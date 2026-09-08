@@ -2860,6 +2860,50 @@ test("stage recovery costs one extra invocation and re-proves the review first",
   }
 });
 
+test("the preparation job checks out the automation before any step requires it", async () => {
+  const os = require("node:os");
+  const evidence = workflowJob(readReviewWorkflow().slice(readReviewWorkflow().indexOf("\njobs:")),
+    "evidence");
+
+  // A hosted runner starts on an empty workspace, so a step that requires a repository module
+  // before the trusted checkout lands cannot run at all.
+  const checkout = evidence.indexOf("git checkout --detach origin/automation");
+  const firstLocalRequire = evidence.indexOf('require("./.github/pr-automation/');
+  assert.ok(checkout !== -1, "the job must check out the trusted automation");
+  assert.ok(firstLocalRequire !== -1, "this test is vacuous unless a step requires a local module");
+  assert.ok(checkout < firstLocalRequire,
+    "no step may require a repository module before the checkout that provides it");
+
+  // That require really does read the workspace: on a blank one it cannot resolve.
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-blank-"));
+  const previous = process.cwd();
+  const failure = await (async () => {
+    try {
+      process.chdir(directory);
+      const body = evidence.slice(evidence.indexOf("script: |") + "script: |\n".length);
+      const lines = [];
+      for (const line of body.split("\n")) {
+        if (line.trim() !== "" && !line.startsWith("            ")) break;
+        lines.push(line.slice(12));
+      }
+      await require("node:vm").runInNewContext(`(async () => {\n${lines.join("\n")}\n})()`, {
+        // The real runner resolves a relative require against the workspace, not the repository.
+        require: (id) => require(id.startsWith(".") ? path.resolve(process.cwd(), id) : id),
+        process: { env: { SELECTED_REVIEWERS: "[]", REQUIRED_REVIEWERS: "[]" } },
+        core: { setOutput: () => {}, info: () => {} },
+      });
+      return null;
+    } catch (error) {
+      return error;
+    } finally {
+      process.chdir(previous);
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  })();
+  assert.ok(failure !== null, "the plan step depends on the checked-out automation");
+  assert.match(String(failure.message), /Cannot find module/);
+});
+
 test("the mandatory reviewer set is resolved once and read everywhere else", () => {
   const jobs = readReviewWorkflow();
   const scoped = jobs.slice(jobs.indexOf("\njobs:"));
@@ -2868,8 +2912,8 @@ test("the mandatory reviewer set is resolved once and read everywhere else", () 
   // One interpretation, taken before any evidence work, so an unusable plan fails closed early.
   assert.match(evidence, /resolveRequiredReviewers/, "evidence must resolve the required set");
   assert.match(evidence, /if \(!resolved\.ok\) throw new Error/);
-  assert.ok(evidence.indexOf("id: plan") < evidence.indexOf("id: evidence"),
-    "the plan must be settled before evidence work begins");
+  assert.ok(evidence.indexOf("id: plan") < evidence.indexOf("Fetch bounded review"),
+    "the plan must be settled before any reviewer stage reads it");
   assert.match(evidence, /required-reviewers: \$\{\{ steps\.plan\.outputs\.required-reviewers \}\}/);
 
   for (const name of ["specialists", "aggregate", "report"]) {

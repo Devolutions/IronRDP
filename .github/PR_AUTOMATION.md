@@ -29,7 +29,7 @@ The pipeline owns evidence, specialists, aggregation, the general review, valida
 
 `required-reviewers` names the specialists that must succeed, and the caller is authoritative.
 The pipeline only falls back to the classification gate when that input is absent.
-The evidence job settles that question once, before any evidence work, and every later stage reads the resolved list rather than interpreting the policy again.
+The evidence job settles that question once per invocation, and every later stage reads the resolved list rather than interpreting the policy again.
 A stage that cannot read the resolved list treats every selected reviewer as mandatory.
 
 Workflow routing selects the code-compressor for every eligible review.

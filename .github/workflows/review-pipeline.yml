@@ -64,6 +64,34 @@ jobs:
       required-reviewers: ${{ steps.plan.outputs.required-reviewers }}
       openspecs-sha: ${{ steps.protocol-sources.outputs.openspecs-sha }}
     steps:
+      - id: evidence
+        name: Prepare SHA-bound pull request evidence
+        shell: bash
+        env:
+          HEAD_SHA: ${{ inputs.head-sha }}
+          BASE_SHA: ${{ inputs.base-sha }}
+          EVIDENCE_MAX_BYTES: ${{ inputs.evidence-max-bytes }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          echo "EVIDENCE_STARTED_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          git init .
+          git config --local core.hooksPath /dev/null
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags origin "+$WORKFLOW_SHA:refs/remotes/origin/automation"
+          git checkout --detach origin/automation
+          if ! bash ./.github/pr-automation/fetch-pr-evidence.sh \
+            "$HEAD_SHA" "$BASE_SHA" "$EVIDENCE_MAX_BYTES"; then
+            reason="pull request evidence unavailable"
+            if test -f pr-evidence/failure-reason.txt; then
+              reason="$(cat pr-evidence/failure-reason.txt)"
+            fi
+            echo "failure-reason=$reason" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
       - id: plan
         name: Resolve the mandatory reviewer set
         uses: actions/github-script@v8
@@ -92,34 +120,6 @@ jobs:
               required: resolved.reviewers,
               source: resolved.source,
             }));
-
-      - id: evidence
-        name: Prepare SHA-bound pull request evidence
-        shell: bash
-        env:
-          HEAD_SHA: ${{ inputs.head-sha }}
-          BASE_SHA: ${{ inputs.base-sha }}
-          EVIDENCE_MAX_BYTES: ${{ inputs.evidence-max-bytes }}
-          WORKFLOW_SHA: ${{ github.workflow_sha }}
-        run: |
-          set -euo pipefail
-          echo "EVIDENCE_STARTED_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
-          export GIT_CONFIG_NOSYSTEM=1
-          export GIT_CONFIG_GLOBAL=/dev/null
-          git init .
-          git config --local core.hooksPath /dev/null
-          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
-          git fetch --no-tags origin "+$WORKFLOW_SHA:refs/remotes/origin/automation"
-          git checkout --detach origin/automation
-          if ! bash ./.github/pr-automation/fetch-pr-evidence.sh \
-            "$HEAD_SHA" "$BASE_SHA" "$EVIDENCE_MAX_BYTES"; then
-            reason="pull request evidence unavailable"
-            if test -f pr-evidence/failure-reason.txt; then
-              reason="$(cat pr-evidence/failure-reason.txt)"
-            fi
-            echo "failure-reason=$reason" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
 
       - name: Fetch bounded review and location context
         uses: actions/github-script@v8
