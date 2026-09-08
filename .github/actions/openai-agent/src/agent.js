@@ -77,6 +77,8 @@ function providerFailure(error) {
   const status = Number(error?.status);
   if (status === 401) return failure("provider credential rejected", "provider-credential");
   if (status === 403) return failure("provider access forbidden", "provider-access");
+  if (status === 408) return failure("provider request timed out", "provider-timeout", true);
+  if (status === 409) return failure("provider request conflict", "provider-conflict", true);
   if (status === 429 && knownQuotaError(error)) {
     return failure("provider quota exhausted", "provider-quota");
   }
@@ -343,7 +345,7 @@ async function runAgent({
       request.response_format = config.output_format === "json_schema"
         ? {
           type: "json_schema",
-          json_schema: { name: config.id, strict: true, schema },
+          json_schema: { name: "structured_output", strict: true, schema },
         }
         : { type: "json_object" };
     }
@@ -377,6 +379,7 @@ function withState(error, state) {
   if (error instanceof AgentFailure) {
     error.turnCount = state.providerCalls;
     error.toolCallCount = state.toolCalls;
+    error.outputRepairCount = state.outputRepairs;
     return error;
   }
   const provider = providerFailure(error);

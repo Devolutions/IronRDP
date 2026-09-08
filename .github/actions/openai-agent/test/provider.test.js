@@ -55,6 +55,10 @@ test("SDK adapter honors valid Retry-After without another retry budget", async 
   assert.deepEqual(delays, [61_000]);
   assert.deepEqual(result, { options: {}, retriesRemaining: 3, requestLogID: "request" });
   assert.equal(retryAfterMilliseconds(new Headers({ "retry-after-ms": "250" })), 250);
+  assert.equal(
+    retryAfterMilliseconds(new Headers({ "retry-after": "600" }), 120_000),
+    120_000,
+  );
   assert.equal(retryAfterMilliseconds(new Headers({ "retry-after": "invalid" })), undefined);
 });
 

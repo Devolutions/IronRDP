@@ -335,7 +335,7 @@ test("validator execution failures are terminal and strict output is opt-in", as
   });
   assert.deepEqual(requests[0].response_format, {
     type: "json_schema",
-    json_schema: { name: "test", strict: true, schema },
+    json_schema: { name: "structured_output", strict: true, schema },
   });
 });
 
@@ -456,6 +456,8 @@ test("provider errors are reduced to fixed non-sensitive categories", () => {
   assert.equal(providerFailureReason({ status: 401, message: "secret" }), "provider credential rejected");
   assert.equal(providerFailureReason({ status: 403, message: "secret" }), "provider access forbidden");
   assert.equal(providerFailureReason({ status: 429, message: "secret" }), "provider rate limit reached");
+  assert.equal(providerFailureReason({ status: 408, message: "secret" }), "provider request timed out");
+  assert.equal(providerFailureReason({ status: 409, message: "secret" }), "provider request conflict");
   assert.equal(providerFailureReason({ status: 503, message: "secret" }), "provider service unavailable");
   assert.equal(
     providerFailureReason(new APIConnectionTimeoutError({ message: "secret" })),
@@ -509,4 +511,22 @@ test("provider diagnostics expose only bounded status and request IDs", () => {
 test("executeTool bounds oversized argument strings", () => {
   const result = executeTool(call("large", "read_file", "x".repeat(16 * 1024 + 1)), sandbox);
   assert.match(result, /tool arguments exceed byte limit/);
+});
+
+test("repair failures retain the completed output repair count", async () => {
+  await assert.rejects(
+    runAgent({
+      client: clientFrom([
+        message('{"wrong":true}'),
+        message({ unexpected: true }),
+      ]),
+      config: baseConfig,
+      methodologies: [],
+      prompt: "p",
+      sandbox,
+      schema,
+    }),
+    (error) => error.reason === "provider response did not contain text" &&
+      error.outputRepairCount === 1,
+  );
 });

@@ -1,6 +1,8 @@
 "use strict";
 
-const { MAX_PROVIDER_ERROR_BYTES } = require("./limits");
+const {
+  MAX_PROVIDER_ERROR_BYTES, MAX_QUOTA_BODY_READ_MS, MAX_REQUEST_TIMEOUT_MS,
+} = require("./limits");
 
 const KNOWN_QUOTA_CODES = new Set([
   "billing_hard_limit_reached",
@@ -109,7 +111,10 @@ function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis
   if (typeof client.retryRequest === "function") {
     const retryRequest = client.retryRequest.bind(client);
     client.retryRequest = async (requestOptions, retriesRemaining, requestLogID, responseHeaders) => {
-      const retryAfter = retryAfterMilliseconds(responseHeaders);
+      const retryAfter = retryAfterMilliseconds(
+        responseHeaders,
+        Number.isSafeInteger(client.timeout) ? client.timeout : MAX_REQUEST_TIMEOUT_MS,
+      );
       if (retryAfter === undefined) {
         return retryRequest(requestOptions, retriesRemaining, requestLogID, responseHeaders);
       }
@@ -143,17 +148,31 @@ async function readBoundedBody(response) {
   if (!reader) return null;
   const chunks = [];
   let length = 0;
+  let timeout;
+  let timedOut = false;
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      length += value.byteLength;
-      if (length > MAX_PROVIDER_ERROR_BYTES) return null;
-      chunks.push(value);
-    }
-    return new TextDecoder("utf-8", { fatal: true }).decode(concatenate(chunks, length));
+    const content = await Promise.race([
+      (async () => {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done || timedOut) break;
+          length += value.byteLength;
+          if (length > MAX_PROVIDER_ERROR_BYTES) return null;
+          chunks.push(value);
+        }
+        return new TextDecoder("utf-8", { fatal: true }).decode(concatenate(chunks, length));
+      })().catch(() => null),
+      new Promise((resolve) => {
+        timeout = setTimeout(() => {
+          timedOut = true;
+          resolve(null);
+        }, MAX_QUOTA_BODY_READ_MS);
+      }),
+    ]);
+    return content;
   } finally {
-    await reader.cancel().catch(() => undefined);
+    if (timeout !== undefined) clearTimeout(timeout);
+    void reader.cancel().catch(() => undefined);
   }
 }
 
@@ -167,15 +186,15 @@ function concatenate(chunks, length) {
   return combined;
 }
 
-function retryAfterMilliseconds(headers) {
+function retryAfterMilliseconds(headers, maximum = MAX_REQUEST_TIMEOUT_MS) {
   const milliseconds = parseDelay(headers?.get?.("retry-after-ms"), 1);
-  if (milliseconds !== undefined) return milliseconds;
+  if (milliseconds !== undefined) return Math.min(milliseconds, maximum);
   const retryAfter = headers?.get?.("retry-after");
   if (typeof retryAfter !== "string") return undefined;
   const seconds = parseDelay(retryAfter, 1000);
-  if (seconds !== undefined) return seconds;
+  if (seconds !== undefined) return Math.min(seconds, maximum);
   const date = Date.parse(retryAfter);
-  return Number.isFinite(date) && date >= Date.now() ? date - Date.now() : undefined;
+  return Number.isFinite(date) && date >= Date.now() ? Math.min(date - Date.now(), maximum) : undefined;
 }
 
 function parseDelay(value, multiplier) {
