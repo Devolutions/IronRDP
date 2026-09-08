@@ -12,20 +12,13 @@ function count(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
-// Providers report usage under several spellings, and the runtime marks whether every attempt was
-// accounted for. A stage whose usage is partial must never look like a complete measurement.
+// Usage arrives in the report spelling, carrying whether every attempt was accounted for. A stage
+// whose usage is partial must never look like a complete measurement.
 function normalizeTokens(tokens) {
   if (tokens === null || typeof tokens !== "object" || Array.isArray(tokens)) return null;
-  const pick = (...keys) => {
-    for (const key of keys) {
-      const value = count(tokens[key]);
-      if (value !== null) return value;
-    }
-    return null;
-  };
-  const input = pick("input", "inputTokens", "input_tokens", "prompt_tokens");
-  const output = pick("output", "outputTokens", "output_tokens", "completion_tokens");
-  const total = pick("total", "totalTokens", "total_tokens");
+  const input = count(tokens.input);
+  const output = count(tokens.output);
+  const total = count(tokens.total);
   if (input === null && output === null && total === null) return null;
   // Usage the producer did not report stays unreported. Deriving a total from two of three fields
   // would turn a partial measurement into one that looks whole.
@@ -53,8 +46,8 @@ const MANDATORY_STAGES = ["evidence", "aggregate", "general", "validate"];
 // first attempt's failure visible even when the retry succeeded.
 function stageOutcome(raw) {
   const {
-    id, status, required = false, reason = "", category = "", attempts = 1, previousReason = "",
-    previous_reason: previousReasonKey = "", provider = false, metrics = {},
+    id, status, required = false, reason = "", category = "", attempts = 1,
+    previous_reason: previousReason = "", provider = false, metrics = {},
   } = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   return {
     id: typeof id === "string" ? id : "",
@@ -64,7 +57,7 @@ function stageOutcome(raw) {
     reason: normalizeText(reason, 300) || "",
     category: normalizeText(category, 60) || "",
     attempts: attempts === 2 ? 2 : 1,
-    previous_reason: normalizeText(previousReason || previousReasonKey, 300) || "",
+    previous_reason: normalizeText(previousReason, 300) || "",
     metrics: normalizeStageMetrics(metrics),
   };
 }

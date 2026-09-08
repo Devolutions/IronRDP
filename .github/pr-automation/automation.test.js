@@ -38,7 +38,9 @@ const {
 const {
   REPORT_VERSION, buildReport, parseReport, stageIds, stageOutcome,
 } = require("./review-report");
-const { MAXIMUM_DELAY_SECONDS, delayedRetryGate } = require("./review-retry");
+const {
+  MAXIMUM_DELAY_SECONDS, delayedRetryGate, retryGateStep,
+} = require("./review-retry");
 const {
   TERMINAL_CODE, validateGeneral, validateSpecialist,
 } = require("./agent-validator");
@@ -2649,7 +2651,7 @@ test("recovery repeats only the failed work and keeps every earlier success", ()
     { id: "specialist:code-compressor", status: "success", required: true, provider: true,
       attempts: 1, metrics: spent },
     { id: "specialist:skeptical", status: "success", required: true, provider: true,
-      attempts: 2, previousReason: "provider request timed out",
+      attempts: 2, previous_reason: "provider request timed out",
       metrics: { ...spent, elapsed_ms: 2000, request_retries: 8 } },
     { id: "specialist:protocol", status: "failed", required: true, provider: true,
       attempts: 1, reason: "model output was not valid JSON",
@@ -2690,7 +2692,7 @@ test("the caller reads exactly what the pipeline wrote, and never reads garbage 
   const produced = buildReport([
     { id: "evidence", status: "success", required: true, metrics: { elapsed_ms: 500 } },
     { id: "specialist:skeptical", status: "success", required: true, provider: true, attempts: 2,
-      previousReason: "provider request timed out",
+      previous_reason: "provider request timed out",
       metrics: { tokens: { complete: true, input: 10, output: 5 }, elapsed_ms: 20,
         request_retries: 4, output_repairs: 1 } },
     { id: "specialist:protocol", status: "failed", required: true, provider: true,
@@ -2773,22 +2775,77 @@ test("reviewer actions retry four provider requests and repair output in convers
   }
 });
 
+test("the shared retry gate carries the resolved plan into its decision", async () => {
+  const os = require("node:os");
+  const fixture = reviewablePullRequest();
+  const run = async (env) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-gate-"));
+    fs.mkdirSync(path.join(directory, "pr-evidence"));
+    fs.writeFileSync(path.join(directory, "pr-evidence", "pull-request.diff"), "x".repeat(2048));
+    const previous = process.cwd();
+    const outputs = {};
+    const logged = [];
+    try {
+      process.chdir(directory);
+      await retryGateStep({
+        github: fixture.github,
+        context: { repo: { owner: "Devolutions", repo: "IronRDP" } },
+        core: {
+          setOutput: (key, value) => { outputs[key] = value; },
+          info: (line) => logged.push(JSON.parse(line)),
+        },
+        env: {
+          PULL_REQUEST_NUMBER: "1", HEAD_SHA: SHA, BASE_SHA: BASE_SHA,
+          RETRYABLE: "true", FAILURE_CATEGORY: "provider-timeout", RETRY_DELAY_SECONDS: "0",
+          SELECTED_REVIEWERS: JSON.stringify(REVIEWABLE_REVIEWERS),
+          ...env,
+        },
+        stage: "specialist",
+      });
+    } finally {
+      process.chdir(previous);
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+    return { outputs, logged };
+  };
+
+  const allowed = await run({ REQUIRED_REVIEWERS: JSON.stringify(["protocol"]) });
+  assert.equal(allowed.outputs.retry, "true");
+  assert.deepEqual(allowed.logged, [{
+    event: "pr-automation.retry-gate", stage: "specialist", retry: true, reason: "",
+  }]);
+
+  // A reviewer the plan makes mandatory but the classification no longer selects cannot be
+  // recovered, and an unreadable plan must not quietly drop that check.
+  const dropped = await run({ REQUIRED_REVIEWERS: JSON.stringify(["security"]) });
+  assert.equal(dropped.outputs.retry, "false");
+  assert.match(dropped.outputs.reason, /required reviewer is no longer selected/);
+});
+
 test("stage recovery costs one extra invocation and re-proves the review first", () => {
   const workflow = readReviewWorkflow();
-  for (const name of ["specialists", "general"]) {
+  const adapter = fs.readFileSync(
+    path.join(__dirname, "review-retry.js"), "utf8",
+  );
+
+  // Both reviewer jobs share one gate adapter, and it re-decides eligibility on the real pull
+  // request rather than on the head alone.
+  assert.match(adapter, /retryable: env\.RETRYABLE/, "the gate must trust the runtime");
+  assert.doesNotMatch(adapter, /RETRYABLE_CATEGORIES/);
+  for (const input of ["expectedBaseSha", "force", "selectedReviewers", "requiredReviewers", "diffBytes"]) {
+    assert.match(adapter, new RegExp(`\\b${input}\\b`), `the gate must receive ${input}`);
+  }
+
+  for (const [name, stage] of [["specialists", "specialist"], ["general", "general"]]) {
     const job = workflowJob(workflow, name);
-    assert.match(job, /delayedRetryGate/, `${name} must gate its retry`);
+    assert.match(job, new RegExp(`retryGateStep\\([\\s\\S]*?stage: "${stage}"`),
+      `${name} must gate its retry`);
     assert.match(job, /retry-delay-seconds/, `${name} must honour the caller delay`);
     // Exactly one retry invocation: recovery is bounded, not a loop.
     assert.equal((job.match(/id: agent-retry\n/g) || []).length, 1);
     assert.match(job, /if: steps\.retry-gate\.outputs\.retry == 'true'/);
-
-    // Retryability is the runtime's verdict, and the gate re-decides eligibility on the real
-    // pull request rather than on the head alone.
-    assert.match(job, /retryable: process\.env\.RETRYABLE/, `${name} must trust the runtime`);
-    assert.doesNotMatch(job, /RETRYABLE_CATEGORIES/);
-    for (const input of ["expectedBaseSha", "force", "selectedReviewers", "diffBytes"]) {
-      assert.match(job, new RegExp(`\\b${input}\\b`), `${name} must pass ${input} to the gate`);
+    for (const variable of ["RETRYABLE", "GATE", "SELECTED_REVIEWERS", "REQUIRED_REVIEWERS"]) {
+      assert.match(job, new RegExp(`${variable}: `), `${name} must pass ${variable} to the gate`);
     }
     // Reading that pull request needs read-only scopes, and grants no write anywhere.
     const permissions = job.slice(job.indexOf("permissions:"), job.indexOf("steps:"));
@@ -2801,78 +2858,137 @@ test("stage recovery costs one extra invocation and re-proves the review first",
     assert.match(job, /RETRY_DECLINE: \$\{\{ steps\.retry-gate\.outputs\.reason \}\}/);
     assert.match(job, /no retry: \$\{decline\}/);
   }
+});
 
-  // Required coverage is resolved the same way everywhere, so the gate fallback still binds.
-  for (const name of ["specialists", "report"]) {
-    assert.match(workflowJob(workflow.slice(workflow.indexOf("\njobs:")), name),
-      /resolveRequiredReviewers/, `${name} must resolve required reviewers`);
+test("the mandatory reviewer set is resolved once and read everywhere else", () => {
+  const jobs = readReviewWorkflow();
+  const scoped = jobs.slice(jobs.indexOf("\njobs:"));
+  const evidence = workflowJob(scoped, "evidence");
+
+  // One interpretation, taken before any evidence work, so an unusable plan fails closed early.
+  assert.match(evidence, /resolveRequiredReviewers/, "evidence must resolve the required set");
+  assert.match(evidence, /if \(!resolved\.ok\) throw new Error/);
+  assert.ok(evidence.indexOf("id: plan") < evidence.indexOf("id: evidence"),
+    "the plan must be settled before evidence work begins");
+  assert.match(evidence, /required-reviewers: \$\{\{ steps\.plan\.outputs\.required-reviewers \}\}/);
+
+  for (const name of ["specialists", "aggregate", "report"]) {
+    const job = workflowJob(scoped, name);
+    assert.doesNotMatch(job, /resolveRequiredReviewers/, `${name} must not reinterpret the policy`);
+    assert.match(job, /REQUIRED_REVIEWERS: \$\{\{ needs\.evidence\.outputs\.required-reviewers \}\}/,
+      `${name} must read the resolved plan`);
   }
 });
 
-test("the aggregate job enforces the gate fallback when the caller sends no required list", async () => {
+// Runs a step script exactly as the workflow does, so a policy regression cannot hide in YAML.
+async function runFirstStepScript(jobName, env) {
   const nodeRequire = require;
   const os = require("node:os");
   const vm = require("node:vm");
   const repoRoot = path.resolve(__dirname, "..", "..");
-  const aggregate = workflowJob(readReviewWorkflow(), "aggregate");
-  const script = (() => {
-    const body = aggregate.slice(aggregate.indexOf("script: |") + "script: |\n".length);
-    const lines = [];
-    for (const line of body.split("\n")) {
-      if (line.trim() !== "" && !line.startsWith("            ")) break;
-      lines.push(line.slice(12));
-    }
-    return lines.join("\n");
-  })();
-  assert.match(script, /buildSpecialistAggregate/);
+  const job = workflowJob(readReviewWorkflow().slice(readReviewWorkflow().indexOf("\njobs:")), jobName);
+  const body = job.slice(job.indexOf("script: |") + "script: |\n".length);
+  const lines = [];
+  for (const line of body.split("\n")) {
+    if (line.trim() !== "" && !line.startsWith("            ")) break;
+    lines.push(line.slice(12));
+  }
+  const script = lines.join("\n");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-step-"));
+  fs.mkdirSync(path.join(directory, "specialist-results"));
+  const previous = process.cwd();
+  const outputs = {};
+  try {
+    process.chdir(directory);
+    await vm.runInNewContext(`(async () => {\n${script}\n})()`, {
+      require: (id) => nodeRequire(id.startsWith(".") ? path.resolve(repoRoot, id) : id),
+      process: { env },
+      core: {
+        setOutput: (key, value) => { outputs[key] = value; },
+        info: () => {}, warning: () => {},
+      },
+    });
+  } finally {
+    process.chdir(previous);
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+  return { outputs, script };
+}
 
-  // The real step script decides mandatory coverage, so an old caller that sends only the gate has
-  // to keep reaching the fallback rather than an empty required list.
-  const runStep = async (env) => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-aggregate-"));
-    fs.mkdirSync(path.join(directory, "specialist-results"));
-    const previous = process.cwd();
-    const outputs = {};
-    try {
-      process.chdir(directory);
-      await vm.runInNewContext(`(async () => {\n${script}\n})()`, {
-        require: (id) => nodeRequire(id.startsWith(".") ? path.resolve(repoRoot, id) : id),
-        process: { env },
-        core: {
-          setOutput: (key, value) => { outputs[key] = value; },
-          info: () => {}, warning: () => {},
-        },
-      });
-    } finally {
-      process.chdir(previous);
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
-    return outputs;
+test("the review plan keeps the gate fallback for a caller that sends no required list", async () => {
+  const base = {
+    SELECTED_REVIEWERS: JSON.stringify(REVIEWABLE_REVIEWERS),
+    GATE: JSON.stringify({ protocolRelated: true, risk: "medium" }),
   };
+  const planned = async (env) => JSON.parse(
+    (await runFirstStepScript("evidence", env)).outputs["required-reviewers"],
+  );
 
+  // An old caller sends only the gate, so the fallback still has to make its reviewers mandatory.
+  assert.deepEqual(await planned(base), ["protocol", "skeptical"]);
+  // An explicit empty list is the caller saying nothing is mandatory, and only the caller can.
+  assert.deepEqual(await planned({ ...base, REQUIRED_REVIEWERS: "[]" }), []);
+  // An explicit list is honoured as given.
+  assert.deepEqual(await planned({ ...base, REQUIRED_REVIEWERS: JSON.stringify(["protocol"]) }),
+    ["protocol"]);
+
+  // A plan that cannot be resolved stops the run before any evidence work is spent.
+  const unresolved = await runFirstStepScript("evidence", {
+    ...base, REQUIRED_REVIEWERS: JSON.stringify(["unknown-reviewer"]),
+  }).then(() => null, (error) => error);
+  assert.ok(unresolved !== null, "an unusable plan must fail the job");
+  assert.match(String(unresolved.message), /invalid required reviewer list/);
+});
+
+test("the aggregate job enforces coverage and fails closed without a plan", async () => {
   const base = {
     HEAD_SHA: SHA,
     SPECIALIST_REVIEWERS: JSON.stringify(REVIEWABLE_REVIEWERS),
-    GATE: JSON.stringify({ protocolRelated: true, risk: "medium" }),
   };
+  const runStep = async (env) => (await runFirstStepScript("aggregate", env)).outputs;
 
-  // No specialist reported, so the protocol and skeptical reviewers the gate makes mandatory are
-  // both missing and the general review must not run.
-  const fallback = await runStep(base);
-  assert.equal(fallback.ready, false);
-  assert.match(fallback.reason, /protocol/);
-  assert.match(fallback.reason, /skeptical/);
-
-  // An explicit empty list is the caller saying nothing is mandatory, and only the caller can.
-  const explicit = await runStep({ ...base, REQUIRED_REVIEWERS: "[]" });
-  assert.equal(explicit.ready, true);
-  assert.equal(explicit.reason, "");
-
-  // An explicit list is honoured as given.
+  // No specialist reported anything, so nothing mandatory is covered.
   const named = await runStep({ ...base, REQUIRED_REVIEWERS: JSON.stringify(["protocol"]) });
   assert.equal(named.ready, false);
   assert.match(named.reason, /protocol/);
   assert.doesNotMatch(named.reason, /skeptical/);
+
+  // An explicit empty plan is authoritative.
+  const explicit = await runStep({ ...base, REQUIRED_REVIEWERS: "[]" });
+  assert.equal(explicit.ready, true);
+  assert.equal(explicit.reason, "");
+
+  // An unreadable plan must not read as "nothing is mandatory".
+  const missing = await runStep(base);
+  assert.equal(missing.ready, false);
+  for (const reviewer of REVIEWABLE_REVIEWERS) assert.match(missing.reason, new RegExp(reviewer));
+});
+
+test("each reviewer ships one artifact holding its result and its stage report", () => {
+  const workflow = readReviewWorkflow();
+  const scoped = workflow.slice(workflow.indexOf("\njobs:"));
+  const specialists = workflowJob(scoped, "specialists");
+
+  // One upload per matrix leg, named per reviewer so the legs cannot overwrite each other.
+  const uploads = specialists.match(/uses: actions\/upload-artifact/g) || [];
+  assert.equal(uploads.length, 1, "a reviewer must ship exactly one artifact");
+  assert.match(specialists, /name: review-specialist-\$\{\{ inputs\.head-sha \}\}-\$\{\{ matrix\.reviewer \}\}/);
+  assert.match(specialists, /path: specialist-out\n/);
+  assert.match(specialists, /if-no-files-found: error/);
+  // A failed reviewer still has to report, so the upload cannot be conditional on success.
+  assert.match(specialists, /- name: Upload the specialist result and stage report\n {8}if: always\(\)/);
+  assert.match(specialists, /path\.join\(directory, "result\.json"\)/);
+  assert.match(specialists, /path\.join\(directory, "stage\.json"\)/);
+  assert.match(specialists, /path\.join\("specialist-out", reviewer\)/);
+
+  // Both consumers read that one artifact, each from its own file.
+  for (const [name, file] of [["aggregate", "result"], ["report", "stage"]]) {
+    const job = workflowJob(scoped, name);
+    assert.match(job, /pattern: review-specialist-\$\{\{ inputs\.head-sha \}\}-\*/,
+      `${name} must download the reviewer artifacts`);
+    assert.match(job, /merge-multiple: true/, `${name} must merge the reviewer artifacts`);
+    assert.match(job, new RegExp(`reviewer, "${file}\\.json"`), `${name} must read ${file}.json`);
+  }
 });
 
 test("the reviewer jobs cannot ask for more than the caller grants them", () => {

@@ -151,11 +151,21 @@ function parseDiagnostics(raw) {
     ? parsed
     : {};
   const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const usage = source.tokenUsage !== null && typeof source.tokenUsage === "object"
+    ? source.tokenUsage
+    : {};
   return {
     elapsed_ms: count(source.durationMs),
     request_retries: count(source.requestRetryCount),
     output_repairs: count(source.outputRepairCount),
-    tokens: normalizeStageMetrics({ tokens: source.tokenUsage }).tokens,
+    tokens: normalizeStageMetrics({
+      tokens: {
+        input: usage.inputTokens,
+        output: usage.outputTokens,
+        total: usage.totalTokens,
+        complete: usage.complete === true,
+      },
+    }).tokens,
   };
 }
 
@@ -183,8 +193,19 @@ function mergeDiagnostics(first, second) {
   };
 }
 
+// The mandatory set is resolved once, in the evidence job. A stage that cannot read that plan
+// treats every selected reviewer as mandatory rather than none.
+function plannedRequiredReviewers(raw, selectedReviewers = []) {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : selectedReviewers;
+  } catch {
+    return selectedReviewers;
+  }
+}
+
 module.exports = {
   SPECIALIST_ORDER,
   buildSpecialistAggregate, failedRun, isRetryableFailure, mergeDiagnostics, parseDiagnostics,
-  resolveRequiredReviewers, validateSpecialistRun,
+  plannedRequiredReviewers, resolveRequiredReviewers, validateSpecialistRun,
 };

@@ -4,7 +4,7 @@ const { SCHEMA_VERSION, parseCheckState } = require("./validate-classifier");
 const { contributorEligibility, reviewPolicyEligible } = require("./resolve-state");
 const { forkRateLimit } = require("./fork-rate-limit");
 const { normalizeReviewerIds } = require("./routing");
-const { isRetryableFailure } = require("./review-pipeline");
+const { isRetryableFailure, plannedRequiredReviewers } = require("./review-pipeline");
 
 const MAXIMUM_DELAY_SECONDS = 15 * 60;
 const OVERSIZED_REVIEW_LABEL = "ai-review/allow-oversized";
@@ -133,6 +133,43 @@ async function delayedRetryGate({
   }
 }
 
+// Both reviewer jobs decide a retry the same way and differ only in the stage they log, so the
+// step keeps the decision here rather than repeating it in YAML.
+async function retryGateStep({ github, context, core, env, stage }) {
+  const diffBytes = (() => {
+    try {
+      return require("node:fs").statSync("pr-evidence/pull-request.diff").size;
+    } catch {
+      return null;
+    }
+  })();
+  const force = (() => {
+    try {
+      return JSON.parse(env.GATE || "{}")?.force === true;
+    } catch {
+      return false;
+    }
+  })();
+  const selectedReviewers = plannedRequiredReviewers(env.SELECTED_REVIEWERS);
+  const decision = await delayedRetryGate({
+    github, owner: context.repo.owner, repo: context.repo.repo,
+    pullNumber: Number(env.PULL_REQUEST_NUMBER),
+    expectedHeadSha: env.HEAD_SHA,
+    expectedBaseSha: env.BASE_SHA,
+    retryable: env.RETRYABLE,
+    failureCategory: env.FAILURE_CATEGORY,
+    delaySeconds: Number(env.RETRY_DELAY_SECONDS),
+    force,
+    selectedReviewers,
+    requiredReviewers: plannedRequiredReviewers(env.REQUIRED_REVIEWERS, selectedReviewers),
+    diffBytes,
+  });
+  core.setOutput("retry", String(decision.retry));
+  core.setOutput("reason", decision.reason);
+  core.info(JSON.stringify({ event: "pr-automation.retry-gate", stage, ...decision }));
+  return decision;
+}
+
 module.exports = {
-  MAXIMUM_DELAY_SECONDS, assertCurrentHead, delayedRetryGate, retryStillPermitted,
+  MAXIMUM_DELAY_SECONDS, assertCurrentHead, delayedRetryGate, retryGateStep, retryStillPermitted,
 };
