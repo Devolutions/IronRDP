@@ -177,3 +177,50 @@ fn test_decode_garbage_input() {
     // with a valid frame.
     assert!(result.is_err(), "garbage NAL content should not produce a valid frame");
 }
+
+// ============================================================================
+// Color Range Tests
+// ============================================================================
+
+/// Encode a YUV420p frame with the given luma/chroma planes and decode it
+/// back through `OpenH264Decoder`, returning the RGBA output.
+fn encode_and_decode_yuv(planes: ([u8; 256], [u8; 64], [u8; 64])) -> ironrdp_egfx::decode::DecodedFrame {
+    use openh264::encoder::Encoder;
+    use openh264::formats::YUVSlices;
+
+    let mut encoder = Encoder::new().expect("encoder should initialize");
+    let yuv = YUVSlices::new((&planes.0, &planes.1, &planes.2), (16, 16), (16, 8, 8));
+    let bitstream = encoder.encode(&yuv).expect("encode should succeed").to_vec();
+
+    let avc_data = annex_b_to_avc(&bitstream);
+    let mut decoder = OpenH264Decoder::new().expect("decoder should initialize");
+    decoder.decode(&avc_data).expect("decode should succeed")
+}
+
+#[test]
+fn test_decode_preserves_full_luma_range() {
+    // MS-RDPEGFX AVC420 is full range, so luma must pass through the
+    // YUV-to-RGBA conversion undistorted. A limited-range (studio swing)
+    // conversion over-expands: near-white luma is pulled past 255 and
+    // clamps there, near-black luma is pulled below 0 and clamps there.
+    // Values right at 255/0 survive either conversion after clamping, so
+    // the discriminating cases sit just inside the extremes.
+    let near_white = encode_and_decode_yuv(([245u8; 256], [128u8; 64], [128u8; 64]));
+    let data = near_white.data();
+    for px in data.chunks_exact(4) {
+        // A limited-range conversion clamps this to 255.
+        assert!(px[0] < 252, "near-white R channel saturated: {}", px[0]);
+        assert!(px[1] < 252, "near-white G channel saturated: {}", px[1]);
+        assert!(px[2] < 252, "near-white B channel saturated: {}", px[2]);
+        assert_eq!(px[3], 255);
+    }
+
+    let near_black = encode_and_decode_yuv(([10u8; 256], [128u8; 64], [128u8; 64]));
+    let data = near_black.data();
+    for px in data.chunks_exact(4) {
+        // A limited-range conversion clamps this to 0.
+        assert!(px[0] > 4, "near-black R channel crushed: {}", px[0]);
+        assert!(px[1] > 4, "near-black G channel crushed: {}", px[1]);
+        assert!(px[2] > 4, "near-black B channel crushed: {}", px[2]);
+    }
+}
