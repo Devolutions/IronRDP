@@ -65,8 +65,10 @@ async function retryStillPermitted({
     owner, repo, ref: expectedHeadSha, check_name: checkName, per_page: 100,
   })).data.check_runs.filter((run) => run?.app?.slug === "github-actions");
 
+  // Duplicate runs can share one external ID, so the newest decides, exactly as the caller's gate.
   const classification = (await runsFor("AI classification"))
-    .find((run) => run.external_id === `${SCHEMA_VERSION}:${expectedHeadSha}`);
+    .filter((run) => run.external_id === `${SCHEMA_VERSION}:${expectedHeadSha}`)
+    .sort((left, right) => right.id - left.id)[0];
   if (classification?.conclusion !== "success") {
     return decline("classification is no longer valid for this head");
   }

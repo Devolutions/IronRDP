@@ -104,9 +104,9 @@ jobs:
             const {
               resolveRequiredReviewers,
             } = require("./.github/pr-automation/review-pipeline");
-            const gate = process.env.GATE ? JSON.parse(process.env.GATE) : {};
             const resolved = (() => {
               try {
+                const gate = process.env.GATE ? JSON.parse(process.env.GATE) : {};
                 return resolveRequiredReviewers({
                   selectedReviewers: JSON.parse(process.env.SELECTED_REVIEWERS),
                   requiredReviewers: process.env.REQUIRED_REVIEWERS

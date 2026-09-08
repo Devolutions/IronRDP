@@ -2537,7 +2537,7 @@ function reviewableState(changes = {}) {
     classificationConclusion: "success", classificationHeadSha: SHA,
     classificationTitle: "Classification complete",
     automaticReviewEligible: true, classifiedReviewers: REVIEWABLE_REVIEWERS,
-    alreadyReviewed: false, ciConclusion: "success", ciRuns: null,
+    alreadyReviewed: false, ciConclusion: "success", ciRuns: null, classificationRuns: null,
     diffBytes: 64 * 1024,
     ...changes,
   };
@@ -2574,16 +2574,19 @@ function reviewablePullRequest(changes = {}, live = null) {
               ? [{ conclusion: "success", app: { slug: "github-actions" } }]
               : [] } };
           }
-          return { data: { check_runs: [{
+          const summaryFor = (run) => `Validated classification.\n\n${encodeCheckState({
+            protocolRelated: true, risk: "medium",
+            specialistReviewers: run.reviewers ?? state.classifiedReviewers,
+            automaticReviewEligible: run.eligible ?? state.automaticReviewEligible,
+          })}`;
+          const runs = state.classificationRuns ?? [{ id: 1, title: state.classificationTitle }];
+          return { data: { check_runs: runs.map((run) => ({
+            id: run.id,
             external_id: `${CLASSIFIER_SCHEMA_VERSION}:${state.classificationHeadSha}`,
-            conclusion: state.classificationConclusion,
+            conclusion: run.conclusion ?? state.classificationConclusion,
             app: { slug: "github-actions" },
-            output: { title: state.classificationTitle, summary: `Validated classification.\n\n${encodeCheckState({
-              protocolRelated: true, risk: "medium",
-              specialistReviewers: state.classifiedReviewers,
-              automaticReviewEligible: state.automaticReviewEligible,
-            })}` },
-          }] } };
+            output: { title: run.title, summary: summaryFor(run) },
+          })) } };
         },
       },
       actions: {
@@ -2690,6 +2693,17 @@ test("a retry re-decides review eligibility against the pull request as it is af
     { name: "CI", conclusion: "success", run_started_at: "2026-01-01T00:00:00Z" },
     { name: "CI", conclusion: "failure", run_started_at: "2026-01-02T00:00:00Z" },
   ] })).retry, false);
+
+  // Two classification runs can share one external ID. The newest decides, whatever order the API
+  // lists them in, so a superseded "Classification complete" cannot authorize the retry.
+  assert.deepEqual(await gate({ classificationRuns: [
+    { id: 41, title: "Classification complete" },
+    { id: 42, title: "Automation stopped" },
+  ] }), { retry: false, reason: "classification no longer authorizes an automatic review" });
+  assert.equal((await gate({ classificationRuns: [
+    { id: 42, title: "Classification complete" },
+    { id: 41, title: "Automation stopped" },
+  ] })).retry, true);
 
   // An unreachable API proves nothing, and proving nothing is not permission to spend a request.
   const broken = { retry: false, reason: "review eligibility could not be confirmed" };
@@ -3182,6 +3196,20 @@ test("the review plan keeps the gate fallback for a caller that sends no require
     .then(() => null, (error) => error);
   assert.ok(unreadable !== null, "an unreadable plan must fail the job");
   assert.match(String(unreadable.stepOutputs["failure-reason"]), /review plan unreadable/);
+
+  // A malformed gate is just as unreadable, so it must not surface as missing evidence either.
+  const badGate = await runFirstStepScript("evidence", { ...base, GATE: "{" })
+    .then(() => null, (error) => error);
+  assert.ok(badGate !== null, "an unreadable gate must fail the job");
+  assert.match(String(badGate.stepOutputs["failure-reason"]), /review plan unreadable/);
+
+  // A plan the aggregate would later reject must not first spend every reviewer request.
+  const noncanonical = await runFirstStepScript("evidence", {
+    ...base, SELECTED_REVIEWERS: JSON.stringify(["skeptical", "protocol"]),
+  }).then(() => null, (error) => error);
+  assert.ok(noncanonical !== null, "a noncanonical plan must fail the job");
+  assert.match(String(noncanonical.stepOutputs["failure-reason"]),
+    /invalid specialist execution plan/);
 
   const evidence = workflowJob(readReviewWorkflow().slice(readReviewWorkflow().indexOf("\njobs:")),
     "evidence");

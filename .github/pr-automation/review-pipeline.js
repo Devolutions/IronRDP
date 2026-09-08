@@ -62,7 +62,9 @@ function resolveRequiredReviewers({
   selectedReviewers, requiredReviewers, protocolRelated, risk,
 } = {}) {
   const selected = normalizeReviewerIds(selectedReviewers);
-  if (!selected) return invalid("invalid specialist execution plan");
+  if (!selected || selected.some((reviewer, index) => reviewer !== selectedReviewers[index])) {
+    return invalid("invalid specialist execution plan");
+  }
   if (requiredReviewers != null) {
     if (!Array.isArray(requiredReviewers)) return invalid("invalid required reviewer list");
     if (requiredReviewers.length === 0) return { ok: true, reviewers: [], source: "caller" };
