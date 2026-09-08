@@ -41,7 +41,7 @@ use crate::pdu::v2_control::AckOfAcksPayload;
 use crate::pdu::v2_data::{DataBody, DataHeader};
 use crate::pdu::v2_flags::V2Flags;
 use crate::pdu::v2_header::{LOG_WINDOW_SIZE_MAX, V2Header};
-use crate::pdu::{V1Datagram, V2Packet};
+use crate::pdu::{SourceData, SourcePayloadHeader, V1AckOfAcksHeader, V1Datagram, V2Packet};
 use crate::recv_window::RecvWindow;
 use crate::reliability::ReliabilityController;
 use crate::rtt::RttEstimator;
@@ -133,6 +133,14 @@ pub struct ConnectionConfig {
     /// The server holds the same value and compares it against the client's
     /// SYN, which is the check 3.1.5.1.1 asks of it.
     pub cookie_hash: Option<[u8; 32]>,
+
+    /// The protocol version the client SYN offers (MS-RDPEUDP 2.2.2.9).
+    ///
+    /// Version 3 selects MS-RDPEUDP2 and requires `cookie_hash`. Offering
+    /// version 2 or 1 asks for the MS-RDPEUDP framing outright, which is what
+    /// a server that only speaks those versions answers; the SYN then carries
+    /// no cookie hash, as the specification requires.
+    pub offer_version: UdpVersion,
 }
 
 impl Default for ConnectionConfig {
@@ -145,6 +153,7 @@ impl Default for ConnectionConfig {
             idle_timeout: Duration::from_secs(65),
             keep_alive_interval: Duration::from_secs(8),
             cookie_hash: None,
+            offer_version: UdpVersion::V3,
         }
     }
 }
@@ -199,6 +208,16 @@ const HANDSHAKE_RETRANSMIT_LIMIT: u8 = 5;
 /// any of it drains.
 const SEND_BUFFER_WINDOW_MULTIPLE: usize = 8;
 
+/// Bytes reserved in a version 1/2 Source Packet for the FEC header (8), an ACK
+/// vector of up to [`V1_ACK_VECTOR_MAX_ELEMENTS`] elements with its size field and
+/// DWORD padding (36), an optional ACK-of-ACKs header (4) and the source payload
+/// header (8).
+const V1_DATA_OVERHEAD: usize = 8 + 36 + 4 + 8;
+/// Elements kept in an outgoing version 1/2 ACK vector; the oldest runs are dropped.
+const V1_ACK_VECTOR_MAX_ELEMENTS: usize = 32;
+/// MS-RDPEUDP 2.2.2.6: an ACK-of-ACKs SHOULD follow every 20 datagrams.
+const V1_ACK_OF_ACKS_INTERVAL: u32 = 20;
+
 /// Connection state in the handshake / lifecycle FSM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -223,6 +242,16 @@ struct Acknowledgement {
 }
 
 /// Negotiated parameters from the handshake.
+/// Which data-transfer framing the handshake settled on (MS-RDPEUDP 3.1.5.1.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WireFormat {
+    /// MS-RDPEUDP version 1 or 2: `RDPUDP_FEC_HEADER` datagrams. The two differ only
+    /// in their minimum timers (2.2.2.9).
+    V1 { version: u16 },
+    /// MS-RDPEUDP2 (version 3).
+    V2,
+}
+
 #[derive(Debug, Clone)]
 struct NegotiatedParams {
     /// Our ISN (from our SYN).
@@ -233,6 +262,8 @@ struct NegotiatedParams {
     mtu: u16,
     /// log2 of the window size.
     log_window_size: u8,
+    /// Framing selected by the SYN+ACK.
+    wire: WireFormat,
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -369,6 +400,49 @@ pub struct RdpeudpConnection {
 
     /// Reusable wire encoding buffer.
     wire_buf: Vec<u8>,
+
+    /// Next `snCoded` for a version 1/2 Source Packet (MS-RDPEUDP 3.1.5.1.4).
+    v1_next_coded: u32,
+    /// Datagrams sent since the last `RDPUDP_ACK_OF_ACKVECTOR_HEADER` (MS-RDPEUDP 2.2.2.6).
+    v1_since_ack_of_acks: u32,
+    /// A Congestion Notification was seen; the next Source Packet must carry CWR (MS-RDPEUDP 3.1.1.8).
+    v1_cwr_pending: bool,
+    /// When the sender last reduced its window for a CN; it reacts at most once per RTT.
+    v1_last_cn_reaction: Option<MonotonicInstant>,
+    /// The pending acknowledgement is being sent because the delayed-ACK timer fired (MS-RDPEUDP 3.1.6.3).
+    v1_ack_delayed: bool,
+    /// Diagnostics: retransmitted Source Packets, ACKs sent, datagrams and Source Packets received.
+    v1_stats: V1Counters,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct V1Counters {
+    retransmits: u64,
+    acks_sent: u64,
+    datagrams_in: u64,
+    data_in: u64,
+    data_out: u64,
+}
+
+/// A snapshot of the MS-RDPEUDP version 1/2 data path, for diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct V1Stats {
+    pub version: u16,
+    pub send_pending: usize,
+    pub bytes_in_flight: u64,
+    pub send_next_source: u64,
+    pub send_lowest_pending: Option<u64>,
+    pub retransmits: u64,
+    pub data_out: u64,
+    pub acks_sent: u64,
+    pub datagrams_in: u64,
+    pub data_in: u64,
+    pub recv_base: u64,
+    pub recv_highest: u64,
+    pub recv_reorder: usize,
+    pub recv_has_gaps: bool,
+    pub srtt_ms: Option<u64>,
+    pub rto_ms: u64,
 }
 
 impl RdpeudpConnection {
@@ -392,7 +466,7 @@ impl RdpeudpConnection {
             ));
         }
 
-        if config.cookie_hash.is_none() {
+        if config.cookie_hash.is_none() && config.offer_version == UdpVersion::V3 {
             return Err(RdpeudpError::invalid_state(
                 "connect without ConnectionConfig::cookie_hash, which a version 3 SYN must carry",
             ));
@@ -487,6 +561,7 @@ impl RdpeudpConnection {
             remote_isn,
             mtu,
             log_window_size: conn.config.log_window_size,
+            wire: WireFormat::V2,
         });
 
         conn.enqueue_syn_ack(remote_isn, now);
@@ -519,6 +594,12 @@ impl RdpeudpConnection {
             ack_delay_started_at: None,
             remote_timestamp_ref: 0,
             wire_buf: Vec::with_capacity(1400),
+            v1_next_coded: 0,
+            v1_since_ack_of_acks: 0,
+            v1_cwr_pending: false,
+            v1_last_cn_reaction: None,
+            v1_ack_delayed: false,
+            v1_stats: V1Counters::default(),
         }
     }
 
@@ -602,6 +683,10 @@ impl RdpeudpConnection {
     ///
     /// [`send`]: Self::send
     pub fn max_payload(&self) -> usize {
+        if let Some(params) = self.params.as_ref().filter(|p| matches!(p.wire, WireFormat::V1 { .. })) {
+            return usize::from(params.mtu).saturating_sub(V1_DATA_OVERHEAD).max(1);
+        }
+
         let mtu = self
             .params
             .as_ref()
@@ -637,7 +722,11 @@ impl RdpeudpConnection {
                     return Ok(());
                 }
 
-                self.handle_v2_packet(wire, now)
+                if self.wire_is_v1() {
+                    self.handle_v1_datagram(wire, now)
+                } else {
+                    self.handle_v2_packet(wire, now)
+                }
             }
             State::Closed => Err(RdpeudpError::connection_closed("handle datagram")),
         }
@@ -812,12 +901,61 @@ impl RdpeudpConnection {
 
     /// Current retransmission timeout.
     pub fn rto(&self) -> Duration {
-        self.rtt.rto()
+        self.effective_rto()
+    }
+
+    /// The retransmit timeout with the negotiated version's floor applied
+    /// (MS-RDPEUDP 3.1.6.1): 500 ms for version 1, 300 ms for version 2.
+    fn effective_rto(&self) -> Duration {
+        Self::apply_rto_floor(self.params.as_ref().map(|p| p.wire), self.rtt.rto())
+    }
+
+    fn apply_rto_floor(wire: Option<WireFormat>, rto: Duration) -> Duration {
+        match wire {
+            Some(WireFormat::V1 { version }) if version < 2 => rto.max(Duration::from_millis(500)),
+            Some(WireFormat::V1 { .. }) => rto.max(Duration::from_millis(300)),
+            _ => rto,
+        }
+    }
+
+    fn wire_is_v1(&self) -> bool {
+        matches!(self.params.as_ref().map(|p| p.wire), Some(WireFormat::V1 { .. }))
     }
 
     /// Negotiated MTU (maximum payload per packet), if handshake is complete.
     pub fn mtu(&self) -> Option<u16> {
         self.params.as_ref().map(|p| p.mtu)
+    }
+
+    /// Diagnostics for the MS-RDPEUDP version 1/2 data path; `None` on MS-RDPEUDP2.
+    pub fn v1_stats(&self) -> Option<V1Stats> {
+        let params = self.params.as_ref()?;
+        let WireFormat::V1 { version } = params.wire else {
+            return None;
+        };
+        let send_window = self.send_window.as_ref()?;
+        let recv_window = self.recv_window.as_ref()?;
+        Some(V1Stats {
+            version,
+            send_pending: send_window.pending_entries().count(),
+            bytes_in_flight: send_window.bytes_in_flight(),
+            send_next_source: send_window.next_channel_seq(),
+            send_lowest_pending: send_window.pending_entries().map(|e| e.channel_seq).min(),
+            retransmits: self.v1_stats.retransmits,
+            data_out: self.v1_stats.data_out,
+            acks_sent: self.v1_stats.acks_sent,
+            datagrams_in: self.v1_stats.datagrams_in,
+            data_in: self.v1_stats.data_in,
+            recv_base: recv_window.base_seq(),
+            recv_highest: recv_window.highest_seq(),
+            recv_reorder: recv_window.reorder_buf_len(),
+            recv_has_gaps: recv_window.has_gaps(),
+            srtt_ms: self
+                .rtt
+                .srtt()
+                .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+            rto_ms: u64::try_from(self.effective_rto().as_millis()).unwrap_or(u64::MAX),
+        })
     }
 
     /// The ACK delay timeout to use right now.
@@ -838,6 +976,18 @@ impl RdpeudpConnection {
     fn ack_delay_timeout(&self) -> Duration {
         const FLOOR: Duration = Duration::from_millis(50);
         const CEILING: Duration = Duration::from_millis(200);
+
+        // MS-RDPEUDP 3.1.6.3: version 1 delays exactly 200 ms; version 2 uses
+        // max(50 ms, RTT/2) capped at 200 ms, which MS-RDPEUDP2 also does.
+        if let Some(NegotiatedParams {
+            wire: WireFormat::V1 { version },
+            ..
+        }) = self.params.as_ref()
+        {
+            if *version < 2 {
+                return CEILING;
+            }
+        }
 
         match self.rtt.srtt() {
             Some(srtt) => (srtt / 2).clamp(FLOOR, CEILING),
@@ -871,11 +1021,16 @@ impl RdpeudpConnection {
                 // (1.3.2.2). Version 2 is the same v1 data transfer with
                 // shorter timers, so advertising it and then speaking v2
                 // framing leaves the peer unable to parse anything.
-                udp_ver: UdpVersion::V3,
+                udp_ver: self.config.offer_version,
                 // 2.2.2.9: mandatory with version 3 in a client SYN.
                 // `connect` refuses to build a connection without it.
-                cookie_hash: self.config.cookie_hash,
+                cookie_hash: if self.config.offer_version == UdpVersion::V3 {
+                    self.config.cookie_hash
+                } else {
+                    None
+                },
             }),
+            data: None,
         };
 
         if !self.enqueue_handshake(&datagram) {
@@ -883,7 +1038,7 @@ impl RdpeudpConnection {
         }
         self.handshake_sent_at = Some(now);
 
-        self.timers.set(Timer::Retransmit, now + self.rtt.rto());
+        self.timers.set(Timer::Retransmit, now + self.effective_rto());
         self.timers.set(Timer::Idle, now + self.config.idle_timeout);
     }
 
@@ -912,6 +1067,7 @@ impl RdpeudpConnection {
                 // "It MUST NOT be present in any other case."
                 cookie_hash: None,
             }),
+            data: None,
         };
 
         if !self.enqueue_handshake(&datagram) {
@@ -919,7 +1075,7 @@ impl RdpeudpConnection {
         }
         self.handshake_sent_at = Some(now);
 
-        self.timers.set(Timer::Retransmit, now + self.rtt.rto());
+        self.timers.set(Timer::Retransmit, now + self.effective_rto());
     }
 
     /// Queue a handshake datagram and keep a copy for retransmission.
@@ -993,12 +1149,16 @@ impl RdpeudpConnection {
         // supported by both endpoints", and per 3.1.5.1.3 that is the version
         // both MUST then use. Anything below 3 means the server settled on the
         // MS-RDPEUDP data transfer, which this crate does not speak.
-        if !syn_data_ex.udp_ver.uses_v2_wire_format() {
-            return Err(RdpeudpError::invalid_packet(
-                "handle SYN+ACK",
-                "server settled on a protocol version below 3, whose data transfer is MS-RDPEUDP rather than MS-RDPEUDP2",
-            ));
-        }
+        // 3.1.5.1.3: the SYN+ACK carries the version both endpoints MUST use.
+        // Version 3 selects the MS-RDPEUDP2 framing; 1 and 2 select the
+        // MS-RDPEUDP one, which this crate also implements for reliable transport.
+        let wire = if syn_data_ex.udp_ver.uses_v2_wire_format() {
+            WireFormat::V2
+        } else {
+            WireFormat::V1 {
+                version: syn_data_ex.udp_ver.0,
+            }
+        };
 
         let local_isn = self.config.initial_sequence_number;
         let remote_isn = syn_data.initial_sequence_number;
@@ -1015,6 +1175,7 @@ impl RdpeudpConnection {
             remote_isn,
             mtu,
             log_window_size: self.config.log_window_size,
+            wire,
         });
 
         // Sample before enqueuing the final ACK. `enqueue_final_ack` calls
@@ -1075,6 +1236,7 @@ impl RdpeudpConnection {
             syn_data: None,
             correlation_id: None,
             syn_data_ex: None,
+            data: None,
         };
 
         let _queued = self.enqueue_handshake(&datagram);
@@ -1123,18 +1285,25 @@ impl RdpeudpConnection {
         let local_initial_data_seq = u64::from(params.local_isn) + 1;
         let remote_initial_data_seq = u64::from(params.remote_isn) + 1;
 
-        // Channel sequence numbers start at 1
-        let initial_channel_seq = 1u64;
+        // MS-RDPEUDP2 numbers channel data from 1. MS-RDPEUDP (3.1.1.2) has a single
+        // Source sequence space starting at the ISN + 1, so both windows use it.
+        let (local_initial_channel_seq, remote_initial_channel_seq) = match params.wire {
+            WireFormat::V1 { .. } => (local_initial_data_seq, remote_initial_data_seq),
+            WireFormat::V2 => (1u64, 1u64),
+        };
+        if let WireFormat::V1 { .. } = params.wire {
+            self.v1_next_coded = params.local_isn.wrapping_add(1);
+        }
 
         self.send_window = Some(SendWindow::new(
             local_initial_data_seq,
-            initial_channel_seq,
+            local_initial_channel_seq,
             params.log_window_size,
         ));
 
         self.recv_window = Some(RecvWindow::new(
             remote_initial_data_seq,
-            initial_channel_seq,
+            remote_initial_channel_seq,
             params.log_window_size,
         ));
 
@@ -1431,7 +1600,7 @@ impl RdpeudpConnection {
         };
 
         let highest_acked = send_window.highest_acked_data_seq();
-        let rto = self.rtt.rto();
+        let rto = Self::apply_rto_floor(self.params.as_ref().map(|p| p.wire), self.rtt.rto());
 
         let lost_seqs = self.loss_detector.detect(send_window, highest_acked, rto, now);
 
@@ -1518,7 +1687,7 @@ impl RdpeudpConnection {
         if has_pending || self.reliability.has_pending() {
             // Keep the timer running
             if !self.timers.is_set(Timer::Retransmit) {
-                self.timers.set(Timer::Retransmit, now + self.rtt.rto());
+                self.timers.set(Timer::Retransmit, now + self.effective_rto());
             }
         } else {
             // Nothing outstanding: clear the timer
@@ -1548,6 +1717,7 @@ impl RdpeudpConnection {
         }
 
         let entry = self.reliability.dequeue()?;
+        self.v1_stats.retransmits += 1;
 
         // Create a new DataSeqNum for the retransmit but preserve ChannelSeqNum
         let new_data_seq = send_window.push_retransmit(entry.channel_seq, entry.data.clone(), now)?;
@@ -1556,7 +1726,7 @@ impl RdpeudpConnection {
 
         if transmit.is_some() {
             // Reset retransmit timer
-            self.timers.set(Timer::Retransmit, now + self.rtt.rto());
+            self.timers.set(Timer::Retransmit, now + self.effective_rto());
         }
 
         transmit
@@ -1589,7 +1759,7 @@ impl RdpeudpConnection {
         if transmit.is_some() {
             // Set retransmit timer if not already running
             if !self.timers.is_set(Timer::Retransmit) {
-                self.timers.set(Timer::Retransmit, now + self.rtt.rto());
+                self.timers.set(Timer::Retransmit, now + self.effective_rto());
             }
         }
 
@@ -1604,6 +1774,11 @@ impl RdpeudpConnection {
         data: Vec<u8>,
         now: MonotonicInstant,
     ) -> Option<Transmit> {
+        if self.wire_is_v1() {
+            let _ = data_seq;
+            return self.build_v1_data_packet(channel_seq, data, now);
+        }
+
         let log_window_size = self.params.as_ref()?.log_window_size;
 
         let mut flags = V2Flags::DATA;
@@ -1663,6 +1838,10 @@ impl RdpeudpConnection {
 
     /// Build a standalone ACK (no data).
     fn build_standalone_ack(&mut self, now: MonotonicInstant) -> Option<Transmit> {
+        if self.wire_is_v1() {
+            return self.build_v1_standalone_ack(now);
+        }
+
         let log_window_size = self.params.as_ref()?.log_window_size;
 
         let acknowledgement = self.build_acknowledgement(now)?;
@@ -1870,13 +2049,14 @@ impl RdpeudpConnection {
 
         // 3.1.6.1 wants the timer to keep firing at no less than the same
         // interval; `on_timeout` above has already backed the RTO off.
-        self.timers.set(Timer::Retransmit, now + self.rtt.rto());
+        self.timers.set(Timer::Retransmit, now + self.effective_rto());
     }
 
     /// Handle ACK delay timer expiry: send a standalone ACK.
     fn handle_ack_delay_timeout(&mut self, _now: MonotonicInstant) {
         self.timers.clear(Timer::AckDelay);
         self.ack_pending = true;
+        self.v1_ack_delayed = true;
     }
 
     /// Handle idle timeout: close the connection.
@@ -1893,6 +2073,293 @@ impl RdpeudpConnection {
 
         self.timers.set(Timer::KeepAlive, now + self.config.keep_alive_interval);
     }
+
+    // ════════════════════════════════════════════════════════════════════
+    // MS-RDPEUDP version 1/2 data transfer (reliable mode)
+    // ════════════════════════════════════════════════════════════════════
+
+    /// Handles an established-state datagram in `RDPUDP_FEC_HEADER` framing.
+    fn handle_v1_datagram(&mut self, wire: &[u8], now: MonotonicInstant) -> Result<(), RdpeudpError> {
+        let datagram: V1Datagram = decode(wire).map_err(RdpeudpError::decode)?;
+        self.v1_stats.datagrams_in += 1;
+
+        // A late handshake retransmit; the peer is already answered elsewhere.
+        if datagram.header.flags.contains(V1Flags::SYN) {
+            return Ok(());
+        }
+
+        let delayed = datagram.header.flags.contains(V1Flags::ACKDELAYED);
+        if datagram.header.flags.contains(V1Flags::ACK) {
+            self.process_v1_acknowledgement(&datagram.header, datagram.ack_vector.as_ref(), delayed, now);
+        }
+
+        if datagram.header.flags.contains(V1Flags::CN) {
+            self.react_to_v1_congestion_notification(now);
+        }
+
+        if let Some(ack_of_acks) = datagram.ack_of_acks {
+            self.process_v1_ack_of_acks(ack_of_acks);
+        }
+
+        if let Some(data) = datagram.data {
+            self.process_v1_data(data, now);
+        }
+
+        Ok(())
+    }
+
+    /// MS-RDPEUDP 3.1.1.4: `snSourceAck` is the highest Source sequence number
+    /// the peer has seen, and the ACK vector walks down from it, one run at a
+    /// time, saying which of those Source Packets arrived.
+    fn process_v1_acknowledgement(
+        &mut self,
+        header: &FecHeader,
+        ack_vector: Option<&V1AckVectorHeader>,
+        delayed: bool,
+        now: MonotonicInstant,
+    ) {
+        let Some(send_window) = self.send_window.as_mut() else {
+            return;
+        };
+
+        let reference = send_window.next_channel_seq().saturating_sub(1);
+        let highest_seen = seq::reconstruct_seq32(header.sn_source_ack, reference);
+
+        let mut acked: Vec<(u64, bool, MonotonicInstant)> = Vec::new();
+        if let Some(vector) = ack_vector {
+            let mut current = Some(highest_seen);
+            for element in &vector.elements {
+                // Windows encodes a run of n datagrams as n - 1 (an element of 0x00
+                // acknowledges exactly one), which 2.2.2.7.1's prose leaves open.
+                for _ in 0..=element.length {
+                    let Some(source_seq) = current else {
+                        break;
+                    };
+                    if element.state.is_received() {
+                        if let Some(entry) = send_window.pending_entries().find(|e| e.channel_seq == source_seq) {
+                            acked.push((entry.data_seq, entry.transmit_count == 1, entry.sent_at));
+                        }
+                    }
+                    current = source_seq.checked_sub(1);
+                }
+            }
+        }
+
+        let mut newly_acked_bytes: u64 = 0;
+        let mut rtt_sample = None;
+        for (data_seq, first_transmission, sent_at) in acked {
+            if let Some(size) = send_window.mark_received(data_seq) {
+                newly_acked_bytes += u64::try_from(size).expect("packet size fits in u64");
+                if first_transmission && !delayed {
+                    rtt_sample = Some(now.duration_since(sent_at));
+                }
+            }
+        }
+
+        if let Some(sample) = rtt_sample {
+            self.rtt.update(sample);
+        }
+
+        if newly_acked_bytes > 0 {
+            self.congestion.on_ack(newly_acked_bytes);
+        }
+
+        self.run_loss_detection(now);
+
+        if newly_acked_bytes > 0 {
+            self.timers.clear(Timer::Retransmit);
+        }
+        self.update_retransmit_timer(now);
+    }
+
+    /// MS-RDPEUDP 3.1.1.8: react to a Congestion Notification at most once per
+    /// RTT and answer it with CWR on the next Source Packet.
+    fn react_to_v1_congestion_notification(&mut self, now: MonotonicInstant) {
+        let rtt = self.rtt.srtt().unwrap_or_else(|| self.effective_rto());
+        let recently = self
+            .v1_last_cn_reaction
+            .is_some_and(|last| now.duration_since(last) < rtt);
+        if recently {
+            return;
+        }
+        if let Some(send_window) = self.send_window.as_ref() {
+            let largest_sent = send_window.next_data_seq().saturating_sub(1);
+            self.congestion.on_loss(largest_sent, largest_sent);
+        }
+        self.v1_last_cn_reaction = Some(now);
+        self.v1_cwr_pending = true;
+    }
+
+    /// MS-RDPEUDP 2.2.2.6: the receiver only reports Source Packets above `snResetSeqNum`.
+    fn process_v1_ack_of_acks(&mut self, ack_of_acks: V1AckOfAcksHeader) {
+        let Some(recv_window) = self.recv_window.as_mut() else {
+            return;
+        };
+        let reference = recv_window.highest_seq();
+        let reset = seq::reconstruct_seq32(ack_of_acks.reset_seq_num, reference);
+        recv_window.advance_base(reset.saturating_add(1));
+    }
+
+    /// MS-RDPEUDP 3.1.5.3.3: accept in-window Source Packets, deliver in order,
+    /// and schedule a (delayed) acknowledgement.
+    fn process_v1_data(&mut self, data: SourceData, now: MonotonicInstant) {
+        let Some(recv_window) = self.recv_window.as_mut() else {
+            return;
+        };
+
+        let reference = recv_window.highest_seq();
+        let source_seq = seq::reconstruct_seq32(data.header.sn_source_start, reference);
+
+        if !recv_window.receive(source_seq, source_seq, data.payload) {
+            return;
+        }
+        self.v1_stats.data_in += 1;
+
+        for chunk in recv_window.drain_ordered() {
+            self.pending_events.push_back(Event::DataReceived(chunk));
+        }
+
+        self.ack_pending = true;
+        if !self.timers.is_set(Timer::AckDelay) {
+            self.timers.set(Timer::AckDelay, now + self.ack_delay_timeout());
+            self.ack_delay_started_at = Some(now);
+        }
+    }
+
+    /// The `RDPUDP_FEC_HEADER` and ACK vector describing what we have received
+    /// (MS-RDPEUDP 3.1.5.1.2): `snSourceAck` is the highest Source sequence
+    /// number seen and the vector runs down from it.
+    fn build_v1_ack_parts(&self, flags: V1Flags) -> Option<(FecHeader, V1AckVectorHeader)> {
+        let params = self.params.as_ref()?;
+        let recv_window = self.recv_window.as_ref()?;
+
+        let mut elements: Vec<V1AckVectorElement> = Vec::new();
+        'runs: for (received, count) in recv_window.ack_vector().into_iter().rev() {
+            let mut remaining = count;
+            while remaining > 0 {
+                if elements.len() >= V1_ACK_VECTOR_MAX_ELEMENTS {
+                    break 'runs;
+                }
+                let chunk = u8::try_from(remaining.min(u64::from(V1AckVectorElement::MAX_LENGTH) + 1))
+                    .expect("clamped to 6-bit range plus one");
+                elements.push(V1AckVectorElement {
+                    state: if received {
+                        VectorElementState::DatagramReceived
+                    } else {
+                        VectorElementState::DatagramNotYetReceived
+                    },
+                    // Wire length is count - 1; see process_v1_acknowledgement.
+                    length: chunk - 1,
+                });
+                remaining -= u64::from(chunk);
+            }
+        }
+        if elements.is_empty() {
+            // Nothing since the handshake: acknowledge the SYN+ACK's own sequence number.
+            elements.push(V1AckVectorElement {
+                state: VectorElementState::DatagramReceived,
+                length: 0,
+            });
+        }
+
+        let mut flags = flags | V1Flags::ACK;
+        if self.v1_ack_delayed {
+            flags |= V1Flags::ACKDELAYED;
+        }
+
+        let header = FecHeader {
+            sn_source_ack: seq::truncate_seq32(recv_window.highest_seq()),
+            receive_window_size: 1u16 << u16::from(params.log_window_size),
+            flags,
+        };
+
+        Some((header, V1AckVectorHeader { elements }))
+    }
+
+    /// MS-RDPEUDP 2.2.2.6: every 20 datagrams, tell the peer the highest Source
+    /// sequence number below which everything we sent was acknowledged.
+    fn take_v1_ack_of_acks(&mut self) -> Option<V1AckOfAcksHeader> {
+        self.v1_since_ack_of_acks += 1;
+        if self.v1_since_ack_of_acks < V1_ACK_OF_ACKS_INTERVAL {
+            return None;
+        }
+        self.v1_since_ack_of_acks = 0;
+        let send_window = self.send_window.as_ref()?;
+        let cumulative = send_window
+            .pending_entries()
+            .map(|entry| entry.channel_seq)
+            .min()
+            .unwrap_or_else(|| send_window.next_channel_seq())
+            .saturating_sub(1);
+        Some(V1AckOfAcksHeader {
+            reset_seq_num: seq::truncate_seq32(cumulative),
+        })
+    }
+
+    fn finish_v1_acknowledgement(&mut self) {
+        self.v1_stats.acks_sent += 1;
+        self.commit_acknowledgement();
+        self.ack_pending = false;
+        self.timers.clear(Timer::AckDelay);
+        self.v1_ack_delayed = false;
+    }
+
+    /// MS-RDPEUDP 3.1.5.1.4: an ACK datagram carrying one Source Packet.
+    fn build_v1_data_packet(&mut self, channel_seq: u64, data: Vec<u8>, now: MonotonicInstant) -> Option<Transmit> {
+        let _ = now;
+        let mut flags = V1Flags::DATA;
+        if self.v1_cwr_pending {
+            flags |= V1Flags::CWR;
+        }
+        let (header, ack_vector) = self.build_v1_ack_parts(flags)?;
+        let ack_of_acks = self.take_v1_ack_of_acks();
+
+        let sn_coded = self.v1_next_coded;
+        self.v1_next_coded = sn_coded.wrapping_add(1);
+
+        let datagram = V1Datagram {
+            header,
+            ack_vector: Some(ack_vector),
+            ack_of_acks,
+            syn_data: None,
+            correlation_id: None,
+            syn_data_ex: None,
+            data: Some(SourceData {
+                header: SourcePayloadHeader {
+                    sn_coded,
+                    sn_source_start: seq::truncate_seq32(channel_seq),
+                },
+                payload: data,
+            }),
+        };
+
+        let contents = encode_vec(&datagram).ok()?;
+        self.v1_cwr_pending = false;
+        self.v1_stats.data_out += 1;
+        self.finish_v1_acknowledgement();
+        Some(Transmit { contents })
+    }
+
+    /// MS-RDPEUDP 3.1.5.1.2: a standalone ACK datagram; also our keepalive (3.1.1.9).
+    fn build_v1_standalone_ack(&mut self, now: MonotonicInstant) -> Option<Transmit> {
+        let _ = now;
+        let (header, ack_vector) = self.build_v1_ack_parts(V1Flags::empty())?;
+        let ack_of_acks = self.take_v1_ack_of_acks();
+
+        let datagram = V1Datagram {
+            header,
+            ack_vector: Some(ack_vector),
+            ack_of_acks,
+            syn_data: None,
+            correlation_id: None,
+            syn_data_ex: None,
+            data: None,
+        };
+
+        let contents = encode_vec(&datagram).ok()?;
+        self.finish_v1_acknowledgement();
+        Some(Transmit { contents })
+    }
 }
 
 impl core::fmt::Debug for RdpeudpConnection {
@@ -1900,7 +2367,7 @@ impl core::fmt::Debug for RdpeudpConnection {
         f.debug_struct("RdpeudpConnection")
             .field("side", &self.side)
             .field("state", &self.state)
-            .field("rto", &self.rtt.rto())
+            .field("rto", &self.effective_rto())
             .field("srtt", &self.rtt.srtt())
             .field("pending_transmits", &self.pending_transmits.len())
             .field("pending_events", &self.pending_events.len())
@@ -2104,5 +2571,229 @@ mod tests {
         conn.sample_handshake_rtt(sent_at + Duration::from_millis(40));
 
         assert_eq!(conn.rtt.srtt(), None);
+    }
+}
+
+#[cfg(test)]
+mod v1_tests {
+    use super::*;
+
+    const LOCAL_ISN: u32 = 5000;
+    const REMOTE_ISN: u32 = 1000;
+
+    fn config() -> ConnectionConfig {
+        ConnectionConfig {
+            initial_sequence_number: LOCAL_ISN,
+            cookie_hash: Some([0x5A; 32]),
+            ..ConnectionConfig::default()
+        }
+    }
+
+    fn at(ms: u64) -> MonotonicInstant {
+        MonotonicInstant::from_millis(ms)
+    }
+
+    fn syn_ack(version: u16) -> Vec<u8> {
+        encode_vec(&V1Datagram {
+            header: FecHeader {
+                sn_source_ack: LOCAL_ISN,
+                receive_window_size: 64,
+                flags: V1Flags::SYN | V1Flags::ACK,
+            },
+            ack_vector: None,
+            ack_of_acks: None,
+            syn_data: Some(SynDataPayload {
+                initial_sequence_number: REMOTE_ISN,
+                upstream_mtu: 1232,
+                downstream_mtu: 1232,
+            }),
+            correlation_id: None,
+            syn_data_ex: Some(SynDataExPayload {
+                syn_ex_flags: SynExFlags::VERSION_INFO_VALID,
+                udp_ver: UdpVersion(version),
+                cookie_hash: None,
+            }),
+            data: None,
+        })
+        .unwrap()
+    }
+
+    /// A server ACK (optionally carrying data) in MS-RDPEUDP framing.
+    fn server_datagram(highest_seen: u32, received: &[(bool, u8)], data: Option<(u32, &[u8])>) -> Vec<u8> {
+        encode_vec(&V1Datagram {
+            header: FecHeader {
+                sn_source_ack: highest_seen,
+                receive_window_size: 64,
+                flags: V1Flags::empty(),
+            },
+            ack_vector: Some(V1AckVectorHeader {
+                elements: received
+                    .iter()
+                    .map(|(r, n)| V1AckVectorElement {
+                        state: if *r {
+                            VectorElementState::DatagramReceived
+                        } else {
+                            VectorElementState::DatagramNotYetReceived
+                        },
+                        length: n - 1, // wire runs are count - 1
+                    })
+                    .collect(),
+            }),
+            ack_of_acks: None,
+            syn_data: None,
+            correlation_id: None,
+            syn_data_ex: None,
+            data: data.map(|(seq, payload)| SourceData {
+                header: SourcePayloadHeader {
+                    sn_coded: seq,
+                    sn_source_start: seq,
+                },
+                payload: payload.to_vec(),
+            }),
+        })
+        .unwrap()
+    }
+
+    fn established(version: u16) -> RdpeudpConnection {
+        let mut conn = RdpeudpConnection::connect(config(), at(0)).unwrap();
+        let syn = conn.poll_transmit(at(0)).expect("client SYN");
+        let decoded: V1Datagram = decode(&syn.contents).unwrap();
+        assert!(decoded.header.flags.contains(V1Flags::SYN));
+
+        let mut wire = syn_ack(version);
+        conn.handle_datagram(&mut wire, at(20))
+            .expect("SYN+ACK with an MS-RDPEUDP version is accepted");
+        assert_eq!(conn.poll_event(), Some(Event::Connected));
+        assert!(conn.is_established());
+
+        let final_ack = conn.poll_transmit(at(20)).expect("final ACK");
+        let decoded: V1Datagram = decode(&final_ack.contents).unwrap();
+        assert!(decoded.header.flags.contains(V1Flags::ACK));
+        assert_eq!(decoded.header.sn_source_ack, REMOTE_ISN);
+        conn
+    }
+
+    #[test]
+    fn version_2_syn_ack_selects_the_rdpeudp_framing() {
+        let conn = established(2);
+        assert_eq!(conn.params.as_ref().unwrap().wire, WireFormat::V1 { version: 2 });
+        assert!(conn.effective_rto() >= Duration::from_millis(300));
+        assert_eq!(conn.max_payload(), 1232 - V1_DATA_OVERHEAD);
+    }
+
+    #[test]
+    fn version_1_uses_its_longer_timers() {
+        let conn = established(1);
+        assert!(conn.effective_rto() >= Duration::from_millis(500));
+        assert_eq!(conn.ack_delay_timeout(), Duration::from_millis(200));
+    }
+
+    #[test]
+    fn data_goes_out_as_a_source_packet_with_an_ack() {
+        let mut conn = established(2);
+        conn.send(b"hello".to_vec()).unwrap();
+        let out = conn.poll_transmit(at(30)).expect("source packet");
+        let datagram: V1Datagram = decode(&out.contents).unwrap();
+
+        assert!(datagram.header.flags.contains(V1Flags::DATA | V1Flags::ACK));
+        assert_eq!(datagram.header.sn_source_ack, REMOTE_ISN, "nothing received yet");
+        let data = datagram.data.expect("source payload");
+        assert_eq!(data.header.sn_source_start, LOCAL_ISN + 1);
+        assert_eq!(data.header.sn_coded, LOCAL_ISN + 1);
+        assert_eq!(data.payload, b"hello");
+        assert_eq!(datagram.ack_vector.unwrap().elements.len(), 1);
+        assert!(conn.poll_transmit(at(31)).is_none(), "single packet, no ack pending");
+    }
+
+    #[test]
+    fn a_peer_ack_vector_retires_our_source_packet_and_no_retransmit_follows() {
+        let mut conn = established(2);
+        conn.send(b"hello".to_vec()).unwrap();
+        let _ = conn.poll_transmit(at(30)).unwrap();
+
+        // Server saw LOCAL_ISN+1 and acknowledges exactly it.
+        let mut ack = server_datagram(LOCAL_ISN + 1, &[(true, 1)], None);
+        conn.handle_datagram(&mut ack, at(60)).unwrap();
+
+        // Well past any RTO: nothing to retransmit.
+        conn.handle_timeout(at(5_000));
+        let next = conn.poll_transmit(at(5_000));
+        let is_data = next
+            .as_ref()
+            .and_then(|t| decode::<V1Datagram>(&t.contents).ok())
+            .is_some_and(|d| d.data.is_some());
+        assert!(!is_data, "acknowledged packet must not be retransmitted");
+    }
+
+    #[test]
+    fn an_unacknowledged_source_packet_is_retransmitted_with_a_new_coded_number() {
+        let mut conn = established(2);
+        conn.send(b"hello".to_vec()).unwrap();
+        let _ = conn.poll_transmit(at(30)).unwrap();
+
+        conn.handle_timeout(at(30 + 1_000));
+        let again = conn.poll_transmit(at(30 + 1_000)).expect("retransmit");
+        let datagram: V1Datagram = decode(&again.contents).unwrap();
+        let data = datagram.data.expect("retransmitted source payload");
+        assert_eq!(
+            data.header.sn_source_start,
+            LOCAL_ISN + 1,
+            "same Source sequence number"
+        );
+        assert_eq!(data.header.sn_coded, LOCAL_ISN + 2, "new Coded sequence number");
+        assert_eq!(data.payload, b"hello");
+    }
+
+    #[test]
+    fn server_data_is_delivered_in_order_and_acknowledged_from_the_highest_seen() {
+        let mut conn = established(2);
+
+        let mut second = server_datagram(LOCAL_ISN, &[(true, 1)], Some((REMOTE_ISN + 2, b"world")));
+        conn.handle_datagram(&mut second, at(40)).unwrap();
+        assert_eq!(conn.poll_event(), None, "out of order: held back");
+
+        let mut first = server_datagram(LOCAL_ISN, &[(true, 1)], Some((REMOTE_ISN + 1, b"hello ")));
+        conn.handle_datagram(&mut first, at(41)).unwrap();
+        assert_eq!(conn.poll_event(), Some(Event::DataReceived(b"hello ".to_vec())));
+        assert_eq!(conn.poll_event(), Some(Event::DataReceived(b"world".to_vec())));
+
+        // The delayed ACK fires and reports both, walking down from the highest seen.
+        conn.handle_timeout(at(41 + 250));
+        let ack = conn.poll_transmit(at(41 + 250)).expect("standalone ACK");
+        let datagram: V1Datagram = decode(&ack.contents).unwrap();
+        assert!(datagram.header.flags.contains(V1Flags::ACK));
+        assert!(datagram.header.flags.contains(V1Flags::ACKDELAYED));
+        assert!(datagram.data.is_none());
+        assert_eq!(datagram.header.sn_source_ack, REMOTE_ISN + 2);
+        let elements = datagram.ack_vector.unwrap().elements;
+        assert_eq!(elements.len(), 1);
+        assert!(elements[0].state.is_received());
+        assert_eq!(elements[0].length, 1, "two datagrams, encoded as count - 1");
+    }
+
+    #[test]
+    fn a_gap_is_reported_as_not_yet_received() {
+        let mut conn = established(2);
+        let mut third = server_datagram(LOCAL_ISN, &[(true, 1)], Some((REMOTE_ISN + 3, b"c")));
+        conn.handle_datagram(&mut third, at(40)).unwrap();
+        conn.handle_timeout(at(400));
+        let ack = conn.poll_transmit(at(400)).expect("ACK");
+        let datagram: V1Datagram = decode(&ack.contents).unwrap();
+        assert_eq!(datagram.header.sn_source_ack, REMOTE_ISN + 3);
+        let elements = datagram.ack_vector.unwrap().elements;
+        // Highest first: +3 received, then +2 and +1 missing.
+        assert!(elements[0].state.is_received());
+        assert_eq!(elements[0].length, 0, "one datagram");
+        assert!(!elements[1].state.is_received());
+        assert_eq!(elements[1].length, 1, "two datagrams");
+    }
+
+    #[test]
+    fn version_3_still_selects_the_rdpeudp2_framing() {
+        let mut conn = RdpeudpConnection::connect(config(), at(0)).unwrap();
+        let _ = conn.poll_transmit(at(0));
+        let mut wire = syn_ack(0x0101);
+        conn.handle_datagram(&mut wire, at(20)).unwrap();
+        assert_eq!(conn.params.as_ref().unwrap().wire, WireFormat::V2);
     }
 }

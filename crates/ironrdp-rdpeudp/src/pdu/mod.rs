@@ -18,6 +18,7 @@ use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, Write
 // ── V1 Handshake modules ──
 
 pub mod v1_ack;
+pub mod v1_data;
 pub mod v1_flags;
 pub mod v1_header;
 pub mod v1_syn;
@@ -39,6 +40,7 @@ pub mod prefix;
 // ── Prefix re-exports ──
 pub use prefix::{PacketPrefixByte, PrefixError, decode_with_prefix, encode_with_prefix};
 pub use v1_ack::{CorrelationIdPayload, V1AckOfAcksHeader, V1AckVectorElement, V1AckVectorHeader, VectorElementState};
+pub use v1_data::{SourceData, SourcePayloadHeader};
 pub use v1_flags::V1Flags;
 pub use v1_header::FecHeader;
 pub use v1_syn::{MTU_MAX, MTU_MIN, SynDataExPayload, SynDataPayload, SynExFlags, UdpVersion};
@@ -124,6 +126,9 @@ pub struct V1Datagram {
     /// Extended SYN data (version negotiation).
     /// Gated by `V1Flags::SYNEX`.
     pub syn_data_ex: Option<SynDataExPayload>,
+
+    /// Version 1/2 Source Packet data (2.2.2.4), present when `RDPUDP_FLAG_DATA` is set.
+    pub data: Option<SourceData>,
 }
 
 impl V1Datagram {
@@ -151,6 +156,9 @@ impl V1Datagram {
         }
         if self.syn_data_ex.is_some() {
             flags |= V1Flags::SYNEX;
+        }
+        if self.data.is_some() {
+            flags |= V1Flags::DATA;
         }
 
         flags
@@ -214,6 +222,10 @@ impl Encode for V1Datagram {
         if let Some(ref syn_data_ex) = self.syn_data_ex {
             syn_data_ex.encode(dst)?;
         }
+        if let Some(ref data) = self.data {
+            data.header.encode(dst)?;
+            dst.write_slice(&data.payload);
+        }
 
         Ok(())
     }
@@ -239,6 +251,10 @@ impl Encode for V1Datagram {
         if let Some(ref sdex) = self.syn_data_ex {
             total += sdex.size();
         }
+        if let Some(ref data) = self.data {
+            total += data.size();
+        }
+
         total
     }
 }
@@ -249,18 +265,11 @@ impl Decode<'_> for V1Datagram {
 
         // V1 data payloads are not supported; reject if present since we
         // cannot skip them without knowing their wire size.
-        if header.flags.contains(V1Flags::DATA) {
-            return Err(ironrdp_core::invalid_field_err!(
-                "V1 Datagram",
-                "flags",
-                "DATA flag is not supported in handshake datagrams"
-            ));
-        }
         if header.flags.contains(V1Flags::FEC) {
             return Err(ironrdp_core::invalid_field_err!(
                 "V1 Datagram",
                 "flags",
-                "FEC flag is not supported in handshake datagrams"
+                "FEC packets belong to lossy transport, which is not supported"
             ));
         }
 
@@ -302,6 +311,16 @@ impl Decode<'_> for V1Datagram {
         } else {
             None
         };
+        let data = if header.flags.contains(V1Flags::DATA) {
+            let source = SourcePayloadHeader::decode(src)?;
+            let payload = src.read_remaining().to_vec();
+            Some(SourceData {
+                header: source,
+                payload,
+            })
+        } else {
+            None
+        };
 
         Ok(Self {
             header,
@@ -310,6 +329,7 @@ impl Decode<'_> for V1Datagram {
             syn_data,
             correlation_id,
             syn_data_ex,
+            data,
         })
     }
 }

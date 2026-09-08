@@ -18,6 +18,6 @@ pub(crate) mod rtt;
 pub(crate) mod send_window;
 pub(crate) mod timer;
 
-pub use self::connection::{ConnectionConfig, Event, RdpeudpConnection, Side, Transmit};
+pub use self::connection::{ConnectionConfig, Event, RdpeudpConnection, Side, Transmit, V1Stats};
 pub use self::error::{RdpeudpError, RdpeudpErrorExt, RdpeudpErrorKind, RdpeudpResult, SendError};
 pub use self::time::MonotonicInstant;

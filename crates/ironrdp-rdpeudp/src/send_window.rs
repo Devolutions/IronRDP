@@ -139,7 +139,6 @@ impl SendWindow {
     }
 
     /// The next ChannelSeqNum that will be assigned to new data.
-    #[cfg(test)]
     pub(crate) fn next_channel_seq(&self) -> u64 {
         self.next_channel_seq
     }

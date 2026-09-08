@@ -300,3 +300,41 @@ mod tests {
         assert_eq!(TIMESTAMP_STALENESS_LIMIT, 8_000_000);
     }
 }
+
+/// Widens a 32-bit on-the-wire sequence number (MS-RDPEUDP 3.1.1.2) to the
+/// 64-bit value closest to `reference`, so wrap-around is handled.
+pub fn reconstruct_seq32(wire: u32, reference: u64) -> u64 {
+    const WINDOW: u64 = 1 << 32;
+    let candidate = (reference & !(WINDOW - 1)) + u64::from(wire);
+    [
+        candidate.checked_sub(WINDOW),
+        Some(candidate),
+        candidate.checked_add(WINDOW),
+    ]
+    .into_iter()
+    .flatten()
+    .min_by_key(|value| value.abs_diff(reference))
+    .unwrap_or(candidate)
+}
+
+/// Narrows a 64-bit sequence number to its 32-bit wire form.
+///
+/// # Panics
+///
+/// Never in practice: the value is masked to 32 bits before the conversion.
+pub fn truncate_seq32(full: u64) -> u32 {
+    u32::try_from(full & 0xFFFF_FFFF).expect("masked to 32 bits fits in u32")
+}
+
+#[cfg(test)]
+mod seq32_tests {
+    use super::*;
+
+    #[test]
+    fn reconstructs_across_the_32_bit_wrap() {
+        assert_eq!(reconstruct_seq32(5, 3), 5);
+        assert_eq!(reconstruct_seq32(0xFFFF_FFF0, 0x1_0000_0004), 0xFFFF_FFF0);
+        assert_eq!(reconstruct_seq32(3, 0xFFFF_FFFE), 0x1_0000_0003);
+        assert_eq!(truncate_seq32(0x1_0000_0003), 3);
+    }
+}
