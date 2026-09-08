@@ -721,7 +721,7 @@ jobs:
              const report = parseReport(process.env.REVIEW_REPORT);
              const recovered = report.stages.filter((stage) => stage.attempts === 2);
              const failureReasons = report.stages.filter((stage) => stage.status === "failed")
-               .map((stage) => stage.reason || stage.category);
+               .map((stage) => `${stage.id}: ${stage.reason || stage.category}`);
              const reviewerReason = report.status === "failed"
                ? failureReasons.join("; ") || process.env.REVIEWER_REASON || "review pipeline failed"
                : process.env.REVIEWER_REASON;

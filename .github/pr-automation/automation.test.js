@@ -311,7 +311,7 @@ test("resolve review state renders bounded recovery diagnostics in the check and
       },
     },
   });
-  assert.match(terminal.state.check.summary, /provider unavailable/);
+  assert.match(terminal.state.check.summary, /protocol: provider unavailable/);
   assert.match(terminal.state.check.summary, /retry-declined/);
   assert.match(terminal.state.check.summary, /unavailable/);
   assert.equal(terminal.state.check.conclusion, "neutral");

@@ -1,6 +1,8 @@
 "use strict";
 
-const MAX_STAGES = 8;
+const { REVIEWER_ORDER } = require("./routing");
+
+const MAX_STAGES = REVIEWER_ORDER.length + 4;
 const MAX_TEXT_LENGTH = 300;
 
 function escapeMarkdown(value) {
