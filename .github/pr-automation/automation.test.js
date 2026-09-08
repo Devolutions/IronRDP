@@ -14,11 +14,6 @@ const {
 const { buildSpecialistAggregate, validateSpecialistRun } = require("./review-pipeline");
 const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
 const {
-  CLAIM_SCHEMA_VERSION, CLAIM_STATE_MARKER, MAX_AUTOMATIC_ATTEMPTS, RECOVERY_DELAY_SECONDS,
-  canonicalRecoveryIdentity, claimAttempt, encodeClaim, hasClaimMarker, parseClaim, recoveryFingerprint, updateClaim,
-} = require("./review-attempt-claim");
-const { aggregateStageMetrics, parsePipelineRecovery, recoveryDecision } = require("./review-recovery");
-const {
   resolveClassificationState, resolveReviewState, reviewPolicyEligible, DUPLICATE_MARKER,
   CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERSIZED_MARKER, OVERSIZED_REVIEW_LABEL, contributorEligibility,
@@ -26,7 +21,7 @@ const {
 const { resolvePr } = require("./resolve-pr");
 const { resolveClassificationGate } = require("./classification-gate");
 const {
-  StaleHeadError, StalePolicyError, applyLabels, ensureReviewClaim, escapeMarkdown, markerBody, writeState,
+  StaleHeadError, StalePolicyError, applyLabels, escapeMarkdown, markerBody, writeState,
 } = require("./write-state");
 const { forkRateLimit } = require("./fork-rate-limit");
 const { reviewSkipReasons } = require("./review-skip-summary");
@@ -115,16 +110,13 @@ test("automatic review requires exact-head CI and only reruns after a later push
   const workflow = readWorkflow();
   const reviewGate = workflowJob(workflow, "review-gate");
   const classifier = workflowJob(workflow, "classifier");
-  const initialClaim = workflowJob(workflow, "review-attempt-claim");
-  const initialPipeline = workflowJob(workflow, "review-pipeline");
-  const recoveryPipeline = workflowJob(workflow, "review-pipeline-recovery");
+  const reviewPipeline = workflowJob(workflow, "review-pipeline");
   const classifierConfig = JSON.parse(fs.readFileSync(
     path.join(__dirname, "agents", "classifier.json"),
     "utf8",
   ));
   assert.equal(classifierConfig.max_request_retries, 4);
   assert.doesNotMatch(classifier, /max-request-retries:/);
-  assert.match(reviewGate, /PREVIOUS_SCHEMA_VERSION/);
   assert.match(reviewGate, /ref: headSha/);
   assert.match(reviewGate, /head_sha: headSha/);
   assert.match(reviewGate,
@@ -135,24 +127,21 @@ test("automatic review requires exact-head CI and only reruns after a later push
   assert.match(reviewGate,
     /ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible/);
   assert.match(workflowJob(workflow, "classification-gate"), /'ai-reviewed\/2'/);
-  assert.match(initialPipeline, /review-gate\.outputs\.eligible == 'true'/);
-  assert.match(initialClaim, /pr-automation-write-/);
-  assert.match(initialClaim, /ensureReviewClaim/);
-  assert.match(initialPipeline, /group: llm-reviewer-pipeline/);
-  assert.match(initialPipeline, /recovery-attempt: "0"/);
-  assert.match(recoveryPipeline, /group: llm-reviewer-pipeline/);
-  assert.match(recoveryPipeline, /recovery-attempt: "1"/);
-  assert.match(recoveryPipeline, /prior-results: \$\{\{ needs\.resolve-stage-recovery\.outputs\.prior-results \}\}/);
-  assert.match(workflowJob(workflow, "stage-recovery-delay"), /sleep 120/);
-  assert.match(workflowJob(workflow, "review-recovery-preflight"), /forkRateLimit/);
-  assert.match(workflowJob(workflow, "review-recovery-preflight"), /contributorEligibility/);
+  assert.match(reviewPipeline, /review-gate\.outputs\.eligible == 'true'/);
+  assert.match(reviewGate, /required-reviewers: \$\{\{ steps\.gate\.outputs\.required-reviewers \}\}/);
+  assert.match(reviewPipeline, /required-reviewers: \$\{\{ needs\.review-gate\.outputs\.required-reviewers \}\}/);
+  assert.match(reviewPipeline, /actions: read/);
+  for (const retiredJob of [
+    "review-attempt-claim", "resolve-stage-recovery", "write-stage-recovery-pending",
+    "stage-recovery-delay", "review-recovery-preflight", "review-recovery-claim", "review-pipeline-recovery",
+  ]) assert.doesNotMatch(workflow, new RegExp(`  ${retiredJob}:`));
   const reviewState = workflowJob(workflow, "resolve-review-state");
+  assert.match(reviewState, /REVIEW_REPORT: \$\{\{ needs\.review-pipeline\.outputs\.report \}\}/);
+  assert.match(reviewState, /parseReport\(process\.env\.REVIEW_REPORT\)/);
+  assert.match(reviewState, /report\.status === "success" \? parse\(process\.env\.RAW_OUTPUT, null\) : null/);
   assert.match(reviewState, /REVIEW_GATE_RESULT: \$\{\{ needs\.review-gate\.result \}\}/);
   assert.match(reviewState, /FORK_RATE_LIMIT_RESULT: \$\{\{ needs\.fork-rate-limit\.result \}\}/);
   assert.match(reviewState, /REVIEW_PIPELINE_RESULT: \$\{\{ needs\.review-pipeline\.result \}\}/);
-  assert.match(reviewState, /RECOVERY_PIPELINE_RESULT: \$\{\{ needs\.review-pipeline-recovery\.result \}\}/);
-  assert.match(reviewState, /aggregateStageMetrics/);
-  assert.match(reviewState, /View the workflow summary/);
   assert.match(reviewState, /addHeading\("Automated review skipped"\)/);
 });
 
@@ -871,20 +860,7 @@ test("classification check state survives a round trip and fails closed when abs
     protocolRelated: true,
     risk: "high",
     specialistReviewers: ["protocol", "skeptical"],
-    selectedReviewers: ["protocol", "skeptical"],
-    requiredReviewers: ["protocol", "skeptical"],
     automaticReviewEligible: false,
-  });
-  const legacy = "ironrdp-pr-automation-state: " +
-    "{\"schema_version\":\"classifier-v3\",\"protocol_related\":false,\"risk\":\"low\"," +
-    "\"specialist_reviewers\":[\"code-compressor\"],\"automatic_review_eligible\":true}";
-  assert.deepEqual(parseCheckState(legacy), {
-    protocolRelated: false,
-    risk: "low",
-    specialistReviewers: ["code-compressor"],
-    selectedReviewers: ["code-compressor"],
-    requiredReviewers: [],
-    automaticReviewEligible: true,
   });
   assert.equal(parseCheckState("Validated AI classification is bound to this commit."), null);
   assert.equal(parseCheckState("ironrdp-pr-automation-state: {\"schema_version\":\"classifier-v1\",\"protocol_related\":true}"), null);
@@ -893,16 +869,13 @@ test("classification check state survives a round trip and fails closed when abs
 });
 
 test("routing adds mandatory reviewers and rejects unknown or noncanonical plans", () => {
-  const routed = resolveReviewerRoute({
+  assert.deepEqual(resolveReviewerRoute({
     suggestedReviewers: ["code-compressor"],
     protocolRelated: true,
     risk: "high",
-  });
-  assert.deepEqual(routed, {
+  }), {
     ok: true,
     reviewers: ["protocol", "skeptical", "code-compressor"],
-    selectedReviewers: ["protocol", "skeptical", "code-compressor"],
-    requiredReviewers: ["protocol", "skeptical"],
   });
   assert.equal(resolveReviewerRoute({
     suggestedReviewers: ["unknown"], protocolRelated: false, risk: "low",
@@ -913,328 +886,6 @@ test("routing adds mandatory reviewers and rejects unknown or noncanonical plans
   assert.equal(validateReviewerRoute({
     reviewers: ["protocol"], protocolRelated: true, risk: "high",
   }).ok, false);
-  assert.equal(validateReviewerRoute({
-    selectedReviewers: ["protocol", "skeptical", "code-compressor"],
-    requiredReviewers: ["protocol"],
-    protocolRelated: true,
-    risk: "high",
-  }).ok, false);
-});
-
-test("review attempt claims bind a finite budget to trusted recovery identity", () => {
-  const identity = canonicalRecoveryIdentity({
-    prNumber: 7,
-    headSha: SHA,
-    baseSha: OTHER_SHA,
-    selectedReviewers: ["skeptical", "code-compressor"],
-    requiredReviewers: ["skeptical"],
-    protocolRelated: false,
-    risk: "high",
-    evidenceMaxBytes: 1024 * 1024,
-    workflowSha: "c".repeat(40),
-  });
-  const fingerprint = recoveryFingerprint(identity);
-  const owner = { runId: 42, runAttempt: 1 };
-  assert.match(fingerprint, /^[0-9a-f]{64}$/);
-  assert.equal(RECOVERY_DELAY_SECONDS, 120);
-  assert.equal(MAX_AUTOMATIC_ATTEMPTS, 2);
-
-  const initial = claimAttempt({ fingerprint, owner });
-  assert.equal(initial.ok, true);
-  assert.deepEqual(initial.claim, {
-    fingerprint, attempt: 1, owner, status: "claimed", reason: "",
-  });
-  const encoded = encodeClaim(initial.claim);
-  assert.match(encoded, new RegExp(`^${CLAIM_STATE_MARKER}`));
-  assert.match(encoded, new RegExp(CLAIM_SCHEMA_VERSION));
-  assert.deepEqual(parseClaim(encoded), initial.claim);
-  assert.equal(parseClaim(`${CLAIM_STATE_MARKER} null`), null);
-  const longSummary = `${"failed stage\n".repeat(400)}${encoded}`;
-  assert.equal(hasClaimMarker(longSummary), true);
-  assert.deepEqual(parseClaim(longSummary), initial.claim);
-
-  const duplicate = claimAttempt({ previous: initial.claim, fingerprint, owner });
-  assert.equal(duplicate.ok, true);
-  assert.deepEqual(duplicate.claim, initial.claim);
-  assert.equal(claimAttempt({
-    previous: updateClaim({
-      claim: initial.claim, owner, status: "pending", reason: "provider timeout",
-    }).claim,
-    fingerprint,
-    owner,
-    nextAttempt: true,
-  }).claim.attempt, 2);
-  assert.equal(claimAttempt({
-    previous: initial.claim, fingerprint: "d".repeat(64), owner,
-  }).reason, "review attempt claim fingerprint changed");
-});
-
-test("review attempt claims prevent active overlap and spend a stale claim only once", () => {
-  const fingerprint = "c".repeat(64);
-  const firstOwner = { runId: 42, runAttempt: 1 };
-  const nextOwner = { runId: 99, runAttempt: 1 };
-  const previous = {
-    fingerprint, attempt: 1, owner: firstOwner, status: "pending", reason: "temporary provider failure",
-  };
-  assert.equal(claimAttempt({
-    previous, fingerprint, owner: nextOwner, ownerRun: { run_attempt: 1, status: "in_progress" },
-  }).reason, "automatic review attempt is owned by an active workflow");
-
-  const reclaimed = claimAttempt({
-    previous, fingerprint, owner: nextOwner, ownerRun: { run_attempt: 1, status: "cancelled" },
-  });
-  assert.equal(reclaimed.ok, true);
-  assert.equal(reclaimed.reclaimed, true);
-  assert.equal(reclaimed.claim.attempt, 2);
-  assert.equal(claimAttempt({
-    previous: reclaimed.claim, fingerprint, owner: firstOwner, ownerRun: { run_attempt: 1, status: "completed" },
-  }).reason, "automatic review attempt budget is complete");
-
-  const exhausted = updateClaim({
-    claim: reclaimed.claim, owner: nextOwner, status: "exhausted", reason: "general reviewer unavailable",
-  });
-  assert.equal(exhausted.ok, true);
-  assert.equal(claimAttempt({
-    previous: exhausted.claim, fingerprint, owner: firstOwner,
-  }).reason, "automatic review attempt budget is complete");
-});
-
-test("review attempt claim status is persisted in a summary-linked check before model execution", async () => {
-  let created;
-  const github = {
-    paginate: { iterator: async function* () { yield { data: [] }; } },
-    rest: {
-      checks: {
-        listForRef: () => {},
-        create: async (payload) => { created = payload; },
-      },
-      pulls: {
-        get: async () => ({ data: { state: "open", head: { sha: SHA } } }),
-      },
-    },
-  };
-  await ensureReviewClaim(
-    github,
-    "Devolutions",
-    "IronRDP",
-    7,
-    SHA,
-    {
-      fingerprint: "c".repeat(64),
-      attempt: 1,
-      owner: { runId: 42, runAttempt: 1 },
-      status: "claimed",
-      reason: "",
-    },
-    "https://github.com/Devolutions/IronRDP/actions/runs/42",
-  );
-  assert.equal(created.status, "in_progress");
-  assert.equal(created.conclusion, undefined);
-  assert.equal(created.output.title, "Automated review in progress");
-  assert.match(created.output.summary, /View the workflow summary/);
-  assert.match(created.output.summary, new RegExp(CLAIM_STATE_MARKER));
-});
-
-test("review publication requires the still-owned attempt claim", async () => {
-  const github = {
-    paginate: { iterator: async function* () {
-      yield { data: [{ id: 1, external_id: SHA, output: { summary: "" } }] };
-    } },
-    rest: {
-      checks: { listForRef: () => {} },
-      pulls: {
-        listReviews: () => {},
-        get: async () => ({ data: { state: "open", head: { sha: SHA } } }),
-      },
-      issues: { get: async () => ({ data: { labels: [] } }) },
-    },
-  };
-  await assert.rejects(writeState({
-    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
-    state: {
-      ok: true, mode: "review", expectedSha: SHA, labelSets: [], addLabels: [],
-      expectedReviewCount: null, forced: false, protocolRelated: false, comments: [],
-      expectedReviewClaim: {
-        fingerprint: "c".repeat(64),
-        attempt: 1,
-        owner: { runId: 42, runAttempt: 1 },
-      },
-    },
-  }), StalePolicyError);
-});
-
-test("stage recovery retries only transient required stages and retains every failure reason", () => {
-  const stage = (changes = {}) => ({
-    id: "specialist:skeptical", status: "failed", required: true, provider: true, reason: "provider timeout",
-    failure_category: "provider-timeout", retryable: true, reused: false, reused_from_run_id: null,
-    reuse_reason: "",
-    metrics: {
-      tokens: null, elapsed_ms: 10, request_retries: 4, output_repairs: 0, stage_recoveries: 0,
-    },
-    ...changes,
-  });
-  const parsed = parsePipelineRecovery({
-    stages: JSON.stringify([
-      stage({
-        id: "specialist:protocol",
-        status: "success",
-        required: true,
-        provider: true,
-        reason: "",
-        failure_category: "",
-        retryable: false,
-        metrics: {
-          tokens: { input: 100, output: 20, total: 120, complete: true },
-          elapsed_ms: 41_230, request_retries: 1, output_repairs: 1, stage_recoveries: 1,
-        },
-      }),
-      stage(),
-      stage({
-        id: "specialist:code-compressor", provider: true, required: false, reason: "optional stage configuration invalid",
-        failure_category: "invalid-configuration", retryable: false,
-      }),
-    ]),
-    provenance: JSON.stringify({
-      run_id: "42", base_sha: OTHER_SHA, head_sha: SHA, evidence_digest: "c".repeat(64),
-      policy_digest: "d".repeat(64), corpus_sha: null, v: 1, run_attempt: "1", recovery_attempt: "0",
-      attempt_id: `${SHA}-r0-a1-42`,
-      artifacts: {
-        evidence: "review-evidence", validation: "review-validation", corpus: null,
-        aggregate: "review-aggregate", general: null, specialists: {},
-      },
-    }),
-    metrics: JSON.stringify({
-      tokens: { input: 0, output: 0, total: 0 }, tokens_complete: false, elapsed_ms: 20,
-      request_retries: 4, output_repairs: 0, stage_recoveries: 0, reused_stages: 0, failed_stages: 2,
-    }),
-    recoverable: "true",
-    expectedHeadSha: SHA,
-    expectedBaseSha: OTHER_SHA,
-    expectedRecoveryAttempt: 0,
-  });
-  assert.equal(parsed.ok, true);
-  assert.deepEqual(recoveryDecision({ pipeline: parsed, attempt: 1 }), {
-    status: "pending",
-    reason: "provider timeout",
-  });
-  const recoveredSuccess = parsePipelineRecovery({
-    stages: JSON.stringify([stage({
-      id: "specialist:code-compressor",
-      status: "success",
-      required: false,
-      provider: true,
-      reason: "",
-      failure_category: "",
-      retryable: false,
-      reused: true,
-      reused_from_run_id: "42",
-      reuse_reason: "validated result from the initial attempt",
-      metrics: {
-        tokens: null, elapsed_ms: 0, request_retries: 0, output_repairs: 0, stage_recoveries: 1,
-      },
-    })]),
-    provenance: JSON.stringify({
-      run_id: "43", base_sha: OTHER_SHA, head_sha: SHA, evidence_digest: "c".repeat(64),
-      policy_digest: "d".repeat(64), corpus_sha: null, v: 1, run_attempt: "2", recovery_attempt: "1",
-      attempt_id: `${SHA}-r1-a2-43`,
-      artifacts: {
-        evidence: "review.evidence.43", validation: "review.validation.43", corpus: null,
-        aggregate: "review.aggregate.43", general: null, specialists: { "code-compressor": "review.specialist.43" },
-      },
-    }),
-    metrics: JSON.stringify({
-      tokens: { input: 0, output: 0, total: 0 }, tokens_complete: true, elapsed_ms: 0,
-      request_retries: 0, output_repairs: 0, stage_recoveries: 1, reused_stages: 1, failed_stages: 0,
-    }),
-    recoverable: "false",
-    expectedHeadSha: SHA,
-    expectedBaseSha: OTHER_SHA,
-    expectedRecoveryAttempt: 1,
-  });
-  assert.equal(recoveredSuccess.ok, true);
-  assert.equal(recoveredSuccess.value.stages[0].reusedFromRunId, "42");
-  assert.equal(recoveredSuccess.value.metrics.tokens_complete, true);
-
-  const mandatoryTerminal = {
-    ...parsed,
-    value: {
-      ...parsed.value,
-      stages: [...parsed.value.stages, {
-        ...stage({ id: "specialist:protocol", reason: "credentials rejected", failure_category: "invalid-credentials",
-          retryable: false }),
-        metrics: { tokens: null, elapsed_ms: null, request_retries: null, output_repairs: null, stage_recoveries: null },
-      }],
-    },
-  };
-  assert.deepEqual(recoveryDecision({ pipeline: mandatoryTerminal, attempt: 1 }), {
-    status: "exhausted",
-    reason: "credentials rejected",
-  });
-  assert.deepEqual(recoveryDecision({ pipeline: parsed, attempt: 2 }), {
-    status: "exhausted",
-    reason: "provider timeout",
-  });
-  assert.equal(parsePipelineRecovery({
-    ...parsed.value,
-    stages: JSON.stringify([stage({ reused: true, reused_from_run_id: null })]),
-    provenance: JSON.stringify({
-      run_id: "42", base_sha: OTHER_SHA, head_sha: SHA, evidence_digest: "c".repeat(64),
-      policy_digest: "d".repeat(64), corpus_sha: null, v: 1, run_attempt: "1", recovery_attempt: "0",
-      attempt_id: `${SHA}-r0-a1-42`,
-      artifacts: {
-        evidence: "review-evidence", validation: "review-validation", corpus: null,
-        aggregate: "review-aggregate", general: null, specialists: {},
-      },
-    }),
-    metrics: JSON.stringify({
-      tokens: { input: 0, output: 0, total: 0 }, tokens_complete: false, elapsed_ms: 20,
-      request_retries: 4, output_repairs: 0, stage_recoveries: 0, reused_stages: 0, failed_stages: 2,
-    }),
-    recoverable: "true",
-    expectedHeadSha: SHA,
-    expectedBaseSha: OTHER_SHA,
-  }).ok, false);
-});
-
-test("stage recovery metrics count failed attempts and preserve unavailable usage", () => {
-  const pipeline = (stages) => ({
-    ok: true,
-    value: { stages, provenance: {}, recoverable: true },
-  });
-  const metrics = {
-    tokens: { input: 60, output: 40, total: 100, complete: true },
-    elapsed_ms: 20, request_retries: 1, output_repairs: 0, stage_recoveries: 0,
-  };
-  const total = aggregateStageMetrics([
-    pipeline([
-      {
-        id: "specialist:skeptical", status: "failed", required: true, provider: true, reason: "timeout",
-        failureCategory: "provider-timeout", retryable: true, reused: false, reusedFromRunId: null, reuseReason: "",
-        metrics: { ...metrics, tokens: null },
-      },
-      {
-        id: "specialist:code-compressor", status: "success", required: false, provider: true, reason: "",
-        failureCategory: "", retryable: false, reused: false, reusedFromRunId: null, reuseReason: "", metrics,
-      },
-    ]),
-    pipeline([
-      {
-        id: "specialist:skeptical", status: "success", required: true, provider: true, reason: "",
-        failureCategory: "", retryable: false, reused: false, reusedFromRunId: null, reuseReason: "", metrics,
-      },
-      {
-        id: "specialist:code-compressor", status: "success", required: false, provider: true, reason: "",
-        failureCategory: "", retryable: false, reused: true, reusedFromRunId: "42", reuseReason: "", metrics,
-      },
-    ]),
-  ]);
-  assert.equal(total.attempts, 4);
-  assert.equal(total.reused, 1);
-  assert.deepEqual(total.totals.tokens, { input: 120, output: 80, total: 200 });
-  assert.equal(total.totals.tokens_complete, false);
-  assert.equal(total.totals.elapsed_ms, 80);
-  assert.equal(total.stages["specialist:skeptical"].failures[0], "timeout");
-  assert.equal(total.stages["specialist:code-compressor"].reused, 1);
 });
 
 test("bot authors are excluded from automation", async () => {

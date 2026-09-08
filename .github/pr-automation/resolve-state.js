@@ -62,8 +62,6 @@ function classificationMachineState({
     protocolRelated,
     risk,
     specialistReviewers: route.reviewers,
-    selectedReviewers: route.selectedReviewers,
-    requiredReviewers: route.requiredReviewers,
     automaticReviewEligible,
   };
 }

@@ -3,7 +3,6 @@
 const { encodeCheckState } = require("./validate-classifier");
 const { provenancePrefix } = require("./validate-final-review");
 const { reviewPolicyEligible } = require("./routing");
-const { encodeClaim, parseClaim } = require("./review-attempt-claim");
 
 const SEVERITY_EMOJI = {
   critical: ":purple_circle:",
@@ -214,59 +213,6 @@ async function ensureReviewCheck(github, owner, repo, prNumber, expectedSha, che
   return true;
 }
 
-async function ensureReviewClaim(github, owner, repo, prNumber, expectedSha, claim, summaryUrl) {
-  if (typeof summaryUrl !== "string" || !/^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/actions\/runs\/\d+$/.test(summaryUrl)) {
-    throw new Error("invalid review claim summary URL");
-  }
-  const check = { name: "AI automated review", externalId: expectedSha };
-  const pending = claim.status === "claimed" || claim.status === "pending";
-  const title = claim.status === "published"
-    ? "Automated review complete"
-    : claim.status === "exhausted"
-      ? "Stage recovery exhausted"
-      : claim.attempt === 1
-        ? "Automated review in progress"
-        : "Stage recovery pending";
-  const summary = `${pending
-    ? "Automated review is running with a bounded stage-recovery budget."
-    : claim.status === "published"
-      ? "Validated automated review is bound to this commit."
-      : `Automated review recovery is exhausted: ${claim.reason || "review unavailable"}.`}\n\n` +
-    `[View the workflow summary](${summaryUrl})\n\n${encodeClaim(claim)}`;
-  const existing = await findCheck(github, owner, repo, expectedSha, check);
-  if (existing?.status === (pending ? "in_progress" : "completed") &&
-      existing.output?.title === title && existing.output?.summary === summary) return false;
-  await assertCurrentHead(github, owner, repo, prNumber, expectedSha);
-  const payload = {
-    owner, repo, name: check.name, head_sha: expectedSha, external_id: check.externalId,
-    status: pending ? "in_progress" : "completed",
-    output: { title, summary },
-  };
-  if (!pending) payload.conclusion = claim.status === "published" ? "success" : "neutral";
-  if (existing) {
-    await github.rest.checks.update({ ...payload, check_run_id: existing.id });
-  } else {
-    await github.rest.checks.create(payload);
-  }
-  return true;
-}
-
-async function assertReviewClaim(github, owner, repo, expectedSha, claim) {
-  if (!claim || !/^[0-9a-f]{64}$/.test(claim.fingerprint) ||
-      !Number.isSafeInteger(claim.attempt) || !Number.isSafeInteger(claim.owner?.runId) ||
-      !Number.isSafeInteger(claim.owner?.runAttempt)) {
-    throw new StalePolicyError();
-  }
-  const check = await findCheck(
-    github, owner, repo, expectedSha, { name: "AI automated review", externalId: expectedSha });
-  const current = parseClaim(check?.output?.summary);
-  if (!current || current.fingerprint !== claim.fingerprint || current.attempt !== claim.attempt ||
-      current.owner.runId !== claim.owner.runId || current.owner.runAttempt !== claim.owner.runAttempt ||
-      !["claimed", "pending"].includes(current.status)) {
-    throw new StalePolicyError();
-  }
-}
-
 async function dispatchClassificationComplete(github, owner, repo, prNumber, expectedSha) {
   await assertCurrentHead(github, owner, repo, prNumber, expectedSha);
   await github.rest.repos.createDispatchEvent({
@@ -311,9 +257,6 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin, revi
   }
   await assertCurrentHead(github, owner, repo, prNumber, state.expectedSha);
   if (state.mode === "review") {
-    if (state.expectedReviewClaim) {
-      await assertReviewClaim(github, owner, repo, state.expectedSha, state.expectedReviewClaim);
-    }
     const comments = state.comments || [];
     for (const comment of comments.filter((comment) => comment.kind === "review")) {
       await publishReview(github, owner, repo, prNumber, state, botLogin, comment);
@@ -355,5 +298,5 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin, revi
 
 module.exports = {
   StaleHeadError, StalePolicyError, applyLabels, assertCurrentHead, deleteMarkedComment, dispatchClassificationComplete,
-  assertReviewClaim, ensureReviewClaim, escapeMarkdown, findCheck, markerBody, upsertMarkedComment, writeState,
+  escapeMarkdown, findCheck, markerBody, upsertMarkedComment, writeState,
 };
