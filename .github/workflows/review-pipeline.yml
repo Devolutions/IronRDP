@@ -29,7 +29,7 @@ on:
         type: string
         default: ""
       gate:
-        description: Validated review gate state, used only when required-reviewers is absent
+        description: Validated review gate state, required for a forced review and whenever required-reviewers is absent
         required: false
         type: string
         default: ""
@@ -376,7 +376,8 @@ jobs:
             const fs = require("node:fs");
             const path = require("node:path");
             const {
-              mergeDiagnostics, parseDiagnostics, plannedRequiredReviewers, validateSpecialistRun,
+              mergeDiagnostics, parseDiagnostics, plannedRequiredReviewers, providerWasCalled,
+              validateSpecialistRun,
             } = require("./.github/pr-automation/review-pipeline");
             const { stageOutcome } = require("./.github/pr-automation/review-report");
             const {
@@ -421,6 +422,10 @@ jobs:
             );
             // A declined retry is a review outcome, so its reason belongs in the report.
             const decline = retryable && !retried ? process.env.RETRY_DECLINE : "";
+            const diagnostics = mergeDiagnostics(
+              parseDiagnostics(process.env.DIAGNOSTICS),
+              retried ? parseDiagnostics(process.env.RETRY_DIAGNOSTICS) : null,
+            );
             fs.writeFileSync(
               path.join(directory, "stage.json"),
               JSON.stringify(stageOutcome({
@@ -433,11 +438,8 @@ jobs:
                 category: run.status === "valid" ? "" : process.env.FAILURE_CATEGORY || "invalid-output",
                 attempts: retried ? 2 : 1,
                 previous_reason: retried ? process.env.PREVIOUS_REASON : "",
-                provider: true,
-                metrics: mergeDiagnostics(
-                  parseDiagnostics(process.env.DIAGNOSTICS),
-                  retried ? parseDiagnostics(process.env.RETRY_DIAGNOSTICS) : null,
-                ),
+                provider: providerWasCalled(diagnostics),
+                metrics: diagnostics,
               }), null, 2),
             );
             core.info(JSON.stringify({
@@ -650,7 +652,7 @@ jobs:
           script: |
             const fs = require("node:fs");
             const {
-              mergeDiagnostics, parseDiagnostics,
+              mergeDiagnostics, parseDiagnostics, providerWasCalled,
             } = require("./.github/pr-automation/review-pipeline");
             const { stageOutcome } = require("./.github/pr-automation/review-report");
             const retried = process.env.RETRIED === "true";
@@ -667,6 +669,10 @@ jobs:
               "general-review/result.json",
               JSON.stringify({ output, reason }),
             );
+            const diagnostics = mergeDiagnostics(
+              parseDiagnostics(process.env.DIAGNOSTICS),
+              retried ? parseDiagnostics(process.env.RETRY_DIAGNOSTICS) : null,
+            );
             core.setOutput("stage", JSON.stringify(stageOutcome({
               id: "general",
               status: output === "" ? "failed" : "success",
@@ -677,11 +683,8 @@ jobs:
                 : "",
               attempts: retried ? 2 : 1,
               previous_reason: retried ? process.env.PREVIOUS_REASON : "",
-              provider: true,
-              metrics: mergeDiagnostics(
-                parseDiagnostics(process.env.DIAGNOSTICS),
-                retried ? parseDiagnostics(process.env.RETRY_DIAGNOSTICS) : null,
-              ),
+              provider: providerWasCalled(diagnostics),
+              metrics: diagnostics,
             })));
 
       - name: Upload general review result
@@ -893,7 +896,7 @@ jobs:
                 }
               })();
               // A specialist that never reported is only a failure when the stage actually ran.
-              stages.push(recorded ? stageOutcome({ ...recorded, provider: true }) : stageOutcome({
+              stages.push(recorded ? stageOutcome({ provider: true, ...recorded }) : stageOutcome({
                 id: `specialist:${reviewer}`,
                 status: evidenceOk ? "failed" : "skipped",
                 required: isRequired(reviewer),
@@ -918,7 +921,7 @@ jobs:
                 : aggregateOk ? "required-specialist-failed" : "aggregate-invalid",
             }));
             const generalStage = json(process.env.GENERAL_STAGE);
-            stages.push(generalStage ? stageOutcome({ ...generalStage, provider: true }) : stageOutcome({
+            stages.push(generalStage ? stageOutcome({ provider: true, ...generalStage }) : stageOutcome({
               id: "general",
               // The general reviewer is skipped by a failed dependency, which is not its failure.
               status: process.env.GENERAL_RESULT === "skipped" ? "skipped" : "failed",

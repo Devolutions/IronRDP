@@ -33,7 +33,8 @@ const {
   corpusFromDirectory, validateProtocolReferences,
 } = require("./validate-protocol-review");
 const {
-  isRetryableFailure, mergeDiagnostics, parseDiagnostics, resolveRequiredReviewers,
+  isRetryableFailure, mergeDiagnostics, parseDiagnostics, providerWasCalled,
+  resolveRequiredReviewers,
 } = require("./review-pipeline");
 const {
   REPORT_VERSION, buildReport, parseReport, stageIds, stageOutcome,
@@ -2356,6 +2357,15 @@ test("repair may correct an identity the validators would never accept", () => {
     metadata, previousCandidate: overflowing,
   }), { ok: true });
 
+  // The candidate validator rejects a repeated id, so a baseline carrying one twice can only be
+  // repaired by keeping a single copy.
+  const duplicated = candidateReview("skeptical", {
+    findings: [candidateFinding(), candidateFinding()],
+  });
+  assert.deepEqual(validateSpecialist(candidateReview("skeptical"), {
+    metadata, previousCandidate: duplicated,
+  }), { ok: true });
+
   // The same rule covers final findings, whose identity is their title.
   const general = fixture.general();
   const untitled = finalReview({
@@ -2376,6 +2386,18 @@ test("repair may correct an identity the validators would never accept", () => {
   });
   assert.deepEqual(validateGeneral(finalReview(), {
     metadata: general, previousCandidate: overweight,
+  }), { ok: true });
+
+  // A disposition for a candidate the specialists never produced is rejected by final validation,
+  // so the repair has to drop it and that is not a withdrawal.
+  const invented = finalReview({
+    candidate_dispositions: [...finalReview().candidate_dispositions, {
+      reviewer: "protocol", finding_id: "never-produced",
+      disposition: "accepted", rationale: "invented candidate",
+    }],
+  });
+  assert.deepEqual(validateGeneral(finalReview(), {
+    metadata: general, previousCandidate: invented,
   }), { ok: true });
 });
 
@@ -2458,17 +2480,19 @@ test("required reviewers come from the caller, with the gate only as a fallback"
 test("unmeasured provider usage is reported as unknown, never as zero", () => {
   const measured = parseDiagnostics(JSON.stringify({
     durationMs: 1200, requestRetryCount: 1, outputRepairCount: 0,
+    providerAttempts: [{ activity: "review" }, { activity: "review" }],
     tokenUsage: { complete: true, inputTokens: 100, outputTokens: 20, totalTokens: 120 },
   }));
   assert.deepEqual(measured, {
-    elapsed_ms: 1200, request_retries: 1, output_repairs: 0,
+    elapsed_ms: 1200, request_retries: 1, output_repairs: 0, provider_attempts: 2,
     tokens: { input: 100, output: 20, total: 120, complete: true },
   });
 
   // Absent, malformed, and token-free diagnostics are all unknown rather than zero.
   for (const raw of ["", "not json", JSON.stringify({}), null]) {
     assert.deepEqual(parseDiagnostics(raw), {
-      elapsed_ms: null, request_retries: null, output_repairs: null, tokens: null,
+      elapsed_ms: null, request_retries: null, output_repairs: null, provider_attempts: null,
+      tokens: null,
     });
   }
 
@@ -2482,12 +2506,13 @@ test("unmeasured provider usage is reported as unknown, never as zero", () => {
 test("a retried stage reports what both of its attempts spent", () => {
   const attempt = (changes = {}) => parseDiagnostics(JSON.stringify({
     durationMs: 1000, requestRetryCount: 4, outputRepairCount: 1,
+    providerAttempts: [{ activity: "review" }],
     tokenUsage: { complete: true, inputTokens: 100, outputTokens: 20, totalTokens: 120 },
     ...changes,
   }));
 
   assert.deepEqual(mergeDiagnostics(attempt(), attempt()), {
-    elapsed_ms: 2000, request_retries: 8, output_repairs: 2,
+    elapsed_ms: 2000, request_retries: 8, output_repairs: 2, provider_attempts: 2,
     tokens: { input: 200, output: 40, total: 240, complete: true },
   });
 
@@ -2787,6 +2812,25 @@ test("a provider stage that never reported usage keeps the totals honest", () =>
   assert.equal(buildReport([
     { id: "general", status: "skipped", required: true, provider: true },
   ]).metrics.tokens_complete, true);
+
+  // A stage that failed before its first request spent nothing, and the diagnostics say so, so its
+  // zero is a measurement rather than a hole in the totals.
+  const beforeAnyRequest = parseDiagnostics(JSON.stringify({
+    durationMs: 40, requestRetryCount: 0, outputRepairCount: 0, providerAttempts: [],
+  }));
+  assert.equal(providerWasCalled(beforeAnyRequest), false);
+  assert.equal(buildReport([
+    { id: "general", status: "failed", required: true, reason: "invalid action input",
+      provider: providerWasCalled(beforeAnyRequest), metrics: beforeAnyRequest },
+  ]).metrics.tokens_complete, true);
+
+  // Diagnostics that never arrived prove nothing, so the stage still counts as spending.
+  assert.equal(providerWasCalled(parseDiagnostics("")), true);
+  assert.equal(providerWasCalled(mergeDiagnostics(beforeAnyRequest, parseDiagnostics(""))), true);
+  assert.equal(buildReport([
+    { id: "general", status: "failed", required: true, reason: "provider unavailable",
+      provider: providerWasCalled(parseDiagnostics("")), metrics: parseDiagnostics("") },
+  ]).metrics.tokens_complete, false);
 });
 
 test("the caller reads exactly what the pipeline wrote, and never reads garbage as success", () => {
@@ -3020,6 +3064,21 @@ test("the preparation job checks out the automation before any step requires it"
   })();
   assert.ok(failure !== null, "the plan step depends on the checked-out automation");
   assert.match(String(failure.message), /Cannot find module/);
+});
+
+test("a stage reports provider spending from its own diagnostics", () => {
+  const scoped = readReviewWorkflow().slice(readReviewWorkflow().indexOf("\njobs:"));
+  for (const name of ["specialists", "general"]) {
+    const job = workflowJob(scoped, name);
+    assert.match(job, /provider: providerWasCalled\(diagnostics\)/, `${name} must measure its own`);
+    assert.doesNotMatch(job, /provider: true/, `${name} must not assume it called the provider`);
+  }
+
+  // The report job cannot measure a stage that never reported, so an absent one still counts as
+  // spending while a recorded one keeps what it measured.
+  const report = workflowJob(scoped, "report");
+  assert.match(report, /stageOutcome\(\{ provider: true, \.\.\.recorded \}\)/);
+  assert.match(report, /stageOutcome\(\{ provider: true, \.\.\.generalStage \}\)/);
 });
 
 test("the mandatory reviewer set is resolved once and read everywhere else", () => {

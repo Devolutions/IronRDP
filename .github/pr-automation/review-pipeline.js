@@ -158,6 +158,7 @@ function parseDiagnostics(raw) {
     elapsed_ms: count(source.durationMs),
     request_retries: count(source.requestRetryCount),
     output_repairs: count(source.outputRepairCount),
+    provider_attempts: Array.isArray(source.providerAttempts) ? source.providerAttempts.length : null,
     tokens: normalizeStageMetrics({
       tokens: {
         input: usage.inputTokens,
@@ -189,8 +190,16 @@ function mergeDiagnostics(first, second) {
     elapsed_ms: add(first.elapsed_ms, second.elapsed_ms),
     request_retries: add(first.request_retries, second.request_retries),
     output_repairs: add(first.output_repairs, second.output_repairs),
+    provider_attempts: add(first.provider_attempts, second.provider_attempts),
     tokens,
   };
+}
+
+// A stage that never reached the provider spent nothing, so its zero is a measurement rather than a
+// gap in the report. Diagnostics that cannot be read prove nothing, so they still count as spending.
+function providerWasCalled(diagnostics) {
+  const attempts = diagnostics?.provider_attempts;
+  return attempts === null || attempts === undefined || attempts > 0;
 }
 
 // The mandatory set is resolved once, in the evidence job. A stage that cannot read that plan
@@ -207,5 +216,5 @@ function plannedRequiredReviewers(raw, selectedReviewers = []) {
 module.exports = {
   SPECIALIST_ORDER,
   buildSpecialistAggregate, failedRun, isRetryableFailure, mergeDiagnostics, parseDiagnostics,
-  plannedRequiredReviewers, resolveRequiredReviewers, validateSpecialistRun,
+  plannedRequiredReviewers, providerWasCalled, resolveRequiredReviewers, validateSpecialistRun,
 };
