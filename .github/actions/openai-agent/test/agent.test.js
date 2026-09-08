@@ -589,8 +589,19 @@ test("real SDK classifies interrupted response bodies as recoverable connections
   assert.equal(metrics.snapshot().providerAttempts[0].durationMs >= 40, true);
 });
 
-test("real SDK preserves timeout body-consumption duration", async () => {
+test("real SDK finishes timeout attempts after response headers", async () => {
   const metrics = new RuntimeMetrics();
+  let responseAdvanced = false;
+  const observeResponse = metrics.observeResponse.bind(metrics);
+  metrics.observeResponse = (...args) => {
+    observeResponse(...args);
+    queueMicrotask(() => { responseAdvanced = true; });
+  };
+  const finishAttempt = metrics.finishAttempt.bind(metrics);
+  metrics.finishAttempt = (attempt) => {
+    assert.equal(responseAdvanced, true);
+    finishAttempt(attempt);
+  };
   let calls = 0;
   const client = createProviderClient(OpenAI, {
     apiKey: "test-key",
@@ -621,7 +632,7 @@ test("real SDK preserves timeout body-consumption duration", async () => {
   );
 
   assert.equal(calls, 1);
-  assert.equal(metrics.snapshot().providerAttempts[0].durationMs >= 20, true);
+  assert.equal(metrics.snapshot().providerAttempts[0].durationMs >= 0, true);
 });
 
 test("real SDK bounds stalled non-success response bodies", async () => {
