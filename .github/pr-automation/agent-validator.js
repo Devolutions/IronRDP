@@ -24,6 +24,14 @@ const TERMINAL_CODE = "VALIDATOR_TERMINAL";
 const SHA = /^[0-9a-f]{40}$/;
 const MAXIMUM_TRUSTED_BYTES = 8 * 1024 * 1024;
 
+// Read from the schemas the model answers to, so a repair baseline is judged by the same rules.
+const CANDIDATE_LIMITS = require("./schemas/candidate-review.json").properties.findings;
+const FINAL_LIMITS = require("./schemas/final-review.json").properties.findings;
+const CANDIDATE_FINDING_ID = new RegExp(CANDIDATE_LIMITS.items.properties.id.pattern);
+const MAX_TITLE_LENGTH = FINAL_LIMITS.items.properties.title.maxLength;
+const DISPOSITION_REVIEWERS = require("./schemas/final-review.json")
+  .properties.candidate_dispositions.items.properties.reviewer.enum;
+
 function terminal(reason) {
   const error = new Error(reason);
   error.code = TERMINAL_CODE;
@@ -137,58 +145,72 @@ function diagnoseProtocolReferences(candidate, corpus, corpusSha) {
   return "";
 }
 
-// A repair baseline is whatever the model first produced, which may not match the schema at all.
-function findingIds(candidate) {
-  const findings = candidate?.findings;
-  return new Set((Array.isArray(findings) ? findings : [])
-    .map((finding) => finding?.id)
-    .filter((id) => typeof id === "string"));
+// The runtime keeps the model's first response as the repair baseline even when that response failed
+// the output schema, so a baseline entry the schema itself rejects is never demanded back: restoring
+// it could not pass either. Everything the schema would have accepted still has to survive.
+function findingCounts(review, identify) {
+  const counts = new Map();
+  for (const finding of Array.isArray(review?.findings) ? review.findings : []) {
+    const key = identify(finding);
+    if (key !== null) counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
 }
+
+function droppedFindings(current, previous, { identify, maximum }) {
+  const findings = Array.isArray(previous?.findings) ? previous.findings : [];
+  if (findings.length > maximum) return [];
+  const kept = findingCounts(current, identify);
+  const dropped = [];
+  for (const [key, count] of findingCounts(previous, identify)) {
+    if ((kept.get(key) ?? 0) < count) dropped.push(key);
+  }
+  return dropped;
+}
+
+const candidateIdentity = (finding) =>
+  typeof finding?.id === "string" && CANDIDATE_FINDING_ID.test(finding.id) ? finding.id : null;
+
+// Final findings carry no id, so a title identifies them. Repair corrects a citation, a path, or a
+// line range, never the issue a finding reports.
+const finalIdentity = (finding) => {
+  const title = typeof finding?.title === "string" ? finding.title : "";
+  const normalized = title.trim().replace(/\s+/g, " ").toLowerCase();
+  return normalized === "" || title.length > MAX_TITLE_LENGTH ? null : normalized;
+};
 
 function preservedCandidateFindings(candidate, previousCandidate) {
   if (!previousCandidate) return "";
-  const current = findingIds(candidate);
-  const missing = [...findingIds(previousCandidate)].filter((id) => !current.has(id));
-  return missing.length === 0
+  const dropped = droppedFindings(candidate, previousCandidate, {
+    identify: candidateIdentity, maximum: CANDIDATE_LIMITS.maxItems,
+  });
+  return dropped.length === 0
     ? ""
-    : `repair must keep every earlier finding; restore ${missing.slice(0, 5).map((id) => `${id}`).join(", ")} and correct it instead of removing it`;
-}
-
-function findingTitles(review) {
-  const findings = review?.findings;
-  return new Set((Array.isArray(findings) ? findings : [])
-    .map((finding) => finding?.title)
-    .filter((title) => typeof title === "string")
-    .map((title) => title.trim().replace(/\s+/g, " ").toLowerCase()));
+    : `repair must keep every earlier finding; restore ${dropped.slice(0, 5).join(", ")} and correct it instead of removing it`;
 }
 
 function acceptedKeys(review) {
   const dispositions = review?.candidate_dispositions;
   return new Set((Array.isArray(dispositions) ? dispositions : [])
     .filter((entry) => entry?.disposition === "accepted" || entry?.disposition === "refined")
-    .map((entry) => `${entry?.reviewer}\u0000${entry?.finding_id}`));
+    .filter((entry) => DISPOSITION_REVIEWERS.includes(entry?.reviewer) &&
+      typeof entry?.finding_id === "string" && CANDIDATE_FINDING_ID.test(entry.finding_id))
+    .map((entry) => `${entry.reviewer}\u0000${entry.finding_id}`));
 }
 
 function preservedFinalFindings(review, previousReview) {
   if (!previousReview) return "";
   const current = acceptedKeys(review);
-  const dropped = [...acceptedKeys(previousReview)].filter((key) => !current.has(key));
-  if (dropped.length > 0) {
+  const withdrawn = [...acceptedKeys(previousReview)].filter((key) => !current.has(key));
+  if (withdrawn.length > 0) {
     return "repair must not reject a candidate it previously accepted or refined; correct the finding instead";
   }
-  // Final findings carry no id, so a title identifies them. Repair corrects a citation, a path, or a
-  // line range, never the issue a finding reports, so a title that disappears is a lost finding even
-  // when the count still matches.
-  const currentTitles = findingTitles(review);
-  const missing = [...findingTitles(previousReview)].filter((title) => !currentTitles.has(title));
-  if (missing.length > 0) {
-    return "repair must keep every earlier finding; restore the one it dropped and correct it instead of replacing it";
-  }
-  const previousCount = Array.isArray(previousReview?.findings) ? previousReview.findings.length : 0;
-  const currentCount = Array.isArray(review?.findings) ? review.findings.length : 0;
-  return currentCount < previousCount
-    ? "repair must keep every earlier finding; correct the invalid one instead of removing it"
-    : "";
+  const dropped = droppedFindings(review, previousReview, {
+    identify: finalIdentity, maximum: FINAL_LIMITS.maxItems,
+  });
+  return dropped.length === 0
+    ? ""
+    : "repair must keep every earlier finding; restore the one it dropped and correct it instead of replacing it";
 }
 
 function validateSpecialist(candidate, { metadata, previousCandidate } = {}) {

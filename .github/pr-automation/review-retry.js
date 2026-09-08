@@ -9,6 +9,9 @@ const { isRetryableFailure, plannedRequiredReviewers } = require("./review-pipel
 const MAXIMUM_DELAY_SECONDS = 15 * 60;
 const OVERSIZED_REVIEW_LABEL = "ai-review/allow-oversized";
 const MIB = 1024 * 1024;
+// A classification that stopped the automation keeps its eligibility flag, so only this title tells
+// the two apart. The caller's own gate reads it the same way.
+const CLASSIFICATION_COMPLETE = "Classification complete";
 
 const decline = (reason) => ({ retry: false, reason });
 
@@ -68,7 +71,8 @@ async function retryStillPermitted({
     return decline("classification is no longer valid for this head");
   }
   const state = parseCheckState(classification.output?.summary);
-  if (state === null || state.automaticReviewEligible !== true) {
+  if (state === null || state.automaticReviewEligible !== true ||
+      classification.output?.title !== CLASSIFICATION_COMPLETE) {
     return decline("classification no longer authorizes an automatic review");
   }
   if (!sameReviewers(state.specialistReviewers, selectedReviewers)) {

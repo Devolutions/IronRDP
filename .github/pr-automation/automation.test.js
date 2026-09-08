@@ -2326,6 +2326,49 @@ test("output repair may correct a finding but never drop one", () => {
   }), { metadata: general, previousCandidate: withGeneralOnly }), { ok: true });
 });
 
+// The runtime keeps the first response as the repair baseline even when it failed the output schema,
+// so demanding a schema-invalid identity back would make both repair attempts impossible.
+test("repair may correct an identity the output schema rejected", () => {
+  const fixture = validatorFixture();
+  const metadata = fixture.specialist();
+
+  const invalidBaseline = candidateReview("skeptical", {
+    findings: [candidateFinding({ id: "INVALID" }), candidateFinding({ id: "finding-2" })],
+  });
+  const corrected = validateSpecialist(candidateReview("skeptical", {
+    findings: [candidateFinding({ id: "renamed" }), candidateFinding({ id: "finding-2" })],
+  }), { metadata, previousCandidate: invalidBaseline });
+  assert.deepEqual(corrected, { ok: true });
+  // The valid identity in that same baseline is still protected.
+  const dropped = validateSpecialist(candidateReview("skeptical", {
+    findings: [candidateFinding({ id: "renamed" })],
+  }), { metadata, previousCandidate: invalidBaseline });
+  assert.equal(dropped.ok, false);
+  assert.match(dropped.reason, /restore finding-2/);
+
+  // A baseline holding more findings than the schema allows cannot be preserved either, because the
+  // repair has to drop some of them to pass.
+  const overflowing = candidateReview("skeptical", {
+    findings: Array.from({ length: 21 }, (_, index) => candidateFinding({ id: `finding-${index}` })),
+  });
+  assert.deepEqual(validateSpecialist(candidateReview("skeptical"), {
+    metadata, previousCandidate: overflowing,
+  }), { ok: true });
+
+  // The same rule covers final findings, whose identity is their title.
+  const general = fixture.general();
+  const untitled = finalReview({
+    findings: [{ ...finalReview().findings[0], title: "   " }],
+  });
+  assert.deepEqual(validateGeneral(finalReview(), { metadata: general, previousCandidate: untitled }),
+    { ok: true });
+  const overlong = finalReview({
+    findings: [{ ...finalReview().findings[0], title: "t".repeat(201) }],
+  });
+  assert.deepEqual(validateGeneral(finalReview(), { metadata: general, previousCandidate: overlong }),
+    { ok: true });
+});
+
 // The runtime turns a rejection it cannot read into a terminal validator error, which would spend
 // the stage instead of repairing it, so every reason has to survive that alphabet.
 test("validator rejections stay inside the reason alphabet the runtime accepts", () => {
@@ -2457,6 +2500,7 @@ function reviewableState(changes = {}) {
     state: "open", draft: false, headSha: SHA, baseSha: BASE_SHA, labels: [],
     authorType: "User", association: "MEMBER",
     classificationConclusion: "success", classificationHeadSha: SHA,
+    classificationTitle: "Classification complete",
     automaticReviewEligible: true, classifiedReviewers: REVIEWABLE_REVIEWERS,
     alreadyReviewed: false, ciConclusion: "success", ciRuns: null,
     diffBytes: 64 * 1024,
@@ -2499,7 +2543,7 @@ function reviewablePullRequest(changes = {}, live = null) {
             external_id: `${CLASSIFIER_SCHEMA_VERSION}:${state.classificationHeadSha}`,
             conclusion: state.classificationConclusion,
             app: { slug: "github-actions" },
-            output: { summary: `Validated classification.\n\n${encodeCheckState({
+            output: { title: state.classificationTitle, summary: `Validated classification.\n\n${encodeCheckState({
               protocolRelated: true, risk: "medium",
               specialistReviewers: state.classifiedReviewers,
               automaticReviewEligible: state.automaticReviewEligible,
@@ -2596,6 +2640,12 @@ test("a retry re-decides review eligibility against the pull request as it is af
   for (const [reason, state] of Object.entries(declined)) {
     assert.deepEqual(await gate(state), { retry: false, reason }, reason);
   }
+
+  // A classification that stopped the automation still carries automaticReviewEligible, so only its
+  // title separates it from one that authorizes a review. Losing the legitimacy label while the
+  // stage sleeps must not buy a second provider request.
+  assert.deepEqual(await gate({ classificationTitle: "Automation stopped" }),
+    { retry: false, reason: "classification no longer authorizes an automatic review" });
 
   // A stale classification bound to an older head cannot authorize this one.
   assert.equal((await gate({ classificationHeadSha: OTHER_SHA })).retry, false);
