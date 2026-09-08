@@ -38,6 +38,10 @@ concurrency:
 `llm-reviewer-pipeline` group must lock the entire review pipeline, not each reviewer job.
 The review pipeline must therefore live in a reusable workflow, with `llm-reviewer-pipeline` concurrency on its caller job.
 
+## Classification
+
+- Configure the classifier action for at most four request retries after the initial attempt.
+
 ## Reviewer pipeline
 
 - Select specialists, identify which are required, and call `review-pipeline.yml`.

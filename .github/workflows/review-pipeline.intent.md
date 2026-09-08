@@ -12,6 +12,8 @@ The general reviewer independently inspects the pull request, attempts to falsif
 It can merge overlapping candidates and add findings that no specialist reported.
 Reviewer findings use severity and a question boolean.
 
+- Configure reviewer actions for at most four request retries after the initial attempt.
+
 ### Specialist reviewers
 
 The caller selects specialists and identifies which are required.

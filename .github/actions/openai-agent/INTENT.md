@@ -10,30 +10,33 @@
 - Instructions.
 - Output schema.
 - Read-only access rules.
-- Execution limits.
-- Optional trusted validator for task-specific checks.
+- Request timeout.
+- Maximum request retries.
+- Maximum model turns.
+- Maximum tool calls.
+- Maximum output size.
+- Maximum output-repair attempts.
+- Optional validator for task-specific checks.
 
 ## Outputs
 
 - JSON accepted by the schema and any supplied validator, or an explicit failure reason.
 
-Keep diagnostic output bounded:
+Expose these diagnostics:
 
-- Phase.
-- Latency.
+- Activity (such as investigation, final output, or repair).
+- Duration of each provider attempt.
 - Request-retry count.
 - Output-repair count.
-- Finish reason.
+- Provider-reported stop reason (such as completion or token limit).
 - Token usage when available.
 - Accumulated turn and tool-call counts, including on failure.
 
 ## Request retries
 
-- Retry transient provider failures with backoff while preserving investigation state.
+- Retry transient provider failures with backoff.
 - Do not automatically retry invalid configuration, rejected credentials, or exhausted quota.
-- Keep request timeouts configurable and bound total time spent on request retries and output repair.
-- Allow at most four retries per request after the initial attempt, including SDK retries.
-- Count request retries separately from output-repair attempts, including retries of repair requests.
+- Apply the configured retry limit per request after the initial attempt, including SDK retries.
 
 For retryable `429` responses:
 
@@ -48,6 +51,5 @@ Prefer the OpenAI SDK for `Retry-After` handling and request retries (`maxRetrie
 - Accept validators only from trusted caller configuration, never from untrusted evidence or model output.
 - Validate JSON and schema locally, then run the supplied validator.
 - Repair JSON, schema, and validator-reported output errors within the same invocation.
-- Preserve the original investigation context during repair.
 - Permit only necessary read-only evidence lookup during repair.
-- Bound repair attempts and return failure when valid output cannot be produced within those limits.
+- Return failure if output remains invalid after the configured repair attempts.
