@@ -709,7 +709,8 @@ jobs:
           script: |
              const { resolveReviewState, reviewOutcome } = require("./.github/pr-automation/resolve-state");
              const { reviewSkipReasons } = require("./.github/pr-automation/review-skip-summary");
-             const { parseReport, stageIds } = require("./.github/pr-automation/review-report");
+             const { parseReport } = require("./.github/pr-automation/review-report");
+             const { renderReviewReport } = require("./.github/pr-automation/review-report-summary");
              const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
              const force = process.env.FORCE === "true";
              const gate = parse(process.env.GATE, force ? {
@@ -718,13 +719,9 @@ jobs:
                specialistReviewers: ["skeptical", "code-compressor"], contributor: { status: "forced" },
              } : {});
              const report = parseReport(process.env.REVIEW_REPORT);
-             const failures = report.stages.filter((stage) => stage.status === "failed");
              const recovered = report.stages.filter((stage) => stage.attempts === 2);
-             const failureReasons = failures.map((stage) => `${stage.id}: ${stage.reason || stage.category}`);
-             const failedAttempts = report.stages.flatMap((stage) => [
-               ...(stage.previous_reason ? [`${stage.id} (first attempt): ${stage.previous_reason}`] : []),
-               ...(stage.status === "failed" ? [`${stage.id}: ${stage.reason || stage.category}`] : []),
-             ]);
+             const failureReasons = report.stages.filter((stage) => stage.status === "failed")
+               .map((stage) => `${stage.id}: ${stage.reason || stage.category}`);
              const reviewerReason = report.status === "failed"
                ? failureReasons.join("; ") || process.env.REVIEWER_REASON || "review pipeline failed"
                : process.env.REVIEWER_REASON;
@@ -761,64 +758,21 @@ jobs:
                  .addList(reasons)
                  .write();
              } else {
-               const metrics = report.metrics;
-               const formatMetric = (value) => value === null ? "unavailable" : String(value);
                const outcome = reviewOutcome({
                  reportStatus: report.status, state, recovered: recovered.length > 0,
                });
-               const title = {
-                 complete: "Automated review complete",
-                 recovered: "Automated review recovered",
-                 unavailable: "Automated review unavailable",
-               }[outcome];
                const detail = state.failed === true ? state.reason || reviewerReason : reviewerReason;
+               const rendered = renderReviewReport({
+                 report, outcome, detail, summaryUrl: process.env.SUMMARY_URL,
+               });
                if (state.check) {
-                 state.check.title = title;
-                 state.check.summary = `${outcome === "complete"
-                   ? "Validated automated review is bound to this commit."
-                   : outcome === "recovered"
-                     ? "Validated automated review was produced after stage recovery."
-                     : `Automated review is unavailable: ${detail || "review unavailable"}. Maintainer review is required.`}\n\n` +
-                   `[View the workflow summary](${process.env.SUMMARY_URL})`;
+                 state.check.title = rendered.title;
+                 state.check.summary = rendered.checkSummary;
                  state.check.conclusion = outcome === "unavailable" ? "neutral" : "success";
                  core.setOutput("state", JSON.stringify(state));
                }
                await core.summary
-                 .addHeading("Automated review")
-                 .addRaw(`Review outcome: **${outcome}**.`, true)
-                 .addRaw(`Stages: ${stageIds(report).join(", ")}.`, true)
-                 .addHeading("Failed stage attempts")
-                 .addList(failedAttempts.length === 0
-                   ? ["No stage failure was reported."]
-                   : failedAttempts)
-                 .addHeading("Metrics")
-                 .addTable([
-                   [{ data: "Metric", header: true }, { data: "Total", header: true }],
-                   [{ data: "Tokens" }, {
-                     data: metrics.tokens === null ? "unavailable"
-                       : `${formatMetric(metrics.tokens.input)} input, ${formatMetric(metrics.tokens.output)} output, ` +
-                         `${formatMetric(metrics.tokens.total)} total${metrics.tokens_complete ? "" : " (incomplete)"}`,
-                   }],
-                   ...["elapsed_ms", "request_retries", "output_repairs", "stage_retries"].map((name) => [
-                     { data: name }, { data: formatMetric(metrics[name]) },
-                   ]),
-                 ])
-                 .addHeading("Per-stage metrics")
-                 .addTable([
-                   [{ data: "Stage", header: true }, { data: "Status", header: true },
-                     { data: "Attempts", header: true }, { data: "Tokens", header: true },
-                     { data: "Elapsed (ms)", header: true }, { data: "Request retries", header: true },
-                     { data: "Output repairs", header: true }],
-                   ...report.stages.map((stage) => [
-                     { data: stage.id }, { data: stage.status }, { data: String(stage.attempts) },
-                     { data: stage.metrics.tokens === null ? "unavailable"
-                       : `${stage.metrics.tokens.input}/${stage.metrics.tokens.output}/${stage.metrics.tokens.total}` +
-                         (stage.metrics.tokens.complete ? "" : " (incomplete)") },
-                     { data: stage.metrics.elapsed_ms === null ? "unavailable" : String(stage.metrics.elapsed_ms) },
-                     { data: stage.metrics.request_retries === null ? "unavailable" : String(stage.metrics.request_retries) },
-                     { data: stage.metrics.output_repairs === null ? "unavailable" : String(stage.metrics.output_repairs) },
-                   ]),
-                 ])
+                 .addRaw(rendered.workflowSummary, true)
                  .write();
              }
 
