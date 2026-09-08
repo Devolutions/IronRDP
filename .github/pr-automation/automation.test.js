@@ -38,7 +38,7 @@ const {
 const {
   REPORT_VERSION, buildReport, parseReport, stageIds, stageOutcome,
 } = require("./review-report");
-const { delayedRetryGate } = require("./review-retry");
+const { MAXIMUM_DELAY_SECONDS, delayedRetryGate } = require("./review-retry");
 const {
   TERMINAL_CODE, validateGeneral, validateSpecialist,
 } = require("./agent-validator");
@@ -2406,36 +2406,209 @@ test("a retried stage reports what both of its attempts spent", () => {
   assert.deepEqual(mergeDiagnostics(null, attempt()), attempt());
 });
 
-test("a stage retries once, only for a transient failure the review can still outlive", async () => {
+const REVIEWABLE_REVIEWERS = ["protocol", "skeptical", "code-compressor"];
+const BASE_SHA = "c".repeat(40);
+
+function reviewableState(changes = {}) {
+  return {
+    state: "open", draft: false, headSha: SHA, baseSha: BASE_SHA, labels: [],
+    authorType: "User", association: "MEMBER",
+    classificationConclusion: "success", classificationHeadSha: SHA,
+    automaticReviewEligible: true, classifiedReviewers: REVIEWABLE_REVIEWERS,
+    alreadyReviewed: false, ciConclusion: "success", ciRuns: null,
+    diffBytes: 64 * 1024,
+    ...changes,
+  };
+}
+
+// A pull request the caller's gate would still admit, with one attribute at a time knocked out.
+function reviewablePullRequest(changes = {}, live = null) {
+  const initial = reviewableState(changes);
+  const now = () => (live ? reviewableState(live()) : initial);
+  const github = {
+    paginate: { iterator: () => ({ [Symbol.asyncIterator]: async function* () {} }) },
+    rest: {
+      pulls: {
+        list: async () => ({ data: [] }),
+        get: async () => {
+          const state = now();
+          return { data: {
+            number: 1,
+            state: state.state,
+            draft: state.draft,
+            head: { sha: state.headSha, repo: { full_name: "Devolutions/IronRDP" } },
+            base: { sha: state.baseSha },
+            labels: state.labels.map((name) => ({ name })),
+            author_association: state.association,
+            user: { login: "octocat", type: state.authorType, node_id: "U_kgDOAoctocat" },
+          } };
+        },
+      },
+      checks: {
+        listForRef: async ({ check_name: checkName }) => {
+          const state = now();
+          if (checkName === "AI automated review") {
+            return { data: { check_runs: state.alreadyReviewed
+              ? [{ conclusion: "success", app: { slug: "github-actions" } }]
+              : [] } };
+          }
+          return { data: { check_runs: [{
+            external_id: `${CLASSIFIER_SCHEMA_VERSION}:${state.classificationHeadSha}`,
+            conclusion: state.classificationConclusion,
+            app: { slug: "github-actions" },
+            output: { summary: `Validated classification.\n\n${encodeCheckState({
+              protocolRelated: true, risk: "medium",
+              specialistReviewers: state.classifiedReviewers,
+              automaticReviewEligible: state.automaticReviewEligible,
+            })}` },
+          }] } };
+        },
+      },
+      actions: {
+        listWorkflowRunsForRepo: async () => {
+          const state = now();
+          return { data: { workflow_runs: state.ciRuns ?? [
+            { name: "CI", conclusion: state.ciConclusion, run_started_at: "2026-01-01T00:00:00Z" },
+          ] } };
+        },
+      },
+    },
+  };
+  return {
+    github, owner: "Devolutions", repo: "IronRDP", pullNumber: 1,
+    expectedHeadSha: SHA, expectedBaseSha: BASE_SHA,
+    selectedReviewers: REVIEWABLE_REVIEWERS, requiredReviewers: ["protocol"],
+    diffBytes: initial.diffBytes,
+  };
+}
+
+test("a delayed retry is spent only on a failure the runtime itself called retryable", async () => {
   const slept = [];
   const gate = (changes = {}) => delayedRetryGate({
-    github: { rest: { pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) } } },
-    owner: "Devolutions", repo: "IronRDP", pullNumber: 1, expectedHeadSha: SHA,
-    failureCategory: "provider-timeout", delaySeconds: 120,
-    sleep: async (ms) => { slept.push(ms); },
+    ...reviewablePullRequest(), retryable: "true", failureCategory: "provider-timeout",
+    delaySeconds: 120, sleep: async (ms) => { slept.push(ms); },
     ...changes,
   });
 
   assert.deepEqual(await gate(), { retry: true, reason: "" });
   assert.deepEqual(slept, [120000]);
 
-  // Repair exhaustion is settled: the runtime already corrected inside the same conversation.
-  for (const category of ["output-repair-exhausted", "validator-rejected", "", undefined]) {
-    const result = await gate({ failureCategory: category });
+  // The runtime owns the taxonomy. Every category it marks retryable is retried, and the pipeline
+  // never second-guesses it with a category list of its own.
+  for (const category of [
+    "provider-timeout", "provider-conflict", "provider-rate-limit", "provider-service",
+    "provider-connection", "a-category-invented-after-this-test-was-written",
+  ]) {
+    assert.equal((await gate({ failureCategory: category })).retry, true, category);
+  }
+
+  // Terminal failures never reach a second request, whatever they are called.
+  for (const failure of [
+    { retryable: "false", failureCategory: "provider-quota" },
+    { retryable: "false", failureCategory: "output-invalid" },
+    { retryable: "false", failureCategory: "provider-credential" },
+    { retryable: "", failureCategory: "" },
+    { retryable: undefined, failureCategory: undefined },
+  ]) {
+    const result = await gate(failure);
     assert.equal(result.retry, false);
     assert.match(result.reason, /not retryable/);
   }
 
-  // A moved head or a closed pull request makes the second request pointless.
-  const stale = { rest: { pulls: { get: async () => ({ data: { state: "open", head: { sha: OTHER_SHA } } }) } } };
-  assert.deepEqual(await gate({ github: stale }),
-    { retry: false, reason: "pull request head is no longer current" });
-  const closed = { rest: { pulls: { get: async () => ({ data: { state: "closed", head: { sha: SHA } } }) } } };
-  assert.equal((await gate({ github: closed })).retry, false);
+  // The delay is bounded no matter what the caller asks for.
+  slept.length = 0;
+  await gate({ delaySeconds: 60 * 60 });
+  await gate({ delaySeconds: -1 });
+  await gate({ delaySeconds: Number.NaN });
+  assert.deepEqual(slept, [MAXIMUM_DELAY_SECONDS * 1000, 0, 0]);
+});
 
-  // An unreachable API is a failure to prove the head, not permission to spend another request.
-  const broken = { rest: { pulls: { get: async () => { throw new Error("rate limited"); } } } };
-  assert.equal((await gate({ github: broken })).retry, false);
+test("a retry re-decides review eligibility against the pull request as it is after the delay", async () => {
+  const gate = (state = {}, extra = {}) => delayedRetryGate({
+    ...reviewablePullRequest(state), retryable: "true", failureCategory: "provider-timeout",
+    delaySeconds: 0, sleep: async () => {},
+    ...extra,
+  });
+
+  assert.equal((await gate()).retry, true);
+
+  // Everything the caller checked before the pipeline started is checked again, because the delay
+  // is long enough for any of it to change.
+  const declined = {
+    "pull request is no longer open": { state: "closed" },
+    "pull request head is no longer current": { headSha: OTHER_SHA },
+    "pull request base moved away from the reviewed evidence": { baseSha: OTHER_SHA },
+    "pull request is a draft": { draft: true },
+    "review is no longer policy eligible": { labels: ["triage/legitimacy"] },
+    "pull request evidence exceeds the current evidence limit": { diffBytes: 2 * 1024 * 1024 },
+    "classification is no longer valid for this head": { classificationConclusion: "failure" },
+    "classification no longer authorizes an automatic review": { automaticReviewEligible: false },
+    "classification now selects a different reviewer set": { classifiedReviewers: ["protocol", "skeptical"] },
+    "this head was already reviewed": { alreadyReviewed: true },
+    "CI is not green at the reviewed head": { ciConclusion: "failure" },
+    "pull request author is a bot": { authorType: "Bot" },
+  };
+  for (const [reason, state] of Object.entries(declined)) {
+    assert.deepEqual(await gate(state), { retry: false, reason }, reason);
+  }
+
+  // A stale classification bound to an older head cannot authorize this one.
+  assert.equal((await gate({ classificationHeadSha: OTHER_SHA })).retry, false);
+
+  // A newer failing CI run is not excused by an older successful one.
+  assert.equal((await gate({ ciRuns: [
+    { name: "CI", conclusion: "success", run_started_at: "2026-01-01T00:00:00Z" },
+    { name: "CI", conclusion: "failure", run_started_at: "2026-01-02T00:00:00Z" },
+  ] })).retry, false);
+
+  // An unreachable API proves nothing, and proving nothing is not permission to spend a request.
+  const broken = { retry: false, reason: "review eligibility could not be confirmed" };
+  assert.deepEqual(await gate({}, { github: { rest: { pulls: {
+    get: async () => { throw new Error("secret-bearing rate limit detail"); },
+  } } } }), broken);
+});
+
+test("the caller's force bypasses review policy, and nothing that makes a review unsafe", async () => {
+  const gate = (state = {}) => delayedRetryGate({
+    ...reviewablePullRequest(state), retryable: "true", failureCategory: "provider-timeout",
+    delaySeconds: 0, sleep: async () => {}, force: true,
+  });
+
+  for (const state of [
+    { draft: true }, { labels: ["triage/legitimacy"] }, { ciConclusion: "failure" },
+    { classificationConclusion: "failure" }, { alreadyReviewed: true },
+  ]) {
+    assert.equal((await gate(state)).retry, true, JSON.stringify(state));
+  }
+
+  // Safety is not policy: a moved head, a closed pull request, and evidence over the current cap
+  // stay fatal under force.
+  for (const state of [
+    { state: "closed" }, { headSha: OTHER_SHA }, { baseSha: OTHER_SHA },
+    { diffBytes: 2 * 1024 * 1024 }, { authorType: "Bot" },
+  ]) {
+    assert.equal((await gate(state)).retry, false, JSON.stringify(state));
+  }
+
+  // The oversized allowance raises the cap it was granted for, and only that far.
+  assert.equal((await gate({
+    diffBytes: 2 * 1024 * 1024, labels: ["ai-review/allow-oversized"],
+  })).retry, true);
+  assert.equal((await gate({
+    diffBytes: 5 * 1024 * 1024, labels: ["ai-review/allow-oversized"],
+  })).retry, false);
+});
+
+test("a retry decision is made after the delay, not before it", async () => {
+  let current = reviewableState();
+  const decision = await delayedRetryGate({
+    ...reviewablePullRequest(current, () => current),
+    retryable: "true", failureCategory: "provider-service", delaySeconds: 30,
+    // The pull request is closed while the pipeline waits, which is exactly the case a
+    // before-the-delay check would miss.
+    sleep: async () => { current = reviewableState({ state: "closed", draft: true }); },
+  });
+  assert.deepEqual(decision, { retry: false, reason: "pull request is no longer open" });
 });
 
 test("every failed stage is reported, not just the first", () => {
@@ -2467,7 +2640,7 @@ test("every failed stage is reported, not just the first", () => {
 test("recovery repeats only the failed work and keeps every earlier success", () => {
   // Incident 1912: the compressor produced a valid review, the skeptical reviewer timed out, and
   // the protocol reviewer exhausted output repair. Only the timeout is worth a second request.
-  const spent = { tokens: { complete: true, input: 100, output: 20 }, elapsed_ms: 1000,
+  const spent = { tokens: { complete: true, input: 100, output: 20, total: 120 }, elapsed_ms: 1000,
     request_retries: 4, output_repairs: 0 };
   const report = buildReport([
     { id: "evidence", status: "success", required: true, metrics: { elapsed_ms: 500 } },
@@ -2533,8 +2706,9 @@ test("the caller reads exactly what the pipeline wrote, and never reads garbage 
   assert.equal(parsed.v, REPORT_VERSION);
   assert.equal(parsed.stages.find((stage) => stage.id === "specialist:skeptical").previous_reason,
     "provider request timed out");
-  // The `provider` flag does not cross the wire, so completeness has to survive on its own.
+  // Which stages paid a provider crosses the wire too, so the consumer's totals are the producer's.
   assert.equal(parsed.metrics.tokens_complete, false);
+  assert.equal(parsed.stages.find((stage) => stage.id === "specialist:protocol").provider, true);
 
   const unusable = (raw) => {
     const report = parseReport(raw);
@@ -2606,6 +2780,30 @@ test("stage recovery costs one extra invocation and re-proves the review first",
     // Exactly one retry invocation: recovery is bounded, not a loop.
     assert.equal((job.match(/id: agent-retry\n/g) || []).length, 1);
     assert.match(job, /if: steps\.retry-gate\.outputs\.retry == 'true'/);
+
+    // Retryability is the runtime's verdict, and the gate re-decides eligibility on the real
+    // pull request rather than on the head alone.
+    assert.match(job, /retryable: process\.env\.RETRYABLE/, `${name} must trust the runtime`);
+    assert.doesNotMatch(job, /RETRYABLE_CATEGORIES/);
+    for (const input of ["expectedBaseSha", "force", "selectedReviewers", "diffBytes"]) {
+      assert.match(job, new RegExp(`\\b${input}\\b`), `${name} must pass ${input} to the gate`);
+    }
+    // Reading that pull request needs read-only scopes, and grants no write anywhere.
+    const permissions = job.slice(job.indexOf("permissions:"), job.indexOf("steps:"));
+    for (const scope of ["actions: read", "checks: read", "issues: read", "pull-requests: read"]) {
+      assert.match(permissions, new RegExp(scope), `${name} must be able to re-check eligibility`);
+    }
+    assert.doesNotMatch(permissions, /: write/);
+
+    // A declined retry is a review outcome the caller has to be able to read.
+    assert.match(job, /RETRY_DECLINE: \$\{\{ steps\.retry-gate\.outputs\.reason \}\}/);
+    assert.match(job, /no retry: \$\{decline\}/);
+  }
+
+  // Required coverage is resolved the same way everywhere, so the gate fallback still binds.
+  for (const name of ["specialists", "report"]) {
+    assert.match(workflowJob(workflow.slice(workflow.indexOf("\njobs:")), name),
+      /resolveRequiredReviewers/, `${name} must resolve required reviewers`);
   }
 });
 

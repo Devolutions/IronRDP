@@ -49,6 +49,6 @@ Return per-stage metrics, including failed attempts and marking unavailable data
 - Request-retry count.
 - Output-repair count.
 - Stage-recovery count.
-- Whether results were reused.
+- Which stages repeated during recovery.
 
-Do not count reused results as new token usage.
+Count each provider attempt only once.

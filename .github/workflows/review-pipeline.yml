@@ -225,8 +225,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Read-only, and used for one thing: confirming the head still matches before a delayed retry
+      # Read-only, and used for one thing: re-deciding review eligibility before a delayed retry
       # spends a second provider request.
+      actions: read
+      checks: read
+      issues: read
       pull-requests: read
     environment: llm-providers
     strategy:
@@ -292,18 +295,44 @@ jobs:
         uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ inputs.head-sha }}
+          BASE_SHA: ${{ inputs.base-sha }}
           PULL_REQUEST_NUMBER: ${{ inputs.pr-number }}
+          RETRYABLE: ${{ steps.agent.outputs.retryable }}
           FAILURE_CATEGORY: ${{ steps.agent.outputs.failure-category }}
           RETRY_DELAY_SECONDS: ${{ inputs.retry-delay-seconds }}
+          SELECTED_REVIEWERS: ${{ inputs.specialist-reviewers }}
+          REQUIRED_REVIEWERS: ${{ inputs.required-reviewers }}
+          GATE: ${{ inputs.gate }}
         with:
           script: |
+            const fs = require("node:fs");
             const { delayedRetryGate } = require("./.github/pr-automation/review-retry");
+            const json = (raw, fallback) => {
+              try {
+                return raw ? JSON.parse(raw) : fallback;
+              } catch {
+                return fallback;
+              }
+            };
+            const diffBytes = (() => {
+              try {
+                return fs.statSync("pr-evidence/pull-request.diff").size;
+              } catch {
+                return null;
+              }
+            })();
             const decision = await delayedRetryGate({
               github, owner: context.repo.owner, repo: context.repo.repo,
               pullNumber: Number(process.env.PULL_REQUEST_NUMBER),
               expectedHeadSha: process.env.HEAD_SHA,
+              expectedBaseSha: process.env.BASE_SHA,
+              retryable: process.env.RETRYABLE,
               failureCategory: process.env.FAILURE_CATEGORY,
               delaySeconds: Number(process.env.RETRY_DELAY_SECONDS),
+              force: json(process.env.GATE, {})?.force === true,
+              selectedReviewers: json(process.env.SELECTED_REVIEWERS, []),
+              requiredReviewers: json(process.env.REQUIRED_REVIEWERS, undefined),
+              diffBytes,
             });
             core.setOutput("retry", String(decision.retry));
             core.setOutput("reason", decision.reason);
@@ -332,19 +361,23 @@ jobs:
           REVIEWER: ${{ matrix.reviewer }}
           OPENSPECS_SHA: ${{ needs.evidence.outputs.openspecs-sha }}
           REQUIRED_REVIEWERS: ${{ inputs.required-reviewers }}
+          SELECTED_REVIEWERS: ${{ inputs.specialist-reviewers }}
+          GATE: ${{ inputs.gate }}
           RAW_OUTPUT: ${{ steps.agent-retry.outputs.structured-output || steps.agent.outputs.structured-output }}
           MODEL_REASON: ${{ steps.agent-retry.outputs.failure-reason || steps.agent.outputs.failure-reason }}
           FAILURE_CATEGORY: ${{ steps.agent-retry.outputs.failure-category || steps.agent.outputs.failure-category }}
           DIAGNOSTICS: ${{ steps.agent.outputs.diagnostics }}
           RETRY_DIAGNOSTICS: ${{ steps.agent-retry.outputs.diagnostics }}
           RETRIED: ${{ steps.retry-gate.outputs.retry }}
+          RETRYABLE: ${{ steps.agent.outputs.retryable }}
+          RETRY_DECLINE: ${{ steps.retry-gate.outputs.reason }}
           PREVIOUS_REASON: ${{ steps.agent.outputs.failure-reason }}
         with:
           script: |
             const fs = require("node:fs");
             const path = require("node:path");
             const {
-              mergeDiagnostics, parseDiagnostics, validateSpecialistRun,
+              mergeDiagnostics, parseDiagnostics, resolveRequiredReviewers, validateSpecialistRun,
             } = require("./.github/pr-automation/review-pipeline");
             const { stageOutcome } = require("./.github/pr-automation/review-report");
             const {
@@ -352,6 +385,7 @@ jobs:
             } = require("./.github/pr-automation/validate-protocol-review");
             const reviewer = process.env.REVIEWER;
             const retried = process.env.RETRIED === "true";
+            const retryable = process.env.RETRYABLE === "true";
             const failed = (reason) => ({ reviewer, status: "failed", reason });
             let run = failed("specialist validation unavailable");
             try {
@@ -383,19 +417,33 @@ jobs:
             );
             const required = (() => {
               try {
-                return JSON.parse(process.env.REQUIRED_REVIEWERS || "[]");
+                const requiredReviewers = process.env.REQUIRED_REVIEWERS
+                  ? JSON.parse(process.env.REQUIRED_REVIEWERS)
+                  : undefined;
+                const gate = JSON.parse(process.env.GATE || "{}");
+                const resolved = resolveRequiredReviewers({
+                  selectedReviewers: JSON.parse(process.env.SELECTED_REVIEWERS || "[]"),
+                  requiredReviewers,
+                  protocolRelated: gate.protocolRelated,
+                  risk: gate.risk,
+                });
+                return resolved.ok ? resolved.reviewers : [];
               } catch {
                 return [];
               }
             })();
+            // A declined retry is a review outcome, so its reason belongs in the report.
+            const decline = retryable && !retried ? process.env.RETRY_DECLINE : "";
             fs.mkdirSync("stage-reports", { recursive: true });
             fs.writeFileSync(
               path.join("stage-reports", `specialist-${reviewer}.json`),
               JSON.stringify(stageOutcome({
                 id: `specialist:${reviewer}`,
                 status: run.status === "valid" ? "success" : "failed",
-                required: Array.isArray(required) && required.includes(reviewer),
-                reason: run.status === "valid" ? "" : run.reason,
+                required: required.includes(reviewer),
+                reason: run.status === "valid"
+                  ? ""
+                  : decline ? `${run.reason} (no retry: ${decline})` : run.reason,
                 category: run.status === "valid" ? "" : process.env.FAILURE_CATEGORY || "invalid-output",
                 attempts: retried ? 2 : 1,
                 previousReason: retried ? process.env.PREVIOUS_REASON : "",
@@ -525,6 +573,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # Read-only, and used for one thing: re-deciding review eligibility before a delayed retry
+      # spends a second provider request.
+      actions: read
+      checks: read
+      issues: read
       pull-requests: read
     environment: llm-providers
     outputs:
@@ -578,18 +631,44 @@ jobs:
         uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ inputs.head-sha }}
+          BASE_SHA: ${{ inputs.base-sha }}
           PULL_REQUEST_NUMBER: ${{ inputs.pr-number }}
+          RETRYABLE: ${{ steps.agent.outputs.retryable }}
           FAILURE_CATEGORY: ${{ steps.agent.outputs.failure-category }}
           RETRY_DELAY_SECONDS: ${{ inputs.retry-delay-seconds }}
+          SELECTED_REVIEWERS: ${{ inputs.specialist-reviewers }}
+          REQUIRED_REVIEWERS: ${{ inputs.required-reviewers }}
+          GATE: ${{ inputs.gate }}
         with:
           script: |
+            const fs = require("node:fs");
             const { delayedRetryGate } = require("./.github/pr-automation/review-retry");
+            const json = (raw, fallback) => {
+              try {
+                return raw ? JSON.parse(raw) : fallback;
+              } catch {
+                return fallback;
+              }
+            };
+            const diffBytes = (() => {
+              try {
+                return fs.statSync("pr-evidence/pull-request.diff").size;
+              } catch {
+                return null;
+              }
+            })();
             const decision = await delayedRetryGate({
               github, owner: context.repo.owner, repo: context.repo.repo,
               pullNumber: Number(process.env.PULL_REQUEST_NUMBER),
               expectedHeadSha: process.env.HEAD_SHA,
+              expectedBaseSha: process.env.BASE_SHA,
+              retryable: process.env.RETRYABLE,
               failureCategory: process.env.FAILURE_CATEGORY,
               delaySeconds: Number(process.env.RETRY_DELAY_SECONDS),
+              force: json(process.env.GATE, {})?.force === true,
+              selectedReviewers: json(process.env.SELECTED_REVIEWERS, []),
+              requiredReviewers: json(process.env.REQUIRED_REVIEWERS, undefined),
+              diffBytes,
             });
             core.setOutput("retry", String(decision.retry));
             core.setOutput("reason", decision.reason);
@@ -620,6 +699,8 @@ jobs:
           DIAGNOSTICS: ${{ steps.agent.outputs.diagnostics }}
           RETRY_DIAGNOSTICS: ${{ steps.agent-retry.outputs.diagnostics }}
           RETRIED: ${{ steps.retry-gate.outputs.retry }}
+          RETRYABLE: ${{ steps.agent.outputs.retryable }}
+          RETRY_DECLINE: ${{ steps.retry-gate.outputs.reason }}
           PREVIOUS_REASON: ${{ steps.agent.outputs.failure-reason }}
         with:
           script: |
@@ -630,8 +711,12 @@ jobs:
             const { stageOutcome } = require("./.github/pr-automation/review-report");
             const retried = process.env.RETRIED === "true";
             const output = process.env.RAW_OUTPUT || "";
+            const decline = process.env.RETRYABLE === "true" && !retried
+              ? process.env.RETRY_DECLINE
+              : "";
+            const failure = process.env.MODEL_REASON || "general reviewer unavailable";
             const reason = output === ""
-              ? process.env.MODEL_REASON || "general reviewer unavailable"
+              ? decline ? `${failure} (no retry: ${decline})` : failure
               : "";
             fs.mkdirSync("general-review", { recursive: true });
             fs.writeFileSync(
@@ -815,6 +900,7 @@ jobs:
         env:
           SPECIALIST_REVIEWERS: ${{ inputs.specialist-reviewers }}
           REQUIRED_REVIEWERS: ${{ inputs.required-reviewers }}
+          GATE: ${{ inputs.gate }}
           EVIDENCE_RESULT: ${{ needs.evidence.result }}
           EVIDENCE_REASON: ${{ needs.evidence.outputs.failure-reason }}
           EVIDENCE_STAGE: ${{ needs.evidence.outputs.stage }}
@@ -830,6 +916,9 @@ jobs:
             const fs = require("node:fs");
             const path = require("node:path");
             const { buildReport, stageOutcome } = require("./.github/pr-automation/review-report");
+            const {
+              resolveRequiredReviewers,
+            } = require("./.github/pr-automation/review-pipeline");
             const json = (raw) => {
               try {
                 return raw ? JSON.parse(raw) : null;
@@ -838,9 +927,17 @@ jobs:
               }
             };
             const selected = json(process.env.SPECIALIST_REVIEWERS) ?? [];
-            const required = json(process.env.REQUIRED_REVIEWERS) ?? [];
-            const isRequired = (reviewer) =>
-              Array.isArray(required) && required.includes(reviewer);
+            const gate = json(process.env.GATE) ?? {};
+            const resolved = resolveRequiredReviewers({
+              selectedReviewers: selected,
+              requiredReviewers: process.env.REQUIRED_REVIEWERS
+                ? json(process.env.REQUIRED_REVIEWERS)
+                : undefined,
+              protocolRelated: gate.protocolRelated,
+              risk: gate.risk,
+            });
+            const required = resolved.ok ? resolved.reviewers : [];
+            const isRequired = (reviewer) => required.includes(reviewer);
             const evidenceOk = process.env.EVIDENCE_RESULT === "success";
             const evidenceStage = json(process.env.EVIDENCE_STAGE);
             const stages = [evidenceStage ? stageOutcome(evidenceStage) : stageOutcome({

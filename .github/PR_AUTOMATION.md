@@ -24,7 +24,7 @@ The pipeline performs these stages:
 9. Resolve validated state and publish through the serialized writer.
 
 `.github/workflows/review-pipeline.yml` is reusable and `workflow_call` is its only trigger.
-The caller owns the global concurrency lock, the reviewer selection, publication, and any delayed rerun.
+The caller owns the global concurrency lock, the reviewer selection, and publication.
 The pipeline owns evidence, specialists, aggregation, the general review, validation, and stage recovery.
 
 `required-reviewers` names the specialists that must succeed, and the caller is authoritative.
@@ -47,7 +47,7 @@ Only the validated general-review result can be published.
 
 ## Reviewer output validation
 
-Every reviewer invocation retries four provider requests after the initial attempt.
+A reviewer invocation retries up to four provider requests after the initial attempt.
 
 `.github/pr-automation/agent-validator.js` is the trusted review validator the model runtime calls.
 The runtime validates JSON and the output schema, then hands the parsed candidate to this module together with bounded metadata naming the stage, the reviewer, the expected SHAs, and the trusted context files.
@@ -64,13 +64,17 @@ Repair happens inside one invocation, so the pipeline never restarts a reviewer 
 
 A transient provider failure costs one extra invocation of that stage, not a replay of the review.
 
-A reviewer stage that fails transiently waits for `retry-delay-seconds` (120 by default), re-proves that the pull request is still open at the reviewed head, and runs exactly once more inside the same job.
+The runtime decides whether a failure is retryable, and the pipeline keeps no failure taxonomy of its own.
+A retryable stage waits for `retry-delay-seconds` (120 by default), re-decides review eligibility against the pull request as it is after the delay, and runs exactly once more inside the same job.
+That recheck repeats the caller's own gate: open state, exact head and base, draft state, review policy labels, the classification bound to this head and its reviewer set, an already-published review, the newest CI run, contributor eligibility, the fork quota, and the evidence size limit still in force.
+A caller `force` bypasses review policy and CI, and never the safety checks.
+A declined retry is reported with its reason.
 Every stage that already succeeded keeps its result, so a recovered review repeats only the work that failed.
 Recovery is bounded to one delayed retry per stage, so a stage reports at most two attempts and the pipeline cannot loop.
 
 Only `provider-timeout`, `provider-connection`, `provider-unavailable`, and `provider-transient` are retryable.
 Exhausted output repair is settled: the runtime already corrected inside the same conversation, so repeating the request cannot help.
-A moved head, a closed pull request, or an unreachable API means the retry is not attempted, because the review it would finish can no longer be published.
+An unreachable API means the retry is not attempted, because a review that cannot be proved wanted is not worth a second request.
 
 Evidence is prepared once and every stage, including a delayed retry, reads those exact bytes.
 Artifacts stay inside the pipeline execution, and a later caller run starts fresh rather than inheriting results across runs.
@@ -79,6 +83,7 @@ The pipeline returns every failed stage with its reason and failure category, no
 It also returns per-stage token usage, elapsed time, request-retry count, output-repair count, the number of recovered stages, and, for a recovered stage, the failure its first attempt reported.
 Unmeasured metrics are reported as missing rather than as zero, and a retried stage is charged for both of its attempts.
 The aggregate marks itself incomplete whenever a stage that called a provider could not account for its usage.
+Each stage records whether it called a provider, so the caller's totals are the pipeline's own.
 
 `.github/pr-automation/review-report.js` defines the one report schema the pipeline writes and the caller reads, so the two sides cannot drift.
 The caller parses it with `parseReport`, which never throws and never reads a malformed or unsupported report as success.

@@ -127,8 +127,10 @@ function diagnoseProtocolReferences(candidate, corpus, corpusSha) {
   return "";
 }
 
+// A repair baseline is whatever the model first produced, which may not match the schema at all.
 function findingIds(candidate) {
-  return new Set((candidate?.findings ?? [])
+  const findings = candidate?.findings;
+  return new Set((Array.isArray(findings) ? findings : [])
     .map((finding) => finding?.id)
     .filter((id) => typeof id === "string"));
 }
@@ -143,7 +145,8 @@ function preservedCandidateFindings(candidate, previousCandidate) {
 }
 
 function acceptedKeys(review) {
-  return new Set((review?.candidate_dispositions ?? [])
+  const dispositions = review?.candidate_dispositions;
+  return new Set((Array.isArray(dispositions) ? dispositions : [])
     .filter((entry) => entry?.disposition === "accepted" || entry?.disposition === "refined")
     .map((entry) => `${entry?.reviewer}\u0000${entry?.finding_id}`));
 }

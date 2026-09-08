@@ -27,11 +27,13 @@ function normalizeTokens(tokens) {
   const output = pick("output", "outputTokens", "output_tokens", "completion_tokens");
   const total = pick("total", "totalTokens", "total_tokens");
   if (input === null && output === null && total === null) return null;
+  // Usage the producer did not report stays unreported. Deriving a total from two of three fields
+  // would turn a partial measurement into one that looks whole.
   return {
     input,
     output,
-    total: total ?? (input === null || output === null ? null : input + output),
-    complete: tokens.complete === true && input !== null && output !== null,
+    total,
+    complete: tokens.complete === true && input !== null && output !== null && total !== null,
   };
 }
 
@@ -45,15 +47,17 @@ function normalizeStageMetrics(metrics = {}) {
   };
 }
 
+const MANDATORY_STAGES = ["evidence", "aggregate", "general", "validate"];
+
 // `attempts` is 1 or 2 because a stage gets at most one delayed retry. `previous_reason` keeps the
-// first attempt's failure visible even when the retry succeeded, so a recovered stage still
-// explains what went wrong.
-function stageOutcome({
-  id, status, required = false, reason = "", category = "", attempts = 1, previousReason = "",
-  previous_reason: previousReasonKey = "", provider = false, metrics = {},
-} = {}) {
+// first attempt's failure visible even when the retry succeeded.
+function stageOutcome(raw) {
+  const {
+    id, status, required = false, reason = "", category = "", attempts = 1, previousReason = "",
+    previous_reason: previousReasonKey = "", provider = false, metrics = {},
+  } = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   return {
-    id: String(id ?? ""),
+    id: typeof id === "string" ? id : "",
     status: STAGE_STATUS.has(status) ? status : "failed",
     required: required === true,
     provider: provider === true,
@@ -65,8 +69,16 @@ function stageOutcome({
   };
 }
 
-function buildReport(stages = []) {
-  const outcomes = (Array.isArray(stages) ? stages : []).map(stageOutcome);
+const UNKNOWN_METRICS = {
+  tokens: null,
+  tokens_complete: false,
+  elapsed_ms: null,
+  request_retries: null,
+  output_repairs: null,
+  stage_retries: null,
+};
+
+function aggregateMetrics(outcomes) {
   const metrics = {
     tokens: { input: 0, output: 0, total: 0 },
     tokens_complete: true,
@@ -75,29 +87,53 @@ function buildReport(stages = []) {
     output_repairs: 0,
     stage_retries: 0,
   };
+  let anyTokens = false;
   for (const stage of outcomes) {
     if (stage.attempts === 2) metrics.stage_retries += 1;
+    const ran = stage.status !== "skipped";
     if (stage.metrics.tokens) {
-      metrics.tokens.input += stage.metrics.tokens.input ?? 0;
-      metrics.tokens.output += stage.metrics.tokens.output ?? 0;
-      metrics.tokens.total += stage.metrics.tokens.total ?? 0;
+      anyTokens = true;
+      for (const key of ["input", "output", "total"]) {
+        if (stage.metrics.tokens[key] === null) metrics.tokens[key] = null;
+        else if (metrics.tokens[key] !== null) metrics.tokens[key] += stage.metrics.tokens[key];
+      }
       if (!stage.metrics.tokens.complete) metrics.tokens_complete = false;
-    } else if (stage.provider && stage.status !== "skipped") {
+    } else if (stage.provider && ran) {
       metrics.tokens_complete = false;
     }
+    // A stage that ran without reporting a measurement makes the total unknown, never a smaller
+    // number that reads as measured. Retries and repairs are provider counters, so only a provider
+    // stage can leave them unknown.
     for (const key of ["elapsed_ms", "request_retries", "output_repairs"]) {
-      if (stage.metrics[key] !== null) metrics[key] += stage.metrics[key];
+      const measurable = ran && (key === "elapsed_ms" || stage.provider);
+      if (stage.metrics[key] === null) {
+        if (measurable) metrics[key] = null;
+      } else if (metrics[key] !== null) {
+        metrics[key] += stage.metrics[key];
+      }
     }
   }
+  if (!anyTokens) metrics.tokens = null;
+  return metrics;
+}
+
+// A report is successful only when its shape proves it: every mandatory stage present exactly once
+// and no required stage left unfinished, with an independent validation that actually succeeded.
+function buildReport(stages = []) {
+  const outcomes = (Array.isArray(stages) ? stages : []).map(stageOutcome);
+  const ids = outcomes.map((stage) => stage.id);
+  const wellFormed = ids.every((id) => id !== "") &&
+    new Set(ids).size === ids.length &&
+    MANDATORY_STAGES.every((id) => ids.includes(id));
   const published = outcomes.some((stage) =>
     stage.id === "validate" && stage.status === "success");
-  const failedRequired = outcomes.some((stage) =>
-    stage.required && stage.status === "failed");
+  const requiredUnfinished = outcomes.some((stage) =>
+    stage.required && stage.status !== "success");
   return {
     v: REPORT_VERSION,
-    status: published && !failedRequired ? "success" : "failed",
-    stages: outcomes.map(({ provider, ...stage }) => stage),
-    metrics,
+    status: wellFormed && published && !requiredUnfinished ? "success" : "failed",
+    stages: outcomes,
+    metrics: aggregateMetrics(outcomes),
   };
 }
 
@@ -116,7 +152,7 @@ function parseReport(raw) {
     v: REPORT_VERSION,
     status: "failed",
     stages: [stageOutcome({ id: "pipeline", status: "failed", required: true, reason })],
-    metrics: buildReport([]).metrics,
+    metrics: { ...UNKNOWN_METRICS },
   });
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     return unusable("the review pipeline returned no usable report");
@@ -124,13 +160,13 @@ function parseReport(raw) {
   if (parsed.v !== REPORT_VERSION) {
     return unusable("the review pipeline returned an unsupported report version");
   }
+  if (!Array.isArray(parsed.stages) || parsed.stages.length === 0) {
+    return unusable("the review pipeline reported no stages");
+  }
   const report = buildReport(parsed.stages);
-  // The `provider` flag does not survive the wire, so a stage whose usage was never measured looks
-  // measurable to the consumer. Honour the producer's own completeness flag, but only downwards:
-  // a producer can tell us it knows less than we inferred, never more.
+  // The producer's own completeness flag is honoured downwards: a report may know less than the
+  // stages suggest, never more.
   if (parsed.metrics?.tokens_complete === false) report.metrics.tokens_complete = false;
-  // A producer that says it failed is believed; a producer that says it succeeded still has to
-  // satisfy the same published-and-no-required-failure rule the pipeline applies.
   return parsed.status === "failed" ? { ...report, status: "failed" } : report;
 }
 
@@ -139,5 +175,6 @@ function stageIds(report) {
 }
 
 module.exports = {
-  REPORT_VERSION, buildReport, normalizeStageMetrics, parseReport, stageIds, stageOutcome,
+  MANDATORY_STAGES, REPORT_VERSION,
+  buildReport, normalizeStageMetrics, parseReport, stageIds, stageOutcome,
 };

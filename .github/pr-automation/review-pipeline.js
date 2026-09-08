@@ -63,7 +63,9 @@ function resolveRequiredReviewers({
 } = {}) {
   const selected = normalizeReviewerIds(selectedReviewers);
   if (!selected) return invalid("invalid specialist execution plan");
-  if (Array.isArray(requiredReviewers) && requiredReviewers.length > 0) {
+  if (requiredReviewers != null) {
+    if (!Array.isArray(requiredReviewers)) return invalid("invalid required reviewer list");
+    if (requiredReviewers.length === 0) return { ok: true, reviewers: [], source: "caller" };
     const required = normalizeReviewerIds(requiredReviewers);
     if (!required || required.some((reviewer, index) => reviewer !== requiredReviewers[index])) {
       return invalid("invalid required reviewer list");
@@ -127,21 +129,15 @@ function buildSpecialistAggregate({
   };
 }
 
-// A transient provider failure is worth one more attempt after a delay. Everything else is
-// settled, including exhausted output repair: the runtime already corrected inside the same
-// conversation, so repeating the request cannot help.
-const RETRYABLE_CATEGORIES = new Set([
-  "provider-timeout", "provider-connection", "provider-unavailable", "provider-transient",
-]);
-
-function isRetryableFailure(category) {
-  return RETRYABLE_CATEGORIES.has(category);
+// The runtime classifies its own failures and reports `retryable`. Re-deriving that here from
+// category names would silently diverge from it.
+function isRetryableFailure(retryable) {
+  return retryable === true || retryable === "true";
 }
 
 // The runtime reports measurements in one canonical diagnostics object, freshly built per
 // invocation. A stage that cannot read it reports every measurement as unavailable, never as zero.
-function parseDiagnostics(raw) {
-  const parsed = (() => {
+function parseDiagnostics(raw) {  const parsed = (() => {
     if (raw === null || raw === undefined || raw === "") return null;
     if (typeof raw !== "string") return raw;
     try {
@@ -187,7 +183,7 @@ function mergeDiagnostics(first, second) {
 }
 
 module.exports = {
-  RETRYABLE_CATEGORIES, SPECIALIST_ORDER,
+  SPECIALIST_ORDER,
   buildSpecialistAggregate, failedRun, isRetryableFailure, mergeDiagnostics, parseDiagnostics,
   resolveRequiredReviewers, validateSpecialistRun,
 };
