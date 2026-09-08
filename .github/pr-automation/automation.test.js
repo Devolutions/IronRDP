@@ -14,7 +14,7 @@ const {
 const { buildSpecialistAggregate, validateSpecialistRun } = require("./review-pipeline");
 const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
 const {
-  resolveClassificationState, resolveReviewState, reviewPolicyEligible, DUPLICATE_MARKER,
+  resolveClassificationState, resolveReviewState, reviewOutcome, reviewPolicyEligible, DUPLICATE_MARKER,
   CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERSIZED_MARKER, OVERSIZED_REVIEW_LABEL, contributorEligibility,
 } = require("./resolve-state");
@@ -109,6 +109,14 @@ test("reusable review keeps inherited secrets inside the trusted workflow", () =
 test("automatic review requires exact-head CI and only reruns after a later push", () => {
   const workflow = readWorkflow();
   const reviewGate = workflowJob(workflow, "review-gate");
+  const classifier = workflowJob(workflow, "classifier");
+  const reviewPipeline = workflowJob(workflow, "review-pipeline");
+  const classifierConfig = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "agents", "classifier.json"),
+    "utf8",
+  ));
+  assert.equal(classifierConfig.max_request_retries, 4);
+  assert.doesNotMatch(classifier, /max-request-retries:/);
   assert.match(reviewGate, /ref: headSha/);
   assert.match(reviewGate, /head_sha: headSha/);
   assert.match(reviewGate,
@@ -119,11 +127,29 @@ test("automatic review requires exact-head CI and only reruns after a later push
   assert.match(reviewGate,
     /ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible/);
   assert.match(workflowJob(workflow, "classification-gate"), /'ai-reviewed\/2'/);
-  assert.match(workflowJob(workflow, "review-pipeline"), /review-gate\.outputs\.eligible == 'true'/);
+  assert.match(reviewPipeline, /review-gate\.outputs\.eligible == 'true'/);
+  assert.match(reviewGate, /required-reviewers: \$\{\{ steps\.gate\.outputs\.required-reviewers \}\}/);
+  assert.match(reviewPipeline, /required-reviewers: \$\{\{ needs\.review-gate\.outputs\.required-reviewers \}\}/);
+  assert.match(reviewPipeline, /actions: read/);
+  assert.match(reviewPipeline, /checks: read/);
+  for (const retiredJob of [
+    "review-attempt-claim", "resolve-stage-recovery", "write-stage-recovery-pending",
+    "stage-recovery-delay", "review-recovery-preflight", "review-recovery-claim", "review-pipeline-recovery",
+  ]) assert.doesNotMatch(workflow, new RegExp(`  ${retiredJob}:`));
   const reviewState = workflowJob(workflow, "resolve-review-state");
+  assert.match(reviewState, /REVIEW_REPORT: \$\{\{ needs\.review-pipeline\.outputs\.report \}\}/);
+  assert.match(reviewState, /parseReport\(process\.env\.REVIEW_REPORT\)/);
+  assert.match(reviewState, /report\.status === "success" \? parse\(process\.env\.RAW_OUTPUT, null\) : null/);
+  assert.match(reviewState, /value === null \? "unavailable" : String\(value\)/);
+  assert.ok(
+    reviewState.indexOf("metrics.tokens === null") < reviewState.indexOf("metrics.tokens.input"),
+    "aggregate tokens are checked for null before their fields are rendered",
+  );
   assert.match(reviewState, /REVIEW_GATE_RESULT: \$\{\{ needs\.review-gate\.result \}\}/);
   assert.match(reviewState, /FORK_RATE_LIMIT_RESULT: \$\{\{ needs\.fork-rate-limit\.result \}\}/);
   assert.match(reviewState, /REVIEW_PIPELINE_RESULT: \$\{\{ needs\.review-pipeline\.result \}\}/);
+  assert.match(reviewState,
+    /SUMMARY_URL: \$\{\{ github\.server_url \}\}\/\$\{\{ github\.repository \}\}\/actions\/runs\/\$\{\{ github\.run_id \}\}/);
   assert.match(reviewState, /addHeading\("Automated review skipped"\)/);
 });
 
@@ -151,6 +177,17 @@ test("review skip summary lists every failed gate condition", () => {
     "The pull request requires a maintainer legitimacy decision.",
     "The contributor has 0 qualifying merged pull requests; at least one is required.",
   ]);
+});
+
+test("review outcome requires validated final output", () => {
+  assert.equal(reviewOutcome({
+    reportStatus: "success",
+    state: { failed: true, reason: "invalid final review" },
+    recovered: true,
+  }), "unavailable");
+  assert.equal(reviewOutcome({ reportStatus: "success", state: {}, recovered: true }), "recovered");
+  assert.equal(reviewOutcome({ reportStatus: "success", state: {}, recovered: false }), "complete");
+  assert.equal(reviewOutcome({ reportStatus: "failed", state: {}, recovered: true }), "unavailable");
 });
 
 test("review skip summary explains gate and quota failures", () => {

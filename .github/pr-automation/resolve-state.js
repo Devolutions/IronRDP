@@ -352,10 +352,15 @@ function resolveReviewState({
   };
 }
 
+function reviewOutcome({ reportStatus, state, recovered = false } = {}) {
+  if (reportStatus !== "success" || state?.failed === true) return "unavailable";
+  return recovered ? "recovered" : "complete";
+}
+
 module.exports = {
   AI_COUNTS, CONTRIBUTOR_INELIGIBLE_MARKER, DUPLICATE_MARKER, EVIDENCE_LIMIT_MARKER,
   FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERSIZED_REVIEW_LABEL, RISK, OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS,
   contributorEligibility, qualifyingMergedPrs, resolveClassificationState,
-  resolveReviewState, reviewPolicyEligible,
+  resolveReviewState, reviewOutcome, reviewPolicyEligible,
 };

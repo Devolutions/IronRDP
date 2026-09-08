@@ -53,11 +53,11 @@ Append `:question:` for questions, and show `:green_circle:` in the main comment
 
 ### Stage recovery
 
-- Schedule stage recovery for temporary failures, with delays and limits, without waiting for another PR or CI event.
+- Start a bounded pipeline that recovers transient stages within its invocation while retaining successful results.
+- A later workflow run starts a fresh recovery budget.
 - Keep all eligibility checks, resource limits, and stale-head protections in effect.
 - Never publish the same review twice, and count only published reviews toward the two-review limit.
-- Show whether stage recovery is pending, successful, or exhausted in the review check and workflow summary, with reasons for every stage failure.
-- Show per-stage review metrics and totals across attempts in the workflow summary, including failed runs and unavailable data.
+- Show the pipeline-reported recovery outcome, every failed-stage reason, and per-stage metrics including unavailable usage in the review check and workflow summary.
 - Link to the summary from the `AI automated review` check; keep metrics out of review comments.
 
 ## Activation policy

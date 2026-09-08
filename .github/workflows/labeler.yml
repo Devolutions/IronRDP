@@ -519,6 +519,7 @@ jobs:
       gate: ${{ steps.gate.outputs.gate }}
       eligible: ${{ steps.gate.outputs.eligible }}
       specialist-reviewers: ${{ steps.gate.outputs.specialist-reviewers }}
+      required-reviewers: ${{ steps.gate.outputs.required-reviewers }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -547,9 +548,13 @@ jobs:
             try { resolvedLabels = JSON.parse(process.env.LABELS || "[]"); } catch {}
             try { author = JSON.parse(process.env.AUTHOR || "null"); } catch {}
             const publish = (gate, eligible = gate.ok) => {
+              const requiredReviewers = (gate.specialistReviewers || []).filter((reviewer) =>
+                (reviewer === "protocol" && gate.protocolRelated === true) ||
+                (reviewer === "skeptical" && ["medium", "high"].includes(gate.risk)));
               core.setOutput("gate", JSON.stringify(gate));
               core.setOutput("eligible", eligible);
               core.setOutput("specialist-reviewers", JSON.stringify(gate.specialistReviewers || []));
+              core.setOutput("required-reviewers", JSON.stringify(requiredReviewers));
               core.info(JSON.stringify({
                 event: "pr-automation.review-gate",
                 decision: gate,
@@ -649,6 +654,8 @@ jobs:
       cancel-in-progress: false
       queue: max
     permissions:
+      actions: read
+      checks: read
       contents: read
       issues: read
       pull-requests: read
@@ -659,6 +666,7 @@ jobs:
       base-sha: ${{ needs.resolve-pr.outputs.base-sha }}
       gate: ${{ needs.review-gate.outputs.gate }}
       specialist-reviewers: ${{ needs.review-gate.outputs.specialist-reviewers }}
+      required-reviewers: ${{ needs.review-gate.outputs.required-reviewers }}
       evidence-max-bytes: ${{ needs.resolve-pr.outputs.evidence-max-bytes }}
     # Work around actions/runner#4453: environment secrets otherwise resolve empty in reusable jobs.
     # This exposes caller-accessible secrets, so the called workflow must remain trusted and not execute PR code.
@@ -684,20 +692,24 @@ jobs:
         uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
           GATE: ${{ needs.review-gate.outputs.gate }}
           REVIEW_GATE_RESULT: ${{ needs.review-gate.result }}
           FORK_RATE_LIMIT: ${{ needs.fork-rate-limit.outputs.quota }}
           FORK_RATE_LIMIT_RESULT: ${{ needs.fork-rate-limit.result }}
           RAW_OUTPUT: ${{ needs.review-pipeline.outputs.output }}
           REVIEWER_REASON: ${{ needs.review-pipeline.outputs.failure-reason }}
+          REVIEW_REPORT: ${{ needs.review-pipeline.outputs.report }}
           REVIEW_PIPELINE_RESULT: ${{ needs.review-pipeline.result }}
           FORCE: ${{ needs.resolve-pr.outputs.force }}
           LABELS: ${{ needs.resolve-pr.outputs.labels }}
           REVIEW_MARKER_ID: ${{ github.run_id }}
+          SUMMARY_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
           script: |
-             const { resolveReviewState } = require("./.github/pr-automation/resolve-state");
+             const { resolveReviewState, reviewOutcome } = require("./.github/pr-automation/resolve-state");
              const { reviewSkipReasons } = require("./.github/pr-automation/review-skip-summary");
+             const { parseReport, stageIds } = require("./.github/pr-automation/review-report");
              const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
              const force = process.env.FORCE === "true";
              const gate = parse(process.env.GATE, force ? {
@@ -705,14 +717,25 @@ jobs:
                labels: parse(process.env.LABELS, []), protocolRelated: false, risk: "unknown",
                specialistReviewers: ["skeptical", "code-compressor"], contributor: { status: "forced" },
              } : {});
+             const report = parseReport(process.env.REVIEW_REPORT);
+             const failures = report.stages.filter((stage) => stage.status === "failed");
+             const recovered = report.stages.filter((stage) => stage.attempts === 2);
+             const failureReasons = failures.map((stage) => `${stage.id}: ${stage.reason || stage.category}`);
+             const failedAttempts = report.stages.flatMap((stage) => [
+               ...(stage.previous_reason ? [`${stage.id} (first attempt): ${stage.previous_reason}`] : []),
+               ...(stage.status === "failed" ? [`${stage.id}: ${stage.reason || stage.category}`] : []),
+             ]);
+             const reviewerReason = report.status === "failed"
+               ? failureReasons.join("; ") || process.env.REVIEWER_REASON || "review pipeline failed"
+               : process.env.REVIEWER_REASON;
              const state = resolveReviewState({
                expectedSha: process.env.HEAD_SHA,
                labels: gate.labels ?? [],
                gate,
                contributor: gate.contributor ?? {},
                rateLimit: parse(process.env.FORK_RATE_LIMIT, {}),
-               reviewer: parse(process.env.RAW_OUTPUT, null),
-               reviewerReason: process.env.REVIEWER_REASON,
+               reviewer: report.status === "success" ? parse(process.env.RAW_OUTPUT, null) : null,
+               reviewerReason,
                force,
                reviewMarkerId: process.env.REVIEW_MARKER_ID,
              });
@@ -736,6 +759,66 @@ jobs:
                  .addHeading("Automated review skipped")
                  .addRaw("The automated review did not run because:", true)
                  .addList(reasons)
+                 .write();
+             } else {
+               const metrics = report.metrics;
+               const formatMetric = (value) => value === null ? "unavailable" : String(value);
+               const outcome = reviewOutcome({
+                 reportStatus: report.status, state, recovered: recovered.length > 0,
+               });
+               const title = {
+                 complete: "Automated review complete",
+                 recovered: "Automated review recovered",
+                 unavailable: "Automated review unavailable",
+               }[outcome];
+               const detail = state.failed === true ? state.reason || reviewerReason : reviewerReason;
+               if (state.check) {
+                 state.check.title = title;
+                 state.check.summary = `${outcome === "complete"
+                   ? "Validated automated review is bound to this commit."
+                   : outcome === "recovered"
+                     ? "Validated automated review was produced after stage recovery."
+                     : `Automated review is unavailable: ${detail || "review unavailable"}. Maintainer review is required.`}\n\n` +
+                   `[View the workflow summary](${process.env.SUMMARY_URL})`;
+                 state.check.conclusion = outcome === "unavailable" ? "neutral" : "success";
+                 core.setOutput("state", JSON.stringify(state));
+               }
+               await core.summary
+                 .addHeading("Automated review")
+                 .addRaw(`Review outcome: **${outcome}**.`, true)
+                 .addRaw(`Stages: ${stageIds(report).join(", ")}.`, true)
+                 .addHeading("Failed stage attempts")
+                 .addList(failedAttempts.length === 0
+                   ? ["No stage failure was reported."]
+                   : failedAttempts)
+                 .addHeading("Metrics")
+                 .addTable([
+                   [{ data: "Metric", header: true }, { data: "Total", header: true }],
+                   [{ data: "Tokens" }, {
+                     data: metrics.tokens === null ? "unavailable"
+                       : `${formatMetric(metrics.tokens.input)} input, ${formatMetric(metrics.tokens.output)} output, ` +
+                         `${formatMetric(metrics.tokens.total)} total${metrics.tokens_complete ? "" : " (incomplete)"}`,
+                   }],
+                   ...["elapsed_ms", "request_retries", "output_repairs", "stage_retries"].map((name) => [
+                     { data: name }, { data: formatMetric(metrics[name]) },
+                   ]),
+                 ])
+                 .addHeading("Per-stage metrics")
+                 .addTable([
+                   [{ data: "Stage", header: true }, { data: "Status", header: true },
+                     { data: "Attempts", header: true }, { data: "Tokens", header: true },
+                     { data: "Elapsed (ms)", header: true }, { data: "Request retries", header: true },
+                     { data: "Output repairs", header: true }],
+                   ...report.stages.map((stage) => [
+                     { data: stage.id }, { data: stage.status }, { data: String(stage.attempts) },
+                     { data: stage.metrics.tokens === null ? "unavailable"
+                       : `${stage.metrics.tokens.input}/${stage.metrics.tokens.output}/${stage.metrics.tokens.total}` +
+                         (stage.metrics.tokens.complete ? "" : " (incomplete)") },
+                     { data: stage.metrics.elapsed_ms === null ? "unavailable" : String(stage.metrics.elapsed_ms) },
+                     { data: stage.metrics.request_retries === null ? "unavailable" : String(stage.metrics.request_retries) },
+                     { data: stage.metrics.output_repairs === null ? "unavailable" : String(stage.metrics.output_repairs) },
+                   ]),
+                 ])
                  .write();
              }
 
