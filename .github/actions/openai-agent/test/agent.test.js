@@ -306,6 +306,75 @@ test("validator-directed repair preserves the previous candidate and may make bo
   assert.equal(requests[2].messages.at(-1).role, "tool");
 });
 
+test("validator preserves the earliest parsed candidate through invalid repairs", async () => {
+  const observed = [];
+  const reviewSchema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["summary", "findings"],
+    properties: {
+      summary: { type: "string" },
+      findings: { type: "array" },
+    },
+  };
+  const result = await runAgent({
+    client: clientFrom([
+      message('{"summary":"original","findings":["preserve"],"unexpected":true}'),
+      message('{"findings":[]}'),
+      message('{"summary":"complete","findings":[]}'),
+    ]),
+    config: { ...baseConfig, max_turns: 4, max_tool_calls: 0, max_output_repair_attempts: 2 },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema: reviewSchema,
+    validator: async (candidate, context) => {
+      observed.push({ candidate, ...context });
+      return { ok: true };
+    },
+  });
+
+  assert.equal(result.output, '{"summary":"complete","findings":[]}');
+  assert.deepEqual(observed, [{
+    candidate: { summary: "complete", findings: [] },
+    previousCandidate: { summary: "original", findings: ["preserve"], unexpected: true },
+    repairAttempt: 2,
+  }]);
+});
+
+test("validator retains falsy parsed candidates as repair baselines", async () => {
+  for (const [first, second, expected] of [
+    ["0", "false", 0],
+    ["false", "[]", false],
+    ["null", "[]", null],
+    ["[]", "false", []],
+  ]) {
+    const observed = [];
+    await runAgent({
+      client: clientFrom([
+        message("not JSON"),
+        message(first),
+        message(second),
+        message('{"answer":"complete"}'),
+      ]),
+      config: { ...baseConfig, max_turns: 5, max_tool_calls: 0, max_output_repair_attempts: 3 },
+      methodologies: [],
+      prompt: "p",
+      sandbox,
+      schema,
+      validator: async (candidate, context) => {
+        observed.push({ candidate, ...context });
+        return { ok: true };
+      },
+    });
+    assert.deepEqual(observed, [{
+      candidate: { answer: "complete" },
+      previousCandidate: expected,
+      repairAttempt: 3,
+    }]);
+  }
+});
+
 test("validator execution failures are terminal and strict output is opt-in", async () => {
   const terminal = new Error("validation context is stale");
   terminal.code = "VALIDATOR_TERMINAL";

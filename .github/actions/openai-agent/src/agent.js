@@ -159,7 +159,7 @@ function compileOutputValidator(schema, maximumBytes = MAX_MODEL_OUTPUT_BYTES) {
           return `${error.schemaPath || "/"}: ${error.keyword}${detail}`;
         })
         .join("; ");
-      return { ok: false, reason: `response did not match the schema: ${errors}` };
+      return { ok: false, reason: `response did not match the schema: ${errors}`, value };
     }
     const output = JSON.stringify(value);
     if (Buffer.byteLength(output, "utf8") > maximumBytes) {
@@ -197,6 +197,7 @@ async function runAgent({
     providerCalls: 0,
     toolCalls: 0,
     outputRepairs: 0,
+    hasPreviousCandidate: false,
     previousCandidate: null,
   };
 
@@ -319,7 +320,13 @@ async function runAgent({
 
   async function validateCandidate(raw) {
     const candidate = validateOutput(raw);
-    if (!candidate.ok) return { ...candidate, kind: "output" };
+    if (!candidate.ok) {
+      if (validator && !state.hasPreviousCandidate && Object.hasOwn(candidate, "value")) {
+        state.previousCandidate = candidate.value;
+        state.hasPreviousCandidate = true;
+      }
+      return { ...candidate, kind: "output" };
+    }
     if (!validator) return candidate;
     const previousCandidate = state.previousCandidate;
     let validation;
@@ -333,7 +340,10 @@ async function runAgent({
         category: error.category || "validator-error", state,
       });
     }
-    state.previousCandidate = candidate.value;
+    if (!state.hasPreviousCandidate) {
+      state.previousCandidate = candidate.value;
+      state.hasPreviousCandidate = true;
+    }
     return validation.ok ? candidate : { ok: false, kind: "validator", reason: validation.reason };
   }
 
