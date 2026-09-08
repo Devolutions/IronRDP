@@ -2909,7 +2909,7 @@ test("the mandatory reviewer set is resolved once and read everywhere else", () 
   const scoped = jobs.slice(jobs.indexOf("\njobs:"));
   const evidence = workflowJob(scoped, "evidence");
 
-  // One interpretation, taken before any evidence work, so an unusable plan fails closed early.
+  // One interpretation, taken before any provider work, so an unusable plan fails closed early.
   assert.match(evidence, /resolveRequiredReviewers/, "evidence must resolve the required set");
   assert.match(evidence, /if \(!resolved\.ok\) throw new Error/);
   assert.ok(evidence.indexOf("id: plan") < evidence.indexOf("Fetch bounded review"),
@@ -2976,7 +2976,7 @@ test("the review plan keeps the gate fallback for a caller that sends no require
   assert.deepEqual(await planned({ ...base, REQUIRED_REVIEWERS: JSON.stringify(["protocol"]) }),
     ["protocol"]);
 
-  // A plan that cannot be resolved stops the run before any evidence work is spent.
+  // A plan that cannot be resolved stops the run before any provider request is spent.
   const unresolved = await runFirstStepScript("evidence", {
     ...base, REQUIRED_REVIEWERS: JSON.stringify(["unknown-reviewer"]),
   }).then(() => null, (error) => error);
