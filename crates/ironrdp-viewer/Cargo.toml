@@ -14,7 +14,6 @@ default-run = "ironrdp-viewer"
 
 [lib]
 doctest = false
-test = false
 
 [[bin]]
 name = "ironrdp-viewer"

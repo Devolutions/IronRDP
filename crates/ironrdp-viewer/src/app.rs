@@ -16,9 +16,10 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, PhysicalSize};
 use winit::event::{self, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::platform::scancode::PhysicalKeyExtScancode as _;
+use winit::keyboard::PhysicalKey;
 use winit::window::{CursorIcon, CustomCursor, Window, WindowAttributes};
+
+use crate::keymap::{is_modifier, map_key_code};
 
 type WindowSurface = (Arc<Window>, softbuffer::Surface<DisplayHandle<'static>, Arc<Window>>);
 
@@ -287,45 +288,22 @@ impl RpcApp {
             // TODO(#376): Implement unicode input in native client
             // }
             WindowEvent::KeyboardInput { event, .. } => {
-                // `winit` scan codes are platform-specific, but RDP expects PC/AT set-1 scan codes.
-                // Override the navigation keys reported in #535 before using the existing fallback.
-                let mapped_scancode = match event.physical_key {
-                    // `ModifiersChanged` is authoritative for these keys.
-                    PhysicalKey::Code(
-                        KeyCode::ShiftLeft
-                        | KeyCode::ShiftRight
-                        | KeyCode::ControlLeft
-                        | KeyCode::ControlRight
-                        | KeyCode::AltLeft
-                        | KeyCode::AltRight
-                        | KeyCode::SuperLeft
-                        | KeyCode::SuperRight,
-                    ) => return,
-                    PhysicalKey::Code(KeyCode::Home) => Some(ironrdp::input::Scancode::from_u8(true, 0x47)),
-                    PhysicalKey::Code(KeyCode::ArrowUp) => Some(ironrdp::input::Scancode::from_u8(true, 0x48)),
-                    PhysicalKey::Code(KeyCode::PageUp) => Some(ironrdp::input::Scancode::from_u8(true, 0x49)),
-                    PhysicalKey::Code(KeyCode::ArrowLeft) => Some(ironrdp::input::Scancode::from_u8(true, 0x4B)),
-                    PhysicalKey::Code(KeyCode::ArrowRight) => Some(ironrdp::input::Scancode::from_u8(true, 0x4D)),
-                    PhysicalKey::Code(KeyCode::End) => Some(ironrdp::input::Scancode::from_u8(true, 0x4F)),
-                    PhysicalKey::Code(KeyCode::ArrowDown) => Some(ironrdp::input::Scancode::from_u8(true, 0x50)),
-                    PhysicalKey::Code(KeyCode::PageDown) => Some(ironrdp::input::Scancode::from_u8(true, 0x51)),
-                    PhysicalKey::Code(KeyCode::Insert) => Some(ironrdp::input::Scancode::from_u8(true, 0x52)),
-                    PhysicalKey::Code(KeyCode::Delete) => Some(ironrdp::input::Scancode::from_u8(true, 0x53)),
-                    _ => None,
+                let key_code = match event.physical_key {
+                    PhysicalKey::Code(key_code) => key_code,
+                    PhysicalKey::Unidentified(native_key_code) => {
+                        warn!(?native_key_code, "Unsupported physical key; ignored");
+                        return;
+                    }
                 };
 
-                let scancode = if let Some(scancode) = mapped_scancode {
-                    scancode
-                } else {
-                    let Some(scancode) = event.physical_key.to_scancode() else {
-                        return;
-                    };
-                    let Ok(scancode) = u16::try_from(scancode) else {
-                        warn!("Unsupported scancode: `{scancode:#X}`; ignored");
-                        return;
-                    };
+                // `ModifiersChanged` is authoritative for these keys.
+                if is_modifier(key_code) {
+                    return;
+                }
 
-                    ironrdp::input::Scancode::from_u16(scancode)
+                let Some(scancode) = map_key_code(key_code) else {
+                    warn!(?key_code, "Unsupported physical key; ignored");
+                    return;
                 };
 
                 let operation = match event.state {

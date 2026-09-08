@@ -6,6 +6,11 @@ This is a a full-fledged RDP client based on IronRDP crates suite, and implement
 non-blocking, asynchronous I/O. Portability is achieved by using softbuffer for rendering
 and winit for windowing.
 
+## Keyboard input
+
+The native viewer translates supported winit physical keys to PC/AT set-1 scancodes before sending RDP, rather than forwarding platform-native scancodes.
+Pause is ignored because RDP requires a four-event sequence with `EXTENDED1`, which the viewer's ordinary key-event path cannot represent.
+
 ## Prebuilt binaries
 
 Prebuilt, checksummed archives are attached to each GitHub Release under the `ironrdp-viewer-v*`
