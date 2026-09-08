@@ -118,7 +118,12 @@ test("automatic review requires exact-head CI and only reruns after a later push
   const initialClaim = workflowJob(workflow, "review-attempt-claim");
   const initialPipeline = workflowJob(workflow, "review-pipeline");
   const recoveryPipeline = workflowJob(workflow, "review-pipeline-recovery");
-  assert.match(classifier, /max-request-retries: 4/);
+  const classifierConfig = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "agents", "classifier.json"),
+    "utf8",
+  ));
+  assert.equal(classifierConfig.max_request_retries, 4);
+  assert.doesNotMatch(classifier, /max-request-retries:/);
   assert.match(reviewGate, /PREVIOUS_SCHEMA_VERSION/);
   assert.match(reviewGate, /ref: headSha/);
   assert.match(reviewGate, /head_sha: headSha/);
