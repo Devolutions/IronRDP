@@ -3,6 +3,8 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+const { createRequire } = require("node:module");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { SIZE_LABELS, addedLinesByPath, analyzeFiles, parseLabelerRules } = require("./deterministic-analysis");
@@ -82,6 +84,50 @@ function readReviewWorkflow(githubDirectory = path.join(__dirname, "..")) {
     .replace(/\r\n/g, "\n");
 }
 
+function resolveReviewScript(workflow = readWorkflow()) {
+  const job = workflowJob(workflow, "resolve-review-state");
+  const match = job.match(/script: \|\n((?: {13}.*\n?)+)/);
+  assert.ok(match, "resolve-review-state script is missing");
+  return match[1].replace(/^ {13}/gm, "");
+}
+
+async function runResolveReviewScript({ report, pipelineResult = "success" }) {
+  const outputs = new Map();
+  const summary = [];
+  const core = {
+    setOutput: (name, value) => outputs.set(name, value),
+    info: () => {},
+    summary: {
+      addHeading: () => core.summary,
+      addRaw: (value) => { summary.push(value); return core.summary; },
+      addList: () => core.summary,
+      write: async () => {},
+    },
+  };
+  const rootRequire = createRequire(path.join(__dirname, "..", "..", "labeler.js"));
+  const reportModule = path.join(__dirname, "review-report.js");
+  const requireWithReport = (name) => name === "./.github/pr-automation/review-report"
+    ? fs.existsSync(reportModule) ? rootRequire(name) : { parseReport: () => report }
+    : rootRequire(name);
+  const process = { env: {
+    HEAD_SHA: SHA, BASE_SHA: "c".repeat(40),
+    GATE: JSON.stringify({
+      ok: true, head_sha: SHA, labels: ["risk/low"], classificationCheck: true, ciGreen: true,
+      protocolRelated: false, risk: "low",
+      specialistReviewers: [], contributor: { status: "eligible" },
+    }),
+    REVIEW_GATE_RESULT: "success", FORK_RATE_LIMIT: JSON.stringify({ status: "allowed" }),
+    FORK_RATE_LIMIT_RESULT: "success", RAW_OUTPUT: JSON.stringify(review({ findings: [] })),
+    REVIEWER_REASON: "", REVIEW_REPORT: JSON.stringify(report), REVIEW_PIPELINE_RESULT: pipelineResult,
+    FORCE: "false", LABELS: JSON.stringify(["risk/low"]), REVIEW_MARKER_ID: "123",
+    SUMMARY_URL: "https://github.example/actions/runs/123",
+  } };
+  await new AsyncFunction("core", "require", "process", resolveReviewScript())(
+    core, requireWithReport, process,
+  );
+  return { state: JSON.parse(outputs.get("state")), summary: summary.join("\n") };
+}
+
 test("reusable review keeps inherited secrets inside the trusted workflow", () => {
   const caller = workflowJob(readWorkflow(), "review-pipeline");
   const reviewWorkflow = readReviewWorkflow();
@@ -140,11 +186,7 @@ test("automatic review requires exact-head CI and only reruns after a later push
   assert.match(reviewState, /REVIEW_REPORT: \$\{\{ needs\.review-pipeline\.outputs\.report \}\}/);
   assert.match(reviewState, /parseReport\(process\.env\.REVIEW_REPORT\)/);
   assert.match(reviewState, /report\.status === "success" \? parse\(process\.env\.RAW_OUTPUT, null\) : null/);
-  assert.match(reviewState, /value === null \? "unavailable" : String\(value\)/);
-  assert.ok(
-    reviewState.indexOf("metrics.tokens === null") < reviewState.indexOf("metrics.tokens.input"),
-    "aggregate tokens are checked for null before their fields are rendered",
-  );
+  assert.match(reviewState, /renderReviewReport/);
   assert.match(reviewState, /REVIEW_GATE_RESULT: \$\{\{ needs\.review-gate\.result \}\}/);
   assert.match(reviewState, /FORK_RATE_LIMIT_RESULT: \$\{\{ needs\.fork-rate-limit\.result \}\}/);
   assert.match(reviewState, /REVIEW_PIPELINE_RESULT: \$\{\{ needs\.review-pipeline\.result \}\}/);
@@ -188,6 +230,88 @@ test("review outcome requires validated final output", () => {
   assert.equal(reviewOutcome({ reportStatus: "success", state: {}, recovered: true }), "recovered");
   assert.equal(reviewOutcome({ reportStatus: "success", state: {}, recovered: false }), "complete");
   assert.equal(reviewOutcome({ reportStatus: "failed", state: {}, recovered: true }), "unavailable");
+});
+
+test("resolve review state renders bounded recovery diagnostics in the check and summary", async () => {
+  const stages = [
+    {
+      id: "evidence", status: "success", attempts: 1,
+      metrics: { tokens: null, elapsed_ms: 0, request_retries: null, output_repairs: null },
+    },
+    {
+      id: "general", status: "success", attempts: 2,
+      previous_reason: "retry declined | malformed <payload>",
+      metrics: {
+        tokens: { input: 0, output: 4, complete: false },
+        elapsed_ms: 0, request_retries: 0, output_repairs: 0,
+      },
+    },
+    {
+      id: "validate", status: "success", attempts: 1,
+      metrics: { tokens: null, elapsed_ms: null, request_retries: null, output_repairs: null },
+    },
+  ];
+  const recovered = await runResolveReviewScript({
+    report: {
+      v: 1, status: "success", stages: [
+        ...stages.slice(0, 2),
+        {
+          id: "aggregate", status: "success", attempts: 1,
+          metrics: { tokens: null, elapsed_ms: 0, request_retries: null, output_repairs: null },
+        },
+        stages[2],
+      ],
+      metrics: {
+        tokens: { input: 0, output: 4 }, tokens_complete: false,
+        elapsed_ms: 0, request_retries: 0, output_repairs: 0, stage_retries: 1,
+      },
+    },
+  });
+  assert.match(recovered.state.check.summary, /Validated automated review was produced after stage recovery/);
+  assert.match(recovered.state.check.summary, /retry declined \\| malformed &lt;payload&gt;/);
+  assert.match(recovered.state.check.summary, /0\/4\/(?:unknown|unavailable) \\\(partial\\\)/);
+  assert.match(recovered.state.check.summary, /\| 0 \|/);
+  assert.match(recovered.state.check.summary, /unavailable/);
+  assert.match(recovered.state.check.summary, /View the workflow summary/);
+  assert.equal(recovered.state.check.conclusion, "success");
+  assert.match(recovered.summary, /retry declined \\| malformed &lt;payload&gt;/);
+  assert.match(recovered.summary, /Per-stage metrics/);
+
+  const terminal = await runResolveReviewScript({
+    report: {
+      v: 1, status: "failed",
+      stages: [{
+        id: "protocol", status: "failed", attempts: 2, reason: "provider unavailable",
+        category: "retry-declined", metrics: {
+          tokens: null, elapsed_ms: null, request_retries: null, output_repairs: null,
+        },
+      }],
+      metrics: {
+        tokens: null, tokens_complete: false, elapsed_ms: null, request_retries: null,
+        output_repairs: null, stage_retries: 1,
+      },
+    },
+  });
+  assert.match(terminal.state.check.summary, /provider unavailable/);
+  assert.match(terminal.state.check.summary, /retry-declined/);
+  assert.match(terminal.state.check.summary, /unavailable/);
+  assert.equal(terminal.state.check.conclusion, "neutral");
+
+  const missing = await runResolveReviewScript({
+    report: {
+      v: 1, status: "failed",
+      stages: [{
+        id: "pipeline", status: "failed", attempts: 1, reason: "no usable report",
+        metrics: { tokens: null, elapsed_ms: null, request_retries: null, output_repairs: null },
+      }],
+      metrics: {
+        tokens: null, tokens_complete: false, elapsed_ms: null, request_retries: null,
+        output_repairs: null, stage_retries: null,
+      },
+    },
+  });
+  assert.match(missing.state.check.summary, /no usable report/);
+  assert.match(missing.state.check.summary, /unavailable/);
 });
 
 test("review skip summary explains gate and quota failures", () => {
