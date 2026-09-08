@@ -624,6 +624,47 @@ test("real SDK preserves timeout body-consumption duration", async () => {
   assert.equal(metrics.snapshot().providerAttempts[0].durationMs >= 20, true);
 });
 
+test("real SDK bounds stalled non-success response bodies", async () => {
+  for (const [status, category, retryable] of [
+    [503, "provider-service", true],
+    [429, "provider-rate-limit", true],
+    [401, "provider-credential", false],
+  ]) {
+    const metrics = new RuntimeMetrics();
+    let calls = 0;
+    const client = createProviderClient(OpenAI, {
+      apiKey: "test-key",
+      baseURL: "https://provider.example/v1",
+      maxRetries: 0,
+      timeout: 25,
+    }, metrics, async (_url, options) => {
+      calls++;
+      return new Response(new ReadableStream({
+        start(controller) {
+          options.signal.addEventListener("abort", () => controller.error(options.signal.reason));
+        },
+      }), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const started = Date.now();
+    await assert.rejects(
+      runAgent({
+        client, config: baseConfig, methodologies: [], prompt: "p", sandbox, schema, metrics,
+      }),
+      (error) => error instanceof AgentFailure && error.category === category &&
+        error.retryable === retryable && error.turnCount === 1,
+    );
+    assert.equal(Date.now() - started < 200, true);
+    assert.equal(calls, 1);
+    const attempt = metrics.snapshot().providerAttempts[0];
+    assert.equal(attempt.status, status);
+    assert.equal(attempt.durationMs >= 25, true);
+  }
+});
+
 test("provider diagnostics expose only bounded status and request IDs", () => {
   assert.deepEqual(providerFailureDiagnostic({
     status: 403,

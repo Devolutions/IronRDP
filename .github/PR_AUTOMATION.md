@@ -78,7 +78,7 @@ The caller can opt into a trusted validator from the workflow checkout and pass 
 The action validates JSON and schema before the validator, then preserves the conversation for bounded correction turns.
 For validator checks, `previousCandidate` is the earliest JSON-parsed candidate in the repair sequence, including a value that did not pass local schema and may be any JSON type.
 Validator-directed corrections may use only necessary bounded read-only evidence lookup, while invalid output remains terminal after its configured repair budget.
-The SDK adapter owns retries of the same request within its single configured retry budget, suppresses retries for known exhausted-quota responses, and bounds valid `Retry-After` delays by the configured request timeout.
+The SDK adapter owns retries of the same request within its single configured retry budget, suppresses retries for known exhausted-quota responses, and bounds valid `Retry-After` delays and non-success response bodies by the configured request timeout.
 A known response-body transport failure that escapes SDK retries is categorized as a stage-recoverable connection failure.
 Strict provider JSON Schema mode is opt-in only for a configured supported endpoint; local validation always remains enforced.
 It reports safe activity, per-attempt duration, retry and repair counts, finish reason, available token usage with completeness state, and machine-readable terminal or transient failure categories through one diagnostics output.

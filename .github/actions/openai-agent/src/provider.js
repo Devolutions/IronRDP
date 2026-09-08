@@ -54,6 +54,8 @@ class RuntimeMetrics {
 
   finishAttempt(attempt) {
     if (!attempt || attempt.durationMs !== undefined) return;
+    if (attempt.deadline !== undefined) clearTimeout(attempt.deadline);
+    attempt.removeAbortListener?.();
     attempt.durationMs = Math.max(0, this.now() - attempt.startedAt);
   }
 
@@ -111,9 +113,22 @@ class RuntimeMetrics {
 function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis.fetch, sleep = delay) {
   const instrumentedFetch = async (...args) => {
     const attempt = metrics.beginAttempt(options.timeout);
+    const [url, requestOptions = {}] = args;
+    const controller = new AbortController();
+    const parentSignal = requestOptions.signal;
+    const abort = () => controller.abort();
+    if (parentSignal?.aborted) {
+      abort();
+    } else {
+      parentSignal?.addEventListener("abort", abort, { once: true });
+      attempt.removeAbortListener = () => parentSignal?.removeEventListener("abort", abort);
+    }
     try {
-      const response = await fetch(...args);
+      const response = await fetch(url, { ...requestOptions, signal: controller.signal });
       metrics.observeResponse(attempt, response);
+      if (!response.ok) {
+        attempt.deadline = setTimeout(abort, metrics.remainingAttemptTimeout(attempt));
+      }
       return response;
     } catch (error) {
       metrics.finishAttempt(attempt);
