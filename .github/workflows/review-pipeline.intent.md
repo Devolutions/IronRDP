@@ -31,7 +31,8 @@ Stage recovery happens within one workflow invocation and keeps the results of s
 
 - Retry a stage once, after a delay, when the provider fails transiently.
 - Recheck the head and review prerequisites before a delayed retry.
-- Supply a review-specific validator and let the action handle bounded output repair.
+- Produce schema-conforming output with minimal, bounded repair and review-specific semantic validation.
+- Report each rejected output attempt's validation reason with bounded, sanitized diagnostics.
 - Never discard findings during output repair; fail the stage if repair cannot produce valid output.
 
 Reusing results across workflow runs is not required.
@@ -40,12 +41,12 @@ A later run starts fresh.
 ### Outputs
 
 - Return a validated general review only when every required specialist succeeds.
-- Return every failed stage and its reason to the caller.
+- Return every stage's outcome and failure reason, distinguishing reduced coverage from full completion.
 
-Return per-stage metrics, including failed attempts and marking unavailable data:
+Return metrics only for LLM-powered stages, including failed attempts and marking unavailable data:
 
-- Token usage.
-- Elapsed time.
+- Clearly labeled input, output, and total token usage, accumulated across requests.
+- Elapsed time in seconds; label summed durations as cumulative rather than wall-clock time.
 - Request-retry count.
 - Output-repair count.
 - Stage-recovery count.
