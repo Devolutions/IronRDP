@@ -12,11 +12,12 @@ const { scratchWorkspace, write } = require("./helpers");
 test("action metadata exposes only configured inputs and required outputs on node24", () => {
   const action = fs.readFileSync(path.join(__dirname, "..", "action.yml"), "utf8");
   assert.match(action, /runs:\r?\n  using: node24\r?\n  main: dist\/index\.js/);
-  for (const input of ["api-key", "base-url", "config-file"]) {
+  for (const input of ["api-key", "base-url", "config-file", "validator", "validator-metadata"]) {
     assert.match(action, new RegExp(`^  ${input}:\\r?$`, "m"));
   }
   for (const output of [
-    "structured-output", "failure-reason", "turn-count", "tool-call-count",
+    "structured-output", "failure-reason", "turn-count", "tool-call-count", "diagnostics",
+    "failure-category", "retryable",
   ]) {
     assert.match(action, new RegExp(`^  ${output}:\\r?$`, "m"));
   }
@@ -127,6 +128,65 @@ test("main masks the key immediately, rejects redirects, and emits only bounded 
   }
 });
 
+test("configuration supplies recovery limits and canonical diagnostics", async () => {
+  const workspace = actionFixture();
+  write(workspace.directory, "config.json", JSON.stringify({
+    id: "safe-id",
+    model: "safe-model",
+    prompt_file: "prompt.md",
+    schema_file: "schema.json",
+    methodology_files: [],
+    allowed_roots: ["evidence"],
+    allowed_files: [],
+    max_output_bytes: 2048,
+    max_turns: 4,
+    max_tool_calls: 1,
+    request_timeout_ms: 90_000,
+    max_request_retries: 4,
+    max_output_repair_attempts: 2,
+  }));
+  const core = mockCore({
+    "api-key": "key",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+  });
+  let options;
+  class MockOpenAI {
+    constructor(received) {
+      options = received;
+      this.chat = { completions: { create: async () => ({
+        choices: [{ message: { content: '{"answer":"ok"}' } }],
+      }) } };
+    }
+  }
+  try {
+    await main(core, { GITHUB_WORKSPACE: workspace.directory }, MockOpenAI);
+    assert.equal(options.timeout, 90_000);
+    assert.equal(options.maxRetries, 4);
+    assert.equal(core.outputs.get("turn-count"), "1");
+    assert.equal(core.outputs.get("failure-category"), "");
+    assert.equal(core.outputs.get("retryable"), "false");
+    const diagnostics = JSON.parse(core.outputs.get("diagnostics"));
+    assert.equal(Number.isSafeInteger(diagnostics.durationMs), true);
+    assert.equal(diagnostics.durationMs >= 0, true);
+    assert.deepEqual({ ...diagnostics, durationMs: 0 }, {
+      activity: "investigating",
+      durationMs: 0,
+      requestRetryCount: 0,
+      outputRepairCount: 0,
+      providerFinishReason: null,
+      tokenUsage: { complete: false, knownAttemptCount: 0, unknownAttemptCount: 0 },
+      turnCount: 1,
+      toolCallCount: 0,
+      failureCategory: null,
+      retryable: false,
+      providerAttempts: [],
+    });
+  } finally {
+    workspace.cleanup();
+  }
+});
+
 test("main repairs a final response with no text", async () => {
   const workspace = actionFixture();
   const core = mockCore({
@@ -142,7 +202,7 @@ test("main repairs a final response with no text", async () => {
   class EmptyResponseOpenAI {
     constructor() {
       this.chat = { completions: { create: async (request) => {
-        requests.push(request);
+        requests.push(structuredClone(request));
         return responses.shift();
       } } };
     }
@@ -195,6 +255,8 @@ test("main never logs or outputs raw provider errors", async () => {
       {
         event: "openai-agent.provider-failure",
         reason: "provider credential rejected",
+        category: "provider-credential",
+        retryable: false,
         status: 401,
       },
     );
@@ -231,6 +293,8 @@ test("main emits a bounded provider request ID without raw errors", async () => 
       {
         event: "openai-agent.provider-failure",
         reason: "provider access forbidden",
+        category: "provider-access",
+        retryable: false,
         status: 403,
         requestId: "req_safe-123",
       },
@@ -249,9 +313,9 @@ test("main distinguishes provider quota and service failures", async () => {
     "config-file": "config.json",
   };
   try {
-    for (const [status, reason] of [
-      [429, "provider rate or quota limit reached"],
-      [503, "provider service unavailable"],
+    for (const [status, reason, category, retryable] of [
+      [429, "provider rate limit reached", "provider-rate-limit", true],
+      [503, "provider service unavailable", "provider-service", true],
     ]) {
       const core = mockCore(inputs);
       class FailingOpenAI {
@@ -266,7 +330,7 @@ test("main distinguishes provider quota and service failures", async () => {
       assert.deepEqual(
         core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
           .find((event) => event.event === "openai-agent.provider-failure"),
-        { event: "openai-agent.provider-failure", reason, status },
+        { event: "openai-agent.provider-failure", reason, category, retryable, status },
       );
       assert.doesNotMatch(JSON.stringify(
         core.events.filter((event) => event[0] !== "secret"),
@@ -285,17 +349,17 @@ test("main safely distinguishes provider transport failures", async () => {
     "config-file": "config.json",
   };
   try {
-    for (const [error, reason] of [
+    for (const [error, reason, category] of [
       [
         new APIConnectionTimeoutError({ message: "RAW_TIMEOUT_SECRET_SENTINEL" }),
-        "provider request timed out",
+        "provider request timed out", "provider-timeout",
       ],
       [
         new APIConnectionError({
           message: "RAW_CONNECTION_SECRET_SENTINEL",
           cause: new Error("RAW_CAUSE_SECRET_SENTINEL"),
         }),
-        "provider connection failed",
+        "provider connection failed", "provider-connection",
       ],
     ]) {
       const core = mockCore(inputs);
@@ -309,7 +373,7 @@ test("main safely distinguishes provider transport failures", async () => {
       assert.deepEqual(
         core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
           .find((event) => event.event === "openai-agent.provider-failure"),
-        { event: "openai-agent.provider-failure", reason },
+        { event: "openai-agent.provider-failure", reason, category, retryable: true },
       );
       assert.doesNotMatch(
         JSON.stringify(core.events.filter((event) => event[0] !== "secret")),
@@ -337,7 +401,7 @@ test("main reports why repaired output remains invalid", async () => {
       this.chat = { completions: { create: async () => responses.shift() } };
     }
   }
-  const reason = "repair response was invalid: response was not valid JSON";
+  const reason = "output remained invalid after the repair limit";
   try {
     await main(core, { GITHUB_WORKSPACE: workspace.directory }, InvalidRepairOpenAI);
     assert.equal(core.outputs.get("structured-output"), "");
@@ -350,7 +414,13 @@ test("main reports why repaired output remains invalid", async () => {
     assert.deepEqual(
       core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
         .find((event) => event.event === "openai-agent.failure"),
-      { event: "openai-agent.failure", phase: "runtime", reason },
+      {
+        event: "openai-agent.failure",
+        phase: "runtime",
+        reason,
+        category: "output-invalid",
+        retryable: false,
+      },
     );
   } finally {
     workspace.cleanup();
@@ -378,7 +448,13 @@ test("main reports configuration failures without constructing a provider client
     assert.deepEqual(
       core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
         .find((event) => event.event === "openai-agent.failure"),
-      { event: "openai-agent.failure", phase: "configuration", reason: "invalid path" },
+      {
+        event: "openai-agent.failure",
+        phase: "configuration",
+        reason: "invalid path",
+        category: "configuration",
+        retryable: false,
+      },
     );
   } finally {
     workspace.cleanup();
@@ -410,7 +486,13 @@ test("main reports each missing input without constructing a provider client", a
       assert.deepEqual(
         core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
           .find((event) => event.event === "openai-agent.failure"),
-        { event: "openai-agent.failure", phase: "input", reason },
+        {
+          event: "openai-agent.failure",
+          phase: "input",
+          reason,
+          category: "input",
+          retryable: false,
+        },
       );
     }
   } finally {
@@ -437,6 +519,8 @@ test("main reports workspace and provider client initialization failures safely"
         event: "openai-agent.failure",
         phase: "configuration",
         reason: "workspace is unavailable",
+        category: "configuration",
+        retryable: false,
       },
     );
 
@@ -459,6 +543,8 @@ test("main reports workspace and provider client initialization failures safely"
         event: "openai-agent.failure",
         phase: "initialization",
         reason: "provider client initialization failed",
+        category: "configuration",
+        retryable: false,
       },
     );
     assert.doesNotMatch(

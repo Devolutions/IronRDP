@@ -11,6 +11,14 @@ inputs:
   config-file:
     description: Workflow-controlled action configuration relative to the workspace
     required: true
+  validator:
+    description: Trusted workflow validator module selector in path#export form
+    required: false
+    default: ""
+  validator-metadata:
+    description: Trusted JSON object passed opaquely to the selected validator
+    required: false
+    default: ""
 
 outputs:
   structured-output:
@@ -21,6 +29,12 @@ outputs:
     description: Number of model turns attempted, excluding SDK retries
   tool-call-count:
     description: Number of model tool calls processed
+  diagnostics:
+    description: Canonical bounded JSON runtime diagnostics
+  failure-category:
+    description: Machine-readable failure category
+  retryable:
+    description: Whether a caller may stage-recover the terminal failure
 
 runs:
   using: node24
