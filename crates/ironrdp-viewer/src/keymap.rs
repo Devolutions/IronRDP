@@ -15,7 +15,7 @@ pub(crate) fn is_modifier(key_code: KeyCode) -> bool {
     )
 }
 
-/// Translates portable physical key positions to RDP's PC/AT set-1 scancodes.
+/// RDP expects PC/AT set-1 scancodes, while native winit scancodes vary by platform.
 ///
 /// `Pause` deliberately has no mapping because [MS-RDPBCGR] 2.2.8.1.2.2.1 requires four events, including `EXTENDED1`, while `Scancode` represents one ordinary event.
 ///
