@@ -93,6 +93,9 @@ function providerFailure(error) {
   if (error?.constructor === APIConnectionError) {
     return failure("provider connection failed", "provider-connection", true);
   }
+  if (isKnownResponseBodyTransportFailure(error)) {
+    return failure("provider connection failed", "provider-connection", true);
+  }
   return failure("provider request failed", "provider-error");
 }
 
@@ -104,6 +107,10 @@ function knownQuotaError(error) {
   return ["billing_hard_limit_reached", "insufficient_quota", "quota_exceeded", "quota_exhausted"]
     .includes(error?.code) || ["billing_hard_limit_reached", "insufficient_quota", "quota_exceeded", "quota_exhausted"]
       .includes(error?.type);
+}
+
+function isKnownResponseBodyTransportFailure(error) {
+  return error?.constructor === TypeError && error?.cause?.code === "UND_ERR_SOCKET";
 }
 
 function providerFailureReason(error) {

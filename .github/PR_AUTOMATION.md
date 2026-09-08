@@ -77,7 +77,8 @@ Its workflow-controlled configuration enforces turn, tool-call, path, byte, line
 The caller can opt into a trusted validator from the workflow checkout and pass bounded invocation metadata.
 The action validates JSON and schema before the validator, then preserves the conversation for bounded correction turns.
 Validator-directed corrections may use only necessary bounded read-only evidence lookup, while invalid output remains terminal after its configured repair budget.
-The SDK adapter retries the same request within its single configured retry budget, suppresses retries for known exhausted-quota responses, and bounds valid `Retry-After` delays by the configured request timeout.
+The SDK adapter owns retries of the same request within its single configured retry budget, suppresses retries for known exhausted-quota responses, and bounds valid `Retry-After` delays by the configured request timeout.
+A known response-body transport failure that escapes SDK retries is categorized as a stage-recoverable connection failure.
 Strict provider JSON Schema mode is opt-in only for a configured supported endpoint; local validation always remains enforced.
 It reports safe activity, per-attempt duration, retry and repair counts, finish reason, available token usage with completeness state, and machine-readable terminal or transient failure categories through one diagnostics output.
 

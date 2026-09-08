@@ -2,14 +2,16 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const OpenAI = require("openai");
 const {
   APIConnectionError, APIConnectionTimeoutError, APIUserAbortError,
-} = require("openai");
+} = OpenAI;
 
 const {
   AgentFailure, TOOLS, compileOutputValidator, executeTool, providerFailureDiagnostic,
   providerFailureReason, runAgent,
 } = require("../src/agent");
+const { RuntimeMetrics, createProviderClient } = require("../src/provider");
 
 const schema = {
   type: "object",
@@ -480,6 +482,77 @@ test("provider errors are reduced to fixed non-sensitive categories", () => {
     "provider request failed",
   );
   assert.equal(providerFailureReason(new Error("secret")), "provider request failed");
+});
+
+test("real SDK classifies interrupted response bodies as recoverable connections", async () => {
+  const metrics = new RuntimeMetrics();
+  let calls = 0;
+  const client = createProviderClient(OpenAI, {
+    apiKey: "test-key",
+    baseURL: "https://provider.example/v1",
+    maxRetries: 0,
+    timeout: 100,
+  }, metrics, async () => {
+    calls++;
+    return new Response(new ReadableStream({
+      start(controller) {
+        setTimeout(() => {
+          controller.error(Object.assign(new TypeError("terminated"), {
+            cause: { code: "UND_ERR_SOCKET" },
+          }));
+        }, 40);
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+
+  await assert.rejects(
+    runAgent({
+      client, config: baseConfig, methodologies: [], prompt: "p", sandbox, schema, metrics,
+    }),
+    (error) => error instanceof AgentFailure && error.category === "provider-connection" &&
+      error.retryable && error.turnCount === 1,
+  );
+
+  assert.equal(calls, 1);
+  assert.equal(metrics.snapshot().providerAttempts[0].durationMs >= 40, true);
+});
+
+test("real SDK preserves timeout body-consumption duration", async () => {
+  const metrics = new RuntimeMetrics();
+  let calls = 0;
+  const client = createProviderClient(OpenAI, {
+    apiKey: "test-key",
+    baseURL: "https://provider.example/v1",
+    maxRetries: 0,
+    timeout: 20,
+  }, metrics, async () => {
+    calls++;
+    return new Response(new ReadableStream({
+      start(controller) {
+        setTimeout(() => {
+          controller.enqueue(new TextEncoder().encode("{}"));
+          controller.close();
+        }, 40);
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+
+  await assert.rejects(
+    runAgent({
+      client, config: baseConfig, methodologies: [], prompt: "p", sandbox, schema, metrics,
+    }),
+    (error) => error instanceof AgentFailure && error.category === "provider-timeout" &&
+      error.retryable && error.turnCount === 1,
+  );
+
+  assert.equal(calls, 1);
+  assert.equal(metrics.snapshot().providerAttempts[0].durationMs >= 20, true);
 });
 
 test("provider diagnostics expose only bounded status and request IDs", () => {
