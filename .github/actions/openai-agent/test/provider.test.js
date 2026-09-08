@@ -93,7 +93,7 @@ test("SDK adapter prohibits policy-terminal retries despite provider headers", a
   for (const status of [408, 409, 429, 503]) {
     assert.equal(await client.shouldRetry(new Response("", {
       status,
-      headers: { "x-should-retry": "true" },
+      headers: { "x-should-retry": "false" },
     })), true);
   }
 });

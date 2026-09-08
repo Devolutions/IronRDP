@@ -152,10 +152,8 @@ function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis
   if (typeof client.shouldRetry === "function") {
     const shouldRetry = client.shouldRetry.bind(client);
     client.shouldRetry = async (response) => {
-      if (await retryProhibited(response, metrics.remainingActiveAttemptTimeout())) {
-        return false;
-      }
-      return shouldRetry(response);
+      const policy = await retryPolicy(response, metrics.remainingActiveAttemptTimeout());
+      return policy ?? shouldRetry(response);
     };
   }
   if (typeof client.retryRequest === "function") {
@@ -196,11 +194,13 @@ function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis
   return client;
 }
 
-async function retryProhibited(response, timeoutMs) {
+async function retryPolicy(response, timeoutMs) {
   const status = Number(response?.status);
-  if (status === 401 || status === 403) return true;
-  if (status >= 400 && status <= 499 && ![408, 409, 429].includes(status)) return true;
-  return status === 429 && await hasKnownQuotaCode(response, timeoutMs);
+  if (status === 401 || status === 403) return false;
+  if (status === 408 || status === 409 || status >= 500 && status <= 599) return true;
+  if (status === 429) return !(await hasKnownQuotaCode(response, timeoutMs));
+  if (status >= 400 && status <= 499) return false;
+  return null;
 }
 
 function isResponseBodyTransportFailure(error) {

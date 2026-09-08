@@ -651,7 +651,7 @@ test("real SDK shares retries between status and body failures", async () => {
         headers: {
           "content-type": "application/json",
           "retry-after-ms": "0",
-          "x-should-retry": "true",
+          "x-should-retry": "false",
         },
       });
     }
@@ -729,6 +729,46 @@ test("real SDK does not retry policy-terminal responses", async () => {
     );
     assert.equal(calls, 1);
     assert.equal(metrics.snapshot().requestRetryCount, 0);
+  }
+});
+
+test("real SDK retries transient responses despite negative provider hints", async () => {
+  for (const status of [408, 409, 429, 503]) {
+    const metrics = new RuntimeMetrics();
+    const delays = [];
+    let calls = 0;
+    const client = createProviderClient(OpenAI, {
+      apiKey: "test-key",
+      baseURL: "https://provider.example/v1",
+      maxRetries: 4,
+      timeout: 100,
+    }, metrics, async () => {
+      calls++;
+      if (calls === 1) {
+        return new Response(JSON.stringify({ error: { code: "temporarily_limited" } }), {
+          status,
+          headers: {
+            "content-type": "application/json",
+            "retry-after-ms": "0",
+            "x-should-retry": "false",
+          },
+        });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ finish_reason: "stop", message: { content: '{"answer":"done"}' } }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }, async (milliseconds) => { delays.push(milliseconds); });
+
+    const result = await runAgent({
+      client, config: baseConfig, methodologies: [], prompt: "p", sandbox, schema, metrics,
+    });
+    assert.equal(result.turnCount, 1);
+    assert.equal(calls, 2);
+    assert.deepEqual(delays, [0]);
+    assert.equal(metrics.snapshot().requestRetryCount, 1);
   }
 });
 
