@@ -48,7 +48,7 @@ test("SDK adapter honors valid Retry-After without another retry budget", async 
   const delays = [];
   const client = createProviderClient(
     BaseClient,
-    {},
+    { timeout: 120_000 },
     new RuntimeMetrics(),
     globalThis.fetch,
     async (milliseconds) => { delays.push(milliseconds); },
@@ -56,19 +56,46 @@ test("SDK adapter honors valid Retry-After without another retry budget", async 
   client.makeRequest = async (options, retriesRemaining, requestLogID) => ({
     options, retriesRemaining, requestLogID,
   });
-  const result = await client.retryRequest({}, 4, "request", new Headers({ "retry-after": "61" }));
-  assert.deepEqual(delays, [61_000]);
+  const result = await client.retryRequest({}, 4, "request", new Headers({ "retry-after": "600" }));
+  assert.deepEqual(delays, [600_000]);
   assert.deepEqual(result, { options: {}, retriesRemaining: 3, requestLogID: "request" });
   assert.equal(retryAfterMilliseconds(new Headers({ "retry-after-ms": "250" })), 250);
   assert.equal(
-    retryAfterMilliseconds(new Headers({ "retry-after": "600" }), 120_000),
-    120_000,
+    retryAfterMilliseconds(new Headers({ "retry-after-ms": "3000000000" })),
+    3_000_000_000,
   );
   assert.equal(
-    retryAfterMilliseconds(new Headers({ "retry-after-ms": "600001" })),
+    retryAfterMilliseconds(
+      new Headers({ "retry-after": "Thu, 01 Jan 1970 00:10:00 GMT" }),
+      0,
+    ),
     600_000,
   );
   assert.equal(retryAfterMilliseconds(new Headers({ "retry-after": "invalid" })), undefined);
+});
+
+test("SDK adapter prohibits policy-terminal retries despite provider headers", async () => {
+  const client = createProviderClient(OpenAI, {
+    apiKey: "test-key",
+    baseURL: "https://provider.example/v1",
+  }, new RuntimeMetrics());
+  for (const [status, body] of [
+    [401, {}],
+    [403, {}],
+    [400, {}],
+    [429, { error: { code: "insufficient_quota" } }],
+  ]) {
+    assert.equal(await client.shouldRetry(new Response(JSON.stringify(body), {
+      status,
+      headers: { "x-should-retry": "true" },
+    })), false);
+  }
+  for (const status of [408, 409, 429, 503]) {
+    assert.equal(await client.shouldRetry(new Response("", {
+      status,
+      headers: { "x-should-retry": "true" },
+    })), true);
+  }
 });
 
 test("runtime metrics retain activity and mark partial usage incomplete", async () => {

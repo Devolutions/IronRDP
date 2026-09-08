@@ -11,6 +11,9 @@ const KNOWN_QUOTA_CODES = new Set([
   "quota_exhausted",
 ]);
 const SAFE_DIAGNOSTIC_VALUE = /^[A-Za-z0-9._:-]{1,128}$/;
+const RETRIES_REMAINING = "openai-agent-retries-remaining";
+const MAX_TIMEOUT = 2_147_483_647;
+
 class RuntimeMetrics {
   constructor(now = Date.now) {
     this.now = now;
@@ -134,11 +137,22 @@ function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis
     }
   };
   const client = new OpenAIClient({ ...options, fetch: instrumentedFetch });
+  if (typeof client.makeRequest === "function") {
+    const makeRequest = client.makeRequest.bind(client);
+    client.makeRequest = async (requestOptions, retriesRemaining, retryOfRequestLogID) => {
+      const resolvedOptions = await requestOptions;
+      const maximumRetries = resolvedOptions.maxRetries ?? client.maxRetries;
+      resolvedOptions.__metadata = {
+        ...resolvedOptions.__metadata,
+        [RETRIES_REMAINING]: retriesRemaining ?? maximumRetries,
+      };
+      return makeRequest(resolvedOptions, retriesRemaining, retryOfRequestLogID);
+    };
+  }
   if (typeof client.shouldRetry === "function") {
     const shouldRetry = client.shouldRetry.bind(client);
     client.shouldRetry = async (response) => {
-      if (response?.status === 429 &&
-          await hasKnownQuotaCode(response, metrics.remainingActiveAttemptTimeout())) {
+      if (await retryProhibited(response, metrics.remainingActiveAttemptTimeout())) {
         return false;
       }
       return shouldRetry(response);
@@ -148,10 +162,7 @@ function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis
     const retryRequest = client.retryRequest.bind(client);
     client.retryRequest = async (requestOptions, retriesRemaining, requestLogID, responseHeaders) => {
       metrics.finishActiveAttempt();
-      const retryAfter = retryAfterMilliseconds(
-        responseHeaders,
-        Number.isSafeInteger(client.timeout) ? client.timeout : MAX_REQUEST_TIMEOUT_MS,
-      );
+      const retryAfter = retryAfterMilliseconds(responseHeaders);
       if (retryAfter === undefined) {
         return retryRequest(requestOptions, retriesRemaining, requestLogID, responseHeaders);
       }
@@ -159,7 +170,41 @@ function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis
       return client.makeRequest(requestOptions, retriesRemaining - 1, requestLogID);
     };
   }
+  if (typeof client.parseResponseWithTimeout === "function") {
+    const parseResponseWithTimeout = client.parseResponseWithTimeout.bind(client);
+    client.parseResponseWithTimeout = async (sdkClient, props) => {
+      while (true) {
+        try {
+          return await parseResponseWithTimeout(sdkClient, props);
+        } catch (error) {
+          const retriesRemaining = props.options.__metadata?.[RETRIES_REMAINING];
+          if (!isResponseBodyTransportFailure(error) || !retriesRemaining ||
+              props.options.__metadata?.hasStreamingBody) {
+            throw error;
+          }
+          const next = await client.retryRequest(
+            props.options,
+            retriesRemaining,
+            props.retryOfRequestLogID ?? props.requestLogID,
+            props.response.headers,
+          );
+          Object.assign(props, next);
+        }
+      }
+    };
+  }
   return client;
+}
+
+async function retryProhibited(response, timeoutMs) {
+  const status = Number(response?.status);
+  if (status === 401 || status === 403) return true;
+  if (status >= 400 && status <= 499 && ![408, 409, 429].includes(status)) return true;
+  return status === 429 && await hasKnownQuotaCode(response, timeoutMs);
+}
+
+function isResponseBodyTransportFailure(error) {
+  return error?.constructor === TypeError && error?.cause?.code === "UND_ERR_SOCKET";
 }
 
 async function hasKnownQuotaCode(response, timeoutMs = MAX_REQUEST_TIMEOUT_MS) {
@@ -223,15 +268,15 @@ function concatenate(chunks, length) {
   return combined;
 }
 
-function retryAfterMilliseconds(headers, maximum = MAX_REQUEST_TIMEOUT_MS) {
+function retryAfterMilliseconds(headers, now = Date.now()) {
   const milliseconds = parseDelay(headers?.get?.("retry-after-ms"), 1);
-  if (milliseconds !== undefined) return Math.min(milliseconds, maximum);
+  if (milliseconds !== undefined) return milliseconds;
   const retryAfter = headers?.get?.("retry-after");
   if (typeof retryAfter !== "string") return undefined;
   const seconds = parseDelay(retryAfter, 1000);
-  if (seconds !== undefined) return Math.min(seconds, maximum);
+  if (seconds !== undefined) return seconds;
   const date = Date.parse(retryAfter);
-  return Number.isFinite(date) && date >= Date.now() ? Math.min(date - Date.now(), maximum) : undefined;
+  return Number.isFinite(date) && date >= now ? date - now : undefined;
 }
 
 function parseDelay(value, multiplier) {
@@ -241,8 +286,12 @@ function parseDelay(value, multiplier) {
 }
 
 async function delay(milliseconds) {
-  if (milliseconds === 0) return;
-  await new Promise((resolve) => setTimeout(resolve, milliseconds));
+  let remaining = milliseconds;
+  while (remaining > 0) {
+    const chunk = Math.min(remaining, MAX_TIMEOUT);
+    await new Promise((resolve) => setTimeout(resolve, chunk));
+    remaining -= chunk;
+  }
 }
 
 function normalizeUsage(usage) {
