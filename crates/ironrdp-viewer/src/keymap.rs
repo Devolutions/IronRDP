@@ -86,7 +86,7 @@ pub(crate) const fn map_key_code(key_code: KeyCode) -> Option<Scancode> {
         KeyCode::F8 => (false, 0x42),
         KeyCode::F9 => (false, 0x43),
         KeyCode::F10 => (false, 0x44),
-        KeyCode::NumLock => (true, 0x45),
+        KeyCode::NumLock => (false, 0x45),
         KeyCode::ScrollLock => (false, 0x46),
         KeyCode::Numpad7 => (false, 0x47),
         KeyCode::Numpad8 => (false, 0x48),
