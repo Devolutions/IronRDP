@@ -16,6 +16,7 @@
 const fs = require("node:fs");
 
 const { REVIEWER_ORDER } = require("./routing");
+const { normalizeText } = require("./validation");
 const { corpusFromDirectory, validateProtocolReferences } = require("./validate-protocol-review");
 const { normalizeCandidateReview } = require("./validate-candidate-review");
 const { validateFinalReview } = require("./validate-final-review");
@@ -28,7 +29,9 @@ const MAXIMUM_TRUSTED_BYTES = 8 * 1024 * 1024;
 const CANDIDATE_LIMITS = require("./schemas/candidate-review.json").properties.findings;
 const FINAL_LIMITS = require("./schemas/final-review.json").properties.findings;
 const CANDIDATE_FINDING_ID = new RegExp(CANDIDATE_LIMITS.items.properties.id.pattern);
-const MAX_TITLE_LENGTH = FINAL_LIMITS.items.properties.title.maxLength;
+// The review validators cap a title at 200 UTF-8 bytes, which is stricter than the schema's
+// character limit, so the byte limit is what a repair can actually reach.
+const MAX_TITLE_BYTES = 200;
 const DISPOSITION_REVIEWERS = require("./schemas/final-review.json")
   .properties.candidate_dispositions.items.properties.reviewer.enum;
 
@@ -172,11 +175,11 @@ const candidateIdentity = (finding) =>
   typeof finding?.id === "string" && CANDIDATE_FINDING_ID.test(finding.id) ? finding.id : null;
 
 // Final findings carry no id, so a title identifies them. Repair corrects a citation, a path, or a
-// line range, never the issue a finding reports.
+// line range, never the issue a finding reports. The title is normalized exactly as the review
+// validators do, so a title only they would reject is never protected.
 const finalIdentity = (finding) => {
-  const title = typeof finding?.title === "string" ? finding.title : "";
-  const normalized = title.trim().replace(/\s+/g, " ").toLowerCase();
-  return normalized === "" || title.length > MAX_TITLE_LENGTH ? null : normalized;
+  const title = normalizeText(finding?.title, MAX_TITLE_BYTES);
+  return title ? title.toLowerCase() : null;
 };
 
 function preservedCandidateFindings(candidate, previousCandidate) {

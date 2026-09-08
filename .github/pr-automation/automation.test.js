@@ -2327,8 +2327,9 @@ test("output repair may correct a finding but never drop one", () => {
 });
 
 // The runtime keeps the first response as the repair baseline even when it failed the output schema,
-// so demanding a schema-invalid identity back would make both repair attempts impossible.
-test("repair may correct an identity the output schema rejected", () => {
+// so demanding an identity the schema or the review validators reject would make both repair
+// attempts impossible.
+test("repair may correct an identity the validators would never accept", () => {
   const fixture = validatorFixture();
   const metadata = fixture.specialist();
 
@@ -2367,6 +2368,15 @@ test("repair may correct an identity the output schema rejected", () => {
   });
   assert.deepEqual(validateGeneral(finalReview(), { metadata: general, previousCandidate: overlong }),
     { ok: true });
+
+  // The review validators cap a title at 200 UTF-8 bytes, which is stricter than the schema's 200
+  // characters, so a title only they reject is not protected either.
+  const overweight = finalReview({
+    findings: [{ ...finalReview().findings[0], title: "\u00e9".repeat(101) }],
+  });
+  assert.deepEqual(validateGeneral(finalReview(), {
+    metadata: general, previousCandidate: overweight,
+  }), { ok: true });
 });
 
 // The runtime turns a rejection it cannot read into a terminal validator error, which would spend
