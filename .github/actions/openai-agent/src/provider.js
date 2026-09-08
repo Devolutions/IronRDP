@@ -11,8 +11,6 @@ const KNOWN_QUOTA_CODES = new Set([
   "quota_exhausted",
 ]);
 const SAFE_DIAGNOSTIC_VALUE = /^[A-Za-z0-9._:-]{1,128}$/;
-const MAX_TIMEOUT = 2_147_483_647;
-
 class RuntimeMetrics {
   constructor(now = Date.now) {
     this.now = now;
@@ -243,12 +241,8 @@ function parseDelay(value, multiplier) {
 }
 
 async function delay(milliseconds) {
-  let remaining = milliseconds;
-  while (remaining > 0) {
-    const chunk = Math.min(remaining, MAX_TIMEOUT);
-    await new Promise((resolve) => setTimeout(resolve, chunk));
-    remaining -= chunk;
-  }
+  if (milliseconds === 0) return;
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function normalizeUsage(usage) {
