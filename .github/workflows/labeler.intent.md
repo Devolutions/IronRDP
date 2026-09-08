@@ -38,32 +38,27 @@ concurrency:
 `llm-reviewer-pipeline` group must lock the entire review pipeline, not each reviewer job.
 The review pipeline must therefore live in a reusable workflow, with `llm-reviewer-pipeline` concurrency on its caller job.
 
+## Classification
+
+- Configure the classifier action for at most four request retries after the initial attempt.
+
 ## Reviewer pipeline
 
-The reviewer pipeline is roughly defined as:
+- Select specialists, identify which are required, and call `review-pipeline.yml`.
+- Publish only after all required specialists succeed and the general review passes validation.
 
-```text
-evidence -> specialist reviewers running in parallel -> general reviewer aggregating everything
-```
-
-The general reviewer independently inspects the pull request, attempts to falsify every candidate, and records exactly one `accepted`, `refined`, or `rejected` disposition per candidate.
-It can merge overlapping candidates and add findings that no specialist reported.
-Only the validated general-review result can be published.
 The published comments include the name of the specialist that found the finding.
-Reviewer findings use severity and a question boolean.
 Render severity as `critical :purple_circle:`, `high :red_circle:`, `medium :orange_circle:`, or `low :yellow_circle:`.
 Append `:question:` for questions, and show `:green_circle:` in the main comment when no findings are found.
 
-### Specialist reviewers
+### Stage recovery
 
-Use three specialist reviewers:
-
-- protocol
-- skeptical
-- code compressor
-
-They should run in parallel using a multi-job matrix.
-We allow at most three specialist agents to run at once.
+- Schedule stage recovery for temporary failures, with delays and limits, without waiting for another PR or CI event.
+- Keep all eligibility checks, resource limits, and stale-head protections in effect.
+- Never publish the same review twice, and count only published reviews toward the two-review limit.
+- Show whether stage recovery is pending, successful, or exhausted in the review check and workflow summary, with reasons for every stage failure.
+- Show per-stage review metrics and totals across attempts in the workflow summary, including failed runs and unavailable data.
+- Link to the summary from the `AI automated review` check; keep metrics out of review comments.
 
 ## Activation policy
 
