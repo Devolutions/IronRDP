@@ -1,21 +1,15 @@
 "use strict";
 
 const { REVIEWER_ORDER } = require("./routing");
+const { escapeMarkdown } = require("./write-state");
 
 const MAX_CHECK_STAGES = REVIEWER_ORDER.length + 4;
 const MAX_WORKFLOW_STAGES = 64;
-const MAX_TEXT_LENGTH = 300;
+const MAX_CHECK_TEXT_LENGTH = 250;
+const MAX_WORKFLOW_TEXT_LENGTH = 300;
 
-function escapeMarkdown(value) {
-  return String(value).replace(/\\/g, "\\\\")
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/`/g, "&#96;")
-    .replace(/@(?=[\w-])/g, "`@`").replace(/(?<!&)#(?=\d)/g, "`#`")
-    .replace(/[[\]()!*_~|]/g, "\\$&");
-}
-
-function text(value) {
-  return escapeMarkdown(String(value ?? "").slice(0, MAX_TEXT_LENGTH) || "unknown");
+function text(value, maxTextLength) {
+  return escapeMarkdown(String(value ?? "").slice(0, maxTextLength) || "unknown");
 }
 
 function metric(value) {
@@ -29,8 +23,8 @@ function tokens(tokens, complete = tokens?.complete) {
   return `${values.join("/")} ${complete ? "" : "(partial)"}`.trim();
 }
 
-function table(headers, rows) {
-  const line = (columns) => `| ${columns.map(text).join(" | ")} |`;
+function table(headers, rows, maxTextLength) {
+  const line = (columns) => `| ${columns.map((column) => text(column, maxTextLength)).join(" | ")} |`;
   return [line(headers), `| ${headers.map(() => "---").join(" | ")} |`, ...rows.map(line)].join("\n");
 }
 
@@ -46,7 +40,7 @@ function failureAttempts(stages) {
   });
 }
 
-function diagnostics(report, outcome, maxStages) {
+function diagnostics(report, outcome, maxStages, maxTextLength) {
   const stages = report.stages.slice(0, maxStages);
   const omittedStages = report.stages.length - stages.length;
   const attempts = failureAttempts(stages);
@@ -54,14 +48,14 @@ function diagnostics(report, outcome, maxStages) {
   const metrics = report.metrics;
   const failedAttempts = attempts.length === 0
     ? "No stage failure was reported."
-    : table(["Stage", "Attempt", "Reason"], attempts);
+    : table(["Stage", "Attempt", "Reason"], attempts, maxTextLength);
   const totalMetrics = table(["Metric", "Total"], [
     ["Tokens", tokens(metrics.tokens, metrics.tokens_complete)],
     ["Elapsed (ms)", metric(metrics.elapsed_ms)],
     ["Request retries", metric(metrics.request_retries)],
     ["Output repairs", metric(metrics.output_repairs)],
     ["Stage retries", metric(metrics.stage_retries)],
-  ]);
+  ], maxTextLength);
   const stageRows = stages.map((stage) => [
     stage.id, stage.status, stage.attempts, tokens(stage.metrics.tokens),
     metric(stage.metrics.elapsed_ms), metric(stage.metrics.request_retries),
@@ -73,7 +67,7 @@ function diagnostics(report, outcome, maxStages) {
   }
   const stageMetrics = table(
     ["Stage", "Status", "Attempts", "Tokens", "Elapsed (ms)", "Request retries", "Output repairs"],
-    stageRows,
+    stageRows, maxTextLength,
   );
   return [
     `Review outcome: **${outcome}**.`,
@@ -90,8 +84,8 @@ function diagnostics(report, outcome, maxStages) {
 }
 
 function renderReviewReport({ report, outcome, detail, summaryUrl }) {
-  const checkDiagnostics = diagnostics(report, outcome, MAX_CHECK_STAGES);
-  const workflowDiagnostics = diagnostics(report, outcome, MAX_WORKFLOW_STAGES);
+  const checkDiagnostics = diagnostics(report, outcome, MAX_CHECK_STAGES, MAX_CHECK_TEXT_LENGTH);
+  const workflowDiagnostics = diagnostics(report, outcome, MAX_WORKFLOW_STAGES, MAX_WORKFLOW_TEXT_LENGTH);
   const heading = {
     complete: "Automated review complete",
     recovered: "Automated review recovered",
@@ -101,7 +95,7 @@ function renderReviewReport({ report, outcome, detail, summaryUrl }) {
     ? "Validated automated review is bound to this commit."
     : outcome === "recovered"
       ? "Validated automated review was produced after stage recovery."
-      : `Automated review is unavailable: ${text(detail || "review unavailable")}. Maintainer review is required.`;
+      : `Automated review is unavailable: ${text(detail || "review unavailable", MAX_CHECK_TEXT_LENGTH)}. Maintainer review is required.`;
   return {
     title: heading,
     checkSummary: `${outcomeText}\n\n${checkDiagnostics}\n\n[View the workflow summary](${summaryUrl})`,

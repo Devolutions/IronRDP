@@ -335,9 +335,9 @@ test("resolve review state renders bounded recovery diagnostics in the check and
   const bounded = renderReviewReport({
     report: {
       stages: Array.from({ length: 16 }, (_, index) => ({
-        id: `stage-${index}-${"x".repeat(300)}`, status: "failed", attempts: 2,
-        reason: "r".repeat(300), category: "retry-declined",
-        previous_reason: "p".repeat(300),
+        id: `stage-${index}-${"'".repeat(300)}`, status: "failed", attempts: 2,
+        reason: "'".repeat(300), category: "retry-declined",
+        previous_reason: "'".repeat(300),
         metrics: {
           tokens: { input: 0, output: 0, total: 0, complete: true },
           elapsed_ms: 0, request_retries: 0, output_repairs: 0,
@@ -351,7 +351,7 @@ test("resolve review state renders bounded recovery diagnostics in the check and
     outcome: "unavailable", detail: "review unavailable",
     summaryUrl: "https://github.example/actions/runs/123",
   });
-  assert.ok(Buffer.byteLength(bounded.checkSummary) < 24 * 1024);
+  assert.ok(Buffer.byteLength(bounded.checkSummary) < 65_535);
   assert.match(bounded.checkSummary, /9 omitted to bound output/);
   assert.doesNotMatch(bounded.checkSummary, /stage-15-/);
   assert.match(bounded.workflowSummary, /stage-15-/);
