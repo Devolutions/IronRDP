@@ -19,6 +19,8 @@ pub(crate) fn is_modifier(key_code: KeyCode) -> bool {
 ///
 /// `Pause` deliberately has no mapping because [MS-RDPBCGR] 2.2.8.1.2.2.1 requires
 /// four events, including `EXTENDED1`, while `Scancode` represents one ordinary event.
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/5073f4ed-1e93-45e1-b039-6e30c385867c
 pub(crate) const fn map_key_code(key_code: KeyCode) -> Option<Scancode> {
     let scancode = match key_code {
         KeyCode::Escape => (false, 0x01),
@@ -85,7 +87,7 @@ pub(crate) const fn map_key_code(key_code: KeyCode) -> Option<Scancode> {
         KeyCode::F8 => (false, 0x42),
         KeyCode::F9 => (false, 0x43),
         KeyCode::F10 => (false, 0x44),
-        KeyCode::NumLock => (false, 0x45),
+        KeyCode::NumLock => (true, 0x45),
         KeyCode::ScrollLock => (false, 0x46),
         KeyCode::Numpad7 => (false, 0x47),
         KeyCode::Numpad8 => (false, 0x48),
@@ -126,10 +128,24 @@ pub(crate) const fn map_key_code(key_code: KeyCode) -> Option<Scancode> {
         KeyCode::NonConvert => (false, 0x7B),
         KeyCode::IntlYen => (false, 0x7D),
         KeyCode::NumpadComma => (false, 0x7E),
+        KeyCode::Undo => (true, 0x08),
+        KeyCode::Paste => (true, 0x0A),
+        KeyCode::MediaTrackPrevious => (true, 0x10),
         KeyCode::NumpadEnter => (true, 0x1C),
         KeyCode::ControlRight => (true, 0x1D),
+        KeyCode::Cut => (true, 0x17),
+        KeyCode::Copy => (true, 0x18),
+        KeyCode::AudioVolumeMute => (true, 0x20),
+        KeyCode::LaunchApp2 => (true, 0x21),
+        KeyCode::MediaPlayPause => (true, 0x22),
+        KeyCode::MediaStop => (true, 0x24),
+        KeyCode::Eject => (true, 0x2C),
+        KeyCode::AudioVolumeDown => (true, 0x2E),
+        KeyCode::AudioVolumeUp => (true, 0x30),
+        KeyCode::BrowserHome => (true, 0x32),
         KeyCode::NumpadDivide => (true, 0x35),
         KeyCode::AltRight => (true, 0x38),
+        KeyCode::Help => (true, 0x3B),
         KeyCode::Home => (true, 0x47),
         KeyCode::ArrowUp => (true, 0x48),
         KeyCode::PageUp => (true, 0x49),
@@ -141,6 +157,18 @@ pub(crate) const fn map_key_code(key_code: KeyCode) -> Option<Scancode> {
         KeyCode::Insert => (true, 0x52),
         KeyCode::Delete => (true, 0x53),
         KeyCode::ContextMenu => (true, 0x5D),
+        KeyCode::Power => (true, 0x5E),
+        KeyCode::Sleep => (true, 0x5F),
+        KeyCode::WakeUp => (true, 0x63),
+        KeyCode::BrowserSearch => (true, 0x65),
+        KeyCode::BrowserFavorites => (true, 0x66),
+        KeyCode::BrowserRefresh => (true, 0x67),
+        KeyCode::BrowserStop => (true, 0x68),
+        KeyCode::BrowserForward => (true, 0x69),
+        KeyCode::BrowserBack => (true, 0x6A),
+        KeyCode::LaunchApp1 => (true, 0x6B),
+        KeyCode::LaunchMail => (true, 0x6C),
+        KeyCode::MediaSelect => (true, 0x6D),
         KeyCode::SuperLeft => (true, 0x5B),
         KeyCode::SuperRight => (true, 0x5C),
         KeyCode::PrintScreen => (true, 0x37),
@@ -224,6 +252,30 @@ mod tests {
             ]
         );
         assert!(database.release_all().is_empty());
+    }
+
+    #[test]
+    fn mapped_media_and_browser_keys_emit_extended_events() {
+        let volume_mute = map_key_code(KeyCode::AudioVolumeMute).expect("media key");
+        let browser_back = map_key_code(KeyCode::BrowserBack).expect("browser key");
+        let mut database = Database::new();
+
+        let events = database.apply([
+            Operation::KeyPressed(volume_mute),
+            Operation::KeyReleased(volume_mute),
+            Operation::KeyPressed(browser_back),
+            Operation::KeyReleased(browser_back),
+        ]);
+
+        assert_eq!(
+            events.as_slice(),
+            [
+                FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED, 0x20),
+                FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED | KeyboardFlags::RELEASE, 0x20),
+                FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED, 0x6A),
+                FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED | KeyboardFlags::RELEASE, 0x6A),
+            ]
+        );
     }
 
     #[test]
