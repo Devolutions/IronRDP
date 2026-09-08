@@ -4,6 +4,7 @@ const Ajv = require("ajv");
 
 const { fail } = require("./errors");
 const {
+  DEFAULT_OUTPUT_REPAIRS, DEFAULT_REQUEST_RETRIES, DEFAULT_REQUEST_TIMEOUT_MS,
   MAX_CONFIG_BYTES, MAX_METHODOLOGY_BYTES, MAX_METHODOLOGY_TOTAL_BYTES, MAX_PROMPT_BYTES,
   MAX_MODEL_OUTPUT_BYTES, MAX_OUTPUT_REPAIRS, MAX_REQUEST_RETRIES, MAX_REQUEST_TIMEOUT_MS,
   MAX_SCHEMA_BYTES, MAX_TOOL_CALLS, MAX_TURNS,
@@ -63,9 +64,16 @@ function parseJson(text, code) {
 function loadConfiguration(workspace, configFile) {
   const workspaceReader = new WorkspaceSandbox(workspace);
   const rawConfig = workspaceReader.readWorkflowFile(configFile, MAX_CONFIG_BYTES);
-  const config = parseJson(rawConfig, "configuration is not valid JSON");
+  const parsed = parseJson(rawConfig, "configuration is not valid JSON");
   const validate = new Ajv({ allErrors: true, strict: true }).compile(CONFIG_SCHEMA);
-  if (!validate(config)) fail("configuration does not match its schema");
+  if (!validate(parsed)) fail("configuration does not match its schema");
+  const config = {
+    ...parsed,
+    request_timeout_ms: parsed.request_timeout_ms ?? DEFAULT_REQUEST_TIMEOUT_MS,
+    max_request_retries: parsed.max_request_retries ?? DEFAULT_REQUEST_RETRIES,
+    max_output_repair_attempts: parsed.max_output_repair_attempts ?? DEFAULT_OUTPUT_REPAIRS,
+    output_format: parsed.output_format || "json_object",
+  };
   if (config.max_tool_calls > 0 &&
       config.allowed_roots.length === 0 && config.allowed_files.length === 0) {
     fail("configuration grants no filesystem capabilities");

@@ -5,11 +5,6 @@ const OpenAI = require("openai");
 const { AgentFailure, providerFailureDiagnostic, runAgent } = require("./agent");
 const { loadConfiguration, validateBaseUrl } = require("./config");
 const { ActionError } = require("./errors");
-const {
-  DEFAULT_OUTPUT_REPAIRS, DEFAULT_REQUEST_RETRIES, DEFAULT_REQUEST_TIMEOUT_MS,
-  MAX_MODEL_OUTPUT_BYTES, MAX_OUTPUT_REPAIRS, MAX_REQUEST_RETRIES, MAX_REQUEST_TIMEOUT_MS,
-  MAX_TOOL_CALLS, MAX_TURNS,
-} = require("./limits");
 const { RuntimeMetrics, createProviderClient } = require("./provider");
 const { ValidatorFailure, loadValidator, parseMetadata } = require("./validator");
 
@@ -31,7 +26,6 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
 
     const baseUrlInput = requiredInput(core, "base-url", "base URL input is missing");
     const configFile = requiredInput(core, "config-file", "config file input is missing");
-    const inputLimits = readInputLimits(core);
     const validatorSelector = core.getInput("validator");
     const validatorMetadata = parseMetadata(core.getInput("validator-metadata"));
     if (validatorSelector === "" && Object.keys(validatorMetadata).length !== 0) {
@@ -44,7 +38,7 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       throw new ActionError("workspace is unavailable");
     }
     const loaded = loadConfiguration(workspace, configFile);
-    const config = resolveConfiguration(loaded.config, inputLimits);
+    const config = loaded.config;
     const validator = loadValidator(workspace, validatorSelector, validatorMetadata);
     core.info(JSON.stringify({
       event: "openai-agent.start",
@@ -158,80 +152,23 @@ function logActionFailure(core, phase, outcome) {
   }));
 }
 
-function readInputLimits(core) {
-  return {
-    requestTimeout: optionalPositiveInput(
-      core, "request-timeout-ms", 1, MAX_REQUEST_TIMEOUT_MS,
-    ),
-    requestRetries: optionalPositiveInput(
-      core, "max-request-retries", 0, MAX_REQUEST_RETRIES,
-    ),
-    modelTurns: optionalPositiveInput(core, "max-model-turns", 1, MAX_TURNS),
-    toolCalls: optionalPositiveInput(core, "max-tool-calls", 0, MAX_TOOL_CALLS),
-    outputBytes: optionalPositiveInput(core, "max-output-bytes", 1024, MAX_MODEL_OUTPUT_BYTES),
-    outputRepairs: optionalPositiveInput(core, "max-output-repairs", 0, MAX_OUTPUT_REPAIRS),
-  };
-}
-
-function optionalPositiveInput(core, name, minimum, maximum) {
-  const value = core.getInput(name);
-  if (value === "") return undefined;
-  if (!/^\d+$/.test(value)) throw new ActionError(`invalid ${name} input`, "input");
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
-    throw new ActionError(`invalid ${name} input`, "input");
-  }
-  return parsed;
-}
-
-function resolveConfiguration(config, inputLimits) {
-  return {
-    ...config,
-    request_timeout_ms: inputLimits.requestTimeout ??
-      config.request_timeout_ms ?? DEFAULT_REQUEST_TIMEOUT_MS,
-    max_request_retries: inputLimits.requestRetries ??
-      config.max_request_retries ?? DEFAULT_REQUEST_RETRIES,
-    max_turns: inputLimits.modelTurns ?? config.max_turns,
-    max_tool_calls: inputLimits.toolCalls ?? config.max_tool_calls,
-    max_output_bytes: inputLimits.outputBytes ?? config.max_output_bytes,
-    max_output_repair_attempts: inputLimits.outputRepairs ??
-      config.max_output_repair_attempts ?? DEFAULT_OUTPUT_REPAIRS,
-    output_format: config.output_format || "json_object",
-  };
-}
-
 function setOutputs(core, {
   output, failureReason, failureCategory, retryable, turnCount, toolCallCount, outputRepairCount, metrics,
 }) {
-  const runtime = metrics.snapshot();
-  const diagnostics = {
-    activity: runtime.activity,
-    durationMs: runtime.durationMs,
-    requestRetryCount: runtime.requestRetryCount,
+  const diagnostics = metrics.snapshot({
     outputRepairCount,
-    providerFinishReason: runtime.providerFinishReason || null,
-    tokenUsage: runtime.tokenUsage,
     turnCount,
     toolCallCount,
     failureCategory: failureCategory || null,
     retryable,
-    providerAttempts: runtime.diagnostics.providerAttempts,
-  };
+  });
   core.setOutput("structured-output", output);
   core.setOutput("failure-reason", failureReason);
   core.setOutput("turn-count", String(turnCount));
   core.setOutput("tool-call-count", String(toolCallCount));
-  core.setOutput("activity", runtime.activity);
-  core.setOutput("duration-ms", String(runtime.durationMs));
-  core.setOutput("request-retry-count", String(runtime.requestRetryCount));
-  core.setOutput("output-repair-count", String(outputRepairCount));
-  core.setOutput("provider-finish-reason", runtime.providerFinishReason);
-  core.setOutput("token-usage", JSON.stringify(runtime.tokenUsage));
-  core.setOutput("diagnostics", JSON.stringify(diagnostics));
   core.setOutput("failure-category", failureCategory);
   core.setOutput("retryable", String(retryable));
+  core.setOutput("diagnostics", JSON.stringify(diagnostics));
 }
 
-module.exports = {
-  main, optionalPositiveInput, readInputLimits, resolveConfiguration, setOutputs,
-};
+module.exports = { main, setOutputs };

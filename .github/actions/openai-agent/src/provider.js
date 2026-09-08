@@ -53,13 +53,21 @@ class RuntimeMetrics {
   }
 
   finishAttempt(attempt) {
-    if (attempt.durationMs !== undefined) return;
+    if (!attempt || attempt.durationMs !== undefined) return;
     attempt.durationMs = Math.max(0, this.now() - attempt.startedAt);
   }
 
   remainingAttemptTimeout(attempt) {
     if (!attempt || !Number.isSafeInteger(attempt.timeoutMs)) return 0;
     return Math.max(0, attempt.timeoutMs - (this.now() - attempt.startedAt));
+  }
+
+  finishActiveAttempt() {
+    this.finishAttempt(this.activeRequest?.attempts.at(-1));
+  }
+
+  remainingActiveAttemptTimeout() {
+    return this.remainingAttemptTimeout(this.activeRequest?.attempts.at(-1));
   }
 
   recordCompletion(request, response) {
@@ -74,7 +82,7 @@ class RuntimeMetrics {
     if (usage) attempt.usage = usage;
   }
 
-  snapshot() {
+  snapshot(details = {}) {
     const providerAttempts = this.requests.flatMap((request) => request.attempts.map((attempt) => ({
       activity: attempt.activity,
       durationMs: attempt.durationMs ?? Math.max(0, this.now() - attempt.startedAt),
@@ -92,23 +100,21 @@ class RuntimeMetrics {
       requestRetryCount: this.requests.reduce(
         (count, request) => count + Math.max(0, request.attempts.length - 1), 0,
       ),
-      providerFinishReason: finishReason,
+      ...details,
+      providerFinishReason: finishReason || null,
       tokenUsage: usage,
-      diagnostics: { providerAttempts, tokenUsage: usage },
+      providerAttempts,
     };
   }
 }
 
 function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis.fetch, sleep = delay) {
-  const attempts = new WeakMap();
   const instrumentedFetch = async (...args) => {
     const attempt = metrics.beginAttempt(options.timeout);
     try {
       const response = await fetch(...args);
       metrics.observeResponse(attempt, response);
-      const observed = observeResponse(response, () => metrics.finishAttempt(attempt));
-      attempts.set(observed, attempt);
-      return observed;
+      return response;
     } catch (error) {
       metrics.finishAttempt(attempt);
       throw error;
@@ -119,7 +125,7 @@ function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis
     const shouldRetry = client.shouldRetry.bind(client);
     client.shouldRetry = async (response) => {
       if (response?.status === 429 &&
-          await hasKnownQuotaCode(response, metrics.remainingAttemptTimeout(attempts.get(response)))) {
+          await hasKnownQuotaCode(response, metrics.remainingActiveAttemptTimeout())) {
         return false;
       }
       return shouldRetry(response);
@@ -128,6 +134,7 @@ function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis
   if (typeof client.retryRequest === "function") {
     const retryRequest = client.retryRequest.bind(client);
     client.retryRequest = async (requestOptions, retriesRemaining, requestLogID, responseHeaders) => {
+      metrics.finishActiveAttempt();
       const retryAfter = retryAfterMilliseconds(
         responseHeaders,
         Number.isSafeInteger(client.timeout) ? client.timeout : MAX_REQUEST_TIMEOUT_MS,
@@ -140,87 +147,6 @@ function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis
     };
   }
   return client;
-}
-
-function observeResponse(response, finish) {
-  let finished = false;
-  const complete = () => {
-    if (finished) return;
-    finished = true;
-    finish();
-  };
-  return new Proxy(response, {
-    get(target, property) {
-      const value = Reflect.get(target, property, target);
-      if (property === "body") return observeBody(value, complete);
-      if (["arrayBuffer", "blob", "formData", "json", "text"].includes(property) &&
-          typeof value === "function") {
-        return async (...args) => {
-          try {
-            return await value.apply(target, args);
-          } finally {
-            complete();
-          }
-        };
-      }
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-}
-
-function observeBody(body, complete) {
-  if (!body) {
-    complete();
-    return body;
-  }
-  return new Proxy(body, {
-    get(target, property) {
-      const value = Reflect.get(target, property, target);
-      if (property === "cancel" && typeof value === "function") {
-        return async (...args) => {
-          try {
-            return await value.apply(target, args);
-          } finally {
-            complete();
-          }
-        };
-      }
-      if (property === "getReader" && typeof value === "function") {
-        return (...args) => observeReader(value.apply(target, args), complete);
-      }
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-}
-
-function observeReader(reader, complete) {
-  return new Proxy(reader, {
-    get(target, property) {
-      const value = Reflect.get(target, property, target);
-      if (property === "read" && typeof value === "function") {
-        return async (...args) => {
-          try {
-            const result = await value.apply(target, args);
-            if (result.done) complete();
-            return result;
-          } catch (error) {
-            complete();
-            throw error;
-          }
-        };
-      }
-      if (property === "cancel" && typeof value === "function") {
-        return async (...args) => {
-          try {
-            return await value.apply(target, args);
-          } finally {
-            complete();
-          }
-        };
-      }
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
 }
 
 async function hasKnownQuotaCode(response, timeoutMs = MAX_REQUEST_TIMEOUT_MS) {

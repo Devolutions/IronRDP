@@ -354,6 +354,7 @@ async function runAgent({
       metrics?.recordCompletion(requestMetrics, response);
       return response;
     } catch (error) {
+      metrics?.finishActiveAttempt();
       throw withState(error, state);
     }
   }

@@ -95,7 +95,7 @@ test("runtime metrics retain activity and mark partial usage incomplete", async 
     outputTokens: 3,
     totalTokens: 7,
   });
-  assert.deepEqual(snapshot.diagnostics.providerAttempts, [
+  assert.deepEqual(snapshot.providerAttempts, [
     { activity: "repairing", durationMs: 0, status: 429 },
     {
       activity: "repairing",
@@ -152,8 +152,8 @@ test("provider attempts include full response-body consumption time", async () =
   );
   const request = metrics.beginRequest("investigating");
   const response = await client.options.fetch("https://provider.example/v1");
-  assert.equal(metrics.snapshot().diagnostics.providerAttempts[0].durationMs < 20, true);
+  assert.equal(metrics.snapshot().providerAttempts[0].durationMs < 20, true);
   await response.text();
   metrics.recordCompletion(request, { choices: [{ finish_reason: "stop" }] });
-  assert.equal(metrics.snapshot().diagnostics.providerAttempts[0].durationMs >= 20, true);
+  assert.equal(metrics.snapshot().providerAttempts[0].durationMs >= 20, true);
 });

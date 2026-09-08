@@ -73,13 +73,13 @@ Model-generated titles and rationales remain untrusted and are escaped independe
 `.github/actions/openai-agent` is a bundled JavaScript action built on the official OpenAI SDK.
 It loads a workflow-controlled agent configuration, prompt, output schema, methodology, and filesystem capability list.
 It exposes only `read_file`, `list_files`, and `search_text`.
-Its backward-compatible action inputs and configuration enforce turn, tool-call, path, byte, line, recursion, result, request-timeout, request-retry, output-size, and output-repair limits.
+Its workflow-controlled configuration enforces turn, tool-call, path, byte, line, recursion, result, request-timeout, request-retry, output-size, and output-repair limits.
 The caller can opt into a trusted validator from the workflow checkout and pass bounded invocation metadata.
 The action validates JSON and schema before the validator, then preserves the conversation for bounded correction turns.
 Validator-directed corrections may use only necessary bounded read-only evidence lookup, while invalid output remains terminal after its configured repair budget.
 The SDK adapter retries the same request within its single configured retry budget, suppresses retries for known exhausted-quota responses, and bounds valid `Retry-After` delays by the configured request timeout.
 Strict provider JSON Schema mode is opt-in only for a configured supported endpoint; local validation always remains enforced.
-It reports safe activity, per-attempt duration, retry and repair counts, finish reason, available token usage with completeness state, and machine-readable terminal or transient failure categories.
+It reports safe activity, per-attempt duration, retry and repair counts, finish reason, available token usage with completeness state, and machine-readable terminal or transient failure categories through one diagnostics output.
 
 The action exposes no command execution, writes, Git operations, GitHub APIs, environment access, arbitrary network access, or generic URL fetching.
 It logs bounded metadata only and never logs prompts, pull request content, tool arguments, tool results, model responses, provider response bodies, or credentials.

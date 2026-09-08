@@ -12,17 +12,12 @@ const { scratchWorkspace, write } = require("./helpers");
 test("action metadata exposes only configured inputs and required outputs on node24", () => {
   const action = fs.readFileSync(path.join(__dirname, "..", "action.yml"), "utf8");
   assert.match(action, /runs:\r?\n  using: node24\r?\n  main: dist\/index\.js/);
-  for (const input of [
-    "api-key", "base-url", "config-file", "request-timeout-ms", "max-request-retries",
-    "max-model-turns", "max-tool-calls", "max-output-bytes", "max-output-repairs",
-    "validator", "validator-metadata",
-  ]) {
+  for (const input of ["api-key", "base-url", "config-file", "validator", "validator-metadata"]) {
     assert.match(action, new RegExp(`^  ${input}:\\r?$`, "m"));
   }
   for (const output of [
-    "structured-output", "failure-reason", "turn-count", "tool-call-count", "activity",
-    "duration-ms", "request-retry-count", "output-repair-count", "provider-finish-reason",
-    "token-usage", "diagnostics", "failure-category", "retryable",
+    "structured-output", "failure-reason", "turn-count", "tool-call-count", "diagnostics",
+    "failure-category", "retryable",
   ]) {
     assert.match(action, new RegExp(`^  ${output}:\\r?$`, "m"));
   }
@@ -133,18 +128,27 @@ test("main masks the key immediately, rejects redirects, and emits only bounded 
   }
 });
 
-test("action inputs override legacy and configuration recovery limits", async () => {
+test("configuration supplies recovery limits and canonical diagnostics", async () => {
   const workspace = actionFixture();
+  write(workspace.directory, "config.json", JSON.stringify({
+    id: "safe-id",
+    model: "safe-model",
+    prompt_file: "prompt.md",
+    schema_file: "schema.json",
+    methodology_files: [],
+    allowed_roots: ["evidence"],
+    allowed_files: [],
+    max_output_bytes: 2048,
+    max_turns: 4,
+    max_tool_calls: 1,
+    request_timeout_ms: 90_000,
+    max_request_retries: 4,
+    max_output_repair_attempts: 2,
+  }));
   const core = mockCore({
     "api-key": "key",
     "base-url": "https://provider.example/v1",
     "config-file": "config.json",
-    "request-timeout-ms": "90000",
-    "max-request-retries": "4",
-    "max-model-turns": "4",
-    "max-tool-calls": "1",
-    "max-output-bytes": "2048",
-    "max-output-repairs": "2",
   });
   let options;
   class MockOpenAI {
@@ -160,9 +164,24 @@ test("action inputs override legacy and configuration recovery limits", async ()
     assert.equal(options.timeout, 90_000);
     assert.equal(options.maxRetries, 4);
     assert.equal(core.outputs.get("turn-count"), "1");
-    assert.equal(core.outputs.get("output-repair-count"), "0");
     assert.equal(core.outputs.get("failure-category"), "");
     assert.equal(core.outputs.get("retryable"), "false");
+    const diagnostics = JSON.parse(core.outputs.get("diagnostics"));
+    assert.equal(Number.isSafeInteger(diagnostics.durationMs), true);
+    assert.equal(diagnostics.durationMs >= 0, true);
+    assert.deepEqual({ ...diagnostics, durationMs: 0 }, {
+      activity: "investigating",
+      durationMs: 0,
+      requestRetryCount: 0,
+      outputRepairCount: 0,
+      providerFinishReason: null,
+      tokenUsage: { complete: false, knownAttemptCount: 0, unknownAttemptCount: 0 },
+      turnCount: 1,
+      toolCallCount: 0,
+      failureCategory: null,
+      retryable: false,
+      providerAttempts: [],
+    });
   } finally {
     workspace.cleanup();
   }
