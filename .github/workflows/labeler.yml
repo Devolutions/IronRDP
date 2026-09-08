@@ -704,6 +704,7 @@ jobs:
           FORCE: ${{ needs.resolve-pr.outputs.force }}
           LABELS: ${{ needs.resolve-pr.outputs.labels }}
           REVIEW_MARKER_ID: ${{ github.run_id }}
+          SUMMARY_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
           script: |
              const { resolveReviewState, reviewOutcome } = require("./.github/pr-automation/resolve-state");
