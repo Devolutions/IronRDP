@@ -2793,6 +2793,10 @@ test("recovery repeats only the failed work and keeps every earlier success", ()
   // A recovered stage still explains the attempt it lost.
   assert.equal(stage("specialist:skeptical").previous_reason, "provider request timed out");
   assert.equal(stage("specialist:protocol").attempts, 1);
+  // A stage its dependency skipped was never attempted, so the report must not read as a call.
+  assert.equal(stage("general").attempts, 0);
+  assert.equal(stage("validate").attempts, 0);
+  assert.equal(stageOutcome({ id: "general", status: "skipped", attempts: 2 }).attempts, 0);
   assert.equal(report.metrics.stage_retries, 1);
   assert.equal(report.metrics.request_retries, 16);
   // Both attempts of the recovered stage are charged.

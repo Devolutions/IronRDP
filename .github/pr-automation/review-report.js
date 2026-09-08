@@ -42,21 +42,23 @@ function normalizeStageMetrics(metrics = {}) {
 
 const MANDATORY_STAGES = ["evidence", "aggregate", "general", "validate"];
 
-// `attempts` is 1 or 2 because a stage gets at most one delayed retry. `previous_reason` keeps the
-// first attempt's failure visible even when the retry succeeded.
+// A stage that ran was attempted once, or twice when it took its single delayed retry, and a
+// skipped stage was never attempted at all. `previous_reason` keeps the first attempt's failure
+// visible even when the retry succeeded.
 function stageOutcome(raw) {
   const {
     id, status, required = false, reason = "", category = "", attempts = 1,
     previous_reason: previousReason = "", provider = false, metrics = {},
   } = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const outcome = STAGE_STATUS.has(status) ? status : "failed";
   return {
     id: typeof id === "string" ? id : "",
-    status: STAGE_STATUS.has(status) ? status : "failed",
+    status: outcome,
     required: required === true,
     provider: provider === true,
     reason: normalizeText(reason, 300) || "",
     category: normalizeText(category, 60) || "",
-    attempts: attempts === 2 ? 2 : 1,
+    attempts: outcome === "skipped" ? 0 : attempts === 2 ? 2 : 1,
     previous_reason: normalizeText(previousReason, 300) || "",
     metrics: normalizeStageMetrics(metrics),
   };
