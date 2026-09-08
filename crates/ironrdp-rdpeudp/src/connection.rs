@@ -1229,7 +1229,9 @@ impl RdpeudpConnection {
             ack_vector: Some(V1AckVectorHeader {
                 elements: vec![V1AckVectorElement {
                     state: VectorElementState::DatagramReceived,
-                    length: 1,
+                    // One datagram (the SYN+ACK): wire runs are count - 1, see
+                    // process_v1_acknowledgement.
+                    length: 0,
                 }],
             }),
             ack_of_acks: None,
@@ -2723,6 +2725,85 @@ mod v1_tests {
             .and_then(|t| decode::<V1Datagram>(&t.contents).ok())
             .is_some_and(|d| d.data.is_some());
         assert!(!is_data, "acknowledged packet must not be retransmitted");
+    }
+
+    /// The client's final handshake ACK acknowledges exactly the SYN+ACK, so
+    /// its single run must be encoded as 0x00, the same way build_v1_ack_parts
+    /// encodes a run of one.
+    #[test]
+    fn the_final_handshake_ack_encodes_one_datagram_as_zero() {
+        let mut conn = RdpeudpConnection::connect(config(), at(0)).unwrap();
+        let _ = conn.poll_transmit(at(0)).expect("client SYN");
+        let mut wire = syn_ack(2);
+        conn.handle_datagram(&mut wire, at(20)).unwrap();
+
+        let out = conn.poll_transmit(at(20)).expect("final ACK");
+        let datagram: V1Datagram = decode(&out.contents).unwrap();
+        assert_eq!(datagram.header.sn_source_ack, REMOTE_ISN);
+        assert_eq!(
+            datagram.ack_vector.unwrap().elements,
+            vec![V1AckVectorElement {
+                state: VectorElementState::DatagramReceived,
+                length: 0,
+            }]
+        );
+    }
+
+    /// ACKs captured from Windows Server (10.0.0.12) over an MS-RDPEUDP
+    /// version 2 tunnel, verbatim apart from `snSourceAck`, which is rebased
+    /// onto this test's ISN:
+    ///
+    /// * after our first Source Packet (the TLS ClientHello, seq 1), the
+    ///   ServerHello came back as `00 00 00 01 00 c8 00 0c 00 01 00 b5 ...`:
+    ///   `snSourceAck` 1 and one element 0x00;
+    /// * after four Source Packets (seq 1..=4, all of which the server acted
+    ///   on: the TLS handshake finished), `00 00 00 04 00 c6 00 04 00 01 03 b5`:
+    ///   `snSourceAck` 4 and one element 0x03.
+    ///
+    /// Read literally 0x00 would be an empty run and 0x03 would leave seq 1
+    /// unacknowledged forever; Windows means "one" and "four", so the six-bit
+    /// run length is count - 1.
+    #[test]
+    fn windows_ack_vector_runs_are_count_minus_one() {
+        fn windows_ack(sn_source_ack: u32, element: u8, window: u16, flags: u16) -> Vec<u8> {
+            let mut bytes = sn_source_ack.to_be_bytes().to_vec();
+            bytes.extend_from_slice(&window.to_be_bytes());
+            bytes.extend_from_slice(&flags.to_be_bytes());
+            bytes.extend_from_slice(&[0x00, 0x01, element, 0xb5]);
+            bytes
+        }
+        fn pending(conn: &RdpeudpConnection) -> usize {
+            conn.send_window.as_ref().unwrap().pending_entries().count()
+        }
+
+        // One Source Packet, acknowledged by element 0x00.
+        let mut conn = established(2);
+        conn.send(b"ClientHello".to_vec()).unwrap();
+        let _ = conn.poll_transmit(at(30)).unwrap();
+        assert_eq!(pending(&conn), 1);
+        let mut ack = windows_ack(LOCAL_ISN + 1, 0x00, 0x00c8, 0x000c);
+        // The captured datagram also carried data; a bare ACK is enough here.
+        ack[7] = 0x04;
+        conn.handle_datagram(&mut ack, at(50)).unwrap();
+        assert_eq!(pending(&conn), 0, "element 0x00 acknowledges exactly one datagram");
+
+        // Four Source Packets, acknowledged by element 0x03.
+        let mut conn = established(2);
+        for payload in [&b"1"[..], b"2", b"3", b"4"] {
+            conn.send(payload.to_vec()).unwrap();
+            let _ = conn.poll_transmit(at(30)).unwrap();
+        }
+        assert_eq!(pending(&conn), 4);
+        let mut ack = windows_ack(LOCAL_ISN + 4, 0x03, 0x00c6, 0x0004);
+        conn.handle_datagram(&mut ack, at(50)).unwrap();
+        assert_eq!(pending(&conn), 0, "element 0x03 acknowledges seq 4 down to seq 1");
+
+        conn.handle_timeout(at(5_000));
+        let retransmit = conn
+            .poll_transmit(at(5_000))
+            .and_then(|t| decode::<V1Datagram>(&t.contents).ok())
+            .is_some_and(|d| d.data.is_some());
+        assert!(!retransmit, "nothing left to retransmit");
     }
 
     #[test]
