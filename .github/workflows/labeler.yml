@@ -439,6 +439,7 @@ jobs:
           api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
           base-url: https://api.helmcode.com/v1
           config-file: .github/pr-automation/agents/classifier.json
+          max-request-retries: 4
 
   resolve-classification-state:
     name: Resolve classification state
@@ -519,6 +520,7 @@ jobs:
       gate: ${{ steps.gate.outputs.gate }}
       eligible: ${{ steps.gate.outputs.eligible }}
       specialist-reviewers: ${{ steps.gate.outputs.specialist-reviewers }}
+      required-reviewers: ${{ steps.gate.outputs.required-reviewers }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -536,7 +538,9 @@ jobs:
           FORCE: ${{ needs.resolve-pr.outputs.force }}
         with:
           script: |
-            const { SCHEMA_VERSION, parseCheckState } = require("./.github/pr-automation/validate-classifier");
+            const {
+              PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION, parseCheckState,
+            } = require("./.github/pr-automation/validate-classifier");
             const { contributorEligibility, reviewPolicyEligible } = require("./.github/pr-automation/resolve-state");
             const { resolveReviewerRoute } = require("./.github/pr-automation/routing");
             const prNumber = Number(process.env.PULL_REQUEST_NUMBER);
@@ -550,6 +554,7 @@ jobs:
               core.setOutput("gate", JSON.stringify(gate));
               core.setOutput("eligible", eligible);
               core.setOutput("specialist-reviewers", JSON.stringify(gate.specialistReviewers || []));
+              core.setOutput("required-reviewers", JSON.stringify(gate.requiredReviewers || []));
               core.info(JSON.stringify({
                 event: "pr-automation.review-gate",
                 decision: gate,
@@ -563,7 +568,8 @@ jobs:
               const completed = (runs, externalId) => runs.data.check_runs
                 .filter((run) => run.external_id === externalId)
                 .sort((left, right) => right.id - left.id)[0];
-              const classification = completed(classificationRuns, `${SCHEMA_VERSION}:${headSha}`);
+              const classification = completed(classificationRuns, `${SCHEMA_VERSION}:${headSha}`) ||
+                completed(classificationRuns, `${PREVIOUS_SCHEMA_VERSION}:${headSha}`);
               const classificationOwned = classification?.conclusion === "success" &&
                 classification.app?.slug === "github-actions";
               // A check without the current machine-readable state predates this contract: fail closed
@@ -588,6 +594,7 @@ jobs:
                   policyEligible: true, labels: resolvedLabels, protocolRelated,
                   risk: protocolState?.risk || "unknown",
                   specialistReviewers: route.ok ? route.reviewers : ["skeptical", "code-compressor"],
+                  requiredReviewers: route.ok ? route.requiredReviewers : ["skeptical"],
                   contributor: { status: "forced" },
                 });
                 return;
@@ -620,6 +627,7 @@ jobs:
                 ciGreen, secondReviewEligible, policyEligible, labels, contributor,
                 protocolRelated, risk: protocolState?.risk || "unknown",
                 specialistReviewers: protocolState?.specialistReviewers || [],
+                requiredReviewers: protocolState?.requiredReviewers || [],
               });
             } catch (error) {
               core.warning(`Review gate unavailable: ${error.message}`);
@@ -628,22 +636,121 @@ jobs:
                 legitimacyStopped: false, ciGreen: false, secondReviewEligible: force,
                 policyEligible: force, labels: force ? resolvedLabels : [], protocolRelated: false,
                 risk: "unknown", specialistReviewers: force ? ["skeptical", "code-compressor"] : [],
+                requiredReviewers: force ? ["skeptical"] : [],
                 contributor: force ? { status: "forced" } : { status: "unavailable" },
                 reason: error.message,
               }, force);
             }
 
-  review-pipeline:
-    name: Run automated review pipeline
+  review-attempt-claim:
+    name: Claim automated review attempt
     needs: [resolve-pr, fork-rate-limit, review-gate]
     if: >-
       always() && !cancelled() &&
       needs.resolve-pr.outputs.ok == 'true' &&
       needs.resolve-pr.outputs.review-route == 'true' &&
-      (needs.resolve-pr.outputs.force == 'true' ||
+      needs.resolve-pr.outputs.force != 'true' &&
       (needs.fork-rate-limit.result == 'success' &&
       needs.fork-rate-limit.outputs.allowed == 'true' &&
-      needs.review-gate.outputs.eligible == 'true'))
+      needs.review-gate.outputs.eligible == 'true')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pr-automation-review-claim-${{ needs.resolve-pr.outputs.pr-number }}
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      checks: write
+      contents: read
+      pull-requests: read
+    outputs:
+      claimed: ${{ steps.claim.outputs.claimed }}
+      fingerprint: ${{ steps.claim.outputs.fingerprint }}
+      attempt: ${{ steps.claim.outputs.attempt }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - id: claim
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
+          EVIDENCE_MAX_BYTES: ${{ needs.resolve-pr.outputs.evidence-max-bytes }}
+          SPECIALIST_REVIEWERS: ${{ needs.review-gate.outputs.specialist-reviewers }}
+          REQUIRED_REVIEWERS: ${{ needs.review-gate.outputs.required-reviewers }}
+          PROTOCOL_RELATED: ${{ fromJSON(needs.review-gate.outputs.gate).protocolRelated }}
+          RISK: ${{ fromJSON(needs.review-gate.outputs.gate).risk }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SUMMARY_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const {
+              canonicalRecoveryIdentity, claimAttempt, parseClaim, recoveryFingerprint,
+            } = require("./.github/pr-automation/review-attempt-claim");
+            const { ensureReviewClaim, findCheck } = require("./.github/pr-automation/write-state");
+            const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
+            const pullNumber = Number(process.env.PULL_REQUEST_NUMBER);
+            const owner = { runId: Number(process.env.RUN_ID), runAttempt: Number(process.env.RUN_ATTEMPT) };
+            const identity = canonicalRecoveryIdentity({
+              prNumber: pullNumber,
+              headSha: process.env.HEAD_SHA,
+              baseSha: process.env.BASE_SHA,
+              selectedReviewers: parse(process.env.SPECIALIST_REVIEWERS, []),
+              requiredReviewers: parse(process.env.REQUIRED_REVIEWERS, []),
+              protocolRelated: process.env.PROTOCOL_RELATED === "true",
+              risk: process.env.RISK,
+              evidenceMaxBytes: Number(process.env.EVIDENCE_MAX_BYTES),
+              workflowSha: process.env.WORKFLOW_SHA,
+            });
+            const fingerprint = recoveryFingerprint(identity);
+            if (!fingerprint) throw new Error("invalid review recovery identity");
+            const check = await findCheck(
+              github, context.repo.owner, context.repo.repo, process.env.HEAD_SHA,
+              { name: "AI automated review", externalId: process.env.HEAD_SHA },
+            );
+            const previous = parseClaim(check?.output?.summary);
+            let ownerRun;
+            if (previous && (previous.owner.runId !== owner.runId ||
+                previous.owner.runAttempt !== owner.runAttempt)) {
+              try {
+                ({ data: ownerRun } = await github.rest.actions.getWorkflowRun({
+                  owner: context.repo.owner, repo: context.repo.repo, run_id: previous.owner.runId,
+                }));
+              } catch (error) {
+                core.warning(`Review claim owner lookup failed: ${error.message}`);
+              }
+            }
+            const result = claimAttempt({ previous, fingerprint, owner, ownerRun });
+            core.setOutput("fingerprint", fingerprint);
+            if (!result.ok) {
+              core.setOutput("claimed", false);
+              core.warning(`Automated review was not claimed: ${result.reason}`);
+              return;
+            }
+            await ensureReviewClaim(
+              github, context.repo.owner, context.repo.repo, pullNumber, process.env.HEAD_SHA,
+              result.claim, process.env.SUMMARY_URL,
+            );
+            core.setOutput("claimed", true);
+            core.setOutput("attempt", result.claim.attempt);
+
+  review-pipeline:
+    name: Run automated review pipeline
+    needs: [resolve-pr, fork-rate-limit, review-gate, review-attempt-claim]
+    if: >-
+      always() && !cancelled() &&
+      needs.resolve-pr.outputs.ok == 'true' &&
+      needs.resolve-pr.outputs.review-route == 'true' &&
+      (needs.resolve-pr.outputs.force == 'true' ||
+      (needs.review-attempt-claim.outputs.claimed == 'true' &&
+      (needs.fork-rate-limit.result == 'success' &&
+      needs.fork-rate-limit.outputs.allowed == 'true' &&
+      needs.review-gate.outputs.eligible == 'true')))
     concurrency:
       group: llm-reviewer-pipeline
       cancel-in-progress: false
@@ -659,14 +766,293 @@ jobs:
       base-sha: ${{ needs.resolve-pr.outputs.base-sha }}
       gate: ${{ needs.review-gate.outputs.gate }}
       specialist-reviewers: ${{ needs.review-gate.outputs.specialist-reviewers }}
+      required-reviewers: ${{ needs.review-gate.outputs.required-reviewers }}
       evidence-max-bytes: ${{ needs.resolve-pr.outputs.evidence-max-bytes }}
+      recovery-attempt: "0"
+      prior-results: ""
     # Work around actions/runner#4453: environment secrets otherwise resolve empty in reusable jobs.
     # This exposes caller-accessible secrets, so the called workflow must remain trusted and not execute PR code.
     secrets: inherit
 
+  resolve-stage-recovery:
+    name: Resolve stage recovery
+    needs: [resolve-pr, review-attempt-claim, review-pipeline]
+    if: always() && !cancelled() && needs.review-attempt-claim.outputs.claimed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      pending: ${{ steps.resolve.outputs.pending }}
+      prior-results: ${{ steps.resolve.outputs.prior-results }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - id: resolve
+        uses: actions/github-script@v8
+        env:
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
+          STAGES: ${{ needs.review-pipeline.outputs.stages }}
+          METRICS: ${{ needs.review-pipeline.outputs.metrics }}
+          PROVENANCE: ${{ needs.review-pipeline.outputs.provenance }}
+          RECOVERABLE: ${{ needs.review-pipeline.outputs.recoverable }}
+          FORCE: ${{ needs.resolve-pr.outputs.force }}
+        with:
+          script: |
+            const { parsePipelineRecovery, recoveryDecision } = require("./.github/pr-automation/review-recovery");
+            const pipeline = parsePipelineRecovery({
+              stages: process.env.STAGES,
+              metrics: process.env.METRICS,
+              provenance: process.env.PROVENANCE,
+              recoverable: process.env.RECOVERABLE,
+              expectedHeadSha: process.env.HEAD_SHA,
+              expectedBaseSha: process.env.BASE_SHA,
+              expectedRecoveryAttempt: 0,
+            });
+            const decision = recoveryDecision({ pipeline, attempt: 1 });
+            core.setOutput("pending", process.env.FORCE !== "true" && decision.status === "pending");
+            if (pipeline.ok) {
+              core.setOutput("prior-results", JSON.stringify(pipeline.value.provenance.value));
+            }
+            core.info(JSON.stringify({
+              event: "pr-automation.stage-recovery",
+              status: decision.status,
+              reason: decision.reason || null,
+            }));
+
+  write-stage-recovery-pending:
+    name: Publish stage recovery status
+    needs: [resolve-pr, review-attempt-claim, resolve-stage-recovery]
+    if: >-
+      always() && !cancelled() &&
+      needs.resolve-stage-recovery.outputs.pending == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pr-automation-write-${{ needs.resolve-pr.outputs.pr-number }}
+      cancel-in-progress: false
+    permissions:
+      checks: write
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          FINGERPRINT: ${{ needs.review-attempt-claim.outputs.fingerprint }}
+          ATTEMPT: ${{ needs.review-attempt-claim.outputs.attempt }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SUMMARY_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const { updateClaim } = require("./.github/pr-automation/review-attempt-claim");
+            const { ensureReviewClaim, findCheck } = require("./.github/pr-automation/write-state");
+            const { parseClaim } = require("./.github/pr-automation/review-attempt-claim");
+            const owner = { runId: Number(process.env.RUN_ID), runAttempt: Number(process.env.RUN_ATTEMPT) };
+            const check = await findCheck(
+              github, context.repo.owner, context.repo.repo, process.env.HEAD_SHA,
+              { name: "AI automated review", externalId: process.env.HEAD_SHA },
+            );
+            const result = updateClaim({
+              claim: parseClaim(check?.output?.summary),
+              owner,
+              status: "pending",
+              reason: "temporary required-stage failure",
+            });
+            if (!result.ok || result.claim.fingerprint !== process.env.FINGERPRINT ||
+                result.claim.attempt !== Number(process.env.ATTEMPT)) {
+              throw new Error("review recovery claim was lost");
+            }
+            await ensureReviewClaim(
+              github, context.repo.owner, context.repo.repo, Number(process.env.PULL_REQUEST_NUMBER),
+              process.env.HEAD_SHA, result.claim, process.env.SUMMARY_URL,
+            );
+
+  stage-recovery-delay:
+    name: Wait before stage recovery
+    needs: [write-stage-recovery-pending]
+    if: always() && !cancelled() && needs.write-stage-recovery-pending.result == 'success'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Wait for temporary provider recovery
+        run: sleep 120
+
+  review-recovery-preflight:
+    name: Recheck stage recovery gate
+    needs: [resolve-pr, review-gate, stage-recovery-delay]
+    if: always() && !cancelled() && needs.stage-recovery-delay.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      eligible: ${{ steps.gate.outputs.eligible }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - id: gate
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
+          AUTHOR: ${{ needs.resolve-pr.outputs.author }}
+          SELECTED_REVIEWERS: ${{ needs.review-gate.outputs.specialist-reviewers }}
+          REQUIRED_REVIEWERS: ${{ needs.review-gate.outputs.required-reviewers }}
+        with:
+          script: |
+            const { contributorEligibility, reviewPolicyEligible } = require("./.github/pr-automation/resolve-state");
+            const { forkRateLimit } = require("./.github/pr-automation/fork-rate-limit");
+            const { parseCheckState, PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION } =
+              require("./.github/pr-automation/validate-classifier");
+            const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
+            const pullNumber = Number(process.env.PULL_REQUEST_NUMBER);
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner, repo: context.repo.repo, pull_number: pullNumber,
+            });
+            if (pr.state !== "open" || pr.head?.sha !== process.env.HEAD_SHA ||
+                pr.base?.sha !== process.env.BASE_SHA) return core.setOutput("eligible", false);
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: pullNumber,
+            });
+            const labels = issue.labels.map((label) => typeof label === "string" ? label : label.name);
+            if (!reviewPolicyEligible({ labels })) return core.setOutput("eligible", false);
+            const runs = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, head_sha: process.env.HEAD_SHA, per_page: 100,
+            });
+            if (!runs.data.workflow_runs.some((run) => run?.name === "CI" && run?.conclusion === "success")) {
+              return core.setOutput("eligible", false);
+            }
+            const checks = await github.rest.checks.listForRef({
+              owner: context.repo.owner, repo: context.repo.repo, ref: process.env.HEAD_SHA,
+              check_name: "AI classification", per_page: 100,
+            });
+            const classification = checks.data.check_runs
+              .filter((run) => run.conclusion === "success" && run.app?.slug === "github-actions" &&
+                [`${SCHEMA_VERSION}:${process.env.HEAD_SHA}`, `${PREVIOUS_SCHEMA_VERSION}:${process.env.HEAD_SHA}`]
+                  .includes(run.external_id))
+              .sort((left, right) => right.id - left.id)[0];
+            const state = parseCheckState(classification?.output?.summary);
+            if (!state || !state.automaticReviewEligible ||
+                JSON.stringify(state.selectedReviewers) !== JSON.stringify(parse(process.env.SELECTED_REVIEWERS, [])) ||
+                JSON.stringify(state.requiredReviewers) !== JSON.stringify(parse(process.env.REQUIRED_REVIEWERS, []))) {
+              return core.setOutput("eligible", false);
+            }
+            const contributor = await contributorEligibility({
+              github, owner: context.repo.owner, repo: context.repo.repo,
+              author: parse(process.env.AUTHOR, null), currentPrNumber: pullNumber,
+            });
+            const quota = await forkRateLimit({
+              github, owner: context.repo.owner, repo: context.repo.repo, pr,
+              author: parse(process.env.AUTHOR, null),
+            });
+            core.setOutput("eligible", contributor.status === "eligible" && quota.status === "allowed");
+
+  review-recovery-claim:
+    name: Claim stage recovery attempt
+    needs: [resolve-pr, review-attempt-claim, resolve-stage-recovery, review-recovery-preflight]
+    if: >-
+      always() && !cancelled() &&
+      needs.resolve-stage-recovery.outputs.pending == 'true' &&
+      needs.review-recovery-preflight.outputs.eligible == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pr-automation-review-claim-${{ needs.resolve-pr.outputs.pr-number }}
+      cancel-in-progress: false
+    permissions:
+      checks: write
+      contents: read
+      pull-requests: read
+    outputs:
+      claimed: ${{ steps.claim.outputs.claimed }}
+      attempt: ${{ steps.claim.outputs.attempt }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - id: claim
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          FINGERPRINT: ${{ needs.review-attempt-claim.outputs.fingerprint }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SUMMARY_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const { claimAttempt, parseClaim } = require("./.github/pr-automation/review-attempt-claim");
+            const { ensureReviewClaim, findCheck } = require("./.github/pr-automation/write-state");
+            const owner = { runId: Number(process.env.RUN_ID), runAttempt: Number(process.env.RUN_ATTEMPT) };
+            const check = await findCheck(
+              github, context.repo.owner, context.repo.repo, process.env.HEAD_SHA,
+              { name: "AI automated review", externalId: process.env.HEAD_SHA },
+            );
+            const result = claimAttempt({
+              previous: parseClaim(check?.output?.summary),
+              fingerprint: process.env.FINGERPRINT,
+              owner,
+              nextAttempt: true,
+            });
+            if (!result.ok) {
+              core.setOutput("claimed", false);
+              core.warning(`Stage recovery was not claimed: ${result.reason}`);
+              return;
+            }
+            await ensureReviewClaim(
+              github, context.repo.owner, context.repo.repo, Number(process.env.PULL_REQUEST_NUMBER),
+              process.env.HEAD_SHA, result.claim, process.env.SUMMARY_URL,
+            );
+            core.setOutput("claimed", true);
+            core.setOutput("attempt", result.claim.attempt);
+
+  review-pipeline-recovery:
+    name: Recover automated review pipeline
+    needs: [resolve-pr, review-gate, resolve-stage-recovery, review-recovery-claim]
+    if: always() && !cancelled() && needs.review-recovery-claim.outputs.claimed == 'true'
+    concurrency:
+      group: llm-reviewer-pipeline
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    uses: ./.github/workflows/review-pipeline.yml
+    with:
+      pr-number: ${{ needs.resolve-pr.outputs.pr-number }}
+      head-sha: ${{ needs.resolve-pr.outputs.head-sha }}
+      base-sha: ${{ needs.resolve-pr.outputs.base-sha }}
+      gate: ${{ needs.review-gate.outputs.gate }}
+      specialist-reviewers: ${{ needs.review-gate.outputs.specialist-reviewers }}
+      required-reviewers: ${{ needs.review-gate.outputs.required-reviewers }}
+      evidence-max-bytes: ${{ needs.resolve-pr.outputs.evidence-max-bytes }}
+      recovery-attempt: "1"
+      prior-results: ${{ needs.resolve-stage-recovery.outputs.prior-results }}
+    secrets: inherit
+
   resolve-review-state:
     name: Resolve review state
-    needs: [resolve-pr, fork-rate-limit, review-gate, review-pipeline]
+    needs: [resolve-pr, fork-rate-limit, review-gate, review-attempt-claim, review-pipeline,
+      resolve-stage-recovery, review-recovery-preflight, review-recovery-claim, review-pipeline-recovery]
     if: always() && !cancelled() && needs.resolve-pr.outputs.ok == 'true' &&
       needs.resolve-pr.outputs.review-route == 'true'
     runs-on: ubuntu-latest
@@ -688,34 +1074,146 @@ jobs:
           REVIEW_GATE_RESULT: ${{ needs.review-gate.result }}
           FORK_RATE_LIMIT: ${{ needs.fork-rate-limit.outputs.quota }}
           FORK_RATE_LIMIT_RESULT: ${{ needs.fork-rate-limit.result }}
-          RAW_OUTPUT: ${{ needs.review-pipeline.outputs.output }}
-          REVIEWER_REASON: ${{ needs.review-pipeline.outputs.failure-reason }}
+          INITIAL_OUTPUT: ${{ needs.review-pipeline.outputs.output }}
+          INITIAL_REASON: ${{ needs.review-pipeline.outputs.failure-reason }}
+          INITIAL_STAGES: ${{ needs.review-pipeline.outputs.stages }}
+          INITIAL_METRICS: ${{ needs.review-pipeline.outputs.metrics }}
+          INITIAL_PROVENANCE: ${{ needs.review-pipeline.outputs.provenance }}
+          INITIAL_RECOVERABLE: ${{ needs.review-pipeline.outputs.recoverable }}
+          RECOVERY_OUTPUT: ${{ needs.review-pipeline-recovery.outputs.output }}
+          RECOVERY_REASON: ${{ needs.review-pipeline-recovery.outputs.failure-reason }}
+          RECOVERY_STAGES: ${{ needs.review-pipeline-recovery.outputs.stages }}
+          RECOVERY_METRICS: ${{ needs.review-pipeline-recovery.outputs.metrics }}
+          RECOVERY_PROVENANCE: ${{ needs.review-pipeline-recovery.outputs.provenance }}
+          RECOVERY_RECOVERABLE: ${{ needs.review-pipeline-recovery.outputs.recoverable }}
           REVIEW_PIPELINE_RESULT: ${{ needs.review-pipeline.result }}
+          RECOVERY_PIPELINE_RESULT: ${{ needs.review-pipeline-recovery.result }}
+          RECOVERY_PREFLIGHT_RESULT: ${{ needs.review-recovery-preflight.result }}
+          RECOVERY_CLAIM_RESULT: ${{ needs.review-recovery-claim.result }}
+          RECOVERY_CLAIMED: ${{ needs.review-recovery-claim.outputs.claimed }}
+          FINGERPRINT: ${{ needs.review-attempt-claim.outputs.fingerprint }}
+          INITIAL_ATTEMPT: ${{ needs.review-attempt-claim.outputs.attempt }}
+          REVIEW_CLAIMED: ${{ needs.review-attempt-claim.outputs.claimed }}
           FORCE: ${{ needs.resolve-pr.outputs.force }}
           LABELS: ${{ needs.resolve-pr.outputs.labels }}
           REVIEW_MARKER_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SUMMARY_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
           script: |
              const { resolveReviewState } = require("./.github/pr-automation/resolve-state");
              const { reviewSkipReasons } = require("./.github/pr-automation/review-skip-summary");
+             const {
+               aggregateStageMetrics, parsePipelineRecovery, recoveryDecision,
+             } = require("./.github/pr-automation/review-recovery");
+             const { encodeClaim } = require("./.github/pr-automation/review-attempt-claim");
              const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
              const force = process.env.FORCE === "true";
              const gate = parse(process.env.GATE, force ? {
                ok: true, force: true, head_sha: process.env.HEAD_SHA,
                labels: parse(process.env.LABELS, []), protocolRelated: false, risk: "unknown",
-               specialistReviewers: ["skeptical", "code-compressor"], contributor: { status: "forced" },
+               specialistReviewers: ["skeptical", "code-compressor"], requiredReviewers: ["skeptical"],
+               contributor: { status: "forced" },
              } : {});
+             if (!force && process.env.REVIEW_CLAIMED !== "true") {
+               if (process.env.REVIEW_PIPELINE_RESULT === "skipped") {
+                 const reasons = reviewSkipReasons({
+                   gate,
+                   gateResult: process.env.REVIEW_GATE_RESULT,
+                   rateLimit: parse(process.env.FORK_RATE_LIMIT, null),
+                   rateLimitResult: process.env.FORK_RATE_LIMIT_RESULT,
+                 });
+                 await core.summary
+                   .addHeading("Automated review skipped")
+                   .addRaw("The automated review did not run because:", true)
+                   .addList(reasons)
+                   .write();
+               }
+               return;
+             }
+             let initial = parsePipelineRecovery({
+               stages: process.env.INITIAL_STAGES,
+               metrics: process.env.INITIAL_METRICS,
+               provenance: process.env.INITIAL_PROVENANCE,
+               recoverable: process.env.INITIAL_RECOVERABLE,
+               expectedHeadSha: process.env.HEAD_SHA,
+               expectedBaseSha: process.env.BASE_SHA,
+               expectedRecoveryAttempt: 0,
+             });
+             if (!initial.ok && process.env.INITIAL_REASON) initial = {
+               ...initial,
+               reason: process.env.INITIAL_REASON,
+             };
+             const recoveryRan = process.env.RECOVERY_PIPELINE_RESULT !== "skipped";
+             let recovered = recoveryRan ? parsePipelineRecovery({
+               stages: process.env.RECOVERY_STAGES,
+               metrics: process.env.RECOVERY_METRICS,
+               provenance: process.env.RECOVERY_PROVENANCE,
+               recoverable: process.env.RECOVERY_RECOVERABLE,
+               expectedHeadSha: process.env.HEAD_SHA,
+               expectedBaseSha: process.env.BASE_SHA,
+               expectedRecoveryAttempt: 1,
+             }) : null;
+             if (recovered && !recovered.ok && process.env.RECOVERY_REASON) recovered = {
+               ...recovered,
+               reason: process.env.RECOVERY_REASON,
+             };
+             const selectedPipeline = recovered ?? initial;
+             let recovery = recoveryDecision({
+               pipeline: selectedPipeline,
+               attempt: recovered ? 2 : 1,
+             });
+             if (!force && !recovered && recovery.status === "pending") {
+               recovery = {
+                 status: "exhausted",
+                 reason: process.env.RECOVERY_PREFLIGHT_RESULT !== "success"
+                   ? "stage recovery gate is unavailable"
+                   : process.env.RECOVERY_CLAIMED !== "true"
+                     ? "stage recovery attempt was not claimed"
+                     : "stage recovery did not run",
+               };
+             }
+             const rawOutput = recovered ? process.env.RECOVERY_OUTPUT : process.env.INITIAL_OUTPUT;
+             const reviewerReason = recovery.status === "exhausted"
+               ? recovery.reason
+               : recovered ? process.env.RECOVERY_REASON : process.env.INITIAL_REASON;
              const state = resolveReviewState({
                expectedSha: process.env.HEAD_SHA,
                labels: gate.labels ?? [],
                gate,
                contributor: gate.contributor ?? {},
                rateLimit: parse(process.env.FORK_RATE_LIMIT, {}),
-               reviewer: parse(process.env.RAW_OUTPUT, null),
-               reviewerReason: process.env.REVIEWER_REASON,
+               reviewer: parse(rawOutput, null),
+               reviewerReason,
                force,
                reviewMarkerId: process.env.REVIEW_MARKER_ID,
              });
+             const claim = {
+               fingerprint: process.env.FINGERPRINT,
+               attempt: recovered ? 2 : Number(process.env.INITIAL_ATTEMPT),
+               owner: { runId: Number(process.env.REVIEW_MARKER_ID), runAttempt: Number(process.env.RUN_ATTEMPT) },
+               status: state.failed === true || recovery.status === "exhausted"
+                 ? "exhausted"
+                 : "published",
+               reason: state.failed === true || recovery.status === "exhausted" ? reviewerReason || "" : "",
+             };
+             if (state.check && /^[0-9a-f]{64}$/.test(claim.fingerprint)) {
+               state.check.title = claim.status === "published"
+                 ? recovered ? "Stage recovery successful" : "Automated review complete"
+                 : "Stage recovery exhausted";
+               state.check.summary = `${claim.status === "published"
+                 ? recovered
+                   ? "Validated automated review was produced after stage recovery."
+                   : "Validated automated review is bound to this commit."
+                 : `Automated review recovery is exhausted: ${claim.reason || "review unavailable"}.`}\n\n` +
+                 `[View the workflow summary](${process.env.SUMMARY_URL})\n\n${encodeClaim(claim)}`;
+               state.check.conclusion = claim.status === "published" ? "success" : "neutral";
+               state.expectedReviewClaim = {
+                 fingerprint: claim.fingerprint,
+                 attempt: claim.attempt,
+                 owner: claim.owner,
+               };
+             }
              core.setOutput("state", JSON.stringify(state));
              core.info(JSON.stringify({
                event: "pr-automation.review-state",
@@ -737,12 +1235,50 @@ jobs:
                  .addRaw("The automated review did not run because:", true)
                  .addList(reasons)
                  .write();
+             } else {
+               const pipelines = [initial, recovered].filter(Boolean);
+               const metrics = aggregateStageMetrics(pipelines);
+               const failures = pipelines.flatMap((pipeline) => pipeline.ok
+                 ? pipeline.value.stages.filter((stage) => stage.status === "failed")
+                 : [{ id: "pipeline", reason: pipeline.reason }]);
+               await core.summary
+                 .addHeading("Automated review recovery")
+                 .addRaw(`Recovery status: **${claim.status}**.`, true)
+                 .addRaw(`Workflow summary: ${process.env.SUMMARY_URL}`, true)
+                 .addHeading("Failed stages")
+                 .addList(failures.length === 0
+                   ? ["No stage failure was reported."]
+                   : failures.map((stage) => `${stage.id}: ${stage.reason || stage.failureCategory}`))
+                 .addHeading("Metrics across attempts")
+                 .addRaw(`Stages: ${metrics.attempts}; reused results: ${metrics.reused}.`, true)
+                 .addTable([
+                   [{ data: "Metric", header: true }, { data: "Total", header: true }],
+                   ...Object.entries(metrics.totals).map(([name, value]) => [{ data: name }, {
+                     data: value === null ? "unavailable" : String(value),
+                   }]),
+                 ])
+                 .addHeading("Per-stage metrics")
+                 .addTable([
+                   [{ data: "Stage", header: true }, { data: "Attempts", header: true },
+                     { data: "Reused", header: true }, ...Object.keys(metrics.totals).map((name) => ({
+                       data: name, header: true,
+                     }))],
+                   ...Object.entries(metrics.stages).map(([name, stage]) => [
+                     { data: name }, { data: String(stage.attempts) }, { data: String(stage.reused) },
+                     ...Object.entries(stage.metrics).map(([metric, value]) => ({
+                       data: stage.unavailable.includes(metric) ? "unavailable" : String(value),
+                     })),
+                   ]),
+                 ])
+                 .write();
              }
 
   write-state:
     name: Write pull request state
     needs: [resolve-pr, classification-gate, deterministic-analysis, fork-rate-limit, semver,
-      classifier, resolve-classification-state, review-gate, review-pipeline, resolve-review-state]
+      classifier, resolve-classification-state, review-gate, review-attempt-claim, review-pipeline,
+      resolve-stage-recovery, write-stage-recovery-pending, stage-recovery-delay,
+      review-recovery-preflight, review-recovery-claim, review-pipeline-recovery, resolve-review-state]
     if: always() && !cancelled() && needs.resolve-pr.outputs.ok == 'true'
     runs-on: ubuntu-latest
     concurrency:

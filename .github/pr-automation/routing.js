@@ -6,11 +6,23 @@ const REVIEWER_IDS = new Set(REVIEWER_ORDER);
 const RISKS = new Set(["low", "medium", "high", "unknown"]);
 
 function normalizeReviewerIds(value) {
-  if (!Array.isArray(value) || value.length > REVIEWER_ORDER.length ||
+  if (!Array.isArray(value) ||
       value.some((reviewer) => typeof reviewer !== "string" || !REVIEWER_IDS.has(reviewer)) ||
       new Set(value).size !== value.length) return null;
   const selected = new Set(value);
   return REVIEWER_ORDER.filter((reviewer) => selected.has(reviewer));
+}
+
+function requiredReviewerIds({ protocolRelated, risk } = {}) {
+  if (typeof protocolRelated !== "boolean" || !RISKS.has(risk)) {
+    return { ok: false, reason: "invalid required reviewer input" };
+  }
+  return {
+    ok: true,
+    reviewers: REVIEWER_ORDER.filter((reviewer) =>
+      (reviewer === "protocol" && protocolRelated) ||
+      (reviewer === "skeptical" && (risk === "medium" || risk === "high"))),
+  };
 }
 
 function resolveReviewerRoute({
@@ -24,24 +36,40 @@ function resolveReviewerRoute({
   const selected = new Set([...suggested, ...deterministic]);
   if (protocolRelated) selected.add("protocol");
   if (risk === "medium" || risk === "high") selected.add("skeptical");
+  const required = requiredReviewerIds({ protocolRelated, risk });
+  if (!required.ok) return required;
+  const reviewers = REVIEWER_ORDER.filter((reviewer) => selected.has(reviewer));
   return {
     ok: true,
-    reviewers: REVIEWER_ORDER.filter((reviewer) => selected.has(reviewer)),
+    reviewers,
+    selectedReviewers: reviewers,
+    requiredReviewers: required.reviewers,
   };
 }
 
-function validateReviewerRoute({ reviewers, protocolRelated, risk } = {}) {
-  const canonical = normalizeReviewerIds(reviewers);
-  if (!canonical || canonical.some((reviewer, index) => reviewer !== reviewers[index])) {
+function validateReviewerRoute({
+  reviewers, selectedReviewers = reviewers, requiredReviewers, protocolRelated, risk,
+} = {}) {
+  const canonical = normalizeReviewerIds(selectedReviewers);
+  if (!canonical || canonical.some((reviewer, index) => reviewer !== selectedReviewers[index]) ||
+      (reviewers !== undefined &&
+      (canonical.length !== reviewers.length || canonical.some((reviewer, index) => reviewer !== reviewers[index])))) {
     return { ok: false, reason: "invalid persisted reviewer route" };
   }
-  const mandatory = resolveReviewerRoute({
-    suggestedReviewers: [], deterministicReviewers: [], protocolRelated, risk,
-  });
-  if (!mandatory.ok || mandatory.reviewers.some((reviewer) => !canonical.includes(reviewer))) {
+  const mandatory = requiredReviewerIds({ protocolRelated, risk });
+  const required = normalizeReviewerIds(requiredReviewers ?? mandatory.reviewers);
+  if (!mandatory.ok || !required ||
+      required.some((reviewer, index) => reviewer !== (requiredReviewers ?? mandatory.reviewers)[index]) ||
+      required.some((reviewer) => !canonical.includes(reviewer)) ||
+      mandatory.reviewers.some((reviewer) => !required.includes(reviewer))) {
     return { ok: false, reason: "incomplete persisted reviewer route" };
   }
-  return { ok: true, reviewers: canonical };
+  return {
+    ok: true,
+    reviewers: canonical,
+    selectedReviewers: canonical,
+    requiredReviewers: required,
+  };
 }
 
 function labelsOf(labels) {
@@ -57,7 +85,7 @@ function reviewPolicyEligible({ labels, legitimacyStopped } = {}) {
 
 module.exports = {
   REVIEWER_ORDER,
-  normalizeReviewerIds,
+  normalizeReviewerIds, requiredReviewerIds,
   resolveReviewerRoute,
   reviewPolicyEligible,
   validateReviewerRoute,

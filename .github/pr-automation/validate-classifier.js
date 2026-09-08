@@ -1,9 +1,10 @@
 "use strict";
 
-const { SHA, exactKeys, invalid, normalizeText, parseJson } = require("./validation");
+const { SHA, exactKeys, invalid, isPlainObject, normalizeText, parseJson } = require("./validation");
 const { validateReviewerRoute } = require("./routing");
 
-const SCHEMA_VERSION = "classifier-v3";
+const SCHEMA_VERSION = "classifier-v4";
+const PREVIOUS_SCHEMA_VERSION = "classifier-v3";
 // Machine-readable classifier state persisted on the SHA-bound check, because the review route runs
 // in a later workflow run and cannot read classifier job outputs.
 const CHECK_STATE_MARKER = "ironrdp-pr-automation-state:";
@@ -112,10 +113,13 @@ function validateClassifier(raw, {
 }
 
 function encodeCheckState({
-  protocolRelated, risk, specialistReviewers, automaticReviewEligible = true,
+  protocolRelated, risk, specialistReviewers, selectedReviewers = specialistReviewers,
+  requiredReviewers, automaticReviewEligible = true,
 } = {}) {
   if (typeof protocolRelated !== "boolean") throw new Error("protocolRelated must be a boolean");
-  const route = validateReviewerRoute({ reviewers: specialistReviewers, protocolRelated, risk });
+  const route = validateReviewerRoute({
+    reviewers: specialistReviewers, selectedReviewers, requiredReviewers, protocolRelated, risk,
+  });
   if (!route.ok) throw new Error(route.reason);
   if (typeof automaticReviewEligible !== "boolean") {
     throw new Error("automaticReviewEligible must be a boolean");
@@ -124,7 +128,8 @@ function encodeCheckState({
     schema_version: SCHEMA_VERSION,
     protocol_related: protocolRelated,
     risk,
-    specialist_reviewers: route.reviewers,
+    selected_reviewers: route.selectedReviewers,
+    required_reviewers: route.requiredReviewers,
     automatic_review_eligible: automaticReviewEligible,
   })}`;
 }
@@ -136,14 +141,19 @@ function parseCheckState(text) {
   if (!line) return null;
   let parsed;
   try { parsed = JSON.parse(line.slice(CHECK_STATE_MARKER.length)); } catch { return null; }
-  const keys = [
-    "schema_version", "protocol_related", "risk", "specialist_reviewers", "automatic_review_eligible",
-  ];
-  if (!exactKeys(parsed, keys) || parsed.schema_version !== SCHEMA_VERSION ||
-      typeof parsed.protocol_related !== "boolean" ||
+  if (!isPlainObject(parsed)) return null;
+  const current = parsed.schema_version === SCHEMA_VERSION;
+  const legacy = parsed.schema_version === PREVIOUS_SCHEMA_VERSION;
+  const keys = current
+    ? ["schema_version", "protocol_related", "risk", "selected_reviewers", "required_reviewers",
+      "automatic_review_eligible"]
+    : ["schema_version", "protocol_related", "risk", "specialist_reviewers", "automatic_review_eligible"];
+  if ((!current && !legacy) || !exactKeys(parsed, keys) || typeof parsed.protocol_related !== "boolean" ||
       typeof parsed.automatic_review_eligible !== "boolean") return null;
   const route = validateReviewerRoute({
-    reviewers: parsed.specialist_reviewers,
+    reviewers: current ? parsed.selected_reviewers : parsed.specialist_reviewers,
+    selectedReviewers: current ? parsed.selected_reviewers : parsed.specialist_reviewers,
+    requiredReviewers: current ? parsed.required_reviewers : undefined,
     protocolRelated: parsed.protocol_related,
     risk: parsed.risk,
   });
@@ -152,11 +162,13 @@ function parseCheckState(text) {
     protocolRelated: parsed.protocol_related,
     risk: parsed.risk,
     specialistReviewers: route.reviewers,
+    selectedReviewers: route.selectedReviewers,
+    requiredReviewers: route.requiredReviewers,
     automaticReviewEligible: parsed.automatic_review_eligible,
   };
 }
 
 module.exports = {
-  CHECK_STATE_MARKER, SCHEMA_VERSION,
+  CHECK_STATE_MARKER, PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION,
   encodeCheckState, isDocumentationPath, parseCheckState, validateClassifier,
 };

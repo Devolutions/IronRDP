@@ -166,9 +166,22 @@ SHA-bound workflow artifacts carry evidence and validated results between review
 Only the final writer mutates pull request state, and it serializes those mutations per pull request.
 Model-execution jobs have read-only or empty permissions.
 
+Before an automatic review invokes a model, it claims one of two SHA- and policy-bound attempt slots in the `AI automated review` check.
+The claim prevents overlapping workflow deliveries and reruns from spending the same review budget.
+An active owner retains its claim, while a cancelled or stale owner can consume only the remaining slot.
+
+One temporary failure of a required review stage schedules a recovery attempt after 120 seconds in the same workflow run.
+The recovery rechecks the open head and base, classification, exact-head CI, contributor eligibility, quota, labels, reviewer route, and review-count policy before it can invoke a model.
+Terminal required-stage failures, invalid or stale provenance, exhausted output repair, invalid credentials or configuration, and provider quota failures do not schedule recovery.
+Optional failures and dependency-skipped stages do not block recovery of a transient required-stage failure.
+
 Two static classifier concurrency lanes allow at most two classifier jobs to invoke Helmcode at once.
 The reusable `.github/workflows/review-pipeline.yml` runs under one global caller-job lock and allows at most three specialist requests at once.
 The general reviewer starts only after all specialists finish, so these limits keep Helmcode usage within the five-request API-key limit.
+
+The `AI automated review` check shows whether stage recovery is pending, successful, or exhausted and links to the Actions summary.
+That summary retains every failed-stage reason and per-stage metrics across attempts, including failed and unavailable measurements.
+Reused results do not add token usage, and unavailable non-reused usage keeps totals incomplete.
 
 Inline comments target only validated added lines.
 Other findings appear in the review body.
