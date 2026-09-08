@@ -32,6 +32,19 @@ const { encodeCheckState, parseCheckState } = require("./validate-classifier");
 const {
   corpusFromDirectory, validateProtocolReferences,
 } = require("./validate-protocol-review");
+const {
+  acceptReusableRecord, isRetryableFailure, resolveRequiredReviewers, reusableRecord, stageRecord,
+  summarizeStages,
+} = require("./review-pipeline");
+const {
+  IdentityError, POLICY_FILES, evidenceDigest, methodologyFiles, policyDigest, stageKey,
+} = require("./review-identity");
+const {
+  TRUSTED_EVENTS, authenticatePriorRun, parseProvenance, resolveTrustedArtifact, workflowPathOf,
+} = require("./review-reuse");
+const {
+  TERMINAL_CODE, validateGeneral, validateSpecialist,
+} = require("./agent-validator");
 
 const SHA = "a".repeat(40);
 const OTHER_SHA = "b".repeat(40);
@@ -405,7 +418,8 @@ test("evidence caps are trusted, bounded, and fail closed with guidance", () => 
   const evidence = workflowJob(reviewWorkflow, "evidence");
   assert.match(evidence, /id: evidence/);
   assert.match(evidence, /EVIDENCE_MAX_BYTES: \$\{\{ inputs\.evidence-max-bytes \}\}/);
-  assert.match(evidence, /failure-reason: \$\{\{ steps\.evidence\.outputs\.failure-reason \}\}/);
+  assert.match(evidence, /failure-reason: \$\{\{ steps\.record\.outputs\.failure-reason \}\}/);
+  assert.match(evidence, /EVIDENCE_REASON: \$\{\{ steps\.evidence\.outputs\.failure-reason \}\}/);
   assert.match(workflowJob(reviewWorkflow, "validate"),
     /EVIDENCE_REASON: \$\{\{ needs\.evidence\.outputs\.failure-reason \}\}/);
 
@@ -711,7 +725,7 @@ test("specialist aggregate preserves explicit failures and canonical reviewer or
     protocolRelated: true,
     risk: "low",
   });
-  assert.equal(protocolFailure.mandatoryFailure, "corpus unavailable");
+  assert.equal(protocolFailure.mandatoryFailure, "protocol: corpus unavailable");
   const skepticalFailure = buildSpecialistAggregate({
     expectedSha: SHA,
     selectedReviewers: ["skeptical"],
@@ -721,7 +735,7 @@ test("specialist aggregate preserves explicit failures and canonical reviewer or
     protocolRelated: false,
     risk: "high",
   });
-  assert.equal(skepticalFailure.mandatoryFailure, "provider unavailable");
+  assert.equal(skepticalFailure.mandatoryFailure, "skeptical: provider unavailable");
 });
 
 test("model prose validation does not rely on prompt-injection text matching", () => {
@@ -2163,3 +2177,718 @@ test("bot authors remain ineligible regardless of association", async () => {
     author: { association: "MEMBER", login: "service[bot]", type: "Bot" }, currentPrNumber: 1,
   }), { status: "ineligible", reason: "bot author" });
 });
+
+// ---- reviewer stage recovery, reuse, and metrics ----
+
+const EVIDENCE_DIGEST = "1".repeat(64);
+const POLICY_DIGEST = "2".repeat(64);
+const AGGREGATE_DIGEST = "3".repeat(64);
+const CORPUS_SHA = "c".repeat(40);
+const REPOSITORY_ROOT = path.join(__dirname, "..", "..");
+const CALLER_WORKFLOW_REF = "Devolutions/IronRDP/.github/workflows/labeler.yml@refs/heads/master";
+
+const identity = (changes = {}) => ({
+  stage: "specialist:protocol", baseSha: OTHER_SHA, headSha: SHA,
+  evidenceDigest: EVIDENCE_DIGEST, policyDigest: POLICY_DIGEST, corpusSha: CORPUS_SHA, ...changes,
+});
+
+const provenance = (changes = {}) => ({
+  v: 1, run_id: "42", run_attempt: "1", recovery_attempt: "0",
+  attempt_id: `${SHA}-r0-a1-42`, base_sha: OTHER_SHA, head_sha: SHA,
+  evidence_digest: EVIDENCE_DIGEST, policy_digest: POLICY_DIGEST, corpus_sha: CORPUS_SHA,
+  artifacts: {
+    evidence: `review-evidence-${SHA}-r0-a1-42`,
+    validation: `review-validation-${SHA}-r0-a1-42`,
+    corpus: `review-corpus-${SHA}-r0-a1-42`,
+    aggregate: `review-aggregate-${SHA}-r0-a1-42`,
+    general: null,
+    specialists: { "code-compressor": `review-reusable-${SHA}-r0-a1-42-code-compressor` },
+  },
+  ...changes,
+});
+
+const priorRun = (changes = {}) => ({
+  repository: { full_name: "Devolutions/IronRDP" },
+  event: "pull_request_target",
+  path: ".github/workflows/labeler.yml",
+  status: "completed",
+  referenced_workflows: [{
+    path: `Devolutions/IronRDP/.github/workflows/review-pipeline.yml@${SHA}`,
+    ref: "refs/heads/master",
+    sha: SHA,
+  }],
+  ...changes,
+});
+
+const runApi = (run) => ({
+  rest: { actions: { getWorkflowRun: async () => {
+    if (run instanceof Error) throw run;
+    return { data: run };
+  } } },
+});
+
+const artifactApi = (artifacts) => ({
+  paginate: async () => {
+    if (artifacts instanceof Error) throw artifacts;
+    return artifacts;
+  },
+  rest: { actions: { listWorkflowRunArtifacts: () => {} } },
+});
+
+function writeFiles(root, files) {
+  for (const [relative, contents] of Object.entries(files)) {
+    const target = path.join(root, relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, contents);
+  }
+  return root;
+}
+
+function evidenceTree(changes = {}) {
+  return writeFiles(fs.mkdtempSync(path.join(os.tmpdir(), "evidence-")), {
+    "pr-evidence/changed-files.txt": "src/lib.rs\n",
+    "pr-evidence/pull-request.diff": "@@ -1 +1 @@\n-old\n+new\n",
+    "pr-evidence/pull-request-context.json": JSON.stringify({ title: "change" }),
+    "pr-evidence/validation-context.json": JSON.stringify({
+      changed_paths: ["src/lib.rs"], changed_lines: { "src/lib.rs": [4] },
+    }),
+    "pr-head/src/lib.rs": "fn main() {}\n",
+    ...changes,
+  });
+}
+
+test("stage identity changes whenever any reuse-relevant input changes", () => {
+  const baseline = stageKey(identity());
+  assert.match(baseline, /^[0-9a-f]{64}$/);
+  assert.equal(stageKey(identity()), baseline);
+  for (const change of [
+    { stage: "specialist:skeptical" },
+    { baseSha: SHA },
+    { headSha: OTHER_SHA },
+    { evidenceDigest: POLICY_DIGEST },
+    { policyDigest: EVIDENCE_DIGEST },
+    { corpusSha: SHA },
+    { corpusSha: null },
+  ]) {
+    assert.notEqual(stageKey(identity(change)), baseline, JSON.stringify(change));
+  }
+  // The general stage additionally depends on the specialist aggregate it reviews.
+  const general = { stage: "general", corpusSha: null, aggregateDigest: AGGREGATE_DIGEST };
+  assert.notEqual(
+    stageKey(identity({ ...general, aggregateDigest: EVIDENCE_DIGEST })),
+    stageKey(identity(general)),
+  );
+  for (const change of [
+    { headSha: "not-a-sha" }, { evidenceDigest: "short" }, { corpusSha: "nope" },
+    { stage: "publish" }, { aggregateDigest: "short" },
+  ]) {
+    assert.throws(() => stageKey(identity(change)), IdentityError, JSON.stringify(change));
+  }
+});
+
+test("the declared reviewer policy manifest exists and covers reviewer methodology", () => {
+  for (const file of POLICY_FILES) {
+    assert.equal(fs.existsSync(path.join(REPOSITORY_ROOT, file)), true, `${file} is missing`);
+  }
+  assert.deepEqual(methodologyFiles(REPOSITORY_ROOT), [
+    ".agents/skills/code-compressor/SKILL.md",
+    ".agents/skills/protocol-reviewer/SKILL.md",
+    ".agents/skills/skeptical-reviewer/SKILL.md",
+  ]);
+  const digest = policyDigest(REPOSITORY_ROOT);
+  assert.match(digest, /^[0-9a-f]{64}$/);
+  assert.equal(policyDigest(REPOSITORY_ROOT), digest);
+});
+
+test("the evidence digest covers every byte a reviewer may read", () => {
+  const baseline = evidenceDigest(evidenceTree());
+  assert.equal(evidenceDigest(evidenceTree()), baseline);
+  assert.notEqual(evidenceDigest(evidenceTree({ "pr-head/src/lib.rs": "fn other() {}\n" })), baseline);
+  assert.notEqual(evidenceDigest(evidenceTree({ "pr-head/src/new.rs": "new\n" })), baseline);
+  assert.notEqual(
+    evidenceDigest(evidenceTree({ "pr-evidence/pull-request.diff": "@@ -1 +1 @@\n+other\n" })),
+    baseline,
+  );
+
+  const missing = evidenceTree();
+  fs.rmSync(path.join(missing, "pr-evidence", "changed-files.txt"));
+  assert.throws(() => evidenceDigest(missing), IdentityError);
+
+  const hostile = evidenceTree();
+  try {
+    fs.symlinkSync(os.tmpdir(), path.join(hostile, "pr-head", "escape"));
+  } catch {
+    return; // Unprivileged Windows cannot create symlinks; the Linux run covers this.
+  }
+  assert.throws(() => evidenceDigest(hostile), IdentityError);
+});
+
+test("prior results are rejected unless they are well formed", () => {
+  assert.equal(parseProvenance(JSON.stringify(provenance())).ok, true);
+  assert.equal(parseProvenance("").ok, false);
+  assert.equal(parseProvenance("not json").ok, false);
+  assert.equal(parseProvenance("[]").ok, false);
+  for (const change of [
+    { v: 2 }, { run_id: "not-a-run" }, { head_sha: "short" }, { base_sha: "short" },
+    { evidence_digest: "short" }, { policy_digest: "short" }, { corpus_sha: "short" },
+    { artifacts: null },
+    { artifacts: { ...provenance().artifacts, evidence: "../escape" } },
+    { artifacts: { ...provenance().artifacts, specialists: { protocol: "bad name" } } },
+  ]) {
+    assert.equal(
+      parseProvenance(JSON.stringify(provenance(change))).ok, false, JSON.stringify(change),
+    );
+  }
+  assert.equal(parseProvenance(JSON.stringify(provenance({ corpus_sha: null }))).ok, true);
+});
+
+test("a prior run must prove it executed trusted code before its results are reused", async () => {
+  const authenticate = (run, { runId = "42", currentRunId = "99" } = {}) => authenticatePriorRun({
+    github: runApi(run), owner: "Devolutions", repo: "IronRDP", runId, currentRunId,
+    repository: "Devolutions/IronRDP", workflowRef: CALLER_WORKFLOW_REF,
+  });
+
+  assert.equal((await authenticate(priorRun())).ok, true);
+  // An in-progress run is legitimate: a recovery round can happen inside the producing run.
+  assert.equal((await authenticate(priorRun({ status: "in_progress" }))).ok, true);
+  assert.equal(TRUSTED_EVENTS.includes("pull_request"), false);
+
+  // Same workflow path and same repository do not prove trusted execution on their own.
+  const untrustedEvent = await authenticate(priorRun({ event: "pull_request" }));
+  assert.equal(untrustedEvent.ok, false);
+  assert.match(untrustedEvent.reason, /untrusted event pull_request/);
+
+  assert.equal((await authenticate(priorRun({
+    path: ".github/workflows/attacker.yml",
+  }))).ok, false);
+  assert.equal((await authenticate(priorRun({
+    repository: { full_name: "attacker/IronRDP" },
+  }))).ok, false);
+  assert.equal((await authenticate(priorRun({
+    referenced_workflows: [{
+      path: `attacker/IronRDP/.github/workflows/review-pipeline.yml@${SHA}`,
+      ref: "refs/heads/attacker",
+    }],
+  }))).ok, false);
+  assert.equal((await authenticate(priorRun({ referenced_workflows: [] }))).ok, false);
+  assert.equal((await authenticate(priorRun({ referenced_workflows: [] }), {
+    runId: "42", currentRunId: "42",
+  })).ok, true);
+  assert.equal((await authenticate(new Error("run not found"))).ok, false);
+  assert.equal(workflowPathOf(CALLER_WORKFLOW_REF), ".github/workflows/labeler.yml");
+});
+
+test("a reusable artifact must exist exactly once, unexpired, in the authenticated run", async () => {
+  const resolve = (artifacts, name = "review-aggregate-x") => resolveTrustedArtifact({
+    github: artifactApi(artifacts), owner: "Devolutions", repo: "IronRDP", runId: "42", name,
+  });
+  const artifact = { id: 1, name: "review-aggregate-x", expired: false, workflow_run: { id: 42 } };
+
+  assert.deepEqual((await resolve([artifact])).value, { id: 1, name: "review-aggregate-x" });
+  assert.match((await resolve([])).reason, /is missing/);
+  assert.match((await resolve([artifact, { ...artifact, id: 2 }])).reason, /is ambiguous/);
+  assert.match((await resolve([{ ...artifact, expired: true }])).reason, /has expired/);
+  assert.match(
+    (await resolve([{ ...artifact, workflow_run: { id: 7 } }])).reason,
+    /belongs to another run/,
+  );
+  assert.equal((await resolve([artifact], "../escape")).ok, false);
+  assert.equal((await resolve(new Error("rate limited"))).ok, false);
+});
+
+test("cached stage output is only accepted for identical review inputs", () => {
+  const stage = "specialist:code-compressor";
+  const key = stageKey(identity({ stage, corpusSha: null }));
+  const record = reusableRecord({
+    stage, stageKey: key, runId: 42, attemptId: `${SHA}-r0-a1-42`,
+    output: JSON.stringify(candidateReview("code-compressor")),
+    metrics: { tokens: { input: 10, output: 5, total: 15 }, elapsed_ms: 1000 },
+  });
+
+  assert.equal(acceptReusableRecord(record, { stage, expectedStageKey: key }).ok, true);
+  const rejections = [
+    [{ ...record, v: 99 }, /unsupported record version/],
+    [{ ...record, stage: "general" }, /different stage/],
+    [{ ...record, stage_key: stageKey(identity({ stage })) }, /does not match the current review inputs/],
+    [{ ...record, output: "" }, /carries no model output/],
+    [null, /unreadable/],
+    ["", /unreadable/],
+  ];
+  for (const [candidate, expected] of rejections) {
+    const result = acceptReusableRecord(candidate, { stage, expectedStageKey: key });
+    assert.equal(result.ok, false);
+    assert.match(result.reason, expected);
+  }
+});
+
+function trustedFile(root, name, value) {
+  const file = path.join(root, name);
+  const contents = JSON.stringify(value);
+  fs.writeFileSync(file, contents);
+  return {
+    file,
+    digest: require("node:crypto").createHash("sha256").update(contents).digest("hex"),
+  };
+}
+
+function validatorFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "validator-"));
+  const context = trustedFile(root, "validation-context.json", {
+    changed_paths: ["src/lib.rs"], changed_lines: { "src/lib.rs": [4] },
+  });
+  const aggregate = trustedFile(root, "aggregate.json", {
+    head_sha: SHA,
+    reviewers: [{
+      reviewer: "skeptical", status: "valid", summary: "candidate review",
+      findings: [candidateFinding()],
+    }],
+  });
+  return {
+    root,
+    specialist: (reviewer = "skeptical", changes = {}) => ({
+      stage: "specialist", reviewer, expected_sha: SHA, base_sha: OTHER_SHA,
+      validation_context_file: context.file, validation_context_digest: context.digest, ...changes,
+    }),
+    general: (changes = {}) => ({
+      stage: "general", expected_sha: SHA, base_sha: OTHER_SHA,
+      validation_context_file: context.file, validation_context_digest: context.digest,
+      aggregate_file: aggregate.file, aggregate_digest: aggregate.digest, ...changes,
+    }),
+    context,
+    aggregate,
+  };
+}
+
+const finalReview = (changes = {}) => ({
+  head_sha: SHA,
+  summary: "verified",
+  candidate_dispositions: [{
+    reviewer: "skeptical", finding_id: "finding-1",
+    disposition: "accepted", rationale: "the claim is supported",
+  }],
+  findings: [{
+    question: false, severity: "high", path: "src/lib.rs", start_line: 4, end_line: 4,
+    title: "Incorrect boundary", rationale: "verified defect", confidence: 0.95,
+    sources: [{ reviewer: "skeptical", finding_id: "finding-1" }],
+  }],
+  ...changes,
+});
+
+test("the review validator turns correctable model errors into targeted repair feedback", () => {
+  const fixture = validatorFixture();
+  const metadata = fixture.specialist();
+  assert.deepEqual(validateSpecialist(candidateReview("skeptical"), { metadata }), { ok: true });
+
+  const repairs = [
+    [candidateReview("skeptical", { head_sha: OTHER_SHA }), /head_sha must be exactly a{40}/],
+    [candidateReview("protocol"), /reviewer must be exactly "skeptical"/],
+    [candidateReview("skeptical", {
+      findings: [candidateFinding({ path: "src/untouched.rs" })],
+    }), /must cite a path changed by this pull request/],
+    [candidateReview("skeptical", {
+      findings: [candidateFinding({ start_line: 9, end_line: 4 })],
+    }), /must use integer lines with end_line at or after start_line/],
+    [candidateReview("skeptical", {
+      findings: [candidateFinding({ references: [{
+        protocol_id: "MS-RDPBCGR", section: "2.2.1", heading: "Heading",
+      }] })],
+    }), /must not carry protocol references/],
+    [candidateReview("skeptical", { summary: "" }), /invalid candidate review summary/],
+  ];
+  for (const [candidate, expected] of repairs) {
+    const result = validateSpecialist(candidate, { metadata });
+    assert.equal(result.ok, false);
+    assert.match(result.reason, expected);
+  }
+});
+
+test("the review validator fails terminally when its trusted inputs are stale or unavailable", () => {
+  const fixture = validatorFixture();
+  const caught = (run) => {
+    try {
+      run();
+    } catch (error) {
+      return error;
+    }
+    return null;
+  };
+  const cases = [
+    fixture.specialist("skeptical", { validation_context_digest: "0".repeat(64) }),
+    fixture.specialist("skeptical", { validation_context_file: path.join(fixture.root, "gone.json") }),
+    fixture.specialist("invented-reviewer"),
+    fixture.specialist("skeptical", { expected_sha: "short" }),
+    fixture.specialist("skeptical", { stage: "general" }),
+  ];
+  for (const metadata of cases) {
+    const error = caught(() => validateSpecialist(candidateReview("skeptical"), { metadata }));
+    assert.equal(error?.code, TERMINAL_CODE, JSON.stringify(metadata));
+  }
+  // A stale aggregate is not something the model can repair either.
+  const stale = validatorFixture();
+  const aggregate = trustedFile(stale.root, "aggregate.json", { head_sha: OTHER_SHA, reviewers: [] });
+  assert.equal(caught(() => validateGeneral(finalReview(), {
+    metadata: stale.general({ aggregate_file: aggregate.file, aggregate_digest: aggregate.digest }),
+  }))?.code, TERMINAL_CODE);
+});
+
+test("output repair may correct a finding but never drop one", () => {
+  const fixture = validatorFixture();
+  const metadata = fixture.specialist();
+  const previousCandidate = candidateReview("skeptical", {
+    findings: [candidateFinding(), candidateFinding({ id: "finding-2" })],
+  });
+
+  const dropped = validateSpecialist(candidateReview("skeptical"), { metadata, previousCandidate });
+  assert.equal(dropped.ok, false);
+  assert.match(dropped.reason, /restore "finding-2"/);
+
+  const corrected = validateSpecialist(candidateReview("skeptical", {
+    findings: [candidateFinding(), candidateFinding({ id: "finding-2", severity: "low" })],
+  }), { metadata, previousCandidate });
+  assert.deepEqual(corrected, { ok: true });
+
+  const general = fixture.general();
+  assert.deepEqual(validateGeneral(finalReview(), { metadata: general }), { ok: true });
+  const withdrawn = validateGeneral(finalReview({
+    candidate_dispositions: [{
+      reviewer: "skeptical", finding_id: "finding-1",
+      disposition: "rejected", rationale: "no longer supported",
+    }],
+    findings: [],
+  }), { metadata: general, previousCandidate: finalReview() });
+  assert.equal(withdrawn.ok, false);
+  assert.match(withdrawn.reason, /must not reject a candidate it previously accepted/);
+});
+
+test("the general validator can normally reject, refine, or accept specialist candidates", () => {
+  const metadata = validatorFixture().general();
+  for (const disposition of ["accepted", "refined"]) {
+    assert.deepEqual(validateGeneral(finalReview({
+      candidate_dispositions: [{
+        reviewer: "skeptical", finding_id: "finding-1",
+        disposition, rationale: "the narrower claim is supported",
+      }],
+    }), { metadata }), { ok: true });
+  }
+  assert.deepEqual(validateGeneral(finalReview({
+    candidate_dispositions: [{
+      reviewer: "skeptical", finding_id: "finding-1",
+      disposition: "rejected", rationale: "the claim is unsupported",
+    }],
+    findings: [],
+  }), { metadata }), { ok: true });
+
+  const incomplete = validateGeneral(finalReview({ candidate_dispositions: [] }), { metadata });
+  assert.equal(incomplete.ok, false);
+  assert.match(incomplete.reason, /exactly one disposition per specialist candidate/);
+});
+
+const providerTokens = (changes = {}) => ({
+  complete: true, knownAttemptCount: 1, unknownAttemptCount: 0,
+  inputTokens: 100, outputTokens: 20, totalTokens: 120, ...changes,
+});
+
+const specialistStage = (reviewer, changes = {}) => stageRecord({
+  id: `specialist:${reviewer}`, status: "success", required: true, provider: true,
+  metrics: { tokens: providerTokens(), elapsed_ms: 1000, request_retries: 0, output_repairs: 0 },
+  ...changes,
+});
+
+test("required reviewers come from the caller, with the gate only as a fallback", () => {
+  const selected = ["protocol", "skeptical", "code-compressor"];
+  assert.deepEqual(resolveRequiredReviewers({
+    selectedReviewers: selected, requiredReviewers: ["skeptical"],
+    protocolRelated: true, risk: "high",
+  }), { ok: true, reviewers: ["skeptical"], source: "caller" });
+
+  // Absence of an explicit list, never a second opinion about it, falls back to the gate.
+  assert.deepEqual(resolveRequiredReviewers({
+    selectedReviewers: selected, requiredReviewers: [], protocolRelated: true, risk: "high",
+  }), { ok: true, reviewers: ["protocol", "skeptical"], source: "gate" });
+
+  assert.equal(resolveRequiredReviewers({
+    selectedReviewers: ["skeptical"], requiredReviewers: ["protocol"],
+    protocolRelated: false, risk: "low",
+  }).ok, false);
+  assert.equal(resolveRequiredReviewers({
+    selectedReviewers: ["skeptical"], requiredReviewers: [], protocolRelated: true, risk: "low",
+  }).ok, false);
+  assert.equal(resolveRequiredReviewers({
+    selectedReviewers: selected, requiredReviewers: ["skeptical", "protocol"],
+    protocolRelated: false, risk: "low",
+  }).ok, false, "a non-canonical required order is refused");
+  assert.equal(resolveRequiredReviewers({
+    selectedReviewers: ["invented"], requiredReviewers: [], protocolRelated: false, risk: "low",
+  }).ok, false);
+});
+
+test("every failed stage is reported, not just the first", () => {
+  const summary = summarizeStages([
+    stageRecord({ id: "evidence", status: "success", required: true }),
+    specialistStage("protocol", {
+      status: "failed", reason: "provider timed out", failureCategory: "provider-timeout",
+      retryable: true,
+    }),
+    specialistStage("skeptical", {
+      status: "failed", reason: "output repair exhausted", failureCategory: "invalid-output",
+    }),
+    specialistStage("code-compressor"),
+    stageRecord({ id: "aggregate", status: "success", required: true }),
+    stageRecord({
+      id: "general", status: "skipped", required: true, provider: true,
+      reason: "protocol: provider timed out; skeptical: output repair exhausted",
+    }),
+    stageRecord({ id: "validate", status: "skipped", required: true, reason: "no general review" }),
+  ]);
+  assert.deepEqual(summary.failures.map(({ id, retryable }) => [id, retryable]), [
+    ["specialist:protocol", true],
+    ["specialist:skeptical", false],
+  ]);
+  assert.equal(summary.metrics.failed_stages, 2);
+  // A required terminal failure cannot be recovered, so the caller must not schedule another round.
+  assert.equal(summary.recoverable, false);
+});
+
+test("stage recovery is offered only while a retryable required failure can still be fixed", () => {
+  const base = [
+    stageRecord({ id: "evidence", status: "success", required: true }),
+    specialistStage("code-compressor"),
+    stageRecord({ id: "aggregate", status: "success", required: true }),
+  ];
+  const transient = specialistStage("skeptical", {
+    status: "failed", reason: "provider timed out", failureCategory: "provider-timeout",
+    retryable: true,
+  });
+  const skipped = [
+    stageRecord({ id: "general", status: "skipped", required: true, provider: true }),
+    stageRecord({ id: "validate", status: "skipped", required: true }),
+  ];
+  assert.equal(summarizeStages([...base, transient, ...skipped]).recoverable, true);
+
+  // An optional terminal failure never blocks a recovery a required transient failure could fix.
+  assert.equal(summarizeStages([
+    ...base, transient,
+    specialistStage("protocol", {
+      required: false, status: "failed", reason: "output repair exhausted",
+      failureCategory: "invalid-output",
+    }),
+    ...skipped,
+  ]).recoverable, true);
+
+  // Nothing is recoverable once a valid review was published.
+  assert.equal(summarizeStages([
+    ...base, transient,
+    stageRecord({ id: "general", status: "success", required: true, provider: true }),
+    stageRecord({ id: "validate", status: "success", required: true }),
+  ]).recoverable, false);
+
+  assert.equal(isRetryableFailure("provider-timeout"), true);
+  assert.equal(isRetryableFailure("provider-connection"), true);
+  assert.equal(isRetryableFailure("validator-terminal"), false);
+  assert.equal(isRetryableFailure("invalid-output"), false);
+});
+
+test("token totals are marked incomplete instead of silently understating spend", () => {
+  const complete = summarizeStages([
+    specialistStage("skeptical"),
+    specialistStage("code-compressor"),
+  ]);
+  assert.deepEqual(complete.metrics.tokens, { input: 200, output: 40, total: 240 });
+  assert.equal(complete.metrics.tokens_complete, true);
+
+  // The runtime says it could not account for every attempt.
+  assert.equal(summarizeStages([
+    specialistStage("skeptical", {
+      metrics: { tokens: providerTokens({ complete: false, unknownAttemptCount: 1 }) },
+    }),
+  ]).metrics.tokens_complete, false);
+
+  // A provider stage that reported no usage at all.
+  assert.equal(summarizeStages([
+    specialistStage("skeptical", { metrics: {} }),
+  ]).metrics.tokens_complete, false);
+
+  // Reused output costs nothing new: it reports no tokens and never marks the total incomplete.
+  const reused = summarizeStages([
+    specialistStage("code-compressor", { reused: true, reusedFromRunId: "42" }),
+    specialistStage("skeptical"),
+  ]);
+  assert.deepEqual(reused.metrics.tokens, { input: 100, output: 20, total: 120 });
+  assert.equal(reused.metrics.tokens_complete, true);
+  assert.equal(reused.metrics.reused_stages, 1);
+
+  // A non-provider stage never needs token usage.
+  assert.equal(summarizeStages([
+    stageRecord({ id: "evidence", status: "success", required: true }),
+  ]).metrics.tokens_complete, true);
+});
+
+test("a discarded cached result is always visible in the stage record", () => {
+  const record = specialistStage("code-compressor", {
+    reuseReason: "cached result does not match the current review inputs",
+  });
+  assert.equal(record.reused, false);
+  assert.equal(record.reused_from_run_id, null);
+  assert.equal(record.reuse_reason, "cached result does not match the current review inputs");
+  assert.equal(record.failure_category, "");
+
+  const restored = specialistStage("code-compressor", { reused: true, reusedFromRunId: "42" });
+  assert.equal(restored.reused_from_run_id, "42");
+  assert.equal(restored.metrics.tokens, null);
+});
+
+test("recovery repeats only the missing work and keeps every earlier success", () => {
+  // Incident #1912: the skeptical provider timed out and the protocol reviewer hit a transient
+  // provider failure, while the code compressor produced a valid review. The general reviewer was
+  // skipped because a required specialist had not succeeded.
+  const first = summarizeStages([
+    stageRecord({ id: "evidence", status: "success", required: true }),
+    specialistStage("protocol", {
+      status: "failed", reason: "provider connection reset",
+      failureCategory: "provider-connection", retryable: true,
+    }),
+    specialistStage("skeptical", {
+      status: "failed", reason: "provider timed out", failureCategory: "provider-timeout",
+      retryable: true,
+    }),
+    specialistStage("code-compressor"),
+    stageRecord({ id: "aggregate", status: "success", required: true }),
+    stageRecord({
+      id: "general", status: "skipped", required: true, provider: true,
+      reason: "protocol: provider connection reset; skeptical: provider timed out",
+    }),
+    stageRecord({ id: "validate", status: "skipped", required: true }),
+  ]);
+  assert.equal(first.recoverable, true);
+  assert.deepEqual(first.failures.map(({ id }) => id),
+    ["specialist:protocol", "specialist:skeptical"]);
+
+  // The recovery round restores the compressor and reruns only the two failed reviewers.
+  const stage = "specialist:code-compressor";
+  const key = stageKey(identity({ stage, corpusSha: null }));
+  const cached = reusableRecord({
+    stage, stageKey: key, runId: 42, attemptId: `${SHA}-r0-a1-42`,
+    output: JSON.stringify(candidateReview("code-compressor")),
+    metrics: { tokens: providerTokens(), elapsed_ms: 1000 },
+  });
+  assert.equal(acceptReusableRecord(cached, { stage, expectedStageKey: key }).ok, true);
+
+  const second = summarizeStages([
+    stageRecord({ id: "evidence", status: "success", required: true, reused: true, reusedFromRunId: "42" }),
+    specialistStage("protocol", { metrics: { tokens: providerTokens(), stage_recoveries: 1 } }),
+    specialistStage("skeptical", { metrics: { tokens: providerTokens(), stage_recoveries: 1 } }),
+    specialistStage("code-compressor", { reused: true, reusedFromRunId: "42" }),
+    stageRecord({ id: "aggregate", status: "success", required: true }),
+    stageRecord({
+      id: "general", status: "success", required: true, provider: true,
+      metrics: { tokens: providerTokens(), stage_recoveries: 1 },
+    }),
+    stageRecord({ id: "validate", status: "success", required: true }),
+  ]);
+  assert.deepEqual(second.failures, []);
+  assert.equal(second.recoverable, false);
+  assert.equal(second.metrics.reused_stages, 2);
+  assert.equal(second.metrics.stage_recoveries, 3);
+  // Three provider stages were newly spent; the reused compressor contributed nothing.
+  assert.deepEqual(second.metrics.tokens, { input: 300, output: 60, total: 360 });
+  assert.equal(second.metrics.tokens_complete, true);
+});
+
+test("the reusable pipeline stays caller-driven and reports every stage back", () => {
+  const workflow = readReviewWorkflow();
+  const triggers = workflow.slice(workflow.indexOf("\non:"), workflow.indexOf("\npermissions:"));
+  assert.match(triggers, /^ {2}workflow_call:$/m);
+  for (const trigger of [
+    "pull_request", "pull_request_target", "push", "issue_comment", "schedule",
+    "workflow_dispatch", "workflow_run",
+  ]) {
+    assert.doesNotMatch(triggers, new RegExp(`^ {2}${trigger}:`, "m"), trigger);
+  }
+  for (const input of ["required-reviewers", "prior-results", "recovery-attempt"]) {
+    assert.match(triggers, new RegExp(`^ {6}${input}:\\n\\s+description:[^\\n]*\\n\\s+required: false`, "m"));
+  }
+  // The gate stays available so an older caller keeps working unchanged.
+  assert.match(triggers, /^ {6}gate:\n\s+description:[^\n]*\n\s+required: false/m);
+  for (const output of ["stages", "metrics", "provenance", "recoverable"]) {
+    assert.match(triggers, new RegExp(`^ {6}${output}:\\n\\s+description:`, "m"));
+  }
+  assert.match(workflowJob(workflow, "report"), /stages: \$\{\{ steps\.report\.outputs\.stages \}\}/);
+  assert.match(workflowJob(workflow, "report"), /if: always\(\) && !cancelled\(\)/);
+});
+
+test("specialist concurrency is a provider allocation, not a reviewer cap", () => {
+  const specialists = workflowJob(readReviewWorkflow(), "specialists");
+  assert.match(specialists, /max-parallel: 3/);
+  // The matrix is the caller's selection, so a larger selection simply runs in further batches.
+  assert.match(specialists, /reviewer: \$\{\{ fromJSON\(inputs\.specialist-reviewers\) \}\}/);
+  assert.doesNotMatch(specialists, /reviewer: \[/);
+});
+
+test("reviewer actions retry four provider requests and repair output in conversation", () => {
+  const workflow = readReviewWorkflow();
+  const agents = workflow.match(
+    /uses: \.\/\.github\/actions\/openai-agent\n(?: {8,}[^\n]*\n|\n)*?(?=\n {6}- )/g,
+  ) || [];
+  assert.equal(agents.length, 2, "both the specialists and the general reviewer run the agent");
+  for (const agent of agents) {
+    assert.match(agent, /max-request-retries: "4"/);
+    assert.match(agent, /max-output-repairs: "2"/);
+    assert.match(agent, /validator: \.github\/pr-automation\/agent-validator\.js#validate/);
+    assert.match(agent, /validator-metadata: \$\{\{ steps\.plan\.outputs\.metadata \}\}/);
+  }
+  // Repair is bounded inside the action, so the workflow never restarts a reviewer to fix output.
+  assert.doesNotMatch(workflow, /resilient-review-output/);
+  assert.doesNotMatch(workflow, /checkpoint/i);
+});
+
+test("attempt-scoped artifacts never overwrite the results a recovery depends on", () => {
+  const workflow = readReviewWorkflow();
+  assert.match(workflowJob(workflow, "identity"),
+    /id=\$HEAD_SHA-r\$RECOVERY_ATTEMPT-a\$GITHUB_RUN_ATTEMPT-\$GITHUB_RUN_ID/);
+  const uploads = workflow.match(/name: review-[a-z-]+-\$\{\{ env\.ATTEMPT_ID \}\}[^\n]*/g) || [];
+  assert.notEqual(uploads.length, 0);
+  const named = workflow.match(/^\s+name: review-[a-z-]+-[^\n]*$/gm) || [];
+  for (const entry of named) {
+    assert.match(entry, /env\.ATTEMPT_ID|steps\.plan\.outputs\.artifact/, entry.trim());
+  }
+  assert.doesNotMatch(workflow, /overwrite: true/);
+  assert.doesNotMatch(workflow, /name: review-[a-z-]+-\$\{\{ inputs\.head-sha \}\}/);
+  // Reading another run's artifacts needs the Actions API, and only where it is actually read.
+  for (const job of ["evidence", "specialists", "general"]) {
+    assert.match(workflowJob(workflow, job), /actions: read/, job);
+  }
+  assert.doesNotMatch(workflowJob(workflow, "aggregate"), /actions: read/);
+});
+
+test("prior results fail closed for evidence and are merely discarded for cached output", () => {
+  const workflow = readReviewWorkflow();
+  const evidence = workflowJob(workflow, "evidence");
+  assert.match(evidence, /throw new Error\(`prior results rejected: \$\{parsed\.reason\}`\)/);
+  assert.match(evidence, /throw new Error\(`prior results rejected: \$\{authenticated\.reason\}`\)/);
+  assert.match(evidence, /restored evidence does not match its digest/);
+  assert.match(evidence, /pull request head is no longer current/);
+
+  // A cached stage result is different: it is discarded and rerun, but never silently.
+  const specialists = workflowJob(workflow, "specialists");
+  assert.match(specialists, /acceptReusableRecord/);
+  assert.match(specialists, /REUSE_REASON: \$\{\{ steps\.reuse\.outputs\.reason \|\| steps\.plan\.outputs\.reuse-reason \}\}/);
+  assert.match(specialists, /validateSpecialistRun/, "restored output is revalidated");
+});
+
+test("publication stays fail closed on required coverage and independent validation", () => {
+  const workflow = readReviewWorkflow();
+  const validate = workflowJob(workflow, "validate");
+  assert.match(validate, /AGGREGATE_READY !== "true"/);
+  assert.match(validate, /GENERAL_RESULT !== "success"/);
+  assert.match(validate, /validateFinalReview/);
+  assert.match(validate, /result\.ok \? JSON\.stringify\(result\.value\) : ""/);
+  // The general reviewer never runs when a required specialist did not succeed.
+  assert.match(workflowJob(workflow, "general"), /needs\.aggregate\.outputs\.ready == 'true'/);
+  assert.match(workflowJob(workflow, "general"), /status: "skipped"/);
+  assert.match(workflowJob(workflow, "aggregate"), /requiredReviewers: parse\(process\.env\.REQUIRED_REVIEWERS, \[\]\)/);
+});
+
+
+
+
+
