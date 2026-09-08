@@ -923,7 +923,7 @@ impl iron_remote_desktop::Session for Session {
                             .context("Send frame to writer task")?;
                     }
                     ActiveStageOutput::GraphicsUpdate(region) => {
-                        let region = extract_partial_image(&image, region, &mut draw_buffer);
+                        let region = extract_partial_image(&image, region, &mut draw_buffer)?;
                         gui.draw(draw_buffer.filled_mut(), region)
                             .context("draw updated region")?;
                         draw_buffer.clear();

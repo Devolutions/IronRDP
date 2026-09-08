@@ -11,3 +11,6 @@ mod gateway_detect;
 mod rdpeudp_tokio;
 mod vmconnect;
 mod volume;
+
+#[path = "../../ironrdp-web/src/image.rs"]
+mod web_image;
