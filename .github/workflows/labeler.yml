@@ -705,7 +705,7 @@ jobs:
           REVIEW_MARKER_ID: ${{ github.run_id }}
         with:
           script: |
-             const { resolveReviewState } = require("./.github/pr-automation/resolve-state");
+             const { resolveReviewState, reviewOutcome } = require("./.github/pr-automation/resolve-state");
              const { reviewSkipReasons } = require("./.github/pr-automation/review-skip-summary");
              const { parseReport, stageIds } = require("./.github/pr-automation/review-report");
              const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
@@ -760,25 +760,29 @@ jobs:
                  .write();
              } else {
                const metrics = report.metrics;
-               const title = report.status === "success"
-                 ? recovered.length === 0 ? "Automated review complete" : "Stage recovery successful"
-                 : "Stage recovery exhausted";
+               const outcome = reviewOutcome({
+                 reportStatus: report.status, state, recovered: recovered.length > 0,
+               });
+               const title = {
+                 complete: "Automated review complete",
+                 recovered: "Automated review recovered",
+                 unavailable: "Automated review unavailable",
+               }[outcome];
+               const detail = state.failed === true ? state.reason || reviewerReason : reviewerReason;
                if (state.check) {
                  state.check.title = title;
-                 state.check.summary = `${report.status === "success"
-                   ? recovered.length === 0
-                     ? "Validated automated review is bound to this commit."
-                     : "Validated automated review was produced after stage recovery."
-                   : `Automated review is unavailable: ${reviewerReason}. Maintainer review is required.`}\n\n` +
+                 state.check.summary = `${outcome === "complete"
+                   ? "Validated automated review is bound to this commit."
+                   : outcome === "recovered"
+                     ? "Validated automated review was produced after stage recovery."
+                     : `Automated review is unavailable: ${detail || "review unavailable"}. Maintainer review is required.`}\n\n` +
                    `[View the workflow summary](${process.env.SUMMARY_URL})`;
-                 state.check.conclusion = report.status === "success" ? "success" : "neutral";
+                 state.check.conclusion = outcome === "unavailable" ? "neutral" : "success";
                  core.setOutput("state", JSON.stringify(state));
                }
                await core.summary
                  .addHeading("Automated review")
-                 .addRaw(`Recovery status: **${report.status === "success"
-                   ? recovered.length === 0 ? "not needed" : "successful"
-                   : "exhausted"}**.`, true)
+                 .addRaw(`Review outcome: **${outcome}**.`, true)
                  .addRaw(`Stages: ${stageIds(report).join(", ")}.`, true)
                  .addHeading("Failed stage attempts")
                  .addList(failedAttempts.length === 0

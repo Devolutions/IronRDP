@@ -53,10 +53,8 @@ Append `:question:` for questions, and show `:green_circle:` in the main comment
 
 ### Stage recovery
 
-- Start one bounded review pipeline invocation for each eligible review.
-- The pipeline retries temporary failed stages once after 120 seconds and reuses successful stage results.
-- The caller holds `llm-reviewer-pipeline` throughout that recovery and remains responsible for eligibility, concurrency, publication, and reporting.
-- A later workflow run or manual rerun starts a fresh bounded pipeline recovery budget.
+- Start a bounded pipeline that recovers transient stages within its invocation while retaining successful results.
+- A later workflow run starts a fresh recovery budget.
 - Keep all eligibility checks, resource limits, and stale-head protections in effect.
 - Never publish the same review twice, and count only published reviews toward the two-review limit.
 - Show the pipeline-reported recovery outcome, every failed-stage reason, and per-stage metrics including unavailable usage in the review check and workflow summary.

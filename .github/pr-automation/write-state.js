@@ -298,5 +298,5 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin, revi
 
 module.exports = {
   StaleHeadError, StalePolicyError, applyLabels, assertCurrentHead, deleteMarkedComment, dispatchClassificationComplete,
-  escapeMarkdown, findCheck, markerBody, upsertMarkedComment, writeState,
+  escapeMarkdown, markerBody, upsertMarkedComment, writeState,
 };

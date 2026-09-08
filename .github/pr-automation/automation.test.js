@@ -14,7 +14,7 @@ const {
 const { buildSpecialistAggregate, validateSpecialistRun } = require("./review-pipeline");
 const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
 const {
-  resolveClassificationState, resolveReviewState, reviewPolicyEligible, DUPLICATE_MARKER,
+  resolveClassificationState, resolveReviewState, reviewOutcome, reviewPolicyEligible, DUPLICATE_MARKER,
   CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERSIZED_MARKER, OVERSIZED_REVIEW_LABEL, contributorEligibility,
 } = require("./resolve-state");
@@ -169,6 +169,17 @@ test("review skip summary lists every failed gate condition", () => {
     "The pull request requires a maintainer legitimacy decision.",
     "The contributor has 0 qualifying merged pull requests; at least one is required.",
   ]);
+});
+
+test("review outcome requires validated final output", () => {
+  assert.equal(reviewOutcome({
+    reportStatus: "success",
+    state: { failed: true, reason: "invalid final review" },
+    recovered: true,
+  }), "unavailable");
+  assert.equal(reviewOutcome({ reportStatus: "success", state: {}, recovered: true }), "recovered");
+  assert.equal(reviewOutcome({ reportStatus: "success", state: {}, recovered: false }), "complete");
+  assert.equal(reviewOutcome({ reportStatus: "failed", state: {}, recovered: true }), "unavailable");
 });
 
 test("review skip summary explains gate and quota failures", () => {
