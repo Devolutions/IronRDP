@@ -2240,7 +2240,7 @@ test("the review validator turns correctable model errors into targeted repair f
 
   const repairs = [
     [candidateReview("skeptical", { head_sha: OTHER_SHA }), /head_sha must be exactly a{40}/],
-    [candidateReview("protocol"), /reviewer must be exactly "skeptical"/],
+    [candidateReview("protocol"), /reviewer must be exactly skeptical/],
     [candidateReview("skeptical", {
       findings: [candidateFinding({ path: "src/untouched.rs" })],
     }), /must cite a path changed by this pull request/],
@@ -2290,7 +2290,7 @@ test("output repair may correct a finding but never drop one", () => {
 
   const dropped = validateSpecialist(candidateReview("skeptical"), { metadata, previousCandidate });
   assert.equal(dropped.ok, false);
-  assert.match(dropped.reason, /restore "finding-2"/);
+  assert.match(dropped.reason, /restore finding-2/);
 
   const corrected = validateSpecialist(candidateReview("skeptical", {
     findings: [candidateFinding(), candidateFinding({ id: "finding-2", severity: "low" })],
@@ -2308,6 +2308,47 @@ test("output repair may correct a finding but never drop one", () => {
   }), { metadata: general, previousCandidate: finalReview() });
   assert.equal(withdrawn.ok, false);
   assert.match(withdrawn.reason, /must not reject a candidate it previously accepted/);
+
+  // A general-only finding has no candidate disposition to protect it and no id of its own, so a
+  // repair that swaps it for an unrelated finding of the same count still loses the original issue.
+  const generalOnly = { question: false, severity: "low", path: "src/lib.rs", start_line: 4,
+    end_line: 4, title: "General only issue", rationale: "verified", confidence: 0.6, sources: [] };
+  const withGeneralOnly = finalReview({ findings: [...finalReview().findings, generalOnly] });
+  assert.deepEqual(validateGeneral(withGeneralOnly, { metadata: general }), { ok: true });
+  const swapped = validateGeneral(finalReview({
+    findings: [...finalReview().findings, { ...generalOnly, title: "An unrelated issue" }],
+  }), { metadata: general, previousCandidate: withGeneralOnly });
+  assert.equal(swapped.ok, false);
+  assert.match(swapped.reason, /keep every earlier finding/);
+  // Correcting the same finding is still allowed.
+  assert.deepEqual(validateGeneral(finalReview({
+    findings: [...finalReview().findings, { ...generalOnly, confidence: 0.8 }],
+  }), { metadata: general, previousCandidate: withGeneralOnly }), { ok: true });
+});
+
+// The runtime turns a rejection it cannot read into a terminal validator error, which would spend
+// the stage instead of repairing it, so every reason has to survive that alphabet.
+test("validator rejections stay inside the reason alphabet the runtime accepts", () => {
+  const safeReason = /^[A-Za-z0-9][A-Za-z0-9 .,:;()/_-]{0,511}$/;
+  const fixture = validatorFixture();
+  const hostile = `a"b\n<c>\u0000\u00e9;drop ${"x".repeat(600)}`;
+
+  const rejections = [
+    validateSpecialist(candidateReview("skeptical", {
+      findings: [candidateFinding({ id: hostile, path: "src/untouched.rs" })],
+    }), { metadata: fixture.specialist() }),
+    validateSpecialist(candidateReview("skeptical", {
+      findings: [candidateFinding({ id: hostile, start_line: 9, end_line: 4 })],
+    }), { metadata: fixture.specialist() }),
+    validateGeneral(finalReview({
+      findings: [{ ...finalReview().findings[0], path: "src/untouched.rs", title: hostile }],
+    }), { metadata: fixture.general() }),
+  ];
+  for (const rejection of rejections) {
+    assert.equal(rejection.ok, false);
+    assert.match(rejection.reason, safeReason);
+    assert.ok(Buffer.byteLength(rejection.reason, "utf8") <= 512, rejection.reason);
+  }
 });
 
 test("the general validator can normally reject, refine, or accept specialist candidates", () => {
@@ -2732,6 +2773,23 @@ test("the caller reads exactly what the pipeline wrote, and never reads garbage 
     { id: "general", status: "failed", required: true },
   ] })).status, "failed");
   assert.equal(parseReport(JSON.stringify({ ...produced, status: "failed" })).status, "failed");
+
+  // Success needs both sides: the producer has to claim it and the stages have to prove it.
+  const clean = buildReport(["evidence", "aggregate", "general", "validate"]
+    .map((id) => ({ id, status: "success", required: true })));
+  assert.equal(clean.status, "success");
+  assert.equal(parseReport(JSON.stringify(clean)).status, "success");
+  for (const status of [undefined, "", null, "succeeded", 1]) {
+    assert.equal(parseReport(JSON.stringify({ ...clean, status })).status, "failed");
+  }
+
+  // A mandatory stage that arrives without its required flag is malformed, not optional, so it can
+  // never be waved through as an unrequired success.
+  const unmarked = ["evidence", "aggregate", "general", "validate"]
+    .map((id) => ({ id, status: "success" }));
+  assert.equal(buildReport(unmarked).status, "failed");
+  assert.equal(parseReport(JSON.stringify({ v: 1, status: "success", stages: unmarked })).status,
+    "failed");
 });
 
 test("the reusable pipeline stays caller-driven and reports every stage back", () => {

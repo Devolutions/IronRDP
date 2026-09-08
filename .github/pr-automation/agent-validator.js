@@ -30,8 +30,18 @@ function terminal(reason) {
   return error;
 }
 
+// The runtime accepts a bounded rejection alphabet and turns anything else into a terminal failure,
+// so model-controlled text is scrubbed here instead of costing the stage its repair attempts.
 function reject(reason) {
-  return { ok: false, reason };
+  const text = String(reason ?? "")
+    .replace(/[^A-Za-z0-9 .,:;()\/_-]/g, " ")
+    .replace(/ +/g, " ")
+    .trim();
+  const start = text.search(/[A-Za-z0-9]/);
+  return {
+    ok: false,
+    reason: start === -1 ? "the review output was rejected" : text.slice(start, start + 512),
+  };
 }
 
 function requireString(metadata, key, pattern) {
@@ -90,22 +100,22 @@ function diagnoseCandidate(candidate, { expectedSha, reviewer, changedPaths }) {
     return `head_sha must be exactly ${expectedSha}`;
   }
   if (candidate?.reviewer !== reviewer) {
-    return `reviewer must be exactly "${reviewer}"`;
+    return `reviewer must be exactly ${reviewer}`;
   }
   const findings = Array.isArray(candidate?.findings) ? candidate.findings : [];
   for (const finding of findings) {
-    const id = typeof finding?.id === "string" ? finding.id : "<missing id>";
+    const id = typeof finding?.id === "string" ? finding.id : "an unnamed finding";
     if (typeof finding?.path !== "string" || !changedPaths.has(finding.path)) {
-      return `finding "${id}" must cite a path changed by this pull request`;
+      return `finding ${id} must cite a path changed by this pull request`;
     }
     const linesAreNull = finding.start_line === null && finding.end_line === null;
     const linesAreIntegers = Number.isSafeInteger(finding.start_line) && finding.start_line >= 1 &&
       Number.isSafeInteger(finding.end_line) && finding.end_line >= finding.start_line;
     if (!linesAreNull && !linesAreIntegers) {
-      return `finding "${id}" must use integer lines with end_line at or after start_line, or null lines`;
+      return `finding ${id} must use integer lines with end_line at or after start_line, or null lines`;
     }
     if (reviewer !== "protocol" && Array.isArray(finding.references) && finding.references.length > 0) {
-      return `finding "${id}" must not carry protocol references`;
+      return `finding ${id} must not carry protocol references`;
     }
   }
   return "";
@@ -113,15 +123,15 @@ function diagnoseCandidate(candidate, { expectedSha, reviewer, changedPaths }) {
 
 function diagnoseProtocolReferences(candidate, corpus, corpusSha) {
   for (const finding of candidate?.findings ?? []) {
-    const id = typeof finding?.id === "string" ? finding.id : "<missing id>";
+    const id = typeof finding?.id === "string" ? finding.id : "an unnamed finding";
     if (!Array.isArray(finding?.references) || finding.references.length === 0) {
-      return `finding "${id}" must cite at least one section of the pinned protocol corpus`;
+      return `finding ${id} must cite at least one section of the pinned protocol corpus`;
     }
     const result = validateProtocolReferences(finding.references, {
       corpus, expectedCorpusSha: corpusSha,
     });
     if (!result.ok) {
-      return `finding "${id}" cites a protocol section that does not exist in the pinned corpus`;
+      return `finding ${id} cites a protocol section that does not exist in the pinned corpus`;
     }
   }
   return "";
@@ -141,7 +151,15 @@ function preservedCandidateFindings(candidate, previousCandidate) {
   const missing = [...findingIds(previousCandidate)].filter((id) => !current.has(id));
   return missing.length === 0
     ? ""
-    : `repair must keep every earlier finding; restore ${missing.slice(0, 5).map((id) => `"${id}"`).join(", ")} and correct it instead of removing it`;
+    : `repair must keep every earlier finding; restore ${missing.slice(0, 5).map((id) => `${id}`).join(", ")} and correct it instead of removing it`;
+}
+
+function findingTitles(review) {
+  const findings = review?.findings;
+  return new Set((Array.isArray(findings) ? findings : [])
+    .map((finding) => finding?.title)
+    .filter((title) => typeof title === "string")
+    .map((title) => title.trim().replace(/\s+/g, " ").toLowerCase()));
 }
 
 function acceptedKeys(review) {
@@ -157,6 +175,14 @@ function preservedFinalFindings(review, previousReview) {
   const dropped = [...acceptedKeys(previousReview)].filter((key) => !current.has(key));
   if (dropped.length > 0) {
     return "repair must not reject a candidate it previously accepted or refined; correct the finding instead";
+  }
+  // Final findings carry no id, so a title identifies them. Repair corrects a citation, a path, or a
+  // line range, never the issue a finding reports, so a title that disappears is a lost finding even
+  // when the count still matches.
+  const currentTitles = findingTitles(review);
+  const missing = [...findingTitles(previousReview)].filter((title) => !currentTitles.has(title));
+  if (missing.length > 0) {
+    return "repair must keep every earlier finding; restore the one it dropped and correct it instead of replacing it";
   }
   const previousCount = Array.isArray(previousReview?.findings) ? previousReview.findings.length : 0;
   const currentCount = Array.isArray(review?.findings) ? review.findings.length : 0;
@@ -224,9 +250,9 @@ function validateGeneral(review, { metadata, previousCandidate } = {}) {
   }
   const changedPaths = new Set(context.changed_paths);
   for (const finding of review?.findings ?? []) {
-    const title = typeof finding?.title === "string" ? finding.title.slice(0, 60) : "<missing title>";
+    const title = typeof finding?.title === "string" ? finding.title.slice(0, 60) : "an untitled finding";
     if (typeof finding?.path !== "string" || !changedPaths.has(finding.path)) {
-      return reject(`finding "${title}" must cite a path changed by this pull request`);
+      return reject(`finding ${title} must cite a path changed by this pull request`);
     }
   }
   return reject(`${result.reason}; record exactly one disposition per specialist candidate and cite only non-rejected candidates as sources`);

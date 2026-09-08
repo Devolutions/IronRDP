@@ -111,13 +111,16 @@ function aggregateMetrics(outcomes) {
 }
 
 // A report is successful only when its shape proves it: every mandatory stage present exactly once
-// and no required stage left unfinished, with an independent validation that actually succeeded.
+// and marked required, no required stage left unfinished, and an independent validation that
+// actually succeeded. A mandatory stage that arrives without its required flag is malformed, not an
+// optional stage, so it can never be waved through.
 function buildReport(stages = []) {
   const outcomes = (Array.isArray(stages) ? stages : []).map(stageOutcome);
   const ids = outcomes.map((stage) => stage.id);
+  const byId = new Map(outcomes.map((stage) => [stage.id, stage]));
   const wellFormed = ids.every((id) => id !== "") &&
     new Set(ids).size === ids.length &&
-    MANDATORY_STAGES.every((id) => ids.includes(id));
+    MANDATORY_STAGES.every((id) => byId.get(id)?.required === true);
   const published = outcomes.some((stage) =>
     stage.id === "validate" && stage.status === "success");
   const requiredUnfinished = outcomes.some((stage) =>
@@ -160,7 +163,9 @@ function parseReport(raw) {
   // The producer's own completeness flag is honoured downwards: a report may know less than the
   // stages suggest, never more.
   if (parsed.metrics?.tokens_complete === false) report.metrics.tokens_complete = false;
-  return parsed.status === "failed" ? { ...report, status: "failed" } : report;
+  // Success needs both sides to agree: the producer has to claim it and the stages have to prove it.
+  // A missing or unknown status is malformed, so it reads as failed.
+  return parsed.status === "success" ? report : { ...report, status: "failed" };
 }
 
 function stageIds(report) {

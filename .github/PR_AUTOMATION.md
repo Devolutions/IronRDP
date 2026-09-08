@@ -74,7 +74,7 @@ A declined retry is reported with its reason.
 Every stage that already succeeded keeps its result, so a recovered review repeats only the work that failed.
 Recovery is bounded to one delayed retry per stage, so a stage reports at most two attempts and the pipeline cannot loop.
 
-Only `provider-timeout`, `provider-connection`, `provider-unavailable`, and `provider-transient` are retryable.
+The runtime marks transient provider failures retryable: timeouts, dropped connections, conflicts, rate limits, and service errors.
 Exhausted output repair is settled: the runtime already corrected inside the same conversation, so repeating the request cannot help.
 An unreachable API means the retry is not attempted, because a review that cannot be proved wanted is not worth a second request.
 
