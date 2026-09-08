@@ -11,6 +11,38 @@ inputs:
   config-file:
     description: Workflow-controlled action configuration relative to the workspace
     required: true
+  request-timeout-ms:
+    description: Maximum duration of each provider request in milliseconds
+    required: false
+    default: ""
+  max-request-retries:
+    description: Maximum SDK retries after each initial provider request
+    required: false
+    default: ""
+  max-model-turns:
+    description: Maximum logical model turns, excluding SDK retries
+    required: false
+    default: ""
+  max-tool-calls:
+    description: Maximum read-only filesystem tool calls
+    required: false
+    default: ""
+  max-output-bytes:
+    description: Maximum UTF-8 bytes in the accepted structured output
+    required: false
+    default: ""
+  max-output-repairs:
+    description: Maximum correction attempts after invalid structured output
+    required: false
+    default: ""
+  validator:
+    description: Trusted workflow validator module selector in path#export form
+    required: false
+    default: ""
+  validator-metadata:
+    description: Trusted JSON object passed opaquely to the selected validator
+    required: false
+    default: ""
 
 outputs:
   structured-output:
@@ -21,6 +53,24 @@ outputs:
     description: Number of model turns attempted, excluding SDK retries
   tool-call-count:
     description: Number of model tool calls processed
+  activity:
+    description: Last active model phase
+  duration-ms:
+    description: Total action duration in milliseconds
+  request-retry-count:
+    description: Number of SDK request retries
+  output-repair-count:
+    description: Number of output correction attempts
+  provider-finish-reason:
+    description: Last safe provider-reported finish reason when available
+  token-usage:
+    description: Bounded JSON token usage aggregate with completeness metadata
+  diagnostics:
+    description: Bounded JSON provider-attempt diagnostics
+  failure-category:
+    description: Machine-readable failure category
+  retryable:
+    description: Whether a caller may stage-recover the terminal failure
 
 runs:
   using: node24

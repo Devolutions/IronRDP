@@ -86,6 +86,7 @@ test("runtime executes only declared tools and returns schema-validated canonica
     output: '{"answer":"done"}',
     turnCount: 2,
     toolCallCount: 3,
+    outputRepairCount: 0,
   });
   assert.deepEqual(requests[0].tools, TOOLS);
   assert.deepEqual(TOOLS.map((tool) => tool.function.name), [
@@ -234,7 +235,8 @@ test("runtime allows exactly one tools-disabled repair for JSON or schema failur
       config: baseConfig, methodologies: [], prompt: "p", sandbox, schema,
     }),
     (error) => error.reason ===
-      "repair response was invalid: response was not valid JSON" && error.turnCount === 2,
+      "output remained invalid after the repair limit" && error.category === "output-invalid" &&
+      error.turnCount === 2 && error.outputRepairCount === 1,
   );
 });
 
@@ -253,9 +255,88 @@ test("runtime rejects fenced repair output despite requesting JSON mode", async 
       schema,
     }),
     (error) => error.reason ===
-      "repair response was invalid: response was not valid JSON" && error.turnCount === 2,
+      "output remained invalid after the repair limit" && error.category === "output-invalid" &&
+      error.turnCount === 2,
   );
   assert.deepEqual(requests[1].response_format, { type: "json_object" });
+});
+
+test("validator-directed repair preserves the previous candidate and may make bounded reads", async () => {
+  const requests = [];
+  const observed = [];
+  const validator = async (candidate, context) => {
+    observed.push({ candidate, ...context });
+    if (candidate.answer === "missing citation") {
+      return { ok: false, reason: "citation requires source verification" };
+    }
+    return { ok: true };
+  };
+  const result = await runAgent({
+    client: clientFrom([
+      message('{"answer":"missing citation"}'),
+      message(null, [call("citation", "read_file", { path: "evidence.txt" })]),
+      message('{"answer":"cited"}'),
+    ], requests),
+    config: { ...baseConfig, max_turns: 4, max_output_repair_attempts: 1 },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+    validator,
+  });
+
+  assert.equal(result.output, '{"answer":"cited"}');
+  assert.equal(result.outputRepairCount, 1);
+  assert.deepEqual(observed, [
+    {
+      candidate: { answer: "missing citation" },
+      previousCandidate: null,
+      repairAttempt: 0,
+    },
+    {
+      candidate: { answer: "cited" },
+      previousCandidate: { answer: "missing citation" },
+      repairAttempt: 1,
+    },
+  ]);
+  assert.deepEqual(requests.map((request) => request.tools !== undefined), [true, true, true]);
+  assert.match(requests[1].messages.at(-1).content, /not to begin a new investigation/);
+  assert.equal(requests[2].messages.at(-1).role, "tool");
+});
+
+test("validator execution failures are terminal and strict output is opt-in", async () => {
+  const terminal = new Error("validation context is stale");
+  terminal.code = "VALIDATOR_TERMINAL";
+  await assert.rejects(
+    runAgent({
+      client: clientFrom([message('{"answer":"candidate"}')]),
+      config: baseConfig,
+      methodologies: [],
+      prompt: "p",
+      sandbox,
+      schema,
+      validator: async () => { throw Object.assign(terminal, {
+        reason: "validation context is stale",
+        category: "validator-terminal",
+      }); },
+    }),
+    (error) => error.category === "validator-terminal" &&
+      error.reason === "validation context is stale" && error.outputRepairCount === 0,
+  );
+
+  const requests = [];
+  await runAgent({
+    client: clientFrom([message('{"answer":"candidate"}')], requests),
+    config: { ...baseConfig, max_tool_calls: 0, output_format: "json_schema" },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+  });
+  assert.deepEqual(requests[0].response_format, {
+    type: "json_schema",
+    json_schema: { name: "test", strict: true, schema },
+  });
 });
 
 test("runtime repairs a final response with no text", async () => {
@@ -374,7 +455,7 @@ test("runtime does not request object-only JSON mode for non-object schemas", as
 test("provider errors are reduced to fixed non-sensitive categories", () => {
   assert.equal(providerFailureReason({ status: 401, message: "secret" }), "provider credential rejected");
   assert.equal(providerFailureReason({ status: 403, message: "secret" }), "provider access forbidden");
-  assert.equal(providerFailureReason({ status: 429, message: "secret" }), "provider rate or quota limit reached");
+  assert.equal(providerFailureReason({ status: 429, message: "secret" }), "provider rate limit reached");
   assert.equal(providerFailureReason({ status: 503, message: "secret" }), "provider service unavailable");
   assert.equal(
     providerFailureReason(new APIConnectionTimeoutError({ message: "secret" })),

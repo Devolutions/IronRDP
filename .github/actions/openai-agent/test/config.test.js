@@ -58,6 +58,10 @@ test("configuration rejects unknown fields, unsafe models, and empty capabilitie
     { max_output_bytes: 1023 },
     { max_turns: 51 },
     { max_tool_calls: 201 },
+    { request_timeout_ms: 600_001 },
+    { max_request_retries: 11 },
+    { max_output_repair_attempts: 6 },
+    { output_format: "unsupported" },
   ]) {
     const workspace = configurationFixture(changes);
     try {
@@ -65,6 +69,38 @@ test("configuration rejects unknown fields, unsafe models, and empty capabilitie
     } finally {
       workspace.cleanup();
     }
+  }
+});
+
+test("configuration accepts bounded recovery controls and gates strict schema output", () => {
+  const workspace = configurationFixture({
+    request_timeout_ms: 90_000,
+    max_request_retries: 4,
+    max_output_repair_attempts: 2,
+    output_format: "json_schema",
+  });
+  try {
+    const loaded = loadConfiguration(workspace.directory, "config.json");
+    assert.equal(loaded.config.request_timeout_ms, 90_000);
+    assert.equal(loaded.config.max_request_retries, 4);
+    assert.equal(loaded.config.max_output_repair_attempts, 2);
+    assert.equal(loaded.config.output_format, "json_schema");
+  } finally {
+    workspace.cleanup();
+  }
+
+  const invalid = configurationFixture({
+    output_format: "json_schema",
+    schema_file: "array-schema.json",
+  });
+  try {
+    write(invalid.directory, "array-schema.json", JSON.stringify({
+      type: "array",
+      items: { type: "string" },
+    }));
+    assert.throws(() => loadConfiguration(invalid.directory, "config.json"));
+  } finally {
+    invalid.cleanup();
   }
 });
 
