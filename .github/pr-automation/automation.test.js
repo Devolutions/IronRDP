@@ -27,6 +27,7 @@ const {
 } = require("./write-state");
 const { forkRateLimit } = require("./fork-rate-limit");
 const { reviewSkipReasons } = require("./review-skip-summary");
+const { renderReviewReport } = require("./review-report-summary");
 const {
   MAX_BODY_LENGTH, MAX_COMMENT_LENGTH, MAX_COMMENTS, fetchReviewContext,
 } = require("./fetch-review-context");
@@ -280,12 +281,30 @@ test("resolve review state renders bounded recovery diagnostics in the check and
   const terminal = await runResolveReviewScript({
     report: {
       v: 1, status: "failed",
-      stages: [{
-        id: "protocol", status: "failed", attempts: 2, reason: "provider unavailable",
-        category: "retry-declined", metrics: {
-          tokens: null, elapsed_ms: null, request_retries: null, output_repairs: null,
+      stages: [
+        {
+          id: "evidence", status: "success", required: true,
+          metrics: { tokens: null, elapsed_ms: 0, request_retries: null, output_repairs: null },
         },
-      }],
+        {
+          id: "protocol", status: "failed", required: true, attempts: 2, reason: "provider unavailable",
+          category: "retry-declined", metrics: {
+            tokens: null, elapsed_ms: null, request_retries: null, output_repairs: null,
+          },
+        },
+        {
+          id: "aggregate", status: "success", required: true,
+          metrics: { tokens: null, elapsed_ms: 0, request_retries: null, output_repairs: null },
+        },
+        {
+          id: "general", status: "success", required: true,
+          metrics: { tokens: null, elapsed_ms: 0, request_retries: null, output_repairs: null },
+        },
+        {
+          id: "validate", status: "success", required: true,
+          metrics: { tokens: null, elapsed_ms: null, request_retries: null, output_repairs: null },
+        },
+      ],
       metrics: {
         tokens: null, tokens_complete: false, elapsed_ms: null, request_retries: null,
         output_repairs: null, stage_retries: 1,
@@ -312,6 +331,27 @@ test("resolve review state renders bounded recovery diagnostics in the check and
   });
   assert.match(missing.state.check.summary, /no usable report/);
   assert.match(missing.state.check.summary, /unavailable/);
+
+  const bounded = renderReviewReport({
+    report: {
+      stages: Array.from({ length: 16 }, (_, index) => ({
+        id: `stage-${index}-${"x".repeat(300)}`, status: "failed", attempts: 2,
+        reason: "r".repeat(300), category: "retry-declined",
+        previous_reason: "p".repeat(300),
+        metrics: {
+          tokens: { input: 0, output: 0, total: 0, complete: true },
+          elapsed_ms: 0, request_retries: 0, output_repairs: 0,
+        },
+      })),
+      metrics: {
+        tokens: { input: 0, output: 0, total: 0 }, tokens_complete: true,
+        elapsed_ms: 0, request_retries: 0, output_repairs: 0, stage_retries: 16,
+      },
+    },
+    outcome: "unavailable", detail: "review unavailable",
+    summaryUrl: "https://github.example/actions/runs/123",
+  });
+  assert.ok(Buffer.byteLength(bounded.checkSummary) < 24 * 1024);
 });
 
 test("review skip summary explains gate and quota failures", () => {

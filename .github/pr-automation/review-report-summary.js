@@ -1,6 +1,6 @@
 "use strict";
 
-const MAX_STAGES = 32;
+const MAX_STAGES = 8;
 const MAX_TEXT_LENGTH = 300;
 
 function escapeMarkdown(value) {
