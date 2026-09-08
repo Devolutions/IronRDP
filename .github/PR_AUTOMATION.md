@@ -49,7 +49,7 @@ Only the validated general-review result can be published.
 
 ## Reviewer output validation
 
-A reviewer invocation retries up to four provider requests after the initial attempt.
+Every provider request a reviewer invocation makes is retried up to four times after its initial attempt.
 
 `.github/pr-automation/agent-validator.js` is the trusted review validator the model runtime calls.
 The runtime validates JSON and the output schema, then hands the parsed candidate to this module together with bounded metadata naming the stage, the reviewer, the expected SHAs, and the trusted context files.

@@ -3099,7 +3099,8 @@ test("the mandatory reviewer set is resolved once and read everywhere else", () 
 
   // One interpretation, taken before any provider work, so an unusable plan fails closed early.
   assert.match(evidence, /resolveRequiredReviewers/, "evidence must resolve the required set");
-  assert.match(evidence, /if \(!resolved\.ok\) throw new Error/);
+  assert.match(evidence, /if \(!resolved\.ok\) \{/);
+  assert.match(evidence, /throw new Error\(resolved\.reason\)/);
   assert.ok(evidence.indexOf("id: plan") < evidence.indexOf("Fetch bounded review"),
     "the plan must be settled before any reviewer stage reads it");
   assert.match(evidence, /required-reviewers: \$\{\{ steps\.plan\.outputs\.required-reviewers \}\}/);
@@ -3140,6 +3141,10 @@ async function runFirstStepScript(jobName, env) {
         info: () => {}, warning: () => {},
       },
     });
+  } catch (error) {
+    // A failing step still reports what it managed to set, which is how its reason reaches the run.
+    error.stepOutputs = outputs;
+    throw error;
   } finally {
     process.chdir(previous);
     fs.rmSync(directory, { recursive: true, force: true });
@@ -3170,6 +3175,18 @@ test("the review plan keeps the gate fallback for a caller that sends no require
   }).then(() => null, (error) => error);
   assert.ok(unresolved !== null, "an unusable plan must fail the job");
   assert.match(String(unresolved.message), /invalid required reviewer list/);
+
+  // The preparation stage reports why it stopped, so a plan failure is not read as missing evidence.
+  assert.match(String(unresolved.stepOutputs["failure-reason"]), /invalid required reviewer list/);
+  const unreadable = await runFirstStepScript("evidence", { ...base, SELECTED_REVIEWERS: "{" })
+    .then(() => null, (error) => error);
+  assert.ok(unreadable !== null, "an unreadable plan must fail the job");
+  assert.match(String(unreadable.stepOutputs["failure-reason"]), /review plan unreadable/);
+
+  const evidence = workflowJob(readReviewWorkflow().slice(readReviewWorkflow().indexOf("\njobs:")),
+    "evidence");
+  assert.match(evidence, /PLAN_REASON: \$\{\{ steps\.plan\.outputs\.failure-reason \}\}/);
+  assert.match(evidence, /process\.env\.PLAN_REASON \|\| process\.env\.EVIDENCE_REASON/);
 });
 
 test("the aggregate job enforces coverage and fails closed without a plan", async () => {

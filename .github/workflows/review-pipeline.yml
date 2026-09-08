@@ -105,15 +105,25 @@ jobs:
               resolveRequiredReviewers,
             } = require("./.github/pr-automation/review-pipeline");
             const gate = process.env.GATE ? JSON.parse(process.env.GATE) : {};
-            const resolved = resolveRequiredReviewers({
-              selectedReviewers: JSON.parse(process.env.SELECTED_REVIEWERS),
-              requiredReviewers: process.env.REQUIRED_REVIEWERS
-                ? JSON.parse(process.env.REQUIRED_REVIEWERS)
-                : undefined,
-              protocolRelated: gate.protocolRelated,
-              risk: gate.risk,
-            });
-            if (!resolved.ok) throw new Error(resolved.reason);
+            const resolved = (() => {
+              try {
+                return resolveRequiredReviewers({
+                  selectedReviewers: JSON.parse(process.env.SELECTED_REVIEWERS),
+                  requiredReviewers: process.env.REQUIRED_REVIEWERS
+                    ? JSON.parse(process.env.REQUIRED_REVIEWERS)
+                    : undefined,
+                  protocolRelated: gate.protocolRelated,
+                  risk: gate.risk,
+                });
+              } catch (error) {
+                return { ok: false, reason: `review plan unreadable: ${error.message}` };
+              }
+            })();
+            // The stage report says why preparation stopped, so the plan keeps its own reason.
+            if (!resolved.ok) {
+              core.setOutput("failure-reason", resolved.reason);
+              throw new Error(resolved.reason);
+            }
             core.setOutput("required-reviewers", JSON.stringify(resolved.reviewers));
             core.info(JSON.stringify({
               event: "pr-automation.review-plan",
@@ -228,6 +238,7 @@ jobs:
         env:
           EVIDENCE_STATUS: ${{ job.status }}
           EVIDENCE_REASON: ${{ steps.evidence.outputs.failure-reason }}
+          PLAN_REASON: ${{ steps.plan.outputs.failure-reason }}
         with:
           script: |
             const { stageOutcome } = require("./.github/pr-automation/review-report");
@@ -235,7 +246,8 @@ jobs:
             const started = Number(process.env.EVIDENCE_STARTED_MS);
             const reason = ok
               ? ""
-              : process.env.EVIDENCE_REASON || "pull request evidence unavailable";
+              : process.env.PLAN_REASON || process.env.EVIDENCE_REASON ||
+                "pull request evidence unavailable";
             core.setOutput("failure-reason", reason);
             core.setOutput("stage", JSON.stringify(stageOutcome({
               id: "evidence",
