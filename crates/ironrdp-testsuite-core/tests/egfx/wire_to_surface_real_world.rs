@@ -3,6 +3,7 @@ use ironrdp_egfx::pdu::{Codec2Type, GfxPdu};
 use ironrdp_pdu::codecs::rfx::progressive::{
     ProgressiveBlock, ProgressiveTile, TILE_FLAG_DIFFERENCE, decode_progressive_stream,
 };
+use rstest::rstest;
 
 fn decode(bytes: &[u8]) -> GfxPdu {
     let mut cursor = ReadCursor::new(bytes);
@@ -77,17 +78,46 @@ fn create_surface_1280x800_context() {
     assert_eq!(pdu.height, 800);
 }
 
-/// WireToSurface2 RemoteFX Progressive fixture with 2 difference-encoded `TILE_FIRST` tiles
+/// WireToSurface2 RemoteFX Progressive fixtures with all-`TILE_FIRST` difference-encoded tiles
 /// (`flags & RFX_TILE_DIFFERENCE == 1` per MS-RDPRFX 2.2.2.3.1.2). See
 /// `test_data/egfx/haven/README.md` for provenance.
-#[test]
-fn wts2_64x64_diff_2tiles() {
-    let bytes = include_bytes!("../../test_data/egfx/haven/wts2_64x64_diff_2tiles.bin");
+///
+/// Each case carries: fixture bytes, codec context id, tile count, and the fixed
+/// `x_idx`/starting `y_idx` of the tile column.
+#[rstest]
+#[case::wts2_64x64_diff_2tiles(
+    include_bytes!("../../test_data/egfx/haven/wts2_64x64_diff_2tiles.bin").as_slice(),
+    18,
+    2,
+    3,
+    2
+)]
+#[case::wts2_64x128_diff_3tiles(
+    include_bytes!("../../test_data/egfx/haven/wts2_64x128_diff_3tiles.bin").as_slice(),
+    24,
+    3,
+    3,
+    2
+)]
+#[case::wts2_37x560_diff_column_9tiles(
+    include_bytes!("../../test_data/egfx/haven/wts2_37x560_diff_column_9tiles.bin").as_slice(),
+    7,
+    9,
+    19,
+    3
+)]
+fn wts2_diff_tiles(
+    #[case] bytes: &[u8],
+    #[case] codec_context_id: u32,
+    #[case] tile_count: usize,
+    #[case] x_idx: u16,
+    #[case] y_start: u16,
+) {
     let GfxPdu::WireToSurface2(pdu) = decode(bytes) else {
         panic!("expected WireToSurface2");
     };
     assert_eq!(pdu.surface_id, 0);
-    assert_eq!(pdu.codec_context_id, 18);
+    assert_eq!(pdu.codec_context_id, codec_context_id);
     assert_eq!(pdu.codec_id, Codec2Type::RemoteFxProgressive);
 
     let blocks = decode_progressive_stream(&pdu.bitmap_data).expect("decode progressive stream");
@@ -96,7 +126,7 @@ fn wts2_64x64_diff_2tiles() {
     let ProgressiveBlock::Region(region) = &blocks[1] else {
         panic!("expected Region block");
     };
-    assert_eq!(region.tiles.len(), 2);
+    assert_eq!(region.tiles.len(), tile_count);
 
     for (i, tile) in region.tiles.iter().enumerate() {
         let ProgressiveTile::First(first) = tile else {
@@ -110,77 +140,8 @@ fn wts2_64x64_diff_2tiles() {
             first.y_idx
         );
         assert_eq!(first.quality, 0xFF);
-        assert_eq!(first.x_idx, 3);
-        assert_eq!(first.y_idx, 2 + u16::try_from(i).expect("tile index fits in u16"));
-    }
-}
-
-/// WireToSurface2 RemoteFX Progressive fixture with 3 difference-encoded `TILE_FIRST` tiles.
-#[test]
-fn wts2_64x128_diff_3tiles() {
-    let bytes = include_bytes!("../../test_data/egfx/haven/wts2_64x128_diff_3tiles.bin");
-    let GfxPdu::WireToSurface2(pdu) = decode(bytes) else {
-        panic!("expected WireToSurface2");
-    };
-    assert_eq!(pdu.surface_id, 0);
-    assert_eq!(pdu.codec_context_id, 24);
-    assert_eq!(pdu.codec_id, Codec2Type::RemoteFxProgressive);
-
-    let blocks = decode_progressive_stream(&pdu.bitmap_data).expect("decode progressive stream");
-    let ProgressiveBlock::Region(region) = &blocks[1] else {
-        panic!("expected Region block");
-    };
-    assert_eq!(region.tiles.len(), 3);
-
-    for (i, tile) in region.tiles.iter().enumerate() {
-        let ProgressiveTile::First(first) = tile else {
-            panic!("expected TileFirst at index {i}");
-        };
-        assert_ne!(
-            first.flags & TILE_FLAG_DIFFERENCE,
-            0,
-            "tile at ({}, {}) should have RFX_TILE_DIFFERENCE set",
-            first.x_idx,
-            first.y_idx
-        );
-        assert_eq!(first.quality, 0xFF);
-        assert_eq!(first.x_idx, 3);
-        assert_eq!(first.y_idx, 2 + u16::try_from(i).expect("tile index fits in u16"));
-    }
-}
-
-/// WireToSurface2 RemoteFX Progressive fixture with a 9-tile vertical strip (x=19, y=3..=11)
-/// of difference-encoded tiles.
-#[test]
-fn wts2_37x560_diff_column_9tiles() {
-    let bytes = include_bytes!("../../test_data/egfx/haven/wts2_37x560_diff_column_9tiles.bin");
-    let GfxPdu::WireToSurface2(pdu) = decode(bytes) else {
-        panic!("expected WireToSurface2");
-    };
-    assert_eq!(pdu.surface_id, 0);
-    assert_eq!(pdu.codec_context_id, 7);
-    assert_eq!(pdu.codec_id, Codec2Type::RemoteFxProgressive);
-
-    let blocks = decode_progressive_stream(&pdu.bitmap_data).expect("decode progressive stream");
-    let ProgressiveBlock::Region(region) = &blocks[1] else {
-        panic!("expected Region block");
-    };
-    assert_eq!(region.tiles.len(), 9);
-
-    for (i, tile) in region.tiles.iter().enumerate() {
-        let ProgressiveTile::First(first) = tile else {
-            panic!("expected TileFirst at index {i}");
-        };
-        assert_ne!(
-            first.flags & TILE_FLAG_DIFFERENCE,
-            0,
-            "tile at ({}, {}) should have RFX_TILE_DIFFERENCE set",
-            first.x_idx,
-            first.y_idx
-        );
-        assert_eq!(first.quality, 0xFF);
-        assert_eq!(first.x_idx, 19);
-        assert_eq!(first.y_idx, 3 + u16::try_from(i).expect("tile index fits in u16"));
+        assert_eq!(first.x_idx, x_idx);
+        assert_eq!(first.y_idx, y_start + u16::try_from(i).expect("tile index fits in u16"));
     }
 }
 
