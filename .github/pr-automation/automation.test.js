@@ -141,6 +141,10 @@ test("automatic review requires exact-head CI and only reruns after a later push
   assert.match(reviewState, /parseReport\(process\.env\.REVIEW_REPORT\)/);
   assert.match(reviewState, /report\.status === "success" \? parse\(process\.env\.RAW_OUTPUT, null\) : null/);
   assert.match(reviewState, /value === null \? "unavailable" : String\(value\)/);
+  assert.ok(
+    reviewState.indexOf("metrics.tokens === null") < reviewState.indexOf("metrics.tokens.input"),
+    "aggregate tokens are checked for null before their fields are rendered",
+  );
   assert.match(reviewState, /REVIEW_GATE_RESULT: \$\{\{ needs\.review-gate\.result \}\}/);
   assert.match(reviewState, /FORK_RATE_LIMIT_RESULT: \$\{\{ needs\.fork-rate-limit\.result \}\}/);
   assert.match(reviewState, /REVIEW_PIPELINE_RESULT: \$\{\{ needs\.review-pipeline\.result \}\}/);
