@@ -1177,6 +1177,14 @@ jobs:
              const reviewerReason = recovery.status === "exhausted"
                ? recovery.reason
                : recovered ? process.env.RECOVERY_REASON : process.env.INITIAL_REASON;
+             const pipelines = [initial, recovered].filter(Boolean);
+             const failures = pipelines.flatMap((pipeline) => pipeline.ok
+               ? pipeline.value.stages.filter((stage) => stage.status === "failed")
+               : [{ id: "pipeline", reason: pipeline.reason }]);
+             const failureSummary = failures.length === 0
+               ? ""
+               : `\n\nFailed stages:\n${failures.map((stage) =>
+                 `- ${stage.id}: ${stage.reason || stage.failureCategory}`).join("\n")}`;
              const state = resolveReviewState({
                expectedSha: process.env.HEAD_SHA,
                labels: gate.labels ?? [],
@@ -1205,7 +1213,7 @@ jobs:
                  ? recovered
                    ? "Validated automated review was produced after stage recovery."
                    : "Validated automated review is bound to this commit."
-                 : `Automated review recovery is exhausted: ${claim.reason || "review unavailable"}.`}\n\n` +
+                 : `Automated review recovery is exhausted: ${claim.reason || "review unavailable"}.`}${failureSummary}\n\n` +
                  `[View the workflow summary](${process.env.SUMMARY_URL})\n\n${encodeClaim(claim)}`;
                state.check.conclusion = claim.status === "published" ? "success" : "neutral";
                state.expectedReviewClaim = {
@@ -1236,11 +1244,7 @@ jobs:
                  .addList(reasons)
                  .write();
              } else {
-               const pipelines = [initial, recovered].filter(Boolean);
                const metrics = aggregateStageMetrics(pipelines);
-               const failures = pipelines.flatMap((pipeline) => pipeline.ok
-                 ? pipeline.value.stages.filter((stage) => stage.status === "failed")
-                 : [{ id: "pipeline", reason: pipeline.reason }]);
                await core.summary
                  .addHeading("Automated review recovery")
                  .addRaw(`Recovery status: **${claim.status}**.`, true)
