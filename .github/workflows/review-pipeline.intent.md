@@ -23,9 +23,11 @@ Supported specialists include:
 
 Run selected specialists in a multi-job matrix, with at most three running at once.
 
-### Recovery
+### Stage recovery
 
-- Keep validated results throughout retries so only failed or missing work is repeated.
+Stage recovery repeats failed or missing stages while reusing successful results.
+
+- Keep validated results throughout stage recovery.
 - Reuse only trusted workflow results for unchanged review inputs and rules, and validate them again.
 - Supply a review-specific validator and let the action handle bounded output repair.
 - Never discard findings during output repair; fail the stage if repair cannot produce valid output.
@@ -39,7 +41,9 @@ Return per-stage metrics, including failed attempts and marking unavailable data
 
 - Token usage.
 - Elapsed time.
-- Retry and repair counts.
+- Request-retry count.
+- Output-repair count.
+- Stage-recovery count.
 - Whether results were reused.
 
 Do not count reused results as new token usage.

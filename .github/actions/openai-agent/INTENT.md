@@ -1,3 +1,8 @@
+## Terms
+
+- **Request retry:** resend the same provider request after a transient failure, without changing the conversation.
+- **Output repair:** ask the model to correct an invalid response using validation feedback and the existing investigation context.
+
 ## Inputs
 
 - Provider connection details and credentials.
@@ -16,25 +21,26 @@ Keep diagnostic output bounded:
 
 - Phase.
 - Latency.
-- Retry and repair counts.
+- Request-retry count.
+- Output-repair count.
 - Finish reason.
 - Token usage when available.
 - Accumulated turn and tool-call counts, including on failure.
 
-## Bounded recovery
+## Request retries
 
 - Retry transient provider failures with backoff while preserving investigation state.
 - Do not automatically retry invalid configuration, rejected credentials, or exhausted quota.
-- Keep request timeouts configurable and bound total recovery time.
-- Account for SDK retries within these bounds.
+- Keep request timeouts configurable and bound total time spent on request retries and output repair.
+- Allow at most four retries per request after the initial attempt, including SDK retries.
+- Count request retries separately from output-repair attempts, including retries of repair requests.
 
 For retryable `429` responses:
 
 - Read the provider's `Retry-After` header.
 - Wait that duration, or fall back to backoff if absent.
-- Fail closed after three consecutive `429` responses.
 
-Prefer the OpenAI SDK for `Retry-After` handling and request retries (`maxRetries`).
+Prefer the OpenAI SDK for `Retry-After` handling and request retries (`maxRetries`) where it satisfies the policy above.
 
 ## Output validation and repair
 
