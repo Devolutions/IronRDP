@@ -27,9 +27,14 @@ Keep diagnostic output bounded:
 - Do not automatically retry invalid configuration, rejected credentials, or exhausted quota.
 - Keep request timeouts configurable and bound total recovery time.
 - Account for SDK retries within these bounds.
-- On retryable `429`, read the provider's `Retry-After` header.
+
+For retryable `429` responses:
+
+- Read the provider's `Retry-After` header.
 - Wait that duration, or fall back to backoff if absent.
 - Fail closed after three consecutive `429` responses.
+
+Prefer the OpenAI SDK for `Retry-After` handling and request retries (`maxRetries`).
 
 ## Validated output
 
