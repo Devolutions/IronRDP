@@ -37,6 +37,11 @@ test("SDK adapter suppresses known quota retries without exposing bodies", async
   assert.equal(await hasKnownQuotaCode(new Response(JSON.stringify({
     error: { type: "quota_exhausted", message: "secret" },
   }), { status: 429 })), true);
+  const started = Date.now();
+  assert.equal(await hasKnownQuotaCode(new Response("x".repeat(8 * 1024 + 1), {
+    status: 429,
+  }), 100), false);
+  assert.equal(Date.now() - started < 100, true);
 });
 
 test("SDK adapter honors valid Retry-After without another retry budget", async () => {
@@ -66,12 +71,14 @@ test("runtime metrics retain activity and mark partial usage incomplete", async 
   const metrics = new RuntimeMetrics(() => 0);
   const request = metrics.beginRequest("repairing");
   const first = metrics.beginAttempt();
-  metrics.finishAttempt(first, new Response("", { status: 429 }));
+  metrics.observeResponse(first, new Response("", { status: 429 }));
+  metrics.finishAttempt(first);
   const second = metrics.beginAttempt();
-  metrics.finishAttempt(second, new Response("", {
+  metrics.observeResponse(second, new Response("", {
     status: 200,
     headers: { "x-request-id": "req_safe-123" },
   }));
+  metrics.finishAttempt(second);
   metrics.recordCompletion(request, {
     choices: [{ finish_reason: "stop" }],
     usage: { prompt_tokens: 4, completion_tokens: 3, total_tokens: 7 },
@@ -99,4 +106,54 @@ test("runtime metrics retain activity and mark partial usage incomplete", async 
       usage: { inputTokens: 4, outputTokens: 3, totalTokens: 7 },
     },
   ]);
+});
+
+test("runtime metrics mark individual missing usage fields incomplete", () => {
+  const metrics = new RuntimeMetrics(() => 0);
+  const first = metrics.beginRequest("investigating");
+  const firstAttempt = metrics.beginAttempt();
+  metrics.finishAttempt(firstAttempt);
+  metrics.recordCompletion(first, {
+    choices: [{ finish_reason: "stop" }],
+    usage: { prompt_tokens: 4, completion_tokens: 3, total_tokens: 7 },
+  });
+  const second = metrics.beginRequest("investigating");
+  const secondAttempt = metrics.beginAttempt();
+  metrics.finishAttempt(secondAttempt);
+  metrics.recordCompletion(second, {
+    choices: [{ finish_reason: "stop" }],
+    usage: { prompt_tokens: 6 },
+  });
+
+  assert.deepEqual(metrics.snapshot().tokenUsage, {
+    complete: false,
+    knownAttemptCount: 2,
+    unknownAttemptCount: 0,
+    inputTokens: 10,
+    outputTokens: 3,
+    totalTokens: 7,
+  });
+});
+
+test("provider attempts include full response-body consumption time", async () => {
+  const metrics = new RuntimeMetrics();
+  const client = createProviderClient(
+    BaseClient,
+    { timeout: 1_000 },
+    metrics,
+    async () => new Response(new ReadableStream({
+      start(controller) {
+        setTimeout(() => {
+          controller.enqueue(new TextEncoder().encode("{}"));
+          controller.close();
+        }, 20);
+      },
+    }), { status: 200 }),
+  );
+  const request = metrics.beginRequest("investigating");
+  const response = await client.options.fetch("https://provider.example/v1");
+  assert.equal(metrics.snapshot().diagnostics.providerAttempts[0].durationMs < 20, true);
+  await response.text();
+  metrics.recordCompletion(request, { choices: [{ finish_reason: "stop" }] });
+  assert.equal(metrics.snapshot().diagnostics.providerAttempts[0].durationMs >= 20, true);
 });

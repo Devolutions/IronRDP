@@ -1,7 +1,7 @@
 "use strict";
 
 const {
-  MAX_PROVIDER_ERROR_BYTES, MAX_QUOTA_BODY_READ_MS, MAX_REQUEST_TIMEOUT_MS,
+  MAX_PROVIDER_ERROR_BYTES, MAX_REQUEST_TIMEOUT_MS,
 } = require("./limits");
 
 const KNOWN_QUOTA_CODES = new Set([
@@ -30,17 +30,17 @@ class RuntimeMetrics {
     return request;
   }
 
-  beginAttempt() {
+  beginAttempt(timeoutMs) {
     const attempt = {
       activity: this.activeRequest?.activity || this.activity,
       startedAt: this.now(),
+      timeoutMs,
     };
     this.activeRequest?.attempts.push(attempt);
     return attempt;
   }
 
-  finishAttempt(attempt, response) {
-    attempt.durationMs = Math.max(0, this.now() - attempt.startedAt);
+  observeResponse(attempt, response) {
     if (response && Number.isInteger(response.status) &&
         response.status >= 100 && response.status <= 599) {
       attempt.status = response.status;
@@ -52,9 +52,20 @@ class RuntimeMetrics {
     }
   }
 
+  finishAttempt(attempt) {
+    if (attempt.durationMs !== undefined) return;
+    attempt.durationMs = Math.max(0, this.now() - attempt.startedAt);
+  }
+
+  remainingAttemptTimeout(attempt) {
+    if (!attempt || !Number.isSafeInteger(attempt.timeoutMs)) return 0;
+    return Math.max(0, attempt.timeoutMs - (this.now() - attempt.startedAt));
+  }
+
   recordCompletion(request, response) {
     const attempt = request.attempts.at(-1);
     if (!attempt) return;
+    this.finishAttempt(attempt);
     const finishReason = response?.choices?.[0]?.finish_reason;
     if (typeof finishReason === "string" && SAFE_DIAGNOSTIC_VALUE.test(finishReason)) {
       attempt.finishReason = finishReason;
@@ -89,12 +100,15 @@ class RuntimeMetrics {
 }
 
 function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis.fetch, sleep = delay) {
+  const attempts = new WeakMap();
   const instrumentedFetch = async (...args) => {
-    const attempt = metrics.beginAttempt();
+    const attempt = metrics.beginAttempt(options.timeout);
     try {
       const response = await fetch(...args);
-      metrics.finishAttempt(attempt, response);
-      return response;
+      metrics.observeResponse(attempt, response);
+      const observed = observeResponse(response, () => metrics.finishAttempt(attempt));
+      attempts.set(observed, attempt);
+      return observed;
     } catch (error) {
       metrics.finishAttempt(attempt);
       throw error;
@@ -104,7 +118,10 @@ function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis
   if (typeof client.shouldRetry === "function") {
     const shouldRetry = client.shouldRetry.bind(client);
     client.shouldRetry = async (response) => {
-      if (response?.status === 429 && await hasKnownQuotaCode(response)) return false;
+      if (response?.status === 429 &&
+          await hasKnownQuotaCode(response, metrics.remainingAttemptTimeout(attempts.get(response)))) {
+        return false;
+      }
       return shouldRetry(response);
     };
   }
@@ -125,10 +142,91 @@ function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis
   return client;
 }
 
-async function hasKnownQuotaCode(response) {
+function observeResponse(response, finish) {
+  let finished = false;
+  const complete = () => {
+    if (finished) return;
+    finished = true;
+    finish();
+  };
+  return new Proxy(response, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (property === "body") return observeBody(value, complete);
+      if (["arrayBuffer", "blob", "formData", "json", "text"].includes(property) &&
+          typeof value === "function") {
+        return async (...args) => {
+          try {
+            return await value.apply(target, args);
+          } finally {
+            complete();
+          }
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+function observeBody(body, complete) {
+  if (!body) {
+    complete();
+    return body;
+  }
+  return new Proxy(body, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (property === "cancel" && typeof value === "function") {
+        return async (...args) => {
+          try {
+            return await value.apply(target, args);
+          } finally {
+            complete();
+          }
+        };
+      }
+      if (property === "getReader" && typeof value === "function") {
+        return (...args) => observeReader(value.apply(target, args), complete);
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+function observeReader(reader, complete) {
+  return new Proxy(reader, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (property === "read" && typeof value === "function") {
+        return async (...args) => {
+          try {
+            const result = await value.apply(target, args);
+            if (result.done) complete();
+            return result;
+          } catch (error) {
+            complete();
+            throw error;
+          }
+        };
+      }
+      if (property === "cancel" && typeof value === "function") {
+        return async (...args) => {
+          try {
+            return await value.apply(target, args);
+          } finally {
+            complete();
+          }
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+async function hasKnownQuotaCode(response, timeoutMs = MAX_REQUEST_TIMEOUT_MS) {
   let text;
   try {
-    text = await readBoundedBody(response.clone());
+    text = await readBoundedBody(response.clone(), timeoutMs);
   } catch {
     return false;
   }
@@ -143,7 +241,7 @@ async function hasKnownQuotaCode(response) {
   }
 }
 
-async function readBoundedBody(response) {
+async function readBoundedBody(response, timeoutMs) {
   const reader = response.body?.getReader?.();
   if (!reader) return null;
   const chunks = [];
@@ -166,7 +264,7 @@ async function readBoundedBody(response) {
         timeout = setTimeout(() => {
           timedOut = true;
           resolve(null);
-        }, MAX_QUOTA_BODY_READ_MS);
+        }, timeoutMs);
       }),
     ]);
     return content;
@@ -232,7 +330,9 @@ function safeTokenCount(value) {
 function summarizeUsage(attempts) {
   const known = attempts.filter((attempt) => attempt.usage !== undefined);
   const summary = {
-    complete: attempts.length > 0 && known.length === attempts.length,
+    complete: attempts.length > 0 && known.length === attempts.length &&
+      known.every((attempt) => ["inputTokens", "outputTokens", "totalTokens"]
+        .every((field) => attempt.usage[field] !== undefined)),
     knownAttemptCount: known.length,
     unknownAttemptCount: attempts.length - known.length,
   };
