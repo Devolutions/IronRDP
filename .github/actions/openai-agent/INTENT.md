@@ -36,7 +36,7 @@ Expose these diagnostics:
 
 - Retry transient provider failures with backoff.
 - Do not automatically retry invalid configuration, rejected credentials, or exhausted quota.
-- Apply the configured retry limit per request after the initial attempt, including SDK retries.
+- Apply the configured retry limit per request after the initial attempt.
 
 For retryable `429` responses:
 
