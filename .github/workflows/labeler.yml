@@ -592,6 +592,7 @@ jobs:
                     protocolRelated: false, risk: "unknown", specialistReviewers: [],
                     contributor: { status: "forced" }, reason: "valid classification unavailable",
                   }, false);
+                  core.setFailed("forced review invocation requires a valid classification for the current head");
                   return;
                 }
                 const route = resolveReviewerRoute({

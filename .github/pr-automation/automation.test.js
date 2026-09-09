@@ -105,6 +105,41 @@ function resolveReviewScript(workflow = readWorkflow()) {
   return match[1].replace(/^ {13}/gm, "");
 }
 
+function reviewGateScript(workflow = readWorkflow()) {
+  const job = workflowJob(workflow, "review-gate");
+  const match = job.match(/script: \|\n((?: {12}.*\n?)+)/);
+  assert.ok(match, "review-gate script is missing");
+  return match[1].replace(/^ {12}/gm, "");
+}
+
+async function runReviewGateScript({ force = false, classificationRuns = [] } = {}) {
+  const outputs = new Map();
+  const failures = [];
+  const core = {
+    setOutput: (name, value) => outputs.set(name, value),
+    setFailed: (message) => failures.push(message),
+    info: () => {},
+    warning: () => {},
+  };
+  const github = {
+    rest: {
+      checks: {
+        listForRef: async () => ({ data: { check_runs: classificationRuns } }),
+      },
+    },
+  };
+  const context = { repo: { owner: "Devolutions", repo: "IronRDP" } };
+  const process = { env: {
+    PULL_REQUEST_NUMBER: "1", HEAD_SHA: SHA, FORCE: String(force),
+    LABELS: "[]", AUTHOR: "null", ROUTE: "manual",
+  } };
+  const rootRequire = createRequire(path.join(__dirname, "..", "..", "labeler.js"));
+  await new AsyncFunction("core", "github", "context", "require", "process", reviewGateScript())(
+    core, github, context, rootRequire, process,
+  );
+  return { gate: JSON.parse(outputs.get("gate")), eligible: outputs.get("eligible"), failures };
+}
+
 async function runResolveReviewScript({ report, pipelineResult = "success" }) {
   const outputs = new Map();
   const summary = [];
@@ -243,6 +278,20 @@ test("review skip summary lists every failed gate condition", () => {
     "The pull request requires a maintainer legitimacy decision.",
     "The contributor has 0 qualifying merged pull requests; at least one is required.",
   ]);
+});
+
+test("a forced review with no valid classification fails as an invocation error", async () => {
+  const result = await runReviewGateScript({ force: true });
+  assert.deepEqual(result.gate, {
+    ok: false, force: true, head_sha: SHA, classificationValid: false,
+    classificationCheck: false, legitimacyStopped: false, ciGreen: false,
+    secondReviewEligible: false, policyEligible: false, labels: [],
+    protocolRelated: false, risk: "unknown", specialistReviewers: [],
+    contributor: { status: "forced" }, reason: "valid classification unavailable",
+  });
+  assert.equal(result.eligible, false);
+  assert.deepEqual(result.failures,
+    ["forced review invocation requires a valid classification for the current head"]);
 });
 
 test("review outcome requires validated final output", () => {
