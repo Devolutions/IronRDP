@@ -401,12 +401,24 @@ test("main reports why repaired output remains invalid", async () => {
       this.chat = { completions: { create: async () => responses.shift() } };
     }
   }
-  const reason = "output remained invalid after the repair limit";
+  const reason =
+    "output remained invalid after the repair limit: json: response was not valid JSON";
   try {
     await main(core, { GITHUB_WORKSPACE: workspace.directory }, InvalidRepairOpenAI);
     assert.equal(core.outputs.get("structured-output"), "");
     assert.equal(core.outputs.get("failure-reason"), reason);
+    assert.equal(core.outputs.get("failure-category"), "output-invalid");
+    assert.equal(core.outputs.get("retryable"), "false");
     assert.equal(core.outputs.get("turn-count"), "2");
+    assert.deepEqual(JSON.parse(core.outputs.get("diagnostics")).outputRejections, [
+      {
+        attempt: 1,
+        activity: "investigating",
+        layer: "schema",
+        reason: "response did not match the schema: #/required: required answer; #/additionalProperties: additionalProperties",
+      },
+      { attempt: 2, activity: "repairing", layer: "json", reason: "response was not valid JSON" },
+    ]);
     assert.deepEqual(
       core.events.filter((event) => event[0] === "failed").map((event) => event[1]),
       [reason],

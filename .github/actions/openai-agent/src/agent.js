@@ -5,8 +5,13 @@ const { APIConnectionError, APIConnectionTimeoutError } = require("openai");
 
 const { ActionError, fail } = require("./errors");
 const {
-  DEFAULT_OUTPUT_REPAIRS, MAX_MODEL_OUTPUT_BYTES, MAX_TOOL_ARGUMENT_BYTES,
+  DEFAULT_OUTPUT_REPAIRS, MAX_MODEL_OUTPUT_BYTES, MAX_OUTPUT_REPAIRS, MAX_TOOL_ARGUMENT_BYTES,
 } = require("./limits");
+const { sanitizeReason } = require("./provider");
+
+// One candidate is parsed per validated attempt, and the repair budget bounds those attempts, so the
+// history a validator sees is bounded by the same output size limit that bounds a single response.
+const MAX_CANDIDATE_HISTORY = 1 + MAX_OUTPUT_REPAIRS;
 
 const TOOLS = [
   {
@@ -141,16 +146,16 @@ function compileOutputValidator(schema, maximumBytes = MAX_MODEL_OUTPUT_BYTES) {
   }
   return (raw) => {
     if (typeof raw !== "string" || raw.length === 0) {
-      return { ok: false, reason: "response was empty" };
+      return { ok: false, layer: "empty", reason: "response was empty" };
     }
     if (Buffer.byteLength(raw, "utf8") > maximumBytes) {
-      return { ok: false, reason: "response exceeded the configured byte limit" };
+      return { ok: false, layer: "size", reason: "response exceeded the configured byte limit" };
     }
     let value;
     try {
       value = JSON.parse(raw);
     } catch {
-      return { ok: false, reason: "response was not valid JSON" };
+      return { ok: false, layer: "json", reason: "response was not valid JSON" };
     }
     if (!validate(value)) {
       const errors = (validate.errors || []).slice(0, 10)
@@ -159,11 +164,15 @@ function compileOutputValidator(schema, maximumBytes = MAX_MODEL_OUTPUT_BYTES) {
           return `${error.schemaPath || "/"}: ${error.keyword}${detail}`;
         })
         .join("; ");
-      return { ok: false, reason: `response did not match the schema: ${errors}`, value };
+      return {
+        ok: false, layer: "schema", reason: `response did not match the schema: ${errors}`, value,
+      };
     }
     const output = JSON.stringify(value);
     if (Buffer.byteLength(output, "utf8") > maximumBytes) {
-      return { ok: false, reason: "response exceeded the configured byte limit" };
+      return {
+        ok: false, layer: "size", reason: "response exceeded the configured byte limit", value,
+      };
     }
     return { ok: true, output, value };
   };
@@ -197,8 +206,7 @@ async function runAgent({
     providerCalls: 0,
     toolCalls: 0,
     outputRepairs: 0,
-    hasPreviousCandidate: false,
-    previousCandidate: null,
+    candidates: [],
   };
 
   try {
@@ -216,7 +224,7 @@ async function runAgent({
       messages.push(message);
       const calls = message.tool_calls;
       if (!Array.isArray(calls) || calls.length === 0) {
-        const candidate = await validateCandidate(textContent(message.content));
+        const candidate = await validateCandidate(textContent(message.content), "investigating");
         if (candidate.ok) return result(candidate.output, state);
         return repair(messages, candidate);
       }
@@ -256,7 +264,7 @@ async function runAgent({
         category: "provider-response", state,
       });
     }
-    const candidate = await validateCandidate(textContent(message.content));
+    const candidate = await validateCandidate(textContent(message.content), "finalizing");
     if (candidate.ok) return result(candidate.output, state);
     return repair(messages, candidate);
   }
@@ -265,7 +273,7 @@ async function runAgent({
     let candidate = initialCandidate;
     while (true) {
       if (state.outputRepairs >= config.max_output_repair_attempts) {
-        throw new AgentFailure("output remained invalid after the repair limit", {
+        throw new AgentFailure(exhaustedReason(candidate), {
           category: "output-invalid", state,
         });
       }
@@ -273,27 +281,30 @@ async function runAgent({
         throw limitFailure("maximum turn count exceeded", state);
       }
       state.outputRepairs++;
-      const allowTools = candidate.kind === "validator" &&
+      // Evidence lookup only helps a semantic rejection, and only until the model has read what it
+      // needs: the corrected value is always asked for without tools, so the answering turn carries
+      // the configured response format instead of an unconstrained tool-enabled request.
+      let toolsPermitted = candidate.kind === "validator" &&
         state.toolCalls < config.max_tool_calls;
       messages.push({
         role: "user",
         content: [
           "Your previous final response was invalid.",
           candidate.reason,
-          allowTools
-            ? "Use only necessary read-only tools to correct this validation error, not to begin a new investigation."
+          toolsPermitted
+            ? "Use only necessary read-only tools to correct this validation error, not to begin a new investigation, then return the corrected JSON in your next message."
             : "Do not call tools or investigate further.",
           "Correct every reported validation error and obey the required schema exactly.",
           "Return exactly one corrected JSON value with no Markdown fences, labels, commentary, or surrounding text.",
         ].join("\n"),
       });
       while (true) {
-        const response = await completion(messages, allowTools, "repairing");
+        const response = await completion(messages, toolsPermitted, "repairing");
         const message = firstMessage(response);
         messages.push(message);
         const calls = message.tool_calls;
         if (Array.isArray(calls) && calls.length !== 0) {
-          if (!allowTools) {
+          if (!toolsPermitted) {
             throw new AgentFailure("repair response attempted a tool call", {
               category: "provider-response", state,
             });
@@ -306,33 +317,34 @@ async function runAgent({
             const toolResult = executeTool(call, sandbox);
             messages.push({ role: "tool", tool_call_id: call.id, content: toolResult });
           }
+          toolsPermitted = false;
           if (state.providerCalls >= config.max_turns) {
             throw limitFailure("maximum turn count exceeded", state);
           }
           continue;
         }
-        candidate = await validateCandidate(textContent(message.content));
+        candidate = await validateCandidate(textContent(message.content), "repairing");
         if (candidate.ok) return result(candidate.output, state);
         break;
       }
     }
   }
 
-  async function validateCandidate(raw) {
+  async function validateCandidate(raw, activity) {
     const candidate = validateOutput(raw);
     if (!candidate.ok) {
-      if (validator && !state.hasPreviousCandidate && Object.hasOwn(candidate, "value")) {
-        state.previousCandidate = candidate.value;
-        state.hasPreviousCandidate = true;
-      }
+      if (validator && Object.hasOwn(candidate, "value")) state.candidates.push(candidate.value);
+      metrics?.recordOutputRejection({
+        activity, layer: candidate.layer, reason: candidate.reason,
+      });
       return { ...candidate, kind: "output" };
     }
     if (!validator) return candidate;
-    const previousCandidate = state.previousCandidate;
     let validation;
     try {
       validation = await validator(candidate.value, {
-        previousCandidate,
+        previousCandidate: state.candidates.length === 0 ? null : state.candidates[0],
+        candidates: state.candidates.slice(0, MAX_CANDIDATE_HISTORY),
         repairAttempt: state.outputRepairs,
       });
     } catch (error) {
@@ -340,11 +352,12 @@ async function runAgent({
         category: error.category || "validator-error", state,
       });
     }
-    if (!state.hasPreviousCandidate) {
-      state.previousCandidate = candidate.value;
-      state.hasPreviousCandidate = true;
-    }
-    return validation.ok ? candidate : { ok: false, kind: "validator", reason: validation.reason };
+    state.candidates.push(candidate.value);
+    if (validation.ok) return candidate;
+    metrics?.recordOutputRejection({
+      activity, layer: "semantic", reason: validation.reason,
+    });
+    return { ok: false, kind: "validator", layer: "semantic", reason: validation.reason };
   }
 
   async function completion(messages, allowTools, activity) {
@@ -359,6 +372,12 @@ async function runAgent({
       request.tool_choice = "auto";
       request.parallel_tool_calls = false;
     } else if (schema.type === "object") {
+      // Strict schema output is a per-model, per-schema provider capability, not a property of the
+      // OpenAI-compatible protocol: the endpoint this action is configured against documents it in
+      // `components.schemas.ResponseFormat` of https://helmcode.com/openapi.json, which as of this
+      // writing claims it only for `qwen3.6` and `gemma4`, and says nothing about the models the
+      // review pipeline configures. Selecting it is therefore left to configuration, and a schema
+      // must also be expressible in the provider's strict subset before a profile turns it on.
       request.response_format = config.output_format === "json_schema"
         ? {
           type: "json_schema",
@@ -458,6 +477,15 @@ function result(output, state) {
 
 function limitFailure(reason, state) {
   return new AgentFailure(reason, { category: "limit", state });
+}
+
+// Exhausting the repair budget says nothing about what the model kept getting wrong, so the reason
+// that actually ended the stage travels with the failure, bounded and sanitized.
+function exhaustedReason(candidate) {
+  const detail = sanitizeReason(`${candidate.layer}: ${candidate.reason}`);
+  return detail === ""
+    ? "output remained invalid after the repair limit"
+    : `output remained invalid after the repair limit: ${detail}`;
 }
 
 module.exports = {

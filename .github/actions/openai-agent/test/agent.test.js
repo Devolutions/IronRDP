@@ -11,7 +11,7 @@ const {
   AgentFailure, TOOLS, compileOutputValidator, executeTool, providerFailureDiagnostic,
   providerFailureReason, runAgent,
 } = require("../src/agent");
-const { RuntimeMetrics, createProviderClient } = require("../src/provider");
+const { RuntimeMetrics, createProviderClient, sanitizeReason } = require("../src/provider");
 
 const schema = {
   type: "object",
@@ -237,9 +237,89 @@ test("runtime allows exactly one tools-disabled repair for JSON or schema failur
       config: baseConfig, methodologies: [], prompt: "p", sandbox, schema,
     }),
     (error) => error.reason ===
-      "output remained invalid after the repair limit" && error.category === "output-invalid" &&
+      "output remained invalid after the repair limit: json: response was not valid JSON" &&
+      error.category === "output-invalid" &&
       error.turnCount === 2 && error.outputRepairCount === 1,
   );
+});
+
+test("exhausting repairs reports the layer and reason that ended the stage", async () => {
+  const metrics = new RuntimeMetrics();
+  await assert.rejects(
+    runAgent({
+      client: clientFrom([
+        message("not-json"),
+        message(JSON.stringify({ answer: "x".repeat(2000) })),
+        message('{"wrong":true}'),
+      ]),
+      config: { ...baseConfig, max_output_bytes: 1024, max_output_repair_attempts: 2 },
+      methodologies: [], prompt: "p", sandbox, schema, metrics,
+    }),
+    (error) => error.reason ===
+      "output remained invalid after the repair limit: schema: response did not match the schema: #/required: required answer; #/additionalProperties: additionalProperties" &&
+      error.category === "output-invalid" && !error.retryable && error.outputRepairCount === 2,
+  );
+  assert.deepEqual(metrics.snapshot().outputRejections, [
+    { attempt: 1, activity: "investigating", layer: "json", reason: "response was not valid JSON" },
+    {
+      attempt: 2,
+      activity: "repairing",
+      layer: "size",
+      reason: "response exceeded the configured byte limit",
+    },
+    {
+      attempt: 3,
+      activity: "repairing",
+      layer: "schema",
+      reason: "response did not match the schema: #/required: required answer; #/additionalProperties: additionalProperties",
+    },
+  ]);
+});
+
+test("a semantic rejection is reported as its own validation layer", async () => {
+  const metrics = new RuntimeMetrics();
+  await assert.rejects(
+    runAgent({
+      client: clientFrom([message('{"answer":"a"}'), message('{"answer":"b"}')]),
+      config: { ...baseConfig, max_tool_calls: 0, max_output_repair_attempts: 1 },
+      methodologies: [], prompt: "p", sandbox, schema, metrics,
+      validator: async () => ({ ok: false, reason: "citation requires source verification" }),
+    }),
+    (error) => error.reason ===
+      "output remained invalid after the repair limit: semantic: citation requires source verification",
+  );
+  assert.deepEqual(
+    metrics.snapshot().outputRejections.map((rejection) => rejection.layer),
+    ["semantic", "semantic"],
+  );
+});
+
+test("clean runs report no rejection diagnostics", async () => {
+  const metrics = new RuntimeMetrics();
+  await runAgent({
+    client: clientFrom([message('{"answer":"done"}')]),
+    config: { ...baseConfig, max_tool_calls: 0 },
+    methodologies: [], prompt: "p", sandbox, schema, metrics,
+  });
+  assert.equal(Object.hasOwn(metrics.snapshot(), "outputRejections"), false);
+});
+
+test("rejection diagnostics are bounded and stripped of unexpected characters", async () => {
+  const metrics = new RuntimeMetrics();
+  const responses = Array.from({ length: 12 }, () => message("not-json"));
+  await assert.rejects(
+    runAgent({
+      client: clientFrom(responses),
+      config: { ...baseConfig, max_turns: 12, max_tool_calls: 0, max_output_repair_attempts: 10 },
+      methodologies: [], prompt: "p", sandbox, schema, metrics,
+    }),
+    (error) => error.category === "output-invalid",
+  );
+  assert.equal(metrics.snapshot().outputRejections.length, 8);
+
+  assert.equal(sanitizeReason("keeps a-z 0.9, (x): #/y_z"), "keeps a-z 0.9, (x): #/y_z");
+  assert.equal(sanitizeReason("drops\nnewlines\tand \"quotes\" <tags>"), "drops newlines and quotes tags");
+  assert.equal(sanitizeReason("x".repeat(400)).length, 240);
 });
 
 test("runtime rejects fenced repair output despite requesting JSON mode", async () => {
@@ -257,13 +337,13 @@ test("runtime rejects fenced repair output despite requesting JSON mode", async 
       schema,
     }),
     (error) => error.reason ===
-      "output remained invalid after the repair limit" && error.category === "output-invalid" &&
-      error.turnCount === 2,
+      "output remained invalid after the repair limit: json: response was not valid JSON" &&
+      error.category === "output-invalid" && error.turnCount === 2,
   );
   assert.deepEqual(requests[1].response_format, { type: "json_object" });
 });
 
-test("validator-directed repair preserves the previous candidate and may make bounded reads", async () => {
+test("a tool-assisted repair still answers under the configured response format", async () => {
   const requests = [];
   const observed = [];
   const validator = async (candidate, context) => {
@@ -293,20 +373,79 @@ test("validator-directed repair preserves the previous candidate and may make bo
     {
       candidate: { answer: "missing citation" },
       previousCandidate: null,
+      candidates: [],
       repairAttempt: 0,
     },
     {
       candidate: { answer: "cited" },
       previousCandidate: { answer: "missing citation" },
+      candidates: [{ answer: "missing citation" }],
       repairAttempt: 1,
     },
   ]);
-  assert.deepEqual(requests.map((request) => request.tools !== undefined), [true, true, true]);
+  // Evidence lookup is offered once; the corrected value is then requested without tools so it is
+  // produced under the response format rather than by an unconstrained tool-enabled request.
+  assert.deepEqual(requests.map((request) => request.tools !== undefined), [true, true, false]);
+  assert.equal(requests[1].response_format, undefined);
+  assert.deepEqual(requests[2].response_format, { type: "json_object" });
   assert.match(requests[1].messages.at(-1).content, /not to begin a new investigation/);
   assert.equal(requests[2].messages.at(-1).role, "tool");
 });
 
-test("validator preserves the earliest parsed candidate through invalid repairs", async () => {
+test("a repair that answers immediately is never offered a second tool turn", async () => {
+  const requests = [];
+  await assert.rejects(
+    runAgent({
+      client: clientFrom([
+        message('{"answer":"rejected"}'),
+        message(null, [call("first", "read_file", { path: "evidence.txt" })]),
+        message(null, [call("second", "read_file", { path: "evidence.txt" })]),
+      ], requests),
+      config: { ...baseConfig, max_turns: 4, max_output_repair_attempts: 1 },
+      methodologies: [],
+      prompt: "p",
+      sandbox,
+      schema,
+      validator: async () => ({ ok: false, reason: "citation requires source verification" }),
+    }),
+    (error) => error.reason === "repair response attempted a tool call" &&
+      error.category === "provider-response",
+  );
+  assert.deepEqual(requests.map((request) => request.tools !== undefined), [true, true, false]);
+});
+
+test("strict output constrains every repair, including tool-assisted ones", async () => {
+  const requests = [];
+  const strictFormat = {
+    type: "json_schema",
+    json_schema: { name: "structured_output", strict: true, schema },
+  };
+  const result = await runAgent({
+    client: clientFrom([
+      message('{"answer":"missing citation"}'),
+      message(null, [call("citation", "read_file", { path: "evidence.txt" })]),
+      message('{"answer":"cited"}'),
+    ], requests),
+    config: {
+      ...baseConfig, max_turns: 4, max_output_repair_attempts: 1, output_format: "json_schema",
+    },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+    validator: async (candidate) => candidate.answer === "missing citation"
+      ? { ok: false, reason: "citation requires source verification" }
+      : { ok: true },
+  });
+
+  assert.equal(result.output, '{"answer":"cited"}');
+  // Selecting strict output has to constrain the turn that actually answers, and it may not buy that
+  // with a correction the configured repair budget never accounted for.
+  assert.equal(result.outputRepairCount, 1);
+  assert.deepEqual(requests[2].response_format, strictFormat);
+});
+
+test("validator sees every parsed candidate with the earliest still first", async () => {
   const observed = [];
   const reviewSchema = {
     type: "object",
@@ -338,6 +477,12 @@ test("validator preserves the earliest parsed candidate through invalid repairs"
   assert.deepEqual(observed, [{
     candidate: { summary: "complete", findings: [] },
     previousCandidate: { summary: "original", findings: ["preserve"], unexpected: true },
+    // A finding first added by an intermediate repair is only protectable if the validator is told
+    // that repair happened, so the whole ordered history travels with the baseline.
+    candidates: [
+      { summary: "original", findings: ["preserve"], unexpected: true },
+      { findings: [] },
+    ],
     repairAttempt: 2,
   }]);
 });
@@ -370,6 +515,7 @@ test("validator retains falsy parsed candidates as repair baselines", async () =
     assert.deepEqual(observed, [{
       candidate: { answer: "complete" },
       previousCandidate: expected,
+      candidates: [expected, JSON.parse(second)],
       repairAttempt: 3,
     }]);
   }
@@ -560,7 +706,9 @@ test("real SDK classifies interrupted response bodies as recoverable connections
     apiKey: "test-key",
     baseURL: "https://provider.example/v1",
     maxRetries: 0,
-    timeout: 100,
+    // The request timeout is far longer than the interruption so the classification under test is
+    // never decided by which timer a loaded machine happens to run first.
+    timeout: 30_000,
   }, metrics, async () => {
     calls++;
     return new Response(new ReadableStream({
@@ -791,14 +939,13 @@ test("real SDK finishes timeout attempts after response headers", async () => {
     baseURL: "https://provider.example/v1",
     maxRetries: 0,
     timeout: 20,
-  }, metrics, async () => {
+  }, metrics, async (_url, options) => {
     calls++;
+    // The body only ever ends because the request timeout aborts it, so the outcome under test does
+    // not depend on a body timer losing a race against the timeout on a loaded machine.
     return new Response(new ReadableStream({
       start(controller) {
-        setTimeout(() => {
-          controller.enqueue(new TextEncoder().encode("{}"));
-          controller.close();
-        }, 40);
+        options.signal.addEventListener("abort", () => controller.error(options.signal.reason));
       },
     }), {
       status: 200,

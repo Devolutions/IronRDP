@@ -151,6 +151,9 @@ function diagnoseProtocolReferences(candidate, corpus, corpusSha) {
 // The runtime keeps the model's first response as the repair baseline even when that response failed
 // the output schema, so a baseline entry the schema itself rejects is never demanded back: restoring
 // it could not pass either. Everything the schema would have accepted still has to survive.
+//
+// The runtime also reports every earlier parsed candidate, so a finding the model first added during
+// an intermediate repair is protected exactly like one it opened with.
 function findingCounts(review, identify, distinct) {
   const counts = new Map();
   for (const finding of Array.isArray(review?.findings) ? review.findings : []) {
@@ -160,12 +163,40 @@ function findingCounts(review, identify, distinct) {
   return counts;
 }
 
-function droppedFindings(current, previous, { identify, maximum, distinct = false }) {
-  const findings = Array.isArray(previous?.findings) ? previous.findings : [];
-  if (findings.length > maximum) return [];
+// A validator built before the runtime reported a history still supplies one candidate, so accept
+// either shape and let the ordered history win when it is present.
+function baselines(previousCandidate, candidates) {
+  if (Array.isArray(candidates) && candidates.length !== 0) return candidates;
+  return previousCandidate ? [previousCandidate] : [];
+}
+
+// A union across repairs is demanded back in full. Every baseline the schema itself rejects is
+// already excluded above, so a union that no longer fits the schema means the model has claimed more
+// distinct findings than any answer can carry. That cannot be repaired away, and quietly forgetting
+// the excess would let a repair drop a finding, so it fails the stage instead.
+function requiredFindings(history, { identify, maximum, distinct }) {
+  const required = new Map();
+  let total = 0;
+  for (const baseline of history) {
+    const findings = Array.isArray(baseline?.findings) ? baseline.findings : [];
+    if (findings.length > maximum) continue;
+    for (const [key, count] of findingCounts(baseline, identify, distinct)) {
+      const kept = required.get(key) ?? 0;
+      if (count <= kept) continue;
+      required.set(key, count);
+      total += count - kept;
+    }
+  }
+  if (total > maximum) {
+    throw terminal("repair accumulated more findings than one review can report");
+  }
+  return required;
+}
+
+function droppedFindings(current, history, { identify, maximum, distinct = false }) {
   const kept = findingCounts(current, identify, distinct);
   const dropped = [];
-  for (const [key, count] of findingCounts(previous, identify, distinct)) {
+  for (const [key, count] of requiredFindings(history, { identify, maximum, distinct })) {
     if ((kept.get(key) ?? 0) < count) dropped.push(key);
   }
   return dropped;
@@ -182,9 +213,9 @@ const finalIdentity = (finding) => {
   return title ? title.toLowerCase() : null;
 };
 
-function preservedCandidateFindings(candidate, previousCandidate) {
-  if (!previousCandidate) return "";
-  const dropped = droppedFindings(candidate, previousCandidate, {
+function preservedCandidateFindings(candidate, history) {
+  if (history.length === 0) return "";
+  const dropped = droppedFindings(candidate, history, {
     identify: candidateIdentity, maximum: CANDIDATE_LIMITS.maxItems,
     // The candidate validator rejects a repeated id, so a repair can only ever keep one of them.
     distinct: true,
@@ -220,14 +251,15 @@ function acceptedKeys(review, candidates) {
     .filter((key) => candidates.has(key)));
 }
 
-function preservedFinalFindings(review, previousReview, candidates) {
-  if (!previousReview) return "";
+function preservedFinalFindings(review, history, candidates) {
+  if (history.length === 0) return "";
   const current = acceptedKeys(review, candidates);
-  const withdrawn = [...acceptedKeys(previousReview, candidates)].filter((key) => !current.has(key));
-  if (withdrawn.length > 0) {
+  const withdrawn = history.some((baseline) =>
+    [...acceptedKeys(baseline, candidates)].some((key) => !current.has(key)));
+  if (withdrawn) {
     return "repair must not reject a candidate it previously accepted or refined; correct the finding instead";
   }
-  const dropped = droppedFindings(review, previousReview, {
+  const dropped = droppedFindings(review, history, {
     identify: finalIdentity, maximum: FINAL_LIMITS.maxItems,
   });
   return dropped.length === 0
@@ -235,7 +267,7 @@ function preservedFinalFindings(review, previousReview, candidates) {
     : "repair must keep every earlier finding; restore the one it dropped and correct it instead of replacing it";
 }
 
-function validateSpecialist(candidate, { metadata, previousCandidate } = {}) {
+function validateSpecialist(candidate, { metadata, previousCandidate, candidates } = {}) {
   if (metadata?.stage !== "specialist") throw terminal("validator metadata is not a specialist stage");
   const reviewer = requireString(metadata, "reviewer");
   if (!REVIEWER_ORDER.includes(reviewer)) throw terminal("validator metadata names an unknown reviewer");
@@ -243,7 +275,7 @@ function validateSpecialist(candidate, { metadata, previousCandidate } = {}) {
   const context = loadValidationContext(metadata);
   const changedPaths = new Set(context.changed_paths);
 
-  const preserved = preservedCandidateFindings(candidate, previousCandidate);
+  const preserved = preservedCandidateFindings(candidate, baselines(previousCandidate, candidates));
   if (preserved) return reject(preserved);
 
   const result = normalizeCandidateReview(candidate, {
@@ -266,7 +298,7 @@ function validateSpecialist(candidate, { metadata, previousCandidate } = {}) {
   return { ok: true };
 }
 
-function validateGeneral(review, { metadata, previousCandidate } = {}) {
+function validateGeneral(review, { metadata, previousCandidate, candidates } = {}) {
   if (metadata?.stage !== "general") throw terminal("validator metadata is not a general stage");
   const expectedSha = requireString(metadata, "expected_sha", SHA);
   const context = loadValidationContext(metadata);
@@ -275,7 +307,9 @@ function validateGeneral(review, { metadata, previousCandidate } = {}) {
     "the validated specialist findings",
   );
 
-  const preserved = preservedFinalFindings(review, previousCandidate, aggregateCandidateKeys(aggregate));
+  const preserved = preservedFinalFindings(
+    review, baselines(previousCandidate, candidates), aggregateCandidateKeys(aggregate),
+  );
   if (preserved) return reject(preserved);
 
   const result = validateFinalReview(review, {

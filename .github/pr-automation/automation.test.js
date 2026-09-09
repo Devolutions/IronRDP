@@ -2531,6 +2531,55 @@ test("output repair may correct a finding but never drop one", () => {
   }), { metadata: general, previousCandidate: withGeneralOnly }), { ok: true });
 });
 
+// The runtime reports every candidate it parsed, not only the first, so a finding the model added
+// while repairing is protected exactly like one it opened with.
+test("output repair may not drop a finding an earlier repair added", () => {
+  const fixture = validatorFixture();
+  const metadata = fixture.specialist();
+  const opened = candidateReview("skeptical", { findings: [candidateFinding()] });
+  const added = candidateReview("skeptical", {
+    findings: [candidateFinding(), candidateFinding({ id: "finding-2" })],
+  });
+
+  const dropped = validateSpecialist(opened, {
+    metadata, previousCandidate: opened, candidates: [opened, added],
+  });
+  assert.equal(dropped.ok, false);
+  assert.match(dropped.reason, /restore finding-2/);
+  assert.deepEqual(validateSpecialist(added, {
+    metadata, previousCandidate: opened, candidates: [opened, added],
+  }), { ok: true });
+
+  // A caller that reports no history still preserves the single baseline it does report.
+  assert.deepEqual(validateSpecialist(opened, { metadata, previousCandidate: opened }), { ok: true });
+  assert.deepEqual(validateSpecialist(opened, { metadata, candidates: [opened] }), { ok: true });
+
+  // A union larger than the schema allows leaves no answer that preserves everything, so the stage
+  // fails instead of quietly forgetting the findings that no longer fit.
+  const crowded = candidateReview("skeptical", {
+    findings: Array.from({ length: 20 }, (_, index) => candidateFinding({ id: `finding-1${index}` })),
+  });
+  assert.throws(() => validateSpecialist(crowded, {
+    metadata, previousCandidate: crowded, candidates: [crowded, added],
+  }), (error) => error.code === "VALIDATOR_TERMINAL" &&
+    /more findings than one review can report/.test(error.message));
+
+  // The same applies to a disposition: accepting a candidate while repairing is not reversible.
+  const general = fixture.general();
+  const rejecting = finalReview({
+    candidate_dispositions: [{
+      reviewer: "skeptical", finding_id: "finding-1",
+      disposition: "rejected", rationale: "no longer supported",
+    }],
+    findings: [],
+  });
+  const withdrawn = validateGeneral(rejecting, {
+    metadata: general, previousCandidate: rejecting, candidates: [rejecting, finalReview()],
+  });
+  assert.equal(withdrawn.ok, false);
+  assert.match(withdrawn.reason, /must not reject a candidate it previously accepted/);
+});
+
 // The runtime keeps the first response as the repair baseline even when it failed the output schema,
 // so demanding an identity the schema or the review validators reject would make both repair
 // attempts impossible.
