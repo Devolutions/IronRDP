@@ -190,8 +190,12 @@ test("automatic review requires exact-head CI and only reruns after a later push
   assert.match(workflowJob(workflow, "classification-gate"), /'ai-reviewed\/2'/);
   assert.match(reviewPipeline, /review-gate\.outputs\.eligible == 'true'/);
   assert.match(reviewPipeline, /needs\.resolve-pr\.outputs\.force == 'true'/);
-  assert.match(workflowJob(workflow, "resolve-pr"), /% 4\) \+ 1/);
-  assert.match(reviewPipeline, /% 7\) \+ 1/);
+  const resolvePrJob = workflowJob(workflow, "resolve-pr");
+  assert.match(resolvePrJob, /"classifier-lane", result\.prNumber \? \(Number\(result\.prNumber\) % 4\) \+ 1 : ""/);
+  assert.match(resolvePrJob, /"reviewer-pipeline-lane", result\.prNumber \? \(Number\(result\.prNumber\) % 7\) \+ 1 : ""/);
+  assert.match(resolvePrJob, /reviewer-pipeline-lane: \$\{\{ steps\.resolve\.outputs\.reviewer-pipeline-lane \}\}/);
+  assert.match(reviewPipeline, /group: llm-reviewer-pipeline-\$\{\{ needs\.resolve-pr\.outputs\.reviewer-pipeline-lane \}\}/);
+  assert.doesNotMatch(reviewPipeline, /fromJSON\(needs\.resolve-pr\.outputs\.pr-number\) %/);
   assert.doesNotMatch(reviewPipeline, /group: llm-reviewer-pipeline\n/);
   assert.match(reviewGate, /required-reviewers: \$\{\{ steps\.gate\.outputs\.required-reviewers \}\}/);
   assert.match(reviewPipeline, /required-reviewers: \$\{\{ needs\.review-gate\.outputs\.required-reviewers \}\}/);
@@ -3194,6 +3198,25 @@ test("a provider stage that never reported usage keeps the totals honest", () =>
     { id: "general", status: "failed", required: true, reason: "provider unavailable",
       provider: providerWasCalled(parseDiagnostics("")), metrics: parseDiagnostics("") },
   ]).metrics.tokens_complete, false);
+
+  const metrics = buildReport([
+    { id: "evidence", status: "success", required: true, attempts: 2, metrics: {
+      tokens: { input: 100, output: 20, total: 120, complete: true },
+      elapsed_ms: 1000, request_retries: 3, output_repairs: 2,
+    } },
+    { id: "general", status: "success", required: true, provider: true, metrics: {
+      tokens: { input: 10, output: 2, total: 12, complete: true },
+      elapsed_ms: 100, request_retries: 1, output_repairs: 0,
+    } },
+  ]).metrics;
+  assert.deepEqual(metrics, {
+    tokens: { input: 10, output: 2, total: 12 },
+    tokens_complete: true,
+    elapsed_ms: 100,
+    request_retries: 1,
+    output_repairs: 0,
+    stage_retries: 0,
+  });
 });
 
 test("the caller reads exactly what the pipeline wrote, and never reads garbage as success", () => {

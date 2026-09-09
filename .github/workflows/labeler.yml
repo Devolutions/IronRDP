@@ -59,6 +59,7 @@ jobs:
       classification-requested: ${{ steps.resolve.outputs.classification-requested }}
       review-route: ${{ steps.resolve.outputs.review-route }}
       classifier-lane: ${{ steps.resolve.outputs.classifier-lane }}
+      reviewer-pipeline-lane: ${{ steps.resolve.outputs.reviewer-pipeline-lane }}
       evidence-max-bytes: ${{ steps.resolve.outputs.evidence-max-bytes }}
     steps:
       - uses: actions/checkout@v6
@@ -92,6 +93,7 @@ jobs:
             core.setOutput("classification-requested", result.classificationRequested === true);
             core.setOutput("review-route", result.reviewRoute === true);
             core.setOutput("classifier-lane", result.prNumber ? (Number(result.prNumber) % 4) + 1 : "");
+            core.setOutput("reviewer-pipeline-lane", result.prNumber ? (Number(result.prNumber) % 7) + 1 : "");
             core.setOutput("evidence-max-bytes", result.evidenceMaxBytes ?? "");
             core.info(JSON.stringify({ event: "pr-automation.resolve-pr", decision: result }));
             if (!result.ok) core.warning(`PR automation did not start: ${result.reason}`);
@@ -660,7 +662,7 @@ jobs:
       (needs.fork-rate-limit.result == 'success' &&
       needs.fork-rate-limit.outputs.allowed == 'true'))
     concurrency:
-      group: llm-reviewer-pipeline-${{ (fromJSON(needs.resolve-pr.outputs.pr-number) % 7) + 1 }}
+      group: llm-reviewer-pipeline-${{ needs.resolve-pr.outputs.reviewer-pipeline-lane }}
       cancel-in-progress: false
       queue: max
     permissions:
