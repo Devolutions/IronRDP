@@ -113,7 +113,7 @@ function reviewGateScript(workflow = readWorkflow()) {
 }
 
 async function runReviewGateScript({
-  force = false, classificationRuns = [], labels = [],
+  force = false, route = "classification-complete", classificationRuns = [], labels = [],
   author = { type: "User", login: "member", nodeId: "U_1", association: "MEMBER" },
 } = {}) {
   const outputs = new Map();
@@ -142,7 +142,7 @@ async function runReviewGateScript({
   const context = { repo: { owner: "Devolutions", repo: "IronRDP" } };
   const process = { env: {
     PULL_REQUEST_NUMBER: "1", HEAD_SHA: SHA, FORCE: String(force),
-    LABELS: JSON.stringify(labels), AUTHOR: JSON.stringify(author), ROUTE: "manual",
+    LABELS: JSON.stringify(labels), AUTHOR: JSON.stringify(author), ROUTE: route,
   } };
   const rootRequire = createRequire(path.join(__dirname, "..", "..", "labeler.js"));
   await new AsyncFunction("core", "github", "context", "require", "process", reviewGateScript())(
@@ -291,18 +291,25 @@ test("review skip summary lists every failed gate condition", () => {
   ]);
 });
 
-test("a forced review with no valid classification fails as an invocation error", async () => {
-  const result = await runReviewGateScript({ force: true });
-  assert.deepEqual(result.gate, {
-    ok: false, force: true, head_sha: SHA, classificationValid: false,
-    classificationCheck: false, legitimacyStopped: false, ciGreen: false,
-    secondReviewEligible: false, policyEligible: false, labels: [],
-    protocolRelated: false, risk: "unknown", specialistReviewers: [],
-    contributor: { status: "forced" }, reason: "valid classification unavailable",
-  });
-  assert.equal(result.eligible, false);
-  assert.deepEqual(result.failures,
-    ["forced review invocation requires a valid classification for the current head"]);
+test("manual reviews with no valid classification fail as invocation errors", async () => {
+  for (const force of [false, true]) {
+    const result = await runReviewGateScript({ force, route: "dispatch" });
+    assert.deepEqual(result.gate, {
+      ok: false, force, head_sha: SHA, classificationValid: false,
+      classificationCheck: false, legitimacyStopped: false, ciGreen: false,
+      secondReviewEligible: false, policyEligible: false, labels: [],
+      protocolRelated: false, risk: "unknown", specialistReviewers: [],
+      contributor: { status: force ? "forced" : "unavailable" },
+      reason: "valid classification unavailable",
+    });
+    assert.equal(result.eligible, false);
+    assert.deepEqual(result.failures,
+      ["manual or forced review requires a valid classification for the current head"]);
+  }
+
+  const automatic = await runReviewGateScript();
+  assert.equal(automatic.eligible, false);
+  assert.deepEqual(automatic.failures, []);
 });
 
 test("automatic policy ineligibility remains a non-error gate skip", async () => {

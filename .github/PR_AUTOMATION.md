@@ -2,6 +2,8 @@
 
 `.github/workflows/labeler.yml` classifies ready, open pull requests and calls `.github/workflows/review-pipeline.yml` for at most two automated reviews.
 Automatic routes stop at `ai-reviewed/2` unless a maintainer uses force mode.
+Manual `workflow_dispatch` requests and forced reviews require a successful GitHub Actions-owned `AI classification` check for the current head with valid machine state.
+They fail visibly before any reviewer starts when that prerequisite is missing, stale, or invalid; automatic CI and classification-complete races instead skip normally.
 Model analysis fails closed when the reviewable pull request diff exceeds the applicable evidence limit.
 The trusted `evidence-diff-attributes` policy represents reproducibly verified generated artifacts with binary-change markers.
 The automation posts guidance on the pull request instead of invoking a model with partial evidence.

@@ -545,6 +545,7 @@ jobs:
             const prNumber = Number(process.env.PULL_REQUEST_NUMBER);
             const headSha = process.env.HEAD_SHA;
             const force = process.env.FORCE === "true";
+            const manual = process.env.ROUTE === "dispatch";
             let resolvedLabels = [];
             let author = null;
             try { resolvedLabels = JSON.parse(process.env.LABELS || "[]"); } catch {}
@@ -583,18 +584,19 @@ jobs:
               const legitimacyStopped = classificationOwned &&
                 classification.output?.title === "Automation stopped";
               const protocolRelated = protocolState?.protocolRelated === true;
+              if (!classificationValid && (force || manual)) {
+                publish({
+                  ok: false, force, head_sha: headSha, classificationValid: false,
+                  classificationCheck: false, legitimacyStopped, ciGreen: false,
+                  secondReviewEligible: false, policyEligible: false, labels: resolvedLabels,
+                  protocolRelated: false, risk: "unknown", specialistReviewers: [],
+                  contributor: { status: force ? "forced" : "unavailable" },
+                  reason: "valid classification unavailable",
+                }, false);
+                core.setFailed("manual or forced review requires a valid classification for the current head");
+                return;
+              }
               if (force) {
-                if (!classificationValid) {
-                  publish({
-                    ok: false, force: true, head_sha: headSha, classificationValid: false,
-                    classificationCheck: false, legitimacyStopped, ciGreen: false,
-                    secondReviewEligible: false, policyEligible: false, labels: resolvedLabels,
-                    protocolRelated: false, risk: "unknown", specialistReviewers: [],
-                    contributor: { status: "forced" }, reason: "valid classification unavailable",
-                  }, false);
-                  core.setFailed("forced review invocation requires a valid classification for the current head");
-                  return;
-                }
                 const route = resolveReviewerRoute({
                   suggestedReviewers: protocolState.specialistReviewers,
                   protocolRelated,
