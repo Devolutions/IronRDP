@@ -13,11 +13,11 @@ pub trait DisplayControlHandler: Send {
 
     /// Capabilities advertised to the client when the channel starts.
     ///
-    /// Defaults to today's single-monitor values (`max_num_monitors = 1`,
-    /// factors `3840`/`2400`, i.e. one 4K-area monitor), so any existing
-    /// handler that doesn't override this keeps its current behavior.
-    /// A handler serving more than one monitor should override this to
-    /// return `DisplayControlCapabilities::new(monitor_count, 3840, 2400)`.
+    /// Defaults to a single-monitor value (`max_num_monitors = 1`, factors
+    /// `3840`/`2400`, i.e. one 4K-area monitor), so any handler that doesn't
+    /// override this keeps that behavior.
+    /// A handler serving more than one monitor should override this, e.g.
+    /// `DisplayControlCapabilities::new(monitor_count, 3840, 2400).expect("valid range")`.
     fn capabilities(&self) -> DisplayControlCapabilities {
         DisplayControlCapabilities::new(1, 3840, 2400).expect("(1, 3840, 2400) are always within the valid range")
     }
