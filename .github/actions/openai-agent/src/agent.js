@@ -10,7 +10,8 @@ const {
 const { sanitizeReason } = require("./provider");
 
 // One candidate is parsed per validated attempt, and the repair budget bounds those attempts, so the
-// history a validator sees is bounded by the same output size limit that bounds a single response.
+// history a validator sees holds at most one more entry than the configured repairs allow, each of
+// them already bounded by the configured output size.
 const MAX_CANDIDATE_HISTORY = 1 + MAX_OUTPUT_REPAIRS;
 
 const TOOLS = [
@@ -282,8 +283,10 @@ async function runAgent({
       }
       state.outputRepairs++;
       // Evidence lookup only helps a semantic rejection, and only until the model has read what it
-      // needs: the corrected value is always asked for without tools, so the answering turn carries
-      // the configured response format instead of an unconstrained tool-enabled request.
+      // needs: once tool results are in, the corrected value is asked for without tools, so it is
+      // produced under the configured response format rather than by a tool-enabled request that
+      // carries none. A repair that answers immediately still answers unconstrained, and is accepted
+      // only because the schema and the validator accept it, which is what decides every result.
       let toolsPermitted = candidate.kind === "validator" &&
         state.toolCalls < config.max_tool_calls;
       messages.push({

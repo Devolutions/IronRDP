@@ -383,8 +383,8 @@ test("a tool-assisted repair still answers under the configured response format"
       repairAttempt: 1,
     },
   ]);
-  // Evidence lookup is offered once; the corrected value is then requested without tools so it is
-  // produced under the response format rather than by an unconstrained tool-enabled request.
+  // Evidence lookup is offered once; once the tool results are in, the corrected value is requested
+  // without tools so it is produced under the response format instead of unconstrained.
   assert.deepEqual(requests.map((request) => request.tools !== undefined), [true, true, false]);
   assert.equal(requests[1].response_format, undefined);
   assert.deepEqual(requests[2].response_format, { type: "json_object" });
@@ -414,7 +414,7 @@ test("a repair that answers immediately is never offered a second tool turn", as
   assert.deepEqual(requests.map((request) => request.tools !== undefined), [true, true, false]);
 });
 
-test("strict output constrains every repair, including tool-assisted ones", async () => {
+test("strict output constrains the answer a repair returns after evidence", async () => {
   const requests = [];
   const strictFormat = {
     type: "json_schema",
@@ -439,10 +439,42 @@ test("strict output constrains every repair, including tool-assisted ones", asyn
   });
 
   assert.equal(result.output, '{"answer":"cited"}');
-  // Selecting strict output has to constrain the turn that actually answers, and it may not buy that
-  // with a correction the configured repair budget never accounted for.
+  // Constraining the turn that answers has to come out of the configured repair budget, not out of a
+  // correction the budget never accounted for.
   assert.equal(result.outputRepairCount, 1);
   assert.deepEqual(requests[2].response_format, strictFormat);
+});
+
+test("a repair that answers without evidence answers unconstrained but validated", async () => {
+  const requests = [];
+  const validated = [];
+  const result = await runAgent({
+    client: clientFrom([
+      message('{"answer":"missing citation"}'),
+      message('{"answer":"cited"}'),
+    ], requests),
+    config: {
+      ...baseConfig, max_turns: 4, max_output_repair_attempts: 1, output_format: "json_schema",
+    },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+    validator: async (candidate) => {
+      validated.push(candidate);
+      return candidate.answer === "missing citation"
+        ? { ok: false, reason: "citation requires source verification" }
+        : { ok: true };
+    },
+  });
+
+  // Offering tools is what costs the request its response format, so a repair that answers before
+  // looking anything up answers unconstrained. Nothing accepts it but the schema and the validator,
+  // which are what decide every result, constrained or not.
+  assert.equal(result.output, '{"answer":"cited"}');
+  assert.equal(requests[1].tools !== undefined, true);
+  assert.equal(requests[1].response_format, undefined);
+  assert.deepEqual(validated, [{ answer: "missing citation" }, { answer: "cited" }]);
 });
 
 test("validator sees every parsed candidate with the earliest still first", async () => {
@@ -998,11 +1030,16 @@ test("real SDK bounds stalled non-success response bodies", async () => {
       (error) => error instanceof AgentFailure && error.category === category &&
         error.retryable === retryable && error.turnCount === 1,
     );
-    assert.equal(Date.now() - started < 200, true);
+    // The SDK arms the request timeout before it calls fetch, so the attempt clock starts fractionally
+    // after the deadline it is measured against and can report just under it. Assert the timeout on
+    // this enclosing clock, which cannot start late, and require the attempt to fall inside it.
+    const elapsed = Date.now() - started;
+    assert.equal(elapsed >= 25, true);
+    assert.equal(elapsed < 200, true);
     assert.equal(calls, 1);
     const attempt = metrics.snapshot().providerAttempts[0];
     assert.equal(attempt.status, status);
-    assert.equal(attempt.durationMs >= 25, true);
+    assert.equal(attempt.durationMs > 0 && attempt.durationMs <= elapsed, true);
   }
 });
 

@@ -52,7 +52,8 @@ Prefer the OpenAI SDK for `Retry-After` handling and request retries (`maxRetrie
 - Accept validators only from trusted caller configuration, never from untrusted evidence or model output.
 - Validate JSON and schema locally, then run the supplied validator.
 - Repair JSON, schema, and validator-reported output errors within the same invocation.
-- Permit only necessary read-only evidence lookup during repair, then ask for the corrected value without tools so it is produced under the configured output format.
+- Permit only necessary read-only evidence lookup during repair, and once it has happened ask for the corrected value without tools so it is produced under the configured output format.
+- Accept a corrected value only when the schema and the supplied validator accept it, whether or not the provider constrained how it was produced.
 - Report every rejected attempt with the validation that rejected it and a bounded, sanitized reason, and carry the last one in the failure reason.
 - Give the validator every candidate parsed so far, oldest first, so a value the model added while repairing can be protected like one it opened with.
 - Return failure if output remains invalid after the configured repair attempts.
