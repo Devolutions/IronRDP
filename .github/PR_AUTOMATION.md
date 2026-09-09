@@ -26,7 +26,7 @@ The pipeline performs these stages:
 9. Resolve validated state and publish through the serialized writer.
 
 `.github/workflows/review-pipeline.yml` is reusable and `workflow_call` is its only trigger.
-The caller owns the global concurrency lock, the reviewer selection, and publication.
+The caller owns the concurrency lane, reviewer selection, and publication.
 The pipeline owns evidence, specialists, aggregation, the general review, validation, and stage recovery.
 
 `required-reviewers` names the specialists that must succeed, and the caller is authoritative.
