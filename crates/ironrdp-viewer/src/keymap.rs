@@ -19,7 +19,7 @@ pub(crate) fn is_modifier(key_code: KeyCode) -> bool {
 ///
 /// `Pause` deliberately has no mapping because [MS-RDPBCGR] 2.2.8.1.2.2.1 requires four events, including `EXTENDED1`, while `Scancode` represents one ordinary event.
 ///
-/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/5073f4ed-1e93-45e1-b039-6e30c385867c
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/5073f4ed-1e93-45e1-b039-6e30c385867c#section_2.2.8.1.2.2.1
 pub(crate) const fn map_key_code(key_code: KeyCode) -> Option<Scancode> {
     let scancode = match key_code {
         KeyCode::Escape => (false, 0x01),
