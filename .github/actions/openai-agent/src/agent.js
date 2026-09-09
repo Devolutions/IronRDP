@@ -5,14 +5,9 @@ const { APIConnectionError, APIConnectionTimeoutError } = require("openai");
 
 const { ActionError, fail } = require("./errors");
 const {
-  DEFAULT_OUTPUT_REPAIRS, MAX_MODEL_OUTPUT_BYTES, MAX_OUTPUT_REPAIRS, MAX_TOOL_ARGUMENT_BYTES,
+  DEFAULT_OUTPUT_REPAIRS, MAX_MODEL_OUTPUT_BYTES, MAX_TOOL_ARGUMENT_BYTES,
 } = require("./limits");
 const { sanitizeReason } = require("./provider");
-
-// One candidate is parsed per validated attempt, and the repair budget bounds those attempts, so the
-// history a validator sees holds at most one more entry than the configured repairs allow, each of
-// them already bounded by the configured output size.
-const MAX_CANDIDATE_HISTORY = 1 + MAX_OUTPUT_REPAIRS;
 
 const TOOLS = [
   {
@@ -346,8 +341,11 @@ async function runAgent({
     let validation;
     try {
       validation = await validator(candidate.value, {
-        previousCandidate: state.candidates.length === 0 ? null : state.candidates[0],
-        candidates: state.candidates.slice(0, MAX_CANDIDATE_HISTORY),
+        previousCandidate: state.candidates[0] ?? null,
+        // One candidate is parsed per validated attempt and the repair budget bounds those attempts,
+        // so this stays within one more entry than the configured repairs allow. Copied so a
+        // validator cannot reach back into the runtime's own record.
+        candidates: state.candidates.slice(),
         repairAttempt: state.outputRepairs,
       });
     } catch (error) {
@@ -483,12 +481,11 @@ function limitFailure(reason, state) {
 }
 
 // Exhausting the repair budget says nothing about what the model kept getting wrong, so the reason
-// that actually ended the stage travels with the failure, bounded and sanitized.
+// that actually ended the stage travels with the failure, bounded and sanitized. Every layer is a
+// static word, so the detail is never empty however the reason itself sanitizes.
 function exhaustedReason(candidate) {
   const detail = sanitizeReason(`${candidate.layer}: ${candidate.reason}`);
-  return detail === ""
-    ? "output remained invalid after the repair limit"
-    : `output remained invalid after the repair limit: ${detail}`;
+  return `output remained invalid after the repair limit: ${detail}`;
 }
 
 module.exports = {
