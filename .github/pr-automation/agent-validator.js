@@ -114,35 +114,33 @@ function diagnoseCandidate(candidate, { expectedSha, reviewer, changedPaths }) {
     return `reviewer must be exactly ${reviewer}`;
   }
   const findings = Array.isArray(candidate?.findings) ? candidate.findings : [];
-  for (const finding of findings) {
-    const id = typeof finding?.id === "string" ? finding.id : "an unnamed finding";
+  for (const [index, finding] of findings.entries()) {
     if (typeof finding?.path !== "string" || !changedPaths.has(finding.path)) {
-      return `finding ${id} must cite a path changed by this pull request`;
+      return `finding at index ${index} must cite a path changed by this pull request`;
     }
     const linesAreNull = finding.start_line === null && finding.end_line === null;
     const linesAreIntegers = Number.isSafeInteger(finding.start_line) && finding.start_line >= 1 &&
       Number.isSafeInteger(finding.end_line) && finding.end_line >= finding.start_line;
     if (!linesAreNull && !linesAreIntegers) {
-      return `finding ${id} must use integer lines with end_line at or after start_line, or null lines`;
+      return `finding at index ${index} must use integer lines with end_line at or after start_line, or null lines`;
     }
     if (reviewer !== "protocol" && Array.isArray(finding.references) && finding.references.length > 0) {
-      return `finding ${id} must not carry protocol references`;
+      return `finding at index ${index} must not carry protocol references`;
     }
   }
   return "";
 }
 
 function diagnoseProtocolReferences(candidate, corpus, corpusSha) {
-  for (const finding of candidate?.findings ?? []) {
-    const id = typeof finding?.id === "string" ? finding.id : "an unnamed finding";
+  for (const [index, finding] of (candidate?.findings ?? []).entries()) {
     if (!Array.isArray(finding?.references) || finding.references.length === 0) {
-      return `finding ${id} must cite at least one section of the pinned protocol corpus`;
+      return `finding at index ${index} must cite at least one section of the pinned protocol corpus`;
     }
     const result = validateProtocolReferences(finding.references, {
       corpus, expectedCorpusSha: corpusSha,
     });
     if (!result.ok) {
-      return `finding ${id} cites a protocol section that does not exist in the pinned corpus`;
+      return `finding at index ${index} cites a protocol section that does not exist in the pinned corpus`;
     }
   }
   return "";
@@ -222,7 +220,7 @@ function preservedCandidateFindings(candidate, history) {
   });
   return dropped.length === 0
     ? ""
-    : `repair must keep every earlier finding; restore ${dropped.slice(0, 5).join(", ")} and correct it instead of removing it`;
+    : "repair must keep every earlier finding; restore the missing findings and correct them instead of removing them";
 }
 
 const dispositionKey = (reviewer, findingId) => `${reviewer}\u0000${findingId}`;
@@ -327,10 +325,9 @@ function validateGeneral(review, { metadata, previousCandidate, candidates } = {
     return reject(`head_sha must be exactly ${expectedSha}`);
   }
   const changedPaths = new Set(context.changed_paths);
-  for (const finding of review?.findings ?? []) {
-    const title = typeof finding?.title === "string" ? finding.title.slice(0, 60) : "an untitled finding";
+  for (const [index, finding] of (review?.findings ?? []).entries()) {
     if (typeof finding?.path !== "string" || !changedPaths.has(finding.path)) {
-      return reject(`finding ${title} must cite a path changed by this pull request`);
+      return reject(`finding at index ${index} must cite a path changed by this pull request`);
     }
   }
   return reject(`${result.reason}; record exactly one disposition per specialist candidate and cite only non-rejected candidates as sources`);
