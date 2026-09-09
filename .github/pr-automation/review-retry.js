@@ -206,6 +206,5 @@ async function retryGateStep({ github, context, core, env, stage }) {
 }
 
 module.exports = {
-  MAXIMUM_DELAY_SECONDS, StaleHeadError, assertCurrentHead, delayedRetryGate, isTruncatedGithubResponse,
-  readPullRequest, retryGateStep, retryStillPermitted,
+  MAXIMUM_DELAY_SECONDS, StaleHeadError, assertCurrentHead, delayedRetryGate, retryGateStep, retryStillPermitted,
 };

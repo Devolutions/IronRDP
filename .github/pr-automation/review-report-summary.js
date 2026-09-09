@@ -94,6 +94,12 @@ function diagnostics(report, outcome, maxStages, maxTextLength, includeReasons) 
   ].join("\n");
 }
 
+function reducedCoverageText(reducedCoverage) {
+  return ` with reduced coverage: optional reviewer${reducedCoverage.length === 1 ? "" : "s"} ` +
+    `${reducedCoverage.map((reviewer) => text(reviewer, MAX_CHECK_TEXT_LENGTH)).join(", ")} ` +
+    `${reducedCoverage.length === 1 ? "was" : "were"} unavailable.`;
+}
+
 function renderReviewReport({ report, outcome, summaryUrl, reducedCoverage = [] }) {
   const checkDiagnostics = diagnostics(report, outcome, MAX_CHECK_STAGES, MAX_CHECK_TEXT_LENGTH, false);
   const workflowDiagnostics = diagnostics(report, outcome, MAX_WORKFLOW_STAGES, MAX_WORKFLOW_TEXT_LENGTH, true);
@@ -104,18 +110,15 @@ function renderReviewReport({ report, outcome, summaryUrl, reducedCoverage = [] 
     "recovered-reduced-coverage": "Automated review recovered with reduced coverage",
     unavailable: "Automated review unavailable",
   }[outcome];
-  const outcomeText = outcome === "complete"
-    ? "Validated automated review is bound to this commit."
-    : outcome === "recovered"
-      ? "Validated automated review was produced after stage recovery."
-      : outcome === "reduced-coverage"
-        ? `Validated automated review is bound to this commit with reduced coverage: optional reviewer${reducedCoverage.length === 1 ? "" : "s"} ${reducedCoverage.map((reviewer) => text(reviewer, MAX_CHECK_TEXT_LENGTH)).join(", ")} ${reducedCoverage.length === 1 ? "was" : "were"} unavailable.`
-        : outcome === "recovered-reduced-coverage"
-          ? `Validated automated review was produced after stage recovery with reduced coverage: optional reviewer${reducedCoverage.length === 1 ? "" : "s"} ${reducedCoverage.map((reviewer) => text(reviewer, MAX_CHECK_TEXT_LENGTH)).join(", ")} ${reducedCoverage.length === 1 ? "was" : "were"} unavailable.`
-        : "Automated review is unavailable. Maintainer review is required.";
+  const outcomeText = outcome === "complete" || outcome === "reduced-coverage"
+    ? "Validated automated review is bound to this commit"
+    : outcome === "recovered" || outcome === "recovered-reduced-coverage"
+      ? "Validated automated review was produced after stage recovery"
+      : "Automated review is unavailable. Maintainer review is required";
+  const coverage = outcome.endsWith("reduced-coverage") ? reducedCoverageText(reducedCoverage) : "";
   return {
     title: heading,
-    checkSummary: `${outcomeText}\n\n${checkDiagnostics}\n\n[View the workflow summary](${summaryUrl})`,
+    checkSummary: `${outcomeText}${coverage}.\n\n${checkDiagnostics}\n\n[View the workflow summary](${summaryUrl})`,
     workflowSummary: `# Automated review\n\n${workflowDiagnostics}`,
   };
 }

@@ -23,7 +23,7 @@ const {
 const { resolvePr } = require("./resolve-pr");
 const { resolveClassificationGate } = require("./classification-gate");
 const {
-  StaleHeadError, StalePolicyError, applyLabels, escapeMarkdown, markerBody, writeState,
+  StalePolicyError, applyLabels, escapeMarkdown, markerBody, writeState,
 } = require("./write-state");
 const { forkRateLimit } = require("./fork-rate-limit");
 const { reviewSkipReasons } = require("./review-skip-summary");
@@ -43,7 +43,7 @@ const {
   REPORT_VERSION, buildReport, parseReport, stageIds, stageOutcome,
 } = require("./review-report");
 const {
-  MAXIMUM_DELAY_SECONDS, delayedRetryGate, retryGateStep,
+  MAXIMUM_DELAY_SECONDS, StaleHeadError, delayedRetryGate, retryGateStep,
 } = require("./review-retry");
 const {
   TERMINAL_CODE, validateGeneral, validateSpecialist,

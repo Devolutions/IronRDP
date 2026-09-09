@@ -3,7 +3,7 @@
 const { encodeCheckState } = require("./validate-classifier");
 const { provenancePrefix } = require("./validate-final-review");
 const { reviewPolicyEligible } = require("./routing");
-const { StaleHeadError, assertCurrentHead: assertPullRequestHead } = require("./review-retry");
+const { assertCurrentHead } = require("./review-retry");
 
 const SEVERITY_EMOJI = {
   critical: ":purple_circle:",
@@ -31,12 +31,6 @@ function escapeMarkdown(value) {
 function findingIndicator(finding) {
   return `${finding.severity} ${SEVERITY_EMOJI[finding.severity]}` +
     `${finding.question ? " :question:" : ""}`;
-}
-
-async function assertCurrentHead(github, owner, repo, prNumber, expectedSha) {
-  await assertPullRequestHead({
-    github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha,
-  });
 }
 
 async function issueLabels(github, owner, repo, prNumber) {
@@ -81,7 +75,7 @@ async function upsertMarkedComment(github, owner, repo, prNumber, expectedSha, b
     item.user?.login === botLogin && typeof item.body === "string" && item.body.includes(comment.marker));
   if (existing?.body === body) return false;
   await issueLabels(github, owner, repo, prNumber);
-  await assertCurrentHead(github, owner, repo, prNumber, expectedSha);
+  await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha });
   if (existing) {
     await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
   } else {
@@ -95,7 +89,7 @@ async function deleteMarkedComment(github, owner, repo, prNumber, expectedSha, b
   const existing = (await comments(github, owner, repo, prNumber)).find((item) =>
     item.user?.login === botLogin && typeof item.body === "string" && item.body.includes(marker));
   if (!existing) return false;
-  await assertCurrentHead(github, owner, repo, prNumber, expectedSha);
+  await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha });
   await github.rest.issues.deleteComment({ owner, repo, comment_id: existing.id });
   return true;
 }
@@ -151,7 +145,7 @@ async function publishReview(github, owner, repo, prNumber, state, botLogin, com
     }
     return comment;
   });
-  await assertCurrentHead(github, owner, repo, prNumber, state.expectedSha);
+  await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha });
   assertReviewPolicy(await issueLabels(github, owner, repo, prNumber), state);
   await github.rest.pulls.createReview({
     owner, repo, pull_number: prNumber, commit_id: state.expectedSha, event: "COMMENT",
@@ -178,7 +172,7 @@ async function ensureClassificationCheck(github, owner, repo, prNumber, expected
   const existing = await findCheck(github, owner, repo, expectedSha, check);
   if (existing?.conclusion === conclusion && existing.output?.title === check.title &&
       existing.output?.summary === summary) return false;
-  await assertCurrentHead(github, owner, repo, prNumber, expectedSha);
+  await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha });
   const payload = {
     owner, repo, name: check.name, head_sha: expectedSha, external_id: check.externalId,
     status: "completed", conclusion,
@@ -202,7 +196,7 @@ async function ensureReviewCheck(github, owner, repo, prNumber, expectedSha, che
   if (state.failed !== true) {
     assertReviewPolicy(await issueLabels(github, owner, repo, prNumber), state);
   }
-  await assertCurrentHead(github, owner, repo, prNumber, expectedSha);
+  await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha });
   const payload = {
     owner, repo, name: check.name, head_sha: expectedSha, external_id: check.externalId,
     status: "completed", conclusion, output: { title, summary },
@@ -216,7 +210,7 @@ async function ensureReviewCheck(github, owner, repo, prNumber, expectedSha, che
 }
 
 async function dispatchClassificationComplete(github, owner, repo, prNumber, expectedSha) {
-  await assertCurrentHead(github, owner, repo, prNumber, expectedSha);
+  await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha });
   await github.rest.repos.createDispatchEvent({
     owner, repo, event_type: "pr-automation-classified",
     client_payload: { pr_number: prNumber, head_sha: expectedSha },
@@ -238,7 +232,7 @@ async function applyLabels(github, owner, repo, prNumber, state, currentLabels) 
   const additions = [...add].filter((label) => !current.has(label));
   const removals = [...remove].filter((label) => current.has(label));
   if (additions.length === 0 && removals.length === 0) return false;
-  await assertCurrentHead(github, owner, repo, prNumber, state.expectedSha);
+  await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha });
   if (additions.length > 0) {
     await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: additions });
   }
@@ -257,7 +251,7 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin, revi
       typeof state.expectedSha !== "string" || !Number.isSafeInteger(prNumber) || prNumber <= 0) {
     throw new Error("invalid normalized state");
   }
-  await assertCurrentHead(github, owner, repo, prNumber, state.expectedSha);
+  await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha });
   if (state.mode === "review") {
     const comments = state.comments || [];
     for (const comment of comments.filter((comment) => comment.kind === "review")) {
@@ -299,6 +293,6 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin, revi
 }
 
 module.exports = {
-  StaleHeadError, StalePolicyError, applyLabels, assertCurrentHead, deleteMarkedComment, dispatchClassificationComplete,
+  StalePolicyError, applyLabels, deleteMarkedComment, dispatchClassificationComplete,
   escapeMarkdown, markerBody, upsertMarkedComment, writeState,
 };
