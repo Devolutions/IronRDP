@@ -168,7 +168,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 autodetect_baseline_rtt: None,
                 autodetect_bandwidth: None,
                 honor_client_desktop_size: None,
-                preempt_existing_session: false,
+                preempt_existing_session: true,
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
@@ -201,7 +201,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 autodetect_baseline_rtt: None,
                 autodetect_bandwidth: None,
                 honor_client_desktop_size: None,
-                preempt_existing_session: false,
+                preempt_existing_session: true,
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
@@ -339,12 +339,13 @@ impl RdpServerBuilder<BuilderDone> {
     /// being told why) and the newcomer is served in its place, instead of
     /// waiting in the TCP listen backlog until the current session ends.
     ///
-    /// Off by default: a second connection queues behind the live one, which
-    /// is `ironrdp-server`'s pre-existing behaviour, so an embedder that
-    /// already relies on it is not surprised by upgrading. Turn this on for a
-    /// server backing a single specific session (e.g. one that mirrors one
-    /// desktop), where a newly connecting client should replace a stale one
-    /// rather than hang behind it.
+    /// On by default: a newly connecting client takes over from a stale or
+    /// abandoned one rather than hanging behind it in the listen backlog. This
+    /// is the least-surprising behaviour for the single-session servers
+    /// `ironrdp-server` typically backs (e.g. one that mirrors one desktop).
+    /// Set it to `false` to restore `ironrdp-server`'s previous queue-behind
+    /// behaviour, appropriate when a live session must never be interrupted by
+    /// a later connection.
     ///
     /// **The strength of that bar depends on the security mode.** Only
     /// [`RdpServerSecurity::Hybrid`] authenticates the client before a
