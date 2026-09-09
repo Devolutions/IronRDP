@@ -173,8 +173,11 @@ than one. File listing is metadata only; a file's contents are fetched only on e
                                       `clipboard-set`.
 - `clipboard-set-files PATH...`      Offer one or more local files to the remote via the clipboard
                                       file-list mechanism. Each path must be a regular file; a
-                                      directory is rejected outright, not skipped. Requires an
-                                      active session that has negotiated file transfer support.
+                                      directory is rejected outright, not skipped. Works before a
+                                      session connects too: the offer is stored and advertised as
+                                      soon as the clipboard channel initializes. Once a session is
+                                      active, it must have negotiated file transfer support, or the
+                                      call fails.
 - `clipboard-list-files`             List the remote's currently offered files (name, path within
                                       the copied collection, size, and whether it is a directory
                                       entry), or a no-files message if none are offered. Nothing is

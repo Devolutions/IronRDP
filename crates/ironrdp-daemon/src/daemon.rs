@@ -826,10 +826,17 @@ impl Daemon {
         };
         let input_tx = client.input_sender();
         let clipboard_file_notify = Arc::new(tokio::sync::Notify::new());
-        // A fetch left over from an abruptly-ended previous session is meaningless against this
-        // new one: clear it rather than let a fresh `clipboard_get_file` wait on it.
+        // State left over from an abruptly-ended previous session is meaningless against this
+        // new one, and the remote file list plus its lock id are actively dangerous to keep: a
+        // `clipboard_get_file` call between sessions could otherwise fetch against a
+        // `remote_file_lock_id` that names a lock on a `CLIPRDR` channel that no longer exists.
+        // `local`/`local_file_paths` are deliberately left alone: an offer made before or between
+        // sessions is meant to survive and be advertised on the next connection.
         {
             let mut clipboard = self.clipboard.lock().expect("clipboard state poisoned");
+            clipboard.remote = None;
+            clipboard.remote_file_lock_id = None;
+            clipboard.negotiated_capabilities = ClipboardGeneralCapabilityFlags::empty();
             clipboard.active_fetch = None;
             clipboard.active_fetch_lock_id = None;
         }
@@ -1282,11 +1289,11 @@ impl Daemon {
                     );
                 }
             };
-            if metadata.is_dir() {
+            if !metadata.is_file() {
                 return Response::typed_error(
                     crate::ipc::AgentErrorCategory::InvalidRequest,
                     format!(
-                        "{}: directories are not supported, name individual files",
+                        "{}: not a regular file (directories are not supported, name individual files)",
                         path.display()
                     ),
                 );
@@ -1370,12 +1377,19 @@ impl Daemon {
     async fn clipboard_get_file(&self, index: i32) -> Response {
         const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 
-        let notify = {
+        // `clipboard_set_files` and `set_local_and_advertise` lock `clipboard` before `state`;
+        // taking the two in the opposite order here would deadlock against either racing on
+        // another IPC connection. Clone what this function needs from the session while `state`
+        // is held, then release it before `clipboard` is ever locked.
+        let (input_tx, clipboard_file_notify) = {
             let guard = self.state.lock().expect("daemon state poisoned");
             let Some(session) = guard.as_ref() else {
                 return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
             };
+            (session.input_tx.clone(), Arc::clone(&session.clipboard_file_notify))
+        };
 
+        let notify = {
             let mut clipboard = self.clipboard.lock().expect("clipboard state poisoned");
             if !clipboard
                 .negotiated_capabilities
@@ -1422,15 +1436,17 @@ impl Daemon {
             // None immediately, indistinguishable from the oversized-Failed case below by that
             // signal alone. Short-circuit here instead of letting it fall into the "exceeds the
             // transport limit" branch, which would misreport an empty file as too large.
-            if descriptor.file_size == Some(0) {
+            let file_size = descriptor.file_size;
+            if file_size == Some(0) {
                 return Response::Ok(Payload::ClipboardFile(Vec::new()));
             }
 
             let clip_data_id = clipboard.remote_file_lock_id;
             let max_total_size = u64::try_from(MAX_CLIPBOARD_FILE_BYTES).unwrap_or(u64::MAX);
-            let mut fetch = match descriptor.file_size {
+            let stream_id = clipboard.next_file_stream_id();
+            let mut fetch = match file_size {
                 Some(size) => ChunkedFetch::new(
-                    crate::clipboard::FILE_FETCH_STREAM_ID,
+                    stream_id,
                     index,
                     size,
                     crate::clipboard::FILE_FETCH_CHUNK_SIZE,
@@ -1438,7 +1454,7 @@ impl Daemon {
                     max_total_size,
                 ),
                 None => ChunkedFetch::new_with_size_query(
-                    crate::clipboard::FILE_FETCH_STREAM_ID,
+                    stream_id,
                     index,
                     crate::clipboard::FILE_FETCH_CHUNK_SIZE,
                     clip_data_id,
@@ -1458,10 +1474,8 @@ impl Daemon {
             clipboard.active_fetch = Some(fetch);
             clipboard.active_fetch_lock_id = clip_data_id;
             clipboard.active_fetch_result = None;
-            let _ = session
-                .input_tx
-                .send_clipboard(ClipboardMessage::SendFileContentsRequest(first_request));
-            Arc::clone(&session.clipboard_file_notify)
+            let _ = input_tx.send_clipboard(ClipboardMessage::SendFileContentsRequest(first_request));
+            clipboard_file_notify
         };
 
         let deadline = tokio::time::Instant::now() + FETCH_TIMEOUT;

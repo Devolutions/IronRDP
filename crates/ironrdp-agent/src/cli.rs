@@ -2213,9 +2213,16 @@ fn print_payload(payload: Payload) {
             Some(files) if files.is_empty() => println!("(no files)"),
             Some(files) => {
                 for (index, file) in files.iter().enumerate() {
+                    // `name`/`relative_path` come from the remote peer. `CLIPRDR` sanitization
+                    // removes path traversal and null bytes but not terminal control sequences;
+                    // `escape_debug` keeps printable Unicode readable while escaping the ANSI/OSC
+                    // control characters an unescaped print would otherwise pass straight to the
+                    // terminal.
                     let path = match &file.relative_path {
-                        Some(relative_path) => format!("{relative_path}\\{}", file.name),
-                        None => file.name.clone(),
+                        Some(relative_path) => {
+                            format!("{}\\{}", relative_path.escape_debug(), file.name.escape_debug())
+                        }
+                        None => file.name.escape_debug().to_string(),
                     };
                     let kind = if file.is_directory { "dir" } else { "file" };
                     let size = file.size.map_or_else(|| "?".to_owned(), |size| size.to_string());

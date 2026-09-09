@@ -33,13 +33,6 @@ use ironrdp_pdu::ironrdp_core::{IntoOwned as _, impl_as_any};
 use ironrdp_rpc::ipc::MAX_CLIPBOARD_IMAGE_BYTES;
 use tracing::debug;
 
-/// `stream_id` used for every `FileContentsRequest` this backend issues.
-///
-/// Only one fetch (`ClipboardState::active_fetch`) is ever outstanding at a time, matching the
-/// one-outstanding-paste model already used for text/image; with no concurrent fetch to
-/// disambiguate against, a fixed id is sufficient and avoids a counter.
-pub(crate) const FILE_FETCH_STREAM_ID: u32 = 1;
-
 /// Chunk size `clipboard_get_file` drives `ChunkedFetch` with, in bytes.
 ///
 /// A pragmatic middle ground: large enough that a multi-megabyte file does not need thousands of
@@ -94,6 +87,23 @@ pub(crate) struct ClipboardState {
     /// one bool; `clipboard_get_file` needs to tell them apart to know whether to return the
     /// fetched bytes or an error, so this is tracked alongside rather than re-derived.
     pub(crate) active_fetch_result: Option<ChunkedFetchProgress>,
+    /// The `stream_id` the next `clipboard-get-file` fetch will use, incremented on every use.
+    ///
+    /// `Cliprdr` retains an outstanding `FileContentsRequest` until its own response/transfer
+    /// timeout even after `clipboard_get_file` gives up on it and clears `active_fetch`, so a
+    /// later fetch must not reuse an id that request might still answer against: a delayed
+    /// response for the old fetch would otherwise match the new fetch's id in
+    /// `on_file_contents_response` and be accepted into it, corrupting its output.
+    next_file_stream_id: u32,
+}
+
+impl ClipboardState {
+    /// Returns a fresh `stream_id` for a new file-contents fetch, never reused by an earlier one.
+    pub(crate) fn next_file_stream_id(&mut self) -> u32 {
+        let id = self.next_file_stream_id;
+        self.next_file_stream_id = self.next_file_stream_id.wrapping_add(1);
+        id
+    }
 }
 
 impl Default for ClipboardState {
@@ -107,6 +117,7 @@ impl Default for ClipboardState {
             active_fetch: None,
             active_fetch_result: None,
             active_fetch_lock_id: None,
+            next_file_stream_id: 1,
         }
     }
 }
