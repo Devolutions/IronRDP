@@ -307,7 +307,8 @@ impl RpcApp {
 
                 #[cfg(windows)]
                 let scancode = if requires_native_layout_mapping(key_code) {
-                    // Korean layouts assign Lang1 and Lang2 distinct E0 scancodes.
+                    // Korean layouts assign Lang1 and Lang2 distinct E0 scancodes, but may report them only on release.
+                    // Database intentionally suppresses releases without a preceding press, as did the former native-scancode path.
                     let Some(native_scancode) = PhysicalKey::Code(key_code).to_scancode() else {
                         warn!(
                             ?key_code,
