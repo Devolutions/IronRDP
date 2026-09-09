@@ -576,9 +576,9 @@ jobs:
               // A check without the current machine-readable state predates this contract: fail closed
               // and wait for a later classification event to rewrite it.
               const protocolState = classificationOwned ? parseCheckState(classification.output?.summary) : null;
-              const classificationValid = classificationOwned && protocolState !== null &&
-                classification.output?.title === "Classification complete";
+              const classificationValid = classificationOwned && protocolState !== null;
               const classificationCheck = classificationValid &&
+                classification.output?.title === "Classification complete" &&
                 protocolState.automaticReviewEligible === true;
               const legitimacyStopped = classificationOwned &&
                 classification.output?.title === "Automation stopped";

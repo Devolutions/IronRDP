@@ -2023,6 +2023,7 @@ test("classification dispatch remains edge-triggered except for explicit retries
 
 test("writer retries a truncated current-head read before dispatching once", async () => {
   let reads = 0;
+  let checkWrites = 0;
   let dispatches = 0;
   const machineState = {
     protocolRelated: false, risk: "low", specialistReviewers: [],
@@ -2031,10 +2032,10 @@ test("writer retries a truncated current-head read before dispatching once", asy
   const github = {
     paginate: { iterator: async function* () { yield { data: [] }; } },
     rest: {
-      checks: { listForRef: () => {}, create: async () => {} },
+      checks: { listForRef: () => {}, create: async () => { checkWrites += 1; } },
       pulls: { get: async () => {
         reads += 1;
-        if (reads === 1) {
+        if (reads === 3) {
           const error = new Error("Unexpected end of JSON input");
           error.status = 500;
           throw error;
@@ -2057,25 +2058,67 @@ test("writer retries a truncated current-head read before dispatching once", asy
     },
   });
   assert.equal(reads, 4);
+  assert.equal(checkWrites, 1);
   assert.equal(dispatches, 1);
 
-  let terminalReads = 0;
-  const terminalGithub = {
-    rest: {
-      pulls: { get: async () => {
-        terminalReads += 1;
-        const error = new Error("internal server error");
-        error.status = 500;
-        throw error;
-      } },
-    },
+  const failedDispatch = async (errorAtRead) => {
+    let failedReads = 0;
+    let failedCheckWrites = 0;
+    let failedDispatches = 0;
+    const github = {
+      paginate: { iterator: async function* () { yield { data: [] }; } },
+      rest: {
+        checks: { listForRef: () => {}, create: async () => { failedCheckWrites += 1; } },
+        pulls: { get: async () => {
+          failedReads += 1;
+          if (failedReads > 2) {
+            const result = errorAtRead(failedReads);
+            if (result instanceof Error) throw result;
+            return { data: { state: "open", head: { sha: result } } };
+          }
+          return { data: { state: "open", head: { sha: SHA } } };
+        } },
+        issues: { get: async () => ({ data: { labels: [] } }) },
+        repos: { createDispatchEvent: async () => { failedDispatches += 1; } },
+      },
+    };
+    await assert.rejects(writeState({
+      github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
+      state: {
+        ok: true, mode: "classification", expectedSha: SHA, labelSets: [], addLabels: [],
+        comments: [], removeCommentMarkers: [], dispatchReview: true,
+        check: {
+          name: "AI classification", externalId: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+          title: "Classification complete", summary: "Validated classification.", machineState,
+        },
+      },
+    }));
+    return { failedReads, failedCheckWrites, failedDispatches };
   };
-  await assert.rejects(writeState({
-    github: terminalGithub, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
-    botLogin: "github-actions[bot]",
-    state: { ok: true, mode: "classification", expectedSha: SHA, labelSets: [], addLabels: [] },
-  }), /internal server error/);
-  assert.equal(terminalReads, 1);
+
+  const terminal = await failedDispatch(() => {
+    const error = new Error("internal server error");
+    error.status = 500;
+    return error;
+  });
+  assert.deepEqual(terminal, { failedReads: 3, failedCheckWrites: 1, failedDispatches: 0 });
+
+  const staleRetry = await failedDispatch((read) => {
+    if (read === 3) {
+      const error = new Error("Unexpected end of JSON input");
+      error.status = 500;
+      return error;
+    }
+    return OTHER_SHA;
+  });
+  assert.deepEqual(staleRetry, { failedReads: 4, failedCheckWrites: 1, failedDispatches: 0 });
+
+  const exhausted = await failedDispatch(() => {
+    const error = new Error("Unexpected end of JSON input");
+    error.status = 500;
+    return error;
+  });
+  assert.deepEqual(exhausted, { failedReads: 4, failedCheckWrites: 1, failedDispatches: 0 });
 });
 
 test("writer does not dispatch a completed classification after the head changes", async () => {
@@ -3033,6 +3076,11 @@ test("a retry re-decides review eligibility against the pull request as it is af
   // stage sleeps must not buy a second provider request.
   assert.deepEqual(await gate({ classificationTitle: "Automation stopped" }),
     { retry: false, reason: "classification no longer authorizes an automatic review" });
+  assert.deepEqual(await gate({ classificationTitle: "Automation stopped" }, { force: true }),
+    { retry: true, reason: "" });
+  const reviewGate = workflowJob(readWorkflow(path.join(__dirname, "..")), "review-gate");
+  assert.match(reviewGate, /const classificationValid = classificationOwned && protocolState !== null;/);
+  assert.match(reviewGate, /const classificationCheck = classificationValid &&\s+classification\.output\?\.title === "Classification complete"/);
 
   // A stale classification bound to an older head cannot authorize this one.
   assert.equal((await gate({ classificationHeadSha: OTHER_SHA })).retry, false);

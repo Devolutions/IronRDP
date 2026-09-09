@@ -87,7 +87,7 @@ async function retryStillPermitted({
   if (state === null) {
     return decline("classification is no longer valid for this head");
   }
-  if (classification.output?.title !== CLASSIFICATION_COMPLETE) {
+  if (!force && classification.output?.title !== CLASSIFICATION_COMPLETE) {
     return decline("classification no longer authorizes an automatic review");
   }
   const classificationGate = validateReviewGate({
