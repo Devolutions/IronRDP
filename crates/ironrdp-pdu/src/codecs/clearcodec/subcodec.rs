@@ -103,7 +103,7 @@ mod tests {
         data.extend_from_slice(&2u16.to_le_bytes()); // height
         data.extend_from_slice(&12u32.to_le_bytes()); // bitmapDataByteCount = 2*2*3 = 12
         data.push(0x00); // subCodecId = Raw
-                         // 4 pixels BGR
+        // 4 pixels BGR
         data.extend_from_slice(&[0xFF, 0x00, 0x00]); // blue
         data.extend_from_slice(&[0x00, 0xFF, 0x00]); // green
         data.extend_from_slice(&[0x00, 0x00, 0xFF]); // red
