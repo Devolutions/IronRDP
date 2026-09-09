@@ -91,7 +91,7 @@ jobs:
             core.setOutput("review-requested", result.reviewRequested === true);
             core.setOutput("classification-requested", result.classificationRequested === true);
             core.setOutput("review-route", result.reviewRoute === true);
-            core.setOutput("classifier-lane", result.prNumber ? (Number(result.prNumber) % 2) + 1 : "");
+            core.setOutput("classifier-lane", result.prNumber ? (Number(result.prNumber) % 4) + 1 : "");
             core.setOutput("evidence-max-bytes", result.evidenceMaxBytes ?? "");
             core.info(JSON.stringify({ event: "pr-automation.resolve-pr", decision: result }));
             if (!result.ok) core.warning(`PR automation did not start: ${result.reason}`);
@@ -574,25 +574,35 @@ jobs:
               // A check without the current machine-readable state predates this contract: fail closed
               // and wait for a later classification event to rewrite it.
               const protocolState = classificationOwned ? parseCheckState(classification.output?.summary) : null;
-              const classificationCheck = classificationOwned && protocolState !== null &&
-                protocolState.automaticReviewEligible === true &&
+              const classificationValid = classificationOwned && protocolState !== null &&
                 classification.output?.title === "Classification complete";
+              const classificationCheck = classificationValid &&
+                protocolState.automaticReviewEligible === true;
               const legitimacyStopped = classificationOwned &&
                 classification.output?.title === "Automation stopped";
               const protocolRelated = protocolState?.protocolRelated === true;
               if (force) {
+                if (!classificationValid) {
+                  publish({
+                    ok: false, force: true, head_sha: headSha, classificationValid: false,
+                    classificationCheck: false, legitimacyStopped, ciGreen: false,
+                    secondReviewEligible: false, policyEligible: false, labels: resolvedLabels,
+                    protocolRelated: false, risk: "unknown", specialistReviewers: [],
+                    contributor: { status: "forced" }, reason: "valid classification unavailable",
+                  }, false);
+                  return;
+                }
                 const route = resolveReviewerRoute({
-                  suggestedReviewers: protocolState?.specialistReviewers || [],
-                  deterministicReviewers: ["skeptical", "code-compressor"],
+                  suggestedReviewers: protocolState.specialistReviewers,
                   protocolRelated,
-                  risk: protocolState?.risk || "unknown",
+                  risk: protocolState.risk,
                 });
                 publish({
-                  ok: true, force: true, head_sha: headSha, classificationCheck,
+                  ok: route.ok, force: true, head_sha: headSha, classificationValid, classificationCheck,
                   legitimacyStopped, ciGreen: false, secondReviewEligible: true,
                   policyEligible: true, labels: resolvedLabels, protocolRelated,
-                  risk: protocolState?.risk || "unknown",
-                  specialistReviewers: route.ok ? route.reviewers : ["skeptical", "code-compressor"],
+                  risk: protocolState.risk,
+                  specialistReviewers: route.ok ? route.reviewers : [],
                   contributor: { status: "forced" },
                 });
                 return;
@@ -621,7 +631,7 @@ jobs:
               publish({
                 ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible &&
                   contributor.status === "eligible",
-                force: false, head_sha: headSha, classificationCheck, legitimacyStopped,
+                force: false, head_sha: headSha, classificationValid, classificationCheck, legitimacyStopped,
                 ciGreen, secondReviewEligible, policyEligible, labels, contributor,
                 protocolRelated, risk: protocolState?.risk || "unknown",
                 specialistReviewers: protocolState?.specialistReviewers || [],
@@ -629,13 +639,13 @@ jobs:
             } catch (error) {
               core.warning(`Review gate unavailable: ${error.message}`);
               publish({
-                ok: force, force, head_sha: headSha, classificationCheck: false,
+                ok: false, force, head_sha: headSha, classificationValid: false, classificationCheck: false,
                 legitimacyStopped: false, ciGreen: false, secondReviewEligible: force,
-                policyEligible: force, labels: force ? resolvedLabels : [], protocolRelated: false,
-                risk: "unknown", specialistReviewers: force ? ["skeptical", "code-compressor"] : [],
+                policyEligible: false, labels: force ? resolvedLabels : [], protocolRelated: false,
+                risk: "unknown", specialistReviewers: [],
                 contributor: force ? { status: "forced" } : { status: "unavailable" },
                 reason: error.message,
-              }, force);
+              }, false);
             }
 
   review-pipeline:
@@ -645,12 +655,12 @@ jobs:
       always() && !cancelled() &&
       needs.resolve-pr.outputs.ok == 'true' &&
       needs.resolve-pr.outputs.review-route == 'true' &&
+      needs.review-gate.outputs.eligible == 'true' &&
       (needs.resolve-pr.outputs.force == 'true' ||
       (needs.fork-rate-limit.result == 'success' &&
-      needs.fork-rate-limit.outputs.allowed == 'true' &&
-      needs.review-gate.outputs.eligible == 'true'))
+      needs.fork-rate-limit.outputs.allowed == 'true'))
     concurrency:
-      group: llm-reviewer-pipeline
+      group: llm-reviewer-pipeline-${{ (fromJSON(needs.resolve-pr.outputs.pr-number) % 7) + 1 }}
       cancel-in-progress: false
       queue: max
     permissions:
@@ -713,13 +723,13 @@ jobs:
              const { renderReviewReport } = require("./.github/pr-automation/review-report-summary");
              const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
              const force = process.env.FORCE === "true";
-             const gate = parse(process.env.GATE, force ? {
-               ok: true, force: true, head_sha: process.env.HEAD_SHA,
-               labels: parse(process.env.LABELS, []), protocolRelated: false, risk: "unknown",
-               specialistReviewers: ["skeptical", "code-compressor"], contributor: { status: "forced" },
-             } : {});
+             const gate = parse(process.env.GATE, {});
              const report = parseReport(process.env.REVIEW_REPORT);
              const recovered = report.stages.filter((stage) => stage.attempts === 2);
+             const reducedCoverage = report.stages
+               .filter((stage) => stage.id.startsWith("specialist:") &&
+                 stage.status === "failed" && stage.required !== true)
+               .map((stage) => stage.id.slice("specialist:".length));
              const failureReasons = report.stages.filter((stage) => stage.status === "failed")
                .map((stage) => `${stage.id}: ${stage.reason || stage.category}`);
              const reviewerReason = report.status === "failed"
@@ -735,6 +745,7 @@ jobs:
                reviewerReason,
                force,
                reviewMarkerId: process.env.REVIEW_MARKER_ID,
+               reducedCoverage,
              });
              core.setOutput("state", JSON.stringify(state));
              core.info(JSON.stringify({
@@ -760,10 +771,10 @@ jobs:
              } else {
                const outcome = reviewOutcome({
                  reportStatus: report.status, state, recovered: recovered.length > 0,
+                 reducedCoverage,
                });
-               const detail = state.failed === true ? state.reason || reviewerReason : reviewerReason;
                const rendered = renderReviewReport({
-                 report, outcome, detail, summaryUrl: process.env.SUMMARY_URL,
+                 report, outcome, summaryUrl: process.env.SUMMARY_URL, reducedCoverage,
                });
                if (state.check) {
                  state.check.title = rendered.title;

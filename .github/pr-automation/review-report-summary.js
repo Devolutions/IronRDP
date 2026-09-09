@@ -16,11 +16,17 @@ function metric(value) {
   return value === null ? "unavailable" : value === undefined ? "unknown" : String(value);
 }
 
-function tokens(tokens, complete = tokens?.complete) {
-  if (tokens === null) return "unavailable";
-  if (tokens === undefined) return "unknown";
+function tokenColumns(tokens, complete = tokens?.complete) {
+  if (tokens === null) return ["unavailable", "unavailable", "unavailable"];
+  if (tokens === undefined) return ["unknown", "unknown", "unknown"];
   const values = ["input", "output", "total"].map((name) => metric(tokens[name]));
-  return `${values.join("/")} ${complete ? "" : "(partial)"}`.trim();
+  values[2] = `${values[2]}${complete ? "" : " (partial)"}`;
+  return values;
+}
+
+function seconds(milliseconds) {
+  return milliseconds === null ? "unavailable" :
+    milliseconds === undefined ? "unknown" : String(milliseconds / 1000);
 }
 
 function table(headers, rows, maxTextLength) {
@@ -40,62 +46,73 @@ function failureAttempts(stages) {
   });
 }
 
-function diagnostics(report, outcome, maxStages, maxTextLength) {
+function diagnostics(report, outcome, maxStages, maxTextLength, includeReasons) {
   const stages = report.stages.slice(0, maxStages);
   const omittedStages = report.stages.length - stages.length;
-  const attempts = failureAttempts(stages);
-  if (omittedStages > 0) attempts.push(["additional stages", "unknown", `${omittedStages} omitted to bound output`]);
   const metrics = report.metrics;
-  const failedAttempts = attempts.length === 0
-    ? "No stage failure was reported."
-    : table(["Stage", "Attempt", "Reason"], attempts, maxTextLength);
-  const totalMetrics = table(["Metric", "Total"], [
-    ["Tokens", tokens(metrics.tokens, metrics.tokens_complete)],
-    ["Elapsed (ms)", metric(metrics.elapsed_ms)],
-    ["Request retries", metric(metrics.request_retries)],
-    ["Output repairs", metric(metrics.output_repairs)],
-    ["Stage retries", metric(metrics.stage_retries)],
-  ], maxTextLength);
-  const stageRows = stages.map((stage) => [
-    stage.id, stage.status, stage.attempts, tokens(stage.metrics.tokens),
-    metric(stage.metrics.elapsed_ms), metric(stage.metrics.request_retries),
+  const stageOutcomes = stages.map((stage) => [stage.id, stage.status, stage.attempts]);
+  if (omittedStages > 0) {
+    stageOutcomes.push(["additional stages", "unknown", `${omittedStages} omitted to bound output`]);
+  }
+  const totalMetrics = table(["Input tokens", "Output tokens", "Total tokens", "Cumulative elapsed (seconds)", "Request retries", "Output repairs", "Stage recoveries"], [[
+    ...tokenColumns(metrics.tokens, metrics.tokens_complete),
+    seconds(metrics.elapsed_ms), metric(metrics.request_retries), metric(metrics.output_repairs),
+    metric(metrics.stage_retries),
+  ]], maxTextLength);
+  const stageRows = stages.filter((stage) => stage.provider).map((stage) => [
+    stage.id, stage.status, stage.attempts, ...tokenColumns(stage.metrics.tokens),
+    seconds(stage.metrics.elapsed_ms), metric(stage.metrics.request_retries),
     metric(stage.metrics.output_repairs),
   ]);
-  if (omittedStages > 0) {
-    stageRows.push(["additional stages", "unknown", "unknown", "unknown", "unknown", "unknown",
-      `${omittedStages} omitted to bound output`]);
-  }
   const stageMetrics = table(
-    ["Stage", "Status", "Attempts", "Tokens", "Elapsed (ms)", "Request retries", "Output repairs"],
+    ["Stage", "Status", "Attempts", "Input tokens", "Output tokens", "Total tokens",
+      "Cumulative elapsed (seconds)", "Request retries", "Output repairs"],
     stageRows, maxTextLength,
   );
+  const reasons = (() => {
+    if (!includeReasons) return "";
+    const attempts = failureAttempts(stages);
+    if (omittedStages > 0) attempts.push(["additional stages", "unknown", `${omittedStages} omitted to bound output`]);
+    return attempts.length === 0
+      ? "No stage failure was reported."
+      : table(["Stage", "Attempt", "Reason"], attempts, maxTextLength);
+  })();
   return [
     `Review outcome: **${outcome}**.`,
     "",
-    "### Failed stage attempts",
-    failedAttempts,
+    "### Stage outcomes",
+    table(["Stage", "Status", "Attempts"], stageOutcomes, maxTextLength),
     "",
     "### Metrics",
     totalMetrics,
     "",
-    "### Per-stage metrics",
+    "Token totals count repeated context across requests and repairs.",
+    "",
+    "### LLM stage metrics",
     stageMetrics,
+    ...(includeReasons ? ["", "### Failed stage attempts", reasons] : []),
   ].join("\n");
 }
 
-function renderReviewReport({ report, outcome, detail, summaryUrl }) {
-  const checkDiagnostics = diagnostics(report, outcome, MAX_CHECK_STAGES, MAX_CHECK_TEXT_LENGTH);
-  const workflowDiagnostics = diagnostics(report, outcome, MAX_WORKFLOW_STAGES, MAX_WORKFLOW_TEXT_LENGTH);
+function renderReviewReport({ report, outcome, summaryUrl, reducedCoverage = [] }) {
+  const checkDiagnostics = diagnostics(report, outcome, MAX_CHECK_STAGES, MAX_CHECK_TEXT_LENGTH, false);
+  const workflowDiagnostics = diagnostics(report, outcome, MAX_WORKFLOW_STAGES, MAX_WORKFLOW_TEXT_LENGTH, true);
   const heading = {
     complete: "Automated review complete",
     recovered: "Automated review recovered",
+    "reduced-coverage": "Automated review completed with reduced coverage",
+    "recovered-reduced-coverage": "Automated review recovered with reduced coverage",
     unavailable: "Automated review unavailable",
   }[outcome];
   const outcomeText = outcome === "complete"
     ? "Validated automated review is bound to this commit."
     : outcome === "recovered"
       ? "Validated automated review was produced after stage recovery."
-      : `Automated review is unavailable: ${text(detail || "review unavailable", MAX_CHECK_TEXT_LENGTH)}. Maintainer review is required.`;
+      : outcome === "reduced-coverage"
+        ? `Validated automated review is bound to this commit with reduced coverage: optional reviewer${reducedCoverage.length === 1 ? "" : "s"} ${reducedCoverage.map((reviewer) => text(reviewer, MAX_CHECK_TEXT_LENGTH)).join(", ")} ${reducedCoverage.length === 1 ? "was" : "were"} unavailable.`
+        : outcome === "recovered-reduced-coverage"
+          ? `Validated automated review was produced after stage recovery with reduced coverage: optional reviewer${reducedCoverage.length === 1 ? "" : "s"} ${reducedCoverage.map((reviewer) => text(reviewer, MAX_CHECK_TEXT_LENGTH)).join(", ")} ${reducedCoverage.length === 1 ? "was" : "were"} unavailable.`
+        : "Automated review is unavailable. Maintainer review is required.";
   return {
     title: heading,
     checkSummary: `${outcomeText}\n\n${checkDiagnostics}\n\n[View the workflow summary](${summaryUrl})`,

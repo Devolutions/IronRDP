@@ -3,6 +3,7 @@
 const { encodeCheckState } = require("./validate-classifier");
 const { provenancePrefix } = require("./validate-final-review");
 const { reviewPolicyEligible } = require("./routing");
+const { StaleHeadError, assertCurrentHead: assertPullRequestHead } = require("./review-retry");
 
 const SEVERITY_EMOJI = {
   critical: ":purple_circle:",
@@ -10,10 +11,6 @@ const SEVERITY_EMOJI = {
   medium: ":orange_circle:",
   low: ":yellow_circle:",
 };
-
-class StaleHeadError extends Error {
-  constructor() { super("pull request head is no longer current"); this.name = "StaleHeadError"; }
-}
 
 class StalePolicyError extends Error {
   constructor() { super("pull request review policy changed"); this.name = "StalePolicyError"; }
@@ -37,8 +34,9 @@ function findingIndicator(finding) {
 }
 
 async function assertCurrentHead(github, owner, repo, prNumber, expectedSha) {
-  const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
-  if (pr.state !== "open" || pr.head?.sha !== expectedSha) throw new StaleHeadError();
+  await assertPullRequestHead({
+    github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha,
+  });
 }
 
 async function issueLabels(github, owner, repo, prNumber) {
@@ -102,14 +100,18 @@ async function deleteMarkedComment(github, owner, repo, prNumber, expectedSha, b
   return true;
 }
 
-function reviewBody(marker, review) {
+function reviewBody(marker, review, reducedCoverage = []) {
   const findings = review.findings.filter((finding) => finding.start_line === null).map((finding, index) => {
     return `${index + 1}. **${provenancePrefix(finding.sources)} ${escapeMarkdown(finding.title)}** — ` +
       `${findingIndicator(finding)} — ${escapeMarkdown(finding.path)}\n` +
       `   ${escapeMarkdown(finding.rationale)}`;
   }).join("\n");
   const clean = review.findings.length === 0 ? ":green_circle: " : "";
-  return `${marker}\n\n${clean}${escapeMarkdown(review.summary)}${findings ? `\n\n${findings}` : ""}`;
+  const coverage = reducedCoverage.length === 0
+    ? ""
+    : `\n\nReduced coverage: optional reviewer${reducedCoverage.length === 1 ? "" : "s"} ` +
+      `${reducedCoverage.map(escapeMarkdown).join(", ")} ${reducedCoverage.length === 1 ? "was" : "were"} unavailable.`;
+  return `${marker}\n\n${clean}${escapeMarkdown(review.summary)}${coverage}${findings ? `\n\n${findings}` : ""}`;
 }
 
 async function reviews(github, owner, repo, prNumber) {
@@ -153,7 +155,7 @@ async function publishReview(github, owner, repo, prNumber, state, botLogin, com
   assertReviewPolicy(await issueLabels(github, owner, repo, prNumber), state);
   await github.rest.pulls.createReview({
     owner, repo, pull_number: prNumber, commit_id: state.expectedSha, event: "COMMENT",
-    body: reviewBody(comment.marker, review), comments: inline,
+    body: reviewBody(comment.marker, review, comment.reducedCoverage), comments: inline,
   });
   return true;
 }
