@@ -112,7 +112,10 @@ function reviewGateScript(workflow = readWorkflow()) {
   return match[1].replace(/^ {12}/gm, "");
 }
 
-async function runReviewGateScript({ force = false, classificationRuns = [] } = {}) {
+async function runReviewGateScript({
+  force = false, classificationRuns = [], labels = [],
+  author = { type: "User", login: "member", nodeId: "U_1", association: "MEMBER" },
+} = {}) {
   const outputs = new Map();
   const failures = [];
   const core = {
@@ -126,12 +129,20 @@ async function runReviewGateScript({ force = false, classificationRuns = [] } = 
       checks: {
         listForRef: async () => ({ data: { check_runs: classificationRuns } }),
       },
+      issues: {
+        get: async () => ({ data: { labels: labels.map((name) => ({ name })) } }),
+      },
+      actions: {
+        listWorkflowRunsForRepo: async () => ({ data: {
+          workflow_runs: [{ name: "CI", conclusion: "success" }],
+        } }),
+      },
     },
   };
   const context = { repo: { owner: "Devolutions", repo: "IronRDP" } };
   const process = { env: {
     PULL_REQUEST_NUMBER: "1", HEAD_SHA: SHA, FORCE: String(force),
-    LABELS: "[]", AUTHOR: "null", ROUTE: "manual",
+    LABELS: JSON.stringify(labels), AUTHOR: JSON.stringify(author), ROUTE: "manual",
   } };
   const rootRequire = createRequire(path.join(__dirname, "..", "..", "labeler.js"));
   await new AsyncFunction("core", "github", "context", "require", "process", reviewGateScript())(
@@ -292,6 +303,28 @@ test("a forced review with no valid classification fails as an invocation error"
   assert.equal(result.eligible, false);
   assert.deepEqual(result.failures,
     ["forced review invocation requires a valid classification for the current head"]);
+});
+
+test("automatic policy ineligibility remains a non-error gate skip", async () => {
+  const machineState = {
+    protocolRelated: false, risk: "low", specialistReviewers: [],
+    automaticReviewEligible: true,
+  };
+  const result = await runReviewGateScript({
+    labels: ["duplicate"],
+    classificationRuns: [{
+      id: 1, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "success",
+      app: { slug: "github-actions" },
+      output: {
+        title: "Classification complete",
+        summary: `Validated classification.\n\n${encodeCheckState(machineState)}`,
+      },
+    }],
+  });
+  assert.equal(result.gate.ok, false);
+  assert.equal(result.gate.policyEligible, false);
+  assert.equal(result.eligible, false);
+  assert.deepEqual(result.failures, []);
 });
 
 test("review outcome requires validated final output", () => {
