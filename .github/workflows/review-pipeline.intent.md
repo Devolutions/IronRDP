@@ -1,7 +1,7 @@
 ## Reviewer pipeline
 
 `review-pipeline.yml` is a reusable GitHub Actions workflow with `workflow_call` as its only trigger.
-This lets specialists run in parallel while the caller applies a global concurrency limit to the entire pipeline.
+The caller limits concurrent pipelines to seven using static lanes, each held for the entire pipeline.
 The caller owns publication.
 
 ```text
@@ -23,7 +23,7 @@ Supported specialists include:
 - skeptical
 - code compressor
 
-Run selected specialists in a multi-job matrix, with at most three running at once.
+Run selected specialists in a multi-job matrix, with at most three running at once per pipeline.
 
 ### Stage recovery
 

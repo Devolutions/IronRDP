@@ -1,20 +1,20 @@
 ## Concurrency model
 
-We’re using Helmcode for the automated classifier and reviewer pipeline.
-We get at most 5 parallel requests.
+The Helmcode key permits at most 25 parallel requests.
 
-To use the 5 parallel requests as efficiently as possible:
+Allocate more capacity to slower review pipelines than to fast classifiers:
 
-- Run at most two classifier agents in parallel.
-- Run at most one reviewer pipeline with at most 3 specialist reviews in parallel.
+- Run at most 4 classifier agents in parallel.
+- Run at most 7 reviewer pipelines, each with at most 3 specialist reviews in parallel.
 
-That totals at most 5 parallel requests at any time.
+That totals at most 25 parallel requests at any time: 4 for classifiers and 21 for review pipelines.
 All model-output schemas are internal and unversioned.
 
 For simplicity, derive static concurrency lanes from the pull request number instead of using an external semaphore service.
 
 ```text
-classifier-lane = (pr-number % 2) + 1 // = 1 or 2
+classifier-lane = (pr-number % 4) + 1 // 1 through 4
+review-pipeline-lane = (pr-number % 7) + 1 // 1 through 7
 ```
 
 At the classifier job level:
@@ -30,13 +30,13 @@ And for the reviewer pipeline job:
 
 ```yaml
 concurrency:
-  group: llm-reviewer-pipeline
+  group: llm-reviewer-pipeline-${{ review-pipeline-lane }}
   cancel-in-progress: false
   queue: max
 ```
 
-`llm-reviewer-pipeline` group must lock the entire review pipeline, not each reviewer job.
-The review pipeline must therefore live in a reusable workflow, with `llm-reviewer-pipeline` concurrency on its caller job.
+Each reviewer-pipeline lane must lock the entire review pipeline, not each reviewer job.
+The review pipeline must therefore live in a reusable workflow, with lane concurrency on its caller job.
 
 ## Classification
 
