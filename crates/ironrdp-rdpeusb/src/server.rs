@@ -746,10 +746,6 @@ impl DvcProcessor for UrbdrcDeviceServer {
                 self.udev_iface = Some(udev_iface);
                 self.no_ack_isoch_write_jitter_buf_size = Some(no_ack_isoch_write_jitter_buf_size);
                 self.state = DeviceState::Ready;
-                resp.push(Box::new(InterfaceRelease {
-                    msg_id: self.msg_alloc.alloc(),
-                    iface_id: InterfaceId::DEVICE_SINK.with_mask(Mask::Proxy),
-                }));
                 resp.push(Box::new(RegisterRequestCallback {
                     msg_id: self.msg_alloc.alloc(),
                     udev_iface,

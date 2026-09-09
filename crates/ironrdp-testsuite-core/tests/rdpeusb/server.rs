@@ -231,14 +231,9 @@ fn new_device_sequence() {
     let resp = server
         .process(11, &encode_pdu(&UrbdrcClientDevicePdu::AddDev(add_device)))
         .expect("add device should succeed");
-    assert_eq!(resp.len(), 2);
+    assert_eq!(resp.len(), 1);
 
-    let UrbdrcServerDevicePdu::IfaceRelease(release) = decode_device_msg(&resp[0]) else {
-        panic!("expected device sink interface release");
-    };
-    assert_eq!(release.iface_id, proxy_iface_id(InterfaceId::DEVICE_SINK));
-
-    let UrbdrcServerDevicePdu::RegReqCb(register) = decode_device_msg(&resp[1]) else {
+    let UrbdrcServerDevicePdu::RegReqCb(register) = decode_device_msg(&resp[0]) else {
         panic!("expected request callback registration");
     };
     assert_eq!(register.udev_iface, udev_iface);
