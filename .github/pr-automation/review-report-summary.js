@@ -97,7 +97,7 @@ function diagnostics(report, outcome, maxStages, maxTextLength, includeReasons) 
 function reducedCoverageText(reducedCoverage) {
   return ` with reduced coverage: optional reviewer${reducedCoverage.length === 1 ? "" : "s"} ` +
     `${reducedCoverage.map((reviewer) => text(reviewer, MAX_CHECK_TEXT_LENGTH)).join(", ")} ` +
-    `${reducedCoverage.length === 1 ? "was" : "were"} unavailable.`;
+    `${reducedCoverage.length === 1 ? "was" : "were"} unavailable`;
 }
 
 function renderReviewReport({ report, outcome, summaryUrl, reducedCoverage = [] }) {

@@ -2497,10 +2497,19 @@ test("review checks name reduced coverage without publishing failure reasons", (
     report, outcome: "recovered-reduced-coverage", reducedCoverage: ["code-compressor"],
     summaryUrl: "https://github.example/actions/runs/123",
   });
-  assert.match(rendered.checkSummary, /recovery with reduced coverage/);
+  assert.equal(rendered.checkSummary.split("\n\n")[0],
+    "Validated automated review was produced after stage recovery with reduced coverage: " +
+    "optional reviewer code-compressor was unavailable.");
   assert.match(rendered.checkSummary, /code-compressor/);
   assert.doesNotMatch(rendered.checkSummary, /provider timeout with internal details/);
   assert.match(rendered.workflowSummary, /provider timeout with internal details/);
+  const multiple = renderReviewReport({
+    report, outcome: "reduced-coverage", reducedCoverage: ["skeptical", "code-compressor"],
+    summaryUrl: "https://github.example/actions/runs/123",
+  });
+  assert.equal(multiple.checkSummary.split("\n\n")[0],
+    "Validated automated review is bound to this commit with reduced coverage: " +
+    "optional reviewers skeptical, code-compressor were unavailable.");
 });
 
 function paginated(pages) {
