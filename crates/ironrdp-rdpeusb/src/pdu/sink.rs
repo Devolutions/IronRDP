@@ -15,6 +15,7 @@ use ironrdp_dvc::DvcEncode;
 use ironrdp_pdu::utils::strict_sum;
 use ironrdp_str::multi_sz::MultiSzString;
 use ironrdp_str::prefixed::Cch32String;
+use ironrdp_usb::UsbSpeed;
 
 use crate::pdu::header::{FunctionId, InterfaceId, Mask, MessageId, SharedMsgHeader};
 
@@ -407,6 +408,16 @@ impl DeviceSpeed {
     /// The raw wire value.
     pub const fn to_u32(self) -> u32 {
         self.0
+    }
+}
+
+impl From<DeviceSpeed> for UsbSpeed {
+    fn from(value: DeviceSpeed) -> Self {
+        if value == DeviceSpeed::FULL_SPEED {
+            Self::Full
+        } else {
+            Self::High
+        }
     }
 }
 
