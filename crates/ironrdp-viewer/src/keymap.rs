@@ -117,6 +117,8 @@ pub(crate) const fn map_key_code(key_code: KeyCode) -> Option<Scancode> {
         KeyCode::F22 => (false, 0x6D),
         KeyCode::F23 => (false, 0x6E),
         KeyCode::KanaMode => (false, 0x70),
+        // Windows delegates these to winit because Korean layouts use E0F1/E0F2.
+        // Other platforms use the standard PC/AT set-1 forms.
         KeyCode::Lang2 => (false, 0x71),
         KeyCode::Lang1 => (false, 0x72),
         KeyCode::IntlRo => (false, 0x73),
@@ -132,7 +134,6 @@ pub(crate) const fn map_key_code(key_code: KeyCode) -> Option<Scancode> {
         KeyCode::MediaTrackPrevious => (true, 0x10),
         KeyCode::MediaTrackNext => (true, 0x19),
         KeyCode::NumpadEnter => (true, 0x1C),
-        KeyCode::ControlRight => (true, 0x1D),
         KeyCode::Cut => (true, 0x17),
         KeyCode::Copy => (true, 0x18),
         KeyCode::AudioVolumeMute => (true, 0x20),
@@ -144,7 +145,6 @@ pub(crate) const fn map_key_code(key_code: KeyCode) -> Option<Scancode> {
         KeyCode::AudioVolumeUp => (true, 0x30),
         KeyCode::BrowserHome => (true, 0x32),
         KeyCode::NumpadDivide => (true, 0x35),
-        KeyCode::AltRight => (true, 0x38),
         KeyCode::Help => (true, 0x3B),
         KeyCode::Home => (true, 0x47),
         KeyCode::ArrowUp => (true, 0x48),
@@ -169,8 +169,6 @@ pub(crate) const fn map_key_code(key_code: KeyCode) -> Option<Scancode> {
         KeyCode::LaunchApp1 => (true, 0x6B),
         KeyCode::LaunchMail => (true, 0x6C),
         KeyCode::MediaSelect => (true, 0x6D),
-        KeyCode::SuperLeft => (true, 0x5B),
-        KeyCode::SuperRight => (true, 0x5C),
         KeyCode::PrintScreen => (true, 0x37),
         _ => return None,
     };
