@@ -306,9 +306,7 @@ impl RpcApp {
                 }
 
                 #[cfg(windows)]
-                let scancode = if requires_native_layout_mapping(key_code) {
-                    // Korean layouts assign Lang1 and Lang2 distinct E0 scancodes, but may report them only on release.
-                    // Database intentionally suppresses releases without a preceding press, as did the former native-scancode path.
+                let (scancode, release_only) = if requires_native_layout_mapping(key_code) {
                     let Some(native_scancode) = PhysicalKey::Code(key_code).to_scancode() else {
                         warn!(
                             ?key_code,
@@ -324,34 +322,39 @@ impl RpcApp {
                         );
                         return;
                     };
-                    scancode
+                    // Korean Lang1 and Lang2 are reported only on release, so synthesize their make event below.
+                    (scancode, matches!(native_scancode, 0xE0F1 | 0xE0F2))
                 } else {
                     let Some(scancode) = map_key_code(key_code) else {
                         warn!(?key_code, "Unsupported physical key; ignored");
                         return;
                     };
-                    scancode
+                    (scancode, false)
                 };
 
                 #[cfg(not(windows))]
-                let scancode = {
+                let (scancode, release_only) = {
                     let Some(scancode) = map_key_code(key_code) else {
                         warn!(?key_code, "Unsupported physical key; ignored");
                         return;
                     };
-                    scancode
+                    (scancode, false)
                 };
 
-                let operation = match event.state {
-                    event::ElementState::Pressed => ironrdp::input::Operation::KeyPressed(scancode),
-                    event::ElementState::Released => ironrdp::input::Operation::KeyReleased(scancode),
+                let operations: SmallVec<[ironrdp::input::Operation; 2]> = match event.state {
+                    event::ElementState::Pressed => {
+                        smallvec::smallvec![ironrdp::input::Operation::KeyPressed(scancode)]
+                    }
+                    event::ElementState::Released if release_only => smallvec::smallvec![
+                        ironrdp::input::Operation::KeyPressed(scancode),
+                        ironrdp::input::Operation::KeyReleased(scancode),
+                    ],
+                    event::ElementState::Released => {
+                        smallvec::smallvec![ironrdp::input::Operation::KeyReleased(scancode)]
+                    }
                 };
 
-                apply_and_send_fast_path_events(
-                    &self.input_target,
-                    &mut self.input_database,
-                    core::iter::once(operation),
-                );
+                apply_and_send_fast_path_events(&self.input_target, &mut self.input_database, operations);
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 const SHIFT_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x2A);
