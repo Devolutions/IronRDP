@@ -19,7 +19,7 @@ pub struct SourcePayloadHeader {
 }
 
 impl SourcePayloadHeader {
-    pub const FIXED_PART_SIZE: usize = 4 + 4;
+    pub const FIXED_PART_SIZE: usize = 4 /* snCoded */ + 4 /* snSourceStart */;
     const NAME: &'static str = "RDPUDP_SOURCE_PAYLOAD_HEADER";
 }
 

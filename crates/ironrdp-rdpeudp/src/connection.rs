@@ -21,7 +21,7 @@
 //! framing from MS-RDPEUDP2 Section 2.2.1.3.
 
 use crate::time::MonotonicInstant;
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeMap, VecDeque};
 #[cfg(not(feature = "std"))]
 use alloc::{vec, vec::Vec};
 use core::time::Duration;
@@ -1147,17 +1147,29 @@ impl RdpeudpConnection {
 
         // 3.1.5.1.1: the version in the SYN+ACK is "the highest version
         // supported by both endpoints", and per 3.1.5.1.3 that is the version
-        // both MUST then use. Anything below 3 means the server settled on the
-        // MS-RDPEUDP data transfer, which this crate does not speak.
-        // 3.1.5.1.3: the SYN+ACK carries the version both endpoints MUST use.
-        // Version 3 selects the MS-RDPEUDP2 framing; 1 and 2 select the
-        // MS-RDPEUDP one, which this crate also implements for reliable transport.
-        let wire = if syn_data_ex.udp_ver.uses_v2_wire_format() {
+        // both MUST then use. Version 3 selects the MS-RDPEUDP2 framing; 1 and
+        // 2 select the MS-RDPEUDP one, which this crate also implements for
+        // reliable transport. Anything else is not a version this crate
+        // speaks, and a selection above what our SYN offered is not one the
+        // peer could have found on both sides; refuse both rather than map
+        // them onto framing and timers chosen by default.
+        let selected = syn_data_ex.udp_ver;
+        if ![UdpVersion::V1, UdpVersion::V2, UdpVersion::V3].contains(&selected) {
+            return Err(RdpeudpError::invalid_packet(
+                "handle SYN+ACK",
+                "SYN+ACK selected a protocol version this crate does not implement",
+            ));
+        }
+        if selected.0 > self.config.offer_version.0 {
+            return Err(RdpeudpError::invalid_packet(
+                "handle SYN+ACK",
+                "SYN+ACK selected a protocol version above the one the SYN offered",
+            ));
+        }
+        let wire = if selected.uses_v2_wire_format() {
             WireFormat::V2
         } else {
-            WireFormat::V1 {
-                version: syn_data_ex.udp_ver.0,
-            }
+            WireFormat::V1 { version: selected.0 }
         };
 
         let local_isn = self.config.initial_sequence_number;
@@ -2129,17 +2141,31 @@ impl RdpeudpConnection {
 
         let mut acked: Vec<(u64, bool, MonotonicInstant)> = Vec::new();
         if let Some(vector) = ack_vector {
+            // Index the window once and look each represented sequence up:
+            // a decoded vector can name 2048 * 64 sequences, and scanning the
+            // window afresh for every one would let a small datagram cost
+            // span * window comparisons.
+            let pending: BTreeMap<u64, (u64, bool, MonotonicInstant)> = send_window
+                .pending_entries()
+                .map(|e| (e.channel_seq, (e.data_seq, e.transmit_count == 1, e.sent_at)))
+                .collect();
+            // Nothing below the lowest pending sequence can be newly
+            // acknowledged, so the walk ends there whatever the vector says.
+            let floor = pending.keys().next().copied();
             let mut current = Some(highest_seen);
-            for element in &vector.elements {
+            'elements: for element in &vector.elements {
                 // Windows encodes a run of n datagrams as n - 1 (an element of 0x00
                 // acknowledges exactly one), which 2.2.2.7.1's prose leaves open.
                 for _ in 0..=element.length {
                     let Some(source_seq) = current else {
-                        break;
+                        break 'elements;
                     };
+                    if floor.is_none_or(|floor| source_seq < floor) {
+                        break 'elements;
+                    }
                     if element.state.is_received() {
-                        if let Some(entry) = send_window.pending_entries().find(|e| e.channel_seq == source_seq) {
-                            acked.push((entry.data_seq, entry.transmit_count == 1, entry.sent_at));
+                        if let Some(entry) = pending.get(&source_seq) {
+                            acked.push(*entry);
                         }
                     }
                     current = source_seq.checked_sub(1);
@@ -2199,6 +2225,13 @@ impl RdpeudpConnection {
         };
         let reference = recv_window.highest_seq();
         let reset = seq::reconstruct_seq32(ack_of_acks.reset_seq_num, reference);
+        // `snResetSeqNum` is a Source sequence number the peer has seen us
+        // acknowledge, so it cannot run ahead of what we have received. One
+        // that does would push the window base into the future and leave every
+        // later Source Packet below it; drop it instead.
+        if reset > reference {
+            return;
+        }
         recv_window.advance_base(reset.saturating_add(1));
     }
 
@@ -2823,6 +2856,87 @@ mod v1_tests {
         );
         assert_eq!(data.header.sn_coded, LOCAL_ISN + 2, "new Coded sequence number");
         assert_eq!(data.payload, b"hello");
+    }
+
+    #[test]
+    fn a_syn_ack_selecting_an_unknown_version_is_rejected() {
+        let mut conn = RdpeudpConnection::connect(config(), at(0)).unwrap();
+        let _ = conn.poll_transmit(at(0)).expect("client SYN");
+        let mut wire = syn_ack(0x0004);
+        conn.handle_datagram(&mut wire, at(20))
+            .expect_err("version 4 is neither MS-RDPEUDP nor MS-RDPEUDP2");
+    }
+
+    #[test]
+    fn a_syn_ack_selecting_a_version_above_the_offer_is_rejected() {
+        let config = ConnectionConfig {
+            offer_version: UdpVersion::V2,
+            cookie_hash: None,
+            ..config()
+        };
+        let mut conn = RdpeudpConnection::connect(config, at(0)).unwrap();
+        let _ = conn.poll_transmit(at(0)).expect("client SYN");
+        let mut wire = syn_ack(UdpVersion::V3.0);
+        conn.handle_datagram(&mut wire, at(20))
+            .expect_err("the SYN offered version 2, so version 3 is not supported by both endpoints");
+    }
+
+    /// A reset ahead of everything received would push the window base into
+    /// the future and strand every later Source Packet below it.
+    #[test]
+    fn an_ack_of_acks_ahead_of_the_receive_window_is_ignored() {
+        let mut conn = established(2);
+
+        let mut first = server_datagram(LOCAL_ISN, &[(true, 1)], Some((REMOTE_ISN + 1, b"hello ")));
+        conn.handle_datagram(&mut first, at(40)).unwrap();
+        assert_eq!(conn.poll_event(), Some(Event::DataReceived(b"hello ".to_vec())));
+
+        let mut ack_of_acks = encode_vec(&V1Datagram {
+            header: FecHeader {
+                sn_source_ack: LOCAL_ISN,
+                receive_window_size: 64,
+                flags: V1Flags::empty(),
+            },
+            ack_vector: Some(V1AckVectorHeader {
+                elements: vec![V1AckVectorElement {
+                    state: VectorElementState::DatagramReceived,
+                    length: 0,
+                }],
+            }),
+            ack_of_acks: Some(V1AckOfAcksHeader {
+                reset_seq_num: REMOTE_ISN + 50,
+            }),
+            syn_data: None,
+            correlation_id: None,
+            syn_data_ex: None,
+            data: None,
+        })
+        .unwrap();
+        conn.handle_datagram(&mut ack_of_acks, at(41)).unwrap();
+
+        let mut second = server_datagram(LOCAL_ISN, &[(true, 1)], Some((REMOTE_ISN + 2, b"world")));
+        conn.handle_datagram(&mut second, at(42)).unwrap();
+        assert_eq!(
+            conn.poll_event(),
+            Some(Event::DataReceived(b"world".to_vec())),
+            "a bogus reset must not strand later Source Packets"
+        );
+    }
+
+    /// A vector that runs far below anything outstanding is bounded by the
+    /// window, not by the vector: 2048 elements of 64 must still resolve the
+    /// one pending Source Packet and stop.
+    #[test]
+    fn an_oversized_ack_vector_still_acknowledges_what_is_pending() {
+        let mut conn = established(2);
+        conn.send(b"only".to_vec()).unwrap();
+        let _ = conn.poll_transmit(at(30)).unwrap();
+        assert_eq!(conn.send_window.as_ref().unwrap().pending_entries().count(), 1);
+
+        let runs: Vec<(bool, u8)> = core::iter::repeat_n((true, 64), 2048).collect();
+        let mut ack = server_datagram(LOCAL_ISN + 1, &runs, None);
+        conn.handle_datagram(&mut ack, at(50)).unwrap();
+        assert_eq!(conn.send_window.as_ref().unwrap().pending_entries().count(), 0);
     }
 
     #[test]

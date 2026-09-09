@@ -57,8 +57,9 @@ pub use v2_header::{LOG_WINDOW_SIZE_MAX, V2Header};
 
 /// V1 flags that don't gate any optional payload; preserved on encode.
 ///
-/// DATA and FEC are payload-gating but have no corresponding fields
-/// in V1Datagram (v1 data transfer is not supported).
+/// DATA is payload-gating too and is derived from `data`. FEC is
+/// payload-gating but has no field: FEC_PAYLOAD (2.2.2.5, lossy transport)
+/// is not supported, and `decode` rejects a datagram that announces one.
 const V1_STANDALONE_FLAGS: u16 = V1Flags::FIN.bits()
     | V1Flags::CN.bits()
     | V1Flags::CWR.bits()
@@ -67,7 +68,7 @@ const V1_STANDALONE_FLAGS: u16 = V1Flags::FIN.bits()
     | V1Flags::ACKDELAYED.bits();
 
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
-/// A complete v1 datagram (SYN, SYN+ACK, or ACK).
+/// A complete v1 datagram (SYN, SYN+ACK, ACK, or Source Packet).
 ///
 /// MS-RDPEUDP Section 2.2.
 /// The FecHeader's flags field determines which optional payloads
@@ -83,6 +84,7 @@ const V1_STANDALONE_FLAGS: u16 = V1Flags::FIN.bits()
 /// 4. SynDataPayload (if SYN flag)
 /// 5. CorrelationIdPayload (if CORRELATION_ID flag)
 /// 6. SynDataExPayload (if SYNEX flag)
+/// 7. SourceData (if DATA flag; the payload runs to the end of the datagram)
 ///
 /// A SYN+ACK is the exception to the ACK flag's usual meaning. Section
 /// 2.2.2.1 defines the flag as "the ACK vector is present", but 3.1.5.1.3
@@ -92,8 +94,10 @@ const V1_STANDALONE_FLAGS: u16 = V1Flags::FIN.bits()
 /// directly, with no ACK vector between them. So on a SYN+ACK the flag says
 /// only that snSourceAck is meaningful, and `ack_vector` must be `None`.
 ///
-/// V1 data payloads (SOURCE_PAYLOAD / FEC_PAYLOAD) are not represented;
-/// this crate always negotiates v2+ for data transfer.
+/// Version 1/2 Source Packets (SOURCE_PAYLOAD, 2.2.2.4) are carried in
+/// `data`. FEC_PAYLOAD (2.2.2.5, lossy transport) is not represented:
+/// `decode` rejects a datagram with the FEC flag set, and there is no field
+/// from which `encode` could emit one.
 ///
 /// `encode` does not zero-pad SYN and SYN+ACK datagrams to the negotiated
 /// MTU that MS-RDPEUDP 3.1.5.1.1 and 3.1.5.1.3 require: this crate has no
@@ -263,13 +267,13 @@ impl Decode<'_> for V1Datagram {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = FecHeader::decode(src)?;
 
-        // V1 data payloads are not supported; reject if present since we
-        // cannot skip them without knowing their wire size.
+        // FEC payloads (lossy transport) are not supported; reject rather
+        // than misread the bytes that follow the header.
         if header.flags.contains(V1Flags::FEC) {
             return Err(ironrdp_core::invalid_field_err!(
                 "V1 Datagram",
                 "flags",
-                "FEC packets belong to lossy transport, which is not supported"
+                "lossy-transport FEC payloads are not supported"
             ));
         }
 

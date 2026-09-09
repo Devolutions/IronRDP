@@ -3,11 +3,11 @@
 //! MS-RDPEUDP2 Section 3.1.1.1.3 (sequence numbers) and
 //! Section 3.1.1.1.4 (timestamps).
 //!
-//! All wire-format sequence numbers are 16-bit. Full resolution
-//! is 64-bit, reconstructed from a nearby reference value.
-//! The active window is limited to `(1 << log_window_size) - 1`
-//! which is at most 32767, so 16 bits are sufficient when a
-//! reference is available.
+//! MS-RDPEUDP2 wire-format sequence numbers are 16-bit; the MS-RDPEUDP
+//! (version 1/2) ones in 3.1.1.2 are 32-bit. Full resolution is 64-bit,
+//! reconstructed from a nearby reference value. The active window is
+//! limited to `(1 << log_window_size) - 1`, which is at most 32767, so
+//! either width is sufficient when a reference is available.
 //!
 //! Timestamps use 24 bits on the wire in units of 4 microseconds,
 //! giving a wrap range of ~67 seconds. Reconstruction uses the
@@ -116,6 +116,31 @@ const TIMESTAMP_HALF_RANGE: u64 = TIMESTAMP_WRAP / 2;
 /// Maximum timestamp age before it's considered stale (32 seconds in 4μs units).
 /// Per MS-RDPEUDP2 Section 3.1.1.1.4.
 pub const TIMESTAMP_STALENESS_LIMIT: u64 = 32_000_000 / TIMESTAMP_UNIT_US; // 8,000,000 units
+
+/// Widens a 32-bit on-the-wire sequence number (MS-RDPEUDP 3.1.1.2) to the
+/// 64-bit value closest to `reference`, so wrap-around is handled.
+pub fn reconstruct_seq32(wire: u32, reference: u64) -> u64 {
+    const WINDOW: u64 = 1 << 32;
+    let candidate = (reference & !(WINDOW - 1)) + u64::from(wire);
+    [
+        candidate.checked_sub(WINDOW),
+        Some(candidate),
+        candidate.checked_add(WINDOW),
+    ]
+    .into_iter()
+    .flatten()
+    .min_by_key(|value| value.abs_diff(reference))
+    .unwrap_or(candidate)
+}
+
+/// Narrows a 64-bit sequence number to its 32-bit wire form.
+///
+/// # Panics
+///
+/// Never in practice: the value is masked to 32 bits before the conversion.
+pub fn truncate_seq32(full: u64) -> u32 {
+    u32::try_from(full & 0xFFFF_FFFF).expect("masked to 32 bits fits in u32")
+}
 
 #[cfg(test)]
 mod tests {
@@ -299,36 +324,8 @@ mod tests {
         // 32 seconds = 32,000,000μs / 4μs = 8,000,000 units
         assert_eq!(TIMESTAMP_STALENESS_LIMIT, 8_000_000);
     }
-}
 
-/// Widens a 32-bit on-the-wire sequence number (MS-RDPEUDP 3.1.1.2) to the
-/// 64-bit value closest to `reference`, so wrap-around is handled.
-pub fn reconstruct_seq32(wire: u32, reference: u64) -> u64 {
-    const WINDOW: u64 = 1 << 32;
-    let candidate = (reference & !(WINDOW - 1)) + u64::from(wire);
-    [
-        candidate.checked_sub(WINDOW),
-        Some(candidate),
-        candidate.checked_add(WINDOW),
-    ]
-    .into_iter()
-    .flatten()
-    .min_by_key(|value| value.abs_diff(reference))
-    .unwrap_or(candidate)
-}
-
-/// Narrows a 64-bit sequence number to its 32-bit wire form.
-///
-/// # Panics
-///
-/// Never in practice: the value is masked to 32 bits before the conversion.
-pub fn truncate_seq32(full: u64) -> u32 {
-    u32::try_from(full & 0xFFFF_FFFF).expect("masked to 32 bits fits in u32")
-}
-
-#[cfg(test)]
-mod seq32_tests {
-    use super::*;
+    // ── 32-bit (MS-RDPEUDP) sequence numbers ──
 
     #[test]
     fn reconstructs_across_the_32_bit_wrap() {
