@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
 use ironrdp_core::{
-    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_int, ensure_fixed_part_size,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_int, ensure_fixed_part_size, ensure_size,
     invalid_field_err,
 };
 
@@ -181,8 +181,9 @@ impl Encode for CiexyzTriple {
 
 /// Header used in `CF_DIB` formats, part of [BITMAPINFO]
 ///
-/// We don't use the optional `bmiColors` field, because it is only relevant for bitmaps with
-/// bpp < 24, which are not supported yet, therefore only fixed part of the header is implemented.
+/// Only the fixed part of the header is implemented. The optional `bmiColors` field is a color
+/// table for bitmaps with bpp < 24, which are not supported; with `BITFIELDS` compression it holds
+/// the three color masks instead, which are read separately when decoding `CF_DIB`.
 ///
 /// [BITMAPINFO]: https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-bitmapinfo
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -468,6 +469,28 @@ fn validate_v1_header(header: &BitmapInfoHeader) -> Result<(), BitmapError> {
     Ok(())
 }
 
+/// Validates the color masks of a `BITFIELDS`-compressed bitmap.
+///
+/// Currently, we only support the standard order, BGRA. When there is no alpha channel the alpha
+/// mask is `0x00000000`, which is supported alongside the standard `0xFF000000`.
+fn validate_bitfields_masks(
+    red_mask: u32,
+    green_mask: u32,
+    blue_mask: u32,
+    alpha_mask: u32,
+) -> Result<(), BitmapError> {
+    let is_bgr = red_mask == 0x00FF0000 && green_mask == 0x0000FF00 && blue_mask == 0x000000FF;
+    let is_supported_alpha = alpha_mask == 0 || alpha_mask == 0xFF000000;
+
+    if !is_bgr || !is_supported_alpha {
+        return Err(BitmapError::Unsupported(
+            "non-standard color masks for `BITFIELDS` compression are not supported",
+        ));
+    }
+
+    Ok(())
+}
+
 fn validate_v5_header(header: &BitmapV5Header) -> Result<(), BitmapError> {
     validate_v1_header(&header.v1)?;
 
@@ -479,17 +502,7 @@ fn validate_v5_header(header: &BitmapV5Header) -> Result<(), BitmapError> {
     }
 
     if header.v1.compression == BitmapCompression::BITFIELDS {
-        // Currently, we only support the standard order, BGRA, for the bitfields compression.
-        let is_bgr = header.red_mask == 0x00FF0000 && header.green_mask == 0x0000FF00 && header.blue_mask == 0x000000FF;
-
-        // Note: when there is no alpha channel, the mask is 0x00000000 and we support this too.
-        let is_supported_alpha = header.alpha_mask == 0 || header.alpha_mask == 0xFF000000;
-
-        if !is_bgr || !is_supported_alpha {
-            return Err(BitmapError::Unsupported(
-                "non-standard color masks for `BITFIELDS` compression are not supported",
-            ));
-        }
+        validate_bitfields_masks(header.red_mask, header.green_mask, header.blue_mask, header.alpha_mask)?;
     }
 
     const SUPPORTED_COLOR_SPACE: &[ColorSpace] = &[
@@ -560,15 +573,45 @@ fn bitmap_data<'a>(header: &BitmapInfoHeader, header_size: usize, input: &'a [u8
     input.get(..image_size).ok_or(BitmapError::InvalidSize)
 }
 
-fn decode_dib(input: &[u8]) -> Result<(BitmapInfoHeader, &[u8]), BitmapError> {
+/// Size of the color masks that follow a `BITMAPINFOHEADER` when the compression is `BITFIELDS`.
+/// Unlike `BITMAPV5HEADER`, the V1 layout carries no alpha mask.
+const V1_BITFIELDS_MASKS_SIZE: usize = 4 // red mask (DWORD)
+    + 4 // green mask (DWORD)
+    + 4; // blue mask (DWORD)
+
+/// Size of a `CF_DIB` header part when the compression is `BITFIELDS`: the fixed
+/// `BITMAPINFOHEADER` followed by the color masks.
+const V1_BITFIELDS_HEADER_SIZE: usize = BitmapInfoHeader::FIXED_PART_SIZE + V1_BITFIELDS_MASKS_SIZE;
+
+/// Reads the color masks that follow a `BITFIELDS` `BITMAPINFOHEADER`.
+///
+/// Kept separate so `ensure_size!` can report a proper decode error from a `DecodeResult` context.
+fn read_v1_bitfields_masks(src: &mut ReadCursor<'_>) -> DecodeResult<(u32, u32, u32)> {
+    ensure_size!(in: src, size: V1_BITFIELDS_MASKS_SIZE);
+    Ok((src.read_u32(), src.read_u32(), src.read_u32()))
+}
+
+/// Decodes a `CF_DIB` payload into its header, the size of the header part (which may include
+/// color masks) and the pixel data.
+fn decode_dib(input: &[u8]) -> Result<(BitmapInfoHeader, usize, &[u8]), BitmapError> {
     let mut src = ReadCursor::new(input);
     let header = BitmapInfoHeader::decode(&mut src).map_err(BitmapError::Decode)?;
     validate_v1_header(&header)?;
-    if header.compression != BitmapCompression::RGB {
+
+    let header_size = if header.compression == BitmapCompression::RGB {
+        BitmapInfoHeader::FIXED_PART_SIZE
+    } else if header.compression == BitmapCompression::BITFIELDS {
+        // With the standard masks the pixels are laid out exactly as with `RGB` compression, so
+        // once validated they are decoded the same way. The V1 layout has no alpha mask.
+        let (red_mask, green_mask, blue_mask) = read_v1_bitfields_masks(&mut src).map_err(BitmapError::Decode)?;
+        validate_bitfields_masks(red_mask, green_mask, blue_mask, 0)?;
+        V1_BITFIELDS_HEADER_SIZE
+    } else {
         return Err(BitmapError::Unsupported("unsupported compression"));
-    }
-    let bitmap = bitmap_data(&header, BitmapInfoHeader::FIXED_PART_SIZE, src.remaining())?;
-    Ok((header, bitmap))
+    };
+
+    let bitmap = bitmap_data(&header, header_size, src.remaining())?;
+    Ok((header, header_size, bitmap))
 }
 
 fn decode_dibv5(input: &[u8]) -> Result<(BitmapV5Header, &[u8]), BitmapError> {
@@ -581,10 +624,8 @@ fn decode_dibv5(input: &[u8]) -> Result<(BitmapV5Header, &[u8]), BitmapError> {
 
 /// Validates a `CF_DIB` payload without allocating and returns its logical byte length.
 pub fn validate_dib(input: &[u8]) -> Result<usize, BitmapError> {
-    let (_, bitmap) = decode_dib(input)?;
-    BitmapInfoHeader::FIXED_PART_SIZE
-        .checked_add(bitmap.len())
-        .ok_or(BitmapError::BufferTooBig)
+    let (_, header_size, bitmap) = decode_dib(input)?;
+    header_size.checked_add(bitmap.len()).ok_or(BitmapError::BufferTooBig)
 }
 
 /// Validates a `CF_DIBV5` payload without allocating and returns its logical byte length.
@@ -700,7 +741,7 @@ fn encode_png(ctx: &PngEncoderContext) -> Result<Vec<u8>, BitmapError> {
 
 /// Converts `CF_DIB` to PNG.
 pub fn dib_to_png(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
-    let (header, bitmap) = decode_dib(input)?;
+    let (header, _, bitmap) = decode_dib(input)?;
     let png_ctx = bgra_to_top_down_rgba(&header, bitmap, false)?;
     encode_png(&png_ctx)
 }
