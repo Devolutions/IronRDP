@@ -182,14 +182,18 @@ fn test_decode_garbage_input() {
 // Color Range Tests
 // ============================================================================
 
-/// Encode a YUV420p frame with the given luma/chroma planes and decode it
-/// back through `OpenH264Decoder`, returning the RGBA output.
-fn encode_and_decode_yuv(planes: ([u8; 256], [u8; 64], [u8; 64])) -> ironrdp_egfx::decode::DecodedFrame {
+/// Encode a YUV420p frame with the given luma/chroma planes and dimensions
+/// and decode it back through `OpenH264Decoder`, returning the RGBA output.
+fn encode_and_decode_yuv(
+    planes: (&[u8], &[u8], &[u8]),
+    dimensions: (usize, usize),
+    strides: (usize, usize, usize),
+) -> ironrdp_egfx::decode::DecodedFrame {
     use openh264::encoder::Encoder;
     use openh264::formats::YUVSlices;
 
     let mut encoder = Encoder::new().expect("encoder should initialize");
-    let yuv = YUVSlices::new((&planes.0, &planes.1, &planes.2), (16, 16), (16, 8, 8));
+    let yuv = YUVSlices::new(planes, dimensions, strides);
     let bitstream = encoder.encode(&yuv).expect("encode should succeed").to_vec();
 
     let avc_data = annex_b_to_avc(&bitstream);
@@ -205,7 +209,11 @@ fn test_decode_preserves_full_luma_range() {
     // clamps there, near-black luma is pulled below 0 and clamps there.
     // Values right at 255/0 survive either conversion after clamping, so
     // the discriminating cases sit just inside the extremes.
-    let near_white = encode_and_decode_yuv(([245u8; 256], [128u8; 64], [128u8; 64]));
+    // 16x16 with padded strides: the Y plane stride (24) exceeds its
+    // visible width, exercising the macroblock-alignment handling that
+    // prevents diagonal streaks; chroma stays at half resolution.
+    let (y, u, v) = ([245u8; 16 * 24], [128u8; 8 * 12], [128u8; 8 * 12]);
+    let near_white = encode_and_decode_yuv((&y, &u, &v), (16, 16), (24, 12, 12));
     let data = near_white.data();
     for px in data.chunks_exact(4) {
         // A limited-range conversion clamps this to 255.
@@ -215,12 +223,38 @@ fn test_decode_preserves_full_luma_range() {
         assert_eq!(px[3], 255);
     }
 
-    let near_black = encode_and_decode_yuv(([10u8; 256], [128u8; 64], [128u8; 64]));
+    let (y, u, v) = ([10u8; 16 * 24], [128u8; 8 * 12], [128u8; 8 * 12]);
+    let near_black = encode_and_decode_yuv((&y, &u, &v), (16, 16), (24, 12, 12));
     let data = near_black.data();
     for px in data.chunks_exact(4) {
         // A limited-range conversion clamps this to 0.
         assert!(px[0] > 4, "near-black R channel crushed: {}", px[0]);
         assert!(px[1] > 4, "near-black G channel crushed: {}", px[1]);
         assert!(px[2] > 4, "near-black B channel crushed: {}", px[2]);
+    }
+}
+
+#[test]
+fn test_decode_uses_bt709_chroma_matrix() {
+    // Neutral chroma cannot distinguish BT.601 from BT.709; both matrices
+    // agree on grayscale. Encode a saturated red tile (YUV planes fed
+    // directly, bypassing the encoder's own RGB conversion) and verify the
+    // decoded pixels sit near pure red under the spec's BT.709 inverse
+    // (MS-RDPEGFX 3.3.8.3.1, image14). Under a full-range BT.601 inverse
+    // the same planes decode with R at roughly 231, failing the R bound
+    // (the G bound does not discriminate there: 601's G goes negative and
+    // clamps to 0).
+    //
+    // BT.709 full-range forward on pure red: Y = (54·255) >> 8 = 53,
+    // U = (-29·255) >> 8 + 128 = 99, V = (128·255) >> 8 + 128 = 255.
+    let y = [53u8; 16 * 16];
+    let u = [99u8; 8 * 8];
+    let v = [255u8; 8 * 8];
+    let red = encode_and_decode_yuv((&y, &u, &v), (16, 16), (16, 8, 8));
+    let data = red.data();
+    for px in data.chunks_exact(4) {
+        assert!(px[0] > 245, "red R channel: {}", px[0]);
+        assert!(px[1] < 20, "red G channel leaked: {}", px[1]);
+        assert!(px[2] < 20, "red B channel leaked: {}", px[2]);
     }
 }
