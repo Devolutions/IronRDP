@@ -13,7 +13,7 @@ const { validateCandidateReview } = require("./validate-candidate-review");
 const {
   provenancePrefix, validateFinalReview, validateNormalizedFinalReview,
 } = require("./validate-final-review");
-const { buildSpecialistAggregate, validateSpecialistRun } = require("./review-pipeline");
+const { buildSpecialistAggregate, validateReviewGate, validateSpecialistRun } = require("./review-pipeline");
 const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
 const {
   resolveClassificationState, resolveReviewState, reviewOutcome, reviewPolicyEligible, DUPLICATE_MARKER,
@@ -23,7 +23,7 @@ const {
 const { resolvePr } = require("./resolve-pr");
 const { resolveClassificationGate } = require("./classification-gate");
 const {
-  StaleHeadError, StalePolicyError, applyLabels, escapeMarkdown, markerBody, writeState,
+  StalePolicyError, applyLabels, escapeMarkdown, markerBody, writeState,
 } = require("./write-state");
 const { forkRateLimit } = require("./fork-rate-limit");
 const { reviewSkipReasons } = require("./review-skip-summary");
@@ -43,7 +43,7 @@ const {
   REPORT_VERSION, buildReport, parseReport, stageIds, stageOutcome,
 } = require("./review-report");
 const {
-  MAXIMUM_DELAY_SECONDS, delayedRetryGate, retryGateStep,
+  MAXIMUM_DELAY_SECONDS, StaleHeadError, delayedRetryGate, retryGateStep,
 } = require("./review-retry");
 const {
   TERMINAL_CODE, validateGeneral, validateSpecialist,
@@ -105,6 +105,52 @@ function resolveReviewScript(workflow = readWorkflow()) {
   return match[1].replace(/^ {13}/gm, "");
 }
 
+function reviewGateScript(workflow = readWorkflow()) {
+  const job = workflowJob(workflow, "review-gate");
+  const match = job.match(/script: \|\n((?: {12}.*\n?)+)/);
+  assert.ok(match, "review-gate script is missing");
+  return match[1].replace(/^ {12}/gm, "");
+}
+
+async function runReviewGateScript({
+  force = false, route = "classification-complete", classificationRuns = [], labels = [],
+  author = { type: "User", login: "member", nodeId: "U_1", association: "MEMBER" },
+} = {}) {
+  const outputs = new Map();
+  const failures = [];
+  const core = {
+    setOutput: (name, value) => outputs.set(name, value),
+    setFailed: (message) => failures.push(message),
+    info: () => {},
+    warning: () => {},
+  };
+  const github = {
+    rest: {
+      checks: {
+        listForRef: async () => ({ data: { check_runs: classificationRuns } }),
+      },
+      issues: {
+        get: async () => ({ data: { labels: labels.map((name) => ({ name })) } }),
+      },
+      actions: {
+        listWorkflowRunsForRepo: async () => ({ data: {
+          workflow_runs: [{ name: "CI", conclusion: "success" }],
+        } }),
+      },
+    },
+  };
+  const context = { repo: { owner: "Devolutions", repo: "IronRDP" } };
+  const process = { env: {
+    PULL_REQUEST_NUMBER: "1", HEAD_SHA: SHA, FORCE: String(force),
+    LABELS: JSON.stringify(labels), AUTHOR: JSON.stringify(author), ROUTE: route,
+  } };
+  const rootRequire = createRequire(path.join(__dirname, "..", "..", "labeler.js"));
+  await new AsyncFunction("core", "github", "context", "require", "process", reviewGateScript())(
+    core, github, context, rootRequire, process,
+  );
+  return { gate: JSON.parse(outputs.get("gate")), eligible: outputs.get("eligible"), failures };
+}
+
 async function runResolveReviewScript({ report, pipelineResult = "success" }) {
   const outputs = new Map();
   const summary = [];
@@ -127,6 +173,7 @@ async function runResolveReviewScript({ report, pipelineResult = "success" }) {
     HEAD_SHA: SHA, BASE_SHA: "c".repeat(40),
     GATE: JSON.stringify({
       ok: true, head_sha: SHA, labels: ["risk/low"], classificationCheck: true, ciGreen: true,
+      classificationValid: true,
       protocolRelated: false, risk: "low",
       specialistReviewers: [], contributor: { status: "eligible" },
     }),
@@ -188,6 +235,14 @@ test("automatic review requires exact-head CI and only reruns after a later push
     /ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible/);
   assert.match(workflowJob(workflow, "classification-gate"), /'ai-reviewed\/2'/);
   assert.match(reviewPipeline, /review-gate\.outputs\.eligible == 'true'/);
+  assert.match(reviewPipeline, /needs\.resolve-pr\.outputs\.force == 'true'/);
+  const resolvePrJob = workflowJob(workflow, "resolve-pr");
+  assert.match(resolvePrJob, /"classifier-lane", result\.prNumber \? \(Number\(result\.prNumber\) % 4\) \+ 1 : ""/);
+  assert.match(resolvePrJob, /"reviewer-pipeline-lane", result\.prNumber \? \(Number\(result\.prNumber\) % 7\) \+ 1 : ""/);
+  assert.match(resolvePrJob, /reviewer-pipeline-lane: \$\{\{ steps\.resolve\.outputs\.reviewer-pipeline-lane \}\}/);
+  assert.match(reviewPipeline, /group: llm-reviewer-pipeline-\$\{\{ needs\.resolve-pr\.outputs\.reviewer-pipeline-lane \}\}/);
+  assert.doesNotMatch(reviewPipeline, /fromJSON\(needs\.resolve-pr\.outputs\.pr-number\) %/);
+  assert.doesNotMatch(reviewPipeline, /group: llm-reviewer-pipeline\n/);
   assert.match(reviewGate, /required-reviewers: \$\{\{ steps\.gate\.outputs\.required-reviewers \}\}/);
   assert.match(reviewPipeline, /required-reviewers: \$\{\{ needs\.review-gate\.outputs\.required-reviewers \}\}/);
   assert.match(reviewPipeline, /actions: read/);
@@ -201,6 +256,7 @@ test("automatic review requires exact-head CI and only reruns after a later push
   assert.match(reviewState, /parseReport\(process\.env\.REVIEW_REPORT\)/);
   assert.match(reviewState, /report\.status === "success" \? parse\(process\.env\.RAW_OUTPUT, null\) : null/);
   assert.match(reviewState, /renderReviewReport/);
+  assert.doesNotMatch(reviewState, /specialistReviewers: \["skeptical", "code-compressor"\]/);
   assert.match(reviewState, /REVIEW_GATE_RESULT: \$\{\{ needs\.review-gate\.result \}\}/);
   assert.match(reviewState, /FORK_RATE_LIMIT_RESULT: \$\{\{ needs\.fork-rate-limit\.result \}\}/);
   assert.match(reviewState, /REVIEW_PIPELINE_RESULT: \$\{\{ needs\.review-pipeline\.result \}\}/);
@@ -235,6 +291,49 @@ test("review skip summary lists every failed gate condition", () => {
   ]);
 });
 
+test("manual reviews with no valid classification fail as invocation errors", async () => {
+  for (const force of [false, true]) {
+    const result = await runReviewGateScript({ force, route: "dispatch" });
+    assert.deepEqual(result.gate, {
+      ok: false, force, head_sha: SHA, classificationValid: false,
+      classificationCheck: false, legitimacyStopped: false, ciGreen: false,
+      secondReviewEligible: false, policyEligible: false, labels: [],
+      protocolRelated: false, risk: "unknown", specialistReviewers: [],
+      contributor: { status: force ? "forced" : "unavailable" },
+      reason: "valid classification unavailable",
+    });
+    assert.equal(result.eligible, false);
+    assert.deepEqual(result.failures,
+      ["manual or forced review requires a valid classification for the current head"]);
+  }
+
+  const automatic = await runReviewGateScript();
+  assert.equal(automatic.eligible, false);
+  assert.deepEqual(automatic.failures, []);
+});
+
+test("automatic policy ineligibility remains a non-error gate skip", async () => {
+  const machineState = {
+    protocolRelated: false, risk: "low", specialistReviewers: [],
+    automaticReviewEligible: true,
+  };
+  const result = await runReviewGateScript({
+    labels: ["duplicate"],
+    classificationRuns: [{
+      id: 1, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "success",
+      app: { slug: "github-actions" },
+      output: {
+        title: "Classification complete",
+        summary: `Validated classification.\n\n${encodeCheckState(machineState)}`,
+      },
+    }],
+  });
+  assert.equal(result.gate.ok, false);
+  assert.equal(result.gate.policyEligible, false);
+  assert.equal(result.eligible, false);
+  assert.deepEqual(result.failures, []);
+});
+
 test("review outcome requires validated final output", () => {
   assert.equal(reviewOutcome({
     reportStatus: "success",
@@ -243,6 +342,12 @@ test("review outcome requires validated final output", () => {
   }), "unavailable");
   assert.equal(reviewOutcome({ reportStatus: "success", state: {}, recovered: true }), "recovered");
   assert.equal(reviewOutcome({ reportStatus: "success", state: {}, recovered: false }), "complete");
+  assert.equal(reviewOutcome({
+    reportStatus: "success", state: {}, reducedCoverage: ["code-compressor"],
+  }), "reduced-coverage");
+  assert.equal(reviewOutcome({
+    reportStatus: "success", state: {}, recovered: true, reducedCoverage: ["code-compressor"],
+  }), "recovered-reduced-coverage");
   assert.equal(reviewOutcome({ reportStatus: "failed", state: {}, recovered: true }), "unavailable");
 });
 
@@ -253,7 +358,7 @@ test("resolve review state renders bounded recovery diagnostics in the check and
       metrics: { tokens: null, elapsed_ms: 0, request_retries: null, output_repairs: null },
     },
     {
-      id: "general", status: "success", attempts: 2,
+      id: "general", status: "success", attempts: 2, provider: true,
       previous_reason: "retry declined | malformed <payload>",
       metrics: {
         tokens: { input: 0, output: 4, complete: false },
@@ -282,14 +387,15 @@ test("resolve review state renders bounded recovery diagnostics in the check and
     },
   });
   assert.match(recovered.state.check.summary, /Validated automated review was produced after stage recovery/);
-  assert.match(recovered.state.check.summary, /retry declined \\| malformed &lt;payload&gt;/);
-  assert.match(recovered.state.check.summary, /0\/4\/(?:unknown|unavailable) \\\(partial\\\)/);
+  assert.doesNotMatch(recovered.state.check.summary, /retry declined \\| malformed &lt;payload&gt;/);
+  assert.match(recovered.state.check.summary, /Input tokens/);
+  assert.match(recovered.state.check.summary, /Cumulative elapsed/);
   assert.match(recovered.state.check.summary, /\| 0 \|/);
   assert.match(recovered.state.check.summary, /unavailable/);
   assert.match(recovered.state.check.summary, /View the workflow summary/);
   assert.equal(recovered.state.check.conclusion, "success");
   assert.match(recovered.summary, /retry declined \\| malformed &lt;payload&gt;/);
-  assert.match(recovered.summary, /Per-stage metrics/);
+  assert.match(recovered.summary, /LLM stage metrics/);
 
   const terminal = await runResolveReviewScript({
     report: {
@@ -324,8 +430,8 @@ test("resolve review state renders bounded recovery diagnostics in the check and
       },
     },
   });
-  assert.match(terminal.state.check.summary, /protocol: provider unavailable/);
-  assert.match(terminal.state.check.summary, /retry-declined/);
+  assert.doesNotMatch(terminal.state.check.summary, /provider unavailable/);
+  assert.doesNotMatch(terminal.state.check.summary, /retry-declined/);
   assert.match(terminal.state.check.summary, /unavailable/);
   assert.equal(terminal.state.check.conclusion, "neutral");
 
@@ -342,7 +448,7 @@ test("resolve review state renders bounded recovery diagnostics in the check and
       },
     },
   });
-  assert.match(missing.state.check.summary, /no usable report/);
+  assert.doesNotMatch(missing.state.check.summary, /no usable report/);
   assert.match(missing.state.check.summary, /unavailable/);
 
   const bounded = renderReviewReport({
@@ -368,6 +474,25 @@ test("resolve review state renders bounded recovery diagnostics in the check and
   assert.match(bounded.checkSummary, /9 omitted to bound output/);
   assert.doesNotMatch(bounded.checkSummary, /stage-15-/);
   assert.match(bounded.workflowSummary, /stage-15-/);
+});
+
+test("review gates require classification before forced work starts", () => {
+  const valid = {
+    ok: true, force: true, head_sha: SHA, classificationValid: true,
+    protocolRelated: true, risk: "medium",
+    specialistReviewers: ["protocol", "skeptical"],
+  };
+  assert.equal(validateReviewGate(valid, SHA, valid.specialistReviewers).ok, true);
+  assert.equal(validateReviewGate({ ...valid, classificationValid: false }, SHA).ok, false);
+  assert.equal(validateReviewGate({ ...valid, specialistReviewers: ["skeptical"] }, SHA).ok, false);
+
+  const rejected = resolveReviewState({
+    expectedSha: SHA, labels: [], reviewer: review(), gate: {
+      ...valid, classificationValid: false,
+    }, force: true, reviewMarkerId: "1",
+  });
+  assert.equal(rejected.failed, true);
+  assert.match(rejected.reason, /classification gate unavailable/);
 });
 
 test("review skip summary explains gate and quota failures", () => {
@@ -643,7 +768,10 @@ test("evidence caps are trusted, bounded, and fail closed with guidance", () => 
   assert.match(markerBody(classification.comments[0]), /ai-review\/allow-oversized/);
 
   const reviewFailure = resolveReviewState({
-    expectedSha: SHA, labels: [], gate: { force: true, head_sha: SHA },
+    expectedSha: SHA, labels: [], gate: {
+      ok: true, force: true, head_sha: SHA, classificationValid: true,
+      protocolRelated: false, risk: "unknown", specialistReviewers: ["skeptical"],
+    },
     reviewerReason: "pull request diff exceeds the 4 MiB evidence limit",
     force: true, reviewMarkerId: "1",
   });
@@ -1530,7 +1658,7 @@ test("forced review bypasses eligibility while retaining publication gates", () 
     labels: ["ai-reviewed/2", "duplicate", "size/XXL", "risk/low"],
     reviewer,
     gate: {
-      ok: true, force: true, head_sha: SHA, protocolRelated: false,
+      ok: true, force: true, head_sha: SHA, classificationValid: true, protocolRelated: false,
       risk: "unknown", specialistReviewers: ["skeptical"],
     },
     contributor: { status: "ineligible" },
@@ -1963,6 +2091,7 @@ test("classification dispatch remains edge-triggered except for explicit retries
       },
       reviewRequested,
     });
+
     return { creates, updates, dispatches };
   };
 
@@ -1979,6 +2108,100 @@ test("classification dispatch remains edge-triggered except for explicit retries
   assert.deepEqual(await writeClassification({ dispatchReview: false, reviewRequested: true }), {
     creates: 1, updates: 0, dispatches: 0,
   });
+});
+
+test("writer retries a truncated current-head read before dispatching once", async () => {
+  let reads = 0;
+  let checkWrites = 0;
+  let dispatches = 0;
+  const machineState = {
+    protocolRelated: false, risk: "low", specialistReviewers: [],
+    automaticReviewEligible: true,
+  };
+  const state = {
+    ok: true, mode: "classification", expectedSha: SHA, labelSets: [], addLabels: [],
+    comments: [], removeCommentMarkers: [], dispatchReview: true,
+    check: {
+      name: "AI classification", externalId: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+      title: "Classification complete", summary: "Validated classification.", machineState,
+    },
+  };
+  const github = {
+    paginate: { iterator: async function* () { yield { data: [] }; } },
+    rest: {
+      checks: { listForRef: () => {}, create: async () => { checkWrites += 1; } },
+      pulls: { get: async () => {
+        reads += 1;
+        if (reads === 3) {
+          const error = new Error("Unexpected end of JSON input");
+          error.status = 500;
+          throw error;
+        }
+        return { data: { state: "open", head: { sha: SHA } } };
+      } },
+      issues: { get: async () => ({ data: { labels: [] } }) },
+      repos: { createDispatchEvent: async () => { dispatches += 1; } },
+    },
+  };
+  await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
+    state,
+  });
+  assert.equal(reads, 4);
+  assert.equal(checkWrites, 1);
+  assert.equal(dispatches, 1);
+
+  const failedDispatch = async (errorAtRead) => {
+    let failedReads = 0;
+    let failedCheckWrites = 0;
+    let failedDispatches = 0;
+    const github = {
+      paginate: { iterator: async function* () { yield { data: [] }; } },
+      rest: {
+        checks: { listForRef: () => {}, create: async () => { failedCheckWrites += 1; } },
+        pulls: { get: async () => {
+          failedReads += 1;
+          if (failedReads > 2) {
+            const result = errorAtRead(failedReads);
+            if (result instanceof Error) throw result;
+            return { data: { state: "open", head: { sha: result } } };
+          }
+          return { data: { state: "open", head: { sha: SHA } } };
+        } },
+        issues: { get: async () => ({ data: { labels: [] } }) },
+        repos: { createDispatchEvent: async () => { failedDispatches += 1; } },
+      },
+    };
+    await assert.rejects(writeState({
+      github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
+      state,
+    }));
+    return { failedReads, failedCheckWrites, failedDispatches };
+  };
+
+  const terminal = await failedDispatch(() => {
+    const error = new Error("internal server error");
+    error.status = 500;
+    return error;
+  });
+  assert.deepEqual(terminal, { failedReads: 3, failedCheckWrites: 1, failedDispatches: 0 });
+
+  const staleRetry = await failedDispatch((read) => {
+    if (read === 3) {
+      const error = new Error("Unexpected end of JSON input");
+      error.status = 500;
+      return error;
+    }
+    return OTHER_SHA;
+  });
+  assert.deepEqual(staleRetry, { failedReads: 4, failedCheckWrites: 1, failedDispatches: 0 });
+
+  const exhausted = await failedDispatch(() => {
+    const error = new Error("Unexpected end of JSON input");
+    error.status = 500;
+    return error;
+  });
+  assert.deepEqual(exhausted, { failedReads: 4, failedCheckWrites: 1, failedDispatches: 0 });
 });
 
 test("writer does not dispatch a completed classification after the head changes", async () => {
@@ -2224,6 +2447,63 @@ test("writer publishes a green main comment when no findings remain", async () =
 
   assert.deepEqual(published.comments, []);
   assert.match(published.body, /:green_circle: No findings identified\./);
+});
+
+test("writer adds deterministic reduced-coverage notices without filtering findings", async () => {
+  let published;
+  const github = {
+    paginate: { iterator: async function* () { yield { data: [] }; } },
+    rest: {
+      pulls: {
+        listReviews: () => {},
+        get: async () => ({ data: { state: "open", head: { sha: SHA } } }),
+        createReview: async (payload) => { published = payload; },
+      },
+      issues: { get: async () => ({ data: { labels: [] } }) },
+    },
+  };
+  await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
+    state: {
+      ok: true, mode: "review", expectedSha: SHA, labelSets: [], addLabels: [],
+      expectedReviewCount: null, forced: false, protocolRelated: false,
+      comments: [{
+        kind: "review", marker: `<!-- ironrdp-pr-automation:review:${SHA} -->`,
+        reducedCoverage: ["protocol"],
+        review: review({ findings: [finding({ confidence: 0.01 })] }),
+      }],
+    },
+  });
+  assert.match(published.body, /Reduced coverage: optional reviewer protocol was unavailable/);
+  assert.equal(published.comments.length, 1);
+});
+
+test("review checks name reduced coverage without publishing failure reasons", () => {
+  const report = buildReport([
+    { id: "evidence", status: "success", required: true },
+    { id: "specialist:code-compressor", status: "failed", provider: true,
+      reason: "provider timeout with internal details", category: "provider-timeout" },
+    { id: "aggregate", status: "success", required: true },
+    { id: "general", status: "success", required: true, provider: true },
+    { id: "validate", status: "success", required: true },
+  ]);
+  const rendered = renderReviewReport({
+    report, outcome: "recovered-reduced-coverage", reducedCoverage: ["code-compressor"],
+    summaryUrl: "https://github.example/actions/runs/123",
+  });
+  assert.equal(rendered.checkSummary.split("\n\n")[0],
+    "Validated automated review was produced after stage recovery with reduced coverage: " +
+    "optional reviewer code-compressor was unavailable.");
+  assert.match(rendered.checkSummary, /code-compressor/);
+  assert.doesNotMatch(rendered.checkSummary, /provider timeout with internal details/);
+  assert.match(rendered.workflowSummary, /provider timeout with internal details/);
+  const multiple = renderReviewReport({
+    report, outcome: "reduced-coverage", reducedCoverage: ["skeptical", "code-compressor"],
+    summaryUrl: "https://github.example/actions/runs/123",
+  });
+  assert.equal(multiple.checkSummary.split("\n\n")[0],
+    "Validated automated review is bound to this commit with reduced coverage: " +
+    "optional reviewers skeptical, code-compressor were unavailable.");
 });
 
 function paginated(pages) {
@@ -2888,6 +3168,11 @@ test("a retry re-decides review eligibility against the pull request as it is af
   // stage sleeps must not buy a second provider request.
   assert.deepEqual(await gate({ classificationTitle: "Automation stopped" }),
     { retry: false, reason: "classification no longer authorizes an automatic review" });
+  assert.deepEqual(await gate({ classificationTitle: "Automation stopped" }, { force: true }),
+    { retry: true, reason: "" });
+  const reviewGate = workflowJob(readWorkflow(path.join(__dirname, "..")), "review-gate");
+  assert.match(reviewGate, /const classificationValid = classificationOwned && protocolState !== null;/);
+  assert.match(reviewGate, /const classificationCheck = classificationValid &&\s+classification\.output\?\.title === "Classification complete"/);
 
   // A stale classification bound to an older head cannot authorize this one.
   assert.equal((await gate({ classificationHeadSha: OTHER_SHA })).retry, false);
@@ -2924,7 +3209,7 @@ test("the caller's force bypasses review policy, and nothing that makes a review
 
   for (const state of [
     { draft: true }, { labels: ["triage/legitimacy"] }, { ciConclusion: "failure" },
-    { classificationConclusion: "failure" }, { alreadyReviewed: true }, { authorType: "Bot" },
+    { alreadyReviewed: true }, { authorType: "Bot" },
   ]) {
     assert.equal((await gate(state)).retry, true, JSON.stringify(state));
   }
@@ -3053,6 +3338,25 @@ test("a provider stage that never reported usage keeps the totals honest", () =>
     { id: "general", status: "failed", required: true, reason: "provider unavailable",
       provider: providerWasCalled(parseDiagnostics("")), metrics: parseDiagnostics("") },
   ]).metrics.tokens_complete, false);
+
+  const metrics = buildReport([
+    { id: "evidence", status: "success", required: true, attempts: 2, metrics: {
+      tokens: { input: 100, output: 20, total: 120, complete: true },
+      elapsed_ms: 1000, request_retries: 3, output_repairs: 2,
+    } },
+    { id: "general", status: "success", required: true, provider: true, metrics: {
+      tokens: { input: 10, output: 2, total: 12, complete: true },
+      elapsed_ms: 100, request_retries: 1, output_repairs: 0,
+    } },
+  ]).metrics;
+  assert.deepEqual(metrics, {
+    tokens: { input: 10, output: 2, total: 12 },
+    tokens_complete: true,
+    elapsed_ms: 100,
+    request_retries: 1,
+    output_repairs: 0,
+    stage_retries: 0,
+  });
 });
 
 test("the caller reads exactly what the pipeline wrote, and never reads garbage as success", () => {
@@ -3317,6 +3621,9 @@ test("the mandatory reviewer set is resolved once and read everywhere else", () 
 
   // One interpretation, taken before any provider work, so an unusable plan fails closed early.
   assert.match(evidence, /resolveRequiredReviewers/, "evidence must resolve the required set");
+  const plan = evidence.slice(evidence.indexOf("- id: plan"), evidence.indexOf("Fetch bounded review"));
+  assert.match(plan, /HEAD_SHA: \$\{\{ inputs\.head-sha \}\}/,
+    "the plan must validate the gate against the reusable workflow's reviewed head");
   assert.match(evidence, /if \(!resolved\.ok\) \{/);
   assert.match(evidence, /throw new Error\(resolved\.reason\)/);
   assert.ok(evidence.indexOf("id: plan") < evidence.indexOf("Fetch bounded review"),
@@ -3372,8 +3679,12 @@ async function runFirstStepScript(jobName, env) {
 
 test("the review plan keeps the gate fallback for a caller that sends no required list", async () => {
   const base = {
+    HEAD_SHA: SHA,
     SELECTED_REVIEWERS: JSON.stringify(REVIEWABLE_REVIEWERS),
-    GATE: JSON.stringify({ protocolRelated: true, risk: "medium" }),
+    GATE: JSON.stringify({
+      ok: true, head_sha: SHA, classificationValid: true, classificationCheck: true,
+      protocolRelated: true, risk: "medium", specialistReviewers: REVIEWABLE_REVIEWERS,
+    }),
   };
   const planned = async (env) => JSON.parse(
     (await runFirstStepScript("evidence", env)).outputs["required-reviewers"],
@@ -3413,7 +3724,7 @@ test("the review plan keeps the gate fallback for a caller that sends no require
   }).then(() => null, (error) => error);
   assert.ok(noncanonical !== null, "a noncanonical plan must fail the job");
   assert.match(String(noncanonical.stepOutputs["failure-reason"]),
-    /invalid specialist execution plan/);
+    /reviewers differ from the classification route/);
 
   const evidence = workflowJob(readReviewWorkflow().slice(readReviewWorkflow().indexOf("\njobs:")),
     "evidence");

@@ -2,6 +2,8 @@
 
 `.github/workflows/labeler.yml` classifies ready, open pull requests and calls `.github/workflows/review-pipeline.yml` for at most two automated reviews.
 Automatic routes stop at `ai-reviewed/2` unless a maintainer uses force mode.
+Manual `workflow_dispatch` requests and forced reviews require a successful GitHub Actions-owned `AI classification` check for the current head with valid machine state.
+They fail visibly before any reviewer starts when that prerequisite is missing, stale, or invalid; automatic CI and classification-complete races instead skip normally.
 Model analysis fails closed when the reviewable pull request diff exceeds the applicable evidence limit.
 The trusted `evidence-diff-attributes` policy represents reproducibly verified generated artifacts with binary-change markers.
 The automation posts guidance on the pull request instead of invoking a model with partial evidence.
@@ -24,7 +26,7 @@ The pipeline performs these stages:
 9. Resolve validated state and publish through the serialized writer.
 
 `.github/workflows/review-pipeline.yml` is reusable and `workflow_call` is its only trigger.
-The caller owns the global concurrency lock, the reviewer selection, and publication.
+The caller owns the concurrency lane, reviewer selection, and publication.
 The pipeline owns evidence, specialists, aggregation, the general review, validation, and stage recovery.
 
 `required-reviewers` names the specialists that must succeed, and the caller is authoritative.
@@ -198,8 +200,8 @@ Duplicates at confidence 0.85 or greater, legitimacy triage, and `ai-reviewed/2`
 Unavailable or invalid classification fails closed to maintainer review.
 
 Bot-authored pull requests do not run automatic routes or label reconciliation.
-Force mode can override policy gates for an open pull request at its current head.
-Force mode never bypasses evidence retrieval, output validation, filesystem restrictions, protocol citation validation, or stale-head checks.
+Force mode can override policy gates for an open pull request at its current head after a trusted, valid classification for that exact head selects its reviewers.
+Force mode never bypasses classification validity, evidence retrieval, output validation, filesystem restrictions, protocol citation validation, or stale-head checks.
 
 ## Size and fork limits
 
@@ -230,15 +232,18 @@ Attempt-scoped workflow artifacts carry evidence and validated results between r
 Only the final writer mutates pull request state, and it serializes those mutations per pull request.
 Model-execution jobs have read-only or empty permissions.
 
-Two static classifier concurrency lanes allow at most two classifier jobs to invoke Helmcode at once.
-The reusable `.github/workflows/review-pipeline.yml` runs under one global caller-job lock and allows at most three specialist requests at once.
-The general reviewer starts only after all specialists finish, so these limits keep Helmcode usage within the five-request API-key limit.
+Four static classifier lanes allow at most four classifier jobs to invoke Helmcode at once.
+Seven static caller-job lanes lock each reusable review pipeline from evidence through its result.
+Each pipeline allows at most three specialist requests at once, for at most 25 model requests across the classifier and reviewer lanes.
+The general reviewer starts only after all specialists finish.
 
 Inline comments target only validated added lines.
 Other findings appear in the review body.
 All model prose is escaped to neutralize Markdown, HTML, mentions, issue references, and links.
 
 Specialist failures are recorded explicitly.
+An optional specialist failure completes the review with reduced coverage and names the unavailable reviewer in the review and check.
+Detailed failure reasons appear only in the workflow summary.
 Every failed stage is reported, not only the first one.
 A mandatory specialist failure, invalid aggregate, invalid final review, exhausted limit, provider failure, or unavailable evidence fails closed to `maintainer-required`.
 Stale heads stop publication without mutation.

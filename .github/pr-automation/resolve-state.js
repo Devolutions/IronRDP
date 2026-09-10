@@ -2,7 +2,8 @@
 
 const { SCHEMA_VERSION: CLASSIFIER_SCHEMA_VERSION, validateClassifier } = require("./validate-classifier");
 const { validateNormalizedFinalReview } = require("./validate-final-review");
-const { resolveReviewerRoute, reviewPolicyEligible, validateReviewerRoute } = require("./routing");
+const { resolveReviewerRoute, reviewPolicyEligible } = require("./routing");
+const { validateReviewGate } = require("./review-pipeline");
 
 const RISK = ["risk/low", "risk/medium", "risk/high", "risk/unknown"];
 const AI_COUNTS = ["ai-reviewed/1", "ai-reviewed/2"];
@@ -253,7 +254,7 @@ async function contributorEligibility({ github, owner, repo, author, currentPrNu
 
 function resolveReviewState({
   expectedSha, labels, reviewer, gate, contributor,
-  rateLimit, reviewerReason, force, reviewMarkerId,
+  rateLimit, reviewerReason, force, reviewMarkerId, reducedCoverage,
 } = {}) {
   const existing = labelsOf(labels);
   const forced = force === true;
@@ -283,6 +284,8 @@ function resolveReviewState({
   if (typeof expectedSha !== "string") return { ok: false, reason: "missing expected SHA" };
   if (forced) {
     if (gate?.force !== true || gate.head_sha !== expectedSha) return fail("forced review gate unavailable");
+    const classification = validateReviewGate(gate, expectedSha);
+    if (!classification.ok) return fail(classification.reason);
     if (typeof reviewMarkerId !== "string" || !/^[1-9]\d{0,19}$/.test(reviewMarkerId)) {
       return fail("forced review marker unavailable");
     }
@@ -293,13 +296,9 @@ function resolveReviewState({
       const reason = gate?.reason ? `review gate unavailable: ${gate.reason}` : "review gate unavailable";
       return fail(reason);
     }
+    const classification = validateReviewGate({ ...gate, ok: true }, expectedSha);
+    if (!classification.ok) return fail(classification.reason);
     if (gate.classificationCheck !== true || gate.ciGreen !== true) return fail("review gate unavailable");
-    const route = validateReviewerRoute({
-      reviewers: gate.specialistReviewers,
-      protocolRelated: gate.protocolRelated,
-      risk: gate.risk,
-    });
-    if (!route.ok) return fail("reviewer route unavailable");
     if (contributor?.status === "ineligible") {
       const reason = Number.isSafeInteger(contributor.merged)
         ? `contributor history ineligible (merged: ${contributor.merged}, required: ${ELIGIBLE_MERGED_PRS})`
@@ -340,7 +339,10 @@ function resolveReviewState({
     ok: true, mode: "review", expectedSha, labelSets: [{ owned: AI_COUNTS, desired: [nextCount] }],
     addLabels: nextCount === "ai-reviewed/2" || !hasFindings ? ["maintainer-required"] : [],
     removeLabels: nextCount === "ai-reviewed/1" && hasFindings ? ["maintainer-required"] : [],
-    comments: [{ kind: "review", marker: reviewMarker, review: reviewerResult.value }],
+    comments: [{
+      kind: "review", marker: reviewMarker, review: reviewerResult.value,
+      reducedCoverage: Array.isArray(reducedCoverage) ? reducedCoverage : [],
+    }],
     removeCommentMarkers: [
       EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER,
       CONTRIBUTOR_INELIGIBLE_MARKER,
@@ -352,8 +354,11 @@ function resolveReviewState({
   };
 }
 
-function reviewOutcome({ reportStatus, state, recovered = false } = {}) {
+function reviewOutcome({ reportStatus, state, recovered = false, reducedCoverage = [] } = {}) {
   if (reportStatus !== "success" || state?.failed === true) return "unavailable";
+  if (Array.isArray(reducedCoverage) && reducedCoverage.length > 0) {
+    return recovered ? "recovered-reduced-coverage" : "reduced-coverage";
+  }
   return recovered ? "recovered" : "complete";
 }
 

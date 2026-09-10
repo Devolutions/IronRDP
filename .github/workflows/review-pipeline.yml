@@ -29,7 +29,7 @@ on:
         type: string
         default: ""
       gate:
-        description: Validated review gate state, required for a forced review and whenever required-reviewers is absent
+        description: Validated exact-head classification and review gate state
         required: false
         type: string
         default: ""
@@ -74,7 +74,6 @@ jobs:
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
-          echo "EVIDENCE_STARTED_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
           export GIT_CONFIG_NOSYSTEM=1
           export GIT_CONFIG_GLOBAL=/dev/null
           git init .
@@ -96,19 +95,23 @@ jobs:
         name: Resolve the mandatory reviewer set
         uses: actions/github-script@v8
         env:
+          HEAD_SHA: ${{ inputs.head-sha }}
           SELECTED_REVIEWERS: ${{ inputs.specialist-reviewers }}
           REQUIRED_REVIEWERS: ${{ inputs.required-reviewers }}
           GATE: ${{ inputs.gate }}
         with:
           script: |
             const {
-              resolveRequiredReviewers,
+              resolveRequiredReviewers, validateReviewGate,
             } = require("./.github/pr-automation/review-pipeline");
             const resolved = (() => {
               try {
                 const gate = process.env.GATE ? JSON.parse(process.env.GATE) : {};
+                const selectedReviewers = JSON.parse(process.env.SELECTED_REVIEWERS);
+                const validatedGate = validateReviewGate(gate, process.env.HEAD_SHA, selectedReviewers);
+                if (!validatedGate.ok) return validatedGate;
                 return resolveRequiredReviewers({
-                  selectedReviewers: JSON.parse(process.env.SELECTED_REVIEWERS),
+                  selectedReviewers,
                   requiredReviewers: process.env.REQUIRED_REVIEWERS
                     ? JSON.parse(process.env.REQUIRED_REVIEWERS)
                     : undefined,
@@ -243,7 +246,6 @@ jobs:
           script: |
             const { stageOutcome } = require("./.github/pr-automation/review-report");
             const ok = process.env.EVIDENCE_STATUS === "success";
-            const started = Number(process.env.EVIDENCE_STARTED_MS);
             const reason = ok
               ? ""
               : process.env.PLAN_REASON || process.env.EVIDENCE_REASON ||
@@ -255,9 +257,6 @@ jobs:
               required: true,
               reason,
               category: ok ? "" : "evidence-unavailable",
-              metrics: {
-                elapsed_ms: Number.isFinite(started) ? Date.now() - started : null,
-              },
             })));
 
   specialists:

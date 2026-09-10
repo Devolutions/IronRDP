@@ -3,7 +3,7 @@
 const { normalizeCandidateReview } = require("./validate-candidate-review");
 const { validateProtocolReferences } = require("./validate-protocol-review");
 const {
-  REVIEWER_ORDER: SPECIALIST_ORDER, normalizeReviewerIds, resolveReviewerRoute,
+  REVIEWER_ORDER: SPECIALIST_ORDER, normalizeReviewerIds, resolveReviewerRoute, validateReviewerRoute,
 } = require("./routing");
 const { SHA, exactKeys, invalid, normalizeText } = require("./validation");
 const { normalizeStageMetrics } = require("./review-report");
@@ -83,6 +83,30 @@ function resolveRequiredReviewers({
     return invalid("required reviewer was not selected");
   }
   return { ok: true, reviewers: route.reviewers, source: "gate" };
+}
+
+function validateReviewGate(gate, expectedSha, selectedReviewers) {
+  const classificationValid = gate?.classificationValid ??
+    (gate?.force !== true && gate?.classificationCheck === true);
+  if (!gate || typeof gate !== "object" || gate.head_sha !== expectedSha ||
+      gate.ok !== true || classificationValid !== true) {
+    return invalid("valid classification gate unavailable");
+  }
+  if (gate.force !== true && gate.classificationCheck !== true) {
+    return invalid("classification no longer authorizes an automatic review");
+  }
+  const route = validateReviewerRoute({
+    reviewers: gate.specialistReviewers,
+    protocolRelated: gate.protocolRelated,
+    risk: gate.risk,
+  });
+  if (!route.ok) return invalid("invalid classification reviewer route");
+  if (selectedReviewers !== undefined &&
+      (route.reviewers.length !== selectedReviewers.length ||
+       route.reviewers.some((reviewer, index) => reviewer !== selectedReviewers[index]))) {
+    return invalid("reviewers differ from the classification route");
+  }
+  return { ok: true, reviewers: route.reviewers };
 }
 
 function buildSpecialistAggregate({
@@ -219,4 +243,5 @@ module.exports = {
   SPECIALIST_ORDER,
   buildSpecialistAggregate, failedRun, isRetryableFailure, mergeDiagnostics, parseDiagnostics,
   plannedRequiredReviewers, providerWasCalled, resolveRequiredReviewers, validateSpecialistRun,
+  validateReviewGate,
 };
