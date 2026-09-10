@@ -102,9 +102,13 @@ test("workflow run names show the target pull request when known and identify th
   const workflow = readWorkflow();
 
   assert.match(workflow, /github\.event\.pull_request\.number.*format\('PR #\{0\}'/);
+  assert.match(workflow, /github\.event\.inputs\['pr-number'\]\s*&&\s*format\('PR #\{0\}'/);
+  assert.match(workflow, /github\.event\.client_payload\.pr_number\s*&&\s*format\('PR #\{0\}'/);
   assert.match(workflow, /github\.event\.workflow_run\.pull_requests\[0\]\.number.*format\('PR #\{0\}'/);
   assert.match(workflow, /github\.event\.workflow_run\.head_branch.*github\.event\.workflow_run\.head_sha/);
-  assert.doesNotMatch(workflow, /github\.run_id.*PR #\$\{\{.*github\.run_id/);
+  assert.match(workflow, /format\('run \{0\}',\s*github\.run_id\)/);
+  assert.doesNotMatch(workflow, /format\('PR #\{0\}',\s*github\.run_id\)/);
+  assert.doesNotMatch(workflow, /PR #\$\{\{.*github\.run_id.*\}\}/);
 });
 
 function resolveReviewScript(workflow = readWorkflow()) {
