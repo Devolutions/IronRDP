@@ -319,10 +319,10 @@ function resolveReviewState({
         : "contributor history unavailable";
       return fail(reason);
     }
-    if (gate.ciGreen !== true) return fail("CI has not succeeded", false, null, "remove");
     if (existing.has("ai-reviewed/1") && gate.secondReviewEligible !== true) {
       return fail("second review is not eligible", false, null, "preserve");
     }
+    if (gate.ciGreen !== true) return fail("CI has not succeeded", false, null, "remove");
     if (!gate.ok) return fail("review gate unavailable");
   }
   const reviewerResult = validateNormalizedFinalReview(reviewer, expectedSha);

@@ -1786,13 +1786,18 @@ test("review blockers distinguish gate and contributor history failures", () => 
   assert.deepEqual(ciPending.addLabels, []);
   assert.deepEqual(ciPending.removeLabels, ["maintainer-required"]);
 
-  const secondReview = resolveReviewState({
-    ...args, labels: ["ai-reviewed/1", "risk/high"],
-    gate: { ...args.gate, ok: false, secondReviewEligible: false },
-  });
-  assert.equal(secondReview.reason, "second review is not eligible");
-  assert.deepEqual(secondReview.addLabels, []);
-  assert.deepEqual(secondReview.removeLabels, []);
+  for (const labels of [
+    ["ai-reviewed/1", "risk/high"],
+    ["ai-reviewed/1", "risk/high", "maintainer-required"],
+  ]) {
+    const secondReview = resolveReviewState({
+      ...args, labels,
+      gate: { ...args.gate, ok: false, ciGreen: false, secondReviewEligible: false },
+    });
+    assert.equal(secondReview.reason, "second review is not eligible");
+    assert.deepEqual(secondReview.addLabels, []);
+    assert.deepEqual(secondReview.removeLabels, []);
+  }
 
   const policy = resolveReviewState({
     ...args, labels: ["risk/low", "duplicate"],
