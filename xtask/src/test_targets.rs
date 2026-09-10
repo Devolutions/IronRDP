@@ -28,7 +28,8 @@ fn validate(metadata: &str) -> anyhow::Result<()> {
             .context("Cargo metadata is missing `packages`")?,
         "`packages`",
     )?;
-    let mut unauthorized = Vec::new();
+    let mut violations = Vec::new();
+    let mut found = [false; ALLOWED_TEST_TARGETS.len()];
 
     for package in packages {
         let package = json_object(package, "Cargo metadata package")?;
@@ -67,7 +68,11 @@ fn validate(metadata: &str) -> anyhow::Result<()> {
                 target.get("name").context("Cargo metadata target is missing `name`")?,
                 "Cargo metadata target name",
             )?;
-            if ALLOWED_TEST_TARGETS.contains(&(package_name, target_name)) {
+            if let Some(index) = ALLOWED_TEST_TARGETS
+                .iter()
+                .position(|allowed| *allowed == (package_name, target_name))
+            {
+                found[index] = true;
                 continue;
             }
 
@@ -77,17 +82,20 @@ fn validate(metadata: &str) -> anyhow::Result<()> {
                     .context("Cargo metadata target is missing `src_path`")?,
                 "Cargo metadata target source path",
             )?;
-            unauthorized.push((package_name, target_name, source_path));
+            violations.push(format!(
+                "- package: `{package_name}`, target: `{target_name}`, source: `{source_path}`"
+            ));
         }
     }
 
-    if !unauthorized.is_empty() {
-        let targets = unauthorized
-            .into_iter()
-            .map(|(package, target, source)| format!("- package: `{package}`, target: `{target}`, source: `{source}`"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        anyhow::bail!("unauthorized Cargo test target(s):\n{targets}");
+    for (&(package, target), found) in ALLOWED_TEST_TARGETS.iter().zip(found) {
+        if !found {
+            violations.push(format!("- missing package: `{package}`, target: `{target}`"));
+        }
+    }
+
+    if !violations.is_empty() {
+        anyhow::bail!("invalid Cargo test target configuration:\n{}", violations.join("\n"));
     }
 
     Ok(())
@@ -195,5 +203,25 @@ mod tests {
         assert!(error.contains("package: `ironrdp-example`"));
         assert!(error.contains("target: `auto_discovered`"));
         assert!(error.contains("source: `crates/ironrdp-example/tests/auto_discovered.rs`"));
+    }
+
+    #[test]
+    fn requires_centralized_test_targets() {
+        let metadata = r#"{
+            "packages": [
+                {
+                    "name": "ironrdp-testsuite-core",
+                    "targets": []
+                },
+                {
+                    "name": "ironrdp-testsuite-extra",
+                    "targets": []
+                }
+            ]
+        }"#;
+
+        let error = validate(metadata).unwrap_err().to_string();
+        assert!(error.contains("missing package: `ironrdp-testsuite-core`, target: `integration_tests_core`"));
+        assert!(error.contains("missing package: `ironrdp-testsuite-extra`, target: `integration_tests_extra`"));
     }
 }
