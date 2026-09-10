@@ -705,6 +705,7 @@ mod tests {
             }),
             correlation_id: None,
             syn_data_ex: None,
+            data: None,
         }
     }
 
@@ -758,6 +759,7 @@ mod tests {
             syn_data: None,
             correlation_id: None,
             syn_data_ex: None,
+            data: None,
         };
         let encoded = ironrdp_core::encode_vec(&datagram).expect("encode");
         let natural_len = encoded.len();

@@ -26,6 +26,7 @@ fn v1_syn_datagram_roundtrip() {
             udp_ver: UdpVersion::V2,
             cookie_hash: None,
         }),
+        data: None,
     };
 
     // header(8) + syndata(8) + syndataex(4) = 20 bytes
@@ -62,6 +63,7 @@ fn v1_syn_ack_datagram_roundtrip() {
             udp_ver: UdpVersion::V2,
             cookie_hash: None,
         }),
+        data: None,
     };
 
     // header(8) + syndata(8) + syndataex(4) = 20.
@@ -162,6 +164,7 @@ fn v1_encode_rejects_ack_vector_on_a_syn() {
         }),
         correlation_id: None,
         syn_data_ex: None,
+        data: None,
     };
 
     encode_vec(&datagram).expect_err("a SYN datagram cannot carry an ACK vector");
@@ -196,6 +199,7 @@ fn v1_encode_rejects_cookie_hash_without_a_client_syn() {
             udp_ver: UdpVersion::V3,
             cookie_hash: Some([0xAA; 32]),
         }),
+        data: None,
     };
 
     encode_vec(&datagram).expect_err("cookieHash is only carried on a client-to-server SYN");
@@ -228,6 +232,7 @@ fn v1_encode_rejects_a_v3_client_syn_missing_its_cookie_hash() {
             udp_ver: UdpVersion::V3,
             cookie_hash: None,
         }),
+        data: None,
     };
 
     encode_vec(&datagram).expect_err("a version 3 client SYN must carry a cookieHash");
@@ -258,6 +263,7 @@ fn v1_ack_datagram_roundtrip() {
         syn_data: None,
         correlation_id: None,
         syn_data_ex: None,
+        data: None,
     };
 
     // header(8) + ack_vector(2+2=4) + ack_of_acks(4) = 16
@@ -294,6 +300,7 @@ fn v1_syn_with_correlation_id_roundtrip() {
             udp_ver: UdpVersion::V2,
             cookie_hash: None,
         }),
+        data: None,
     };
 
     // header(8) + syndata(8) + correlation(16 id + 16 reserved = 32) + syndataex(4) = 52.
@@ -327,6 +334,7 @@ fn v1_syn_v3_with_cookie_roundtrip() {
             udp_ver: UdpVersion::V3,
             cookie_hash: Some([0xAA; 32]),
         }),
+        data: None,
     };
 
     // header(8) + syndata(8) + syndataex(4+32=36) = 52
@@ -362,6 +370,7 @@ fn v1_syn_ack_v3_does_not_read_padding_as_cookie_hash() {
             udp_ver: UdpVersion::V3,
             cookie_hash: None,
         }),
+        data: None,
     };
 
     let mut encoded = encode_vec(&datagram).expect("encode");
@@ -394,6 +403,7 @@ fn v1_flags_auto_computed_on_encode() {
         correlation_id: None,
         // syn_data_ex is None, so SYNEX should NOT be in flags
         syn_data_ex: None,
+        data: None,
     };
 
     let encoded = encode_vec(&datagram).expect("encode");
@@ -425,6 +435,7 @@ fn v1_ack_flag_preserved_on_a_syn() {
         }),
         correlation_id: None,
         syn_data_ex: None,
+        data: None,
     };
 
     let encoded = encode_vec(&datagram).expect("encode");
@@ -452,6 +463,7 @@ fn v1_ack_flag_absent_on_a_bare_syn() {
         }),
         correlation_id: None,
         syn_data_ex: None,
+        data: None,
     };
 
     let encoded = encode_vec(&datagram).expect("encode");
@@ -479,6 +491,7 @@ fn v1_standalone_flags_preserved() {
         syn_data: None,
         correlation_id: None,
         syn_data_ex: None,
+        data: None,
     };
 
     let encoded = encode_vec(&datagram).expect("encode");
@@ -503,6 +516,7 @@ fn v1_decode_rejects_data_flag() {
         syn_data: None,
         correlation_id: None,
         syn_data_ex: None,
+        data: None,
     };
     let mut encoded = encode_vec(&datagram).expect("encode");
 
@@ -533,6 +547,7 @@ fn v1_decode_rejects_fec_flag() {
         syn_data: None,
         correlation_id: None,
         syn_data_ex: None,
+        data: None,
     };
     let mut encoded = encode_vec(&datagram).expect("encode");
 
@@ -560,6 +575,7 @@ fn v1_empty_datagram_roundtrip() {
         syn_data: None,
         correlation_id: None,
         syn_data_ex: None,
+        data: None,
     };
 
     assert_eq!(datagram.size(), 8); // header only
