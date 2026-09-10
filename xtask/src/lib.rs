@@ -5,3 +5,4 @@
 )]
 
 pub mod bench;
+pub mod capture;

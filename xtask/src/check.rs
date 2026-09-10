@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+use xtask::capture;
+
 use crate::prelude::*;
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
@@ -132,16 +134,18 @@ pub fn dependencies(sh: &Shell) -> anyhow::Result<()> {
 pub fn capture_files(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("CAPTURE-FILES");
 
-    let tracked_files = cmd!(sh, "git ls-files").read()?;
-    let captures = tracked_files
-        .lines()
-        .filter(|path| path.ends_with(".pcap") || path.ends_with(".pcapng"))
-        .collect::<Vec<_>>();
+    let tracked_files = cmd!(sh, "git ls-files -z").output()?;
+    let captures = capture::paths_from_ls_files(&tracked_files.stdout);
 
     if !captures.is_empty() {
+        let captures = captures
+            .iter()
+            .map(|path| String::from_utf8_lossy(path))
+            .collect::<Vec<_>>()
+            .join("\n");
         anyhow::bail!(
             "packet captures must not be tracked; cache them under ignored dependencies instead:\n{}",
-            captures.join("\n")
+            captures
         );
     }
 
