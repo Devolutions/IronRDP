@@ -16,7 +16,8 @@ use ironrdp::pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu
 use ironrdp::pdu::geometry::InclusiveRectangle;
 use ironrdp::pdu::rdp::ClientInfoPdu;
 use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
-use ironrdp::pdu::rdp::server_license::{ClientNewLicenseRequest, LicensePdu, PreambleType};
+use ironrdp::pdu::rdp::headers::BASIC_SECURITY_HEADER_SIZE;
+use ironrdp::pdu::rdp::server_license::{ClientNewLicenseRequest, LicensePdu, PREAMBLE_SIZE, PreambleType};
 use ironrdp::pdu::x224::{X224, X224Data};
 use ironrdp::pdu::{Action, find_size, gcc, mcs, nego};
 use ironrdp::session::image::DecodedImage;
@@ -28,6 +29,11 @@ use sha2::{Digest as _, Sha256};
 use crate::replay::{PartialReplayId, PartialReplayWorkload};
 
 const MAX_CONNECTOR_STEPS: usize = 128;
+const LICENSE_HEADER_SIZE: usize = BASIC_SECURITY_HEADER_SIZE /* Basic Security Header */ + PREAMBLE_SIZE /* License Preamble */;
+const CLIENT_NEW_LICENSE_REQUEST_RANDOM_OFFSET: usize =
+    LICENSE_HEADER_SIZE + 4 /* PreferredKeyExchangeAlg */ + 4 /* PlatformId */;
+const CLIENT_NEW_LICENSE_REQUEST_RANDOM_SIZE: usize = 32;
+const LICENSE_BLOB_HEADER_SIZE: usize = 2 /* blobType */ + 2 /* length */;
 
 const NO_NLA_ACCEPTED_CONTRACT: ConnectorReplayContract = ConnectorReplayContract {
     connector_steps: 26,
@@ -773,7 +779,7 @@ fn update_send_data_fingerprint(
                 "connector replay produced an unexpected licensing PDU".to_owned(),
             ));
         };
-        return update_client_new_license_request_fingerprint(&request, output_fingerprint);
+        return update_client_new_license_request_fingerprint(user_data, &request, output_fingerprint);
     }
 
     output_fingerprint.update(b"SessionData");
@@ -794,6 +800,7 @@ fn assert_client_info_is_normalized(client_info: &ClientInfoPdu) -> ConnectorRep
 }
 
 fn update_client_new_license_request_fingerprint(
+    user_data: &[u8],
     request: &ClientNewLicenseRequest,
     output_fingerprint: &mut Sha256,
 ) -> ConnectorReplayResult<()> {
@@ -805,18 +812,43 @@ fn update_client_new_license_request_fingerprint(
             "connector replay licensing output was not NEW_LICENSE_REQUEST".to_owned(),
         ));
     }
+    let [client_random, encrypted_premaster_secret] = client_new_license_request_secret_ranges(user_data)?;
     output_fingerprint.update(b"ClientNewLicenseRequest");
-    output_fingerprint.update(b"NewLicenseRequest");
-    output_fingerprint.update(request.license_header.security_header.flags.bits().to_le_bytes());
-    output_fingerprint.update(format!("{:?}", request.license_header.preamble_flags).as_bytes());
-    output_fingerprint.update(format!("{:?}", request.license_header.preamble_version).as_bytes());
-    output_fingerprint.update(request.license_header.preamble_message_size.to_le_bytes());
-    output_fingerprint.update(request.client_username.as_bytes());
-    output_fingerprint.update(request.client_machine_name.as_bytes());
-    let encrypted_premaster_secret_len = u64::try_from(request.encrypted_premaster_secret.len())
-        .map_err(|_| ConnectorReplayError::new("encrypted premaster secret length exceeds u64".to_owned()))?;
-    output_fingerprint.update(encrypted_premaster_secret_len.to_le_bytes());
+    output_fingerprint.update(&user_data[..client_random.start]);
+    output_fingerprint.update(b"ClientRandom");
+    output_fingerprint.update(&user_data[client_random.end..encrypted_premaster_secret.start]);
+    output_fingerprint.update(b"EncryptedPreMasterSecret");
+    output_fingerprint.update(&user_data[encrypted_premaster_secret.end..]);
     Ok(())
+}
+
+fn client_new_license_request_secret_ranges(user_data: &[u8]) -> ConnectorReplayResult<[std::ops::Range<usize>; 2]> {
+    let client_random = CLIENT_NEW_LICENSE_REQUEST_RANDOM_OFFSET
+        ..CLIENT_NEW_LICENSE_REQUEST_RANDOM_OFFSET
+            .checked_add(CLIENT_NEW_LICENSE_REQUEST_RANDOM_SIZE)
+            .ok_or_else(|| ConnectorReplayError::new("client random range overflows".to_owned()))?;
+    let encrypted_premaster_secret_header = client_random.end;
+    let encrypted_premaster_secret_length = encrypted_premaster_secret_header
+        .checked_add(2 /* blobType */)
+        .and_then(|offset| user_data.get(offset..offset.checked_add(2 /* length */)?))
+        .ok_or_else(|| ConnectorReplayError::new("truncated encrypted premaster secret header".to_owned()))?;
+    let encrypted_premaster_secret_length = usize::from(u16::from_le_bytes(
+        encrypted_premaster_secret_length
+            .try_into()
+            .map_err(|_| ConnectorReplayError::new("invalid encrypted premaster secret length".to_owned()))?,
+    ));
+    let encrypted_premaster_secret_start = encrypted_premaster_secret_header
+        .checked_add(LICENSE_BLOB_HEADER_SIZE)
+        .ok_or_else(|| ConnectorReplayError::new("encrypted premaster secret range overflows".to_owned()))?;
+    let encrypted_premaster_secret = encrypted_premaster_secret_start
+        ..encrypted_premaster_secret_start
+            .checked_add(encrypted_premaster_secret_length)
+            .filter(|&end| end <= user_data.len())
+            .ok_or_else(|| ConnectorReplayError::new("truncated encrypted premaster secret".to_owned()))?;
+    if client_random.end > user_data.len() {
+        return Err(ConnectorReplayError::new("truncated client random".to_owned()));
+    }
+    Ok([client_random, encrypted_premaster_secret])
 }
 
 fn complete_frame_info(frame: &[u8], description: &str) -> ConnectorReplayResult<ironrdp::pdu::PduInfo> {
@@ -960,33 +992,46 @@ mod tests {
 
     #[test]
     fn semantic_fingerprint_rejects_same_length_difference() {
-        let mut first = Sha256::new();
-        let mut second = Sha256::new();
-        let first_request = client_new_license_request("first");
-        let second_request = client_new_license_request("other");
-        update_client_new_license_request_fingerprint(&first_request, &mut first)
-            .expect("first test request must hash");
-        update_client_new_license_request_fingerprint(&second_request, &mut second)
-            .expect("second test request must hash");
-        assert_ne!(first.finalize(), second.finalize());
+        assert_ne!(
+            license_fingerprint(&encoded_client_new_license_request("first")),
+            license_fingerprint(&encoded_client_new_license_request("other"))
+        );
+    }
+
+    #[test]
+    fn semantic_fingerprint_rejects_platform_id_change() {
+        let first = encoded_client_new_license_request("first");
+        let mut second = first.clone();
+        second[LICENSE_HEADER_SIZE + 4 /* PreferredKeyExchangeAlg */..CLIENT_NEW_LICENSE_REQUEST_RANDOM_OFFSET]
+            .copy_from_slice(&0x0402_1234_u32.to_le_bytes());
+        assert_ne!(license_fingerprint(&first), license_fingerprint(&second));
     }
 
     #[test]
     fn semantic_fingerprint_ignores_only_license_secrets() {
-        let first = client_new_license_request("first");
-        let mut second = client_new_license_request("first");
-        second.client_random = vec![2; 32];
-        second.encrypted_premaster_secret = vec![3; 64];
-        let mut first_hash = Sha256::new();
-        let mut second_hash = Sha256::new();
-        update_client_new_license_request_fingerprint(&first, &mut first_hash).expect("first test request must hash");
-        update_client_new_license_request_fingerprint(&second, &mut second_hash)
-            .expect("second test request must hash");
-        assert_eq!(first_hash.finalize(), second_hash.finalize());
+        let first = encoded_client_new_license_request("first");
+        let mut second = first.clone();
+        for secret_range in
+            client_new_license_request_secret_ranges(&second).expect("test request must contain both licensing secrets")
+        {
+            second[secret_range].fill(2);
+        }
+        assert_eq!(license_fingerprint(&first), license_fingerprint(&second));
     }
 
-    fn client_new_license_request(client_username: &str) -> ClientNewLicenseRequest {
-        ClientNewLicenseRequest {
+    fn license_fingerprint(user_data: &[u8]) -> [u8; 32] {
+        let license = decode::<LicensePdu>(user_data).expect("test request must decode");
+        let LicensePdu::ClientNewLicenseRequest(request) = license else {
+            panic!("test request must be a Client New License Request");
+        };
+        let mut fingerprint = Sha256::new();
+        update_client_new_license_request_fingerprint(user_data, &request, &mut fingerprint)
+            .expect("test request must fingerprint");
+        fingerprint.finalize().into()
+    }
+
+    fn encoded_client_new_license_request(client_username: &str) -> Vec<u8> {
+        let request = ClientNewLicenseRequest {
             license_header: ironrdp::pdu::rdp::server_license::LicenseHeader {
                 security_header: BasicSecurityHeader {
                     flags: BasicSecurityHeaderFlags::LICENSE_PKT,
@@ -1000,6 +1045,7 @@ mod tests {
             encrypted_premaster_secret: vec![1; 64],
             client_username: client_username.to_owned(),
             client_machine_name: "machine".to_owned(),
-        }
+        };
+        encode_vec(&LicensePdu::from(request)).expect("test request must encode")
     }
 }
