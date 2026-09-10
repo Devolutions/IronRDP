@@ -9,6 +9,29 @@ use tracing::{debug, trace, warn};
 use crate::CHANNEL_NAME;
 use crate::pdu::{DataPdu, FormatChangePdu, FormatsPdu, OpenPdu, OpenReplyPdu, RdpeaiPdu, Version, VersionPdu};
 
+pub trait RdpeaiError: core::error::Error + Send + Sync + 'static {}
+
+impl<T> RdpeaiError for T where T: core::error::Error + Send + Sync + 'static {}
+
+/// Message sent by the embedding application's event loop to drive [`RdpeaiServer`] from
+/// outside the DVC message-processing path — e.g. once a consumer decides it wants to start
+/// recording, or wants to switch formats mid-session.
+#[derive(Debug)]
+pub enum RdpeaiServerMessage {
+    /// Request the client start recording. See [`RdpeaiServer::open`].
+    Open {
+        frames_per_packet: u32,
+        initial_format: u32,
+        capture_format: AudioFormat,
+    },
+    /// Request the client switch to a different negotiated format. See
+    /// [`RdpeaiServer::change_format`].
+    ChangeFormat { new_format: u32 },
+    /// Failure received from the embedding application's own capture/consumer pipeline.
+    /// Implementations should log/display this error.
+    Error(Box<dyn RdpeaiError>),
+}
+
 /// Handler for the server side of the Audio Input Redirection Virtual Channel (`AUDIO_INPUT`).
 ///
 /// Implementations supply the list of audio formats the server offers and receive the

@@ -35,11 +35,13 @@ use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, Se
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
 use ironrdp_rdpdr as rdpdr;
+use ironrdp_rdpeai as rdpeai;
 use ironrdp_rdpsnd as rdpsnd;
 use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor, server_encode_svc_messages};
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
 use rand::RngCore as _;
 use rdpdr::server::{RdpdrServer, RdpdrServerMessage};
+use rdpeai::server::{RdpeaiServer, RdpeaiServerMessage};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use tokio::net::{TcpSocket, TcpStream};
@@ -58,6 +60,7 @@ use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResu
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
 use crate::heartbeat::HeartbeatConfig;
+use crate::rdpeai::RdpeaiServerFactory;
 use crate::rdpei::RdpeiServerFactory;
 #[cfg(feature = "usb")]
 use crate::urbdrc::{
@@ -670,6 +673,7 @@ pub struct RdpServer {
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
     rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
+    rdpeai_factory: Option<Box<dyn RdpeaiServerFactory>>,
     echo_handle: EchoServerHandle,
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
@@ -838,6 +842,7 @@ pub enum ServerEvent {
     Clipboard(ClipboardMessage),
     Rdpsnd(RdpsndServerMessage),
     Rdpdr(RdpdrServerMessage),
+    Rdpeai(RdpeaiServerMessage),
     Echo(EchoServerMessage),
     SetCredentials(Credentials),
     /// Replace or clear the Server Auto-Reconnect Cookie.
@@ -869,6 +874,7 @@ impl fmt::Debug for ServerEvent {
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
             Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
             Self::Rdpdr(..) => f.write_str("Rdpdr(..)"),
+            Self::Rdpeai(..) => f.write_str("Rdpeai(..)"),
             Self::Echo(..) => f.write_str("Echo(..)"),
             Self::SetCredentials(..) => f.write_str("SetCredentials(..)"),
             Self::SetAutoReconnectCookie(Some(..)) => f.write_str("SetAutoReconnectCookie(Some(..))"),
@@ -1347,6 +1353,11 @@ impl RdpServer {
         clippy::too_many_arguments,
         reason = "called via the builder; positional parameters are an internal detail"
     )]
+    #[expect(
+        clippy::similar_names,
+        reason = "rdpei (MS-RDPEI touch/pen) and rdpeai (MS-RDPEAI audio input) are distinct protocols \
+                  whose names happen to be textually close; renaming either would be less accurate"
+    )]
     pub(crate) fn new(
         opts: RdpServerOptions,
         handler: Box<dyn RdpServerInputHandler>,
@@ -1356,6 +1367,7 @@ impl RdpServer {
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
         mut rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
         mut rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
+        mut rdpeai_factory: Option<Box<dyn RdpeaiServerFactory>>,
         connection_handler: Option<Box<dyn ConnectionHandler>>,
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
         display_suppressed: Option<Arc<AtomicBool>>,
@@ -1377,6 +1389,9 @@ impl RdpServer {
         if let Some(rdpdr) = rdpdr_factory.as_mut() {
             rdpdr.set_sender(ev_sender.clone());
         }
+        if let Some(rdpeai) = rdpeai_factory.as_mut() {
+            rdpeai.set_sender(ev_sender.clone());
+        }
         #[cfg(feature = "egfx")]
         if let Some(gfx) = gfx_factory.as_mut() {
             gfx.set_sender(ev_sender.clone());
@@ -1392,6 +1407,7 @@ impl RdpServer {
             cliprdr_factory,
             rdpei_factory,
             rdpdr_factory,
+            rdpeai_factory,
             echo_handle: EchoServerHandle::new(ev_sender.clone()),
             #[cfg(feature = "egfx")]
             gfx_factory,
@@ -1849,6 +1865,13 @@ impl RdpServer {
 
         let dvc = if let Some(factory) = self.rdpei_factory.as_deref() {
             dvc.with_dynamic_channel(factory.build_server())
+        } else {
+            dvc
+        };
+
+        let dvc = if let Some(factory) = self.rdpeai_factory.as_deref() {
+            let backend = factory.build_backend();
+            dvc.with_dynamic_channel(RdpeaiServer::new(backend))
         } else {
             dvc
         };
@@ -2871,6 +2894,52 @@ impl RdpServer {
                         .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
                     let data =
                         server_encode_svc_messages(msgs, channel_id, user_channel_id).map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| ServerError::io("write_all", e))?;
+                }
+                ServerEvent::Rdpeai(msg) => {
+                    let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>() else {
+                        warn!("No drdynvc channel, dropping AUDIO_INPUT event");
+                        continue;
+                    };
+                    let Some(channel_id) = drdynvc.get_channel_id_by_type::<RdpeaiServer>() else {
+                        warn!("No AUDIO_INPUT dynamic channel, dropping event");
+                        continue;
+                    };
+                    if !drdynvc.is_channel_opened(channel_id) {
+                        warn!("AUDIO_INPUT dynamic channel not yet opened, dropping event");
+                        continue;
+                    }
+                    let Some(mut rdpeai) = drdynvc.dvc_by_id_mut::<RdpeaiServer>(channel_id) else {
+                        warn!("AUDIO_INPUT channel not found by id, dropping event");
+                        continue;
+                    };
+                    let msgs = match msg {
+                        RdpeaiServerMessage::Open {
+                            frames_per_packet,
+                            initial_format,
+                            capture_format,
+                        } => rdpeai
+                            .processor_mut()
+                            .open(frames_per_packet, initial_format, capture_format),
+                        RdpeaiServerMessage::ChangeFormat { new_format } => {
+                            rdpeai.processor_mut().change_format(new_format)
+                        }
+                        RdpeaiServerMessage::Error(error) => {
+                            error!(?error, "Handling AUDIO_INPUT event");
+                            continue;
+                        }
+                    }
+                    .map_err_kind("failed to send AUDIO_INPUT event", ServerErrorKind::Pdu)?;
+                    let dvc_messages = dvc::encode_dvc_messages(channel_id, msgs, ChannelFlags::empty())
+                        .map_err(ServerError::encode)?;
+                    let drdynvc_channel_id = self
+                        .get_channel_id_by_type::<dvc::DrdynvcServer>()
+                        .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
+                    let data = server_encode_svc_messages(dvc_messages, drdynvc_channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
                     writer
                         .write_all(&data)
                         .await

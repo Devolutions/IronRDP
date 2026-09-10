@@ -3313,6 +3313,7 @@ dependencies = [
  "ironrdp-nscodec",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
+ "ironrdp-rdpeai",
  "ironrdp-rdpei",
  "ironrdp-rdpeusb",
  "ironrdp-rdpsnd",
