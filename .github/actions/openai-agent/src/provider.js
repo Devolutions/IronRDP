@@ -131,15 +131,15 @@ class RuntimeMetrics {
   }
 }
 
+// The alphabet is entirely ASCII, so what survives it measures the same in characters as in bytes and
+// the budget can be applied by slicing.
 function sanitizeReason(reason) {
-  const text = String(reason ?? "")
+  return String(reason ?? "")
     .replace(UNSAFE_REASON_CHARACTER, " ")
     .replace(/ +/g, " ")
-    .trim();
-  return Buffer.byteLength(text, "utf8") <= MAX_OUTPUT_REJECTION_REASON_BYTES
-    ? text
-    : Buffer.from(text, "utf8").subarray(0, MAX_OUTPUT_REJECTION_REASON_BYTES)
-      .toString("utf8").replace(/\uFFFD+$/, "").trim();
+    .trim()
+    .slice(0, MAX_OUTPUT_REJECTION_REASON_BYTES)
+    .trimEnd();
 }
 
 function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis.fetch, sleep = delay) {
