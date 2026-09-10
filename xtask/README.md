@@ -64,13 +64,19 @@ Each timed replay creates fresh session state and validates lifecycle, routing c
 The preflight verifies the full output fingerprint, while the standalone command performs that strict verification in its single replay execution.
 
 ```PowerShell
-cargo bench -p ironrdp-bench --bench capture_replay -- 'partial-replay/no-nla-accepted/processing' --exact
-cargo bench -p ironrdp-bench --bench capture_replay -- 'partial-replay/no-nla-smartcard/processing' --exact
+cargo xtask bench capture-replay --capture no-nla-accepted
+cargo xtask bench capture-replay --capture no-nla-smartcard
 cargo build --release -p ironrdp-bench --bin capture-replay-bench --locked
 hyperfine --warmup 1 '.\target\release\capture-replay-bench.exe --capture no-nla-accepted'
 ```
 
-An unmatched Criterion filter is not a benchmark result.
+`cargo xtask bench capture-replay --capture <id>` validates the manifest eligibility and exact Criterion identity before Cargo runs.
+Use direct Criterion filtering only as a lower-level local command:
+
+```PowerShell
+cargo bench -p ironrdp-bench --bench capture_replay -- 'partial-replay/no-nla-accepted/processing' --exact
+```
+
 Use only `no-nla-accepted` and `no-nla-smartcard`; both are active partial replays with eight declared static-channel gaps.
 Use `cargo xtask bench replay` to regression-test the complete pinned corpus, not to produce a single-capture timing score.
 

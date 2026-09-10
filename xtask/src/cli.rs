@@ -12,6 +12,8 @@ TASKS:
   bootstrap               Install all requirements for development
   bench corpus-fetch      Fetch and verify the pinned benchmark capture corpus
   bench corpus-list       List pinned benchmark capture corpus metadata
+  bench capture-replay --capture <ID>
+                          Run one manifest-qualified capture replay Criterion workload
   bench replay [--capture <ID>]
                           Replay verified cached benchmark captures
   check fmt               Check formatting
@@ -92,6 +94,9 @@ pub enum Action {
     Bootstrap,
     BenchCorpusFetch,
     BenchCorpusList,
+    BenchCaptureReplay {
+        capture: String,
+    },
     BenchReplay {
         capture: Option<String>,
     },
@@ -161,6 +166,9 @@ pub fn parse_args() -> anyhow::Result<Args> {
             Some("bench") => match args.subcommand()?.as_deref() {
                 Some("corpus-fetch") => Action::BenchCorpusFetch,
                 Some("corpus-list") => Action::BenchCorpusList,
+                Some("capture-replay") => Action::BenchCaptureReplay {
+                    capture: args.value_from_str("--capture")?,
+                },
                 Some("replay") => Action::BenchReplay {
                     capture: args.opt_value_from_str("--capture")?,
                 },

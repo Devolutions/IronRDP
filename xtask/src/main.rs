@@ -64,6 +64,7 @@ fn main() -> anyhow::Result<()> {
         }
         Action::BenchCorpusFetch => bench::corpus_fetch(&sh)?,
         Action::BenchCorpusList => bench::corpus_list()?,
+        Action::BenchCaptureReplay { capture } => bench::capture_replay_benchmark(&capture)?,
         Action::BenchReplay { capture } => bench::corpus_replay(capture.as_deref())?,
         Action::CheckFmt => check::fmt(&sh)?,
         Action::CheckLints => check::lints(&sh)?,
