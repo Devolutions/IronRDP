@@ -1,8 +1,11 @@
 #![allow(clippy::print_stdout)]
 #![allow(clippy::print_stderr)]
 #![allow(unreachable_pub)]
+#![allow(unused_crate_dependencies, reason = "the library target owns corpus dependencies")]
 
 mod macros;
+
+use xtask::bench;
 
 mod bin_install;
 mod bin_version;
@@ -59,10 +62,13 @@ fn main() -> anyhow::Result<()> {
                 list_files(&sh, local_bin())?;
             }
         }
+        Action::BenchCorpusFetch => bench::corpus_fetch()?,
+        Action::BenchCorpusList => bench::corpus_list()?,
         Action::CheckFmt => check::fmt(&sh)?,
         Action::CheckLints => check::lints(&sh)?,
         Action::CheckLocks => check::lock_files(&sh)?,
         Action::CheckDependencies => check::dependencies(&sh)?,
+        Action::CheckCaptures => check::capture_files(&sh)?,
         Action::CheckTestSettings { base, head } => check::test_settings(&sh, &base, &head)?,
         Action::CheckTests { no_run } => {
             if no_run {
