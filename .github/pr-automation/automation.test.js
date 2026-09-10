@@ -551,7 +551,6 @@ test("classification gate reuses completed state but forces oversized retries", 
     available: true, required: true, reason: "",
     externalId: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
     completed: true,
-    largerEvidence: true,
   });
   assert.equal(reads, 2);
 

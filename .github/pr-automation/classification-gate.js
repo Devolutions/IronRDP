@@ -25,7 +25,6 @@ async function resolveClassificationGate({
       reason: "",
       externalId,
       completed,
-      ...(retryWithLargerEvidence ? { largerEvidence: true } : {}),
     };
   } catch (error) {
     return {
