@@ -822,7 +822,7 @@ fn update_client_new_license_request_fingerprint(
     Ok(())
 }
 
-fn client_new_license_request_secret_ranges(user_data: &[u8]) -> ConnectorReplayResult<[std::ops::Range<usize>; 2]> {
+fn client_new_license_request_secret_ranges(user_data: &[u8]) -> ConnectorReplayResult<[core::ops::Range<usize>; 2]> {
     let client_random = CLIENT_NEW_LICENSE_REQUEST_RANDOM_OFFSET
         ..CLIENT_NEW_LICENSE_REQUEST_RANDOM_OFFSET
             .checked_add(CLIENT_NEW_LICENSE_REQUEST_RANDOM_SIZE)
@@ -1003,7 +1003,7 @@ mod tests {
         let first = encoded_client_new_license_request("first");
         let mut second = first.clone();
         second[LICENSE_HEADER_SIZE + 4 /* PreferredKeyExchangeAlg */..CLIENT_NEW_LICENSE_REQUEST_RANDOM_OFFSET]
-            .copy_from_slice(&0x0402_1234_u32.to_le_bytes());
+            .copy_from_slice(&0x0402_1234u32.to_le_bytes());
         assert_ne!(license_fingerprint(&first), license_fingerprint(&second));
     }
 
