@@ -212,7 +212,15 @@ async function runAgent({
   }
 
   async function runModel(messages) {
-    const reservedFinalTurns = Math.min(config.max_turns, 1 + config.max_output_repair_attempts);
+    // A semantic rejection lets a repair spend one tool-enabled call on evidence before it
+    // answers, so an attempt costs two provider calls wherever that is possible and one otherwise.
+    // Reserving one per attempt left the last attempts unreachable behind the turn ceiling,
+    // failing the stage on an opaque limit instead of what the model kept getting wrong.
+    const toolAssistedRepair = validator !== null && config.max_tool_calls > 0;
+    const reservedFinalTurns = Math.min(
+      config.max_turns,
+      1 + config.max_output_repair_attempts * (toolAssistedRepair ? 2 : 1),
+    );
     while (state.providerCalls < config.max_turns - reservedFinalTurns &&
         state.toolCalls < config.max_tool_calls) {
       const response = await completion(messages, true, "investigating");
@@ -282,8 +290,11 @@ async function runAgent({
       // produced under the configured response format rather than by a tool-enabled request that
       // carries none. A repair that answers immediately still answers unconstrained, and is accepted
       // only because the schema and the validator accept it, which is what decides every result.
+      // The evidence call only pays off when the answer after it also fits, which an undersized
+      // turn ceiling cannot always afford.
       let toolsPermitted = candidate.kind === "validator" &&
-        state.toolCalls < config.max_tool_calls;
+        state.toolCalls < config.max_tool_calls &&
+        state.providerCalls + 2 <= config.max_turns;
       messages.push({
         role: "user",
         content: [
