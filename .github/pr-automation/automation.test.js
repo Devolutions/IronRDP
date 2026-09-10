@@ -98,11 +98,13 @@ function readReviewWorkflow(githubDirectory = path.join(__dirname, "..")) {
     .replace(/\r\n/g, "\n");
 }
 
-test("workflow run names show the target pull request", () => {
+test("workflow run names show the target pull request when known and identify the source branch otherwise", () => {
   const workflow = readWorkflow();
 
-  assert.match(workflow, /run-name: "PR #\$\{\{ .*github\.event\.pull_request\.number.*\}\}"/);
-  assert.match(workflow, /github\.event\.workflow_run\.pull_requests\[0\]\.number/);
+  assert.match(workflow, /github\.event\.pull_request\.number.*format\('PR #\{0\}'/);
+  assert.match(workflow, /github\.event\.workflow_run\.pull_requests\[0\]\.number.*format\('PR #\{0\}'/);
+  assert.match(workflow, /github\.event\.workflow_run\.head_branch.*github\.event\.workflow_run\.head_sha/);
+  assert.doesNotMatch(workflow, /github\.run_id.*PR #\$\{\{.*github\.run_id/);
 });
 
 function resolveReviewScript(workflow = readWorkflow()) {
