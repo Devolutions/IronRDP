@@ -532,9 +532,6 @@ impl ReplayRouter {
         };
         if route == ReplayRoute::StaticChannel {
             self.observe_dvc_lifecycle(message, report);
-            if !self.is_drdynvc_message(message) {
-                return Ok((route, false));
-            }
         }
         if route == ReplayRoute::OtherServerMessage {
             return Ok((route, false));
@@ -670,12 +667,6 @@ impl ReplayRouter {
                 });
             }
         }
-    }
-
-    fn is_drdynvc_message(&self, message: &CapturedPdu) -> bool {
-        mcs::decode_send_data_indication(&message.bytes)
-            .ok()
-            .is_some_and(|context| Some(context.channel_id) == self.drdynvc_channel_id)
     }
 
     fn drain_egfx_output<E>(

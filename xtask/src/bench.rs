@@ -731,6 +731,7 @@ expect = {{ outcome = "rejected", stage = "negotiate", reason = "missing-rdp-sta
         fs::remove_dir_all(directory).expect("remove test directory");
     }
 
+    #[test]
     fn rejects_missing_replay_cache_entry() {
         let capture = parse_corpus(&corpus_toml("accepted-rdp.pcapng"))
             .expect("valid manifest")
@@ -742,7 +743,6 @@ expect = {{ outcome = "rejected", stage = "negotiate", reason = "missing-rdp-sta
 
         assert!(error.to_string().contains("open capture"));
     }
-    #[test]
     #[test]
     fn invalid_download_does_not_install_cache_entry() {
         let directory = test_directory();
