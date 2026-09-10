@@ -306,6 +306,7 @@ fn is_lower_hex(value: &str, expected_length: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+// TODO: move these implementation-detail tests to `xtask/tests` once the command surface is integration-testable.
 #[cfg(test)]
 mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
