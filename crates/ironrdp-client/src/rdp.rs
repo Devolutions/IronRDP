@@ -2242,6 +2242,9 @@ async fn connect_iroh(
         .await
         .map_err(|e| ironrdp_connector::custom_err!("iroh handshake write", e))?;
 
+    #[cfg(feature = "vmconnect")]
+    let pcb_deadline = tokio::time::Instant::now() + ironrdp_vmconnect::PCB_TRANSMIT_DEADLINE;
+
     // The iroh tunnel has no traditional socket address; use a dummy loopback address for
     // Client Info, same as the named-pipe transport.
     let client_addr = SocketAddr::from(([127, 0, 0, 1], 0));
@@ -2260,6 +2263,16 @@ async fn connect_iroh(
         false,
         auto_reconnect_cookie,
     )?;
+    #[cfg(feature = "vmconnect")]
+    if config.vm_id().is_some() {
+        return Box::pin(vmconnect_handshake_and_finalize(
+            framed,
+            connector,
+            config,
+            pcb_deadline,
+        ))
+        .await;
+    }
 
     Box::pin(security_upgrade_and_finalize(framed, connector, config, None)).await
 }
