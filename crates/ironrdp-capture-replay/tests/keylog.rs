@@ -381,3 +381,19 @@ fn reports_invalid_key_log_file() {
     std::fs::remove_file(capture_path).expect("remove synthetic capture");
     std::fs::remove_file(key_log_path).expect("remove synthetic key log");
 }
+
+#[test]
+fn summary_mode_rejects_missing_capture_input() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ironrdp-capture-replay"))
+        .args(["--summary", "missing-capture.pcapng"])
+        .output()
+        .expect("run replay binary");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).starts_with("replay export failed: failed to read capture"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+}

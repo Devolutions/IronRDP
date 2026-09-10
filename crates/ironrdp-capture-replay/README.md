@@ -20,7 +20,8 @@ cargo run -p ironrdp-capture-replay --bin ironrdp-capture-replay -- --summary ca
 ```
 
 The summary reports only stable routing counters, framebuffer dimensions, an optional output fingerprint, and categorized gaps.
-`prepare_capture` separates capture ingestion, decryption, and negotiation recovery from `PreparedReplay::replay`, which starts with fresh session state on every execution.
+Pass `--gaps` to print at most 16 payload-free gap locations and reason codes.
+`read_capture` performs capture ingestion, while `prepare_capture` separates decryption and negotiation recovery from `PreparedReplay::replay`, which starts with fresh session state on every execution.
 Framebuffers are observed by reference during headless replay, so summaries do not allocate snapshots unless an output consumer explicitly does so.
 
 ## Exporting frames

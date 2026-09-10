@@ -7,70 +7,70 @@ id = "clipboard-various-formats"
 file = "rdp-clipboard-various-formats1.pcapng"
 sha256 = "537058172eade338c4bdadf4fdbdd80c839a8370c643c7a51ea2b976b7778d73"
 intent = "Clipboard redirection with text, images, rich text, and file copy formats."
-expect = { outcome = "partial", summary = { client_pdus = 341, server_pdus = 12427, connection_pdus = 12427, client_observation_pdus = 341, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 1940736, truncated_pdu_gaps = 12768, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 12768, unsupported_gaps = 0 } }
+expect = { outcome = "partial", summary = { client_pdus = 341, server_pdus = 12427, connection_pdus = 12427, client_observation_pdus = 341, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", lifecycle = "never-activated", framing_gaps = 152, truncated_pdu_gaps = 1, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 1, unsupported_gaps = 0, gap_fingerprint = "9356ccd8046a07ee5041ca577dff2ad1a0950eae0e7b3c8dff7001754d1bcae4" } }
 
 [[capture]]
 id = "credential-guard-accepted"
 file = "rdp-credential-guard-accepted1.pcapng"
 sha256 = "3196565f3b31d3c13ebb595fca662a96c1d2e9c21e29902a5eb190c0e05005c4"
 intent = "RDP with NLA and Remote Credential Guard accepted by the server."
-expect = { outcome = "partial", summary = { client_pdus = 98, server_pdus = 202, connection_pdus = 202, client_observation_pdus = 98, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 60300, truncated_pdu_gaps = 300, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 300, unsupported_gaps = 0 } }
+expect = { outcome = "partial", summary = { client_pdus = 98, server_pdus = 202, connection_pdus = 202, client_observation_pdus = 98, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", lifecycle = "never-activated", framing_gaps = 201, truncated_pdu_gaps = 1, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 1, unsupported_gaps = 0, gap_fingerprint = "009356054d8c678e4df400e41f9205a57488af08a37f77a76ade0406586519d4" } }
 
 [[capture]]
 id = "credential-guard-rejected"
 file = "rdp-credential-guard-rejected1.pcapng"
 sha256 = "80552836675c68bddc15b2a2cc9782c51a6a467039108bc75d1a76172766f975"
 intent = "RDP with NLA and Remote Credential Guard rejected by the server."
-expect = { outcome = "partial", summary = { client_pdus = 55, server_pdus = 71, connection_pdus = 71, client_observation_pdus = 55, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 12726, truncated_pdu_gaps = 252, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 126, unsupported_gaps = 0 } }
+expect = { outcome = "partial", summary = { client_pdus = 55, server_pdus = 71, connection_pdus = 71, client_observation_pdus = 55, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", lifecycle = "never-activated", framing_gaps = 101, truncated_pdu_gaps = 2, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 1, unsupported_gaps = 0, gap_fingerprint = "054153597b81deeaa40efcd918ede674cfaea5ec0956f9d89f7348311870c69f" } }
 
 [[capture]]
 id = "nla-kerberos-password-1"
 file = "rdp-nla-kerberos-auth1.pcapng"
 sha256 = "2d6cb5c030acd849d6104a7c640a2769a7351168465d098cc64b7d098b16c03f"
 intent = "RDP NLA with Kerberos password authentication using a UPN."
-expect = { outcome = "partial", summary = { client_pdus = 40, server_pdus = 86, connection_pdus = 86, client_observation_pdus = 40, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 12726, truncated_pdu_gaps = 252, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 126, unsupported_gaps = 0 } }
+expect = { outcome = "partial", summary = { client_pdus = 40, server_pdus = 86, connection_pdus = 86, client_observation_pdus = 40, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", lifecycle = "never-activated", framing_gaps = 101, truncated_pdu_gaps = 2, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 1, unsupported_gaps = 0, gap_fingerprint = "8657169e8c5c17f97af5aa3ead8a0e4a5fe5dd98fa6d8dccbd0c6b973dd6d616" } }
 
 [[capture]]
 id = "nla-kerberos-password-2"
 file = "rdp-nla-kerberos-auth2.pcapng"
 sha256 = "403ee5c14066fddba95e24f7931629ec9ad3ae96d9f3a8837843d6851cb857f8"
 intent = "RDP NLA with Kerberos password authentication using a domain account."
-expect = { outcome = "partial", summary = { client_pdus = 25, server_pdus = 75, connection_pdus = 75, client_observation_pdus = 25, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 7300, truncated_pdu_gaps = 200, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 100, unsupported_gaps = 0 } }
+expect = { outcome = "partial", summary = { client_pdus = 25, server_pdus = 75, connection_pdus = 75, client_observation_pdus = 25, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", lifecycle = "never-activated", framing_gaps = 73, truncated_pdu_gaps = 2, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 1, unsupported_gaps = 0, gap_fingerprint = "00ddf421bddff96f800e879807774a4caa31020fa42e7dbd63bd09feac46fe2b" } }
 
 [[capture]]
 id = "nla-ntlm-rejected-ip"
 file = "rdp-nla-ntlm-rejected1.pcapng"
 sha256 = "8fcc046baf9b6c4962a9b3a49ad1554b55760da4364e80fb63339a1a74f22134"
 intent = "RDP NLA with NTLM rejected after connecting by IP address."
-expect = { outcome = "rejected", stage = "negotiate", reason = "missing-rdp-state" }
+expect = { outcome = "unsupported", stage = "negotiate", reason = "missing-rdp-state" }
 
 [[capture]]
 id = "nla-ntlm-rejected-after-kerberos"
 file = "rdp-nla-ntlm-rejected2.pcapng"
 sha256 = "cd7cb64e7d7dd71a3227d3b3d27a6de4d59e65fa01ad97fe6cacc0015867815f"
 intent = "RDP NLA Kerberos password attempt followed by a rejected NTLM downgrade."
-expect = { outcome = "rejected", stage = "negotiate", reason = "missing-rdp-state" }
+expect = { outcome = "unsupported", stage = "negotiate", reason = "missing-rdp-state" }
 
 [[capture]]
 id = "nla-kerberos-smartcard-1"
 file = "rdp-nla-smartcard-auth1.pcapng"
 sha256 = "34ceff904e52e2964c2f100a90d726fc45a5f29ab7d90e535a6807959ea34f18"
 intent = "RDP NLA with Kerberos smartcard authentication."
-expect = { outcome = "partial", summary = { client_pdus = 654, server_pdus = 94, connection_pdus = 94, client_observation_pdus = 654, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 56848, truncated_pdu_gaps = 748, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 748, unsupported_gaps = 0 } }
+expect = { outcome = "partial", summary = { client_pdus = 654, server_pdus = 94, connection_pdus = 94, client_observation_pdus = 654, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", lifecycle = "never-activated", framing_gaps = 76, truncated_pdu_gaps = 1, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 1, unsupported_gaps = 0, gap_fingerprint = "a37c653ea033e90e34a35732a9f3e20dcd0e72c9b71369f033cd5b8401c0cd6a" } }
 
 [[capture]]
 id = "nla-kerberos-smartcard-2"
 file = "rdp-nla-smartcard-auth2.pcapng"
 sha256 = "cfc4d559b62a0e31e45cf771a28dc72a3473cc7061e5e157241fedb17b1e36ff"
 intent = "RDP NLA with Kerberos smartcard authentication for a protected user."
-expect = { outcome = "partial", summary = { client_pdus = 503, server_pdus = 129, connection_pdus = 129, client_observation_pdus = 503, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 71416, truncated_pdu_gaps = 632, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 632, unsupported_gaps = 0 } }
+expect = { outcome = "partial", summary = { client_pdus = 503, server_pdus = 129, connection_pdus = 129, client_observation_pdus = 503, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", lifecycle = "never-activated", framing_gaps = 113, truncated_pdu_gaps = 1, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 1, unsupported_gaps = 0, gap_fingerprint = "b39b02b19c834f444473c3fb4ac13e1db1c1697bc2f17eb902546335b208901c" } }
 
 [[capture]]
 id = "no-nla-accepted"
 file = "rdp-no-nla-accepted1.pcapng"
 sha256 = "1146ef447ad88e58f25d14adf81581233c8265bf49140fa6f7a172fd30f3c402"
 intent = "RDP without NLA accepted by the server."
-expect = { outcome = "partial", summary = { client_pdus = 666, server_pdus = 740, connection_pdus = 15, client_observation_pdus = 666, fast_path_pdus = 20, io_channel_pdus = 4, message_channel_pdus = 38, static_channel_pdus = 662, other_server_message_pdus = 1, graphics_updates = 78, final_dimensions = "1024x768", fingerprint = "5f280762f289c4420327a0b8b6e302ccfc3a40465a2eed9bf2dc2fa833ec7b19", framing_gaps = 0, truncated_pdu_gaps = 0, static_channel_gaps = 11248, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 0, unsupported_gaps = 0 } }
+expect = { outcome = "partial", summary = { client_pdus = 666, server_pdus = 740, connection_pdus = 15, client_observation_pdus = 666, fast_path_pdus = 20, io_channel_pdus = 4, message_channel_pdus = 38, static_channel_pdus = 662, other_server_message_pdus = 1, graphics_updates = 78, final_dimensions = "1024x768", fingerprint = "5f280762f289c4420327a0b8b6e302ccfc3a40465a2eed9bf2dc2fa833ec7b19", lifecycle = "active", framing_gaps = 0, truncated_pdu_gaps = 0, static_channel_gaps = 8, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 0, unsupported_gaps = 0, gap_fingerprint = "4b8da452635699c6de2820276840579b4f05cf92f9f636c707737312456934f1" } }
 
 [[capture]]
 id = "no-nla-rejected"
@@ -84,7 +84,7 @@ id = "no-nla-smartcard"
 file = "rdp-no-nla-smartcard-auth1.pcapng"
 sha256 = "b29eedb9e81ed6fab7e0730951880e78fc60c3d64bfb6b37e4fa604ea3a30ff2"
 intent = "RDP without NLA using smartcard authentication."
-expect = { outcome = "partial", summary = { client_pdus = 903, server_pdus = 934, connection_pdus = 15, client_observation_pdus = 903, fast_path_pdus = 12, io_channel_pdus = 4, message_channel_pdus = 38, static_channel_pdus = 864, other_server_message_pdus = 1, graphics_updates = 79, final_dimensions = "1024x768", fingerprint = "51069cfd256a082e8bf9aa9d159ebc1c1d82c5f0bf7991f07d61bfa09eb81426", framing_gaps = 0, truncated_pdu_gaps = 0, static_channel_gaps = 14696, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 0, unsupported_gaps = 0 } }
+expect = { outcome = "partial", summary = { client_pdus = 903, server_pdus = 934, connection_pdus = 15, client_observation_pdus = 903, fast_path_pdus = 12, io_channel_pdus = 4, message_channel_pdus = 38, static_channel_pdus = 864, other_server_message_pdus = 1, graphics_updates = 79, final_dimensions = "1024x768", fingerprint = "51069cfd256a082e8bf9aa9d159ebc1c1d82c5f0bf7991f07d61bfa09eb81426", lifecycle = "active", framing_gaps = 0, truncated_pdu_gaps = 0, static_channel_gaps = 8, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 0, unsupported_gaps = 0, gap_fingerprint = "1c6187ca6547aa904e0e752f5122a592f9eca8b68d2aa4315076536a7039a7ec" } }
 
 [[capture]]
 id = "no-tls-accepted"
@@ -112,7 +112,7 @@ id = "gateway-no-kdc-proxy-ntlm-downgrade-failure"
 file = "rdp-rdg-no-kdc-proxy-ntlm-downgrade-failure.pcapng"
 sha256 = "e8ef972799f437e6742430c155ae7dadb734afe671227433e7069a2f4761a6fc"
 intent = "RD Gateway without KDC proxy where NTLM downgrade fails."
-expect = { outcome = "rejected", stage = "negotiate", reason = "missing-rdp-state" }
+expect = { outcome = "unsupported", stage = "negotiate", reason = "missing-rdp-state" }
 
 [[capture]]
 id = "gateway-no-kdc-proxy-ntlm-downgrade-success"
@@ -154,14 +154,14 @@ id = "restricted-admin-accepted"
 file = "rdp-restricted-admin-accepted1.pcapng"
 sha256 = "ac66138a736535e1a2955459154bd837815ad40dfcb1d2b18e8a93a6dadd6355"
 intent = "RDP with NLA and Restricted Admin Mode accepted by the server."
-expect = { outcome = "partial", summary = { client_pdus = 19, server_pdus = 244, connection_pdus = 244, client_observation_pdus = 19, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 12361, truncated_pdu_gaps = 263, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 263, unsupported_gaps = 0 } }
+expect = { outcome = "partial", summary = { client_pdus = 19, server_pdus = 244, connection_pdus = 244, client_observation_pdus = 19, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", lifecycle = "never-activated", framing_gaps = 47, truncated_pdu_gaps = 1, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 1, unsupported_gaps = 0, gap_fingerprint = "e2c867999540dae9199681db6dccfa2b98285561c6a766986fc32daada6130a1" } }
 
 [[capture]]
 id = "restricted-admin-rejected"
 file = "rdp-restricted-admin-rejected1.pcapng"
 sha256 = "f05a42387cc3fb9a971abfd30ec52d2b9c173120a6407b6e1b1431c13a7e5ffb"
 intent = "RDP with NLA and Restricted Admin Mode rejected by the server."
-expect = { outcome = "partial", summary = { client_pdus = 10, server_pdus = 10, connection_pdus = 10, client_observation_pdus = 10, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 260, truncated_pdu_gaps = 40, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 20, unsupported_gaps = 0 } }
+expect = { outcome = "partial", summary = { client_pdus = 10, server_pdus = 10, connection_pdus = 10, client_observation_pdus = 10, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", lifecycle = "never-activated", framing_gaps = 13, truncated_pdu_gaps = 2, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 1, unsupported_gaps = 0, gap_fingerprint = "4adf2896039f8febc1b61997f29ab289ad889f8514f31476aedbe1cbfbe5d8b9" } }
 
 [[capture]]
 id = "vmconnect-local-basic"

@@ -15,7 +15,10 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use ironrdp_capture_replay::{ExportOptions, ReplayOptions, export_capture, prepare_capture, read_capture};
+use ironrdp_capture_replay::{
+    ExportOptions, ReplayDirection, ReplayGap, ReplayGapKind, ReplayGapReason, ReplayLifecycle, ReplayOptions,
+    export_capture, prepare_capture, read_capture,
+};
 use zeroize::Zeroize as _;
 
 fn main() -> ExitCode {
@@ -41,7 +44,13 @@ fn run() -> Result<(), Box<dyn core::error::Error>> {
     let arguments = parse_arguments(std::env::args_os().skip(1)).map_err(usage_error)?;
     let mut capture = match read_capture(&arguments.capture) {
         Ok(capture) => capture,
-        Err(error) if arguments.summary => return print_summary_error(error),
+        Err(error @ (ironrdp_capture_replay::ReplayError::Io(_) | ironrdp_capture_replay::ReplayError::Pcap(_))) => {
+            return Err(error.into());
+        }
+        Err(error) if arguments.summary => {
+            print_summary_error(error);
+            return Ok(());
+        }
         Err(error) => return Err(error.into()),
     };
     if let Some(key_log) = &arguments.key_log {
@@ -58,9 +67,15 @@ fn run() -> Result<(), Box<dyn core::error::Error>> {
         }) {
             Ok(execution) => {
                 print_summary(&execution.summary);
+                if arguments.show_gaps {
+                    print_gaps(&execution.report.gaps);
+                }
                 Ok(())
             }
-            Err(error) => print_summary_error(error),
+            Err(error) => {
+                print_summary_error(error);
+                Ok(())
+            }
         };
     }
     let summary = export_capture(
@@ -85,11 +100,13 @@ struct Arguments {
     key_log: Option<PathBuf>,
     replace: bool,
     summary: bool,
+    show_gaps: bool,
 }
 
 fn parse_arguments(arguments: impl Iterator<Item = OsString>) -> Result<Arguments, String> {
     let mut replace = false;
     let mut summary = false;
+    let mut show_gaps = false;
     let mut key_log = None;
     let mut paths = Vec::new();
     let mut arguments = arguments.peekable();
@@ -98,6 +115,8 @@ fn parse_arguments(arguments: impl Iterator<Item = OsString>) -> Result<Argument
             replace = true;
         } else if argument == "--summary" {
             summary = true;
+        } else if argument == "--gaps" {
+            show_gaps = true;
         } else if argument == "--keylog" {
             key_log = Some(PathBuf::from(arguments.next().ok_or_else(usage)?));
         } else if argument.to_string_lossy().starts_with('-') {
@@ -120,17 +139,17 @@ fn parse_arguments(arguments: impl Iterator<Item = OsString>) -> Result<Argument
         key_log,
         replace,
         summary,
+        show_gaps,
     })
 }
 
 fn usage() -> String {
-    "usage: ironrdp-capture-replay [--replace] [--keylog <tls-keys.log>] <capture.pcapng> <output-directory>\n       ironrdp-capture-replay --summary [--keylog <tls-keys.log>] <capture.pcapng>".to_owned()
+    "usage: ironrdp-capture-replay [--replace] [--keylog <tls-keys.log>] <capture.pcapng> <output-directory>\n       ironrdp-capture-replay --summary [--gaps] [--keylog <tls-keys.log>] <capture.pcapng>".to_owned()
 }
 
-fn print_summary_error(error: ironrdp_capture_replay::ReplayError) -> Result<(), Box<dyn core::error::Error>> {
+fn print_summary_error(error: ironrdp_capture_replay::ReplayError) {
     let (stage, reason) = error.summary_code();
     println!("status=error\tstage={stage}\treason={reason}");
-    Ok(())
 }
 
 fn print_summary(summary: &ironrdp_capture_replay::ReplaySummary) {
@@ -141,8 +160,13 @@ fn print_summary(summary: &ironrdp_capture_replay::ReplaySummary) {
         || "-".to_owned(),
         |bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect(),
     );
+    let gap_fingerprint = summary
+        .gap_fingerprint
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     println!(
-        "status=ok\tclient-pdus={}\tserver-pdus={}\tconnection-pdus={}\tclient-observation-pdus={}\tfast-path-pdus={}\tio-channel-pdus={}\tmessage-channel-pdus={}\tstatic-channel-pdus={}\tother-server-message-pdus={}\tgraphics-updates={}\tfinal-dimensions={dimensions}\tfingerprint={fingerprint}\tframing-gaps={}\ttruncated-pdu-gaps={}\tstatic-channel-gaps={}\tdynamic-channel-gaps={}\tsession-gaps={}\tincomplete-activation-gaps={}\tunsupported-gaps={}",
+        "status=ok\tclient-pdus={}\tserver-pdus={}\tconnection-pdus={}\tclient-observation-pdus={}\tfast-path-pdus={}\tio-channel-pdus={}\tmessage-channel-pdus={}\tstatic-channel-pdus={}\tother-server-message-pdus={}\tgraphics-updates={}\tfinal-dimensions={dimensions}\tfingerprint={fingerprint}\tlifecycle={}\tframing-gaps={}\ttruncated-pdu-gaps={}\tstatic-channel-gaps={}\tdynamic-channel-gaps={}\tsession-gaps={}\tincomplete-activation-gaps={}\tunsupported-gaps={}\tgap-fingerprint={gap_fingerprint}",
         summary.client_pdus,
         summary.server_pdus,
         summary.connection_pdus,
@@ -153,6 +177,7 @@ fn print_summary(summary: &ironrdp_capture_replay::ReplaySummary) {
         summary.static_channel_pdus,
         summary.other_server_message_pdus,
         summary.graphics_updates,
+        lifecycle_name(summary.lifecycle),
         summary.framing_gaps,
         summary.truncated_pdu_gaps,
         summary.static_channel_gaps,
@@ -161,4 +186,67 @@ fn print_summary(summary: &ironrdp_capture_replay::ReplaySummary) {
         summary.incomplete_activation_gaps,
         summary.unsupported_gaps,
     );
+}
+
+fn lifecycle_name(lifecycle: ReplayLifecycle) -> &'static str {
+    match lifecycle {
+        ReplayLifecycle::NeverActivated => "never-activated",
+        ReplayLifecycle::Active => "active",
+        ReplayLifecycle::Deactivated => "deactivated",
+    }
+}
+
+fn print_gaps(gaps: &[ReplayGap]) {
+    const MAX_GAP_DETAILS: usize = 16;
+
+    for gap in gaps.iter().take(MAX_GAP_DETAILS) {
+        println!(
+            "gap=packet:{}\tdirection:{}\tkind:{}\treason:{}\tskipped-bytes:{}",
+            gap.packet,
+            direction_name(gap.direction),
+            gap_kind_name(gap.kind),
+            gap_reason_name(gap.reason),
+            gap.skipped_bytes,
+        );
+    }
+    if gaps.len() > MAX_GAP_DETAILS {
+        println!("gap-details-truncated={}", gaps.len() - MAX_GAP_DETAILS);
+    }
+}
+
+fn direction_name(direction: ReplayDirection) -> &'static str {
+    match direction {
+        ReplayDirection::Client => "client",
+        ReplayDirection::Server => "server",
+    }
+}
+
+fn gap_kind_name(kind: ReplayGapKind) -> &'static str {
+    match kind {
+        ReplayGapKind::Framing => "framing",
+        ReplayGapKind::TruncatedPdu => "truncated-pdu",
+        ReplayGapKind::StaticChannel => "static-channel",
+        ReplayGapKind::DynamicChannel => "dynamic-channel",
+        ReplayGapKind::Session => "session",
+        ReplayGapKind::IncompleteActivation => "incomplete-activation",
+        ReplayGapKind::Unsupported => "unsupported",
+    }
+}
+
+fn gap_reason_name(reason: ReplayGapReason) -> &'static str {
+    match reason {
+        ReplayGapReason::Framing => "framing",
+        ReplayGapReason::TruncatedPdu => "truncated-pdu",
+        ReplayGapReason::StaticChannelPdu => "static-channel-pdu",
+        ReplayGapReason::StaticChannelEncode => "static-channel-encode",
+        ReplayGapReason::StaticChannelDecode => "static-channel-decode",
+        ReplayGapReason::StaticChannelBulkDecompression => "static-channel-bulk-decompression",
+        ReplayGapReason::StaticChannelBitmapSourceLength => "static-channel-bitmap-source-length",
+        ReplayGapReason::StaticChannelProcessor => "static-channel-processor",
+        ReplayGapReason::StaticChannelOther => "static-channel-other",
+        ReplayGapReason::DynamicChannel => "dynamic-channel",
+        ReplayGapReason::Session => "session",
+        ReplayGapReason::IncompleteActivation => "incomplete-activation",
+        ReplayGapReason::Unsupported => "unsupported",
+    }
 }

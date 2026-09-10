@@ -506,12 +506,14 @@ mod tests {
                 packet: 20,
                 direction: ReplayDirection::Server,
                 kind: ReplayGapKind::Framing,
+                reason: crate::ReplayGapReason::Framing,
                 skipped_bytes: 3,
             }],
             dynamic_channels: vec![CapturedDynamicChannel {
                 id: 7,
                 name: "CLIENT_RANDOM decrypted payload".to_owned(),
             }],
+            lifecycle: crate::ReplayLifecycle::Active,
         }
     }
 

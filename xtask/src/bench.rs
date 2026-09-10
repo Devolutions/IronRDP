@@ -144,8 +144,9 @@ pub fn corpus_replay(selector: Option<&str>) -> anyhow::Result<()> {
             .with_context(|| format!("verify cached benchmark capture: {}", capture.file))?;
         let observed = run_headless_replay(&capture_path)?;
         validate_replay_expectation(capture, &observed)?;
-        outcomes[usize::from(observed.outcome())] += 1;
-        println!("{}: {}", capture.id, observed.outcome().name());
+        let outcome = observed.outcome()?;
+        outcomes[usize::from(outcome)] += 1;
+        println!("{}: {}", capture.id, outcome.name());
     }
 
     println!(
@@ -165,12 +166,16 @@ enum ObservedReplay {
 }
 
 impl ObservedReplay {
-    fn outcome(&self) -> ReplayOutcome {
+    fn outcome(&self) -> anyhow::Result<ReplayOutcome> {
         match self {
-            Self::Success(summary) if summary_has_gaps(summary) => ReplayOutcome::Partial,
-            Self::Success(_) => ReplayOutcome::Complete,
-            Self::Failure { reason, .. } if is_unsupported_reason(reason) => ReplayOutcome::Unsupported,
-            Self::Failure { .. } => ReplayOutcome::Rejected,
+            Self::Success(summary) if summary_has_gaps(summary) || summary_lifecycle(summary) != Some("active") => {
+                Ok(ReplayOutcome::Partial)
+            }
+            Self::Success(_) => Ok(ReplayOutcome::Complete),
+            Self::Failure { reason, .. } if is_unsupported_reason(reason) => Ok(ReplayOutcome::Unsupported),
+            Self::Failure { stage, reason } => anyhow::bail!(
+                "unqualified headless replay failure: {stage}:{reason}; add explicit support or classify it as unsupported"
+            ),
         }
     }
 }
@@ -268,11 +273,11 @@ fn parse_headless_summary(output: &str) -> anyhow::Result<ObservedReplay> {
 
 fn validate_replay_expectation(capture: &Capture, observed: &ObservedReplay) -> anyhow::Result<()> {
     anyhow::ensure!(
-        capture.expect.outcome == observed.outcome(),
+        capture.expect.outcome == observed.outcome()?,
         "replay outcome mismatch for {}: expected {}, got {}",
         capture.id,
         capture.expect.outcome.name(),
-        observed.outcome().name()
+        observed.outcome()?.name()
     );
     match (capture.expect.summary.as_ref(), observed) {
         (Some(expected), ObservedReplay::Success(actual)) => anyhow::ensure!(
@@ -293,9 +298,14 @@ fn validate_replay_expectation(capture: &Capture, observed: &ObservedReplay) -> 
 }
 
 fn summary_has_gaps(summary: &ReplaySummaryExpectation) -> bool {
-    SUMMARY_KEYS[13..]
+    SUMMARY_KEYS
         .iter()
+        .filter(|key| key.ends_with("_gaps"))
         .any(|key| summary.values.get(*key).is_some_and(|value| value != "0"))
+}
+
+fn summary_lifecycle(summary: &ReplaySummaryExpectation) -> Option<&str> {
+    summary.values.get("lifecycle").map(String::as_str)
 }
 
 fn is_unsupported_reason(reason: &str) -> bool {
@@ -305,6 +315,7 @@ fn is_unsupported_reason(reason: &str) -> bool {
             | "standard-security"
             | "unsupported-tls"
             | "missing-tunneled-tls-secret"
+            | "missing-rdp-state"
             | "tls-key-update"
             | "missing-drdynvc-channel"
             | "dynamic-channel-attachment"
@@ -396,6 +407,7 @@ const SUMMARY_KEYS: &[&str] = &[
     "graphics_updates",
     "final_dimensions",
     "fingerprint",
+    "lifecycle",
     "framing_gaps",
     "truncated_pdu_gaps",
     "static_channel_gaps",
@@ -403,6 +415,7 @@ const SUMMARY_KEYS: &[&str] = &[
     "session_gaps",
     "incomplete_activation_gaps",
     "unsupported_gaps",
+    "gap_fingerprint",
 ];
 
 fn parse_replay_expectation(value: &toml::Table) -> anyhow::Result<ReplayExpectation> {
@@ -450,6 +463,13 @@ fn parse_replay_expectation(value: &toml::Table) -> anyhow::Result<ReplayExpecta
                 summary.is_some(),
                 "successful replay expectation must declare a summary"
             );
+            if outcome == ReplayOutcome::Complete {
+                let summary = summary.as_ref().expect("complete replay summary is required");
+                anyhow::ensure!(
+                    summary_lifecycle(summary) == Some("active") && !summary_has_gaps(summary),
+                    "complete replay expectation must end active without gaps"
+                );
+            }
         }
         ReplayOutcome::Rejected | ReplayOutcome::Unsupported => {
             anyhow::ensure!(
@@ -626,6 +646,25 @@ expect = {{ outcome = "rejected", stage = "negotiate", reason = "missing-rdp-sta
         )
     }
 
+    fn summary(lifecycle: &str, static_channel_gaps: usize) -> ReplaySummaryExpectation {
+        let values = SUMMARY_KEYS
+            .iter()
+            .map(|key| {
+                let value = match *key {
+                    "lifecycle" => lifecycle.to_owned(),
+                    "static_channel_gaps" => static_channel_gaps.to_string(),
+                    "final_dimensions" => "-".to_owned(),
+                    "fingerprint" | "gap_fingerprint" => {
+                        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_owned()
+                    }
+                    _ => "0".to_owned(),
+                };
+                ((*key).to_owned(), value)
+            })
+            .collect();
+        ReplaySummaryExpectation { values }
+    }
+
     fn test_directory() -> PathBuf {
         let directory = std::env::temp_dir().join(format!(
             "ironrdp-xtask-bench-{}-{}",
@@ -760,7 +799,7 @@ expect = {{ outcome = "rejected", stage = "negotiate", reason = "missing-rdp-sta
             sha256: SHA256_ABC.to_owned(),
             intent: "A direct RDP session accepted by the server.".to_owned(),
             expect: ReplayExpectation {
-                outcome: ReplayOutcome::Rejected,
+                outcome: ReplayOutcome::Unsupported,
                 stage: Some("negotiate".to_owned()),
                 reason: Some("missing-rdp-state".to_owned()),
                 summary: None,
@@ -768,11 +807,71 @@ expect = {{ outcome = "rejected", stage = "negotiate", reason = "missing-rdp-sta
         };
         let observed = ObservedReplay::Failure {
             stage: "decrypt".to_owned(),
-            reason: "missing-tls-secret".to_owned(),
+            reason: "standard-security".to_owned(),
         };
 
         let error = validate_replay_expectation(&capture, &observed).expect_err("mismatched failure must fail");
 
         assert!(error.to_string().contains("replay failure mismatch"));
+    }
+
+    #[test]
+    fn classifies_missing_rdp_state_as_unsupported() {
+        let observed = ObservedReplay::Failure {
+            stage: "negotiate".to_owned(),
+            reason: "missing-rdp-state".to_owned(),
+        };
+
+        assert_eq!(
+            observed.outcome().expect("known limitation"),
+            ReplayOutcome::Unsupported
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_replay_failure_classification() {
+        let observed = ObservedReplay::Failure {
+            stage: "route".to_owned(),
+            reason: "unexpected-error".to_owned(),
+        };
+
+        let error = observed.outcome().expect_err("unknown failure must not be classified");
+
+        assert!(error.to_string().contains("unqualified headless replay failure"));
+    }
+
+    #[test]
+    fn classifies_clean_never_activated_replay_as_partial() {
+        let observed = ObservedReplay::Success(summary("never-activated", 0));
+
+        assert_eq!(observed.outcome().expect("valid summary"), ReplayOutcome::Partial);
+    }
+
+    #[test]
+    fn rejects_complete_expectation_with_gaps() {
+        let summary = summary("active", 1);
+        let values = SUMMARY_KEYS
+            .iter()
+            .map(|key| {
+                let value = summary.values.get(*key).expect("complete summary field");
+                format!("{key} = \"{value}\"")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let manifest = format!(
+            r#"
+outcome = "complete"
+summary = {{ {values} }}
+"#
+        );
+        let expectation = toml::from_str::<toml::Table>(&manifest).expect("valid expectation TOML");
+
+        let error = parse_replay_expectation(&expectation).expect_err("gapped completion must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("complete replay expectation must end active without gaps")
+        );
     }
 }

@@ -24,7 +24,7 @@ cargo xtask bench replay
 
 Use `--capture <id>` to run one manifest entry.
 The command never fetches data and fails when a cache entry is missing or its digest does not match the manifest.
-It prints only payload-free outcome categories and verifies every successful replay's routing counters, graphics dimensions, output fingerprint, and enumerated gaps.
+It prints only payload-free outcome categories and verifies every successful replay's routing counters, graphics dimensions, output fingerprint, lifecycle, and exact gap metadata fingerprint.
 Run `cargo xtask bench corpus-fetch` before `cargo xtask ci` when the local corpus cache is cold.
 
 The fetch command downloads only the files listed in `crates/ironrdp-bench/corpus.toml` from immutable raw URLs at the manifest's Git commit.
