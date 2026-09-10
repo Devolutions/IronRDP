@@ -1,12 +1,14 @@
 name: Pull request automation
-run-name: ${{
-  github.event.pull_request.number && format('PR #{0}', github.event.pull_request.number) ||
-  github.event.inputs['pr-number'] && format('PR #{0}', github.event.inputs['pr-number']) ||
-  github.event.client_payload.pr_number && format('PR #{0}', github.event.client_payload.pr_number) ||
-  github.event.workflow_run.pull_requests[0].number && format('PR #{0}', github.event.workflow_run.pull_requests[0].number) ||
-  github.event.workflow_run.head_branch && format('{0} @ {1}', github.event.workflow_run.head_branch, github.event.workflow_run.head_sha) ||
-  format('run {0}', github.run_id)
-}}
+# Prefer an exact PR number when the event carries one; otherwise identify the CI head that triggered the workflow.
+run-name: >-
+  ${{
+    github.event.pull_request.number && format('PR #{0}', github.event.pull_request.number)
+    || github.event.inputs['pr-number'] && format('PR #{0}', github.event.inputs['pr-number'])
+    || github.event.client_payload.pr_number && format('PR #{0}', github.event.client_payload.pr_number)
+    || github.event.workflow_run.pull_requests[0].number && format('PR #{0}', github.event.workflow_run.pull_requests[0].number)
+    || github.event.workflow_run.head_branch && format('{0} @ {1}', github.event.workflow_run.head_branch, github.event.workflow_run.head_sha)
+    || format('run {0}', github.run_id)
+  }}
 
 on:
   pull_request_target:
