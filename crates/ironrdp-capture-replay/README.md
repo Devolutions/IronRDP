@@ -11,6 +11,18 @@ Full TLS 1.2 and TLS 1.3 captures, including resumed sessions, are supported for
 TLS 1.2 requires `CLIENT_RANDOM`, while TLS 1.3 requires `CLIENT_HANDSHAKE_TRAFFIC_SECRET`, `SERVER_HANDSHAKE_TRAFFIC_SECRET`, `CLIENT_TRAFFIC_SECRET_0`, and `SERVER_TRAFFIC_SECRET_0`.
 Mid-stream TLS captures without a ClientHello and ServerHello remain unsupported.
 
+## Headless replay
+
+Use `--summary` to perform headless passive replay without writing files:
+
+```shell
+cargo run -p ironrdp-capture-replay --bin ironrdp-capture-replay -- --summary capture.pcapng
+```
+
+The summary reports only stable routing counters, framebuffer dimensions, an optional output fingerprint, and categorized gaps.
+`prepare_capture` separates capture ingestion, decryption, and negotiation recovery from `PreparedReplay::replay`, which starts with fresh session state on every execution.
+Framebuffers are observed by reference during headless replay, so summaries do not allocate snapshots unless an output consumer explicitly does so.
+
 ## Exporting frames
 
 Run the CLI with a pcapng capture that contains the TLS key-log material required by the replay pipeline.

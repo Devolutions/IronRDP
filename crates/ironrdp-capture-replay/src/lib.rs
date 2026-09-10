@@ -19,8 +19,9 @@ pub use gateway_rpch::{extract_rpch_from_flows, extract_rpch_tunneled_rdp};
 pub use negotiation::{NegotiatedState, StaticChannel, recover_negotiated_state};
 pub use output::{ExportError, ExportOptions, ExportSummary, export_capture};
 pub use routing::{
-    CapturedActivation, CapturedDynamicChannel, ReplayDirection, ReplayEvent, ReplayGap, ReplayGapKind, ReplayReport,
-    ReplayRoute, ReplayRouter, replay_capture,
+    CapturedActivation, CapturedDynamicChannel, PreparedReplay, ReplayDirection, ReplayEvent, ReplayExecution,
+    ReplayGap, ReplayGapKind, ReplayOptions, ReplayReport, ReplayRoute, ReplayRouter, ReplaySummary, prepare_capture,
+    replay_capture,
 };
 pub use tls::{Plaintext, decrypt_tls};
 pub use transport::{Capture, Endpoint, Flow, PacketStream, TlsKeyLog, read_capture};

@@ -190,6 +190,32 @@ jobs:
       - name: Lock files
         run: cargo xtask check locks -v
 
+  corpus-replay:
+    name: Corpus replay
+    needs: [formatting]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        uses: ./.github/actions/install-build-deps
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.9.1
+
+      - name: Corpus cache
+        uses: actions/cache@v5
+        with:
+          path: ./dependencies/wireshark-rdp
+          key: ${{ runner.os }}-benchmark-corpus-${{ hashFiles('crates/ironrdp-bench/corpus.toml') }}
+
+      - name: Fetch corpus
+        run: cargo xtask bench corpus-fetch
+
+      - name: Replay corpus
+        run: cargo xtask bench replay
+
   web:
     name: Web Client
     needs: [formatting]

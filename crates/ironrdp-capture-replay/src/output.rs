@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use crate::routing::{ReplayFrame, prepare_replay_capture};
+use crate::prepare_capture;
+use crate::routing::ReplayFrame;
 use crate::{Capture, ReplayDirection, ReplayError, ReplayEvent, ReplayGap, ReplayGapKind, ReplayReport, ReplayRoute};
 
 /// Options that control replay artifact export.
@@ -68,16 +69,19 @@ pub enum ExportError {
 ///
 /// The destination receives nothing unless every PNG and tabular file was written successfully.
 pub fn export_capture(capture: &Capture, options: &ExportOptions) -> Result<ExportSummary, ExportError> {
-    let (mut router, plaintext) = prepare_replay_capture(capture).map_err(ExportError::Replay)?;
+    let prepared = prepare_capture(capture).map_err(ExportError::Replay)?;
     validate_output_directory(&options.directory, options.replace)?;
 
     let parent = output_parent(&options.directory);
     fs::create_dir_all(parent).map_err(ExportError::PrepareOutput)?;
     let staging = create_staging_directory(parent, &options.directory)?;
     let mut output = StagedOutput::new(staging);
-    let result = router
-        .route_plaintext_with_frame_sink(&plaintext, &mut |frame| output.write_frame(frame))
-        .and_then(|report| finalize_staged_output(&mut output, &report, options));
+    let result = {
+        let mut router = crate::ReplayRouter::new(prepared.activation.clone()).map_err(ExportError::Replay)?;
+        router
+            .route_plaintext_with_frame_sink(&prepared.plaintext, &mut |frame| output.write_frame(frame))
+            .and_then(|report| finalize_staged_output(&mut output, &report, options))
+    };
     match result {
         Ok(summary) => Ok(summary),
         Err(error) => {
@@ -128,7 +132,7 @@ impl StagedOutput {
         }
     }
 
-    fn write_frame(&mut self, frame: ReplayFrame) -> Result<(), ExportError> {
+    fn write_frame(&mut self, frame: ReplayFrame<'_>) -> Result<(), ExportError> {
         let name = format!("frame_{:06}.png", self.frame_count);
         encode_png(&self.directory.join(name), &frame)?;
         self.frame_metadata.push_str(&format!(
@@ -281,13 +285,13 @@ fn replace_output_directory(staging: &Path, directory: &Path, replace: bool) -> 
     fs::rename(staging, directory).map_err(ExportError::FinalizeOutput)
 }
 
-fn encode_png(path: &Path, frame: &ReplayFrame) -> Result<(), ExportError> {
+fn encode_png(path: &Path, frame: &ReplayFrame<'_>) -> Result<(), ExportError> {
     let file = fs::File::create(path).map_err(ExportError::WriteOutput)?;
     let mut encoder = png::Encoder::new(file, u32::from(frame.width), u32::from(frame.height));
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().map_err(ExportError::EncodePng)?;
-    writer.write_image_data(&frame.pixels).map_err(ExportError::EncodePng)?;
+    writer.write_image_data(frame.pixels).map_err(ExportError::EncodePng)?;
     writer.finish().map_err(ExportError::EncodePng)?;
     Ok(())
 }
@@ -377,8 +381,8 @@ mod tests {
         let staging = create_staging_directory(directory.parent().unwrap(), &directory).unwrap();
         let mut output = StagedOutput::new(staging.clone());
         let report = report();
-        output.write_frame(frame(12, [0x11, 0x22, 0x33, 0xff])).unwrap();
-        output.write_frame(frame(47, [0x44, 0x55, 0x66, 0xff])).unwrap();
+        output.write_frame(frame(12, &[0x11, 0x22, 0x33, 0xff])).unwrap();
+        output.write_frame(frame(47, &[0x44, 0x55, 0x66, 0xff])).unwrap();
         output.write_diagnostics(&report).unwrap();
         replace_output_directory(&staging, &directory, false).unwrap();
 
@@ -445,7 +449,7 @@ mod tests {
         fs::write(directory.join("keep"), "old").unwrap();
         let staging = create_staging_directory(directory.parent().unwrap(), &directory).unwrap();
         let mut output = StagedOutput::new(staging);
-        output.write_frame(frame(12, [0x11, 0x22, 0x33, 0xff])).unwrap();
+        output.write_frame(frame(12, &[0x11, 0x22, 0x33, 0xff])).unwrap();
 
         let summary = finalize_staged_output(
             &mut output,
@@ -511,12 +515,12 @@ mod tests {
         }
     }
 
-    fn frame(packet: usize, pixels: [u8; 4]) -> ReplayFrame {
+    fn frame<'a>(packet: usize, pixels: &'a [u8; 4]) -> ReplayFrame<'a> {
         ReplayFrame {
             packet,
             width: 1,
             height: 1,
-            pixels: pixels.to_vec(),
+            pixels,
         }
     }
 

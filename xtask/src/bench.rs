@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::Context as _;
 use sha2::{Digest as _, Sha256};
@@ -12,18 +13,60 @@ const MANIFEST_PATH: &str = "crates/ironrdp-bench/corpus.toml";
 const CACHE_ROOT: &str = "bench-data/wireshark-rdp";
 const UPSTREAM_REPOSITORY: &str = "awakecoding/wireshark-rdp";
 
-#[derive(Debug)]
-struct Corpus {
-    revision: String,
-    captures: Vec<Capture>,
+#[derive(Debug, Eq, PartialEq)]
+pub struct Corpus {
+    /// Immutable upstream revision that identifies the cached capture set.
+    pub revision: String,
+    /// Captures and strict replay expectations.
+    pub captures: Vec<Capture>,
+>>>>>>> a3b87d1e6 (feat: add headless corpus replay)
 }
 
-#[derive(Debug)]
-struct Capture {
-    id: String,
-    file: String,
-    sha256: String,
-    intent: String,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Capture {
+    /// Stable manifest identifier.
+    pub id: String,
+    /// Pinned upstream file name.
+    pub file: String,
+    /// Expected SHA-256 digest.
+    pub sha256: String,
+    /// Recorded upstream scenario description.
+    pub intent: String,
+    /// Observed replay behavior for this exact capture revision.
+    pub expect: ReplayExpectation,
+}
+
+/// Strict expected result for one capture replay.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReplayExpectation {
+    /// Declared outcome category.
+    pub outcome: ReplayOutcome,
+    /// Failing replay stage for rejection and unsupported outcomes.
+    pub stage: Option<String>,
+    /// Stable failing replay reason for rejection and unsupported outcomes.
+    pub reason: Option<String>,
+    /// Exact counters and output identity for completed and partial outcomes.
+    pub summary: Option<ReplaySummaryExpectation>,
+}
+
+/// Stable category for a qualified capture replay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplayOutcome {
+    /// Replay reached a clean completed state.
+    Complete,
+    /// Replay produced useful output but recorded known gaps.
+    Partial,
+    /// The capture records a recognized protocol rejection.
+    Rejected,
+    /// The capture requires a replay capability that is not implemented.
+    Unsupported,
+}
+
+/// Expected payload-free counters and output identity for a successful replay.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReplaySummaryExpectation {
+    /// Exact values keyed by the stable summary field names.
+    pub values: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -76,7 +119,200 @@ pub fn corpus_list() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn load_corpus() -> anyhow::Result<Corpus> {
+/// Replay verified cached captures and enforce their qualified expectations.
+pub fn corpus_replay(selector: Option<&str>) -> anyhow::Result<()> {
+    let corpus = load_corpus()?;
+    let cache_dir = project_root().join(CACHE_ROOT).join(&corpus.revision).join("captures");
+    let captures = match selector {
+        Some(selector) => corpus
+            .captures
+            .iter()
+            .filter(|capture| capture.id == selector)
+            .collect::<Vec<_>>(),
+        None => corpus.captures.iter().collect(),
+    };
+    anyhow::ensure!(
+        !captures.is_empty(),
+        "unknown benchmark capture selector: {}",
+        selector.unwrap_or_default()
+    );
+
+    let mut outcomes = [0usize; 4];
+    for capture in captures {
+        let capture_path = cache_dir.join(&capture.file);
+        verify_file(&capture_path, &capture.sha256)
+            .with_context(|| format!("verify cached benchmark capture: {}", capture.file))?;
+        let observed = run_headless_replay(&capture_path)?;
+        validate_replay_expectation(capture, &observed)?;
+        outcomes[usize::from(observed.outcome())] += 1;
+        println!("{}: {}", capture.id, observed.outcome().name());
+    }
+
+    println!(
+        "Qualified replay outcomes: complete={}, partial={}, rejected={}, unsupported={}",
+        outcomes[usize::from(ReplayOutcome::Complete)],
+        outcomes[usize::from(ReplayOutcome::Partial)],
+        outcomes[usize::from(ReplayOutcome::Rejected)],
+        outcomes[usize::from(ReplayOutcome::Unsupported)],
+    );
+    Ok(())
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum ObservedReplay {
+    Success(ReplaySummaryExpectation),
+    Failure { stage: String, reason: String },
+}
+
+impl ObservedReplay {
+    fn outcome(&self) -> ReplayOutcome {
+        match self {
+            Self::Success(summary) if summary_has_gaps(summary) => ReplayOutcome::Partial,
+            Self::Success(_) => ReplayOutcome::Complete,
+            Self::Failure { reason, .. } if is_unsupported_reason(reason) => ReplayOutcome::Unsupported,
+            Self::Failure { .. } => ReplayOutcome::Rejected,
+        }
+    }
+}
+
+impl ReplayOutcome {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Partial => "partial",
+            Self::Rejected => "rejected",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
+impl From<ReplayOutcome> for usize {
+    fn from(value: ReplayOutcome) -> Self {
+        match value {
+            ReplayOutcome::Complete => 0,
+            ReplayOutcome::Partial => 1,
+            ReplayOutcome::Rejected => 2,
+            ReplayOutcome::Unsupported => 3,
+        }
+    }
+}
+
+fn run_headless_replay(capture: &Path) -> anyhow::Result<ObservedReplay> {
+    let output = Command::new(env!("CARGO"))
+        .current_dir(project_root())
+        .args([
+            "run",
+            "--quiet",
+            "--locked",
+            "-p",
+            "ironrdp-capture-replay",
+            "--bin",
+            "ironrdp-capture-replay",
+            "--",
+        ])
+        .arg("--summary")
+        .arg(capture)
+        .output()
+        .with_context(|| format!("run headless replay: {}", capture.display()))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "headless replay command failed for {}: {}",
+        capture.display(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    parse_headless_summary(&String::from_utf8(output.stdout).context("headless replay output is not UTF-8")?)
+}
+
+fn parse_headless_summary(output: &str) -> anyhow::Result<ObservedReplay> {
+    let line = output.lines().filter(|line| !line.is_empty()).collect::<Vec<_>>();
+    anyhow::ensure!(line.len() == 1, "headless replay must emit exactly one summary line");
+    let mut fields = std::collections::BTreeMap::new();
+    for field in line[0].split('\t') {
+        let (key, value) = field.split_once('=').context("invalid headless replay summary field")?;
+        anyhow::ensure!(
+            fields.insert(key, value).is_none(),
+            "duplicate headless replay summary field: {key}"
+        );
+    }
+    match fields.remove("status") {
+        Some("ok") => {
+            anyhow::ensure!(
+                fields.len() == SUMMARY_KEYS.len(),
+                "headless replay summary has unexpected fields"
+            );
+            let mut values = std::collections::BTreeMap::new();
+            for key in SUMMARY_KEYS {
+                let output_key = key.replace('_', "-");
+                let value = fields
+                    .remove(output_key.as_str())
+                    .context("headless replay summary is missing a field")?;
+                values.insert((*key).to_owned(), value.to_owned());
+            }
+            Ok(ObservedReplay::Success(ReplaySummaryExpectation { values }))
+        }
+        Some("error") => {
+            let stage = fields.remove("stage").context("headless replay failure has no stage")?;
+            let reason = fields
+                .remove("reason")
+                .context("headless replay failure has no reason")?;
+            anyhow::ensure!(fields.is_empty(), "headless replay failure has unexpected fields");
+            Ok(ObservedReplay::Failure {
+                stage: stage.to_owned(),
+                reason: reason.to_owned(),
+            })
+        }
+        Some(status) => anyhow::bail!("unknown headless replay status: {status}"),
+        None => anyhow::bail!("headless replay summary has no status"),
+    }
+}
+
+fn validate_replay_expectation(capture: &Capture, observed: &ObservedReplay) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        capture.expect.outcome == observed.outcome(),
+        "replay outcome mismatch for {}: expected {}, got {}",
+        capture.id,
+        capture.expect.outcome.name(),
+        observed.outcome().name()
+    );
+    match (capture.expect.summary.as_ref(), observed) {
+        (Some(expected), ObservedReplay::Success(actual)) => anyhow::ensure!(
+            expected == actual,
+            "replay summary mismatch for {}: update the qualified manifest explicitly",
+            capture.id
+        ),
+        (None, ObservedReplay::Failure { stage, reason }) => anyhow::ensure!(
+            capture.expect.stage.as_deref() == Some(stage) && capture.expect.reason.as_deref() == Some(reason),
+            "replay failure mismatch for {}: expected {}:{}, got {stage}:{reason}",
+            capture.id,
+            capture.expect.stage.as_deref().unwrap_or_default(),
+            capture.expect.reason.as_deref().unwrap_or_default(),
+        ),
+        _ => anyhow::bail!("replay expectation shape mismatch for {}", capture.id),
+    }
+    Ok(())
+}
+
+fn summary_has_gaps(summary: &ReplaySummaryExpectation) -> bool {
+    SUMMARY_KEYS[13..]
+        .iter()
+        .any(|key| summary.values.get(*key).is_some_and(|value| value != "0"))
+}
+
+fn is_unsupported_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "unsupported-transport"
+            | "standard-security"
+            | "unsupported-tls"
+            | "missing-tunneled-tls-secret"
+            | "tls-key-update"
+            | "missing-drdynvc-channel"
+            | "dynamic-channel-attachment"
+    )
+}
+
+/// Load and validate the pinned benchmark corpus manifest.
+pub fn load_corpus() -> anyhow::Result<Corpus> {
     let path = project_root().join(MANIFEST_PATH);
     let contents = fs::read_to_string(&path).with_context(|| format!("read corpus manifest: {}", path.display()))?;
     parse_corpus(&contents).with_context(|| format!("validate corpus manifest: {}", path.display()))
@@ -111,7 +347,7 @@ fn parse_corpus(contents: &str) -> anyhow::Result<Corpus> {
 
     for capture in captures {
         let capture = capture.as_table().context("capture entry must be a TOML table")?;
-        ensure_allowed_keys(capture, &["id", "file", "sha256", "intent"], "capture")?;
+        ensure_allowed_keys(capture, &["id", "file", "sha256", "intent", "expect"], "capture")?;
 
         let id = string(capture, "id", "capture")?.to_owned();
         anyhow::ensure!(is_identifier(&id), "invalid capture identifier: {id}");
@@ -131,17 +367,103 @@ fn parse_corpus(contents: &str) -> anyhow::Result<Corpus> {
         let intent = string(capture, "intent", "capture")?.to_owned();
         anyhow::ensure!(!intent.is_empty(), "capture intent must not be empty: {file}");
 
+        let expect = parse_replay_expectation(table(capture, "expect", "capture")?)?;
         parsed_captures.push(Capture {
             id,
             file,
             sha256,
             intent,
+            expect,
         });
     }
 
     Ok(Corpus {
         revision,
         captures: parsed_captures,
+    })
+}
+
+const SUMMARY_KEYS: &[&str] = &[
+    "client_pdus",
+    "server_pdus",
+    "connection_pdus",
+    "client_observation_pdus",
+    "fast_path_pdus",
+    "io_channel_pdus",
+    "message_channel_pdus",
+    "static_channel_pdus",
+    "other_server_message_pdus",
+    "graphics_updates",
+    "final_dimensions",
+    "fingerprint",
+    "framing_gaps",
+    "truncated_pdu_gaps",
+    "static_channel_gaps",
+    "dynamic_channel_gaps",
+    "session_gaps",
+    "incomplete_activation_gaps",
+    "unsupported_gaps",
+];
+
+fn parse_replay_expectation(value: &toml::Table) -> anyhow::Result<ReplayExpectation> {
+    ensure_allowed_keys(value, &["outcome", "stage", "reason", "summary"], "capture.expect")?;
+    let outcome = match string(value, "outcome", "capture.expect")? {
+        "complete" => ReplayOutcome::Complete,
+        "partial" => ReplayOutcome::Partial,
+        "rejected" => ReplayOutcome::Rejected,
+        "unsupported" => ReplayOutcome::Unsupported,
+        outcome => anyhow::bail!("unknown capture replay outcome: {outcome}"),
+    };
+    let stage = value.get("stage").and_then(toml::Value::as_str).map(str::to_owned);
+    let reason = value.get("reason").and_then(toml::Value::as_str).map(str::to_owned);
+    let summary = value
+        .get("summary")
+        .map(|value| {
+            let value = value
+                .as_table()
+                .context("capture.expect.summary must be a TOML table")?;
+            ensure_allowed_keys(value, SUMMARY_KEYS, "capture.expect.summary")?;
+            anyhow::ensure!(
+                value.len() == SUMMARY_KEYS.len(),
+                "capture.expect.summary must declare every replay summary field"
+            );
+            let mut values = std::collections::BTreeMap::new();
+            for key in SUMMARY_KEYS {
+                let value = value.get(*key).context("missing replay summary field")?;
+                let value = match value {
+                    toml::Value::Integer(value) => value.to_string(),
+                    toml::Value::String(value) => value.clone(),
+                    _ => anyhow::bail!("invalid replay summary field: {key}"),
+                };
+                values.insert((*key).to_owned(), value);
+            }
+            Ok(ReplaySummaryExpectation { values })
+        })
+        .transpose()?;
+    match outcome {
+        ReplayOutcome::Complete | ReplayOutcome::Partial => {
+            anyhow::ensure!(
+                stage.is_none() && reason.is_none(),
+                "successful replay expectation cannot declare stage or reason"
+            );
+            anyhow::ensure!(
+                summary.is_some(),
+                "successful replay expectation must declare a summary"
+            );
+        }
+        ReplayOutcome::Rejected | ReplayOutcome::Unsupported => {
+            anyhow::ensure!(
+                stage.is_some() && reason.is_some(),
+                "failed replay expectation must declare stage and reason"
+            );
+            anyhow::ensure!(summary.is_none(), "failed replay expectation cannot declare a summary");
+        }
+    }
+    Ok(ReplayExpectation {
+        outcome,
+        stage,
+        reason,
+        summary,
     })
 }
 
@@ -299,6 +621,7 @@ id = "accepted-rdp"
 file = "{file}"
 sha256 = "{SHA256_ABC}"
 intent = "A direct RDP session accepted by the server."
+expect = {{ outcome = "rejected", stage = "negotiate", reason = "missing-rdp-state" }}
 "#
         )
     }
@@ -369,6 +692,18 @@ intent = "A direct RDP session accepted by the server."
         fs::remove_dir_all(directory).expect("remove test directory");
     }
 
+    fn rejects_missing_replay_cache_entry() {
+        let capture = parse_corpus(&corpus_toml("accepted-rdp.pcapng"))
+            .expect("valid manifest")
+            .captures
+            .pop()
+            .expect("one capture");
+        let error = verify_file(Path::new("missing-benchmark-capture.pcapng"), &capture.sha256)
+            .expect_err("missing replay cache entry must fail");
+
+        assert!(error.to_string().contains("open capture"));
+    }
+    #[test]
     #[test]
     fn invalid_download_does_not_install_cache_entry() {
         let directory = test_directory();
@@ -408,5 +743,36 @@ intent = "A direct RDP session accepted by the server."
             format_list(&corpus),
             format!("accepted-rdp\taccepted-rdp.pcapng\t{SHA256_ABC}\tA direct RDP session accepted by the server.\n")
         );
+    }
+
+    #[test]
+    fn rejects_headless_summary_with_missing_fields() {
+        let error = parse_headless_summary("status=ok\tclient-pdus=1\n").expect_err("incomplete summary must fail");
+
+        assert!(error.to_string().contains("unexpected fields"));
+    }
+
+    #[test]
+    fn rejects_mismatched_replay_failure() {
+        let capture = Capture {
+            id: "accepted-rdp".to_owned(),
+            file: "accepted-rdp.pcapng".to_owned(),
+            sha256: SHA256_ABC.to_owned(),
+            intent: "A direct RDP session accepted by the server.".to_owned(),
+            expect: ReplayExpectation {
+                outcome: ReplayOutcome::Rejected,
+                stage: Some("negotiate".to_owned()),
+                reason: Some("missing-rdp-state".to_owned()),
+                summary: None,
+            },
+        };
+        let observed = ObservedReplay::Failure {
+            stage: "decrypt".to_owned(),
+            reason: "missing-tls-secret".to_owned(),
+        };
+
+        let error = validate_replay_expectation(&capture, &observed).expect_err("mismatched failure must fail");
+
+        assert!(error.to_string().contains("replay failure mismatch"));
     }
 }

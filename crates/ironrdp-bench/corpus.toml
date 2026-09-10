@@ -7,159 +7,186 @@ id = "clipboard-various-formats"
 file = "rdp-clipboard-various-formats1.pcapng"
 sha256 = "537058172eade338c4bdadf4fdbdd80c839a8370c643c7a51ea2b976b7778d73"
 intent = "Clipboard redirection with text, images, rich text, and file copy formats."
+expect = { outcome = "partial", summary = { client_pdus = 341, server_pdus = 12427, connection_pdus = 12427, client_observation_pdus = 341, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 1940736, truncated_pdu_gaps = 12768, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 12768, unsupported_gaps = 0 } }
 
 [[capture]]
 id = "credential-guard-accepted"
 file = "rdp-credential-guard-accepted1.pcapng"
 sha256 = "3196565f3b31d3c13ebb595fca662a96c1d2e9c21e29902a5eb190c0e05005c4"
 intent = "RDP with NLA and Remote Credential Guard accepted by the server."
+expect = { outcome = "partial", summary = { client_pdus = 98, server_pdus = 202, connection_pdus = 202, client_observation_pdus = 98, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 60300, truncated_pdu_gaps = 300, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 300, unsupported_gaps = 0 } }
 
 [[capture]]
 id = "credential-guard-rejected"
 file = "rdp-credential-guard-rejected1.pcapng"
 sha256 = "80552836675c68bddc15b2a2cc9782c51a6a467039108bc75d1a76172766f975"
 intent = "RDP with NLA and Remote Credential Guard rejected by the server."
+expect = { outcome = "partial", summary = { client_pdus = 55, server_pdus = 71, connection_pdus = 71, client_observation_pdus = 55, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 12726, truncated_pdu_gaps = 252, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 126, unsupported_gaps = 0 } }
 
 [[capture]]
 id = "nla-kerberos-password-1"
 file = "rdp-nla-kerberos-auth1.pcapng"
 sha256 = "2d6cb5c030acd849d6104a7c640a2769a7351168465d098cc64b7d098b16c03f"
 intent = "RDP NLA with Kerberos password authentication using a UPN."
+expect = { outcome = "partial", summary = { client_pdus = 40, server_pdus = 86, connection_pdus = 86, client_observation_pdus = 40, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 12726, truncated_pdu_gaps = 252, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 126, unsupported_gaps = 0 } }
 
 [[capture]]
 id = "nla-kerberos-password-2"
 file = "rdp-nla-kerberos-auth2.pcapng"
 sha256 = "403ee5c14066fddba95e24f7931629ec9ad3ae96d9f3a8837843d6851cb857f8"
 intent = "RDP NLA with Kerberos password authentication using a domain account."
+expect = { outcome = "partial", summary = { client_pdus = 25, server_pdus = 75, connection_pdus = 75, client_observation_pdus = 25, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 7300, truncated_pdu_gaps = 200, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 100, unsupported_gaps = 0 } }
 
 [[capture]]
 id = "nla-ntlm-rejected-ip"
 file = "rdp-nla-ntlm-rejected1.pcapng"
 sha256 = "8fcc046baf9b6c4962a9b3a49ad1554b55760da4364e80fb63339a1a74f22134"
 intent = "RDP NLA with NTLM rejected after connecting by IP address."
+expect = { outcome = "rejected", stage = "negotiate", reason = "missing-rdp-state" }
 
 [[capture]]
 id = "nla-ntlm-rejected-after-kerberos"
 file = "rdp-nla-ntlm-rejected2.pcapng"
 sha256 = "cd7cb64e7d7dd71a3227d3b3d27a6de4d59e65fa01ad97fe6cacc0015867815f"
 intent = "RDP NLA Kerberos password attempt followed by a rejected NTLM downgrade."
+expect = { outcome = "rejected", stage = "negotiate", reason = "missing-rdp-state" }
 
 [[capture]]
 id = "nla-kerberos-smartcard-1"
 file = "rdp-nla-smartcard-auth1.pcapng"
 sha256 = "34ceff904e52e2964c2f100a90d726fc45a5f29ab7d90e535a6807959ea34f18"
 intent = "RDP NLA with Kerberos smartcard authentication."
+expect = { outcome = "partial", summary = { client_pdus = 654, server_pdus = 94, connection_pdus = 94, client_observation_pdus = 654, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 56848, truncated_pdu_gaps = 748, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 748, unsupported_gaps = 0 } }
 
 [[capture]]
 id = "nla-kerberos-smartcard-2"
 file = "rdp-nla-smartcard-auth2.pcapng"
 sha256 = "cfc4d559b62a0e31e45cf771a28dc72a3473cc7061e5e157241fedb17b1e36ff"
 intent = "RDP NLA with Kerberos smartcard authentication for a protected user."
+expect = { outcome = "partial", summary = { client_pdus = 503, server_pdus = 129, connection_pdus = 129, client_observation_pdus = 503, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 71416, truncated_pdu_gaps = 632, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 632, unsupported_gaps = 0 } }
 
 [[capture]]
 id = "no-nla-accepted"
 file = "rdp-no-nla-accepted1.pcapng"
 sha256 = "1146ef447ad88e58f25d14adf81581233c8265bf49140fa6f7a172fd30f3c402"
 intent = "RDP without NLA accepted by the server."
+expect = { outcome = "partial", summary = { client_pdus = 666, server_pdus = 740, connection_pdus = 15, client_observation_pdus = 666, fast_path_pdus = 20, io_channel_pdus = 4, message_channel_pdus = 38, static_channel_pdus = 662, other_server_message_pdus = 1, graphics_updates = 78, final_dimensions = "1024x768", fingerprint = "5f280762f289c4420327a0b8b6e302ccfc3a40465a2eed9bf2dc2fa833ec7b19", framing_gaps = 0, truncated_pdu_gaps = 0, static_channel_gaps = 11248, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 0, unsupported_gaps = 0 } }
 
 [[capture]]
 id = "no-nla-rejected"
 file = "rdp-no-nla-rejected1.pcapng"
 sha256 = "d4be2c78e635a60f17a89d3cedd15bbd4e6420247feffedf399429e038fafea5"
 intent = "RDP without NLA rejected by the server."
+expect = { outcome = "unsupported", stage = "decrypt", reason = "standard-security" }
 
 [[capture]]
 id = "no-nla-smartcard"
 file = "rdp-no-nla-smartcard-auth1.pcapng"
 sha256 = "b29eedb9e81ed6fab7e0730951880e78fc60c3d64bfb6b37e4fa604ea3a30ff2"
 intent = "RDP without NLA using smartcard authentication."
+expect = { outcome = "partial", summary = { client_pdus = 903, server_pdus = 934, connection_pdus = 15, client_observation_pdus = 903, fast_path_pdus = 12, io_channel_pdus = 4, message_channel_pdus = 38, static_channel_pdus = 864, other_server_message_pdus = 1, graphics_updates = 79, final_dimensions = "1024x768", fingerprint = "51069cfd256a082e8bf9aa9d159ebc1c1d82c5f0bf7991f07d61bfa09eb81426", framing_gaps = 0, truncated_pdu_gaps = 0, static_channel_gaps = 14696, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 0, unsupported_gaps = 0 } }
 
 [[capture]]
 id = "no-tls-accepted"
 file = "rdp-no-tls-accepted1.pcapng"
 sha256 = "c13b629a67ed0b9503f5810baca605a305b7aa88192b9feec5315a4ae4d98b13"
 intent = "RDP without NLA or TLS accepted by the server."
+expect = { outcome = "unsupported", stage = "decrypt", reason = "standard-security" }
 
 [[capture]]
 id = "gateway-different-credentials-password"
 file = "rdp-rdg-diff-creds-kerberos-password.pcapng"
 sha256 = "9f4764bb1a095f4601475b879ae4aa27cd770b06f73153e74243a62cef26e4a3"
 intent = "RD Gateway and RDP server with different Kerberos password credentials."
+expect = { outcome = "unsupported", stage = "gateway", reason = "missing-tunneled-tls-secret" }
 
 [[capture]]
 id = "gateway-different-credentials-smartcard"
 file = "rdp-rdg-diff-creds-kerberos-smartcard.pcapng"
 sha256 = "eeebb5343f4140887c7ca1c04153c031ed3c37a85e288d5829e0bb18cbd77611"
 intent = "RD Gateway and RDP server with different Kerberos smartcard credentials."
+expect = { outcome = "unsupported", stage = "gateway", reason = "missing-tunneled-tls-secret" }
 
 [[capture]]
 id = "gateway-no-kdc-proxy-ntlm-downgrade-failure"
 file = "rdp-rdg-no-kdc-proxy-ntlm-downgrade-failure.pcapng"
 sha256 = "e8ef972799f437e6742430c155ae7dadb734afe671227433e7069a2f4761a6fc"
 intent = "RD Gateway without KDC proxy where NTLM downgrade fails."
+expect = { outcome = "rejected", stage = "negotiate", reason = "missing-rdp-state" }
 
 [[capture]]
 id = "gateway-no-kdc-proxy-ntlm-downgrade-success"
 file = "rdp-rdg-no-kdc-proxy-ntlm-downgrade-success.pcapng"
 sha256 = "5973f58fdb05f1ab952119b2fac38ec3b18cd001d069309f72c76ab1fd3cd8dc"
 intent = "RD Gateway without KDC proxy where NTLM downgrade succeeds."
+expect = { outcome = "unsupported", stage = "gateway", reason = "missing-tunneled-tls-secret" }
 
 [[capture]]
 id = "gateway-kdc-proxy-password-1"
 file = "rdp-rdg-same-creds-kerberos-password-success1.pcapng"
 sha256 = "470ae7d40db4070d82bc5b98e314746f7344ff690895b6808d51cba77a0daa0f"
 intent = "RD Gateway KDC proxy with shared Kerberos password credentials."
+expect = { outcome = "unsupported", stage = "gateway", reason = "missing-tunneled-tls-secret" }
 
 [[capture]]
 id = "gateway-kdc-line-of-sight-password-2"
 file = "rdp-rdg-same-creds-kerberos-password-success2.pcapng"
 sha256 = "dac06102cb606c6a349c73b1c8fa1e1bc7e25f8829b120f9bcdda24f1387160d"
 intent = "RD Gateway KDC line-of-sight with shared Kerberos password credentials."
+expect = { outcome = "unsupported", stage = "gateway", reason = "missing-tunneled-tls-secret" }
 
 [[capture]]
 id = "gateway-kdc-proxy-smartcard-1"
 file = "rdp-rdg-same-creds-kerberos-smartcard-success1.pcapng"
 sha256 = "213a84ab2750f0d0e6b4f532b2c0d1146688897df34d3c51748c0b7c27d1ab1e"
 intent = "RD Gateway KDC proxy with shared Kerberos smartcard credentials."
+expect = { outcome = "unsupported", stage = "gateway", reason = "missing-tunneled-tls-secret" }
 
 [[capture]]
 id = "gateway-kdc-line-of-sight-smartcard-2"
 file = "rdp-rdg-same-creds-kerberos-smartcard-success2.pcapng"
 sha256 = "506975b387e2db499aab2a780cf1859447bb6d914703cda0915c9721671628e0"
 intent = "RD Gateway KDC line-of-sight with shared Kerberos smartcard credentials."
+expect = { outcome = "unsupported", stage = "gateway", reason = "missing-tunneled-tls-secret" }
 
 [[capture]]
 id = "restricted-admin-accepted"
 file = "rdp-restricted-admin-accepted1.pcapng"
 sha256 = "ac66138a736535e1a2955459154bd837815ad40dfcb1d2b18e8a93a6dadd6355"
 intent = "RDP with NLA and Restricted Admin Mode accepted by the server."
+expect = { outcome = "partial", summary = { client_pdus = 19, server_pdus = 244, connection_pdus = 244, client_observation_pdus = 19, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 12361, truncated_pdu_gaps = 263, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 263, unsupported_gaps = 0 } }
 
 [[capture]]
 id = "restricted-admin-rejected"
 file = "rdp-restricted-admin-rejected1.pcapng"
 sha256 = "f05a42387cc3fb9a971abfd30ec52d2b9c173120a6407b6e1b1431c13a7e5ffb"
 intent = "RDP with NLA and Restricted Admin Mode rejected by the server."
+expect = { outcome = "partial", summary = { client_pdus = 10, server_pdus = 10, connection_pdus = 10, client_observation_pdus = 10, fast_path_pdus = 0, io_channel_pdus = 0, message_channel_pdus = 0, static_channel_pdus = 0, other_server_message_pdus = 0, graphics_updates = 0, final_dimensions = "-", fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", framing_gaps = 260, truncated_pdu_gaps = 40, static_channel_gaps = 0, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 20, unsupported_gaps = 0 } }
 
 [[capture]]
 id = "vmconnect-local-basic"
 file = "rdp-vmconnect-local-basic-session-mode1.pcapng"
 sha256 = "395fd31e78c94f99d9d6920529fa89262557bb49ed3f8f5d9924bb6568ecff08"
 intent = "Local Hyper-V VMConnect using implicit credentials in basic session mode."
+expect = { outcome = "unsupported", stage = "read", reason = "unsupported-transport" }
 
 [[capture]]
 id = "vmconnect-local-enhanced"
 file = "rdp-vmconnect-local-enhanced-session-mode1.pcapng"
 sha256 = "14dc3e445051985c257a1ef78852ce3cc9e79df3f7e9ea066af08a3a2f193f6f"
 intent = "Local Hyper-V VMConnect using implicit credentials in enhanced session mode."
+expect = { outcome = "unsupported", stage = "read", reason = "unsupported-transport" }
 
 [[capture]]
 id = "vmconnect-remote-basic"
 file = "rdp-vmconnect-remote-basic-session-mode1.pcapng"
 sha256 = "3283d92ab7c95070fbc14d41975909c8853eb6b2ef5568078311f0ceb6532606"
 intent = "Remote Hyper-V VMConnect using explicit credentials in basic session mode."
+expect = { outcome = "unsupported", stage = "read", reason = "unsupported-transport" }
 
 [[capture]]
 id = "vmconnect-remote-enhanced"
 file = "rdp-vmconnect-remote-enhanced-session-mode1.pcapng"
 sha256 = "e011364124486dcbb106389b781b11d4dbfdcac1e01680fe7a1d6223b8749371"
 intent = "Remote Hyper-V VMConnect using explicit credentials in enhanced session mode."
+expect = { outcome = "unsupported", stage = "read", reason = "unsupported-transport" }
