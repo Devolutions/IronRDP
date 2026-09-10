@@ -147,6 +147,7 @@ ironrdp-agent connect --server placeholder:3389 --prop ironrdp_iroh_ticket:s:<ti
 
 `--server` is still required to populate the RDP hostname and Client Info fields, even though the ticket determines where the connection actually goes.
 Obtain a ticket by running a socat-like iroh forwarder (e.g. `dumbpipe listen-tcp --host <target>:3389`) pointed at the target RDP server; it prints a ticket string to pass here.
+If the target enforces TLS certificate validation, `--server` must still match a name the certificate is valid for (e.g. the RDP server's real hostname), since RDP's own TLS/NLA handshake runs over the tunnel and is unaware of iroh.
 
 ## Prebuilt binaries
 
