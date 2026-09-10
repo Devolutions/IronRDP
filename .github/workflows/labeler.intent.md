@@ -67,7 +67,8 @@ Keep detailed failure reasons in the workflow summary only.
 
 Classify every non-draft, human-authored pull request that passes the integrity and capacity gates.
 Run automated review after CI succeeds for the exact classified head.
-Run the second review after a later push reaches green exact-head CI, and stop automatic review at `ai-reviewed/2`.
+Run the second review after a later push reaches green exact-head CI.
+At `ai-reviewed/2`, the review pipeline stops; classification and its labels keep updating.
 
 `OWNER` and `MEMBER` authors are always eligible.
 Other authors need one pull request from the same immutable human author merged into `master`.
