@@ -70,6 +70,10 @@ Run automated review after CI succeeds for the exact classified head.
 Run the second review after a later push reaches green exact-head CI.
 At `ai-reviewed/2`, the review pipeline stops; classification and its labels keep updating.
 
+Use `maintainer-required` only when maintainer action is the next step.
+On the normal review path, apply it only after exact-head CI succeeds and an automated review reports no findings or reaches `ai-reviewed/2`.
+Apply it earlier only when automation stops and needs maintainer intervention.
+
 `OWNER` and `MEMBER` authors are always eligible.
 Other authors need one pull request from the same immutable human author merged into `master`.
 

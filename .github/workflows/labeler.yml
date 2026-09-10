@@ -111,6 +111,7 @@ jobs:
     outputs:
       required: ${{ steps.gate.outputs.required }}
       available: ${{ steps.gate.outputs.available }}
+      completed: ${{ steps.gate.outputs.completed }}
       reason: ${{ steps.gate.outputs.reason }}
     steps:
       - uses: actions/checkout@v6
@@ -137,6 +138,7 @@ jobs:
             });
             core.setOutput("required", decision.required);
             core.setOutput("available", decision.available);
+            core.setOutput("completed", decision.completed === true);
             core.setOutput("reason", decision.reason);
             if (decision.error) core.warning(`Classification gate unavailable: ${decision.error}`);
             core.info(JSON.stringify({
@@ -467,6 +469,7 @@ jobs:
           CLASSIFIER_REASON: ${{ needs.classifier.outputs.failure-reason }}
           DUPLICATE_CANDIDATES: ${{ needs.classifier.outputs.duplicate-candidates }}
           CLASSIFICATION_GATE_AVAILABLE: ${{ needs.classification-gate.outputs.available }}
+          CLASSIFICATION_GATE_COMPLETED: ${{ needs.classification-gate.outputs.completed }}
           CLASSIFICATION_GATE_REASON: ${{ needs.classification-gate.outputs.reason }}
           FORK_RATE_LIMIT: ${{ needs.fork-rate-limit.outputs.quota }}
           SEMVER: ${{ needs.semver.outputs.compatibility }}
@@ -485,6 +488,7 @@ jobs:
               duplicateCandidates: parse(process.env.DUPLICATE_CANDIDATES, []),
               classificationGate: {
                 available: process.env.CLASSIFICATION_GATE_AVAILABLE === "true",
+                completed: process.env.CLASSIFICATION_GATE_COMPLETED === "true",
                 reason: process.env.CLASSIFICATION_GATE_REASON || "",
               },
               rateLimit: parse(process.env.FORK_RATE_LIMIT, {}),
