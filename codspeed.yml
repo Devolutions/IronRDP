@@ -1,0 +1,9 @@
+benchmarks:
+  - name: partial-replay/no-nla-accepted/strict-cli
+    exec: ./target/release/capture-replay-bench --capture no-nla-accepted
+
+  - name: partial-replay/no-nla-smartcard/strict-cli
+    exec: ./target/release/capture-replay-bench --capture no-nla-smartcard
+
+  - name: connector-replay/no-nla-accepted/strict-cli
+    exec: ./target/release/capture-replay-bench --connector no-nla-accepted

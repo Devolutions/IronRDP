@@ -98,5 +98,43 @@ hyperfine --warmup 1 '.\target\release\capture-replay-bench.exe --connector no-n
 ```
 Use `cargo xtask bench replay` to regression-test the complete pinned corpus, not to produce a single-capture timing score.
 
+## CodSpeed reporting
+
+CodSpeed simulation measures the three individually named encoder workloads (`rfx_enc_tile`, `rfx_enc`, and `to_ycbcr`) plus the two passive partial replays and one connector replay.
+The simulation job fetches and verifies the corpus before benchmark setup, then each replay target prepares and strictly preflights its selected capture outside Criterion's timed iterations.
+Every timed iteration starts with fresh replay, connector, and session state.
+CPU simulation models deterministic user-space work and is useful for focused processing regressions, not wall-clock completion, hardware-specific SIMD behavior, or native H.264 performance.
+
+The `codspeed` feature selects `codspeed-criterion-compat` only for the two benchmark targets.
+Regular `cargo bench` continues to use Criterion 0.8.
+Build the CodSpeed targets locally without uploading results with:
+
+```PowerShell
+cargo xtask bench corpus-fetch
+cargo install cargo-codspeed --version 5.0.1 --locked
+cargo codspeed build -p ironrdp-bench --bench bench --bench capture_replay --features codspeed --locked -m simulation
+```
+
+Run the ordinary local Criterion workloads or one whole-process measurement with:
+
+```PowerShell
+cargo bench -p ironrdp-bench --bench capture_replay -- 'partial-replay/no-nla-smartcard/processing' --exact
+cargo build --release -p ironrdp-bench --bin capture-replay-bench --locked
+hyperfine --warmup 1 '.\target\release\capture-replay-bench.exe --connector no-nla-accepted'
+```
+
+Hyperfine remains a separate local tool and does not import results into CodSpeed.
+
+`codspeed.yml` defines the independent wall-time command identities `exec_harness::partial-replay/no-nla-accepted/strict-cli`, `exec_harness::partial-replay/no-nla-smartcard/strict-cli`, and `exec_harness::connector-replay/no-nla-accepted/strict-cli`.
+Each command starts one release binary process, verifies and loads the selected cached capture, decrypts and prepares its replay state, and executes one strict replay.
+Compilation and corpus fetching occur before the CodSpeed action and are excluded from this measurement.
+
+The `CodSpeed` workflow runs simulation for pushes and pull requests only after maintainers set the `CODSPEED_ENABLED` repository variable to `true` and enable the repository in CodSpeed.
+It authenticates through GitHub OIDC and requires no repository secret for this public repository.
+The wall-time job is manual only and runs only when its dispatcher supplies a known, approved Linux runner label.
+Use a dedicated stable runner for wall time; shared hosted runners are too noisy for performance decisions.
+The public capture cache uses the existing manifest-hash cache key and is digest-verified before use.
+Do not upload captures, decrypted payloads, TLS key material, screenshots, or generated replay output; CodSpeed receives measurements and may retain symbol-bearing profiles, not raw replay payloads.
+
 To update the corpus, inspect the upstream capture inventory, revise the manifest revision, inventory, scenario intent metadata, replay expectations, and SHA-256 digests together, then run `cargo xtask bench corpus-fetch` followed by `cargo xtask bench replay`.
 Do not commit captures, TLS key material, decrypted payloads, screenshots, or generated output.

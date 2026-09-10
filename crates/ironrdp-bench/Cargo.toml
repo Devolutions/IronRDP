@@ -9,6 +9,7 @@ publish = false
 default = ["qoi", "qoiz"]
 qoi = ["ironrdp/qoi"]
 qoiz = ["ironrdp/qoiz"]
+codspeed = ["dep:codspeed-criterion-compat"]
 
 [dependencies]
 anyhow = "1"
@@ -21,6 +22,7 @@ tokio = { version = "1", features = ["sync", "fs", "time", "io-util", "macros", 
 toml = "1.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing = { version = "0.1", features = ["log"] }
+codspeed-criterion-compat = { version = "5.0.1", package = "codspeed-criterion-compat", optional = true }
 
 [dev-dependencies]
 criterion = "0.8"
