@@ -30,6 +30,9 @@ fn connector_replay(c: &mut Criterion) {
         c.bench_function(&name, |b| {
             let workload =
                 ConnectorReplayWorkload::prepare(id).expect("connector replay workload must prepare and preflight");
+            workload
+                .verify()
+                .expect("connector replay workload must pass strict preflight");
             b.iter(|| {
                 let measurement = workload.replay().expect("connector replay workload must execute");
                 black_box(measurement)

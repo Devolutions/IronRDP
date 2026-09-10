@@ -5,6 +5,7 @@
 //! `ConnectionResult`. TLS is an explicit completed boundary: no TLS handshake
 //! or authentication traffic is measured or claimed.
 
+use core::net::SocketAddr;
 use core::str::FromStr;
 use std::fmt;
 
@@ -13,7 +14,9 @@ use ironrdp::core::{WriteBuf, decode, encode_vec};
 use ironrdp::pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
 use ironrdp::pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
 use ironrdp::pdu::geometry::InclusiveRectangle;
+use ironrdp::pdu::rdp::ClientInfoPdu;
 use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
+use ironrdp::pdu::rdp::server_license::{ClientNewLicenseRequest, LicensePdu, PreambleType};
 use ironrdp::pdu::x224::{X224, X224Data};
 use ironrdp::pdu::{Action, find_size, gcc, mcs, nego};
 use ironrdp::session::image::DecodedImage;
@@ -25,6 +28,36 @@ use sha2::{Digest as _, Sha256};
 use crate::replay::{PartialReplayId, PartialReplayWorkload};
 
 const MAX_CONNECTOR_STEPS: usize = 128;
+
+const NO_NLA_ACCEPTED_CONTRACT: ConnectorReplayContract = ConnectorReplayContract {
+    connector_steps: 26,
+    outbound_frames: 17,
+    active_frames: 725,
+    active_x224_frames: 705,
+    active_fast_path_frames: 20,
+    active_response_frames: 29,
+    graphics_updates: 0,
+    deterministic_graphics_updates: 1,
+    outbound_prefix: &[
+        OutboundPdu::ConnectionRequest,
+        OutboundPdu::ConnectInitial,
+        OutboundPdu::ErectDomainRequest,
+        OutboundPdu::AttachUserRequest,
+        OutboundPdu::ChannelJoinRequest,
+        OutboundPdu::ChannelJoinRequest,
+        OutboundPdu::ChannelJoinRequest,
+        OutboundPdu::ChannelJoinRequest,
+        OutboundPdu::ChannelJoinRequest,
+        OutboundPdu::ChannelJoinRequest,
+        OutboundPdu::ChannelJoinRequest,
+        OutboundPdu::ClientInfo,
+    ],
+    session_data_frames: 34,
+    output_fingerprint: [
+        136, 13, 81, 145, 199, 202, 22, 19, 202, 244, 96, 188, 49, 170, 187, 64, 199, 213, 18, 148, 125, 103, 197, 10,
+        214, 215, 197, 191, 3, 121, 2, 194,
+    ],
+};
 /// A connector-driven capture workload.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConnectorReplayId {
@@ -64,7 +97,6 @@ pub struct ConnectorReplayWorkload {
     server_frames: Vec<Vec<u8>>,
     config: Config,
     channel_names: Vec<gcc::ChannelName>,
-    expected: ConnectorReplayMeasurement,
 }
 
 impl ConnectorReplayWorkload {
@@ -97,41 +129,39 @@ impl ConnectorReplayWorkload {
             ));
         }
 
-        let workload = Self {
+        Ok(Self {
             id,
             raw_server_confirm,
             server_frames,
             config,
             channel_names,
-            expected: ConnectorReplayMeasurement::default(),
-        };
-        let expected = workload.replay_once()?;
-        let repeated = workload.replay_once()?;
-        if repeated != expected {
-            return Err(ConnectorReplayError::new(format!(
-                "connector replay did not reset to stable output: expected {expected:?}, got {repeated:?}"
-            )));
-        }
-        Ok(Self { expected, ..workload })
+        })
     }
 
-    /// Run one fresh connector and active-session execution.
+    /// Strictly verify a fresh connector and active-session execution.
+    ///
+    /// This hashes the validated semantic output outside the timed path.
+    pub fn verify(&self) -> ConnectorReplayResult<ConnectorReplayMeasurement> {
+        let (measurement, output_fingerprint, outbound_pdus) = self.replay_once(true)?;
+        self.contract()
+            .validate(measurement, output_fingerprint, &outbound_pdus)
+    }
+
+    /// Run one fresh, hash-free connector and active-session execution.
     ///
     /// This includes constructing the connector, driving connection
     /// establishment, constructing the active stage from its result, and
     /// processing every decrypted server frame. TLS and CredSSP are not run.
     pub fn replay(&self) -> ConnectorReplayResult<ConnectorReplayMeasurement> {
-        let measurement = self.replay_once()?;
-        if measurement != self.expected {
-            return Err(ConnectorReplayError::new(
-                "connector replay output no longer matches its preflight".to_owned(),
-            ));
-        }
-        Ok(measurement)
+        let (measurement, _, outbound_pdus) = self.replay_once(false)?;
+        self.contract().validate(measurement, None, &outbound_pdus)
     }
 
-    fn replay_once(&self) -> ConnectorReplayResult<ConnectorReplayMeasurement> {
-        let mut connector = ClientConnector::new(self.config.clone(), "127.0.0.1:3389".parse().unwrap());
+    fn replay_once(
+        &self,
+        verify_output: bool,
+    ) -> ConnectorReplayResult<(ConnectorReplayMeasurement, Option<[u8; 32]>, Vec<OutboundPdu>)> {
+        let mut connector = ClientConnector::new(self.config.clone(), SocketAddr::from(([127, 0, 0, 1], 3389)));
         for name in &self.channel_names {
             if !connector.attach_dynamic_static_channel(OpaqueStaticChannel { name: name.clone() }) {
                 return Err(ConnectorReplayError::new(
@@ -140,18 +170,29 @@ impl ConnectorReplayWorkload {
             }
         }
 
-        let mut output_fingerprint = Sha256::new();
+        let mut output_fingerprint = verify_output.then(Sha256::new);
+        let mut outbound_pdus = Vec::new();
         let mut outbound_frames = 0;
         let mut connector_steps = 0;
 
         let initial_request = step_no_input(&mut connector, "send connection request")?;
         connector_steps += 1;
-        outbound_frames += validate_outbound_frames(&initial_request, "connection request", &mut output_fingerprint)?;
+        outbound_frames += validate_outbound_frames(
+            &initial_request,
+            "connection request",
+            output_fingerprint.as_mut(),
+            &mut outbound_pdus,
+        )?;
         validate_connection_request(&initial_request, &self.config)?;
 
         let confirm_output = step_input(&mut connector, &self.raw_server_confirm, "receive connection confirm")?;
         connector_steps += 1;
-        outbound_frames += validate_outbound_frames(&confirm_output, "connection confirm", &mut output_fingerprint)?;
+        outbound_frames += validate_outbound_frames(
+            &confirm_output,
+            "connection confirm",
+            output_fingerprint.as_mut(),
+            &mut outbound_pdus,
+        )?;
         if !connector.should_perform_security_upgrade() {
             return Err(ConnectorReplayError::new(
                 "connector did not stop at the TLS completion boundary".to_owned(),
@@ -196,7 +237,12 @@ impl ConnectorReplayWorkload {
                 step_no_input(&mut connector, "produce connector output")?
             };
             connector_steps += 1;
-            outbound_frames += validate_outbound_frames(&output, "connector response", &mut output_fingerprint)?;
+            outbound_frames += validate_outbound_frames(
+                &output,
+                "connector response",
+                output_fingerprint.as_mut(),
+                &mut outbound_pdus,
+            )?;
         }
 
         let ClientConnectorState::Connected { result } = connector.state else {
@@ -239,7 +285,8 @@ impl ConnectorReplayWorkload {
                         .iter()
                         .filter(|output| matches!(output, ActiveStageOutput::GraphicsUpdate(_)))
                         .count();
-                    active_response_frames += validate_active_outputs(&outputs, &mut output_fingerprint)?;
+                    active_response_frames +=
+                        validate_active_outputs(&outputs, output_fingerprint.as_mut(), &mut outbound_pdus)?;
                 }
                 Err(error) => {
                     return Err(ConnectorReplayError::new(format!(
@@ -263,28 +310,38 @@ impl ConnectorReplayWorkload {
             .iter()
             .filter(|output| matches!(output, ActiveStageOutput::GraphicsUpdate(_)))
             .count();
-        active_response_frames += validate_active_outputs(&deterministic_outputs, &mut output_fingerprint)?;
+        active_response_frames +=
+            validate_active_outputs(&deterministic_outputs, output_fingerprint.as_mut(), &mut outbound_pdus)?;
         if deterministic_graphics_updates != 1 {
             return Err(ConnectorReplayError::new(format!(
                 "deterministic active-stage bitmap produced {deterministic_graphics_updates} graphics updates"
             )));
         }
-        Ok(ConnectorReplayMeasurement {
-            connector_steps,
-            outbound_frames,
-            active_frames,
-            active_x224_frames,
-            active_fast_path_frames,
-            active_response_frames,
-            graphics_updates,
-            deterministic_graphics_updates,
-            output_fingerprint: output_fingerprint.finalize().into(),
-        })
+        Ok((
+            ConnectorReplayMeasurement {
+                connector_steps,
+                outbound_frames,
+                active_frames,
+                active_x224_frames,
+                active_fast_path_frames,
+                active_response_frames,
+                graphics_updates,
+                deterministic_graphics_updates,
+            },
+            output_fingerprint.map(|hasher| hasher.finalize().into()),
+            outbound_pdus,
+        ))
     }
 
     /// Stable workload identifier.
     pub const fn id(&self) -> ConnectorReplayId {
         self.id
+    }
+
+    const fn contract(&self) -> &ConnectorReplayContract {
+        match self.id {
+            ConnectorReplayId::NoNlaAccepted => &NO_NLA_ACCEPTED_CONTRACT,
+        }
     }
 }
 
@@ -307,8 +364,75 @@ pub struct ConnectorReplayMeasurement {
     pub graphics_updates: usize,
     /// Rendered updates produced by the deterministic post-capture bitmap.
     pub deterministic_graphics_updates: usize,
-    /// SHA-256 over the deterministic semantic envelope of outbound frames.
-    pub output_fingerprint: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ConnectorReplayContract {
+    connector_steps: usize,
+    outbound_frames: usize,
+    active_frames: usize,
+    active_x224_frames: usize,
+    active_fast_path_frames: usize,
+    active_response_frames: usize,
+    graphics_updates: usize,
+    deterministic_graphics_updates: usize,
+    outbound_prefix: &'static [OutboundPdu],
+    session_data_frames: usize,
+    output_fingerprint: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutboundPdu {
+    ConnectionRequest,
+    ConnectInitial,
+    ErectDomainRequest,
+    AttachUserRequest,
+    ChannelJoinRequest,
+    ClientInfo,
+    ClientNewLicenseRequest,
+    SessionData,
+}
+
+impl ConnectorReplayContract {
+    fn validate(
+        self,
+        measurement: ConnectorReplayMeasurement,
+        output_fingerprint: Option<[u8; 32]>,
+        outbound_pdus: &[OutboundPdu],
+    ) -> ConnectorReplayResult<ConnectorReplayMeasurement> {
+        if measurement.connector_steps != self.connector_steps
+            || measurement.outbound_frames != self.outbound_frames
+            || measurement.active_frames != self.active_frames
+            || measurement.active_x224_frames != self.active_x224_frames
+            || measurement.active_fast_path_frames != self.active_fast_path_frames
+            || measurement.active_response_frames != self.active_response_frames
+            || measurement.graphics_updates != self.graphics_updates
+            || measurement.deterministic_graphics_updates != self.deterministic_graphics_updates
+        {
+            return Err(ConnectorReplayError::new(format!(
+                "connector replay did not satisfy its immutable contract: expected {self:?}, got {measurement:?}"
+            )));
+        }
+        let (prefix, session_data) = outbound_pdus.split_at(outbound_pdus.len().min(self.outbound_prefix.len()));
+        if prefix != self.outbound_prefix
+            || session_data.len() != self.session_data_frames
+            || session_data.iter().any(|pdu| *pdu != OutboundPdu::SessionData)
+        {
+            return Err(ConnectorReplayError::new(format!(
+                "connector replay outbound PDU sequence changed: expected {:?} then {} session frames, got {outbound_pdus:?}",
+                self.outbound_prefix, self.session_data_frames
+            )));
+        }
+        if let Some(output_fingerprint) = output_fingerprint {
+            if output_fingerprint != self.output_fingerprint {
+                return Err(ConnectorReplayError::new(format!(
+                    "connector replay output fingerprint changed: expected {:?}, got {output_fingerprint:?}",
+                    self.output_fingerprint
+                )));
+            }
+        }
+        Ok(measurement)
+    }
 }
 
 /// Error returned when a connector replay cannot satisfy its contract.
@@ -512,13 +636,15 @@ fn step_input(connector: &mut ClientConnector, input: &[u8], description: &str) 
 fn validate_outbound_frames(
     frames: &[u8],
     description: &str,
-    output_fingerprint: &mut Sha256,
+    output_fingerprint: Option<&mut Sha256>,
+    outbound_pdus: &mut Vec<OutboundPdu>,
 ) -> ConnectorReplayResult<usize> {
     if frames.is_empty() {
         return Ok(0);
     }
     let mut offset = 0;
     let mut count = 0;
+    let mut output_fingerprint = output_fingerprint;
     while offset < frames.len() {
         let info = find_size(&frames[offset..])
             .map_err(|error| ConnectorReplayError::new(format!("frame {description}: {error}")))?
@@ -532,15 +658,58 @@ fn validate_outbound_frames(
             .checked_add(info.length)
             .filter(|&end| end <= frames.len())
             .ok_or_else(|| ConnectorReplayError::new(format!("truncated {description}")))?;
-        update_outbound_fingerprint(&frames[offset..end], output_fingerprint)?;
+        outbound_pdus.push(inspect_outbound_frame(&frames[offset..end])?);
+        if let Some(output_fingerprint) = output_fingerprint.as_deref_mut() {
+            update_outbound_fingerprint(&frames[offset..end], output_fingerprint)?;
+        }
         offset = end;
         count += 1;
     }
     Ok(count)
 }
 
+fn inspect_outbound_frame(frame: &[u8]) -> ConnectorReplayResult<OutboundPdu> {
+    if decode::<X224<nego::ConnectionRequest>>(frame).is_ok() {
+        return Ok(OutboundPdu::ConnectionRequest);
+    }
+    let payload = decode::<X224<X224Data<'_>>>(frame)
+        .map_err(|error| ConnectorReplayError::new(format!("decode outbound X.224 frame: {error}")))?
+        .0;
+    if decode::<mcs::ConnectInitial>(payload.data.as_ref()).is_ok() {
+        return Ok(OutboundPdu::ConnectInitial);
+    }
+    let message = decode::<X224<mcs::McsMessage<'_>>>(frame)
+        .map_err(|error| ConnectorReplayError::new(format!("decode outbound MCS frame: {error}")))?;
+    match message.0 {
+        mcs::McsMessage::ErectDomainRequest(_) => Ok(OutboundPdu::ErectDomainRequest),
+        mcs::McsMessage::AttachUserRequest(_) => Ok(OutboundPdu::AttachUserRequest),
+        mcs::McsMessage::ChannelJoinRequest(_) => Ok(OutboundPdu::ChannelJoinRequest),
+        mcs::McsMessage::SendDataRequest(data) => inspect_send_data(data.user_data.as_ref()),
+        _ => Err(ConnectorReplayError::new(
+            "connector replay produced an unexpected server-direction MCS frame".to_owned(),
+        )),
+    }
+}
+
+fn inspect_send_data(user_data: &[u8]) -> ConnectorReplayResult<OutboundPdu> {
+    if let Ok(client_info) = decode::<ClientInfoPdu>(user_data) {
+        assert_client_info_is_normalized(&client_info)?;
+        return Ok(OutboundPdu::ClientInfo);
+    }
+    if let Ok(license) = decode::<LicensePdu>(user_data) {
+        if !matches!(license, LicensePdu::ClientNewLicenseRequest(_)) {
+            return Err(ConnectorReplayError::new(
+                "connector replay produced an unexpected licensing PDU".to_owned(),
+            ));
+        }
+        return Ok(OutboundPdu::ClientNewLicenseRequest);
+    }
+    Ok(OutboundPdu::SessionData)
+}
+
 fn update_outbound_fingerprint(frame: &[u8], output_fingerprint: &mut Sha256) -> ConnectorReplayResult<()> {
     if decode::<X224<nego::ConnectionRequest>>(frame).is_ok() {
+        output_fingerprint.update(b"ConnectionRequest");
         output_fingerprint.update(frame);
         return Ok(());
     }
@@ -549,24 +718,28 @@ fn update_outbound_fingerprint(frame: &[u8], output_fingerprint: &mut Sha256) ->
         .0;
     if decode::<mcs::ConnectInitial>(payload.data.as_ref()).is_ok() {
         output_fingerprint.update(b"ConnectInitial");
-        output_fingerprint.update((frame.len() as u64).to_le_bytes());
+        output_fingerprint.update(frame);
         return Ok(());
     }
     let message = decode::<X224<mcs::McsMessage<'_>>>(frame)
         .map_err(|error| ConnectorReplayError::new(format!("decode outbound MCS frame: {error}")))?;
-    output_fingerprint.update((frame.len() as u64).to_le_bytes());
     match message.0 {
-        mcs::McsMessage::ErectDomainRequest(_) => output_fingerprint.update(b"ErectDomainRequest"),
-        mcs::McsMessage::AttachUserRequest(_) => output_fingerprint.update(b"AttachUserRequest"),
-        mcs::McsMessage::ChannelJoinRequest(_) => output_fingerprint.update(b"ChannelJoinRequest"),
+        mcs::McsMessage::ErectDomainRequest(_) => {
+            output_fingerprint.update(b"ErectDomainRequest");
+        }
+        mcs::McsMessage::AttachUserRequest(_) => {
+            output_fingerprint.update(b"AttachUserRequest");
+        }
+        mcs::McsMessage::ChannelJoinRequest(_) => {
+            output_fingerprint.update(b"ChannelJoinRequest");
+        }
         mcs::McsMessage::SendDataRequest(data) => {
-            // The production license state machine generates fresh secrets for
-            // its ClientNewLicenseRequest. Retain a deterministic envelope for
-            // every SendData request so the fingerprint remains comparable.
-            output_fingerprint.update(b"SendDataRequest");
-            output_fingerprint.update(data.initiator_id.to_le_bytes());
-            output_fingerprint.update(data.channel_id.to_le_bytes());
-            output_fingerprint.update((data.user_data.len() as u64).to_le_bytes());
+            update_send_data_fingerprint(
+                data.user_data.as_ref(),
+                data.initiator_id,
+                data.channel_id,
+                output_fingerprint,
+            )?;
         }
         _ => {
             return Err(ConnectorReplayError::new(
@@ -574,6 +747,75 @@ fn update_outbound_fingerprint(frame: &[u8], output_fingerprint: &mut Sha256) ->
             ));
         }
     }
+    Ok(())
+}
+
+fn update_send_data_fingerprint(
+    user_data: &[u8],
+    initiator_id: u16,
+    channel_id: u16,
+    output_fingerprint: &mut Sha256,
+) -> ConnectorReplayResult<()> {
+    output_fingerprint.update(b"SendDataRequest");
+    output_fingerprint.update(initiator_id.to_le_bytes());
+    output_fingerprint.update(channel_id.to_le_bytes());
+
+    if let Ok(client_info) = decode::<ClientInfoPdu>(user_data) {
+        assert_client_info_is_normalized(&client_info)?;
+        output_fingerprint.update(b"ClientInfo");
+        output_fingerprint.update(user_data);
+        return Ok(());
+    }
+
+    if let Ok(license) = decode::<LicensePdu>(user_data) {
+        let LicensePdu::ClientNewLicenseRequest(request) = license else {
+            return Err(ConnectorReplayError::new(
+                "connector replay produced an unexpected licensing PDU".to_owned(),
+            ));
+        };
+        return update_client_new_license_request_fingerprint(&request, output_fingerprint);
+    }
+
+    output_fingerprint.update(b"SessionData");
+    output_fingerprint.update(user_data);
+    Ok(())
+}
+
+fn assert_client_info_is_normalized(client_info: &ClientInfoPdu) -> ConnectorReplayResult<()> {
+    if !client_info.client_info.credentials.username.is_empty()
+        || !client_info.client_info.credentials.password.is_empty()
+        || client_info.client_info.credentials.domain.is_some()
+    {
+        return Err(ConnectorReplayError::new(
+            "connector replay produced non-normalized Client Info credentials".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn update_client_new_license_request_fingerprint(
+    request: &ClientNewLicenseRequest,
+    output_fingerprint: &mut Sha256,
+) -> ConnectorReplayResult<()> {
+    // MS-RDPELE 3.3.5.1/.2 requires a NEW_LICENSE_REQUEST when no cached
+    // license exists and specifies newly generated ClientRandom and premaster
+    // secret values. Those are the only intentionally omitted fields.
+    if request.license_header.preamble_message_type != PreambleType::NewLicenseRequest {
+        return Err(ConnectorReplayError::new(
+            "connector replay licensing output was not NEW_LICENSE_REQUEST".to_owned(),
+        ));
+    }
+    output_fingerprint.update(b"ClientNewLicenseRequest");
+    output_fingerprint.update(b"NewLicenseRequest");
+    output_fingerprint.update(request.license_header.security_header.flags.bits().to_le_bytes());
+    output_fingerprint.update(format!("{:?}", request.license_header.preamble_flags).as_bytes());
+    output_fingerprint.update(format!("{:?}", request.license_header.preamble_version).as_bytes());
+    output_fingerprint.update(request.license_header.preamble_message_size.to_le_bytes());
+    output_fingerprint.update(request.client_username.as_bytes());
+    output_fingerprint.update(request.client_machine_name.as_bytes());
+    let encrypted_premaster_secret_len = u64::try_from(request.encrypted_premaster_secret.len())
+        .map_err(|_| ConnectorReplayError::new("encrypted premaster secret length exceeds u64".to_owned()))?;
+    output_fingerprint.update(encrypted_premaster_secret_len.to_le_bytes());
     Ok(())
 }
 
@@ -591,13 +833,19 @@ fn complete_frame_info(frame: &[u8], description: &str) -> ConnectorReplayResult
 
 fn validate_active_outputs(
     outputs: &[ActiveStageOutput],
-    output_fingerprint: &mut Sha256,
+    output_fingerprint: Option<&mut Sha256>,
+    outbound_pdus: &mut Vec<OutboundPdu>,
 ) -> ConnectorReplayResult<usize> {
     let mut response_frames = 0;
+    let mut output_fingerprint = output_fingerprint;
     for output in outputs {
         if let ActiveStageOutput::ResponseFrame(frame) = output {
-            output_fingerprint.update(frame);
-            response_frames += validate_outbound_frames(frame, "active-stage response", output_fingerprint)?;
+            response_frames += validate_outbound_frames(
+                frame,
+                "active-stage response",
+                output_fingerprint.as_deref_mut(),
+                outbound_pdus,
+            )?;
         }
     }
     Ok(response_frames)
@@ -639,6 +887,8 @@ fn deterministic_bitmap_frame() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ironrdp::pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
+    use ironrdp::pdu::rdp::server_license::{PreambleFlags, PreambleVersion};
 
     #[test]
     fn rejects_unknown_connector_replay_id() {
@@ -667,6 +917,89 @@ mod tests {
 
     #[test]
     fn rejects_malformed_active_response() {
-        assert!(validate_active_outputs(&[ActiveStageOutput::ResponseFrame(vec![1])], &mut Sha256::new()).is_err());
+        assert!(
+            validate_active_outputs(
+                &[ActiveStageOutput::ResponseFrame(vec![1])],
+                Some(&mut Sha256::new()),
+                &mut Vec::new()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_fixed_contract_mismatch() {
+        let contract = ConnectorReplayContract {
+            connector_steps: 1,
+            outbound_frames: 1,
+            active_frames: 1,
+            active_x224_frames: 1,
+            active_fast_path_frames: 0,
+            active_response_frames: 1,
+            graphics_updates: 0,
+            deterministic_graphics_updates: 1,
+            outbound_prefix: &[],
+            session_data_frames: 0,
+            output_fingerprint: [0; 32],
+        };
+        let measurement = ConnectorReplayMeasurement {
+            connector_steps: 2,
+            ..ConnectorReplayMeasurement {
+                connector_steps: 1,
+                outbound_frames: 1,
+                active_frames: 1,
+                active_x224_frames: 1,
+                active_fast_path_frames: 0,
+                active_response_frames: 1,
+                graphics_updates: 0,
+                deterministic_graphics_updates: 1,
+            }
+        };
+        assert!(contract.validate(measurement, None, &[]).is_err());
+    }
+
+    #[test]
+    fn semantic_fingerprint_rejects_same_length_difference() {
+        let mut first = Sha256::new();
+        let mut second = Sha256::new();
+        let first_request = client_new_license_request("first");
+        let second_request = client_new_license_request("other");
+        update_client_new_license_request_fingerprint(&first_request, &mut first)
+            .expect("first test request must hash");
+        update_client_new_license_request_fingerprint(&second_request, &mut second)
+            .expect("second test request must hash");
+        assert_ne!(first.finalize(), second.finalize());
+    }
+
+    #[test]
+    fn semantic_fingerprint_ignores_only_license_secrets() {
+        let first = client_new_license_request("first");
+        let mut second = client_new_license_request("first");
+        second.client_random = vec![2; 32];
+        second.encrypted_premaster_secret = vec![3; 64];
+        let mut first_hash = Sha256::new();
+        let mut second_hash = Sha256::new();
+        update_client_new_license_request_fingerprint(&first, &mut first_hash).expect("first test request must hash");
+        update_client_new_license_request_fingerprint(&second, &mut second_hash)
+            .expect("second test request must hash");
+        assert_eq!(first_hash.finalize(), second_hash.finalize());
+    }
+
+    fn client_new_license_request(client_username: &str) -> ClientNewLicenseRequest {
+        ClientNewLicenseRequest {
+            license_header: ironrdp::pdu::rdp::server_license::LicenseHeader {
+                security_header: BasicSecurityHeader {
+                    flags: BasicSecurityHeaderFlags::LICENSE_PKT,
+                },
+                preamble_message_type: PreambleType::NewLicenseRequest,
+                preamble_flags: PreambleFlags::empty(),
+                preamble_version: PreambleVersion::V3,
+                preamble_message_size: 128,
+            },
+            client_random: vec![1; 32],
+            encrypted_premaster_secret: vec![1; 64],
+            client_username: client_username.to_owned(),
+            client_machine_name: "machine".to_owned(),
+        }
     }
 }

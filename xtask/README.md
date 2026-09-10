@@ -80,7 +80,7 @@ cargo bench -p ironrdp-bench --bench capture_replay -- 'partial-replay/no-nla-ac
 Use only `no-nla-accepted` and `no-nla-smartcard`; both are active partial replays with eight declared static-channel gaps.
 
 The connector-driven `no-nla-accepted` workload separately uses the real `ClientConnector` from X.224 negotiation through `ConnectionResult`, then creates an `ActiveStage` from that result and processes the remaining recorded server frames.
-It strictly preflights two identical fresh executions outside timing and measures one fresh connection-and-session execution against that semantic contract.
+It strictly verifies immutable connection, frame-routing, response, and output-semantic contracts outside timing, then measures one fresh hash-free connection-and-session execution against the same counters.
 The workload uses the capture's decrypted server traffic only; recorded client traffic supplies normalized configuration and channel-order expectations, never server input.
 TLS completion is an explicit external boundary: TLS handshake, certificate validation, and CredSSP authentication are excluded.
 The client license request contains production-generated secrets, so its validated MCS envelope, rather than its nondeterministic payload, participates in the stable output fingerprint.

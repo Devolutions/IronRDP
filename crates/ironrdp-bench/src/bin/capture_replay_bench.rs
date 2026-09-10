@@ -58,7 +58,7 @@ fn run() -> Result<(), String> {
         (None, Some(selector)) => {
             let id = ConnectorReplayId::from_str(&selector).map_err(|error| error.to_string())?;
             let workload = ConnectorReplayWorkload::prepare(id).map_err(|error| error.to_string())?;
-            let measurement = workload.replay().map_err(|error| error.to_string())?;
+            let measurement = workload.verify().map_err(|error| error.to_string())?;
             println!(
                 "workload=connector-replay/{}/connection-and-session\tconnector_steps={}\tactive_frames={}\tactive_x224_frames={}\tactive_fast_path_frames={}\tgraphics_updates={}",
                 workload.id().as_str(),
