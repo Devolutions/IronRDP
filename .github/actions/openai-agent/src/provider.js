@@ -1,7 +1,8 @@
 "use strict";
 
 const {
-  MAX_PROVIDER_ERROR_BYTES, MAX_REQUEST_TIMEOUT_MS,
+  MAX_OUTPUT_REJECTION_REASON_BYTES, MAX_OUTPUT_REJECTIONS, MAX_PROVIDER_ERROR_BYTES,
+  MAX_REQUEST_TIMEOUT_MS,
 } = require("./limits");
 
 const KNOWN_QUOTA_CODES = new Set([
@@ -11,6 +12,9 @@ const KNOWN_QUOTA_CODES = new Set([
   "quota_exhausted",
 ]);
 const SAFE_DIAGNOSTIC_VALUE = /^[A-Za-z0-9._:-]{1,128}$/;
+// Rejection reasons are assembled from the trusted output schema and from validator text that the
+// validator loader has already restricted, so this only bounds what a future caller could add.
+const UNSAFE_REASON_CHARACTER = /[^A-Za-z0-9 #.,:;()/_-]+/g;
 const RETRIES_REMAINING = "openai-agent-retries-remaining";
 const MAX_TIMEOUT = 2_147_483_647;
 
@@ -21,6 +25,7 @@ class RuntimeMetrics {
     this.activity = "input";
     this.requests = [];
     this.activeRequest = null;
+    this.outputRejections = [];
   }
 
   beginRequest(activity) {
@@ -85,6 +90,18 @@ class RuntimeMetrics {
     if (usage) attempt.usage = usage;
   }
 
+  // A rejected output attempt is the only evidence left of why a stage exhausted its repairs, so it
+  // is kept as bounded telemetry rather than being reduced to the exhaustion itself.
+  recordOutputRejection({ activity, layer, reason }) {
+    if (this.outputRejections.length >= MAX_OUTPUT_REJECTIONS) return;
+    this.outputRejections.push({
+      attempt: this.outputRejections.length + 1,
+      activity,
+      layer,
+      reason: sanitizeReason(reason),
+    });
+  }
+
   snapshot(details = {}) {
     const providerAttempts = this.requests.flatMap((request) => request.attempts.map((attempt) => ({
       activity: attempt.activity,
@@ -107,8 +124,22 @@ class RuntimeMetrics {
       providerFinishReason: finishReason || null,
       tokenUsage: usage,
       providerAttempts,
+      ...(this.outputRejections.length === 0
+        ? {}
+        : { outputRejections: this.outputRejections }),
     };
   }
+}
+
+// The alphabet is entirely ASCII, so what survives it measures the same in characters as in bytes and
+// the budget can be applied by slicing.
+function sanitizeReason(reason) {
+  return String(reason ?? "")
+    .replace(UNSAFE_REASON_CHARACTER, " ")
+    .replace(/ +/g, " ")
+    .trim()
+    .slice(0, MAX_OUTPUT_REJECTION_REASON_BYTES)
+    .trimEnd();
 }
 
 function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis.fetch, sleep = delay) {
@@ -328,5 +359,5 @@ function summarizeUsage(attempts) {
 }
 
 module.exports = {
-  RuntimeMetrics, createProviderClient, hasKnownQuotaCode, retryAfterMilliseconds,
+  RuntimeMetrics, createProviderClient, hasKnownQuotaCode, retryAfterMilliseconds, sanitizeReason,
 };

@@ -114,35 +114,33 @@ function diagnoseCandidate(candidate, { expectedSha, reviewer, changedPaths }) {
     return `reviewer must be exactly ${reviewer}`;
   }
   const findings = Array.isArray(candidate?.findings) ? candidate.findings : [];
-  for (const finding of findings) {
-    const id = typeof finding?.id === "string" ? finding.id : "an unnamed finding";
+  for (const [index, finding] of findings.entries()) {
     if (typeof finding?.path !== "string" || !changedPaths.has(finding.path)) {
-      return `finding ${id} must cite a path changed by this pull request`;
+      return `finding at index ${index} must cite a path changed by this pull request`;
     }
     const linesAreNull = finding.start_line === null && finding.end_line === null;
     const linesAreIntegers = Number.isSafeInteger(finding.start_line) && finding.start_line >= 1 &&
       Number.isSafeInteger(finding.end_line) && finding.end_line >= finding.start_line;
     if (!linesAreNull && !linesAreIntegers) {
-      return `finding ${id} must use integer lines with end_line at or after start_line, or null lines`;
+      return `finding at index ${index} must use integer lines with end_line at or after start_line, or null lines`;
     }
     if (reviewer !== "protocol" && Array.isArray(finding.references) && finding.references.length > 0) {
-      return `finding ${id} must not carry protocol references`;
+      return `finding at index ${index} must not carry protocol references`;
     }
   }
   return "";
 }
 
 function diagnoseProtocolReferences(candidate, corpus, corpusSha) {
-  for (const finding of candidate?.findings ?? []) {
-    const id = typeof finding?.id === "string" ? finding.id : "an unnamed finding";
+  for (const [index, finding] of (candidate?.findings ?? []).entries()) {
     if (!Array.isArray(finding?.references) || finding.references.length === 0) {
-      return `finding ${id} must cite at least one section of the pinned protocol corpus`;
+      return `finding at index ${index} must cite at least one section of the pinned protocol corpus`;
     }
     const result = validateProtocolReferences(finding.references, {
       corpus, expectedCorpusSha: corpusSha,
     });
     if (!result.ok) {
-      return `finding ${id} cites a protocol section that does not exist in the pinned corpus`;
+      return `finding at index ${index} cites a protocol section that does not exist in the pinned corpus`;
     }
   }
   return "";
@@ -151,6 +149,9 @@ function diagnoseProtocolReferences(candidate, corpus, corpusSha) {
 // The runtime keeps the model's first response as the repair baseline even when that response failed
 // the output schema, so a baseline entry the schema itself rejects is never demanded back: restoring
 // it could not pass either. Everything the schema would have accepted still has to survive.
+//
+// The runtime also reports every earlier parsed candidate, so a finding the model first added during
+// an intermediate repair is protected exactly like one it opened with.
 function findingCounts(review, identify, distinct) {
   const counts = new Map();
   for (const finding of Array.isArray(review?.findings) ? review.findings : []) {
@@ -160,12 +161,40 @@ function findingCounts(review, identify, distinct) {
   return counts;
 }
 
-function droppedFindings(current, previous, { identify, maximum, distinct = false }) {
-  const findings = Array.isArray(previous?.findings) ? previous.findings : [];
-  if (findings.length > maximum) return [];
+// A validator built before the runtime reported a history still supplies one candidate, so accept
+// either shape and let the ordered history win when it is present.
+function baselines(previousCandidate, candidates) {
+  if (Array.isArray(candidates) && candidates.length !== 0) return candidates;
+  return previousCandidate ? [previousCandidate] : [];
+}
+
+// A union across repairs is demanded back in full. Every baseline the schema itself rejects is
+// already excluded above, so a union that no longer fits the schema means the model has claimed more
+// distinct findings than any answer can carry. That cannot be repaired away, and quietly forgetting
+// the excess would let a repair drop a finding, so it fails the stage instead.
+function requiredFindings(history, { identify, maximum, distinct }) {
+  const required = new Map();
+  let total = 0;
+  for (const baseline of history) {
+    const findings = Array.isArray(baseline?.findings) ? baseline.findings : [];
+    if (findings.length > maximum) continue;
+    for (const [key, count] of findingCounts(baseline, identify, distinct)) {
+      const kept = required.get(key) ?? 0;
+      if (count <= kept) continue;
+      required.set(key, count);
+      total += count - kept;
+    }
+  }
+  if (total > maximum) {
+    throw terminal("repair accumulated more findings than one review can report");
+  }
+  return required;
+}
+
+function droppedFindings(current, history, { identify, maximum, distinct = false }) {
   const kept = findingCounts(current, identify, distinct);
   const dropped = [];
-  for (const [key, count] of findingCounts(previous, identify, distinct)) {
+  for (const [key, count] of requiredFindings(history, { identify, maximum, distinct })) {
     if ((kept.get(key) ?? 0) < count) dropped.push(key);
   }
   return dropped;
@@ -182,16 +211,16 @@ const finalIdentity = (finding) => {
   return title ? title.toLowerCase() : null;
 };
 
-function preservedCandidateFindings(candidate, previousCandidate) {
-  if (!previousCandidate) return "";
-  const dropped = droppedFindings(candidate, previousCandidate, {
+function preservedCandidateFindings(candidate, history) {
+  if (history.length === 0) return "";
+  const dropped = droppedFindings(candidate, history, {
     identify: candidateIdentity, maximum: CANDIDATE_LIMITS.maxItems,
     // The candidate validator rejects a repeated id, so a repair can only ever keep one of them.
     distinct: true,
   });
   return dropped.length === 0
     ? ""
-    : `repair must keep every earlier finding; restore ${dropped.slice(0, 5).join(", ")} and correct it instead of removing it`;
+    : "repair must keep every earlier finding; restore the missing findings and correct them instead of removing them";
 }
 
 const dispositionKey = (reviewer, findingId) => `${reviewer}\u0000${findingId}`;
@@ -220,14 +249,15 @@ function acceptedKeys(review, candidates) {
     .filter((key) => candidates.has(key)));
 }
 
-function preservedFinalFindings(review, previousReview, candidates) {
-  if (!previousReview) return "";
+function preservedFinalFindings(review, history, candidates) {
+  if (history.length === 0) return "";
   const current = acceptedKeys(review, candidates);
-  const withdrawn = [...acceptedKeys(previousReview, candidates)].filter((key) => !current.has(key));
-  if (withdrawn.length > 0) {
+  const withdrawn = history.some((baseline) =>
+    [...acceptedKeys(baseline, candidates)].some((key) => !current.has(key)));
+  if (withdrawn) {
     return "repair must not reject a candidate it previously accepted or refined; correct the finding instead";
   }
-  const dropped = droppedFindings(review, previousReview, {
+  const dropped = droppedFindings(review, history, {
     identify: finalIdentity, maximum: FINAL_LIMITS.maxItems,
   });
   return dropped.length === 0
@@ -235,7 +265,7 @@ function preservedFinalFindings(review, previousReview, candidates) {
     : "repair must keep every earlier finding; restore the one it dropped and correct it instead of replacing it";
 }
 
-function validateSpecialist(candidate, { metadata, previousCandidate } = {}) {
+function validateSpecialist(candidate, { metadata, previousCandidate, candidates } = {}) {
   if (metadata?.stage !== "specialist") throw terminal("validator metadata is not a specialist stage");
   const reviewer = requireString(metadata, "reviewer");
   if (!REVIEWER_ORDER.includes(reviewer)) throw terminal("validator metadata names an unknown reviewer");
@@ -243,7 +273,7 @@ function validateSpecialist(candidate, { metadata, previousCandidate } = {}) {
   const context = loadValidationContext(metadata);
   const changedPaths = new Set(context.changed_paths);
 
-  const preserved = preservedCandidateFindings(candidate, previousCandidate);
+  const preserved = preservedCandidateFindings(candidate, baselines(previousCandidate, candidates));
   if (preserved) return reject(preserved);
 
   const result = normalizeCandidateReview(candidate, {
@@ -266,7 +296,7 @@ function validateSpecialist(candidate, { metadata, previousCandidate } = {}) {
   return { ok: true };
 }
 
-function validateGeneral(review, { metadata, previousCandidate } = {}) {
+function validateGeneral(review, { metadata, previousCandidate, candidates } = {}) {
   if (metadata?.stage !== "general") throw terminal("validator metadata is not a general stage");
   const expectedSha = requireString(metadata, "expected_sha", SHA);
   const context = loadValidationContext(metadata);
@@ -275,7 +305,9 @@ function validateGeneral(review, { metadata, previousCandidate } = {}) {
     "the validated specialist findings",
   );
 
-  const preserved = preservedFinalFindings(review, previousCandidate, aggregateCandidateKeys(aggregate));
+  const preserved = preservedFinalFindings(
+    review, baselines(previousCandidate, candidates), aggregateCandidateKeys(aggregate),
+  );
   if (preserved) return reject(preserved);
 
   const result = validateFinalReview(review, {
@@ -293,10 +325,9 @@ function validateGeneral(review, { metadata, previousCandidate } = {}) {
     return reject(`head_sha must be exactly ${expectedSha}`);
   }
   const changedPaths = new Set(context.changed_paths);
-  for (const finding of review?.findings ?? []) {
-    const title = typeof finding?.title === "string" ? finding.title.slice(0, 60) : "an untitled finding";
+  for (const [index, finding] of (review?.findings ?? []).entries()) {
     if (typeof finding?.path !== "string" || !changedPaths.has(finding.path)) {
-      return reject(`finding ${title} must cite a path changed by this pull request`);
+      return reject(`finding at index ${index} must cite a path changed by this pull request`);
     }
   }
   return reject(`${result.reason}; record exactly one disposition per specialist candidate and cite only non-rejected candidates as sources`);

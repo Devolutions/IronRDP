@@ -401,12 +401,24 @@ test("main reports why repaired output remains invalid", async () => {
       this.chat = { completions: { create: async () => responses.shift() } };
     }
   }
-  const reason = "output remained invalid after the repair limit";
+  const reason =
+    "output remained invalid after the repair limit: json: response was not valid JSON";
   try {
     await main(core, { GITHUB_WORKSPACE: workspace.directory }, InvalidRepairOpenAI);
     assert.equal(core.outputs.get("structured-output"), "");
     assert.equal(core.outputs.get("failure-reason"), reason);
+    assert.equal(core.outputs.get("failure-category"), "output-invalid");
+    assert.equal(core.outputs.get("retryable"), "false");
     assert.equal(core.outputs.get("turn-count"), "2");
+    assert.deepEqual(JSON.parse(core.outputs.get("diagnostics")).outputRejections, [
+      {
+        attempt: 1,
+        activity: "investigating",
+        layer: "schema",
+        reason: "response did not match the schema: #/required: required answer; #/additionalProperties: additionalProperties",
+      },
+      { attempt: 2, activity: "repairing", layer: "json", reason: "response was not valid JSON" },
+    ]);
     assert.deepEqual(
       core.events.filter((event) => event[0] === "failed").map((event) => event[1]),
       [reason],
@@ -424,6 +436,72 @@ test("main reports why repaired output remains invalid", async () => {
     );
   } finally {
     workspace.cleanup();
+  }
+});
+
+test("review rejection diagnostics and failure logs never echo finding text", async () => {
+  const automation = path.resolve(__dirname, "..", "..", "..", "pr-automation");
+  const secret = "model-secret-sentinel";
+  const sha = "a".repeat(40);
+  const finding = {
+    question: false, severity: "low", path: `src/${secret}.rs`,
+    start_line: null, end_line: null, title: secret, rationale: secret, confidence: 0.5,
+  };
+  for (const scenario of ["specialist", "general", "preservation"]) {
+    const workspace = actionFixture();
+    const general = scenario === "general";
+    const candidate = {
+      head_sha: sha, summary: "review",
+      ...(general ? { candidate_dispositions: [] } : { reviewer: "skeptical" }),
+      findings: [{ ...finding, ...(general ? { sources: [] } : { id: secret, references: [] }) }],
+    };
+    const metadata = {
+      stage: general ? "general" : "specialist",
+      reviewer: "skeptical", expected_sha: sha,
+      validation_context_file: write(workspace.directory, "context.json", JSON.stringify({
+        changed_paths: ["src/lib.rs"], changed_lines: {},
+      })),
+      aggregate_file: write(workspace.directory, "aggregate.json", JSON.stringify({
+        head_sha: sha, reviewers: [],
+      })),
+    };
+    write(workspace.directory, "schema.json", fs.readFileSync(path.join(
+      automation, "schemas", general ? "final-review.json" : "candidate-review.json",
+    ), "utf8"));
+    write(workspace.directory, "validator.js",
+      `exports.validate = require(${JSON.stringify(path.join(automation, "agent-validator.js"))})` +
+      `.${general ? "validateGeneral" : "validateSpecialist"};`);
+    const core = mockCore({
+      "api-key": "key",
+      "base-url": "https://provider.example/v1",
+      "config-file": "config.json",
+      validator: "validator.js#validate",
+      "validator-metadata": JSON.stringify(metadata),
+    });
+    const responses = [candidate, scenario === "preservation" ? { ...candidate, findings: [] } : candidate];
+    class InvalidReviewOpenAI {
+      constructor() {
+        this.chat = { completions: { create: async () => ({
+          choices: [{ message: { content: JSON.stringify(responses.shift()) } }],
+        }) } };
+      }
+    }
+    try {
+      await main(core, { GITHUB_WORKSPACE: workspace.directory }, InvalidReviewOpenAI);
+      assert.equal(core.outputs.get("structured-output"), "");
+      assert.equal(core.outputs.get("failure-category"), "output-invalid");
+      const reason = core.outputs.get("failure-reason");
+      assert.match(reason, scenario === "preservation"
+        ? /restore the missing findings/
+        : /finding at index 0 must cite a path changed/);
+      const rejections = JSON.parse(core.outputs.get("diagnostics")).outputRejections;
+      assert.equal(rejections.length, 2);
+      assert.ok(rejections.every((entry) => entry.layer === "semantic"));
+      const emitted = core.events.filter(([kind]) => ["output", "info", "failed"].includes(kind));
+      assert.ok(!JSON.stringify(emitted).includes(secret), scenario);
+    } finally {
+      workspace.cleanup();
+    }
   }
 });
 
