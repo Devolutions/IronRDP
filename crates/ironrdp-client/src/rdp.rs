@@ -2142,8 +2142,33 @@ async fn connect_named_pipe(
     Box::pin(security_upgrade_and_finalize(framed, connector, config, None)).await
 }
 
-/// The joined iroh stream bundled with the [`iroh::endpoint::Connection`] and [`iroh::Endpoint`]
-/// that back it.
+/// Best-effort graceful close for a bound iroh [`Endpoint`](iroh::Endpoint).
+///
+/// `Endpoint`'s own `Drop` impl aborts the underlying socket and logs an `error!` if it is
+/// dropped without a prior call to `Endpoint::close`, instead of sending a QUIC close frame to
+/// the peer. Wrapping the endpoint in this guard right after `bind` — rather than only once it
+/// reaches [`IrohStream`] — ensures `connect`, `open_bi`, and the handshake write, which can all
+/// fail via `?` or be cancelled mid-await by `cancelable_operation`, still close it gracefully
+/// instead of aborting.
+#[cfg(feature = "iroh")]
+struct IrohEndpointGuard(iroh::Endpoint);
+
+#[cfg(feature = "iroh")]
+impl Drop for IrohEndpointGuard {
+    fn drop(&mut self) {
+        // Spawn a best-effort background task to close it gracefully; if no Tokio runtime is
+        // available (e.g. the process is already shutting down), skip it.
+        let endpoint = self.0.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                endpoint.close().await;
+            });
+        }
+    }
+}
+
+/// The joined iroh stream bundled with the [`iroh::endpoint::Connection`] and
+/// [`IrohEndpointGuard`] that back it.
 ///
 /// INVARIANT: the `Endpoint` outlives every stream it produced; dropping it early tears down its
 /// background driver task and kills any connection still in flight ("endpoint driver future was
@@ -2153,23 +2178,7 @@ async fn connect_named_pipe(
 struct IrohStream {
     stream: tokio::io::Join<iroh::endpoint::RecvStream, iroh::endpoint::SendStream>,
     _connection: iroh::endpoint::Connection,
-    _endpoint: iroh::Endpoint,
-}
-
-#[cfg(feature = "iroh")]
-impl Drop for IrohStream {
-    fn drop(&mut self) {
-        // `Endpoint`'s own `Drop` impl aborts the underlying socket and logs an `error!` if it is
-        // dropped without a prior call to `Endpoint::close`, instead of sending a QUIC close
-        // frame to the peer. Spawn a best-effort background task to close it gracefully; if no
-        // Tokio runtime is available (e.g. the process is already shutting down), skip it.
-        let endpoint = self._endpoint.clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                endpoint.close().await;
-            });
-        }
-    }
+    _endpoint: IrohEndpointGuard,
 }
 
 #[cfg(feature = "iroh")]
@@ -2227,8 +2236,12 @@ async fn connect_iroh(
         .bind()
         .await
         .map_err(|e| ironrdp_connector::custom_err!("iroh endpoint bind", e))?;
+    // Guard the endpoint from the moment it is bound, so a failure or cancellation in any of the
+    // steps below still closes it gracefully instead of aborting (see `IrohEndpointGuard`).
+    let endpoint = IrohEndpointGuard(endpoint);
 
     let connection = endpoint
+        .0
         .connect(addr, DUMBPIPE_ALPN)
         .await
         .map_err(|e| ironrdp_connector::custom_err!("iroh connect", e))?;

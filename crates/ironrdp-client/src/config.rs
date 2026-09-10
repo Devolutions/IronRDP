@@ -2220,6 +2220,15 @@ impl ConfigBuilder {
         });
         #[cfg(not(feature = "iroh"))]
         let iroh_transport: Option<TransportKind> = None;
+        #[cfg(not(feature = "iroh"))]
+        if ps.iroh_ticket().is_some() {
+            // Reject rather than silently falling through to another transport: the caller
+            // explicitly requested the iroh tunnel, and proceeding with e.g. direct TCP could
+            // route credentials to the wrong place instead of failing loudly.
+            anyhow::bail!(
+                "'ironrdp_iroh_ticket' property is set, but this build was compiled without the 'iroh' feature"
+            );
+        }
 
         self = if let Some(transport) = iroh_transport {
             // Route through `with_transport` so the sibling transport properties (e.g. a
@@ -2510,6 +2519,17 @@ mod tests {
 
         assert!(matches!(config.transport(), Transport::RDCleanPath(_)));
         assert_eq!(config.properties().iroh_ticket(), None);
+    }
+
+    #[cfg(not(feature = "iroh"))]
+    #[test]
+    fn property_set_rejects_iroh_ticket_when_iroh_feature_is_disabled() {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.set_iroh_ticket("iroh-ticket");
+
+        // Without the `iroh` feature, silently falling through to another transport (e.g. direct
+        // TCP) instead of erroring could route credentials to a host the caller never intended.
+        assert!(complete_builder().with_property_set(&properties).is_err());
     }
 
     #[cfg(feature = "gateway")]
