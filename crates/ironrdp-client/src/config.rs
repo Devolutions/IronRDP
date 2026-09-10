@@ -466,6 +466,14 @@ pub enum Transport {
         /// Full pipe path (`\\.\pipe\…`) or bare pipe name.
         path: String,
     },
+
+    /// Tunnel the RDP byte stream over an iroh (<https://github.com/n0-computer/iroh>) P2P QUIC
+    /// connection, wire-compatible with `dumbpipe` (<https://github.com/n0-computer/dumbpipe>).
+    #[cfg(feature = "iroh")]
+    Iroh {
+        /// Iroh ticket string identifying the remote endpoint to dial.
+        ticket: String,
+    },
 }
 
 /// Transport selection used to configure a [`ConfigBuilder`].
@@ -515,6 +523,16 @@ pub enum TransportKind {
     NamedPipe {
         /// Full pipe path (`\\.\pipe\…`) or bare pipe name.
         path: String,
+    },
+
+    /// Tunnel the RDP byte stream over an iroh P2P QUIC connection.
+    ///
+    /// Wire-compatible with `dumbpipe` (<https://github.com/n0-computer/dumbpipe>): no other
+    /// secrets are needed, the ticket is self-contained.
+    #[cfg(feature = "iroh")]
+    Iroh {
+        /// Iroh ticket string identifying the remote endpoint to dial.
+        ticket: String,
     },
 }
 
@@ -1237,11 +1255,15 @@ impl ConfigBuilder {
                 self.properties.clear_gateway();
                 #[cfg(windows)]
                 self.properties.clear_named_pipe();
+                #[cfg(feature = "iroh")]
+                self.properties.clear_iroh_ticket();
             }
             TransportKind::RDCleanPath { url } => {
                 self.properties.clear_gateway();
                 #[cfg(windows)]
                 self.properties.clear_named_pipe();
+                #[cfg(feature = "iroh")]
+                self.properties.clear_iroh_ticket();
                 self.properties.set_rdcleanpath_url(url.to_string());
             }
             #[cfg(feature = "gateway")]
@@ -1252,6 +1274,8 @@ impl ConfigBuilder {
                 self.properties.clear_rdcleanpath();
                 #[cfg(windows)]
                 self.properties.clear_named_pipe();
+                #[cfg(feature = "iroh")]
+                self.properties.clear_iroh_ticket();
                 self.properties.set_gateway_hostname(endpoint.clone());
                 self.properties.set_gateway_usage_method(if *prefer_direct {
                     ironrdp_cfg::GatewayUsageMethod::Detect
@@ -1263,7 +1287,17 @@ impl ConfigBuilder {
             TransportKind::NamedPipe { path } => {
                 self.properties.clear_rdcleanpath();
                 self.properties.clear_gateway();
+                #[cfg(feature = "iroh")]
+                self.properties.clear_iroh_ticket();
                 self.properties.set_named_pipe(path.clone());
+            }
+            #[cfg(feature = "iroh")]
+            TransportKind::Iroh { ticket } => {
+                self.properties.clear_rdcleanpath();
+                self.properties.clear_gateway();
+                #[cfg(windows)]
+                self.properties.clear_named_pipe();
+                self.properties.set_iroh_ticket(ticket.clone());
             }
         }
         self.transport = transport;
@@ -1833,6 +1867,8 @@ impl ConfigBuilder {
             }),
             #[cfg(windows)]
             TransportKind::NamedPipe { path } => Transport::NamedPipe { path },
+            #[cfg(feature = "iroh")]
+            TransportKind::Iroh { ticket } => Transport::Iroh { ticket },
         };
 
         #[cfg(feature = "vmconnect")]
@@ -2023,10 +2059,8 @@ impl ConfigBuilder {
     /// Only properties present in `ps` set values, so this can be layered:
     /// `explicit setters → PropertySet → more setters`, last writer wins. Resolution rules:
     /// `full address` beats `alternate full address`, an embedded port beats `server port`, and
-    /// transport precedence is RDCleanPath > Gateway > Direct.
+    /// transport precedence is Iroh > NamedPipe > RDCleanPath > Gateway > Direct.
     pub fn with_property_set(mut self, ps: &PropertySet) -> anyhow::Result<Self> {
-        #[cfg(feature = "gateway")]
-        use ironrdp_cfg::GatewayUsageMethod;
         use ironrdp_cfg::{AudioCaptureMode, AudioMode, TargetHost};
 
         self.properties.merge(ps);
@@ -2179,98 +2213,17 @@ impl ConfigBuilder {
             });
         }
 
-        // Transport: NamedPipe > RDCleanPath > Gateway > Direct.
-        #[cfg(windows)]
-        if let Some(path) = ps.named_pipe() {
-            self.transport = TransportKind::NamedPipe { path: path.to_owned() };
-        } else if let Some((url, token)) = ps.rdcleanpath_url().zip(ps.rdcleanpath_token()) {
-            let url = Url::parse(url).context("invalid 'ironrdp_rdcleanpathurl'")?;
-            self.transport = TransportKind::RDCleanPath { url };
-            self.rdcleanpath_token = Some(token.to_owned());
+        // Transport: Iroh > NamedPipe > RDCleanPath > Gateway > Direct.
+        #[cfg(feature = "iroh")]
+        if let Some(ticket) = ps.iroh_ticket() {
+            self.transport = TransportKind::Iroh {
+                ticket: ticket.to_owned(),
+            };
         } else {
-            #[cfg(feature = "gateway")]
-            {
-                let gateway_usage = ps
-                    .gateway_usage_method()
-                    .context("invalid Gateway usage method")?
-                    .unwrap_or_default();
-
-                let gateway_hostname = ps.gateway_hostname();
-
-                let select_gateway_transport = match gateway_usage {
-                    // Explicit gateway use.
-                    GatewayUsageMethod::UseAlways => Some(false),
-
-                    // Try direct first; fall back to gateway when a hostname is configured.
-                    GatewayUsageMethod::Detect if gateway_hostname.is_some() => Some(true),
-                    GatewayUsageMethod::Detect => None,
-
-                    // IronRDP does not currently resolve MSTSC/client/GPO default gateway policy.
-                    GatewayUsageMethod::UseDefaultSettings => None,
-
-                    // Explicit no-gateway modes.
-                    GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => None,
-                };
-
-                if let Some(prefer_direct) = select_gateway_transport {
-                    let endpoint = gateway_hostname.context("missing Gateway hostname")?;
-
-                    self.transport = TransportKind::Gateway {
-                        endpoint: endpoint.to_owned(),
-                        prefer_direct,
-                    };
-
-                    if let Some(user) = ps.gateway_username() {
-                        self.gateway_username = Some(user.to_owned());
-                    }
-
-                    if let Some(pass) = ps.gateway_password() {
-                        self.gateway_password = Some(pass.to_owned());
-                    }
-                }
-            }
+            self.resolve_named_pipe_or_rdcleanpath_or_gateway_transport(ps)?;
         }
-        #[cfg(not(windows))]
-        if let Some((url, token)) = ps.rdcleanpath_url().zip(ps.rdcleanpath_token()) {
-            let url = Url::parse(url).context("invalid 'ironrdp_rdcleanpathurl'")?;
-            self.transport = TransportKind::RDCleanPath { url };
-            self.rdcleanpath_token = Some(token.to_owned());
-        } else {
-            #[cfg(feature = "gateway")]
-            {
-                let gateway_usage = ps
-                    .gateway_usage_method()
-                    .context("invalid Gateway usage method")?
-                    .unwrap_or_default();
-
-                let gateway_hostname = ps.gateway_hostname();
-
-                let select_gateway_transport = match gateway_usage {
-                    GatewayUsageMethod::UseAlways => Some(false),
-                    GatewayUsageMethod::Detect if gateway_hostname.is_some() => Some(true),
-                    GatewayUsageMethod::Detect => None,
-                    GatewayUsageMethod::UseDefaultSettings => None,
-                    GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => None,
-                };
-
-                if let Some(prefer_direct) = select_gateway_transport {
-                    let endpoint = gateway_hostname.context("missing Gateway hostname")?;
-
-                    self.transport = TransportKind::Gateway {
-                        endpoint: endpoint.to_owned(),
-                        prefer_direct,
-                    };
-
-                    if let Some(user) = ps.gateway_username() {
-                        self.gateway_username = Some(user.to_owned());
-                    }
-
-                    if let Some(pass) = ps.gateway_password() {
-                        self.gateway_password = Some(pass.to_owned());
-                    }
-                }
-            }
-        }
+        #[cfg(not(feature = "iroh"))]
+        self.resolve_named_pipe_or_rdcleanpath_or_gateway_transport(ps)?;
 
         if let Some(redirect) = ps.redirect_clipboard() {
             #[cfg(feature = "clipboard")]
@@ -2321,6 +2274,72 @@ impl ConfigBuilder {
         self.dvc_plugins.extend(ps.dvc_plugins());
 
         Ok(self)
+    }
+
+    /// Resolve the non-Iroh transport precedence: NamedPipe > RDCleanPath > Gateway > Direct.
+    ///
+    /// Extracted out of [`with_property_set`](Self::with_property_set) so the Iroh precedence
+    /// check there (highest priority, checked first) does not have to duplicate this chain.
+    fn resolve_named_pipe_or_rdcleanpath_or_gateway_transport(&mut self, ps: &PropertySet) -> anyhow::Result<()> {
+        #[cfg(feature = "gateway")]
+        use ironrdp_cfg::GatewayUsageMethod;
+
+        #[cfg(windows)]
+        if let Some(path) = ps.named_pipe() {
+            self.transport = TransportKind::NamedPipe { path: path.to_owned() };
+            return Ok(());
+        }
+
+        if let Some((url, token)) = ps.rdcleanpath_url().zip(ps.rdcleanpath_token()) {
+            let url = Url::parse(url).context("invalid 'ironrdp_rdcleanpathurl'")?;
+            self.transport = TransportKind::RDCleanPath { url };
+            self.rdcleanpath_token = Some(token.to_owned());
+            return Ok(());
+        }
+
+        #[cfg(feature = "gateway")]
+        {
+            let gateway_usage = ps
+                .gateway_usage_method()
+                .context("invalid Gateway usage method")?
+                .unwrap_or_default();
+
+            let gateway_hostname = ps.gateway_hostname();
+
+            let select_gateway_transport = match gateway_usage {
+                // Explicit gateway use.
+                GatewayUsageMethod::UseAlways => Some(false),
+
+                // Try direct first; fall back to gateway when a hostname is configured.
+                GatewayUsageMethod::Detect if gateway_hostname.is_some() => Some(true),
+                GatewayUsageMethod::Detect => None,
+
+                // IronRDP does not currently resolve MSTSC/client/GPO default gateway policy.
+                GatewayUsageMethod::UseDefaultSettings => None,
+
+                // Explicit no-gateway modes.
+                GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => None,
+            };
+
+            if let Some(prefer_direct) = select_gateway_transport {
+                let endpoint = gateway_hostname.context("missing Gateway hostname")?;
+
+                self.transport = TransportKind::Gateway {
+                    endpoint: endpoint.to_owned(),
+                    prefer_direct,
+                };
+
+                if let Some(user) = ps.gateway_username() {
+                    self.gateway_username = Some(user.to_owned());
+                }
+
+                if let Some(pass) = ps.gateway_password() {
+                    self.gateway_password = Some(pass.to_owned());
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

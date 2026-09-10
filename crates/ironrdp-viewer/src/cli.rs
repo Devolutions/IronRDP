@@ -97,6 +97,12 @@ struct Args {
     #[clap(short, long, env = "RDP_PASSWORD", hide_env_values = true)]
     password: Option<String>,
 
+    /// Connect over an iroh (<https://github.com/n0-computer/iroh>) P2P QUIC tunnel using the
+    /// given ticket string, instead of a direct TCP connection. Takes precedence over
+    /// `--rdcleanpath-url` and `--gw-endpoint`.
+    #[clap(long, value_name = "TICKET")]
+    iroh_ticket: Option<String>,
+
     /// Proxy URL to connect to for the RDCleanPath
     ///
     /// The accompanying token may be supplied via `--rdcleanpath-token` or entered interactively.
@@ -442,7 +448,7 @@ fn apply_cli_to_builder(
         builder = builder.with_fake_events_interval(Duration::from_secs(u64::from(minutes) * 60));
     }
 
-    // Transport overrides: RDCleanPath takes precedence over Gateway.
+    // Transport overrides: Iroh > RDCleanPath > Gateway.
     if let Some(vm_id) = args.vmconnect {
         let mode = if args.vmconnect_basic {
             VmConnectMode::Basic
@@ -456,7 +462,9 @@ fn apply_cli_to_builder(
         builder = builder.with_vmconnect_current_user(true);
     }
 
-    if let Some(url) = args.rdcleanpath_url {
+    if let Some(ticket) = args.iroh_ticket {
+        builder = builder.with_transport(TransportKind::Iroh { ticket });
+    } else if let Some(url) = args.rdcleanpath_url {
         builder = builder.with_transport(TransportKind::RDCleanPath { url });
 
         if let Some(token) = args.rdcleanpath_token {

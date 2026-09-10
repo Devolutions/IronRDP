@@ -12,6 +12,10 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+# Tunnel the RDP stream over an iroh P2P QUIC connection instead of a direct TCP connection.
+iroh = ["ironrdp-client/iroh"]
+
 [dependencies]
 ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["rustls", "dvc-pipe-proxy", "rdpdr", "smartcard", "vmconnect", "gateway", "clipboard"] } # public
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }

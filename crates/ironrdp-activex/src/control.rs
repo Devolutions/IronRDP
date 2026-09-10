@@ -3457,6 +3457,8 @@ fn active_x_transport_from_client_transport(
         Transport::RDCleanPath(rdcleanpath) => Ok(ActiveXTransport::RDCleanPath(rdcleanpath.clone())),
         // Named-pipe RDP (e.g. Windows Sandbox) is agent/desktop-client only.
         Transport::NamedPipe { .. } => Err("Windows named-pipe transport is not supported by the ActiveX host"),
+        // Iroh P2P tunneling is agent/desktop-client only.
+        Transport::Iroh { .. } => Err("Iroh transport is not supported by the ActiveX host"),
     }
 }
 
@@ -11242,6 +11244,10 @@ impl Control {
                 // Rejected by `active_x_transport_from_client_transport` before settings apply.
                 Transport::NamedPipe { .. } => {
                     unreachable!("NamedPipe must fail RPC connect before compatibility settings")
+                }
+                // Rejected by `active_x_transport_from_client_transport` before settings apply.
+                Transport::Iroh { .. } => {
+                    unreachable!("Iroh must fail RPC connect before compatibility settings")
                 }
             }
         }

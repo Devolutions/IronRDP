@@ -1,9 +1,13 @@
 use core::net::SocketAddr;
 use core::num::NonZeroU16;
+#[cfg(feature = "iroh")]
+use core::pin::Pin;
 #[cfg(feature = "rdpdr")]
 use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "location")]
 use core::sync::atomic::{AtomicU8, Ordering as LocationOrdering};
+#[cfg(feature = "iroh")]
+use core::task::{Context, Poll};
 use core::time::Duration;
 use std::io;
 use std::sync::Arc;
@@ -58,6 +62,8 @@ use ironrdp_svc::SvcMessage;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
 use smallvec::SmallVec;
+#[cfg(feature = "iroh")]
+use tokio::io::ReadBuf;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -956,6 +962,44 @@ impl RdpClient {
                     connect_named_pipe(
                         &self.config,
                         path,
+                        &self.input_event_sender,
+                        &self.output_event_sender,
+                        cliprdr_factory,
+                        rdpdr_factory,
+                        reconnect_cookie,
+                    ),
+                    &mut self.close_receiver,
+                ))
+                .await
+                {
+                    Some(Ok(result)) => result,
+                    Some(Err(error)) => {
+                        if self
+                            .try_auto_reconnect(
+                                auto_reconnect_policy,
+                                &mut reconnect_attempt,
+                                auto_reconnect_cookie.as_ref(),
+                            )
+                            .await
+                        {
+                            continue;
+                        }
+                        if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
+                            self.emit_user_initiated_termination();
+                        }
+                        break;
+                    }
+                    None => {
+                        self.emit_user_initiated_termination();
+                        break;
+                    }
+                },
+
+                #[cfg(feature = "iroh")]
+                Transport::Iroh { ticket } => match Box::pin(cancelable_operation(
+                    connect_iroh(
+                        &self.config,
+                        ticket,
                         &self.input_event_sender,
                         &self.output_event_sender,
                         cliprdr_factory,
@@ -2084,6 +2128,112 @@ async fn connect_named_pipe(
     // Named pipes have no socket address; use a dummy loopback address for Client Info.
     let client_addr = SocketAddr::from(([127, 0, 0, 1], 0));
     let framed = ironrdp_tokio::TokioFramed::new(stream);
+    let connector = build_connector(
+        config,
+        client_addr,
+        (input_sender, output_event_sender),
+        cliprdr_factory,
+        rdpdr_factory,
+        true,
+        false,
+        auto_reconnect_cookie,
+    )?;
+
+    Box::pin(security_upgrade_and_finalize(framed, connector, config, None)).await
+}
+
+/// The joined iroh stream bundled with the [`iroh::endpoint::Connection`] and [`iroh::Endpoint`]
+/// that back it.
+///
+/// INVARIANT: the `Endpoint` outlives every stream it produced; dropping it early tears down its
+/// background driver task and kills any connection still in flight ("endpoint driver future was
+/// dropped"). Bundling both alongside the stream ties their lifetime to the RDP session's I/O
+/// object instead of the `connect_iroh` stack frame, which returns long before the session ends.
+#[cfg(feature = "iroh")]
+struct IrohStream {
+    stream: tokio::io::Join<iroh::endpoint::RecvStream, iroh::endpoint::SendStream>,
+    _connection: iroh::endpoint::Connection,
+    _endpoint: iroh::Endpoint,
+}
+
+#[cfg(feature = "iroh")]
+impl AsyncRead for IrohStream {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().stream).poll_read(cx, buf)
+    }
+}
+
+#[cfg(feature = "iroh")]
+impl AsyncWrite for IrohStream {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().stream).poll_shutdown(cx)
+    }
+}
+
+/// Tunnel the RDP byte stream over an iroh (<https://github.com/n0-computer/iroh>) P2P QUIC
+/// connection.
+///
+/// Wire-compatible with `dumbpipe` (<https://github.com/n0-computer/dumbpipe>): dials the
+/// ticket's endpoint on dumbpipe's default ALPN and writes its 5-byte handshake before the RDP
+/// stream starts, so an unmodified `dumbpipe listen-tcp` instance can forward the tunnel to a
+/// real RDP server.
+#[cfg(feature = "iroh")]
+async fn connect_iroh(
+    config: &Config,
+    ticket: &str,
+    input_sender: &RdpInputSender,
+    output_event_sender: &crate::output_channel::OutputEventSender,
+    cliprdr_factory: CliprdrFactoryRef<'_>,
+    rdpdr_factory: RdpdrFactoryRef<'_>,
+    auto_reconnect_cookie: Option<&ServerAutoReconnect>,
+) -> ConnectorResult<ConnectOutput> {
+    // `dumbpipe`'s default ALPN and 5-byte handshake, sent by the connecting side right after
+    // opening the bidirectional stream and before any payload bytes.
+    const DUMBPIPE_ALPN: &[u8] = b"DUMBPIPEV0";
+    const DUMBPIPE_HANDSHAKE: [u8; 5] = *b"hello";
+
+    let ticket: iroh_tickets::endpoint::EndpointTicket = ticket
+        .parse()
+        .map_err(|e| ironrdp_connector::custom_err!("invalid iroh ticket", e))?;
+    let addr = ticket.endpoint_addr().clone();
+
+    info!(?addr, "Connecting over iroh");
+
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+        .bind()
+        .await
+        .map_err(|e| ironrdp_connector::custom_err!("iroh endpoint bind", e))?;
+
+    let connection = endpoint
+        .connect(addr, DUMBPIPE_ALPN)
+        .await
+        .map_err(|e| ironrdp_connector::custom_err!("iroh connect", e))?;
+
+    let (mut send, recv) = connection
+        .open_bi()
+        .await
+        .map_err(|e| ironrdp_connector::custom_err!("iroh open stream", e))?;
+
+    send.write_all(&DUMBPIPE_HANDSHAKE)
+        .await
+        .map_err(|e| ironrdp_connector::custom_err!("iroh handshake write", e))?;
+
+    // The iroh tunnel has no traditional socket address; use a dummy loopback address for
+    // Client Info, same as the named-pipe transport.
+    let client_addr = SocketAddr::from(([127, 0, 0, 1], 0));
+    let framed = ironrdp_tokio::TokioFramed::new(IrohStream {
+        stream: tokio::io::join(recv, send),
+        _connection: connection,
+        _endpoint: endpoint,
+    });
     let connector = build_connector(
         config,
         client_addr,

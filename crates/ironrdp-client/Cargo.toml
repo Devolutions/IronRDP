@@ -54,6 +54,9 @@ udp = [
     "dep:ironrdp-rdpeudp-tokio",
     "ironrdp-rdpeudp-tokio/rustls-aws-lc-rs",
 ]
+# Tunnel the RDP stream over an iroh (https://github.com/n0-computer/iroh) P2P QUIC connection,
+# wire-compatible with `dumbpipe` (https://github.com/n0-computer/dumbpipe).
+iroh = ["dep:iroh", "dep:iroh-tickets"]
 
 all = [
     "sound",
@@ -67,6 +70,7 @@ all = [
     "vmconnect",
     "location",
     "udp",
+    "iroh",
 ]
 
 [dependencies]
@@ -112,6 +116,18 @@ tracing = { version = "0.1", features = ["log"] }
 tokio = { version = "1", features = ["macros", "net", "io-util", "sync", "rt", "time"] }
 tokio-tungstenite = "0.29"
 futures-util = { version = "0.3", features = ["sink"] }
+
+# Iroh P2P transport (activated by the 'iroh' feature). `tls-aws-lc-rs` is selected in place of
+# iroh's default `tls-ring` so that the `rustls` crate is built with a single crypto backend
+# (matching `ironrdp-tls`'s `rustls-aws-lc-rs` default); otherwise `rustls::ClientConfig::builder()`
+# can no longer auto-detect the process-level `CryptoProvider` and panics at connection time.
+iroh = { version = "1", optional = true, default-features = false, features = [
+    "metrics",
+    "fast-apple-datapath",
+    "portmapper",
+    "tls-aws-lc-rs",
+] }
+iroh-tickets = { version = "1", optional = true }
 
 # Utils
 anyhow = "1"

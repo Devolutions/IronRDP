@@ -633,6 +633,13 @@ pub trait PropertySetExt {
     /// Removes the `ironrdp_named_pipe` property.
     fn clear_named_pipe(&mut self);
 
+    /// Iroh ticket for tunneling RDP over an iroh P2P QUIC connection (`ironrdp_iroh_ticket`).
+    fn iroh_ticket(&self) -> Option<&str>;
+    /// Sets the `ironrdp_iroh_ticket` property.
+    fn set_iroh_ticket(&mut self, value: impl Into<String>);
+    /// Removes the `ironrdp_iroh_ticket` property.
+    fn clear_iroh_ticket(&mut self);
+
     /// Select the Hyper-V basic console instead of Enhanced Session mode (`ironrdp_vmconnect_basic`).
     fn vmconnect_basic(&self) -> Option<bool>;
     /// Sets the `ironrdp_vmconnect_basic` property.
@@ -1248,6 +1255,24 @@ impl PropertySetExt for PropertySet {
 
     fn clear_named_pipe(&mut self) {
         self.remove("ironrdp_named_pipe");
+    }
+
+    /// Iroh ticket for tunneling RDP over an iroh P2P QUIC connection.
+    ///
+    /// The ticket encodes the target endpoint's address (see the `iroh`/`iroh-tickets` crates,
+    /// https://github.com/n0-computer/iroh). When set, the client dials the iroh endpoint
+    /// instead of opening a TCP socket, using a wire protocol compatible with `dumbpipe`
+    /// (https://github.com/n0-computer/dumbpipe).
+    fn iroh_ticket(&self) -> Option<&str> {
+        self.get::<&str>("ironrdp_iroh_ticket")
+    }
+
+    fn set_iroh_ticket(&mut self, value: impl Into<String>) {
+        self.insert("ironrdp_iroh_ticket", value.into());
+    }
+
+    fn clear_iroh_ticket(&mut self) {
+        self.remove("ironrdp_iroh_ticket");
     }
 
     fn vmconnect_basic(&self) -> Option<bool> {

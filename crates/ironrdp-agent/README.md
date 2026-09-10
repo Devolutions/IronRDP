@@ -133,6 +133,21 @@ ironrdp-agent connect --sandbox-pipe \\.\pipe\{VMId} -u WDAGUtilityAccount -p <p
 NamedPipe remains the default Windows Sandbox transport.
 Use VMConnect for Hyper-V VMs rather than replacing the Sandbox recipe.
 
+## Iroh P2P transport
+
+Building with `--features iroh` lets the daemon tunnel the RDP stream over an [iroh](https://github.com/n0-computer/iroh) P2P QUIC connection instead of a direct TCP connection.
+It is cross-platform and wire-compatible with `dumbpipe`'s `DUMBPIPEV0` ALPN and 5-byte handshake.
+There is no dedicated CLI flag; set the `ironrdp_iroh_ticket` property to an iroh `EndpointTicket` string through the existing `--prop` override.
+Iroh takes precedence over NamedPipe, RDCleanPath, Gateway, and Direct transports when present.
+
+```powershell
+ironrdp-agent daemon-start
+ironrdp-agent connect --server placeholder:3389 --prop ironrdp_iroh_ticket:s:<ticket> -u user -p password
+```
+
+`--server` is still required to populate the RDP hostname and Client Info fields, even though the ticket determines where the connection actually goes.
+Obtain a ticket by running a socat-like iroh forwarder (e.g. `dumbpipe listen-tcp --host <target>:3389`) pointed at the target RDP server; it prints a ticket string to pass here.
+
 ## Prebuilt binaries
 
 Prebuilt, checksummed archives are attached to each GitHub Release under the `ironrdp-agent-v*`

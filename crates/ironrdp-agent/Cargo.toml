@@ -19,6 +19,11 @@ name = "ironrdp-agent"
 path = "src/main.rs"
 test = false
 
+[features]
+# Tunnel the RDP stream over an iroh (https://github.com/n0-computer/iroh) P2P QUIC connection
+# instead of a direct TCP connection. Pass a ticket via the `ironrdp_iroh_ticket` property.
+iroh = ["ironrdp-daemon/iroh"]
+
 [dependencies]
 # Configuration model and codecs
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }
