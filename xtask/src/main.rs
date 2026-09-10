@@ -62,7 +62,7 @@ fn main() -> anyhow::Result<()> {
                 list_files(&sh, local_bin())?;
             }
         }
-        Action::BenchCorpusFetch => bench::corpus_fetch()?,
+        Action::BenchCorpusFetch => bench::corpus_fetch(&sh)?,
         Action::BenchCorpusList => bench::corpus_list()?,
         Action::CheckFmt => check::fmt(&sh)?,
         Action::CheckLints => check::lints(&sh)?,

@@ -15,7 +15,6 @@ xshell = "0.2"
 tinyjson = "2.5"
 sha2 = "0.10"
 toml = "1.1"
-ureq = "3"
 
 [lints]
 workspace = true

@@ -1,9 +1,10 @@
 use std::collections::BTreeSet;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use sha2::{Digest as _, Sha256};
+use xshell::{Shell, cmd};
 
 const MANIFEST_PATH: &str = "crates/ironrdp-bench/corpus.toml";
 const CACHE_ROOT: &str = "dependencies/wireshark-rdp";
@@ -30,7 +31,7 @@ enum CacheState {
     Corrupt(String),
 }
 
-pub fn corpus_fetch() -> anyhow::Result<()> {
+pub fn corpus_fetch(sh: &Shell) -> anyhow::Result<()> {
     let corpus = load_corpus()?;
     let cache_dir = project_root().join(CACHE_ROOT).join(&corpus.revision).join("captures");
 
@@ -59,7 +60,7 @@ pub fn corpus_fetch() -> anyhow::Result<()> {
         );
         let temporary_path = temporary_path(&cache_path)?;
 
-        download(&url, &temporary_path, &capture.sha256)?;
+        download(sh, &url, &temporary_path, &capture.sha256)?;
 
         install_capture(&temporary_path, &cache_path)?;
         println!("Fetched and verified: {}", capture.file);
@@ -158,45 +159,30 @@ fn inspect_cache(path: &Path, capture: &Capture) -> anyhow::Result<CacheState> {
     }
 }
 
-fn download(url: &str, temporary_path: &Path, expected_sha256: &str) -> anyhow::Result<()> {
-    let response = ureq::get(url)
-        .call()
-        .with_context(|| format!("download capture from {url}"))?;
-    let mut body = response.into_body().into_reader();
-    write_verified(&mut body, temporary_path, expected_sha256)
+fn download(sh: &Shell, url: &str, temporary_path: &Path, expected_sha256: &str) -> anyhow::Result<()> {
+    let result = cmd!(sh, "curl --fail --location --output {temporary_path} {url}")
+        .run()
+        .with_context(|| format!("download capture from {url}"));
+
+    if let Err(error) = result {
+        remove_partial_download(temporary_path)?;
+        return Err(error);
+    }
+
+    if let Err(error) = verify_file(temporary_path, expected_sha256) {
+        remove_partial_download(temporary_path)?;
+        return Err(error);
+    }
+
+    Ok(())
 }
 
-fn write_verified(reader: &mut dyn std::io::Read, temporary_path: &Path, expected_sha256: &str) -> anyhow::Result<()> {
-    let mut temporary = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(temporary_path)
-        .with_context(|| format!("create partial download: {}", temporary_path.display()))?;
-
-    let result = copy_and_hash(reader, &mut temporary).and_then(|actual_sha256| {
-        temporary
-            .sync_all()
-            .with_context(|| format!("sync partial download: {}", temporary_path.display()))?;
-        Ok(actual_sha256)
-    });
-    drop(temporary);
-
-    let actual_sha256 = match result {
-        Ok(actual_sha256) => actual_sha256,
-        Err(error) => {
-            fs::remove_file(temporary_path)
-                .with_context(|| format!("remove failed partial download: {}", temporary_path.display()))?;
-            return Err(error);
-        }
-    };
-
-    if actual_sha256 != expected_sha256 {
-        fs::remove_file(temporary_path)
-            .with_context(|| format!("remove failed partial download: {}", temporary_path.display()))?;
-        anyhow::bail!(
-            "download digest mismatch for {}: expected {expected_sha256}, got {actual_sha256}",
-            temporary_path.display()
-        );
+fn remove_partial_download(path: &Path) -> anyhow::Result<()> {
+    if path
+        .try_exists()
+        .with_context(|| format!("inspect partial download: {}", path.display()))?
+    {
+        fs::remove_file(path).with_context(|| format!("remove failed partial download: {}", path.display()))?;
     }
 
     Ok(())
@@ -333,7 +319,6 @@ fn is_lower_hex(value: &str, expected_length: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
-    use std::io::Cursor;
 
     use super::*;
 
@@ -425,13 +410,14 @@ intent = "A direct RDP session accepted by the server."
     }
 
     #[test]
-    fn partial_download_does_not_install_cache_entry() {
+    fn invalid_download_does_not_install_cache_entry() {
         let directory = test_directory();
         let cache_path = directory.join("accepted-rdp.pcapng");
         let partial_path = temporary_path(&cache_path).expect("temporary path");
-        let mut source = Cursor::new(b"wrong");
+        fs::write(&partial_path, b"wrong").expect("write partial download");
 
-        assert!(write_verified(&mut source, &partial_path, SHA256_ABC).is_err());
+        assert!(verify_file(&partial_path, SHA256_ABC).is_err());
+        remove_partial_download(&partial_path).expect("remove failed partial download");
         assert!(!cache_path.exists());
         assert!(!partial_path.exists());
 
