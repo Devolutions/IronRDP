@@ -440,20 +440,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
-name = "benches"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytesize",
- "ironrdp",
- "pico-args",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2688,10 +2674,18 @@ dependencies = [
 name = "ironrdp-bench"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytesize",
  "criterion",
+ "ironrdp",
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-server",
+ "pico-args",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

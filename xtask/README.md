@@ -34,5 +34,28 @@ Keep generated benchmark output under `bench-data/benchmark-output`, separate fr
 The ignored `bench-data` directory must never be committed.
 Capture-based commands must work from the verified local cache and must not perform network I/O after this explicit fetch step.
 
+## Codec and server encoding benchmarks
+
+Run focused Criterion workloads with:
+
+```PowerShell
+cargo bench -p ironrdp-bench -p ironrdp-bulk --bench bench --bench bulk_compression --locked
+```
+
+The graphics fixtures contain deterministic nonzero ARGB data and expose each encoder's output length.
+Bulk compression measures supported 4 KiB cold and stateful-history streams separately, resetting state before every history sequence.
+The separately named 16 KiB passthrough cases document the production size threshold and do not claim to measure compression.
+
+Build the server-encoding binary before measuring it with Hyperfine so compilation is outside the measured process:
+
+```PowerShell
+cargo build --release -p ironrdp-bench --bin perfenc --locked
+hyperfine --warmup 1 '.\target\release\perfenc.exe --width 1920 --height 1080 input.rgbx'
+```
+
+`perfenc` reads headerless RGBX frames, allocates and reads each frame, then encodes it with one persistent server encoder.
+Its default is unpaced and emits one final payload-free summary after it confirms that every input frame produced output.
+Pass `--fps <FPS>` only for interactive playback pacing.
+
 To update the corpus, inspect the upstream capture inventory, revise the manifest revision, inventory, scenario intent metadata, replay expectations, and SHA-256 digests together, then run `cargo xtask bench corpus-fetch` followed by `cargo xtask bench replay`.
 Do not commit captures, TLS key material, decrypted payloads, screenshots, or generated output.

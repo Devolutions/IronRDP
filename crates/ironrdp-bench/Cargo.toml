@@ -5,11 +5,34 @@ description = "IronRDP benchmarks"
 edition.workspace = true
 publish = false
 
+[features]
+default = ["qoi", "qoiz"]
+qoi = ["ironrdp/qoi"]
+qoiz = ["ironrdp/qoiz"]
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+bytesize = "2.3"
+ironrdp = { path = "../ironrdp", features = [
+    "server",
+    "pdu",
+    "__bench",
+] }
+pico-args = "0.5"
+tokio = { version = "1", features = ["sync", "fs", "time"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = { version = "0.1", features = ["log"] }
+
 [dev-dependencies]
 criterion = "0.8"
 ironrdp-graphics.path = "../ironrdp-graphics"
 ironrdp-pdu.path = "../ironrdp-pdu"
 ironrdp-server = { path = "../ironrdp-server", features = ["__bench"] }
+
+[[bin]]
+name = "perfenc"
+path = "src/bin/perfenc.rs"
 
 [[bench]]
 name = "bench"

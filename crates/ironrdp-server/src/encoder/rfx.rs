@@ -235,16 +235,22 @@ pub(crate) mod bench {
         algo: rfx::EntropyAlgorithm,
         tile_x: usize,
         tile_y: usize,
-    ) {
+    ) -> usize {
         let (enc, mut data) = UpdateEncoder::new(bitmap, quant.clone(), algo);
 
-        enc.encode_tile(tile_x, tile_y, &mut data.0)
+        let encoded = enc
+            .encode_tile(tile_x, tile_y, &mut data.0)
             .expect("cannot propagate error in benchmark");
+        encoded.y_data.len() + encoded.cb_data.len() + encoded.cr_data.len()
     }
 
-    pub fn rfx_enc(bitmap: &BitmapUpdate, quant: &Quant, algo: rfx::EntropyAlgorithm) {
+    pub fn rfx_enc(bitmap: &BitmapUpdate, quant: &Quant, algo: rfx::EntropyAlgorithm) -> usize {
         let (enc, mut data) = UpdateEncoder::new(bitmap, quant.clone(), algo);
 
-        enc.encode(&mut data).expect("cannot propagate error in benchmark");
+        enc.encode(&mut data)
+            .expect("cannot propagate error in benchmark")
+            .iter()
+            .map(|tile| tile.y_data.len() + tile.cb_data.len() + tile.cr_data.len())
+            .sum()
     }
 }
