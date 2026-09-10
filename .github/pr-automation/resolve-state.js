@@ -164,10 +164,12 @@ function resolveClassificationState({
     { owned: ["breaking-change"], desired: breaking ? ["breaking-change"] : [] },
   ];
   const legitimacyStopped = model.likely_non_legitimate;
+  const maintainerRequired = duplicate || legitimacyStopped || existing.has("ai-reviewed/2");
   const addLabels = [
-    "maintainer-required",
+    ...(maintainerRequired ? ["maintainer-required"] : []),
     ...(legitimacyStopped ? [LEGITIMACY_LABEL] : []),
   ];
+  const removeLabels = maintainerRequired ? [] : ["maintainer-required"];
   const comments = [
     ...(duplicate ? [{
       kind: "duplicate", marker: DUPLICATE_MARKER,
@@ -181,7 +183,7 @@ function resolveClassificationState({
     }] : []),
   ];
   return {
-    ok: true, mode: "classification", expectedSha, labelSets, addLabels, comments, auditComments,
+    ok: true, mode: "classification", expectedSha, labelSets, addLabels, removeLabels, comments, auditComments,
     dispatchReview: !forced,
     removeCommentMarkers: [
       // A later push can make a previously reported duplicate or oversized verdict wrong, and stale
@@ -258,7 +260,7 @@ function resolveReviewState({
 } = {}) {
   const existing = labelsOf(labels);
   const forced = force === true;
-  const fail = (reason, report = false, contributorComment = null) => {
+  const fail = (reason, report = false, contributorComment = null, labelAction = "add") => {
     const comments = [
       forced ? null : quotaComment(rateLimit),
       evidenceLimitComment(reason),
@@ -266,7 +268,10 @@ function resolveReviewState({
     ].filter(Boolean);
     return {
       ok: true, mode: "review", expectedSha, failed: true, reason,
-      labelSets: [], addLabels: ["maintainer-required"], comments,
+      labelSets: [],
+      addLabels: labelAction === "add" ? ["maintainer-required"] : [],
+      removeLabels: labelAction === "remove" ? ["maintainer-required"] : [],
+      comments,
       removeCommentMarkers: [
         ...(comments.some((comment) => comment.kind === "evidence-limit") ? [] : [EVIDENCE_LIMIT_MARKER]),
         FORK_QUOTA_MARKER,
@@ -298,7 +303,10 @@ function resolveReviewState({
     }
     const classification = validateReviewGate({ ...gate, ok: true }, expectedSha);
     if (!classification.ok) return fail(classification.reason);
-    if (gate.classificationCheck !== true || gate.ciGreen !== true) return fail("review gate unavailable");
+    if (gate.classificationCheck !== true) return fail("review gate unavailable");
+    if (!reviewPolicyEligible({
+      labels, legitimacyStopped: gate.legitimacyStopped,
+    })) return fail("review is not eligible");
     if (contributor?.status === "ineligible") {
       const reason = Number.isSafeInteger(contributor.merged)
         ? `contributor history ineligible (merged: ${contributor.merged}, required: ${ELIGIBLE_MERGED_PRS})`
@@ -314,12 +322,10 @@ function resolveReviewState({
         : "contributor history unavailable";
       return fail(reason);
     }
+    if (gate.ciGreen !== true) return fail("CI has not succeeded", false, null, "remove");
     if (existing.has("ai-reviewed/1") && gate.secondReviewEligible !== true) {
-      return fail("second review is not eligible");
+      return fail("second review is not eligible", false, null, "preserve");
     }
-    if (!reviewPolicyEligible({
-      labels, legitimacyStopped: gate.legitimacyStopped,
-    })) return fail("review is not eligible");
     if (!gate.ok) return fail("review gate unavailable");
   }
   const reviewerResult = validateNormalizedFinalReview(reviewer, expectedSha);

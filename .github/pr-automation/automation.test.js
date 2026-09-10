@@ -1513,7 +1513,8 @@ test("size/XXL remains informational and does not suppress classification", () =
   const desired = state.labelSets.flatMap((set) => set.desired);
   assert.deepEqual(desired.sort(), ["breaking-change", "contributor/first-time", "risk/high",
     "scope/core", "scope/web", "size/XXL"]);
-  assert.deepEqual(state.addLabels, ["maintainer-required"]);
+  assert.deepEqual(state.addLabels, []);
+  assert.deepEqual(state.removeLabels, ["maintainer-required"]);
   assert.deepEqual(state.comments, []);
   assert.equal(state.check.title, "Classification complete");
   assert.equal(state.check.machineState.automaticReviewEligible, true);
@@ -1535,6 +1536,8 @@ test("a duplicate verdict is withdrawn once it no longer holds", () => {
       : { detected: false, similar_pr_number: null, similar_pr_url: null, confidence: 0, rationale: "" } }),
   });
   const flagged = state(true);
+  assert.deepEqual(flagged.addLabels, ["maintainer-required"]);
+  assert.deepEqual(flagged.removeLabels, []);
   assert.deepEqual(flagged.comments.map((comment) => comment.kind), ["duplicate"]);
   assert.equal(flagged.removeCommentMarkers.includes(DUPLICATE_MARKER), false);
   // Removing only the label would leave a comment contradicting the labels the same run wrote.
@@ -1750,17 +1753,27 @@ test("review blockers distinguish gate and contributor history failures", () => 
   assert.equal(unavailable.reason, "contributor history unavailable: GitHub API unavailable");
   assert.equal(unavailable.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), false);
 
+  const ciPending = resolveReviewState({
+    ...args, gate: { ...args.gate, ok: false, ciGreen: false },
+  });
+  assert.equal(ciPending.reason, "CI has not succeeded");
+  assert.deepEqual(ciPending.addLabels, []);
+  assert.deepEqual(ciPending.removeLabels, ["maintainer-required"]);
+
   const secondReview = resolveReviewState({
     ...args, labels: ["ai-reviewed/1", "risk/high"],
     gate: { ...args.gate, ok: false, secondReviewEligible: false },
   });
   assert.equal(secondReview.reason, "second review is not eligible");
+  assert.deepEqual(secondReview.addLabels, []);
+  assert.deepEqual(secondReview.removeLabels, []);
 
   const policy = resolveReviewState({
     ...args, labels: ["risk/low", "duplicate"],
     gate: { ...args.gate, policyEligible: false, protocolRelated: false },
   });
   assert.equal(policy.reason, "review is not eligible");
+  assert.deepEqual(policy.addLabels, ["maintainer-required"]);
 });
 
 test("a later eligible review removes the contributor-ineligible comment", () => {
