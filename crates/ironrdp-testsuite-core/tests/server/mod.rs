@@ -1,6 +1,7 @@
 mod acceptor;
 mod autodetect;
 mod credential_validator;
+mod encoder;
 mod fast_path;
 mod finalize_timeout;
 mod rdpdr;
