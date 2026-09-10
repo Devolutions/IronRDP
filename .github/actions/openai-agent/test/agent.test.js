@@ -178,6 +178,8 @@ test("runtime reserves tool-free finalization and repair turns", async () => {
       message("not-json"),
       message('{"answer":"repaired"}'),
     ], requests),
+    // Without a validator a repair cannot use tools, so one repair call plus finalization
+    // reserves two, leaving two for investigation.
     config: baseConfig,
     methodologies: [],
     prompt: "p",
@@ -192,6 +194,60 @@ test("runtime reserves tool-free finalization and repair turns", async () => {
   assert.deepEqual(requests[2].response_format, { type: "json_object" });
   assert.deepEqual(requests[3].response_format, { type: "json_object" });
   assert.match(requests[2].messages.at(-1).content, /Investigation is complete/);
+});
+
+test("an undersized turn ceiling reports the validation error rather than the limit", async () => {
+  // The clamp can leave a repair without room for both an evidence call and the answer that
+  // follows it. Asking for the correction directly keeps the semantic reason on the failure.
+  const respond = (request) => request.tools !== undefined
+    ? message(null, [call("t", "read_file", { path: "x" })])
+    : message('{"answer":"bad"}');
+
+  await assert.rejects(
+    runAgent({
+      client: clientFrom(Array(8).fill(respond)),
+      config: { ...baseConfig, max_turns: 4, max_tool_calls: 8, max_output_repair_attempts: 2 },
+      methodologies: [], prompt: "p", sandbox, schema,
+      validator: async () => ({ ok: false, reason: "citation requires source verification" }),
+    }),
+    (error) => {
+      assert.match(error.reason, /citation requires source verification/);
+      assert.equal(error.category, "output-invalid");
+      return true;
+    },
+  );
+});
+
+test("a saturated investigation still leaves every repair attempt reachable", async () => {
+  // Each semantic rejection buys one evidence call before the next answer, so both repair
+  // attempts exercise the two-provider-call maximum. Tools are always taken, leaving the
+  // reservation alone to decide when investigation ends.
+  const answers = ['{"answer":"bad"}', '{"answer":"bad2"}', '{"answer":"good"}'];
+  const activities = [];
+  const respond = (request) => {
+    const toolsOffered = request.tools !== undefined;
+    activities.push(toolsOffered ? "tools" : "answer");
+    return toolsOffered
+      ? message(null, [call(`t${activities.length}`, "read_file", { path: "x" })])
+      : message(answers.shift());
+  };
+
+  const result = await runAgent({
+    client: clientFrom(Array(12).fill(respond)),
+    config: { ...baseConfig, max_turns: 8, max_tool_calls: 20, max_output_repair_attempts: 2 },
+    methodologies: [], prompt: "p", sandbox, schema,
+    validator: async (candidate) => candidate.answer === "good"
+      ? { ok: true }
+      : { ok: false, reason: "citation requires source verification" },
+  });
+
+  assert.equal(result.output, '{"answer":"good"}');
+  assert.equal(result.outputRepairCount, 2);
+  assert.equal(result.turnCount, 8);
+  // Three investigation turns, a tool-free finalization, then two tool-assisted repairs.
+  assert.deepEqual(activities, [
+    "tools", "tools", "tools", "answer", "tools", "answer", "tools", "answer",
+  ]);
 });
 
 test("runtime stops advertising tools after exhausting the configured budget", async () => {
