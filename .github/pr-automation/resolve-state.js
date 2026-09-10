@@ -161,7 +161,8 @@ function resolveClassificationState({
     { owned: ["breaking-change"], desired: breaking ? ["breaking-change"] : [] },
   ];
   const legitimacyStopped = model.likely_non_legitimate;
-  const maintainerRequired = duplicate || legitimacyStopped || existing.has("ai-reviewed/2");
+  const maintainerRequired = duplicate || legitimacyStopped || existing.has("ai-reviewed/2") ||
+    (existing.has("maintainer-required") && classificationGate?.completed === true);
   const addLabels = [
     ...(maintainerRequired ? ["maintainer-required"] : []),
     ...(legitimacyStopped ? [LEGITIMACY_LABEL] : []),

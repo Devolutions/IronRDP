@@ -548,9 +548,12 @@ test("classification gate reuses completed state but forces oversized retries", 
 
   const retry = await resolveClassificationGate({ ...args, retryWithLargerEvidence: true });
   assert.deepEqual(retry, {
-    available: true, required: true, reason: "", largerEvidence: true,
+    available: true, required: true, reason: "",
+    externalId: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+    completed: true,
+    largerEvidence: true,
   });
-  assert.equal(reads, 1);
+  assert.equal(reads, 2);
 
   const unavailable = await resolveClassificationGate({
     ...args,
@@ -1436,6 +1439,26 @@ test("successful classification preserves the first-time contributor label", () 
   });
   assert.deepEqual(state.labelSets.find((set) => set.owned.includes("contributor/first-time")).desired,
     ["contributor/first-time"]);
+});
+
+test("same-head reclassification preserves an existing maintainer handoff", () => {
+  const deterministic = {
+    ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/S",
+    sizeLabels: ["size/S"], firstTime: false,
+  };
+  const classify = (completed) => resolveClassificationState({
+    expectedSha: SHA,
+    labels: ["maintainer-required"],
+    deterministic,
+    classifier: classifier(),
+    classificationGate: { available: true, completed },
+    semver: { head_sha: SHA, status: "not-suspected" },
+  });
+
+  assert.deepEqual(classify(true).addLabels, ["maintainer-required"]);
+  assert.deepEqual(classify(true).removeLabels, []);
+  assert.deepEqual(classify(false).addLabels, []);
+  assert.deepEqual(classify(false).removeLabels, ["maintainer-required"]);
 });
 
 test("terminal review count stops only the review pipeline", () => {
