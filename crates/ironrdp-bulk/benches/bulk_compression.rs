@@ -121,22 +121,29 @@ fn bench_supported_workload(c: &mut Criterion, compression_type: CompressionType
     group.bench_function(BenchmarkId::new("compress/cold", data.len()), |b| {
         b.iter(|| {
             let mut compressor = BulkCompressor::new(compression_type);
-            black_box(
-                compressor
-                    .compress(black_box(data))
-                    .expect("bulk compression should succeed"),
-            )
+            let (size, packet_flags) = compressor
+                .compress(black_box(data))
+                .expect("bulk compression should succeed");
+            assert_ne!(
+                packet_flags & flags::PACKET_COMPRESSED,
+                0,
+                "supported compression workload must compress"
+            );
+            black_box((size, packet_flags))
         });
     });
     group.bench_function(BenchmarkId::new("decompress/cold", data.len()), |b| {
         b.iter(|| {
             let mut decompressor = BulkCompressor::new(compression_type);
-            black_box(
-                decompressor
-                    .decompress(black_box(&cold_packet.bytes), cold_packet.flags)
-                    .expect("prepared bulk packet should decompress")
-                    .len(),
-            )
+            let decoded = decompressor
+                .decompress(black_box(&cold_packet.bytes), cold_packet.flags)
+                .expect("prepared bulk packet should decompress");
+            assert_eq!(
+                decoded.len(),
+                data.len(),
+                "decompression must preserve the input length"
+            );
+            black_box(decoded.len())
         });
     });
     group.bench_function(BenchmarkId::new("compress/history", data.len()), |b| {
@@ -144,11 +151,15 @@ fn bench_supported_workload(c: &mut Criterion, compression_type: CompressionType
             || BulkCompressor::new(compression_type),
             |compressor| {
                 for _ in 0..HISTORY_PACKETS {
-                    black_box(
-                        compressor
-                            .compress(black_box(data))
-                            .expect("bulk compression should succeed"),
+                    let (size, packet_flags) = compressor
+                        .compress(black_box(data))
+                        .expect("bulk compression should succeed");
+                    assert_ne!(
+                        packet_flags & flags::PACKET_COMPRESSED,
+                        0,
+                        "supported compression workload must compress"
                     );
+                    black_box((size, packet_flags));
                 }
             },
             BatchSize::SmallInput,
@@ -159,12 +170,15 @@ fn bench_supported_workload(c: &mut Criterion, compression_type: CompressionType
             || BulkCompressor::new(compression_type),
             |decompressor| {
                 for packet in &history_packets {
-                    black_box(
-                        decompressor
-                            .decompress(black_box(&packet.bytes), packet.flags)
-                            .expect("prepared bulk packet should decompress")
-                            .len(),
+                    let decoded = decompressor
+                        .decompress(black_box(&packet.bytes), packet.flags)
+                        .expect("prepared bulk packet should decompress");
+                    assert_eq!(
+                        decoded.len(),
+                        data.len(),
+                        "decompression must preserve the input length"
                     );
+                    black_box(decoded.len());
                 }
             },
             BatchSize::SmallInput,

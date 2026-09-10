@@ -43,6 +43,11 @@ pub fn rfx_enc_tile_bench(c: &mut Criterion) {
         data: representative_argb(64, 64).into(),
         stride: STRIDE,
     };
+    assert_ne!(
+        rfx_enc_tile(&bitmap, &quant, algo, 0, 0),
+        0,
+        "tile encoder must produce output"
+    );
     c.bench_function("rfx_enc_tile", |b| {
         b.iter(|| black_box(rfx_enc_tile(black_box(&bitmap), black_box(&quant), algo, 0, 0)))
     });
@@ -65,6 +70,7 @@ pub fn rfx_enc_bench(c: &mut Criterion) {
         data: representative_argb(2048, 2048).into(),
         stride: STRIDE,
     };
+    assert_ne!(rfx_enc(&bitmap, &quant, algo), 0, "image encoder must produce output");
     c.bench_function("rfx_enc", |b| {
         b.iter(|| black_box(rfx_enc(black_box(&bitmap), black_box(&quant), algo)))
     });
@@ -80,6 +86,22 @@ pub fn to_ycbcr_bench(c: &mut Criterion) {
     let mut cb = [0i16; WIDTH * HEIGHT];
     let mut cr = [0i16; WIDTH * HEIGHT];
     let format = ironrdp_graphics::image_processing::PixelFormat::ARgb32;
+
+    to_64x64_ycbcr_tile(
+        &input,
+        WIDTH.try_into().expect("can't panic"),
+        HEIGHT.try_into().expect("can't panic"),
+        stride.try_into().expect("can't panic"),
+        format,
+        &mut y,
+        &mut cb,
+        &mut cr,
+    )
+    .expect("representative ARGB tile is valid");
+    assert!(
+        y.iter().chain(&cb).chain(&cr).any(|component| *component != 0),
+        "color conversion must produce nonzero output"
+    );
 
     c.bench_function("to_ycbcr", |b| {
         b.iter(|| {
