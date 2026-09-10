@@ -3,7 +3,7 @@
 use core::str::FromStr;
 use std::fmt;
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ironrdp_capture_replay::{
     ReplayExecution, ReplayLifecycle, ReplayOptions, ReplaySummary, prepare_capture, read_capture,
