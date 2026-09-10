@@ -103,6 +103,7 @@ fn main() -> anyhow::Result<()> {
             check::lints(&sh)?;
             features::run_all(&sh)?;
             check::dependencies(&sh)?;
+            check::capture_files(&sh)?;
             wasm::check(&sh)?;
             fuzz::run(&sh, None, None)?;
             web::install(&sh)?;

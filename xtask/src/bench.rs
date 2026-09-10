@@ -61,13 +61,7 @@ pub fn corpus_fetch() -> anyhow::Result<()> {
 
         download(&url, &temporary_path, &capture.sha256)?;
 
-        if cache_path.exists() {
-            fs::remove_file(&cache_path)
-                .with_context(|| format!("remove corrupt cache entry: {}", cache_path.display()))?;
-        }
-
-        fs::rename(&temporary_path, &cache_path)
-            .with_context(|| format!("install verified capture: {}", cache_path.display()))?;
+        install_capture(&temporary_path, &cache_path)?;
         println!("Fetched and verified: {}", capture.file);
     }
 
@@ -243,6 +237,11 @@ fn temporary_path(cache_path: &Path) -> anyhow::Result<PathBuf> {
         .and_then(|name| name.to_str())
         .context("cache path has no UTF-8 file name")?;
     Ok(cache_path.with_file_name(format!(".{name}.{}.part", std::process::id())))
+}
+
+fn install_capture(temporary_path: &Path, cache_path: &Path) -> anyhow::Result<()> {
+    fs::rename(temporary_path, cache_path)
+        .with_context(|| format!("install verified capture: {}", cache_path.display()))
 }
 
 fn format_list(corpus: &Corpus) -> String {
@@ -435,6 +434,22 @@ intent = "A direct RDP session accepted by the server."
         assert!(write_verified(&mut source, &partial_path, SHA256_ABC).is_err());
         assert!(!cache_path.exists());
         assert!(!partial_path.exists());
+
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn install_replaces_an_existing_cache_entry() {
+        let directory = test_directory();
+        let cache_path = directory.join("accepted-rdp.pcapng");
+        let temporary_path = temporary_path(&cache_path).expect("temporary path");
+        fs::write(&cache_path, b"corrupt").expect("write corrupt cache entry");
+        fs::write(&temporary_path, b"verified").expect("write verified temporary capture");
+
+        install_capture(&temporary_path, &cache_path).expect("replace corrupt cache entry");
+
+        assert_eq!(fs::read(&cache_path).expect("read replacement"), b"verified");
+        assert!(!temporary_path.exists());
 
         fs::remove_dir_all(directory).expect("remove test directory");
     }
