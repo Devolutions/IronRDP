@@ -82,10 +82,7 @@ fn load_corpus() -> anyhow::Result<Corpus> {
 
 fn parse_corpus(contents: &str) -> anyhow::Result<Corpus> {
     let root: toml::Table = toml::from_str(contents).context("parse TOML")?;
-    ensure_allowed_keys(&root, &["version", "upstream", "capture"], "root")?;
-
-    let version = integer(&root, "version", "root")?;
-    anyhow::ensure!(version == 1, "unsupported corpus manifest version: {version}");
+    ensure_allowed_keys(&root, &["upstream", "capture"], "root")?;
 
     let upstream = table(&root, "upstream", "root")?;
     ensure_allowed_keys(upstream, &["repository", "revision"], "upstream")?;
@@ -283,13 +280,6 @@ fn string<'a>(table: &'a toml::Table, key: &str, location: &str) -> anyhow::Resu
         .with_context(|| format!("missing or invalid {location}.{key} string"))
 }
 
-fn integer(table: &toml::Table, key: &str, location: &str) -> anyhow::Result<i64> {
-    table
-        .get(key)
-        .and_then(toml::Value::as_integer)
-        .with_context(|| format!("missing or invalid {location}.{key} integer"))
-}
-
 fn is_identifier(value: &str) -> bool {
     !value.is_empty()
         && !value.starts_with('-')
@@ -328,8 +318,6 @@ mod tests {
     fn corpus_toml(file: &str) -> String {
         format!(
             r#"
-version = 1
-
 [upstream]
 repository = "awakecoding/wireshark-rdp"
 revision = "683505a753dfd7a2b27713b3a21e9a6951abacc4"
