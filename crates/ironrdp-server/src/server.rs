@@ -58,6 +58,7 @@ use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResu
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
 use crate::heartbeat::HeartbeatConfig;
+use crate::multitransport;
 use crate::rdpei::RdpeiServerFactory;
 #[cfg(feature = "usb")]
 use crate::urbdrc::{
@@ -397,6 +398,10 @@ pub struct RdpServerOptions {
     ///
     /// [MS-RDPRFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/
     pub remotefx_entropy_coder: Option<EntropyBits>,
+    /// UDP bind address for the sideband multitransport socket, when UDP
+    /// multitransport is offered. `None` disables the feature entirely. Set
+    /// via [`RdpServerBuilder::with_udp_transport`](crate::RdpServerBuilder::with_udp_transport).
+    pub udp_bind_addr: Option<SocketAddr>,
 }
 
 impl RdpServerOptions {
@@ -485,6 +490,20 @@ impl RdpServerSecurity {
             RdpServerSecurity::None => nego::SecurityProtocol::empty(),
             RdpServerSecurity::Tls(_) => nego::SecurityProtocol::SSL,
             RdpServerSecurity::Hybrid(_) => nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX,
+        }
+    }
+
+    /// The [`TlsAcceptor`] backing this security mode, if any.
+    ///
+    /// UDP multitransport reuses this connection's own TLS certificate for
+    /// the sideband transport (`TlsAcceptor::config()`), rather than needing
+    /// separate cert/key plumbing. `None` under [`RdpServerSecurity::None`],
+    /// which has no certificate to reuse and cannot offer multitransport
+    /// anyway (Enhanced Security only).
+    fn tls_acceptor(&self) -> Option<&TlsAcceptor> {
+        match self {
+            RdpServerSecurity::None => None,
+            RdpServerSecurity::Tls(acceptor) | RdpServerSecurity::Hybrid((acceptor, _)) => Some(acceptor),
         }
     }
 }
@@ -944,9 +963,16 @@ impl PendingConnection {
         capabilities: Vec<CapabilitySet>,
         creds: Option<Credentials>,
         honor_client_desktop_size: Option<DesktopSize>,
+        udp_bind_addr: Option<SocketAddr>,
     ) -> Self {
         let mut acceptor = Acceptor::new(security.flag(), desktop_size, capabilities, creds);
         acceptor.set_honor_client_desktop_size(honor_client_desktop_size);
+        // Multitransport requires Enhanced Security: `RdpServerSecurity::None`
+        // has nothing to authenticate the sideband transport's TLS with, and
+        // matches the reference client's own Enhanced-Security-only gate.
+        if udp_bind_addr.is_some() && matches!(security, RdpServerSecurity::Tls(_) | RdpServerSecurity::Hybrid(_)) {
+            acceptor.set_multitransport_offer(Some(ironrdp_pdu::gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+        }
         Self { security, acceptor }
     }
 
@@ -1259,6 +1285,7 @@ async fn negotiate_candidate(
         capabilities,
         ctx.creds.clone(),
         ctx.opts.honor_client_desktop_size,
+        ctx.opts.udp_bind_addr,
     );
 
     // NOTE: deliberately NO channel attachment here. Building the cliprdr /
@@ -2083,6 +2110,7 @@ impl RdpServer {
             capabilities,
             self.creds.clone(),
             self.opts.honor_client_desktop_size,
+            self.opts.udp_bind_addr,
         );
 
         self.attach_channels(pending.acceptor_mut());
@@ -2603,7 +2631,14 @@ impl RdpServer {
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
+        udp_transport: Option<&multitransport::UdpTransportHandle>,
     ) -> ServerResult<RunState> {
+        // Only referenced under `#[cfg(feature = "egfx")]` below (the only
+        // channel this integration migrates); this keeps the parameter
+        // itself unconditional so callers don't need their own `egfx` gate.
+        #[cfg(not(feature = "egfx"))]
+        let _ = &udp_transport;
+
         // Avoid wave messages queuing up and causing extra delay. When a
         // batch carries more than `WAVE_KEEP` waves, drop the OLDEST ones
         // and keep the most recent — playing stale audio just bakes the
@@ -3061,15 +3096,8 @@ impl RdpServer {
                 #[cfg(feature = "egfx")]
                 ServerEvent::Egfx(msg) => match msg {
                     EgfxServerMessage::SendMessages { messages } => {
-                        let drdynvc_channel_id = self
-                            .get_channel_id_by_type::<dvc::DrdynvcServer>()
-                            .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
-                        let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)
-                            .map_err(ServerError::encode)?;
-                        writer
-                            .write_all(&data)
-                            .await
-                            .map_err(|e| ServerError::io("write_all", e))?;
+                        self.dispatch_egfx_messages(messages, writer, user_channel_id, udp_transport)
+                            .await?;
                     }
                 },
                 ServerEvent::AutoDetectRttRequest => {
@@ -3118,6 +3146,124 @@ impl RdpServer {
         Ok(RunState::Continue)
     }
 
+    /// Routes EGFX graphics data over the sideband UDP transport when one is
+    /// up and the channel has migrated, otherwise the normal TCP path.
+    ///
+    /// Opportunistically requests the migration (Soft-Sync,
+    /// [`dvc::DrdynvcServer::request_reliable_udp`]) the first time EGFX has
+    /// data to send after a transport exists: MS-RDPBCGR sequencing does not
+    /// give an earlier point where EGFX's dynamic channel id is known to be
+    /// open (dynamic channels open lazily, driven by the client, well after
+    /// the transport could have already come up during multitransport
+    /// bootstrapping). A repeat request (already migrated) is a no-op, per
+    /// [`dvc::DrdynvcServer::request_reliable_udp`]'s own idempotency guard.
+    #[cfg(feature = "egfx")]
+    async fn dispatch_egfx_messages(
+        &mut self,
+        messages: Vec<ironrdp_svc::SvcMessage>,
+        writer: &mut impl FramedWrite,
+        user_channel_id: u16,
+        udp_transport: Option<&multitransport::UdpTransportHandle>,
+    ) -> ServerResult<()> {
+        let drdynvc_channel_id = self
+            .get_channel_id_by_type::<dvc::DrdynvcServer>()
+            .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
+
+        let mut route_over_udp = false;
+
+        if let Some(udp_transport) = udp_transport
+            && let Some(drdynvc) = self
+                .static_channels
+                .get_by_type_mut::<dvc::DrdynvcServer>()
+                .and_then(|svc| svc.channel_processor_downcast_mut::<dvc::DrdynvcServer>())
+            && let Some(egfx_dvc_id) = drdynvc.get_channel_id_by_type::<ironrdp_egfx::server::GraphicsPipelineServer>()
+        {
+            // First time EGFX has data to send after the tunnel exists: ask
+            // to migrate it. "Already requested" (a previous batch already
+            // asked) and "channel not open" (raced with the client closing
+            // it) are both expected steady-state outcomes here, not errors.
+            if let Ok(request) = drdynvc.request_reliable_udp(vec![egfx_dvc_id]) {
+                let data = server_encode_svc_messages(vec![request], drdynvc_channel_id, user_channel_id)
+                    .map_err(ServerError::encode)?;
+                writer
+                    .write_all(&data)
+                    .await
+                    .map_err(|e| ServerError::io("write_all", e))?;
+            }
+
+            // Only once the client has acknowledged: pushing frame data onto
+            // the tunnel before the client processed the request would land
+            // on a receive path it has not set up yet.
+            route_over_udp = drdynvc.soft_sync_response_received()
+                && drdynvc.tunnel_for_outgoing_channel(egfx_dvc_id) == Some(dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP);
+
+            if route_over_udp {
+                for message in &messages {
+                    let payload = message.encode_unframed_pdu().map_err(ServerError::encode)?;
+                    udp_transport.send(payload).await;
+                }
+            }
+        }
+
+        if !route_over_udp {
+            let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)
+                .map_err(ServerError::encode)?;
+            writer
+                .write_all(&data)
+                .await
+                .map_err(|e| ServerError::io("write_all", e))?;
+        }
+
+        Ok(())
+    }
+
+    /// Decodes and dispatches one payload received over the sideband UDP
+    /// transport (MS-RDPEMT TunnelData): raw DRDYNVC bytes, per
+    /// [`dvc::DrdynvcServer::process_tunnel`]. Any resulting response
+    /// messages go back over TCP; only outgoing EGFX frames are proactively
+    /// routed onto the tunnel in this integration (see
+    /// [`Self::dispatch_egfx_messages`]).
+    ///
+    /// A malformed or unexpected tunnel payload is logged and dropped rather
+    /// than treated as a connection error: nothing about the primary TCP
+    /// session depends on the sideband transport's correctness.
+    async fn dispatch_udp_tunnel_payload(
+        &mut self,
+        payload: &[u8],
+        writer: &mut impl FramedWrite,
+        user_channel_id: u16,
+    ) -> ServerResult<RunState> {
+        let Some(drdynvc_channel_id) = self.get_channel_id_by_type::<dvc::DrdynvcServer>() else {
+            warn!("No drdynvc channel, dropping UDP tunnel payload");
+            return Ok(RunState::Continue);
+        };
+        let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>() else {
+            warn!("No drdynvc channel, dropping UDP tunnel payload");
+            return Ok(RunState::Continue);
+        };
+
+        let messages = match drdynvc.process_tunnel(payload) {
+            Ok(messages) => messages,
+            Err(error) => {
+                warn!(%error, "Failed to process UDP tunnel payload, dropping it");
+                return Ok(RunState::Continue);
+            }
+        };
+
+        if messages.is_empty() {
+            return Ok(RunState::Continue);
+        }
+
+        let data =
+            server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id).map_err(ServerError::encode)?;
+        writer
+            .write_all(&data)
+            .await
+            .map_err(|e| ServerError::io("write tunnel response", e))?;
+
+        Ok(RunState::Continue)
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "private per-connection entry point; the parameters are the connection's negotiated identifiers"
@@ -3131,6 +3277,7 @@ impl RdpServer {
         message_channel_id: Option<u16>,
         client_supports_heartbeat: bool,
         mut encoder: UpdateEncoder,
+        udp_transport: Option<multitransport::UdpTransportHandle>,
     ) -> ServerResult<RunState>
     where
         R: FramedRead,
@@ -3148,6 +3295,8 @@ impl RdpServer {
         let mut event_writer = writer.clone();
         let mut auto_reconnect_writer = writer.clone();
         let mut heartbeat_writer = writer.clone();
+        let mut udp_tunnel_writer = writer.clone();
+        let udp_transport_for_events = udp_transport.clone();
         let write_counter = writer.write_counter();
         let ev_receiver = Arc::clone(&self.ev_receiver);
         let s = Rc::new(Mutex::new(self));
@@ -3272,6 +3421,7 @@ impl RdpServer {
                         io_channel_id,
                         user_channel_id,
                         message_channel_id,
+                        udp_transport_for_events.as_ref(),
                     )
                     .await?;
                 let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -3345,12 +3495,34 @@ impl RdpServer {
             }
         };
 
+        let this = Rc::clone(&s);
+        let dispatch_udp_tunnel = async move {
+            let Some(udp_transport) = udp_transport else {
+                return core::future::pending::<ServerResult<RunState>>().await;
+            };
+            loop {
+                let Some(payload) = udp_transport.recv().await else {
+                    debug!("UDP transport closed, continuing TCP-only for the rest of the session");
+                    return core::future::pending::<ServerResult<RunState>>().await;
+                };
+                let mut this = this.lock().await;
+                let result = this
+                    .dispatch_udp_tunnel_payload(&payload, &mut udp_tunnel_writer, user_channel_id)
+                    .await?;
+                match result {
+                    RunState::Continue => continue,
+                    state => break Ok(state),
+                }
+            }
+        };
+
         let state = tokio::select!(
             state = dispatch_pdu => state,
             state = dispatch_display => state,
             state = dispatch_events => state,
             state = refresh_auto_reconnect_cookie => state,
             state = send_heartbeats => state,
+            state = dispatch_udp_tunnel => state,
         );
 
         debug!("End of client loop: {state:?}");
@@ -3362,6 +3534,7 @@ impl RdpServer {
         reader: &mut Framed<R>,
         writer: &mut Framed<W>,
         result: AcceptorResult,
+        udp_transport: Option<multitransport::UdpTransportHandle>,
     ) -> ServerResult<RunState>
     where
         R: FramedRead,
@@ -3583,6 +3756,7 @@ impl RdpServer {
                     .client_early_capability_flags
                     .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_HEART_BEAT_PDU),
                 encoder,
+                udp_transport,
             )
             .await?;
 
@@ -3859,6 +4033,18 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
+        let udp_bind_addr = self.opts.udp_bind_addr;
+        let tls_config = self
+            .opts
+            .security
+            .tls_acceptor()
+            .map(|acceptor| Arc::clone(acceptor.config()));
+        // Persists across a Deactivation-Reactivation pass of this loop: the
+        // sideband transport, once established, is not torn down or
+        // re-bootstrapped for a resize (see the acceptor's own doc comment
+        // on `MultitransportBootstrapping` regarding reactivation).
+        let mut udp_transport: Option<multitransport::UdpTransportHandle> = None;
+
         loop {
             // Bounded: see `FINALIZE_TIMEOUT`. The bound belongs on THIS call
             // and not on `accept_finalize` itself or its callers — the loop
@@ -3867,7 +4053,26 @@ impl RdpServer {
             // length. Applying it per pass also gives a
             // deactivation-reactivation its own budget rather than sharing one
             // with the initial handshake.
-            let finalize = ironrdp_acceptor::accept_finalize(framed, &mut acceptor);
+            //
+            // Always the `_with_multitransport` driver rather than branching
+            // on whether UDP is configured: when it is not, `acceptor` never
+            // has a request to report (`set_multitransport_offer` was never
+            // called, see `PendingConnection::new`), so the handler below
+            // simply never runs and this is exactly `accept_finalize`'s own
+            // behavior.
+            let finalize = ironrdp_acceptor::accept_finalize_with_multitransport(
+                framed,
+                &mut acceptor,
+                async |request, _soft_sync| {
+                    // Defensive only: reached only if the acceptor sent a
+                    // request despite one of these being unset, which
+                    // `PendingConnection::new`'s gate should prevent.
+                    let (Some(udp_bind_addr), Some(tls_config)) = (udp_bind_addr, tls_config.clone()) else {
+                        return;
+                    };
+                    udp_transport = multitransport::accept(udp_bind_addr, tls_config, &request).await;
+                },
+            );
             let (new_framed, result) = match tokio::time::timeout(FINALIZE_TIMEOUT, finalize).await {
                 Ok(res) => res.map_err_kind("failed to accept client during finalize", ServerErrorKind::Connector)?,
                 Err(_) => {
@@ -3884,7 +4089,10 @@ impl RdpServer {
 
             let (mut reader, mut writer) = split_tokio_framed(new_framed);
 
-            match self.client_accepted(&mut reader, &mut writer, result).await? {
+            match self
+                .client_accepted(&mut reader, &mut writer, result, udp_transport.clone())
+                .await?
+            {
                 RunState::Continue => {
                     unreachable!();
                 }
@@ -4164,6 +4372,7 @@ mod preempt_tests {
                 preempt_existing_session: true,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
+                udp_bind_addr: None,
             },
             creds: None,
             display: Arc::new(Mutex::new(Box::new(NoDisplay))),

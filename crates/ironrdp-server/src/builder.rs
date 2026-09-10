@@ -60,6 +60,7 @@ pub struct BuilderDone {
     preempt_existing_session: bool,
     remotefx_quant: Quant,
     remotefx_entropy_coder: Option<EntropyBits>,
+    udp_bind_addr: Option<SocketAddr>,
 }
 
 pub struct RdpServerBuilder<State> {
@@ -172,6 +173,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
+                udp_bind_addr: None,
             },
         }
     }
@@ -205,6 +207,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
+                udp_bind_addr: None,
             },
         }
     }
@@ -459,6 +462,31 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Offer UDP multitransport (MS-RDPBCGR 2.2.1.4.6/2.2.15.1) to clients
+    /// that support it, binding a fresh UDP socket to `udp_bind_addr` per
+    /// connection to accept the sideband RDPEUDP2 + TLS + RDPEMT transport.
+    ///
+    /// Requires [`RdpServerSecurity::Tls`] or [`RdpServerSecurity::Hybrid`]
+    /// (multitransport is Enhanced-Security-only, matching the reference
+    /// client); ignored under [`RdpServerSecurity::None`].
+    ///
+    /// `udp_bind_addr` is a separate, explicit address rather than reusing
+    /// [`Self`]'s own TCP `addr`: a caller driving [`RdpServer::run_connection`]
+    /// with its own accept loop (rather than [`RdpServer::run`]) may not have
+    /// `addr` bound to anything real, so it cannot be inferred. Typically the
+    /// same host and port as the TCP listener (UDP and TCP occupy independent
+    /// port spaces at the same number).
+    ///
+    /// Once established, the transport is used to migrate EGFX graphics
+    /// traffic off TCP; a failure to establish it at any stage falls back to
+    /// TCP-only rather than failing the connection.
+    ///
+    /// `None` (the default): no UDP socket is ever bound, no behavior change.
+    pub fn with_udp_transport(mut self, udp_bind_addr: SocketAddr) -> Self {
+        self.state.udp_bind_addr = Some(udp_bind_addr);
+        self
+    }
+
     pub fn build(self) -> RdpServer {
         let mut server = RdpServer::new(
             RdpServerOptions {
@@ -470,6 +498,7 @@ impl RdpServerBuilder<BuilderDone> {
                 preempt_existing_session: self.state.preempt_existing_session,
                 remotefx_quant: self.state.remotefx_quant,
                 remotefx_entropy_coder: self.state.remotefx_entropy_coder,
+                udp_bind_addr: self.state.udp_bind_addr,
             },
             self.state.handler,
             self.state.display,
