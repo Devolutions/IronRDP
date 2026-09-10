@@ -1,5 +1,7 @@
 use ironrdp::input::Scancode;
 use winit::keyboard::KeyCode;
+#[cfg(windows)]
+use winit::{keyboard::PhysicalKey, platform::scancode::PhysicalKeyExtScancode as _};
 
 pub(crate) fn is_modifier(key_code: KeyCode) -> bool {
     matches!(
@@ -20,7 +22,20 @@ pub(crate) fn is_modifier(key_code: KeyCode) -> bool {
 /// `Pause` deliberately has no mapping because [MS-RDPBCGR] 2.2.8.1.2.2.1 requires four events, including `EXTENDED1`, while `Scancode` represents one ordinary event.
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/5073f4ed-1e93-45e1-b039-6e30c385867c#section_2.2.8.1.2.2.1
-pub(crate) const fn map_key_code(key_code: KeyCode) -> Option<Scancode> {
+pub(crate) fn map_key_code(key_code: KeyCode) -> Option<(Scancode, bool)> {
+    #[cfg(windows)]
+    if matches!(key_code, KeyCode::Lang1 | KeyCode::Lang2) {
+        let native_scancode = PhysicalKey::Code(key_code).to_scancode()?;
+        let scancode = Scancode::from_u16(u16::try_from(native_scancode).ok()?);
+
+        // Korean Lang1 and Lang2 are reported only on release, so flag their required make synthesis.
+        return Some((scancode, matches!(native_scancode, 0xE0F1 | 0xE0F2)));
+    }
+
+    Some((map_standard_key_code(key_code)?, false))
+}
+
+const fn map_standard_key_code(key_code: KeyCode) -> Option<Scancode> {
     let scancode = match key_code {
         KeyCode::Escape => (false, 0x01),
         KeyCode::Digit1 => (false, 0x02),
@@ -174,15 +189,4 @@ pub(crate) const fn map_key_code(key_code: KeyCode) -> Option<Scancode> {
     };
 
     Some(Scancode::from_u8(scancode.0, scancode.1))
-}
-
-#[cfg(windows)]
-pub(crate) const fn requires_native_layout_mapping(key_code: KeyCode) -> bool {
-    matches!(key_code, KeyCode::Lang1 | KeyCode::Lang2)
-}
-
-#[cfg(windows)]
-pub(crate) fn map_native_layout_scancode(scancode: u32) -> Option<Scancode> {
-    let scancode = u16::try_from(scancode).ok()?;
-    Some(Scancode::from_u16(scancode))
 }

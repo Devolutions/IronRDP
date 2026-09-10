@@ -17,13 +17,9 @@ use winit::dpi::{LogicalPosition, PhysicalSize};
 use winit::event::{self, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
-#[cfg(windows)]
-use winit::platform::scancode::PhysicalKeyExtScancode as _;
 use winit::window::{CursorIcon, CustomCursor, Window, WindowAttributes};
 
 use crate::keymap::{is_modifier, map_key_code};
-#[cfg(windows)]
-use crate::keymap::{map_native_layout_scancode, requires_native_layout_mapping};
 
 type WindowSurface = (Arc<Window>, softbuffer::Surface<DisplayHandle<'static>, Arc<Window>>);
 
@@ -305,40 +301,9 @@ impl RpcApp {
                     return;
                 }
 
-                #[cfg(windows)]
-                let (scancode, release_only) = if requires_native_layout_mapping(key_code) {
-                    let Some(native_scancode) = PhysicalKey::Code(key_code).to_scancode() else {
-                        warn!(
-                            ?key_code,
-                            "Unable to map physical key with current keyboard layout; ignored"
-                        );
-                        return;
-                    };
-                    let Some(scancode) = map_native_layout_scancode(native_scancode) else {
-                        warn!(
-                            ?key_code,
-                            ?native_scancode,
-                            "Unsupported physical key with current keyboard layout; ignored"
-                        );
-                        return;
-                    };
-                    // Korean Lang1 and Lang2 are reported only on release, so synthesize their make event below.
-                    (scancode, matches!(native_scancode, 0xE0F1 | 0xE0F2))
-                } else {
-                    let Some(scancode) = map_key_code(key_code) else {
-                        warn!(?key_code, "Unsupported physical key; ignored");
-                        return;
-                    };
-                    (scancode, false)
-                };
-
-                #[cfg(not(windows))]
-                let (scancode, release_only) = {
-                    let Some(scancode) = map_key_code(key_code) else {
-                        warn!(?key_code, "Unsupported physical key; ignored");
-                        return;
-                    };
-                    (scancode, false)
+                let Some((scancode, release_only)) = map_key_code(key_code) else {
+                    warn!(?key_code, "Unsupported physical key; ignored");
+                    return;
                 };
 
                 let operations: SmallVec<[ironrdp::input::Operation; 2]> = match event.state {
