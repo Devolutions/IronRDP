@@ -3,7 +3,7 @@
 use core::str::FromStr;
 use std::fmt;
 use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use ironrdp_capture_replay::{
     ReplayExecution, ReplayLifecycle, ReplayOptions, ReplaySummary, prepare_capture, read_capture,
@@ -76,6 +76,21 @@ impl PartialReplayWorkload {
             expected: capture.expected,
             prepared,
         })
+    }
+
+    /// Return the verified local path for one manifest-qualified partial replay.
+    ///
+    /// This is shared by offline benchmark workloads that need the original capture
+    /// in addition to the prepared passive replay.
+    pub(crate) fn cached_capture_path(id: PartialReplayId) -> ReplayWorkloadResult<PathBuf> {
+        let capture = expected_capture(id)?;
+        let path = project_root()
+            .join(CACHE_ROOT)
+            .join(capture.revision)
+            .join("captures")
+            .join(capture.file);
+        verify_file(&path, &capture.sha256)?;
+        Ok(path)
     }
 
     /// Execute one strict replay and enforce its complete partial-replay contract.

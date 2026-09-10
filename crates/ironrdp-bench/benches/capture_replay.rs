@@ -3,6 +3,7 @@
 use core::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use ironrdp_bench::connector_replay::{ConnectorReplayId, ConnectorReplayWorkload};
 use ironrdp_bench::replay::{PartialReplayId, PartialReplayWorkload};
 
 fn partial_replay(c: &mut Criterion) {
@@ -23,5 +24,19 @@ fn partial_replay(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, partial_replay);
+fn connector_replay(c: &mut Criterion) {
+    for id in ConnectorReplayId::ALL {
+        let name = format!("connector-replay/{}/connection-and-session", id.as_str());
+        c.bench_function(&name, |b| {
+            let workload =
+                ConnectorReplayWorkload::prepare(id).expect("connector replay workload must prepare and preflight");
+            b.iter(|| {
+                let measurement = workload.replay().expect("connector replay workload must execute");
+                black_box(measurement)
+            });
+        });
+    }
+}
+
+criterion_group!(benches, partial_replay, connector_replay);
 criterion_main!(benches);
