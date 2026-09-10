@@ -233,7 +233,6 @@ test("automatic review requires exact-head CI and only reruns after a later push
   assert.match(reviewGate, /const secondReviewEligible = !labels\.includes\("ai-reviewed\/1"\) \|\| !reviewAtHead/);
   assert.match(reviewGate,
     /ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible/);
-  assert.match(workflowJob(workflow, "classification-gate"), /'ai-reviewed\/2'/);
   assert.match(reviewPipeline, /review-gate\.outputs\.eligible == 'true'/);
   assert.match(reviewPipeline, /needs\.resolve-pr\.outputs\.force == 'true'/);
   const resolvePrJob = workflowJob(workflow, "resolve-pr");
@@ -1439,6 +1438,31 @@ test("successful classification preserves the first-time contributor label", () 
     ["contributor/first-time"]);
 });
 
+test("terminal review count stops only the review pipeline", () => {
+  const workflow = readWorkflow();
+  for (const job of ["classification-gate", "semver", "classifier"]) {
+    assert.equal(workflowJob(workflow, job).includes("ai-reviewed/2"), false);
+  }
+  const deterministic = {
+    ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/S",
+    sizeLabels: ["size/S"], firstTime: false,
+  };
+  const state = resolveClassificationState({
+    expectedSha: SHA,
+    labels: ["ai-reviewed/2", "risk/low"],
+    deterministic,
+    classifier: classifier({ risk: "medium" }),
+    semver: { head_sha: SHA, status: "not-suspected" },
+  });
+
+  assert.equal(state.failed, undefined);
+  assert.equal(state.check.title, "Classification complete");
+  assert.deepEqual(state.labelSets.find((set) => set.owned.includes("risk/unknown")).desired,
+    ["risk/medium"]);
+  assert.equal(state.dispatchReview, false);
+  assert.equal(reviewPolicyEligible({ labels: ["ai-reviewed/2", "risk/medium"] }), false);
+});
+
 test("all classified changes are reviewable unless a legitimacy or count gate blocks them", () => {
   assert.equal(reviewPolicyEligible({ labels: ["risk/low"], protocolRelated: true }), true);
   assert.equal(reviewPolicyEligible({ labels: ["risk/low"], protocolRelated: false }), true);
@@ -1624,7 +1648,7 @@ test("forced classification bypasses policy, quota, and cache but still validate
   };
   const args = {
     expectedSha: SHA,
-    labels: ["ai-reviewed/2"],
+    labels: [],
     deterministic,
     classifier: classifier(),
     classificationGate: { available: false, reason: "checks unavailable" },

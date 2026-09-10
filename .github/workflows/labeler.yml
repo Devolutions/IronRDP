@@ -103,9 +103,7 @@ jobs:
     needs: resolve-pr
     if: >-
       needs.resolve-pr.outputs.ok == 'true' &&
-      needs.resolve-pr.outputs.classification-requested == 'true' &&
-      (needs.resolve-pr.outputs.force == 'true' ||
-      !contains(fromJSON(needs.resolve-pr.outputs.labels), 'ai-reviewed/2'))
+      needs.resolve-pr.outputs.classification-requested == 'true'
     runs-on: ubuntu-latest
     permissions:
       checks: read
@@ -249,8 +247,7 @@ jobs:
       needs.resolve-pr.outputs.classification-requested == 'true' &&
       (needs.resolve-pr.outputs.force == 'true' ||
       (needs.classification-gate.outputs.available == 'true' &&
-      needs.classification-gate.outputs.required == 'true' &&
-      !contains(fromJSON(needs.resolve-pr.outputs.labels), 'ai-reviewed/2')))
+      needs.classification-gate.outputs.required == 'true'))
     runs-on: ubuntu-latest
     permissions: {}
     outputs:
@@ -353,8 +350,7 @@ jobs:
       (needs.classification-gate.outputs.available == 'true' &&
       needs.classification-gate.outputs.required == 'true' &&
       needs.fork-rate-limit.result == 'success' &&
-      needs.fork-rate-limit.outputs.allowed == 'true' &&
-      !contains(fromJSON(needs.resolve-pr.outputs.labels), 'ai-reviewed/2')))
+      needs.fork-rate-limit.outputs.allowed == 'true'))
     runs-on: ubuntu-latest
     concurrency:
       group: llm-classifier-${{ needs.resolve-pr.outputs.classifier-lane }}

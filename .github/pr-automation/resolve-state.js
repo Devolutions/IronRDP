@@ -101,13 +101,9 @@ function resolveClassificationState({
   expectedSha, labels, deterministic, classifier, classificationGate,
   classifierReason, changedPaths, duplicateCandidates, prNumber, semver, rateLimit, force,
 } = {}) {
-  const existing = labelsOf(labels);
   const forced = force === true;
   const failureRateLimit = forced ? undefined : rateLimit;
   if (typeof expectedSha !== "string") return { ok: false, reason: "missing expected SHA" };
-  if (!forced && existing.has("ai-reviewed/2")) {
-    return failedClassification(expectedSha, deterministic, "terminal AI review count", failureRateLimit);
-  }
   const semverStatus = boundStatus(semver, expectedSha, ["suspected", "not-suspected"]);
   if (!forced && rateLimit && rateLimit.status !== "allowed") {
     return failedClassification(expectedSha, deterministic, "fork LLM quota unavailable", failureRateLimit, semverStatus);
@@ -182,7 +178,7 @@ function resolveClassificationState({
   ];
   return {
     ok: true, mode: "classification", expectedSha, labelSets, addLabels, comments, auditComments,
-    dispatchReview: !forced,
+    dispatchReview: !forced && !labelsOf(labels).has("ai-reviewed/2"),
     removeCommentMarkers: [
       // A later push can make a previously reported duplicate or oversized verdict wrong, and stale
       // guidance would then contradict the labels this run just wrote.
