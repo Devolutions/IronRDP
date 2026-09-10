@@ -89,7 +89,7 @@ function workflowJob(workflow, name) {
 }
 
 function readWorkflow(githubDirectory = path.join(__dirname, "..")) {
-  return fs.readFileSync(path.join(githubDirectory, "workflows", "labeler.yml"), "utf8")
+  return fs.readFileSync(path.join(githubDirectory, "workflows", "pr-automation.yml"), "utf8")
     .replace(/\r\n/g, "\n");
 }
 
@@ -97,6 +97,13 @@ function readReviewWorkflow(githubDirectory = path.join(__dirname, "..")) {
   return fs.readFileSync(path.join(githubDirectory, "workflows", "review-pipeline.yml"), "utf8")
     .replace(/\r\n/g, "\n");
 }
+
+test("workflow run names show the target pull request", () => {
+  const workflow = readWorkflow();
+
+  assert.match(workflow, /run-name: "PR #\$\{\{ .*github\.event\.pull_request\.number.*\}\}"/);
+  assert.match(workflow, /github\.event\.workflow_run\.pull_requests\[0\]\.number/);
+});
 
 function resolveReviewScript(workflow = readWorkflow()) {
   const job = workflowJob(workflow, "resolve-review-state");
@@ -798,7 +805,7 @@ test("every deterministic label is declared and the repository rules classify to
     assert.notEqual(patterns.length, 0, `${label} has no path patterns`);
   }
   const result = analyzeFiles([
-    { filename: ".github/workflows/labeler.yml", additions: 5, deletions: 1 },
+    { filename: ".github/workflows/pr-automation.yml", additions: 5, deletions: 1 },
   ], { labelerRules: rules, authorAssociation: "MEMBER" });
   assert.deepEqual(result.pathLabels, ["scope/tooling"]);
   assert.equal(result.sizeLabel, "size/XS");
