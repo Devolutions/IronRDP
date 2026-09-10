@@ -11,3 +11,4 @@
 
 pub mod app;
 pub mod cli;
+mod keymap;
