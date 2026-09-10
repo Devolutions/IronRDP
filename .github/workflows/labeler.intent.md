@@ -67,7 +67,8 @@ Keep detailed failure reasons in the workflow summary only.
 
 Classify every non-draft, human-authored pull request that passes the integrity and capacity gates.
 Run automated review after CI succeeds for the exact classified head.
-Run the second review after a later push reaches green exact-head CI, and stop automatic review at `ai-reviewed/2`.
+Run the second review after a later push reaches green exact-head CI.
+At `ai-reviewed/2`, the review pipeline stops; classification and its labels keep updating.
 
 Use `maintainer-required` only when maintainer action is the next step.
 On the normal review path, apply it only after exact-head CI succeeds and an automated review reports no findings or reaches `ai-reviewed/2`.
