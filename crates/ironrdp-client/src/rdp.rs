@@ -2157,6 +2157,22 @@ struct IrohStream {
 }
 
 #[cfg(feature = "iroh")]
+impl Drop for IrohStream {
+    fn drop(&mut self) {
+        // `Endpoint`'s own `Drop` impl aborts the underlying socket and logs an `error!` if it is
+        // dropped without a prior call to `Endpoint::close`, instead of sending a QUIC close
+        // frame to the peer. Spawn a best-effort background task to close it gracefully; if no
+        // Tokio runtime is available (e.g. the process is already shutting down), skip it.
+        let endpoint = self._endpoint.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                endpoint.close().await;
+            });
+        }
+    }
+}
+
+#[cfg(feature = "iroh")]
 impl AsyncRead for IrohStream {
     fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.get_mut().stream).poll_read(cx, buf)

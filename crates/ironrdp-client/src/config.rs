@@ -2215,15 +2215,17 @@ impl ConfigBuilder {
 
         // Transport: Iroh > NamedPipe > RDCleanPath > Gateway > Direct.
         #[cfg(feature = "iroh")]
-        if let Some(ticket) = ps.iroh_ticket() {
-            self.transport = TransportKind::Iroh {
-                ticket: ticket.to_owned(),
-            };
+        let iroh_transport = ps.iroh_ticket().map(|ticket| TransportKind::Iroh {
+            ticket: ticket.to_owned(),
+        });
+        #[cfg(not(feature = "iroh"))]
+        let iroh_transport: Option<TransportKind> = None;
+
+        if let Some(transport) = iroh_transport {
+            self.transport = transport;
         } else {
             self.resolve_named_pipe_or_rdcleanpath_or_gateway_transport(ps)?;
         }
-        #[cfg(not(feature = "iroh"))]
-        self.resolve_named_pipe_or_rdcleanpath_or_gateway_transport(ps)?;
 
         if let Some(redirect) = ps.redirect_clipboard() {
             #[cfg(feature = "clipboard")]
