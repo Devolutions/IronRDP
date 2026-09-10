@@ -2221,11 +2221,14 @@ impl ConfigBuilder {
         #[cfg(not(feature = "iroh"))]
         let iroh_transport: Option<TransportKind> = None;
 
-        if let Some(transport) = iroh_transport {
-            self.transport = transport;
+        self = if let Some(transport) = iroh_transport {
+            // Route through `with_transport` so the sibling transport properties (e.g. a
+            // leftover `ironrdp_rdcleanpathurl` from an earlier overlay) get cleared and
+            // `self.properties()` stays consistent with the resolved transport.
+            self.with_transport(transport)
         } else {
-            self.resolve_named_pipe_or_rdcleanpath_or_gateway_transport(ps)?;
-        }
+            self.resolve_named_pipe_or_rdcleanpath_or_gateway_transport(ps)?
+        };
 
         if let Some(redirect) = ps.redirect_clipboard() {
             #[cfg(feature = "clipboard")]
@@ -2279,24 +2282,23 @@ impl ConfigBuilder {
     }
 
     /// Resolve the non-Iroh transport precedence: NamedPipe > RDCleanPath > Gateway > Direct.
+    /// Returns `self` unchanged if none of the corresponding properties are present.
     ///
     /// Extracted out of [`with_property_set`](Self::with_property_set) so the Iroh precedence
     /// check there (highest priority, checked first) does not have to duplicate this chain.
-    fn resolve_named_pipe_or_rdcleanpath_or_gateway_transport(&mut self, ps: &PropertySet) -> anyhow::Result<()> {
+    fn resolve_named_pipe_or_rdcleanpath_or_gateway_transport(mut self, ps: &PropertySet) -> anyhow::Result<Self> {
         #[cfg(feature = "gateway")]
         use ironrdp_cfg::GatewayUsageMethod;
 
         #[cfg(windows)]
         if let Some(path) = ps.named_pipe() {
-            self.transport = TransportKind::NamedPipe { path: path.to_owned() };
-            return Ok(());
+            return Ok(self.with_transport(TransportKind::NamedPipe { path: path.to_owned() }));
         }
 
         if let Some((url, token)) = ps.rdcleanpath_url().zip(ps.rdcleanpath_token()) {
             let url = Url::parse(url).context("invalid 'ironrdp_rdcleanpathurl'")?;
-            self.transport = TransportKind::RDCleanPath { url };
             self.rdcleanpath_token = Some(token.to_owned());
-            return Ok(());
+            return Ok(self.with_transport(TransportKind::RDCleanPath { url }));
         }
 
         #[cfg(feature = "gateway")]
@@ -2326,10 +2328,10 @@ impl ConfigBuilder {
             if let Some(prefer_direct) = select_gateway_transport {
                 let endpoint = gateway_hostname.context("missing Gateway hostname")?;
 
-                self.transport = TransportKind::Gateway {
+                self = self.with_transport(TransportKind::Gateway {
                     endpoint: endpoint.to_owned(),
                     prefer_direct,
-                };
+                });
 
                 if let Some(user) = ps.gateway_username() {
                     self.gateway_username = Some(user.to_owned());
@@ -2341,7 +2343,7 @@ impl ConfigBuilder {
             }
         }
 
-        Ok(())
+        Ok(self)
     }
 }
 
@@ -2414,9 +2416,11 @@ mod tests {
     use ironrdp_cfg::PropertySetExt as _;
     use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 
-    use super::{ConfigBuilder, Destination};
     #[cfg(feature = "gateway")]
-    use super::{MissingField, Transport, TransportKind};
+    use super::MissingField;
+    use super::{ConfigBuilder, Destination};
+    #[cfg(any(feature = "gateway", feature = "iroh"))]
+    use super::{Transport, TransportKind};
 
     fn complete_builder() -> ConfigBuilder {
         ConfigBuilder::new()
@@ -2478,6 +2482,34 @@ mod tests {
         let mut properties = ironrdp_propertyset::PropertySet::new();
         properties.insert("audioqualitymode", -1i64);
         assert!(ConfigBuilder::from_property_set(&properties).is_err());
+    }
+
+    #[cfg(feature = "iroh")]
+    #[test]
+    fn later_property_set_overlay_clears_stale_transport_properties() {
+        let mut iroh_properties = ironrdp_propertyset::PropertySet::new();
+        iroh_properties.set_iroh_ticket("iroh-ticket");
+
+        let builder = complete_builder()
+            .with_property_set(&iroh_properties)
+            .expect("valid iroh properties");
+        assert!(matches!(builder.transport, TransportKind::Iroh { .. }));
+        assert_eq!(builder.properties.iroh_ticket(), Some("iroh-ticket"));
+
+        let mut rdcleanpath_properties = ironrdp_propertyset::PropertySet::new();
+        rdcleanpath_properties.set_rdcleanpath_url("https://gateway.example/");
+        rdcleanpath_properties.set_rdcleanpath_token("token");
+
+        // Overlaying a later `PropertySet` that resolves a different transport must clear the
+        // stale `ironrdp_iroh_ticket` property so `properties()` stays consistent with `transport()`.
+        let config = builder
+            .with_property_set(&rdcleanpath_properties)
+            .expect("valid rdcleanpath properties")
+            .build()
+            .expect("valid configuration");
+
+        assert!(matches!(config.transport(), Transport::RDCleanPath(_)));
+        assert_eq!(config.properties().iroh_ticket(), None);
     }
 
     #[cfg(feature = "gateway")]
