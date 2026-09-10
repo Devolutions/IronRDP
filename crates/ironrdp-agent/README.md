@@ -142,12 +142,11 @@ Iroh takes precedence over NamedPipe, RDCleanPath, Gateway, and Direct transport
 
 ```powershell
 ironrdp-agent daemon-start
-ironrdp-agent connect --server placeholder:3389 --prop ironrdp_iroh_ticket:s:<ticket> -u user -p password
+ironrdp-agent connect --server <RDP_HOST>:3389 --prop ironrdp_iroh_ticket:s:<ticket> -u user -p password
 ```
 
-`--server` is still required to populate the RDP hostname and Client Info fields, even though the ticket determines where the connection actually goes.
+`--server` is still required, and must be the real RDP server's hostname or IP (not a placeholder): the ticket only determines where the iroh tunnel connects, while `--server` populates the Client Info fields and is validated against the TLS certificate during RDP's own TLS/NLA handshake, which runs over the tunnel unaware of iroh.
 Obtain a ticket by running a socat-like iroh forwarder (e.g. `dumbpipe listen-tcp --host <target>:3389`) pointed at the target RDP server; it prints a ticket string to pass here.
-If the target enforces TLS certificate validation, `--server` must still match a name the certificate is valid for (e.g. the RDP server's real hostname), since RDP's own TLS/NLA handshake runs over the tunnel and is unaware of iroh.
 
 ## Prebuilt binaries
 

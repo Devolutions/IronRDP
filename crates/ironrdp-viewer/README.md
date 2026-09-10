@@ -58,12 +58,11 @@ It is cross-platform and wire-compatible with `dumbpipe`'s `DUMBPIPEV0` ALPN and
 Pass the iroh ticket with `--iroh-ticket`; it takes precedence over `--rdcleanpath-url` and `--gw-endpoint`.
 
 ```shell
-ironrdp-viewer placeholder:3389 --iroh-ticket <TICKET> --username <USERNAME> --password <PASSWORD>
+ironrdp-viewer <RDP_HOST>:3389 --iroh-ticket <TICKET> --username <USERNAME> --password <PASSWORD>
 ```
 
-The hostname argument is still required to populate the RDP hostname and Client Info fields, even though the ticket determines where the connection actually goes.
+The hostname argument is still required, and must be the real RDP server's hostname or IP (not a placeholder): the ticket only determines where the iroh tunnel connects, while the hostname populates the Client Info fields and is validated against the TLS certificate during RDP's own TLS/NLA handshake, which runs over the tunnel unaware of iroh.
 Obtain a ticket by running a socat-like iroh forwarder (e.g. `dumbpipe listen-tcp --host <target>:3389`) pointed at the target RDP server; it prints a ticket string to pass here.
-If the target enforces TLS certificate validation, the hostname argument must still match a name the certificate is valid for (e.g. the RDP server's real hostname), since RDP's own TLS/NLA handshake runs over the tunnel and is unaware of iroh.
 
 ## `.rdp` file support
 
