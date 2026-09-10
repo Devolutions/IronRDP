@@ -84,25 +84,24 @@ function aggregateMetrics(outcomes) {
   };
   let anyTokens = false;
   for (const stage of outcomes) {
-    if (stage.provider && stage.attempts === 2) metrics.stage_retries += 1;
+    if (!stage.provider) continue;
+    if (stage.attempts === 2) metrics.stage_retries += 1;
     const ran = stage.status !== "skipped";
-    if (stage.provider && stage.metrics.tokens) {
+    if (stage.metrics.tokens) {
       anyTokens = true;
       for (const key of ["input", "output", "total"]) {
         if (stage.metrics.tokens[key] === null) metrics.tokens[key] = null;
         else if (metrics.tokens[key] !== null) metrics.tokens[key] += stage.metrics.tokens[key];
       }
       if (!stage.metrics.tokens.complete) metrics.tokens_complete = false;
-    } else if (stage.provider && ran) {
+    } else if (ran) {
       metrics.tokens_complete = false;
     }
     // Timing and retry metrics describe model work only. A stage that reached a provider without
     // reporting a measurement makes the total unknown, never a smaller measured number.
-    if (!stage.provider) continue;
     for (const key of ["elapsed_ms", "request_retries", "output_repairs"]) {
-      const measurable = ran;
       if (stage.metrics[key] === null) {
-        if (measurable) metrics[key] = null;
+        if (ran) metrics[key] = null;
       } else if (metrics[key] !== null) {
         metrics[key] += stage.metrics[key];
       }

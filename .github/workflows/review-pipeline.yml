@@ -95,6 +95,7 @@ jobs:
         name: Resolve the mandatory reviewer set
         uses: actions/github-script@v8
         env:
+          HEAD_SHA: ${{ inputs.head-sha }}
           SELECTED_REVIEWERS: ${{ inputs.specialist-reviewers }}
           REQUIRED_REVIEWERS: ${{ inputs.required-reviewers }}
           GATE: ${{ inputs.gate }}

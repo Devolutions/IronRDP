@@ -24,12 +24,12 @@ function isTruncatedGithubResponse(error) {
 }
 
 async function readPullRequest({ github, owner, repo, pullNumber }) {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return (await github.rest.pulls.get({ owner, repo, pull_number: pullNumber })).data;
-    } catch (error) {
-      if (attempt !== 0 || !isTruncatedGithubResponse(error)) throw error;
-    }
+  const read = () => github.rest.pulls.get({ owner, repo, pull_number: pullNumber });
+  try {
+    return (await read()).data;
+  } catch (error) {
+    if (!isTruncatedGithubResponse(error)) throw error;
+    return (await read()).data;
   }
 }
 

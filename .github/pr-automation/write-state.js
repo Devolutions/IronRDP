@@ -103,9 +103,13 @@ function reviewBody(marker, review, reducedCoverage = []) {
   const clean = review.findings.length === 0 ? ":green_circle: " : "";
   const coverage = reducedCoverage.length === 0
     ? ""
-    : `\n\nReduced coverage: optional reviewer${reducedCoverage.length === 1 ? "" : "s"} ` +
-      `${reducedCoverage.map(escapeMarkdown).join(", ")} ${reducedCoverage.length === 1 ? "was" : "were"} unavailable.`;
+    : `\n\nReduced coverage:${reducedCoverageText(reducedCoverage.map(escapeMarkdown))}.`;
   return `${marker}\n\n${clean}${escapeMarkdown(review.summary)}${coverage}${findings ? `\n\n${findings}` : ""}`;
+}
+
+function reducedCoverageText(reducedCoverage) {
+  return ` optional reviewer${reducedCoverage.length === 1 ? "" : "s"} ` +
+    `${reducedCoverage.join(", ")} ${reducedCoverage.length === 1 ? "was" : "were"} unavailable`;
 }
 
 async function reviews(github, owner, repo, prNumber) {
@@ -295,4 +299,5 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin, revi
 module.exports = {
   StalePolicyError, applyLabels, deleteMarkedComment, dispatchClassificationComplete,
   escapeMarkdown, markerBody, upsertMarkedComment, writeState,
+  reducedCoverageText,
 };

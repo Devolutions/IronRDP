@@ -2118,6 +2118,14 @@ test("writer retries a truncated current-head read before dispatching once", asy
     protocolRelated: false, risk: "low", specialistReviewers: [],
     automaticReviewEligible: true,
   };
+  const state = {
+    ok: true, mode: "classification", expectedSha: SHA, labelSets: [], addLabels: [],
+    comments: [], removeCommentMarkers: [], dispatchReview: true,
+    check: {
+      name: "AI classification", externalId: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+      title: "Classification complete", summary: "Validated classification.", machineState,
+    },
+  };
   const github = {
     paginate: { iterator: async function* () { yield { data: [] }; } },
     rest: {
@@ -2137,14 +2145,7 @@ test("writer retries a truncated current-head read before dispatching once", asy
   };
   await writeState({
     github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
-    state: {
-      ok: true, mode: "classification", expectedSha: SHA, labelSets: [], addLabels: [],
-      comments: [], removeCommentMarkers: [], dispatchReview: true,
-      check: {
-        name: "AI classification", externalId: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
-        title: "Classification complete", summary: "Validated classification.", machineState,
-      },
-    },
+    state,
   });
   assert.equal(reads, 4);
   assert.equal(checkWrites, 1);
@@ -2173,14 +2174,7 @@ test("writer retries a truncated current-head read before dispatching once", asy
     };
     await assert.rejects(writeState({
       github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
-      state: {
-        ok: true, mode: "classification", expectedSha: SHA, labelSets: [], addLabels: [],
-        comments: [], removeCommentMarkers: [], dispatchReview: true,
-        check: {
-          name: "AI classification", externalId: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
-          title: "Classification complete", summary: "Validated classification.", machineState,
-        },
-      },
+      state,
     }));
     return { failedReads, failedCheckWrites, failedDispatches };
   };
@@ -3627,6 +3621,9 @@ test("the mandatory reviewer set is resolved once and read everywhere else", () 
 
   // One interpretation, taken before any provider work, so an unusable plan fails closed early.
   assert.match(evidence, /resolveRequiredReviewers/, "evidence must resolve the required set");
+  const plan = evidence.slice(evidence.indexOf("- id: plan"), evidence.indexOf("Fetch bounded review"));
+  assert.match(plan, /HEAD_SHA: \$\{\{ inputs\.head-sha \}\}/,
+    "the plan must validate the gate against the reusable workflow's reviewed head");
   assert.match(evidence, /if \(!resolved\.ok\) \{/);
   assert.match(evidence, /throw new Error\(resolved\.reason\)/);
   assert.ok(evidence.indexOf("id: plan") < evidence.indexOf("Fetch bounded review"),

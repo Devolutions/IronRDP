@@ -2,7 +2,7 @@
 
 const { SCHEMA_VERSION: CLASSIFIER_SCHEMA_VERSION, validateClassifier } = require("./validate-classifier");
 const { validateNormalizedFinalReview } = require("./validate-final-review");
-const { resolveReviewerRoute, reviewPolicyEligible, validateReviewerRoute } = require("./routing");
+const { resolveReviewerRoute, reviewPolicyEligible } = require("./routing");
 const { validateReviewGate } = require("./review-pipeline");
 
 const RISK = ["risk/low", "risk/medium", "risk/high", "risk/unknown"];

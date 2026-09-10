@@ -1,7 +1,7 @@
 "use strict";
 
 const { REVIEWER_ORDER } = require("./routing");
-const { escapeMarkdown } = require("./write-state");
+const { escapeMarkdown, reducedCoverageText } = require("./write-state");
 
 const MAX_CHECK_STAGES = REVIEWER_ORDER.length + 4;
 const MAX_WORKFLOW_STAGES = 64;
@@ -94,12 +94,6 @@ function diagnostics(report, outcome, maxStages, maxTextLength, includeReasons) 
   ].join("\n");
 }
 
-function reducedCoverageText(reducedCoverage) {
-  return ` with reduced coverage: optional reviewer${reducedCoverage.length === 1 ? "" : "s"} ` +
-    `${reducedCoverage.map((reviewer) => text(reviewer, MAX_CHECK_TEXT_LENGTH)).join(", ")} ` +
-    `${reducedCoverage.length === 1 ? "was" : "were"} unavailable`;
-}
-
 function renderReviewReport({ report, outcome, summaryUrl, reducedCoverage = [] }) {
   const checkDiagnostics = diagnostics(report, outcome, MAX_CHECK_STAGES, MAX_CHECK_TEXT_LENGTH, false);
   const workflowDiagnostics = diagnostics(report, outcome, MAX_WORKFLOW_STAGES, MAX_WORKFLOW_TEXT_LENGTH, true);
@@ -115,7 +109,11 @@ function renderReviewReport({ report, outcome, summaryUrl, reducedCoverage = [] 
     : outcome === "recovered" || outcome === "recovered-reduced-coverage"
       ? "Validated automated review was produced after stage recovery"
       : "Automated review is unavailable. Maintainer review is required";
-  const coverage = outcome.endsWith("reduced-coverage") ? reducedCoverageText(reducedCoverage) : "";
+  const coverage = outcome.endsWith("reduced-coverage")
+    ? ` with reduced coverage:${reducedCoverageText(
+      reducedCoverage.map((reviewer) => text(reviewer, MAX_CHECK_TEXT_LENGTH)),
+    )}`
+    : "";
   return {
     title: heading,
     checkSummary: `${outcomeText}${coverage}.\n\n${checkDiagnostics}\n\n[View the workflow summary](${summaryUrl})`,
