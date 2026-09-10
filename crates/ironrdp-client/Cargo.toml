@@ -70,7 +70,6 @@ all = [
     "vmconnect",
     "location",
     "udp",
-    "iroh",
 ]
 
 [dependencies]

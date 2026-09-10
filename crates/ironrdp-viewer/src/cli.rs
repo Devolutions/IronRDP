@@ -100,6 +100,7 @@ struct Args {
     /// Connect over an iroh (<https://github.com/n0-computer/iroh>) P2P QUIC tunnel using the
     /// given ticket string, instead of a direct TCP connection. Takes precedence over
     /// `--rdcleanpath-url` and `--gw-endpoint`.
+    #[cfg(feature = "iroh")]
     #[clap(long, value_name = "TICKET")]
     iroh_ticket: Option<String>,
 
@@ -462,8 +463,13 @@ fn apply_cli_to_builder(
         builder = builder.with_vmconnect_current_user(true);
     }
 
-    if let Some(ticket) = args.iroh_ticket {
-        builder = builder.with_transport(TransportKind::Iroh { ticket });
+    #[cfg(feature = "iroh")]
+    let iroh_transport = args.iroh_ticket.map(|ticket| TransportKind::Iroh { ticket });
+    #[cfg(not(feature = "iroh"))]
+    let iroh_transport: Option<TransportKind> = None;
+
+    if let Some(transport) = iroh_transport {
+        builder = builder.with_transport(transport);
     } else if let Some(url) = args.rdcleanpath_url {
         builder = builder.with_transport(TransportKind::RDCleanPath { url });
 

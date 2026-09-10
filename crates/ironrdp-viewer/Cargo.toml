@@ -26,6 +26,9 @@ rustls = ["ironrdp/rustls"]
 native-tls = ["ironrdp/native-tls"]
 qoi = ["ironrdp/qoi"]
 qoiz = ["ironrdp/qoiz"]
+# Tunnel the RDP stream over an iroh (https://github.com/n0-computer/iroh) P2P QUIC connection
+# instead of a direct TCP connection. Pass a ticket via `--iroh-ticket`.
+iroh = ["ironrdp/client-iroh", "ironrdp-daemon/iroh"]
 
 [dependencies]
 ironrdp-daemon = { path = "../ironrdp-daemon", version = "0.1" } # public

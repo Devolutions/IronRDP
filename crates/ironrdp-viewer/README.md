@@ -51,6 +51,19 @@ The RPC host uses the default `ironrdp-agent-<uid>.sock` endpoint on Unix or
 the same `--endpoint` value on the agent. The GUI and agent share one RDP session, including its
 framebuffer and input. Close the viewer window to stop the host.
 
+## Iroh P2P transport
+
+Building with `--features iroh` lets the viewer tunnel the RDP stream over an [iroh](https://github.com/n0-computer/iroh) P2P QUIC connection instead of a direct TCP connection.
+It is cross-platform and wire-compatible with `dumbpipe`'s `DUMBPIPEV0` ALPN and 5-byte handshake.
+Pass the iroh ticket with `--iroh-ticket`; it takes precedence over `--rdcleanpath-url` and `--gw-endpoint`.
+
+```shell
+ironrdp-viewer placeholder:3389 --iroh-ticket <TICKET> --username <USERNAME> --password <PASSWORD>
+```
+
+The hostname argument is still required to populate the RDP hostname and Client Info fields, even though the ticket determines where the connection actually goes.
+Obtain a ticket by running a socat-like iroh forwarder (e.g. `dumbpipe listen-tcp --host <target>:3389`) pointed at the target RDP server; it prints a ticket string to pass here.
+
 ## `.rdp` file support
 
 You can load a `.rdp` file with `--rdp-file <PATH>`.
