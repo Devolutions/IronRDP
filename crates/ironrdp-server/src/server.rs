@@ -337,14 +337,15 @@ pub struct RdpServerOptions {
     /// **completed authentication**, the existing connection is told why it is
     /// going away and dropped, and the newcomer is served in its place.
     ///
-    /// [`RdpServer`] serves one connection at a time. By default a second
-    /// connection accepted while one is live is left unserved in the OS listen
-    /// backlog — from that client's point of view, a silent hang until the
-    /// first session ends. That is `ironrdp-server`'s pre-existing behaviour,
-    /// kept as the default so an embedder that already relies on it is not
-    /// surprised by upgrading; it does not suit a server backing a single
-    /// specific session (e.g. mirroring one desktop), where a newly connecting
-    /// client should replace a stale or abandoned one.
+    /// [`RdpServer`] serves one connection at a time. With preemption OFF, a
+    /// second connection accepted while one is live is left unserved in the OS
+    /// listen backlog — from that client's point of view, a silent hang until
+    /// the first session ends. That was `ironrdp-server`'s pre-existing
+    /// behaviour; it does not suit a server backing a single specific session
+    /// (e.g. mirroring one desktop), where a newly connecting client should
+    /// replace a stale or abandoned one — so preemption is now ON by default,
+    /// the least-surprising behaviour for that shape. Set the option to `false`
+    /// to restore the queue-behind behaviour.
     ///
     /// # Security — what a candidate must clear, per mode
     ///
@@ -378,7 +379,8 @@ pub struct RdpServerOptions {
     /// considered — see the limitation documented on
     /// `CANDIDATE_NEGOTIATION_TIMEOUT`.
     ///
-    /// Defaults to `false` (queue-behind, the pre-existing behaviour). Set via
+    /// Defaults to `true` (preempt). Set to `false` for the pre-existing
+    /// queue-behind behaviour, via
     /// [`RdpServerBuilder::with_preempt_existing_session`](crate::RdpServerBuilder::with_preempt_existing_session).
     pub preempt_existing_session: bool,
     /// Quantization values the RemoteFX encoder uses once selected. Defaults
