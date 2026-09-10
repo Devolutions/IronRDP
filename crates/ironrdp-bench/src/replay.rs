@@ -81,15 +81,31 @@ impl PartialReplayWorkload {
         })
     }
 
-    /// Execute one fresh replay and enforce its exact partial-replay contract.
+    /// Execute one strict replay and enforce its complete partial-replay contract.
+    ///
+    /// This includes the full framebuffer output fingerprint and is intended for
+    /// preflight verification or a standalone one-run measurement.
+    pub fn verify(&self) -> ReplayWorkloadResult<ReplayMeasurement> {
+        self.execute(true)
+    }
+
+    /// Execute one fresh replay and enforce its processing contract.
+    ///
+    /// This starts with fresh session state and verifies lifecycle, routing,
+    /// gap, and graphics-update boundaries without hashing every framebuffer.
+    /// Call [`Self::verify`] before using this in a focused benchmark.
     pub fn replay(&self) -> ReplayWorkloadResult<ReplayMeasurement> {
+        self.execute(false)
+    }
+
+    fn execute(&self, calculate_output_fingerprint: bool) -> ReplayWorkloadResult<ReplayMeasurement> {
         let execution = self
             .prepared
             .replay_with_options(ReplayOptions {
-                calculate_output_fingerprint: true,
+                calculate_output_fingerprint,
             })
             .map_err(|error| ReplayWorkloadError::new(format!("replay {}: {error}", self.id.as_str())))?;
-        validate_execution(&execution, &self.expected)?;
+        validate_execution(&execution, &self.expected, calculate_output_fingerprint)?;
 
         Ok(ReplayMeasurement {
             routed_pdus: execution.report.events.len(),
@@ -234,7 +250,11 @@ fn parse_expectation(summary: &toml::Table) -> ReplayWorkloadResult<ReplayExpect
     })
 }
 
-fn validate_execution(execution: &ReplayExecution, expected: &ReplayExpectation) -> ReplayWorkloadResult<()> {
+fn validate_execution(
+    execution: &ReplayExecution,
+    expected: &ReplayExpectation,
+    verify_output_fingerprint: bool,
+) -> ReplayWorkloadResult<()> {
     let summary = &execution.summary;
     let expected_gaps = expected
         .framing_gaps
@@ -256,7 +276,6 @@ fn validate_execution(execution: &ReplayExecution, expected: &ReplayExpectation)
         && summary.other_server_message_pdus == expected.other_server_message_pdus
         && summary.graphics_updates == expected.graphics_updates
         && summary.final_dimensions == expected.final_dimensions
-        && summary.output_fingerprint == Some(expected.output_fingerprint)
         && summary.lifecycle == expected.lifecycle
         && summary.framing_gaps == expected.framing_gaps
         && summary.truncated_pdu_gaps == expected.truncated_pdu_gaps
@@ -267,6 +286,8 @@ fn validate_execution(execution: &ReplayExecution, expected: &ReplayExpectation)
         && summary.unsupported_gaps == expected.unsupported_gaps
         && summary.gap_fingerprint == expected.gap_fingerprint;
     if !summaries_match
+        || (verify_output_fingerprint && summary.output_fingerprint != Some(expected.output_fingerprint))
+        || (!verify_output_fingerprint && summary.output_fingerprint.is_some())
         || execution.report.lifecycle != expected.lifecycle
         || execution.report.events.len()
             != summary
@@ -452,6 +473,6 @@ mod tests {
             report: Default::default(),
             summary: ReplaySummary::default(),
         };
-        assert!(validate_execution(&execution, &expected).is_err());
+        assert!(validate_execution(&execution, &expected, true).is_err());
     }
 }

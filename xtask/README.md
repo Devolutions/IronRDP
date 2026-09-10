@@ -59,17 +59,20 @@ Its default is unpaced and emits one final payload-free summary after it confirm
 Pass `--fps <FPS>` only for interactive playback pacing.
 
 The capture replay workloads are intentionally qualified partial replays, not full-session success measurements.
-They verify the cached capture SHA-256 digest, load and decrypt it, and prepare the replay before Criterion timing begins.
-Each timed replay creates fresh session state and validates its manifest lifecycle, counters, gap fingerprint, output fingerprint, and framebuffer updates.
+Criterion prepares and strictly verifies only the selected cached capture before timing begins.
+Each timed replay creates fresh session state and validates lifecycle, routing counters, gap metadata, and framebuffer updates without hashing every framebuffer.
+The preflight verifies the full output fingerprint, while the standalone command performs that strict verification in its single replay execution.
 
 ```PowerShell
-cargo bench -p ironrdp-bench --bench capture_replay --locked
+cargo bench -p ironrdp-bench --bench capture_replay -- 'partial-replay/no-nla-accepted/processing' --exact
+cargo bench -p ironrdp-bench --bench capture_replay -- 'partial-replay/no-nla-smartcard/processing' --exact
 cargo build --release -p ironrdp-bench --bin capture-replay-bench --locked
 hyperfine --warmup 1 '.\target\release\capture-replay-bench.exe --capture no-nla-accepted'
 ```
 
-The standalone command performs its preflight and one verified processing execution in the measured process.
+An unmatched Criterion filter is not a benchmark result.
 Use only `no-nla-accepted` and `no-nla-smartcard`; both are active partial replays with eight declared static-channel gaps.
+Use `cargo xtask bench replay` to regression-test the complete pinned corpus, not to produce a single-capture timing score.
 
 To update the corpus, inspect the upstream capture inventory, revise the manifest revision, inventory, scenario intent metadata, replay expectations, and SHA-256 digests together, then run `cargo xtask bench corpus-fetch` followed by `cargo xtask bench replay`.
 Do not commit captures, TLS key material, decrypted payloads, screenshots, or generated output.

@@ -7,9 +7,12 @@ use ironrdp_bench::replay::{PartialReplayId, PartialReplayWorkload};
 
 fn partial_replay(c: &mut Criterion) {
     for id in PartialReplayId::ALL {
-        let workload = PartialReplayWorkload::prepare(id).expect("qualified partial replay workload must prepare");
         let name = format!("partial-replay/{}/processing", id.as_str());
         c.bench_function(&name, |b| {
+            let workload = PartialReplayWorkload::prepare(id).expect("qualified partial replay workload must prepare");
+            workload
+                .verify()
+                .expect("qualified partial replay workload must pass strict preflight");
             b.iter(|| {
                 let measurement = workload
                     .replay()

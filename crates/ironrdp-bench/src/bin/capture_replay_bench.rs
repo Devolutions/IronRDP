@@ -42,7 +42,7 @@ fn run() -> Result<(), String> {
 
     let id = PartialReplayId::from_str(&selector).map_err(|error| error.to_string())?;
     let workload = PartialReplayWorkload::prepare(id).map_err(|error| error.to_string())?;
-    let measurement = workload.replay().map_err(|error| error.to_string())?;
+    let measurement = workload.verify().map_err(|error| error.to_string())?;
     println!(
         "workload=partial-replay/{}\trouted_pdus={}\tgraphics_updates={}",
         workload.id().as_str(),
