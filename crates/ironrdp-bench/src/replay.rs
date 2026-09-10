@@ -60,11 +60,6 @@ impl PartialReplayWorkload {
     /// This intentionally runs outside focused Criterion timing.
     pub fn prepare(id: PartialReplayId) -> ReplayWorkloadResult<Self> {
         let cache_root = project_root().join(CACHE_ROOT);
-        Self::prepare_from_cache(id, &cache_root)
-    }
-
-    /// Verify, read, decrypt, and prepare a capture from an explicit cache root.
-    pub fn prepare_from_cache(id: PartialReplayId, cache_root: &Path) -> ReplayWorkloadResult<Self> {
         let capture = expected_capture(id)?;
         let path = cache_root.join(&capture.revision).join("captures").join(&capture.file);
         verify_file(&path, &capture.sha256)?;
@@ -454,6 +449,20 @@ mod tests {
         assert_eq!(smartcard.expected.lifecycle, ReplayLifecycle::Active);
         assert_eq!(accepted.expected.static_channel_gaps, 8);
         assert_eq!(smartcard.expected.static_channel_gaps, 8);
+    }
+
+    #[test]
+    fn declares_every_manifest_qualified_workload() {
+        let manifest: toml::Table = toml::from_str(MANIFEST).expect("valid corpus manifest");
+        let captures = required_array(&manifest, "capture", "root").expect("capture entries");
+        let manifest_ids = captures
+            .iter()
+            .filter_map(toml::Value::as_table)
+            .filter(|capture| capture.contains_key("performance"))
+            .map(|capture| required_string(capture, "id", "capture").expect("performance capture id"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(manifest_ids, PartialReplayId::ALL.map(PartialReplayId::as_str));
     }
 
     #[test]

@@ -55,16 +55,3 @@ fn run() -> Result<(), String> {
 const fn usage() -> &'static str {
     "usage: capture-replay-bench --capture <no-nla-accepted|no-nla-smartcard>"
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn requires_one_approved_selector() {
-        assert_eq!(
-            usage(),
-            "usage: capture-replay-bench --capture <no-nla-accepted|no-nla-smartcard>"
-        );
-    }
-}
