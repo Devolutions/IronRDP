@@ -1,5 +1,6 @@
 // FIXME: tests in this module can probably be rewritten to be much shorter using the ironrdp-client crate.
 
+use core::net::SocketAddr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::path::Path;
@@ -59,6 +60,24 @@ async fn test_client_server() {
         |stage, _activation_factory, framed, _display_tx| async { (stage, framed) },
     )
     .await
+}
+
+/// Configuring UDP multitransport on the server must not disturb a client
+/// that never advertises support for it: `set_multitransport_offer` gates on
+/// the client's own GCC `MultiTransportChannelData` reciprocating, so with
+/// `multitransport_flags: None` (the default) the acceptor never sends the
+/// Initiate Multitransport Request and the connection proceeds exactly as it
+/// does with no UDP transport configured at all.
+#[tokio::test]
+async fn test_client_server_with_udp_transport_configured_but_unused() {
+    client_server_with_connector(
+        default_client_config(),
+        Vec::new(),
+        Some(([127, 0, 0, 1], 0).into()),
+        |connector| connector,
+        |stage, _activation_factory, framed, _display_tx, _echo_handle| async { (stage, framed) },
+    )
+    .await;
 }
 
 /// Advertising the Graphics Pipeline early-capability bit must not disturb connection establishment.
@@ -249,6 +268,7 @@ async fn test_echo_virtual_channel_end_to_end() {
     client_server_with_connector(
         default_client_config(),
         Vec::new(),
+        None,
         |connector| connector.with_static_channel(DrdynvcClient::new().with_dynamic_channel(EchoClient::new())),
         move |mut stage, _activation_factory, mut framed, display_tx, echo_handle| async move {
             let _display_tx = display_tx;
@@ -304,6 +324,7 @@ async fn rdpdr_static_channel_announces_a_drive_and_completes_an_unsupported_cre
     client_server_with_connector(
         default_client_config(),
         vec![Box::new(fixture)],
+        None,
         |connector| connector.with_static_channel(test_rdpdr_channel()),
         move |stage, _activation_factory, framed, display_tx, _echo_handle| {
             drive_rdpdr_until_complete(stage, framed, display_tx, fixture_state)
@@ -332,6 +353,7 @@ async fn rdpdr_static_channel_creates_a_file_with_the_windows_backend() {
     client_server_with_connector(
         default_client_config(),
         vec![Box::new(fixture)],
+        None,
         move |connector| connector.with_static_channel(rdpdr_channel(&factory)),
         move |stage, _activation_factory, framed, display_tx, _echo_handle| {
             drive_rdpdr_until_complete(stage, framed, display_tx, fixture_state_for_client)
@@ -369,6 +391,7 @@ async fn rdpdr_static_channel_preserves_large_read_response_lengths() {
     client_server_with_connector(
         default_client_config(),
         vec![Box::new(fixture)],
+        None,
         move |connector| connector.with_static_channel(rdpdr_channel(&factory)),
         move |stage, _activation_factory, framed, display_tx, _echo_handle| {
             drive_rdpdr_until_complete(stage, framed, display_tx, fixture_state_for_client)
@@ -884,6 +907,7 @@ where
     client_server_with_connector(
         client_config,
         Vec::new(),
+        None,
         |connector| connector,
         move |stage, connection_activation, framed, display_tx, _echo_handle| {
             clientfn(stage, connection_activation, framed, display_tx)
@@ -895,6 +919,7 @@ where
 async fn client_server_with_connector<F, Fut, C>(
     client_config: connector::Config,
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+    server_udp_addr: Option<SocketAddr>,
     connector_factory: C,
     clientfn: F,
 ) where
@@ -929,6 +954,9 @@ async fn client_server_with_connector<F, Fut, C>(
         });
     for factory in static_channel_factories {
         server_builder = server_builder.with_static_channel_factory(factory);
+    }
+    if let Some(udp_addr) = server_udp_addr {
+        server_builder = server_builder.with_udp_transport(udp_addr);
     }
     let mut server = server_builder.build();
     server.set_credentials(Some(server::Credentials {
