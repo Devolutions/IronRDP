@@ -131,7 +131,9 @@ Compilation and corpus fetching occur before the CodSpeed action and are exclude
 
 The `CodSpeed` workflow runs simulation for pushes and pull requests only after maintainers set the `CODSPEED_ENABLED` repository variable to `true` and enable the repository in CodSpeed.
 It authenticates through GitHub OIDC and requires no repository secret for this public repository.
-The wall-time job is manual only and runs only when its dispatcher supplies a known, approved Linux runner label.
+The wall-time job is manual only and runs only when maintainers set the repository-controlled `CODSPEED_WALLTIME_RUNNER` variable to a known, approved Linux runner label.
+Dispatchers cannot select or override the wall-time runner.
+The job is skipped unless `CODSPEED_ENABLED` is `true` and `CODSPEED_WALLTIME_RUNNER` is nonempty.
 Use a dedicated stable runner for wall time; shared hosted runners are too noisy for performance decisions.
 The public capture cache uses the existing manifest-hash cache key and is digest-verified before use.
 Do not upload captures, decrypted payloads, TLS key material, screenshots, or generated replay output; CodSpeed receives measurements and may retain symbol-bearing profiles, not raw replay payloads.

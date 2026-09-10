@@ -7,11 +7,6 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
-    inputs:
-      walltime_runner:
-        description: Approved Linux runner label for wall-time measurements
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -64,8 +59,8 @@ jobs:
 
   walltime:
     name: CodSpeed walltime
-    if: github.event_name == 'workflow_dispatch' && inputs.walltime_runner != '' && vars.CODSPEED_ENABLED == 'true'
-    runs-on: ${{ inputs.walltime_runner }}
+    if: github.event_name == 'workflow_dispatch' && vars.CODSPEED_ENABLED == 'true' && vars.CODSPEED_WALLTIME_RUNNER != ''
+    runs-on: ${{ vars.CODSPEED_WALLTIME_RUNNER }}
 
     steps:
       - uses: actions/checkout@v6
