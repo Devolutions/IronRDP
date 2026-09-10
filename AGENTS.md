@@ -12,7 +12,7 @@ You are responsible for the full lifecycle of a task: understanding intent, plan
 
 2. **Plan**
    - Make a short plan for non-trivial changes; keep scope tight to the user request.
-   - Identify affected workspace members (`crates/*`, `xtask`, `ffi`, `benches`, `fuzz`, `web-client`) and API boundaries.
+   - Identify affected workspace members (`crates/*`, `xtask`, `ffi`, `fuzz`, `web-client`) and API boundaries.
    - Prefer root-cause fixes over local workarounds.
 
 3. **Documentation**
@@ -76,7 +76,8 @@ See [skills.sh](https://skills.sh) for more on the `npx skills` command.
 - **`fuzz/`**: Fuzz targets/corpus for robustness testing.
 - **`ffi/`**: Native library + .NET bindings and examples.
 - **`web-client/`**: Browser/web-component/Svelte client artifacts.
-- **`benches/`**: Benchmarks and perf-related code.
+- **`crates/ironrdp-bench/`**: Consolidated benchmark package with Criterion targets, shared workloads, and standalone CLI binaries.
+  Crate-local benchmarks, such as `crates/ironrdp-bulk/benches/`, stay next to the code they measure.
 
 When changing architecture-sensitive crates, preserve tier boundaries and invariants from `ARCHITECTURE.md`.
 
@@ -93,7 +94,6 @@ These crates exist on disk but are not documented in `ARCHITECTURE.md`. Be aware
 - `ironrdp-egfx` — extended graphics pipeline channel
 - `ironrdp-rdpdr-native` — native RDPDR backend
 - `ironrdp-rdpsnd-native` — native RDPSND backend
-- `ironrdp-bench` — benchmarking harness
 - `iron-remote-desktop` (under `crates/`) — remote desktop abstractions
 
 ### Workspace Exclusions
