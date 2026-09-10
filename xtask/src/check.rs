@@ -129,6 +129,26 @@ pub fn dependencies(sh: &Shell) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn capture_files(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("CAPTURE-FILES");
+
+    let tracked_files = cmd!(sh, "git ls-files").read()?;
+    let captures = tracked_files
+        .lines()
+        .filter(|path| path.ends_with(".pcap") || path.ends_with(".pcapng"))
+        .collect::<Vec<_>>();
+
+    if !captures.is_empty() {
+        anyhow::bail!(
+            "packet captures must not be tracked; cache them under ignored dependencies instead:\n{}",
+            captures.join("\n")
+        );
+    }
+
+    println!("All good!");
+    Ok(())
+}
+
 pub fn test_settings(sh: &Shell, base: &str, head: &str) -> anyhow::Result<()> {
     let _s = Section::new("TEST-SETTINGS");
     let mut base_settings = BTreeSet::new();
