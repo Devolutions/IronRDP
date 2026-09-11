@@ -18,9 +18,9 @@ categories.workspace = true
 __test = []
 
 [dependencies]
-ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] } # public
+ironrdp-core = { path = "../ironrdp-core", version = "0.3", features = ["alloc"] } # public
 ironrdp-input = { path = "../ironrdp-input", version = "0.7" } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.10" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # public
 tokio = { version = "1", features = ["net", "io-util"] }
 anyhow = "1"

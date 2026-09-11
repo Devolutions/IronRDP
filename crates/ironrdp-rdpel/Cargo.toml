@@ -17,10 +17,10 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-core = { version = "0.2.1", path = "../ironrdp-core", features = ["alloc"] } # public
-ironrdp-dvc = { version = "0.8.0", path = "../ironrdp-dvc" } # public
-ironrdp-pdu = { version = "0.9.0", path = "../ironrdp-pdu", features = ["alloc"] } # public
-ironrdp-svc = { version = "0.8.0", path = "../ironrdp-svc" } # public
+ironrdp-core = { version = "0.3.0", path = "../ironrdp-core", features = ["alloc"] } # public
+ironrdp-dvc = { version = "0.9.0", path = "../ironrdp-dvc" } # public
+ironrdp-pdu = { version = "0.10.0", path = "../ironrdp-pdu", features = ["alloc"] } # public
+ironrdp-svc = { version = "0.9.0", path = "../ironrdp-svc" } # public
 tracing = { version = "0.1", features = ["log"] }
 
 [lints]

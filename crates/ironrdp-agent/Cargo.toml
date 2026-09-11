@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-agent"
-version = "0.1.0"
+version = "0.2.0"
 readme = "README.md"
 description = "CLI-driven, daemon-backed agentic RDP client suitable for LLM consumption"
 edition.workspace = true
@@ -22,7 +22,7 @@ test = false
 [dependencies]
 # Configuration model and codecs
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }
-ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
+ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.2" }
 ironrdp-rdpfile = { path = "../ironrdp-rdpfile", version = "0.1" }
 ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
 ironrdp-daemon = { path = "../ironrdp-daemon", version = "0.1" }
@@ -38,7 +38,7 @@ clap = { version = "4.6", features = ["derive", "cargo", "env"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-ironrdp-mstsgu = { path = "../ironrdp-mstsgu", version = "0.0.1", features = ["rustls"] }
+ironrdp-mstsgu = { path = "../ironrdp-mstsgu", version = "0.0.2", features = ["rustls"] }
 
 [target.'cfg(windows)'.dependencies]
 # Windows Sandbox control plane: gRPC/HTTP2 over a per-user named pipe.

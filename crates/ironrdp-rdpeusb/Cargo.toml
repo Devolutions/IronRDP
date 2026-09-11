@@ -21,11 +21,11 @@ default = []
 std = []
 
 [dependencies]
-ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", features = ["alloc"] } # public
-ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.8" } # public
+ironrdp-core = { path = "../ironrdp-core", version = "0.3", features = ["alloc"] } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.10", features = ["alloc"] } # public
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.9" } # public
 ironrdp-usb = { path = "../ironrdp-usb", version = "0.1" } # public
-ironrdp-str = { path = "../ironrdp-str", version = "0.1" }
+ironrdp-str = { path = "../ironrdp-str", version = "0.2" }
 
 [lints]
 workspace = true
