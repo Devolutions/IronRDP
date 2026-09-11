@@ -36,13 +36,12 @@ pub struct Acceptor {
     keyboard_layout: u32,
     keyboard_type: gcc::KeyboardType,
     ime_file_name: String,
-    multitransport_flags: gcc::MultiTransportFlags,
-    /// Whether the client sent a Client MultiTransportChannelData block at all
-    /// (MS-RDPBCGR 2.2.1.3.8), independent of what flags it carried. The
-    /// server's own block MUST be omitted when the client did not populate
-    /// this field (2.2.1.4), which `multitransport_flags` alone can't express
-    /// since it collapses "absent" and "present but empty" together.
-    client_offered_multitransport: bool,
+    /// The client's MultiTransportChannelData block flags (MS-RDPBCGR
+    /// 2.2.1.3.8), when it sent one. `None` when the client did not send the
+    /// block at all, distinct from `Some(empty())` (block present, no flags
+    /// set): the server's own block MUST be omitted in the former case but
+    /// not the latter (2.2.1.4).
+    multitransport_flags: Option<gcc::MultiTransportFlags>,
     early_capability_flags: gcc::ClientEarlyCapabilityFlags,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
@@ -178,8 +177,7 @@ impl Acceptor {
             keyboard_layout: 0,
             keyboard_type: gcc::KeyboardType(0),
             ime_file_name: String::new(),
-            multitransport_flags: gcc::MultiTransportFlags::empty(),
-            client_offered_multitransport: false,
+            multitransport_flags: None,
             early_capability_flags: gcc::ClientEarlyCapabilityFlags::empty(),
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
@@ -260,6 +258,12 @@ impl Acceptor {
     ///
     /// `None` is the default: no multitransport block is advertised and no
     /// request is ever sent.
+    ///
+    /// This acceptor only bootstraps and sends the request; it does not
+    /// itself establish the RDPEUDP2 sideband transport the request
+    /// promises. Enabling this without a caller that drives that
+    /// establishment (over `multitransport_request()`) makes every
+    /// reciprocating client attempt a UDP connection that cannot succeed.
     pub fn set_multitransport_offer(&mut self, flags: Option<gcc::MultiTransportFlags>) {
         self.offer_multitransport = flags;
     }
@@ -291,19 +295,24 @@ impl Acceptor {
 
     /// Whether both peers advertised Soft-Sync support for multitransport.
     ///
-    /// Only meaningful once [`multitransport_request()`](Self::multitransport_request)
-    /// returns `Some`.
-    pub fn multitransport_soft_sync_negotiated(&self) -> bool {
-        self.offer_multitransport
-            .is_some_and(|offer| offer.contains(gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP))
-            && self
-                .multitransport_flags
-                .contains(gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP)
+    /// `None` before [`multitransport_request()`](Self::multitransport_request)
+    /// returns `Some`: no request was sent, so nothing was actually
+    /// negotiated regardless of what the GCC flags alone would suggest.
+    pub fn multitransport_soft_sync_negotiated(&self) -> Option<bool> {
+        self.sent_multitransport_request.as_ref()?;
+        Some(
+            self.offer_multitransport
+                .is_some_and(|offer| offer.contains(gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP))
+                && self
+                    .multitransport_flags
+                    .is_some_and(|flags| flags.contains(gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP)),
+        )
     }
 
     /// If `data` (an MCS SendDataRequest already decoded from the wire) is on
     /// the message channel while a multitransport request is outstanding AND
     /// its payload strictly decodes as an Initiate Multitransport Response,
+    /// logs it against the outstanding request (matching request IDs) and
     /// returns it. MS-RDPBCGR 3.2.5.15.1 gives this response no fixed
     /// position relative to the rest of the handshake: it depends on when
     /// the client resolves its own bootstrapping and whether the sideband
@@ -323,24 +332,12 @@ impl Acceptor {
         &self,
         data: &mcs::SendDataRequest<'_>,
     ) -> Option<rdp::multitransport::MultitransportResponsePdu> {
-        if !(self.sent_multitransport_request.is_some() && Some(data.channel_id) == self.message_channel_id) {
+        let sent = self.sent_multitransport_request.as_ref()?;
+        if Some(data.channel_id) != self.message_channel_id {
             return None;
         }
-        decode::<rdp::multitransport::MultitransportResponsePdu>(data.user_data.as_ref()).ok()
-    }
-
-    /// Logs a received Initiate Multitransport Response against the
-    /// outstanding request, matching request IDs. Shared by the two call
-    /// sites `late_multitransport_response` gates; both only call this once
-    /// that method has confirmed a request is outstanding, so
-    /// `sent_multitransport_request` is always `Some` here.
-    fn log_multitransport_response(&self, response: &rdp::multitransport::MultitransportResponsePdu) {
-        let expected_request_id = self
-            .sent_multitransport_request
-            .as_ref()
-            .expect("late_multitransport_response only returns Some when a request is outstanding")
-            .request_id;
-        if response.request_id == expected_request_id {
+        let response = decode::<rdp::multitransport::MultitransportResponsePdu>(data.user_data.as_ref()).ok()?;
+        if response.request_id == sent.request_id {
             debug!(
                 request_id = response.request_id,
                 success = response.is_success(),
@@ -349,9 +346,11 @@ impl Acceptor {
         } else {
             warn!(
                 response.request_id,
-                expected_request_id, "Initiate Multitransport Response request ID does not match the sent request"
+                expected_request_id = sent.request_id,
+                "Initiate Multitransport Response request ID does not match the sent request"
             );
         }
+        Some(response)
     }
 
     pub fn new_deactivation_reactivation(
@@ -387,7 +386,6 @@ impl Acceptor {
             keyboard_type: consumed.keyboard_type,
             ime_file_name: consumed.ime_file_name,
             multitransport_flags: consumed.multitransport_flags,
-            client_offered_multitransport: consumed.client_offered_multitransport,
             early_capability_flags: consumed.early_capability_flags,
             server_capabilities: consumed.server_capabilities,
             static_channels,
@@ -489,7 +487,9 @@ impl Acceptor {
                 keyboard_layout: self.keyboard_layout,
                 keyboard_type: self.keyboard_type,
                 ime_file_name: self.ime_file_name.clone(),
-                multitransport_flags: self.multitransport_flags,
+                multitransport_flags: self
+                    .multitransport_flags
+                    .unwrap_or_else(gcc::MultiTransportFlags::empty),
                 client_early_capability_flags: self.early_capability_flags,
                 reactivation: self.reactivation,
                 credentials: self.received_credentials.take(),
@@ -504,6 +504,7 @@ impl Acceptor {
 }
 
 #[derive(Default, Debug)]
+#[non_exhaustive]
 pub enum AcceptorState {
     #[default]
     Consumed,
@@ -795,12 +796,7 @@ impl Sequence for Acceptor {
                 self.keyboard_layout = gcc_blocks.core.keyboard_layout;
                 self.keyboard_type = gcc_blocks.core.keyboard_type;
                 self.ime_file_name.clone_from(&gcc_blocks.core.ime_file_name);
-                self.client_offered_multitransport = gcc_blocks.multi_transport_channel.is_some();
-                self.multitransport_flags = gcc_blocks
-                    .multi_transport_channel
-                    .as_ref()
-                    .map(|m| m.flags)
-                    .unwrap_or_else(gcc::MultiTransportFlags::empty);
+                self.multitransport_flags = gcc_blocks.multi_transport_channel.as_ref().map(|m| m.flags);
 
                 // Adopt the client's requested desktop size (from its Client
                 // Core Data) before Demand Active is sent, so the session is
@@ -904,7 +900,8 @@ impl Sequence for Acceptor {
                     requested_protocol,
                     skip_channel_join,
                     self.message_channel_id,
-                    self.offer_multitransport.filter(|_| self.client_offered_multitransport),
+                    self.offer_multitransport
+                        .filter(|_| self.multitransport_flags.is_some()),
                 );
 
                 let settings_response = mcs::ConnectResponse {
@@ -1074,7 +1071,7 @@ impl Sequence for Acceptor {
                     .is_some_and(|offer| offer.contains(gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
                 let client_supports_udp_fecr = self
                     .multitransport_flags
-                    .contains(gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR);
+                    .is_some_and(|flags| flags.contains(gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
                 // 2.2.15.1 requires the request to travel on the MCS message
                 // channel. A client can in principle advertise UDP support
                 // without also requesting a message channel; rather than
@@ -1192,31 +1189,27 @@ impl Sequence for Acceptor {
                         }
                     }
                 };
-                // An Initiate Multitransport Response can legitimately land here:
-                // it travels on the message channel, and the client sends it
-                // (when it sends one at all) while resolving its own multitransport
-                // bootstrapping, strictly before it ever reads the Demand Active
-                // that leads to Confirm Active. So it is checked for by channel
-                // and a successful strict decode before assuming the payload is a
-                // Confirm Active, and simply logged and dropped: this acceptor
-                // does not gate on it, per the note on
-                // `AcceptorState::MultitransportBootstrapping`. A decode failure
-                // here means the message-channel traffic isn't a response at all
-                // (Auto-Detect Response, Heartbeat), so it falls through to the
-                // Confirm Active handling below instead.
-                let late_multitransport_response = match &message {
-                    mcs::McsMessage::SendDataRequest(data) => self.late_multitransport_response(data),
-                    _ => None,
-                };
-
-                if let Some(response) = late_multitransport_response {
-                    self.log_multitransport_response(&response);
-                    self.state = prev_state;
-                    return Ok(Written::Nothing);
-                }
-
                 match message {
                     mcs::McsMessage::SendDataRequest(data) => {
+                        // An Initiate Multitransport Response can legitimately land
+                        // here: it travels on the message channel, and the client
+                        // sends it (when it sends one at all) while resolving its
+                        // own multitransport bootstrapping, strictly before it
+                        // ever reads the Demand Active that leads to Confirm
+                        // Active. So it is checked for by channel and a
+                        // successful strict decode before assuming the payload is
+                        // a Confirm Active, and simply logged and dropped: this
+                        // acceptor does not gate on it, per the note on
+                        // `AcceptorState::MultitransportBootstrapping`. A decode
+                        // failure here means the message-channel traffic isn't a
+                        // response at all (Auto-Detect Response, Heartbeat), so it
+                        // falls through to the Confirm Active handling below
+                        // instead.
+                        if self.late_multitransport_response(&data).is_some() {
+                            self.state = prev_state;
+                            return Ok(Written::Nothing);
+                        }
+
                         let capabilities_confirm = decode::<rdp::headers::ShareControlHeader>(data.user_data.as_ref())
                             .map_err(ConnectorError::decode);
                         let capabilities_confirm = match capabilities_confirm {
@@ -1275,14 +1268,14 @@ impl Sequence for Acceptor {
                 // application as a raw input event. Check for it here, before
                 // finalization ever sees the bytes, mirroring
                 // `CapabilitiesWaitConfirm`'s handling.
-                let late_multitransport_response = match decode::<X224<mcs::McsMessage<'_>>>(input) {
-                    Ok(X224(mcs::McsMessage::SendDataRequest(data))) => self.late_multitransport_response(&data),
-                    _ => None,
+                let is_late_multitransport_response = match decode::<X224<mcs::McsMessage<'_>>>(input) {
+                    Ok(X224(mcs::McsMessage::SendDataRequest(data))) => {
+                        self.late_multitransport_response(&data).is_some()
+                    }
+                    _ => false,
                 };
 
-                if let Some(response) = late_multitransport_response {
-                    self.log_multitransport_response(&response);
-
+                if is_late_multitransport_response {
                     (
                         Written::Nothing,
                         AcceptorState::ConnectionFinalization {

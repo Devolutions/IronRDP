@@ -325,6 +325,26 @@ fn client_gcc_with_message_channel_and_multitransport(
     blocks
 }
 
+/// Builds an `Acceptor` for the multitransport tests below, at a common
+/// 1920x1080 desktop size with no static channels or credentials. `offer` is
+/// passed to `set_multitransport_offer` when `Some`; pass `None` to exercise
+/// the default-disabled path.
+fn multitransport_acceptor(offer: Option<MultiTransportFlags>) -> Acceptor {
+    let mut acceptor = Acceptor::new(
+        SecurityProtocol::SSL,
+        DesktopSize {
+            width: 1920,
+            height: 1080,
+        },
+        Vec::new(),
+        None,
+    );
+    if let Some(offer) = offer {
+        acceptor.set_multitransport_offer(Some(offer));
+    }
+    acceptor
+}
+
 /// The full happy path: the acceptor offers reliable UDP multitransport, the
 /// client reciprocates, so the request goes out on the message channel and
 /// `multitransport_request()` surfaces it. A late Initiate Multitransport
@@ -335,16 +355,7 @@ fn client_gcc_with_message_channel_and_multitransport(
 /// still reaching capabilities confirmation.
 #[test]
 fn multitransport_offered_and_client_reciprocates() {
-    let mut acceptor = Acceptor::new(
-        SecurityProtocol::SSL,
-        DesktopSize {
-            width: 1920,
-            height: 1080,
-        },
-        Vec::new(),
-        None,
-    );
-    acceptor.set_multitransport_offer(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+    let mut acceptor = multitransport_acceptor(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
 
     let client_blocks =
         client_gcc_with_message_channel_and_multitransport(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
@@ -421,16 +432,7 @@ fn multitransport_offered_and_client_reciprocates() {
 /// own (pre-existing, unrelated to this fix) handling see it.
 #[test]
 fn non_response_traffic_on_the_message_channel_is_not_misclassified() {
-    let mut acceptor = Acceptor::new(
-        SecurityProtocol::SSL,
-        DesktopSize {
-            width: 1920,
-            height: 1080,
-        },
-        Vec::new(),
-        None,
-    );
-    acceptor.set_multitransport_offer(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+    let mut acceptor = multitransport_acceptor(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
 
     let client_blocks =
         client_gcc_with_message_channel_and_multitransport(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
@@ -473,16 +475,7 @@ fn non_response_traffic_on_the_message_channel_is_not_misclassified() {
 /// and the connection is dropped outright.
 #[test]
 fn multitransport_response_arriving_during_finalization_is_tolerated() {
-    let mut acceptor = Acceptor::new(
-        SecurityProtocol::SSL,
-        DesktopSize {
-            width: 1920,
-            height: 1080,
-        },
-        Vec::new(),
-        None,
-    );
-    acceptor.set_multitransport_offer(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+    let mut acceptor = multitransport_acceptor(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
 
     let client_blocks =
         client_gcc_with_message_channel_and_multitransport(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
@@ -568,15 +561,7 @@ fn multitransport_response_arriving_during_finalization_is_tolerated() {
 /// Multitransport Request is ever sent.
 #[test]
 fn multitransport_not_offered_by_default() {
-    let mut acceptor = Acceptor::new(
-        SecurityProtocol::SSL,
-        DesktopSize {
-            width: 1920,
-            height: 1080,
-        },
-        Vec::new(),
-        None,
-    );
+    let mut acceptor = multitransport_acceptor(None);
 
     let client_blocks =
         client_gcc_with_message_channel_and_multitransport(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
@@ -586,7 +571,7 @@ fn multitransport_not_offered_by_default() {
     let written = acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping
     assert!(matches!(written, Written::Nothing));
     assert!(acceptor.multitransport_request().is_none());
-    assert!(!acceptor.multitransport_soft_sync_negotiated());
+    assert_eq!(acceptor.multitransport_soft_sync_negotiated(), None);
 }
 
 /// The acceptor offers multitransport, but the client's GCC blocks never
@@ -595,16 +580,7 @@ fn multitransport_not_offered_by_default() {
 /// rather than echo the offer the client never reciprocated.
 #[test]
 fn multitransport_not_offered_when_client_does_not_reciprocate() {
-    let mut acceptor = Acceptor::new(
-        SecurityProtocol::SSL,
-        DesktopSize {
-            width: 1920,
-            height: 1080,
-        },
-        Vec::new(),
-        None,
-    );
-    acceptor.set_multitransport_offer(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+    let mut acceptor = multitransport_acceptor(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
 
     let client_blocks = client_gcc_with_message_channel_and_multitransport(None);
     let (.., server_multitransport) = drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
