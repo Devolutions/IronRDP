@@ -2,7 +2,7 @@
 
 use ironrdp_core::{decode, impl_as_any};
 use ironrdp_dvc::{DvcMessage, DvcProcessor, DvcServerProcessor};
-use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
+use ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
 use tracing::{debug, trace, warn};
 
@@ -91,14 +91,14 @@ enum State {
 /// [`Self::open`] is called. Recording itself is caller-initiated: call [`Self::open`] once
 /// the negotiated formats are known ([`RdpeaiServerBackend::on_formats_negotiated`]) and the
 /// consuming application actually wants to record, then forward the returned PDUs to the
-/// client over the `channel_id` this processor was started with.
+/// client over the channel id this processor was created for (recover it with
+/// [`ironrdp_dvc::DrdynvcServer::get_channel_id_by_type`]).
 ///
 /// Malformed, unrecognized, or out-of-sequence PDUs are logged and ignored rather than
 /// treated as errors, per MS-RDPEAI 3.1.5's explicit MUST-ignore requirement.
 pub struct RdpeaiServer {
     backend: Box<dyn RdpeaiServerBackend>,
     state: State,
-    channel_id: Option<u32>,
     client_version: Option<Version>,
     /// Negotiated format list, in the client's reply order — Open/FormatChange indices refer
     /// here (MS-RDPEAI 3.1.1: this is the list the client establishes as final).
@@ -117,13 +117,25 @@ impl RdpeaiServer {
         Self {
             backend,
             state: State::Start,
-            channel_id: None,
             client_version: None,
             negotiated_formats: Vec::new(),
             current_format: None,
             pending_open_format: None,
             pending_format_change: None,
         }
+    }
+
+    /// Clear all per-connection state, transitioning to `state`. Shared by
+    /// [`DvcProcessor::start`] (transitions to `AwaitingClientVersion`) and
+    /// [`DvcProcessor::close`] (transitions to `Start`), so the two reset sequences can't
+    /// drift apart as fields are added.
+    fn reset(&mut self, state: State) {
+        self.state = state;
+        self.client_version = None;
+        self.negotiated_formats.clear();
+        self.current_format = None;
+        self.pending_open_format = None;
+        self.pending_format_change = None;
     }
 
     /// Formats negotiated with the client (MS-RDPEAI 3.3.5.1.5); empty before that completes
@@ -267,13 +279,16 @@ impl RdpeaiServer {
                     return Ok(Vec::new());
                 };
                 if pdu.new_format != pending {
+                    // MS-RDPEAI 3.1.5: a non-conformant confirm MUST be ignored, not trusted.
+                    // Keep the server-requested index rather than the client's divergent echo.
                     warn!(
                         expected = pending,
                         got = pdu.new_format,
-                        "Initial AUDIO_INPUT FormatChange confirm does not match the format from Open"
+                        "Initial AUDIO_INPUT FormatChange confirm does not match the format from Open; \
+                         keeping the requested format"
                     );
                 }
-                self.current_format = Some(pdu.new_format);
+                self.current_format = Some(pending);
                 self.pending_open_format = None;
                 self.state = State::AwaitingOpenReply;
                 Ok(Vec::new())
@@ -285,13 +300,16 @@ impl RdpeaiServer {
                     return Ok(Vec::new());
                 };
                 if pdu.new_format != pending {
+                    // MS-RDPEAI 3.1.5: a non-conformant confirm MUST be ignored, not trusted.
+                    // Keep the server-requested index rather than the client's divergent echo.
                     warn!(
                         expected = pending,
                         got = pdu.new_format,
-                        "AUDIO_INPUT FormatChange confirm does not match the requested format"
+                        "AUDIO_INPUT FormatChange confirm does not match the requested format; \
+                         keeping the requested format"
                     );
                 }
-                self.current_format = Some(pdu.new_format);
+                self.current_format = Some(pending);
                 if let Some(fmt) = self.current_format().cloned() {
                     self.backend.on_format_change_confirmed(&fmt);
                 }
@@ -349,20 +367,24 @@ impl DvcProcessor for RdpeaiServer {
     }
 
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        self.channel_id = Some(channel_id);
-        self.state = State::AwaitingClientVersion;
-        self.client_version = None;
-        self.negotiated_formats.clear();
-        self.current_format = None;
-        self.pending_open_format = None;
-        self.pending_format_change = None;
+        self.reset(State::AwaitingClientVersion);
         debug!(channel_id, "AUDIO_INPUT channel started");
         // MS-RDPEAI 3.3.5.1.1: the Version PDU MUST be the first PDU sent by the server.
         Ok(vec![Box::new(RdpeaiPdu::Version(VersionPdu::new(Version::V2)))])
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        let pdu: RdpeaiPdu = decode(payload).map_err(|e| decode_err!(e))?;
+        // MS-RDPEAI 3.1.5: malformed or unrecognized PDUs MUST be ignored rather than
+        // treated as errors. A decode failure must not propagate: this processor is
+        // reached through the shared DRDYNVC SVC processor, so an Err here would fail
+        // the whole dynamic-channel message loop, not just this channel.
+        let pdu: RdpeaiPdu = match decode(payload) {
+            Ok(pdu) => pdu,
+            Err(e) => {
+                warn!(error = %e, "Ignoring malformed AUDIO_INPUT PDU");
+                return Ok(Vec::new());
+            }
+        };
         trace!(?pdu, "AUDIO_INPUT PDU received");
         match pdu {
             RdpeaiPdu::Version(v) => self.handle_version(v),
@@ -381,13 +403,7 @@ impl DvcProcessor for RdpeaiServer {
 
     fn close(&mut self, _channel_id: u32) {
         self.backend.on_close();
-        self.channel_id = None;
-        self.state = State::Start;
-        self.client_version = None;
-        self.negotiated_formats.clear();
-        self.current_format = None;
-        self.pending_open_format = None;
-        self.pending_format_change = None;
+        self.reset(State::Start);
         debug!("AUDIO_INPUT channel closed");
     }
 }

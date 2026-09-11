@@ -69,50 +69,34 @@ fn process_encoded(server: &mut RdpeaiServer, channel_id: u32, pdu: RdpeaiPdu) -
         .expect("process")
 }
 
-/// Drive the server through Version -> Formats -> Open -> FormatChange confirm -> OpenReply,
-/// returning the backend so callers can inspect what it observed.
+/// Drive the server through Version -> Formats -> Open -> FormatChange confirm -> OpenReply.
+/// Every call site uses the same channel id, frames-per-packet, and initial format index, so
+/// those are fixed here rather than threaded through as parameters.
 fn negotiate_and_open(
     server: &mut RdpeaiServer,
-    channel_id: u32,
     client_formats: Vec<AudioFormat>,
-    frames_per_packet: u32,
-    initial_format: u32,
     capture_format: AudioFormat,
     open_result: i32,
 ) {
-    let start_out = server.start(channel_id).expect("start");
+    let start_out = server.start(1).expect("start");
     assert_eq!(start_out.len(), 1);
     assert!(matches!(decode_dvc(&start_out[0]), RdpeaiPdu::Version(_)));
 
-    let version_out = process_encoded(server, channel_id, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
+    let version_out = process_encoded(server, 1, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
     assert_eq!(version_out.len(), 1);
     assert!(matches!(decode_dvc(&version_out[0]), RdpeaiPdu::Formats(_)));
 
-    let formats_out = process_encoded(
-        server,
-        channel_id,
-        RdpeaiPdu::Formats(FormatsPdu::client(client_formats)),
-    );
+    let formats_out = process_encoded(server, 1, RdpeaiPdu::Formats(FormatsPdu::client(client_formats)));
     assert!(formats_out.is_empty());
 
-    let open_out = server
-        .open(frames_per_packet, initial_format, capture_format)
-        .expect("open");
+    let open_out = server.open(320, 0, capture_format).expect("open");
     assert_eq!(open_out.len(), 1);
     assert!(matches!(decode_dvc(&open_out[0]), RdpeaiPdu::Open(_)));
 
-    let confirm_out = process_encoded(
-        server,
-        channel_id,
-        RdpeaiPdu::FormatChange(FormatChangePdu::new(initial_format)),
-    );
+    let confirm_out = process_encoded(server, 1, RdpeaiPdu::FormatChange(FormatChangePdu::new(0)));
     assert!(confirm_out.is_empty());
 
-    let reply_out = process_encoded(
-        server,
-        channel_id,
-        RdpeaiPdu::OpenReply(OpenReplyPdu { result: open_result }),
-    );
+    let reply_out = process_encoded(server, 1, RdpeaiPdu::OpenReply(OpenReplyPdu { result: open_result }));
     assert!(reply_out.is_empty());
 }
 
@@ -173,15 +157,7 @@ fn open_through_data_delivers_audio_to_the_backend() {
     let backend = MockBackend::new(vec![fmt.clone()]);
     let mut server = RdpeaiServer::new(Box::new(backend.clone()));
 
-    negotiate_and_open(
-        &mut server,
-        1,
-        vec![fmt.clone()],
-        320,
-        0,
-        fmt.clone(),
-        OpenReplyPdu::S_OK,
-    );
+    negotiate_and_open(&mut server, vec![fmt.clone()], fmt.clone(), OpenReplyPdu::S_OK);
 
     assert_eq!(backend.state.lock().unwrap().open_replies, vec![OpenReplyPdu::S_OK]);
     assert_eq!(server.current_format(), Some(&fmt));
@@ -240,15 +216,7 @@ fn open_reply_failure_returns_to_ready_and_allows_retry() {
     let backend = MockBackend::new(vec![fmt.clone()]);
     let mut server = RdpeaiServer::new(Box::new(backend.clone()));
 
-    negotiate_and_open(
-        &mut server,
-        1,
-        vec![fmt.clone()],
-        320,
-        0,
-        fmt.clone(),
-        OpenReplyPdu::E_FAIL,
-    );
+    negotiate_and_open(&mut server, vec![fmt.clone()], fmt.clone(), OpenReplyPdu::E_FAIL);
 
     assert_eq!(backend.state.lock().unwrap().open_replies, vec![OpenReplyPdu::E_FAIL]);
     assert_eq!(server.current_format(), None);
@@ -267,10 +235,7 @@ fn change_format_round_trips_and_notifies_backend() {
 
     negotiate_and_open(
         &mut server,
-        1,
         vec![fmt_a.clone(), fmt_b.clone()],
-        320,
-        0,
         fmt_a,
         OpenReplyPdu::S_OK,
     );
@@ -287,12 +252,39 @@ fn change_format_round_trips_and_notifies_backend() {
 }
 
 #[test]
+fn change_format_confirm_ignores_divergent_echo() {
+    // MS-RDPEAI 3.1.5: a confirm that echoes a different index than the server requested is
+    // non-conformant and MUST be ignored, not trusted, keeping the server-requested format.
+    let fmt_a = pcm_format(1, 16000, 16);
+    let fmt_b = pcm_format(1, 48000, 16);
+    let backend = MockBackend::new(vec![fmt_a.clone(), fmt_b.clone()]);
+    let mut server = RdpeaiServer::new(Box::new(backend.clone()));
+
+    negotiate_and_open(
+        &mut server,
+        vec![fmt_a.clone(), fmt_b.clone()],
+        fmt_a,
+        OpenReplyPdu::S_OK,
+    );
+
+    let change_out = server.change_format(1).expect("change_format");
+    assert_eq!(change_out.len(), 1);
+
+    // Client echoes index 0 instead of the requested index 1.
+    let confirm_out = process_encoded(&mut server, 1, RdpeaiPdu::FormatChange(FormatChangePdu::new(0)));
+    assert!(confirm_out.is_empty());
+
+    assert_eq!(server.current_format(), Some(&fmt_b));
+    assert_eq!(backend.state.lock().unwrap().format_changes, vec![fmt_b]);
+}
+
+#[test]
 fn change_format_rejects_out_of_range() {
     let fmt = pcm_format(1, 16000, 16);
     let backend = MockBackend::new(vec![fmt.clone()]);
     let mut server = RdpeaiServer::new(Box::new(backend));
 
-    negotiate_and_open(&mut server, 1, vec![fmt.clone()], 320, 0, fmt, OpenReplyPdu::S_OK);
+    negotiate_and_open(&mut server, vec![fmt.clone()], fmt, OpenReplyPdu::S_OK);
 
     assert!(server.change_format(5).is_err());
 }
@@ -327,15 +319,8 @@ fn change_format_skips_when_active_format_is_aac_and_client_is_version_one() {
     let backend = MockBackend::new(vec![aac.clone(), pcm.clone()]);
     let mut server = RdpeaiServer::new(Box::new(backend.clone()));
 
-    negotiate_and_open(
-        &mut server,
-        1,
-        vec![aac.clone(), pcm],
-        320,
-        0, // aac is index 0
-        aac,
-        OpenReplyPdu::S_OK,
-    );
+    // aac is index 0
+    negotiate_and_open(&mut server, vec![aac.clone(), pcm], aac, OpenReplyPdu::S_OK);
     assert_eq!(server.client_version(), Some(Version::V1));
 
     let out = server
@@ -386,12 +371,28 @@ fn client_originated_open_pdu_is_ignored() {
 }
 
 #[test]
+fn malformed_pdu_is_ignored_not_errored() {
+    // MS-RDPEAI 3.1.5: malformed or unrecognized PDUs MUST be ignored. A decode failure
+    // must not surface as an Err, since process() is reached through the shared DRDYNVC
+    // SVC processor and an Err there would fail the whole dynamic-channel message loop.
+    let fmt = pcm_format(1, 16000, 16);
+    let backend = MockBackend::new(vec![fmt]);
+    let mut server = RdpeaiServer::new(Box::new(backend));
+
+    server.start(1).unwrap();
+    let out = server
+        .process(1, &[0xFF])
+        .expect("malformed PDU must be ignored, not errored");
+    assert!(out.is_empty());
+}
+
+#[test]
 fn close_resets_state_and_notifies_backend() {
     let fmt = pcm_format(1, 16000, 16);
     let backend = MockBackend::new(vec![fmt.clone()]);
     let mut server = RdpeaiServer::new(Box::new(backend.clone()));
 
-    negotiate_and_open(&mut server, 1, vec![fmt.clone()], 320, 0, fmt, OpenReplyPdu::S_OK);
+    negotiate_and_open(&mut server, vec![fmt.clone()], fmt, OpenReplyPdu::S_OK);
     assert!(server.current_format().is_some());
 
     server.close(1);
