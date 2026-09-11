@@ -191,7 +191,7 @@ fn verify_file(path: &Path, expected_sha256: &str) -> anyhow::Result<()> {
 
     anyhow::ensure!(
         actual_sha256 == expected_sha256,
-        "SHA-256 mismatch: expected {expected_sha256}, got {actual_sha256}"
+        "sha-256 mismatch: expected {expected_sha256}, got {actual_sha256}"
     );
 
     Ok(())
