@@ -6,5 +6,6 @@ pub const CHANNEL_NAME: &str = "AUDIO_INPUT";
 
 pub mod client;
 pub mod pdu;
+pub mod server;
 
 pub use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
