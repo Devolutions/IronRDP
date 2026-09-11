@@ -161,6 +161,51 @@ test("the run name mode follows the route the triggering event takes", () => {
   }), `topic @ ${"b".repeat(40)} (review)`);
 });
 
+function resolvePrScript(workflow = readWorkflow()) {
+  const job = workflowJob(workflow, "resolve-pr");
+  const match = job.match(/script: \|\n((?: {12}.*\n?)+)/);
+  assert.ok(match, "resolve-pr script is missing");
+  return match[1].replace(/^ {12}/gm, "");
+}
+
+test("the run summary links the resolved pull request", async () => {
+  const workflow = readWorkflow();
+  assert.match(workflowJob(workflow, "resolve-pr"),
+    /PULL_REQUEST_URL_BASE: \$\{\{ github\.server_url \}\}\/\$\{\{ github\.repository \}\}\/pull/);
+
+  const lines = [];
+  let writes = 0;
+  const core = {
+    setOutput: () => {},
+    info: () => {},
+    warning: () => {},
+    summary: {
+      addRaw: (value) => { lines.push(value); return core.summary; },
+      write: async () => { writes += 1; },
+    },
+  };
+  const rootRequire = createRequire(path.join(__dirname, "..", "..", "labeler.js"));
+  const run = async (result) => {
+    lines.length = 0;
+    writes = 0;
+    const requireWithResolve = (name) => name === "./.github/pr-automation/resolve-pr"
+      ? { resolvePr: async () => result }
+      : rootRequire(name);
+    const process = { env: { PULL_REQUEST_URL_BASE: "https://github.example/Devolutions/IronRDP/pull" } };
+    await new AsyncFunction("core", "github", "context", "require", "process", resolvePrScript(workflow))(
+      core, {}, { payload: {} }, requireWithResolve, process,
+    );
+    return { summary: lines.join("\n"), writes };
+  };
+
+  assert.deepEqual(await run({ ok: true, route: "ci", prNumber: 7, headSha: SHA, baseSha: OTHER_SHA }), {
+    summary: "Resolved pull request [#7](https://github.example/Devolutions/IronRDP/pull/7).",
+    writes: 1,
+  });
+  assert.deepEqual(await run({ ok: false, route: "ci", reason: "pull request is draft" }),
+    { summary: "", writes: 0 });
+});
+
 function resolveReviewScript(workflow = readWorkflow()) {
   const job = workflowJob(workflow, "resolve-review-state");
   const match = job.match(/script: \|\n((?: {13}.*\n?)+)/);

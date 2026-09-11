@@ -83,6 +83,8 @@ jobs:
 
       - id: resolve
         uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_URL_BASE: ${{ github.server_url }}/${{ github.repository }}/pull
         with:
           script: |
             const { resolvePr } = require("./.github/pr-automation/resolve-pr");
@@ -110,6 +112,12 @@ jobs:
             core.setOutput("reviewer-pipeline-lane", result.prNumber ? (Number(result.prNumber) % 7) + 1 : "");
             core.setOutput("evidence-max-bytes", result.evidenceMaxBytes ?? "");
             core.info(JSON.stringify({ event: "pr-automation.resolve-pr", decision: result }));
+            if (result.prNumber) {
+              const prUrl = `${process.env.PULL_REQUEST_URL_BASE}/${result.prNumber}`;
+              await core.summary
+                .addRaw(`Resolved pull request [#${result.prNumber}](${prUrl}).`, true)
+                .write();
+            }
             if (!result.ok) core.warning(`PR automation did not start: ${result.reason}`);
 
   classification-gate:
