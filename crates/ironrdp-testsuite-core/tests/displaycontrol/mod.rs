@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 use ironrdp_core::decode;
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_displaycontrol::pdu;
+use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
 use ironrdp_dvc::DvcProcessor as _;
+use ironrdp_pdu::{PduResult, decode_err};
 use ironrdp_testsuite_core::encode_decode_test;
 
 encode_decode_test! {
@@ -216,4 +218,23 @@ fn client_process_rejects_trailing_bytes_after_caps() {
         "bytes left over after decoding the caps body should be rejected"
     );
     assert!(!client.ready());
+}
+
+struct OutOfRangeCapsHandler;
+
+impl DisplayControlHandler for OutOfRangeCapsHandler {
+    fn capabilities(&self) -> PduResult<pdu::DisplayControlCapabilities> {
+        // More than 1024 monitors is rejected by DisplayControlCapabilities::new, per
+        // invalid_caps above.
+        pdu::DisplayControlCapabilities::new(2000, 100, 100).map_err(|e| decode_err!(e))
+    }
+}
+
+#[test]
+fn server_start_propagates_an_invalid_capabilities_override_as_an_error() {
+    // A handler deriving capabilities from real runtime state can hit the wire-encoding bound
+    // DisplayControlCapabilities::new enforces; start() must surface that as a PduResult::Err
+    // rather than let a handler's own expect()/panic tear down the connection.
+    let mut server = DisplayControlServer::new(Box::new(OutOfRangeCapsHandler));
+    assert!(server.start(0).is_err());
 }

@@ -17,9 +17,14 @@ pub trait DisplayControlHandler: Send {
     /// `3840`/`2400`, i.e. one 4K-area monitor), so any handler that doesn't
     /// override this keeps that behavior.
     /// A handler serving more than one monitor should override this, e.g.
-    /// `DisplayControlCapabilities::new(monitor_count, 3840, 2400).expect("valid range")`.
-    fn capabilities(&self) -> DisplayControlCapabilities {
-        DisplayControlCapabilities::new(1, 3840, 2400).expect("(1, 3840, 2400) are always within the valid range")
+    /// `DisplayControlCapabilities::new(monitor_count, 3840, 2400)`. Fallible
+    /// because [`DisplayControlCapabilities::new`] validates its arguments
+    /// (MS-RDPEDISP does not bound them, but the wire encoding does); an
+    /// overrider deriving values from runtime display state should propagate
+    /// that error rather than `expect` it, since this is called from
+    /// [`DvcProcessor::start`] and a panic there aborts the connection.
+    fn capabilities(&self) -> PduResult<DisplayControlCapabilities> {
+        DisplayControlCapabilities::new(1, 3840, 2400).map_err(|e| decode_err!(e))
     }
 }
 
@@ -43,7 +48,7 @@ impl DvcProcessor for DisplayControlServer {
     }
 
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        let pdu: DisplayControlPdu = self.handler.capabilities().into();
+        let pdu: DisplayControlPdu = self.handler.capabilities()?.into();
 
         Ok(vec![Box::new(pdu)])
     }
