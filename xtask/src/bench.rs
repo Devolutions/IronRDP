@@ -7,7 +7,7 @@ use sha2::{Digest as _, Sha256};
 use xshell::{Shell, cmd};
 
 const MANIFEST_PATH: &str = "crates/ironrdp-bench/corpus.toml";
-const CACHE_ROOT: &str = "dependencies/wireshark-rdp";
+const CACHE_ROOT: &str = "bench-data/wireshark-rdp";
 const UPSTREAM_REPOSITORY: &str = "awakecoding/wireshark-rdp";
 
 #[derive(Debug, Eq, PartialEq)]
