@@ -546,8 +546,17 @@ impl DisplayControlHandler for DisplayControlBackend {
     }
 
     fn capabilities(&self) -> DisplayControlCapabilities {
-        DisplayControlCapabilities::new(self.monitor_count, 3840, 2400).unwrap_or_else(|e| {
-            warn!(monitor_count = self.monitor_count, error = %e, "RdpServerDisplay::monitor_count() out of range, falling back to 1");
+        // `DisplayControlCapabilities::new` only rejects `monitor_count > 1024`; 0 passes its
+        // validation (0 * 3840 * 2400 does not overflow) but would advertise a server that
+        // supports no monitors, so it is folded into the same out-of-range fallback below.
+        let monitor_count = if self.monitor_count == 0 {
+            warn!("RdpServerDisplay::monitor_count() returned 0, falling back to 1");
+            1
+        } else {
+            self.monitor_count
+        };
+        DisplayControlCapabilities::new(monitor_count, 3840, 2400).unwrap_or_else(|e| {
+            warn!(monitor_count, error = %e, "RdpServerDisplay::monitor_count() out of range, falling back to 1");
             DisplayControlCapabilities::new(1, 3840, 2400).expect("(1, 3840, 2400) are always within the valid range")
         })
     }
