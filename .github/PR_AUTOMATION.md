@@ -46,6 +46,7 @@ Protocol candidates also carry structured protocol references.
 One specialist never receives another specialist's output.
 
 The general reviewer independently inspects the pull request, attempts to falsify every candidate, and records exactly one `accepted`, `refined`, or `rejected` disposition per candidate.
+A candidate is one entry in the findings of a reviewer the aggregate reports as valid, so a reviewer that failed or reported nothing contributes none.
 It can merge overlapping candidates and add findings that no specialist reported.
 Only the validated general-review result can be published.
 
@@ -59,6 +60,7 @@ The validator reads the changed-file manifest, the protocol corpus, and the spec
 
 The validator distinguishes two outcomes.
 A wrong head SHA, an unchanged path, a malformed line range, an unverifiable protocol citation, or a missing candidate disposition is correctable, so the runtime repairs the output inside the same conversation, at most twice.
+A correctable rejection states what the validator established, with counts and positions rather than anything the model wrote, and reports every disposition failure at once so two repairs are enough to answer for every candidate.
 A stale or unavailable trusted input is not correctable, so the stage fails immediately instead of burning repair attempts.
 Repair may correct a finding but may never drop one, and a stage fails when it cannot produce valid output.
 

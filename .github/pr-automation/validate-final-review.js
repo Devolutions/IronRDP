@@ -8,9 +8,28 @@ const { REVIEWER_ORDER: REVIEWERS } = require("./routing");
 const MAXIMUM_BYTES = 65536;
 const MAXIMUM_CANDIDATES = 60;
 const MAXIMUM_FINDINGS = 20;
+const MAXIMUM_SUMMARY_BYTES = 1000;
+const MAXIMUM_DISPOSITION_RATIONALE_BYTES = 800;
+const MAXIMUM_TITLE_BYTES = 200;
+const MAXIMUM_RATIONALE_BYTES = 1200;
+const MAXIMUM_PATH_BYTES = 300;
 const SEVERITIES = new Set(["critical", "high", "medium", "low"]);
+const DISPOSITIONS = new Set(["accepted", "refined", "rejected"]);
 const FINDING_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const REVIEWER_ORDER = new Map(REVIEWERS.map((reviewer, index) => [reviewer, index]));
+
+// A rejection is both repair feedback and a published stage reason. The stage report drops a reason
+// over 300 bytes entirely, so that is the budget. The runtime additionally keeps only 240 bytes of
+// `semantic: <reason>` in its diagnostics, so counts are emitted before coordinates and the part
+// that says how much is wrong survives that truncation too.
+const MAXIMUM_REASON_BYTES = 300;
+const MAXIMUM_COORDINATES = 8;
+
+const count = (value, noun) => `${value} ${noun}${value === 1 ? "" : "s"}`;
+
+// `normalizeText` collapses whitespace and then rejects an empty result, one over the byte budget,
+// and any forbidden control character, so a diagnostic about it has to name all three.
+const NORMALIZED_TEXT_RULE = "non blank, free of control characters, and at most";
 
 function referenceKey(reference) {
   return `${reference.reviewer}\0${reference.finding_id}`;
@@ -33,6 +52,50 @@ function sourceCategories(sources) {
 
 function provenancePrefix(sources) {
   return `[${sourceCategories(sources).join(" + ")}]`;
+}
+
+// A repair has to find the candidate a diagnostic is about without the diagnostic quoting anything
+// the model wrote, so a candidate is named by its reviewer and its position in that reviewer's
+// findings inside the trusted aggregate. Reviewer names come from the pipeline's own enum.
+function boundedCoordinates(items, format) {
+  const shown = items.slice(0, MAXIMUM_COORDINATES);
+  const omitted = items.length - shown.length;
+  return omitted === 0 ? format(shown) : `${format(shown)} and ${omitted} more`;
+}
+
+function aggregateCoordinates(candidates) {
+  const ordered = [...candidates].sort((left, right) =>
+    REVIEWER_ORDER.get(left.reviewer) - REVIEWER_ORDER.get(right.reviewer) || left.index - right.index);
+  return boundedCoordinates(ordered, (shown) => {
+    const byReviewer = new Map();
+    for (const candidate of shown) {
+      byReviewer.set(candidate.reviewer, [...(byReviewer.get(candidate.reviewer) ?? []), candidate.index]);
+    }
+    return [...byReviewer]
+      .map(([reviewer, indexes]) => `${reviewer} ${indexes.join(", ")}`)
+      .join(" and ");
+  });
+}
+
+function indexCoordinates(indexes) {
+  return boundedCoordinates(indexes, (shown) => shown.join(", "));
+}
+
+// Coordinates are worth less than the counts they locate, so they are dropped from the end until
+// the whole diagnostic fits. What is dropped is still counted, never silently forgotten.
+function boundedReason(prefix, parts) {
+  const fits = (reason) => Buffer.byteLength(reason, "utf8") <= MAXIMUM_REASON_BYTES;
+  const assemble = (render) => `${prefix}: ${parts.map(render).join(". ")}`;
+  for (let detailed = parts.length; detailed > 0; detailed -= 1) {
+    const reason = assemble((part, index) => (index < detailed ? `${part.summary}, at ${part.detail}` : part.summary));
+    if (fits(reason)) return reason;
+  }
+  const counted = assemble((part) => part.summary);
+  if (fits(counted)) return counted;
+  // A review that saturates every failure class at once leaves no room for the sentences that
+  // explain them, so the counts that say how much of each one to fix are what survives.
+  const terse = assemble((part) => part.short ?? part.summary);
+  return fits(terse) ? terse : prefix;
 }
 
 function aggregateCandidates(specialistAggregate, expectedSha) {
@@ -61,7 +124,7 @@ function aggregateCandidates(specialistAggregate, expectedSha) {
         !exactKeys(review, ["reviewer", "status", "summary", "findings"]) ||
         !normalizeText(review.summary, 1000) ||
         !isBoundedArray(review.findings, MAXIMUM_FINDINGS)) return null;
-    for (const candidate of review.findings) {
+    for (const [index, candidate] of review.findings.entries()) {
       if (!exactKeys(candidate, candidateKeys) ||
           typeof candidate.question !== "boolean" ||
           !SEVERITIES.has(candidate.severity) ||
@@ -71,31 +134,87 @@ function aggregateCandidates(specialistAggregate, expectedSha) {
         finding_id: candidate.id,
       });
       if (reference === null || candidates.has(referenceKey(reference))) return null;
-      candidates.set(referenceKey(reference), reference);
+      // The position in the aggregate is what a diagnostic can safely name this candidate by.
+      candidates.set(referenceKey(reference), { ...reference, index });
     }
   }
   return candidates;
 }
 
-function normalizeDispositions(entries, candidates) {
-  if (!isBoundedArray(entries, MAXIMUM_CANDIDATES) || entries.length !== candidates.size) return null;
+// Every disposition problem is reported together. The stage affords two repairs and a review can
+// carry sixty candidates, so a diagnostic that revealed one missing disposition per attempt could
+// not converge on a review that omitted four.
+function diagnoseDispositions(entries, candidates) {
+  if (!isBoundedArray(entries, MAXIMUM_CANDIDATES)) {
+    return {
+      ok: false,
+      reason: `invalid specialist candidate dispositions: candidate_dispositions must be an array of at most ${MAXIMUM_CANDIDATES} entries`,
+    };
+  }
+  const malformed = [];
+  const unknown = [];
+  const duplicated = [];
+  const unusableRationale = [];
   const byCandidate = new Map();
-  for (const entry of entries) {
+  for (const [index, entry] of entries.entries()) {
     if (!exactKeys(entry, ["reviewer", "finding_id", "disposition", "rationale"]) ||
-        !["accepted", "refined", "rejected"].includes(entry.disposition)) return null;
+        !DISPOSITIONS.has(entry.disposition)) {
+      malformed.push(index);
+      continue;
+    }
     const reference = normalizeReference({
       reviewer: entry.reviewer,
       finding_id: entry.finding_id,
     });
-    const rationale = normalizeText(entry.rationale, 800);
-    if (reference === null || !rationale) return null;
+    if (reference === null) {
+      malformed.push(index);
+      continue;
+    }
     const key = referenceKey(reference);
-    if (!candidates.has(key) || byCandidate.has(key)) return null;
-    const normalized = { ...reference, disposition: entry.disposition, rationale };
-    byCandidate.set(key, normalized);
+    if (!candidates.has(key)) {
+      unknown.push(index);
+      continue;
+    }
+    if (byCandidate.has(key)) {
+      duplicated.push(index);
+      continue;
+    }
+    const rationale = normalizeText(entry.rationale, MAXIMUM_DISPOSITION_RATIONALE_BYTES);
+    if (!rationale) {
+      unusableRationale.push(index);
+      continue;
+    }
+    byCandidate.set(key, { ...reference, disposition: entry.disposition, rationale });
   }
-  if ([...candidates.keys()].some((key) => !byCandidate.has(key))) return null;
-  return byCandidate;
+  const missing = [...candidates].filter(([key]) => !byCandidate.has(key)).map(([, value]) => value);
+  const parts = [];
+  if (missing.length !== 0) {
+    // An entry that names the candidate but carries no usable rationale leaves it here too, so this
+    // asks for a valid disposition rather than for another entry.
+    parts.push({
+      summary: `${missing.length} of ${count(candidates.size, "candidate")} ${missing.length === 1 ? "has" : "have"} no valid disposition`,
+      short: `${missing.length} of ${candidates.size} undispositioned`,
+      detail: `aggregate findings ${aggregateCoordinates(missing)}`,
+    });
+  }
+  for (const [indexes, summary, short] of [
+    [unknown, "naming a candidate the specialists did not report", "unknown"],
+    [duplicated, "repeating a candidate an earlier entry already covered", "duplicate"],
+    [unusableRationale,
+      `with a rationale that must be ${NORMALIZED_TEXT_RULE} ${MAXIMUM_DISPOSITION_RATIONALE_BYTES} UTF-8 bytes once whitespace is normalized`,
+      "with an unusable rationale"],
+    [malformed, "not well formed for a known reviewer", "malformed"],
+  ]) {
+    if (indexes.length === 0) continue;
+    const entries = `${indexes.length} ${indexes.length === 1 ? "entry" : "entries"}`;
+    parts.push({
+      summary: `${entries} ${summary}`,
+      short: `${entries} ${short}`,
+      detail: `candidate_dispositions index ${indexCoordinates(indexes)}`,
+    });
+  }
+  if (parts.length === 0) return { ok: true, value: byCandidate };
+  return { ok: false, reason: boundedReason("invalid specialist candidate dispositions", parts) };
 }
 
 function normalizeFinding(finding, changedPaths, changedLines, dispositions, referencedCandidates) {
@@ -103,32 +222,52 @@ function normalizeFinding(finding, changedPaths, changedLines, dispositions, ref
     "question", "severity", "path", "start_line", "end_line", "title", "rationale",
     "confidence", "sources",
   ];
+  const rejected = (reason) => ({ ok: false, reason });
   if (!exactKeys(finding, keys) ||
       typeof finding.question !== "boolean" ||
       !SEVERITIES.has(finding.severity) ||
-      typeof finding.path !== "string" || Buffer.byteLength(finding.path, "utf8") > 300 ||
-      finding.path.includes("\\") || !REPO_PATH.test(finding.path) || !changedPaths.has(finding.path) ||
-      !Number.isFinite(finding.confidence) || finding.confidence < 0 || finding.confidence > 1 ||
-      !isBoundedArray(finding.sources, MAXIMUM_CANDIDATES)) return null;
+      !Number.isFinite(finding.confidence) || finding.confidence < 0 || finding.confidence > 1) {
+    return rejected("it must carry exactly the required fields, a boolean question, a known severity, and a confidence between 0 and 1");
+  }
+  if (typeof finding.path !== "string" || Buffer.byteLength(finding.path, "utf8") > MAXIMUM_PATH_BYTES ||
+      finding.path.includes("\\") || !REPO_PATH.test(finding.path) || !changedPaths.has(finding.path)) {
+    return rejected("path must be a repository path this pull request changed");
+  }
+  if (!isBoundedArray(finding.sources, MAXIMUM_CANDIDATES)) {
+    return rejected(`sources must be an array of at most ${MAXIMUM_CANDIDATES} entries`);
+  }
 
   const linesAreNull = finding.start_line === null && finding.end_line === null;
   const linesAreIntegers = Number.isSafeInteger(finding.start_line) && finding.start_line >= 1 &&
     Number.isSafeInteger(finding.end_line) && finding.end_line >= finding.start_line;
-  if (!linesAreNull && !linesAreIntegers) return null;
+  if (!linesAreNull && !linesAreIntegers) {
+    return rejected("start_line and end_line must both be null or integers with end_line at or after start_line");
+  }
 
-  const title = normalizeText(finding.title, 200);
-  const rationale = normalizeText(finding.rationale, 1200);
-  if (!title || !rationale) return null;
+  const title = normalizeText(finding.title, MAXIMUM_TITLE_BYTES);
+  const rationale = normalizeText(finding.rationale, MAXIMUM_RATIONALE_BYTES);
+  if (!title || !rationale) {
+    return rejected(`title and rationale must be ${NORMALIZED_TEXT_RULE} ${MAXIMUM_TITLE_BYTES} and ${MAXIMUM_RATIONALE_BYTES} UTF-8 bytes once whitespace is normalized`);
+  }
 
   const sources = [];
   const localSources = new Set();
-  for (const source of finding.sources) {
+  for (const [index, source] of finding.sources.entries()) {
     const reference = normalizeReference(source);
-    if (reference === null) return null;
+    if (reference === null) {
+      return rejected(`sources index ${index} must name a reviewer and a finding_id`);
+    }
     const key = referenceKey(reference);
     const disposition = dispositions.get(key);
-    if (!disposition || disposition.disposition === "rejected" ||
-        localSources.has(key) || referencedCandidates.has(key)) return null;
+    if (!disposition) {
+      return rejected(`sources index ${index} names a candidate the specialists did not report`);
+    }
+    if (disposition.disposition === "rejected") {
+      return rejected(`sources index ${index} names a candidate this review rejected`);
+    }
+    if (localSources.has(key) || referencedCandidates.has(key)) {
+      return rejected(`sources index ${index} names a candidate another source already cites`);
+    }
     localSources.add(key);
     referencedCandidates.add(key);
     sources.push(reference);
@@ -140,15 +279,18 @@ function normalizeFinding(finding, changedPaths, changedLines, dispositions, ref
   const locationIsValidated = linesAreNull ||
     linesAreValidated(finding.path, finding.start_line, finding.end_line, changedLines);
   return {
-    question: finding.question,
-    severity: finding.severity,
-    path: finding.path,
-    start_line: locationIsValidated ? finding.start_line : null,
-    end_line: locationIsValidated ? finding.end_line : null,
-    title,
-    rationale,
-    confidence: finding.confidence,
-    sources,
+    ok: true,
+    value: {
+      question: finding.question,
+      severity: finding.severity,
+      path: finding.path,
+      start_line: locationIsValidated ? finding.start_line : null,
+      end_line: locationIsValidated ? finding.end_line : null,
+      title,
+      rationale,
+      confidence: finding.confidence,
+      sources,
+    },
   };
 }
 
@@ -164,28 +306,44 @@ function validateFinalReview(raw, {
       !isBoundedArray(value.findings, MAXIMUM_FINDINGS)) {
     return invalid("invalid final review object");
   }
-  const summary = normalizeText(value.summary, 1000);
-  if (!summary) return invalid("invalid final review summary");
+  const summary = normalizeText(value.summary, MAXIMUM_SUMMARY_BYTES);
+  if (!summary) {
+    return invalid(`invalid final review summary: summary must be ${NORMALIZED_TEXT_RULE} ${MAXIMUM_SUMMARY_BYTES} UTF-8 bytes once whitespace is normalized`);
+  }
 
-  const normalizedDispositions = normalizeDispositions(value.candidate_dispositions, candidates);
-  if (normalizedDispositions === null) return invalid("invalid specialist candidate dispositions");
+  const dispositions = diagnoseDispositions(value.candidate_dispositions, candidates);
+  if (!dispositions.ok) return invalid(dispositions.reason);
+  const normalizedDispositions = dispositions.value;
 
   const findings = [];
   const referencedCandidates = new Set();
   const paths = new Set(changedPaths);
-  for (const finding of value.findings) {
+  for (const [index, finding] of value.findings.entries()) {
     const normalized = normalizeFinding(
       finding, paths, changedLines, normalizedDispositions, referencedCandidates,
     );
-    if (normalized === null) return invalid("invalid final review finding");
-    findings.push(normalized);
+    if (!normalized.ok) {
+      return invalid(`invalid final review finding at index ${index}: ${normalized.reason}`);
+    }
+    findings.push(normalized.value);
   }
 
+  const uncited = [];
   for (const [key, disposition] of normalizedDispositions) {
     const referenced = referencedCandidates.has(key);
-    if (disposition.disposition === "rejected" ? referenced : !referenced) {
-      return invalid("specialist disposition contradicts final findings");
+    if (disposition.disposition === "rejected") {
+      if (referenced) {
+        return invalid("specialist disposition contradicts final findings: a rejected candidate is cited as a source");
+      }
+    } else if (!referenced) {
+      uncited.push(candidates.get(key));
     }
+  }
+  if (uncited.length !== 0) {
+    return invalid(boundedReason("specialist disposition contradicts final findings", [{
+      summary: `${count(uncited.length, "accepted or refined candidate")} ${uncited.length === 1 ? "is" : "are"} cited by no final finding`,
+      detail: `aggregate findings ${aggregateCoordinates(uncited)}`,
+    }]));
   }
 
   const normalized = {

@@ -330,7 +330,7 @@ function validateGeneral(review, { metadata, previousCandidate, candidates } = {
       return reject(`finding at index ${index} must cite a path changed by this pull request`);
     }
   }
-  return reject(`${result.reason}; record exactly one disposition per specialist candidate and cite only non-rejected candidates as sources`);
+  return reject(result.reason);
 }
 
 module.exports = {

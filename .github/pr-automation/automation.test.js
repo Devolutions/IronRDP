@@ -3078,7 +3078,208 @@ test("the general validator can normally reject, refine, or accept specialist ca
 
   const incomplete = validateGeneral(finalReview({ candidate_dispositions: [] }), { metadata });
   assert.equal(incomplete.ok, false);
-  assert.match(incomplete.reason, /exactly one disposition per specialist candidate/);
+  assert.match(incomplete.reason, /1 of 1 candidate has no valid disposition/);
+  // The instruction the runtime used to append to every final-review rejection now lives in the
+  // reviewer prompt, so a rejection carries only what the validator actually established.
+  assert.doesNotMatch(incomplete.reason, /record exactly one disposition per specialist candidate/);
+});
+
+// An aggregate shaped like the one PR #1943 produced: a valid protocol review with nothing to
+// report, a valid skeptical review with four candidates, and an optional reviewer that failed.
+const specialistAggregate = (candidates = 4) => ({
+  head_sha: SHA,
+  reviewers: [
+    { reviewer: "protocol", status: "valid", summary: "no protocol defect", findings: [] },
+    {
+      reviewer: "skeptical", status: "valid", summary: "candidate review",
+      findings: Array.from({ length: candidates },
+        (_, index) => candidateFinding({ id: `finding-${index + 1}` })),
+    },
+    { reviewer: "code-compressor", status: "failed", reason: "provider request timed out" },
+  ],
+});
+
+const finalContext = (candidates = 4) => ({
+  expectedSha: SHA,
+  changedPaths: ["src/lib.rs"],
+  changedLines: { "src/lib.rs": [4] },
+  specialistAggregate: specialistAggregate(candidates),
+});
+
+const finalOutput = (candidate_dispositions, findings = []) => ({
+  head_sha: SHA, summary: "verified", candidate_dispositions, findings,
+});
+
+const disposition = (index, changes = {}) => ({
+  reviewer: "skeptical", finding_id: `finding-${index}`,
+  disposition: "rejected", rationale: "the claim is unsupported", ...changes,
+});
+
+// The stage affords two repairs, so a review that omitted four dispositions can only converge if
+// the first rejection accounts for all four.
+test("final review diagnostics report the whole disposition map in one rejection", () => {
+  const context = finalContext();
+  const missing = validateFinalReview(finalOutput([disposition(1)]), context);
+  assert.equal(missing.ok, false);
+  assert.match(missing.reason, /3 of 4 candidates have no valid disposition/);
+  assert.match(missing.reason, /aggregate findings skeptical 1, 2, 3/);
+
+  // One corrected response can satisfy that rejection.
+  assert.equal(validateFinalReview(
+    finalOutput([1, 2, 3, 4].map((index) => disposition(index))), context,
+  ).ok, true);
+
+  // Unknown, repeated, unusable, and malformed entries are counted together with what is missing,
+  // each located by its position in candidate_dispositions.
+  const mixed = validateFinalReview(finalOutput([
+    disposition(1),
+    disposition(1),
+    disposition(2, { reviewer: "protocol" }),
+    disposition(3, { rationale: "  " }),
+    disposition(4, { disposition: "ignored" }),
+  ]), context);
+  assert.equal(mixed.ok, false);
+  assert.match(mixed.reason, /3 of 4 undispositioned/);
+  assert.match(mixed.reason, /1 entry unknown/);
+  assert.match(mixed.reason, /1 entry duplicate/);
+  assert.match(mixed.reason, /1 entry with an unusable rationale/);
+  assert.match(mixed.reason, /1 entry malformed/);
+
+  // Saturating every class at once costs the prose and the coordinates, never the counts.
+  const saturated = validateFinalReview(finalOutput([
+    ...Array.from({ length: 15 }, () => disposition(1, { reviewer: "protocol" })),
+    ...Array.from({ length: 15 }, () => disposition(1)),
+    ...Array.from({ length: 15 }, () => disposition(2, { rationale: " " })),
+    ...Array.from({ length: 15 }, () => disposition(3, { disposition: "ignored" })),
+  ]), context);
+  assert.equal(saturated.ok, false);
+  assert.match(saturated.reason, /3 of 4 undispositioned/);
+  assert.match(saturated.reason, /15 entries unknown/);
+  assert.match(saturated.reason, /14 entries duplicate/);
+  assert.match(saturated.reason, /15 entries with an unusable rationale/);
+  assert.match(saturated.reason, /15 entries malformed/);
+  assert.ok(Buffer.byteLength(saturated.reason, "utf8") <= 300, saturated.reason);
+
+  // More candidates than coordinates fit are still counted in full.
+  const crowded = validateFinalReview(finalOutput([]), finalContext(20));
+  assert.equal(crowded.ok, false);
+  assert.match(crowded.reason, /20 of 20 candidates have no valid disposition/);
+  assert.match(crowded.reason, /skeptical 0, 1, 2, 3, 4, 5, 6, 7 and 12 more/);
+});
+
+// The schema bounds a rationale in characters while the validator bounds it in bytes and forbids
+// control characters, so these failures reach the validator and have to be explained accurately.
+test("final review diagnostics explain text normalization the schema does not enforce", () => {
+  const context = finalContext(1);
+  const accented = "\u00e9".repeat(401);
+  assert.ok(accented.length <= 800 && Buffer.byteLength(accented, "utf8") > 800);
+
+  for (const rationale of [" ", '""', accented, "supported\u0000claim"]) {
+    const result = validateFinalReview(finalOutput([disposition(1, { rationale })]), context);
+    assert.equal(result.ok, false, rationale);
+    assert.match(result.reason, /1 entry with a rationale that must be non blank, free of control characters, and at most 800 UTF-8 bytes/);
+    assert.match(result.reason, /candidate_dispositions index 0/);
+  }
+
+  const summary = validateFinalReview(
+    { ...finalOutput([disposition(1)]), summary: "verified\u0000review" }, context,
+  );
+  assert.equal(summary.ok, false);
+  assert.match(summary.reason, /summary must be non blank, free of control characters, and at most 1000 UTF-8 bytes/);
+
+  const finding = (changes = {}) => ({
+    question: false, severity: "high", path: "src/lib.rs", start_line: 4, end_line: 4,
+    title: "Incorrect boundary", rationale: "verified defect", confidence: 0.95,
+    sources: [{ reviewer: "skeptical", finding_id: "finding-1" }], ...changes,
+  });
+  const accepted = [disposition(1, { disposition: "accepted" })];
+  for (const changes of [{ title: " " }, { rationale: "\u00e9".repeat(601) }, { rationale: "a\u0000b" }]) {
+    const result = validateFinalReview(finalOutput(accepted, [finding(changes)]), context);
+    assert.equal(result.ok, false, JSON.stringify(changes));
+    assert.match(result.reason, /invalid final review finding at index 0: title and rationale must be non blank, free of control characters/);
+  }
+  const lines = validateFinalReview(
+    finalOutput(accepted, [finding({ start_line: 9, end_line: 4 })]), context,
+  );
+  assert.equal(lines.ok, false);
+  assert.match(lines.reason, /end_line at or after start_line/);
+});
+
+test("final review diagnostics locate an unusable source and an uncited candidate", () => {
+  const context = finalContext(2);
+  const finding = (sources, changes = {}) => ({
+    question: false, severity: "high", path: "src/lib.rs", start_line: 4, end_line: 4,
+    title: "Incorrect boundary", rationale: "verified defect", confidence: 0.95, sources, ...changes,
+  });
+  const cited = { reviewer: "skeptical", finding_id: "finding-1" };
+  const accepted = (index) => disposition(index, { disposition: "accepted" });
+
+  const rejectedSource = validateFinalReview(
+    finalOutput([disposition(1), accepted(2)], [finding([cited])]), context,
+  );
+  assert.equal(rejectedSource.ok, false);
+  assert.match(rejectedSource.reason, /finding at index 0: sources index 0 names a candidate this review rejected/);
+
+  const unknownSource = validateFinalReview(finalOutput([accepted(1), accepted(2)],
+    [finding([cited, { reviewer: "protocol", finding_id: "never-reported" }])]), context);
+  assert.equal(unknownSource.ok, false);
+  assert.match(unknownSource.reason, /sources index 1 names a candidate the specialists did not report/);
+
+  const reused = validateFinalReview(finalOutput([accepted(1), accepted(2)], [
+    finding([cited, { reviewer: "skeptical", finding_id: "finding-2" }]),
+    finding([cited], { title: "A second finding" }),
+  ]), context);
+  assert.equal(reused.ok, false);
+  assert.match(reused.reason, /finding at index 1: sources index 0 names a candidate another source already cites/);
+
+  const uncited = validateFinalReview(finalOutput([accepted(1), accepted(2)], [finding([cited])]), context);
+  assert.equal(uncited.ok, false);
+  assert.match(uncited.reason, /1 accepted or refined candidate is cited by no final finding/);
+  assert.match(uncited.reason, /aggregate findings skeptical 1/);
+
+  assert.equal(validateFinalReview(finalOutput([accepted(1), accepted(2)],
+    [finding([cited, { reviewer: "skeptical", finding_id: "finding-2" }])]), context).ok, true);
+});
+
+// Every new diagnostic still has to survive the runtime's rejection alphabet and reach the model
+// without quoting anything the model or a specialist wrote.
+test("final review diagnostics stay factual, bounded, and free of model text", () => {
+  const secret = "model-secret-sentinel";
+  const fixture = validatorFixture();
+  const aggregate = specialistAggregate(3);
+  aggregate.reviewers[1].findings.push(candidateFinding({ id: secret, title: secret }));
+  const metadata = fixture.general({
+    aggregate_file: trustedFile(fixture.root, "four-candidates.json", aggregate),
+  });
+  const safe = /^[A-Za-z0-9][A-Za-z0-9 .,:;()/_-]{0,511}$/;
+
+  const rejections = [
+    validateGeneral(finalOutput([disposition(1)]), { metadata }),
+    validateGeneral(finalOutput([
+      ...[1, 2, 3].map((index) => disposition(index)),
+      { reviewer: "skeptical", finding_id: secret, disposition: "accepted", rationale: secret },
+    ]), { metadata }),
+    validateGeneral(finalOutput([1, 2, 3].map((index) => disposition(index)).concat([
+      { reviewer: "skeptical", finding_id: secret, disposition: "accepted", rationale: " " },
+    ])), { metadata }),
+  ];
+  for (const rejection of rejections) {
+    assert.equal(rejection.ok, false);
+    assert.match(rejection.reason, safe);
+    assert.ok(!rejection.reason.includes(secret), rejection.reason);
+    assert.ok(Buffer.byteLength(rejection.reason, "utf8") <= 300, rejection.reason);
+    assert.doesNotMatch(rejection.reason, /record exactly one disposition/);
+  }
+  assert.match(rejections[0].reason, /3 of 4 candidates have no valid disposition/);
+  assert.match(rejections[0].reason, /aggregate findings skeptical 1, 2, 3/);
+  assert.match(rejections[2].reason, /1 entry with a rationale that must be non blank/);
+
+  // A stale aggregate is still terminal rather than repairable.
+  assert.equal(caught(() => validateGeneral(finalOutput([disposition(1)]), {
+    metadata: fixture.general({
+      aggregate_file: trustedFile(fixture.root, "stale-final.json", { head_sha: OTHER_SHA, reviewers: [] }),
+    }),
+  }))?.code, TERMINAL_CODE);
 });
 
 test("required reviewers come from the caller, with the gate only as a fallback", () => {

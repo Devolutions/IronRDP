@@ -505,6 +505,160 @@ test("review rejection diagnostics and failure logs never echo finding text", as
   }
 });
 
+// The review pipeline's own validator, schema, and trusted files, driven through the real runtime:
+// a rejection has to reach the provider as actionable feedback, and one corrected response has to
+// be enough to account for every candidate the first answer left out.
+function reviewFixture(workspace, { candidates = 4 } = {}) {
+  const automation = path.resolve(__dirname, "..", "..", "..", "pr-automation");
+  const sha = "a".repeat(40);
+  const secret = "model-secret-sentinel";
+  const aggregate = {
+    head_sha: sha,
+    reviewers: [
+      { reviewer: "protocol", status: "valid", summary: "no protocol defect", findings: [] },
+      {
+        reviewer: "skeptical", status: "valid", summary: "candidate review",
+        findings: Array.from({ length: candidates }, (_, index) => ({
+          id: `${secret}-${index + 1}`, question: false, severity: "high", path: "src/lib.rs",
+          start_line: 4, end_line: 4, title: `${secret} title`, rationale: `${secret} rationale`,
+          confidence: 0.9, references: [],
+        })),
+      },
+      { reviewer: "code-compressor", status: "failed", reason: "provider request timed out" },
+    ],
+  };
+  write(workspace.directory, "schema.json",
+    fs.readFileSync(path.join(automation, "schemas", "final-review.json"), "utf8"));
+  write(workspace.directory, "validator.js",
+    `exports.validate = require(${JSON.stringify(path.join(automation, "agent-validator.js"))})` +
+    ".validateGeneral;");
+  const context = {
+    changed_paths: ["src/lib.rs"], changed_lines: { "src/lib.rs": [4] },
+  };
+  const metadata = {
+    stage: "general",
+    expected_sha: sha,
+    validation_context_file: write(workspace.directory, "context.json", JSON.stringify(context)),
+    aggregate_file: write(workspace.directory, "aggregate.json", JSON.stringify(aggregate)),
+  };
+  return {
+    automation, sha, secret, context,
+    core: () => mockCore({
+      "api-key": "key",
+      "base-url": "https://provider.example/v1",
+      "config-file": "config.json",
+      validator: "validator.js#validate",
+      "validator-metadata": JSON.stringify(metadata),
+    }),
+    review: (covered) => ({
+      head_sha: sha,
+      summary: "verified",
+      candidate_dispositions: Array.from({ length: covered }, (_, index) => ({
+        reviewer: "skeptical", finding_id: `${secret}-${index + 1}`,
+        disposition: "accepted", rationale: `${secret} holds up`,
+      })),
+      findings: [{
+        question: false, severity: "high", path: "src/lib.rs", start_line: 4, end_line: 4,
+        title: `${secret} boundary defect`, rationale: `${secret} verified`, confidence: 0.95,
+        sources: Array.from({ length: covered }, (_, index) => ({
+          reviewer: "skeptical", finding_id: `${secret}-${index + 1}`,
+        })),
+      }],
+    }),
+  };
+}
+
+function mockProvider(responses, requests) {
+  return class ReviewOpenAI {
+    constructor() {
+      this.chat = { completions: { create: async (request) => {
+        // The runtime appends to one conversation, so a request is only readable afterwards if the
+        // messages it carried are copied as they were sent.
+        requests.push({ ...request, messages: request.messages.map((message) => ({ ...message })) });
+        return { choices: [{ message: { content: JSON.stringify(responses.shift()) } }] };
+      } } };
+    }
+  };
+}
+
+test("a final review missing four dispositions is repaired from one factual rejection", async () => {
+  const workspace = actionFixture();
+  const fixture = reviewFixture(workspace);
+  const core = fixture.core();
+  const requests = [];
+  try {
+    await main(core, { GITHUB_WORKSPACE: workspace.directory },
+      mockProvider([fixture.review(1), fixture.review(4)], requests));
+
+    // The rejection the provider was asked to repair names every candidate left out, at positions
+    // in the trusted aggregate, and carries no instruction the reviewer prompt already states.
+    const repairRequest = requests[1].messages.at(-1).content;
+    assert.match(repairRequest, /3 of 4 candidates have no valid disposition/);
+    assert.match(repairRequest, /aggregate findings skeptical 1, 2, 3/);
+    assert.doesNotMatch(repairRequest, /record exactly one disposition per specialist candidate/);
+    assert.ok(!repairRequest.includes(`${fixture.secret}-1`), repairRequest);
+
+    // One corrected response accounted for all four, inside the unchanged repair budget.
+    assert.equal(requests.length, 2);
+    assert.equal(core.outputs.get("failure-reason"), "");
+    assert.equal(core.outputs.get("turn-count"), "2");
+    assert.equal(core.events.some((event) => event[0] === "failed"), false);
+    const diagnostics = JSON.parse(core.outputs.get("diagnostics"));
+    assert.equal(diagnostics.outputRepairCount, 1);
+    assert.deepEqual(diagnostics.outputRejections.map((entry) => entry.layer), ["semantic"]);
+    assert.match(diagnostics.outputRejections[0].reason, /3 of 4 candidates have no valid disposition/);
+
+    // The published review is what the pipeline's own validator derives from that output.
+    const {
+      provenancePrefix, validateFinalReview,
+    } = require(path.join(fixture.automation, "validate-final-review"));
+    const validated = validateFinalReview(core.outputs.get("structured-output"), {
+      expectedSha: fixture.sha,
+      changedPaths: fixture.context.changed_paths,
+      changedLines: fixture.context.changed_lines,
+      specialistAggregate: JSON.parse(fs.readFileSync(
+        path.join(workspace.directory, "aggregate.json"), "utf8")),
+    });
+    assert.equal(validated.ok, true, validated.reason);
+    assert.deepEqual(Object.keys(validated.value), ["head_sha", "summary", "findings"]);
+    assert.equal(provenancePrefix(validated.value.findings[0].sources), "[skeptical]");
+    assert.equal(validated.value.findings[0].sources.length, 4);
+
+    // Accepted model text belongs in the output, never in the logs.
+    const logs = JSON.stringify(core.events.filter(([kind]) => kind === "info" || kind === "failed"));
+    assert.ok(!logs.includes(fixture.secret), logs);
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test("a final review that never accounts for its candidates exhausts repair with the same fact", async () => {
+  const workspace = actionFixture();
+  const fixture = reviewFixture(workspace);
+  const core = fixture.core();
+  const requests = [];
+  try {
+    await main(core, { GITHUB_WORKSPACE: workspace.directory },
+      mockProvider([fixture.review(1), fixture.review(2)], requests));
+
+    assert.equal(core.outputs.get("structured-output"), "");
+    assert.equal(core.outputs.get("failure-category"), "output-invalid");
+    assert.equal(core.outputs.get("turn-count"), "2");
+    const reason = core.outputs.get("failure-reason");
+    assert.match(reason, /^output remained invalid after the repair limit: semantic: /);
+    assert.match(reason, /2 of 4 candidates have no valid disposition/);
+    assert.ok(Buffer.byteLength(reason, "utf8") <= 300, reason);
+    assert.doesNotMatch(reason, /record exactly one disposition per specialist candidate/);
+    const diagnostics = JSON.parse(core.outputs.get("diagnostics"));
+    assert.equal(diagnostics.outputRepairCount, 1);
+    assert.equal(diagnostics.outputRejections.length, 2);
+    const emitted = core.events.filter(([kind]) => ["output", "info", "failed"].includes(kind));
+    assert.ok(!JSON.stringify(emitted).includes(fixture.secret), JSON.stringify(emitted));
+  } finally {
+    workspace.cleanup();
+  }
+});
+
 test("main reports configuration failures without constructing a provider client", async () => {
   const workspace = actionFixture();
   const core = mockCore({

@@ -7,6 +7,8 @@ Inspect `pr-head` for the surrounding implementation.
 Review the change independently rather than accepting specialist conclusions by default.
 
 Return only the final-review JSON for the aggregate head SHA.
+A candidate is one entry in the `findings` array of a reviewer whose `status` is `valid` in `validated-specialist-findings.json`; its `reviewer` is that reviewer's name and its `finding_id` is the entry's `id`.
+A reviewer that failed or reported no findings contributes no candidate.
 Include exactly one candidate disposition for every specialist candidate, using its exact `reviewer` and `finding_id`.
 Use `accepted` when the candidate should appear substantially unchanged, `refined` when its valid root cause needs a corrected final finding, and `rejected` when it should not be published.
 Reference every accepted or refined candidate exactly once from a final finding's `sources`.
