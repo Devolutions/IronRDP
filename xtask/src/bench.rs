@@ -19,7 +19,6 @@ pub struct Corpus {
     pub revision: String,
     /// Captures and strict replay expectations.
     pub captures: Vec<Capture>,
->>>>>>> a3b87d1e6 (feat: add headless corpus replay)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
