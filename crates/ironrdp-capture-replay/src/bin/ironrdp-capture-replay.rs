@@ -15,10 +15,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use ironrdp_capture_replay::{
-    ExportOptions, ReplayDirection, ReplayGap, ReplayGapKind, ReplayGapReason, ReplayLifecycle, ReplayOptions,
-    export_capture, prepare_capture, read_capture,
-};
+use ironrdp_capture_replay::{ExportOptions, ReplayGap, ReplayOptions, export_capture, prepare_capture, read_capture};
 use zeroize::Zeroize as _;
 
 fn main() -> ExitCode {
@@ -177,7 +174,7 @@ fn print_summary(summary: &ironrdp_capture_replay::ReplaySummary) {
         summary.static_channel_pdus,
         summary.other_server_message_pdus,
         summary.graphics_updates,
-        lifecycle_name(summary.lifecycle),
+        summary.lifecycle,
         summary.framing_gaps,
         summary.truncated_pdu_gaps,
         summary.static_channel_gaps,
@@ -188,14 +185,6 @@ fn print_summary(summary: &ironrdp_capture_replay::ReplaySummary) {
     );
 }
 
-fn lifecycle_name(lifecycle: ReplayLifecycle) -> &'static str {
-    match lifecycle {
-        ReplayLifecycle::NeverActivated => "never-activated",
-        ReplayLifecycle::Active => "active",
-        ReplayLifecycle::Deactivated => "deactivated",
-    }
-}
-
 fn print_gaps(gaps: &[ReplayGap]) {
     const MAX_GAP_DETAILS: usize = 16;
 
@@ -203,50 +192,13 @@ fn print_gaps(gaps: &[ReplayGap]) {
         println!(
             "gap=packet:{}\tdirection:{}\tkind:{}\treason:{}\tskipped-bytes:{}",
             gap.packet,
-            direction_name(gap.direction),
-            gap_kind_name(gap.kind),
-            gap_reason_name(gap.reason),
+            gap.direction,
+            gap.kind(),
+            gap.reason,
             gap.skipped_bytes,
         );
     }
     if gaps.len() > MAX_GAP_DETAILS {
         println!("gap-details-truncated={}", gaps.len() - MAX_GAP_DETAILS);
-    }
-}
-
-fn direction_name(direction: ReplayDirection) -> &'static str {
-    match direction {
-        ReplayDirection::Client => "client",
-        ReplayDirection::Server => "server",
-    }
-}
-
-fn gap_kind_name(kind: ReplayGapKind) -> &'static str {
-    match kind {
-        ReplayGapKind::Framing => "framing",
-        ReplayGapKind::TruncatedPdu => "truncated-pdu",
-        ReplayGapKind::StaticChannel => "static-channel",
-        ReplayGapKind::DynamicChannel => "dynamic-channel",
-        ReplayGapKind::Session => "session",
-        ReplayGapKind::IncompleteActivation => "incomplete-activation",
-        ReplayGapKind::Unsupported => "unsupported",
-    }
-}
-
-fn gap_reason_name(reason: ReplayGapReason) -> &'static str {
-    match reason {
-        ReplayGapReason::Framing => "framing",
-        ReplayGapReason::TruncatedPdu => "truncated-pdu",
-        ReplayGapReason::StaticChannelPdu => "static-channel-pdu",
-        ReplayGapReason::StaticChannelEncode => "static-channel-encode",
-        ReplayGapReason::StaticChannelDecode => "static-channel-decode",
-        ReplayGapReason::StaticChannelBulkDecompression => "static-channel-bulk-decompression",
-        ReplayGapReason::StaticChannelBitmapSourceLength => "static-channel-bitmap-source-length",
-        ReplayGapReason::StaticChannelProcessor => "static-channel-processor",
-        ReplayGapReason::StaticChannelOther => "static-channel-other",
-        ReplayGapReason::DynamicChannel => "dynamic-channel",
-        ReplayGapReason::Session => "session",
-        ReplayGapReason::IncompleteActivation => "incomplete-activation",
-        ReplayGapReason::Unsupported => "unsupported",
     }
 }

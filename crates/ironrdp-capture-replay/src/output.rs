@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use crate::prepare_capture;
 use crate::routing::ReplayFrame;
-use crate::{Capture, ReplayDirection, ReplayError, ReplayEvent, ReplayGap, ReplayGapKind, ReplayReport, ReplayRoute};
+use crate::{Capture, ReplayError, ReplayEvent, ReplayGap, ReplayReport, ReplayRoute};
 
 /// Options that control replay artifact export.
 #[derive(Clone, Debug)]
@@ -303,7 +303,7 @@ fn events_tsv(events: &[ReplayEvent]) -> String {
             "{}\t{}\t{}\t{:?}\t{}\n",
             index + 1,
             event.packet,
-            direction_name(event.direction),
+            event.direction,
             event.action,
             route_name(event.route),
         ));
@@ -317,8 +317,8 @@ fn gaps_tsv(gaps: &[ReplayGap]) -> String {
         output.push_str(&format!(
             "{}\t{}\t{}\t{}\n",
             gap.packet,
-            direction_name(gap.direction),
-            gap_kind_name(gap.kind),
+            gap.direction,
+            gap.kind(),
             gap.skipped_bytes,
         ));
     }
@@ -333,13 +333,6 @@ fn dynamic_channels_tsv(report: &ReplayReport) -> String {
     output
 }
 
-fn direction_name(direction: ReplayDirection) -> &'static str {
-    match direction {
-        ReplayDirection::Client => "client",
-        ReplayDirection::Server => "server",
-    }
-}
-
 fn route_name(route: ReplayRoute) -> &'static str {
     match route {
         ReplayRoute::Connection => "connection",
@@ -352,18 +345,6 @@ fn route_name(route: ReplayRoute) -> &'static str {
     }
 }
 
-fn gap_kind_name(kind: ReplayGapKind) -> &'static str {
-    match kind {
-        ReplayGapKind::Framing => "framing",
-        ReplayGapKind::TruncatedPdu => "truncated-pdu",
-        ReplayGapKind::StaticChannel => "static-channel",
-        ReplayGapKind::DynamicChannel => "dynamic-channel",
-        ReplayGapKind::Session => "session",
-        ReplayGapKind::IncompleteActivation => "incomplete-activation",
-        ReplayGapKind::Unsupported => "unsupported",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
@@ -371,7 +352,7 @@ mod tests {
     use ironrdp_pdu::Action;
 
     use super::*;
-    use crate::CapturedDynamicChannel;
+    use crate::{CapturedDynamicChannel, ReplayDirection};
 
     static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
@@ -505,7 +486,6 @@ mod tests {
             gaps: vec![ReplayGap {
                 packet: 20,
                 direction: ReplayDirection::Server,
-                kind: ReplayGapKind::Framing,
                 reason: crate::ReplayGapReason::Framing,
                 skipped_bytes: 3,
             }],

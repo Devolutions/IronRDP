@@ -209,6 +209,8 @@ jobs:
         with:
           path: ./bench-data/wireshark-rdp
           key: ${{ runner.os }}-benchmark-corpus-${{ hashFiles('crates/ironrdp-bench/corpus.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-benchmark-corpus-
 
       - name: Fetch corpus
         run: cargo xtask bench corpus-fetch
