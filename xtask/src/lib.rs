@@ -7,7 +7,6 @@
 use std::path::{Path, PathBuf};
 
 pub mod bench;
-pub mod capture;
 
 /// Returns the repository root containing the `xtask` manifest.
 ///
