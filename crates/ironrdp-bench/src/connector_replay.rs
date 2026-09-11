@@ -21,7 +21,7 @@ use ironrdp::pdu::rdp::server_license::{ClientNewLicenseRequest, LicensePdu, PRE
 use ironrdp::pdu::x224::{X224, X224Data};
 use ironrdp::pdu::{Action, find_size, gcc, mcs, nego};
 use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput};
+use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
 use ironrdp::svc::{SvcClientProcessor, SvcMessage, SvcProcessor, impl_as_any};
 use ironrdp_capture_replay::{PacketStream, decrypt_tls, read_capture};
 use sha2::{Digest as _, Sha256};
@@ -34,6 +34,7 @@ const CLIENT_NEW_LICENSE_REQUEST_RANDOM_OFFSET: usize =
     LICENSE_HEADER_SIZE + 4 /* PreferredKeyExchangeAlg */ + 4 /* PlatformId */;
 const CLIENT_NEW_LICENSE_REQUEST_RANDOM_SIZE: usize = 32;
 const LICENSE_BLOB_HEADER_SIZE: usize = 2 /* blobType */ + 2 /* length */;
+const ADMINISTRATIVE_DISCONNECT: &str = "[Protocol independent error] The disconnection was initiated by an administrative tool on the server running in the user's session";
 
 const NO_NLA_ACCEPTED_CONTRACT: ConnectorReplayContract = ConnectorReplayContract {
     connector_steps: 26,
@@ -59,6 +60,21 @@ const NO_NLA_ACCEPTED_CONTRACT: ConnectorReplayContract = ConnectorReplayContrac
         OutboundPdu::ClientInfo,
     ],
     session_data_frames: 34,
+    semantic_outputs: &[
+        ActiveStageSemanticOutput::SaveSessionInfo { logon_complete: true },
+        ActiveStageSemanticOutput::SaveSessionInfo { logon_complete: false },
+        ActiveStageSemanticOutput::AutoReconnectCookie { logon_id: 2 },
+        ActiveStageSemanticOutput::TerminateOther {
+            description: ADMINISTRATIVE_DISCONNECT,
+        },
+        ActiveStageSemanticOutput::TerminateUserInitiated,
+        ActiveStageSemanticOutput::GraphicsUpdate {
+            left: 0,
+            top: 0,
+            right: 3,
+            bottom: 3,
+        },
+    ],
     output_fingerprint: [
         136, 13, 81, 145, 199, 202, 22, 19, 202, 244, 96, 188, 49, 170, 187, 64, 199, 213, 18, 148, 125, 103, 197, 10,
         214, 215, 197, 191, 3, 121, 2, 194,
@@ -178,6 +194,7 @@ impl ConnectorReplayWorkload {
 
         let mut output_fingerprint = verify_output.then(Sha256::new);
         let mut outbound_pdus = Vec::new();
+        let mut semantic_outputs = ActiveOutputValidator::new(self.contract().semantic_outputs);
         let mut outbound_frames = 0;
         let mut connector_steps = 0;
 
@@ -287,12 +304,14 @@ impl ConnectorReplayWorkload {
             }
             match stage.process(&mut image, info.action, frame) {
                 Ok(outputs) => {
-                    graphics_updates += outputs
-                        .iter()
-                        .filter(|output| matches!(output, ActiveStageOutput::GraphicsUpdate(_)))
-                        .count();
-                    active_response_frames +=
-                        validate_active_outputs(&outputs, output_fingerprint.as_mut(), &mut outbound_pdus)?;
+                    let outputs = validate_active_outputs(
+                        &outputs,
+                        output_fingerprint.as_mut(),
+                        &mut outbound_pdus,
+                        &mut semantic_outputs,
+                    )?;
+                    graphics_updates += outputs.graphics_updates;
+                    active_response_frames += outputs.response_frames;
                 }
                 Err(error) => {
                     return Err(ConnectorReplayError::new(format!(
@@ -312,17 +331,20 @@ impl ConnectorReplayWorkload {
             .map_err(|error| {
                 ConnectorReplayError::new(format!("active stage rejected deterministic bitmap frame: {error}"))
             })?;
-        let deterministic_graphics_updates = deterministic_outputs
-            .iter()
-            .filter(|output| matches!(output, ActiveStageOutput::GraphicsUpdate(_)))
-            .count();
-        active_response_frames +=
-            validate_active_outputs(&deterministic_outputs, output_fingerprint.as_mut(), &mut outbound_pdus)?;
+        let deterministic_outputs = validate_active_outputs(
+            &deterministic_outputs,
+            output_fingerprint.as_mut(),
+            &mut outbound_pdus,
+            &mut semantic_outputs,
+        )?;
+        let deterministic_graphics_updates = deterministic_outputs.graphics_updates;
+        active_response_frames += deterministic_outputs.response_frames;
         if deterministic_graphics_updates != 1 {
             return Err(ConnectorReplayError::new(format!(
                 "deterministic active-stage bitmap produced {deterministic_graphics_updates} graphics updates"
             )));
         }
+        semantic_outputs.finish()?;
         Ok((
             ConnectorReplayMeasurement {
                 connector_steps,
@@ -384,6 +406,7 @@ struct ConnectorReplayContract {
     deterministic_graphics_updates: usize,
     outbound_prefix: &'static [OutboundPdu],
     session_data_frames: usize,
+    semantic_outputs: &'static [ActiveStageSemanticOutput],
     output_fingerprint: [u8; 32],
 }
 
@@ -397,6 +420,129 @@ enum OutboundPdu {
     ClientInfo,
     ClientNewLicenseRequest,
     SessionData,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ActiveStageSemanticOutput {
+    GraphicsUpdate {
+        left: u16,
+        top: u16,
+        right: u16,
+        bottom: u16,
+    },
+    SaveSessionInfo {
+        logon_complete: bool,
+    },
+    AutoReconnectCookie {
+        logon_id: u32,
+    },
+    TerminateOther {
+        description: &'static str,
+    },
+    TerminateUserInitiated,
+}
+
+struct ActiveOutputValidator {
+    expected: &'static [ActiveStageSemanticOutput],
+    next: usize,
+}
+
+impl ActiveOutputValidator {
+    const fn new(expected: &'static [ActiveStageSemanticOutput]) -> Self {
+        Self { expected, next: 0 }
+    }
+
+    fn observe(&mut self, output: &ActiveStageOutput) -> ConnectorReplayResult<bool> {
+        if let ActiveStageOutput::Terminate(reason) = output {
+            return self.observe_termination(reason);
+        }
+        let actual = match output {
+            ActiveStageOutput::ResponseFrame(_) => return Ok(false),
+            ActiveStageOutput::GraphicsUpdate(rectangle) => ActiveStageSemanticOutput::GraphicsUpdate {
+                left: rectangle.left,
+                top: rectangle.top,
+                right: rectangle.right,
+                bottom: rectangle.bottom,
+            },
+            ActiveStageOutput::SaveSessionInfo { logon_complete } => ActiveStageSemanticOutput::SaveSessionInfo {
+                logon_complete: *logon_complete,
+            },
+            ActiveStageOutput::AutoReconnectCookie(cookie) => ActiveStageSemanticOutput::AutoReconnectCookie {
+                logon_id: cookie.logon_id,
+            },
+            _ => {
+                return Err(ConnectorReplayError::new(format!(
+                    "connector replay produced unexpected ActiveStage semantic output: {}",
+                    active_stage_output_name(output)
+                )));
+            }
+        };
+        let expected = self.expected.get(self.next).ok_or_else(|| {
+            ConnectorReplayError::new(format!(
+                "connector replay produced unexpected ActiveStage semantic output: {actual:?}"
+            ))
+        })?;
+        if actual != *expected {
+            return Err(ConnectorReplayError::new(format!(
+                "connector replay ActiveStage semantic output changed: expected {expected:?}, got {actual:?}"
+            )));
+        }
+        self.next += 1;
+        Ok(matches!(actual, ActiveStageSemanticOutput::GraphicsUpdate { .. }))
+    }
+
+    fn observe_termination(&mut self, reason: &GracefulDisconnectReason) -> ConnectorReplayResult<bool> {
+        let expected = self.expected.get(self.next).ok_or_else(|| {
+            ConnectorReplayError::new(format!(
+                "connector replay produced unexpected ActiveStage termination: {reason:?}"
+            ))
+        })?;
+        let matches = match (reason, expected) {
+            (GracefulDisconnectReason::Other(actual), ActiveStageSemanticOutput::TerminateOther { description }) => {
+                actual == description
+            }
+            (GracefulDisconnectReason::UserInitiated, ActiveStageSemanticOutput::TerminateUserInitiated) => true,
+            _ => false,
+        };
+        if !matches {
+            return Err(ConnectorReplayError::new(format!(
+                "connector replay ActiveStage termination changed: expected {expected:?}, got {reason:?}"
+            )));
+        }
+        self.next += 1;
+        Ok(false)
+    }
+
+    fn finish(&self) -> ConnectorReplayResult<()> {
+        if self.next != self.expected.len() {
+            return Err(ConnectorReplayError::new(format!(
+                "connector replay ActiveStage semantic output sequence ended early: expected {}, got {}",
+                self.expected.len(),
+                self.next
+            )));
+        }
+        Ok(())
+    }
+}
+
+const fn active_stage_output_name(output: &ActiveStageOutput) -> &'static str {
+    match output {
+        ActiveStageOutput::ResponseFrame(_) => "ResponseFrame",
+        ActiveStageOutput::GraphicsUpdate(_) => "GraphicsUpdate",
+        ActiveStageOutput::PointerDefault => "PointerDefault",
+        ActiveStageOutput::PointerHidden => "PointerHidden",
+        ActiveStageOutput::PointerPosition { .. } => "PointerPosition",
+        ActiveStageOutput::PointerBitmap(_) => "PointerBitmap",
+        ActiveStageOutput::MonitorLayout(_) => "MonitorLayout",
+        ActiveStageOutput::WindowingOrders(_) => "WindowingOrders",
+        ActiveStageOutput::Terminate(_) => "Terminate",
+        ActiveStageOutput::SaveSessionInfo { .. } => "SaveSessionInfo",
+        ActiveStageOutput::DeactivateAll => "DeactivateAll",
+        ActiveStageOutput::MultitransportRequest(_) => "MultitransportRequest",
+        ActiveStageOutput::AutoDetect(_) => "AutoDetect",
+        ActiveStageOutput::AutoReconnectCookie(_) => "AutoReconnectCookie",
+        ActiveStageOutput::AutoReconnectFailed => "AutoReconnectFailed",
+    }
 }
 
 impl ConnectorReplayContract {
@@ -867,20 +1013,29 @@ fn validate_active_outputs(
     outputs: &[ActiveStageOutput],
     output_fingerprint: Option<&mut Sha256>,
     outbound_pdus: &mut Vec<OutboundPdu>,
-) -> ConnectorReplayResult<usize> {
-    let mut response_frames = 0;
+    semantic_outputs: &mut ActiveOutputValidator,
+) -> ConnectorReplayResult<ActiveOutputMeasurement> {
+    let mut measurement = ActiveOutputMeasurement::default();
     let mut output_fingerprint = output_fingerprint;
     for output in outputs {
         if let ActiveStageOutput::ResponseFrame(frame) = output {
-            response_frames += validate_outbound_frames(
+            measurement.response_frames += validate_outbound_frames(
                 frame,
                 "active-stage response",
                 output_fingerprint.as_deref_mut(),
                 outbound_pdus,
             )?;
+        } else if semantic_outputs.observe(output)? {
+            measurement.graphics_updates += 1;
         }
     }
-    Ok(response_frames)
+    Ok(measurement)
+}
+
+#[derive(Default)]
+struct ActiveOutputMeasurement {
+    response_frames: usize,
+    graphics_updates: usize,
 }
 
 /// Build one deterministic Fast-Path bitmap frame for active-stage coverage.
@@ -949,11 +1104,27 @@ mod tests {
 
     #[test]
     fn rejects_malformed_active_response() {
+        let mut semantic_outputs = ActiveOutputValidator::new(&[]);
         assert!(
             validate_active_outputs(
                 &[ActiveStageOutput::ResponseFrame(vec![1])],
                 Some(&mut Sha256::new()),
-                &mut Vec::new()
+                &mut Vec::new(),
+                &mut semantic_outputs,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_unexpected_active_semantic_output() {
+        let mut semantic_outputs = ActiveOutputValidator::new(&[]);
+        assert!(
+            validate_active_outputs(
+                &[ActiveStageOutput::PointerDefault],
+                None,
+                &mut Vec::new(),
+                &mut semantic_outputs,
             )
             .is_err()
         );
@@ -972,6 +1143,7 @@ mod tests {
             deterministic_graphics_updates: 1,
             outbound_prefix: &[],
             session_data_frames: 0,
+            semantic_outputs: &[],
             output_fingerprint: [0; 32],
         };
         let measurement = ConnectorReplayMeasurement {

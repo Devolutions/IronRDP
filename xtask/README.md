@@ -83,8 +83,12 @@ The connector-driven `no-nla-accepted` workload separately uses the real `Client
 It strictly verifies immutable connection, frame-routing, response, and output-semantic contracts outside timing, then measures one fresh hash-free connection-and-session execution against the same counters.
 The workload uses the capture's decrypted server traffic only; recorded client traffic supplies normalized configuration and channel-order expectations, never server input.
 TLS completion is an explicit external boundary: TLS handshake, certificate validation, and CredSSP authentication are excluded.
-The client license request contains production-generated secrets, so its validated MCS envelope, rather than its nondeterministic payload, participates in the stable output fingerprint.
+The StatusValidClient transcript does not emit a client license request, but any NEW_LICENSE_REQUEST retains its preamble and PlatformId while normalizing only its production-generated ClientRandom and encrypted premaster secret in strict output verification.
 Opaque static channels preserve wire framing and ordering, but their channel-specific behavior and the capture's DRDYNVC/EGFX rendering are excluded.
+The connector workload therefore requires no captured graphics updates and does not compare them with the passive replay's 78 DRDYNVC/EGFX-rendered updates.
+The recorded auto-reconnect cookie's event position and stable logon ID are validated, while its credential random bits are neither recorded nor fingerprinted.
+The captured Save Session Info events, administrative termination reason, and user-initiated close are also validated in their exact sequence.
+All other non-response ActiveStage semantic outputs are rejected, except the exact deterministic bitmap update that proves real graphics processing.
 The passive preflight retains the capture's eight declared static-channel gaps, while the connector workload rejects every `ActiveStage` processing error and finishes with a deterministic bitmap through the real `ActiveStage`.
 
 ```PowerShell
