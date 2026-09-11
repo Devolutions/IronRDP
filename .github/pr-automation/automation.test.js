@@ -1780,6 +1780,35 @@ test("review transition is terminal-safe and preserves human triage on no findin
   }).failed, true);
 });
 
+test("a review with findings leaves the next step with the contributor", () => {
+  const gate = {
+    ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true,
+    risk: "high", protocolRelated: false, specialistReviewers: ["skeptical"],
+    secondReviewEligible: true,
+  };
+  const second = resolveReviewState({
+    expectedSha: SHA, labels: ["ai-reviewed/1", "risk/high", "maintainer-required"],
+    reviewer: review(), gate, contributor: { status: "eligible" },
+  });
+  assert.deepEqual(second.labelSets[0].desired, ["ai-reviewed/2"]);
+  assert.deepEqual(second.addLabels, []);
+  assert.deepEqual(second.removeLabels, ["maintainer-required"]);
+
+  // Automatic review is exhausted at `ai-reviewed/2`, so classification owns the later handoff.
+  const nextPush = resolveClassificationState({
+    expectedSha: OTHER_SHA,
+    labels: ["ai-reviewed/2", "risk/high"],
+    deterministic: {
+      ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/S",
+      sizeLabels: ["size/S"], firstTime: false,
+    },
+    classifier: classifier({ head_sha: OTHER_SHA }),
+    semver: { head_sha: OTHER_SHA, status: "not-suspected" },
+  });
+  assert.deepEqual(nextPush.addLabels, ["maintainer-required"]);
+  assert.deepEqual(nextPush.removeLabels, []);
+});
+
 test("review blockers distinguish gate and contributor history failures", () => {
   const args = {
     expectedSha: SHA, labels: ["risk/high"], reviewer: review(),
