@@ -29,8 +29,7 @@ const MAXIMUM_COORDINATES = 8;
 
 const count = (value, noun) => `${value} ${noun}${value === 1 ? "" : "s"}`;
 
-// `normalizeText` collapses whitespace and then rejects an empty result, one over the byte budget,
-// and any forbidden control character, so a diagnostic about it has to name all three.
+// `normalizeText` checks byte limits and forbidden controls; callers also reject empty results.
 const NORMALIZED_TEXT_RULE = "non-blank and free of forbidden control characters";
 
 function referenceKey(reference) {
