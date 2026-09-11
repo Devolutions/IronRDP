@@ -2174,16 +2174,12 @@ fn print_payload(payload: Payload) {
         Payload::RailLaunch(launch) => {
             println!("queued RAIL launch {}: {}", launch.launch_id, launch.executable);
         }
-        Payload::ClipboardText(text) => match text {
+        Payload::ClipboardText(text) | Payload::ClipboardHtml(text) => match text {
             Some(text) => println!("{text}"),
             None => println!("(empty)"),
         },
         // Handled out-of-band by the `ClipboardGetImage` command, never printed here.
         Payload::ClipboardImage(png) => println!("clipboard image ({} bytes)", png.as_ref().map_or(0, Vec::len)),
-        Payload::ClipboardHtml(html) => match html {
-            Some(html) => println!("{html}"),
-            None => println!("(empty)"),
-        },
     }
 }
 
