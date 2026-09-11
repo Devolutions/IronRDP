@@ -725,6 +725,38 @@ test("a review wrong in several ways at once keeps every category through the ru
   }
 });
 
+test("one repair corrects duplicate and rationale failures in either entry order", async () => {
+  for (const invalidIndexes of [[0], [1], [0, 1]]) {
+    const workspace = actionFixture();
+    const fixture = reviewFixture(workspace, { candidates: 1 });
+    const core = fixture.core();
+    const requests = [];
+    try {
+      const invalid = fixture.review(1);
+      invalid.candidate_dispositions.push({ ...invalid.candidate_dispositions[0] });
+      for (const index of invalidIndexes) invalid.candidate_dispositions[index].rationale = " ";
+      const expected = fixture.reasonFor(invalid);
+      assert.match(expected, /1 duplicate|1 entry repeating/);
+      assert.match(expected, new RegExp(`${invalidIndexes.length} (?:entr(?:y|ies) )?with a`));
+
+      await main(core, { GITHUB_WORKSPACE: workspace.directory },
+        mockProvider([invalid, fixture.review(1)], requests));
+
+      assert.equal(requests.length, 2);
+      assert.ok(requests[1].messages.at(-1).content.includes(expected), expected);
+      assert.equal(core.outputs.get("failure-reason"), "");
+      assert.deepEqual(JSON.parse(core.outputs.get("structured-output")), fixture.review(1));
+      const diagnostics = JSON.parse(core.outputs.get("diagnostics"));
+      assert.equal(diagnostics.outputRepairCount, 1);
+      assert.deepEqual(diagnostics.outputRejections.map((entry) => entry.reason), [expected]);
+      const logs = JSON.stringify(core.events.filter(([kind]) => kind === "info" || kind === "failed"));
+      assert.ok(!logs.includes(fixture.secret), logs);
+    } finally {
+      workspace.cleanup();
+    }
+  }
+});
+
 test("main reports configuration failures without constructing a provider client", async () => {
   const workspace = actionFixture();
   const core = mockCore({

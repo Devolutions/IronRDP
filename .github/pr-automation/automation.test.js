@@ -3154,7 +3154,7 @@ test("final review diagnostics report the whole disposition map in one rejection
   assert.match(mixed.reason, /3\/4 candidates lack a valid disposition/);
   assert.match(mixed.reason, /1 unknown/);
   assert.match(mixed.reason, /1 duplicate/);
-  assert.match(mixed.reason, /1 with a blank, control character, or over 800 UTF-8 byte rationale/);
+  assert.match(mixed.reason, /1 with a blank, forbidden-control, or over 800 UTF-8 byte rationale/);
   assert.match(mixed.reason, /1 malformed/);
   assertReasonSurvivesRuntime(mixed.reason);
 
@@ -3168,8 +3168,8 @@ test("final review diagnostics report the whole disposition map in one rejection
   assert.equal(saturated.ok, false);
   assert.match(saturated.reason, /3\/4 candidates lack a valid disposition/);
   assert.match(saturated.reason, /15 unknown/);
-  assert.match(saturated.reason, /14 duplicate/);
-  assert.match(saturated.reason, /15 with a blank, control character, or over 800 UTF-8 byte rationale/);
+  assert.match(saturated.reason, /28 duplicate/);
+  assert.match(saturated.reason, /15 with a blank, forbidden-control, or over 800 UTF-8 byte rationale/);
   assert.match(saturated.reason, /15 malformed/);
   assertReasonSurvivesRuntime(saturated.reason);
 
@@ -3178,6 +3178,36 @@ test("final review diagnostics report the whole disposition map in one rejection
   assert.equal(crowded.ok, false);
   assert.match(crowded.reason, /20 of 20 candidates have no valid disposition/);
   assert.match(crowded.reason, /skeptical 0, 1, 2, 3, 4, 5, 6, 7 and 12 more/);
+});
+
+test("final review diagnostics report duplicate and rationale failures independently", () => {
+  for (const rationale of [" ", "x\u0000y", "\u00e9".repeat(401)]) {
+    for (const rationales of [
+      [rationale, "supported"],
+      ["supported", rationale],
+      [rationale, rationale],
+    ]) {
+      const result = validateFinalReview(finalOutput(rationales.map((rationale) =>
+        disposition(1, { rationale }))), finalContext(1));
+      const invalidCount = rationales.filter((value) => value !== "supported").length;
+      assert.equal(result.ok, false);
+      assert.match(result.reason, /1 duplicate|1 entry repeating/);
+      assert.match(result.reason, new RegExp(`${invalidCount} (?:entr(?:y|ies) )?with a`));
+      assertReasonSurvivesRuntime(result.reason);
+      if (invalidCount === 1) {
+        assert.doesNotMatch(result.reason, /no valid disposition|lack a valid disposition/);
+      }
+    }
+  }
+
+  const unknown = validateFinalReview(finalOutput([
+    disposition(1),
+    disposition(2, { rationale: " " }),
+  ]), finalContext(1));
+  assert.match(unknown.reason, /1 unknown|1 entry naming/);
+  assert.match(unknown.reason, /1 (?:entry )?with a/);
+  assertReasonSurvivesRuntime(unknown.reason);
+  assert.equal(validateFinalReview(finalOutput([disposition(1)]), finalContext(1)).ok, true);
 });
 
 // The schema bounds a rationale in characters while the validator bounds it in bytes and forbids
@@ -3193,7 +3223,7 @@ test("final review diagnostics explain text normalization the schema does not en
     // The constraint and both counts are what a repair needs, so they survive even though the
     // second coordinate does not fit beside them.
     assert.match(result.reason, /1 of 1 candidate has no valid disposition/);
-    assert.match(result.reason, /1 entry with a rationale that must be non-blank, free of control characters, and within 800 UTF-8 bytes/);
+    assert.match(result.reason, /1 entry with a rationale that must be non-blank and free of forbidden control characters, within 800 UTF-8 bytes/);
     assertReasonSurvivesRuntime(result.reason);
   }
 
@@ -3209,7 +3239,7 @@ test("final review diagnostics explain text normalization the schema does not en
     { ...finalOutput([disposition(1)]), summary: "verified\u0000review" }, context,
   );
   assert.equal(summary.ok, false);
-  assert.match(summary.reason, /summary must be non-blank, free of control characters, and within 1000 UTF-8 bytes/);
+  assert.match(summary.reason, /summary must be non-blank and free of forbidden control characters, within 1000 UTF-8 bytes/);
 
   const finding = (changes = {}) => ({
     question: false, severity: "high", path: "src/lib.rs", start_line: 4, end_line: 4,
@@ -3220,8 +3250,26 @@ test("final review diagnostics explain text normalization the schema does not en
   for (const changes of [{ title: " " }, { rationale: "\u00e9".repeat(601) }, { rationale: "a\u0000b" }]) {
     const result = validateFinalReview(finalOutput(accepted, [finding(changes)]), context);
     assert.equal(result.ok, false, JSON.stringify(changes));
-    assert.match(result.reason, /invalid final review finding at index 0: title and rationale must be non-blank, free of control characters/);
+    assert.match(result.reason, /invalid final review finding at index 0: title and rationale must be non-blank and free of forbidden control characters/);
   }
+  const bothInvalid = validateFinalReview(finalOutput(accepted, [
+    finding({ title: " ", rationale: "a\u0000b" }),
+  ]), context);
+  assert.match(bothInvalid.reason, /title 200 bytes/);
+  assert.match(bothInvalid.reason, /rationale 1200 bytes/);
+  assert.match(bothInvalid.reason, /forbidden control characters/);
+  assertReasonSurvivesRuntime(bothInvalid.reason);
+
+  const whitespace = validateFinalReview({
+    ...finalOutput([disposition(1, { rationale: "\tsupported\nclaim\r" })], [
+      finding({ title: "\tBoundary\nissue\r", rationale: "\tA\nreason\r", sources: [] }),
+    ]),
+    summary: "\tA\nsummary\r",
+  }, context);
+  assert.equal(whitespace.ok, true, whitespace.reason);
+  assert.equal(whitespace.value.summary, "A summary");
+  assert.equal(whitespace.value.findings[0].title, "Boundary issue");
+  assert.equal(whitespace.value.findings[0].rationale, "A reason");
   const lines = validateFinalReview(
     finalOutput(accepted, [finding({ start_line: 9, end_line: 4 })]), context,
   );

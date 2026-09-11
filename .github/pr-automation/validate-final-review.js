@@ -31,7 +31,7 @@ const count = (value, noun) => `${value} ${noun}${value === 1 ? "" : "s"}`;
 
 // `normalizeText` collapses whitespace and then rejects an empty result, one over the byte budget,
 // and any forbidden control character, so a diagnostic about it has to name all three.
-const NORMALIZED_TEXT_RULE = "non-blank, free of control characters, and within";
+const NORMALIZED_TEXT_RULE = "non-blank and free of forbidden control characters";
 
 function referenceKey(reference) {
   return `${reference.reviewer}\0${reference.finding_id}`;
@@ -160,6 +160,7 @@ function diagnoseDispositions(entries, candidates) {
   const unknown = [];
   const duplicated = [];
   const unusableRationale = [];
+  const seenCandidates = new Set();
   const byCandidate = new Map();
   for (const [index, entry] of entries.entries()) {
     if (!exactKeys(entry, ["reviewer", "finding_id", "disposition", "rationale"]) ||
@@ -176,20 +177,19 @@ function diagnoseDispositions(entries, candidates) {
       continue;
     }
     const key = referenceKey(reference);
-    if (!candidates.has(key)) {
+    const known = candidates.has(key);
+    if (!known) {
       unknown.push(index);
-      continue;
-    }
-    if (byCandidate.has(key)) {
-      duplicated.push(index);
-      continue;
+    } else {
+      if (seenCandidates.has(key)) duplicated.push(index);
+      seenCandidates.add(key);
     }
     const rationale = normalizeText(entry.rationale, MAXIMUM_DISPOSITION_RATIONALE_BYTES);
     if (!rationale) {
       unusableRationale.push(index);
-      continue;
+    } else if (known && !byCandidate.has(key)) {
+      byCandidate.set(key, { ...reference, disposition: entry.disposition, rationale });
     }
-    byCandidate.set(key, { ...reference, disposition: entry.disposition, rationale });
   }
   const missing = [...candidates].filter(([key]) => !byCandidate.has(key)).map(([, value]) => value);
   const parts = [];
@@ -206,8 +206,8 @@ function diagnoseDispositions(entries, candidates) {
     [unknown, "naming a candidate the specialists did not report", "unknown"],
     [duplicated, "repeating a candidate an earlier entry already covered", "duplicate"],
     [unusableRationale,
-      `with a rationale that must be ${NORMALIZED_TEXT_RULE} ${MAXIMUM_DISPOSITION_RATIONALE_BYTES} UTF-8 bytes`,
-      `with a blank, control character, or over ${MAXIMUM_DISPOSITION_RATIONALE_BYTES} UTF-8 byte rationale`],
+      `with a rationale that must be ${NORMALIZED_TEXT_RULE}, within ${MAXIMUM_DISPOSITION_RATIONALE_BYTES} UTF-8 bytes`,
+      `with a blank, forbidden-control, or over ${MAXIMUM_DISPOSITION_RATIONALE_BYTES} UTF-8 byte rationale`],
     [malformed, "not well formed for a known reviewer", "malformed"],
   ]) {
     if (indexes.length === 0) continue;
@@ -252,7 +252,7 @@ function normalizeFinding(finding, changedPaths, changedLines, dispositions, ref
   const title = normalizeText(finding.title, MAXIMUM_TITLE_BYTES);
   const rationale = normalizeText(finding.rationale, MAXIMUM_RATIONALE_BYTES);
   if (!title || !rationale) {
-    return rejected(`title and rationale must be ${NORMALIZED_TEXT_RULE} ${MAXIMUM_TITLE_BYTES} and ${MAXIMUM_RATIONALE_BYTES} UTF-8 bytes`);
+    return rejected(`title and rationale must be ${NORMALIZED_TEXT_RULE}; UTF-8 limits: title ${MAXIMUM_TITLE_BYTES} bytes, rationale ${MAXIMUM_RATIONALE_BYTES} bytes`);
   }
 
   const sources = [];
@@ -313,7 +313,7 @@ function validateFinalReview(raw, {
   }
   const summary = normalizeText(value.summary, MAXIMUM_SUMMARY_BYTES);
   if (!summary) {
-    return invalid(`invalid final review summary: summary must be ${NORMALIZED_TEXT_RULE} ${MAXIMUM_SUMMARY_BYTES} UTF-8 bytes`);
+    return invalid(`invalid final review summary: summary must be ${NORMALIZED_TEXT_RULE}, within ${MAXIMUM_SUMMARY_BYTES} UTF-8 bytes`);
   }
 
   const dispositions = diagnoseDispositions(value.candidate_dispositions, candidates);
