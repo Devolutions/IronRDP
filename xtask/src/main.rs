@@ -5,7 +5,7 @@
 
 mod macros;
 
-use xtask::bench;
+use xtask::{bench, project_root};
 
 mod bin_install;
 mod bin_version;
@@ -144,14 +144,6 @@ fn new_shell() -> anyhow::Result<Shell> {
     update_env_path(&sh)?;
 
     Ok(sh)
-}
-
-fn project_root() -> PathBuf {
-    Path::new(&env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(1)
-        .expect("failed to retrieve project root path")
-        .to_path_buf()
 }
 
 fn update_env_path(sh: &Shell) -> anyhow::Result<()> {

@@ -6,6 +6,8 @@ use anyhow::Context as _;
 use sha2::{Digest as _, Sha256};
 use xshell::{Shell, cmd};
 
+use crate::project_root;
+
 const MANIFEST_PATH: &str = "crates/ironrdp-bench/corpus.toml";
 const CACHE_ROOT: &str = "bench-data/wireshark-rdp";
 const UPSTREAM_REPOSITORY: &str = "awakecoding/wireshark-rdp";
@@ -159,14 +161,10 @@ fn inspect_cache(path: &Path, capture: &Capture) -> anyhow::Result<CacheState> {
 fn download(sh: &Shell, url: &str, temporary_path: &Path, expected_sha256: &str) -> anyhow::Result<()> {
     let result = cmd!(sh, "curl --fail --location --output {temporary_path} {url}")
         .run()
-        .with_context(|| format!("download capture from {url}"));
+        .with_context(|| format!("download capture from {url}"))
+        .and_then(|()| verify_file(temporary_path, expected_sha256));
 
     if let Err(error) = result {
-        remove_partial_download(temporary_path)?;
-        return Err(error);
-    }
-
-    if let Err(error) = verify_file(temporary_path, expected_sha256) {
         remove_partial_download(temporary_path)?;
         return Err(error);
     }
@@ -187,7 +185,7 @@ fn remove_partial_download(path: &Path) -> anyhow::Result<()> {
 
 fn verify_file(path: &Path, expected_sha256: &str) -> anyhow::Result<()> {
     let mut file = File::open(path).with_context(|| format!("open capture: {}", path.display()))?;
-    let actual_sha256 = copy_and_hash(&mut file, &mut std::io::sink())?;
+    let actual_sha256 = hash_reader(&mut file)?;
 
     anyhow::ensure!(
         actual_sha256 == expected_sha256,
@@ -197,7 +195,7 @@ fn verify_file(path: &Path, expected_sha256: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn copy_and_hash(reader: &mut dyn std::io::Read, writer: &mut dyn std::io::Write) -> anyhow::Result<String> {
+fn hash_reader(reader: &mut dyn std::io::Read) -> anyhow::Result<String> {
     let mut buffer = [0; 64 * 1024];
     let mut digest = Sha256::new();
 
@@ -206,9 +204,7 @@ fn copy_and_hash(reader: &mut dyn std::io::Read, writer: &mut dyn std::io::Write
         if bytes_read == 0 {
             break;
         }
-
         digest.update(&buffer[..bytes_read]);
-        writer.write_all(&buffer[..bytes_read]).context("write capture data")?;
     }
 
     Ok(format!("{:x}", digest.finalize()))
@@ -242,13 +238,6 @@ fn format_list(corpus: &Corpus) -> String {
     }
 
     list
-}
-
-fn project_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("xtask manifest directory has no parent")
-        .to_path_buf()
 }
 
 fn ensure_allowed_keys(table: &toml::Table, allowed: &[&str], location: &str) -> anyhow::Result<()> {
