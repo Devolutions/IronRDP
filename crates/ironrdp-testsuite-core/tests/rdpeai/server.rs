@@ -227,6 +227,60 @@ fn open_reply_failure_returns_to_ready_and_allows_retry() {
 }
 
 #[test]
+fn open_reply_failure_before_format_change_confirm_returns_to_ready() {
+    // The client rejects Open (e.g. initialFormat out of range, or FramesPerPacket rejected)
+    // by replying with OpenReply failure directly, without first confirming the initial
+    // format via FormatChange (ironrdp-rdpeai's own client does exactly this in
+    // handle_open). The server must accept that reply from AwaitingFormatConfirm, not just
+    // AwaitingOpenReply, or the channel is stuck forever with no path back to Ready.
+    let fmt = pcm_format(1, 16000, 16);
+    let backend = MockBackend::new(vec![fmt.clone()]);
+    let mut server = RdpeaiServer::new(Box::new(backend.clone()));
+
+    server.start(1).expect("start");
+    process_encoded(&mut server, 1, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
+    process_encoded(
+        &mut server,
+        1,
+        RdpeaiPdu::Formats(FormatsPdu::client(vec![fmt.clone()])),
+    );
+    server.open(320, 0, fmt.clone()).expect("open");
+
+    // Skip the FormatChange confirm entirely; reply as if Open was rejected.
+    let reply_out = process_encoded(
+        &mut server,
+        1,
+        RdpeaiPdu::OpenReply(OpenReplyPdu {
+            result: OpenReplyPdu::E_FAIL,
+        }),
+    );
+    assert!(reply_out.is_empty());
+
+    assert_eq!(backend.state.lock().unwrap().open_replies, vec![OpenReplyPdu::E_FAIL]);
+    assert_eq!(server.current_format(), None);
+    assert!(server.open(320, 0, fmt).is_ok());
+}
+
+#[test]
+fn open_reply_with_a_non_s_ok_non_negative_result_is_treated_as_success() {
+    // MS-RDPEAI 3.3.5.1.8: an HRESULT is an error only when its sign bit is set, so any
+    // non-negative result is success, not just S_OK (0). S_FALSE (1) is one such code.
+    const S_FALSE: i32 = 1;
+    let fmt = pcm_format(1, 16000, 16);
+    let backend = MockBackend::new(vec![fmt.clone()]);
+    let mut server = RdpeaiServer::new(Box::new(backend.clone()));
+
+    negotiate_and_open(&mut server, vec![fmt.clone()], fmt.clone(), S_FALSE);
+
+    assert_eq!(backend.state.lock().unwrap().open_replies, vec![S_FALSE]);
+    assert_eq!(server.current_format(), Some(&fmt));
+
+    let data_out = process_encoded(&mut server, 1, RdpeaiPdu::Data(DataPdu::new(vec![5, 6, 7])));
+    assert!(data_out.is_empty());
+    assert_eq!(backend.state.lock().unwrap().audio, vec![(fmt, vec![5, 6, 7])]);
+}
+
+#[test]
 fn change_format_round_trips_and_notifies_backend() {
     let fmt_a = pcm_format(1, 16000, 16);
     let fmt_b = pcm_format(1, 48000, 16);
