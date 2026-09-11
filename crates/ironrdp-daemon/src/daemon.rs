@@ -311,6 +311,21 @@ fn filetime_to_unix_secs(filetime: u64) -> Option<u64> {
     (filetime / 10_000_000).checked_sub(EPOCH_DIFFERENCE_SECS)
 }
 
+/// Takes `active_fetch_result` if `clipboard_get_file`'s fetch has finished, materializing the
+/// response and clearing the (now-finished) fetch's slot. `None` means the fetch has not yet
+/// resolved and the caller should keep waiting. Shared by the wait loop's per-iteration check and
+/// its post-timeout recheck in `Daemon::clipboard_get_file`, which must resolve a same-instant
+/// race identically rather than risk the two copies drifting apart.
+fn take_finished_fetch_result(clipboard: &mut crate::clipboard::ClipboardState) -> Option<Response> {
+    let result = clipboard.active_fetch_result.take()?;
+    let fetch = clipboard.active_fetch.take();
+    clipboard.active_fetch_lock_id = None;
+    Some(match (result, fetch) {
+        (ChunkedFetchProgress::Complete, Some(fetch)) => Response::Ok(Payload::ClipboardFile(fetch.into_data())),
+        _ => Response::typed_error(crate::ipc::AgentErrorCategory::Internal, "file fetch failed"),
+    })
+}
+
 fn enqueue_unicode_text(input_tx: &RdpInputSender, input_db: &mut Database, text: &str) -> Response {
     // Reserve every queue slot before changing keyboard state. A full queue therefore sends no
     // prefix of the requested text.
@@ -839,6 +854,16 @@ impl Daemon {
             clipboard.negotiated_capabilities = ClipboardGeneralCapabilityFlags::empty();
             clipboard.active_fetch = None;
             clipboard.active_fetch_lock_id = None;
+            clipboard.active_fetch_result = None;
+        }
+        // Wake a `clipboard_get_file` waiter left over from the outgoing session (if any) so it
+        // re-checks promptly instead of running out its own FETCH_TIMEOUT: its fetch was just
+        // cleared above, and without this it would otherwise only find out at its own deadline
+        // (see the stream_id-guarded clear in `clipboard_get_file`'s timeout path, which this
+        // pairs with: this is what lets that waiter wake up and leave promptly rather than
+        // silently sitting on a slot the next session has already reused).
+        if let Some(outgoing_session) = self.state.lock().expect("daemon state poisoned").as_ref() {
+            outgoing_session.clipboard_file_notify.notify_waiters();
         }
         let client = client.with_cliprdr_backend_factory(Box::new(crate::clipboard::AgentCliprdrBackendFactory::new(
             Arc::clone(&self.clipboard),
@@ -1375,6 +1400,11 @@ impl Daemon {
     ///
     /// Panics if the clipboard or daemon state mutex is poisoned.
     async fn clipboard_get_file(&self, index: i32) -> Response {
+        // Idle timeout, not a total-transfer budget: recomputed on every loop iteration below so
+        // it resets on each chunk's progress, matching `Cliprdr`'s own per-request
+        // `transfer_timeout`. A fixed total-transfer deadline would time out a large file over a
+        // slow-but-healthy link even though each individual chunk arrives well within its own
+        // allowance.
         const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 
         // `clipboard_set_files` and `set_local_and_advertise` lock `clipboard` before `state`;
@@ -1389,7 +1419,7 @@ impl Daemon {
             (session.input_tx.clone(), Arc::clone(&session.clipboard_file_notify))
         };
 
-        let notify = {
+        let (notify, stream_id) = {
             let mut clipboard = self.clipboard.lock().expect("clipboard state poisoned");
             if !clipboard
                 .negotiated_capabilities
@@ -1475,26 +1505,21 @@ impl Daemon {
             clipboard.active_fetch_lock_id = clip_data_id;
             clipboard.active_fetch_result = None;
             let _ = input_tx.send_clipboard(ClipboardMessage::SendFileContentsRequest(first_request));
-            clipboard_file_notify
+            (clipboard_file_notify, stream_id)
         };
 
-        let deadline = tokio::time::Instant::now() + FETCH_TIMEOUT;
         loop {
+            // Recomputed each iteration: an idle timeout since the last progress notification,
+            // not a fixed budget for the whole (possibly multi-chunk) transfer.
+            let deadline = tokio::time::Instant::now() + FETCH_TIMEOUT;
             let notified = notify.notified();
             tokio::pin!(notified);
             let _ = notified.as_mut().enable();
 
             {
                 let mut clipboard = self.clipboard.lock().expect("clipboard state poisoned");
-                if let Some(result) = clipboard.active_fetch_result.take() {
-                    let fetch = clipboard.active_fetch.take();
-                    clipboard.active_fetch_lock_id = None;
-                    return match (result, fetch) {
-                        (ChunkedFetchProgress::Complete, Some(fetch)) => {
-                            Response::Ok(Payload::ClipboardFile(fetch.into_data()))
-                        }
-                        _ => Response::typed_error(crate::ipc::AgentErrorCategory::Internal, "file fetch failed"),
-                    };
+                if let Some(response) = take_finished_fetch_result(&mut clipboard) {
+                    return response;
                 }
             }
 
@@ -1505,18 +1530,21 @@ impl Daemon {
                 // fetch is genuinely stuck, the same way `rail_wait` re-checks live state after
                 // its own timeout rather than assuming nothing arrived.
                 let mut clipboard = self.clipboard.lock().expect("clipboard state poisoned");
-                if let Some(result) = clipboard.active_fetch_result.take() {
-                    let fetch = clipboard.active_fetch.take();
-                    clipboard.active_fetch_lock_id = None;
-                    return match (result, fetch) {
-                        (ChunkedFetchProgress::Complete, Some(fetch)) => {
-                            Response::Ok(Payload::ClipboardFile(fetch.into_data()))
-                        }
-                        _ => Response::typed_error(crate::ipc::AgentErrorCategory::Internal, "file fetch failed"),
-                    };
+                if let Some(response) = take_finished_fetch_result(&mut clipboard) {
+                    return response;
                 }
-                clipboard.active_fetch = None;
-                clipboard.active_fetch_lock_id = None;
+                // Only clear the shared fetch slot if it is still this call's own fetch: a
+                // session transition (`connect`) may have already cleared it, or a later call
+                // may have started a new fetch in the interim after finding the slot empty, and
+                // this stale timeout must not clobber that unrelated, still-in-progress fetch.
+                if clipboard
+                    .active_fetch
+                    .as_ref()
+                    .is_some_and(|fetch| fetch.stream_id() == stream_id)
+                {
+                    clipboard.active_fetch = None;
+                    clipboard.active_fetch_lock_id = None;
+                }
                 return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "file fetch timed out");
             }
         }
@@ -2218,6 +2246,8 @@ mod tests {
 
     use ironrdp_client::output_channel::output_channel;
     use ironrdp_client::rdp::{RdpInputEvent, RdpInputSender};
+    use ironrdp_cliprdr::chunked_fetch::ChunkedFetch;
+    use ironrdp_cliprdr::pdu::{ClipboardGeneralCapabilityFlags, FileDescriptor};
     use ironrdp_input::{Database, Operation};
     use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
     use ironrdp_propertyset::PropertySet;
@@ -3052,5 +3082,118 @@ mod tests {
                 Err(error) if error.to_string() == "rdpdr volume root must use the X:\\ form"
             ));
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_fetch_does_not_clobber_a_fetch_started_after_it() {
+        // Regression test for the race the stream_id guard in `clipboard_get_file`'s timeout
+        // path closes: a session transition (`connect`) can clear a stuck fetch's slot out from
+        // under a still-sleeping waiter, a new call can then start a fresh fetch in that slot,
+        // and the original waiter's own deadline must not clobber that unrelated fetch when it
+        // finally elapses.
+        let (daemon, _input_rx, _live, _rail_notify) = active_rail_session(true);
+        {
+            let mut clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+            clipboard.negotiated_capabilities = ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED;
+            clipboard.remote = Some(crate::clipboard::ClipboardContent::Files(vec![
+                FileDescriptor::new("a.bin").with_file_size(10),
+            ]));
+        }
+
+        let daemon = Arc::new(daemon);
+        let fetch_a = tokio::spawn({
+            let daemon = Arc::clone(&daemon);
+            async move { daemon.clipboard_get_file(0).await }
+        });
+
+        // Let fetch_a register itself (stream_id 1, the first one `ClipboardState::default`
+        // hands out) before simulating the session transition.
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        {
+            let clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+            assert_eq!(
+                clipboard.active_fetch.as_ref().map(ChunkedFetch::stream_id),
+                Some(1),
+                "fetch_a should have registered its fetch by now"
+            );
+        }
+
+        // Simulate `connect`'s reset (clearing fetch_a's slot without resolving it) immediately
+        // followed by a second, unrelated call starting a fresh fetch in the same slot: what
+        // matters for this test is that a *different* stream_id now occupies the slot.
+        {
+            let mut clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+            clipboard.active_fetch = Some(ChunkedFetch::new_with_size_query(99, 0, 4096, None, u64::MAX));
+            clipboard.active_fetch_lock_id = None;
+            clipboard.active_fetch_result = None;
+        }
+
+        // Push past fetch_a's 60s deadline; nothing ever answers its FileContentsRequest, so it
+        // times out.
+        tokio::time::advance(Duration::from_secs(61)).await;
+        let response = fetch_a.await.expect("fetch_a task did not panic");
+        assert!(matches!(
+            response,
+            Response::Err(err) if err.message.contains("timed out")
+        ));
+
+        // The unrelated fetch (stream_id 99) must still be there: fetch_a's stale timeout must
+        // not have cleared it.
+        let clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+        assert_eq!(
+            clipboard.active_fetch.as_ref().map(ChunkedFetch::stream_id),
+            Some(99),
+            "fetch_a's timeout must not clobber a fetch it does not own"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn steady_progress_beyond_the_total_timeout_does_not_time_out() {
+        // Regression test for the idle-vs-total-transfer timeout fix: a fetch that keeps making
+        // progress at intervals under FETCH_TIMEOUT must not time out just because the *total*
+        // elapsed time exceeds FETCH_TIMEOUT, since each individual chunk is arriving well within
+        // its own allowance (matching `Cliprdr`'s per-request `transfer_timeout` semantics).
+        let (daemon, _input_rx, _live, _rail_notify) = active_rail_session(true);
+        {
+            let mut clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+            clipboard.negotiated_capabilities = ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED;
+            clipboard.remote = Some(crate::clipboard::ClipboardContent::Files(vec![
+                FileDescriptor::new("a.bin").with_file_size(10),
+            ]));
+        }
+
+        let notify = {
+            let guard = daemon.state.lock().expect("daemon state poisoned");
+            Arc::clone(&guard.as_ref().expect("session installed").clipboard_file_notify)
+        };
+
+        let daemon = Arc::new(daemon);
+        let fetch = tokio::spawn({
+            let daemon = Arc::clone(&daemon);
+            async move { daemon.clipboard_get_file(0).await }
+        });
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+
+        // Two progress notifications 50s apart (100s cumulative, well past the old fixed 60s
+        // deadline), neither leaving a 60s idle gap.
+        for _ in 0..2 {
+            tokio::time::advance(Duration::from_secs(50)).await;
+            notify.notify_waiters();
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !fetch.is_finished(),
+            "steady sub-60s progress must not have timed out the fetch"
+        );
+
+        // A genuine 60s idle gap (no further notify) still times it out.
+        tokio::time::advance(Duration::from_secs(61)).await;
+        let response = fetch.await.expect("fetch task did not panic");
+        assert!(matches!(
+            response,
+            Response::Err(err) if err.message.contains("timed out")
+        ));
     }
 }

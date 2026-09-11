@@ -13,11 +13,16 @@
 //! file-list PDUs (`initiate_file_copy`/`on_file_contents_request`/`on_remote_file_list`), not
 //! `FormatDataRequest`/`FormatDataResponse`. `ironrdp_cliprdr::Cliprdr` owns the whole lock
 //! lifecycle (snapshotting the local file list on an incoming `LockData`, auto-locking when a
-//! remote file list arrives, timeout-driven expiry); this backend's `on_lock`/`on_unlock` stay
-//! informational. `on_outgoing_locks_expired` is not, though: it aborts any active
-//! `clipboard-get-file` fetch bound to the expiring lock rather than let it continue against a
-//! remote clipboard that has since changed underneath it.
+//! remote file list arrives, timeout-driven expiry), but that internal snapshot is only used for
+//! `Cliprdr`'s own index-bounds validation and is never exposed to the backend. This backend's
+//! `on_lock`/`on_unlock` therefore keep their own snapshot (`ClipboardState::local_locked_lists`)
+//! so `build_file_contents_response` can serve a locked request from the content that was
+//! actually locked rather than whatever `local`/`local_file_paths` hold by the time the request
+//! arrives. `on_outgoing_locks_expired` is the mirror image on the other direction: it aborts any
+//! active `clipboard-get-file` fetch bound to the expiring lock rather than let it continue
+//! against a remote clipboard that has since changed underneath it.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -38,6 +43,11 @@ use tracing::debug;
 /// A pragmatic middle ground: large enough that a multi-megabyte file does not need thousands of
 /// round trips, small enough that one chunk comfortably fits an IPC frame's own overhead.
 pub(crate) const FILE_FETCH_CHUNK_SIZE: u32 = 256 * 1024;
+
+/// Cap on `ClipboardState::local_locked_lists`, mirroring `ironrdp_cliprdr::Cliprdr`'s own
+/// `MAX_LOCKED_FILE_LISTS` bound on the identical growth risk: a remote that sends Lock PDUs
+/// under many distinct clipDataIds without ever unlocking must not grow this map unbounded.
+const MAX_LOCAL_LOCKED_LISTS: usize = 100;
 
 /// One piece of clipboard content, in the daemon's own internal representation.
 ///
@@ -87,6 +97,13 @@ pub(crate) struct ClipboardState {
     /// one bool; `clipboard_get_file` needs to tell them apart to know whether to return the
     /// fetched bytes or an error, so this is tracked alongside rather than re-derived.
     pub(crate) active_fetch_result: Option<ChunkedFetchProgress>,
+    /// Snapshots of `(local, local_file_paths)` at the moment each was locked by the remote
+    /// (`on_lock`), keyed by clipDataId. `Cliprdr` keeps its own snapshot for index-bounds
+    /// validation but does not expose it to the backend, so `build_file_contents_response`
+    /// consults this instead of the possibly-since-replaced `local`/`local_file_paths` when a
+    /// request carries a `data_id`. Cleared on the matching `on_unlock`; capped at
+    /// `MAX_LOCAL_LOCKED_LISTS`.
+    pub(crate) local_locked_lists: HashMap<u32, (Vec<FileDescriptor>, Vec<PathBuf>)>,
     /// The `stream_id` the next `clipboard-get-file` fetch will use, incremented on every use.
     ///
     /// `Cliprdr` retains an outstanding `FileContentsRequest` until its own response/transfer
@@ -104,6 +121,21 @@ impl ClipboardState {
         self.next_file_stream_id = self.next_file_stream_id.wrapping_add(1);
         id
     }
+
+    /// Clears the active fetch and marks it failed, if one exists. Returns whether it did, so
+    /// the caller knows whether to wake `file_fetch_notify` afterward (which must happen after
+    /// releasing this state's lock, so it is not done here). Shared by every place an in-progress
+    /// fetch needs to be abandoned: the remote clipboard changing (`on_remote_copy`), an active
+    /// fetch's lock expiring (`on_outgoing_locks_expired`), and that lock being released
+    /// immediately by a new `clipboard-set-files` (`on_outgoing_locks_cleared`).
+    fn abort_active_fetch(&mut self) -> bool {
+        if self.active_fetch.take().is_none() {
+            return false;
+        }
+        self.active_fetch_lock_id = None;
+        self.active_fetch_result = Some(ChunkedFetchProgress::Failed);
+        true
+    }
 }
 
 impl Default for ClipboardState {
@@ -117,6 +149,7 @@ impl Default for ClipboardState {
             active_fetch: None,
             active_fetch_result: None,
             active_fetch_lock_id: None,
+            local_locked_lists: HashMap::new(),
             next_file_stream_id: 1,
         }
     }
@@ -267,10 +300,22 @@ impl AgentCliprdrBackend {
             Ok(index) => index,
             Err(_) => return FileContentsResponse::new_error(request.stream_id),
         };
-        let Some(ClipboardContent::Files(files)) = state.local.as_ref() else {
-            return FileContentsResponse::new_error(request.stream_id);
+
+        // MS-RDPECLIP 3.1.5.4.6: if the request carries a clipDataId, it MUST be serviced from
+        // the File Stream data locked under that id, not whatever is currently offered — the
+        // local offer may have been replaced by a later clipboard-set-files call while the lock
+        // (and the remote's in-flight fetch against it) is still active.
+        let locked = request.data_id.and_then(|id| state.local_locked_lists.get(&id));
+        let (files, paths) = match locked {
+            Some((files, paths)) => (files, paths),
+            None => {
+                let Some(ClipboardContent::Files(files)) = state.local.as_ref() else {
+                    return FileContentsResponse::new_error(request.stream_id);
+                };
+                (files, &state.local_file_paths)
+            }
         };
-        let (Some(descriptor), Some(path)) = (files.get(index), state.local_file_paths.get(index)) else {
+        let (Some(descriptor), Some(path)) = (files.get(index), paths.get(index)) else {
             return FileContentsResponse::new_error(request.stream_id);
         };
         if descriptor
@@ -389,10 +434,9 @@ impl CliprdrBackend for AgentCliprdrBackend {
             // and start a new fetch, whose result the first caller's notified-but-stale wakeup
             // could then read as its own. Failing it explicitly and waking any waiter now closes
             // that window.
-            if state.active_fetch.take().is_some() {
-                state.active_fetch_lock_id = None;
-                state.active_fetch_result = Some(ChunkedFetchProgress::Failed);
-                drop(state);
+            let aborted = state.abort_active_fetch();
+            drop(state);
+            if aborted {
                 self.file_fetch_notify.notify_waiters();
             }
         }
@@ -568,13 +612,30 @@ impl CliprdrBackend for AgentCliprdrBackend {
     }
 
     fn on_lock(&mut self, data_id: LockDataId) {
-        // `Cliprdr` already snapshots `local_file_list` for this id and releases it on the
-        // matching unlock; nothing for this backend to do beyond logging.
         debug!(?data_id, "Remote locked local clipboard file list");
+        let mut state = self.state.lock().expect("clipboard state poisoned");
+        let Some(ClipboardContent::Files(files)) = state.local.clone() else {
+            return;
+        };
+        let paths = state.local_file_paths.clone();
+        if state.local_locked_lists.len() >= MAX_LOCAL_LOCKED_LISTS {
+            debug!(?data_id, "Local locked-list cache full; not snapshotting this lock");
+            return;
+        }
+        // `Cliprdr` keeps its own snapshot for index-bounds validation but does not expose it to
+        // the backend, so this snapshot is what makes `build_file_contents_response` serve the
+        // locked content rather than whatever `local`/`local_file_paths` hold by the time a
+        // request against this id actually arrives.
+        state.local_locked_lists.insert(data_id.0, (files, paths));
     }
 
     fn on_unlock(&mut self, data_id: LockDataId) {
         debug!(?data_id, "Remote unlocked local clipboard file list");
+        self.state
+            .lock()
+            .expect("clipboard state poisoned")
+            .local_locked_lists
+            .remove(&data_id.0);
     }
 
     fn on_remote_file_list(&mut self, files: &[FileDescriptor], clip_data_id: Option<u32>) {
@@ -603,9 +664,28 @@ impl CliprdrBackend for AgentCliprdrBackend {
                 clip_data_id = active_id,
                 "Active file fetch's lock expired; aborting rather than continue against a changed remote clipboard"
             );
-            state.active_fetch = None;
-            state.active_fetch_lock_id = None;
-            state.active_fetch_result = Some(ChunkedFetchProgress::Failed);
+            state.abort_active_fetch();
+            drop(state);
+            self.file_fetch_notify.notify_waiters();
+        }
+    }
+
+    fn on_outgoing_locks_cleared(&mut self, clip_data_ids: &[LockDataId]) {
+        // `initiate_file_copy` (a new `clipboard-set-files`) releases outgoing locks immediately
+        // rather than waiting for the expiry timeout, but an active fetch bound to one of those
+        // locks needs the same abort `on_outgoing_locks_expired` already gives the timeout path:
+        // otherwise it keeps issuing FileContentsRequests against a data_id whose lock no longer
+        // exists, against a remote clipboard that has changed underneath it.
+        let mut state = self.state.lock().expect("clipboard state poisoned");
+        let Some(active_id) = state.active_fetch_lock_id else {
+            return;
+        };
+        if clip_data_ids.iter().any(|id| id.0 == active_id) {
+            debug!(
+                clip_data_id = active_id,
+                "Active file fetch's lock released; aborting rather than continue against a changed remote clipboard"
+            );
+            state.abort_active_fetch();
             drop(state);
             self.file_fetch_notify.notify_waiters();
         }
@@ -614,7 +694,18 @@ impl CliprdrBackend for AgentCliprdrBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClipboardContent, advertised_formats};
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use ironrdp_client::rdp::RdpInputSender;
+    use ironrdp_cliprdr::backend::CliprdrBackend as _;
+    use ironrdp_cliprdr::chunked_fetch::{ChunkedFetch, ChunkedFetchProgress};
+    use ironrdp_cliprdr::pdu::{FileContentsFlags, FileContentsRequest, FileDescriptor, LockDataId};
+
+    use super::{
+        AgentClipboardMessageProxy, AgentCliprdrBackend, ClipboardContent, ClipboardState, advertised_formats,
+    };
 
     #[test]
     fn advertised_formats_is_empty_for_files() {
@@ -623,5 +714,124 @@ mod tests {
         // documentation of that invariant rather than a path either call site actually takes.
         let formats = advertised_formats(&ClipboardContent::Files(Vec::new()));
         assert!(formats.is_empty());
+    }
+
+    fn test_backend() -> AgentCliprdrBackend {
+        let (sender, _input_rx) = RdpInputSender::channel(1);
+        AgentCliprdrBackend {
+            state: Arc::new(Mutex::new(ClipboardState::default())),
+            proxy: AgentClipboardMessageProxy(sender),
+            file_fetch_notify: Arc::new(tokio::sync::Notify::new()),
+            pending_paste: None,
+            pending_since_ms: None,
+            desired_paste: None,
+        }
+    }
+
+    fn temp_file_with(label: &str, content: &[u8]) -> PathBuf {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("ironrdp-daemon-test-{}-{unique}-{label}", std::process::id()));
+        std::fs::write(&path, content).expect("write temp test file");
+        path
+    }
+
+    fn range_request(data_id: Option<u32>) -> FileContentsRequest {
+        FileContentsRequest {
+            stream_id: 1,
+            index: 0,
+            flags: FileContentsFlags::RANGE,
+            position: 0,
+            requested_size: 1024,
+            data_id,
+        }
+    }
+
+    #[test]
+    fn file_contents_request_with_lock_serves_the_locked_snapshot_not_the_current_offer() {
+        let mut backend = test_backend();
+        let locked_path = temp_file_with("locked", b"LOCKED_CONTENT");
+        let replaced_path = temp_file_with("replaced", b"REPLACED_CONTENT");
+
+        {
+            let mut state = backend.state.lock().unwrap();
+            state.local = Some(ClipboardContent::Files(vec![FileDescriptor::new("locked.txt")]));
+            state.local_file_paths = vec![locked_path.clone()];
+        }
+
+        // The remote locks our offered list under clipDataId 42 before fetching from it.
+        backend.on_lock(LockDataId(42));
+
+        // clipboard-set-files replaces the offer while the lock is still active.
+        {
+            let mut state = backend.state.lock().unwrap();
+            state.local = Some(ClipboardContent::Files(vec![FileDescriptor::new("replaced.txt")]));
+            state.local_file_paths = vec![replaced_path.clone()];
+        }
+
+        // A request against the locked id must still read the locked file's bytes, not the
+        // replacement's.
+        let response = backend.build_file_contents_response(&range_request(Some(42)));
+        assert_eq!(response.data(), b"LOCKED_CONTENT");
+
+        // Once unlocked, the same clipDataId has no snapshot left and falls back to whatever is
+        // currently offered.
+        backend.on_unlock(LockDataId(42));
+        let response = backend.build_file_contents_response(&range_request(Some(42)));
+        assert_eq!(response.data(), b"REPLACED_CONTENT");
+
+        let _ = std::fs::remove_file(&locked_path);
+        let _ = std::fs::remove_file(&replaced_path);
+    }
+
+    #[test]
+    fn file_contents_request_without_lock_serves_the_current_offer() {
+        let backend = test_backend();
+        let path = temp_file_with("unlocked", b"CURRENT_CONTENT");
+        {
+            let mut state = backend.state.lock().unwrap();
+            state.local = Some(ClipboardContent::Files(vec![FileDescriptor::new("current.txt")]));
+            state.local_file_paths = vec![path.clone()];
+        }
+
+        let response = backend.build_file_contents_response(&range_request(None));
+        assert_eq!(response.data(), b"CURRENT_CONTENT");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn outgoing_locks_cleared_aborts_the_active_fetch_bound_to_them() {
+        // A new clipboard-set-files releases outgoing locks immediately (not just on the
+        // inactivity-timeout path `on_outgoing_locks_expired` already covered), so an active
+        // fetch bound to one of those locks must be aborted the same way.
+        let mut backend = test_backend();
+        {
+            let mut state = backend.state.lock().unwrap();
+            state.active_fetch = Some(ChunkedFetch::new_with_size_query(1, 0, 4096, Some(7), u64::MAX));
+            state.active_fetch_lock_id = Some(7);
+        }
+
+        backend.on_outgoing_locks_cleared(&[LockDataId(7)]);
+
+        let state = backend.state.lock().unwrap();
+        assert!(state.active_fetch.is_none());
+        assert!(state.active_fetch_lock_id.is_none());
+        assert!(matches!(state.active_fetch_result, Some(ChunkedFetchProgress::Failed)));
+    }
+
+    #[test]
+    fn outgoing_locks_cleared_ignores_unrelated_ids() {
+        let mut backend = test_backend();
+        {
+            let mut state = backend.state.lock().unwrap();
+            state.active_fetch_lock_id = Some(7);
+        }
+
+        backend.on_outgoing_locks_cleared(&[LockDataId(99)]);
+
+        let state = backend.state.lock().unwrap();
+        assert_eq!(state.active_fetch_lock_id, Some(7));
+        assert!(state.active_fetch_result.is_none());
     }
 }
