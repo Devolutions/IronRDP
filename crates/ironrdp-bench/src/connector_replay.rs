@@ -97,6 +97,12 @@ impl ConnectorReplayId {
             Self::NoNlaAccepted => "no-nla-accepted",
         }
     }
+
+    const fn partial_replay_id(self) -> PartialReplayId {
+        match self {
+            Self::NoNlaAccepted => PartialReplayId::NoNlaAccepted,
+        }
+    }
 }
 
 impl FromStr for ConnectorReplayId {
@@ -127,13 +133,14 @@ impl ConnectorReplayWorkload {
     /// The strict passive replay preflight and all capture processing happen
     /// outside the focused connection-and-session measurement.
     pub fn prepare(id: ConnectorReplayId) -> ConnectorReplayResult<Self> {
-        let passive = PartialReplayWorkload::prepare(PartialReplayId::NoNlaAccepted)
-            .map_err(|error| ConnectorReplayError::new(error.to_string()))?;
+        let passive_id = id.partial_replay_id();
+        let passive =
+            PartialReplayWorkload::prepare(passive_id).map_err(|error| ConnectorReplayError::new(error.to_string()))?;
         passive
             .verify()
             .map_err(|error| ConnectorReplayError::new(error.to_string()))?;
 
-        let path = PartialReplayWorkload::cached_capture_path(PartialReplayId::NoNlaAccepted)
+        let path = PartialReplayWorkload::cached_capture_path(passive_id)
             .map_err(|error| ConnectorReplayError::new(error.to_string()))?;
         let capture = read_capture(&path)
             .map_err(|error| ConnectorReplayError::new(format!("read capture {}: {error}", path.display())))?;
