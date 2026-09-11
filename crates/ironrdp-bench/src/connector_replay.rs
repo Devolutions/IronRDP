@@ -37,14 +37,16 @@ const LICENSE_BLOB_HEADER_SIZE: usize = 2 /* blobType */ + 2 /* length */;
 const ADMINISTRATIVE_DISCONNECT: &str = "[Protocol independent error] The disconnection was initiated by an administrative tool on the server running in the user's session";
 
 const NO_NLA_ACCEPTED_CONTRACT: ConnectorReplayContract = ConnectorReplayContract {
-    connector_steps: 26,
-    outbound_frames: 17,
-    active_frames: 725,
-    active_x224_frames: 705,
-    active_fast_path_frames: 20,
-    active_response_frames: 29,
-    graphics_updates: 0,
-    deterministic_graphics_updates: 1,
+    expected_measurement: ConnectorReplayMeasurement {
+        connector_steps: 26,
+        outbound_frames: 17,
+        active_frames: 725,
+        active_x224_frames: 705,
+        active_fast_path_frames: 20,
+        active_response_frames: 29,
+        graphics_updates: 0,
+        deterministic_graphics_updates: 1,
+    },
     outbound_prefix: &[
         OutboundPdu::ConnectionRequest,
         OutboundPdu::ConnectInitial,
@@ -152,12 +154,6 @@ impl ConnectorReplayWorkload {
         let (config, channel_names) = config_from_captured_initial(&client_frames)?;
 
         validate_raw_negotiation(&capture.flow.client_stream, &raw_server_confirm, &config)?;
-        if server_frames.is_empty() {
-            return Err(ConnectorReplayError::new(
-                "connector replay has no decrypted server frames".to_owned(),
-            ));
-        }
-
         Ok(Self {
             id,
             raw_server_confirm,
@@ -403,14 +399,7 @@ pub struct ConnectorReplayMeasurement {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ConnectorReplayContract {
-    connector_steps: usize,
-    outbound_frames: usize,
-    active_frames: usize,
-    active_x224_frames: usize,
-    active_fast_path_frames: usize,
-    active_response_frames: usize,
-    graphics_updates: usize,
-    deterministic_graphics_updates: usize,
+    expected_measurement: ConnectorReplayMeasurement,
     outbound_prefix: &'static [OutboundPdu],
     session_data_frames: usize,
     semantic_outputs: &'static [ActiveStageSemanticOutput],
@@ -559,17 +548,10 @@ impl ConnectorReplayContract {
         output_fingerprint: Option<[u8; 32]>,
         outbound_pdus: &[OutboundPdu],
     ) -> ConnectorReplayResult<ConnectorReplayMeasurement> {
-        if measurement.connector_steps != self.connector_steps
-            || measurement.outbound_frames != self.outbound_frames
-            || measurement.active_frames != self.active_frames
-            || measurement.active_x224_frames != self.active_x224_frames
-            || measurement.active_fast_path_frames != self.active_fast_path_frames
-            || measurement.active_response_frames != self.active_response_frames
-            || measurement.graphics_updates != self.graphics_updates
-            || measurement.deterministic_graphics_updates != self.deterministic_graphics_updates
-        {
+        if measurement != self.expected_measurement {
             return Err(ConnectorReplayError::new(format!(
-                "connector replay did not satisfy its immutable contract: expected {self:?}, got {measurement:?}"
+                "connector replay did not satisfy its immutable contract: expected {:?}, got {measurement:?}",
+                self.expected_measurement
             )));
         }
         let (prefix, session_data) = outbound_pdus.split_at(outbound_pdus.len().min(self.outbound_prefix.len()));
@@ -1140,22 +1122,7 @@ mod tests {
     #[test]
     fn rejects_fixed_contract_mismatch() {
         let contract = ConnectorReplayContract {
-            connector_steps: 1,
-            outbound_frames: 1,
-            active_frames: 1,
-            active_x224_frames: 1,
-            active_fast_path_frames: 0,
-            active_response_frames: 1,
-            graphics_updates: 0,
-            deterministic_graphics_updates: 1,
-            outbound_prefix: &[],
-            session_data_frames: 0,
-            semantic_outputs: &[],
-            output_fingerprint: [0; 32],
-        };
-        let measurement = ConnectorReplayMeasurement {
-            connector_steps: 2,
-            ..ConnectorReplayMeasurement {
+            expected_measurement: ConnectorReplayMeasurement {
                 connector_steps: 1,
                 outbound_frames: 1,
                 active_frames: 1,
@@ -1164,7 +1131,15 @@ mod tests {
                 active_response_frames: 1,
                 graphics_updates: 0,
                 deterministic_graphics_updates: 1,
-            }
+            },
+            outbound_prefix: &[],
+            session_data_frames: 0,
+            semantic_outputs: &[],
+            output_fingerprint: [0; 32],
+        };
+        let measurement = ConnectorReplayMeasurement {
+            connector_steps: 2,
+            ..contract.expected_measurement
         };
         assert!(contract.validate(measurement, None, &[]).is_err());
     }
