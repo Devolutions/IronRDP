@@ -207,7 +207,7 @@ jobs:
       - name: Corpus cache
         uses: actions/cache@v5
         with:
-          path: ./dependencies/wireshark-rdp
+          path: ./bench-data/wireshark-rdp
           key: ${{ runner.os }}-benchmark-corpus-${{ hashFiles('crates/ironrdp-bench/corpus.toml') }}
 
       - name: Fetch corpus
