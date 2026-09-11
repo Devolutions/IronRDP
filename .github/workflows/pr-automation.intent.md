@@ -77,7 +77,9 @@ Apply it earlier only when automation stops and needs maintainer intervention.
 `OWNER` and `MEMBER` authors are always eligible.
 Other authors need one pull request from the same immutable human author merged into `master`.
 
-Block review for duplicates at confidence 0.85 or greater and likely non-legitimate changes.
+Block review for likely non-legitimate changes.
+Label a suspected overlap with another pull request at confidence 0.85 or greater as `triage/overlap`, and keep it advisory: it never blocks review and never asks for maintainer handoff on its own.
+Retire `duplicate`, and never read it.
 Unavailable or invalid classification fails closed to maintainer review.
 Risk and protocol relevance select reviewers but do not suppress review.
 
