@@ -7,7 +7,7 @@ const SCHEMA_VERSION = "classifier-v3";
 // Machine-readable classifier state persisted on the SHA-bound check, because the review route runs
 // in a later workflow run and cannot read classifier job outputs.
 const CHECK_STATE_MARKER = "ironrdp-pr-automation-state:";
-const DUPLICATE_URL = /^https:\/\/github\.com\/Devolutions\/IronRDP\/pull\/[1-9][0-9]*$/;
+const OVERLAP_URL = /^https:\/\/github\.com\/Devolutions\/IronRDP\/pull\/[1-9][0-9]*$/;
 
 function isDocumentationPath(path) {
   const behavioral = /\.(?:rs|cs|[cm]?[jt]sx?|svelte|ya?ml|toml|json|lock|sh|ps1|py|rb|java)$/i;
@@ -20,14 +20,14 @@ function isDocumentationPath(path) {
 }
 
 function validateClassifier(raw, {
-  expectedSha, changedPaths, documentationOnlyPaths, duplicateCandidates, prNumber,
+  expectedSha, changedPaths, documentationOnlyPaths, overlapCandidates, prNumber,
 } = {}) {
   if (prNumber !== undefined && (!Number.isSafeInteger(prNumber) || prNumber < 1)) {
     return invalid("invalid classifier validation context");
   }
   const value = parseJson(raw, 4096);
   const required = [
-    "head_sha", "risk", "technical_debt", "documentation_only", "cross_cutting", "duplicate",
+    "head_sha", "risk", "technical_debt", "documentation_only", "cross_cutting", "overlap",
     "likely_non_legitimate", "non_legitimate_confidence", "non_legitimate_reason",
     "breaking_change_suspected", "breaking_change_rationale", "breaking_change_surface",
     "protocol_related", "summary",
@@ -45,16 +45,16 @@ function validateClassifier(raw, {
     return invalid("invalid classifier primitive");
   }
 
-  const duplicateKeys = ["detected", "similar_pr_number", "similar_pr_url", "confidence", "rationale"];
-  const duplicate = value.duplicate;
-  if (!exactKeys(duplicate, duplicateKeys) || typeof duplicate.detected !== "boolean" ||
-      !Number.isFinite(duplicate.confidence) || duplicate.confidence < 0 || duplicate.confidence > 1 ||
-      !((Number.isSafeInteger(duplicate.similar_pr_number) && duplicate.similar_pr_number > 0) ||
-        duplicate.similar_pr_number === null) ||
-      !(typeof duplicate.similar_pr_url === "string" || duplicate.similar_pr_url === null)) {
-    return invalid("invalid duplicate result");
+  const overlapKeys = ["detected", "similar_pr_number", "similar_pr_url", "confidence", "rationale"];
+  const overlap = value.overlap;
+  if (!exactKeys(overlap, overlapKeys) || typeof overlap.detected !== "boolean" ||
+      !Number.isFinite(overlap.confidence) || overlap.confidence < 0 || overlap.confidence > 1 ||
+      !((Number.isSafeInteger(overlap.similar_pr_number) && overlap.similar_pr_number > 0) ||
+        overlap.similar_pr_number === null) ||
+      !(typeof overlap.similar_pr_url === "string" || overlap.similar_pr_url === null)) {
+    return invalid("invalid overlap result");
   }
-  const rationale = normalizeText(duplicate.rationale, 500);
+  const rationale = normalizeText(overlap.rationale, 500);
   const breakingRationale = normalizeText(value.breaking_change_rationale, 500);
   const breakingSurface = normalizeText(value.breaking_change_surface, 200);
   const nonLegitimateReason = normalizeText(value.non_legitimate_reason, 500);
@@ -67,23 +67,23 @@ function validateClassifier(raw, {
     : value.non_legitimate_confidence !== 0 || nonLegitimateReason !== "") {
     return invalid("incoherent legitimacy signal");
   }
-  if (duplicate.similar_pr_url !== null && !DUPLICATE_URL.test(duplicate.similar_pr_url)) {
-    return invalid("invalid duplicate URL");
+  if (overlap.similar_pr_url !== null && !OVERLAP_URL.test(overlap.similar_pr_url)) {
+    return invalid("invalid overlap URL");
   }
-  if (duplicate.detected) {
-    if (duplicate.similar_pr_number === null || duplicate.similar_pr_url === null ||
-        duplicate.confidence < 0.85 || duplicate.similar_pr_number === prNumber ||
-        !duplicate.similar_pr_url.endsWith(`/pull/${duplicate.similar_pr_number}`) ||
-        !Array.isArray(duplicateCandidates) || duplicateCandidates.length > 30 ||
-        !duplicateCandidates.some((candidate) =>
+  if (overlap.detected) {
+    if (overlap.similar_pr_number === null || overlap.similar_pr_url === null ||
+        overlap.confidence < 0.85 || overlap.similar_pr_number === prNumber ||
+        !overlap.similar_pr_url.endsWith(`/pull/${overlap.similar_pr_number}`) ||
+        !Array.isArray(overlapCandidates) || overlapCandidates.length > 30 ||
+        !overlapCandidates.some((candidate) =>
           exactKeys(candidate, ["number", "url"]) &&
-          candidate.number === duplicate.similar_pr_number &&
-          candidate.url === duplicate.similar_pr_url)) {
-      return invalid("invalid duplicate reference");
+          candidate.number === overlap.similar_pr_number &&
+          candidate.url === overlap.similar_pr_url)) {
+      return invalid("invalid overlap reference");
     }
-  } else if (duplicate.similar_pr_number !== null || duplicate.similar_pr_url !== null ||
-      duplicate.confidence !== 0 || rationale !== "") {
-    return invalid("false duplicate has reference");
+  } else if (overlap.similar_pr_number !== null || overlap.similar_pr_url !== null ||
+      overlap.confidence !== 0 || rationale !== "") {
+    return invalid("false overlap has reference");
   }
   const docsOnly = documentationOnlyPaths === undefined
     ? Array.isArray(changedPaths) && changedPaths.every((path) => typeof path === "string" && isDocumentationPath(path))
@@ -96,9 +96,9 @@ function validateClassifier(raw, {
   }
   const normalized = {
     head_sha: value.head_sha, risk: value.risk, technical_debt: value.technical_debt,
-    documentation_only: value.documentation_only, cross_cutting: value.cross_cutting, duplicate: {
-      detected: duplicate.detected, similar_pr_number: duplicate.similar_pr_number,
-      similar_pr_url: duplicate.similar_pr_url, confidence: duplicate.confidence, rationale,
+    documentation_only: value.documentation_only, cross_cutting: value.cross_cutting, overlap: {
+      detected: overlap.detected, similar_pr_number: overlap.similar_pr_number,
+      similar_pr_url: overlap.similar_pr_url, confidence: overlap.confidence, rationale,
     },
     likely_non_legitimate: value.likely_non_legitimate,
     non_legitimate_confidence: value.non_legitimate_confidence,

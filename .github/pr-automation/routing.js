@@ -48,10 +48,8 @@ function labelsOf(labels) {
   return new Set((labels || []).map((label) => typeof label === "string" ? label : label?.name).filter(Boolean));
 }
 
-// Suspected overlap with another pull request is advisory and never consulted here: it is an
-// approximate signal, and cancelling review on it hides real defects from the humans who still have
-// to decide how related proposals proceed. The retired `duplicate` label is not consulted either,
-// so one an earlier automation applied on its own no longer suppresses review.
+// Suspected overlap is approximate and must not suppress code review.
+// The `duplicate` label is also ignored.
 function reviewPolicyEligible({ labels, legitimacyStopped } = {}) {
   const present = labelsOf(labels);
   if (present.has("ai-reviewed/2") ||

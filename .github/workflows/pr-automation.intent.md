@@ -79,7 +79,8 @@ Other authors need one pull request from the same immutable human author merged 
 
 Block review for likely non-legitimate changes.
 Label a suspected overlap with another pull request at confidence 0.85 or greater as `triage/overlap`, and keep it advisory: it never blocks review and never asks for maintainer handoff on its own.
-Retire `duplicate`, and never read it.
+Use `overlap` in the classifier schema and describe only current shared scope.
+Ignore the `duplicate` label without applying or removing it.
 Unavailable or invalid classification fails closed to maintainer review.
 Risk and protocol relevance select reviewers but do not suppress review.
 

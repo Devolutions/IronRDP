@@ -201,7 +201,9 @@ Automatic review requires successful CI for the exact classified head.
 After the first review, a later push starts the second review when CI succeeds for that new head.
 Legitimacy triage and `ai-reviewed/2` block automatic review.
 A suspected overlap with another pull request is advisory: at confidence 0.85 or greater it adds `triage/overlap` and a non-blocking comment, and review proceeds under the usual gates.
-Automation never applies or reads `duplicate`, which is retired and no longer declared; `triage/overlap` replaces it.
+The classifier reports possible shared scope in `overlap`, using candidate titles and truncated bodies.
+The `duplicate` label is undeclared and unowned: automation ignores it and leaves existing labels untouched.
+Classification removes comments carrying the `duplicate` marker, even on failure, because their blocking wording contradicts the advisory policy.
 Unavailable or invalid classification fails closed to maintainer review.
 
 Bot-authored pull requests do not run automatic routes or label reconciliation.

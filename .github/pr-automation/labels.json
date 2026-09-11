@@ -112,7 +112,7 @@
   {
     "name": "triage/overlap",
     "color": "fbca04",
-    "description": "A classifier saw a possible overlap with another pull request; advisory only"
+    "description": "Possible overlap with another pull request; advisory only"
   },
   {
     "name": "ai-reviewed/1",

@@ -10,7 +10,7 @@
   "allowed_files": [
     "pr-automation-context.json",
     "pr-evidence/changed-files.txt",
-    "pr-evidence/duplicate-candidates.json",
+    "pr-evidence/overlap-candidates.json",
     "pr-evidence/pull-request.diff"
   ],
   "max_output_bytes": 4096,

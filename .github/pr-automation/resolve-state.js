@@ -12,8 +12,7 @@ const OVERLAP_LABEL = "triage/overlap";
 const OVERSIZED_REVIEW_LABEL = "ai-review/allow-oversized";
 const LEGITIMACY_MARKER_PREFIX = "<!-- ironrdp-pr-automation:legitimacy:v2:";
 const OVERLAP_MARKER = "<!-- ironrdp-pr-automation:overlap -->";
-// Superseded by OVERLAP_MARKER. Still deleted on every classification so the blocking wording of an
-// earlier run disappears instead of sitting next to the advisory notice.
+// Remove comments with blocking wording on every classification, including failures.
 const LEGACY_DUPLICATE_MARKER = "<!-- ironrdp-pr-automation:duplicate -->";
 const OVERSIZED_MARKER = "<!-- ironrdp-pr-automation:oversized -->";
 const LEGACY_XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
@@ -84,6 +83,7 @@ function failedClassification(expectedSha, deterministic, reason, rateLimit, sem
     ],
     addLabels: ["maintainer-required"], comments,
     removeCommentMarkers: [
+      LEGACY_DUPLICATE_MARKER,
       ...(comments.some((comment) => comment.kind === "evidence-limit") ? [] : [EVIDENCE_LIMIT_MARKER]),
       FORK_QUOTA_MARKER,
       ...(comments.some((comment) => comment.kind === "global-quota") ? [] : [GLOBAL_QUOTA_MARKER]),
@@ -103,7 +103,7 @@ function failedClassification(expectedSha, deterministic, reason, rateLimit, sem
 
 function resolveClassificationState({
   expectedSha, labels, deterministic, classifier, classificationGate,
-  classifierReason, changedPaths, duplicateCandidates, prNumber, semver, rateLimit, force,
+  classifierReason, changedPaths, overlapCandidates, prNumber, semver, rateLimit, force,
 } = {}) {
   const existing = labelsOf(labels);
   const forced = force === true;
@@ -123,7 +123,7 @@ function resolveClassificationState({
   }
   const classifierResult = validateClassifier(classifier, {
     expectedSha, changedPaths, documentationOnlyPaths: deterministic.documentationOnlyPaths,
-    duplicateCandidates, prNumber,
+    overlapCandidates, prNumber,
   });
   if (!classifierResult?.ok || classifierResult.value?.head_sha !== expectedSha) {
     const reason = classifierReason || classifierResult?.reason || "classifier output unavailable";
@@ -150,9 +150,9 @@ function resolveClassificationState({
     return failedClassification(
       expectedSha, deterministic, "reviewer routing unavailable", failureRateLimit, semverStatus);
   }
-  // Overlap is a similarity signal, not a verdict: it labels and comments, and nothing else. The
-  // retired `duplicate` label is in no owned set, so automation neither applies nor withdraws it.
-  const overlap = model.duplicate.detected && model.duplicate.confidence >= 0.85;
+  // Overlap is advisory: it only adds a label and comment.
+  // The `duplicate` label is unowned, so automation neither applies nor removes it.
+  const overlap = model.overlap.detected && model.overlap.confidence >= 0.85;
   const optional = [
     ["kind/technical-debt", model.technical_debt],
     ["kind/protocol", model.protocol_related],
@@ -177,7 +177,7 @@ function resolveClassificationState({
   const comments = [
     ...(overlap ? [{
       kind: "overlap", marker: OVERLAP_MARKER,
-      url: model.duplicate.similar_pr_url, rationale: model.duplicate.rationale,
+      url: model.overlap.similar_pr_url, rationale: model.overlap.rationale,
     }] : []),
   ];
   const auditComments = [
@@ -190,8 +190,7 @@ function resolveClassificationState({
     ok: true, mode: "classification", expectedSha, labelSets, addLabels, removeLabels, comments, auditComments,
     dispatchReview: !forced && !existing.has("ai-reviewed/2"),
     removeCommentMarkers: [
-      // A later push can make a previously reported overlap or oversized verdict wrong, and stale
-      // guidance would then contradict the labels this run just wrote.
+      // Remove notices that contradict the current classification.
       ...(overlap ? [] : [OVERLAP_MARKER]),
       LEGACY_DUPLICATE_MARKER,
       EVIDENCE_LIMIT_MARKER,
