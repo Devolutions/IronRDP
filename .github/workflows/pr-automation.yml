@@ -1,13 +1,17 @@
 name: Pull request automation
 # Prefer an exact PR number when the event carries one; otherwise identify the CI head that triggered the workflow.
+# The trailing mode mirrors the route the triggering event takes, so classifier and reviewer runs are told apart at a glance.
 run-name: >-
   ${{
-    github.event.pull_request.number && format('PR #{0}', github.event.pull_request.number)
-    || inputs.pr-number && format('PR #{0}', inputs.pr-number)
-    || github.event.client_payload.pr_number && format('PR #{0}', github.event.client_payload.pr_number)
-    || github.event.workflow_run.pull_requests[0].number && format('PR #{0}', github.event.workflow_run.pull_requests[0].number)
-    || github.event.workflow_run.head_branch && format('{0} @ {1}', github.event.workflow_run.head_branch, github.event.workflow_run.head_sha)
-    || format('run {0}', github.run_id)
+    format('{0} ({1})',
+      github.event.pull_request.number && format('PR #{0}', github.event.pull_request.number)
+      || inputs.pr-number && format('PR #{0}', inputs.pr-number)
+      || github.event.client_payload.pr_number && format('PR #{0}', github.event.client_payload.pr_number)
+      || github.event.workflow_run.pull_requests[0].number && format('PR #{0}', github.event.workflow_run.pull_requests[0].number)
+      || github.event.workflow_run.head_branch && format('{0} @ {1}', github.event.workflow_run.head_branch, github.event.workflow_run.head_sha)
+      || format('run {0}', github.run_id),
+      (github.event_name == 'workflow_run' || github.event_name == 'repository_dispatch'
+        || (github.event_name == 'workflow_dispatch' && inputs.review)) && 'review' || 'classify')
   }}
 
 on:

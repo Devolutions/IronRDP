@@ -103,17 +103,62 @@ function readReviewWorkflow(githubDirectory = path.join(__dirname, "..")) {
     .replace(/\r\n/g, "\n");
 }
 
-test("workflow run names show the target pull request when known and identify the source branch otherwise", () => {
-  const workflow = readWorkflow();
+function runNameExpression(workflow = readWorkflow()) {
+  const match = workflow.match(/\nrun-name: >-\n((?: {2}\S.*\n| {3,}.*\n)+)/);
+  assert.ok(match, "run-name expression is missing");
+  return match[1];
+}
 
-  assert.match(workflow, /github\.event\.pull_request\.number.*format\('PR #\{0\}'/);
-  assert.match(workflow, /inputs\.pr-number\s*&&\s*format\('PR #\{0\}'/);
-  assert.match(workflow, /github\.event\.client_payload\.pr_number\s*&&\s*format\('PR #\{0\}'/);
-  assert.match(workflow, /github\.event\.workflow_run\.pull_requests\[0\]\.number.*format\('PR #\{0\}'/);
-  assert.match(workflow, /github\.event\.workflow_run\.head_branch.*github\.event\.workflow_run\.head_sha/);
-  assert.match(workflow, /format\('run \{0\}',\s*github\.run_id\)/);
-  assert.doesNotMatch(workflow, /format\('PR #\{0\}',\s*github\.run_id\)/);
-  assert.doesNotMatch(workflow, /PR #\$\{\{.*github\.run_id.*\}\}/s);
+// Translates the context lookups, equality, and format() calls the run-name expression uses into
+// JavaScript, so the workflow expression can be evaluated against synthetic event payloads.
+function evaluateRunName(expression, { github = {}, inputs = {} } = {}) {
+  const body = expression.trim().replace(/^\$\{\{/, "").replace(/\}\}$/, "")
+    .replace(/\b(?:github|inputs)(?:\.[A-Za-z0-9_-]+|\[\d+\])+/g, (path) => `read(${JSON.stringify(path)})`)
+    .replace(/==/g, "===");
+  const read = (path) => path.split(/[.[\]]+/).filter(Boolean)
+    .reduce((value, key) => (value == null ? null : value[key]), { github, inputs }) ?? null;
+  const format = (template, ...args) => template.replace(/\{(\d+)\}/g, (_, index) => args[Number(index)]);
+  return new Function("read", "format", `return (${body});`)(read, format);
+}
+
+test("workflow run names show the target pull request and automation mode when known, and identify the source branch otherwise", () => {
+  const runName = runNameExpression();
+
+  assert.match(runName, /github\.event\.pull_request\.number.*format\('PR #\{0\}'/);
+  assert.match(runName, /inputs\.pr-number\s*&&\s*format\('PR #\{0\}'/);
+  assert.match(runName, /github\.event\.client_payload\.pr_number\s*&&\s*format\('PR #\{0\}'/);
+  assert.match(runName, /github\.event\.workflow_run\.pull_requests\[0\]\.number.*format\('PR #\{0\}'/);
+  assert.match(runName, /github\.event\.workflow_run\.head_branch.*github\.event\.workflow_run\.head_sha/);
+  assert.match(runName, /format\('run \{0\}',\s*github\.run_id\)/);
+  assert.match(runName, /format\('\{0\} \(\{1\}\)',/);
+  assert.doesNotMatch(runName, /format\('PR #\{0\}',\s*github\.run_id\)/);
+  assert.doesNotMatch(runName, /PR #\$\{\{.*github\.run_id.*\}\}/s);
+});
+
+test("the run name mode follows the route the triggering event takes", () => {
+  const expression = runNameExpression();
+  const runName = (github, inputs) => evaluateRunName(expression, { github: { run_id: 7, ...github }, inputs });
+
+  assert.equal(runName({ event_name: "pull_request_target", event: { pull_request: { number: 12 } } }),
+    "PR #12 (classify)");
+  assert.equal(runName({
+    event_name: "workflow_run",
+    event: { workflow_run: { pull_requests: [{ number: 34 }], head_branch: "topic", head_sha: "a".repeat(40) } },
+  }), "PR #34 (review)");
+  assert.equal(runName({ event_name: "repository_dispatch", event: { client_payload: { pr_number: 56 } } }),
+    "PR #56 (review)");
+
+  // workflow_dispatch carries `review` as a typed boolean, so both values must pick their own mode.
+  assert.equal(runName({ event_name: "workflow_dispatch", event: {} }, { "pr-number": 78, review: false }),
+    "PR #78 (classify)");
+  assert.equal(runName({ event_name: "workflow_dispatch", event: {} }, { "pr-number": 78, review: true }),
+    "PR #78 (review)");
+
+  // A CI completion that names no pull request still identifies its source, and stays a review run.
+  assert.equal(runName({
+    event_name: "workflow_run",
+    event: { workflow_run: { pull_requests: [], head_branch: "topic", head_sha: "b".repeat(40) } },
+  }), `topic @ ${"b".repeat(40)} (review)`);
 });
 
 function resolveReviewScript(workflow = readWorkflow()) {
