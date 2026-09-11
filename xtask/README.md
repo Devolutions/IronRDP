@@ -129,7 +129,7 @@ Hyperfine remains a separate local tool and does not import results into CodSpee
 Each command starts one release binary process, verifies and loads the selected cached capture, decrypts and prepares its replay state, and executes one strict replay.
 Compilation and corpus fetching occur before the CodSpeed action and are excluded from this measurement.
 
-The `CodSpeed` workflow runs simulation for pushes and pull requests only after maintainers set the `CODSPEED_ENABLED` repository variable to `true` and enable the repository in CodSpeed.
+The `CodSpeed` workflow runs simulation for pushes, pull requests, and manual dispatches after maintainers set the `CODSPEED_ENABLED` repository variable to `true` and enable the repository in CodSpeed.
 It authenticates through GitHub OIDC and requires no repository secret for this public repository.
 The wall-time job is manual only and runs only when maintainers set the repository-controlled `CODSPEED_WALLTIME_RUNNER` variable to a known, approved Linux runner label.
 Dispatchers cannot select or override the wall-time runner.
