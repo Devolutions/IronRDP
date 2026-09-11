@@ -127,18 +127,20 @@ test("the run summary links the resolved pull request", async () => {
     /PULL_REQUEST_URL_BASE: \$\{\{ github\.server_url \}\}\/\$\{\{ github\.repository \}\}\/pull/);
 
   const lines = [];
+  let writes = 0;
   const core = {
     setOutput: () => {},
     info: () => {},
     warning: () => {},
     summary: {
       addRaw: (value) => { lines.push(value); return core.summary; },
-      write: async () => {},
+      write: async () => { writes += 1; },
     },
   };
   const rootRequire = createRequire(path.join(__dirname, "..", "..", "labeler.js"));
   const run = async (result) => {
     lines.length = 0;
+    writes = 0;
     const requireWithResolve = (name) => name === "./.github/pr-automation/resolve-pr"
       ? { resolvePr: async () => result }
       : rootRequire(name);
@@ -146,14 +148,15 @@ test("the run summary links the resolved pull request", async () => {
     await new AsyncFunction("core", "github", "context", "require", "process", resolvePrScript(workflow))(
       core, {}, { payload: {} }, requireWithResolve, process,
     );
-    return lines.join("\n");
+    return { summary: lines.join("\n"), writes };
   };
 
-  assert.equal(
-    await run({ ok: true, route: "ci", prNumber: 7, headSha: SHA, baseSha: OTHER_SHA }),
-    "Resolved pull request [#7](https://github.example/Devolutions/IronRDP/pull/7).",
-  );
-  assert.equal(await run({ ok: false, route: "ci", reason: "pull request is draft" }), "");
+  assert.deepEqual(await run({ ok: true, route: "ci", prNumber: 7, headSha: SHA, baseSha: OTHER_SHA }), {
+    summary: "Resolved pull request [#7](https://github.example/Devolutions/IronRDP/pull/7).",
+    writes: 1,
+  });
+  assert.deepEqual(await run({ ok: false, route: "ci", reason: "pull request is draft" }),
+    { summary: "", writes: 0 });
 });
 
 function resolveReviewScript(workflow = readWorkflow()) {
