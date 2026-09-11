@@ -2908,15 +2908,14 @@ impl RdpServer {
                         warn!("No AUDIO_INPUT dynamic channel, dropping event");
                         continue;
                     };
-                    if !drdynvc.is_channel_opened(channel_id) {
-                        warn!("AUDIO_INPUT dynamic channel not yet opened, dropping event");
-                        continue;
-                    }
+                    // dvc_by_id_mut already returns None for a channel that isn't yet
+                    // Opened, and that case is handled just below; a separate
+                    // is_channel_opened check here would only duplicate it.
                     let Some(mut rdpeai) = drdynvc.dvc_by_id_mut::<RdpeaiServer>(channel_id) else {
-                        warn!("AUDIO_INPUT channel not found by id, dropping event");
+                        warn!("AUDIO_INPUT channel not opened or not found by id, dropping event");
                         continue;
                     };
-                    let msgs = match msg {
+                    let result = match msg {
                         RdpeaiServerMessage::Open {
                             frames_per_packet,
                             initial_format,
@@ -2931,9 +2930,20 @@ impl RdpServer {
                             error!(?error, "Handling AUDIO_INPUT event");
                             continue;
                         }
-                    }
-                    .map_err_kind("failed to send AUDIO_INPUT event", ServerErrorKind::Pdu)?;
-                    let dvc_messages = dvc::encode_dvc_messages(channel_id, msgs, ChannelFlags::empty())
+                    };
+                    // open()/change_format() reject calls that race the channel's current
+                    // state (e.g. Open before negotiation finishes); that is an expected,
+                    // recoverable condition per their own doc comments, not a connection
+                    // fault, so drop-and-warn like every other unavailability in this arm
+                    // rather than tearing down the session.
+                    let msgs = match result {
+                        Ok(msgs) => msgs,
+                        Err(error) => {
+                            warn!(%error, "AUDIO_INPUT event rejected by current channel state, dropping");
+                            continue;
+                        }
+                    };
+                    let dvc_messages = dvc::encode_dvc_messages(channel_id, msgs, ChannelFlags::SHOW_PROTOCOL)
                         .map_err(ServerError::encode)?;
                     let drdynvc_channel_id = self
                         .get_channel_id_by_type::<dvc::DrdynvcServer>()

@@ -54,7 +54,9 @@ pub trait RdpeaiServerBackend: Send {
     }
 
     /// Called when the client answers an Open PDU (MS-RDPEAI 3.3.5.1.8). `result` is the
-    /// client's raw HRESULT; `result == 0` ([`OpenReplyPdu::S_OK`]) means capture started.
+    /// client's raw HRESULT; per MS-RDPEAI 3.3.5.1.8 an HRESULT is an error only when its
+    /// sign bit is set, so `result >= 0` (not just [`OpenReplyPdu::S_OK`]) means capture
+    /// started.
     fn on_open_reply(&mut self, result: i32) {
         let _ = result;
     }
@@ -346,24 +348,45 @@ impl RdpeaiServer {
     }
 
     fn handle_open_reply(&mut self, pdu: OpenReplyPdu) -> PduResult<Vec<DvcMessage>> {
-        if self.state != State::AwaitingOpenReply {
-            warn!(?self.state, "Ignoring out-of-sequence AUDIO_INPUT OpenReply PDU");
-            return Ok(Vec::new());
-        }
-
-        self.backend.on_open_reply(pdu.result);
-        if pdu.result == OpenReplyPdu::S_OK {
-            self.state = State::Opened;
-            debug!("AUDIO_INPUT capture opened");
-        } else {
-            // MS-RDPEAI 3.3.5.1.8: on failure the server MAY send another Open PDU; leave that
-            // to the caller by returning to Ready rather than retrying automatically.
-            self.current_format = None;
-            self.state = State::Ready;
-            warn!(
-                result = pdu.result,
-                "AUDIO_INPUT client failed to open its capture device"
-            );
+        match self.state {
+            State::AwaitingOpenReply => {
+                self.backend.on_open_reply(pdu.result);
+                // MS-RDPEAI 3.3.5.1.8: an HRESULT is an error only when its sign bit is set,
+                // so any non-negative result (not just S_OK) is success.
+                if pdu.result >= 0 {
+                    self.state = State::Opened;
+                    debug!("AUDIO_INPUT capture opened");
+                } else {
+                    // MS-RDPEAI 3.3.5.1.8: on failure the server MAY send another Open PDU;
+                    // leave that to the caller by returning to Ready rather than retrying
+                    // automatically.
+                    self.current_format = None;
+                    self.state = State::Ready;
+                    warn!(
+                        result = pdu.result,
+                        "AUDIO_INPUT client failed to open its capture device"
+                    );
+                }
+            }
+            State::AwaitingFormatConfirm => {
+                // A client rejecting Open before confirming the initial format (e.g.
+                // initialFormat out of range, or FramesPerPacket rejected) skips the
+                // FormatChange confirm and replies with OpenReply failure directly.
+                // 3.3.5.1.8 only conditions the server's reaction on the Result field, not on
+                // a preceding FormatChange, so accept it here too rather than leaving the
+                // channel wedged in AwaitingFormatConfirm with no path back to Ready.
+                self.backend.on_open_reply(pdu.result);
+                self.pending_open_format = None;
+                self.current_format = None;
+                self.state = State::Ready;
+                warn!(
+                    result = pdu.result,
+                    "AUDIO_INPUT client rejected Open before confirming the initial format"
+                );
+            }
+            _ => {
+                warn!(?self.state, "Ignoring out-of-sequence AUDIO_INPUT OpenReply PDU");
+            }
         }
         Ok(Vec::new())
     }
