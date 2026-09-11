@@ -31,7 +31,7 @@ const count = (value, noun) => `${value} ${noun}${value === 1 ? "" : "s"}`;
 
 // `normalizeText` collapses whitespace and then rejects an empty result, one over the byte budget,
 // and any forbidden control character, so a diagnostic about it has to name all three.
-const NORMALIZED_TEXT_RULE = "non blank, free of control characters, and within";
+const NORMALIZED_TEXT_RULE = "non-blank, free of control characters, and within";
 
 function referenceKey(reference) {
   return `${reference.reviewer}\0${reference.finding_id}`;
