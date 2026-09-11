@@ -241,8 +241,8 @@ impl core::str::FromStr for OptCodec {
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::{AtomicUsize, Ordering};
     use std::fs;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
