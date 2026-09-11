@@ -12,13 +12,13 @@ const MANIFEST_PATH: &str = "crates/ironrdp-bench/corpus.toml";
 const CACHE_ROOT: &str = "bench-data/wireshark-rdp";
 const UPSTREAM_REPOSITORY: &str = "awakecoding/wireshark-rdp";
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 struct Corpus {
     revision: String,
     captures: Vec<Capture>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 struct Capture {
     id: String,
     file: String,
@@ -185,7 +185,9 @@ fn remove_partial_download(path: &Path) -> anyhow::Result<()> {
 
 fn verify_file(path: &Path, expected_sha256: &str) -> anyhow::Result<()> {
     let mut file = File::open(path).with_context(|| format!("open capture: {}", path.display()))?;
-    let actual_sha256 = hash_reader(&mut file)?;
+    let mut digest = Sha256::new();
+    std::io::copy(&mut file, &mut digest).context("read capture data")?;
+    let actual_sha256 = format!("{:x}", digest.finalize());
 
     anyhow::ensure!(
         actual_sha256 == expected_sha256,
@@ -193,21 +195,6 @@ fn verify_file(path: &Path, expected_sha256: &str) -> anyhow::Result<()> {
     );
 
     Ok(())
-}
-
-fn hash_reader(reader: &mut dyn std::io::Read) -> anyhow::Result<String> {
-    let mut buffer = [0; 64 * 1024];
-    let mut digest = Sha256::new();
-
-    loop {
-        let bytes_read = reader.read(&mut buffer).context("read capture data")?;
-        if bytes_read == 0 {
-            break;
-        }
-        digest.update(&buffer[..bytes_read]);
-    }
-
-    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn temporary_path(cache_path: &Path) -> anyhow::Result<PathBuf> {
@@ -224,20 +211,11 @@ fn install_capture(temporary_path: &Path, cache_path: &Path) -> anyhow::Result<(
 }
 
 fn format_list(corpus: &Corpus) -> String {
-    let mut list = String::new();
-
-    for capture in &corpus.captures {
-        list.push_str(&capture.id);
-        list.push('\t');
-        list.push_str(&capture.file);
-        list.push('\t');
-        list.push_str(&capture.sha256);
-        list.push('\t');
-        list.push_str(&capture.intent);
-        list.push('\n');
-    }
-
-    list
+    corpus
+        .captures
+        .iter()
+        .map(|capture| format!("{}\t{}\t{}\t{}\n", capture.id, capture.file, capture.sha256, capture.intent))
+        .collect()
 }
 
 fn ensure_allowed_keys(table: &toml::Table, allowed: &[&str], location: &str) -> anyhow::Result<()> {
@@ -280,7 +258,6 @@ fn is_identifier(value: &str) -> bool {
 
 fn is_safe_capture_file(value: &str) -> bool {
     value.ends_with(".pcapng")
-        && value.len() > ".pcapng".len()
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'.')
