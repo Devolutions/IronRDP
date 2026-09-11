@@ -234,6 +234,7 @@ SHA-bound GitHub checks carry classification and review state between permission
 Attempt-scoped workflow artifacts carry evidence and validated results between review-pipeline jobs and across recovery attempts.
 Only the final writer mutates pull request state, and it serializes those mutations per pull request.
 Model-execution jobs have read-only or empty permissions.
+The run summary links the pull request the run resolved.
 
 Four static classifier lanes allow at most four classifier jobs to invoke Helmcode at once.
 Seven static caller-job lanes lock each reusable review pipeline from evidence through its result.

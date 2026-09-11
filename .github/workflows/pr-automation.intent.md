@@ -94,3 +94,7 @@ Adding `ai-review/allow-oversized` forces reclassification and may dispatch on t
 Unrelated label events and repeated non-explicit unchanged classifications must not dispatch.
 
 Force mode bypasses policy gates but not classification prerequisites, evidence, validation, filesystem, citation, publication, or stale-head safeguards.
+
+## Run summary
+
+Link the resolved pull request from the workflow run summary, on every route.
