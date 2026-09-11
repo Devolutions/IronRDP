@@ -9,7 +9,7 @@ use ironrdp_capture_replay::{ReplayExecution, ReplayLifecycle, ReplayOptions, pr
 use sha2::{Digest as _, Sha256};
 
 const MANIFEST: &str = include_str!("../corpus.toml");
-const CACHE_ROOT: &str = "dependencies/wireshark-rdp";
+const CACHE_ROOT: &str = "bench-data/wireshark-rdp";
 
 /// A replay workload with useful rendered output and known, qualified gaps.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
