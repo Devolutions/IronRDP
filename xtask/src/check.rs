@@ -136,14 +136,7 @@ pub fn capture_files(sh: &Shell) -> anyhow::Result<()> {
     let captures = tracked_files
         .stdout
         .split(|byte| *byte == b'\0')
-        .filter(|path| {
-            path.rsplit(|byte| *byte == b'/' || *byte == b'\\')
-                .next()
-                .and_then(|name| name.iter().rposition(|byte| *byte == b'.').map(|dot| &name[dot + 1..]))
-                .is_some_and(|extension| {
-                    extension.eq_ignore_ascii_case(b"pcap") || extension.eq_ignore_ascii_case(b"pcapng")
-                })
-        })
+        .filter(|path| is_capture_file(path))
         .collect::<Vec<_>>();
 
     if !captures.is_empty() {
@@ -160,6 +153,13 @@ pub fn capture_files(sh: &Shell) -> anyhow::Result<()> {
 
     println!("All good!");
     Ok(())
+}
+
+fn is_capture_file(path: &[u8]) -> bool {
+    path.rsplit(|byte| *byte == b'/' || *byte == b'\\')
+        .next()
+        .and_then(|name| name.iter().rposition(|byte| *byte == b'.').map(|dot| &name[dot + 1..]))
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(b"pcap") || extension.eq_ignore_ascii_case(b"pcapng"))
 }
 
 pub fn test_settings(sh: &Shell, base: &str, head: &str) -> anyhow::Result<()> {
