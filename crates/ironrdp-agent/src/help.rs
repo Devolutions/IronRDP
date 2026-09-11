@@ -186,9 +186,10 @@ only on explicit request.
                                       active, it must have negotiated file transfer support, or the
                                       call fails.
 - `clipboard-list-files`             List the remote's currently offered files (name, path within
-                                      the copied collection, size, and whether it is a directory
-                                      entry), or a no-files message if none are offered. Nothing is
-                                      downloaded; this only inspects metadata already received.
+                                      the copied collection, size, last-write time as Unix seconds,
+                                      and whether it is a directory entry), or a no-files message if
+                                      none are offered. Nothing is downloaded; this only inspects
+                                      metadata already received.
 - `clipboard-get-file INDEX --out PATH`
                                       Fetch one file's full contents by its position in the last
                                       `clipboard-list-files` listing and write it to `PATH`. Fails
