@@ -104,14 +104,9 @@ fn verify_round_trip(compression_type: CompressionType, packets: &[CompressedPac
 
 fn bench_supported_workload(c: &mut Criterion, compression_type: CompressionType, label: &str, data: &[u8]) {
     let algorithm = algorithm_name(compression_type);
-    let cold_packet = prepare_history(compression_type, data)
-        .into_iter()
-        .next()
-        .expect("one cold packet is prepared");
-    verify_round_trip(compression_type, core::slice::from_ref(&cold_packet), data);
-
     let history_packets = prepare_history(compression_type, data);
     verify_round_trip(compression_type, &history_packets, data);
+    let cold_packet = history_packets.first().expect("one cold packet is prepared");
 
     let mut group = c.benchmark_group(format!("{algorithm}/{label}"));
     group.throughput(Throughput::Bytes(

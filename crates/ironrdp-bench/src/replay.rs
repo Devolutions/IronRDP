@@ -5,7 +5,9 @@ use std::fmt;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use ironrdp_capture_replay::{ReplayExecution, ReplayLifecycle, ReplayOptions, prepare_capture, read_capture};
+use ironrdp_capture_replay::{
+    ReplayExecution, ReplayLifecycle, ReplayOptions, ReplaySummary, prepare_capture, read_capture,
+};
 use sha2::{Digest as _, Sha256};
 
 const MANIFEST: &str = include_str!("../corpus.toml");
@@ -50,7 +52,7 @@ impl FromStr for PartialReplayId {
 /// A prepared capture replay with a manifest-qualified output contract.
 pub struct PartialReplayWorkload {
     id: PartialReplayId,
-    expected: ReplayExpectation,
+    expected: ReplaySummary,
     prepared: ironrdp_capture_replay::PreparedReplay,
 }
 
@@ -148,31 +150,7 @@ struct ExpectedCapture {
     revision: String,
     file: String,
     sha256: String,
-    expected: ReplayExpectation,
-}
-
-struct ReplayExpectation {
-    client_pdus: usize,
-    server_pdus: usize,
-    connection_pdus: usize,
-    client_observation_pdus: usize,
-    fast_path_pdus: usize,
-    io_channel_pdus: usize,
-    message_channel_pdus: usize,
-    static_channel_pdus: usize,
-    other_server_message_pdus: usize,
-    graphics_updates: usize,
-    final_dimensions: Option<(u16, u16)>,
-    output_fingerprint: [u8; 32],
-    lifecycle: ReplayLifecycle,
-    framing_gaps: usize,
-    truncated_pdu_gaps: usize,
-    static_channel_gaps: usize,
-    dynamic_channel_gaps: usize,
-    session_gaps: usize,
-    incomplete_activation_gaps: usize,
-    unsupported_gaps: usize,
-    gap_fingerprint: [u8; 32],
+    expected: ReplaySummary,
 }
 
 fn expected_capture(id: PartialReplayId) -> ReplayWorkloadResult<ExpectedCapture> {
@@ -219,8 +197,8 @@ fn expected_capture_from_manifest(manifest: &str, id: PartialReplayId) -> Replay
     })
 }
 
-fn parse_expectation(summary: &toml::Table) -> ReplayWorkloadResult<ReplayExpectation> {
-    Ok(ReplayExpectation {
+fn parse_expectation(summary: &toml::Table) -> ReplayWorkloadResult<ReplaySummary> {
+    Ok(ReplaySummary {
         client_pdus: required_usize(summary, "client_pdus")?,
         server_pdus: required_usize(summary, "server_pdus")?,
         connection_pdus: required_usize(summary, "connection_pdus")?,
@@ -232,7 +210,11 @@ fn parse_expectation(summary: &toml::Table) -> ReplayWorkloadResult<ReplayExpect
         other_server_message_pdus: required_usize(summary, "other_server_message_pdus")?,
         graphics_updates: required_usize(summary, "graphics_updates")?,
         final_dimensions: parse_dimensions(required_string(summary, "final_dimensions", "capture.expect.summary")?)?,
-        output_fingerprint: parse_digest(required_string(summary, "fingerprint", "capture.expect.summary")?)?,
+        output_fingerprint: Some(parse_digest(required_string(
+            summary,
+            "fingerprint",
+            "capture.expect.summary",
+        )?)?),
         lifecycle: parse_lifecycle(required_string(summary, "lifecycle", "capture.expect.summary")?)?,
         framing_gaps: required_usize(summary, "framing_gaps")?,
         truncated_pdu_gaps: required_usize(summary, "truncated_pdu_gaps")?,
@@ -247,55 +229,46 @@ fn parse_expectation(summary: &toml::Table) -> ReplayWorkloadResult<ReplayExpect
 
 fn validate_execution(
     execution: &ReplayExecution,
-    expected: &ReplayExpectation,
+    expected: &ReplaySummary,
     verify_output_fingerprint: bool,
 ) -> ReplayWorkloadResult<()> {
-    let summary = &execution.summary;
-    let expected_gaps = expected
-        .framing_gaps
-        .checked_add(expected.truncated_pdu_gaps)
-        .and_then(|count| count.checked_add(expected.static_channel_gaps))
-        .and_then(|count| count.checked_add(expected.dynamic_channel_gaps))
-        .and_then(|count| count.checked_add(expected.session_gaps))
-        .and_then(|count| count.checked_add(expected.incomplete_activation_gaps))
-        .and_then(|count| count.checked_add(expected.unsupported_gaps))
-        .ok_or_else(|| ReplayWorkloadError::new("expected gap count overflows usize".to_owned()))?;
-    let summaries_match = summary.client_pdus == expected.client_pdus
-        && summary.server_pdus == expected.server_pdus
-        && summary.connection_pdus == expected.connection_pdus
-        && summary.client_observation_pdus == expected.client_observation_pdus
-        && summary.fast_path_pdus == expected.fast_path_pdus
-        && summary.io_channel_pdus == expected.io_channel_pdus
-        && summary.message_channel_pdus == expected.message_channel_pdus
-        && summary.static_channel_pdus == expected.static_channel_pdus
-        && summary.other_server_message_pdus == expected.other_server_message_pdus
-        && summary.graphics_updates == expected.graphics_updates
-        && summary.final_dimensions == expected.final_dimensions
-        && summary.lifecycle == expected.lifecycle
-        && summary.framing_gaps == expected.framing_gaps
-        && summary.truncated_pdu_gaps == expected.truncated_pdu_gaps
-        && summary.static_channel_gaps == expected.static_channel_gaps
-        && summary.dynamic_channel_gaps == expected.dynamic_channel_gaps
-        && summary.session_gaps == expected.session_gaps
-        && summary.incomplete_activation_gaps == expected.incomplete_activation_gaps
-        && summary.unsupported_gaps == expected.unsupported_gaps
-        && summary.gap_fingerprint == expected.gap_fingerprint;
-    if !summaries_match
-        || (verify_output_fingerprint && summary.output_fingerprint != Some(expected.output_fingerprint))
-        || (!verify_output_fingerprint && summary.output_fingerprint.is_some())
+    let mut expected = expected.clone();
+    if !verify_output_fingerprint {
+        expected.output_fingerprint = None;
+    }
+    if execution.summary != expected
         || execution.report.lifecycle != expected.lifecycle
         || execution.report.events.len()
-            != summary
+            != execution
+                .summary
                 .client_pdus
-                .checked_add(summary.server_pdus)
+                .checked_add(execution.summary.server_pdus)
                 .ok_or_else(|| ReplayWorkloadError::new("replay PDU count overflows usize".to_owned()))?
-        || execution.report.gaps.len() != expected_gaps
+        || execution.report.gaps.len() != gap_count(&execution.summary)?
     {
         return Err(ReplayWorkloadError::new(
             "partial replay no longer matches its declared contract".to_owned(),
         ));
     }
     Ok(())
+}
+
+fn gap_count(summary: &ReplaySummary) -> ReplayWorkloadResult<usize> {
+    [
+        summary.framing_gaps,
+        summary.truncated_pdu_gaps,
+        summary.static_channel_gaps,
+        summary.dynamic_channel_gaps,
+        summary.session_gaps,
+        summary.incomplete_activation_gaps,
+        summary.unsupported_gaps,
+    ]
+    .into_iter()
+    .try_fold(0usize, |count, gaps| {
+        count
+            .checked_add(gaps)
+            .ok_or_else(|| ReplayWorkloadError::new("replay gap count overflows usize".to_owned()))
+    })
 }
 
 fn verify_file(path: &Path, expected: &str) -> ReplayWorkloadResult<()> {
@@ -428,7 +401,6 @@ fn project_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ironrdp_capture_replay::ReplaySummary;
 
     #[test]
     fn rejects_unknown_partial_replay_id() {

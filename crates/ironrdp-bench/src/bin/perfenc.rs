@@ -34,8 +34,9 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let width = args.opt_value_from_str("--width")?.unwrap_or(3840);
-    let height = args.opt_value_from_str("--height")?.unwrap_or(2400);
+    let width = NonZeroU16::new(args.opt_value_from_str("--width")?.unwrap_or(3840)).context("width cannot be zero")?;
+    let height =
+        NonZeroU16::new(args.opt_value_from_str("--height")?.unwrap_or(2400)).context("height cannot be zero")?;
     let codec = args.opt_value_from_str("--codec")?.unwrap_or_else(OptCodec::default);
     let fps = args.opt_value_from_str("--fps")?.unwrap_or(0);
 
@@ -43,9 +44,12 @@ async fn main() -> anyhow::Result<()> {
     let file = File::open(&filename)
         .await
         .with_context(|| format!("failed to open file: {filename}"))?;
-    let desktop_size = DesktopSize { width, height };
+    let desktop_size = DesktopSize {
+        width: width.get(),
+        height: height.get(),
+    };
     let mut encoder = create_encoder(desktop_size, codec)?;
-    let mut updates = DisplayUpdates::new(file, desktop_size, fps);
+    let mut updates = DisplayUpdates::new(file, width, height, fps);
 
     let mut total_raw = 0u64;
     let mut total_encoded = 0u64;
@@ -107,16 +111,21 @@ fn create_encoder(desktop_size: DesktopSize, codec: OptCodec) -> anyhow::Result<
 
 struct DisplayUpdates {
     file: File,
-    desktop_size: DesktopSize,
+    width: NonZeroU16,
+    height: NonZeroU16,
+    stride: NonZeroUsize,
     fps: u32,
     last_update_time: Option<Instant>,
 }
 
 impl DisplayUpdates {
-    fn new(file: File, desktop_size: DesktopSize, fps: u32) -> Self {
+    fn new(file: File, width: NonZeroU16, height: NonZeroU16, fps: u32) -> Self {
         Self {
             file,
-            desktop_size,
+            width,
+            height,
+            stride: NonZeroUsize::new(usize::from(width.get()) * 4)
+                .expect("nonzero width produces a nonzero RGBX stride"),
             fps,
             last_update_time: None,
         }
@@ -128,8 +137,7 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
     async fn next_update(&mut self) -> ironrdp::server::ServerResult<Option<DisplayUpdate>> {
         use ironrdp::server::ServerErrorExt as _;
 
-        let stride = usize::from(self.desktop_size.width) * 4;
-        let frame_size = stride * usize::from(self.desktop_size.height);
+        let frame_size = self.stride.get() * usize::from(self.height.get());
         let mut frame = vec![0; frame_size];
         match read_frame(&mut self.file, &mut frame)
             .await
@@ -157,14 +165,11 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
         Ok(Some(DisplayUpdate::Bitmap(BitmapUpdate {
             x: 0,
             y: 0,
-            width: NonZeroU16::new(self.desktop_size.width)
-                .ok_or_else(|| ironrdp::server::ServerError::reason("perfenc", "width cannot be zero"))?,
-            height: NonZeroU16::new(self.desktop_size.height)
-                .ok_or_else(|| ironrdp::server::ServerError::reason("perfenc", "height cannot be zero"))?,
+            width: self.width,
+            height: self.height,
             format: PixelFormat::RgbX32,
             data: frame.into(),
-            stride: NonZeroUsize::new(stride)
-                .ok_or_else(|| ironrdp::server::ServerError::reason("perfenc", "stride cannot be zero"))?,
+            stride: self.stride,
         })))
     }
 }
@@ -265,7 +270,15 @@ mod tests {
         let path = temporary_path(name);
         fs::write(&path, bytes).expect("write temporary frame source");
         let file = File::open(&path).await.expect("open temporary frame source");
-        (DisplayUpdates::new(file, DesktopSize { width: 1, height: 1 }, 0), path)
+        (
+            DisplayUpdates::new(
+                file,
+                NonZeroU16::new(1).expect("one is nonzero"),
+                NonZeroU16::new(1).expect("one is nonzero"),
+                0,
+            ),
+            path,
+        )
     }
 
     #[tokio::test]

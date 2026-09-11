@@ -24,19 +24,16 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
-    let mut arguments = std::env::args().skip(1);
-    let Some(argument) = arguments.next() else {
-        return Err(usage().to_owned());
-    };
-    if argument == "--help" || argument == "-h" {
+    let mut arguments = pico_args::Arguments::from_env();
+    if arguments.contains(["-h", "--help"]) {
+        if !arguments.finish().is_empty() {
+            return Err(usage().to_owned());
+        }
         println!("{}", usage());
         return Ok(());
     }
-    if argument != "--capture" {
-        return Err(usage().to_owned());
-    }
-    let selector = arguments.next().ok_or_else(|| usage().to_owned())?;
-    if arguments.next().is_some() {
+    let selector: String = arguments.value_from_str("--capture").map_err(|_| usage().to_owned())?;
+    if !arguments.finish().is_empty() {
         return Err(usage().to_owned());
     }
 
