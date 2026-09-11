@@ -206,6 +206,9 @@ opt-level = 3
 opt-level = 3
 
 [patch.crates-io]
-# FIXME: We need to catch up with Diplomat upstream again, but this is a significant amount of work.
-# In the meantime, we use this forked version which fixes an undefined behavior in the code expanded by the bridge macro.
-diplomat = { git = "https://github.com/CBenoit/diplomat", rev = "6dc806e80162b6b39509a04a2835744236cd2396" }
+# WIP: pin to Result/Option owned-byte-slice work (rust-diplomat/diplomat#1250).
+# IronRDP is still on diplomat 0.7-era APIs — this alone does not finish the
+# 0.16 catch-up. After #1250 merges, cut a Devolutions diplomat tag and finish
+# the migration (then drop this comment).
+diplomat = { git = "https://github.com/irvingoujAtDevolution/diplomat.git", rev = "ab68f7a4bf1b910729d0e6ece4cb7da31e616306" }
+diplomat-runtime = { git = "https://github.com/irvingoujAtDevolution/diplomat.git", rev = "ab68f7a4bf1b910729d0e6ece4cb7da31e616306" }

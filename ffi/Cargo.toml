@@ -12,8 +12,9 @@ test = false
 doctest = false
 
 [dependencies]
-diplomat = "0.7"
-diplomat-runtime = "0.7"
+# Same temporary pin as workspace [patch]; see Cargo.toml.
+diplomat = { git = "https://github.com/irvingoujAtDevolution/diplomat.git", rev = "ab68f7a4bf1b910729d0e6ece4cb7da31e616306" }
+diplomat-runtime = { git = "https://github.com/irvingoujAtDevolution/diplomat.git", rev = "ab68f7a4bf1b910729d0e6ece4cb7da31e616306" }
 ironrdp = { path = "../crates/ironrdp", features = ["session", "connector", "dvc", "svc", "rdpdr", "rdpsnd", "graphics", "input", "cliprdr", "displaycontrol"] }
 ironrdp-cliprdr-native.path = "../crates/ironrdp-cliprdr-native"
 ironrdp-dvc-pipe-proxy.path = "../crates/ironrdp-dvc-pipe-proxy"
