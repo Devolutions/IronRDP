@@ -580,6 +580,8 @@ impl Daemon {
             Request::ClipboardSet { text } => DaemonResponse::Single(self.clipboard_set(text)),
             Request::ClipboardGetImage => DaemonResponse::Single(self.clipboard_get_image()),
             Request::ClipboardSetImage { png } => DaemonResponse::Single(self.clipboard_set_image(png)),
+            Request::ClipboardGetHtml => DaemonResponse::Single(self.clipboard_get_html()),
+            Request::ClipboardSetHtml { html } => DaemonResponse::Single(self.clipboard_set_html(html)),
             Request::MouseMove { x, y } => {
                 DaemonResponse::Single(self.input(Operation::MouseMove(MousePosition { x, y })))
             }
@@ -1106,9 +1108,9 @@ impl Daemon {
 
     /// Returns the last text received from the remote clipboard, if any.
     ///
-    /// `None` both when nothing has been received yet and when the last remote copy was an image,
-    /// not text; the two are indistinguishable from this call alone. Use `clipboard_get_image` for
-    /// the image case.
+    /// `None` when nothing has been received yet, or when the last remote copy was an image or
+    /// HTML, not text; the cases are indistinguishable from this call alone. Use
+    /// `clipboard_get_image` or `clipboard_get_html` for those cases.
     ///
     /// # Panics
     ///
@@ -1116,7 +1118,9 @@ impl Daemon {
     fn clipboard_get(&self) -> Response {
         let text = match self.clipboard.lock().expect("clipboard state poisoned").remote.clone() {
             Some(crate::clipboard::ClipboardContent::Text(text)) => Some(text),
-            Some(crate::clipboard::ClipboardContent::Image(_)) | None => None,
+            Some(crate::clipboard::ClipboardContent::Image(_) | crate::clipboard::ClipboardContent::Html(_)) | None => {
+                None
+            }
         };
         Response::Ok(Payload::ClipboardText(text))
     }
@@ -1136,8 +1140,8 @@ impl Daemon {
 
     /// Returns the last image received from the remote clipboard as PNG bytes, if any.
     ///
-    /// `None` both when nothing has been received yet and when the last remote copy was text, not
-    /// an image. Use `clipboard_get` for the text case.
+    /// `None` when nothing has been received yet, or when the last remote copy was text or HTML,
+    /// not an image. Use `clipboard_get` or `clipboard_get_html` for those cases.
     ///
     /// # Panics
     ///
@@ -1145,7 +1149,9 @@ impl Daemon {
     fn clipboard_get_image(&self) -> Response {
         let png = match self.clipboard.lock().expect("clipboard state poisoned").remote.clone() {
             Some(crate::clipboard::ClipboardContent::Image(png)) => Some(png),
-            Some(crate::clipboard::ClipboardContent::Text(_)) | None => None,
+            Some(crate::clipboard::ClipboardContent::Text(_) | crate::clipboard::ClipboardContent::Html(_)) | None => {
+                None
+            }
         };
         Response::Ok(Payload::ClipboardImage(png))
     }
@@ -1168,6 +1174,38 @@ impl Daemon {
             );
         }
         self.set_local_and_advertise(crate::clipboard::ClipboardContent::Image(png));
+        Response::ok()
+    }
+
+    /// Returns the last HTML fragment received from the remote clipboard, if any.
+    ///
+    /// `None` both when nothing has been received yet and when the last remote copy was text or
+    /// an image, not HTML.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard state mutex is poisoned.
+    fn clipboard_get_html(&self) -> Response {
+        let html = match self.clipboard.lock().expect("clipboard state poisoned").remote.clone() {
+            Some(crate::clipboard::ClipboardContent::Html(html)) => Some(html),
+            Some(crate::clipboard::ClipboardContent::Text(_) | crate::clipboard::ClipboardContent::Image(_)) | None => {
+                None
+            }
+        };
+        Response::Ok(Payload::ClipboardHtml(html))
+    }
+
+    /// Sets the local clipboard HTML fragment and, if a session is connected, advertises it to
+    /// the remote as the registered `HTML Format`.
+    ///
+    /// Replaces any text or image previously set with `clipboard_set`/`clipboard_set_image`:
+    /// local content is a single logical item, not a per-format set.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard state mutex is poisoned.
+    fn clipboard_set_html(&self, html: String) -> Response {
+        self.set_local_and_advertise(crate::clipboard::ClipboardContent::Html(html));
         Response::ok()
     }
 
