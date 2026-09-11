@@ -101,19 +101,26 @@ function readReviewWorkflow(githubDirectory = path.join(__dirname, "..")) {
     .replace(/\r\n/g, "\n");
 }
 
-test("workflow run names show the target pull request and automation mode when known, and identify the source branch otherwise", () => {
-  const workflow = readWorkflow();
+function runNameExpression(workflow = readWorkflow()) {
+  const match = workflow.match(/\nrun-name: >-\n((?: {2}\S.*\n| {3,}.*\n)+)/);
+  assert.ok(match, "run-name expression is missing");
+  return match[1];
+}
 
-  assert.match(workflow, /github\.event\.pull_request\.number.*format\('PR #\{0\}'/);
-  assert.match(workflow, /inputs\.pr-number\s*&&\s*format\('PR #\{0\}'/);
-  assert.match(workflow, /github\.event\.client_payload\.pr_number\s*&&\s*format\('PR #\{0\}'/);
-  assert.match(workflow, /github\.event\.workflow_run\.pull_requests\[0\]\.number.*format\('PR #\{0\}'/);
-  assert.match(workflow, /github\.event\.workflow_run\.head_branch.*github\.event\.workflow_run\.head_sha/);
-  assert.match(workflow, /format\('run \{0\}',\s*github\.run_id\)/);
-  assert.match(workflow, /github\.event_name == 'workflow_run' \|\| github\.event_name == 'repository_dispatch'/);
-  assert.match(workflow, /github\.event_name == 'workflow_dispatch' && inputs\.review\)\) && 'review' \|\| 'classify'/);
-  assert.doesNotMatch(workflow, /format\('PR #\{0\}',\s*github\.run_id\)/);
-  assert.doesNotMatch(workflow, /PR #\$\{\{.*github\.run_id.*\}\}/s);
+test("workflow run names show the target pull request and automation mode when known, and identify the source branch otherwise", () => {
+  const runName = runNameExpression();
+
+  assert.match(runName, /github\.event\.pull_request\.number.*format\('PR #\{0\}'/);
+  assert.match(runName, /inputs\.pr-number\s*&&\s*format\('PR #\{0\}'/);
+  assert.match(runName, /github\.event\.client_payload\.pr_number\s*&&\s*format\('PR #\{0\}'/);
+  assert.match(runName, /github\.event\.workflow_run\.pull_requests\[0\]\.number.*format\('PR #\{0\}'/);
+  assert.match(runName, /github\.event\.workflow_run\.head_branch.*github\.event\.workflow_run\.head_sha/);
+  assert.match(runName, /format\('run \{0\}',\s*github\.run_id\)/);
+  assert.match(runName, /format\('\{0\} \(\{1\}\)',/);
+  assert.match(runName, /github\.event_name == 'workflow_run' \|\| github\.event_name == 'repository_dispatch'/);
+  assert.match(runName, /github\.event_name == 'workflow_dispatch' && inputs\.review\)\) && 'review' \|\| 'classify'/);
+  assert.doesNotMatch(runName, /format\('PR #\{0\}',\s*github\.run_id\)/);
+  assert.doesNotMatch(runName, /PR #\$\{\{.*github\.run_id.*\}\}/s);
 });
 
 function resolveReviewScript(workflow = readWorkflow()) {
