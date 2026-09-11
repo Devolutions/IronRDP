@@ -17,7 +17,7 @@ const { buildSpecialistAggregate, validateReviewGate, validateSpecialistRun } = 
 const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
 const {
   resolveClassificationState, resolveReviewState, reviewOutcome, reviewPolicyEligible, OVERLAP_MARKER,
-  LEGACY_DUPLICATE_MARKER, OVERLAP_LABEL,
+  OVERLAP_LABEL,
   CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERSIZED_MARKER, OVERSIZED_REVIEW_LABEL, contributorEligibility,
 } = require("./resolve-state");
@@ -1725,8 +1725,6 @@ test("suspected overlap is advisory and is withdrawn once it no longer holds", (
   assert.equal(flagged.labelSets.some((set) => set.owned.includes("duplicate")), false);
   assert.deepEqual(flagged.comments.map((comment) => comment.kind), ["overlap"]);
   assert.equal(flagged.removeCommentMarkers.includes(OVERLAP_MARKER), false);
-  // Blocking and advisory notices must not coexist.
-  assert.equal(flagged.removeCommentMarkers.includes(LEGACY_DUPLICATE_MARKER), true);
   const body = markerBody(flagged.comments[0]);
   assert.match(body, /may overlap with/);
   assert.match(body, /advisory only/);
@@ -1738,31 +1736,6 @@ test("suspected overlap is advisory and is withdrawn once it no longer holds", (
   assert.deepEqual(cleared.comments, []);
   assert.deepEqual(cleared.labelSets.find((set) => set.owned.includes(OVERLAP_LABEL)).desired, []);
   assert.equal(cleared.removeCommentMarkers.includes(OVERLAP_MARKER), true);
-  assert.equal(cleared.removeCommentMarkers.includes(LEGACY_DUPLICATE_MARKER), true);
-});
-
-test("failed classification removes duplicate-marked comments but leaves the label unowned", () => {
-  const deterministic = { ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/S",
-    sizeLabels: ["size/S"], firstTime: false };
-  for (const [name, changes] of [
-    ["unavailable classifier", { classifier: null }],
-    ["invalid classifier", { classifier: classifier({ risk: "invalid" }) }],
-    ["failed deterministic analysis", { deterministic: { ok: false } }],
-    ["unavailable classification gate", { classificationGate: { available: false } }],
-    ["unavailable semver", { semver: { head_sha: SHA, status: "unavailable" } }],
-    ["unavailable quota", { rateLimit: { status: "unavailable" } }],
-  ]) {
-    const state = resolveClassificationState({
-      expectedSha: SHA, labels: ["duplicate"], deterministic, classifier: classifier(),
-      semver: { head_sha: SHA, status: "not-suspected" }, ...changes,
-    });
-    assert.equal(state.failed, true, name);
-    assert.equal(state.removeCommentMarkers.includes(LEGACY_DUPLICATE_MARKER), true, name);
-    assert.equal(state.labelSets.some((set) => set.owned.includes("duplicate")), false, name);
-    assert.deepEqual(state.addLabels, ["maintainer-required"], name);
-    assert.equal((state.removeLabels || []).includes("duplicate"), false, name);
-    assert.equal(state.check.machineState.automaticReviewEligible, false, name);
-  }
 });
 
 test("model text cannot smuggle active markup into a bot comment", () => {

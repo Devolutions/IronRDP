@@ -203,7 +203,6 @@ Legitimacy triage and `ai-reviewed/2` block automatic review.
 A suspected overlap with another pull request is advisory: at confidence 0.85 or greater it adds `triage/overlap` and a non-blocking comment, and review proceeds under the usual gates.
 The classifier reports possible shared scope in `overlap`, using candidate titles and truncated bodies.
 The `duplicate` label is undeclared and unowned: automation ignores it and leaves existing labels untouched.
-Classification removes comments carrying the `duplicate` marker, even on failure, because their blocking wording contradicts the advisory policy.
 Unavailable or invalid classification fails closed to maintainer review.
 
 Bot-authored pull requests do not run automatic routes or label reconciliation.

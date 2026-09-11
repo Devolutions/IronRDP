@@ -12,8 +12,6 @@ const OVERLAP_LABEL = "triage/overlap";
 const OVERSIZED_REVIEW_LABEL = "ai-review/allow-oversized";
 const LEGITIMACY_MARKER_PREFIX = "<!-- ironrdp-pr-automation:legitimacy:v2:";
 const OVERLAP_MARKER = "<!-- ironrdp-pr-automation:overlap -->";
-// Remove comments with blocking wording on every classification, including failures.
-const LEGACY_DUPLICATE_MARKER = "<!-- ironrdp-pr-automation:duplicate -->";
 const OVERSIZED_MARKER = "<!-- ironrdp-pr-automation:oversized -->";
 const LEGACY_XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
 const FORK_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-quota -->";
@@ -83,7 +81,6 @@ function failedClassification(expectedSha, deterministic, reason, rateLimit, sem
     ],
     addLabels: ["maintainer-required"], comments,
     removeCommentMarkers: [
-      LEGACY_DUPLICATE_MARKER,
       ...(comments.some((comment) => comment.kind === "evidence-limit") ? [] : [EVIDENCE_LIMIT_MARKER]),
       FORK_QUOTA_MARKER,
       ...(comments.some((comment) => comment.kind === "global-quota") ? [] : [GLOBAL_QUOTA_MARKER]),
@@ -192,7 +189,6 @@ function resolveClassificationState({
     removeCommentMarkers: [
       // Remove notices that contradict the current classification.
       ...(overlap ? [] : [OVERLAP_MARKER]),
-      LEGACY_DUPLICATE_MARKER,
       EVIDENCE_LIMIT_MARKER,
       FORK_QUOTA_MARKER,
       GLOBAL_QUOTA_MARKER,
@@ -374,7 +370,7 @@ function reviewOutcome({ reportStatus, state, recovered = false, reducedCoverage
 
 module.exports = {
   AI_COUNTS, CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER,
-  GLOBAL_QUOTA_MARKER, LEGACY_DUPLICATE_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
+  GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERLAP_LABEL, OVERLAP_MARKER, OVERSIZED_REVIEW_LABEL, RISK,
   OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS,
   contributorEligibility, qualifyingMergedPrs, resolveClassificationState,
