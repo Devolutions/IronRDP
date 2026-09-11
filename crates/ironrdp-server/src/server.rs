@@ -316,6 +316,73 @@ impl CredentialValidator for ExactMatchCredentialValidator {
     }
 }
 
+/// What [`RdpServer::run`] does with a second connection that arrives while a
+/// session is already being served.
+///
+/// [`RdpServer`] serves one connection at a time. By default a second
+/// connection accepted while one is live is left unserved in the OS listen
+/// backlog -- from that client's point of view, a silent hang until the first
+/// session ends. That is `ironrdp-server`'s pre-existing behaviour, kept as the
+/// default ([`Queue`](ConnectionPolicy::Queue)) so an embedder that already
+/// relies on it is not surprised by upgrading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConnectionPolicy {
+    /// Leave the extra connection in the OS listen backlog until the running
+    /// session ends. The pre-existing behaviour: the second client is not
+    /// answered and appears to hang until the first leaves.
+    #[default]
+    Queue,
+    /// Close the extra connection immediately. The running session is never
+    /// interrupted; the new client fails fast and can retry rather than
+    /// appearing to hang.
+    ///
+    /// A connection closed this way never reaches
+    /// [`ConnectionHandler::on_accept`]: it is dropped before it enters the
+    /// handler's lifecycle, just as a connection left in the backlog under
+    /// `Queue` is not seen by the handler until it is served. The rejected
+    /// peer is logged at `debug` level.
+    Reject,
+    /// Preempt the running session with a fully-authenticated newcomer: once it
+    /// has **completed authentication**, the existing connection is told why it
+    /// is going away and dropped, and the newcomer is served in its place.
+    /// Suits a server backing a single specific session (e.g. mirroring one
+    /// desktop), where a newly connecting client should replace a stale or
+    /// abandoned one.
+    ///
+    /// # Security -- what a candidate must clear, per mode
+    ///
+    /// Evicting a live session is disruptive, so a candidate runs the FULL
+    /// negotiation -- and, under [`RdpServerSecurity::Hybrid`], CredSSP/NLA --
+    /// before the live session is touched at all. A candidate that fails at any
+    /// step leaves the live session untouched.
+    ///
+    /// How strong that bar actually is depends entirely on the security mode,
+    /// because only `Hybrid` authenticates the *client* before the point a
+    /// candidate reaches. **Read this table before selecting this variant:**
+    ///
+    /// | Security mode | Bar to preempt | Guarantee |
+    /// |---|---|---|
+    /// | [`Hybrid`](RdpServerSecurity::Hybrid) | CredSSP/NLA succeeds | an unauthenticated peer can never evict |
+    /// | [`Tls`](RdpServerSecurity::Tls) | a TLS handshake -- which authenticates the *server* to the client, not the reverse | **none against an unauthenticated peer**: any peer that can reach the port clears it, and a [`CredentialValidator`] does not run until finalization |
+    /// | [`None`](RdpServerSecurity::None) | a well-formed X.224 Connection Request | **none**: this mode authenticates nothing |
+    ///
+    /// So under `Tls` and `None` an unauthenticated peer CAN evict an
+    /// authenticated session, repeatedly -- the anti-storm cooldown bars the
+    /// victim, never the attacker. A warning is logged at startup in that case.
+    /// If you need takeover to be authentication-gated, use `Hybrid`; if you
+    /// must select it under another mode, restrict who may attempt one with
+    /// [`ConnectionHandler::on_accept`].
+    ///
+    /// Candidates are additionally gated through
+    /// [`ConnectionHandler::on_accept`] *before* they are allowed to
+    /// negotiate, so an IP allowlist or rate limiter bounds who may even
+    /// attempt a takeover. It does NOT bound how long one admitted candidate
+    /// can occupy the (single) negotiation slot before another is even
+    /// considered -- see the limitation documented on
+    /// `CANDIDATE_NEGOTIATION_TIMEOUT`.
+    Preempt,
+}
+
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct RdpServerOptions {
@@ -332,55 +399,10 @@ pub struct RdpServerOptions {
     /// server-provided size. Set via
     /// [`RdpServerBuilder::with_honor_client_desktop_size`](crate::RdpServerBuilder::with_honor_client_desktop_size).
     pub honor_client_desktop_size: Option<DesktopSize>,
-    /// When `true`, a new connection accepted while [`RdpServer::run`] is
-    /// already serving another one PREEMPTS it: once the newcomer has
-    /// **completed authentication**, the existing connection is told why it is
-    /// going away and dropped, and the newcomer is served in its place.
-    ///
-    /// [`RdpServer`] serves one connection at a time. By default a second
-    /// connection accepted while one is live is left unserved in the OS listen
-    /// backlog — from that client's point of view, a silent hang until the
-    /// first session ends. That is `ironrdp-server`'s pre-existing behaviour,
-    /// kept as the default so an embedder that already relies on it is not
-    /// surprised by upgrading; it does not suit a server backing a single
-    /// specific session (e.g. mirroring one desktop), where a newly connecting
-    /// client should replace a stale or abandoned one.
-    ///
-    /// # Security — what a candidate must clear, per mode
-    ///
-    /// Evicting a live session is disruptive, so a candidate runs the FULL
-    /// negotiation — and, under [`RdpServerSecurity::Hybrid`], CredSSP/NLA —
-    /// before the live session is touched at all. A candidate that fails at any
-    /// step leaves the live session untouched.
-    ///
-    /// How strong that bar actually is depends entirely on the security mode,
-    /// because only `Hybrid` authenticates the *client* before the point a
-    /// candidate reaches. **Read this table before enabling the option:**
-    ///
-    /// | Security mode | Bar to preempt | Guarantee |
-    /// |---|---|---|
-    /// | [`Hybrid`](RdpServerSecurity::Hybrid) | CredSSP/NLA succeeds | an unauthenticated peer can never evict |
-    /// | [`Tls`](RdpServerSecurity::Tls) | a TLS handshake — which authenticates the *server* to the client, not the reverse | **none against an unauthenticated peer**: any peer that can reach the port clears it, and a [`CredentialValidator`] does not run until finalization |
-    /// | [`None`](RdpServerSecurity::None) | a well-formed X.224 Connection Request | **none**: this mode authenticates nothing |
-    ///
-    /// So under `Tls` and `None` an unauthenticated peer CAN evict an
-    /// authenticated session, repeatedly — the anti-storm cooldown bars the
-    /// victim, never the attacker. A warning is logged at startup in that case.
-    /// If you need takeover to be authentication-gated, use `Hybrid`; if you
-    /// must enable it under another mode, restrict who may attempt one with
-    /// [`ConnectionHandler::on_accept`].
-    ///
-    /// Candidates are additionally gated through
-    /// [`ConnectionHandler::on_accept`] *before* they are allowed to
-    /// negotiate, so an IP allowlist or rate limiter bounds who may even
-    /// attempt a takeover. It does NOT bound how long one admitted candidate
-    /// can occupy the (single) negotiation slot before another is even
-    /// considered — see the limitation documented on
-    /// `CANDIDATE_NEGOTIATION_TIMEOUT`.
-    ///
-    /// Defaults to `false` (queue-behind, the pre-existing behaviour). Set via
-    /// [`RdpServerBuilder::with_preempt_existing_session`](crate::RdpServerBuilder::with_preempt_existing_session).
-    pub preempt_existing_session: bool,
+    /// What to do with a second connection while a session is being served.
+    /// Defaults to [`ConnectionPolicy::Queue`]. Set via
+    /// [`RdpServerBuilder::with_connection_policy`](crate::RdpServerBuilder::with_connection_policy).
+    pub connection_policy: ConnectionPolicy,
     /// Quantization values the RemoteFX encoder uses once selected. Defaults
     /// to [`Quant::default`], the same values Windows RDP servers send. Set
     /// via
@@ -663,7 +685,7 @@ pub struct RdpServer {
     autodetect: Option<AutoDetectManager>,
     heartbeat: Option<HeartbeatConfig>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
-    /// Anti-storm net for [`RdpServerOptions::preempt_existing_session`]: the
+    /// Anti-storm net for [`ConnectionPolicy::Preempt`]: the
     /// peer most recently EVICTED by a takeover, and when it last tried to
     /// come back.
     ///
@@ -878,7 +900,7 @@ type PreemptProbe<'ctx> =
     core::pin::Pin<Box<dyn Future<Output = Option<(Box<NegotiatedCandidate>, SocketAddr)>> + 'ctx>>;
 
 /// What resolved first while a session was live, under
-/// [`RdpServerOptions::preempt_existing_session`]: the session itself ending, a
+/// [`ConnectionPolicy::Preempt`]: the session itself ending, a
 /// new inbound connection, or the verdict on a [`PreemptProbe`] being
 /// negotiated. The race's `select!` yields one of these and must not
 /// otherwise mutate the probe slot, whose futures it still borrows.
@@ -1159,7 +1181,7 @@ const REPREEMPT_MAX_LOCKOUT: Duration = Duration::from_secs(30);
 /// client, not the reverse, and any peer that can reach the port completes one;
 /// `None` authenticates nothing. Under those two, preemption's bar is therefore
 /// NOT authentication — see the security section on
-/// [`RdpServerOptions::preempt_existing_session`], and the startup warning in
+/// [`ConnectionPolicy::Preempt`], and the startup warning in
 /// [`RdpServer::run`].
 fn authenticates_before_eviction(security: &RdpServerSecurity) -> bool {
     matches!(security, RdpServerSecurity::Hybrid(_))
@@ -1243,7 +1265,7 @@ type NegotiatedCandidate = NegotiatedConnection<TcpStream>;
 /// Returns `Some` only once the candidate has genuinely earned the session:
 /// negotiation completed and, where the security mode provides it,
 /// authentication succeeded (see the table on
-/// [`RdpServerOptions::preempt_existing_session`]). On any failure — a
+/// [`ConnectionPolicy::Preempt`]). On any failure — a
 /// malformed or non-RDP handshake, TLS rejected, CredSSP rejected — returns
 /// `None` and the live session is left completely undisturbed.
 async fn negotiate_candidate(
@@ -2199,13 +2221,14 @@ impl RdpServer {
         // call (that hook is stateful for rate limiters) and no renegotiation.
         let mut pending: Option<(Box<NegotiatedCandidate>, SocketAddr)> = None;
 
-        let preempt_enabled = self.opts.preempt_existing_session;
         // Say so out loud: under these modes the bar to evict a live session is
         // NOT authentication, whatever the option's name suggests. Restrict who
         // may even attempt a takeover with `ConnectionHandler::on_accept`.
-        if preempt_enabled && !authenticates_before_eviction(&self.opts.security) {
+        if self.opts.connection_policy == ConnectionPolicy::Preempt
+            && !authenticates_before_eviction(&self.opts.security)
+        {
             warn!(
-                "preempt_existing_session is enabled under a security mode that does not authenticate the client \
+                "ConnectionPolicy::Preempt is selected under a security mode that does not authenticate the client \
                  before it could evict the live session: any peer able to complete the handshake can take the \
                  session over. Use RdpServerSecurity::Hybrid (CredSSP/NLA) for an authentication-gated takeover, or \
                  gate candidates with ConnectionHandler::on_accept."
@@ -2301,191 +2324,226 @@ impl RdpServer {
 
             let started = tokio::time::Instant::now();
 
-            let (result, preempted_by) = if preempt_enabled {
-                // Serve this connection while still accepting: a newcomer that
-                // clears `on_accept` AND fully authenticates
-                // (`negotiate_candidate`) takes over, instead of queuing behind
-                // the live session. Cancelling `conn` runs the same
-                // per-connection teardown a client-side disconnect does.
-                //
-                // `conn` borrows `self` for the whole race, so the candidate's
-                // `on_accept` and its negotiation work from clones taken here.
-                let handler = self.connection_handler.take();
-                let ctx = self.negotiation_context();
-                let ev_sender = self.ev_sender.clone();
-                let mut recently_evicted = self.recently_evicted.take();
+            let (result, preempted_by) = match self.opts.connection_policy {
+                ConnectionPolicy::Preempt => {
+                    // Serve this connection while still accepting: a newcomer that
+                    // clears `on_accept` AND fully authenticates
+                    // (`negotiate_candidate`) takes over, instead of queuing behind
+                    // the live session. Cancelling `conn` runs the same
+                    // per-connection teardown a client-side disconnect does.
+                    //
+                    // `conn` borrows `self` for the whole race, so the candidate's
+                    // `on_accept` and its negotiation work from clones taken here.
+                    let handler = self.connection_handler.take();
+                    let ctx = self.negotiation_context();
+                    let ev_sender = self.ev_sender.clone();
+                    let mut recently_evicted = self.recently_evicted.take();
 
-                let outcome = {
-                    // Uses the anyhow-returning inner method, not the public
-                    // `run_connection` (`ServerResult`-returning as of
-                    // upstream's typed-error migration, #1242): `conn`'s
-                    // declared `Result<()>` (anyhow) must match
-                    // `serve_negotiated`'s return type across both match
-                    // arms, and `on_disconnected` below still expects
-                    // `Option<&anyhow::Error>` -- the same reason upstream's
-                    // own accept loop bypasses the public wrapper too.
-                    let mut conn: core::pin::Pin<Box<dyn Future<Output = ServerResult<()>> + '_>> = match entry {
-                        Entry::Fresh(stream, _) => Box::pin(self.run_connection_inner(stream, TransportTls::Managed)),
-                        Entry::Negotiated(candidate, _) => Box::pin(self.serve_negotiated(candidate)),
-                    };
-                    let mut probe: PreemptProbe<'_> = Box::pin(core::future::pending());
-                    let mut handler = handler;
-                    let mut probing = false;
-
-                    loop {
-                        // This `select!` must only YIELD — never mutate
-                        // `probe`, whose futures it still borrows.
-                        let race = tokio::select! {
-                            res = &mut conn => PreemptRace::Ended(res),
-                            accepted = listener.accept(), if !probing => PreemptRace::Accepted(accepted),
-                            candidate = &mut probe => PreemptRace::Probed(candidate),
+                    let outcome = {
+                        // Uses the anyhow-returning inner method, not the public
+                        // `run_connection` (`ServerResult`-returning as of
+                        // upstream's typed-error migration, #1242): `conn`'s
+                        // declared `Result<()>` (anyhow) must match
+                        // `serve_negotiated`'s return type across both match
+                        // arms, and `on_disconnected` below still expects
+                        // `Option<&anyhow::Error>` -- the same reason upstream's
+                        // own accept loop bypasses the public wrapper too.
+                        let mut conn: core::pin::Pin<Box<dyn Future<Output = ServerResult<()>> + '_>> = match entry {
+                            Entry::Fresh(stream, _) => {
+                                Box::pin(self.run_connection_inner(stream, TransportTls::Managed))
+                            }
+                            Entry::Negotiated(candidate, _) => Box::pin(self.serve_negotiated(candidate)),
                         };
+                        let mut probe: PreemptProbe<'_> = Box::pin(core::future::pending());
+                        let mut handler = handler;
+                        let mut probing = false;
 
-                        match race {
-                            // The session ended on its own. A candidate still
-                            // negotiating is NOT discarded — that would reset a
-                            // legitimate client that happened to connect just
-                            // as the old session ended; finish it and serve it
-                            // next if it authenticates.
-                            PreemptRace::Ended(res) => {
-                                if probing {
-                                    // BOUNDED: nothing else is being serviced
-                                    // during this await, so a candidate that
-                                    // is not nearly done is dropped rather
-                                    // than allowed to stall the listener.
-                                    pending = match tokio::time::timeout(CANDIDATE_HANDOFF_GRACE, &mut probe).await {
-                                        Ok(candidate) => candidate,
-                                        Err(_) => {
-                                            debug!(
-                                                "a candidate was still negotiating when the session ended -- \
+                        loop {
+                            // This `select!` must only YIELD — never mutate
+                            // `probe`, whose futures it still borrows.
+                            let race = tokio::select! {
+                                res = &mut conn => PreemptRace::Ended(res),
+                                accepted = listener.accept(), if !probing => PreemptRace::Accepted(accepted),
+                                candidate = &mut probe => PreemptRace::Probed(candidate),
+                            };
+
+                            match race {
+                                // The session ended on its own. A candidate still
+                                // negotiating is NOT discarded — that would reset a
+                                // legitimate client that happened to connect just
+                                // as the old session ended; finish it and serve it
+                                // next if it authenticates.
+                                PreemptRace::Ended(res) => {
+                                    if probing {
+                                        // BOUNDED: nothing else is being serviced
+                                        // during this await, so a candidate that
+                                        // is not nearly done is dropped rather
+                                        // than allowed to stall the listener.
+                                        pending = match tokio::time::timeout(CANDIDATE_HANDOFF_GRACE, &mut probe).await
+                                        {
+                                            Ok(candidate) => candidate,
+                                            Err(_) => {
+                                                debug!(
+                                                    "a candidate was still negotiating when the session ended -- \
                                                  dropping it rather than stalling the accept loop; it can reconnect"
-                                            );
-                                            None
-                                        }
-                                    };
+                                                );
+                                                None
+                                            }
+                                        };
+                                    }
+                                    break (res, None, handler, recently_evicted);
                                 }
-                                break (res, None, handler, recently_evicted);
-                            }
-                            PreemptRace::Accepted(Ok((next_stream, next_peer))) => {
-                                // Same reason as the primary accept above: RDP
-                                // is small latency-sensitive writes, so a
-                                // candidate that goes on to win the race and
-                                // become the live session needs this too, not
-                                // just the one accept path upstream's own
-                                // (non-preemption) loop happens to have.
-                                if let Err(error) = next_stream.set_nodelay(true) {
-                                    warn!(
-                                        ?next_peer,
-                                        %error,
-                                        "Failed to set TCP_NODELAY on a candidate; interactive latency may suffer"
+                                PreemptRace::Accepted(Ok((next_stream, next_peer))) => {
+                                    // Same reason as the primary accept above: RDP
+                                    // is small latency-sensitive writes, so a
+                                    // candidate that goes on to win the race and
+                                    // become the live session needs this too, not
+                                    // just the one accept path upstream's own
+                                    // (non-preemption) loop happens to have.
+                                    if let Err(error) = next_stream.set_nodelay(true) {
+                                        warn!(
+                                            ?next_peer,
+                                            %error,
+                                            "Failed to set TCP_NODELAY on a candidate; interactive latency may suffer"
+                                        );
+                                    }
+                                    // A peer evicted moments ago may not bounce
+                                    // straight back and retake the session; each
+                                    // attempt re-arms the window, so a reconnect
+                                    // storm can never win. See `recently_evicted`.
+                                    let bounced_back = refuse_reconnect_from_evicted(
+                                        &mut recently_evicted,
+                                        next_peer.ip(),
+                                        Instant::now(),
+                                        REPREEMPT_COOLDOWN,
+                                        REPREEMPT_MAX_LOCKOUT,
                                     );
-                                }
-                                // A peer evicted moments ago may not bounce
-                                // straight back and retake the session; each
-                                // attempt re-arms the window, so a reconnect
-                                // storm can never win. See `recently_evicted`.
-                                let bounced_back = refuse_reconnect_from_evicted(
-                                    &mut recently_evicted,
-                                    next_peer.ip(),
-                                    Instant::now(),
-                                    REPREEMPT_COOLDOWN,
-                                    REPREEMPT_MAX_LOCKOUT,
-                                );
-                                // Gate the candidate through `on_accept` BEFORE
-                                // it may negotiate, and so before it can
-                                // preempt anything: otherwise a candidate the
-                                // rate limiter would reject could still evict
-                                // the live session and only be rejected
-                                // afterwards, once the damage was done.
-                                let candidate_accepted =
-                                    !bounced_back && handler.as_mut().is_none_or(|h| h.on_accept(next_peer));
+                                    // Gate the candidate through `on_accept` BEFORE
+                                    // it may negotiate, and so before it can
+                                    // preempt anything: otherwise a candidate the
+                                    // rate limiter would reject could still evict
+                                    // the live session and only be rejected
+                                    // afterwards, once the damage was done.
+                                    let candidate_accepted =
+                                        !bounced_back && handler.as_mut().is_none_or(|h| h.on_accept(next_peer));
 
-                                if candidate_accepted {
-                                    probing = true;
-                                    // BOUNDED: see `CANDIDATE_NEGOTIATION_TIMEOUT`.
-                                    // An unbounded probe is a remote hang of
-                                    // the whole accept loop.
-                                    probe = Box::pin(negotiate_candidate_bounded(&ctx, next_stream, next_peer));
-                                } else if bounced_back {
-                                    info!(
-                                        ?next_peer,
-                                        "ignoring a reconnect from the peer just evicted -- it is \
+                                    if candidate_accepted {
+                                        probing = true;
+                                        // BOUNDED: see `CANDIDATE_NEGOTIATION_TIMEOUT`.
+                                        // An unbounded probe is a remote hang of
+                                        // the whole accept loop.
+                                        probe = Box::pin(negotiate_candidate_bounded(&ctx, next_stream, next_peer));
+                                    } else if bounced_back {
+                                        info!(
+                                            ?next_peer,
+                                            "ignoring a reconnect from the peer just evicted -- it is \
                                          auto-reconnecting into the session that replaced it"
-                                    );
-                                    drop(next_stream);
-                                } else {
-                                    debug!(?next_peer, "candidate rejected by handler while a session was live");
-                                    drop(next_stream);
+                                        );
+                                        drop(next_stream);
+                                    } else {
+                                        debug!(?next_peer, "candidate rejected by handler while a session was live");
+                                        drop(next_stream);
+                                    }
                                 }
-                            }
-                            PreemptRace::Accepted(Err(error)) => {
-                                warn!(?error, "accept failed while a session was live");
-                            }
-                            PreemptRace::Probed(candidate) => {
-                                probing = false;
-                                probe = Box::pin(core::future::pending());
-                                // `negotiate_candidate` already logged the
-                                // reason when it declines, so there is nothing
-                                // to do in the `None` case.
-                                if let Some((candidate, new_peer)) = candidate {
-                                    info!(
-                                        old_peer = ?peer,
-                                        ?new_peer,
-                                        "an authenticated client connected -- evicting the existing session"
-                                    );
-                                    let _ = ev_sender.send(ServerEvent::EvictedByOtherConnection);
-                                    let now = Instant::now();
-                                    recently_evicted = Some(EvictedPeer {
-                                        ip: peer.ip(),
-                                        evicted_at: now,
-                                        last_try: now,
-                                    });
-                                    // Let the incumbent observe the event and
-                                    // put the reason on the wire before it
-                                    // goes; bounded, so a wedged peer cannot
-                                    // stall the takeover.
-                                    match tokio::time::timeout(EVICTION_GRACE, &mut conn).await {
-                                        Ok(res) => {
-                                            break (res, Some((candidate, new_peer)), handler, recently_evicted);
-                                        }
-                                        Err(_) => {
-                                            debug!(old_peer = ?peer, "evicted session did not wind down in time");
-                                            break (Ok(()), Some((candidate, new_peer)), handler, recently_evicted);
+                                PreemptRace::Accepted(Err(error)) => {
+                                    warn!(?error, "accept failed while a session was live");
+                                }
+                                PreemptRace::Probed(candidate) => {
+                                    probing = false;
+                                    probe = Box::pin(core::future::pending());
+                                    // `negotiate_candidate` already logged the
+                                    // reason when it declines, so there is nothing
+                                    // to do in the `None` case.
+                                    if let Some((candidate, new_peer)) = candidate {
+                                        info!(
+                                            old_peer = ?peer,
+                                            ?new_peer,
+                                            "an authenticated client connected -- evicting the existing session"
+                                        );
+                                        let _ = ev_sender.send(ServerEvent::EvictedByOtherConnection);
+                                        let now = Instant::now();
+                                        recently_evicted = Some(EvictedPeer {
+                                            ip: peer.ip(),
+                                            evicted_at: now,
+                                            last_try: now,
+                                        });
+                                        // Let the incumbent observe the event and
+                                        // put the reason on the wire before it
+                                        // goes; bounded, so a wedged peer cannot
+                                        // stall the takeover.
+                                        match tokio::time::timeout(EVICTION_GRACE, &mut conn).await {
+                                            Ok(res) => {
+                                                break (res, Some((candidate, new_peer)), handler, recently_evicted);
+                                            }
+                                            Err(_) => {
+                                                debug!(old_peer = ?peer, "evicted session did not wind down in time");
+                                                break (Ok(()), Some((candidate, new_peer)), handler, recently_evicted);
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
-                };
+                    };
 
-                let (result, preempted_by, handler, evicted) = outcome;
-                self.connection_handler = handler;
-                // Only remember an eviction that actually replaced this
-                // session; a session that ended on its own terms leaves nobody
-                // barred from connecting.
-                self.recently_evicted = if preempted_by.is_some() { evicted } else { None };
-                if preempted_by.is_some() {
-                    // Can't do this INSIDE the race above: `conn` (built from
-                    // `self.run_connection`/`self.serve_negotiated`) borrows
-                    // `self` mutably for the whole race, so no other &mut self
-                    // call is possible there. `self` is free again here, and
-                    // the ~750ms EVICTION_GRACE this waited through is
-                    // immaterial to what this closes -- a real ARC reconnect
-                    // takes far longer than that to occur.
-                    self.invalidate_auto_reconnect_cookie_on_eviction();
+                    let (result, preempted_by, handler, evicted) = outcome;
+                    self.connection_handler = handler;
+                    // Only remember an eviction that actually replaced this
+                    // session; a session that ended on its own terms leaves nobody
+                    // barred from connecting.
+                    self.recently_evicted = if preempted_by.is_some() { evicted } else { None };
+                    if preempted_by.is_some() {
+                        // Can't do this INSIDE the race above: `conn` (built from
+                        // `self.run_connection`/`self.serve_negotiated`) borrows
+                        // `self` mutably for the whole race, so no other &mut self
+                        // call is possible there. `self` is free again here, and
+                        // the ~750ms EVICTION_GRACE this waited through is
+                        // immaterial to what this closes -- a real ARC reconnect
+                        // takes far longer than that to occur.
+                        self.invalidate_auto_reconnect_cookie_on_eviction();
+                    }
+                    (result, preempted_by)
                 }
-                (result, preempted_by)
-            } else {
-                let result = match entry {
-                    // Same anyhow-vs-ServerResult reasoning as the preemption
-                    // branch above.
-                    Entry::Fresh(stream, _) => self.run_connection_inner(stream, TransportTls::Managed).await,
-                    // Unreachable in practice: `pending` is only ever populated
-                    // by the preemption branch above.
-                    Entry::Negotiated(candidate, _) => self.serve_negotiated(candidate).await,
-                };
-                (result, None)
+                ConnectionPolicy::Reject => {
+                    // Serve while still accepting, but close any newcomer
+                    // instead of racing it (Preempt) or queuing it (Queue): the
+                    // extra connection fails fast rather than hanging in the
+                    // backlog (#1483). The session arm is polled first (biased),
+                    // so a client reconnecting the instant a session ends is
+                    // taken by the outer loop, not rejected here.
+                    let result = match entry {
+                        Entry::Fresh(stream, _) => {
+                            let mut conn = core::pin::pin!(self.run_connection_inner(stream, TransportTls::Managed));
+                            loop {
+                                tokio::select! {
+                                    biased;
+                                    res = &mut conn => break res,
+                                    accepted = listener.accept() => match accepted {
+                                        Ok((extra, extra_peer)) => {
+                                            debug!(?extra_peer, "Session active; rejecting connection");
+                                            drop(extra);
+                                        }
+                                        Err(error) => warn!(?error, "accept failed while a session was live"),
+                                    },
+                                }
+                            }
+                        }
+                        // Unreachable: Reject never produces a Negotiated candidate.
+                        Entry::Negotiated(candidate, _) => self.serve_negotiated(candidate).await,
+                    };
+                    (result, None)
+                }
+                ConnectionPolicy::Queue => {
+                    let result = match entry {
+                        // Same anyhow-vs-ServerResult reasoning as the preemption
+                        // branch above.
+                        Entry::Fresh(stream, _) => self.run_connection_inner(stream, TransportTls::Managed).await,
+                        // Unreachable in practice: `pending` is only ever populated
+                        // by the preemption branch above.
+                        Entry::Negotiated(candidate, _) => self.serve_negotiated(candidate).await,
+                    };
+                    (result, None)
+                }
             };
             let duration = started.elapsed();
 
@@ -4161,7 +4219,7 @@ mod preempt_tests {
                 codecs: BitmapCodecs(Vec::new()),
                 max_request_size: 8 * 1024 * 1024,
                 honor_client_desktop_size: None,
-                preempt_existing_session: true,
+                connection_policy: ConnectionPolicy::Preempt,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
             },
@@ -4370,7 +4428,7 @@ mod preempt_tests {
                     .with_no_security()
                     .with_no_input()
                     .with_no_display()
-                    .with_preempt_existing_session(true)
+                    .with_connection_policy(ConnectionPolicy::Preempt)
                     .build();
 
                 let event_sender = server.event_sender().clone();
@@ -4467,7 +4525,7 @@ mod preempt_tests {
                         seen: seen_for_handler,
                         accepted_once: false,
                     })))
-                    .with_preempt_existing_session(true)
+                    .with_connection_policy(ConnectionPolicy::Preempt)
                     .build();
 
                 let event_sender = server.event_sender().clone();

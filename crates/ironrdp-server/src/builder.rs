@@ -13,7 +13,8 @@ use super::display::{DesktopSize, RdpServerDisplay};
 use super::gfx::GfxServerFactory;
 use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use super::server::{
-    ConnectionHandler, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity, StaticChannelFactory,
+    ConnectionHandler, ConnectionPolicy, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity,
+    StaticChannelFactory,
 };
 use crate::error::ServerResult;
 #[cfg(feature = "usb")]
@@ -57,7 +58,7 @@ pub struct BuilderDone {
     autodetect_bandwidth: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
-    preempt_existing_session: bool,
+    connection_policy: ConnectionPolicy,
     remotefx_quant: Quant,
     remotefx_entropy_coder: Option<EntropyBits>,
 }
@@ -168,7 +169,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 autodetect_baseline_rtt: None,
                 autodetect_bandwidth: None,
                 honor_client_desktop_size: None,
-                preempt_existing_session: false,
+                connection_policy: ConnectionPolicy::default(),
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
@@ -201,7 +202,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 autodetect_baseline_rtt: None,
                 autodetect_bandwidth: None,
                 honor_client_desktop_size: None,
-                preempt_existing_session: false,
+                connection_policy: ConnectionPolicy::default(),
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
@@ -333,27 +334,19 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
-    /// When `true`, a new connection accepted while [`RdpServer::run`] is
-    /// already serving another one takes over: once the newcomer has
-    /// **completed authentication**, the existing session is dropped (after
-    /// being told why) and the newcomer is served in its place, instead of
-    /// waiting in the TCP listen backlog until the current session ends.
+    /// Choose what [`RdpServer::run`] does with a second connection that
+    /// arrives while a session is already being served: leave it in the backlog
+    /// ([`ConnectionPolicy::Queue`], the default), close it immediately
+    /// ([`ConnectionPolicy::Reject`]), or let a fully-authenticated newcomer
+    /// take the session over ([`ConnectionPolicy::Preempt`]).
     ///
-    /// Off by default: a second connection queues behind the live one, which
-    /// is `ironrdp-server`'s pre-existing behaviour, so an embedder that
-    /// already relies on it is not surprised by upgrading. Turn this on for a
-    /// server backing a single specific session (e.g. one that mirrors one
-    /// desktop), where a newly connecting client should replace a stale one
-    /// rather than hang behind it.
-    ///
-    /// **The strength of that bar depends on the security mode.** Only
-    /// [`RdpServerSecurity::Hybrid`] authenticates the client before a
-    /// candidate could evict anything; under `Tls` or `None` any peer that can
-    /// complete the handshake can take the session over, and a warning is
-    /// logged at startup. See
-    /// [`RdpServerOptions::preempt_existing_session`] for the per-mode table.
-    pub fn with_preempt_existing_session(mut self, preempt: bool) -> Self {
-        self.state.preempt_existing_session = preempt;
+    /// `Preempt`'s takeover is only authentication-gated under
+    /// [`RdpServerSecurity::Hybrid`]; see [`ConnectionPolicy::Preempt`] for the
+    /// per-mode security table. `Reject` closes a newcomer without consulting
+    /// [`ConnectionHandler::on_accept`]; see [`ConnectionPolicy::Reject`].
+    #[must_use]
+    pub fn with_connection_policy(mut self, policy: ConnectionPolicy) -> Self {
+        self.state.connection_policy = policy;
         self
     }
 
@@ -467,7 +460,7 @@ impl RdpServerBuilder<BuilderDone> {
                 codecs: self.state.codecs,
                 max_request_size: self.state.max_request_size,
                 honor_client_desktop_size: self.state.honor_client_desktop_size,
-                preempt_existing_session: self.state.preempt_existing_session,
+                connection_policy: self.state.connection_policy,
                 remotefx_quant: self.state.remotefx_quant,
                 remotefx_entropy_coder: self.state.remotefx_entropy_coder,
             },
