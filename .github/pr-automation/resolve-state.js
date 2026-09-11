@@ -148,7 +148,6 @@ function resolveClassificationState({
       expectedSha, deterministic, "reviewer routing unavailable", failureRateLimit, semverStatus);
   }
   // Overlap is advisory: it only adds a label and comment.
-  // The `duplicate` label is unowned, so automation neither applies nor removes it.
   const overlap = model.overlap.detected && model.overlap.confidence >= 0.85;
   const optional = [
     ["kind/technical-debt", model.technical_debt],

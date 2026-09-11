@@ -349,14 +349,11 @@ test("automatic policy ineligibility remains a non-error gate skip", async () =>
   assert.equal(result.eligible, false);
   assert.deepEqual(result.failures, []);
 
-  // Neither overlap nor the `duplicate` label suppresses review.
-  for (const labels of [[OVERLAP_LABEL], ["duplicate"], [OVERLAP_LABEL, "duplicate"]]) {
-    const eligible = await runReviewGateScript({ labels, classificationRuns });
-    assert.equal(eligible.gate.policyEligible, true, labels.join(", "));
-    assert.equal(eligible.gate.ok, true, labels.join(", "));
-    assert.equal(eligible.eligible, true, labels.join(", "));
-    assert.deepEqual(eligible.failures, []);
-  }
+  const eligible = await runReviewGateScript({ labels: [OVERLAP_LABEL], classificationRuns });
+  assert.equal(eligible.gate.policyEligible, true);
+  assert.equal(eligible.gate.ok, true);
+  assert.equal(eligible.eligible, true);
+  assert.deepEqual(eligible.failures, []);
 });
 
 test("review outcome requires validated final output", () => {
@@ -821,8 +818,6 @@ test("every deterministic label is declared and the repository rules classify to
   ]) {
     assert.equal(declaredLabels.has(label), true, `${label} is missing from labels.json`);
   }
-  // The `duplicate` label is not managed by automation.
-  assert.equal(declaredLabels.has("duplicate"), false);
   for (const [label, patterns] of Object.entries(rules)) {
     assert.notEqual(patterns.length, 0, `${label} has no path patterns`);
   }
@@ -1623,7 +1618,7 @@ test("all classified changes are reviewable unless a legitimacy or count gate bl
   assert.equal(reviewPolicyEligible({ labels: ["risk/medium"] }), true);
   assert.equal(reviewPolicyEligible({ labels: ["risk/high", "size/XXL"] }), true);
   // Advisory labels do not suppress review.
-  assert.equal(reviewPolicyEligible({ labels: ["risk/high", OVERLAP_LABEL, "duplicate"] }), true);
+  assert.equal(reviewPolicyEligible({ labels: ["risk/high", OVERLAP_LABEL] }), true);
   for (const blocking of ["ai-reviewed/2", LEGITIMACY_LABEL]) {
     assert.equal(reviewPolicyEligible({ labels: ["risk/high", blocking], protocolRelated: true }), false);
   }
@@ -1721,8 +1716,6 @@ test("suspected overlap is advisory and is withdrawn once it no longer holds", (
   assert.equal(flagged.dispatchReview, true);
   assert.deepEqual(flagged.labelSets.find((set) => set.owned.includes(OVERLAP_LABEL)).desired,
     [OVERLAP_LABEL]);
-  // The `duplicate` label is outside automation ownership.
-  assert.equal(flagged.labelSets.some((set) => set.owned.includes("duplicate")), false);
   assert.deepEqual(flagged.comments.map((comment) => comment.kind), ["overlap"]);
   assert.equal(flagged.removeCommentMarkers.includes(OVERLAP_MARKER), false);
   const body = markerBody(flagged.comments[0]);
@@ -1975,7 +1968,7 @@ test("review blockers distinguish gate and contributor history failures", () => 
   // Overlap is advisory at publication too, so the review this run spent its model call on is
   // published instead of being discarded.
   const advisory = resolveReviewState({
-    ...args, labels: ["risk/low", OVERLAP_LABEL, "duplicate"],
+    ...args, labels: ["risk/low", OVERLAP_LABEL],
   });
   assert.equal(advisory.failed, undefined);
   assert.deepEqual(advisory.labelSets[0].desired, ["ai-reviewed/1"]);

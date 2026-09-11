@@ -49,7 +49,6 @@ function labelsOf(labels) {
 }
 
 // Suspected overlap is approximate and must not suppress code review.
-// The `duplicate` label is also ignored.
 function reviewPolicyEligible({ labels, legitimacyStopped } = {}) {
   const present = labelsOf(labels);
   if (present.has("ai-reviewed/2") ||
