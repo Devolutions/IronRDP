@@ -565,6 +565,29 @@ function reviewFixture(workspace, { candidates = 4 } = {}) {
         })),
       }],
     }),
+    // Schema-valid in every field, and wrong in four different ways at once: a duplicate, an
+    // unknown candidate, a rationale the schema counts in characters and the validator in bytes,
+    // and every remaining candidate left out.
+    mixed: () => ({
+      head_sha: sha,
+      summary: "verified",
+      candidate_dispositions: [
+        { reviewer: "skeptical", finding_id: `${secret}-1`, disposition: "rejected", rationale: "unsupported" },
+        { reviewer: "skeptical", finding_id: `${secret}-1`, disposition: "rejected", rationale: "unsupported again" },
+        { reviewer: "skeptical", finding_id: "ghost-candidate", disposition: "rejected", rationale: "unsupported" },
+        { reviewer: "skeptical", finding_id: `${secret}-2`, disposition: "rejected", rationale: "\u00e9".repeat(401) },
+      ],
+      findings: [],
+    }),
+    // The authoritative reason for a given output, so a test can require the runtime to carry
+    // exactly it rather than merely something that looks like it.
+    reasonFor: (output) => require(path.join(automation, "validate-final-review"))
+      .validateFinalReview(output, {
+        expectedSha: sha,
+        changedPaths: context.changed_paths,
+        changedLines: context.changed_lines,
+        specialistAggregate: aggregate,
+      }).reason,
   };
 }
 
@@ -587,6 +610,15 @@ test("a final review missing four dispositions is repaired from one factual reje
   const core = fixture.core();
   const requests = [];
   try {
+    // This fixture affords one repair, which is enough to show a single rejection converging. The
+    // shipped reviewer affords two, and this change leaves that and every other budget alone.
+    const shipped = JSON.parse(fs.readFileSync(
+      path.join(fixture.automation, "agents", "general-reviewer.json"), "utf8"));
+    assert.equal(shipped.max_output_repair_attempts, 2);
+    assert.equal(shipped.max_turns, 32);
+    assert.equal(shipped.max_tool_calls, 120);
+    assert.equal(shipped.max_request_retries, 4);
+
     await main(core, { GITHUB_WORKSPACE: workspace.directory },
       mockProvider([fixture.review(1), fixture.review(4)], requests));
 
@@ -644,16 +676,50 @@ test("a final review that never accounts for its candidates exhausts repair with
     assert.equal(core.outputs.get("structured-output"), "");
     assert.equal(core.outputs.get("failure-category"), "output-invalid");
     assert.equal(core.outputs.get("turn-count"), "2");
+    // The runtime slices both its telemetry reason and `semantic: <reason>` at 240 bytes, so the
+    // only useful assertion is that what it published is the validator's reason entire.
+    const expected = fixture.reasonFor(fixture.review(2));
+    assert.match(expected, /2 of 4 candidates have no valid disposition/);
     const reason = core.outputs.get("failure-reason");
-    assert.match(reason, /^output remained invalid after the repair limit: semantic: /);
-    assert.match(reason, /2 of 4 candidates have no valid disposition/);
-    assert.ok(Buffer.byteLength(reason, "utf8") <= 300, reason);
+    assert.equal(reason, `output remained invalid after the repair limit: semantic: ${expected}`);
     assert.doesNotMatch(reason, /record exactly one disposition per specialist candidate/);
     const diagnostics = JSON.parse(core.outputs.get("diagnostics"));
     assert.equal(diagnostics.outputRepairCount, 1);
     assert.equal(diagnostics.outputRejections.length, 2);
+    assert.equal(diagnostics.outputRejections[1].reason, expected);
     const emitted = core.events.filter(([kind]) => ["output", "info", "failed"].includes(kind));
     assert.ok(!JSON.stringify(emitted).includes(fixture.secret), JSON.stringify(emitted));
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+// The longest diagnostics the validator produces are the mixed ones, and they are exactly the ones
+// a byte slice would quietly rob of a category, a count, or a limit.
+test("a review wrong in several ways at once keeps every category through the runtime", async () => {
+  const workspace = actionFixture();
+  const fixture = reviewFixture(workspace, { candidates: 20 });
+  const core = fixture.core();
+  const requests = [];
+  try {
+    await main(core, { GITHUB_WORKSPACE: workspace.directory },
+      mockProvider([fixture.mixed(), fixture.mixed()], requests));
+
+    const expected = fixture.reasonFor(fixture.mixed());
+    // Every failure the output contains is accounted for, with its own count.
+    assert.match(expected, /candidates lack a valid disposition|candidates have no valid disposition/);
+    assert.match(expected, /1 unknown|1 entry naming a candidate the specialists did not report/);
+    assert.match(expected, /1 duplicate|1 entry repeating a candidate an earlier entry already covered/);
+    assert.match(expected, /over 800 UTF-8 byte rationale|within 800 UTF-8 bytes/);
+
+    // Both runtime paths carry that reason unchanged: the repair request, the telemetry entry, and
+    // the terminal failure. A slice at 240 bytes would truncate any of them.
+    assert.ok(requests[1].messages.at(-1).content.includes(expected), expected);
+    const diagnostics = JSON.parse(core.outputs.get("diagnostics"));
+    assert.deepEqual(diagnostics.outputRejections.map((entry) => entry.reason), [expected, expected]);
+    assert.equal(core.outputs.get("failure-reason"),
+      `output remained invalid after the repair limit: semantic: ${expected}`);
+    assert.ok(!core.outputs.get("failure-reason").includes(fixture.secret));
   } finally {
     workspace.cleanup();
   }

@@ -32,6 +32,9 @@ const {
   MAX_BODY_LENGTH, MAX_COMMENT_LENGTH, MAX_COMMENTS, fetchReviewContext,
 } = require("./fetch-review-context");
 const { encodeCheckState, parseCheckState } = require("./validate-classifier");
+// A rejection reason is repair feedback only if the runtime carries it whole, so the diagnostics
+// tests measure it with the runtime's own sanitizer rather than a restatement of its budget.
+const { sanitizeReason } = require("../actions/openai-agent/src/provider");
 const {
   corpusFromDirectory, validateProtocolReferences,
 } = require("./validate-protocol-review");
@@ -3115,6 +3118,15 @@ const disposition = (index, changes = {}) => ({
   disposition: "rejected", rationale: "the claim is unsupported", ...changes,
 });
 
+// The runtime keeps 240 bytes of the reason for its diagnostics and 240 bytes of
+// `semantic: <reason>` for the exhaustion failure, and both are plain slices. A reason that either
+// path shortens has lost a category, a count, or a limit without saying so, so the only useful
+// assertion is that both carry it unchanged.
+function assertReasonSurvivesRuntime(reason) {
+  assert.equal(sanitizeReason(reason), reason, reason);
+  assert.equal(sanitizeReason(`semantic: ${reason}`), `semantic: ${reason}`, reason);
+}
+
 // The stage affords two repairs, so a review that omitted four dispositions can only converge if
 // the first rejection accounts for all four.
 test("final review diagnostics report the whole disposition map in one rejection", () => {
@@ -3139,11 +3151,12 @@ test("final review diagnostics report the whole disposition map in one rejection
     disposition(4, { disposition: "ignored" }),
   ]), context);
   assert.equal(mixed.ok, false);
-  assert.match(mixed.reason, /3 of 4 undispositioned/);
-  assert.match(mixed.reason, /1 entry unknown/);
-  assert.match(mixed.reason, /1 entry duplicate/);
-  assert.match(mixed.reason, /1 entry with an unusable rationale/);
-  assert.match(mixed.reason, /1 entry malformed/);
+  assert.match(mixed.reason, /3\/4 candidates lack a valid disposition/);
+  assert.match(mixed.reason, /1 unknown/);
+  assert.match(mixed.reason, /1 duplicate/);
+  assert.match(mixed.reason, /1 with a blank, control character, or over 800 UTF-8 byte rationale/);
+  assert.match(mixed.reason, /1 malformed/);
+  assertReasonSurvivesRuntime(mixed.reason);
 
   // Saturating every class at once costs the prose and the coordinates, never the counts.
   const saturated = validateFinalReview(finalOutput([
@@ -3153,12 +3166,12 @@ test("final review diagnostics report the whole disposition map in one rejection
     ...Array.from({ length: 15 }, () => disposition(3, { disposition: "ignored" })),
   ]), context);
   assert.equal(saturated.ok, false);
-  assert.match(saturated.reason, /3 of 4 undispositioned/);
-  assert.match(saturated.reason, /15 entries unknown/);
-  assert.match(saturated.reason, /14 entries duplicate/);
-  assert.match(saturated.reason, /15 entries with an unusable rationale/);
-  assert.match(saturated.reason, /15 entries malformed/);
-  assert.ok(Buffer.byteLength(saturated.reason, "utf8") <= 300, saturated.reason);
+  assert.match(saturated.reason, /3\/4 candidates lack a valid disposition/);
+  assert.match(saturated.reason, /15 unknown/);
+  assert.match(saturated.reason, /14 duplicate/);
+  assert.match(saturated.reason, /15 with a blank, control character, or over 800 UTF-8 byte rationale/);
+  assert.match(saturated.reason, /15 malformed/);
+  assertReasonSurvivesRuntime(saturated.reason);
 
   // More candidates than coordinates fit are still counted in full.
   const crowded = validateFinalReview(finalOutput([]), finalContext(20));
@@ -3177,15 +3190,26 @@ test("final review diagnostics explain text normalization the schema does not en
   for (const rationale of [" ", '""', accented, "supported\u0000claim"]) {
     const result = validateFinalReview(finalOutput([disposition(1, { rationale })]), context);
     assert.equal(result.ok, false, rationale);
-    assert.match(result.reason, /1 entry with a rationale that must be non blank, free of control characters, and at most 800 UTF-8 bytes/);
-    assert.match(result.reason, /candidate_dispositions index 0/);
+    // The constraint and both counts are what a repair needs, so they survive even though the
+    // second coordinate does not fit beside them.
+    assert.match(result.reason, /1 of 1 candidate has no valid disposition/);
+    assert.match(result.reason, /1 entry with a rationale that must be non blank, free of control characters, and within 800 UTF-8 bytes/);
+    assertReasonSurvivesRuntime(result.reason);
   }
+
+  // With room for it, the entry that failed is located in candidate_dispositions as well.
+  const unknown = validateFinalReview(
+    finalOutput([disposition(1, { finding_id: "finding-9" })]), context,
+  );
+  assert.equal(unknown.ok, false);
+  assert.match(unknown.reason, /candidate_dispositions index 0/);
+  assertReasonSurvivesRuntime(unknown.reason);
 
   const summary = validateFinalReview(
     { ...finalOutput([disposition(1)]), summary: "verified\u0000review" }, context,
   );
   assert.equal(summary.ok, false);
-  assert.match(summary.reason, /summary must be non blank, free of control characters, and at most 1000 UTF-8 bytes/);
+  assert.match(summary.reason, /summary must be non blank, free of control characters, and within 1000 UTF-8 bytes/);
 
   const finding = (changes = {}) => ({
     question: false, severity: "high", path: "src/lib.rs", start_line: 4, end_line: 4,
@@ -3203,6 +3227,17 @@ test("final review diagnostics explain text normalization the schema does not en
   );
   assert.equal(lines.ok, false);
   assert.match(lines.reason, /end_line at or after start_line/);
+
+  // A path the pull request changed can still be too long, so the condition names that bound too.
+  const long = `src/${"\u00e9".repeat(150)}.rs`;
+  assert.ok(long.length < 300 && Buffer.byteLength(long, "utf8") > 300);
+  const oversized = validateFinalReview(finalOutput(accepted, [finding({ path: long })]), {
+    ...context, changedPaths: ["src/lib.rs", long],
+    changedLines: { "src/lib.rs": [4], [long]: [4] },
+  });
+  assert.equal(oversized.ok, false);
+  assert.match(oversized.reason, /path must be a repository path this pull request changed, within 300 UTF-8 bytes/);
+  assertReasonSurvivesRuntime(oversized.reason);
 });
 
 test("final review diagnostics locate an unusable source and an uncited candidate", () => {
@@ -3267,7 +3302,7 @@ test("final review diagnostics stay factual, bounded, and free of model text", (
     assert.equal(rejection.ok, false);
     assert.match(rejection.reason, safe);
     assert.ok(!rejection.reason.includes(secret), rejection.reason);
-    assert.ok(Buffer.byteLength(rejection.reason, "utf8") <= 300, rejection.reason);
+    assertReasonSurvivesRuntime(rejection.reason);
     assert.doesNotMatch(rejection.reason, /record exactly one disposition/);
   }
   assert.match(rejections[0].reason, /3 of 4 candidates have no valid disposition/);

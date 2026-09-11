@@ -18,18 +18,20 @@ const DISPOSITIONS = new Set(["accepted", "refined", "rejected"]);
 const FINDING_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const REVIEWER_ORDER = new Map(REVIEWERS.map((reviewer, index) => [reviewer, index]));
 
-// A rejection is both repair feedback and a published stage reason. The stage report drops a reason
-// over 300 bytes entirely, so that is the budget. The runtime additionally keeps only 240 bytes of
-// `semantic: <reason>` in its diagnostics, so counts are emitted before coordinates and the part
-// that says how much is wrong survives that truncation too.
-const MAXIMUM_REASON_BYTES = 300;
+// A rejection is both repair feedback and a published stage reason, and the runtime is the tighter
+// of the two consumers: `sanitizeReason` keeps 240 bytes of the reason for its diagnostics, and the
+// same 240 bytes of `semantic: <reason>` for the exhaustion failure. A reason within the smaller of
+// those allowances survives every path whole, which is what this budget is, and it is comfortably
+// inside the 300 bytes the stage report keeps.
+const RUNTIME_REASON_BYTES = 240;
+const MAXIMUM_REASON_BYTES = RUNTIME_REASON_BYTES - "semantic: ".length;
 const MAXIMUM_COORDINATES = 8;
 
 const count = (value, noun) => `${value} ${noun}${value === 1 ? "" : "s"}`;
 
 // `normalizeText` collapses whitespace and then rejects an empty result, one over the byte budget,
 // and any forbidden control character, so a diagnostic about it has to name all three.
-const NORMALIZED_TEXT_RULE = "non blank, free of control characters, and at most";
+const NORMALIZED_TEXT_RULE = "non blank, free of control characters, and within";
 
 function referenceKey(reference) {
   return `${reference.reviewer}\0${reference.finding_id}`;
@@ -81,8 +83,11 @@ function indexCoordinates(indexes) {
   return boundedCoordinates(indexes, (shown) => shown.join(", "));
 }
 
-// Coordinates are worth less than the counts they locate, so they are dropped from the end until
-// the whole diagnostic fits. What is dropped is still counted, never silently forgotten.
+// The counts and categories say how much of what is wrong, so they are what a repair cannot do
+// without; the coordinates only save it a search. Detail is therefore dropped from the end until the
+// whole diagnostic fits, and a saturated review falls back to terse forms that still name every
+// category and count. Nothing dropped is ever silently forgotten, and the result always fits whole
+// inside the runtime's allowance rather than relying on where a truncation happens to land.
 function boundedReason(prefix, parts) {
   const fits = (reason) => Buffer.byteLength(reason, "utf8") <= MAXIMUM_REASON_BYTES;
   const assemble = (render) => `${prefix}: ${parts.map(render).join(". ")}`;
@@ -93,7 +98,7 @@ function boundedReason(prefix, parts) {
   const counted = assemble((part) => part.summary);
   if (fits(counted)) return counted;
   // A review that saturates every failure class at once leaves no room for the sentences that
-  // explain them, so the counts that say how much of each one to fix are what survives.
+  // explain them, so what survives is the count and constraint of each one.
   const terse = assemble((part) => part.short ?? part.summary);
   return fits(terse) ? terse : prefix;
 }
@@ -193,7 +198,7 @@ function diagnoseDispositions(entries, candidates) {
     // asks for a valid disposition rather than for another entry.
     parts.push({
       summary: `${missing.length} of ${count(candidates.size, "candidate")} ${missing.length === 1 ? "has" : "have"} no valid disposition`,
-      short: `${missing.length} of ${candidates.size} undispositioned`,
+      short: `${missing.length}/${candidates.size} candidates lack a valid disposition`,
       detail: `aggregate findings ${aggregateCoordinates(missing)}`,
     });
   }
@@ -201,15 +206,15 @@ function diagnoseDispositions(entries, candidates) {
     [unknown, "naming a candidate the specialists did not report", "unknown"],
     [duplicated, "repeating a candidate an earlier entry already covered", "duplicate"],
     [unusableRationale,
-      `with a rationale that must be ${NORMALIZED_TEXT_RULE} ${MAXIMUM_DISPOSITION_RATIONALE_BYTES} UTF-8 bytes once whitespace is normalized`,
-      "with an unusable rationale"],
+      `with a rationale that must be ${NORMALIZED_TEXT_RULE} ${MAXIMUM_DISPOSITION_RATIONALE_BYTES} UTF-8 bytes`,
+      `with a blank, control character, or over ${MAXIMUM_DISPOSITION_RATIONALE_BYTES} UTF-8 byte rationale`],
     [malformed, "not well formed for a known reviewer", "malformed"],
   ]) {
     if (indexes.length === 0) continue;
     const entries = `${indexes.length} ${indexes.length === 1 ? "entry" : "entries"}`;
     parts.push({
       summary: `${entries} ${summary}`,
-      short: `${entries} ${short}`,
+      short: `${indexes.length} ${short}`,
       detail: `candidate_dispositions index ${indexCoordinates(indexes)}`,
     });
   }
@@ -231,7 +236,7 @@ function normalizeFinding(finding, changedPaths, changedLines, dispositions, ref
   }
   if (typeof finding.path !== "string" || Buffer.byteLength(finding.path, "utf8") > MAXIMUM_PATH_BYTES ||
       finding.path.includes("\\") || !REPO_PATH.test(finding.path) || !changedPaths.has(finding.path)) {
-    return rejected("path must be a repository path this pull request changed");
+    return rejected(`path must be a repository path this pull request changed, within ${MAXIMUM_PATH_BYTES} UTF-8 bytes`);
   }
   if (!isBoundedArray(finding.sources, MAXIMUM_CANDIDATES)) {
     return rejected(`sources must be an array of at most ${MAXIMUM_CANDIDATES} entries`);
@@ -247,7 +252,7 @@ function normalizeFinding(finding, changedPaths, changedLines, dispositions, ref
   const title = normalizeText(finding.title, MAXIMUM_TITLE_BYTES);
   const rationale = normalizeText(finding.rationale, MAXIMUM_RATIONALE_BYTES);
   if (!title || !rationale) {
-    return rejected(`title and rationale must be ${NORMALIZED_TEXT_RULE} ${MAXIMUM_TITLE_BYTES} and ${MAXIMUM_RATIONALE_BYTES} UTF-8 bytes once whitespace is normalized`);
+    return rejected(`title and rationale must be ${NORMALIZED_TEXT_RULE} ${MAXIMUM_TITLE_BYTES} and ${MAXIMUM_RATIONALE_BYTES} UTF-8 bytes`);
   }
 
   const sources = [];
@@ -308,7 +313,7 @@ function validateFinalReview(raw, {
   }
   const summary = normalizeText(value.summary, MAXIMUM_SUMMARY_BYTES);
   if (!summary) {
-    return invalid(`invalid final review summary: summary must be ${NORMALIZED_TEXT_RULE} ${MAXIMUM_SUMMARY_BYTES} UTF-8 bytes once whitespace is normalized`);
+    return invalid(`invalid final review summary: summary must be ${NORMALIZED_TEXT_RULE} ${MAXIMUM_SUMMARY_BYTES} UTF-8 bytes`);
   }
 
   const dispositions = diagnoseDispositions(value.candidate_dispositions, candidates);
@@ -342,6 +347,7 @@ function validateFinalReview(raw, {
   if (uncited.length !== 0) {
     return invalid(boundedReason("specialist disposition contradicts final findings", [{
       summary: `${count(uncited.length, "accepted or refined candidate")} ${uncited.length === 1 ? "is" : "are"} cited by no final finding`,
+      short: `${uncited.length} accepted or refined candidates are uncited`,
       detail: `aggregate findings ${aggregateCoordinates(uncited)}`,
     }]));
   }
