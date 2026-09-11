@@ -342,8 +342,10 @@ function resolveReviewState({
     `${forced ? `:force:${reviewMarkerId}` : ""} -->`;
   return {
     ok: true, mode: "review", expectedSha, labelSets: [{ owned: AI_COUNTS, desired: [nextCount] }],
-    addLabels: nextCount === "ai-reviewed/2" || !hasFindings ? ["maintainer-required"] : [],
-    removeLabels: nextCount === "ai-reviewed/1" && hasFindings ? ["maintainer-required"] : [],
+    // Reported findings leave the next step with the contributor, even at `ai-reviewed/2`. Automatic
+    // review is exhausted there, so classification hands the pull request over on their next push.
+    addLabels: hasFindings ? [] : ["maintainer-required"],
+    removeLabels: hasFindings ? ["maintainer-required"] : [],
     comments: [{
       kind: "review", marker: reviewMarker, review: reviewerResult.value,
       reducedCoverage: Array.isArray(reducedCoverage) ? reducedCoverage : [],

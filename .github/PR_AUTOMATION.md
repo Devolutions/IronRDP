@@ -204,6 +204,10 @@ A suspected overlap with another pull request is advisory: at confidence 0.85 or
 The classifier reports possible shared scope in `overlap`, using candidate titles and truncated bodies.
 Unavailable or invalid classification fails closed to maintainer review.
 
+`maintainer-required` marks a pull request whose next step belongs to a maintainer.
+A review applies it when it reports no findings and withdraws it when it reports findings.
+Once `ai-reviewed/2` is set, classification applies it on the next push, because automatic review has stopped.
+
 Bot-authored pull requests do not run automatic routes or label reconciliation.
 Force mode can override policy gates for an open pull request at its current head after a trusted, valid classification for that exact head selects its reviewers.
 Force mode never bypasses classification validity, evidence retrieval, output validation, filesystem restrictions, protocol citation validation, or stale-head checks.
