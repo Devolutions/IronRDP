@@ -29,7 +29,7 @@ arbitrary = ["dep:arbitrary", "std", "bitflags/arbitrary"]
 
 [dependencies]
 arbitrary = { version = "1", features = ["derive"], optional = true }
-ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] } # public
+ironrdp-core = { path = "../ironrdp-core", version = "0.3", features = ["alloc"] } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.2", features = ["alloc"] } # public
 bitflags = "2.11" # public
 
