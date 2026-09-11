@@ -1,44 +1,169 @@
 //! In-memory `CLIPRDR` backend for the headless agent daemon.
 //!
 //! Bridges `CLIPRDR` to the `clipboard-get`/`clipboard-set` IPC operations. Plain Unicode text
-//! (`CF_UNICODETEXT`) and images (`CF_DIB`/`CF_DIBV5`, stored as PNG); no file transfer, no HTML.
-//! A headless daemon has no host clipboard of its own, so this backend holds the last content
-//! pushed by a `clipboard-set*` operation as its local clipboard content and the last content
-//! received from the remote as its remote clipboard content, both behind a lock shared with the
-//! daemon's IPC handlers. Content is a single logical item at a time (text or image, not both at
-//! once), matching how each `clipboard-set*` call replaces whatever was there before.
+//! (`CF_UNICODETEXT`), images (`CF_DIB`/`CF_DIBV5`, stored as PNG), and files (the
+//! `FileGroupDescriptorW` file-list mechanism). A headless daemon has no host clipboard of its
+//! own, so this backend holds the last content pushed by a `clipboard-set*` operation as its
+//! local clipboard content and the last content received from the remote as its remote clipboard
+//! content, both behind a lock shared with the daemon's IPC handlers. Content is a single logical
+//! item at a time (text, image, or files, not several at once), matching how each
+//! `clipboard-set*` call replaces whatever was there before.
+//!
+//! Files are a structurally different mechanism from the other three: `CLIPRDR`'s delayed-render
+//! file-list PDUs (`initiate_file_copy`/`on_file_contents_request`/`on_remote_file_list`), not
+//! `FormatDataRequest`/`FormatDataResponse`. `ironrdp_cliprdr::Cliprdr` owns the whole lock
+//! lifecycle (snapshotting the local file list on an incoming `LockData`, auto-locking when a
+//! remote file list arrives, timeout-driven expiry), but that internal snapshot is only used for
+//! `Cliprdr`'s own index-bounds validation and is never exposed to the backend. This backend's
+//! `on_lock`/`on_unlock` therefore keep their own snapshot (`ClipboardState::local_locked_lists`)
+//! so `build_file_contents_response` can serve a locked request from the content that was
+//! actually locked rather than whatever `local`/`local_file_paths` hold by the time the request
+//! arrives. `on_outgoing_locks_expired` is the mirror image on the other direction: it aborts any
+//! active `clipboard-get-file` fetch bound to the expiring lock rather than let it continue
+//! against a remote clipboard that has since changed underneath it.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use ironrdp_client::rdp::RdpInputSender;
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy, CliprdrBackend, CliprdrBackendFactory};
+use ironrdp_cliprdr::chunked_fetch::{ChunkedFetch, ChunkedFetchProgress};
 use ironrdp_cliprdr::pdu::{
-    ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse,
-    FormatDataRequest, FormatDataResponse, LockDataId,
+    ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, FileContentsFlags,
+    FileContentsRequest, FileContentsResponse, FileDescriptor, FormatDataRequest, FormatDataResponse, LockDataId,
 };
 use ironrdp_cliprdr_format::bitmap;
 use ironrdp_pdu::ironrdp_core::{IntoOwned as _, impl_as_any};
 use ironrdp_rpc::ipc::MAX_CLIPBOARD_IMAGE_BYTES;
 use tracing::debug;
 
+/// Chunk size `clipboard_get_file` drives `ChunkedFetch` with, in bytes.
+///
+/// A pragmatic middle ground: large enough that a multi-megabyte file does not need thousands of
+/// round trips, small enough that one chunk comfortably fits an IPC frame's own overhead.
+pub(crate) const FILE_FETCH_CHUNK_SIZE: u32 = 256 * 1024;
+
+/// Cap on `ClipboardState::local_locked_lists`, mirroring `ironrdp_cliprdr::Cliprdr`'s own
+/// `MAX_LOCKED_FILE_LISTS` bound on the identical growth risk: a remote that sends Lock PDUs
+/// under many distinct clipDataIds without ever unlocking must not grow this map unbounded.
+const MAX_LOCAL_LOCKED_LISTS: usize = 100;
+
 /// One piece of clipboard content, in the daemon's own internal representation.
 ///
 /// Images are stored as PNG bytes regardless of which `CF_DIB`/`CF_DIBV5` format the remote asks
 /// for or offers; conversion to/from the wire's DIB byte layout happens at the point of use via
-/// `ironrdp_cliprdr_format::bitmap`.
+/// `ironrdp_cliprdr_format::bitmap`. Files are the wire-shaped metadata list, used identically for
+/// what we offer locally and what the remote last advertised: local disk paths backing an offered
+/// list live separately in `ClipboardState::local_file_paths`, since `FileDescriptor` itself
+/// carries no local filesystem path.
 #[derive(Debug, Clone)]
 pub(crate) enum ClipboardContent {
     Text(String),
     Image(Vec<u8>),
+    Files(Vec<FileDescriptor>),
 }
 
 /// Clipboard content shared between the `CLIPRDR` backend and the daemon's IPC handlers.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct ClipboardState {
     /// Set by a `clipboard-set*` operation; advertised to the remote and served on request.
     pub(crate) local: Option<ClipboardContent>,
     /// Set from the remote's last copy; read by a `clipboard-get*` operation.
     pub(crate) remote: Option<ClipboardContent>,
+    /// Local filesystem paths backing `local`'s entries when `local` is
+    /// `Some(ClipboardContent::Files(_))`, parallel-indexed to that list. Needed to serve
+    /// `on_file_contents_request` by reading the actual bytes; empty otherwise.
+    pub(crate) local_file_paths: Vec<PathBuf>,
+    /// The `clipDataId` of the lock automatically covering `remote`'s file list, when `remote` is
+    /// `Some(ClipboardContent::Files(_))` and locking was negotiated. Passed to `ChunkedFetch` so
+    /// a fetch stays bound to the snapshot it was listed against.
+    pub(crate) remote_file_lock_id: Option<u32>,
+    /// The capabilities the active session negotiated, updated by
+    /// `CliprdrBackend::on_process_negotiated_capabilities`. `clipboard_set_files` and
+    /// `clipboard_get_file` check this before sending a file-transfer message: `Cliprdr` itself
+    /// hard-errors a file-transfer call when `STREAM_FILECLIP_ENABLED` was not negotiated, and
+    /// that error is session-fatal by the time it reaches `ironrdp-client`'s dispatcher, so this
+    /// backend must fail cleanly at the IPC layer instead of sending the message at all.
+    pub(crate) negotiated_capabilities: ClipboardGeneralCapabilityFlags,
+    /// The in-progress `clipboard-get-file` fetch, if any. Only one is ever driven at a time.
+    pub(crate) active_fetch: Option<ChunkedFetch>,
+    /// The `clipDataId` `active_fetch` is bound to, if locking was negotiated. Tracked
+    /// separately from `active_fetch` itself (`ChunkedFetch` does not expose its own bound id)
+    /// so `on_outgoing_locks_expired` can recognize and abort a fetch whose lock just expired.
+    pub(crate) active_fetch_lock_id: Option<u32>,
+    /// The last [`ChunkedFetchProgress`] `on_file_contents_response` observed for `active_fetch`,
+    /// once it is `Complete` or `Failed`. `ChunkedFetch::is_finished` collapses both outcomes to
+    /// one bool; `clipboard_get_file` needs to tell them apart to know whether to return the
+    /// fetched bytes or an error, so this is tracked alongside rather than re-derived.
+    pub(crate) active_fetch_result: Option<ChunkedFetchProgress>,
+    /// The `stream_id` of the fetch `active_fetch_result` belongs to, whenever
+    /// `active_fetch_result` is `Some`. Needed because `abort_active_fetch` clears `active_fetch`
+    /// in the same step it sets `active_fetch_result`, so by the time a waiter checks, there may
+    /// be no `active_fetch` left to compare its own `stream_id` against; without this, a later,
+    /// unrelated fetch reusing the slot could finish and have its result stolen by a stale
+    /// waiter still holding an older `stream_id`. Always set and cleared in lockstep with
+    /// `active_fetch_result`.
+    pub(crate) active_fetch_result_stream_id: Option<u32>,
+    /// Snapshots of `(local, local_file_paths)` at the moment each was locked by the remote
+    /// (`on_lock`), keyed by clipDataId. `Cliprdr` keeps its own snapshot for index-bounds
+    /// validation but does not expose it to the backend, so `build_file_contents_response`
+    /// consults this instead of the possibly-since-replaced `local`/`local_file_paths` when a
+    /// request carries a `data_id`. Cleared on the matching `on_unlock`; capped at
+    /// `MAX_LOCAL_LOCKED_LISTS`.
+    pub(crate) local_locked_lists: HashMap<u32, (Vec<FileDescriptor>, Vec<PathBuf>)>,
+    /// The `stream_id` the next `clipboard-get-file` fetch will use, incremented on every use.
+    ///
+    /// `Cliprdr` retains an outstanding `FileContentsRequest` until its own response/transfer
+    /// timeout even after `clipboard_get_file` gives up on it and clears `active_fetch`, so a
+    /// later fetch must not reuse an id that request might still answer against: a delayed
+    /// response for the old fetch would otherwise match the new fetch's id in
+    /// `on_file_contents_response` and be accepted into it, corrupting its output.
+    next_file_stream_id: u32,
+}
+
+impl ClipboardState {
+    /// Returns a fresh `stream_id` for a new file-contents fetch, never reused by an earlier one.
+    pub(crate) fn next_file_stream_id(&mut self) -> u32 {
+        let id = self.next_file_stream_id;
+        self.next_file_stream_id = self.next_file_stream_id.wrapping_add(1);
+        id
+    }
+
+    /// Clears the active fetch and marks it failed, if one exists. Returns whether it did, so
+    /// the caller knows whether to wake `file_fetch_notify` afterward (which must happen after
+    /// releasing this state's lock, so it is not done here). Shared by every place an in-progress
+    /// fetch needs to be abandoned: the remote clipboard changing (`on_remote_copy`), an active
+    /// fetch's lock expiring (`on_outgoing_locks_expired`), that lock being released immediately
+    /// by a new `clipboard-set-files` (`on_outgoing_locks_cleared`), and a session transition
+    /// (`Daemon::connect`) leaving one behind from the outgoing session.
+    pub(crate) fn abort_active_fetch(&mut self) -> bool {
+        let Some(fetch) = self.active_fetch.take() else {
+            return false;
+        };
+        self.active_fetch_lock_id = None;
+        self.active_fetch_result = Some(ChunkedFetchProgress::Failed);
+        self.active_fetch_result_stream_id = Some(fetch.stream_id());
+        true
+    }
+}
+
+impl Default for ClipboardState {
+    fn default() -> Self {
+        Self {
+            local: None,
+            remote: None,
+            local_file_paths: Vec::new(),
+            remote_file_lock_id: None,
+            negotiated_capabilities: ClipboardGeneralCapabilityFlags::empty(),
+            active_fetch: None,
+            active_fetch_result: None,
+            active_fetch_result_stream_id: None,
+            active_fetch_lock_id: None,
+            local_locked_lists: HashMap::new(),
+            next_file_stream_id: 1,
+        }
+    }
 }
 
 /// Forwards `CLIPRDR` events into the session's bounded input channel.
@@ -63,11 +188,20 @@ impl ClipboardMessageProxy for AgentClipboardMessageProxy {
 pub(crate) struct AgentCliprdrBackendFactory {
     state: Arc<Mutex<ClipboardState>>,
     input_tx: RdpInputSender,
+    file_fetch_notify: Arc<tokio::sync::Notify>,
 }
 
 impl AgentCliprdrBackendFactory {
-    pub(crate) fn new(state: Arc<Mutex<ClipboardState>>, input_tx: RdpInputSender) -> Self {
-        Self { state, input_tx }
+    pub(crate) fn new(
+        state: Arc<Mutex<ClipboardState>>,
+        input_tx: RdpInputSender,
+        file_fetch_notify: Arc<tokio::sync::Notify>,
+    ) -> Self {
+        Self {
+            state,
+            input_tx,
+            file_fetch_notify,
+        }
     }
 }
 
@@ -76,6 +210,7 @@ impl CliprdrBackendFactory for AgentCliprdrBackendFactory {
         Box::new(AgentCliprdrBackend {
             state: Arc::clone(&self.state),
             proxy: AgentClipboardMessageProxy(self.input_tx.clone()),
+            file_fetch_notify: Arc::clone(&self.file_fetch_notify),
             pending_paste: None,
             pending_since_ms: None,
             desired_paste: None,
@@ -96,6 +231,11 @@ enum PendingPaste {
     Image {
         dibv5: bool,
     },
+    /// File-list paste. The list itself arrives through the separate
+    /// [`CliprdrBackend::on_remote_file_list`] callback, not `on_format_data_response`; this
+    /// variant exists so `on_remote_copy`'s one-outstanding-request bookkeeping and timeout still
+    /// cover the file-list case the same way as the others.
+    Files,
 }
 
 /// How long an outstanding paste request is given to answer before a newer remote copy is allowed
@@ -112,6 +252,9 @@ const PENDING_PASTE_TIMEOUT_MS: u64 = 5_000;
 struct AgentCliprdrBackend {
     state: Arc<Mutex<ClipboardState>>,
     proxy: AgentClipboardMessageProxy,
+    /// Woken whenever `on_file_contents_response` advances or finishes `active_fetch`, so
+    /// `clipboard_get_file`'s wait loop knows to re-check state instead of polling.
+    file_fetch_notify: Arc<tokio::sync::Notify>,
     /// The format currently awaiting a `FormatDataResponse`, if any.
     pending_paste: Option<PendingPaste>,
     /// When `pending_paste` was issued, per [`CliprdrBackend::now_ms`].
@@ -127,6 +270,12 @@ impl_as_any!(AgentCliprdrBackend);
 ///
 /// Shared by [`AgentCliprdrBackend::on_request_format_list`] and the daemon's `clipboard_set*`
 /// handlers, which advertise immediately to an already-connected session.
+///
+/// Does not cover [`ClipboardContent::Files`]: files use the separate
+/// `ClipboardMessage::SendInitiateFileCopy` path (`Cliprdr::initiate_file_copy`), not
+/// `SendInitiateCopy`, since offering a file list is `CLIPRDR`'s delayed-render file-list
+/// mechanism rather than a `FormatDataRequest`-served format. Both call sites branch on
+/// `ClipboardContent::Files` before reaching this function.
 pub(crate) fn advertised_formats(content: &ClipboardContent) -> Vec<ClipboardFormat> {
     match content {
         ClipboardContent::Text(_) => vec![ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)],
@@ -136,10 +285,32 @@ pub(crate) fn advertised_formats(content: &ClipboardContent) -> Vec<ClipboardFor
             ClipboardFormat::new(ClipboardFormatId::CF_DIB),
             ClipboardFormat::new(ClipboardFormatId::CF_DIBV5),
         ],
+        ClipboardContent::Files(_) => Vec::new(),
     }
 }
 
 impl AgentCliprdrBackend {
+    /// Aborts the active fetch if its lock is among `clip_data_ids`, since it can no longer
+    /// safely continue against a remote clipboard that has changed underneath it. `reason`
+    /// distinguishes why the lock is gone (expiry timeout vs. immediate release by a new
+    /// `clipboard-set-files`) in the log line; the abort-and-notify behavior is identical either
+    /// way. Shared by `on_outgoing_locks_expired` and `on_outgoing_locks_cleared`.
+    fn abort_fetch_for_released_lock(&mut self, clip_data_ids: &[LockDataId], reason: &str) {
+        let mut state = self.state.lock().expect("clipboard state poisoned");
+        let Some(active_id) = state.active_fetch_lock_id else {
+            return;
+        };
+        if clip_data_ids.iter().any(|id| id.0 == active_id) {
+            debug!(
+                clip_data_id = active_id,
+                "Active file fetch's lock {reason}; aborting rather than continue against a changed remote clipboard"
+            );
+            state.abort_active_fetch();
+            drop(state);
+            self.file_fetch_notify.notify_waiters();
+        }
+    }
+
     /// Marks `paste` as the outstanding request and sends it. Only ever call this when no other
     /// request is outstanding (`pending_paste` is `None`), which `on_remote_copy` and
     /// `on_format_data_response` are responsible for maintaining.
@@ -150,6 +321,90 @@ impl AgentCliprdrBackend {
         self.proxy
             .send_clipboard_message(ClipboardMessage::SendInitiatePaste(format));
     }
+
+    /// Builds the response to one `FileContentsRequest` for a file we offered, reading from the
+    /// local disk path `clipboard_set_files` recorded alongside the offered `FileDescriptor`.
+    fn build_file_contents_response(&self, request: &FileContentsRequest) -> FileContentsResponse<'static> {
+        use std::io::{Read as _, Seek as _, SeekFrom};
+
+        let state = self.state.lock().expect("clipboard state poisoned");
+        let index = match usize::try_from(request.index) {
+            Ok(index) => index,
+            Err(_) => return FileContentsResponse::new_error(request.stream_id),
+        };
+
+        // MS-RDPECLIP 3.1.5.4.6: if the request carries a clipDataId, it MUST be serviced from
+        // the File Stream data locked under that id, not whatever is currently offered — the
+        // local offer may have been replaced by a later clipboard-set-files call while the lock
+        // (and the remote's in-flight fetch against it) is still active.
+        let (files, paths) = match request.data_id {
+            Some(id) => match state.local_locked_lists.get(&id) {
+                Some((files, paths)) => (files, paths),
+                // A present clipDataId names a snapshot this backend either never captured (the
+                // cache was full, see MAX_LOCAL_LOCKED_LISTS) or already reaped (the inactivity
+                // sweep's on_unlock): serving the current offer here would risk mixing content
+                // the lock exists specifically to prevent, so this is an error, not a fallback.
+                None => return FileContentsResponse::new_error(request.stream_id),
+            },
+            None => {
+                let Some(ClipboardContent::Files(files)) = state.local.as_ref() else {
+                    return FileContentsResponse::new_error(request.stream_id);
+                };
+                (files, &state.local_file_paths)
+            }
+        };
+        let (Some(descriptor), Some(path)) = (files.get(index), paths.get(index)) else {
+            return FileContentsResponse::new_error(request.stream_id);
+        };
+        if descriptor
+            .attributes
+            .is_some_and(|attributes| attributes.contains(ironrdp_cliprdr::pdu::ClipboardFileAttributes::DIRECTORY))
+        {
+            debug!(index, "File contents requested for a directory entry; refusing");
+            return FileContentsResponse::new_error(request.stream_id);
+        }
+        let path = path.clone();
+        drop(state);
+
+        if request.flags.contains(FileContentsFlags::SIZE) {
+            return match std::fs::metadata(&path) {
+                Ok(metadata) => FileContentsResponse::new_size_response(request.stream_id, metadata.len()),
+                Err(error) => {
+                    debug!(%error, index, "Failed to stat offered file for a SIZE request");
+                    FileContentsResponse::new_error(request.stream_id)
+                }
+            };
+        }
+
+        // RANGE. Cap the read below the caller's own `requested_size`: MS-RDPECLIP defines
+        // `cbRequested` as an upper bound on what a responder may return, not a guarantee of how
+        // much it will, so a peer asking for an unreasonably large single chunk gets a shorter
+        // response instead of forcing a matching allocation here; `ChunkedFetch` on the requesting
+        // side already handles a response shorter than requested by issuing another RANGE request
+        // for the remainder.
+        const MAX_RESPONSE_CHUNK_BYTES: u32 = 4 * 1024 * 1024;
+        let read_len = request.requested_size.min(MAX_RESPONSE_CHUNK_BYTES);
+
+        let mut file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) => {
+                debug!(%error, index, "Failed to open offered file for a RANGE request");
+                return FileContentsResponse::new_error(request.stream_id);
+            }
+        };
+        if let Err(error) = file.seek(SeekFrom::Start(request.position)) {
+            debug!(%error, index, position = request.position, "Failed to seek offered file");
+            return FileContentsResponse::new_error(request.stream_id);
+        }
+        let mut buf = Vec::new();
+        match file.take(u64::from(read_len)).read_to_end(&mut buf) {
+            Ok(_) => FileContentsResponse::new_data_response(request.stream_id, buf),
+            Err(error) => {
+                debug!(%error, index, "Failed to read offered file");
+                FileContentsResponse::new_error(request.stream_id)
+            }
+        }
+    }
 }
 
 impl CliprdrBackend for AgentCliprdrBackend {
@@ -158,30 +413,73 @@ impl CliprdrBackend for AgentCliprdrBackend {
     }
 
     fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags {
-        // No file transfer support: no STREAM_FILECLIP_ENABLED, no CAN_LOCK_CLIPDATA.
-        ClipboardGeneralCapabilityFlags::empty()
+        ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED | ClipboardGeneralCapabilityFlags::CAN_LOCK_CLIPDATA
     }
 
     fn on_ready(&mut self) {}
 
     fn on_request_format_list(&mut self) {
-        let formats = match self.state.lock().expect("clipboard state poisoned").local.as_ref() {
-            Some(content) => advertised_formats(content),
-            None => Vec::new(),
-        };
-        self.proxy
-            .send_clipboard_message(ClipboardMessage::SendInitiateCopy(formats));
+        let state = self.state.lock().expect("clipboard state poisoned");
+        match state.local.as_ref() {
+            Some(ClipboardContent::Files(files)) => {
+                if state
+                    .negotiated_capabilities
+                    .contains(ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED)
+                {
+                    let files = files.clone();
+                    drop(state);
+                    self.proxy
+                        .send_clipboard_message(ClipboardMessage::SendInitiateFileCopy(files));
+                } else {
+                    debug!("Not re-advertising local file list: file transfer was not negotiated");
+                    drop(state);
+                    self.proxy
+                        .send_clipboard_message(ClipboardMessage::SendInitiateCopy(Vec::new()));
+                }
+            }
+            Some(content) => {
+                let formats = advertised_formats(content);
+                drop(state);
+                self.proxy
+                    .send_clipboard_message(ClipboardMessage::SendInitiateCopy(formats));
+            }
+            None => {
+                drop(state);
+                self.proxy
+                    .send_clipboard_message(ClipboardMessage::SendInitiateCopy(Vec::new()));
+            }
+        }
     }
 
     fn on_process_negotiated_capabilities(&mut self, capabilities: ClipboardGeneralCapabilityFlags) {
         debug!(?capabilities, "CLIPRDR capabilities negotiated");
+        self.state
+            .lock()
+            .expect("clipboard state poisoned")
+            .negotiated_capabilities = capabilities;
     }
 
     fn on_remote_copy(&mut self, available_formats: &[ClipboardFormat]) {
         // The remote clipboard changed: whatever content was cached no longer reflects it.
-        self.state.lock().expect("clipboard state poisoned").remote = None;
+        {
+            let mut state = self.state.lock().expect("clipboard state poisoned");
+            state.remote = None;
+            state.remote_file_lock_id = None;
+            // Abandoning an in-progress fetch here without marking it failed would leave its
+            // waiting `clipboard_get_file` caller unable to tell its fetch was interrupted from a
+            // fresh one nobody has started yet: it would keep waiting until its own timeout, and
+            // a second `clipboard_get_file` call in the meantime would see `active_fetch: None`
+            // and start a new fetch, whose result the first caller's notified-but-stale wakeup
+            // could then read as its own. Failing it explicitly and waking any waiter now closes
+            // that window.
+            let aborted = state.abort_active_fetch();
+            drop(state);
+            if aborted {
+                self.file_fetch_notify.notify_waiters();
+            }
+        }
 
-        // Prefer the richest representation offered: image over text, DIBV5 over DIB.
+        // Prefer the richest representation offered: files over image over text, DIBV5 over DIB.
         let has_dibv5 = available_formats
             .iter()
             .any(|format| format.id() == ClipboardFormatId::CF_DIBV5);
@@ -191,8 +489,16 @@ impl CliprdrBackend for AgentCliprdrBackend {
         let has_text = available_formats
             .iter()
             .any(|format| format.id() == ClipboardFormatId::CF_UNICODETEXT);
+        // The remote assigns its own ID to the registered file-list format; match by name and use
+        // whatever ID it picked, same reasoning as the HTML format elsewhere in this file.
+        let remote_file_list_id = available_formats
+            .iter()
+            .find(|format| format.name() == Some(&ClipboardFormatName::FILE_LIST))
+            .map(ClipboardFormat::id);
 
-        let target = if has_dibv5 {
+        let target = if let Some(file_list_id) = remote_file_list_id {
+            Some((PendingPaste::Files, file_list_id))
+        } else if has_dibv5 {
             Some((PendingPaste::Image { dibv5: true }, ClipboardFormatId::CF_DIBV5))
         } else if has_dib {
             Some((PendingPaste::Image { dibv5: false }, ClipboardFormatId::CF_DIB))
@@ -277,6 +583,14 @@ impl CliprdrBackend for AgentCliprdrBackend {
                         }
                     }
                 }
+                // A successful file-list response is intercepted by `Cliprdr` itself and
+                // delivered via `on_remote_file_list`, never reaching here; this arm exists only
+                // for the fallback case where the response failed to parse as a file list, which
+                // `Cliprdr` forwards here with `is_error()` still false.
+                PendingPaste::Files => {
+                    debug!("File list response could not be parsed; dropped");
+                    None
+                }
             };
             if let Some(content) = content {
                 self.state.lock().expect("clipboard state poisoned").remote = Some(content);
@@ -292,18 +606,277 @@ impl CliprdrBackend for AgentCliprdrBackend {
     }
 
     fn on_file_contents_request(&mut self, request: FileContentsRequest) {
-        debug!(?request, "File contents request ignored: no file transfer support");
+        let response = self.build_file_contents_response(&request);
+        self.proxy
+            .send_clipboard_message(ClipboardMessage::SendFileContentsResponse(response));
     }
 
     fn on_file_contents_response(&mut self, response: FileContentsResponse<'_>) {
-        debug!(?response, "File contents response ignored: no file transfer support");
+        let mut state = self.state.lock().expect("clipboard state poisoned");
+        let Some(fetch) = state.active_fetch.as_mut() else {
+            debug!("File contents response received with no active fetch; dropped");
+            return;
+        };
+        if fetch.stream_id() != response.stream_id() {
+            debug!(
+                expected = fetch.stream_id(),
+                got = response.stream_id(),
+                "File contents response stream id mismatch; dropped"
+            );
+            return;
+        }
+
+        let progress = fetch.on_response(&response);
+        let next_request = if matches!(progress, ChunkedFetchProgress::InProgress) {
+            fetch.next_request()
+        } else {
+            None
+        };
+        if matches!(progress, ChunkedFetchProgress::Complete | ChunkedFetchProgress::Failed) {
+            state.active_fetch_result = Some(progress);
+            state.active_fetch_result_stream_id = Some(response.stream_id());
+        }
+        drop(state);
+
+        if let Some(next) = next_request {
+            self.proxy
+                .send_clipboard_message(ClipboardMessage::SendFileContentsRequest(next));
+        }
+        // Wake on every response, not just Complete/Failed: `clipboard_get_file`'s wait loop
+        // recomputes its deadline each iteration as an idle timeout, so an `InProgress` chunk
+        // must reset it too, or a transfer with healthy per-chunk progress can still exceed the
+        // fixed 60s if the loop is never woken until completion.
+        self.file_fetch_notify.notify_waiters();
     }
 
     fn on_lock(&mut self, data_id: LockDataId) {
-        debug!(?data_id, "Clipboard lock ignored: no file transfer support");
+        debug!(?data_id, "Remote locked local clipboard file list");
+        let mut state = self.state.lock().expect("clipboard state poisoned");
+        let Some(ClipboardContent::Files(files)) = state.local.clone() else {
+            return;
+        };
+        let paths = state.local_file_paths.clone();
+        if state.local_locked_lists.len() >= MAX_LOCAL_LOCKED_LISTS {
+            debug!(?data_id, "Local locked-list cache full; not snapshotting this lock");
+            return;
+        }
+        // `Cliprdr` keeps its own snapshot for index-bounds validation but does not expose it to
+        // the backend, so this snapshot is what makes `build_file_contents_response` serve the
+        // locked content rather than whatever `local`/`local_file_paths` hold by the time a
+        // request against this id actually arrives.
+        state.local_locked_lists.insert(data_id.0, (files, paths));
     }
 
     fn on_unlock(&mut self, data_id: LockDataId) {
-        debug!(?data_id, "Clipboard unlock ignored: no file transfer support");
+        debug!(?data_id, "Remote unlocked local clipboard file list");
+        self.state
+            .lock()
+            .expect("clipboard state poisoned")
+            .local_locked_lists
+            .remove(&data_id.0);
+    }
+
+    fn on_remote_file_list(&mut self, files: &[FileDescriptor], clip_data_id: Option<u32>) {
+        debug!(file_count = files.len(), ?clip_data_id, "Received remote file list");
+        let mut state = self.state.lock().expect("clipboard state poisoned");
+        state.remote = Some(ClipboardContent::Files(files.to_vec()));
+        state.remote_file_lock_id = clip_data_id;
+
+        // Success for a `PendingPaste::Files` request arrives here, not through
+        // `on_format_data_response`, so this callback is what actually clears it.
+        self.pending_paste = None;
+        self.pending_since_ms = None;
+        if let Some(target) = self.desired_paste.take() {
+            drop(state);
+            self.issue_paste(target);
+        }
+    }
+
+    fn on_outgoing_locks_expired(&mut self, clip_data_ids: &[LockDataId]) {
+        self.abort_fetch_for_released_lock(clip_data_ids, "expired");
+    }
+
+    fn on_outgoing_locks_cleared(&mut self, clip_data_ids: &[LockDataId]) {
+        // `initiate_file_copy` (a new `clipboard-set-files`) releases outgoing locks immediately
+        // rather than waiting for the expiry timeout, but an active fetch bound to one of those
+        // locks needs the same abort `on_outgoing_locks_expired` already gives the timeout path:
+        // otherwise it keeps issuing FileContentsRequests against a data_id whose lock no longer
+        // exists, against a remote clipboard that has changed underneath it.
+        self.abort_fetch_for_released_lock(clip_data_ids, "released");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use core::time::Duration;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use ironrdp_client::rdp::RdpInputSender;
+    use ironrdp_cliprdr::backend::CliprdrBackend as _;
+    use ironrdp_cliprdr::chunked_fetch::{ChunkedFetch, ChunkedFetchProgress};
+    use ironrdp_cliprdr::pdu::{
+        FileContentsFlags, FileContentsRequest, FileContentsResponse, FileDescriptor, LockDataId,
+    };
+
+    use super::{
+        AgentClipboardMessageProxy, AgentCliprdrBackend, ClipboardContent, ClipboardState, advertised_formats,
+    };
+
+    #[test]
+    fn advertised_formats_is_empty_for_files() {
+        // Files use `SendInitiateFileCopy`, not `SendInitiateCopy`; both call sites branch on
+        // `ClipboardContent::Files` before reaching `advertised_formats`, so this is defensive
+        // documentation of that invariant rather than a path either call site actually takes.
+        let formats = advertised_formats(&ClipboardContent::Files(Vec::new()));
+        assert!(formats.is_empty());
+    }
+
+    fn test_backend() -> AgentCliprdrBackend {
+        let (sender, _input_rx) = RdpInputSender::channel(1);
+        AgentCliprdrBackend {
+            state: Arc::new(Mutex::new(ClipboardState::default())),
+            proxy: AgentClipboardMessageProxy(sender),
+            file_fetch_notify: Arc::new(tokio::sync::Notify::new()),
+            pending_paste: None,
+            pending_since_ms: None,
+            desired_paste: None,
+        }
+    }
+
+    fn temp_file_with(label: &str, content: &[u8]) -> PathBuf {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("ironrdp-daemon-test-{}-{unique}-{label}", std::process::id()));
+        std::fs::write(&path, content).expect("write temp test file");
+        path
+    }
+
+    fn range_request(data_id: Option<u32>) -> FileContentsRequest {
+        FileContentsRequest {
+            stream_id: 1,
+            index: 0,
+            flags: FileContentsFlags::RANGE,
+            position: 0,
+            requested_size: 1024,
+            data_id,
+        }
+    }
+
+    #[test]
+    fn file_contents_request_with_lock_serves_the_locked_snapshot_not_the_current_offer() {
+        let mut backend = test_backend();
+        let locked_path = temp_file_with("locked", b"LOCKED_CONTENT");
+        let replaced_path = temp_file_with("replaced", b"REPLACED_CONTENT");
+
+        {
+            let mut state = backend.state.lock().unwrap();
+            state.local = Some(ClipboardContent::Files(vec![FileDescriptor::new("locked.txt")]));
+            state.local_file_paths = vec![locked_path.clone()];
+        }
+
+        // The remote locks our offered list under clipDataId 42 before fetching from it.
+        backend.on_lock(LockDataId(42));
+
+        // clipboard-set-files replaces the offer while the lock is still active.
+        {
+            let mut state = backend.state.lock().unwrap();
+            state.local = Some(ClipboardContent::Files(vec![FileDescriptor::new("replaced.txt")]));
+            state.local_file_paths = vec![replaced_path.clone()];
+        }
+
+        // A request against the locked id must still read the locked file's bytes, not the
+        // replacement's.
+        let response = backend.build_file_contents_response(&range_request(Some(42)));
+        assert_eq!(response.data(), b"LOCKED_CONTENT");
+
+        // Once unlocked, the same clipDataId has no snapshot left; a request naming it errors
+        // rather than falling back to whatever is currently offered, per MS-RDPECLIP 3.1.5.4.6.
+        backend.on_unlock(LockDataId(42));
+        let response = backend.build_file_contents_response(&range_request(Some(42)));
+        assert!(response.is_error());
+
+        let _ = std::fs::remove_file(&locked_path);
+        let _ = std::fs::remove_file(&replaced_path);
+    }
+
+    #[test]
+    fn file_contents_request_without_lock_serves_the_current_offer() {
+        let backend = test_backend();
+        let path = temp_file_with("unlocked", b"CURRENT_CONTENT");
+        {
+            let mut state = backend.state.lock().unwrap();
+            state.local = Some(ClipboardContent::Files(vec![FileDescriptor::new("current.txt")]));
+            state.local_file_paths = vec![path.clone()];
+        }
+
+        let response = backend.build_file_contents_response(&range_request(None));
+        assert_eq!(response.data(), b"CURRENT_CONTENT");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn outgoing_locks_cleared_aborts_the_active_fetch_bound_to_them() {
+        // A new clipboard-set-files releases outgoing locks immediately (not just on the
+        // inactivity-timeout path `on_outgoing_locks_expired` already covered), so an active
+        // fetch bound to one of those locks must be aborted the same way.
+        let mut backend = test_backend();
+        {
+            let mut state = backend.state.lock().unwrap();
+            state.active_fetch = Some(ChunkedFetch::new_with_size_query(1, 0, 4096, Some(7), u64::MAX));
+            state.active_fetch_lock_id = Some(7);
+        }
+
+        backend.on_outgoing_locks_cleared(&[LockDataId(7)]);
+
+        let state = backend.state.lock().unwrap();
+        assert!(state.active_fetch.is_none());
+        assert!(state.active_fetch_lock_id.is_none());
+        assert!(matches!(state.active_fetch_result, Some(ChunkedFetchProgress::Failed)));
+    }
+
+    #[test]
+    fn outgoing_locks_cleared_ignores_unrelated_ids() {
+        let mut backend = test_backend();
+        {
+            let mut state = backend.state.lock().unwrap();
+            state.active_fetch_lock_id = Some(7);
+        }
+
+        backend.on_outgoing_locks_cleared(&[LockDataId(99)]);
+
+        let state = backend.state.lock().unwrap();
+        assert_eq!(state.active_fetch_lock_id, Some(7));
+        assert!(state.active_fetch_result.is_none());
+    }
+
+    #[tokio::test]
+    async fn in_progress_response_wakes_the_fetch_waiter() {
+        // Regression test: a mid-transfer chunk must wake `clipboard_get_file`'s waiter too, not
+        // only the final Complete/Failed response, or the daemon's idle-timeout loop is never
+        // reset by real chunk arrivals and can time out a healthy, still-progressing transfer.
+        let mut backend = test_backend();
+        {
+            let mut state = backend.state.lock().unwrap();
+            // total_size=8, chunk_size=4: the first response leaves the fetch InProgress.
+            state.active_fetch = Some(ChunkedFetch::new(1, 0, 8, 4, None, u64::MAX));
+        }
+
+        let notify = Arc::clone(&backend.file_fetch_notify);
+        let waiter = tokio::spawn(async move { notify.notified().await });
+        tokio::task::yield_now().await;
+
+        let response = FileContentsResponse::new_data_response(1, vec![0u8; 4]);
+        backend.on_file_contents_response(response);
+
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("an in-progress response must wake the fetch waiter")
+            .expect("waiter task must not panic");
+
+        let state = backend.state.lock().unwrap();
+        assert_eq!(state.active_fetch.as_ref().map(ChunkedFetch::is_finished), Some(false));
     }
 }

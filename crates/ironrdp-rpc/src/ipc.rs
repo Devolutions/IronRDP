@@ -52,6 +52,23 @@ pub const MAX_CLIPBOARD_IMAGE_BYTES: usize = crate::transport::MAX_MESSAGE_LEN -
 /// a handful of bytes, but this only needs to be safely conservative, not exact.
 const CLIPBOARD_IMAGE_FRAME_HEADROOM: usize = 4 * 1024;
 
+/// Maximum size in bytes of one file fetched via [`Request::ClipboardGetFile`].
+///
+/// Same rationale as [`MAX_CLIPBOARD_IMAGE_BYTES`]: derived from the transport's own frame limit,
+/// not an unrelated constant that could exceed what a single IPC message can actually carry. The
+/// daemon also bounds the fetch itself against this ceiling before issuing any wire request for
+/// the file's contents, so an oversized remote file is rejected before any bytes are pulled over
+/// the RDP session, not just before the IPC response is framed.
+pub const MAX_CLIPBOARD_FILE_BYTES: usize = crate::transport::MAX_MESSAGE_LEN - CLIPBOARD_IMAGE_FRAME_HEADROOM;
+
+/// Maximum entries accepted in one [`Request::ClipboardSetFiles`] or returned by
+/// [`Request::ClipboardListFiles`].
+///
+/// Generous for a real folder copy while still bounding decode-time allocation and the size of a
+/// CLI listing. `ironrdp_cliprdr` itself caps a wire file list at 100,000 entries as a separate,
+/// lower-level defense; this is an independent, smaller IPC-level bound.
+pub const MAX_CLIPBOARD_FILE_LIST_ENTRIES: usize = 10_000;
+
 /// Maximum contacts in one MS-RDPEI touch frame accepted over RPC.
 pub const MAX_TOUCH_CONTACTS: usize = 10;
 
@@ -122,6 +139,56 @@ pub struct PenFrameRequest {
     /// Microseconds since the previous frame (`0` for the first frame of a transaction).
     pub frame_offset: u64,
     pub contacts: Vec<PenContactRequest>,
+}
+
+/// One file's metadata: either offered locally via [`Request::ClipboardSetFiles`] (derived from
+/// the local filesystem) or listed from the remote via [`Request::ClipboardListFiles`] (as
+/// advertised over `CLIPRDR`, name-sanitized already by `ironrdp_cliprdr`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipboardFileEntry {
+    pub name: String,
+    /// Directory portion of the path within the copied collection, `\`-separated. `None` for a
+    /// file at the root of the collection.
+    pub relative_path: Option<String>,
+    pub is_directory: bool,
+    /// Absent when the remote did not declare a size (directories never carry one; some peers
+    /// omit it for files too, which forces a `SIZE` round-trip before a fetch can begin).
+    pub size: Option<u64>,
+    /// Last write time as Unix seconds, converted from the wire's Windows FILETIME (100-ns
+    /// intervals since 1601-01-01). `None` when the remote did not declare one.
+    pub last_write_time: Option<u64>,
+}
+
+fn clipboard_file_entry_size(entry: &ClipboardFileEntry) -> usize {
+    string_size(&entry.name)
+        + opt_string_size(entry.relative_path.as_deref())
+        + 1 /* is_directory */
+        + opt_u64_size(entry.size)
+        + opt_u64_size(entry.last_write_time)
+}
+
+fn write_clipboard_file_entry(dst: &mut WriteCursor<'_>, entry: &ClipboardFileEntry) -> EncodeResult<()> {
+    write_string(dst, &entry.name)?;
+    write_opt_string(dst, entry.relative_path.as_deref())?;
+    write_bool(dst, entry.is_directory)?;
+    write_opt_u64(dst, entry.size)?;
+    write_opt_u64(dst, entry.last_write_time)?;
+    Ok(())
+}
+
+fn read_clipboard_file_entry(src: &mut ReadCursor<'_>) -> DecodeResult<ClipboardFileEntry> {
+    let name = read_string(src)?;
+    let relative_path = read_opt_string(src)?;
+    let is_directory = read_bool(src)?;
+    let size = read_opt_u64(src)?;
+    let last_write_time = read_opt_u64(src)?;
+    Ok(ClipboardFileEntry {
+        name,
+        relative_path,
+        is_directory,
+        size,
+        last_write_time,
+    })
 }
 
 /// Validates and converts an RPC touch request into an MS-RDPEI touch event PDU.
@@ -465,6 +532,15 @@ pub enum Request {
     /// Set the local clipboard image (PNG bytes, at most [`MAX_CLIPBOARD_IMAGE_BYTES`]) and
     /// advertise it to the remote as `CF_DIB`/`CF_DIBV5`.
     ClipboardSetImage { png: Vec<u8> },
+    /// Offer local files (at most [`MAX_CLIPBOARD_FILE_LIST_ENTRIES`] paths) to the remote via
+    /// the `CLIPRDR` file-list mechanism (`FileGroupDescriptorW`), replacing any previous local
+    /// clipboard content. Each path names a single regular file; a directory path is rejected.
+    ClipboardSetFiles { paths: Vec<String> },
+    /// List the remote's currently offered files, if any (metadata only; nothing is fetched).
+    ClipboardListFiles,
+    /// Fetch one file's full contents from the remote by its position in the last file list
+    /// [`Request::ClipboardListFiles`] returned, bounded at [`MAX_CLIPBOARD_FILE_BYTES`].
+    ClipboardGetFile { index: i32 },
 }
 
 // Manual `Debug` so the `Connect` payload's property *values* (which may include a password before
@@ -588,6 +664,14 @@ impl fmt::Debug for Request {
                 .debug_struct("ClipboardSetImage")
                 .field("png_len", &png.len())
                 .finish(),
+            // Never print file paths or names: they can carry as much sensitive information as
+            // clipboard text or file contents.
+            Self::ClipboardSetFiles { paths } => f
+                .debug_struct("ClipboardSetFiles")
+                .field("path_count", &paths.len())
+                .finish(),
+            Self::ClipboardListFiles => f.write_str("ClipboardListFiles"),
+            Self::ClipboardGetFile { index } => f.debug_struct("ClipboardGetFile").field("index", index).finish(),
         }
     }
 }
@@ -668,6 +752,11 @@ pub enum Payload {
     ClipboardText(Option<String>),
     /// The remote clipboard's last image as PNG bytes, or `None` if unavailable.
     ClipboardImage(Option<Vec<u8>>),
+    /// The remote's currently offered files (metadata only), or `None` if the remote is not
+    /// currently offering any.
+    ClipboardFileList(Option<Vec<ClipboardFileEntry>>),
+    /// The full contents of one file fetched via [`Request::ClipboardGetFile`].
+    ClipboardFile(Vec<u8>),
 }
 
 impl fmt::Debug for Payload {
@@ -701,6 +790,12 @@ impl fmt::Debug for Payload {
                 .debug_tuple("ClipboardImage")
                 .field(&png.as_ref().map(Vec::len))
                 .finish(),
+            // File names can be as sensitive as clipboard text; print counts only.
+            Self::ClipboardFileList(files) => f
+                .debug_tuple("ClipboardFileList")
+                .field(&files.as_ref().map(Vec::len))
+                .finish(),
+            Self::ClipboardFile(data) => f.debug_tuple("ClipboardFile").field(&data.len()).finish(),
         }
     }
 }
@@ -2027,6 +2122,21 @@ impl Encode for Payload {
                 dst.write_u8(14);
                 write_opt_bytes(dst, png.as_deref())?;
             }
+            Self::ClipboardFileList(files) => {
+                dst.write_u8(15);
+                write_bool(dst, files.is_some())?;
+                if let Some(files) = files {
+                    let file_count: u16 = cast_length!("clipboard file list count", files.len())?;
+                    dst.write_u16(file_count);
+                    for file in files {
+                        write_clipboard_file_entry(dst, file)?;
+                    }
+                }
+            }
+            Self::ClipboardFile(data) => {
+                dst.write_u8(16);
+                write_bytes(dst, data)?;
+            }
         }
         Ok(())
     }
@@ -2053,6 +2163,13 @@ impl Encode for Payload {
                 Self::RailLaunch(launch) => launch.size(),
                 Self::ClipboardText(text) => opt_string_size(text.as_deref()),
                 Self::ClipboardImage(png) => opt_bytes_size(png.as_deref()),
+                Self::ClipboardFileList(files) => {
+                    1 /* presence */
+                        + files.as_ref().map_or(0, |files| {
+                            2 /* file_count */ + files.iter().map(clipboard_file_entry_size).sum::<usize>()
+                        })
+                }
+                Self::ClipboardFile(data) => bytes_size(data),
             }
     }
 }
@@ -2103,6 +2220,32 @@ impl Decode<'_> for Payload {
                     return Err(ironrdp_core::invalid_field_err!("clipboard image", "too large"));
                 }
                 Ok(Self::ClipboardImage(png))
+            }
+            15 => {
+                let present = read_bool(src)?;
+                if !present {
+                    return Ok(Self::ClipboardFileList(None));
+                }
+                ensure_size!(in: src, size: 2);
+                let file_count = usize::from(src.read_u16());
+                if file_count > MAX_CLIPBOARD_FILE_LIST_ENTRIES {
+                    return Err(ironrdp_core::invalid_field_err!(
+                        "clipboard file list",
+                        "too many entries"
+                    ));
+                }
+                let mut files = Vec::with_capacity(file_count);
+                for _ in 0..file_count {
+                    files.push(read_clipboard_file_entry(src)?);
+                }
+                Ok(Self::ClipboardFileList(Some(files)))
+            }
+            16 => {
+                let data = read_bytes(src)?;
+                if data.len() > MAX_CLIPBOARD_FILE_BYTES {
+                    return Err(ironrdp_core::invalid_field_err!("clipboard file", "too large"));
+                }
+                Ok(Self::ClipboardFile(data))
             }
             _ => Err(ironrdp_core::invalid_field_err!("payload", "unknown tag", in: src)),
         }
@@ -2330,6 +2473,19 @@ impl Encode for Request {
                 dst.write_u8(32);
                 write_bytes(dst, png)?;
             }
+            Self::ClipboardSetFiles { paths } => {
+                dst.write_u8(33);
+                let path_count: u16 = cast_length!("clipboard file path count", paths.len())?;
+                dst.write_u16(path_count);
+                for path in paths {
+                    write_string(dst, path)?;
+                }
+            }
+            Self::ClipboardListFiles => dst.write_u8(34),
+            Self::ClipboardGetFile { index } => {
+                dst.write_u8(35);
+                dst.write_i32(*index);
+            }
         }
         Ok(())
     }
@@ -2393,6 +2549,11 @@ impl Encode for Request {
                 Self::DismissHoveringTouchContact { .. } => 1 /* contact_id */,
                 Self::ClipboardSet { text } => string_size(text),
                 Self::ClipboardSetImage { png } => bytes_size(png),
+                Self::ClipboardSetFiles { paths } => {
+                    2 /* path_count */ + paths.iter().map(|path| string_size(path)).sum::<usize>()
+                }
+                Self::ClipboardListFiles => 0,
+                Self::ClipboardGetFile { .. } => 4 /* index */,
             }
     }
 }
@@ -2594,6 +2755,26 @@ impl Decode<'_> for Request {
                     return Err(ironrdp_core::invalid_field_err!("clipboard image", "too large"));
                 }
                 Ok(Self::ClipboardSetImage { png })
+            }
+            33 => {
+                ensure_size!(in: src, size: 2);
+                let path_count = usize::from(src.read_u16());
+                if path_count > MAX_CLIPBOARD_FILE_LIST_ENTRIES {
+                    return Err(ironrdp_core::invalid_field_err!(
+                        "clipboard file paths",
+                        "too many paths"
+                    ));
+                }
+                let mut paths = Vec::with_capacity(path_count);
+                for _ in 0..path_count {
+                    paths.push(read_string(src)?);
+                }
+                Ok(Self::ClipboardSetFiles { paths })
+            }
+            34 => Ok(Self::ClipboardListFiles),
+            35 => {
+                ensure_size!(in: src, size: 4);
+                Ok(Self::ClipboardGetFile { index: src.read_i32() })
             }
             _ => Err(ironrdp_core::invalid_field_err!("request", "unknown tag", in: src)),
         }
