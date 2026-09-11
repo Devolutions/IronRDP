@@ -214,7 +214,12 @@ fn format_list(corpus: &Corpus) -> String {
     corpus
         .captures
         .iter()
-        .map(|capture| format!("{}\t{}\t{}\t{}\n", capture.id, capture.file, capture.sha256, capture.intent))
+        .map(|capture| {
+            format!(
+                "{}\t{}\t{}\t{}\n",
+                capture.id, capture.file, capture.sha256, capture.intent
+            )
+        })
         .collect()
 }
 
