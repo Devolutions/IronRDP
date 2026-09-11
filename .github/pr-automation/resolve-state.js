@@ -8,9 +8,10 @@ const { validateReviewGate } = require("./review-pipeline");
 const RISK = ["risk/low", "risk/medium", "risk/high", "risk/unknown"];
 const AI_COUNTS = ["ai-reviewed/1", "ai-reviewed/2"];
 const LEGITIMACY_LABEL = "triage/legitimacy";
+const OVERLAP_LABEL = "triage/overlap";
 const OVERSIZED_REVIEW_LABEL = "ai-review/allow-oversized";
 const LEGITIMACY_MARKER_PREFIX = "<!-- ironrdp-pr-automation:legitimacy:v2:";
-const DUPLICATE_MARKER = "<!-- ironrdp-pr-automation:duplicate -->";
+const OVERLAP_MARKER = "<!-- ironrdp-pr-automation:overlap -->";
 const OVERSIZED_MARKER = "<!-- ironrdp-pr-automation:oversized -->";
 const LEGACY_XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
 const FORK_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-quota -->";
@@ -99,7 +100,7 @@ function failedClassification(expectedSha, deterministic, reason, rateLimit, sem
 
 function resolveClassificationState({
   expectedSha, labels, deterministic, classifier, classificationGate,
-  classifierReason, changedPaths, duplicateCandidates, prNumber, semver, rateLimit, force,
+  classifierReason, changedPaths, overlapCandidates, prNumber, semver, rateLimit, force,
 } = {}) {
   const existing = labelsOf(labels);
   const forced = force === true;
@@ -119,7 +120,7 @@ function resolveClassificationState({
   }
   const classifierResult = validateClassifier(classifier, {
     expectedSha, changedPaths, documentationOnlyPaths: deterministic.documentationOnlyPaths,
-    duplicateCandidates, prNumber,
+    overlapCandidates, prNumber,
   });
   if (!classifierResult?.ok || classifierResult.value?.head_sha !== expectedSha) {
     const reason = classifierReason || classifierResult?.reason || "classifier output unavailable";
@@ -146,12 +147,13 @@ function resolveClassificationState({
     return failedClassification(
       expectedSha, deterministic, "reviewer routing unavailable", failureRateLimit, semverStatus);
   }
-  const duplicate = model.duplicate.detected && model.duplicate.confidence >= 0.85;
+  // Overlap is advisory: it only adds a label and comment.
+  const overlap = model.overlap.detected && model.overlap.confidence >= 0.85;
   const optional = [
     ["kind/technical-debt", model.technical_debt],
     ["kind/protocol", model.protocol_related],
     ["documentation", model.documentation_only],
-    ["duplicate", duplicate],
+    [OVERLAP_LABEL, overlap],
   ];
   const labelSets = [
     { owned: RISK, desired: [`risk/${risk}`] },
@@ -161,7 +163,7 @@ function resolveClassificationState({
     { owned: ["breaking-change"], desired: breaking ? ["breaking-change"] : [] },
   ];
   const legitimacyStopped = model.likely_non_legitimate;
-  const maintainerRequired = duplicate || legitimacyStopped || existing.has("ai-reviewed/2") ||
+  const maintainerRequired = legitimacyStopped || existing.has("ai-reviewed/2") ||
     (existing.has("maintainer-required") && classificationGate?.completed === true);
   const addLabels = [
     ...(maintainerRequired ? ["maintainer-required"] : []),
@@ -169,9 +171,9 @@ function resolveClassificationState({
   ];
   const removeLabels = maintainerRequired ? [] : ["maintainer-required"];
   const comments = [
-    ...(duplicate ? [{
-      kind: "duplicate", marker: DUPLICATE_MARKER,
-      url: model.duplicate.similar_pr_url, rationale: model.duplicate.rationale,
+    ...(overlap ? [{
+      kind: "overlap", marker: OVERLAP_MARKER,
+      url: model.overlap.similar_pr_url, rationale: model.overlap.rationale,
     }] : []),
   ];
   const auditComments = [
@@ -184,9 +186,8 @@ function resolveClassificationState({
     ok: true, mode: "classification", expectedSha, labelSets, addLabels, removeLabels, comments, auditComments,
     dispatchReview: !forced && !existing.has("ai-reviewed/2"),
     removeCommentMarkers: [
-      // A later push can make a previously reported duplicate or oversized verdict wrong, and stale
-      // guidance would then contradict the labels this run just wrote.
-      ...(duplicate ? [] : [DUPLICATE_MARKER]),
+      // Remove notices that contradict the current classification.
+      ...(overlap ? [] : [OVERLAP_MARKER]),
       EVIDENCE_LIMIT_MARKER,
       FORK_QUOTA_MARKER,
       GLOBAL_QUOTA_MARKER,
@@ -367,9 +368,10 @@ function reviewOutcome({ reportStatus, state, recovered = false, reducedCoverage
 }
 
 module.exports = {
-  AI_COUNTS, CONTRIBUTOR_INELIGIBLE_MARKER, DUPLICATE_MARKER, EVIDENCE_LIMIT_MARKER,
-  FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
-  LEGITIMACY_MARKER_PREFIX, OVERSIZED_REVIEW_LABEL, RISK, OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS,
+  AI_COUNTS, CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER,
+  GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
+  LEGITIMACY_MARKER_PREFIX, OVERLAP_LABEL, OVERLAP_MARKER, OVERSIZED_REVIEW_LABEL, RISK,
+  OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS,
   contributorEligibility, qualifyingMergedPrs, resolveClassificationState,
   resolveReviewState, reviewOutcome, reviewPolicyEligible,
 };

@@ -16,7 +16,7 @@ The classifier and all reviewers use `glm5.3`.
 The pipeline performs these stages:
 
 1. Prepare a SHA-bound changed-file manifest, diff, pull request context, and read-only head tree.
-2. Classify risk, scope, legitimacy, duplicate likelihood, protocol relevance, and useful specialist reviewers.
+2. Classify risk, scope, legitimacy, overlap with another pull request, protocol relevance, and useful specialist reviewers.
 3. Apply workflow-controlled routing rules and persist the canonical review plan in the `AI classification` check.
 4. Run selected specialists as parallel matrix jobs, at most three at once.
 5. Validate each specialist result, then aggregate the results in the canonical order `protocol`, `skeptical`, `code-compressor`.
@@ -199,7 +199,9 @@ Other human authors need one qualifying merged IronRDP pull request from the sam
 A qualifying pull request is any pull request from that author merged into `master`.
 Automatic review requires successful CI for the exact classified head.
 After the first review, a later push starts the second review when CI succeeds for that new head.
-Duplicates at confidence 0.85 or greater, legitimacy triage, and `ai-reviewed/2` block automatic review.
+Legitimacy triage and `ai-reviewed/2` block automatic review.
+A suspected overlap with another pull request is advisory: at confidence 0.85 or greater it adds `triage/overlap` and a non-blocking comment, and review proceeds under the usual gates.
+The classifier reports possible shared scope in `overlap`, using candidate titles and truncated bodies.
 Unavailable or invalid classification fails closed to maintainer review.
 
 Bot-authored pull requests do not run automatic routes or label reconciliation.

@@ -47,8 +47,8 @@ async function comments(github, owner, repo, prNumber) {
 }
 
 function markerBody(comment, owner, repo) {
-  if (comment.kind === "duplicate") {
-    return `${comment.marker}\n\nPotential duplicate detected: ${escapeMarkdown(comment.url)}.\n\n${escapeMarkdown(comment.rationale)}\n\nMaintainer review is required.`;
+  if (comment.kind === "overlap") {
+    return `${comment.marker}\n\nThis pull request may overlap with ${escapeMarkdown(comment.url)}.\n\n${escapeMarkdown(comment.rationale)}\n\nThis notice is advisory only. Automated review continues as usual, and how these pull requests relate is for maintainers and authors to decide.\n\n> [!NOTE]\n> LLM-assisted content (no human feedback).`;
   }
   if (comment.kind === "legitimacy") {
     return `${comment.marker}\n\nAutomated review stopped because commit \`${escapeMarkdown(comment.sha)}\` has strong indicators requiring maintainer triage.\n\n${escapeMarkdown(comment.reason)}\n\nThis comment remains as an audit record if later classifications differ. Maintainer review is required.`;

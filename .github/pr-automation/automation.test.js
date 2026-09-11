@@ -16,7 +16,8 @@ const {
 const { buildSpecialistAggregate, validateReviewGate, validateSpecialistRun } = require("./review-pipeline");
 const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
 const {
-  resolveClassificationState, resolveReviewState, reviewOutcome, reviewPolicyEligible, DUPLICATE_MARKER,
+  resolveClassificationState, resolveReviewState, reviewOutcome, reviewPolicyEligible, OVERLAP_MARKER,
+  OVERLAP_LABEL,
   CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERSIZED_MARKER, OVERSIZED_REVIEW_LABEL, contributorEligibility,
 } = require("./resolve-state");
@@ -35,6 +36,7 @@ const { encodeCheckState, parseCheckState } = require("./validate-classifier");
 // A rejection reason is repair feedback only if the runtime carries it whole, so the diagnostics
 // tests measure it with the runtime's own sanitizer rather than a restatement of its budget.
 const { sanitizeReason } = require("../actions/openai-agent/src/provider");
+const { compileOutputValidator } = require("../actions/openai-agent/src/agent");
 const {
   corpusFromDirectory, validateProtocolReferences,
 } = require("./validate-protocol-review");
@@ -57,7 +59,7 @@ const OTHER_SHA = "b".repeat(40);
 const classifier = (changes = {}) => ({
   head_sha: SHA, risk: "low", technical_debt: false, documentation_only: false,
   cross_cutting: false,
-  duplicate: { detected: false, similar_pr_number: null, similar_pr_url: null, confidence: 0, rationale: "" },
+  overlap: { detected: false, similar_pr_number: null, similar_pr_url: null, confidence: 0, rationale: "" },
   likely_non_legitimate: false, non_legitimate_confidence: 0, non_legitimate_reason: "",
   breaking_change_suspected: false, breaking_change_rationale: "", breaking_change_surface: "",
   protocol_related: false, summary: "safe",
@@ -290,7 +292,7 @@ test("review skip summary lists every failed gate condition", () => {
       secondReviewEligible: false,
       policyEligible: false,
       legitimacyStopped: true,
-      labels: ["ai-reviewed/2", "duplicate"],
+      labels: ["ai-reviewed/2", "triage/legitimacy"],
       contributor: { status: "ineligible", merged: 0 },
     },
     rateLimitResult: "success",
@@ -300,7 +302,6 @@ test("review skip summary lists every failed gate condition", () => {
     "CI has not succeeded for this head.",
     "An automated review has already run for this head; push a new commit before the next review.",
     "The pull request has reached the two-review limit.",
-    "The pull request is marked as a duplicate.",
     "The pull request requires a maintainer legitimacy decision.",
     "The contributor has 0 qualifying merged pull requests; at least one is required.",
   ]);
@@ -332,21 +333,27 @@ test("automatic policy ineligibility remains a non-error gate skip", async () =>
     protocolRelated: false, risk: "low", specialistReviewers: [],
     automaticReviewEligible: true,
   };
+  const classificationRuns = [{
+    id: 1, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "success",
+    app: { slug: "github-actions" },
+    output: {
+      title: "Classification complete",
+      summary: `Validated classification.\n\n${encodeCheckState(machineState)}`,
+    },
+  }];
   const result = await runReviewGateScript({
-    labels: ["duplicate"],
-    classificationRuns: [{
-      id: 1, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "success",
-      app: { slug: "github-actions" },
-      output: {
-        title: "Classification complete",
-        summary: `Validated classification.\n\n${encodeCheckState(machineState)}`,
-      },
-    }],
+    labels: [LEGITIMACY_LABEL], classificationRuns,
   });
   assert.equal(result.gate.ok, false);
   assert.equal(result.gate.policyEligible, false);
   assert.equal(result.eligible, false);
   assert.deepEqual(result.failures, []);
+
+  const eligible = await runReviewGateScript({ labels: [OVERLAP_LABEL], classificationRuns });
+  assert.equal(eligible.gate.policyEligible, true);
+  assert.equal(eligible.gate.ok, true);
+  assert.equal(eligible.eligible, true);
+  assert.deepEqual(eligible.failures, []);
 });
 
 test("review outcome requires validated final output", () => {
@@ -807,6 +814,7 @@ test("every deterministic label is declared and the repository rules classify to
   ).map((label) => label.name));
   for (const label of [
     ...Object.keys(rules), ...SIZE_LABELS, "contributor/first-time", "kind/protocol", LEGITIMACY_LABEL,
+    OVERLAP_LABEL,
   ]) {
     assert.equal(declaredLabels.has(label), true, `${label} is missing from labels.json`);
   }
@@ -860,8 +868,8 @@ test("deterministic size uses the larger changed-line or touched-file bucket", (
   ], { labelerRules: rules }).sizeLabel, "size/XS");
 });
 
-test("classifier rejects malformed duplicate and executable documentation claims", () => {
-  assert.equal(validateClassifier(classifier({ duplicate: {
+test("classifier rejects malformed overlap and executable documentation claims", () => {
+  assert.equal(validateClassifier(classifier({ overlap: {
     detected: true, similar_pr_number: 4, similar_pr_url: "https://github.com/Devolutions/IronRDP/pull/4",
     confidence: 0.84, rationale: "",
   } }), { expectedSha: SHA }).ok, false);
@@ -873,20 +881,120 @@ test("classifier rejects malformed duplicate and executable documentation claims
   assert.equal(validateClassifier(missingCrossCutting, { expectedSha: SHA }).ok, false);
 });
 
-test("classifier accepts a SHA-bound qualifying duplicate", () => {
-  const result = validateClassifier(classifier({ duplicate: {
+test("classifier accepts a SHA-bound qualifying overlap", () => {
+  const raw = classifier({ overlap: {
     detected: true, similar_pr_number: 4, similar_pr_url: "https://github.com/Devolutions/IronRDP/pull/4",
     confidence: 0.85, rationale: "same implementation",
-  } }), {
+  } });
+  const context = {
     expectedSha: SHA,
     prNumber: 5,
-    duplicateCandidates: [{ number: 4, url: "https://github.com/Devolutions/IronRDP/pull/4" }],
-  });
+    overlapCandidates: [{ number: 4, url: "https://github.com/Devolutions/IronRDP/pull/4" }],
+  };
+  const result = validateClassifier(raw, context);
   assert.equal(result.ok, true);
-  assert.equal(validateClassifier(classifier({ duplicate: {
-    detected: true, similar_pr_number: 4, similar_pr_url: "https://github.com/Devolutions/IronRDP/pull/4",
-    confidence: 0.85, rationale: "same implementation",
-  } }), { expectedSha: SHA, prNumber: 5, duplicateCandidates: [] }).ok, false);
+  assert.deepEqual(result.value.overlap, raw.overlap);
+  assert.equal(validateClassifier({
+    ...raw, overlap: { ...raw.overlap, confidence: 0.84 },
+  }, context).ok, false);
+  assert.equal(validateClassifier(raw, { ...context, overlapCandidates: [] }).ok, false);
+});
+
+test("classifier schema and semantic validation require overlap", () => {
+  const schema = JSON.parse(fs.readFileSync(path.join(__dirname, "schemas", "classifier.json"), "utf8"));
+  const validateOutput = compileOutputValidator(schema);
+  for (const raw of [
+    classifier(),
+    classifier({ overlap: {
+      detected: true, similar_pr_number: 4, similar_pr_url: "https://github.com/Devolutions/IronRDP/pull/4",
+      confidence: 0.85, rationale: "shared scope",
+    } }),
+  ]) {
+    const context = {
+      expectedSha: SHA, prNumber: 5,
+      overlapCandidates: [{ number: 4, url: "https://github.com/Devolutions/IronRDP/pull/4" }],
+    };
+    assert.equal(validateOutput(JSON.stringify(raw)).ok, true);
+    assert.equal(validateClassifier(raw, context).ok, true);
+    const { overlap, ...fields } = raw;
+    for (const invalid of [fields, { ...fields, duplicate: overlap }, { ...raw, duplicate: overlap }]) {
+      assert.equal(validateOutput(JSON.stringify(invalid)).ok, false);
+      assert.equal(validateClassifier(invalid, context).ok, false);
+    }
+  }
+});
+
+test("classifier workflow carries bounded overlap metadata into advisory state", async () => {
+  const workflow = readWorkflow();
+  const classifierJob = workflowJob(workflow, "classifier");
+  const candidateStep = classifierJob.slice(classifierJob.indexOf("- id: overlap-candidates"));
+  const candidateScript = candidateStep.match(/script: \|\n((?: {12}.*\n?)+)/)[1].replace(/^ {12}/gm, "");
+  const files = new Map();
+  const outputs = {};
+  const core = { setOutput: (name, value) => { outputs[name] = value; }, info: () => {} };
+  const pulls = Array.from({ length: 35 }, (_, index) => ({
+    number: index + 1, html_url: `https://github.com/Devolutions/IronRDP/pull/${index + 1}`,
+    title: "t".repeat(301), body: "b".repeat(1001), head: { sha: OTHER_SHA },
+  }));
+  await new AsyncFunction("require", "github", "context", "process", "core", candidateScript)(
+    (name) => {
+      assert.equal(name, "node:fs");
+      return { writeFileSync: (file, body) => files.set(file, body) };
+    },
+    { rest: { pulls: { list: async (args) => {
+      assert.deepEqual(args, {
+        owner: "Devolutions", repo: "IronRDP", state: "open", sort: "updated", direction: "desc", per_page: 100,
+      });
+      return { data: pulls };
+    } } } },
+    { repo: { owner: "Devolutions", repo: "IronRDP" } },
+    { env: { PULL_REQUEST_NUMBER: "1" } }, core,
+  );
+  const evidencePath = "pr-evidence/overlap-candidates.json";
+  const { candidates } = JSON.parse(files.get(evidencePath));
+  assert.deepEqual(candidates, pulls.slice(1, 31).map((pull) => ({
+    number: pull.number, url: pull.html_url,
+    title: "t".repeat(300), body: "b".repeat(1000), head_sha: OTHER_SHA,
+  })));
+  assert.deepEqual(JSON.parse(outputs.manifest), candidates.map(({ number, url }) => ({ number, url })));
+  const config = JSON.parse(fs.readFileSync(path.join(__dirname, "agents", "classifier.json"), "utf8"));
+  const prompt = fs.readFileSync(path.join(__dirname, "prompts", "classifier.md"), "utf8");
+  assert.equal(config.allowed_files.includes(evidencePath), true);
+  assert.equal(prompt.includes(evidencePath), true);
+  assert.doesNotMatch(prompt, /duplicate/i);
+  assert.match(classifierJob, /overlap-candidates: \$\{\{ steps\.overlap-candidates\.outputs\.manifest \}\}/);
+
+  const resolverJob = workflowJob(workflow, "resolve-classification-state");
+  assert.match(resolverJob, /OVERLAP_CANDIDATES: \$\{\{ needs\.classifier\.outputs\.overlap-candidates \}\}/);
+  const resolverScript = resolverJob.match(/script: \|\n((?: {12}.*\n?)+)/)[1].replace(/^ {12}/gm, "");
+  await new AsyncFunction("require", "process", "core", resolverScript)(
+    (name) => {
+      assert.equal(name, "./.github/pr-automation/resolve-state");
+      return { resolveClassificationState };
+    },
+    { env: {
+      HEAD_SHA: SHA, LABELS: "[]", PR_NUMBER: "1",
+      DETERMINISTIC: JSON.stringify({
+        ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/S", sizeLabels: ["size/S"],
+      }),
+      CLASSIFIER: JSON.stringify(classifier({ overlap: {
+        detected: true, similar_pr_number: 2, similar_pr_url: candidates[0].url,
+        confidence: 0.85, rationale: "shared scope",
+      } })),
+      OVERLAP_CANDIDATES: outputs.manifest,
+      CLASSIFICATION_GATE_AVAILABLE: "true", CLASSIFICATION_GATE_COMPLETED: "false",
+      FORK_RATE_LIMIT: JSON.stringify({ status: "allowed" }),
+      SEMVER: JSON.stringify({ head_sha: SHA, status: "not-suspected" }),
+    } }, core,
+  );
+  const state = JSON.parse(outputs.state);
+  assert.equal(state.failed, undefined);
+  assert.equal(state.dispatchReview, true);
+  assert.deepEqual(state.addLabels, []);
+  assert.deepEqual(state.labelSets.find((set) => set.owned.includes(OVERLAP_LABEL)).desired, [OVERLAP_LABEL]);
+  assert.deepEqual(state.comments, [{
+    kind: "overlap", marker: OVERLAP_MARKER, url: candidates[0].url, rationale: "shared scope",
+  }]);
 });
 
 test("classifier recognizes documentation below crate directories", () => {
@@ -1106,7 +1214,7 @@ test("classifier output validation requires PR context", () => {
   assert.equal(validateClassifier(classifier({ documentation_only: true }), {
     expectedSha: SHA, changedPaths: ["src/lib.rs"], prNumber: 7,
   }).ok, false);
-  assert.equal(validateClassifier(classifier({ duplicate: {
+  assert.equal(validateClassifier(classifier({ overlap: {
     detected: true, similar_pr_number: 7, similar_pr_url: "https://github.com/Devolutions/IronRDP/pull/7",
     confidence: 0.9, rationale: "same pull request",
   } }), {
@@ -1509,7 +1617,9 @@ test("all classified changes are reviewable unless a legitimacy or count gate bl
   assert.equal(reviewPolicyEligible({ labels: ["risk/low", "breaking-change"] }), true);
   assert.equal(reviewPolicyEligible({ labels: ["risk/medium"] }), true);
   assert.equal(reviewPolicyEligible({ labels: ["risk/high", "size/XXL"] }), true);
-  for (const blocking of ["duplicate", "ai-reviewed/2", LEGITIMACY_LABEL]) {
+  // Advisory labels do not suppress review.
+  assert.equal(reviewPolicyEligible({ labels: ["risk/high", OVERLAP_LABEL] }), true);
+  for (const blocking of ["ai-reviewed/2", LEGITIMACY_LABEL]) {
     assert.equal(reviewPolicyEligible({ labels: ["risk/high", blocking], protocolRelated: true }), false);
   }
   assert.equal(reviewPolicyEligible({
@@ -1587,27 +1697,38 @@ test("size/XXL remains informational and does not suppress classification", () =
   assert.equal(state.removeCommentMarkers.includes(OVERSIZED_MARKER), true);
 });
 
-test("a duplicate verdict is withdrawn once it no longer holds", () => {
+test("suspected overlap is advisory and is withdrawn once it no longer holds", () => {
   const deterministic = { ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/S",
     sizeLabels: ["size/S"], firstTime: false };
-  const state = (duplicate) => resolveClassificationState({
+  const state = (detected) => resolveClassificationState({
     expectedSha: SHA, labels: [], deterministic, semver: { head_sha: SHA, status: "not-suspected" },
-    duplicateCandidates: [{ number: 2, url: "https://github.com/Devolutions/IronRDP/pull/2" }],
-    classifier: classifier({ duplicate: duplicate
+    overlapCandidates: [{ number: 2, url: "https://github.com/Devolutions/IronRDP/pull/2" }],
+    classifier: classifier({ overlap: detected
       ? { detected: true, similar_pr_number: 2,
         similar_pr_url: "https://github.com/Devolutions/IronRDP/pull/2",
         confidence: 0.99, rationale: "same change" }
       : { detected: false, similar_pr_number: null, similar_pr_url: null, confidence: 0, rationale: "" } }),
   });
   const flagged = state(true);
-  assert.deepEqual(flagged.addLabels, ["maintainer-required"]);
-  assert.deepEqual(flagged.removeLabels, []);
-  assert.deepEqual(flagged.comments.map((comment) => comment.kind), ["duplicate"]);
-  assert.equal(flagged.removeCommentMarkers.includes(DUPLICATE_MARKER), false);
+  // Overlap alone neither hands the pull request to a maintainer nor stops the review dispatch.
+  assert.deepEqual(flagged.addLabels, []);
+  assert.deepEqual(flagged.removeLabels, ["maintainer-required"]);
+  assert.equal(flagged.dispatchReview, true);
+  assert.deepEqual(flagged.labelSets.find((set) => set.owned.includes(OVERLAP_LABEL)).desired,
+    [OVERLAP_LABEL]);
+  assert.deepEqual(flagged.comments.map((comment) => comment.kind), ["overlap"]);
+  assert.equal(flagged.removeCommentMarkers.includes(OVERLAP_MARKER), false);
+  const body = markerBody(flagged.comments[0]);
+  assert.match(body, /may overlap with/);
+  assert.match(body, /advisory only/);
+  assert.equal(/Maintainer review is required/.test(body), false);
+  assert.match(body, /LLM-assisted content \(no human feedback\)/);
+
   // Removing only the label would leave a comment contradicting the labels the same run wrote.
   const cleared = state(false);
   assert.deepEqual(cleared.comments, []);
-  assert.equal(cleared.removeCommentMarkers.includes(DUPLICATE_MARKER), true);
+  assert.deepEqual(cleared.labelSets.find((set) => set.owned.includes(OVERLAP_LABEL)).desired, []);
+  assert.equal(cleared.removeCommentMarkers.includes(OVERLAP_MARKER), true);
 });
 
 test("model text cannot smuggle active markup into a bot comment", () => {
@@ -1722,7 +1843,7 @@ test("forced review bypasses eligibility while retaining publication gates", () 
   const reviewer = review({ summary: "none", findings: [] });
   const args = {
     expectedSha: SHA,
-    labels: ["ai-reviewed/2", "duplicate", "size/XXL", "risk/low"],
+    labels: ["ai-reviewed/2", LEGITIMACY_LABEL, "size/XXL", "risk/low"],
     reviewer,
     gate: {
       ok: true, force: true, head_sha: SHA, classificationValid: true, protocolRelated: false,
@@ -1838,11 +1959,19 @@ test("review blockers distinguish gate and contributor history failures", () => 
   }
 
   const policy = resolveReviewState({
-    ...args, labels: ["risk/low", "duplicate"],
+    ...args, labels: ["risk/low", LEGITIMACY_LABEL],
     gate: { ...args.gate, policyEligible: false, protocolRelated: false },
   });
   assert.equal(policy.reason, "review is not eligible");
   assert.deepEqual(policy.addLabels, ["maintainer-required"]);
+
+  // Overlap is advisory at publication too, so the review this run spent its model call on is
+  // published instead of being discarded.
+  const advisory = resolveReviewState({
+    ...args, labels: ["risk/low", OVERLAP_LABEL],
+  });
+  assert.equal(advisory.failed, undefined);
+  assert.deepEqual(advisory.labelSets[0].desired, ["ai-reviewed/1"]);
 });
 
 test("a later eligible review removes the contributor-ineligible comment", () => {
@@ -1919,7 +2048,7 @@ test("writer stops before mutations when the head is stale", async () => {
 
 test("writer stops before mutations when review policy or count changes", async () => {
   let writes = 0;
-  let labels = [{ name: "duplicate" }];
+  let labels = [{ name: LEGITIMACY_LABEL }];
   const github = { rest: {
     pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
     issues: {
@@ -3607,6 +3736,9 @@ test("a retry re-decides review eligibility against the pull request as it is af
   for (const [reason, state] of Object.entries(declined)) {
     assert.deepEqual(await gate(state), { retry: false, reason }, reason);
   }
+
+  // A suspected overlap is advisory, so a retry earned by a transient provider failure still runs.
+  assert.deepEqual(await gate({ labels: [OVERLAP_LABEL] }), { retry: true, reason: "" });
 
   // A classification that stopped the automation still carries automaticReviewEligible, so only its
   // title separates it from one that authorizes a review. Losing the legitimacy label while the
