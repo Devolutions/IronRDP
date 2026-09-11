@@ -6,8 +6,9 @@ pub fn paths_from_ls_files(output: &[u8]) -> Vec<&[u8]> {
 }
 
 fn is_capture_path(path: &[u8]) -> bool {
-    path.rsplit(|byte| *byte == b'.')
-        .next()
+    path.iter()
+        .rposition(|byte| *byte == b'.')
+        .map(|dot| &path[dot + 1..])
         .is_some_and(|extension| extension.eq_ignore_ascii_case(b"pcap") || extension.eq_ignore_ascii_case(b"pcapng"))
 }
 
@@ -20,6 +21,14 @@ mod tests {
         assert_eq!(
             paths_from_ls_files(b"session.PCAP\0session.PCAPNG\0session.txt\0"),
             [b"session.PCAP".as_slice(), b"session.PCAPNG".as_slice()]
+        );
+    }
+
+    #[test]
+    fn requires_a_final_extension_separator() {
+        assert_eq!(
+            paths_from_ls_files(b"pcap\0pcapng\0.pcap\0.pcapng\0directory.pcap/file\0file.pcap/directory\0"),
+            [b".pcap".as_slice(), b".pcapng".as_slice()]
         );
     }
 
