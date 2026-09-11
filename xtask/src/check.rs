@@ -1,7 +1,5 @@
 use std::collections::BTreeSet;
 
-use xtask::capture;
-
 use crate::prelude::*;
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
@@ -135,7 +133,18 @@ pub fn capture_files(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("CAPTURE-FILES");
 
     let tracked_files = cmd!(sh, "git ls-files -z").output()?;
-    let captures = capture::paths_from_ls_files(&tracked_files.stdout);
+    let captures = tracked_files
+        .stdout
+        .split(|byte| *byte == b'\0')
+        .filter(|path| {
+            path.rsplit(|byte| *byte == b'/' || *byte == b'\\')
+                .next()
+                .and_then(|name| name.iter().rposition(|byte| *byte == b'.').map(|dot| &name[dot + 1..]))
+                .is_some_and(|extension| {
+                    extension.eq_ignore_ascii_case(b"pcap") || extension.eq_ignore_ascii_case(b"pcapng")
+                })
+        })
+        .collect::<Vec<_>>();
 
     if !captures.is_empty() {
         let captures = captures
