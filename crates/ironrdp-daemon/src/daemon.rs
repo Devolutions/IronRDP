@@ -313,11 +313,21 @@ fn filetime_to_unix_secs(filetime: u64) -> Option<u64> {
 
 /// Takes `active_fetch_result` if `clipboard_get_file`'s fetch has finished, materializing the
 /// response and clearing the (now-finished) fetch's slot. `None` means the fetch has not yet
-/// resolved and the caller should keep waiting. Shared by the wait loop's per-iteration check and
-/// its post-timeout recheck in `Daemon::clipboard_get_file`, which must resolve a same-instant
-/// race identically rather than risk the two copies drifting apart.
-fn take_finished_fetch_result(clipboard: &mut crate::clipboard::ClipboardState) -> Option<Response> {
+/// resolved (or resolved for a different `stream_id` than the caller's own) and the caller should
+/// keep waiting. Shared by the wait loop's per-iteration check and its post-timeout recheck in
+/// `Daemon::clipboard_get_file`, which must resolve a same-instant race identically rather than
+/// risk the two copies drifting apart.
+///
+/// Guarded by `stream_id` rather than taking whatever `active_fetch_result` holds: an aborted
+/// fetch clears `active_fetch` in the same step it sets `active_fetch_result`, so a later,
+/// unrelated fetch can start and finish in the same slot before the first call's own waiter gets
+/// scheduled. Without this guard that waiter would consume the later fetch's bytes.
+fn take_finished_fetch_result(clipboard: &mut crate::clipboard::ClipboardState, stream_id: u32) -> Option<Response> {
+    if clipboard.active_fetch_result_stream_id != Some(stream_id) {
+        return None;
+    }
     let result = clipboard.active_fetch_result.take()?;
+    clipboard.active_fetch_result_stream_id = None;
     let fetch = clipboard.active_fetch.take();
     clipboard.active_fetch_lock_id = None;
     Some(match (result, fetch) {
@@ -852,9 +862,11 @@ impl Daemon {
             clipboard.remote = None;
             clipboard.remote_file_lock_id = None;
             clipboard.negotiated_capabilities = ClipboardGeneralCapabilityFlags::empty();
-            clipboard.active_fetch = None;
-            clipboard.active_fetch_lock_id = None;
-            clipboard.active_fetch_result = None;
+            // Marks the outgoing fetch Failed (keyed by its own stream_id) rather than silently
+            // clearing it: a waiter woken just below must actually resolve promptly through
+            // `take_finished_fetch_result`, not find nothing and fall through to its own 60s
+            // FETCH_TIMEOUT despite being woken here specifically to avoid that.
+            clipboard.abort_active_fetch();
         }
         // Wake a `clipboard_get_file` waiter left over from the outgoing session (if any) so it
         // re-checks promptly instead of running out its own FETCH_TIMEOUT: its fetch was just
@@ -1504,6 +1516,7 @@ impl Daemon {
             clipboard.active_fetch = Some(fetch);
             clipboard.active_fetch_lock_id = clip_data_id;
             clipboard.active_fetch_result = None;
+            clipboard.active_fetch_result_stream_id = None;
             let _ = input_tx.send_clipboard(ClipboardMessage::SendFileContentsRequest(first_request));
             (clipboard_file_notify, stream_id)
         };
@@ -1518,7 +1531,7 @@ impl Daemon {
 
             {
                 let mut clipboard = self.clipboard.lock().expect("clipboard state poisoned");
-                if let Some(response) = take_finished_fetch_result(&mut clipboard) {
+                if let Some(response) = take_finished_fetch_result(&mut clipboard, stream_id) {
                     return response;
                 }
             }
@@ -1530,7 +1543,7 @@ impl Daemon {
                 // fetch is genuinely stuck, the same way `rail_wait` re-checks live state after
                 // its own timeout rather than assuming nothing arrived.
                 let mut clipboard = self.clipboard.lock().expect("clipboard state poisoned");
-                if let Some(response) = take_finished_fetch_result(&mut clipboard) {
+                if let Some(response) = take_finished_fetch_result(&mut clipboard, stream_id) {
                     return response;
                 }
                 // Only clear the shared fetch slot if it is still this call's own fetch: a
@@ -2246,7 +2259,7 @@ mod tests {
 
     use ironrdp_client::output_channel::output_channel;
     use ironrdp_client::rdp::{RdpInputEvent, RdpInputSender};
-    use ironrdp_cliprdr::chunked_fetch::ChunkedFetch;
+    use ironrdp_cliprdr::chunked_fetch::{ChunkedFetch, ChunkedFetchProgress};
     use ironrdp_cliprdr::pdu::{ClipboardGeneralCapabilityFlags, FileDescriptor};
     use ironrdp_input::{Database, Operation};
     use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
@@ -3127,6 +3140,7 @@ mod tests {
             clipboard.active_fetch = Some(ChunkedFetch::new_with_size_query(99, 0, 4096, None, u64::MAX));
             clipboard.active_fetch_lock_id = None;
             clipboard.active_fetch_result = None;
+            clipboard.active_fetch_result_stream_id = None;
         }
 
         // Push past fetch_a's 60s deadline; nothing ever answers its FileContentsRequest, so it
@@ -3146,6 +3160,86 @@ mod tests {
             Some(99),
             "fetch_a's timeout must not clobber a fetch it does not own"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stale_waiter_does_not_consume_a_later_fetch_result() {
+        // Regression test for the `active_fetch_result_stream_id` guard: an aborted fetch clears
+        // `active_fetch` in the same step it sets `active_fetch_result`, so a later, unrelated
+        // fetch can start and finish in the same slot before the first call's own waiter is
+        // scheduled to consume it. Without the guard, `take_finished_fetch_result` would hand
+        // fetch_a a completion meant for fetch_b, and fetch_b would then block out its own
+        // timeout for a result that was already taken out from under it.
+        let (daemon, _input_rx, _live, _rail_notify) = active_rail_session(true);
+        {
+            let mut clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+            clipboard.negotiated_capabilities = ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED;
+            clipboard.remote = Some(crate::clipboard::ClipboardContent::Files(vec![
+                FileDescriptor::new("a.bin").with_file_size(10),
+            ]));
+        }
+
+        let daemon = Arc::new(daemon);
+        let fetch_a = tokio::spawn({
+            let daemon = Arc::clone(&daemon);
+            async move { daemon.clipboard_get_file(0).await }
+        });
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        {
+            let clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+            assert_eq!(
+                clipboard.active_fetch.as_ref().map(ChunkedFetch::stream_id),
+                Some(1),
+                "fetch_a should have registered its fetch by now"
+            );
+        }
+
+        let notify = {
+            let guard = daemon.state.lock().expect("daemon state poisoned");
+            Arc::clone(&guard.as_ref().expect("session installed").clipboard_file_notify)
+        };
+
+        // Simulate fetch_a's fetch being aborted and, before fetch_a's task ever gets scheduled
+        // to react, a second, unrelated fetch (stream_id 99) starting and completing in the same
+        // slot. A zero-size fetch starts already `Complete`, matching what a real completed fetch
+        // looks like from `take_finished_fetch_result`'s perspective.
+        {
+            let mut clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+            clipboard.active_fetch = Some(ChunkedFetch::new(99, 1, 0, 4096, None, u64::MAX));
+            clipboard.active_fetch_lock_id = None;
+            clipboard.active_fetch_result = Some(ChunkedFetchProgress::Complete);
+            clipboard.active_fetch_result_stream_id = Some(99);
+        }
+        notify.notify_waiters();
+        tokio::task::yield_now().await;
+
+        assert!(
+            !fetch_a.is_finished(),
+            "fetch_a must not have consumed fetch_b's result"
+        );
+        {
+            let clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+            assert_eq!(
+                clipboard.active_fetch.as_ref().map(ChunkedFetch::stream_id),
+                Some(99),
+                "fetch_b's still-unconsumed result must remain in the slot"
+            );
+            assert!(matches!(
+                clipboard.active_fetch_result,
+                Some(ChunkedFetchProgress::Complete)
+            ));
+        }
+
+        // fetch_a eventually times out on its own; fetch_b's result is untouched by that timeout
+        // (already covered by `timed_out_fetch_does_not_clobber_a_fetch_started_after_it`), and a
+        // real caller for stream_id 99 would still find its own result intact.
+        tokio::time::advance(Duration::from_secs(61)).await;
+        let response = fetch_a.await.expect("fetch_a task did not panic");
+        assert!(matches!(
+            response,
+            Response::Err(err) if err.message.contains("timed out")
+        ));
     }
 
     #[tokio::test(start_paused = true)]

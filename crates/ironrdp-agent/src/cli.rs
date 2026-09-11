@@ -2226,7 +2226,12 @@ fn print_payload(payload: Payload) {
                     };
                     let kind = if file.is_directory { "dir" } else { "file" };
                     let size = file.size.map_or_else(|| "?".to_owned(), |size| size.to_string());
-                    println!("{index}: {kind} {size:>12} {path}");
+                    // Unix seconds, not a formatted date: keeps this crate free of a date/time
+                    // dependency for what is otherwise a plain integer field.
+                    let mtime = file
+                        .last_write_time
+                        .map_or_else(|| "?".to_owned(), |time| time.to_string());
+                    println!("{index}: {kind} {size:>12} {mtime:>10} {path}");
                 }
             }
             None => println!("(no files on the remote clipboard)"),
