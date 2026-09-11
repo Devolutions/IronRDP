@@ -6,8 +6,6 @@ use bitvec::prelude::*;
 use ironrdp_pdu::codecs::rfx::EntropyAlgorithm;
 use yuv::YuvError;
 
-use crate::utils::Bits;
-
 const KP_MAX: u32 = 80;
 const LS_GR: u32 = 3;
 const UP_GR: u32 = 4;
@@ -22,16 +20,6 @@ macro_rules! write_byte {
             $output = &mut $output[1..];
         } else {
             break;
-        }
-    };
-}
-
-macro_rules! try_split_bits {
-    ($bits:ident, $n:expr) => {
-        if $bits.len() < $n {
-            break;
-        } else {
-            $bits.split_to($n)
         }
     };
 }
@@ -252,6 +240,99 @@ fn code_gr(bits: &mut BitStream<'_>, krp: &mut u32, val: u32) {
     }
 }
 
+/// MSB-first bit reader over an encoded tile.
+struct BitReader<'a> {
+    /// Bytes not yet loaded into `acc`.
+    data: &'a [u8],
+    /// Buffered bits: the next bit to be read is bit 63, and every
+    /// bit below `64 - len` is zero.
+    acc: u64,
+    /// Number of valid bits in `acc`, at most 64.
+    len: u32,
+}
+
+impl<'a> BitReader<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        let mut this = Self { data, acc: 0, len: 0 };
+        this.refill();
+        this
+    }
+
+    /// Tops `acc` up to more than 56 bits when input remains, so any read of up
+    /// to 32 bits is served without a second bounds check.
+    #[inline]
+    fn refill(&mut self) {
+        while self.len <= 56 {
+            let Some((&byte, rest)) = self.data.split_first() else {
+                break;
+            };
+            self.data = rest;
+            self.acc |= u64::from(byte) << (56 - self.len);
+            self.len += 8;
+        }
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.len == 0 && self.data.is_empty()
+    }
+
+    /// Consumes `n` buffered bits. `n` must not exceed `len`, and `len <= 64`.
+    #[inline]
+    fn consume(&mut self, n: u32) {
+        debug_assert!(n < 64 && n <= self.len);
+        self.acc <<= n;
+        self.len -= n;
+    }
+
+    /// Reads `n` bits (`n <= 32`) MSB-first, or returns `None` without consuming
+    /// anything if fewer than `n` bits remain.
+    #[inline]
+    fn read(&mut self, n: u32) -> Option<u32> {
+        debug_assert!(n <= 32);
+        if n == 0 {
+            return Some(0);
+        }
+        self.refill();
+        if self.len < n {
+            return None;
+        }
+        #[expect(clippy::cast_possible_truncation, reason = "n <= 32, so the shift leaves 32 bits")]
+        let value = (self.acc >> (64 - n)) as u32;
+        self.consume(n);
+        Some(value)
+    }
+
+    /// Counts and consumes leading bits equal to `value`, leaving the
+    /// terminating opposite bit for the caller to read.
+    #[inline]
+    fn skip_leading(&mut self, value: bool) -> usize {
+        let mut total = 0usize;
+
+        loop {
+            self.refill();
+            if self.len == 0 {
+                return total;
+            }
+
+            // Count leading zeros either way by inverting for a run of ones.
+            let word = if value { !self.acc } else { self.acc };
+            let run = word.leading_zeros().min(self.len);
+            total += usize::try_from(run).unwrap_or(usize::MAX);
+
+            if run < self.len {
+                // The terminator is in the buffer. Leave it unconsumed.
+                self.consume(run);
+                return total;
+            }
+
+            // The whole buffer matched. Drop it and look at the next one.
+            self.acc = 0;
+            self.len = 0;
+        }
+    }
+}
+
 pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Result<(), RlgrError> {
     #![expect(
         clippy::as_conversions,
@@ -268,21 +349,36 @@ pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Re
     let mut kp: u32 = k << LS_GR;
     let mut krp: u32 = kr << LS_GR;
 
-    let mut bits = Bits::new(BitSlice::from_slice(tile));
+    let mut bits = BitReader::new(tile);
 
     while !bits.is_empty() && !output.is_empty() {
         match CompressionMode::from(k) {
             CompressionMode::RunLength => {
-                let number_of_zeros = truncate_leading_value(&mut bits, false);
-                try_split_bits!(bits, 1);
-                let run = count_run(number_of_zeros, &mut k, &mut kp) + load_be_u32(try_split_bits!(bits, k as usize));
+                let number_of_zeros = bits.skip_leading(false);
+                if bits.read(1).is_none() {
+                    break;
+                }
+                // `count_run` advances `k`, and the run's low bits are then read
+                // with the updated `k`. Order matters.
+                let run = count_run(number_of_zeros, &mut k, &mut kp);
+                let Some(run_low_bits) = bits.read(k) else {
+                    break;
+                };
+                let run = run + run_low_bits;
 
-                let sign_bit = try_split_bits!(bits, 1).load_be::<u8>();
+                let Some(sign_bit) = bits.read(1) else {
+                    break;
+                };
 
-                let number_of_ones = truncate_leading_value(&mut bits, true);
-                try_split_bits!(bits, 1);
+                let number_of_ones = bits.skip_leading(true);
+                if bits.read(1).is_none() {
+                    break;
+                }
 
-                let code_remainder = load_be_u32(try_split_bits!(bits, kr as usize)) + ((number_of_ones as u32) << kr);
+                let Some(remainder) = bits.read(kr) else {
+                    break;
+                };
+                let code_remainder = remainder + ((number_of_ones as u32) << kr);
 
                 update_parameters_according_to_number_of_ones(number_of_ones, &mut kr, &mut krp);
                 kp = kp.saturating_sub(DN_GR);
@@ -291,15 +387,20 @@ pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Re
                 let magnitude = compute_rl_magnitude(sign_bit, code_remainder)?;
 
                 let size = min(run as usize, output.len());
-                fill(&mut output[..size], 0);
+                output[..size].fill(0);
                 output = &mut output[size..];
                 write_byte!(output, magnitude);
             }
             CompressionMode::GolombRice => {
-                let number_of_ones = truncate_leading_value(&mut bits, true);
-                try_split_bits!(bits, 1);
+                let number_of_ones = bits.skip_leading(true);
+                if bits.read(1).is_none() {
+                    break;
+                }
 
-                let code_remainder = load_be_u32(try_split_bits!(bits, kr as usize)) + ((number_of_ones as u32) << kr);
+                let Some(remainder) = bits.read(kr) else {
+                    break;
+                };
+                let code_remainder = remainder + ((number_of_ones as u32) << kr);
 
                 update_parameters_according_to_number_of_ones(number_of_ones, &mut kr, &mut krp);
 
@@ -311,8 +412,12 @@ pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Re
                     EntropyAlgorithm::Rlgr3 => {
                         let n_index = compute_n_index(code_remainder);
 
-                        let val1 = load_be_u32(try_split_bits!(bits, n_index));
-                        let val2 = code_remainder - val1;
+                        let Some(val1) = bits.read(n_index) else {
+                            break;
+                        };
+                        let Some(val2) = code_remainder.checked_sub(val1) else {
+                            return Err(RlgrError::InvalidIntegralConversion("code remainder - val1"));
+                        };
                         if val1 != 0 && val2 != 0 {
                             kp = kp.saturating_sub(2 * DQ_GR);
                             k = kp >> LS_GR;
@@ -333,30 +438,9 @@ pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Re
     }
 
     // Fill remaining buffer with zeros.
-    fill(output, 0);
+    output.fill(0);
 
     Ok(())
-}
-
-fn fill(buffer: &mut [i16], value: i16) {
-    for v in buffer {
-        *v = value;
-    }
-}
-
-fn load_be_u32(s: &BitSlice<u8, Msb0>) -> u32 {
-    if s.is_empty() { 0 } else { s.load_be::<u32>() }
-}
-
-// Returns number of truncated bits
-fn truncate_leading_value(bits: &mut Bits<'_>, value: bool) -> usize {
-    let leading_values = if value {
-        bits.leading_ones()
-    } else {
-        bits.leading_zeros()
-    };
-    bits.split_to(leading_values);
-    leading_values
 }
 
 fn count_run(number_of_zeros: usize, k: &mut u32, kp: &mut u32) -> u32 {
@@ -371,7 +455,7 @@ fn count_run(number_of_zeros: usize, k: &mut u32, kp: &mut u32) -> u32 {
     .sum()
 }
 
-fn compute_rl_magnitude(sign_bit: u8, code_remainder: u32) -> Result<i16, RlgrError> {
+fn compute_rl_magnitude(sign_bit: u32, code_remainder: u32) -> Result<i16, RlgrError> {
     let rl_magnitude =
         i16::try_from(code_remainder + 1).map_err(|_| RlgrError::InvalidIntegralConversion("code remainder + 1"))?;
 
@@ -409,16 +493,10 @@ fn compute_rlgr3_magnitude(val: u32) -> Result<i16, RlgrError> {
     }
 }
 
-fn compute_n_index(code_remainder: u32) -> usize {
-    if code_remainder == 0 {
-        return 0;
-    }
-
-    let code_bytes = code_remainder.to_be_bytes();
-    let code_bits = BitSlice::<u8, Msb0>::from_slice(code_bytes.as_ref());
-    let leading_zeros = code_bits.leading_zeros();
-
-    32 - leading_zeros
+/// Number of significant bits in `code_remainder`, i.e. the width of the field
+/// that follows it in RLGR3.
+fn compute_n_index(code_remainder: u32) -> u32 {
+    32 - code_remainder.leading_zeros()
 }
 
 fn update_parameters_according_to_number_of_ones(number_of_ones: usize, kr: &mut u32, krp: &mut u32) {
@@ -494,5 +572,343 @@ impl core::error::Error for RlgrError {
 impl From<io::Error> for RlgrError {
     fn from(err: io::Error) -> Self {
         Self::Io(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pre-optimization `bitvec`-based decoder, kept verbatim as an oracle.
+    ///
+    /// The rewrite of [`decode`] only replaced the bit-reading layer; every
+    /// arithmetic and control-flow decision is meant to be unchanged. That is a
+    /// property worth checking directly rather than trusting, because RLGR has
+    /// no test vectors here and a subtle divergence would show up as corrupt
+    /// pixels in a live session rather than as a failing build.
+    mod reference {
+        use bitvec::field::BitField as _;
+        use bitvec::prelude::*;
+
+        use super::super::{
+            CompressionMode, DN_GR, DQ_GR, EntropyAlgorithm, KP_MAX, LS_GR, RlgrError, UQ_GR, compute_rl_magnitude,
+            compute_rlgr1_magnitude, compute_rlgr3_magnitude, count_run, update_parameters_according_to_number_of_ones,
+        };
+        use crate::utils::Bits;
+
+        macro_rules! write_byte {
+            ($output:ident, $value:ident) => {
+                if !$output.is_empty() {
+                    $output[0] = $value;
+                    $output = &mut $output[1..];
+                } else {
+                    break;
+                }
+            };
+        }
+
+        macro_rules! try_split_bits {
+            ($bits:ident, $n:expr) => {
+                if $bits.len() < $n {
+                    break;
+                } else {
+                    $bits.split_to($n)
+                }
+            };
+        }
+
+        fn fill(buffer: &mut [i16], value: i16) {
+            for v in buffer {
+                *v = value;
+            }
+        }
+
+        fn load_be_u32(s: &BitSlice<u8, Msb0>) -> u32 {
+            if s.is_empty() { 0 } else { s.load_be::<u32>() }
+        }
+
+        fn truncate_leading_value(bits: &mut Bits<'_>, value: bool) -> usize {
+            let leading_values = if value {
+                bits.leading_ones()
+            } else {
+                bits.leading_zeros()
+            };
+            bits.split_to(leading_values);
+            leading_values
+        }
+
+        fn compute_n_index(code_remainder: u32) -> usize {
+            if code_remainder == 0 {
+                return 0;
+            }
+
+            let code_bytes = code_remainder.to_be_bytes();
+            let code_bits = BitSlice::<u8, Msb0>::from_slice(code_bytes.as_ref());
+            let leading_zeros = code_bits.leading_zeros();
+
+            32 - leading_zeros
+        }
+
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            reason = "matches the original"
+        )]
+        pub(super) fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Result<(), RlgrError> {
+            if tile.is_empty() {
+                return Err(RlgrError::EmptyTile);
+            }
+
+            let mut k: u32 = 1;
+            let mut kr: u32 = 1;
+            let mut kp: u32 = k << LS_GR;
+            let mut krp: u32 = kr << LS_GR;
+
+            let mut bits = Bits::new(BitSlice::from_slice(tile));
+
+            while !bits.is_empty() && !output.is_empty() {
+                match CompressionMode::from(k) {
+                    CompressionMode::RunLength => {
+                        let number_of_zeros = truncate_leading_value(&mut bits, false);
+                        try_split_bits!(bits, 1);
+                        let run = count_run(number_of_zeros, &mut k, &mut kp)
+                            + load_be_u32(try_split_bits!(bits, k as usize));
+
+                        let sign_bit = try_split_bits!(bits, 1).load_be::<u8>();
+
+                        let number_of_ones = truncate_leading_value(&mut bits, true);
+                        try_split_bits!(bits, 1);
+
+                        let code_remainder =
+                            load_be_u32(try_split_bits!(bits, kr as usize)) + ((number_of_ones as u32) << kr);
+
+                        update_parameters_according_to_number_of_ones(number_of_ones, &mut kr, &mut krp);
+                        kp = kp.saturating_sub(DN_GR);
+                        k = kp >> LS_GR;
+
+                        let magnitude = compute_rl_magnitude(u32::from(sign_bit), code_remainder)?;
+
+                        let size = core::cmp::min(run as usize, output.len());
+                        fill(&mut output[..size], 0);
+                        output = &mut output[size..];
+                        write_byte!(output, magnitude);
+                    }
+                    CompressionMode::GolombRice => {
+                        let number_of_ones = truncate_leading_value(&mut bits, true);
+                        try_split_bits!(bits, 1);
+
+                        let code_remainder =
+                            load_be_u32(try_split_bits!(bits, kr as usize)) + ((number_of_ones as u32) << kr);
+
+                        update_parameters_according_to_number_of_ones(number_of_ones, &mut kr, &mut krp);
+
+                        match mode {
+                            EntropyAlgorithm::Rlgr1 => {
+                                let magnitude = compute_rlgr1_magnitude(code_remainder, &mut k, &mut kp)?;
+                                write_byte!(output, magnitude);
+                            }
+                            EntropyAlgorithm::Rlgr3 => {
+                                let n_index = compute_n_index(code_remainder);
+
+                                let val1 = load_be_u32(try_split_bits!(bits, n_index));
+                                // Matches the guard added to `super::decode`.
+                                // The original subtraction panicked here in
+                                // debug builds, which would stop this oracle
+                                // from covering malformed input at all.
+                                let Some(val2) = code_remainder.checked_sub(val1) else {
+                                    return Err(RlgrError::InvalidIntegralConversion("code remainder - val1"));
+                                };
+                                if val1 != 0 && val2 != 0 {
+                                    kp = kp.saturating_sub(2 * DQ_GR);
+                                    k = kp >> LS_GR;
+                                } else if val1 == 0 && val2 == 0 {
+                                    kp = core::cmp::min(kp + 2 * UQ_GR, KP_MAX);
+                                    k = kp >> LS_GR;
+                                }
+
+                                let magnitude = compute_rlgr3_magnitude(val1)?;
+                                write_byte!(output, magnitude);
+
+                                let magnitude = compute_rlgr3_magnitude(val2)?;
+                                write_byte!(output, magnitude);
+                            }
+                        }
+                    }
+                }
+            }
+
+            fill(output, 0);
+
+            Ok(())
+        }
+    }
+
+    /// Deterministic xorshift, so a failure is reproducible from the seed alone.
+    struct Rng(u32);
+
+    impl Rng {
+        fn next(&mut self) -> u32 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            self.0 = x;
+            x
+        }
+
+        fn bytes(&mut self, len: usize) -> Vec<u8> {
+            (0..len).map(|_| (self.next() >> 7) as u8).collect()
+        }
+    }
+
+    fn assert_same(mode: EntropyAlgorithm, tile: &[u8], out_len: usize) {
+        let mut fast = vec![0i16; out_len];
+        let mut reference = vec![0i16; out_len];
+
+        let fast_result = decode(mode, tile, &mut fast);
+        let reference_result = reference::decode(mode, tile, &mut reference);
+
+        assert_eq!(
+            fast_result.is_ok(),
+            reference_result.is_ok(),
+            "{mode:?}: ok-ness diverged for tile {tile:02x?}"
+        );
+        assert_eq!(fast, reference, "{mode:?}: output diverged for tile {tile:02x?}");
+    }
+
+    #[test]
+    fn matches_reference_on_random_input() {
+        // Arbitrary bytes are still valid RLGR input -- the format has no
+        // checksum -- so this covers the full state machine, including the
+        // parameter adaptation paths and the truncated-stream exits.
+        let mut rng = Rng(0xC0FF_EE01);
+        for mode in [EntropyAlgorithm::Rlgr1, EntropyAlgorithm::Rlgr3] {
+            for len in [1usize, 2, 3, 7, 8, 9, 15, 16, 31, 64, 127, 256, 1024] {
+                for _ in 0..40 {
+                    assert_same(mode, &rng.bytes(len), 4096);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn matches_reference_on_long_runs() {
+        // All-zero and all-one inputs drive the unary prefix scan past a single
+        // 64-bit buffer, which is where the accumulator refill logic differs
+        // most from a bit-at-a-time scan.
+        for mode in [EntropyAlgorithm::Rlgr1, EntropyAlgorithm::Rlgr3] {
+            for len in [1usize, 8, 9, 63, 64, 65, 128, 300] {
+                assert_same(mode, &vec![0x00; len], 4096);
+                assert_same(mode, &vec![0xff; len], 4096);
+                assert_same(mode, &vec![0xaa; len], 4096);
+                assert_same(mode, &vec![0x55; len], 4096);
+                // A long zero run followed by data, and the reverse.
+                let mut tile = vec![0x00; len];
+                tile.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+                assert_same(mode, &tile, 4096);
+                let mut tile = vec![0xff; len];
+                tile.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+                assert_same(mode, &tile, 4096);
+            }
+        }
+    }
+
+    #[test]
+    fn matches_reference_with_small_output_buffers() {
+        // The `write_byte!` and run-fill paths both clamp against the output
+        // buffer; a short buffer exercises those exits.
+        let mut rng = Rng(0x1357_9BDF);
+        for mode in [EntropyAlgorithm::Rlgr1, EntropyAlgorithm::Rlgr3] {
+            for out_len in [1usize, 2, 3, 5, 17, 64, 4095] {
+                for _ in 0..20 {
+                    assert_same(mode, &rng.bytes(128), out_len);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_tile_is_rejected() {
+        let mut out = [0i16; 16];
+        assert!(matches!(
+            decode(EntropyAlgorithm::Rlgr3, &[], &mut out),
+            Err(RlgrError::EmptyTile)
+        ));
+    }
+
+    #[test]
+    fn round_trips_through_the_encoder() {
+        // The encoder is the ground truth a real server provides: whatever it
+        // emits, the decoder must reproduce.
+        let mut rng = Rng(0x2468_ACE0);
+        for mode in [EntropyAlgorithm::Rlgr1, EntropyAlgorithm::Rlgr3] {
+            for _ in 0..8 {
+                // Coefficient-like input: mostly zeros with occasional spikes,
+                // which is what quantized RFX subbands look like.
+                let input: Vec<i16> = (0..4096)
+                    .map(|_| {
+                        let r = rng.next();
+                        if r % 5 == 0 { ((r >> 8) % 512) as i16 - 256 } else { 0 }
+                    })
+                    .collect();
+
+                let mut encoded = vec![0u8; 4096 * 4];
+                let len = encode(mode, &input, &mut encoded).expect("encode");
+
+                let mut fast = vec![0i16; 4096];
+                let mut reference = vec![0i16; 4096];
+                decode(mode, &encoded[..len], &mut fast).expect("decode");
+                reference::decode(mode, &encoded[..len], &mut reference).expect("reference decode");
+
+                assert_eq!(fast, reference);
+                assert_eq!(fast, input, "{mode:?}: encoder output did not decode back to its input");
+            }
+        }
+    }
+
+    #[test]
+    fn bit_reader_matches_a_naive_reader() {
+        // Direct unit test of the reader itself, independent of RLGR.
+        let mut rng = Rng(0x0BAD_F00D);
+        for _ in 0..200 {
+            let data = rng.bytes(37);
+            let mut reader = BitReader::new(&data);
+            let mut naive: Vec<bool> = Vec::new();
+            for byte in &data {
+                for bit in (0..8).rev() {
+                    naive.push((byte >> bit) & 1 == 1);
+                }
+            }
+            let mut pos = 0usize;
+
+            for _ in 0..40 {
+                match rng.next() % 3 {
+                    0 => {
+                        let n = rng.next() % 33;
+                        let got = reader.read(n);
+                        if pos + n as usize > naive.len() {
+                            assert_eq!(got, None);
+                        } else {
+                            let mut want = 0u32;
+                            for i in 0..n as usize {
+                                want = (want << 1) | u32::from(naive[pos + i]);
+                            }
+                            assert_eq!(got, Some(want), "read({n}) at bit {pos}");
+                            pos += n as usize;
+                        }
+                    }
+                    value => {
+                        let value = value == 1;
+                        let got = reader.skip_leading(value);
+                        let mut want = 0usize;
+                        while pos + want < naive.len() && naive[pos + want] == value {
+                            want += 1;
+                        }
+                        assert_eq!(got, want, "skip_leading({value}) at bit {pos}");
+                        pos += want;
+                    }
+                }
+            }
+        }
     }
 }
