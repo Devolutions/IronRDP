@@ -41,23 +41,23 @@ pub struct Capture {
 pub struct ReplayExpectation {
     /// Declared outcome category.
     pub outcome: ReplayOutcome,
-    /// Failing replay stage for rejection and unsupported outcomes.
+    /// Failing replay stage for unsupported outcomes.
     pub stage: Option<String>,
-    /// Stable failing replay reason for rejection and unsupported outcomes.
+    /// Stable failing replay reason for unsupported outcomes.
     pub reason: Option<String>,
     /// Exact counters and output identity for completed and partial outcomes.
     pub summary: Option<ReplaySummaryExpectation>,
 }
 
 /// Stable category for a qualified capture replay.
+///
+/// Add a rejected outcome only when the replay decodes protocol rejection evidence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReplayOutcome {
     /// Replay reached a clean completed state.
     Complete,
     /// Replay produced useful output but recorded known gaps.
     Partial,
-    /// The capture records a recognized protocol rejection.
-    Rejected,
     /// The capture requires a replay capability that is not implemented.
     Unsupported,
 }
@@ -137,7 +137,7 @@ pub fn corpus_replay(selector: Option<&str>) -> anyhow::Result<()> {
         selector.unwrap_or_default()
     );
 
-    let mut outcomes = [0usize; 4];
+    let mut outcomes = [0usize; 3];
     for capture in captures {
         let capture_path = cache_dir.join(&capture.file);
         verify_file(&capture_path, &capture.sha256)
@@ -150,10 +150,9 @@ pub fn corpus_replay(selector: Option<&str>) -> anyhow::Result<()> {
     }
 
     println!(
-        "Qualified replay outcomes: complete={}, partial={}, rejected={}, unsupported={}",
+        "Qualified replay outcomes: complete={}, partial={}, unsupported={}",
         outcomes[usize::from(ReplayOutcome::Complete)],
         outcomes[usize::from(ReplayOutcome::Partial)],
-        outcomes[usize::from(ReplayOutcome::Rejected)],
         outcomes[usize::from(ReplayOutcome::Unsupported)],
     );
     Ok(())
@@ -185,7 +184,6 @@ impl ReplayOutcome {
         match self {
             Self::Complete => "complete",
             Self::Partial => "partial",
-            Self::Rejected => "rejected",
             Self::Unsupported => "unsupported",
         }
     }
@@ -196,8 +194,7 @@ impl From<ReplayOutcome> for usize {
         match value {
             ReplayOutcome::Complete => 0,
             ReplayOutcome::Partial => 1,
-            ReplayOutcome::Rejected => 2,
-            ReplayOutcome::Unsupported => 3,
+            ReplayOutcome::Unsupported => 2,
         }
     }
 }
@@ -423,12 +420,11 @@ fn parse_replay_expectation(value: &toml::Table) -> anyhow::Result<ReplayExpecta
     let outcome = match string(value, "outcome", "capture.expect")? {
         "complete" => ReplayOutcome::Complete,
         "partial" => ReplayOutcome::Partial,
-        "rejected" => ReplayOutcome::Rejected,
         "unsupported" => ReplayOutcome::Unsupported,
         outcome => anyhow::bail!("unknown capture replay outcome: {outcome}"),
     };
-    let stage = value.get("stage").and_then(toml::Value::as_str).map(str::to_owned);
-    let reason = value.get("reason").and_then(toml::Value::as_str).map(str::to_owned);
+    let stage = optional_string(value, "stage", "capture.expect")?.map(str::to_owned);
+    let reason = optional_string(value, "reason", "capture.expect")?.map(str::to_owned);
     let summary = value
         .get("summary")
         .map(|value| {
@@ -471,7 +467,7 @@ fn parse_replay_expectation(value: &toml::Table) -> anyhow::Result<ReplayExpecta
                 );
             }
         }
-        ReplayOutcome::Rejected | ReplayOutcome::Unsupported => {
+        ReplayOutcome::Unsupported => {
             anyhow::ensure!(
                 stage.is_some() && reason.is_some(),
                 "failed replay expectation must declare stage and reason"
@@ -485,6 +481,17 @@ fn parse_replay_expectation(value: &toml::Table) -> anyhow::Result<ReplayExpecta
         reason,
         summary,
     })
+}
+
+fn optional_string<'a>(table: &'a toml::Table, key: &str, location: &str) -> anyhow::Result<Option<&'a str>> {
+    table
+        .get(key)
+        .map(|value| {
+            value
+                .as_str()
+                .with_context(|| format!("invalid {location}.{key} string"))
+        })
+        .transpose()
 }
 
 fn inspect_cache(path: &Path, capture: &Capture) -> anyhow::Result<CacheState> {
@@ -641,7 +648,7 @@ id = "accepted-rdp"
 file = "{file}"
 sha256 = "{SHA256_ABC}"
 intent = "A direct RDP session accepted by the server."
-expect = {{ outcome = "rejected", stage = "negotiate", reason = "missing-rdp-state" }}
+expect = {{ outcome = "unsupported", stage = "negotiate", reason = "missing-rdp-state" }}
 "#
         )
     }
@@ -684,6 +691,25 @@ expect = {{ outcome = "rejected", stage = "negotiate", reason = "missing-rdp-sta
 
         assert_eq!(corpus.captures.len(), 1);
         assert_eq!(corpus.captures[0].id, "accepted-rdp");
+    }
+
+    #[test]
+    fn rejects_unobservable_replay_outcome() {
+        let manifest =
+            corpus_toml("accepted-rdp.pcapng").replace(r#"outcome = "unsupported""#, r#"outcome = "rejected""#);
+
+        let error = parse_corpus(&manifest).expect_err("unobservable outcome must fail");
+
+        assert!(error.to_string().contains("unknown capture replay outcome: rejected"));
+    }
+
+    #[test]
+    fn rejects_wrong_typed_optional_replay_field() {
+        let manifest = corpus_toml("accepted-rdp.pcapng").replace(r#"stage = "negotiate""#, "stage = 123");
+
+        let error = parse_corpus(&manifest).expect_err("wrong-typed stage must fail");
+
+        assert!(error.to_string().contains("invalid capture.expect.stage string"));
     }
 
     #[test]
@@ -792,7 +818,7 @@ expect = {{ outcome = "rejected", stage = "negotiate", reason = "missing-rdp-sta
     }
 
     #[test]
-    fn rejects_mismatched_replay_failure() {
+    fn rejects_mismatched_unsupported_replay() {
         let capture = Capture {
             id: "accepted-rdp".to_owned(),
             file: "accepted-rdp.pcapng".to_owned(),

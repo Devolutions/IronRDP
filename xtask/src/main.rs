@@ -105,6 +105,7 @@ fn main() -> anyhow::Result<()> {
             features::run_all(&sh)?;
             check::dependencies(&sh)?;
             check::capture_files(&sh)?;
+            bench::corpus_fetch(&sh)?;
             bench::corpus_replay(None)?;
             wasm::check(&sh)?;
             fuzz::run(&sh, None, None)?;
