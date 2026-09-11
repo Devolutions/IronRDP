@@ -9,6 +9,11 @@ use std::path::{Path, PathBuf};
 pub mod bench;
 pub mod capture;
 
+/// Returns the repository root containing the `xtask` manifest.
+///
+/// # Panics
+///
+/// Panics if `CARGO_MANIFEST_DIR` has no parent directory.
 pub fn project_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
