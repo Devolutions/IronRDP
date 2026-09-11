@@ -115,13 +115,7 @@ cargo install cargo-codspeed --version 5.0.1 --locked
 cargo codspeed build -p ironrdp-bench --bench bench --bench capture_replay --features codspeed --locked -m simulation
 ```
 
-Run the ordinary local Criterion workloads or one whole-process measurement with:
-
-```PowerShell
-cargo bench -p ironrdp-bench --bench capture_replay -- 'partial-replay/no-nla-smartcard/processing' --exact
-cargo build --release -p ironrdp-bench --bin capture-replay-bench --locked
-hyperfine --warmup 1 '.\target\release\capture-replay-bench.exe --connector no-nla-accepted'
-```
+Use the local Criterion and Hyperfine commands above; replace `no-nla-accepted` with `no-nla-smartcard` in the Criterion filter to benchmark that passive replay.
 
 Hyperfine remains a separate local tool and does not import results into CodSpeed.
 
@@ -131,9 +125,8 @@ Compilation and corpus fetching occur before the CodSpeed action and are exclude
 
 The `CodSpeed` workflow runs simulation for pushes, pull requests, and manual dispatches after maintainers set the `CODSPEED_ENABLED` repository variable to `true` and enable the repository in CodSpeed.
 It authenticates through GitHub OIDC and requires no repository secret for this public repository.
-The wall-time job is manual only and runs only when maintainers set the repository-controlled `CODSPEED_WALLTIME_RUNNER` variable to a known, approved Linux runner label.
+The wall-time job is manual only and runs only when `CODSPEED_ENABLED` is `true` and maintainers set the repository-controlled `CODSPEED_WALLTIME_RUNNER` variable to a known, approved Linux runner label.
 Dispatchers cannot select or override the wall-time runner.
-The job is skipped unless `CODSPEED_ENABLED` is `true` and `CODSPEED_WALLTIME_RUNNER` is nonempty.
 Use a dedicated stable runner for wall time; shared hosted runners are too noisy for performance decisions.
 The public capture cache uses the existing manifest-hash cache key and is digest-verified before use.
 Do not upload captures, decrypted payloads, TLS key material, screenshots, or generated replay output; CodSpeed receives measurements and may retain symbol-bearing profiles, not raw replay payloads.
