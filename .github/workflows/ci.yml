@@ -326,7 +326,7 @@ jobs:
   success:
     name: Success
     if: ${{ always() }}
-    needs: [formatting, test-settings, typos, openai-agent, checks, fuzz, web, ffi, feature-matrix-setup, feature-matrix]
+    needs: [formatting, test-settings, typos, openai-agent, checks, fuzz, corpus-replay, web, ffi, feature-matrix-setup, feature-matrix]
     runs-on: ubuntu-latest
 
     steps:
