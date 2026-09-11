@@ -89,7 +89,7 @@ function workflowJob(workflow, name) {
 }
 
 function readWorkflow(githubDirectory = path.join(__dirname, "..")) {
-  return fs.readFileSync(path.join(githubDirectory, "workflows", "labeler.yml"), "utf8")
+  return fs.readFileSync(path.join(githubDirectory, "workflows", "pr-automation.yml"), "utf8")
     .replace(/\r\n/g, "\n");
 }
 
@@ -97,6 +97,19 @@ function readReviewWorkflow(githubDirectory = path.join(__dirname, "..")) {
   return fs.readFileSync(path.join(githubDirectory, "workflows", "review-pipeline.yml"), "utf8")
     .replace(/\r\n/g, "\n");
 }
+
+test("workflow run names show the target pull request when known and identify the source branch otherwise", () => {
+  const workflow = readWorkflow();
+
+  assert.match(workflow, /github\.event\.pull_request\.number.*format\('PR #\{0\}'/);
+  assert.match(workflow, /inputs\.pr-number\s*&&\s*format\('PR #\{0\}'/);
+  assert.match(workflow, /github\.event\.client_payload\.pr_number\s*&&\s*format\('PR #\{0\}'/);
+  assert.match(workflow, /github\.event\.workflow_run\.pull_requests\[0\]\.number.*format\('PR #\{0\}'/);
+  assert.match(workflow, /github\.event\.workflow_run\.head_branch.*github\.event\.workflow_run\.head_sha/);
+  assert.match(workflow, /format\('run \{0\}',\s*github\.run_id\)/);
+  assert.doesNotMatch(workflow, /format\('PR #\{0\}',\s*github\.run_id\)/);
+  assert.doesNotMatch(workflow, /PR #\$\{\{.*github\.run_id.*\}\}/s);
+});
 
 function resolveReviewScript(workflow = readWorkflow()) {
   const job = workflowJob(workflow, "resolve-review-state");
@@ -798,7 +811,7 @@ test("every deterministic label is declared and the repository rules classify to
     assert.notEqual(patterns.length, 0, `${label} has no path patterns`);
   }
   const result = analyzeFiles([
-    { filename: ".github/workflows/labeler.yml", additions: 5, deletions: 1 },
+    { filename: ".github/workflows/pr-automation.yml", additions: 5, deletions: 1 },
   ], { labelerRules: rules, authorAssociation: "MEMBER" });
   assert.deepEqual(result.pathLabels, ["scope/tooling"]);
   assert.equal(result.sizeLabel, "size/XS");
