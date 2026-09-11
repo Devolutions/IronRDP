@@ -45,7 +45,7 @@ ironrdp-mstsgu = { path = "../ironrdp-mstsgu", version = "0.0.1", features = ["r
 bytes = "1"
 h2 = "0.4"
 http = "1"
-md-5 = "0.10"
+md-5 = "0.11"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Security",
