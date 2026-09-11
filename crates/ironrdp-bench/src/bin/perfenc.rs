@@ -242,20 +242,27 @@ impl core::str::FromStr for OptCodec {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+
+    static NEXT_TEMPORARY_FILE: AtomicUsize = AtomicUsize::new(0);
 
     fn temporary_path(name: &str) -> std::path::PathBuf {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time is after the Unix epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("ironrdp-perfenc-{name}-{}-{timestamp}", std::process::id()))
+        let sequence = NEXT_TEMPORARY_FILE.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "ironrdp-perfenc-{name}-{}-{timestamp}-{sequence}",
+            std::process::id()
+        ))
     }
 
-    async fn display_updates(bytes: &[u8]) -> (DisplayUpdates, std::path::PathBuf) {
-        let path = temporary_path("frame");
+    async fn display_updates(name: &str, bytes: &[u8]) -> (DisplayUpdates, std::path::PathBuf) {
+        let path = temporary_path(name);
         fs::write(&path, bytes).expect("write temporary frame source");
         let file = File::open(&path).await.expect("open temporary frame source");
         (DisplayUpdates::new(file, DesktopSize { width: 1, height: 1 }, 0), path)
@@ -263,14 +270,14 @@ mod tests {
 
     #[tokio::test]
     async fn returns_none_at_clean_eof() {
-        let (mut updates, path) = display_updates(&[]).await;
+        let (mut updates, path) = display_updates("clean-eof", &[]).await;
         assert!(updates.next_update().await.expect("clean EOF is valid").is_none());
         fs::remove_file(path).expect("remove temporary frame source");
     }
 
     #[tokio::test]
     async fn rejects_truncated_frame() {
-        let (mut updates, path) = display_updates(&[0, 1, 2]).await;
+        let (mut updates, path) = display_updates("truncated", &[0, 1, 2]).await;
         let error = updates.next_update().await.expect_err("partial frame must fail");
         assert!(error.to_string().contains("truncated RGBX frame"));
         fs::remove_file(path).expect("remove temporary frame source");
