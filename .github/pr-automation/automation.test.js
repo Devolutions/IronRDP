@@ -16,7 +16,8 @@ const {
 const { buildSpecialistAggregate, validateReviewGate, validateSpecialistRun } = require("./review-pipeline");
 const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
 const {
-  resolveClassificationState, resolveReviewState, reviewOutcome, reviewPolicyEligible, DUPLICATE_MARKER,
+  resolveClassificationState, resolveReviewState, reviewOutcome, reviewPolicyEligible, OVERLAP_MARKER,
+  LEGACY_DUPLICATE_MARKER, OVERLAP_LABEL,
   CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERSIZED_MARKER, OVERSIZED_REVIEW_LABEL, contributorEligibility,
 } = require("./resolve-state");
@@ -290,7 +291,7 @@ test("review skip summary lists every failed gate condition", () => {
       secondReviewEligible: false,
       policyEligible: false,
       legitimacyStopped: true,
-      labels: ["ai-reviewed/2", "duplicate"],
+      labels: ["ai-reviewed/2", "triage/legitimacy"],
       contributor: { status: "ineligible", merged: 0 },
     },
     rateLimitResult: "success",
@@ -300,7 +301,6 @@ test("review skip summary lists every failed gate condition", () => {
     "CI has not succeeded for this head.",
     "An automated review has already run for this head; push a new commit before the next review.",
     "The pull request has reached the two-review limit.",
-    "The pull request is marked as a duplicate.",
     "The pull request requires a maintainer legitimacy decision.",
     "The contributor has 0 qualifying merged pull requests; at least one is required.",
   ]);
@@ -332,21 +332,31 @@ test("automatic policy ineligibility remains a non-error gate skip", async () =>
     protocolRelated: false, risk: "low", specialistReviewers: [],
     automaticReviewEligible: true,
   };
+  const classificationRuns = [{
+    id: 1, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "success",
+    app: { slug: "github-actions" },
+    output: {
+      title: "Classification complete",
+      summary: `Validated classification.\n\n${encodeCheckState(machineState)}`,
+    },
+  }];
   const result = await runReviewGateScript({
-    labels: ["duplicate"],
-    classificationRuns: [{
-      id: 1, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "success",
-      app: { slug: "github-actions" },
-      output: {
-        title: "Classification complete",
-        summary: `Validated classification.\n\n${encodeCheckState(machineState)}`,
-      },
-    }],
+    labels: [LEGITIMACY_LABEL], classificationRuns,
   });
   assert.equal(result.gate.ok, false);
   assert.equal(result.gate.policyEligible, false);
   assert.equal(result.eligible, false);
   assert.deepEqual(result.failures, []);
+
+  // Suspected overlap is advisory, and a `duplicate` label an earlier automation applied on its own
+  // must not keep a pull request out of review either.
+  for (const labels of [[OVERLAP_LABEL], ["duplicate"], [OVERLAP_LABEL, "duplicate"]]) {
+    const eligible = await runReviewGateScript({ labels, classificationRuns });
+    assert.equal(eligible.gate.policyEligible, true, labels.join(", "));
+    assert.equal(eligible.gate.ok, true, labels.join(", "));
+    assert.equal(eligible.eligible, true, labels.join(", "));
+    assert.deepEqual(eligible.failures, []);
+  }
 });
 
 test("review outcome requires validated final output", () => {
@@ -807,9 +817,12 @@ test("every deterministic label is declared and the repository rules classify to
   ).map((label) => label.name));
   for (const label of [
     ...Object.keys(rules), ...SIZE_LABELS, "contributor/first-time", "kind/protocol", LEGITIMACY_LABEL,
+    OVERLAP_LABEL,
   ]) {
     assert.equal(declaredLabels.has(label), true, `${label} is missing from labels.json`);
   }
+  // `duplicate` is retired: automation must not declare, apply, or read it.
+  assert.equal(declaredLabels.has("duplicate"), false);
   for (const [label, patterns] of Object.entries(rules)) {
     assert.notEqual(patterns.length, 0, `${label} has no path patterns`);
   }
@@ -1509,7 +1522,10 @@ test("all classified changes are reviewable unless a legitimacy or count gate bl
   assert.equal(reviewPolicyEligible({ labels: ["risk/low", "breaking-change"] }), true);
   assert.equal(reviewPolicyEligible({ labels: ["risk/medium"] }), true);
   assert.equal(reviewPolicyEligible({ labels: ["risk/high", "size/XXL"] }), true);
-  for (const blocking of ["duplicate", "ai-reviewed/2", LEGITIMACY_LABEL]) {
+  // Suspected overlap is advisory, and a `duplicate` label left over from when automation applied
+  // one must not keep suppressing review either.
+  assert.equal(reviewPolicyEligible({ labels: ["risk/high", OVERLAP_LABEL, "duplicate"] }), true);
+  for (const blocking of ["ai-reviewed/2", LEGITIMACY_LABEL]) {
     assert.equal(reviewPolicyEligible({ labels: ["risk/high", blocking], protocolRelated: true }), false);
   }
   assert.equal(reviewPolicyEligible({
@@ -1587,27 +1603,43 @@ test("size/XXL remains informational and does not suppress classification", () =
   assert.equal(state.removeCommentMarkers.includes(OVERSIZED_MARKER), true);
 });
 
-test("a duplicate verdict is withdrawn once it no longer holds", () => {
+test("suspected overlap is advisory and is withdrawn once it no longer holds", () => {
   const deterministic = { ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/S",
     sizeLabels: ["size/S"], firstTime: false };
-  const state = (duplicate) => resolveClassificationState({
-    expectedSha: SHA, labels: [], deterministic, semver: { head_sha: SHA, status: "not-suspected" },
+  const state = (overlap, labels = []) => resolveClassificationState({
+    expectedSha: SHA, labels, deterministic, semver: { head_sha: SHA, status: "not-suspected" },
     duplicateCandidates: [{ number: 2, url: "https://github.com/Devolutions/IronRDP/pull/2" }],
-    classifier: classifier({ duplicate: duplicate
+    classifier: classifier({ duplicate: overlap
       ? { detected: true, similar_pr_number: 2,
         similar_pr_url: "https://github.com/Devolutions/IronRDP/pull/2",
         confidence: 0.99, rationale: "same change" }
       : { detected: false, similar_pr_number: null, similar_pr_url: null, confidence: 0, rationale: "" } }),
   });
   const flagged = state(true);
-  assert.deepEqual(flagged.addLabels, ["maintainer-required"]);
-  assert.deepEqual(flagged.removeLabels, []);
-  assert.deepEqual(flagged.comments.map((comment) => comment.kind), ["duplicate"]);
-  assert.equal(flagged.removeCommentMarkers.includes(DUPLICATE_MARKER), false);
+  // Overlap alone neither hands the pull request to a maintainer nor stops the review dispatch.
+  assert.deepEqual(flagged.addLabels, []);
+  assert.deepEqual(flagged.removeLabels, ["maintainer-required"]);
+  assert.equal(flagged.dispatchReview, true);
+  assert.deepEqual(flagged.labelSets.find((set) => set.owned.includes(OVERLAP_LABEL)).desired,
+    [OVERLAP_LABEL]);
+  // Automation never touches `duplicate`; it is retired and not in any owned set.
+  assert.equal(flagged.labelSets.some((set) => set.owned.includes("duplicate")), false);
+  assert.deepEqual(flagged.comments.map((comment) => comment.kind), ["overlap"]);
+  assert.equal(flagged.removeCommentMarkers.includes(OVERLAP_MARKER), false);
+  // The blocking wording of an earlier run goes away even while the advisory notice stands.
+  assert.equal(flagged.removeCommentMarkers.includes(LEGACY_DUPLICATE_MARKER), true);
+  const body = markerBody(flagged.comments[0]);
+  assert.match(body, /may overlap with/);
+  assert.match(body, /advisory only/);
+  assert.equal(/Maintainer review is required/.test(body), false);
+  assert.match(body, /LLM-assisted content \(no human feedback\)/);
+
   // Removing only the label would leave a comment contradicting the labels the same run wrote.
   const cleared = state(false);
   assert.deepEqual(cleared.comments, []);
-  assert.equal(cleared.removeCommentMarkers.includes(DUPLICATE_MARKER), true);
+  assert.deepEqual(cleared.labelSets.find((set) => set.owned.includes(OVERLAP_LABEL)).desired, []);
+  assert.equal(cleared.removeCommentMarkers.includes(OVERLAP_MARKER), true);
+  assert.equal(cleared.removeCommentMarkers.includes(LEGACY_DUPLICATE_MARKER), true);
 });
 
 test("model text cannot smuggle active markup into a bot comment", () => {
@@ -1722,7 +1754,7 @@ test("forced review bypasses eligibility while retaining publication gates", () 
   const reviewer = review({ summary: "none", findings: [] });
   const args = {
     expectedSha: SHA,
-    labels: ["ai-reviewed/2", "duplicate", "size/XXL", "risk/low"],
+    labels: ["ai-reviewed/2", LEGITIMACY_LABEL, "size/XXL", "risk/low"],
     reviewer,
     gate: {
       ok: true, force: true, head_sha: SHA, classificationValid: true, protocolRelated: false,
@@ -1838,11 +1870,19 @@ test("review blockers distinguish gate and contributor history failures", () => 
   }
 
   const policy = resolveReviewState({
-    ...args, labels: ["risk/low", "duplicate"],
+    ...args, labels: ["risk/low", LEGITIMACY_LABEL],
     gate: { ...args.gate, policyEligible: false, protocolRelated: false },
   });
   assert.equal(policy.reason, "review is not eligible");
   assert.deepEqual(policy.addLabels, ["maintainer-required"]);
+
+  // Overlap is advisory at publication too, so the review this run spent its model call on is
+  // published instead of being discarded.
+  const advisory = resolveReviewState({
+    ...args, labels: ["risk/low", OVERLAP_LABEL, "duplicate"],
+  });
+  assert.equal(advisory.failed, undefined);
+  assert.deepEqual(advisory.labelSets[0].desired, ["ai-reviewed/1"]);
 });
 
 test("a later eligible review removes the contributor-ineligible comment", () => {
@@ -1919,7 +1959,7 @@ test("writer stops before mutations when the head is stale", async () => {
 
 test("writer stops before mutations when review policy or count changes", async () => {
   let writes = 0;
-  let labels = [{ name: "duplicate" }];
+  let labels = [{ name: LEGITIMACY_LABEL }];
   const github = { rest: {
     pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
     issues: {
@@ -3607,6 +3647,9 @@ test("a retry re-decides review eligibility against the pull request as it is af
   for (const [reason, state] of Object.entries(declined)) {
     assert.deepEqual(await gate(state), { retry: false, reason }, reason);
   }
+
+  // A suspected overlap is advisory, so a retry earned by a transient provider failure still runs.
+  assert.deepEqual(await gate({ labels: [OVERLAP_LABEL] }), { retry: true, reason: "" });
 
   // A classification that stopped the automation still carries automaticReviewEligible, so only its
   // title separates it from one that authorizes a review. Losing the legitimacy label while the
