@@ -60,7 +60,8 @@ The validator reads the changed-file manifest, the protocol corpus, and the spec
 
 The validator distinguishes two outcomes.
 A wrong head SHA, an unchanged path, a malformed line range, an unverifiable protocol citation, or a missing candidate disposition is correctable, so the runtime repairs the output inside the same conversation, at most twice.
-A correctable rejection states what the validator established, with counts and positions rather than anything the model wrote, and reports every disposition failure at once so two repairs are enough to answer for every candidate.
+Final-review rejections describe validation failures without quoting model text.
+Disposition-map errors are reported together, so repairs do not have to discover missing candidates one at a time.
 A stale or unavailable trusted input is not correctable, so the stage fails immediately instead of burning repair attempts.
 Repair may correct a finding but may never drop one, and a stage fails when it cannot produce valid output.
 
