@@ -101,7 +101,7 @@ function readReviewWorkflow(githubDirectory = path.join(__dirname, "..")) {
     .replace(/\r\n/g, "\n");
 }
 
-test("workflow run names show the target pull request when known and identify the source branch otherwise", () => {
+test("workflow run names show the target pull request and automation mode when known, and identify the source branch otherwise", () => {
   const workflow = readWorkflow();
 
   assert.match(workflow, /github\.event\.pull_request\.number.*format\('PR #\{0\}'/);
@@ -110,6 +110,8 @@ test("workflow run names show the target pull request when known and identify th
   assert.match(workflow, /github\.event\.workflow_run\.pull_requests\[0\]\.number.*format\('PR #\{0\}'/);
   assert.match(workflow, /github\.event\.workflow_run\.head_branch.*github\.event\.workflow_run\.head_sha/);
   assert.match(workflow, /format\('run \{0\}',\s*github\.run_id\)/);
+  assert.match(workflow, /github\.event_name == 'workflow_run' \|\| github\.event_name == 'repository_dispatch'/);
+  assert.match(workflow, /github\.event_name == 'workflow_dispatch' && inputs\.review\)\) && 'review' \|\| 'classify'/);
   assert.doesNotMatch(workflow, /format\('PR #\{0\}',\s*github\.run_id\)/);
   assert.doesNotMatch(workflow, /PR #\$\{\{.*github\.run_id.*\}\}/s);
 });
