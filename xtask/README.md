@@ -55,7 +55,7 @@ hyperfine --warmup 1 '.\target\release\perfenc.exe --width 1920 --height 1080 in
 ```
 
 `perfenc` reads headerless RGBX frames, allocates and reads each frame, then encodes it with one persistent server encoder.
-Its default is unpaced and emits one final payload-free summary after it confirms that every input frame produced output.
+Its default is unpaced and emits one final payload-free summary after it confirms aggregate encoder output.
 Pass `--fps <FPS>` only for interactive playback pacing.
 
 The capture replay workloads are intentionally qualified partial replays, not full-session success measurements.
