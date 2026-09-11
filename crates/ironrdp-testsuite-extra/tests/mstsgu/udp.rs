@@ -1,5 +1,3 @@
-#![allow(unused_crate_dependencies)]
-
 use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor};
 use ironrdp_mstsgu::{
     AaSynData, AaSynDataResp, ConnectPkt, ConnectPktResp, DataPkt, DiscPkt, GwUdpOffer, MAX_CONNECT_REQ_FRAGMENT_SIZE,
