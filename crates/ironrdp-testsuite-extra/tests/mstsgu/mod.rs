@@ -19,7 +19,6 @@ mod proto;
 #[cfg(feature = "native-tls")]
 mod proxy;
 mod rpc_pdu;
-mod rpc_tsgu_stubs;
 pub(crate) mod rpch_http;
 mod tunnel_policy;
 mod udp;
