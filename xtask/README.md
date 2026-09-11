@@ -18,9 +18,9 @@ cargo xtask bench corpus-list
 
 The fetch command downloads only the files listed in `crates/ironrdp-bench/corpus.toml` from immutable raw URLs at the manifest's Git commit.
 It requires the cross-platform `curl` command to be available on `PATH`.
-It verifies every download and warm-cache entry with the manifest SHA-256 digest before storing files under `dependencies/wireshark-rdp/<revision>/captures`.
-Keep generated benchmark output under `dependencies/benchmark-output`, separate from the corpus cache.
-The ignored `dependencies` directory must never be committed.
+It verifies every download and warm-cache entry with the manifest SHA-256 digest before storing files under `bench-data/wireshark-rdp/<revision>/captures`.
+Keep generated benchmark output under `bench-data/benchmark-output`, separate from the corpus cache.
+The ignored `bench-data` directory must never be committed.
 Capture-based commands must work from the verified local cache and must not perform network I/O after this explicit fetch step.
 
 To update the corpus, inspect the upstream capture inventory, revise the manifest revision, inventory, scenario intent metadata, and SHA-256 digests together, then run `cargo xtask bench corpus-fetch`.
