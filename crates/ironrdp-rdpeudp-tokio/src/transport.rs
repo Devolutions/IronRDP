@@ -210,6 +210,37 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
+/// A cloneable handle for sending data over an established UDP transport,
+/// obtained from [`UdpTransport::sender`].
+///
+/// Independent of [`UdpTransport::recv`]'s `&mut self` requirement: Sending
+/// and receiving already run over separate channels fed by separate
+/// background tasks, so this never contends with a concurrent `recv()`.
+#[derive(Clone)]
+pub struct UdpTransportSender(mpsc::Sender<Vec<u8>>);
+
+impl UdpTransportSender {
+    /// Send a higher-layer data frame through the tunnel.
+    ///
+    /// Identical validation and error semantics to [`UdpTransport::send`],
+    /// which delegates to this.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PayloadTooLarge` if `data` exceeds 65535 bytes, the wire
+    /// `PayloadLength` field's capacity ([MS-RDPEMT] 2.2.2.3).
+    pub async fn send(&self, data: Vec<u8>) -> Result<(), UdpTransportError> {
+        if data.len() > usize::from(u16::MAX) {
+            return Err(UdpTransportError::payload_too_large("send", data.len()));
+        }
+
+        self.0
+            .send(data)
+            .await
+            .map_err(|_| UdpTransportError::driver("send", DriverError::connection_closed("send")))
+    }
+}
+
 /// Handle to an established UDP transport.
 ///
 /// Provides bidirectional higher-layer data (DVC frames) over the
@@ -260,14 +291,21 @@ impl UdpTransport {
     /// discover: that task has no way to report a per-payload failure back
     /// to a caller who already received `Ok(())` from a channel send.
     pub async fn send(&self, data: Vec<u8>) -> Result<(), UdpTransportError> {
-        if data.len() > usize::from(u16::MAX) {
-            return Err(UdpTransportError::payload_too_large("send", data.len()));
-        }
+        self.sender().send(data).await
+    }
 
-        self.data_tx
-            .send(data)
-            .await
-            .map_err(|_| UdpTransportError::driver("send", DriverError::connection_closed("send")))
+    /// Returns a cloneable handle for sending data, independent of this
+    /// object's `&mut self`-requiring [`Self::recv`].
+    ///
+    /// Sending and receiving are already independent internally (separate
+    /// channels fed by separate background tasks), so a caller that shares
+    /// one `UdpTransport` between a single dedicated receiver (behind a lock
+    /// reserved for `recv()` alone, since only one caller should ever call
+    /// it) and one or more senders can send through this handle without
+    /// contending on that lock, including for the full duration of an idle
+    /// `recv()` wait.
+    pub fn sender(&self) -> UdpTransportSender {
+        UdpTransportSender(self.data_tx.clone())
     }
 
     /// Shut down the transport, closing the RDPEUDP2 connection.

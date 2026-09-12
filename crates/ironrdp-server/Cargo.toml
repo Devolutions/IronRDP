@@ -59,6 +59,9 @@ ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9" } # public
 ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" } # public
 ironrdp-rdpeusb = { path = "../ironrdp-rdpeusb", version = "0.1", optional = true }
 ironrdp-usb = { path = "../ironrdp-usb", version = "0.1", optional = true }
+ironrdp-rdpemt = { path = "../ironrdp-rdpemt", version = "0.1" } # public
+ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", version = "0.1" } # public
+ironrdp-rdpeudp-tokio = { path = "../ironrdp-rdpeudp-tokio", version = "0.1" } # public
 tracing = { version = "0.1", features = ["log"] }
 x509-cert = { version = "0.3", optional = true }
 rustls-pemfile = { version = "2.2", optional = true }
