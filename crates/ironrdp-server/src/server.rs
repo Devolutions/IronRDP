@@ -3793,8 +3793,24 @@ impl RdpServer {
                         }
                         AutoDetectOutcome::Bandwidth(Some(bandwidth_kbps)) => {
                             self.autodetect_bandwidth.store(bandwidth_kbps, Ordering::Relaxed);
+                            // Logging the raw inputs, not just the computed figure: a
+                            // damage-driven video source makes any single measurement
+                            // window's byte count wildly bimodal (near-idle vs. a real
+                            // frame landing in it), so bandwidth_kbps alone reads as
+                            // noise without time_delta_ms/byte_count alongside it to
+                            // show why.
+                            let rdp::autodetect::AutoDetectResponse::BandwidthMeasureResults {
+                                time_delta_ms,
+                                byte_count,
+                                ..
+                            } = &pdu.response
+                            else {
+                                unreachable!("computed_bandwidth_kbps() only returns Some for this variant")
+                            };
                             debug!(
                                 bandwidth_kbps,
+                                time_delta_ms,
+                                byte_count,
                                 seq = pdu.response.sequence_number(),
                                 "Bandwidth measured"
                             );
