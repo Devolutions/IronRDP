@@ -557,7 +557,7 @@ impl DisplayControlHandler for DisplayControlBackend {
         };
         DisplayControlCapabilities::new(monitor_count, 3840, 2400).unwrap_or_else(|e| {
             warn!(monitor_count, error = %e, "RdpServerDisplay::monitor_count() out of range, falling back to 1");
-            DisplayControlCapabilities::new(1, 3840, 2400).expect("(1, 3840, 2400) are always within the valid range")
+            DisplayControlCapabilities::single_monitor()
         })
     }
 }
