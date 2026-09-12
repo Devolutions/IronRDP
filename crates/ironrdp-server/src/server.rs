@@ -14,7 +14,7 @@ use ironrdp_async::Framed;
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_core::{decode, encode_vec, impl_as_any};
-use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
+use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout};
 use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
 use ironrdp_dvc as dvc;
 #[cfg(feature = "usb")]
@@ -552,11 +552,12 @@ impl dvc::DvcServerProcessor for AInputHandler {}
 
 struct DisplayControlBackend {
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
+    monitor_count: u32,
 }
 
 impl DisplayControlBackend {
-    fn new(display: Arc<Mutex<Box<dyn RdpServerDisplay>>>) -> Self {
-        Self { display }
+    fn new(display: Arc<Mutex<Box<dyn RdpServerDisplay>>>, monitor_count: u32) -> Self {
+        Self { display, monitor_count }
     }
 }
 
@@ -564,6 +565,22 @@ impl DisplayControlHandler for DisplayControlBackend {
     fn monitor_layout(&self, layout: DisplayControlMonitorLayout) {
         let display = Arc::clone(&self.display);
         task::spawn_blocking(move || display.blocking_lock().request_layout(layout));
+    }
+
+    fn capabilities(&self) -> DisplayControlCapabilities {
+        // `DisplayControlCapabilities::new` only rejects `monitor_count > 1024`; 0 passes its
+        // validation (0 * 3840 * 2400 does not overflow) but would advertise a server that
+        // supports no monitors, so it is folded into the same out-of-range fallback below.
+        let monitor_count = if self.monitor_count == 0 {
+            warn!("RdpServerDisplay::monitor_count() returned 0, falling back to 1");
+            1
+        } else {
+            self.monitor_count
+        };
+        DisplayControlCapabilities::new(monitor_count, 3840, 2400).unwrap_or_else(|e| {
+            warn!(monitor_count, error = %e, "RdpServerDisplay::monitor_count() out of range, falling back to 1");
+            DisplayControlCapabilities::single_monitor()
+        })
     }
 }
 
@@ -1814,7 +1831,7 @@ impl RdpServer {
         self.gfx_handle.as_ref()
     }
 
-    fn attach_channels(&mut self, acceptor: &mut Acceptor) {
+    fn attach_channels(&mut self, acceptor: &mut Acceptor, monitor_count: u32) {
         if let Some(cliprdr_factory) = self.cliprdr_factory.as_deref() {
             let backend = cliprdr_factory.build_cliprdr_backend();
 
@@ -1835,7 +1852,7 @@ impl RdpServer {
             acceptor.attach_static_channel(RdpdrServer::new(backend));
         }
 
-        let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));
+        let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display), monitor_count);
         let dvc = dvc::DrdynvcServer::new()
             .with_dynamic_channel(AInputHandler {
                 handler: Arc::clone(&self.handler),
@@ -1970,7 +1987,8 @@ impl RdpServer {
         // `accept_finalize`, which is where the acceptor first consumes the
         // static channel set (the MCS Connect Initial); `accept_begin`, already
         // done, stops at the security-upgrade gate before that.
-        self.attach_channels(&mut candidate.acceptor);
+        let monitor_count = self.display.lock().await.monitor_count().await;
+        self.attach_channels(&mut candidate.acceptor, monitor_count);
 
         self.finalize_negotiated(*candidate).await
     }
@@ -2098,6 +2116,7 @@ impl RdpServer {
         self.display_suppressed.store(false, Ordering::Relaxed);
 
         let size = self.display.lock().await.size().await;
+        let monitor_count = self.display.lock().await.monitor_count().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
         let mut pending = PendingConnection::new(
             self.opts.security.clone(),
@@ -2107,7 +2126,7 @@ impl RdpServer {
             self.opts.honor_client_desktop_size,
         );
 
-        self.attach_channels(pending.acceptor_mut());
+        self.attach_channels(pending.acceptor_mut(), monitor_count);
 
         let Some(negotiated) = pending.negotiate_and_authenticate(stream, tls).await? else {
             return Ok(());

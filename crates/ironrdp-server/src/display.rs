@@ -335,6 +335,21 @@ pub trait RdpServerDisplay: Send {
     fn request_layout(&mut self, layout: DisplayControlMonitorLayout) {
         debug!(?layout, "Requesting layout")
     }
+
+    /// The maximum number of monitors this display will honor in a client's
+    /// `request_layout()` call for the rest of the session.
+    ///
+    /// This is a capacity ceiling (MS-RDPEDISP `MaxNumMonitors`), not a report
+    /// of the current topology: the client may request any layout up to this
+    /// many monitors, and it is validated against this number, not the other
+    /// way around. Called once, before the Display Control Virtual Channel
+    /// opens, to build the capabilities the server advertises; the display's
+    /// actual monitor count may later grow or shrink within that ceiling
+    /// without a way to advertise a new one mid-session. Defaults to `1`,
+    /// matching every existing implementation's current behavior.
+    async fn monitor_count(&mut self) -> u32 {
+        1
+    }
 }
 
 #[cfg(test)]
