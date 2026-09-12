@@ -32,16 +32,16 @@ struct Capture {
     /// Recorded upstream scenario description.
     intent: String,
     /// Optional focused performance workload for this capture.
-    pub performance: Option<PerformanceWorkload>,
+    performance: Option<PerformanceWorkload>,
     /// Observed replay behavior for this exact capture revision.
     expect: ReplayExpectation,
 }
 
 /// A focused performance workload declared by the corpus manifest.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PerformanceWorkload {
+struct PerformanceWorkload {
     /// Exact Criterion benchmark identifier.
-    pub criterion: String,
+    criterion: String,
 }
 
 /// Strict expected result for one capture replay.
