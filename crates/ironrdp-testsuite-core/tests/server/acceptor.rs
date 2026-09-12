@@ -327,8 +327,8 @@ pub(super) fn client_gcc_with_message_channel_and_multitransport(
 
 /// Builds an `Acceptor` for the multitransport tests below, at a common
 /// 1920x1080 desktop size with no static channels or credentials. `offer` is
-/// passed to `set_multitransport_offer` when `Some`; pass `None` to exercise
-/// the default-disabled path.
+/// passed straight through to `set_multitransport_offer`; pass `None` to
+/// exercise the default-disabled path.
 fn multitransport_acceptor(offer: Option<MultiTransportFlags>) -> Acceptor {
     let mut acceptor = Acceptor::new(
         SecurityProtocol::SSL,
@@ -339,9 +339,7 @@ fn multitransport_acceptor(offer: Option<MultiTransportFlags>) -> Acceptor {
         Vec::new(),
         None,
     );
-    if let Some(offer) = offer {
-        acceptor.set_multitransport_offer(Some(offer));
-    }
+    acceptor.set_multitransport_offer(offer);
     acceptor
 }
 

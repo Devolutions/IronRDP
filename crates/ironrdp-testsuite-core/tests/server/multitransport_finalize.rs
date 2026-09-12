@@ -133,7 +133,10 @@ async fn play_client(mut framed: TokioFramed<DuplexStream>) -> (TokioFramed<Dupl
 
     // A response arriving ahead of Confirm Active: the acceptor must
     // silently absorb it and keep waiting rather than erroring.
-    let response = MultitransportResponsePdu::success(request.request_id);
+    // MS-RDPBCGR 2.2.15.2: S_OK MUST only be sent to a server advertising
+    // SOFTSYNC_TCP_TO_UDP, which this test's offer does not include; the
+    // legitimate response here is a failure code.
+    let response = MultitransportResponsePdu::abort(request.request_id);
     framed
         .write_all(&encode_send_data_request(
             user_channel_id,
