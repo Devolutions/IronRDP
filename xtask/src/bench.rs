@@ -109,8 +109,6 @@ pub fn corpus_fetch(sh: &Shell) -> anyhow::Result<()> {
         install_capture(&temporary_path, &cache_path)?;
         println!("Fetched and verified: {}", capture.file);
     }
-    remove_stale_corpus_revisions(&project_root().join(CACHE_ROOT), &corpus.revision)?;
-
     Ok(())
 }
 
@@ -482,28 +480,6 @@ fn parse_replay_expectation(value: &toml::Table) -> anyhow::Result<ReplayExpecta
         reason,
         summary,
     })
-}
-
-fn remove_stale_corpus_revisions(cache_root: &Path, revision: &str) -> anyhow::Result<()> {
-    for entry in
-        fs::read_dir(cache_root).with_context(|| format!("read corpus cache root: {}", cache_root.display()))?
-    {
-        let entry = entry.with_context(|| format!("read corpus cache root: {}", cache_root.display()))?;
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-        if file_name != revision
-            && is_lower_hex(&file_name, 40)
-            && entry
-                .file_type()
-                .with_context(|| format!("inspect corpus cache entry: {}", entry.path().display()))?
-                .is_dir()
-        {
-            fs::remove_dir_all(entry.path())
-                .with_context(|| format!("remove stale corpus cache revision: {}", entry.path().display()))?;
-        }
-    }
-
-    Ok(())
 }
 
 fn optional_string<'a>(table: &'a toml::Table, key: &str, location: &str) -> anyhow::Result<Option<&'a str>> {
@@ -950,22 +926,5 @@ summary = {{ {values} }}
                 .to_string()
                 .contains("partial replay expectation must have gaps or not end active")
         );
-    }
-
-    #[test]
-    fn removes_stale_corpus_revision_directories() {
-        let directory = test_directory();
-        let current = "683505a753dfd7a2b27713b3a21e9a6951abacc4";
-        let stale = "0000000000000000000000000000000000000000";
-        fs::create_dir(directory.join(current)).expect("create current revision");
-        fs::create_dir(directory.join(stale)).expect("create stale revision");
-        fs::create_dir(directory.join("unexpected")).expect("create unrelated cache entry");
-
-        remove_stale_corpus_revisions(&directory, current).expect("prune stale revision");
-
-        assert!(directory.join(current).exists());
-        assert!(!directory.join(stale).exists());
-        assert!(directory.join("unexpected").exists());
-        fs::remove_dir_all(directory).expect("remove test directory");
     }
 }
