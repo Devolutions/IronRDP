@@ -66,7 +66,7 @@ pub struct Acceptor {
     /// Whether the Initiate Multitransport Response matching
     /// `sent_multitransport_request` was received, and whether it reported
     /// success. `None` until a matching response arrives. See
-    /// `multitransport_response_success()`.
+    /// [`AcceptorResult::multitransport_response_success`].
     received_multitransport_response: Option<bool>,
 }
 
@@ -154,7 +154,7 @@ pub struct AcceptorResult {
     /// Whether the Initiate Multitransport Response matching the sent
     /// request was received during the connection sequence, and whether it
     /// reported success. `None` when no request was sent, or a matching
-    /// response never arrived. See [`Acceptor::multitransport_response_success`].
+    /// response never arrived.
     pub multitransport_response_success: Option<bool>,
     /// Credentials received from the client during SecureSettingsExchange.
     ///
@@ -368,19 +368,6 @@ impl Acceptor {
             );
         }
         true
-    }
-
-    /// Whether the Initiate Multitransport Response matching the sent
-    /// request was received, and whether it reported success.
-    ///
-    /// `None` until a matching response arrives: Neither Soft-Sync
-    /// (MS-RDPEDYC 3.1.5.3) nor tunneling static virtual channel traffic
-    /// (MS-RDPEDYC 3.3.5.3.1) may begin until this is `Some(true)`, since
-    /// both require "a successful Initiate Multitransport Response PDU"
-    /// to have actually been received, not merely that the sideband
-    /// transport's own handshake succeeded.
-    pub fn multitransport_response_success(&self) -> Option<bool> {
-        self.received_multitransport_response
     }
 
     pub fn new_deactivation_reactivation(

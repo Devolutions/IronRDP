@@ -971,7 +971,7 @@ impl PendingConnection {
         // Multitransport requires Enhanced Security: `RdpServerSecurity::None`
         // has nothing to authenticate the sideband transport's TLS with, and
         // matches the reference client's own Enhanced-Security-only gate.
-        if udp_bind_addr.is_some() && matches!(security, RdpServerSecurity::Tls(_) | RdpServerSecurity::Hybrid(_)) {
+        if udp_bind_addr.is_some() && security.tls_acceptor().is_some() {
             // SOFT_SYNC_TCP_TO_UDP is included alongside the transport type
             // itself: Without it, Soft-Sync is never negotiated (MS-RDPEDYC
             // 3.1.5.3 requires both peers to advertise it), and
@@ -3201,10 +3201,7 @@ impl RdpServer {
         // (`udp_transport.is_some()`) establishes on its own.
         if udp_migration_allowed
             && let Some(udp_transport) = udp_transport
-            && let Some(drdynvc) = self
-                .static_channels
-                .get_by_type_mut::<dvc::DrdynvcServer>()
-                .and_then(|svc| svc.channel_processor_downcast_mut::<dvc::DrdynvcServer>())
+            && let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>()
             && let Some(egfx_dvc_id) = drdynvc.get_channel_id_by_type::<ironrdp_egfx::server::GraphicsPipelineServer>()
         {
             // First time EGFX has data to send after the tunnel exists: ask
@@ -3579,6 +3576,11 @@ impl RdpServer {
                 };
                 let Some(payload) = transport.recv().await else {
                     debug!("UDP transport closed, continuing TCP-only for the rest of the session");
+                    // Without this, `dispatch_egfx_messages` would keep seeing
+                    // `Some(dead_handle)` here and stay on the UDP branch,
+                    // silently dropping every future EGFX batch instead of
+                    // actually falling back to TCP as this log claims.
+                    *udp_transport.borrow_mut() = None;
                     return core::future::pending::<ServerResult<RunState>>().await;
                 };
                 let mut this = this.lock().await;
@@ -3827,6 +3829,19 @@ impl RdpServer {
         // SOFT_SYNC_TCP_TO_UDP and a successful Initiate Multitransport
         // Response was actually received, not merely that the sideband
         // transport's own handshake succeeded.
+        //
+        // This is a one-time snapshot, not a value `client_loop` can ever
+        // revise: `handle_message_channel_data` only decodes an Auto-Detect
+        // Response off the message channel, so a Multitransport Response
+        // arriving after finalization completes is not recognized at all.
+        // MS-RDPBCGR gives no guarantee the client resolves its own UDP
+        // bootstrap (RDPEUDP2 + TLS + RDPEMT) before TCP finalization's own
+        // few round trips finish, so a response landing in that gap is
+        // possible in principle. Accepted tradeoff, same shape as the
+        // `pending_udp_accept`-across-reactivation one below: the session
+        // just stays on TCP for its lifetime rather than ever migrating,
+        // which is the same safe degrade this file already takes elsewhere,
+        // not a correctness issue.
         let udp_migration_allowed = result.multitransport_response_success == Some(true)
             && result
                 .multitransport_flags
