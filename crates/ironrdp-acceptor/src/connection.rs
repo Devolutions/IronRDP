@@ -63,6 +63,11 @@ pub struct Acceptor {
     /// The Initiate Multitransport Request sent to the client, once
     /// `MultitransportBootstrapping` has run. See `multitransport_request()`.
     sent_multitransport_request: Option<rdp::multitransport::MultitransportRequestPdu>,
+    /// Whether the Initiate Multitransport Response matching
+    /// `sent_multitransport_request` was received, and whether it reported
+    /// success. `None` until a matching response arrives. See
+    /// `multitransport_response_success()`.
+    received_multitransport_response: Option<bool>,
 }
 
 /// Minimum and maximum desktop dimension honored from a client.
@@ -146,6 +151,11 @@ pub struct AcceptorResult {
     /// implement UDP multitransport can use it to decide whether to send a
     /// Server Initiate Multitransport Request.
     pub multitransport_flags: gcc::MultiTransportFlags,
+    /// Whether the Initiate Multitransport Response matching the sent
+    /// request was received during the connection sequence, and whether it
+    /// reported success. `None` when no request was sent, or a matching
+    /// response never arrived. See [`Acceptor::multitransport_response_success`].
+    pub multitransport_response_success: Option<bool>,
     /// Credentials received from the client during SecureSettingsExchange.
     ///
     /// Present for TLS-mode connections where the client sends credentials
@@ -193,6 +203,7 @@ impl Acceptor {
             honor_client_desktop_size: None,
             offer_multitransport: None,
             sent_multitransport_request: None,
+            received_multitransport_response: None,
         }
     }
 
@@ -332,7 +343,7 @@ impl Acceptor {
     /// handling for anything that isn't really a response, mirroring how
     /// `ClientConnectorState::ConnectTimeAutoDetection` demuxes the same
     /// channel client-side.
-    fn is_late_multitransport_response(&self, data: &mcs::SendDataRequest<'_>) -> bool {
+    fn is_late_multitransport_response(&mut self, data: &mcs::SendDataRequest<'_>) -> bool {
         let Some(sent) = self.sent_multitransport_request.as_ref() else {
             return false;
         };
@@ -348,6 +359,7 @@ impl Acceptor {
                 success = response.is_success(),
                 "Received Initiate Multitransport Response"
             );
+            self.received_multitransport_response = Some(response.is_success());
         } else {
             warn!(
                 response.request_id,
@@ -356,6 +368,19 @@ impl Acceptor {
             );
         }
         true
+    }
+
+    /// Whether the Initiate Multitransport Response matching the sent
+    /// request was received, and whether it reported success.
+    ///
+    /// `None` until a matching response arrives: Neither Soft-Sync
+    /// (MS-RDPEDYC 3.1.5.3) nor tunneling static virtual channel traffic
+    /// (MS-RDPEDYC 3.3.5.3.1) may begin until this is `Some(true)`, since
+    /// both require "a successful Initiate Multitransport Response PDU"
+    /// to have actually been received, not merely that the sideband
+    /// transport's own handshake succeeded.
+    pub fn multitransport_response_success(&self) -> Option<bool> {
+        self.received_multitransport_response
     }
 
     pub fn new_deactivation_reactivation(
@@ -402,6 +427,7 @@ impl Acceptor {
             honor_client_desktop_size: consumed.honor_client_desktop_size,
             offer_multitransport: consumed.offer_multitransport,
             sent_multitransport_request: consumed.sent_multitransport_request,
+            received_multitransport_response: consumed.received_multitransport_response,
         })
     }
 
@@ -495,6 +521,7 @@ impl Acceptor {
                 multitransport_flags: self
                     .multitransport_flags
                     .unwrap_or_else(gcc::MultiTransportFlags::empty),
+                multitransport_response_success: self.received_multitransport_response,
                 client_early_capability_flags: self.early_capability_flags,
                 reactivation: self.reactivation,
                 credentials: self.received_credentials.take(),

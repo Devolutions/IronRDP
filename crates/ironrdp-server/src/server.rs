@@ -1,3 +1,4 @@
+use core::cell::RefCell;
 use core::fmt;
 use core::net::{IpAddr, SocketAddr};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -971,7 +972,15 @@ impl PendingConnection {
         // has nothing to authenticate the sideband transport's TLS with, and
         // matches the reference client's own Enhanced-Security-only gate.
         if udp_bind_addr.is_some() && matches!(security, RdpServerSecurity::Tls(_) | RdpServerSecurity::Hybrid(_)) {
-            acceptor.set_multitransport_offer(Some(ironrdp_pdu::gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+            // SOFT_SYNC_TCP_TO_UDP is included alongside the transport type
+            // itself: Without it, Soft-Sync is never negotiated (MS-RDPEDYC
+            // 3.1.5.3 requires both peers to advertise it), and
+            // `dispatch_egfx_messages` gates the EGFX-over-tunnel migration
+            // on `multitransport_flags` reflecting it.
+            acceptor.set_multitransport_offer(Some(
+                ironrdp_pdu::gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR
+                    | ironrdp_pdu::gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP,
+            ));
         }
         Self { security, acceptor }
     }
@@ -2624,6 +2633,10 @@ impl RdpServer {
         Ok((RunState::Continue, encoder))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "private per-connection dispatch entry point; the parameters are the connection's negotiated identifiers"
+    )]
     async fn dispatch_server_events(
         &mut self,
         events: &mut Vec<ServerEvent>,
@@ -2632,12 +2645,14 @@ impl RdpServer {
         user_channel_id: u16,
         message_channel_id: Option<u16>,
         udp_transport: Option<&multitransport::UdpTransportHandle>,
+        udp_migration_allowed: bool,
     ) -> ServerResult<RunState> {
         // Only referenced under `#[cfg(feature = "egfx")]` below (the only
-        // channel this integration migrates); this keeps the parameter
-        // itself unconditional so callers don't need their own `egfx` gate.
+        // channel this integration migrates); this keeps the parameters
+        // themselves unconditional so callers don't need their own `egfx`
+        // gate.
         #[cfg(not(feature = "egfx"))]
-        let _ = &udp_transport;
+        let _ = (&udp_transport, udp_migration_allowed);
 
         // Avoid wave messages queuing up and causing extra delay. When a
         // batch carries more than `WAVE_KEEP` waves, drop the OLDEST ones
@@ -3096,8 +3111,14 @@ impl RdpServer {
                 #[cfg(feature = "egfx")]
                 ServerEvent::Egfx(msg) => match msg {
                     EgfxServerMessage::SendMessages { messages } => {
-                        self.dispatch_egfx_messages(messages, writer, user_channel_id, udp_transport)
-                            .await?;
+                        self.dispatch_egfx_messages(
+                            messages,
+                            writer,
+                            user_channel_id,
+                            udp_transport,
+                            udp_migration_allowed,
+                        )
+                        .await?;
                     }
                 },
                 ServerEvent::AutoDetectRttRequest => {
@@ -3164,6 +3185,7 @@ impl RdpServer {
         writer: &mut impl FramedWrite,
         user_channel_id: u16,
         udp_transport: Option<&multitransport::UdpTransportHandle>,
+        udp_migration_allowed: bool,
     ) -> ServerResult<()> {
         let drdynvc_channel_id = self
             .get_channel_id_by_type::<dvc::DrdynvcServer>()
@@ -3171,7 +3193,14 @@ impl RdpServer {
 
         let mut route_over_udp = false;
 
-        if let Some(udp_transport) = udp_transport
+        // `udp_migration_allowed` gates the Soft-Sync Request itself
+        // (`request_reliable_udp` below): MS-RDPEDYC 3.1.5.3/3.3.5.3.1 forbid
+        // it unless both peers negotiated SOFT_SYNC_TCP_TO_UDP and a
+        // successful Initiate Multitransport Response was actually received,
+        // neither of which the sideband transport's own handshake succeeding
+        // (`udp_transport.is_some()`) establishes on its own.
+        if udp_migration_allowed
+            && let Some(udp_transport) = udp_transport
             && let Some(drdynvc) = self
                 .static_channels
                 .get_by_type_mut::<dvc::DrdynvcServer>()
@@ -3233,11 +3262,15 @@ impl RdpServer {
         writer: &mut impl FramedWrite,
         user_channel_id: u16,
     ) -> ServerResult<RunState> {
-        let Some(drdynvc_channel_id) = self.get_channel_id_by_type::<dvc::DrdynvcServer>() else {
-            warn!("No drdynvc channel, dropping UDP tunnel payload");
-            return Ok(RunState::Continue);
-        };
-        let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>() else {
+        // A single guard: `get_channel_id_by_type` and `get_svc_processor`
+        // both key off the same registered processor's `TypeId`, so one
+        // succeeding without the other would mean `static_channels` itself
+        // is inconsistent, not a case this function can meaningfully
+        // distinguish from "no drdynvc channel".
+        let (Some(drdynvc_channel_id), Some(drdynvc)) = (
+            self.get_channel_id_by_type::<dvc::DrdynvcServer>(),
+            self.get_svc_processor::<dvc::DrdynvcServer>(),
+        ) else {
             warn!("No drdynvc channel, dropping UDP tunnel payload");
             return Ok(RunState::Continue);
         };
@@ -3277,7 +3310,9 @@ impl RdpServer {
         message_channel_id: Option<u16>,
         client_supports_heartbeat: bool,
         mut encoder: UpdateEncoder,
-        udp_transport: Option<multitransport::UdpTransportHandle>,
+        udp_transport: Rc<RefCell<Option<multitransport::UdpTransportHandle>>>,
+        pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>>,
+        udp_migration_allowed: bool,
     ) -> ServerResult<RunState>
     where
         R: FramedRead,
@@ -3296,7 +3331,7 @@ impl RdpServer {
         let mut auto_reconnect_writer = writer.clone();
         let mut heartbeat_writer = writer.clone();
         let mut udp_tunnel_writer = writer.clone();
-        let udp_transport_for_events = udp_transport.clone();
+        let udp_transport_for_events = Rc::clone(&udp_transport);
         let write_counter = writer.write_counter();
         let ev_receiver = Arc::clone(&self.ev_receiver);
         let s = Rc::new(Mutex::new(self));
@@ -3414,6 +3449,11 @@ impl RdpServer {
                 let lock_wait_ms = u64::try_from(lock_start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
                 let dispatch_start = Instant::now();
+                // Cloned out of the cell before the call, since `dispatch_server_events`
+                // is async and this must not hold the `RefCell` borrow across
+                // an await point. `UdpTransportHandle` is cheap to clone (see
+                // its own doc comment).
+                let current_udp_transport = udp_transport_for_events.borrow().clone();
                 let result = this
                     .dispatch_server_events(
                         &mut events,
@@ -3421,7 +3461,8 @@ impl RdpServer {
                         io_channel_id,
                         user_channel_id,
                         message_channel_id,
-                        udp_transport_for_events.as_ref(),
+                        current_udp_transport.as_ref(),
+                        udp_migration_allowed,
                     )
                     .await?;
                 let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -3497,11 +3538,46 @@ impl RdpServer {
 
         let this = Rc::clone(&s);
         let dispatch_udp_tunnel = async move {
-            let Some(udp_transport) = udp_transport else {
-                return core::future::pending::<ServerResult<RunState>>().await;
-            };
+            // Only the pass of `client_loop` that received a fresh
+            // `pending_udp_accept` waits on it; every other future in this
+            // `select!` is already dispatching over TCP while this resolves,
+            // so the session never stalls on it. The accepted transport (if
+            // any) is stashed in the shared cell so `dispatch_events`, running
+            // concurrently, can start using it as soon as it lands too.
+            //
+            // If a Deactivation-Reactivation cycle drops this future while
+            // `handle` is still unresolved, the background accept task (and
+            // whatever socket/handshake it is mid-negotiation on) is orphaned:
+            // Its eventual result has nowhere left to be delivered, and this
+            // session continues TCP-only for the rest of its lifetime. That is
+            // an accepted narrow-window tradeoff; the alternative is
+            // persisting in-flight `JoinHandle`s across reactivation, which
+            // this integration does not attempt. The orphaned task also keeps
+            // `udp_bind_addr` bound for up to `UDP_ACCEPT_TIMEOUT`, so a NEXT
+            // connection's own bind attempt during that window can collide
+            // with it too, not only a concurrently preempted session's (see
+            // `multitransport::accept`'s own doc comment on that failure
+            // mode); it degrades the same way, gracefully, to TCP-only.
+            if let Some(handle) = pending_udp_accept {
+                match handle.await {
+                    Ok(Some(transport)) => {
+                        *udp_transport.borrow_mut() = Some(transport);
+                    }
+                    Ok(None) => {
+                        debug!("UDP transport did not come up, continuing TCP-only for the rest of the session");
+                    }
+                    Err(error) => {
+                        warn!(%error, "UDP transport accept task panicked, continuing TCP-only for the rest of the session");
+                    }
+                }
+            }
+
             loop {
-                let Some(payload) = udp_transport.recv().await else {
+                let current = udp_transport.borrow().clone();
+                let Some(transport) = current else {
+                    return core::future::pending::<ServerResult<RunState>>().await;
+                };
+                let Some(payload) = transport.recv().await else {
                     debug!("UDP transport closed, continuing TCP-only for the rest of the session");
                     return core::future::pending::<ServerResult<RunState>>().await;
                 };
@@ -3534,7 +3610,8 @@ impl RdpServer {
         reader: &mut Framed<R>,
         writer: &mut Framed<W>,
         result: AcceptorResult,
-        udp_transport: Option<multitransport::UdpTransportHandle>,
+        udp_transport: Rc<RefCell<Option<multitransport::UdpTransportHandle>>>,
+        pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>>,
     ) -> ServerResult<RunState>
     where
         R: FramedRead,
@@ -3745,6 +3822,16 @@ impl RdpServer {
         self.send_next_auto_reconnect_cookie(writer, result.io_channel_id, result.user_channel_id)
             .await?;
 
+        // MS-RDPEDYC 3.1.5.3/3.3.5.3.1: Soft-Sync (and the tunneling it
+        // gates) MUST NOT be used unless both peers negotiated
+        // SOFT_SYNC_TCP_TO_UDP and a successful Initiate Multitransport
+        // Response was actually received, not merely that the sideband
+        // transport's own handshake succeeded.
+        let udp_migration_allowed = result.multitransport_response_success == Some(true)
+            && result
+                .multitransport_flags
+                .contains(ironrdp_pdu::gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP);
+
         let state = self
             .client_loop(
                 reader,
@@ -3757,6 +3844,8 @@ impl RdpServer {
                     .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_HEART_BEAT_PDU),
                 encoder,
                 udp_transport,
+                pending_udp_accept,
+                udp_migration_allowed,
             )
             .await?;
 
@@ -4039,11 +4128,21 @@ impl RdpServer {
             .security
             .tls_acceptor()
             .map(|acceptor| Arc::clone(acceptor.config()));
-        // Persists across a Deactivation-Reactivation pass of this loop: the
+        // Persists across a Deactivation-Reactivation pass of this loop: The
         // sideband transport, once established, is not torn down or
         // re-bootstrapped for a resize (see the acceptor's own doc comment
-        // on `MultitransportBootstrapping` regarding reactivation).
-        let mut udp_transport: Option<multitransport::UdpTransportHandle> = None;
+        // on `MultitransportBootstrapping` regarding reactivation). Shared
+        // with `client_loop`, which populates it once `pending_udp_accept`
+        // (below) resolves.
+        let udp_transport: Rc<RefCell<Option<multitransport::UdpTransportHandle>>> = Rc::new(RefCell::new(None));
+        // Set once, by the handler below, the first time the acceptor
+        // actually sends a request. Taken (not cloned) when handed to
+        // `client_loop`, which awaits it in its own select loop: The full
+        // RDPEUDP2 + TLS + RDPEMT handshake this drives can take up to
+        // `multitransport::UDP_ACCEPT_TIMEOUT`, and the handler below runs
+        // synchronously as part of finalize, so establishing it must never
+        // block the RDP handshake finalize itself is driving.
+        let mut pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>> = None;
 
         loop {
             // Bounded: see `FINALIZE_TIMEOUT`. The bound belongs on THIS call
@@ -4070,7 +4169,14 @@ impl RdpServer {
                     let (Some(udp_bind_addr), Some(tls_config)) = (udp_bind_addr, tls_config.clone()) else {
                         return;
                     };
-                    udp_transport = multitransport::accept(udp_bind_addr, tls_config, &request).await;
+                    // Spawned rather than awaited inline: See the comment on
+                    // `pending_udp_accept`'s declaration above. `spawn_local`
+                    // requires the `LocalSet` `RdpServer::run()` already
+                    // documents as a requirement of its own (see
+                    // `finalize_timeout.rs`'s note on the same constraint).
+                    pending_udp_accept = Some(task::spawn_local(async move {
+                        multitransport::accept(udp_bind_addr, tls_config, &request).await
+                    }));
                 },
             );
             let (new_framed, result) = match tokio::time::timeout(FINALIZE_TIMEOUT, finalize).await {
@@ -4090,7 +4196,13 @@ impl RdpServer {
             let (mut reader, mut writer) = split_tokio_framed(new_framed);
 
             match self
-                .client_accepted(&mut reader, &mut writer, result, udp_transport.clone())
+                .client_accepted(
+                    &mut reader,
+                    &mut writer,
+                    result,
+                    Rc::clone(&udp_transport),
+                    pending_udp_accept.take(),
+                )
                 .await?
             {
                 RunState::Continue => {

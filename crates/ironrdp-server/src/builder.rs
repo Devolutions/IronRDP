@@ -479,7 +479,11 @@ impl RdpServerBuilder<BuilderDone> {
     ///
     /// Once established, the transport is used to migrate EGFX graphics
     /// traffic off TCP; a failure to establish it at any stage falls back to
-    /// TCP-only rather than failing the connection.
+    /// TCP-only rather than failing the connection. This includes
+    /// [`Self::with_preempt_existing_session`] overlapping a candidate
+    /// session's own UDP bind with a still-live session's: When
+    /// `udp_bind_addr` is the same for both, the second bind fails and that
+    /// connection degrades to TCP-only.
     ///
     /// `None` (the default): no UDP socket is ever bound, no behavior change.
     pub fn with_udp_transport(mut self, udp_bind_addr: SocketAddr) -> Self {

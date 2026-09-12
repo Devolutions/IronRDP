@@ -408,12 +408,20 @@ impl DrdynvcServer {
                 return Err(pdu_other_err!("soft-sync response selected an unrequested tunnel"));
             }
         }
-        self.incoming_tunnel_channels = self
+        let accepted_channels: BTreeMap<u32, SoftSyncTunnelType> = self
             .outgoing_tunnel_channels
             .iter()
             .filter(|(_, tunnel_type)| response.tunnels_to_switch().contains(tunnel_type))
             .map(|(channel_id, tunnel_type)| (*channel_id, *tunnel_type))
             .collect();
+        // A channel the client did not select is dropped from both maps, not
+        // only `incoming_tunnel_channels`: `tunnel_for_outgoing_channel`
+        // reads `outgoing_tunnel_channels` directly, and it must stop
+        // reporting a tunnel for a channel the response declined, or the
+        // caller pushes outgoing frames onto a receive path the client never
+        // set up for it.
+        self.outgoing_tunnel_channels = accepted_channels.clone();
+        self.incoming_tunnel_channels = accepted_channels;
         *response_received = true;
         Ok(())
     }
@@ -560,6 +568,31 @@ mod tests {
 
         server.close_channel(channel_id).unwrap();
         assert!(server.request_reliable_udp(alloc::vec![channel_id]).is_err());
+    }
+
+    #[test]
+    fn soft_sync_outgoing_gate_reflects_a_declined_response() {
+        let mut server = DrdynvcServer::new();
+        let channel_id = server.dynamic_channels.insert_channel(TestDvc, ChannelState::Opened);
+
+        server.request_reliable_udp(alloc::vec![channel_id]).unwrap();
+        assert_eq!(
+            server.tunnel_for_outgoing_channel(channel_id),
+            Some(SoftSyncTunnelType::RELIABLE_UDP)
+        );
+
+        // An empty list is a decline: the client acknowledged the request
+        // but selected no tunnel for it.
+        server
+            .process_soft_sync_response(crate::pdu::SoftSyncResponsePdu::new(alloc::vec![]))
+            .unwrap();
+
+        assert!(server.soft_sync_response_received());
+        assert_eq!(
+            server.tunnel_for_outgoing_channel(channel_id),
+            None,
+            "a declined channel must not be routed over the tunnel"
+        );
     }
 
     #[test]
