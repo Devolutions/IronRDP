@@ -440,20 +440,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
-name = "benches"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytesize",
- "ironrdp",
- "pico-args",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -607,12 +593,6 @@ name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
-
-[[package]]
-name = "bytesize"
-version = "2.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d7c8918969267b2932ffd5655509bbbea0833823058c378876953217f5fc50e"
 
 [[package]]
 name = "calloop"
@@ -2688,10 +2668,20 @@ dependencies = [
 name = "ironrdp-bench"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
  "criterion",
+ "ironrdp",
+ "ironrdp-capture-replay",
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-server",
+ "pico-args",
+ "sha2 0.10.9",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

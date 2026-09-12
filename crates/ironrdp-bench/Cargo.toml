@@ -5,15 +5,49 @@ description = "IronRDP benchmarks"
 edition.workspace = true
 publish = false
 
+[features]
+default = ["qoi", "qoiz"]
+qoi = ["ironrdp/qoi"]
+qoiz = ["ironrdp/qoiz"]
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+ironrdp = { path = "../ironrdp", features = [
+    "server",
+    "pdu",
+    "__bench",
+] }
+ironrdp-capture-replay.path = "../ironrdp-capture-replay"
+pico-args = "0.5"
+sha2 = "0.10"
+tokio = { version = "1", features = ["sync", "fs", "time", "io-util", "macros", "rt"] }
+toml = "1.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = { version = "0.1", features = ["log"] }
+
 [dev-dependencies]
 criterion = "0.8"
 ironrdp-graphics.path = "../ironrdp-graphics"
 ironrdp-pdu.path = "../ironrdp-pdu"
 ironrdp-server = { path = "../ironrdp-server", features = ["__bench"] }
 
+[[bin]]
+name = "perfenc"
+path = "src/bin/perfenc.rs"
+
+[[bin]]
+name = "capture-replay-bench"
+path = "src/bin/capture_replay_bench.rs"
+
 [[bench]]
 name = "bench"
 path = "benches/bench.rs"
+harness = false
+
+[[bench]]
+name = "capture_replay"
+path = "benches/capture_replay.rs"
 harness = false
 
 [lints]
