@@ -16,7 +16,7 @@ use std::sync::Arc;
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_rdpemt::TunnelConfig;
 use ironrdp_rdpeudp::ConnectionConfig;
-use ironrdp_rdpeudp_tokio::{UdpAcceptConfig, UdpTransport, accept_udp};
+use ironrdp_rdpeudp_tokio::{UdpAcceptConfig, UdpTransport, UdpTransportSender, accept_udp};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio_rustls::rustls;
@@ -29,19 +29,27 @@ const UDP_ACCEPT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Shared handle to an established sideband UDP transport.
 ///
-/// `send()` only holds the lock for the hand-off to the transport's internal
-/// channel, mirroring the short-lived `this.lock().await` pattern already
-/// used throughout the client dispatch loop in `server.rs`. `recv()` is
-/// intended for a single dedicated caller (the `client_loop` select arm):
-/// each call re-acquires the lock fresh, so it is never held across the idle
-/// wait for the next datagram, and a concurrent `send()` (an outgoing EGFX
-/// frame, say) is never blocked behind it.
+/// `send()` uses `UdpTransportSender`, cloned once at construction from the
+/// underlying `UdpTransport`. That handle is entirely independent of the
+/// `Mutex` below, so it never contends with (or blocks behind) `recv()`,
+/// which holds that lock for the full duration of its idle wait for the
+/// next datagram: Sending and receiving already run over separate channels
+/// fed by separate background tasks, so the two were never meant to share
+/// one lock. `recv()` is intended for a single dedicated caller (the
+/// `client_loop` select arm).
 #[derive(Clone)]
-pub(crate) struct UdpTransportHandle(Arc<Mutex<UdpTransport>>);
+pub(crate) struct UdpTransportHandle {
+    sender: UdpTransportSender,
+    transport: Arc<Mutex<UdpTransport>>,
+}
 
 impl UdpTransportHandle {
     fn new(transport: UdpTransport) -> Self {
-        Self(Arc::new(Mutex::new(transport)))
+        let sender = transport.sender();
+        Self {
+            sender,
+            transport: Arc::new(Mutex::new(transport)),
+        }
     }
 
     /// Sends one higher-layer (raw DVC) payload over the tunnel.
@@ -58,7 +66,7 @@ impl UdpTransportHandle {
         )
     )]
     pub(crate) async fn send(&self, data: Vec<u8>) -> bool {
-        match self.0.lock().await.send(data).await {
+        match self.sender.send(data).await {
             Ok(()) => true,
             Err(error) => {
                 warn!(%error, "Failed to send data over UDP transport");
@@ -68,21 +76,26 @@ impl UdpTransportHandle {
     }
 
     pub(crate) async fn recv(&self) -> Option<Vec<u8>> {
-        self.0.lock().await.recv().await
+        self.transport.lock().await.recv().await
     }
 }
 
 /// Attempts to establish the sideband UDP transport for one Initiate
 /// Multitransport Request.
 ///
-/// Binds a fresh socket to `udp_bind_addr` for this attempt. Only one
-/// attempt is ever in flight at a time: `ironrdp-server` serves one
-/// connection at a time (see the integration plan's non-goal on multi-client
-/// UDP demux), so a single ephemeral bind per connection is sufficient and
-/// avoids any shared, long-lived UDP socket state to manage.
+/// Binds a fresh socket to `udp_bind_addr` for this attempt, avoiding any
+/// shared, long-lived UDP socket state to manage. This assumes at most one
+/// live attempt at a time; under
+/// [`RdpServerOptions::preempt_existing_session`](crate::server::RdpServerOptions::preempt_existing_session)
+/// a candidate session's negotiation can overlap the still-live session it
+/// is preempting, and `udp_bind_addr` is typically the same host and port for
+/// both (see [`RdpServerBuilder::with_udp_transport`](crate::RdpServerBuilder::with_udp_transport)),
+/// so the second bind fails with `AddrInUse`. That failure is handled below
+/// like any other: The overlapping connection degrades to TCP-only rather
+/// than failing.
 ///
 /// Any failure (bind, RDPEUDP2 handshake, TLS, RDPEMT tunnel) is logged and
-/// reported as `None` rather than propagated: an optional sideband transport
+/// reported as `None` rather than propagated: An optional sideband transport
 /// failing to come up is never a reason to fail the RDP connection, matching
 /// the reference client implementation's posture.
 pub(crate) async fn accept(
