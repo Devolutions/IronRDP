@@ -570,7 +570,7 @@ impl DisplayControlHandler for DisplayControlBackend {
         task::spawn_blocking(move || display.blocking_lock().request_layout(layout));
     }
 
-    fn capabilities(&self) -> DisplayControlCapabilities {
+    fn capabilities(&self) -> PduResult<DisplayControlCapabilities> {
         // `DisplayControlCapabilities::new` only rejects `monitor_count > 1024`; 0 passes its
         // validation (0 * 3840 * 2400 does not overflow) but would advertise a server that
         // supports no monitors, so it is folded into the same out-of-range fallback below.
@@ -580,10 +580,11 @@ impl DisplayControlHandler for DisplayControlBackend {
         } else {
             self.monitor_count
         };
-        DisplayControlCapabilities::new(monitor_count, 3840, 2400).unwrap_or_else(|e| {
+        let capabilities = DisplayControlCapabilities::new(monitor_count, 3840, 2400).unwrap_or_else(|e| {
             warn!(monitor_count, error = %e, "RdpServerDisplay::monitor_count() out of range, falling back to 1");
-            DisplayControlCapabilities::new(1, 3840, 2400).expect("(1, 3840, 2400) are always within the valid range")
-        })
+            DisplayControlCapabilities::single_monitor()
+        });
+        Ok(capabilities)
     }
 }
 
