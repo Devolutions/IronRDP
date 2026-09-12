@@ -18,8 +18,9 @@ use ironrdp_pdu::rdp::client_info::{ClientInfoFlags, CompressionType};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, decode_err, find_size, mcs};
 use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
+use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput, SessionErrorKind};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcMessage, SvcProcessor};
+use sha2::{Digest as _, Sha256};
 
 use crate::tls::decrypt_tls_streams;
 use crate::{
@@ -58,6 +59,15 @@ pub enum ReplayDirection {
     Server,
 }
 
+impl core::fmt::Display for ReplayDirection {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Client => "client",
+            Self::Server => "server",
+        })
+    }
+}
+
 /// The routing path selected for a captured RDP PDU.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReplayRoute {
@@ -90,15 +100,15 @@ pub struct ReplayEvent {
     pub route: ReplayRoute,
 }
 
-#[derive(Clone, Eq, PartialEq)]
-pub(crate) struct ReplayFrame {
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) struct ReplayFrame<'a> {
     pub packet: usize,
     pub width: u16,
     pub height: u16,
-    pub pixels: Vec<u8>,
+    pub pixels: &'a [u8],
 }
 
-impl core::fmt::Debug for ReplayFrame {
+impl core::fmt::Debug for ReplayFrame<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ReplayFrame")
             .field("packet", &self.packet)
@@ -128,6 +138,114 @@ pub enum ReplayGapKind {
     Unsupported,
 }
 
+impl core::fmt::Display for ReplayGapKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Framing => "framing",
+            Self::TruncatedPdu => "truncated-pdu",
+            Self::StaticChannel => "static-channel",
+            Self::DynamicChannel => "dynamic-channel",
+            Self::Session => "session",
+            Self::IncompleteActivation => "incomplete-activation",
+            Self::Unsupported => "unsupported",
+        })
+    }
+}
+
+/// Stable, payload-free reason for a replay gap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplayGapReason {
+    /// RDP framing did not recognize bytes at the current offset.
+    Framing,
+    /// A framed RDP PDU ended before its declared boundary.
+    TruncatedPdu,
+    /// A static-channel PDU failed in the PDU layer.
+    StaticChannelPdu,
+    /// A static-channel PDU failed in the encoding layer.
+    StaticChannelEncode,
+    /// A static-channel PDU failed in the decoding layer.
+    StaticChannelDecode,
+    /// A static-channel PDU failed in bulk decompression.
+    StaticChannelBulkDecompression,
+    /// A static-channel PDU had an invalid bitmap source length.
+    StaticChannelBitmapSourceLength,
+    /// A static-channel PDU failed with a processor reason.
+    StaticChannelProcessor,
+    /// A static-channel PDU failed with a general or custom processor error.
+    StaticChannelOther,
+    /// A dynamic-channel message could not be routed.
+    DynamicChannel,
+    /// An active-session message could not be routed.
+    Session,
+    /// The capture ended before activation or reactivation completed.
+    IncompleteActivation,
+    /// A protocol path is not supported by the replay harness.
+    Unsupported,
+}
+
+impl ReplayGapReason {
+    /// Return the stable category for this reason.
+    pub const fn kind(self) -> ReplayGapKind {
+        match self {
+            Self::Framing => ReplayGapKind::Framing,
+            Self::TruncatedPdu => ReplayGapKind::TruncatedPdu,
+            Self::StaticChannelPdu
+            | Self::StaticChannelEncode
+            | Self::StaticChannelDecode
+            | Self::StaticChannelBulkDecompression
+            | Self::StaticChannelBitmapSourceLength
+            | Self::StaticChannelProcessor
+            | Self::StaticChannelOther => ReplayGapKind::StaticChannel,
+            Self::DynamicChannel => ReplayGapKind::DynamicChannel,
+            Self::Session => ReplayGapKind::Session,
+            Self::IncompleteActivation => ReplayGapKind::IncompleteActivation,
+            Self::Unsupported => ReplayGapKind::Unsupported,
+        }
+    }
+}
+
+impl core::fmt::Display for ReplayGapReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Framing => "framing",
+            Self::TruncatedPdu => "truncated-pdu",
+            Self::StaticChannelPdu => "static-channel-pdu",
+            Self::StaticChannelEncode => "static-channel-encode",
+            Self::StaticChannelDecode => "static-channel-decode",
+            Self::StaticChannelBulkDecompression => "static-channel-bulk-decompression",
+            Self::StaticChannelBitmapSourceLength => "static-channel-bitmap-source-length",
+            Self::StaticChannelProcessor => "static-channel-processor",
+            Self::StaticChannelOther => "static-channel-other",
+            Self::DynamicChannel => "dynamic-channel",
+            Self::Session => "session",
+            Self::IncompleteActivation => "incomplete-activation",
+            Self::Unsupported => "unsupported",
+        })
+    }
+}
+
+/// Terminal activation state observed during a replay.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ReplayLifecycle {
+    /// The capture never reached activation.
+    #[default]
+    NeverActivated,
+    /// The capture ended with an active session.
+    Active,
+    /// The capture deactivated after an active session.
+    Deactivated,
+}
+
+impl core::fmt::Display for ReplayLifecycle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::NeverActivated => "never-activated",
+            Self::Active => "active",
+            Self::Deactivated => "deactivated",
+        })
+    }
+}
+
 /// A safe, payload-free description of an unreplayable captured message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReplayGap {
@@ -135,10 +253,17 @@ pub struct ReplayGap {
     pub packet: usize,
     /// Stream direction containing the gap.
     pub direction: ReplayDirection,
-    /// Layer that could not be replayed.
-    pub kind: ReplayGapKind,
+    /// Stable reason for the gap without captured payload content.
+    pub reason: ReplayGapReason,
     /// Bytes skipped while resynchronizing after a framing error.
     pub skipped_bytes: usize,
+}
+
+impl ReplayGap {
+    /// Return the stable category for this gap.
+    pub const fn kind(self) -> ReplayGapKind {
+        self.reason.kind()
+    }
 }
 
 /// A dynamic channel recovered from a recorded DVC create request.
@@ -159,6 +284,109 @@ pub struct ReplayReport {
     pub gaps: Vec<ReplayGap>,
     /// Dynamic channels attached from recorded DVC create requests.
     pub dynamic_channels: Vec<CapturedDynamicChannel>,
+    /// Terminal activation state observed while routing the capture.
+    pub lifecycle: ReplayLifecycle,
+}
+
+/// Configuration for one replay execution.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ReplayOptions {
+    /// Hash every rendered framebuffer update for a deterministic output fingerprint.
+    pub calculate_output_fingerprint: bool,
+}
+
+/// Payload-free work completed by one replay execution.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ReplaySummary {
+    /// Number of framed client-to-server PDUs consumed from the capture.
+    pub client_pdus: usize,
+    /// Number of framed server-to-client PDUs consumed from the capture.
+    pub server_pdus: usize,
+    /// Number of connection and activation PDUs observed.
+    pub connection_pdus: usize,
+    /// Number of client PDUs retained as observations.
+    pub client_observation_pdus: usize,
+    /// Number of server Fast-Path PDUs routed.
+    pub fast_path_pdus: usize,
+    /// Number of server I/O channel PDUs routed.
+    pub io_channel_pdus: usize,
+    /// Number of server message-channel PDUs routed.
+    pub message_channel_pdus: usize,
+    /// Number of server static-channel PDUs routed.
+    pub static_channel_pdus: usize,
+    /// Number of server MCS PDUs retained outside captured active channels.
+    pub other_server_message_pdus: usize,
+    /// Number of composited framebuffer updates observed.
+    pub graphics_updates: usize,
+    /// Dimensions of the final composited framebuffer update, when one was observed.
+    pub final_dimensions: Option<(u16, u16)>,
+    /// SHA-256 over ordered framebuffer updates, when requested.
+    pub output_fingerprint: Option<[u8; 32]>,
+    /// Terminal activation state observed during replay.
+    pub lifecycle: ReplayLifecycle,
+    /// Number of framing gaps.
+    pub framing_gaps: usize,
+    /// Number of truncated-PDU gaps.
+    pub truncated_pdu_gaps: usize,
+    /// Number of static-channel gaps.
+    pub static_channel_gaps: usize,
+    /// Number of dynamic-channel gaps.
+    pub dynamic_channel_gaps: usize,
+    /// Number of active-session gaps.
+    pub session_gaps: usize,
+    /// Number of incomplete-activation gaps.
+    pub incomplete_activation_gaps: usize,
+    /// Number of unsupported replay gaps.
+    pub unsupported_gaps: usize,
+    /// SHA-256 over ordered payload-free gap metadata.
+    pub gap_fingerprint: [u8; 32],
+}
+
+/// A prepared replay that can be executed repeatedly without reparsing or decrypting a capture.
+#[derive(Clone, Debug)]
+pub struct PreparedReplay {
+    pub(crate) activation: CapturedActivation,
+    pub(crate) plaintext: Plaintext,
+}
+
+/// Report and payload-free summary from one fresh replay execution.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReplayExecution {
+    /// Detailed routing report.
+    pub report: ReplayReport,
+    /// Deterministic replay counters and optional output fingerprint.
+    pub summary: ReplaySummary,
+}
+
+impl PreparedReplay {
+    /// Execute the prepared replay with fresh session and channel state.
+    pub fn replay(&self) -> Result<ReplayExecution, ReplayError> {
+        self.replay_with_options(ReplayOptions::default())
+    }
+
+    /// Execute the prepared replay with the selected summary options.
+    pub fn replay_with_options(&self, options: ReplayOptions) -> Result<ReplayExecution, ReplayError> {
+        let mut router = ReplayRouter::new(self.activation.clone())?;
+        let mut summary = ReplaySummary::default();
+        let mut fingerprint = options.calculate_output_fingerprint.then(Sha256::new);
+        let report = match router.route_plaintext_with_frame_sink(&self.plaintext, &mut |frame| {
+            summary.graphics_updates += 1;
+            summary.final_dimensions = Some((frame.width, frame.height));
+            if let Some(hasher) = &mut fingerprint {
+                hasher.update(frame.width.to_le_bytes());
+                hasher.update(frame.height.to_le_bytes());
+                hasher.update(frame.pixels);
+            }
+            Ok::<_, Infallible>(())
+        }) {
+            Ok(report) => report,
+            Err(error) => match error {},
+        };
+        summarize_report(&mut summary, &report);
+        summary.output_fingerprint = fingerprint.map(|hasher| hasher.finalize().into());
+
+        Ok(ReplayExecution { report, summary })
+    }
 }
 
 /// Offline router configured exclusively from captured RDP state.
@@ -277,7 +505,7 @@ impl ReplayRouter {
     pub(crate) fn route_plaintext_with_frame_sink<E>(
         &mut self,
         plaintext: &Plaintext,
-        frame_sink: &mut impl FnMut(ReplayFrame) -> Result<(), E>,
+        frame_sink: &mut impl for<'a> FnMut(ReplayFrame<'a>) -> Result<(), E>,
     ) -> Result<ReplayReport, E> {
         let mut report = ReplayReport::default();
         let mut messages = framed_stream(&plaintext.client, ReplayDirection::Client, &mut report.gaps);
@@ -329,12 +557,19 @@ impl ReplayRouter {
                 report.gaps.push(ReplayGap {
                     packet,
                     direction: ReplayDirection::Server,
-                    kind: ReplayGapKind::IncompleteActivation,
+                    reason: ReplayGapReason::IncompleteActivation,
                     skipped_bytes: 0,
                 });
             }
         }
-        report.gaps.sort_by_key(|gap| gap.packet);
+        report.lifecycle = if activated {
+            ReplayLifecycle::Active
+        } else if ever_activated {
+            ReplayLifecycle::Deactivated
+        } else {
+            ReplayLifecycle::NeverActivated
+        };
+        report.gaps.sort_by_key(gap_sort_key);
         Ok(report)
     }
 
@@ -342,7 +577,7 @@ impl ReplayRouter {
         &mut self,
         message: &CapturedPdu,
         report: &mut ReplayReport,
-        frame_sink: &mut impl FnMut(ReplayFrame) -> Result<(), E>,
+        frame_sink: &mut impl for<'a> FnMut(ReplayFrame<'a>) -> Result<(), E>,
     ) -> Result<(ReplayRoute, bool), E> {
         let route = match message.action {
             Action::FastPath => ReplayRoute::FastPath,
@@ -381,7 +616,7 @@ impl ReplayRouter {
                         packet: message.packet,
                         width: self.image.width(),
                         height: self.image.height(),
-                        pixels: self.image.data().to_vec(),
+                        pixels: self.image.data(),
                     })?;
                 }
                 self.drain_egfx_output(message.packet, report, frame_sink)?;
@@ -392,17 +627,17 @@ impl ReplayRouter {
                         .any(|output| matches!(output, ActiveStageOutput::DeactivateAll)),
                 ))
             }
-            Err(_) => {
+            Err(error) => {
+                let unsupported = route == ReplayRoute::StaticChannel && self.take_unsupported_egfx_codec();
+                let reason = if unsupported {
+                    ReplayGapReason::Unsupported
+                } else {
+                    session_gap_reason(route, error.kind())
+                };
                 report.gaps.push(ReplayGap {
                     packet: message.packet,
                     direction: ReplayDirection::Server,
-                    kind: if route == ReplayRoute::StaticChannel && self.take_unsupported_egfx_codec() {
-                        ReplayGapKind::Unsupported
-                    } else if route == ReplayRoute::StaticChannel {
-                        ReplayGapKind::StaticChannel
-                    } else {
-                        ReplayGapKind::Session
-                    },
+                    reason,
                     skipped_bytes: 0,
                 });
                 Ok((route, false))
@@ -443,6 +678,7 @@ impl ReplayRouter {
         if Some(context.channel_id) != self.drdynvc_channel_id {
             return;
         }
+
         self.dvc_lifecycle
             .channel_processor_downcast_mut::<DynamicChannelDiscovery>()
             .expect("DynamicChannelDiscovery must retain its concrete type")
@@ -451,7 +687,7 @@ impl ReplayRouter {
             report.gaps.push(ReplayGap {
                 packet: message.packet,
                 direction: message.direction,
-                kind: ReplayGapKind::DynamicChannel,
+                reason: ReplayGapReason::DynamicChannel,
                 skipped_bytes: 0,
             });
             return;
@@ -488,7 +724,7 @@ impl ReplayRouter {
                 report.gaps.push(ReplayGap {
                     packet: channel.packet,
                     direction: ReplayDirection::Server,
-                    kind: ReplayGapKind::DynamicChannel,
+                    reason: ReplayGapReason::DynamicChannel,
                     skipped_bytes: 0,
                 });
             }
@@ -499,7 +735,7 @@ impl ReplayRouter {
         &mut self,
         packet: usize,
         report: &mut ReplayReport,
-        frame_sink: &mut impl FnMut(ReplayFrame) -> Result<(), E>,
+        frame_sink: &mut impl for<'a> FnMut(ReplayFrame<'a>) -> Result<(), E>,
     ) -> Result<(), E> {
         let channel_ids = self.egfx_dynamic_channels.iter().copied().collect::<Vec<_>>();
         for channel_id in channel_ids {
@@ -516,7 +752,7 @@ impl ReplayRouter {
                     report.gaps.push(ReplayGap {
                         packet,
                         direction: ReplayDirection::Server,
-                        kind: ReplayGapKind::Unsupported,
+                        reason: ReplayGapReason::Unsupported,
                         skipped_bytes: 0,
                     });
                     continue;
@@ -531,7 +767,7 @@ impl ReplayRouter {
                     packet,
                     width: self.egfx_framebuffer.width,
                     height: self.egfx_framebuffer.height,
-                    pixels: self.egfx_framebuffer.pixels.clone(),
+                    pixels: &self.egfx_framebuffer.pixels,
                 })?;
             }
         }
@@ -555,11 +791,11 @@ impl ReplayRouter {
 
 /// Decrypt, recover captured activation state, and route a direct TCP RDP capture.
 pub fn replay_capture(capture: &Capture) -> Result<ReplayReport, ReplayError> {
-    let (mut router, plaintext) = prepare_replay_capture(capture)?;
-    Ok(router.route_plaintext(&plaintext))
+    Ok(prepare_capture(capture)?.replay()?.report)
 }
 
-pub(crate) fn prepare_replay_capture(capture: &Capture) -> Result<(ReplayRouter, Plaintext), ReplayError> {
+/// Decrypt and recover a capture once for repeated offline replay executions.
+pub fn prepare_capture(capture: &Capture) -> Result<PreparedReplay, ReplayError> {
     let mut decrypted = Vec::new();
     let mut decrypt_error = None;
     for flow in core::iter::once(&capture.flow).chain(capture.gateway_alternates.iter()) {
@@ -583,11 +819,115 @@ pub(crate) fn prepare_replay_capture(capture: &Capture) -> Result<(ReplayRouter,
             None => return Err(decrypt_error.unwrap_or(ReplayError::MissingRdpState)),
         }
     };
-    let router = ReplayRouter::new(CapturedActivation {
+    let activation = CapturedActivation {
         state: recover_negotiated_state(&plaintext)?,
         compression_type: captured_compression_type(&plaintext),
-    })?;
-    Ok((router, plaintext))
+    };
+    Ok(PreparedReplay { activation, plaintext })
+}
+
+fn summarize_report(summary: &mut ReplaySummary, report: &ReplayReport) {
+    for event in &report.events {
+        match event.direction {
+            ReplayDirection::Client => summary.client_pdus += 1,
+            ReplayDirection::Server => summary.server_pdus += 1,
+        }
+        match event.route {
+            ReplayRoute::Connection => summary.connection_pdus += 1,
+            ReplayRoute::ClientObservation => summary.client_observation_pdus += 1,
+            ReplayRoute::FastPath => summary.fast_path_pdus += 1,
+            ReplayRoute::IoChannel => summary.io_channel_pdus += 1,
+            ReplayRoute::MessageChannel => summary.message_channel_pdus += 1,
+            ReplayRoute::StaticChannel => summary.static_channel_pdus += 1,
+            ReplayRoute::OtherServerMessage => summary.other_server_message_pdus += 1,
+        }
+    }
+    summary.lifecycle = report.lifecycle;
+    let mut gap_fingerprint = Sha256::new();
+    for gap in &report.gaps {
+        match gap.kind() {
+            ReplayGapKind::Framing => summary.framing_gaps += 1,
+            ReplayGapKind::TruncatedPdu => summary.truncated_pdu_gaps += 1,
+            ReplayGapKind::StaticChannel => summary.static_channel_gaps += 1,
+            ReplayGapKind::DynamicChannel => summary.dynamic_channel_gaps += 1,
+            ReplayGapKind::Session => summary.session_gaps += 1,
+            ReplayGapKind::IncompleteActivation => summary.incomplete_activation_gaps += 1,
+            ReplayGapKind::Unsupported => summary.unsupported_gaps += 1,
+        }
+        gap_fingerprint.update(gap.packet.to_string().as_bytes());
+        gap_fingerprint.update([b':']);
+        gap_fingerprint.update([gap_direction_code(gap.direction)]);
+        gap_fingerprint.update([b':']);
+        gap_fingerprint.update([gap_kind_code(gap.kind())]);
+        gap_fingerprint.update([b':']);
+        gap_fingerprint.update([gap_reason_code(gap.reason)]);
+        gap_fingerprint.update([b':']);
+        gap_fingerprint.update(gap.skipped_bytes.to_string().as_bytes());
+        gap_fingerprint.update([b'\n']);
+    }
+    summary.gap_fingerprint = gap_fingerprint.finalize().into();
+}
+
+const fn gap_sort_key(gap: &ReplayGap) -> (usize, u8, u8, usize, u8) {
+    (
+        gap.packet,
+        gap_direction_code(gap.direction),
+        gap_kind_code(gap.kind()),
+        gap.skipped_bytes,
+        gap_reason_code(gap.reason),
+    )
+}
+
+const fn gap_direction_code(direction: ReplayDirection) -> u8 {
+    match direction {
+        ReplayDirection::Client => b'C',
+        ReplayDirection::Server => b'S',
+    }
+}
+
+const fn gap_kind_code(kind: ReplayGapKind) -> u8 {
+    match kind {
+        ReplayGapKind::Framing => b'F',
+        ReplayGapKind::TruncatedPdu => b'T',
+        ReplayGapKind::StaticChannel => b'V',
+        ReplayGapKind::DynamicChannel => b'D',
+        ReplayGapKind::Session => b'R',
+        ReplayGapKind::IncompleteActivation => b'A',
+        ReplayGapKind::Unsupported => b'U',
+    }
+}
+
+const fn gap_reason_code(reason: ReplayGapReason) -> u8 {
+    match reason {
+        ReplayGapReason::Framing => b'F',
+        ReplayGapReason::TruncatedPdu => b'T',
+        ReplayGapReason::StaticChannelPdu => b'P',
+        ReplayGapReason::StaticChannelEncode => b'E',
+        ReplayGapReason::StaticChannelDecode => b'D',
+        ReplayGapReason::StaticChannelBulkDecompression => b'B',
+        ReplayGapReason::StaticChannelBitmapSourceLength => b'I',
+        ReplayGapReason::StaticChannelProcessor => b'R',
+        ReplayGapReason::StaticChannelOther => b'O',
+        ReplayGapReason::DynamicChannel => b'V',
+        ReplayGapReason::Session => b'S',
+        ReplayGapReason::IncompleteActivation => b'A',
+        ReplayGapReason::Unsupported => b'U',
+    }
+}
+
+fn session_gap_reason(route: ReplayRoute, error: &SessionErrorKind) -> ReplayGapReason {
+    if route != ReplayRoute::StaticChannel {
+        return ReplayGapReason::Session;
+    }
+    match error {
+        SessionErrorKind::Pdu(_) => ReplayGapReason::StaticChannelPdu,
+        SessionErrorKind::Encode(_) => ReplayGapReason::StaticChannelEncode,
+        SessionErrorKind::Decode(_) => ReplayGapReason::StaticChannelDecode,
+        SessionErrorKind::FastPathBulkDecompression(_) => ReplayGapReason::StaticChannelBulkDecompression,
+        SessionErrorKind::InvalidBitmapSourceLength => ReplayGapReason::StaticChannelBitmapSourceLength,
+        SessionErrorKind::Reason(_) => ReplayGapReason::StaticChannelProcessor,
+        SessionErrorKind::General | SessionErrorKind::Custom | _ => ReplayGapReason::StaticChannelOther,
+    }
 }
 
 fn decrypt_tunneled_rdp(tunneled: &Plaintext, capture: &Capture) -> Result<Plaintext, ReplayError> {
@@ -665,7 +1005,7 @@ fn framed_stream(stream: &PacketStream, direction: ReplayDirection, gaps: &mut V
                 gaps.push(ReplayGap {
                     packet: packet_at(offset),
                     direction,
-                    kind: ReplayGapKind::TruncatedPdu,
+                    reason: ReplayGapReason::TruncatedPdu,
                     skipped_bytes: 0,
                 });
                 break;
@@ -675,7 +1015,7 @@ fn framed_stream(stream: &PacketStream, direction: ReplayDirection, gaps: &mut V
                     gaps.push(ReplayGap {
                         packet: packet_at(offset),
                         direction,
-                        kind: ReplayGapKind::Framing,
+                        reason: ReplayGapReason::Framing,
                         skipped_bytes: 1,
                     });
                     unframed = true;
@@ -1077,7 +1417,37 @@ mod tests {
         let messages = framed_stream(&vec![(9, vec![3, 0, 0, 8])], ReplayDirection::Server, &mut gaps);
         assert!(messages.is_empty());
         assert_eq!(gaps[0].packet, 9);
-        assert_eq!(gaps[0].kind, ReplayGapKind::TruncatedPdu);
+        assert_eq!(gaps[0].kind(), ReplayGapKind::TruncatedPdu);
+    }
+
+    #[test]
+    fn derives_gap_kind_from_reason() {
+        for (reason, kind) in [
+            (ReplayGapReason::Framing, ReplayGapKind::Framing),
+            (ReplayGapReason::TruncatedPdu, ReplayGapKind::TruncatedPdu),
+            (ReplayGapReason::StaticChannelPdu, ReplayGapKind::StaticChannel),
+            (ReplayGapReason::StaticChannelEncode, ReplayGapKind::StaticChannel),
+            (ReplayGapReason::StaticChannelDecode, ReplayGapKind::StaticChannel),
+            (
+                ReplayGapReason::StaticChannelBulkDecompression,
+                ReplayGapKind::StaticChannel,
+            ),
+            (
+                ReplayGapReason::StaticChannelBitmapSourceLength,
+                ReplayGapKind::StaticChannel,
+            ),
+            (ReplayGapReason::StaticChannelProcessor, ReplayGapKind::StaticChannel),
+            (ReplayGapReason::StaticChannelOther, ReplayGapKind::StaticChannel),
+            (ReplayGapReason::DynamicChannel, ReplayGapKind::DynamicChannel),
+            (ReplayGapReason::Session, ReplayGapKind::Session),
+            (
+                ReplayGapReason::IncompleteActivation,
+                ReplayGapKind::IncompleteActivation,
+            ),
+            (ReplayGapReason::Unsupported, ReplayGapKind::Unsupported),
+        ] {
+            assert_eq!(reason.kind(), kind);
+        }
     }
 
     #[test]
@@ -1124,7 +1494,7 @@ mod tests {
                     ],
                 },
                 &mut |frame| {
-                    frames.push(frame);
+                    frames.push((frame.packet, frame.width, frame.height, frame.pixels.to_vec()));
                     Ok::<_, ()>(())
                 },
             )
@@ -1134,10 +1504,121 @@ mod tests {
             report.events.iter().map(|event| event.packet).collect::<Vec<_>>(),
             vec![1, 2, 3, 4]
         );
-        assert_eq!(frames.iter().map(|frame| frame.packet).collect::<Vec<_>>(), vec![3, 4]);
-        assert!(frames.iter().all(|frame| (frame.width, frame.height) == (32, 32)));
-        assert_eq!(&frames[0].pixels[..4], [0x33, 0x22, 0x11, 0xff]);
-        assert_eq!(&frames[1].pixels[..4], [0x66, 0x55, 0x44, 0xff]);
+        assert_eq!(frames.iter().map(|frame| frame.0).collect::<Vec<_>>(), vec![3, 4]);
+        assert!(frames.iter().all(|frame| (frame.1, frame.2) == (32, 32)));
+        assert_eq!(&frames[0].3[..4], [0x33, 0x22, 0x11, 0xff]);
+        assert_eq!(&frames[1].3[..4], [0x66, 0x55, 0x44, 0xff]);
+    }
+
+    #[test]
+    fn prepared_replay_resets_state_between_executions() {
+        let plaintext = Plaintext {
+            client: Vec::new(),
+            server: vec![
+                (1, demand_active()),
+                (2, font_map()),
+                (3, bitmap_fast_path([0x11, 0x22, 0x33, 0xff])),
+            ],
+        };
+        let prepared = PreparedReplay {
+            activation: activation(),
+            plaintext,
+        };
+
+        let first = prepared
+            .replay_with_options(ReplayOptions {
+                calculate_output_fingerprint: true,
+            })
+            .unwrap();
+        let second = prepared
+            .replay_with_options(ReplayOptions {
+                calculate_output_fingerprint: true,
+            })
+            .unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(first.summary.graphics_updates, 1);
+        assert_eq!(first.summary.final_dimensions, Some((32, 32)));
+        assert!(first.summary.output_fingerprint.is_some());
+    }
+
+    #[test]
+    fn summarizes_each_gap_once() {
+        let static_channel_gap = ReplayGap {
+            packet: 7,
+            direction: ReplayDirection::Server,
+            reason: ReplayGapReason::StaticChannelPdu,
+            skipped_bytes: 0,
+        };
+        let report = ReplayReport {
+            events: vec![
+                ReplayEvent {
+                    packet: 1,
+                    direction: ReplayDirection::Client,
+                    action: Action::X224,
+                    route: ReplayRoute::ClientObservation,
+                },
+                ReplayEvent {
+                    packet: 2,
+                    direction: ReplayDirection::Server,
+                    action: Action::FastPath,
+                    route: ReplayRoute::FastPath,
+                },
+            ],
+            gaps: vec![static_channel_gap],
+            lifecycle: ReplayLifecycle::Active,
+            ..ReplayReport::default()
+        };
+        let mut summary = ReplaySummary::default();
+
+        summarize_report(&mut summary, &report);
+
+        assert_eq!(summary.client_pdus, 1);
+        assert_eq!(summary.server_pdus, 1);
+        assert_eq!(summary.static_channel_gaps, 1);
+        assert_eq!(summary.lifecycle, ReplayLifecycle::Active);
+    }
+
+    #[test]
+    fn summarizes_gaps_without_events() {
+        let gap = ReplayGap {
+            packet: 7,
+            direction: ReplayDirection::Server,
+            reason: ReplayGapReason::StaticChannelPdu,
+            skipped_bytes: 0,
+        };
+        let report = ReplayReport {
+            gaps: vec![gap],
+            ..ReplayReport::default()
+        };
+        let mut summary = ReplaySummary::default();
+
+        summarize_report(&mut summary, &report);
+
+        assert_eq!(summary.static_channel_gaps, 1);
+        assert_eq!(summary.lifecycle, ReplayLifecycle::NeverActivated);
+    }
+
+    #[test]
+    fn gap_fingerprint_identifies_gap_metadata() {
+        let report = ReplayReport {
+            gaps: vec![ReplayGap {
+                packet: 7,
+                direction: ReplayDirection::Server,
+                reason: ReplayGapReason::StaticChannelPdu,
+                skipped_bytes: 0,
+            }],
+            ..ReplayReport::default()
+        };
+        let mut summary = ReplaySummary::default();
+        summarize_report(&mut summary, &report);
+
+        let mut changed = report;
+        changed.gaps[0].packet = 8;
+        let mut changed_summary = ReplaySummary::default();
+        summarize_report(&mut changed_summary, &changed);
+
+        assert_ne!(summary.gap_fingerprint, changed_summary.gap_fingerprint);
     }
 
     #[test]
@@ -1348,7 +1829,7 @@ mod tests {
                     ],
                 },
                 &mut |frame| {
-                    frames.push(frame);
+                    frames.push((frame.packet, frame.width, frame.height, frame.pixels.to_vec()));
                     Ok::<_, ()>(())
                 },
             )
@@ -1362,14 +1843,14 @@ mod tests {
             }]
         );
         assert!(report.gaps.is_empty());
-        assert_eq!(frames.iter().map(|frame| frame.packet).collect::<Vec<_>>(), [10, 14]);
-        assert!(frames.iter().all(|frame| (frame.width, frame.height) == (3, 1)));
+        assert_eq!(frames.iter().map(|frame| frame.0).collect::<Vec<_>>(), [10, 14]);
+        assert!(frames.iter().all(|frame| (frame.1, frame.2) == (3, 1)));
         assert_eq!(
-            frames[0].pixels,
+            frames[0].3,
             [0x11, 0x22, 0x33, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
         );
         assert_eq!(
-            frames[1].pixels,
+            frames[1].3,
             [0x11, 0x22, 0x33, 0xff, 0x44, 0x55, 0x66, 0xff, 0x77, 0x88, 0x99, 0xff]
         );
         assert!(router.egfx_dynamic_channels.contains(&channel_id));
@@ -1378,7 +1859,6 @@ mod tests {
     #[test]
     fn keeps_unknown_recorded_dvcs_opaque() {
         let mut router = ReplayRouter::new(activation()).unwrap();
-        let mut frames = Vec::new();
         let channel_id = 47;
         let report = router
             .route_plaintext_with_frame_sink(
@@ -1397,15 +1877,11 @@ mod tests {
                         ),
                     ],
                 },
-                &mut |frame| {
-                    frames.push(frame);
-                    Ok::<_, ()>(())
-                },
+                &mut |_frame| Ok::<_, ()>(()),
             )
             .unwrap();
 
         assert!(report.gaps.is_empty());
-        assert!(frames.is_empty());
         assert!(!router.egfx_dynamic_channels.contains(&channel_id));
         let drdynvc = router.stage.get_svc_processor_mut::<DrdynvcClient>().unwrap();
         assert!(
@@ -1462,7 +1938,7 @@ mod tests {
             [ReplayGap {
                 packet: 4,
                 direction: ReplayDirection::Server,
-                kind: ReplayGapKind::Unsupported,
+                reason: ReplayGapReason::Unsupported,
                 skipped_bytes: 0,
             }]
         );
@@ -1536,7 +2012,7 @@ mod tests {
             [ReplayGap {
                 packet: 6,
                 direction: ReplayDirection::Server,
-                kind: ReplayGapKind::Unsupported,
+                reason: ReplayGapReason::Unsupported,
                 skipped_bytes: 0,
             }]
         );
@@ -1630,7 +2106,7 @@ mod tests {
         assert!(report.gaps.contains(&ReplayGap {
             packet: 17,
             direction: ReplayDirection::Server,
-            kind: ReplayGapKind::IncompleteActivation,
+            reason: ReplayGapReason::IncompleteActivation,
             skipped_bytes: 0,
         }));
     }
@@ -1654,7 +2130,7 @@ mod tests {
             vec![ReplayGap {
                 packet: 9,
                 direction: ReplayDirection::Server,
-                kind: ReplayGapKind::Framing,
+                reason: ReplayGapReason::Framing,
                 skipped_bytes: 1,
             }]
         );
