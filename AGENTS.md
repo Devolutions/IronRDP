@@ -62,7 +62,7 @@ Crate changelogs are not normal hand-maintained documentation.
 
 ### Microsoft Open Specifications (Agent Skill)
 
-For protocol-level work, the [windows-protocols](hhttps://skills.sh/awakecoding/openspecs/windows-protocols) agent skill provides a local markdown corpus of Microsoft Open Specifications (`MS-RDP*` and related docs).
+For protocol-level work, the [windows-protocols](https://skills.sh/awakecoding/openspecs/windows-protocols) agent skill provides a local markdown corpus of Microsoft Open Specifications (`MS-RDP*` and related docs).
 When referencing these specs, check if the skill is installed and suggest installing it if not:
 
 ```
