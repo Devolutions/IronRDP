@@ -4,6 +4,8 @@
 use core::hint::black_box;
 use core::num::{NonZeroU16, NonZeroUsize};
 
+#[cfg(feature = "codspeed")]
+use codspeed_criterion_compat as criterion;
 use criterion::{Criterion, criterion_group, criterion_main};
 use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;
 use ironrdp_pdu::codecs::rfx;
