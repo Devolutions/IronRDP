@@ -24,6 +24,10 @@ use super::finalization::FinalizationSequence;
 use crate::util::{self, wrap_share_data};
 
 const IO_CHANNEL_ID: u16 = 1003;
+// Also the fixed MCS server channel ID (0x03EA) that MS-RDPBCGR 3.3.1.5 defines,
+// which is why it doubles as the `initiator` on every server-to-client Send Data
+// Indication in this file (License, Demand Active, Initiate Multitransport Request
+// per 3.3.5.15.1) rather than the user's own MCS channel ID.
 const USER_CHANNEL_ID: u16 = 1002;
 
 pub struct Acceptor {
@@ -381,13 +385,12 @@ impl Acceptor {
     /// handling for anything that isn't really a response, mirroring how
     /// `ClientConnectorState::ConnectTimeAutoDetection` demuxes the same
     /// channel client-side.
-    fn late_multitransport_response(
-        &self,
-        data: &mcs::SendDataRequest<'_>,
-    ) -> Option<rdp::multitransport::MultitransportResponsePdu> {
-        let sent = self.sent_multitransport_request.as_ref()?;
+    fn is_late_multitransport_response(&self, data: &mcs::SendDataRequest<'_>) -> bool {
+        let Some(sent) = self.sent_multitransport_request.as_ref() else {
+            return false;
+        };
         if Some(data.channel_id) != self.message_channel_id {
-            return None;
+            return false;
         }
         // `decode` alone would accept a valid response followed by trailing
         // bytes. This acceptor advertises ENCRYPTION_LEVEL_NONE, so the
@@ -395,9 +398,11 @@ impl Acceptor {
         // 2.2.15.2) and is exactly 12 bytes: anything left over means the
         // payload is something else.
         let mut cursor = ReadCursor::new(data.user_data.as_ref());
-        let response = decode_cursor::<rdp::multitransport::MultitransportResponsePdu>(&mut cursor).ok()?;
+        let Ok(response) = decode_cursor::<rdp::multitransport::MultitransportResponsePdu>(&mut cursor) else {
+            return false;
+        };
         if !cursor.is_empty() {
-            return None;
+            return false;
         }
         if response.request_id == sent.request_id {
             debug!(
@@ -412,7 +417,7 @@ impl Acceptor {
                 "Initiate Multitransport Response request ID does not match the sent request"
             );
         }
-        Some(response)
+        true
     }
 
     pub fn new_deactivation_reactivation(
@@ -1274,7 +1279,7 @@ impl Sequence for Acceptor {
                         // response at all (Auto-Detect Response, Heartbeat), so it
                         // falls through to the Confirm Active handling below
                         // instead.
-                        if self.late_multitransport_response(&data).is_some() {
+                        if self.is_late_multitransport_response(&data) {
                             self.state = prev_state;
                             return Ok(Written::Nothing);
                         }
@@ -1329,7 +1334,7 @@ impl Sequence for Acceptor {
                 client_capabilities,
             } => {
                 // A late Initiate Multitransport Response can land in any
-                // finalization sub-state (see `late_multitransport_response`);
+                // finalization sub-state (see `is_late_multitransport_response`);
                 // none of FinalizationSequence's own PDU decoders expect it, and
                 // depending which sub-state is active it would otherwise be
                 // silently swallowed while advancing a state, propagated as a
@@ -1338,9 +1343,7 @@ impl Sequence for Acceptor {
                 // finalization ever sees the bytes, mirroring
                 // `CapabilitiesWaitConfirm`'s handling.
                 let is_late_multitransport_response = match decode::<X224<mcs::McsMessage<'_>>>(input) {
-                    Ok(X224(mcs::McsMessage::SendDataRequest(data))) => {
-                        self.late_multitransport_response(&data).is_some()
-                    }
+                    Ok(X224(mcs::McsMessage::SendDataRequest(data))) => self.is_late_multitransport_response(&data),
                     _ => false,
                 };
 
