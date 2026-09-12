@@ -844,9 +844,7 @@ fn summarize_report(summary: &mut ReplaySummary, report: &ReplayReport) {
     }
     summary.lifecycle = report.lifecycle;
     let mut gap_fingerprint = Sha256::new();
-    let mut gaps = report.gaps.iter().collect::<Vec<_>>();
-    gaps.sort_by_key(|gap| gap_sort_key(gap));
-    for gap in gaps {
+    for gap in &report.gaps {
         match gap.kind() {
             ReplayGapKind::Framing => summary.framing_gaps += 1,
             ReplayGapKind::TruncatedPdu => summary.truncated_pdu_gaps += 1,

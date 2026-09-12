@@ -14,45 +14,45 @@ const CACHE_ROOT: &str = "bench-data/wireshark-rdp";
 const UPSTREAM_REPOSITORY: &str = "awakecoding/wireshark-rdp";
 
 #[derive(Debug, Eq, PartialEq)]
-pub struct Corpus {
+struct Corpus {
     /// Immutable upstream revision that identifies the cached capture set.
-    pub revision: String,
+    revision: String,
     /// Captures and strict replay expectations.
-    pub captures: Vec<Capture>,
+    captures: Vec<Capture>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Capture {
+struct Capture {
     /// Stable manifest identifier.
-    pub id: String,
+    id: String,
     /// Pinned upstream file name.
-    pub file: String,
+    file: String,
     /// Expected SHA-256 digest.
-    pub sha256: String,
+    sha256: String,
     /// Recorded upstream scenario description.
-    pub intent: String,
+    intent: String,
     /// Observed replay behavior for this exact capture revision.
-    pub expect: ReplayExpectation,
+    expect: ReplayExpectation,
 }
 
 /// Strict expected result for one capture replay.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReplayExpectation {
+struct ReplayExpectation {
     /// Declared outcome category.
-    pub outcome: ReplayOutcome,
+    outcome: ReplayOutcome,
     /// Failing replay stage for unsupported outcomes.
-    pub stage: Option<String>,
+    stage: Option<String>,
     /// Stable failing replay reason for unsupported outcomes.
-    pub reason: Option<String>,
+    reason: Option<String>,
     /// Exact counters and output identity for completed and partial outcomes.
-    pub summary: Option<ReplaySummaryExpectation>,
+    summary: Option<ReplaySummaryExpectation>,
 }
 
 /// Stable category for a qualified capture replay.
 ///
 /// Add a rejected outcome only when the replay decodes protocol rejection evidence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReplayOutcome {
+enum ReplayOutcome {
     /// Replay reached a clean completed state.
     Complete,
     /// Replay produced useful output but recorded known gaps.
@@ -63,9 +63,9 @@ pub enum ReplayOutcome {
 
 /// Expected payload-free counters and output identity for a successful replay.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReplaySummaryExpectation {
+struct ReplaySummaryExpectation {
     /// Exact values keyed by the stable summary field names.
-    pub values: std::collections::BTreeMap<String, String>,
+    values: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -109,6 +109,7 @@ pub fn corpus_fetch(sh: &Shell) -> anyhow::Result<()> {
         install_capture(&temporary_path, &cache_path)?;
         println!("Fetched and verified: {}", capture.file);
     }
+    remove_stale_corpus_revisions(&project_root().join(CACHE_ROOT), &corpus.revision)?;
 
     Ok(())
 }
@@ -136,7 +137,9 @@ pub fn corpus_replay(selector: Option<&str>) -> anyhow::Result<()> {
         selector.unwrap_or_default()
     );
 
-    let mut outcomes = [0usize; 3];
+    let mut complete = 0;
+    let mut partial = 0;
+    let mut unsupported = 0;
     for capture in captures {
         let capture_path = cache_dir.join(&capture.file);
         verify_file(&capture_path, &capture.sha256)
@@ -144,15 +147,17 @@ pub fn corpus_replay(selector: Option<&str>) -> anyhow::Result<()> {
         let observed = run_headless_replay(&capture_path)?;
         validate_replay_expectation(capture, &observed)?;
         let outcome = observed.outcome()?;
-        outcomes[usize::from(outcome)] += 1;
+        match outcome {
+            ReplayOutcome::Complete => complete += 1,
+            ReplayOutcome::Partial => partial += 1,
+            ReplayOutcome::Unsupported => unsupported += 1,
+        }
         println!("{}: {}", capture.id, outcome.name());
     }
 
     println!(
         "Qualified replay outcomes: complete={}, partial={}, unsupported={}",
-        outcomes[usize::from(ReplayOutcome::Complete)],
-        outcomes[usize::from(ReplayOutcome::Partial)],
-        outcomes[usize::from(ReplayOutcome::Unsupported)],
+        complete, partial, unsupported,
     );
     Ok(())
 }
@@ -184,16 +189,6 @@ impl ReplayOutcome {
             Self::Complete => "complete",
             Self::Partial => "partial",
             Self::Unsupported => "unsupported",
-        }
-    }
-}
-
-impl From<ReplayOutcome> for usize {
-    fn from(value: ReplayOutcome) -> Self {
-        match value {
-            ReplayOutcome::Complete => 0,
-            ReplayOutcome::Partial => 1,
-            ReplayOutcome::Unsupported => 2,
         }
     }
 }
@@ -319,7 +314,7 @@ fn is_unsupported_reason(reason: &str) -> bool {
 }
 
 /// Load and validate the pinned benchmark corpus manifest.
-pub fn load_corpus() -> anyhow::Result<Corpus> {
+fn load_corpus() -> anyhow::Result<Corpus> {
     let path = project_root().join(MANIFEST_PATH);
     let contents = fs::read_to_string(&path).with_context(|| format!("read corpus manifest: {}", path.display()))?;
     parse_corpus(&contents).with_context(|| format!("validate corpus manifest: {}", path.display()))
@@ -464,8 +459,15 @@ fn parse_replay_expectation(value: &toml::Table) -> anyhow::Result<ReplayExpecta
                     summary_lifecycle(summary) == Some("active") && !summary_has_gaps(summary),
                     "complete replay expectation must end active without gaps"
                 );
+            } else {
+                let summary = summary.as_ref().expect("partial replay summary is required");
+                anyhow::ensure!(
+                    summary_lifecycle(summary) != Some("active") || summary_has_gaps(summary),
+                    "partial replay expectation must have gaps or not end active"
+                );
             }
         }
+
         ReplayOutcome::Unsupported => {
             anyhow::ensure!(
                 stage.is_some() && reason.is_some(),
@@ -480,6 +482,28 @@ fn parse_replay_expectation(value: &toml::Table) -> anyhow::Result<ReplayExpecta
         reason,
         summary,
     })
+}
+
+fn remove_stale_corpus_revisions(cache_root: &Path, revision: &str) -> anyhow::Result<()> {
+    for entry in
+        fs::read_dir(cache_root).with_context(|| format!("read corpus cache root: {}", cache_root.display()))?
+    {
+        let entry = entry.with_context(|| format!("read corpus cache root: {}", cache_root.display()))?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if file_name != revision
+            && is_lower_hex(&file_name, 40)
+            && entry
+                .file_type()
+                .with_context(|| format!("inspect corpus cache entry: {}", entry.path().display()))?
+                .is_dir()
+        {
+            fs::remove_dir_all(entry.path())
+                .with_context(|| format!("remove stale corpus cache revision: {}", entry.path().display()))?;
+        }
+    }
+
+    Ok(())
 }
 
 fn optional_string<'a>(table: &'a toml::Table, key: &str, location: &str) -> anyhow::Result<Option<&'a str>> {
@@ -898,5 +922,50 @@ summary = {{ {values} }}
                 .to_string()
                 .contains("complete replay expectation must end active without gaps")
         );
+    }
+
+    #[test]
+    fn rejects_partial_expectation_without_gaps() {
+        let summary = summary("active", 0);
+        let values = SUMMARY_KEYS
+            .iter()
+            .map(|key| {
+                let value = summary.values.get(*key).expect("partial summary field");
+                format!("{key} = \"{value}\"")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let manifest = format!(
+            r#"
+outcome = "partial"
+summary = {{ {values} }}
+"#
+        );
+        let expectation = toml::from_str::<toml::Table>(&manifest).expect("valid expectation TOML");
+
+        let error = parse_replay_expectation(&expectation).expect_err("clean partial must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("partial replay expectation must have gaps or not end active")
+        );
+    }
+
+    #[test]
+    fn removes_stale_corpus_revision_directories() {
+        let directory = test_directory();
+        let current = "683505a753dfd7a2b27713b3a21e9a6951abacc4";
+        let stale = "0000000000000000000000000000000000000000";
+        fs::create_dir(directory.join(current)).expect("create current revision");
+        fs::create_dir(directory.join(stale)).expect("create stale revision");
+        fs::create_dir(directory.join("unexpected")).expect("create unrelated cache entry");
+
+        remove_stale_corpus_revisions(&directory, current).expect("prune stale revision");
+
+        assert!(directory.join(current).exists());
+        assert!(!directory.join(stale).exists());
+        assert!(directory.join("unexpected").exists());
+        fs::remove_dir_all(directory).expect("remove test directory");
     }
 }

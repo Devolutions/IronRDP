@@ -41,10 +41,13 @@ fn run() -> Result<(), Box<dyn core::error::Error>> {
     let arguments = parse_arguments(std::env::args_os().skip(1)).map_err(usage_error)?;
     let mut capture = match read_capture(&arguments.capture) {
         Ok(capture) => capture,
-        Err(error @ (ironrdp_capture_replay::ReplayError::Io(_) | ironrdp_capture_replay::ReplayError::Pcap(_))) => {
-            return Err(error.into());
-        }
-        Err(error) if arguments.summary => {
+        Err(error)
+            if arguments.summary
+                && !matches!(
+                    error,
+                    ironrdp_capture_replay::ReplayError::Io(_) | ironrdp_capture_replay::ReplayError::Pcap(_)
+                ) =>
+        {
             print_summary_error(error);
             return Ok(());
         }
@@ -121,6 +124,9 @@ fn parse_arguments(arguments: impl Iterator<Item = OsString>) -> Result<Argument
         } else {
             paths.push(argument);
         }
+    }
+    if show_gaps && !summary || replace && summary {
+        return Err(usage());
     }
     let (capture, output) = if summary {
         let [capture]: [OsString; 1] = paths.try_into().map_err(|_| usage())?;
@@ -200,5 +206,43 @@ fn print_gaps(gaps: &[ReplayGap]) {
     }
     if gaps.len() > MAX_GAP_DETAILS {
         println!("gap-details-truncated={}", gaps.len() - MAX_GAP_DETAILS);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_mode_inappropriate_flags() {
+        assert!(parse_arguments(["--gaps", "capture.pcapng", "output"].into_iter().map(OsString::from)).is_err());
+        assert!(
+            parse_arguments(
+                ["--summary", "--replace", "capture.pcapng"]
+                    .into_iter()
+                    .map(OsString::from)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn accepts_mode_appropriate_flags() {
+        assert!(
+            parse_arguments(
+                ["--summary", "--gaps", "capture.pcapng"]
+                    .into_iter()
+                    .map(OsString::from)
+            )
+            .is_ok()
+        );
+        assert!(
+            parse_arguments(
+                ["--replace", "capture.pcapng", "output"]
+                    .into_iter()
+                    .map(OsString::from)
+            )
+            .is_ok()
+        );
     }
 }
