@@ -13,7 +13,7 @@ use ironrdp_acceptor::{Acceptor, AcceptorResult, BeginResult, DesktopSize};
 use ironrdp_async::Framed;
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_cliprdr::backend::ClipboardMessage;
-use ironrdp_core::{decode, encode_vec, impl_as_any};
+use ironrdp_core::{DecodeResult, decode, encode_vec, impl_as_any};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
 use ironrdp_dvc as dvc;
@@ -3768,11 +3768,8 @@ impl RdpServer {
     }
 
     fn handle_message_channel_data(&mut self, data: SendDataRequest<'_>) {
-        // The MCS message channel currently carries only the auto-detect
-        // response. It is framed by a Basic Security Header (SEC_AUTODETECT_RSP),
-        // not a Share Control header.
-        match decode::<rdp::autodetect::AutoDetectRspPdu>(data.user_data.as_ref()) {
-            Ok(pdu) => {
+        match decode_message_channel_pdu(data.user_data.as_ref()) {
+            Ok(MessageChannelPdu::AutoDetect(pdu)) => {
                 if let Some(ref mut ad) = self.autodetect {
                     match ad.handle_response(&pdu.response, monotonic_now_ms()) {
                         AutoDetectOutcome::Rtt(rtt_ms) => {
@@ -3813,6 +3810,20 @@ impl RdpServer {
                             trace!(seq = pdu.response.sequence_number(), "Unmatched auto-detect response");
                         }
                     }
+                }
+            }
+            Ok(MessageChannelPdu::Multitransport(pdu)) => {
+                if pdu.is_success() {
+                    debug!(request_id = pdu.request_id, "Multitransport connection established");
+                } else {
+                    // Not a decode error: the client tried the sideband UDP transport and is
+                    // correctly reporting that it could not establish it. The session
+                    // continues on the main transport regardless.
+                    debug!(
+                        request_id = pdu.request_id,
+                        hr_response = format!("{:#x}", pdu.hr_response),
+                        "Multitransport connection failed, continuing on the main transport"
+                    );
                 }
             }
             Err(error) => {
@@ -3971,6 +3982,37 @@ impl RdpServer {
     pub fn set_credentials(&mut self, creds: Option<Credentials>) {
         debug!(?creds, "Changing credentials");
         self.creds = creds
+    }
+}
+
+/// A successfully-recognized MCS message channel PDU.
+#[derive(Debug)]
+enum MessageChannelPdu {
+    AutoDetect(rdp::autodetect::AutoDetectRspPdu),
+    Multitransport(rdp::multitransport::MultitransportResponsePdu),
+}
+
+/// Decode a PDU received on the MCS message channel.
+///
+/// The message channel carries the auto-detect response and the Initiate
+/// Multitransport Response ([MS-RDPBCGR] 2.2.15.2), both framed by a Basic
+/// Security Header whose flags (SEC_AUTODETECT_RSP vs. SEC_TRANSPORT_RSP)
+/// distinguish which one follows; neither is framed by a Share Control
+/// header. A client only ever sends the latter after the server has sent an
+/// Initiate Multitransport Request, so trying the far more common
+/// auto-detect response first and falling back to the multitransport
+/// response keeps the common case a single decode. On a double failure, the
+/// auto-detect error is returned: this channel overwhelmingly carries
+/// auto-detect responses, so that error is the more useful one to surface.
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+fn decode_message_channel_pdu(user_data: &[u8]) -> DecodeResult<MessageChannelPdu> {
+    match decode::<rdp::autodetect::AutoDetectRspPdu>(user_data) {
+        Ok(pdu) => Ok(MessageChannelPdu::AutoDetect(pdu)),
+        Err(autodetect_error) => match decode::<rdp::multitransport::MultitransportResponsePdu>(user_data) {
+            Ok(pdu) => Ok(MessageChannelPdu::Multitransport(pdu)),
+            Err(_) => Err(autodetect_error),
+        },
     }
 }
 
@@ -4790,6 +4832,53 @@ mod tests {
     use ironrdp_svc::{SvcMessage, SvcServerProcessor};
 
     use super::*;
+
+    #[test]
+    fn decode_message_channel_pdu_recognizes_autodetect_response() {
+        let pdu = rdp::autodetect::AutoDetectRspPdu::new(rdp::autodetect::AutoDetectResponse::RttResponse {
+            sequence_number: 7,
+        });
+        let bytes = encode_vec(&pdu).unwrap();
+
+        match decode_message_channel_pdu(&bytes).unwrap() {
+            MessageChannelPdu::AutoDetect(decoded) => assert_eq!(decoded.response.sequence_number(), 7),
+            MessageChannelPdu::Multitransport(_) => panic!("decoded as the wrong PDU type"),
+        }
+    }
+
+    /// Regression test: a real Windows client (mstsc) offering UDP
+    /// multitransport but failing to establish it answers on this same
+    /// channel with an Initiate Multitransport Response, not another
+    /// auto-detect response. Before this fix, `handle_message_channel_data`
+    /// only ever tried to decode `AutoDetectRspPdu` here, so this PDU failed
+    /// to decode (`securityHeader`'s flags carry `SEC_TRANSPORT_RSP`, not
+    /// `SEC_AUTODETECT_RSP`) and was dropped as an "Unhandled MCS message
+    /// channel PDU" warning instead of being recognized.
+    #[test]
+    fn decode_message_channel_pdu_recognizes_multitransport_response() {
+        let pdu = rdp::multitransport::MultitransportResponsePdu::abort(42);
+        let bytes = encode_vec(&pdu).unwrap();
+
+        match decode_message_channel_pdu(&bytes).unwrap() {
+            MessageChannelPdu::Multitransport(decoded) => {
+                assert_eq!(decoded.request_id, 42);
+                assert!(!decoded.is_success());
+            }
+            MessageChannelPdu::AutoDetect(_) => panic!("decoded as the wrong PDU type"),
+        }
+    }
+
+    #[test]
+    fn decode_message_channel_pdu_reports_the_autodetect_error_on_double_failure() {
+        let garbage = [0xffu8; 12];
+
+        let error = decode_message_channel_pdu(&garbage).unwrap_err();
+
+        // Both decode attempts fail on this input; the auto-detect error is
+        // the one that should surface (see `decode_message_channel_pdu`'s
+        // doc comment for why).
+        assert!(format!("{error:#}").contains("AutoDetectResponse"));
+    }
 
     /// A channel backend that owns a resource, released on drop the way
     /// `RdpsndServer` stops its handler.
