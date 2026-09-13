@@ -252,6 +252,17 @@ enum WireFormat {
     V2,
 }
 
+impl WireFormat {
+    /// The framing a negotiated `UdpVersion` selects, per `uses_v2_wire_format()`.
+    fn for_version(version: UdpVersion) -> Self {
+        if version.uses_v2_wire_format() {
+            Self::V2
+        } else {
+            Self::V1 { version: version.0 }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct NegotiatedParams {
     /// Our ISN (from our SYN).
@@ -546,13 +557,7 @@ impl RdpeudpConnection {
             }
         }
 
-        let wire = if negotiated_version.uses_v2_wire_format() {
-            WireFormat::V2
-        } else {
-            WireFormat::V1 {
-                version: negotiated_version.0,
-            }
-        };
+        let wire = WireFormat::for_version(negotiated_version);
 
         let mut conn = Self::new(Side::Server, config);
         conn.state = State::SynReceived;
@@ -1181,11 +1186,7 @@ impl RdpeudpConnection {
                 "SYN+ACK selected a protocol version above the one the SYN offered",
             ));
         }
-        let wire = if selected.uses_v2_wire_format() {
-            WireFormat::V2
-        } else {
-            WireFormat::V1 { version: selected.0 }
-        };
+        let wire = WireFormat::for_version(selected);
 
         let local_isn = self.config.initial_sequence_number;
         let remote_isn = syn_data.initial_sequence_number;
