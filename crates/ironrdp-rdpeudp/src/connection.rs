@@ -512,35 +512,47 @@ impl RdpeudpConnection {
             )
         })?;
 
-        // Only version 3 selects the MS-RDPEUDP2 data transfer (1.3.2.2), and
-        // that is the only data transfer this crate implements, so a client
-        // offering version 1 or 2 (asking for the MS-RDPEUDP one) cannot be
-        // served. A client offering something above version 3 can: MS-RDPEUDP
-        // 1.7's negotiate-down MUST clause requires settling on our own
-        // highest supported version rather than refusing the connection, and
-        // `enqueue_syn_ack` below always answers with version 3 regardless of
-        // what was offered, which is exactly that settlement.
-        if syn_data_ex.udp_ver.0 < UdpVersion::V3.0 {
+        // MS-RDPEUDP 1.7's negotiate-down MUST clause: a remote offering
+        // anything at or above our own highest supported version (3,
+        // including a value this crate does not otherwise recognize) settles
+        // on that highest version rather than being refused. A remote
+        // offering exactly version 1 or 2 settles there too, now that this
+        // crate implements the MS-RDPEUDP data transfer alongside MS-RDPEUDP2.
+        // Anything else (an offer below 3 that is not exactly 1 or 2) is not
+        // a version this crate can serve.
+        let mut negotiated_version = if syn_data_ex.udp_ver.0 >= UdpVersion::V3.0 {
+            UdpVersion::V3
+        } else if syn_data_ex.udp_ver == UdpVersion::V1 || syn_data_ex.udp_ver == UdpVersion::V2 {
+            syn_data_ex.udp_ver
+        } else {
             return Err(RdpeudpError::invalid_packet(
                 "accept",
-                "remote offered a protocol version below 3, whose data transfer is MS-RDPEUDP rather than MS-RDPEUDP2",
+                "remote offered a protocol version this crate does not implement",
             ));
+        };
+
+        // 2.2.2.9: cookieHash accompanies a version 3 SYN and "MUST NOT be
+        // present in any other case", so a version 1 or 2 offer has none to
+        // check. 3.1.5.1.1 asks the server to confirm the hash on a version 3
+        // SYN and says an invalid one MUST drop the connection to version 2
+        // rather than refuse it.
+        if negotiated_version == UdpVersion::V3 {
+            let offered_hash = syn_data_ex
+                .cookie_hash
+                .ok_or_else(|| RdpeudpError::invalid_packet("accept", "version 3 SYN carries no cookieHash"))?;
+
+            if offered_hash != expected_hash {
+                negotiated_version = UdpVersion::V2;
+            }
         }
 
-        // 3.1.5.1.1 asks the server to confirm the hash, and says an invalid
-        // one MUST drop the connection back to version 2. That version means
-        // the MS-RDPEUDP data transfer, which this crate does not implement,
-        // so the only honest outcome is to refuse the connection.
-        let offered_hash = syn_data_ex
-            .cookie_hash
-            .ok_or_else(|| RdpeudpError::invalid_packet("accept", "version 3 SYN carries no cookieHash"))?;
-
-        if offered_hash != expected_hash {
-            return Err(RdpeudpError::invalid_packet(
-                "accept",
-                "cookieHash does not match the security cookie for this multitransport request",
-            ));
-        }
+        let wire = if negotiated_version.uses_v2_wire_format() {
+            WireFormat::V2
+        } else {
+            WireFormat::V1 {
+                version: negotiated_version.0,
+            }
+        };
 
         let mut conn = Self::new(Side::Server, config);
         conn.state = State::SynReceived;
@@ -561,10 +573,10 @@ impl RdpeudpConnection {
             remote_isn,
             mtu,
             log_window_size: conn.config.log_window_size,
-            wire: WireFormat::V2,
+            wire,
         });
 
-        conn.enqueue_syn_ack(remote_isn, now);
+        conn.enqueue_syn_ack(remote_isn, negotiated_version, now);
         conn.timers.set(Timer::Idle, now + conn.config.idle_timeout);
 
         Ok(conn)
@@ -1043,7 +1055,7 @@ impl RdpeudpConnection {
     }
 
     /// Build and enqueue the server SYN+ACK datagram.
-    fn enqueue_syn_ack(&mut self, remote_isn: u32, now: MonotonicInstant) {
+    fn enqueue_syn_ack(&mut self, remote_isn: u32, negotiated_version: UdpVersion, now: MonotonicInstant) {
         let datagram = V1Datagram {
             header: FecHeader {
                 sn_source_ack: remote_isn,
@@ -1062,7 +1074,10 @@ impl RdpeudpConnection {
             correlation_id: None,
             syn_data_ex: Some(SynDataExPayload {
                 syn_ex_flags: SynExFlags::VERSION_INFO_VALID,
-                udp_ver: UdpVersion::V3,
+                // 3.1.5.1.1: "the highest version supported by both
+                // endpoints", per the negotiate-down decision `accept` above
+                // already made; not unconditionally our own maximum.
+                udp_ver: negotiated_version,
                 // 2.2.2.9 puts the hash in the client's SYN and nowhere else:
                 // "It MUST NOT be present in any other case."
                 cookie_hash: None,

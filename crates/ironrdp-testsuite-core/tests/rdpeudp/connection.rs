@@ -150,8 +150,79 @@ fn full_handshake_client_server() {
     assert_eq!(event, Event::Connected);
 }
 
+/// End-to-end handshake AND data exchange for the server-accept role
+/// settling on version 2, exercising the already-merged MS-RDPEUDP (version
+/// 1/2) data path (`handle_v1_datagram` and friends) from the server-accept
+/// side rather than only the client-connects-out side those functions were
+/// originally tested from.
 #[test]
-fn server_rejects_non_v2_syn() {
+fn full_handshake_and_data_exchange_when_the_server_settles_on_version_2() {
+    let t = now();
+
+    let mut client_config = default_config(100);
+    client_config.offer_version = UdpVersion::V2;
+    client_config.cookie_hash = None;
+
+    let mut client = RdpeudpConnection::connect(client_config, t).expect("connect");
+    let syn_transmit = client.poll_transmit(t).expect("client SYN");
+
+    let syn_datagram: V1Datagram = decode(&syn_transmit.contents).expect("decode SYN");
+    let mut server = RdpeudpConnection::accept(default_config(200), &syn_datagram, t).expect("accept");
+    let syn_ack_transmit = server.poll_transmit(t).expect("server SYN+ACK");
+
+    let mut syn_ack_bytes = syn_ack_transmit.contents;
+    client
+        .handle_datagram(&mut syn_ack_bytes, later(t, 50))
+        .expect("handle SYN+ACK");
+    assert!(client.is_established());
+
+    let ack_transmit = client.poll_transmit(later(t, 50)).expect("client final ACK");
+    let mut ack_bytes = ack_transmit.contents;
+    server
+        .handle_datagram(&mut ack_bytes, later(t, 100))
+        .expect("handle final ACK");
+    assert!(server.is_established());
+
+    // Drain each side's own Connected event before checking for data, since
+    // poll_event() returns queued events in order.
+    assert_eq!(client.poll_event().expect("client Connected event"), Event::Connected);
+    assert_eq!(server.poll_event().expect("server Connected event"), Event::Connected);
+
+    // Both sides settled on the MS-RDPEUDP (version 1/2) data path, not
+    // MS-RDPEUDP2, confirmed via the same public diagnostic a real caller
+    // would use to tell which wire format is in effect.
+    assert_eq!(
+        client.v1_stats().expect("client on v1/v2 wire").version,
+        UdpVersion::V2.0
+    );
+    assert_eq!(
+        server.v1_stats().expect("server on v1/v2 wire").version,
+        UdpVersion::V2.0
+    );
+
+    // Data actually flows both ways through the version-1/2 data path with
+    // the server on the accept side, not just the SYN/SYN+ACK/ACK handshake.
+    client.send(b"hello from client".to_vec()).expect("client send");
+    let client_data_transmit = client.poll_transmit(later(t, 150)).expect("client data");
+    let mut client_data_bytes = client_data_transmit.contents;
+    server
+        .handle_datagram(&mut client_data_bytes, later(t, 200))
+        .expect("server handles client data");
+    let received = server.poll_event().expect("server should have data event");
+    assert_eq!(received, Event::DataReceived(b"hello from client".to_vec()));
+
+    server.send(b"hello from server".to_vec()).expect("server send");
+    let server_data_transmit = server.poll_transmit(later(t, 250)).expect("server data");
+    let mut server_data_bytes = server_data_transmit.contents;
+    client
+        .handle_datagram(&mut server_data_bytes, later(t, 300))
+        .expect("client handles server data");
+    let received = client.poll_event().expect("client should have data event");
+    assert_eq!(received, Event::DataReceived(b"hello from server".to_vec()));
+}
+
+#[test]
+fn server_accepts_and_settles_on_version_1_for_a_syn_offering_it() {
     let t = now();
 
     let syn = V1Datagram {
@@ -170,7 +241,45 @@ fn server_rejects_non_v2_syn() {
         correlation_id: None,
         syn_data_ex: Some(SynDataExPayload {
             syn_ex_flags: SynExFlags::VERSION_INFO_VALID,
+            // 2.2.2.9: cookieHash MUST NOT be present outside a version 3 SYN.
             udp_ver: UdpVersion::V1,
+            cookie_hash: None,
+        }),
+        data: None,
+    };
+
+    let mut conn = RdpeudpConnection::accept(default_config(200), &syn, t).expect("version 1 is now implemented");
+
+    let transmit = conn.poll_transmit(t).expect("should have SYN+ACK");
+    let datagram: V1Datagram = decode(&transmit.contents).expect("valid SYN+ACK");
+    let syn_data_ex = datagram.syn_data_ex.expect("SYN+ACK carries SynDataEx");
+    assert_eq!(syn_data_ex.udp_ver, UdpVersion::V1);
+    assert_eq!(syn_data_ex.cookie_hash, None);
+}
+
+#[test]
+fn server_rejects_a_syn_offering_a_version_below_1() {
+    let t = now();
+
+    let syn = V1Datagram {
+        header: FecHeader {
+            sn_source_ack: 0xFFFF_FFFF,
+            receive_window_size: 64,
+            flags: V1Flags::SYN | V1Flags::SYNEX,
+        },
+        ack_vector: None,
+        ack_of_acks: None,
+        syn_data: Some(SynDataPayload {
+            initial_sequence_number: 100,
+            upstream_mtu: 1232,
+            downstream_mtu: 1232,
+        }),
+        correlation_id: None,
+        syn_data_ex: Some(SynDataExPayload {
+            syn_ex_flags: SynExFlags::VERSION_INFO_VALID,
+            // 0x0000 is not a version this or any known MS-RDPEUDP
+            // implementation speaks; there is nothing to negotiate down to.
+            udp_ver: UdpVersion(0x0000),
             cookie_hash: None,
         }),
         data: None,
@@ -1126,7 +1235,7 @@ fn connect_refuses_to_build_a_version_3_syn_without_a_cookie_hash() {
 }
 
 #[test]
-fn a_server_rejects_a_syn_offering_a_version_below_3() {
+fn a_server_accepts_and_settles_on_the_version_a_syn_offers_below_3() {
     let t = now();
 
     let syn = V1Datagram {
@@ -1146,17 +1255,26 @@ fn a_server_rejects_a_syn_offering_a_version_below_3() {
         syn_data_ex: Some(SynDataExPayload {
             syn_ex_flags: SynExFlags::VERSION_INFO_VALID,
             // 0x0002 means the MS-RDPEUDP data transfer, not MS-RDPEUDP2.
+            // 2.2.2.9: cookieHash MUST NOT be present outside a version 3 SYN.
             udp_ver: UdpVersion::V2,
             cookie_hash: None,
         }),
         data: None,
     };
 
-    RdpeudpConnection::accept(default_config(200), &syn, t).expect_err("version 2 is not RDPEUDP2");
+    let mut conn = RdpeudpConnection::accept(default_config(200), &syn, t).expect("version 2 is now implemented");
+
+    // The SYN+ACK echoes the negotiated version back, per 3.1.5.1.1's "highest
+    // version supported by both endpoints", not unconditionally our maximum.
+    let transmit = conn.poll_transmit(t).expect("should have SYN+ACK");
+    let datagram: V1Datagram = decode(&transmit.contents).expect("valid SYN+ACK");
+    let syn_data_ex = datagram.syn_data_ex.expect("SYN+ACK carries SynDataEx");
+    assert_eq!(syn_data_ex.udp_ver, UdpVersion::V2);
+    assert_eq!(syn_data_ex.cookie_hash, None);
 }
 
 #[test]
-fn a_server_rejects_a_syn_whose_cookie_hash_does_not_match() {
+fn a_server_downgrades_to_version_2_on_a_syn_whose_cookie_hash_does_not_match() {
     let t = now();
 
     let syn = V1Datagram {
@@ -1181,7 +1299,15 @@ fn a_server_rejects_a_syn_whose_cookie_hash_does_not_match() {
         data: None,
     };
 
-    RdpeudpConnection::accept(default_config(200), &syn, t).expect_err("the hash is for a different cookie");
+    // 3.1.5.1.1: an invalid cookieHash on a version 3 SYN MUST drop the
+    // connection to version 2, not refuse it outright.
+    let mut conn =
+        RdpeudpConnection::accept(default_config(200), &syn, t).expect("a mismatched hash downgrades, not fails");
+
+    let transmit = conn.poll_transmit(t).expect("should have SYN+ACK");
+    let datagram: V1Datagram = decode(&transmit.contents).expect("valid SYN+ACK");
+    let syn_data_ex = datagram.syn_data_ex.expect("SYN+ACK carries SynDataEx");
+    assert_eq!(syn_data_ex.udp_ver, UdpVersion::V2);
 }
 
 /// A SYN+ACK from a server that only speaks MS-RDPEUDP, answering a client SYN
