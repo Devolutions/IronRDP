@@ -21,7 +21,7 @@ use tokio_native_tls::native_tls::{Identity, TlsAcceptor as NativeTlsAcceptor};
 
 type TestBody = BoxBody<Bytes, Infallible>;
 
-static ENVIRONMENT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static ENVIRONMENT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[test]
 fn parses_supported_proxy_urls_without_exposing_credentials() {
