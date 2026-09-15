@@ -20,10 +20,6 @@ mod gateway_detect;
 mod mstsgu;
 pub(crate) use mstsgu::rpch_http::{Error, GwErrorExt, GwErrorKind};
 #[path = "../../ironrdp-mstsgu/src/http_auth.rs"]
-#[expect(
-    unexpected_cfgs,
-    reason = "the included Mstsgu source owns the smartcard configuration"
-)]
 mod http_auth;
 #[path = "../../ironrdp-mstsgu/src/mock_rpch.rs"]
 mod mock_rpch;

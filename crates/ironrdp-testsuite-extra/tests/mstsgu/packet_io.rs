@@ -22,6 +22,8 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::Role;
 
+use super::proxy::ENVIRONMENT_LOCK;
+
 type TestBody = BoxBody<Bytes, Infallible>;
 
 const PACKET: &[u8] = &[
@@ -32,6 +34,7 @@ const PACKET: &[u8] = &[
 
 #[tokio::test]
 async fn strict_policy_rejects_self_signed_gateway_certificate() {
+    let _environment_lock = ENVIRONMENT_LOCK.lock().await;
     let (listener, acceptor) = tls_listener().await;
     let target = gateway_target(listener.local_addr().expect("gateway listener address"));
     let server = tokio::spawn(async move {

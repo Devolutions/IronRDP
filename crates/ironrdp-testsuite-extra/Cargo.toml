@@ -12,6 +12,9 @@ keywords.workspace = true
 categories.workspace = true
 autotests = false
 
+[features]
+smartcard = ["ironrdp-mstsgu/smartcard"]
+
 [lib]
 doctest = false
 test = false
@@ -52,6 +55,9 @@ ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }
 ironrdp-viewer.path = "../ironrdp-viewer"
 ironrdp-vmconnect = { path = "../ironrdp-vmconnect", features = ["__test"] }
+picky = "=7.0.0-rc.25"
+picky-asn1-der = "0.5"
+picky-asn1-x509 = "0.15"
 rcgen = "0.14"
 semver = "1.0"
 tracing = { version = "0.1", features = ["log"] }
