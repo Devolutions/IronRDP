@@ -116,10 +116,7 @@ impl FramedWrite for ChunkedStream {
 struct UnusedNetworkClient;
 
 impl NetworkClient for UnusedNetworkClient {
-    async fn send(
-        &mut self,
-        _: &ironrdp::connector::sspi::generator::NetworkRequest,
-    ) -> ironrdp::connector::ConnectorResult<Vec<u8>> {
+    async fn send(&mut self, _: &sspi::generator::NetworkRequest) -> ironrdp::connector::ConnectorResult<Vec<u8>> {
         Err(ironrdp::connector::general_err!("unexpected network request"))
     }
 }
