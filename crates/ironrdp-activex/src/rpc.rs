@@ -21,6 +21,7 @@ use ironrdp_daemon::logbuf::{self, LogBuffer};
 use ironrdp_daemon::now::NowEndpoint;
 use ironrdp_daemon::operations::{OperationAttachment, OperationManager};
 use ironrdp_input::Operation;
+use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_propertyset::{PropertySet, Value};
 use ironrdp_rpc as ironrdp_agent;
 use ironrdp_rpc::transport::{self, Endpoint, Listener, read_message, write_message};
@@ -255,15 +256,125 @@ impl ActiveXRpc {
         live.frame = None;
     }
 
+    #[cfg(test)]
     pub(crate) fn retain_frame(&self, width: u16, height: u16, pixels: &[u32]) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        self.retain_frame_region(
+            width,
+            height,
+            InclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: width - 1,
+                bottom: height - 1,
+            },
+            pixels,
+        );
+    }
+
+    pub(crate) fn retain_frame_region(&self, width: u16, height: u16, region: InclusiveRectangle, pixels: &[u32]) {
+        self.retain_frame_region_with_limit(width, height, region, pixels, MAX_SCREENSHOT_PIXELS);
+    }
+
+    fn retain_frame_region_with_limit(
+        &self,
+        width: u16,
+        height: u16,
+        region: InclusiveRectangle,
+        pixels: &[u32],
+        max_pixels: usize,
+    ) {
+        let Some(region_width) = region
+            .right
+            .checked_sub(region.left)
+            .and_then(|value| value.checked_add(1))
+        else {
+            tracing::warn!(?region, "Discarding RPC frame update with invalid horizontal bounds");
+            return;
+        };
+        let Some(region_height) = region
+            .bottom
+            .checked_sub(region.top)
+            .and_then(|value| value.checked_add(1))
+        else {
+            tracing::warn!(?region, "Discarding RPC frame update with invalid vertical bounds");
+            return;
+        };
+        let Some(pixel_count) = usize::from(width).checked_mul(usize::from(height)) else {
+            tracing::warn!(width, height, "Discarding RPC frame update with an overflowing extent");
+            return;
+        };
+        let Some(update_pixel_count) = usize::from(region_width).checked_mul(usize::from(region_height)) else {
+            tracing::warn!(?region, "Discarding RPC frame update with an overflowing region");
+            return;
+        };
+        if width == 0
+            || height == 0
+            || region.right >= width
+            || region.bottom >= height
+            || pixels.len() != update_pixel_count
+        {
+            tracing::warn!(width, height, ?region, "Discarding inconsistent RPC frame update");
+            return;
+        }
+
         let mut live = lock(&self.shared.live);
         live.properties.insert("desktopwidth", i64::from(width));
         live.properties.insert("desktopheight", i64::from(height));
-        live.frame = Some(Frame {
-            width,
-            height,
-            pixels: pixels.to_vec(),
-        });
+        if pixel_count > max_pixels {
+            live.frame = None;
+            tracing::warn!(
+                width,
+                height,
+                max_pixels,
+                "Not retaining RPC frame above the pixel limit"
+            );
+            return;
+        }
+        let frame = if let Some(frame) = live
+            .frame
+            .as_mut()
+            .filter(|frame| frame.width == width && frame.height == height)
+        {
+            frame
+        } else {
+            let full_frame = region.left == 0
+                && region.top == 0
+                && region.right.checked_add(1) == Some(width)
+                && region.bottom.checked_add(1) == Some(height);
+            if !full_frame {
+                tracing::warn!(
+                    width,
+                    height,
+                    ?region,
+                    "Discarding partial RPC update without a base frame"
+                );
+                return;
+            }
+            let mut frame_pixels = Vec::new();
+            if frame_pixels.try_reserve_exact(pixel_count).is_err() {
+                tracing::warn!(width, height, "Unable to allocate RPC frame");
+                return;
+            }
+            frame_pixels.resize(pixel_count, 0);
+            live.frame.insert(Frame {
+                width,
+                height,
+                pixels: frame_pixels,
+            })
+        };
+
+        let destination_width = usize::from(width);
+        let source_width = usize::from(region_width);
+        let left = usize::from(region.left);
+        for row in 0..usize::from(region_height) {
+            let source_start = row * source_width;
+            let destination_start = (usize::from(region.top) + row) * destination_width + left;
+            frame.pixels[destination_start..destination_start + source_width]
+                .copy_from_slice(&pixels[source_start..source_start + source_width]);
+        }
     }
 
     pub(crate) fn session_dispatch(&self, directive: Option<&str>) -> tracing::Dispatch {
@@ -813,6 +924,68 @@ mod tests {
     fn screenshot_without_a_frame_is_unavailable() {
         let rpc = rpc();
         assert!(!screenshot(&rpc.shared).is_ok());
+    }
+
+    #[test]
+    fn retained_rpc_frame_applies_partial_updates() {
+        let rpc = rpc();
+        rpc.retain_frame(3, 2, &[0; 6]);
+        rpc.retain_frame_region(
+            3,
+            2,
+            InclusiveRectangle {
+                left: 1,
+                top: 0,
+                right: 2,
+                bottom: 1,
+            },
+            &[1, 2, 3, 4],
+        );
+
+        let live = lock(&rpc.shared.live);
+        let frame = live.frame.as_ref().expect("retained frame");
+        assert_eq!(frame.pixels, [0, 1, 2, 0, 3, 4]);
+    }
+
+    #[test]
+    fn partial_rpc_update_without_a_base_frame_is_discarded() {
+        let rpc = rpc();
+        rpc.retain_frame_region(
+            3,
+            2,
+            InclusiveRectangle {
+                left: 1,
+                top: 0,
+                right: 2,
+                bottom: 1,
+            },
+            &[1, 2, 3, 4],
+        );
+
+        assert!(lock(&rpc.shared.live).frame.is_none());
+    }
+
+    #[test]
+    fn oversized_rpc_frame_clears_stale_retained_frame() {
+        let rpc = rpc();
+        rpc.retain_frame(1, 1, &[0x0011_2233]);
+        rpc.retain_frame_region_with_limit(
+            2,
+            1,
+            InclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 1,
+                bottom: 0,
+            },
+            &[0x0044_5566, 0x0077_8899],
+            1,
+        );
+
+        let live = lock(&rpc.shared.live);
+        assert!(live.frame.is_none());
+        assert_eq!(live.properties.get::<i64>("desktopwidth"), Some(2));
+        assert_eq!(live.properties.get::<i64>("desktopheight"), Some(1));
     }
 
     #[tokio::test]
