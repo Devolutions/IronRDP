@@ -56,6 +56,7 @@ pub struct BuilderDone {
     autodetect_rtt: Option<Arc<AtomicU32>>,
     autodetect_baseline_rtt: Option<Arc<AtomicU32>>,
     autodetect_bandwidth: Option<Arc<AtomicU32>>,
+    autodetect_bandwidth_generation: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
     connection_policy: ConnectionPolicy,
@@ -168,6 +169,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 autodetect_rtt: None,
                 autodetect_baseline_rtt: None,
                 autodetect_bandwidth: None,
+                autodetect_bandwidth_generation: None,
                 honor_client_desktop_size: None,
                 connection_policy: ConnectionPolicy::default(),
                 auto_reconnect_cookie: None,
@@ -201,6 +203,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 autodetect_rtt: None,
                 autodetect_baseline_rtt: None,
                 autodetect_bandwidth: None,
+                autodetect_bandwidth_generation: None,
                 honor_client_desktop_size: None,
                 connection_policy: ConnectionPolicy::default(),
                 auto_reconnect_cookie: None,
@@ -406,6 +409,18 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Inject a shared handle that increments every time a Bandwidth Measure
+    /// transaction completes, whether or not it produced a usable figure.
+    /// Pairs with [`Self::with_autodetect_bandwidth_handle`]: the bandwidth
+    /// figure alone repeats too often to tell a fresh measurement window
+    /// apart from a stale one. When not called, the server allocates its own
+    /// (still readable via
+    /// [`RdpServer::autodetect_bandwidth_generation_handle`]).
+    pub fn with_autodetect_bandwidth_generation_handle(mut self, handle: Arc<AtomicU32>) -> Self {
+        self.state.autodetect_bandwidth_generation = Some(handle);
+        self
+    }
+
     /// Provision the Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.2
     /// `ARC_SC_PRIVATE_PACKET`) handed to the client during logon.
     ///
@@ -480,6 +495,7 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.autodetect_rtt,
             self.state.autodetect_baseline_rtt,
             self.state.autodetect_bandwidth,
+            self.state.autodetect_bandwidth_generation,
         );
         server.set_credential_validator(self.state.credential_validator);
         server.set_auto_reconnect_cookie(self.state.auto_reconnect_cookie);
