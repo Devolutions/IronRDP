@@ -1466,6 +1466,44 @@ mod tests {
         assert_eq!(&u.data[0..4], &[0x30, 0x20, 0x10, 0xFF]);
     }
 
+    /// The bitmap cache outlives `ResetGraphics`.
+    ///
+    /// Windows fills cache slots before a resolution change and then restores the
+    /// desktop from them afterwards, with hundreds of `CacheToSurface` PDUs against
+    /// slots filled before the reset. MS-RDPEGFX 3.3.5.14 only redefines the graphics
+    /// output buffer; cache slots are connection-scoped. Dropping them here makes
+    /// every one of those blits a silent no-op, so the desktop keeps whatever the
+    /// client last invented for those pixels.
+    #[test]
+    fn reset_keeps_the_bitmap_cache() {
+        let mut c = Compositor::default();
+        c.reset(128, 128);
+        c.create_surface(1, 16, 16);
+        c.solid_fill(
+            1,
+            &Color {
+                b: 0x10,
+                g: 0x20,
+                r: 0x30,
+                xa: 0,
+            },
+            &[rect(0, 0, 8, 8)],
+        );
+        c.surface_to_cache(1, 7, 0, &rect(0, 0, 8, 8));
+        c.end_frame();
+        let _ = c.drain_output();
+
+        c.reset(256, 256);
+        c.create_surface(2, 16, 16);
+        c.map_surface(2, 0, 0);
+        c.cache_to_surface(7, 2, &[Point { x: 0, y: 0 }]);
+        c.end_frame();
+
+        let updates = c.drain_output();
+        assert_eq!(updates.len(), 1, "cached tile must still paint after a reset");
+        assert_eq!(&updates[0].data[0..4], &[0x30, 0x20, 0x10, 0xFF]);
+    }
+
     /// A destination rectangle larger than the surface is clipped, not panicked.
     #[test]
     fn oversized_rect_is_clipped() {
