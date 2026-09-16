@@ -174,6 +174,7 @@ export class RemoteDesktopService {
         const sessionBuilder = new this.module.SessionBuilder();
 
         sessionBuilder.proxyAddress(config.proxyAddress);
+        sessionBuilder.webSocketProtocols(config.webSocketProtocols);
         sessionBuilder.destination(config.destination);
         sessionBuilder.serverDomain(config.serverDomain);
         sessionBuilder.password(config.password);

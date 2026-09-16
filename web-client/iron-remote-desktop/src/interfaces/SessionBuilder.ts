@@ -25,6 +25,10 @@ export interface SessionBuilder {
      */
     proxyAddress(address: string): SessionBuilder;
     /**
+     * Optional
+     */
+    webSocketProtocols(protocols: string[]): SessionBuilder;
+    /**
      * Required
      */
     authToken(token: string): SessionBuilder;
