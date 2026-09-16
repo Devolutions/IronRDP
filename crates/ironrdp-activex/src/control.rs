@@ -17013,7 +17013,12 @@ fn queue_worker_event(
                     ) if pending.width == incoming.width && pending.height == incoming.height
                 );
                 if !same_extent {
-                    queue[index] = event;
+                    // The queued frame at `index` was already accepted at a different
+                    // extent (e.g. a resize landed between frames): appending preserves
+                    // it as a distinct, still-visible transitional frame instead of
+                    // silently evicting it in place, which would suppress that
+                    // intermediate remote-size transition.
+                    queue.push(event);
                     true
                 } else if let (
                     WorkerEvent::Image { update: pending, .. },
@@ -24693,6 +24698,8 @@ try {
             ));
         }
 
+        // A different extent (e.g. a remote resize) is appended rather than replacing the
+        // still-queued frame in place; see `worker_event_queue_appends_instead_of_evicting_on_extent_change`.
         assert!(queue_worker_event(
             &events,
             &event_posted,
@@ -24706,8 +24713,12 @@ try {
             let queue = events.events.lock().expect("event queue is available");
             assert!(matches!(
                 queue.as_slice(),
-                [WorkerEvent::Image { generation: 7, update, .. }]
-                    if update.width == 2 && update.height == 1 && update.buffer == [4, 4]
+                [
+                    WorkerEvent::Image { generation: 7, update: first, .. },
+                    WorkerEvent::Image { generation: 7, update: second, .. },
+                ]
+                if first.buffer == [2]
+                    && second.width == 2 && second.height == 1 && second.buffer == [4, 4]
             ));
         }
 
@@ -24767,6 +24778,46 @@ try {
                 .iter()
                 .all(|event| matches!(event, WorkerEvent::StaticChannelData { .. }))
         );
+    }
+
+    /// A same-generation frame at a different extent (e.g. a remote resize landing between
+    /// frames) must be appended, not overwrite the already-accepted frame in place: otherwise
+    /// the transitional frame at the old extent would be silently evicted and never presented.
+    #[test]
+    fn worker_event_queue_appends_instead_of_evicting_on_extent_change() {
+        let events = Arc::new(WorkerEventQueue::new());
+        let event_posted = Arc::new(AtomicBool::new(true));
+        let dispatcher = HWND(ptr::null_mut());
+
+        assert!(queue_worker_event(
+            &events,
+            &event_posted,
+            dispatcher,
+            WorkerEvent::Image {
+                generation: 7,
+                update: full_frame_update(1, 1, 1),
+            },
+        ));
+        assert!(queue_worker_event(
+            &events,
+            &event_posted,
+            dispatcher,
+            WorkerEvent::Image {
+                generation: 7,
+                update: full_frame_update(2, 1, 2),
+            },
+        ));
+
+        let queue = events.events.lock().expect("event queue is available");
+        assert!(matches!(
+            queue.as_slice(),
+            [
+                WorkerEvent::Image { generation: 7, update: first, .. },
+                WorkerEvent::Image { generation: 7, update: second, .. },
+            ]
+            if first.width == 1 && first.height == 1 && first.buffer == [1]
+                && second.width == 2 && second.height == 1 && second.buffer == [2, 2]
+        ));
     }
 
     #[test]
