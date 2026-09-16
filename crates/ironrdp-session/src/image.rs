@@ -210,8 +210,11 @@ impl DecodedImage {
         self.data
             .try_reserve_exact(additional)
             .map_err(|error| SessionError::custom("allocate reset graphics framebuffer", error))?;
+        // `clear` drops the length (keeping capacity) so the following `resize` zero-fills the
+        // whole buffer in one pass, instead of zero-filling the grown tail and then the entire
+        // buffer again.
+        self.data.clear();
         self.data.resize(len, 0);
-        self.data.fill(0);
         self.width = width;
         self.height = height;
         self.pointer_src_rect = InclusiveRectangle::empty();
