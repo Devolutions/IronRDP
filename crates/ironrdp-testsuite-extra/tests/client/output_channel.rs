@@ -70,6 +70,24 @@ fn drop_policy_classification() {
     assert_eq!(RdpOutputEvent::Connected.drop_policy(), DropPolicy::MustDeliver);
     assert_eq!(RdpOutputEvent::LoginComplete.drop_policy(), DropPolicy::MustDeliver);
     assert_eq!(RdpOutputEvent::AutoReconnected.drop_policy(), DropPolicy::MustDeliver);
+    // A `DesktopUpdate` is a diff against the prior frame, not a full snapshot like `Image`:
+    // it must never be dropped in favor of a newer one, or that region's pixels would be lost.
+    let update = DesktopUpdate::new(
+        vec![0u32],
+        NonZeroU16::new(1).unwrap(),
+        NonZeroU16::new(1).unwrap(),
+        InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        },
+    )
+    .expect("valid update");
+    assert_eq!(
+        RdpOutputEvent::DesktopUpdate(update).drop_policy(),
+        DropPolicy::MustDeliver
+    );
 }
 
 /// A burst of `LatestOnly` sends must never block, and the receiver must see
@@ -121,6 +139,32 @@ async fn latest_only_variants_are_independent() {
         saw_image && saw_pointer,
         "both variants must be delivered independently"
     );
+}
+
+/// `Connected` and a `DesktopUpdate` must arrive in send order: a desktop update produced after
+/// activation must never be observed by a consumer before `Connected`, which would let the UI
+/// present a frame while still reporting the pre-connection state.
+#[tokio::test]
+async fn desktop_update_is_ordered_after_connected() {
+    let (sender, mut receiver) = output_channel(32);
+
+    sender.send(RdpOutputEvent::Connected).await.unwrap();
+    let update = DesktopUpdate::new(
+        vec![0u32],
+        NonZeroU16::new(1).unwrap(),
+        NonZeroU16::new(1).unwrap(),
+        InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        },
+    )
+    .expect("valid update");
+    sender.send(RdpOutputEvent::DesktopUpdate(update)).await.unwrap();
+
+    assert!(matches!(receiver.recv().await, Some(RdpOutputEvent::Connected)));
+    assert!(matches!(receiver.recv().await, Some(RdpOutputEvent::DesktopUpdate(_))));
 }
 
 /// `MustDeliver` events keep backpressuring a full channel exactly like a

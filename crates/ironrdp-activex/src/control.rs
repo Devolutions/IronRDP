@@ -12024,20 +12024,7 @@ impl Control {
         let rpc_destination = config.destination().to_string();
         drop(settings);
         let (output_sender, mut output_receiver) = output_channel(32);
-        let desktop_update_events = Arc::clone(&self.events);
-        let desktop_update_posted = Arc::clone(&self.event_posted);
-        let desktop_update_hwnd = hwnd.0 as isize;
-        let client = RdpClient::new(config, output_sender).with_desktop_update_handler(move |update| {
-            let _ = queue_worker_event(
-                &desktop_update_events,
-                &desktop_update_posted,
-                HWND(desktop_update_hwnd as *mut c_void),
-                WorkerEvent::Image {
-                    generation,
-                    update: FrameUpdate::from_desktop_update(update),
-                },
-            );
-        });
+        let client = RdpClient::new(config, output_sender).with_desktop_updates();
         let client = if let Some(maximum_attempts) = auto_reconnect_maximum_attempts {
             client.with_auto_reconnect(maximum_attempts)
         } else {
@@ -12128,6 +12115,27 @@ impl Control {
                                                         height = height.get(),
                                                         "Discarding inconsistent full-frame output"
                                                     );
+                                                }
+                                            }
+                                            RdpOutputEvent::DesktopUpdate(update) => {
+                                                // Routed through this same ordered channel (rather
+                                                // than a side-channel callback) so it can never be
+                                                // dispatched to the UI ahead of `Connected` or any
+                                                // other event that logically preceded it. Never
+                                                // dropped: unlike `Image`, this carries a diff
+                                                // against the prior frame, so silently discarding
+                                                // it (as a `LatestOnly`/best-effort path would)
+                                                // would lose that region's pixels permanently.
+                                                if !queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::Image {
+                                                        generation,
+                                                        update: FrameUpdate::from_desktop_update(update),
+                                                    },
+                                                ) {
+                                                    break;
                                                 }
                                             }
                                             RdpOutputEvent::WindowingOrders(data) => {

@@ -126,6 +126,12 @@ pub enum RdpOutputEvent {
         width: NonZeroU16,
         height: NonZeroU16,
     },
+    /// A tightly packed changed region, delivered instead of a full [`RdpOutputEvent::Image`]
+    /// snapshot when the embedder opted into [`DesktopUpdate`] delivery.
+    ///
+    /// Routed through this same output channel (rather than a side-channel callback) so it is
+    /// strictly ordered with respect to [`RdpOutputEvent::Connected`] and every other event.
+    DesktopUpdate(DesktopUpdate),
     ConnectionFailure(ironrdp_connector::ConnectorError),
     PointerDefault,
     PointerHidden,
@@ -265,6 +271,10 @@ impl RdpOutputEvent {
         use crate::output_channel::DropPolicy;
 
         match self {
+            // `DesktopUpdate` carries a diff against the prior frame, not a full snapshot like
+            // `Image`: dropping a superseded value (as `LatestOnly` does) would silently lose
+            // that region's pixels forever instead of merely re-sending a stale-but-complete
+            // framebuffer, so it falls through to `MustDeliver` below.
             RdpOutputEvent::Image { .. }
             | RdpOutputEvent::PointerDefault
             | RdpOutputEvent::PointerHidden
@@ -690,7 +700,7 @@ pub struct RdpClient {
     close_receiver: watch::Receiver<bool>,
     graceful_close_receiver: watch::Receiver<bool>,
     auto_reconnect_maximum_attempts: Option<u32>,
-    desktop_update_handler: Option<Box<dyn Fn(DesktopUpdate) + Send + Sync>>,
+    desktop_update_enabled: bool,
     #[cfg(feature = "clipboard")]
     cliprdr_backend_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
     #[cfg(feature = "rdpdr")]
@@ -715,7 +725,7 @@ impl RdpClient {
             close_receiver,
             graceful_close_receiver,
             auto_reconnect_maximum_attempts: None,
-            desktop_update_handler: None,
+            desktop_update_enabled: false,
             #[cfg(feature = "clipboard")]
             cliprdr_backend_factory: None,
             #[cfg(feature = "rdpdr")]
@@ -758,16 +768,16 @@ impl RdpClient {
         self
     }
 
-    /// Delivers tightly packed dirty regions instead of full [`RdpOutputEvent::Image`] snapshots.
+    /// Delivers tightly packed dirty regions ([`RdpOutputEvent::DesktopUpdate`]) instead of full
+    /// [`RdpOutputEvent::Image`] snapshots.
     ///
     /// The first update for each framebuffer extent covers the full framebuffer.
-    /// Other output events continue through the configured output channel.
+    /// Every event, including [`RdpOutputEvent::DesktopUpdate`], is delivered through the same
+    /// output channel used for [`RdpOutputEvent::Connected`] and all other events, so relative
+    /// ordering between them is preserved.
     #[must_use]
-    pub fn with_desktop_update_handler<F>(mut self, handler: F) -> Self
-    where
-        F: Fn(DesktopUpdate) + Send + Sync + 'static,
-    {
-        self.desktop_update_handler = Some(Box::new(handler));
+    pub fn with_desktop_updates(mut self) -> Self {
+        self.desktop_update_enabled = true;
         self
     }
 
@@ -1094,7 +1104,7 @@ impl RdpClient {
                 udp_tunnel,
                 self.config.rail_initial_execute.clone(),
                 &self.output_event_sender,
-                self.desktop_update_handler.as_deref(),
+                self.desktop_update_enabled,
                 &mut self.input_event_receiver,
                 &mut self.clipboard_event_receiver,
                 &mut self.close_receiver,
@@ -3007,7 +3017,7 @@ async fn active_session(
     #[cfg(not(feature = "udp"))] _udp_tunnel: UdpTunnel,
     initial_rail_execute: Option<ExecutePdu>,
     output_event_sender: &crate::output_channel::OutputEventSender,
-    desktop_update_handler: Option<&(dyn Fn(DesktopUpdate) + Send + Sync)>,
+    desktop_update_enabled: bool,
     input_event_receiver: &mut mpsc::Receiver<RdpInputEvent>,
     clipboard_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
     close_receiver: &mut watch::Receiver<bool>,
@@ -3744,7 +3754,7 @@ async fn active_session(
                         NonZeroU16::new(image.width()).ok_or_else(|| ironrdp_session::general_err!("width is zero"))?;
                     let height = NonZeroU16::new(image.height())
                         .ok_or_else(|| ironrdp_session::general_err!("height is zero"))?;
-                    if let Some(handler) = desktop_update_handler {
+                    if desktop_update_enabled {
                         if desktop_damage_delivered {
                             continue;
                         }
@@ -3752,7 +3762,7 @@ async fn active_session(
                         let extent = (width, height);
                         if desktop_update_extent != Some(extent) {
                             desktop_update_extent = Some(extent);
-                            handler(pack_desktop_update(
+                            let update = pack_desktop_update(
                                 &image,
                                 width,
                                 height,
@@ -3762,14 +3772,36 @@ async fn active_session(
                                     right: width.get() - 1,
                                     bottom: height.get() - 1,
                                 },
-                            )?);
+                            )?;
+                            if !send_active_output_event(
+                                output_event_sender,
+                                RdpOutputEvent::DesktopUpdate(update),
+                                close_receiver,
+                            )
+                            .await?
+                            {
+                                return Ok(RdpControlFlow::TerminatedGracefully(
+                                    GracefulDisconnectReason::UserInitiated,
+                                ));
+                            }
                             desktop_damage_regions.clear();
                         } else {
                             if desktop_damage_regions.is_empty() {
                                 desktop_damage_regions.push(region);
                             }
                             for region in desktop_damage_regions.drain(..) {
-                                handler(pack_desktop_update(&image, width, height, region)?);
+                                let update = pack_desktop_update(&image, width, height, region)?;
+                                if !send_active_output_event(
+                                    output_event_sender,
+                                    RdpOutputEvent::DesktopUpdate(update),
+                                    close_receiver,
+                                )
+                                .await?
+                                {
+                                    return Ok(RdpControlFlow::TerminatedGracefully(
+                                        GracefulDisconnectReason::UserInitiated,
+                                    ));
+                                }
                             }
                         }
                         continue;
