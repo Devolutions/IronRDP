@@ -14,7 +14,7 @@ categories.workspace = true
 
 [dependencies]
 aes-gcm = "0.10"
-hmac = "0.12"
+hmac = "0.13"
 ironrdp-core = { version = "0.2.1", path = "../ironrdp-core" }
 ironrdp-dvc = { version = "0.8.0", path = "../ironrdp-dvc" } # public
 ironrdp-egfx = { version = "0.3.0", path = "../ironrdp-egfx" }
@@ -24,7 +24,7 @@ ironrdp-session = { version = "0.11.0", path = "../ironrdp-session" }
 ironrdp-svc = { version = "0.8.0", path = "../ironrdp-svc" }
 pcap-parser = "0.17"
 png = "0.18"
-sha2 = "0.10"
+sha2 = "0.11"
 thiserror = "2"
 zeroize = "1.8"
 
