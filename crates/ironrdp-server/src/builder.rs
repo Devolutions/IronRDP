@@ -19,7 +19,10 @@ use super::server::{
 use crate::error::ServerResult;
 #[cfg(feature = "usb")]
 use crate::urbdrc::DeviceFactory;
-use crate::{DisplayUpdate, RdpServerDisplayUpdates, RdpdrServerFactory, RdpeiServerFactory, SoundServerFactory};
+use crate::{
+    DisplayUpdate, RdpServerDisplayUpdates, RdpdrServerFactory, RdpeaiServerFactory, RdpeiServerFactory,
+    SoundServerFactory,
+};
 
 pub struct WantsAddr {}
 pub struct WantsSecurity {
@@ -46,6 +49,7 @@ pub struct BuilderDone {
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
     rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
+    rdpeai_factory: Option<Box<dyn RdpeaiServerFactory>>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     #[cfg(feature = "egfx")]
@@ -156,6 +160,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 cliprdr_factory: None,
                 rdpei_factory: None,
                 rdpdr_factory: None,
+                rdpeai_factory: None,
                 connection_handler: None,
                 credential_validator: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
@@ -189,6 +194,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 cliprdr_factory: None,
                 rdpei_factory: None,
                 rdpdr_factory: None,
+                rdpeai_factory: None,
                 connection_handler: None,
                 credential_validator: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
@@ -236,6 +242,12 @@ impl RdpServerBuilder<BuilderDone> {
 
     pub fn with_rdpdr_factory(mut self, rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>) -> Self {
         self.state.rdpdr_factory = rdpdr_factory;
+        self
+    }
+
+    /// Configure MS-RDPEAI (audio input / microphone redirection over a dynamic channel).
+    pub fn with_rdpeai_factory(mut self, rdpeai_factory: Option<Box<dyn RdpeaiServerFactory>>) -> Self {
+        self.state.rdpeai_factory = rdpeai_factory;
         self
     }
 
@@ -471,6 +483,7 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.cliprdr_factory,
             self.state.rdpei_factory,
             self.state.rdpdr_factory,
+            self.state.rdpeai_factory,
             self.state.connection_handler,
             #[cfg(feature = "egfx")]
             self.state.gfx_factory,
