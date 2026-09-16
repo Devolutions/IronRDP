@@ -4,9 +4,9 @@
 
 #[cfg(test)]
 use {
-    anyhow as _, async_trait as _, image as _, ironrdp_blocking as _, ironrdp_cliprdr_native as _, opus2 as _,
-    pico_args as _, rand as _, sspi as _, tokio as _, tokio_rustls as _, tracing as _, tracing_subscriber as _,
-    x509_cert as _,
+    anyhow as _, async_trait as _, image as _, ironrdp_blocking as _, ironrdp_cliprdr_native as _,
+    ironrdp_egfx as _, opus2 as _, pico_args as _, rand as _, sspi as _, tokio as _, tokio_rustls as _,
+    tracing as _, tracing_subscriber as _, x509_cert as _,
 };
 
 #[cfg(feature = "acceptor")]
