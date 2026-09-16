@@ -10,6 +10,16 @@ pub trait DisplayControlHandler: Send {
     fn monitor_layout(&self, layout: DisplayControlMonitorLayout) {
         debug!(?layout);
     }
+
+    /// Capabilities advertised to the client when the channel starts.
+    ///
+    /// Defaults to [`DisplayControlCapabilities::single_monitor()`], so any
+    /// existing handler that doesn't override this keeps its current
+    /// behavior. A handler serving more than one monitor should override
+    /// this to return `DisplayControlCapabilities::new(monitor_count, 3840, 2400)`.
+    fn capabilities(&self) -> DisplayControlCapabilities {
+        DisplayControlCapabilities::single_monitor()
+    }
 }
 
 /// A server for the Display Control Virtual Channel.
@@ -32,9 +42,7 @@ impl DvcProcessor for DisplayControlServer {
     }
 
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        let pdu: DisplayControlPdu = DisplayControlCapabilities::new(1, 3840, 2400)
-            .map_err(|e| decode_err!(e))?
-            .into();
+        let pdu: DisplayControlPdu = self.handler.capabilities().into();
 
         Ok(vec![Box::new(pdu)])
     }

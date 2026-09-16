@@ -174,6 +174,17 @@ impl DisplayControlCapabilities {
     pub fn max_monitor_area(&self) -> u64 {
         self.max_monitor_area
     }
+
+    /// One 4K-area (3840x2400) monitor: the single-monitor capabilities every
+    /// existing server advertised before per-display monitor counts existed,
+    /// and the safe fallback for a monitor count that turns out to be invalid.
+    ///
+    /// # Panics
+    ///
+    /// Never: `(1, 3840, 2400)` is always within [`new`](Self::new)'s valid range.
+    pub fn single_monitor() -> Self {
+        Self::new(1, 3840, 2400).expect("(1, 3840, 2400) are always within the valid range")
+    }
 }
 
 impl Encode for DisplayControlCapabilities {
