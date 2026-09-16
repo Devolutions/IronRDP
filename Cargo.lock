@@ -3715,6 +3715,7 @@ dependencies = [
  "ironrdp",
  "ironrdp-cliprdr-format",
  "ironrdp-core 0.3.0",
+ "ironrdp-egfx",
  "ironrdp-futures",
  "ironrdp-pdu",
  "ironrdp-propertyset",
