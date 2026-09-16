@@ -38,7 +38,7 @@ pub enum SessionErrorKind {
 impl fmt::Display for SessionErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self {
-            SessionErrorKind::Pdu(_) => write!(f, "PDU error"),
+            SessionErrorKind::Pdu(e) => write!(f, "PDU error: {e}"),
             SessionErrorKind::Encode(_) => write!(f, "encode error"),
             SessionErrorKind::Decode(_) => write!(f, "decode error"),
             SessionErrorKind::FastPathBulkDecompression(_) => write!(f, "fast-path bulk decompression error"),

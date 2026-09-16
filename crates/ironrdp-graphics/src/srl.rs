@@ -6,29 +6,26 @@
 
 const INITIAL_KP: u8 = 8;
 const MAX_KP: u8 = 80;
-// This conservative malformed-stream bound includes LL3 entries, although LL3 is raw-coded.
+/// Longest zero run the encoder will emit: one tile's worth of coefficients.
+///
+/// Encode-side only. The decoder consumes a run one event at a time and needs no bound; see
+/// [`SrlDecoder::read_zero_run_event`].
 const MAX_ZERO_RUN: usize = 4096;
 
 /// Errors encountered while decoding or encoding an SRL stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SrlError {
-    /// The required trailing zero byte is absent.
-    MissingTerminator,
-    /// The stream ended before a complete code word was read.
-    Truncated,
     /// An SRL value requires between one and fifteen magnitude bits.
     InvalidBitCount(u8),
     /// A value cannot be represented by the magnitude width.
     MagnitudeOutOfRange { magnitude: u16, max: u16 },
-    /// A zero run exceeds the number of coefficients in one component.
+    /// A zero run to encode exceeds the number of coefficients in one tile.
     ZeroRunTooLong,
 }
 
 impl core::fmt::Display for SrlError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::MissingTerminator => write!(f, "srl stream is missing its trailing zero byte"),
-            Self::Truncated => write!(f, "srl stream is truncated"),
             Self::InvalidBitCount(bits) => write!(f, "invalid srl magnitude bit count {bits}"),
             Self::MagnitudeOutOfRange { magnitude, max } => {
                 write!(f, "srl magnitude {magnitude} exceeds maximum {max}")
@@ -52,18 +49,16 @@ pub struct SrlDecoder<'a> {
 }
 
 impl<'a> SrlDecoder<'a> {
-    /// Create a decoder for an SRL stream, excluding its required trailing zero byte.
+    /// Create a decoder over an SRL stream.
+    ///
+    /// Every byte is payload, and the stream is treated as zero-padded past its end — see
+    /// [`BitReader::read_bit`]. MS-RDPEGFX 2.2.4.2.1.5.4 gives the per-component SRL stream an
+    /// explicit `*SrlLen`, and nothing in 3.1.8.1.5 reserves the final byte. Requiring a zero
+    /// terminator rejected the streams Windows actually sends, and when the last byte did happen
+    /// to be zero it silently dropped those eight bits from the tail.
     pub fn new(data: &'a [u8]) -> Result<Self, SrlError> {
-        let Some((&terminator, payload)) = data.split_last() else {
-            return Err(SrlError::MissingTerminator);
-        };
-
-        if terminator != 0 {
-            return Err(SrlError::MissingTerminator);
-        }
-
         Ok(Self {
-            reader: BitReader::new(payload),
+            reader: BitReader::new(data),
             kp: INITIAL_KP,
             zero_run_remaining: 0,
             nonzero_pending: false,
@@ -84,50 +79,73 @@ impl<'a> SrlDecoder<'a> {
                 continue;
             }
 
+            // Not even one bit left to start a codeword: the stream is over and every
+            // remaining coefficient is zero.
+            //
+            // This check must come before `nonzero_pending`. Padding only completes a
+            // codeword that has *already started* (see `BitReader::read_bit`); if a zero
+            // run's terminating bit lands on the very last bit, the "non-zero value" that
+            // follows has no bits at all, and decoding it purely from padding invents a
+            // maximum-magnitude coefficient out of nothing.
+            if self.reader.is_exhausted() {
+                output.resize(num_values, 0);
+                self.nonzero_pending = false;
+                break;
+            }
+
             if self.nonzero_pending {
                 output.push(self.decode_nonzero(num_bits)?);
                 self.nonzero_pending = false;
                 continue;
             }
 
-            self.zero_run_remaining = self.decode_zero_run()?;
-            self.nonzero_pending = true;
+            self.read_zero_run_event();
         }
 
         Ok(output)
     }
 
-    fn decode_zero_run(&mut self) -> Result<usize, SrlError> {
-        let mut zeros = 0usize;
+    /// Read one zero-run event: either "at least `1 << k` more zeros" or "`tail` zeros, then a value".
+    ///
+    /// A run is consumed one event at a time rather than summed up front. Its total length is
+    /// bounded only by the coefficients the caller asks for, so a run that outlives the current
+    /// band simply carries over, and one that outlives the tile is dropped with the decoder.
+    /// Summing the whole run eagerly needed a cap to stay finite, and that cap rejected the long
+    /// all-zero runs Windows sends for mostly static tiles — the discarded tiles are the blocks
+    /// that never refresh. FreeRDP's `progressive_rfx_srl_read` applies no bound either.
+    fn read_zero_run_event(&mut self) {
+        let k = self.kp / 8;
 
-        loop {
-            let k = self.kp / 8;
-
-            if self.reader.read_bit()? {
-                let tail = usize::try_from(self.reader.read_bits(k)?).map_err(|_| SrlError::ZeroRunTooLong)?;
-                self.kp = self.kp.saturating_sub(6);
-
-                let zeros = zeros.checked_add(tail).ok_or(SrlError::ZeroRunTooLong)?;
-                return (zeros <= MAX_ZERO_RUN).then_some(zeros).ok_or(SrlError::ZeroRunTooLong);
-            }
-
-            let chunk = 1usize << k;
-            zeros = zeros.checked_add(chunk).ok_or(SrlError::ZeroRunTooLong)?;
-            if zeros > MAX_ZERO_RUN {
-                return Err(SrlError::ZeroRunTooLong);
-            }
-
+        if self.reader.read_bit() {
+            // A `1` bit: `tail` more zeros, then a non-zero value.
+            // `k` is at most 10 (KP caps at 80), so the tail always fits in a u16.
+            let tail = u16::try_from(self.reader.read_bits(k)).unwrap_or(u16::MAX);
+            self.zero_run_remaining = usize::from(tail);
+            self.kp = self.kp.saturating_sub(6);
+            self.nonzero_pending = true;
+        } else {
+            // A `0` bit: at least `1 << k` more zeros, so the run continues. `k` is at
+            // most 10, hence the chunk is at least 1 and the loop always makes progress.
+            self.zero_run_remaining = 1usize << k;
             self.kp = self.kp.saturating_add(4).min(MAX_KP);
         }
     }
 
+    /// Bits read past the end of the stream, i.e. how much of the tail was assumed to be zero.
+    ///
+    /// A handful at the very end is normal (the encoder stops once the rest of a band is zero).
+    /// A large count means the decoder and the encoder disagree about the stream layout.
+    pub fn overread_bits(&self) -> u32 {
+        self.reader.overread_bits
+    }
+
     fn decode_nonzero(&mut self, num_bits: u8) -> Result<i16, SrlError> {
         let maximum = max_magnitude(num_bits)?;
-        let sign = self.reader.read_bit()?;
+        let sign = self.reader.read_bit();
         let mut zero_count = 0u16;
 
         while zero_count + 1 < maximum {
-            if self.reader.read_bit()? {
+            if self.reader.read_bit() {
                 break;
             }
 
@@ -265,6 +283,7 @@ struct BitReader<'a> {
     data: &'a [u8],
     byte_idx: usize,
     bit_idx: u8,
+    overread_bits: u32,
 }
 
 impl<'a> BitReader<'a> {
@@ -273,12 +292,27 @@ impl<'a> BitReader<'a> {
             data,
             byte_idx: 0,
             bit_idx: 0,
+            overread_bits: 0,
         }
     }
 
-    fn read_bit(&mut self) -> Result<bool, SrlError> {
+    /// Whether every bit of the stream has been consumed.
+    fn is_exhausted(&self) -> bool {
+        self.byte_idx >= self.data.len()
+    }
+
+    /// Read one bit, treating the stream as zero-padded past its end.
+    ///
+    /// An SRL stream is bounded by the number of coefficients the caller asks for, not by its
+    /// own length: once the remaining coefficients in a band are all zero the encoder simply
+    /// stops emitting bits. Windows relies on this, and so does the reference decoder — FreeRDP's
+    /// `BitStream_Fetch` leaves its prefetch register zeroed when the offset passes capacity.
+    /// Erroring out instead discarded the whole tile, which is what surfaced as blocks that
+    /// never refresh. Over-reads are counted so a desync stays visible in the logs.
+    fn read_bit(&mut self) -> bool {
         let Some(&byte) = self.data.get(self.byte_idx) else {
-            return Err(SrlError::Truncated);
+            self.overread_bits = self.overread_bits.saturating_add(1);
+            return false;
         };
 
         let bit = (byte >> (7 - self.bit_idx)) & 1 != 0;
@@ -288,15 +322,15 @@ impl<'a> BitReader<'a> {
             self.byte_idx += 1;
         }
 
-        Ok(bit)
+        bit
     }
 
-    fn read_bits(&mut self, count: u8) -> Result<u32, SrlError> {
+    fn read_bits(&mut self, count: u8) -> u32 {
         let mut value = 0u32;
         for _ in 0..count {
-            value = (value << 1) | u32::from(self.read_bit()?);
+            value = (value << 1) | u32::from(self.read_bit());
         }
-        Ok(value)
+        value
     }
 }
 
@@ -368,13 +402,35 @@ mod tests {
     }
 
     #[test]
-    fn rejects_truncated_stream() {
-        assert_eq!(decode_srl(&[0x80, 0x00], 1, 4), Err(SrlError::Truncated));
+    fn pads_an_exhausted_stream_with_zeros() {
+        // The encoder stops emitting bits once the rest of a band is zero, so reaching
+        // the end of the stream must continue as zeros rather than reject the whole tile.
+        assert_eq!(decode_srl(&[0x80, 0x00], 1, 4), Ok(vec![15]));
     }
 
     #[test]
-    fn rejects_missing_terminator() {
-        assert_eq!(decode_srl(&[0x84], 1, 4), Err(SrlError::MissingTerminator));
+    fn counts_bits_read_past_the_end() {
+        // A handful of over-read bits is normal; a count that runs away means the decoder
+        // and the encoder disagree about the stream layout, which has to be visible in logs.
+        let mut decoder = SrlDecoder::new(&[0x80]).unwrap();
+        let _ = decoder.decode(1, 4);
+        assert!(decoder.overread_bits() > 0, "zero-padded reads must be counted");
+    }
+
+    #[test]
+    fn treats_the_final_byte_as_payload() {
+        // The final byte used to be treated as a mandatory zero terminator and cut off:
+        // a non-zero one rejected the whole stream (which is exactly what Windows sends),
+        // and a zero one wasted its eight bits, surfacing later as Truncated.
+        let decoded = decode_srl(&[0x84], 1, 4);
+        assert!(
+            decoded.is_ok(),
+            "a stream whose last byte is non-zero must decode, got {decoded:?}"
+        );
+        // A component with `*SrlLen = 0` is common: it means no refinement this pass, so
+        // the coefficients stay zero. The old implementation reported MissingTerminator
+        // for an empty stream and the whole tile update was dropped.
+        assert_eq!(decode_srl(&[], 3, 4), Ok(vec![0, 0, 0]));
     }
 
     #[test]
@@ -386,8 +442,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_run_longer_than_component() {
+    fn encoder_rejects_zero_run_longer_than_a_tile() {
         assert_eq!(encode_srl(&vec![0; MAX_ZERO_RUN + 1], 1), Err(SrlError::ZeroRunTooLong));
+    }
+
+    #[test]
+    fn decodes_a_zero_run_longer_than_the_encoder_would_emit() {
+        // All-zero bits are a chain of "at least `1 << k` more zeros" events, and `k` grows
+        // with KP up to 1024, so the sum far exceeds one tile's worth of coefficients. The
+        // decoder used to sum the whole run up front and cap it at 4096, so the very long
+        // zero runs a static region produces were judged corrupt and the whole tile update
+        // was dropped — the blocks that never refresh. The reference implementation consumes
+        // the run event by event with no bound at all: however long it runs it is only zeros,
+        // and the excess is dropped along with the decoder.
+        assert_eq!(decode_srl(&[0x00; 32], 8, 4), Ok(vec![0; 8]));
+        assert_eq!(decode_srl(&[0x00; 32], MAX_ZERO_RUN, 4), Ok(vec![0; MAX_ZERO_RUN]));
     }
 
     #[test]
