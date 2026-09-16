@@ -1769,25 +1769,29 @@ mod tests {
     /// Same-size `ResetGraphics` must still be observable: it destroys every surface, so a
     /// consumer has to re-blit even when the output dimensions did not change.
     #[test]
-    fn take_reset_graphics_reports_same_size_resets() {
+    fn take_output_reset_reports_same_size_resets() {
         let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
-        assert!(client.take_reset_graphics().is_none());
+        assert!(client.take_output_reset().is_none());
 
-        let _ = client.handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
-            width: 800,
-            height: 600,
-            monitors: vec![],
-        }));
-        assert_eq!(client.take_reset_graphics(), Some((800, 600)));
-        assert!(client.take_reset_graphics().is_none(), "flag is one-shot");
+        client
+            .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
+                width: 800,
+                height: 600,
+                monitors: vec![],
+            }))
+            .expect("valid reset dimensions");
+        assert_eq!(client.take_output_reset(), Some((800, 600)));
+        assert!(client.take_output_reset().is_none(), "flag is one-shot");
 
-        let _ = client.handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
-            width: 800,
-            height: 600,
-            monitors: vec![],
-        }));
+        client
+            .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
+                width: 800,
+                height: 600,
+                monitors: vec![],
+            }))
+            .expect("valid reset dimensions");
         assert_eq!(
-            client.take_reset_graphics(),
+            client.take_output_reset(),
             Some((800, 600)),
             "same-size ResetGraphics must still signal a full client re-blit"
         );

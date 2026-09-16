@@ -82,6 +82,7 @@ ironrdp-vmconnect = { path = "../ironrdp-vmconnect", version = "0.1", optional =
 [dev-dependencies]
 ironrdp-blocking = { path = "../ironrdp-blocking", version = "0.10" }
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.7" }
+ironrdp-egfx = { path = "../ironrdp-egfx", version = "0.3" }
 anyhow = "1"
 async-trait = "0.1"
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -108,6 +109,11 @@ required-features = ["session", "connector", "graphics"]
 name = "server"
 doc-scrape-examples = true
 required-features = ["cliprdr", "connector", "rdpsnd", "server"]
+
+[[example]]
+name = "rdp_stress"
+doc-scrape-examples = false
+required-features = ["session", "connector", "graphics", "dvc", "displaycontrol"]
 
 [lints]
 workspace = true
