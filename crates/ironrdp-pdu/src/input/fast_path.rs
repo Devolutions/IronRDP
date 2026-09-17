@@ -1,13 +1,16 @@
+use std::borrow::Cow;
+
 use bit_field::BitField as _;
 use bitflags::bitflags;
 use ironrdp_core::{
-    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
-    ensure_size, invalid_field_err, other_err,
+    Decode, DecodeResult, Encode, EncodeResult, IntoOwned, ReadCursor, WriteCursor, cast_length,
+    ensure_fixed_part_size, ensure_size, invalid_field_err, other_err,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 
 use crate::fast_path::EncryptionFlags;
+use crate::impl_pdu_borrowing;
 use crate::input::{MousePdu, MouseRelPdu, MouseXPdu};
 use crate::per;
 
@@ -264,32 +267,47 @@ bitflags! {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FastPathInput(
+pub struct FastPathInput<'a>(
     /// INVARIANT: the input event count is within `1..=FastPathInput::MAX_EVENTS`.
-    Vec<FastPathInputEvent>,
+    Cow<'a, [FastPathInputEvent]>,
 );
+
+impl_pdu_borrowing!(FastPathInput<'_>, OwnedFastPathInput);
+
+impl IntoOwned for FastPathInput<'_> {
+    type Owned = OwnedFastPathInput;
+
+    fn into_owned(self) -> Self::Owned {
+        // The invariant on the event count is carried over unchanged.
+        FastPathInput(Cow::Owned(self.0.into_owned()))
+    }
+}
 
 // Hand-rolled because `derive(Arbitrary)` cannot encode the 1..=255 length
 // invariant. Without this constraint, encode()/size() panic via u8::try_from
 // on out-of-range lengths under fuzz.
 #[cfg(feature = "arbitrary")]
-impl<'a> arbitrary::Arbitrary<'a> for FastPathInput {
+impl<'a> arbitrary::Arbitrary<'a> for FastPathInput<'a> {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         let len = u.int_in_range::<usize>(1..=Self::MAX_EVENTS)?;
         let mut events = Vec::with_capacity(len);
         for _ in 0..len {
             events.push(FastPathInputEvent::arbitrary(u)?);
         }
-        Ok(Self(events))
+        Ok(Self(Cow::Owned(events)))
     }
 }
 
-impl FastPathInput {
+impl<'a> FastPathInput<'a> {
     const NAME: &'static str = "FastPathInput";
 
     pub const MAX_EVENTS: usize = 255;
 
-    pub fn new(input_events: Vec<FastPathInputEvent>) -> DecodeResult<Self> {
+    pub fn new<T>(input_events: T) -> DecodeResult<Self>
+    where
+        T: Into<Cow<'a, [FastPathInputEvent]>>,
+    {
+        let input_events = input_events.into();
         // Ensure the invariant on `input_events.len()` is respected.
         if !(1..=Self::MAX_EVENTS).contains(&input_events.len()) {
             return Err(invalid_field_err!("nEvents", "invalid number of input events"));
@@ -300,7 +318,7 @@ impl FastPathInput {
 
     pub fn single(input_event: FastPathInputEvent) -> Self {
         // A single element upholds the invariant.
-        Self(vec![input_event])
+        Self(Cow::Owned(vec![input_event]))
     }
 
     pub fn input_events(&self) -> &[FastPathInputEvent] {
@@ -308,7 +326,7 @@ impl FastPathInput {
     }
 }
 
-impl Encode for FastPathInput {
+impl Encode for FastPathInput<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -348,7 +366,10 @@ impl Encode for FastPathInput {
     }
 }
 
-impl<'de> Decode<'de> for FastPathInput {
+// Unlike other borrowing PDUs, the lifetime is free here instead of being tied to `'de`:
+// each event is decoded into an owned value, so decoding never borrows from the source
+// buffer and always yields `Cow::Owned`. Borrowing is only useful on the encoding side.
+impl<'de> Decode<'de> for FastPathInput<'_> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let header = FastPathInputHeader::decode(src)?;
         let events = core::iter::repeat_with(|| FastPathInputEvent::decode(src))
