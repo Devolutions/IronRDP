@@ -1,0 +1,29 @@
+[package]
+name = "ironrdp-rfxbench"
+version = "0.0.0"
+description = "RemoteFX (RFX) decode benchmarks and fixtures"
+edition.workspace = true
+publish = false
+
+# rlib for the criterion bench and unit tests, cdylib so the same fixtures and
+# decode driver can be measured on wasm32 (see wasm/run.mjs).
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+ironrdp-core.path = "../ironrdp-core"
+ironrdp-graphics.path = "../ironrdp-graphics"
+ironrdp-pdu = { path = "../ironrdp-pdu", features = ["std"] }
+ironrdp-session.path = "../ironrdp-session"
+
+[dev-dependencies]
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "rfx_decode"
+path = "benches/rfx_decode.rs"
+harness = false
+
+[lints]
+workspace = true
