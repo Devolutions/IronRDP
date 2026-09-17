@@ -16,7 +16,7 @@ Keep repository-local agent skills correct, focused, and inexpensive to load.
 3. Run local structural validation for every relevant skill:
 
    ```powershell
-   pwsh <this-skill-directory>\scripts\Test-TesslSkill.ps1 -SkillDirectory <skill-directory>
+   pwsh <this-skill-directory>/scripts/Test-TesslSkill.ps1 -SkillDirectory <skill-directory>
    ```
 
    The helper stages the skill in a temporary directory, creates Tessl's required local metadata there, runs `tessl skill lint <temporary-skill-directory>`, and removes the staging directory.
