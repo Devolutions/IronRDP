@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use ironrdp_core::{ReadCursor, decode_cursor, encode_vec};
 use ironrdp_pdu::input::MousePdu;
-use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
+use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent, OwnedFastPathInput};
 use ironrdp_pdu::input::mouse::PointerFlags;
 
 const FASTPATH_INPUT_MESSAGE: [u8; 44] = [
@@ -11,7 +11,7 @@ const FASTPATH_INPUT_MESSAGE: [u8; 44] = [
     0x0, 0x28, 0x4,
 ];
 
-static FASTPATH_INPUT: LazyLock<FastPathInput> = LazyLock::new(|| {
+static FASTPATH_INPUT: LazyLock<OwnedFastPathInput> = LazyLock::new(|| {
     FastPathInput::new(vec![
         FastPathInputEvent::MouseEvent(MousePdu {
             flags: PointerFlags::DOWN | PointerFlags::LEFT_BUTTON,

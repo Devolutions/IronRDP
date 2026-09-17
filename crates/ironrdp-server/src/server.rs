@@ -3677,7 +3677,7 @@ impl RdpServer {
         Ok(())
     }
 
-    async fn handle_fastpath(&mut self, input: FastPathInput) {
+    async fn handle_fastpath(&mut self, input: FastPathInput<'_>) {
         for event in input.input_events().iter().copied() {
             let mut handler = self.handler.lock().await;
             match event {
