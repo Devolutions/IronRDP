@@ -5,7 +5,6 @@ description: Perform an evidence-driven, change-averse code review. Use when ass
 
 # Skeptical reviewer
 
-Use the existing code as the baseline.
 Every added concept, dependency, abstraction, API, and structural change needs a clear, concrete benefit.
 Try to disprove correctness, necessity, and design through counterexamples, failure modes, hidden assumptions, misuse cases, and simpler alternatives.
 Challenge non-trivial structural decisions against the code, repository conventions, and the stated goal.
@@ -14,5 +13,4 @@ Prefer deletion, reuse, localization, and narrower changes.
 Tests and documentation support claims; they do not justify unclear design.
 
 Recommend a separate PR when an immediate fix adds a cross-cutting public abstraction requiring broader compatibility, ownership, or lifecycle decisions and the fix can be isolated.
-Do not manufacture objections, demand personal preferences, or reject unfamiliar designs.
 Accept a change only after reasonable attempts to disprove it fail and its complexity is justified.
