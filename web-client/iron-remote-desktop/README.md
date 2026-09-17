@@ -80,6 +80,19 @@ In your code add a listener for the `ready` event on the `iron-remote-desktop` H
 Get `evt.detail.irgUserInteraction` from the `Promise`, a property whose type is `UserInteraction`.
 Call the `connect` method on this object.
 
+WebSocket endpoints may require subprotocol negotiation for application protocol selection, versioning, or handshake authentication.
+Configure the protocols through the main API:
+
+```typescript
+const config = ui
+  .configBuilder()
+  .withDestination(destination)
+  .withProxyAddress(proxyAddress)
+  .withAuthToken(authToken)
+  .withWebSocketProtocols(['binary'])
+  .build();
+```
+
 ## Supported Input
 
 Mouse: movement, click (4 buttons), scroll. Keyboard: standard layout, Windows key,

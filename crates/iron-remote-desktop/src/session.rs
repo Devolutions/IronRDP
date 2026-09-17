@@ -28,6 +28,9 @@ pub trait SessionBuilder {
     fn proxy_address(&self, address: String) -> Self;
 
     #[must_use]
+    fn websocket_protocols(&self, protocols: js_sys::Array) -> Self;
+
+    #[must_use]
     fn auth_token(&self, token: String) -> Self;
 
     #[must_use]

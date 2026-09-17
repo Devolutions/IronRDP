@@ -29,6 +29,9 @@ class MockSessionBuilder {
     proxyAddress(_address: string): this {
         return this;
     }
+    webSocketProtocols(_protocols: string[]): this {
+        return this;
+    }
     destination(_dest: string): this {
         return this;
     }
@@ -137,6 +140,7 @@ describe('enableFileTransfer integration', () => {
 
             await service.connect({
                 proxyAddress: 'wss://test',
+                webSocketProtocols: [],
                 destination: 'test:3389',
                 serverDomain: '',
                 password: 'pass',
@@ -157,6 +161,7 @@ describe('enableFileTransfer integration', () => {
 
             await service.connect({
                 proxyAddress: 'wss://test',
+                webSocketProtocols: [],
                 destination: 'test:3389',
                 serverDomain: '',
                 password: 'pass',
@@ -175,6 +180,7 @@ describe('enableFileTransfer integration', () => {
         it('should not register any file transfer extensions', async () => {
             await service.connect({
                 proxyAddress: 'wss://test',
+                webSocketProtocols: [],
                 destination: 'test:3389',
                 serverDomain: '',
                 password: 'pass',
