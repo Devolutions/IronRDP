@@ -16,7 +16,7 @@ You are responsible for the full lifecycle of a task: understanding intent, plan
    - Prefer root-cause fixes over local workarounds.
 
 3. **Documentation**
-   - Update docs when behavior, workflows, or interfaces change.
+   - Update hand-maintained docs when behavior, workflows, or interfaces change.
    - Keep crate docs and examples aligned with implementation.
    - Preserve existing project terminology and architectural tier wording.
 
@@ -52,13 +52,17 @@ You are expected to read and follow these sources of truth when relevant:
 - **Typo checker config:** `typos.toml`
 - **CI behavior:** `.github/workflows/ci.yml`
 - **Changelog / release config:** `cliff.toml`, `release-plz.toml`
-- **Crate-level specifics:** `crates/*/README.md` and `crates/*/CHANGELOG.md`
+- **Crate-level specifics:** `crates/*/README.md`
 - **FFI details:** `ffi/README.md`
 - **Web client details:** `web-client/README.md`
 
+Do not create, edit, or update `crates/*/CHANGELOG.md` during feature or fix work.
+Crate changelogs are generated and updated exclusively in release-plz release PRs.
+Crate changelogs are not normal hand-maintained documentation.
+
 ### Microsoft Open Specifications (Agent Skill)
 
-For protocol-level work, the [windows-protocols](hhttps://skills.sh/awakecoding/openspecs/windows-protocols) agent skill provides a local markdown corpus of Microsoft Open Specifications (`MS-RDP*` and related docs).
+For protocol-level work, the [windows-protocols](https://skills.sh/awakecoding/openspecs/windows-protocols) agent skill provides a local markdown corpus of Microsoft Open Specifications (`MS-RDP*` and related docs).
 When referencing these specs, check if the skill is installed and suggest installing it if not:
 
 ```
