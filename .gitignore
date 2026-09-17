@@ -1,6 +1,7 @@
 # Build artifacts
 /target
 /dependencies
+/bench-data
 # Local cargo root
 /.cargo/local_root
 
