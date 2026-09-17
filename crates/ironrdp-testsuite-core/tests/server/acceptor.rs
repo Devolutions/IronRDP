@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use ironrdp_acceptor::Acceptor;
+use ironrdp_acceptor::{Acceptor, MultitransportSecurityRng};
 use ironrdp_connector::{DesktopSize, Sequence as _, Written, encode_x224_packet};
 use ironrdp_core::{WriteBuf, decode, encode_vec};
 use ironrdp_pdu::gcc::{ClientMessageChannelData, MultiTransportChannelData, MultiTransportFlags};
@@ -422,6 +422,50 @@ fn multitransport_offered_and_client_reciprocates() {
     let confirm_active = encode_send_data_request(user_channel_id, _io_channel_id, &CLIENT_DEMAND_ACTIVE_PDU_BUFFER);
     acceptor.step(&confirm_active, None, &mut WriteBuf::new()).unwrap();
     assert_eq!(acceptor.state().name(), "ConnectionFinalization");
+}
+
+/// A fixed `MultitransportSecurityRng` for deterministic assertions.
+struct FixedMultitransportSecurityRng {
+    cookie: [u8; 16],
+    request_id: u32,
+}
+
+impl MultitransportSecurityRng for FixedMultitransportSecurityRng {
+    fn fill_security_cookie(&mut self, cookie: &mut [u8; 16]) {
+        *cookie = self.cookie;
+    }
+
+    fn next_request_id(&mut self) -> u32 {
+        self.request_id
+    }
+}
+
+/// The security cookie and request ID in the Initiate Multitransport Request
+/// come from the injected `MultitransportSecurityRng`, not from a hidden
+/// global RNG read inside `step()`: the acceptor is deterministic when its
+/// randomness is supplied rather than sourced internally.
+#[test]
+fn multitransport_request_uses_the_injected_rng() {
+    let mut acceptor = multitransport_acceptor(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+    acceptor.set_multitransport_security_rng(Box::new(FixedMultitransportSecurityRng {
+        cookie: [0xAB; 16],
+        request_id: 0x1234_5678,
+    }));
+
+    let client_blocks =
+        client_gcc_with_message_channel_and_multitransport(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+    drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
+
+    // LicensingExchange (sends license) -> MultitransportBootstrapping.
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    // MultitransportBootstrapping: sends the request using the injected RNG.
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+
+    let sent_request = acceptor
+        .multitransport_request()
+        .expect("request recorded after MultitransportBootstrapping");
+    assert_eq!(sent_request.security_cookie, [0xAB; 16]);
+    assert_eq!(sent_request.request_id, 0x1234_5678);
 }
 
 /// The message channel also carries Auto-Detect Response and Heartbeat PDUs

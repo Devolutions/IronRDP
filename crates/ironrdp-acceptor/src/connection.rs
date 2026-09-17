@@ -59,6 +59,38 @@ pub struct Acceptor {
     /// The Initiate Multitransport Request sent to the client, once
     /// `MultitransportBootstrapping` has run. See `multitransport_request()`.
     sent_multitransport_request: Option<rdp::multitransport::MultitransportRequestPdu>,
+    /// Source of randomness for the Initiate Multitransport Request's security
+    /// cookie and request ID. See `set_multitransport_security_rng()`.
+    multitransport_security_rng: Box<dyn MultitransportSecurityRng>,
+}
+
+/// Source of randomness for the security cookie and request ID the acceptor
+/// sends in an Initiate Multitransport Request PDU (MS-RDPBCGR 2.2.15.1).
+///
+/// [`Acceptor::step`] is otherwise a pure function of its inputs and stored
+/// state, which is what makes the sans-I/O sequence deterministic and
+/// testable by feeding it bytes; reading a global RNG from inside `step`
+/// would be a hidden side channel breaking that. Injected instead via
+/// [`Acceptor::set_multitransport_security_rng`], defaulting to an OS-backed
+/// implementation.
+pub trait MultitransportSecurityRng: Send {
+    /// Fill `cookie` with random bytes for the security cookie field.
+    fn fill_security_cookie(&mut self, cookie: &mut [u8; 16]);
+    /// Produce the request ID.
+    fn next_request_id(&mut self) -> u32;
+}
+
+/// Default [`MultitransportSecurityRng`], backed by the OS RNG via `rand::rng()`.
+struct OsMultitransportSecurityRng;
+
+impl MultitransportSecurityRng for OsMultitransportSecurityRng {
+    fn fill_security_cookie(&mut self, cookie: &mut [u8; 16]) {
+        rand::rng().fill_bytes(cookie);
+    }
+
+    fn next_request_id(&mut self) -> u32 {
+        rand::rng().next_u32()
+    }
 }
 
 /// Minimum and maximum desktop dimension honored from a client.
@@ -189,7 +221,15 @@ impl Acceptor {
             honor_client_desktop_size: None,
             offer_multitransport: None,
             sent_multitransport_request: None,
+            multitransport_security_rng: Box::new(OsMultitransportSecurityRng),
         }
+    }
+
+    /// Overrides the source of randomness used for the security cookie and
+    /// request ID in an Initiate Multitransport Request PDU. Defaults to an
+    /// OS-backed RNG; intended for tests that need deterministic output.
+    pub fn set_multitransport_security_rng(&mut self, rng: Box<dyn MultitransportSecurityRng>) {
+        self.multitransport_security_rng = rng;
     }
 
     /// Adopt the desktop size requested by the client in its Client Core Data
@@ -397,6 +437,7 @@ impl Acceptor {
             honor_client_desktop_size: consumed.honor_client_desktop_size,
             offer_multitransport: consumed.offer_multitransport,
             sent_multitransport_request: consumed.sent_multitransport_request,
+            multitransport_security_rng: consumed.multitransport_security_rng,
         })
     }
 
@@ -1084,9 +1125,9 @@ impl Sequence for Acceptor {
 
                 if let Some(message_channel_id) = message_channel_id {
                     let mut security_cookie = [0u8; 16];
-                    let mut rng = rand::rng();
-                    rng.fill_bytes(&mut security_cookie);
-                    let request_id = rng.next_u32();
+                    self.multitransport_security_rng
+                        .fill_security_cookie(&mut security_cookie);
+                    let request_id = self.multitransport_security_rng.next_request_id();
 
                     let request = rdp::multitransport::MultitransportRequestPdu {
                         security_header: rdp::headers::BasicSecurityHeader {
