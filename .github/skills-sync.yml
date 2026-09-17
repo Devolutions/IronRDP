@@ -10,4 +10,5 @@ repositories:
       - markdown-writer
       - prose-verifier
       - prose-writer
+      - skeptical-reviewer
       - tessl-skill-linting
