@@ -303,10 +303,7 @@ impl<'a> FastPathInput<'a> {
 
     pub const MAX_EVENTS: usize = 255;
 
-    pub fn new<T>(input_events: T) -> DecodeResult<Self>
-    where
-        T: Into<Cow<'a, [FastPathInputEvent]>>,
-    {
+    pub fn new(input_events: impl Into<Cow<'a, [FastPathInputEvent]>>) -> DecodeResult<Self> {
         let input_events = input_events.into();
         // Ensure the invariant on `input_events.len()` is respected.
         if !(1..=Self::MAX_EVENTS).contains(&input_events.len()) {
