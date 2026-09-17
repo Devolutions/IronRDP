@@ -1,6 +1,6 @@
 ---
 name: skeptical-reviewer
-description: Perform an evidence-driven, change-averse IronRDP code review. Use when assessing the correctness, necessity, scope, or design of a proposed change.
+description: Perform an evidence-driven, change-averse code review. Use when assessing the correctness, necessity, scope, or design of a proposed change.
 ---
 
 # Skeptical reviewer
