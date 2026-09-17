@@ -13,11 +13,7 @@ qoiz = ["ironrdp/qoiz"]
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
-ironrdp = { path = "../ironrdp", features = [
-    "server",
-    "pdu",
-    "__bench",
-] }
+ironrdp = { path = "../ironrdp", features = ["server", "pdu", "__bench", "connector", "graphics", "session", "svc"], version = "0.17.0" }
 ironrdp-capture-replay.path = "../ironrdp-capture-replay"
 pico-args = "0.5"
 sha2 = "0.10"
