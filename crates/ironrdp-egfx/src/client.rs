@@ -738,13 +738,7 @@ impl GraphicsPipelineClient {
 
         debug!(
             width,
-<<<<<<< HEAD
-            height,
-            surface_count,
-            "ResetGraphics: surfaces destroyed; tile refs dropped; progressive CONTEXT retained"
-=======
             height, surface_count, "ResetGraphics: surfaces destroyed; tile refs dropped; progressive CONTEXT retained"
->>>>>>> fddc02f (chore: tighten review-facing comments and drop log-only progressive API)
         );
 
         if output_size.is_some() {
