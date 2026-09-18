@@ -573,7 +573,7 @@ pub(crate) enum RdpInputEvent {
     },
     /// Server resized the Graphics Output Buffer (MS-RDPEGFX 2.2.2.14). This is how a modern
     /// Windows host answers a Display Control request: no Deactivation-Reactivation Sequence,
-    /// so it is the only chance we get to follow the new desktop size.
+    /// so the canvas must follow the new desktop size here.
     GraphicsReset {
         width: u32,
         height: u32,
@@ -1604,7 +1604,7 @@ fn build_config(
         pointer_software_rendering: false,
         multitransport_flags: None,
         // Prefer MS-RDPEGFX when the server supports it — classic bitmap updates
-        // paint dirty rectangles and look "blocky" on full refreshes.
+        // repaint only dirty rectangles and look coarse on full refreshes.
         support_dyn_vc_gfx_protocol: true,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,
@@ -1755,7 +1755,7 @@ async fn connect(
 
     // Advertise SUPPORT_DYN_VC_GFX in Config, and actually register the EGFX
     // DVC here. Without GraphicsPipelineClient the server stays on classic
-    // dirty-rectangle bitmaps (blocky full-screen refreshes).
+    // dirty-rectangle bitmaps (coarse full-screen refreshes).
     //
     // No H.264 decoder in WASM yet — GraphicsPipelineClient filters AVC caps
     // and falls back to V8 / ClearCodec / RFX Progressive.

@@ -738,9 +738,13 @@ impl GraphicsPipelineClient {
 
         debug!(
             width,
+<<<<<<< HEAD
             height,
             surface_count,
             "ResetGraphics: surfaces destroyed; tile refs dropped; progressive CONTEXT retained"
+=======
+            height, surface_count, "ResetGraphics: surfaces destroyed; tile refs dropped; progressive CONTEXT retained"
+>>>>>>> fddc02f (chore: tighten review-facing comments and drop log-only progressive API)
         );
 
         if output_size.is_some() {
@@ -780,19 +784,15 @@ impl GraphicsPipelineClient {
         // MS-RDPEGFX: deleting a surface drops that surface's progressive tile
         // references. A following difference tile before a new base tile will
         // correctly fail with MissingTileReference.
-        let cleared_refs = self.progressive_decoder.reference_count_for_surface(surface_id);
         self.progressive_decoder.delete_surface(surface_id);
         if self.surfaces.remove(&surface_id).is_some() {
             self.compositor.delete_surface(surface_id);
-            debug!(
-                surface_id,
-                cleared_refs, "DeleteSurface cleared progressive tile references"
-            );
+            debug!(surface_id, "DeleteSurface cleared progressive tile references");
             self.handler.on_surface_deleted(surface_id);
         } else {
             warn!(
                 surface_id,
-                cleared_refs, "DeleteSurface for unknown surface (progressive refs cleared)"
+                "DeleteSurface for unknown surface (progressive refs cleared)"
             );
         }
     }
@@ -2345,8 +2345,7 @@ mod tests {
 
         // MS-RDPEGFX 2.2.2.14 / 3.3.5.14: ResetGraphics destroys every surface.
         // Tile coefficient buffers belong to those surfaces. Reusing surface id 0
-        // after a Display Control resize must not difference against the old
-        // desktop — that is the shredded frame native RDP does not produce.
+        // after a Display Control resize must not difference against the old desktop.
         assert_eq!(client.progressive_decoder.total_reference_count(), 0);
 
         client

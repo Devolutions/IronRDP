@@ -53,9 +53,9 @@ impl<'a> SrlDecoder<'a> {
     ///
     /// Every byte is payload, and the stream is treated as zero-padded past its end — see
     /// [`BitReader::read_bit`]. MS-RDPEGFX 2.2.4.2.1.5.4 gives the per-component SRL stream an
-    /// explicit `*SrlLen`, and nothing in 3.1.8.1.5 reserves the final byte. Requiring a zero
-    /// terminator rejected the streams Windows actually sends, and when the last byte did happen
-    /// to be zero it silently dropped those eight bits from the tail.
+    /// explicit `*SrlLen`, and nothing in 3.1.8.1.5 reserves the final byte as a terminator, so
+    /// the last byte carries coefficients like any other. An empty stream is valid and means no
+    /// refinement in this pass.
     pub fn new(data: &'a [u8]) -> Result<Self, SrlError> {
         Ok(Self {
             reader: BitReader::new(data),
@@ -110,9 +110,9 @@ impl<'a> SrlDecoder<'a> {
     /// A run is consumed one event at a time rather than summed up front. Its total length is
     /// bounded only by the coefficients the caller asks for, so a run that outlives the current
     /// band simply carries over, and one that outlives the tile is dropped with the decoder.
-    /// Summing the whole run eagerly needed a cap to stay finite, and that cap rejected the long
-    /// all-zero runs Windows sends for mostly static tiles — the discarded tiles are the blocks
-    /// that never refresh. FreeRDP's `progressive_rfx_srl_read` applies no bound either.
+    /// This is what lets the long all-zero runs Windows sends for mostly static tiles decode
+    /// without a bound on the run itself; FreeRDP's `progressive_rfx_srl_read` applies none
+    /// either.
     fn read_zero_run_event(&mut self) {
         let k = self.kp / 8;
 
@@ -307,8 +307,8 @@ impl<'a> BitReader<'a> {
     /// own length: once the remaining coefficients in a band are all zero the encoder simply
     /// stops emitting bits. Windows relies on this, and so does the reference decoder — FreeRDP's
     /// `BitStream_Fetch` leaves its prefetch register zeroed when the offset passes capacity.
-    /// Erroring out instead discarded the whole tile, which is what surfaced as blocks that
-    /// never refresh. Over-reads are counted so a desync stays visible in the logs.
+    /// Treating the end of the stream as an error would discard the tile the caller is still
+    /// decoding. Over-reads are counted so a desync stays visible in the logs.
     fn read_bit(&mut self) -> bool {
         let Some(&byte) = self.data.get(self.byte_idx) else {
             self.overread_bits = self.overread_bits.saturating_add(1);
@@ -448,13 +448,11 @@ mod tests {
 
     #[test]
     fn decodes_a_zero_run_longer_than_the_encoder_would_emit() {
-        // All-zero bits are a chain of "at least `1 << k` more zeros" events, and `k` grows
-        // with KP up to 1024, so the sum far exceeds one tile's worth of coefficients. The
-        // decoder used to sum the whole run up front and cap it at 4096, so the very long
-        // zero runs a static region produces were judged corrupt and the whole tile update
-        // was dropped — the blocks that never refresh. The reference implementation consumes
-        // the run event by event with no bound at all: however long it runs it is only zeros,
-        // and the excess is dropped along with the decoder.
+        // All-zero bits are a chain of "at least `1 << k` more zeros" events, and `k` climbs
+        // with KP until each event contributes 1024 (`1 << 10`, since KP caps at 80), so the
+        // run far exceeds one tile's worth of coefficients. Summing it up front and capping it
+        // at 4096 judges the very long zero runs a static region produces to be corrupt and
+        // drops the whole tile update. Consuming the run event by event needs no bound.
         assert_eq!(decode_srl(&[0x00; 32], 8, 4), Ok(vec![0; 8]));
         assert_eq!(decode_srl(&[0x00; 32], MAX_ZERO_RUN, 4), Ok(vec![0; MAX_ZERO_RUN]));
     }

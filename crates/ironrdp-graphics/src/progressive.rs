@@ -1558,15 +1558,6 @@ impl ProgressiveDecoder {
         self.surface_context_flags.remove(&surface_id);
     }
 
-    /// Number of retained difference-tile coefficient buffers for a surface.
-    #[must_use]
-    pub fn reference_count_for_surface(&self, surface_id: u16) -> usize {
-        self.references
-            .keys()
-            .filter(|(reference_surface_id, _, _)| *reference_surface_id == surface_id)
-            .count()
-    }
-
     /// Total retained difference-tile coefficient buffers across all surfaces.
     #[must_use]
     pub fn total_reference_count(&self) -> usize {
