@@ -2892,8 +2892,23 @@ impl RdpServer {
                             error!(?error, "Handling clipboard event");
                             continue;
                         }
-                    }
-                    .map_err_kind("failed to send clipboard event", ServerErrorKind::Pdu)?;
+                    };
+
+                    // A clipboard failure is a per-request problem at worst: a
+                    // stale or malformed request, a capability that was never
+                    // negotiated, backpressure on pending transfers. None of
+                    // that is a reason to disconnect a session whose display,
+                    // audio and input are healthy. The `ClipboardMessage::Error`
+                    // arm above already takes this view; propagating here made
+                    // the two paths disagree.
+                    let msgs = match msgs {
+                        Ok(msgs) => msgs,
+                        Err(error) => {
+                            error!(?error, "Failed to send clipboard event");
+                            continue;
+                        }
+                    };
+
                     let channel_id = self
                         .get_channel_id_by_type::<CliprdrServer>()
                         .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
@@ -4838,5 +4853,111 @@ mod tests {
             released.load(Ordering::Relaxed),
             "the channel backends of a finished connection must be released, not held until the next client"
         );
+    }
+}
+
+/// A failing clipboard event must not disconnect the session.
+///
+/// `dispatch_server_events` used to `?` the result of every `CliprdrServer`
+/// call, so a single rejected clipboard message -- a stale file contents
+/// request, a capability that was never negotiated, backpressure on pending
+/// transfers -- ended `client_loop` and tore down a session whose display,
+/// audio and input were healthy.
+#[cfg(test)]
+mod cliprdr_error_tests {
+    use core::any::TypeId;
+    use core::net::Ipv4Addr;
+
+    use ironrdp_cliprdr::Cliprdr;
+    use ironrdp_cliprdr::backend::CliprdrBackend;
+    use ironrdp_cliprdr::pdu::{
+        ClipboardFormat, ClipboardGeneralCapabilityFlags, FileContentsFlags, FileContentsRequest, FileContentsResponse,
+        FormatDataRequest, FormatDataResponse, LockDataId,
+    };
+    use ironrdp_core::impl_as_any;
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct SilentBackend;
+
+    impl_as_any!(SilentBackend);
+
+    impl CliprdrBackend for SilentBackend {
+        fn temporary_directory(&self) -> &str {
+            "."
+        }
+
+        fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags {
+            ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED
+        }
+
+        fn on_ready(&mut self) {}
+        fn on_request_format_list(&mut self) {}
+        fn on_process_negotiated_capabilities(&mut self, _: ClipboardGeneralCapabilityFlags) {}
+        fn on_remote_copy(&mut self, _: &[ClipboardFormat]) {}
+        fn on_format_data_request(&mut self, _: FormatDataRequest) {}
+        fn on_format_data_response(&mut self, _: FormatDataResponse<'_>) {}
+        fn on_file_contents_request(&mut self, _: FileContentsRequest) {}
+        fn on_file_contents_response(&mut self, _: FileContentsResponse<'_>) {}
+        fn on_lock(&mut self, _: LockDataId) {}
+        fn on_unlock(&mut self, _: LockDataId) {}
+    }
+
+    #[derive(Default)]
+    struct CapturingWriter(Vec<u8>);
+
+    impl FramedWrite for CapturingWriter {
+        type WriteAllFut<'write>
+            = core::future::Ready<std::io::Result<()>>
+        where
+            Self: 'write;
+
+        fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
+            self.0.extend_from_slice(buf);
+            core::future::ready(Ok(()))
+        }
+    }
+
+    /// A clipboard message the channel refuses keeps the session alive.
+    #[tokio::test]
+    async fn a_refused_clipboard_message_does_not_end_the_client_loop() {
+        let mut server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+
+        // Left in its initial state, so `require_ready` refuses the request
+        // below -- the cheapest reproduction of "the channel said no".
+        let cliprdr: CliprdrServer = Cliprdr::new(Box::new(SilentBackend));
+        server.static_channels.insert(cliprdr);
+        server
+            .static_channels
+            .attach_channel_id(TypeId::of::<CliprdrServer>(), 1004);
+
+        let mut events = vec![ServerEvent::Clipboard(ClipboardMessage::SendFileContentsRequest(
+            FileContentsRequest {
+                stream_id: 1,
+                index: 0,
+                flags: FileContentsFlags::SIZE,
+                position: 0,
+                requested_size: 8,
+                data_id: None,
+            },
+        ))];
+
+        let mut writer = CapturingWriter::default();
+        let state = server
+            .dispatch_server_events(&mut events, &mut writer, 1003, 1002, None)
+            .await
+            .expect("a refused clipboard message must not surface as a session error");
+
+        assert!(
+            matches!(state, RunState::Continue),
+            "the session must keep running after a refused clipboard message, got {state:?}"
+        );
+        assert!(writer.0.is_empty(), "a refused message has nothing to put on the wire");
     }
 }
