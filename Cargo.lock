@@ -3276,6 +3276,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-replay-bench"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "ironrdp",
+ "ironrdp-replay-core",
+ "ironrdp-tokio",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "ironrdp-replay-core"
+version = "0.0.0"
+dependencies = [
+ "crc32fast",
+ "ironrdp",
+]
+
+[[package]]
 name = "ironrdp-rpc"
 version = "0.1.0"
 dependencies = [
