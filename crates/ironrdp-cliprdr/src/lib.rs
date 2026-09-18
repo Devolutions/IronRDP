@@ -425,6 +425,18 @@ pub struct Cliprdr<R: Role> {
     /// Used for validating FileContentsRequest.lindex bounds.
     remote_file_list: Option<PackedFileList>,
 
+    /// [MS-RDPECLIP] 3.1.5.4.5 - Remote file list snapshots, keyed by the
+    /// `clipDataId` of the lock that was active when the list arrived.
+    ///
+    /// The receiver-side mirror of [`Self::locked_file_lists`]. A Lock PDU we
+    /// sent asks the remote to keep its File Stream data alive across a
+    /// clipboard change; 3.1.5.4.5 then says a request carrying that
+    /// `clipDataId` must be serviced from the locked data. It follows that such
+    /// a request must be *validated* against the list that data came with --
+    /// [`Self::remote_file_list`] may already describe a different clipboard,
+    /// or have been cleared outright by a new Format List.
+    locked_remote_file_lists: HashMap<u32, PackedFileList>,
+
     /// Format ID used by remote for FileGroupDescriptorW in FormatList they sent.
     /// Detected by finding format with name "FileGroupDescriptorW".
     remote_file_list_format_id: Option<ClipboardFormatId>,
@@ -564,6 +576,7 @@ impl<R: Role> Cliprdr<R> {
             local_file_list_format_id: None,
             local_drop_effect_format_id: None,
             remote_file_list: None,
+            locked_remote_file_lists: HashMap::new(),
             remote_file_list_format_id: None,
             sent_file_contents_requests: HashMap::new(),
             outgoing_locks: HashMap::new(),
@@ -1077,6 +1090,7 @@ impl<R: Role> Cliprdr<R> {
 
         let cleared: Vec<u32> = self.outgoing_locks.keys().copied().collect();
         self.outgoing_locks.clear();
+        self.locked_remote_file_lists.clear();
         self.current_lock_id = None;
 
         debug!(
@@ -1178,6 +1192,9 @@ impl<R: Role> Cliprdr<R> {
         // Remove and send Unlock for each
         for clip_data_id in &expired_ids {
             if let Some(_lock) = self.outgoing_locks.remove(clip_data_id) {
+                // The remote releases its File Stream data on Unlock, so the
+                // snapshot we validated against goes with it.
+                self.locked_remote_file_lists.remove(clip_data_id);
                 debug!(clip_data_id, "Removed expired lock from tracking");
                 let pdu = ClipboardPdu::UnlockData(LockDataId(*clip_data_id));
                 messages.push(into_cliprdr_message(pdu));
@@ -1354,7 +1371,15 @@ impl<R: Role> Cliprdr<R> {
             reject_file_contents_request!(self, request.stream_id, "file index is negative");
         };
 
-        if let Some(ref file_list) = self.remote_file_list {
+        // [MS-RDPECLIP] 3.1.5.4.5 - A request carrying a clipDataId is serviced
+        // from the locked File Stream data, so it is validated against the list
+        // that data came with rather than the current remote clipboard.
+        let file_list = request
+            .data_id
+            .and_then(|clip_data_id| self.locked_remote_file_lists.get(&clip_data_id))
+            .or(self.remote_file_list.as_ref());
+
+        if let Some(file_list) = file_list {
             if file_list.files.len() <= validated_file_index {
                 reject_file_contents_request!(self, request.stream_id, "file index out of bounds for remote file list");
             }
@@ -1753,6 +1778,23 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                                 // Notify backend with file metadata and the current lock ID
                                 // (if locking was negotiated). The lock is already held at this point.
                                 self.backend.on_remote_file_list(&file_list.files, self.current_lock_id);
+
+                                // [MS-RDPECLIP] 3.1.5.4.5 - Snapshot the list under the
+                                // active lock, so requests that carry its clipDataId keep
+                                // validating against it after the clipboard changes.
+                                if let Some(clip_data_id) = self.current_lock_id {
+                                    if MAX_LOCKED_FILE_LISTS <= self.locked_remote_file_lists.len() {
+                                        warn!(
+                                            clip_data_id,
+                                            current = self.locked_remote_file_lists.len(),
+                                            max = MAX_LOCKED_FILE_LISTS,
+                                            "Too many locked remote file lists, not snapshotting this one"
+                                        );
+                                    } else {
+                                        debug!(clip_data_id, "Snapshotting remote file list under lock");
+                                        self.locked_remote_file_lists.insert(clip_data_id, file_list.clone());
+                                    }
+                                }
 
                                 // Store the remote file list for FileContentsRequest validation.
                                 self.remote_file_list = Some(file_list);
