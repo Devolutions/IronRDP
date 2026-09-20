@@ -319,18 +319,22 @@ impl CredentialValidator for ExactMatchCredentialValidator {
 /// What [`RdpServer::run`] does with a second connection that arrives while a
 /// session is already being served.
 ///
-/// [`RdpServer`] serves one connection at a time. By default a second
-/// connection accepted while one is live is left unserved in the OS listen
-/// backlog -- from that client's point of view, a silent hang until the first
-/// session ends. That is `ironrdp-server`'s pre-existing behaviour, kept as the
-/// default ([`Queue`](ConnectionPolicy::Queue)) so an embedder that already
-/// relies on it is not surprised by upgrading.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// [`RdpServer`] serves one connection at a time, so a second connection
+/// accepted while one is live has to go somewhere: left in the OS listen
+/// backlog ([`Queue`](ConnectionPolicy::Queue)), closed at once
+/// ([`Reject`](ConnectionPolicy::Reject)), or served in place of the running
+/// session ([`Preempt`](ConnectionPolicy::Preempt)).
+///
+/// The default depends on the security mode -- see
+/// [`ConnectionPolicy::default_for`]. There is deliberately no
+/// mode-independent [`Default`]: whether takeover is safe out of the box is
+/// decided by whether the client is authenticated before it could evict
+/// anything, and only the security mode knows that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionPolicy {
     /// Leave the extra connection in the OS listen backlog until the running
     /// session ends. The pre-existing behaviour: the second client is not
     /// answered and appears to hang until the first leaves.
-    #[default]
     Queue,
     /// Close the extra connection immediately. The running session is never
     /// interrupted; the new client fails fast and can retry rather than
@@ -383,6 +387,37 @@ pub enum ConnectionPolicy {
     Preempt,
 }
 
+impl ConnectionPolicy {
+    /// The policy [`RdpServerBuilder`](crate::RdpServerBuilder) starts from
+    /// for a given security mode.
+    ///
+    /// Takeover is the least-surprising behaviour for the single-session
+    /// servers `ironrdp-server` typically backs (one mirroring one desktop): a
+    /// newly connecting client should replace a stale or abandoned one, not
+    /// hang behind it. But takeover is only *safe* out of the box where the
+    /// newcomer is authenticated before it could evict anything, and per the
+    /// table on [`Preempt`](ConnectionPolicy::Preempt) that is
+    /// [`RdpServerSecurity::Hybrid`] alone -- under `Tls` or `None` any peer
+    /// able to complete the handshake clears the bar, and the anti-storm
+    /// cooldown bars the victim rather than the attacker. So:
+    ///
+    /// | Security mode | Default |
+    /// |---|---|
+    /// | [`Hybrid`](RdpServerSecurity::Hybrid) | [`Preempt`](ConnectionPolicy::Preempt) -- CredSSP/NLA gates every takeover |
+    /// | [`Tls`](RdpServerSecurity::Tls), [`None`](RdpServerSecurity::None) | [`Queue`](ConnectionPolicy::Queue) -- the pre-existing behaviour; an unauthenticated takeover is an explicit opt-in |
+    ///
+    /// Either can be overridden with
+    /// [`RdpServerBuilder::with_connection_policy`](crate::RdpServerBuilder::with_connection_policy).
+    #[must_use]
+    pub fn default_for(security: &RdpServerSecurity) -> Self {
+        if authenticates_before_eviction(security) {
+            Self::Preempt
+        } else {
+            Self::Queue
+        }
+    }
+}
+
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct RdpServerOptions {
@@ -400,7 +435,10 @@ pub struct RdpServerOptions {
     /// [`RdpServerBuilder::with_honor_client_desktop_size`](crate::RdpServerBuilder::with_honor_client_desktop_size).
     pub honor_client_desktop_size: Option<DesktopSize>,
     /// What to do with a second connection while a session is being served.
-    /// Defaults to [`ConnectionPolicy::Queue`]. Set via
+    /// Defaults to [`ConnectionPolicy::default_for`] the selected security
+    /// mode: [`Preempt`](ConnectionPolicy::Preempt) under
+    /// [`Hybrid`](RdpServerSecurity::Hybrid), [`Queue`](ConnectionPolicy::Queue)
+    /// otherwise. Set via
     /// [`RdpServerBuilder::with_connection_policy`](crate::RdpServerBuilder::with_connection_policy).
     pub connection_policy: ConnectionPolicy,
     /// Quantization values the RemoteFX encoder uses once selected. Defaults
@@ -801,6 +839,11 @@ impl ErrorInfoDisconnectHandle {
     /// The disconnect takes effect only after the server handles this event.
     /// Unlike [`ServerEvent::Quit`], the client is told why: it decodes the
     /// PDU and can surface `error` to the user before the connection drops.
+    ///
+    /// The one exception is a client that did not set
+    /// `RNS_UD_CS_SUPPORT_ERRINFO_PDU` in its Client Core Data: MS-RDPBCGR
+    /// 3.3.5.7.1 forbids sending it the PDU, so it is disconnected without
+    /// the reason.
     #[expect(
         clippy::result_large_err,
         reason = "SendError<ServerEvent> hands the whole event back on a closed channel; ServerEvent's size is \
@@ -824,6 +867,13 @@ pub enum ServerEvent {
     /// with no explanation auto-reconnects a second later, re-preempts the
     /// client that replaced it, and the two ping-pong indefinitely. Telling
     /// the loser WHY it was disconnected is what makes it stay away.
+    ///
+    /// The PDU is only sent to a client that set
+    /// `RNS_UD_CS_SUPPORT_ERRINFO_PDU` in its Client Core Data (MS-RDPBCGR
+    /// 3.3.5.7.1 forbids it otherwise); one that did not is dropped without
+    /// the reason, and the anti-storm cooldown on [`RdpServer::run`] is then
+    /// the only thing standing between it and the ping-pong above. (mstsc and
+    /// FreeRDP both set the flag.)
     ///
     /// A more general version of the same PDU/mechanism exists as
     /// [`Self::Disconnect`] (upstream, `ErrorInfoDisconnectHandle`) for an
@@ -2654,6 +2704,11 @@ impl RdpServer {
         Ok((RunState::Continue, encoder))
     }
 
+    /// `client_supports_errinfo` is the client's `RNS_UD_CS_SUPPORT_ERRINFO_PDU`
+    /// early-capability opt-in: MS-RDPBCGR 3.3.5.7.1 forbids sending a Server
+    /// Set Error Info PDU to a client that did not set it, so the two arms below
+    /// that carry a disconnect reason drop the PDU (and just disconnect) when it
+    /// is `false`.
     async fn dispatch_server_events(
         &mut self,
         events: &mut Vec<ServerEvent>,
@@ -2661,6 +2716,7 @@ impl RdpServer {
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
+        client_supports_errinfo: bool,
     ) -> ServerResult<RunState> {
         // Avoid wave messages queuing up and causing extra delay. When a
         // batch carries more than `WAVE_KEEP` waves, drop the OLDEST ones
@@ -2691,14 +2747,14 @@ impl RdpServer {
                 // against the preempting client — see the variant's docs).
                 ServerEvent::EvictedByOtherConnection => {
                     debug!("evicting this connection -- another client took the session over");
-                    // KNOWN GAP: MS-RDPBCGR 3.3.5.7.1 says the Set Error Info
-                    // PDU MUST NOT be sent to a client that did not set
-                    // RNS_UD_CS_SUPPORT_ERRINFO_PDU in its Client Core Data
-                    // `earlyCapabilityFlags`, and this sends it unconditionally.
-                    // `AcceptorResult` exposes no early-capability field today,
-                    // so the check is not currently expressible here; the
-                    // pre-existing `send_access_denied` has the identical gap.
-                    // Closing it needs an ironrdp-acceptor API addition.
+                    if !client_supports_errinfo {
+                        // MS-RDPBCGR 3.3.5.7.1: the client did not set
+                        // RNS_UD_CS_SUPPORT_ERRINFO_PDU, so it MUST NOT be
+                        // sent a Set Error Info PDU. Such a client cannot be
+                        // told why it is going away; it just goes.
+                        debug!("client did not opt into Set Error Info PDUs; dropping it without the eviction reason");
+                        return Ok(RunState::Disconnect);
+                    }
                     let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(
                         ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::DisconnectedByOtherconnection),
                     ));
@@ -2721,6 +2777,11 @@ impl RdpServer {
                 }
                 ServerEvent::Disconnect(error) => {
                     debug!(?error, "Got disconnect event");
+                    if !client_supports_errinfo {
+                        // Same MS-RDPBCGR 3.3.5.7.1 rule as the eviction arm.
+                        debug!("client did not opt into Set Error Info PDUs; disconnecting without the reason");
+                        return Ok(RunState::Disconnect);
+                    }
                     let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error));
                     // pduSource=0, not user_channel_id -- same MS-RDPBCGR
                     // 2.2.5.1.1 requirement as the EvictedByOtherConnection
@@ -3188,6 +3249,7 @@ impl RdpServer {
         user_channel_id: u16,
         message_channel_id: Option<u16>,
         client_supports_heartbeat: bool,
+        client_supports_errinfo: bool,
         mut encoder: UpdateEncoder,
     ) -> ServerResult<RunState>
     where
@@ -3330,6 +3392,7 @@ impl RdpServer {
                         io_channel_id,
                         user_channel_id,
                         message_channel_id,
+                        client_supports_errinfo,
                     )
                     .await?;
                 let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -3640,6 +3703,9 @@ impl RdpServer {
                 result
                     .client_early_capability_flags
                     .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_HEART_BEAT_PDU),
+                result
+                    .client_early_capability_flags
+                    .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU),
                 encoder,
             )
             .await?;

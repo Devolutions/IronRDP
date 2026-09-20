@@ -145,6 +145,7 @@ impl RdpServerBuilder<WantsDisplay> {
     where
         D: RdpServerDisplay + 'static,
     {
+        let connection_policy = ConnectionPolicy::default_for(&self.state.security);
         RdpServerBuilder {
             state: BuilderDone {
                 addr: self.state.addr,
@@ -169,7 +170,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 autodetect_baseline_rtt: None,
                 autodetect_bandwidth: None,
                 honor_client_desktop_size: None,
-                connection_policy: ConnectionPolicy::default(),
+                connection_policy,
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
@@ -178,6 +179,7 @@ impl RdpServerBuilder<WantsDisplay> {
     }
 
     pub fn with_no_display(self) -> RdpServerBuilder<BuilderDone> {
+        let connection_policy = ConnectionPolicy::default_for(&self.state.security);
         RdpServerBuilder {
             state: BuilderDone {
                 addr: self.state.addr,
@@ -202,7 +204,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 autodetect_baseline_rtt: None,
                 autodetect_bandwidth: None,
                 honor_client_desktop_size: None,
-                connection_policy: ConnectionPolicy::default(),
+                connection_policy,
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
@@ -336,9 +338,13 @@ impl RdpServerBuilder<BuilderDone> {
 
     /// Choose what [`RdpServer::run`] does with a second connection that
     /// arrives while a session is already being served: leave it in the backlog
-    /// ([`ConnectionPolicy::Queue`], the default), close it immediately
+    /// ([`ConnectionPolicy::Queue`]), close it immediately
     /// ([`ConnectionPolicy::Reject`]), or let a fully-authenticated newcomer
     /// take the session over ([`ConnectionPolicy::Preempt`]).
+    ///
+    /// The default follows the security mode already chosen on this builder --
+    /// `Preempt` under [`RdpServerSecurity::Hybrid`], `Queue` otherwise; see
+    /// [`ConnectionPolicy::default_for`] for why.
     ///
     /// `Preempt`'s takeover is only authentication-gated under
     /// [`RdpServerSecurity::Hybrid`]; see [`ConnectionPolicy::Preempt`] for the

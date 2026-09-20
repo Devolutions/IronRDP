@@ -1,19 +1,22 @@
 //! Coverage for [`ConnectionPolicy`] in `RdpServer::run`.
 //!
-//! `run` serves one connection at a time. `Queue` (the default) leaves a
-//! second connection unanswered in the listen backlog until the first ends;
-//! `Reject` closes it at once so the client fails fast instead of appearing to
-//! hang.
+//! `run` serves one connection at a time. `Queue` (the default outside
+//! `Hybrid` security) leaves a second connection unanswered in the listen
+//! backlog until the first ends; `Reject` closes it at once so the client
+//! fails fast instead of appearing to hang.
 
 use core::net::SocketAddr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use std::sync::Arc;
 
-use ironrdp_server::{ConnectionHandler, ConnectionPolicy, RdpServer, ServerEvent};
+use ironrdp_server::{ConnectionHandler, ConnectionPolicy, RdpServer, RdpServerSecurity, ServerEvent};
 use tokio::io::AsyncReadExt as _;
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
+use tokio_rustls::TlsAcceptor;
+use tokio_rustls::rustls::server::{ClientHello, ResolvesServerCert};
+use tokio_rustls::rustls::sign::CertifiedKey;
 
 async fn bound_addr(sender: &tokio::sync::mpsc::UnboundedSender<ServerEvent>) -> SocketAddr {
     // Poll until the accept loop has bound and can answer GetLocalAddr.
@@ -71,11 +74,9 @@ async fn reject_closes_a_second_connection_during_a_session() {
         .await;
 }
 
-/// With the default `Queue`, a second connection is left unanswered while the
+/// Drive `server` and assert a second connection is left unanswered while the
 /// session runs: the read does not complete within the window.
-#[tokio::test]
-async fn queue_leaves_a_second_connection_waiting_during_a_session() {
-    let mut server = build(ConnectionPolicy::Queue);
+async fn assert_second_connection_is_left_waiting(mut server: RdpServer) {
     let sender = server.event_sender().clone();
 
     let local = tokio::task::LocalSet::new();
@@ -100,6 +101,67 @@ async fn queue_leaves_a_second_connection_waiting_during_a_session() {
             let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
         })
         .await;
+}
+
+/// With `Queue`, a second connection is left unanswered while the session
+/// runs.
+#[tokio::test]
+async fn queue_leaves_a_second_connection_waiting_during_a_session() {
+    assert_second_connection_is_left_waiting(build(ConnectionPolicy::Queue)).await;
+}
+
+/// Pins the out-of-the-box policy under `with_no_security` end to end: with no
+/// `with_connection_policy` call, a second connection is left waiting (`Queue`),
+/// NOT served in place of the live one. `None` authenticates nothing, so a
+/// `Preempt` default here would let any peer that can reach the port evict the
+/// live session.
+#[tokio::test]
+async fn the_default_under_no_security_leaves_a_second_connection_waiting() {
+    let server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_no_security()
+        .with_no_input()
+        .with_no_display()
+        .build();
+    assert_second_connection_is_left_waiting(server).await;
+}
+
+/// A `TlsAcceptor` that can be constructed without any certificate material.
+/// It would fail the first handshake, but nothing here handshakes: the tests
+/// only need a value of each `RdpServerSecurity` variant.
+#[derive(Debug)]
+struct NoCert;
+
+impl ResolvesServerCert for NoCert {
+    fn resolve(&self, _client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        None
+    }
+}
+
+fn tls_acceptor() -> TlsAcceptor {
+    let config = tokio_rustls::rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_cert_resolver(Arc::new(NoCert));
+    TlsAcceptor::from(Arc::new(config))
+}
+
+/// The default policy follows the security mode: takeover out of the box only
+/// where the newcomer is authenticated before it could evict anything
+/// (`Hybrid`); the pre-existing queue-behind everywhere else.
+#[test]
+fn the_default_policy_follows_the_security_mode() {
+    assert_eq!(
+        ConnectionPolicy::default_for(&RdpServerSecurity::None),
+        ConnectionPolicy::Queue
+    );
+    assert_eq!(
+        ConnectionPolicy::default_for(&RdpServerSecurity::Tls(tls_acceptor())),
+        ConnectionPolicy::Queue
+    );
+    assert_eq!(
+        ConnectionPolicy::default_for(&RdpServerSecurity::Hybrid((tls_acceptor(), Vec::new()))),
+        ConnectionPolicy::Preempt
+    );
 }
 
 struct CountingHandler {

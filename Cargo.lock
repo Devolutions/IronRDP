@@ -3421,6 +3421,7 @@ dependencies = [
  "proptest",
  "rstest",
  "tokio",
+ "tokio-rustls",
  "visibility",
 ]
 
