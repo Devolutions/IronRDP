@@ -4,7 +4,7 @@ const { SCHEMA_VERSION, parseCheckState } = require("./validate-classifier");
 const { contributorEligibility, reviewPolicyEligible } = require("./resolve-state");
 const { forkRateLimit } = require("./fork-rate-limit");
 const { normalizeReviewerIds } = require("./routing");
-const { isRetryableFailure, plannedRequiredReviewers } = require("./review-pipeline");
+const { isRetryableFailure, plannedRequiredReviewers, validateReviewGate } = require("./review-pipeline");
 
 const MAXIMUM_DELAY_SECONDS = 15 * 60;
 const OVERSIZED_REVIEW_LABEL = "ai-review/allow-oversized";
@@ -15,10 +15,28 @@ const CLASSIFICATION_COMPLETE = "Classification complete";
 
 const decline = (reason) => ({ retry: false, reason });
 
+class StaleHeadError extends Error {
+  constructor() { super("pull request head is no longer current"); this.name = "StaleHeadError"; }
+}
+
+function isTruncatedGithubResponse(error) {
+  return error?.status === 500 && /unexpected end of JSON input/i.test(String(error.message));
+}
+
+async function readPullRequest({ github, owner, repo, pullNumber }) {
+  const read = () => github.rest.pulls.get({ owner, repo, pull_number: pullNumber });
+  try {
+    return (await read()).data;
+  } catch (error) {
+    if (!isTruncatedGithubResponse(error)) throw error;
+    return (await read()).data;
+  }
+}
+
 async function assertCurrentHead({ github, owner, repo, pullNumber, expectedHeadSha }) {
-  const { data } = await github.rest.pulls.get({ owner, repo, pull_number: pullNumber });
+  const data = await readPullRequest({ github, owner, repo, pullNumber });
   if (data.state !== "open" || data.head?.sha !== expectedHeadSha) {
-    throw new Error("pull request head is no longer current");
+    throw new StaleHeadError();
   }
 }
 
@@ -39,7 +57,7 @@ async function retryStillPermitted({
   github, owner, repo, pullNumber, expectedHeadSha, expectedBaseSha, force = false,
   selectedReviewers = [], requiredReviewers, diffBytes = null,
 } = {}) {
-  const pull = (await github.rest.pulls.get({ owner, repo, pull_number: pullNumber })).data;
+  const pull = await readPullRequest({ github, owner, repo, pullNumber });
   if (pull.state !== "open") return decline("pull request is no longer open");
   if (pull.head?.sha !== expectedHeadSha) return decline("pull request head is no longer current");
   if (expectedBaseSha && pull.base?.sha !== expectedBaseSha) {
@@ -54,13 +72,6 @@ async function retryStillPermitted({
   const cap = labels.includes(OVERSIZED_REVIEW_LABEL) ? 4 * MIB : MIB;
   if (diffBytes > cap) return decline("pull request evidence exceeds the current evidence limit");
 
-  // A trusted caller's force bypasses policy and CI, and nothing else.
-  if (force) return { retry: true, reason: "" };
-
-  if (pull.user?.type === "Bot") return decline("pull request author is a bot");
-  if (pull.draft === true) return decline("pull request is a draft");
-  if (!reviewPolicyEligible({ labels })) return decline("review is no longer policy eligible");
-
   const runsFor = async (checkName) => (await github.rest.checks.listForRef({
     owner, repo, ref: expectedHeadSha, check_name: checkName, per_page: 100,
   })).data.check_runs.filter((run) => run?.app?.slug === "github-actions");
@@ -73,9 +84,20 @@ async function retryStillPermitted({
     return decline("classification is no longer valid for this head");
   }
   const state = parseCheckState(classification.output?.summary);
-  if (state === null || state.automaticReviewEligible !== true ||
-      classification.output?.title !== CLASSIFICATION_COMPLETE) {
+  if (state === null) {
+    return decline("classification is no longer valid for this head");
+  }
+  if (!force && classification.output?.title !== CLASSIFICATION_COMPLETE) {
     return decline("classification no longer authorizes an automatic review");
+  }
+  const classificationGate = validateReviewGate({
+    ok: true, force, head_sha: expectedHeadSha, classificationValid: true,
+    classificationCheck: state.automaticReviewEligible === true,
+    protocolRelated: state.protocolRelated, risk: state.risk,
+    specialistReviewers: state.specialistReviewers,
+  }, expectedHeadSha);
+  if (!classificationGate.ok) {
+    return decline(classificationGate.reason);
   }
   if (!sameReviewers(state.specialistReviewers, selectedReviewers)) {
     return decline("classification now selects a different reviewer set");
@@ -85,6 +107,13 @@ async function retryStillPermitted({
       requiredReviewers.some((reviewer) => !stillSelected.includes(reviewer))) {
     return decline("a required reviewer is no longer selected");
   }
+
+  // A trusted caller's force bypasses policy and CI, and nothing else.
+  if (force) return { retry: true, reason: "" };
+
+  if (pull.user?.type === "Bot") return decline("pull request author is a bot");
+  if (pull.draft === true) return decline("pull request is a draft");
+  if (!reviewPolicyEligible({ labels })) return decline("review is no longer policy eligible");
 
   if ((await runsFor("AI automated review")).some((run) => run.conclusion === "success")) {
     return decline("this head was already reviewed");
@@ -177,5 +206,5 @@ async function retryGateStep({ github, context, core, env, stage }) {
 }
 
 module.exports = {
-  MAXIMUM_DELAY_SECONDS, assertCurrentHead, delayedRetryGate, retryGateStep, retryStillPermitted,
+  MAXIMUM_DELAY_SECONDS, StaleHeadError, assertCurrentHead, delayedRetryGate, retryGateStep, retryStillPermitted,
 };

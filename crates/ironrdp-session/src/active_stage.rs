@@ -47,6 +47,8 @@ pub struct ActiveStage {
     bulk_decompressor: Option<BulkCompressor>,
     enable_server_pointer: bool,
     window_support_level: Option<WindowSupportLevel>,
+    graphics_output_needs_full_refresh: bool,
+    damage_regions: Vec<InclusiveRectangle>,
 }
 
 /// Builder for [`ActiveStage`].
@@ -103,6 +105,8 @@ impl ActiveStageBuilder {
             bulk_decompressor: new_bulk_decompressor(compression_type),
             enable_server_pointer,
             window_support_level: None,
+            graphics_output_needs_full_refresh: false,
+            damage_regions: Vec::new(),
         }
     }
 }
@@ -123,6 +127,11 @@ impl ActiveStage {
         self.fast_path_processor.take_bitmap_recovery_request()
     }
 
+    /// Takes the exact framebuffer regions changed by the most recent processing call.
+    pub fn take_damage_regions(&mut self) -> Vec<InclusiveRectangle> {
+        core::mem::take(&mut self.damage_regions)
+    }
+
     /// Encodes outgoing input events and modifies image if necessary (e.g for client-side pointer
     /// rendering).
     pub fn process_fastpath_input(
@@ -130,6 +139,7 @@ impl ActiveStage {
         image: &mut DecodedImage,
         events: &[FastPathInputEvent],
     ) -> SessionResult<Vec<ActiveStageOutput>> {
+        self.damage_regions.clear();
         if events.is_empty() {
             return Ok(Vec::new());
         }
@@ -165,6 +175,7 @@ impl ActiveStage {
 
         // Graphics update is only sent when update is visually changed the framebuffer
         if let Some(rect) = image.move_pointer(mouse_x, mouse_y)? {
+            self.damage_regions.push(rect.clone());
             output.push(ActiveStageOutput::GraphicsUpdate(rect));
         }
 
@@ -178,6 +189,7 @@ impl ActiveStage {
         action: Action,
         frame: &[u8],
     ) -> SessionResult<Vec<ActiveStageOutput>> {
+        self.damage_regions.clear();
         let (mut stage_outputs, processor_updates) = match action {
             Action::FastPath => {
                 let mut output = WriteBuf::new();
@@ -223,13 +235,21 @@ impl ActiveStage {
                 // data only ever arrives over a DVC, which is X224-carried, so this stays
                 // out of the Action::FastPath arm rather than running on every fast-path
                 // frame (the highest-frequency path in a session).
-                let graphics_updates = self
+                let (output_reset, graphics_updates) = self
                     .get_dvc_mut::<GraphicsPipelineClient>()
-                    .map(|mut gfx| gfx.processor_mut().drain_output())
+                    .map(|mut gfx| {
+                        let gfx = gfx.processor_mut();
+                        (gfx.take_output_reset(), gfx.drain_output())
+                    })
                     .unwrap_or_default();
-                if let Some(region) =
-                    composite_graphics_updates(image, graphics_updates.into_iter().map(|u| (u.region, u.data)))?
-                {
+                if let Some((width, height)) = output_reset {
+                    image.reset_preserving_pointer(width, height)?;
+                    self.graphics_output_needs_full_refresh = true;
+                }
+                let (region, damage_regions) =
+                    composite_graphics_updates(image, graphics_updates.into_iter().map(|u| (u.region, u.data)))?;
+                self.damage_regions.extend(damage_regions);
+                if let Some(region) = region {
                     stage_outputs.push(ActiveStageOutput::GraphicsUpdate(region));
                 }
 
@@ -248,6 +268,7 @@ impl ActiveStage {
                     }
                 }
                 UpdateKind::Region(region) => {
+                    self.damage_regions.push(region.clone());
                     stage_outputs.push(ActiveStageOutput::GraphicsUpdate(region));
                 }
                 UpdateKind::PointerDefault => {
@@ -263,6 +284,22 @@ impl ActiveStage {
                     stage_outputs.push(ActiveStageOutput::PointerBitmap(pointer));
                 }
             }
+        }
+
+        if self.graphics_output_needs_full_refresh
+            && let Some(ActiveStageOutput::GraphicsUpdate(region)) = stage_outputs
+                .iter_mut()
+                .find(|output| matches!(output, ActiveStageOutput::GraphicsUpdate(_)))
+        {
+            *region = InclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: image.width().saturating_sub(1),
+                bottom: image.height().saturating_sub(1),
+            };
+            self.damage_regions.clear();
+            self.damage_regions.push(region.clone());
+            self.graphics_output_needs_full_refresh = false;
         }
 
         Ok(stage_outputs)
@@ -944,20 +981,18 @@ fn process_slow_path_pointer(
     fast_path_processor.process_pointer_update(image, pointer)
 }
 
-/// Apply every compositor delta to `image` and return the single region covering them.
+/// Apply every compositor delta to `image` and return their union and exact applied regions.
 ///
-/// Emitting one update per delta would be correct but ruinous: a consumer is entitled to
-/// redraw whatever a `GraphicsUpdate` names, and `ironrdp-client` rebuilds the entire
-/// framebuffer for each one, so an N-rectangle frame would copy the whole desktop N
-/// times. A single SolidFill or CacheToSurface can name up to `u16::MAX` rectangles, so
-/// N is the server's choice, not ours. The union's worst case is the full desktop, which
-/// is still one copy rather than N.
+/// The union preserves the single full-frame copy used by existing consumers.
+/// Opt-in dirty-region consumers use the exact list instead, avoiding a nearly full
+/// bounding-box copy for sparse updates.
 #[cfg_attr(feature = "__test", visibility::make(pub))]
 fn composite_graphics_updates(
     image: &mut DecodedImage,
     updates: impl IntoIterator<Item = (ExclusiveRectangle, Vec<u8>)>,
-) -> SessionResult<Option<InclusiveRectangle>> {
+) -> SessionResult<(Option<InclusiveRectangle>, Vec<InclusiveRectangle>)> {
     let mut dirty: Option<InclusiveRectangle> = None;
+    let mut regions = Vec::new();
     for (region, data) in updates {
         // egfx maps regions with exclusive right/bottom; the session's InclusiveRectangle
         // is one-past-inclusive. Compositor updates are always non-empty, so the
@@ -973,11 +1008,9 @@ fn composite_graphics_updates(
         // which is `(0, 0, 0, 0)` and not distinguishable from a real 1x1 update at the
         // origin. Checking fit here first, rather than branching on that return value,
         // means the delta is skipped outright rather than folded into the accumulator
-        // as a phantom region. This can happen for real: the compositor clips to the
-        // dimensions ResetGraphics declared, while `image` is sized from the desktop
-        // size negotiated at connection time and is never resized on ResetGraphics, so
-        // a server that reports a larger graphics output than the desktop hits this on
-        // every delta outside the desktop bounds.
+        // as a phantom region. A successful ResetGraphics resizes `image` to the
+        // compositor output before deltas are drained; this guard remains for deltas
+        // received before the first reset and future accounting mismatches.
         let fits = region.left <= region.right
             && region.top <= region.bottom
             && region.right < image.width()
@@ -993,12 +1026,13 @@ fn composite_graphics_updates(
         }
 
         let applied = image.apply_rgba32(&data, &region, false)?;
+        regions.push(applied.clone());
         dirty = Some(match dirty {
             Some(acc) => acc.union(&applied),
             None => applied,
         });
     }
-    Ok(dirty)
+    Ok((dirty, regions))
 }
 
 #[cfg(test)]

@@ -2,14 +2,16 @@
 
 const { SCHEMA_VERSION: CLASSIFIER_SCHEMA_VERSION, validateClassifier } = require("./validate-classifier");
 const { validateNormalizedFinalReview } = require("./validate-final-review");
-const { resolveReviewerRoute, reviewPolicyEligible, validateReviewerRoute } = require("./routing");
+const { resolveReviewerRoute, reviewPolicyEligible } = require("./routing");
+const { validateReviewGate } = require("./review-pipeline");
 
 const RISK = ["risk/low", "risk/medium", "risk/high", "risk/unknown"];
 const AI_COUNTS = ["ai-reviewed/1", "ai-reviewed/2"];
 const LEGITIMACY_LABEL = "triage/legitimacy";
+const OVERLAP_LABEL = "triage/overlap";
 const OVERSIZED_REVIEW_LABEL = "ai-review/allow-oversized";
 const LEGITIMACY_MARKER_PREFIX = "<!-- ironrdp-pr-automation:legitimacy:v2:";
-const DUPLICATE_MARKER = "<!-- ironrdp-pr-automation:duplicate -->";
+const OVERLAP_MARKER = "<!-- ironrdp-pr-automation:overlap -->";
 const OVERSIZED_MARKER = "<!-- ironrdp-pr-automation:oversized -->";
 const LEGACY_XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
 const FORK_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-quota -->";
@@ -98,15 +100,12 @@ function failedClassification(expectedSha, deterministic, reason, rateLimit, sem
 
 function resolveClassificationState({
   expectedSha, labels, deterministic, classifier, classificationGate,
-  classifierReason, changedPaths, duplicateCandidates, prNumber, semver, rateLimit, force,
+  classifierReason, changedPaths, overlapCandidates, prNumber, semver, rateLimit, force,
 } = {}) {
   const existing = labelsOf(labels);
   const forced = force === true;
   const failureRateLimit = forced ? undefined : rateLimit;
   if (typeof expectedSha !== "string") return { ok: false, reason: "missing expected SHA" };
-  if (!forced && existing.has("ai-reviewed/2")) {
-    return failedClassification(expectedSha, deterministic, "terminal AI review count", failureRateLimit);
-  }
   const semverStatus = boundStatus(semver, expectedSha, ["suspected", "not-suspected"]);
   if (!forced && rateLimit && rateLimit.status !== "allowed") {
     return failedClassification(expectedSha, deterministic, "fork LLM quota unavailable", failureRateLimit, semverStatus);
@@ -121,7 +120,7 @@ function resolveClassificationState({
   }
   const classifierResult = validateClassifier(classifier, {
     expectedSha, changedPaths, documentationOnlyPaths: deterministic.documentationOnlyPaths,
-    duplicateCandidates, prNumber,
+    overlapCandidates, prNumber,
   });
   if (!classifierResult?.ok || classifierResult.value?.head_sha !== expectedSha) {
     const reason = classifierReason || classifierResult?.reason || "classifier output unavailable";
@@ -148,12 +147,13 @@ function resolveClassificationState({
     return failedClassification(
       expectedSha, deterministic, "reviewer routing unavailable", failureRateLimit, semverStatus);
   }
-  const duplicate = model.duplicate.detected && model.duplicate.confidence >= 0.85;
+  // Overlap is advisory: it only adds a label and comment.
+  const overlap = model.overlap.detected && model.overlap.confidence >= 0.85;
   const optional = [
     ["kind/technical-debt", model.technical_debt],
     ["kind/protocol", model.protocol_related],
     ["documentation", model.documentation_only],
-    ["duplicate", duplicate],
+    [OVERLAP_LABEL, overlap],
   ];
   const labelSets = [
     { owned: RISK, desired: [`risk/${risk}`] },
@@ -163,14 +163,17 @@ function resolveClassificationState({
     { owned: ["breaking-change"], desired: breaking ? ["breaking-change"] : [] },
   ];
   const legitimacyStopped = model.likely_non_legitimate;
+  const maintainerRequired = legitimacyStopped || existing.has("ai-reviewed/2") ||
+    (existing.has("maintainer-required") && classificationGate?.completed === true);
   const addLabels = [
-    "maintainer-required",
+    ...(maintainerRequired ? ["maintainer-required"] : []),
     ...(legitimacyStopped ? [LEGITIMACY_LABEL] : []),
   ];
+  const removeLabels = maintainerRequired ? [] : ["maintainer-required"];
   const comments = [
-    ...(duplicate ? [{
-      kind: "duplicate", marker: DUPLICATE_MARKER,
-      url: model.duplicate.similar_pr_url, rationale: model.duplicate.rationale,
+    ...(overlap ? [{
+      kind: "overlap", marker: OVERLAP_MARKER,
+      url: model.overlap.similar_pr_url, rationale: model.overlap.rationale,
     }] : []),
   ];
   const auditComments = [
@@ -180,12 +183,11 @@ function resolveClassificationState({
     }] : []),
   ];
   return {
-    ok: true, mode: "classification", expectedSha, labelSets, addLabels, comments, auditComments,
-    dispatchReview: !forced,
+    ok: true, mode: "classification", expectedSha, labelSets, addLabels, removeLabels, comments, auditComments,
+    dispatchReview: !forced && !existing.has("ai-reviewed/2"),
     removeCommentMarkers: [
-      // A later push can make a previously reported duplicate or oversized verdict wrong, and stale
-      // guidance would then contradict the labels this run just wrote.
-      ...(duplicate ? [] : [DUPLICATE_MARKER]),
+      // Remove notices that contradict the current classification.
+      ...(overlap ? [] : [OVERLAP_MARKER]),
       EVIDENCE_LIMIT_MARKER,
       FORK_QUOTA_MARKER,
       GLOBAL_QUOTA_MARKER,
@@ -253,11 +255,11 @@ async function contributorEligibility({ github, owner, repo, author, currentPrNu
 
 function resolveReviewState({
   expectedSha, labels, reviewer, gate, contributor,
-  rateLimit, reviewerReason, force, reviewMarkerId,
+  rateLimit, reviewerReason, force, reviewMarkerId, reducedCoverage,
 } = {}) {
   const existing = labelsOf(labels);
   const forced = force === true;
-  const fail = (reason, report = false, contributorComment = null) => {
+  const fail = (reason, report = false, contributorComment = null, labelAction = "add") => {
     const comments = [
       forced ? null : quotaComment(rateLimit),
       evidenceLimitComment(reason),
@@ -265,7 +267,10 @@ function resolveReviewState({
     ].filter(Boolean);
     return {
       ok: true, mode: "review", expectedSha, failed: true, reason,
-      labelSets: [], addLabels: ["maintainer-required"], comments,
+      labelSets: [],
+      addLabels: labelAction === "add" ? ["maintainer-required"] : [],
+      removeLabels: labelAction === "remove" ? ["maintainer-required"] : [],
+      comments,
       removeCommentMarkers: [
         ...(comments.some((comment) => comment.kind === "evidence-limit") ? [] : [EVIDENCE_LIMIT_MARKER]),
         FORK_QUOTA_MARKER,
@@ -283,6 +288,8 @@ function resolveReviewState({
   if (typeof expectedSha !== "string") return { ok: false, reason: "missing expected SHA" };
   if (forced) {
     if (gate?.force !== true || gate.head_sha !== expectedSha) return fail("forced review gate unavailable");
+    const classification = validateReviewGate(gate, expectedSha);
+    if (!classification.ok) return fail(classification.reason);
     if (typeof reviewMarkerId !== "string" || !/^[1-9]\d{0,19}$/.test(reviewMarkerId)) {
       return fail("forced review marker unavailable");
     }
@@ -293,13 +300,12 @@ function resolveReviewState({
       const reason = gate?.reason ? `review gate unavailable: ${gate.reason}` : "review gate unavailable";
       return fail(reason);
     }
-    if (gate.classificationCheck !== true || gate.ciGreen !== true) return fail("review gate unavailable");
-    const route = validateReviewerRoute({
-      reviewers: gate.specialistReviewers,
-      protocolRelated: gate.protocolRelated,
-      risk: gate.risk,
-    });
-    if (!route.ok) return fail("reviewer route unavailable");
+    const classification = validateReviewGate({ ...gate, ok: true }, expectedSha);
+    if (!classification.ok) return fail(classification.reason);
+    if (gate.classificationCheck !== true) return fail("review gate unavailable");
+    if (!reviewPolicyEligible({
+      labels, legitimacyStopped: gate.legitimacyStopped,
+    })) return fail("review is not eligible");
     if (contributor?.status === "ineligible") {
       const reason = Number.isSafeInteger(contributor.merged)
         ? `contributor history ineligible (merged: ${contributor.merged}, required: ${ELIGIBLE_MERGED_PRS})`
@@ -316,11 +322,9 @@ function resolveReviewState({
       return fail(reason);
     }
     if (existing.has("ai-reviewed/1") && gate.secondReviewEligible !== true) {
-      return fail("second review is not eligible");
+      return fail("second review is not eligible", false, null, "preserve");
     }
-    if (!reviewPolicyEligible({
-      labels, legitimacyStopped: gate.legitimacyStopped,
-    })) return fail("review is not eligible");
+    if (gate.ciGreen !== true) return fail("CI has not succeeded", false, null, "remove");
     if (!gate.ok) return fail("review gate unavailable");
   }
   const reviewerResult = validateNormalizedFinalReview(reviewer, expectedSha);
@@ -338,9 +342,14 @@ function resolveReviewState({
     `${forced ? `:force:${reviewMarkerId}` : ""} -->`;
   return {
     ok: true, mode: "review", expectedSha, labelSets: [{ owned: AI_COUNTS, desired: [nextCount] }],
-    addLabels: nextCount === "ai-reviewed/2" || !hasFindings ? ["maintainer-required"] : [],
-    removeLabels: nextCount === "ai-reviewed/1" && hasFindings ? ["maintainer-required"] : [],
-    comments: [{ kind: "review", marker: reviewMarker, review: reviewerResult.value }],
+    // Reported findings leave the next step with the contributor, even at `ai-reviewed/2`. Automatic
+    // review is exhausted there, so classification hands the pull request over on their next push.
+    addLabels: hasFindings ? [] : ["maintainer-required"],
+    removeLabels: hasFindings ? ["maintainer-required"] : [],
+    comments: [{
+      kind: "review", marker: reviewMarker, review: reviewerResult.value,
+      reducedCoverage: Array.isArray(reducedCoverage) ? reducedCoverage : [],
+    }],
     removeCommentMarkers: [
       EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER,
       CONTRIBUTOR_INELIGIBLE_MARKER,
@@ -352,15 +361,19 @@ function resolveReviewState({
   };
 }
 
-function reviewOutcome({ reportStatus, state, recovered = false } = {}) {
+function reviewOutcome({ reportStatus, state, recovered = false, reducedCoverage = [] } = {}) {
   if (reportStatus !== "success" || state?.failed === true) return "unavailable";
+  if (Array.isArray(reducedCoverage) && reducedCoverage.length > 0) {
+    return recovered ? "recovered-reduced-coverage" : "reduced-coverage";
+  }
   return recovered ? "recovered" : "complete";
 }
 
 module.exports = {
-  AI_COUNTS, CONTRIBUTOR_INELIGIBLE_MARKER, DUPLICATE_MARKER, EVIDENCE_LIMIT_MARKER,
-  FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
-  LEGITIMACY_MARKER_PREFIX, OVERSIZED_REVIEW_LABEL, RISK, OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS,
+  AI_COUNTS, CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER,
+  GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
+  LEGITIMACY_MARKER_PREFIX, OVERLAP_LABEL, OVERLAP_MARKER, OVERSIZED_REVIEW_LABEL, RISK,
+  OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS,
   contributorEligibility, qualifyingMergedPrs, resolveClassificationState,
   resolveReviewState, reviewOutcome, reviewPolicyEligible,
 };

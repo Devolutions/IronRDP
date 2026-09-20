@@ -63,6 +63,7 @@ function loadValidator(workspace, selector, metadata) {
       const result = await validate(candidate, {
         metadata,
         previousCandidate: context.previousCandidate,
+        candidates: context.candidates,
         repairAttempt: context.repairAttempt,
       });
       if (result === null || typeof result !== "object" || Array.isArray(result) ||

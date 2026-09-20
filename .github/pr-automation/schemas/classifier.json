@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["head_sha", "risk", "technical_debt", "documentation_only", "cross_cutting", "duplicate", "likely_non_legitimate", "non_legitimate_confidence", "non_legitimate_reason", "breaking_change_suspected", "breaking_change_rationale", "breaking_change_surface", "protocol_related", "summary"],
+  "required": ["head_sha", "risk", "technical_debt", "documentation_only", "cross_cutting", "overlap", "likely_non_legitimate", "non_legitimate_confidence", "non_legitimate_reason", "breaking_change_suspected", "breaking_change_rationale", "breaking_change_surface", "protocol_related", "summary"],
   "properties": {
     "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "risk": { "enum": ["low", "medium", "high"] },
@@ -11,7 +11,7 @@
     "likely_non_legitimate": { "type": "boolean" },
     "non_legitimate_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
     "non_legitimate_reason": { "type": "string", "maxLength": 500 },
-    "duplicate": {
+    "overlap": {
       "type": "object",
       "additionalProperties": false,
       "required": ["detected", "similar_pr_number", "similar_pr_url", "confidence", "rationale"],

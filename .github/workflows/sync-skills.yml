@@ -44,7 +44,7 @@ jobs:
           GH_TOKEN: ${{ secrets.DEVOLUTIONSBOT_WRITE_TOKEN }}
           PULL_REQUEST_BODY: |
             Synchronizes configured shared skills from their upstream repositories.
-          PULL_REQUEST_TITLE: 'chore(skills): sync shared skills'
+          PULL_REQUEST_TITLE: 'chore(agents): sync shared skills'
           SYNCHRONIZATION_BRANCH: automation/sync-shared-skills
         run: |
           set -euo pipefail

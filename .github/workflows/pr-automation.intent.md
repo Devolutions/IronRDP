@@ -67,12 +67,20 @@ Keep detailed failure reasons in the workflow summary only.
 
 Classify every non-draft, human-authored pull request that passes the integrity and capacity gates.
 Run automated review after CI succeeds for the exact classified head.
-Run the second review after a later push reaches green exact-head CI, and stop automatic review at `ai-reviewed/2`.
+Run the second review after a later push reaches green exact-head CI.
+At `ai-reviewed/2`, the review pipeline stops; classification and its labels keep updating.
+
+Use `maintainer-required` only when maintainer action is the next step.
+On the normal review path, apply it only after exact-head CI succeeds and an automated review reports no findings.
+When a review reports findings, the next step belongs to the contributor, even at `ai-reviewed/2`.
+Once `ai-reviewed/2` is set, classification applies the label on the next push, when the outstanding findings are presumed addressed.
+Apply it earlier only when automation stops and needs maintainer intervention.
 
 `OWNER` and `MEMBER` authors are always eligible.
 Other authors need one pull request from the same immutable human author merged into `master`.
 
-Block review for duplicates at confidence 0.85 or greater and likely non-legitimate changes.
+Block review for likely non-legitimate changes.
+Label a suspected overlap with another pull request at confidence 0.85 or greater as `triage/overlap`, and keep it advisory: it never blocks review and never asks for maintainer handoff on its own.
 Unavailable or invalid classification fails closed to maintainer review.
 Risk and protocol relevance select reviewers but do not suppress review.
 
@@ -89,3 +97,7 @@ Adding `ai-review/allow-oversized` forces reclassification and may dispatch on t
 Unrelated label events and repeated non-explicit unchanged classifications must not dispatch.
 
 Force mode bypasses policy gates but not classification prerequisites, evidence, validation, filesystem, citation, publication, or stale-head safeguards.
+
+## Run summary
+
+Link the resolved pull request from the workflow run summary, on every route.

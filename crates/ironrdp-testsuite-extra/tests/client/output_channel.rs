@@ -3,8 +3,9 @@ use core::time::Duration;
 use std::sync::Arc;
 
 use ironrdp_client::output_channel::{DropPolicy, output_channel};
-use ironrdp_client::rdp::RdpOutputEvent;
+use ironrdp_client::rdp::{DesktopUpdate, RdpOutputEvent};
 use ironrdp_graphics::pointer::DecodedPointer;
+use ironrdp_pdu::geometry::InclusiveRectangle;
 
 fn pointer_bitmap(hotspot_x: u16) -> RdpOutputEvent {
     RdpOutputEvent::PointerBitmap(Arc::new(DecodedPointer {
@@ -25,6 +26,39 @@ fn image_event(width: u16) -> RdpOutputEvent {
 }
 
 #[test]
+fn desktop_update_validates_packed_region_shape() {
+    let width = NonZeroU16::new(4).unwrap();
+    let height = NonZeroU16::new(3).unwrap();
+    let region = InclusiveRectangle {
+        left: 1,
+        top: 1,
+        right: 3,
+        bottom: 2,
+    };
+    let update = DesktopUpdate::new(vec![1, 2, 3, 4, 5, 6], width, height, region.clone()).expect("valid update");
+
+    assert_eq!(update.buffer(), [1, 2, 3, 4, 5, 6]);
+    assert_eq!(update.width(), width);
+    assert_eq!(update.height(), height);
+    assert_eq!(update.region(), region);
+    assert!(DesktopUpdate::new(vec![0; 5], width, height, region).is_none());
+    assert!(
+        DesktopUpdate::new(
+            vec![0],
+            width,
+            height,
+            InclusiveRectangle {
+                left: 4,
+                top: 0,
+                right: 4,
+                bottom: 0,
+            },
+        )
+        .is_none()
+    );
+}
+
+#[test]
 fn drop_policy_classification() {
     assert_eq!(image_event(1).drop_policy(), DropPolicy::LatestOnly);
     assert_eq!(RdpOutputEvent::PointerDefault.drop_policy(), DropPolicy::LatestOnly);
@@ -36,6 +70,24 @@ fn drop_policy_classification() {
     assert_eq!(RdpOutputEvent::Connected.drop_policy(), DropPolicy::MustDeliver);
     assert_eq!(RdpOutputEvent::LoginComplete.drop_policy(), DropPolicy::MustDeliver);
     assert_eq!(RdpOutputEvent::AutoReconnected.drop_policy(), DropPolicy::MustDeliver);
+    // A `DesktopUpdate` is a diff against the prior frame, not a full snapshot like `Image`:
+    // it must never be dropped in favor of a newer one, or that region's pixels would be lost.
+    let update = DesktopUpdate::new(
+        vec![0u32],
+        NonZeroU16::new(1).unwrap(),
+        NonZeroU16::new(1).unwrap(),
+        InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        },
+    )
+    .expect("valid update");
+    assert_eq!(
+        RdpOutputEvent::DesktopUpdate(update).drop_policy(),
+        DropPolicy::MustDeliver
+    );
 }
 
 /// A burst of `LatestOnly` sends must never block, and the receiver must see
@@ -87,6 +139,32 @@ async fn latest_only_variants_are_independent() {
         saw_image && saw_pointer,
         "both variants must be delivered independently"
     );
+}
+
+/// `Connected` and a `DesktopUpdate` must arrive in send order: a desktop update produced after
+/// activation must never be observed by a consumer before `Connected`, which would let the UI
+/// present a frame while still reporting the pre-connection state.
+#[tokio::test]
+async fn desktop_update_is_ordered_after_connected() {
+    let (sender, mut receiver) = output_channel(32);
+
+    sender.send(RdpOutputEvent::Connected).await.unwrap();
+    let update = DesktopUpdate::new(
+        vec![0u32],
+        NonZeroU16::new(1).unwrap(),
+        NonZeroU16::new(1).unwrap(),
+        InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        },
+    )
+    .expect("valid update");
+    sender.send(RdpOutputEvent::DesktopUpdate(update)).await.unwrap();
+
+    assert!(matches!(receiver.recv().await, Some(RdpOutputEvent::Connected)));
+    assert!(matches!(receiver.recv().await, Some(RdpOutputEvent::DesktopUpdate(_))));
 }
 
 /// `MustDeliver` events keep backpressuring a full channel exactly like a

@@ -21,7 +21,6 @@ function reviewSkipReasons({ gate, gateResult, rateLimit, rateLimitResult } = {}
       const labels = new Set(Array.isArray(gate.labels) ? gate.labels : []);
       const policyReasonStart = reasons.length;
       if (labels.has("ai-reviewed/2")) reasons.push("The pull request has reached the two-review limit.");
-      if (labels.has("duplicate")) reasons.push("The pull request is marked as a duplicate.");
       if (labels.has("triage/legitimacy") || gate.legitimacyStopped === true) {
         reasons.push("The pull request requires a maintainer legitimacy decision.");
       }

@@ -48,9 +48,10 @@ function labelsOf(labels) {
   return new Set((labels || []).map((label) => typeof label === "string" ? label : label?.name).filter(Boolean));
 }
 
+// Suspected overlap is approximate and must not suppress code review.
 function reviewPolicyEligible({ labels, legitimacyStopped } = {}) {
   const present = labelsOf(labels);
-  if (present.has("ai-reviewed/2") || present.has("duplicate") ||
+  if (present.has("ai-reviewed/2") ||
       present.has("triage/legitimacy") || legitimacyStopped === true) return false;
   return true;
 }

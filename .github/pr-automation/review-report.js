@@ -84,6 +84,7 @@ function aggregateMetrics(outcomes) {
   };
   let anyTokens = false;
   for (const stage of outcomes) {
+    if (!stage.provider) continue;
     if (stage.attempts === 2) metrics.stage_retries += 1;
     const ran = stage.status !== "skipped";
     if (stage.metrics.tokens) {
@@ -93,16 +94,14 @@ function aggregateMetrics(outcomes) {
         else if (metrics.tokens[key] !== null) metrics.tokens[key] += stage.metrics.tokens[key];
       }
       if (!stage.metrics.tokens.complete) metrics.tokens_complete = false;
-    } else if (stage.provider && ran) {
+    } else if (ran) {
       metrics.tokens_complete = false;
     }
-    // A stage that ran without reporting a measurement makes the total unknown, never a smaller
-    // number that reads as measured. Retries and repairs are provider counters, so only a provider
-    // stage can leave them unknown.
+    // Timing and retry metrics describe model work only. A stage that reached a provider without
+    // reporting a measurement makes the total unknown, never a smaller measured number.
     for (const key of ["elapsed_ms", "request_retries", "output_repairs"]) {
-      const measurable = ran && (key === "elapsed_ms" || stage.provider);
       if (stage.metrics[key] === null) {
-        if (measurable) metrics[key] = null;
+        if (ran) metrics[key] = null;
       } else if (metrics[key] !== null) {
         metrics[key] += stage.metrics[key];
       }

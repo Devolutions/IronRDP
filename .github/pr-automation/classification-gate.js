@@ -8,9 +8,6 @@ async function resolveClassificationGate({
   if (force) {
     return { available: true, required: true, reason: "", force: true };
   }
-  if (retryWithLargerEvidence) {
-    return { available: true, required: true, reason: "", largerEvidence: true };
-  }
   try {
     const { data } = await github.rest.checks.listForRef({
       owner, repo, ref: expectedSha, check_name: "AI classification", per_page: 100,
@@ -22,7 +19,13 @@ async function resolveClassificationGate({
         run.app?.slug === "github-actions" && state?.automaticReviewEligible === true &&
         run.output?.title === "Classification complete";
     });
-    return { available: true, required: !completed, reason: "", externalId, completed };
+    return {
+      available: true,
+      required: retryWithLargerEvidence || !completed,
+      reason: "",
+      externalId,
+      completed,
+    };
   } catch (error) {
     return {
       available: false,

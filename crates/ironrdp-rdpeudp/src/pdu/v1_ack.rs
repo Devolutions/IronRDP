@@ -66,7 +66,13 @@ pub struct V1AckVectorElement {
     /// State shared by every datagram in this run.
     pub state: VectorElementState,
 
-    /// Number of consecutive datagrams in this state (0..=63).
+    /// Raw six-bit run length as it appears on the wire (0..=63).
+    ///
+    /// Windows encodes a run of `n` datagrams as `n - 1`: an element of 0x00
+    /// covers exactly one datagram and 0x3F covers sixty-four. [MS-RDPEUDP]
+    /// 2.2.2.7.1 only says the field is "the length of a continuous sequence
+    /// of datagrams"; the count-minus-one reading is what the peer sends
+    /// (see `RdpeudpConnection::process_v1_acknowledgement`).
     pub length: u8,
 }
 

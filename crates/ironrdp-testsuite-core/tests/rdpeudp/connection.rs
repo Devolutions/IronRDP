@@ -23,6 +23,7 @@ fn default_config(isn: u32) -> ConnectionConfig {
         idle_timeout: Duration::from_secs(65),
         keep_alive_interval: Duration::from_secs(8),
         cookie_hash: Some(TEST_COOKIE_HASH),
+        offer_version: UdpVersion::V3,
     }
 }
 
@@ -87,6 +88,7 @@ fn server_accept_produces_syn_ack() {
         }),
         correlation_id: None,
         syn_data_ex: Some(test_syn_data_ex()),
+        data: None,
     };
 
     let mut conn = RdpeudpConnection::accept(default_config(200), &client_syn, t).expect("accept");
@@ -171,6 +173,7 @@ fn server_rejects_non_v2_syn() {
             udp_ver: UdpVersion::V1,
             cookie_hash: None,
         }),
+        data: None,
     };
 
     let result = RdpeudpConnection::accept(default_config(200), &syn, t);
@@ -204,6 +207,7 @@ fn server_accepts_and_settles_on_v3_for_an_unrecognized_higher_version() {
             udp_ver: UdpVersion(0x0102),
             cookie_hash: Some(TEST_COOKIE_HASH),
         }),
+        data: None,
     };
 
     let mut conn = RdpeudpConnection::accept(default_config(200), &syn, t).expect("accept");
@@ -280,6 +284,7 @@ fn accept_rejects_an_out_of_range_log_window_size() {
         }),
         correlation_id: None,
         syn_data_ex: Some(test_syn_data_ex()),
+        data: None,
     };
 
     let result = RdpeudpConnection::accept(config, &syn, t);
@@ -1144,6 +1149,7 @@ fn a_server_rejects_a_syn_offering_a_version_below_3() {
             udp_ver: UdpVersion::V2,
             cookie_hash: None,
         }),
+        data: None,
     };
 
     RdpeudpConnection::accept(default_config(200), &syn, t).expect_err("version 2 is not RDPEUDP2");
@@ -1172,17 +1178,15 @@ fn a_server_rejects_a_syn_whose_cookie_hash_does_not_match() {
             udp_ver: UdpVersion::V3,
             cookie_hash: Some([0xFF; 32]),
         }),
+        data: None,
     };
 
     RdpeudpConnection::accept(default_config(200), &syn, t).expect_err("the hash is for a different cookie");
 }
 
-#[test]
-fn a_client_rejects_a_syn_ack_that_settles_below_version_3() {
-    let t = now();
-    let mut client = RdpeudpConnection::connect(default_config(100), t).expect("connect");
-    client.poll_transmit(t).expect("SYN");
-
+/// A SYN+ACK from a server that only speaks MS-RDPEUDP, answering a client SYN
+/// that offered version 3.
+fn version_2_syn_ack() -> Vec<u8> {
     let syn_ack = V1Datagram {
         header: FecHeader {
             sn_source_ack: 100,
@@ -1202,12 +1206,52 @@ fn a_client_rejects_a_syn_ack_that_settles_below_version_3() {
             udp_ver: UdpVersion::V2,
             cookie_hash: None,
         }),
+        data: None,
     };
+    encode_vec(&syn_ack).expect("encode")
+}
 
-    let mut bytes = encode_vec(&syn_ack).expect("encode");
+/// MS-RDPEUDP 1.7: a server that does not implement version 3 settles on its
+/// own highest version, and the client MUST follow it down onto the
+/// MS-RDPEUDP data transfer, which this crate implements for reliable
+/// transport.
+#[test]
+fn a_client_follows_a_syn_ack_that_settles_on_version_2() {
+    let t = now();
+    let mut client = RdpeudpConnection::connect(default_config(100), t).expect("connect");
+    client.poll_transmit(t).expect("SYN");
+
+    let mut bytes = version_2_syn_ack();
     client
         .handle_datagram(&mut bytes, later(t, 50))
-        .expect_err("the server settled on the MS-RDPEUDP data transfer");
+        .expect("version 2 is a version both endpoints support");
+    assert!(client.is_established());
+
+    // The final handshake ACK acknowledges the SYN+ACK in MS-RDPEUDP framing.
+    let ack = client.poll_transmit(later(t, 50)).expect("final ACK");
+    let ack: V1Datagram = decode(&ack.contents).expect("MS-RDPEUDP framing");
+    assert!(ack.header.flags.contains(V1Flags::ACK));
+    assert_eq!(ack.header.sn_source_ack, 200);
+}
+
+/// The SYN+ACK's version is "the highest version supported by both endpoints"
+/// (3.1.5.1.1); one above what the SYN offered cannot be, so the client does
+/// not guess at framing and timers for it.
+#[test]
+fn a_client_rejects_a_syn_ack_that_settles_above_its_offer() {
+    let t = now();
+    let config = ConnectionConfig {
+        offer_version: UdpVersion::V1,
+        cookie_hash: None,
+        ..default_config(100)
+    };
+    let mut client = RdpeudpConnection::connect(config, t).expect("connect");
+    client.poll_transmit(t).expect("SYN");
+
+    let mut bytes = version_2_syn_ack();
+    client
+        .handle_datagram(&mut bytes, later(t, 50))
+        .expect_err("the SYN offered version 1, so version 2 is not supported by both endpoints");
     assert!(!client.is_established());
 }
 
