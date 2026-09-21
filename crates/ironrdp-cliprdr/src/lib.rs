@@ -1333,10 +1333,7 @@ impl<R: Role> Cliprdr<R> {
 
         // [MS-RDPECLIP] 2.2.5.3 - Validate flags are spec-compliant
         if let Err(e) = request.flags.validate() {
-            return Err(ironrdp_pdu::PduError::new(
-                "request_file_contents",
-                ironrdp_pdu::PduErrorKind::Other { description: e },
-            ));
+            reject_file_contents_request!(self, request.stream_id, e);
         }
 
         // [MS-RDPECLIP] 2.2.5.3 - Validate SIZE request constraints
