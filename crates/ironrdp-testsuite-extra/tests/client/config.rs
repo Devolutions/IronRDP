@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use std::sync::Arc;
 
+use ironrdp::connector::sspi::KdcResolution;
 #[cfg(windows)]
 use ironrdp_cfg::GatewayCredentialsSource;
 use ironrdp_cfg::PropertySetExt as _;
@@ -435,10 +436,10 @@ fn kdc_proxy_name_is_normalized_to_https_url() {
     );
 
     let kerberos = config.kerberos_config().expect("kerberos config should be present");
-    let kdc_proxy_url = kerberos
-        .kdc_proxy_url
-        .as_ref()
-        .expect("kdc proxy url should be present");
+    let kdc_proxy_url = match &kerberos.kdc_resolution {
+        KdcResolution::KdcUrl(Some(url)) => url,
+        _ => panic!("kdc proxy url should be present"),
+    };
     assert_eq!(kdc_proxy_url.as_str(), "https://kdc.example.com/KdcProxy");
 }
 
