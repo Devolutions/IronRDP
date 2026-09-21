@@ -80,6 +80,16 @@ const AUTO_RECONNECT_COOKIE_UPDATE_INTERVAL: Duration = Duration::from_secs(60 *
 /// call it periodically. `ironrdp-client` and `ironrdp-web` already do; without
 /// this the server role never sends `Unlock` PDUs, never expires locks and never
 /// answers abandoned file contents requests.
+///
+/// Two of those sweeps reach the backend with no PDU from the peer behind them:
+/// a file contents request left pending past the transfer timeout is answered
+/// with a synthetic error through [`on_file_contents_response`], and a locked
+/// file list snapshot left inactive for that same window is dropped with
+/// [`on_unlock`]. Both already run for the client and web roles; a server
+/// backend starts seeing them once this timer does.
+///
+/// [`on_file_contents_response`]: ironrdp_cliprdr::backend::CliprdrBackend::on_file_contents_response
+/// [`on_unlock`]: ironrdp_cliprdr::backend::CliprdrBackend::on_unlock
 const CLIPRDR_DRIVE_TIMEOUTS_INTERVAL: Duration = Duration::from_secs(5);
 
 /// How long a single [`ironrdp_acceptor::accept_finalize`] pass may take before
