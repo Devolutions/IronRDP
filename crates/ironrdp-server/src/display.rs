@@ -350,6 +350,19 @@ pub trait RdpServerDisplay: Send {
     async fn monitor_count(&mut self) -> u32 {
         1
     }
+
+    /// Whether to offer the Display Control Virtual Channel (MS-RDPEDISP) on
+    /// this connection.
+    ///
+    /// Called once per connection, before the dynamic channels are set up.
+    /// Return `false` when the display cannot honor a client layout request,
+    /// for example when it mirrors a fixed-size physical screen: MS-RDPEDISP
+    /// section 1.3 defines no reject message, so a client that sent a layout
+    /// the server cannot apply just waits for a reconfiguration that never
+    /// comes. Defaults to `true`, matching every existing implementation.
+    async fn offers_display_control(&mut self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
