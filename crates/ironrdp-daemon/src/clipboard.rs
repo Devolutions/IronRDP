@@ -430,26 +430,40 @@ impl CliprdrBackend for AgentCliprdrBackend {
         ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED | ClipboardGeneralCapabilityFlags::CAN_LOCK_CLIPDATA
     }
 
-    fn on_ready(&mut self) {}
+    fn on_ready(&mut self) {
+        // A stored file offer is re-advertised here rather than in `on_request_format_list`:
+        // `Cliprdr::initiate_file_copy` requires the Ready state, and the format list sent from
+        // `on_request_format_list` is what completes the handshake that reaches it.
+        let state = self.state.lock().expect("clipboard state poisoned");
+        if let Some(ClipboardContent::Files(files)) = state.local.as_ref() {
+            if state
+                .negotiated_capabilities
+                .contains(ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED)
+            {
+                let files = files.clone();
+                drop(state);
+                self.proxy
+                    .send_clipboard_message(ClipboardMessage::SendInitiateFileCopy(files));
+            }
+        }
+    }
 
     fn on_request_format_list(&mut self) {
         let state = self.state.lock().expect("clipboard state poisoned");
         match state.local.as_ref() {
-            Some(ClipboardContent::Files(files)) => {
-                if state
+            Some(ClipboardContent::Files(_)) => {
+                // `initiate_file_copy` hard-errors outside the Ready state and the error is
+                // session-fatal, so the handshake completes with an empty list and `on_ready`
+                // re-advertises the files.
+                if !state
                     .negotiated_capabilities
                     .contains(ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED)
                 {
-                    let files = files.clone();
-                    drop(state);
-                    self.proxy
-                        .send_clipboard_message(ClipboardMessage::SendInitiateFileCopy(files));
-                } else {
                     debug!("Not re-advertising local file list: file transfer was not negotiated");
-                    drop(state);
-                    self.proxy
-                        .send_clipboard_message(ClipboardMessage::SendInitiateCopy(Vec::new()));
                 }
+                drop(state);
+                self.proxy
+                    .send_clipboard_message(ClipboardMessage::SendInitiateCopy(Vec::new()));
             }
             Some(content) => {
                 let formats = advertised_formats(content);
