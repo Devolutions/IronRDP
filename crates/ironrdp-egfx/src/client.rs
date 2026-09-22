@@ -502,6 +502,13 @@ impl GraphicsPipelineClient {
     ///
     /// The returned dimensions satisfy the protocol's output limit and the
     /// compositor's output-framebuffer allocation limit and are reported once.
+    ///
+    /// The framebuffer must follow this size *before* the compositor deltas drained by
+    /// [`Self::drain_output`] are applied, because a reset and the deltas that repaint the
+    /// new output arrive in the same payload and the server will not send them again.
+    ///
+    /// A same-size reset is still reported when valid. Per MS-RDPEGFX 3.3.5.14 the reset
+    /// destroys every surface even when the output dimensions are unchanged.
     #[must_use]
     pub fn take_output_reset(&mut self) -> Option<(u16, u16)> {
         self.pending_output_reset.take()
@@ -694,6 +701,13 @@ impl GraphicsPipelineClient {
         let output_size = Compositor::materializable_output_size(width, height);
 
         // Per spec, ResetGraphics implicitly destroys all surfaces
+        let surface_count = self.surfaces.len();
+        // Tile coefficient buffers belong to those surfaces. Keeping them lets a
+        // later surface reuse the same id and difference against the previous
+        // desktop, which decodes as torn or duplicated tiles.
+        // CONTEXT / ClearCodec glyph cache stay: 3.3.5.14 only redefines the
+        // output buffer, and Windows will not re-send SYNC + CONTEXT.
+        self.progressive_decoder.clear_tile_references();
         self.surfaces.clear();
         self.compositor.reset(width, height);
         self.pending_output_reset = output_size;
@@ -722,8 +736,12 @@ impl GraphicsPipelineClient {
         // drop the glyph cache, so a legitimate post-reset GLYPH_HIT would fail unless the
         // server redundantly re-sent every glyph.
 
+        debug!(
+            width,
+            height, surface_count, "ResetGraphics: surfaces destroyed; tile refs dropped; progressive CONTEXT retained"
+        );
+
         if output_size.is_some() {
-            debug!(width, height, "Graphics reset");
             self.handler.on_reset_graphics(width, height);
             Ok(())
         } else {
@@ -757,13 +775,19 @@ impl GraphicsPipelineClient {
     }
 
     fn handle_delete_surface(&mut self, surface_id: u16) {
+        // MS-RDPEGFX: deleting a surface drops that surface's progressive tile
+        // references. A following difference tile before a new base tile will
+        // correctly fail with MissingTileReference.
         self.progressive_decoder.delete_surface(surface_id);
         if self.surfaces.remove(&surface_id).is_some() {
             self.compositor.delete_surface(surface_id);
-            debug!(surface_id, "Surface deleted");
+            debug!(surface_id, "DeleteSurface cleared progressive tile references");
             self.handler.on_surface_deleted(surface_id);
         } else {
-            warn!(surface_id, "DeleteSurface for unknown surface");
+            warn!(
+                surface_id,
+                "DeleteSurface for unknown surface (progressive refs cleared)"
+            );
         }
     }
 
@@ -1424,6 +1448,25 @@ mod tests {
                 pixel_format: PixelFormat::XRgb,
             }))
             .unwrap();
+        // Give the surface content first: mapping a surface that has never been painted
+        // publishes nothing, so the delta asserted below would not exist.
+        client
+            .handle_pdu(GfxPdu::SolidFill(SolidFillPdu {
+                surface_id: 1,
+                fill_pixel: crate::pdu::Color {
+                    b: 0x33,
+                    g: 0x22,
+                    r: 0x11,
+                    xa: 0,
+                },
+                rectangles: vec![ExclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 2,
+                    bottom: 2,
+                }],
+            }))
+            .unwrap();
         client
             .handle_pdu(GfxPdu::MapSurfaceToScaledOutput(MapSurfaceToScaledOutputPdu {
                 surface_id: 1,
@@ -1715,6 +1758,37 @@ mod tests {
         assert!(client.surfaces.is_empty(), "surfaces should be cleared");
         assert!(client.current_frame_id.is_none(), "frame_id should be reset");
         assert_eq!(client.frames_queued, 0, "frame queue should be reset");
+    }
+
+    /// Same-size `ResetGraphics` must still be observable: it destroys every surface, so a
+    /// consumer has to re-blit even when the output dimensions did not change.
+    #[test]
+    fn take_output_reset_reports_same_size_resets() {
+        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
+        assert!(client.take_output_reset().is_none());
+
+        client
+            .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
+                width: 800,
+                height: 600,
+                monitors: vec![],
+            }))
+            .expect("valid reset dimensions");
+        assert_eq!(client.take_output_reset(), Some((800, 600)));
+        assert!(client.take_output_reset().is_none(), "flag is one-shot");
+
+        client
+            .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
+                width: 800,
+                height: 600,
+                monitors: vec![],
+            }))
+            .expect("valid reset dimensions");
+        assert_eq!(
+            client.take_output_reset(),
+            Some((800, 600)),
+            "same-size ResetGraphics must still signal a full client re-blit"
+        );
     }
 
     #[test]
@@ -2242,6 +2316,40 @@ mod tests {
 
         // Windows never re-sends SYNC + CONTEXT after a reset, so a CONTEXT-less
         // continuation has to keep decoding.
+        assert!(wire_progressive(&mut client, progressive_context_stream(false)).is_ok());
+    }
+
+    #[test]
+    fn reset_graphics_drops_tile_references_of_implicitly_destroyed_surfaces() {
+        let mut client = progressive_client();
+        wire_progressive(&mut client, progressive_context_stream(true)).unwrap();
+        wire_progressive(&mut client, progressive_tile_stream(0, 0, 64, 64)).unwrap();
+        assert!(
+            client.progressive_decoder.total_reference_count() > 0,
+            "first-pass tile must leave a difference reference"
+        );
+
+        client
+            .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
+                width: 128,
+                height: 96,
+                monitors: vec![],
+            }))
+            .unwrap();
+
+        // MS-RDPEGFX 2.2.2.14 / 3.3.5.14: ResetGraphics destroys every surface.
+        // Tile coefficient buffers belong to those surfaces. Reusing surface id 0
+        // after a Display Control resize must not difference against the old desktop.
+        assert_eq!(client.progressive_decoder.total_reference_count(), 0);
+
+        client
+            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                surface_id: 1,
+                width: 128,
+                height: 96,
+                pixel_format: PixelFormat::XRgb,
+            }))
+            .unwrap();
         assert!(wire_progressive(&mut client, progressive_context_stream(false)).is_ok());
     }
 
