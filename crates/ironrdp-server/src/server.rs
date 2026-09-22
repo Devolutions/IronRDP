@@ -1879,7 +1879,7 @@ impl RdpServer {
         self.gfx_handle.as_ref()
     }
 
-    fn attach_channels(&mut self, acceptor: &mut Acceptor, monitor_count: u32) {
+    fn attach_channels(&mut self, acceptor: &mut Acceptor, monitor_count: u32, offer_display_control: bool) {
         if let Some(cliprdr_factory) = self.cliprdr_factory.as_deref() {
             let backend = cliprdr_factory.build_cliprdr_backend();
 
@@ -1900,12 +1900,16 @@ impl RdpServer {
             acceptor.attach_static_channel(RdpdrServer::new(backend));
         }
 
-        let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display), monitor_count);
-        let dvc = dvc::DrdynvcServer::new()
-            .with_dynamic_channel(AInputHandler {
-                handler: Arc::clone(&self.handler),
-            })
-            .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
+        let dvc = dvc::DrdynvcServer::new().with_dynamic_channel(AInputHandler {
+            handler: Arc::clone(&self.handler),
+        });
+
+        let dvc = if offer_display_control {
+            let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display), monitor_count);
+            dvc.with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)))
+        } else {
+            dvc
+        };
 
         let dvc = {
             let echo_handle = self.echo_handle.clone();
@@ -2043,7 +2047,8 @@ impl RdpServer {
         // static channel set (the MCS Connect Initial); `accept_begin`, already
         // done, stops at the security-upgrade gate before that.
         let monitor_count = self.display.lock().await.monitor_count().await;
-        self.attach_channels(&mut candidate.acceptor, monitor_count);
+        let offer_display_control = self.display.lock().await.offers_display_control().await;
+        self.attach_channels(&mut candidate.acceptor, monitor_count, offer_display_control);
 
         self.finalize_negotiated(*candidate).await
     }
@@ -2181,7 +2186,8 @@ impl RdpServer {
             self.opts.honor_client_desktop_size,
         );
 
-        self.attach_channels(pending.acceptor_mut(), monitor_count);
+        let offer_display_control = self.display.lock().await.offers_display_control().await;
+        self.attach_channels(pending.acceptor_mut(), monitor_count, offer_display_control);
 
         let Some(negotiated) = pending.negotiate_and_authenticate(stream, tls).await? else {
             return Ok(());
