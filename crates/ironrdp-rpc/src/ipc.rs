@@ -52,6 +52,12 @@ pub const MAX_CLIPBOARD_IMAGE_BYTES: usize = crate::transport::MAX_MESSAGE_LEN -
 /// a handful of bytes, but this only needs to be safely conservative, not exact.
 const CLIPBOARD_IMAGE_FRAME_HEADROOM: usize = 4 * 1024;
 
+/// Maximum size in bytes of an HTML fragment accepted by [`Request::ClipboardSetHtml`].
+///
+/// Generous for a clipboard fragment (a typical rich-text paste is a few KB) while still bounded;
+/// this is a plain-text CLI argument, not a file, so it stays well under the image cap.
+pub const MAX_CLIPBOARD_HTML_BYTES: usize = 256 * 1024;
+
 /// Maximum contacts in one MS-RDPEI touch frame accepted over RPC.
 pub const MAX_TOUCH_CONTACTS: usize = 10;
 
@@ -465,6 +471,11 @@ pub enum Request {
     /// Set the local clipboard image (PNG bytes, at most [`MAX_CLIPBOARD_IMAGE_BYTES`]) and
     /// advertise it to the remote as `CF_DIB`/`CF_DIBV5`.
     ClipboardSetImage { png: Vec<u8> },
+    /// Return the last HTML fragment received from the remote clipboard, if any.
+    ClipboardGetHtml,
+    /// Set the local clipboard HTML fragment (at most [`MAX_CLIPBOARD_HTML_BYTES`]) and advertise
+    /// it to the remote as the registered `HTML Format`.
+    ClipboardSetHtml { html: String },
 }
 
 // Manual `Debug` so the `Connect` payload's property *values* (which may include a password before
@@ -588,6 +599,11 @@ impl fmt::Debug for Request {
                 .debug_struct("ClipboardSetImage")
                 .field("png_len", &png.len())
                 .finish(),
+            Self::ClipboardGetHtml => f.write_str("ClipboardGetHtml"),
+            Self::ClipboardSetHtml { html } => f
+                .debug_struct("ClipboardSetHtml")
+                .field("html_len", &html.len())
+                .finish(),
         }
     }
 }
@@ -668,6 +684,8 @@ pub enum Payload {
     ClipboardText(Option<String>),
     /// The remote clipboard's last image as PNG bytes, or `None` if unavailable.
     ClipboardImage(Option<Vec<u8>>),
+    /// The remote clipboard's last HTML fragment, or `None` if unavailable.
+    ClipboardHtml(Option<String>),
 }
 
 impl fmt::Debug for Payload {
@@ -700,6 +718,10 @@ impl fmt::Debug for Payload {
             Self::ClipboardImage(png) => f
                 .debug_tuple("ClipboardImage")
                 .field(&png.as_ref().map(Vec::len))
+                .finish(),
+            Self::ClipboardHtml(html) => f
+                .debug_tuple("ClipboardHtml")
+                .field(&html.as_ref().map(String::len))
                 .finish(),
         }
     }
@@ -2027,6 +2049,10 @@ impl Encode for Payload {
                 dst.write_u8(14);
                 write_opt_bytes(dst, png.as_deref())?;
             }
+            Self::ClipboardHtml(html) => {
+                dst.write_u8(15);
+                write_opt_string(dst, html.as_deref())?;
+            }
         }
         Ok(())
     }
@@ -2053,6 +2079,7 @@ impl Encode for Payload {
                 Self::RailLaunch(launch) => launch.size(),
                 Self::ClipboardText(text) => opt_string_size(text.as_deref()),
                 Self::ClipboardImage(png) => opt_bytes_size(png.as_deref()),
+                Self::ClipboardHtml(html) => opt_string_size(html.as_deref()),
             }
     }
 }
@@ -2103,6 +2130,13 @@ impl Decode<'_> for Payload {
                     return Err(ironrdp_core::invalid_field_err!("clipboard image", "too large"));
                 }
                 Ok(Self::ClipboardImage(png))
+            }
+            15 => {
+                let html = read_opt_string(src)?;
+                if html.as_ref().is_some_and(|html| html.len() > MAX_CLIPBOARD_HTML_BYTES) {
+                    return Err(ironrdp_core::invalid_field_err!("clipboard html", "too large", in: src));
+                }
+                Ok(Self::ClipboardHtml(html))
             }
             _ => Err(ironrdp_core::invalid_field_err!("payload", "unknown tag", in: src)),
         }
@@ -2330,6 +2364,11 @@ impl Encode for Request {
                 dst.write_u8(32);
                 write_bytes(dst, png)?;
             }
+            Self::ClipboardGetHtml => dst.write_u8(33),
+            Self::ClipboardSetHtml { html } => {
+                dst.write_u8(34);
+                write_string(dst, html)?;
+            }
         }
         Ok(())
     }
@@ -2352,7 +2391,8 @@ impl Encode for Request {
                 | Self::NowDiagnostics
                 | Self::RailStatus
                 | Self::ClipboardGet
-                | Self::ClipboardGetImage => 0,
+                | Self::ClipboardGetImage
+                | Self::ClipboardGetHtml => 0,
                 Self::QueryProps { filter } => 1 /* presence */ + filter.as_ref().map_or(0, Encode::size),
                 Self::QueryLogs { substring, last } => {
                     opt_string_size(substring.as_deref()) + 1 /* presence */ + last.map_or(0, |_| 4)
@@ -2393,6 +2433,7 @@ impl Encode for Request {
                 Self::DismissHoveringTouchContact { .. } => 1 /* contact_id */,
                 Self::ClipboardSet { text } => string_size(text),
                 Self::ClipboardSetImage { png } => bytes_size(png),
+                Self::ClipboardSetHtml { html } => string_size(html),
             }
     }
 }
@@ -2594,6 +2635,14 @@ impl Decode<'_> for Request {
                     return Err(ironrdp_core::invalid_field_err!("clipboard image", "too large"));
                 }
                 Ok(Self::ClipboardSetImage { png })
+            }
+            33 => Ok(Self::ClipboardGetHtml),
+            34 => {
+                let html = read_string(src)?;
+                if html.len() > MAX_CLIPBOARD_HTML_BYTES {
+                    return Err(ironrdp_core::invalid_field_err!("clipboard html", "too large", in: src));
+                }
+                Ok(Self::ClipboardSetHtml { html })
             }
             _ => Err(ironrdp_core::invalid_field_err!("request", "unknown tag", in: src)),
         }
