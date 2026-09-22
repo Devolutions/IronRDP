@@ -366,14 +366,15 @@ impl Acceptor {
         )
     }
 
-    /// If `data` (an MCS SendDataRequest already decoded from the wire) is on
-    /// the message channel while a multitransport request is outstanding AND
-    /// its payload strictly decodes as an Initiate Multitransport Response,
-    /// logs it against the outstanding request (matching request IDs) and
-    /// returns it. MS-RDPBCGR 3.2.5.15.1 gives this response no fixed
-    /// position relative to the rest of the handshake: it depends on when
-    /// the client resolves its own bootstrapping and whether the sideband
-    /// attempt failed, so both `CapabilitiesWaitConfirm` and
+    /// Returns `true` if `data` (an MCS SendDataRequest already decoded from
+    /// the wire) is on the message channel while a multitransport request is
+    /// outstanding AND its payload strictly decodes as an Initiate
+    /// Multitransport Response, after logging the response against the
+    /// outstanding request (matching request IDs); `false` otherwise, leaving
+    /// the caller to handle `data`. MS-RDPBCGR 3.2.5.15.1 gives this response
+    /// no fixed position relative to the rest of the handshake: it depends on
+    /// when the client resolves its own bootstrapping and whether the
+    /// sideband attempt failed, so both `CapabilitiesWaitConfirm` and
     /// `ConnectionFinalization` tolerate it landing wherever it actually
     /// shows up rather than only where `MultitransportBootstrapping`'s own
     /// comment describes as typical.
