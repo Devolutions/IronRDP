@@ -505,6 +505,38 @@ fn non_response_traffic_on_the_message_channel_is_not_misclassified() {
     );
 }
 
+/// With the Basic Security Header that the acceptor's ENCRYPTION_LEVEL_NONE
+/// implies, the Initiate Multitransport Response is exactly 12 bytes
+/// (MS-RDPBCGR 2.2.15.2). A message-channel payload that starts with a valid
+/// response but carries trailing bytes is not one, so it must not be consumed
+/// as a late response: it falls through to the same handling as any other
+/// unexpected traffic.
+#[test]
+fn multitransport_response_with_trailing_bytes_is_not_consumed() {
+    let mut acceptor = multitransport_acceptor(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+
+    let client_blocks =
+        client_gcc_with_message_channel_and_multitransport(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+    let (user_channel_id, _io_channel_id, message_channel_id, _) =
+        drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
+    let message_channel_id = message_channel_id.expect("message channel negotiated");
+
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping: sends request
+    let sent_request = acceptor.multitransport_request().expect("request sent").clone();
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // CapabilitiesSendServer: sends Demand Active
+    assert_eq!(acceptor.state().name(), "CapabilitiesWaitConfirm");
+
+    let mut payload = encode_vec(&MultitransportResponsePdu::abort(sent_request.request_id)).unwrap();
+    payload.push(0x00);
+    let response_with_trailing_byte = encode_send_data_request(user_channel_id, message_channel_id, &payload);
+    let result = acceptor.step(&response_with_trailing_byte, None, &mut WriteBuf::new());
+    assert!(
+        result.is_err(),
+        "a response followed by trailing bytes must not be swallowed as a late response"
+    );
+}
+
 /// MS-RDPBCGR 3.2.5.15.1 gives the Initiate Multitransport Response no fixed
 /// position relative to the rest of the handshake: it depends on when the
 /// client resolves its own bootstrapping and whether the sideband attempt
@@ -616,6 +648,54 @@ fn multitransport_not_offered_by_default() {
     assert!(matches!(written, Written::Nothing));
     assert!(acceptor.multitransport_request().is_none());
     assert_eq!(acceptor.multitransport_soft_sync_negotiated(), None);
+}
+
+/// The request decision follows what the server advertised during Basic
+/// Settings Exchange, not the live offer: enabling multitransport only after
+/// the GCC response went out without a MultiTransportChannelData block must
+/// not produce a request the client was never told about (MS-RDPBCGR 2.2.1.4).
+#[test]
+fn multitransport_offer_enabled_after_basic_settings_is_not_requested() {
+    let mut acceptor = multitransport_acceptor(None);
+
+    let client_blocks =
+        client_gcc_with_message_channel_and_multitransport(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+    let (.., server_multitransport) = drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
+    assert_eq!(server_multitransport, None);
+
+    acceptor.set_multitransport_offer(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
+    let written = acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping
+    assert!(matches!(written, Written::Nothing));
+    assert!(acceptor.multitransport_request().is_none());
+}
+
+/// Likewise for Soft-Sync: adding `SOFT_SYNC_TCP_TO_UDP` to the offer after
+/// the GCC response advertised reliable UDP without it must not make
+/// `multitransport_soft_sync_negotiated()` report a negotiation that never
+/// took place.
+#[test]
+fn soft_sync_added_after_basic_settings_is_not_negotiated() {
+    let mut acceptor = multitransport_acceptor(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+
+    let client_blocks = client_gcc_with_message_channel_and_multitransport(Some(
+        MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR | MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP,
+    ));
+    let (.., server_multitransport) = drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
+    assert_eq!(
+        server_multitransport,
+        Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR)
+    );
+
+    acceptor.set_multitransport_offer(Some(
+        MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR | MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP,
+    ));
+
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping: sends request
+    assert!(acceptor.multitransport_request().is_some());
+    assert_eq!(acceptor.multitransport_soft_sync_negotiated(), Some(false));
 }
 
 /// The acceptor offers multitransport, but the client's GCC blocks never

@@ -5,7 +5,7 @@ use ironrdp_connector::{
     ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, MonotonicInstant, Sequence, State, Written,
     encode_x224_packet, general_err, reason_err,
 };
-use ironrdp_core::{WriteBuf, decode};
+use ironrdp_core::{ReadCursor, WriteBuf, decode, decode_cursor};
 use ironrdp_pdu as pdu;
 use ironrdp_pdu::nego::SecurityProtocol;
 use ironrdp_pdu::x224::X224;
@@ -56,6 +56,13 @@ pub struct Acceptor {
     /// Server MultiTransportChannelData block is sent, and no Initiate
     /// Multitransport Request follows. See `set_multitransport_offer()`.
     offer_multitransport: Option<gcc::MultiTransportFlags>,
+    /// The flags actually written into the Server MultiTransportChannelData
+    /// block during Basic Settings Exchange, or `None` if no block was sent.
+    /// Everything after that exchange decides from this snapshot rather than
+    /// from `offer_multitransport`, so a later `set_multitransport_offer()`
+    /// call cannot send a request, or report a Soft-Sync result, that the
+    /// client was never told about.
+    advertised_multitransport: Option<gcc::MultiTransportFlags>,
     /// The Initiate Multitransport Request sent to the client, once
     /// `MultitransportBootstrapping` has run. See `multitransport_request()`.
     sent_multitransport_request: Option<rdp::multitransport::MultitransportRequestPdu>,
@@ -220,6 +227,7 @@ impl Acceptor {
             reactivation: false,
             honor_client_desktop_size: None,
             offer_multitransport: None,
+            advertised_multitransport: None,
             sent_multitransport_request: None,
             multitransport_security_rng: Box::new(OsMultitransportSecurityRng),
         }
@@ -299,6 +307,11 @@ impl Acceptor {
     /// `None` is the default: no multitransport block is advertised and no
     /// request is ever sent.
     ///
+    /// Only a call made before Basic Settings Exchange takes effect. The
+    /// flags advertised there are what the later request and
+    /// `multitransport_soft_sync_negotiated()` are based on; changing the
+    /// offer afterwards does not alter a negotiation already under way.
+    ///
     /// This acceptor only bootstraps and sends the request; it does not
     /// itself establish the RDPEUDP2 sideband transport the request
     /// promises. Enabling this without a caller that drives that
@@ -341,7 +354,7 @@ impl Acceptor {
     pub fn multitransport_soft_sync_negotiated(&self) -> Option<bool> {
         self.sent_multitransport_request.as_ref()?;
         Some(
-            self.offer_multitransport
+            self.advertised_multitransport
                 .is_some_and(|offer| offer.contains(gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP))
                 && self
                     .multitransport_flags
@@ -376,7 +389,16 @@ impl Acceptor {
         if Some(data.channel_id) != self.message_channel_id {
             return None;
         }
-        let response = decode::<rdp::multitransport::MultitransportResponsePdu>(data.user_data.as_ref()).ok()?;
+        // `decode` alone would accept a valid response followed by trailing
+        // bytes. This acceptor advertises ENCRYPTION_LEVEL_NONE, so the
+        // response carries the 4-byte Basic Security Header (MS-RDPBCGR
+        // 2.2.15.2) and is exactly 12 bytes: anything left over means the
+        // payload is something else.
+        let mut cursor = ReadCursor::new(data.user_data.as_ref());
+        let response = decode_cursor::<rdp::multitransport::MultitransportResponsePdu>(&mut cursor).ok()?;
+        if !cursor.is_empty() {
+            return None;
+        }
         if response.request_id == sent.request_id {
             debug!(
                 request_id = response.request_id,
@@ -436,6 +458,7 @@ impl Acceptor {
             reactivation: true,
             honor_client_desktop_size: consumed.honor_client_desktop_size,
             offer_multitransport: consumed.offer_multitransport,
+            advertised_multitransport: consumed.advertised_multitransport,
             sent_multitransport_request: consumed.sent_multitransport_request,
             multitransport_security_rng: consumed.multitransport_security_rng,
         })
@@ -600,9 +623,10 @@ pub enum AcceptorState {
     /// reactive (it waits to read whatever the server sends), this state is
     /// where the server actively decides and writes: it is entered with
     /// nothing to read, decides based on the client's advertised
-    /// `multitransport_flags` and the acceptor's own configured offer, and
-    /// either sends the request or skips it, either way moving straight on
-    /// to `CapabilitiesSendServer` in the same step.
+    /// `multitransport_flags` and the offer the server itself advertised
+    /// during Basic Settings Exchange, and either sends the request or skips
+    /// it, either way moving straight on to `CapabilitiesSendServer` in the
+    /// same step.
     ///
     /// There is deliberately no state mirroring the client's
     /// `MultitransportPending`: MS-RDPBCGR 3.2.5.15.1 only obliges the client
@@ -935,14 +959,18 @@ impl Sequence for Acceptor {
                 let skip_channel_join = early_capability
                     .is_some_and(|client| client.contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_SKIP_CHANNELJOIN));
 
+                self.advertised_multitransport = self
+                    .message_channel_id
+                    .and(self.offer_multitransport)
+                    .filter(|_| self.multitransport_flags.is_some());
+
                 let server_blocks = create_gcc_blocks(
                     self.io_channel_id,
                     channel_ids.clone(),
                     requested_protocol,
                     skip_channel_join,
                     self.message_channel_id,
-                    self.offer_multitransport
-                        .filter(|_| self.multitransport_flags.is_some()),
+                    self.advertised_multitransport,
                 );
 
                 let settings_response = mcs::ConnectResponse {
@@ -1108,7 +1136,7 @@ impl Sequence for Acceptor {
                 };
 
                 let offer_udp_fecr = self
-                    .offer_multitransport
+                    .advertised_multitransport
                     .is_some_and(|offer| offer.contains(gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
                 let client_supports_udp_fecr = self
                     .multitransport_flags
@@ -1381,7 +1409,7 @@ fn create_gcc_blocks(
         }),
         // Only meaningful alongside a message channel: the request and any
         // response it draws both travel there (MS-RDPBCGR 2.2.15.1, 2.2.15.2).
-        // The caller has already filtered offer_multitransport to None when
+        // The caller has already filtered the offer to None when
         // the client did not populate its own MultiTransportChannelData
         // block, per 2.2.1.4's requirement that this block be omitted then.
         multi_transport_channel: message_channel_id
