@@ -7919,7 +7919,9 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "pico-args",
+ "sha2 0.10.9",
  "tinyjson",
+ "toml",
  "xshell",
 ]
 
