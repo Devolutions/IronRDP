@@ -229,7 +229,158 @@ fn rejects_views_smaller_than_the_frame() {
 }
 
 #[test]
-fn rejects_sizes_that_are_not_macroblock_aligned() {
-    assert!(Yuv444Frame::new(W + 8, H).is_err());
+fn rejects_sizes_the_layout_cannot_hold() {
+    // The auxiliary view packs chroma into quarters of each row, and 4:2:0
+    // needs whole row pairs.
+    assert!(Yuv444Frame::new(W + 2, H).is_err());
+    assert!(Yuv444Frame::new(W, H + 1).is_err());
     assert!(Yuv444Frame::new(W, 0).is_err());
+    // Cropped heights are fine, for example 1080 decoded from a 1088 stream.
+    assert!(Yuv444Frame::new(1920, 1080).is_ok());
+}
+
+/// Through `GraphicsPipelineClient` with OpenH264: the two views are encoded
+/// as one H.264 stream by a single encoder, as MS-RDPEGFX 2.2.4.5 requires,
+/// sent as one AVC444v2 PDU, and decoded and combined by the client.
+#[cfg(feature = "openh264-bundled")]
+mod end_to_end {
+    use std::sync::{Arc, Mutex};
+
+    use ironrdp_core::encode_vec;
+    use ironrdp_dvc::DvcProcessor as _;
+    use ironrdp_egfx::client::{BitmapUpdate, GraphicsPipelineClient, GraphicsPipelineHandler};
+    use ironrdp_egfx::decode::OpenH264Decoder;
+    use ironrdp_egfx::pdu::{
+        Avc420BitmapStream, Avc444BitmapStream, CapabilitiesConfirmPdu, CapabilitiesV107Flags, CapabilitySet,
+        Codec1Type, CreateSurfacePdu, Encoding, GfxPdu, PixelFormat, QuantQuality, WireToSurface1Pdu,
+    };
+    use ironrdp_graphics::zgfx::wrap_uncompressed;
+
+    use super::*;
+
+    /// Collects the RGBA of every bitmap update.
+    struct Capture(Arc<Mutex<Vec<Vec<u8>>>>);
+
+    impl GraphicsPipelineHandler for Capture {
+        fn on_bitmap_updated(&mut self, update: &BitmapUpdate) {
+            assert_eq!(update.codec_id, Codec1Type::Avc444v2);
+            self.0.lock().expect("lock").push(update.data.clone());
+        }
+    }
+
+    /// A source with one-pixel chroma stripes: U alternates by column, V by
+    /// row. YUV420 averages them away; YUV444 keeps them.
+    fn striped_source() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let mut y = vec![0u8; W * H];
+        let mut u = vec![0u8; W * H];
+        let mut v = vec![0u8; W * H];
+        for row in 0..H {
+            for col in 0..W {
+                let i = row * W + col;
+                y[i] = u8::try_from(64 + (row + col) % 128).expect("fits");
+                u[i] = if col % 2 == 0 { 78 } else { 178 };
+                v[i] = if row % 2 == 0 { 78 } else { 178 };
+            }
+        }
+        (y, u, v)
+    }
+
+    fn mean_abs_error(a: &[u8], b: &[u8]) -> f64 {
+        assert_eq!(a.len(), b.len());
+        let total: u64 = a.iter().zip(b).map(|(x, y)| u64::from(x.abs_diff(*y))).sum();
+        #[expect(clippy::cast_precision_loss, reason = "test statistic")]
+        let mean = total as f64 / a.len() as f64;
+        mean
+    }
+
+    fn avc420_stream(data: &[u8]) -> Avc420BitmapStream<'_> {
+        Avc420BitmapStream {
+            rectangles: full_frame().to_vec(),
+            quant_qual_vals: vec![QuantQuality {
+                quantization_parameter: 22,
+                progressive: false,
+                quality: 100,
+            }],
+            data,
+        }
+    }
+
+    fn process(client: &mut GraphicsPipelineClient, pdu: &GfxPdu) {
+        let bytes = encode_vec(pdu).expect("encode PDU");
+        client.process(0, &wrap_uncompressed(&bytes)).expect("process PDU");
+    }
+
+    #[test]
+    fn avc444v2_through_the_client_keeps_full_chroma() {
+        let (y, u, v) = striped_source();
+        let (main, aux) = split_v2(&y, &u, &v);
+
+        // One encoder, main view then auxiliary view: one H.264 stream.
+        let config = openh264::encoder::EncoderConfig::new()
+            .skip_frames(false)
+            .bitrate(openh264::encoder::BitRate::from_bps(50_000_000));
+        let mut encoder =
+            openh264::encoder::Encoder::with_api_config(openh264::OpenH264API::from_source(), config).expect("encoder");
+        let mut encode = |planes: &Planes420| {
+            let yuv = openh264::formats::YUVSlices::new((&planes.y, &planes.u, &planes.v), (W, H), (W, W / 2, W / 2));
+            encoder.encode(&yuv).expect("encode").to_vec()
+        };
+        let (main_h264, aux_h264) = (encode(&main), encode(&aux));
+        assert!(!main_h264.is_empty() && !aux_h264.is_empty(), "encoder skipped a view");
+
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let mut client = GraphicsPipelineClient::new(
+            Box::new(Capture(Arc::clone(&updates))),
+            Some(Box::new(OpenH264Decoder::new().expect("decoder"))),
+        );
+        process(
+            &mut client,
+            &GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V10_7 {
+                flags: CapabilitiesV107Flags::empty(),
+            })),
+        );
+        process(
+            &mut client,
+            &GfxPdu::CreateSurface(CreateSurfacePdu {
+                surface_id: 1,
+                width: u16::try_from(W).expect("fits"),
+                height: u16::try_from(H).expect("fits"),
+                pixel_format: PixelFormat::XRgb,
+            }),
+        );
+        let stream = Avc444BitmapStream {
+            encoding: Encoding::LUMA_AND_CHROMA,
+            stream1: avc420_stream(&main_h264),
+            stream2: Some(avc420_stream(&aux_h264)),
+        };
+        process(
+            &mut client,
+            &GfxPdu::WireToSurface1(WireToSurface1Pdu {
+                surface_id: 1,
+                codec_id: Codec1Type::Avc444v2,
+                pixel_format: PixelFormat::XRgb,
+                destination_rectangle: full_frame()[0].clone(),
+                bitmap_data: encode_vec(&stream).expect("encode AVC444 stream"),
+            }),
+        );
+
+        let updates = updates.lock().expect("lock");
+        assert_eq!(updates.len(), 1, "one bitmap update");
+        let got = &updates[0];
+
+        // References without H.264 loss: the full reconstruction, and the
+        // main view alone (what AVC420 would show).
+        let mut full = Yuv444Frame::new(W, H).expect("frame");
+        full.apply_main_view(&main.view(), &full_frame()).expect("main");
+        full.apply_auxiliary_view_v2(&aux.view(), &full_frame()).expect("aux");
+        let mut luma_only = Yuv444Frame::new(W, H).expect("frame");
+        luma_only.apply_main_view(&main.view(), &full_frame()).expect("main");
+
+        let to_444 = mean_abs_error(got, &full.to_rgba(W, H).expect("rgba"));
+        let to_420 = mean_abs_error(got, &luma_only.to_rgba(W, H).expect("rgba"));
+        assert!(
+            to_444 * 4.0 < to_420,
+            "expected the output to match YUV444, not YUV420: error {to_444:.2} vs {to_420:.2}"
+        );
+    }
 }

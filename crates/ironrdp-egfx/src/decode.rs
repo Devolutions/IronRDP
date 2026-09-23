@@ -180,6 +180,121 @@ pub trait H264Decoder: Send {
     fn reset(&mut self) {
         // Default: no-op
     }
+
+    /// Whether [`H264Decoder::decode_yuv420`] is implemented.
+    ///
+    /// AVC444 reconstruction works on YUV planes, so
+    /// [`crate::client::GraphicsPipelineClient`] only advertises AVC444 when
+    /// its decoders return `true` here.
+    fn supports_yuv420(&self) -> bool {
+        false
+    }
+
+    /// Decode like [`H264Decoder::decode`], but return the YUV420p planes
+    /// instead of converting them to RGBA.
+    ///
+    /// The default returns an error; implement it together with
+    /// [`H264Decoder::supports_yuv420`].
+    fn decode_yuv420(&mut self, data: &[u8]) -> DecoderResult<DecodedYuv420Frame> {
+        let _ = data;
+        Err(DecoderError::msg("this H.264 decoder does not return YUV420 planes"))
+    }
+}
+
+// ============================================================================
+// Decoded YUV420 Frame
+// ============================================================================
+
+/// Decoded YUV420p frame (8-bit, 4:2:0) from an H.264 decoder
+///
+/// The chroma planes are half the width and height of the luma plane. Each
+/// plane has its own stride in bytes.
+#[derive(Clone)]
+#[non_exhaustive]
+pub struct DecodedYuv420Frame {
+    width: u32,
+    height: u32,
+    y: Vec<u8>,
+    y_stride: usize,
+    u: Vec<u8>,
+    u_stride: usize,
+    v: Vec<u8>,
+    v_stride: usize,
+}
+
+impl DecodedYuv420Frame {
+    /// Build a frame from its planes and strides.
+    ///
+    /// Fails if a plane is too small for its stride and the frame size.
+    pub fn new(
+        width: u32,
+        height: u32,
+        (y, y_stride): (Vec<u8>, usize),
+        (u, u_stride): (Vec<u8>, usize),
+        (v, v_stride): (Vec<u8>, usize),
+    ) -> DecoderResult<Self> {
+        let frame = Self {
+            width,
+            height,
+            y,
+            y_stride,
+            u,
+            u_stride,
+            v,
+            v_stride,
+        };
+        let (w, h) = (
+            usize::try_from(width).map_err(|_| DecoderError::msg("frame width out of range"))?,
+            usize::try_from(height).map_err(|_| DecoderError::msg("frame height out of range"))?,
+        );
+        let fits = |plane: &[u8], stride: usize, row: usize, rows: usize| {
+            rows == 0
+                || (stride >= row
+                    && stride
+                        .checked_mul(rows - 1)
+                        .and_then(|n| n.checked_add(row))
+                        .is_some_and(|needed| plane.len() >= needed))
+        };
+        if fits(&frame.y, y_stride, w, h)
+            && fits(&frame.u, u_stride, w.div_ceil(2), h.div_ceil(2))
+            && fits(&frame.v, v_stride, w.div_ceil(2), h.div_ceil(2))
+        {
+            Ok(frame)
+        } else {
+            Err(DecoderError::msg("YUV420 plane smaller than its frame size"))
+        }
+    }
+
+    /// Frame width in pixels.
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Frame height in pixels.
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Borrow the planes for [`crate::avc444::Yuv444Frame`].
+    pub fn planes(&self) -> crate::avc444::Yuv420Planes<'_> {
+        crate::avc444::Yuv420Planes {
+            y: &self.y,
+            y_stride: self.y_stride,
+            u: &self.u,
+            u_stride: self.u_stride,
+            v: &self.v,
+            v_stride: self.v_stride,
+        }
+    }
+}
+
+impl fmt::Debug for DecodedYuv420Frame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DecodedYuv420Frame")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
 }
 
 // ============================================================================
@@ -191,7 +306,7 @@ mod openh264_impl {
     use openh264::formats::YUVSource;
     use tracing::warn;
 
-    use super::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
+    use super::{DecodedFrame, DecodedYuv420Frame, DecoderError, DecoderResult, H264Decoder};
 
     /// H.264 decoder backed by Cisco's OpenH264 library
     ///
@@ -247,10 +362,9 @@ mod openh264_impl {
                 annex_b_buffer: Vec::new(),
             })
         }
-    }
 
-    impl H264Decoder for OpenH264Decoder {
-        fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
+        /// Decode one access unit to OpenH264's YUV420p picture.
+        fn decode_picture(&mut self, data: &[u8]) -> DecoderResult<openh264::decoder::DecodedYUV<'_>> {
             let annex_b = if crate::pdu::is_avc_format(data) {
                 crate::pdu::avc_to_annex_b_into(data, &mut self.annex_b_buffer);
                 &self.annex_b_buffer
@@ -258,11 +372,16 @@ mod openh264_impl {
                 data
             };
 
-            let yuv = self
-                .decoder
+            self.decoder
                 .decode(annex_b)
                 .map_err(|e| DecoderError::new("OpenH264 decode failed", e))?
-                .ok_or_else(|| DecoderError::msg("OpenH264 returned no picture"))?;
+                .ok_or_else(|| DecoderError::msg("OpenH264 returned no picture"))
+        }
+    }
+
+    impl H264Decoder for OpenH264Decoder {
+        fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
+            let yuv = self.decode_picture(data)?;
 
             let (width, height) = YUVSource::dimensions(&yuv);
             let (y_stride, u_stride, v_stride) = YUVSource::strides(&yuv);
@@ -324,6 +443,23 @@ mod openh264_impl {
             // In libloading-only mode, we don't have the library path stored,
             // so we can't recreate. The existing decoder handles new SPS/PPS
             // transparently when the next I-frame arrives.
+        }
+
+        fn supports_yuv420(&self) -> bool {
+            true
+        }
+
+        fn decode_yuv420(&mut self, data: &[u8]) -> DecoderResult<DecodedYuv420Frame> {
+            let yuv = self.decode_picture(data)?;
+            let (width, height) = YUVSource::dimensions(&yuv);
+            let (y_stride, u_stride, v_stride) = YUVSource::strides(&yuv);
+            DecodedYuv420Frame::new(
+                u32::try_from(width).map_err(|_| DecoderError::msg("frame width out of range"))?,
+                u32::try_from(height).map_err(|_| DecoderError::msg("frame height out of range"))?,
+                (yuv.y().to_vec(), y_stride),
+                (yuv.u().to_vec(), u_stride),
+                (yuv.v().to_vec(), v_stride),
+            )
         }
     }
 }

@@ -51,11 +51,14 @@ impl core::fmt::Debug for Yuv444Frame {
 }
 
 impl Yuv444Frame {
-    /// Create a frame of the coded size of both views. Both dimensions must be
-    /// multiples of 16, as MS-RDPEGFX requires for AVC bitstreams.
+    /// Create a frame the size of the decoded views. The width must be a
+    /// multiple of 4 and the height even, as the auxiliary view packs chroma
+    /// into halves and quarters of each row.
     pub fn new(width: usize, height: usize) -> DecoderResult<Self> {
-        if width == 0 || height == 0 || !width.is_multiple_of(16) || !height.is_multiple_of(16) {
-            return Err(DecoderError::msg("AVC444 frame size must be a nonzero multiple of 16"));
+        if width == 0 || height == 0 || !width.is_multiple_of(4) || !height.is_multiple_of(2) {
+            return Err(DecoderError::msg(
+                "AVC444 frame width must be a nonzero multiple of 4 and height a nonzero even number",
+            ));
         }
         let len = width
             .checked_mul(height)
@@ -159,6 +162,36 @@ impl Yuv444Frame {
             }
         }
         Ok(())
+    }
+
+    /// Convert the top-left `width` x `height` area to RGBA (4 bytes per
+    /// pixel, rows packed), reading the samples as full-range BT.709, the
+    /// format MS-RDPEGFX specifies for AVC.
+    pub fn to_rgba(&self, width: usize, height: usize) -> DecoderResult<Vec<u8>> {
+        if width > self.width || height > self.height {
+            return Err(DecoderError::msg("RGBA area exceeds the AVC444 frame"));
+        }
+        let to_u32 = |n: usize| u32::try_from(n).map_err(|_| DecoderError::msg("AVC444 frame too large"));
+        let stride = to_u32(self.width)?;
+        let mut rgba = vec![0u8; width * height * 4];
+        yuv::yuv444_to_rgba(
+            &yuv::YuvPlanarImage {
+                y_plane: &self.y,
+                y_stride: stride,
+                u_plane: &self.u,
+                u_stride: stride,
+                v_plane: &self.v,
+                v_stride: stride,
+                width: to_u32(width)?,
+                height: to_u32(height)?,
+            },
+            &mut rgba,
+            to_u32(width * 4)?,
+            yuv::YuvRange::Full,
+            yuv::YuvStandardMatrix::Bt709,
+        )
+        .map_err(|e| DecoderError::new("failed to convert YUV444 to RGBA", e))?;
+        Ok(rgba)
     }
 
     /// The region expanded to whole 16x16 macroblocks and clipped to the
