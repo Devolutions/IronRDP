@@ -15,7 +15,6 @@ use crate::rdp::multitransport::MultitransportResponsePdu;
 
 /// A PDU received from the client on the MCS message channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum ClientMessageChannelPdu {
     /// An Auto-Detect Response (`SEC_AUTODETECT_RSP`).
     AutoDetectResponse(AutoDetectRspPdu),
