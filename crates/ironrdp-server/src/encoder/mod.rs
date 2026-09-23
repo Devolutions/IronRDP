@@ -4,7 +4,6 @@ use core::num::NonZeroU16;
 use ironrdp_acceptor::DesktopSize;
 use ironrdp_graphics::diff::{Rect, find_different_rects_sub};
 use ironrdp_pdu::codecs::rfx::Quant;
-use ironrdp_pdu::encode_vec;
 use ironrdp_pdu::fast_path::UpdateCode;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
 use ironrdp_pdu::pointer::{
@@ -13,6 +12,7 @@ use ironrdp_pdu::pointer::{
 };
 use ironrdp_pdu::rdp::capability_sets::{CmdFlags, EntropyBits, LargePointerSupportFlags};
 use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, SurfaceCommand};
+use ironrdp_pdu::{Encode as _, encode_vec};
 use tracing::{debug, warn};
 
 use self::bitmap::BitmapEncoder;
@@ -124,10 +124,14 @@ pub(crate) struct UpdateEncoder {
     desktop_size: DesktopSize,
     framebuffer: Option<Framebuffer>,
     bitmap_updater: Option<BitmapUpdater>,
-    /// Negotiated MultifragmentUpdate reassembly buffer size. Used to split
-    /// oversized bitmaps into strips that fit within the limit when sent as
-    /// uncompressed surface commands.
-    max_request_size: usize,
+    /// Largest uncompressed tile, in bytes of pixels, whose surface-bits update
+    /// still fits the client's MultifragmentUpdate reassembly buffer: the
+    /// advertised `max_request_size` minus the framing `set_surface` puts
+    /// around the pixels. The client counts the whole reassembled update,
+    /// framing included, against that buffer and drops the connection when it
+    /// is exceeded, so a tile that fills the buffer with pixels alone is one
+    /// header too large.
+    tile_budget: usize,
     /// Client's advertised New Pointer Update cache size (MS-RDPBCGR 2.2.7.1.5
     /// `pointerCacheSize`). Zero means the client did not advertise support for the
     /// New Pointer Update; `RGBAPointer`/`CachedPointer` emission is skipped in that
@@ -191,8 +195,9 @@ impl UpdateEncoder {
             desktop_size,
             framebuffer: None,
             bitmap_updater: Some(bitmap_updater),
-            max_request_size: usize::try_from(max_request_size)
-                .map_err(|e| ServerError::custom("max_request_size", e))?,
+            tile_budget: usize::try_from(max_request_size)
+                .map_err(|e| ServerError::custom("max_request_size", e))?
+                .saturating_sub(surface_bits_framing_size()),
             pointer_cache_size,
             large_pointer_flags,
         })
@@ -363,11 +368,11 @@ impl UpdateEncoder {
             }]
         };
 
-        // Subdivide diff rects whose uncompressed size would exceed the
-        // MultifragmentUpdate reassembly buffer.
+        // Subdivide diff rects whose uncompressed size would not leave room
+        // for the update framing in the MultifragmentUpdate reassembly buffer.
         let mut tiled = Vec::with_capacity(diffs.len());
         for rect in diffs {
-            if rect.width * rect.height * 4 <= self.max_request_size {
+            if rect.width * rect.height * 4 <= self.tile_budget {
                 tiled.push(rect);
             } else {
                 let rects = self.split_diff(rect);
@@ -377,19 +382,19 @@ impl UpdateEncoder {
         tiled
     }
 
-    /// Split a rect into tiles that fit within `max_request_size`.
+    /// Split a rect into tiles that fit within the tile budget.
     /// Splits by height first, then by width within each horizontal strip.
     fn split_diff(&self, rect: Rect) -> Vec<Rect> {
         let mut rects = Vec::new();
 
-        let max_height = (self.max_request_size / (rect.width * 4)).max(1);
+        let max_height = (self.tile_budget / (rect.width * 4)).max(1);
         let mut y = rect.y;
         let y_end = rect.y + rect.height;
         while y < y_end {
             let h = (y_end - y).min(max_height);
             // Width splitting is unlikely in practice (would require
             // max_request_size < ~256 KB), but ensures correctness.
-            let max_width = (self.max_request_size / (h * 4)).max(1);
+            let max_width = (self.tile_budget / (h * 4)).max(1);
             let mut x = rect.x;
             let x_end = rect.x + rect.width;
             while x < x_end {
@@ -942,4 +947,90 @@ fn set_surface(bitmap: &BitmapUpdate, codec_id: u8, data: &[u8]) -> ServerResult
         UpdateCode::SurfaceCommands,
         encode_vec(&cmd).map_err(ServerError::encode)?,
     ))
+}
+
+/// Size of everything `set_surface` puts on the wire besides the pixels: the
+/// `TS_SURFCMD_SET_SURF_BITS` header and its `TS_BITMAP_DATA_EX`. The client
+/// counts it against the MultifragmentUpdate reassembly buffer together with
+/// the pixel data.
+fn surface_bits_framing_size() -> usize {
+    let extended_bitmap_data = ExtendedBitmapDataPdu {
+        bpp: 32,
+        width: 0,
+        height: 0,
+        codec_id: CodecId::None.as_u8(),
+        header: None,
+        data: &[],
+    };
+    let pdu = SurfaceBitsPdu {
+        destination: ExclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        },
+        extended_bitmap_data,
+    };
+    SurfaceCommand::SetSurfaceBits(pdu).size()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EIGHT_MIB: usize = 8 * 1024 * 1024;
+
+    fn new_encoder(width: u16, height: u16) -> UpdateEncoder {
+        UpdateEncoder::new(
+            DesktopSize { width, height },
+            CmdFlags::SET_SURFACE_BITS,
+            UpdateEncoderCodecs::new(),
+            u32::try_from(EIGHT_MIB).unwrap(),
+            0,
+            LargePointerSupportFlags::empty(),
+        )
+        .unwrap()
+    }
+
+    fn full_rect(width: u16, height: u16) -> Rect {
+        Rect {
+            x: 0,
+            y: 0,
+            width: width.into(),
+            height: height.into(),
+        }
+    }
+
+    #[test]
+    fn surface_bits_framing_is_the_set_surface_header() {
+        // TS_SURFCMD_SET_SURF_BITS (cmdType 2 + destRect 8) + TS_BITMAP_DATA_EX (12).
+        assert_eq!(surface_bits_framing_size(), 22);
+    }
+
+    #[test]
+    fn strips_leave_room_for_the_framing_when_the_width_divides_the_buffer() {
+        let encoder = new_encoder(2048, 1080);
+        let tiles = encoder.split_diff(full_rect(2048, 1080));
+
+        // 1024 rows would fill the buffer exactly; one fewer leaves room for the header.
+        assert_eq!(tiles[0].height, 1023);
+        for tile in &tiles {
+            assert!(
+                tile.width * tile.height * 4 + surface_bits_framing_size() <= EIGHT_MIB,
+                "a {}x{} strip at y={} does not leave room for the framing",
+                tile.width,
+                tile.height,
+                tile.y
+            );
+        }
+        assert_eq!(tiles.iter().map(|tile| tile.height).sum::<usize>(), 1080);
+    }
+
+    #[test]
+    fn strips_with_slack_keep_their_height() {
+        // 3840 * 4 leaves 2 KiB unused in a 546-row strip, so nothing changes.
+        let encoder = new_encoder(3840, 2160);
+        let tiles = encoder.split_diff(full_rect(3840, 2160));
+        assert_eq!(tiles[0].height, 546);
+    }
 }

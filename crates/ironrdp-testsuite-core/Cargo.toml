@@ -33,6 +33,7 @@ openh264 = { version = "0.9", optional = true, default-features = false, feature
 visibility = { version = "0.1", optional = true }
 
 [dev-dependencies]
+bytes = "1"
 anyhow = "1"
 async-trait = "0.1"
 expect-test.workspace = true
@@ -62,7 +63,7 @@ ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", features = ["std"] }
 ironrdp-rdpeusb.path = "../ironrdp-rdpeusb"
 ironrdp-usb.path = "../ironrdp-usb"
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", features = ["__test"] }
-ironrdp-server.path = "../ironrdp-server"
+ironrdp-server = { path = "../ironrdp-server", features = ["__bench"] }
 ironrdp-session = { path = "../ironrdp-session", features = ["qoi", "__test"] }
 ironrdp-cfg.path = "../ironrdp-cfg"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
