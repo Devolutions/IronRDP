@@ -164,23 +164,27 @@ impl Yuv444Frame {
         Ok(())
     }
 
-    /// Convert the top-left `width` x `height` area to RGBA (4 bytes per
-    /// pixel, rows packed), reading the samples as full-range BT.709, the
-    /// format MS-RDPEGFX specifies for AVC.
-    pub fn to_rgba(&self, width: usize, height: usize) -> DecoderResult<Vec<u8>> {
-        if width > self.width || height > self.height {
-            return Err(DecoderError::msg("RGBA area exceeds the AVC444 frame"));
+    /// Convert the area `rect` to RGBA (4 bytes per pixel, rows packed),
+    /// reading the samples as full-range BT.709, the format MS-RDPEGFX
+    /// specifies for AVC.
+    pub fn to_rgba(&self, rect: &ExclusiveRectangle) -> DecoderResult<Vec<u8>> {
+        let (left, top) = (usize::from(rect.left), usize::from(rect.top));
+        let (right, bottom) = (usize::from(rect.right), usize::from(rect.bottom));
+        if left >= right || top >= bottom || right > self.width || bottom > self.height {
+            return Err(DecoderError::msg("RGBA area is empty or exceeds the AVC444 frame"));
         }
+        let (width, height) = (right - left, bottom - top);
         let to_u32 = |n: usize| u32::try_from(n).map_err(|_| DecoderError::msg("AVC444 frame too large"));
         let stride = to_u32(self.width)?;
+        let start = top * self.width + left;
         let mut rgba = vec![0u8; width * height * 4];
         yuv::yuv444_to_rgba(
             &yuv::YuvPlanarImage {
-                y_plane: &self.y,
+                y_plane: &self.y[start..],
                 y_stride: stride,
-                u_plane: &self.u,
+                u_plane: &self.u[start..],
                 u_stride: stride,
-                v_plane: &self.v,
+                v_plane: &self.v[start..],
                 v_stride: stride,
                 width: to_u32(width)?,
                 height: to_u32(height)?,

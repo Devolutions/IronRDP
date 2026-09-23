@@ -754,6 +754,7 @@ impl GraphicsPipelineClient {
         };
 
         debug!(surface_id, width, height, ?pixel_format, "Surface created");
+        self.avc444_frames.remove(&surface_id);
         self.compositor.create_surface(surface_id, width, height);
         self.handler.on_surface_created(&surface);
         self.surfaces.insert(surface_id, surface);
@@ -852,7 +853,7 @@ impl GraphicsPipelineClient {
                 self.decode_avc420(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)?;
             }
             Codec1Type::Avc444v2 => {
-                self.decode_avc444v2(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)?;
+                self.decode_avc444v2(pdu.surface_id, &pdu.bitmap_data)?;
             }
             Codec1Type::Avc444 => {
                 debug!("AVC444 (v1 layout) not yet implemented, forwarding to handler");
@@ -1095,12 +1096,7 @@ impl GraphicsPipelineClient {
     /// Both views go through the one H.264 decoder in order, as MS-RDPEGFX
     /// 2.2.4.5 requires ("decoded by a single MPEG-4 AVC/H.264 decoder as one
     /// stream"), and are combined into the surface's persistent YUV444 frame.
-    fn decode_avc444v2(
-        &mut self,
-        surface_id: u16,
-        dest_rect: &ExclusiveRectangle,
-        bitmap_data: &[u8],
-    ) -> PduResult<()> {
+    fn decode_avc444v2(&mut self, surface_id: u16, bitmap_data: &[u8]) -> PduResult<()> {
         let mut cursor = ReadCursor::new(bitmap_data);
         let stream = Avc444BitmapStream::decode(&mut cursor).map_err(|e| decode_err!(e))?;
 
@@ -1161,30 +1157,44 @@ impl GraphicsPipelineClient {
                 .map_err(|e| pdu_other_err!("AVC444 chroma view", source: e))?;
         }
 
-        // MS-RDPEGFX 2.2.1.4.1: RDPGFX_RECT16 right/bottom are exclusive.
-        let dest_width = dest_rect.right - dest_rect.left;
-        let dest_height = dest_rect.bottom - dest_rect.top;
-        if width < usize::from(dest_width) || height < usize::from(dest_height) {
-            warn!(
-                width,
-                height, dest_width, dest_height, "decoded frame smaller than destination rectangle"
-            );
-            return Err(pdu_other_err!("decoded frame smaller than destination rectangle"));
+        // The frame is current only inside the regions this PDU updated, so
+        // paint just those. Region rectangles are in surface coordinates, with
+        // the picture's top-left at the surface origin, as FreeRDP reads them.
+        let surface = self
+            .surfaces
+            .get(&surface_id)
+            .ok_or_else(|| pdu_other_err!("unknown surface in WireToSurface1"))?;
+        let (max_right, max_bottom) = (
+            surface.width.min(u16::try_from(width).unwrap_or(u16::MAX)),
+            surface.height.min(u16::try_from(height).unwrap_or(u16::MAX)),
+        );
+        let mut painted: Vec<ExclusiveRectangle> = Vec::new();
+        let regions = luma.iter().chain(chroma.iter()).flat_map(|(_, regions)| regions.iter());
+        for region in regions {
+            let rect = ExclusiveRectangle {
+                left: region.left,
+                top: region.top,
+                right: region.right.min(max_right),
+                bottom: region.bottom.min(max_bottom),
+            };
+            if rect.left >= rect.right || rect.top >= rect.bottom || painted.contains(&rect) {
+                continue;
+            }
+            let data = frame
+                .to_rgba(&rect)
+                .map_err(|e| pdu_other_err!("AVC444 color conversion", source: e))?;
+            let update = BitmapUpdate {
+                surface_id,
+                destination_rectangle: rect.clone(),
+                codec_id: Codec1Type::Avc444v2,
+                data,
+                width: rect.right - rect.left,
+                height: rect.bottom - rect.top,
+            };
+            self.compositor.apply_bitmap(surface_id, &rect, &update.data);
+            self.handler.on_bitmap_updated(&update);
+            painted.push(rect);
         }
-        let data = frame
-            .to_rgba(usize::from(dest_width), usize::from(dest_height))
-            .map_err(|e| pdu_other_err!("AVC444 color conversion", source: e))?;
-
-        let update = BitmapUpdate {
-            surface_id,
-            destination_rectangle: dest_rect.clone(),
-            codec_id: Codec1Type::Avc444v2,
-            data,
-            width: dest_width,
-            height: dest_height,
-        };
-        self.compositor.apply_bitmap(surface_id, dest_rect, &update.data);
-        self.handler.on_bitmap_updated(&update);
         Ok(())
     }
 

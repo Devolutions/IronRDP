@@ -258,13 +258,16 @@ mod end_to_end {
 
     use super::*;
 
-    /// Collects the RGBA of every bitmap update.
-    struct Capture(Arc<Mutex<Vec<Vec<u8>>>>);
+    /// Collects the destination and RGBA of every bitmap update.
+    struct Capture(Arc<Mutex<Vec<(ExclusiveRectangle, Vec<u8>)>>>);
 
     impl GraphicsPipelineHandler for Capture {
         fn on_bitmap_updated(&mut self, update: &BitmapUpdate) {
             assert_eq!(update.codec_id, Codec1Type::Avc444v2);
-            self.0.lock().expect("lock").push(update.data.clone());
+            self.0
+                .lock()
+                .expect("lock")
+                .push((update.destination_rectangle.clone(), update.data.clone()));
         }
     }
 
@@ -293,14 +296,17 @@ mod end_to_end {
         mean
     }
 
-    fn avc420_stream(data: &[u8]) -> Avc420BitmapStream<'_> {
+    fn avc420_stream<'a>(data: &'a [u8], regions: &[ExclusiveRectangle]) -> Avc420BitmapStream<'a> {
         Avc420BitmapStream {
-            rectangles: full_frame().to_vec(),
-            quant_qual_vals: vec![QuantQuality {
-                quantization_parameter: 22,
-                progressive: false,
-                quality: 100,
-            }],
+            rectangles: regions.to_vec(),
+            quant_qual_vals: vec![
+                QuantQuality {
+                    quantization_parameter: 22,
+                    progressive: false,
+                    quality: 100,
+                };
+                regions.len()
+            ],
             data,
         }
     }
@@ -310,12 +316,9 @@ mod end_to_end {
         client.process(0, &wrap_uncompressed(&bytes)).expect("process PDU");
     }
 
-    #[test]
-    fn avc444v2_through_the_client_keeps_full_chroma() {
-        let (y, u, v) = striped_source();
-        let (main, aux) = split_v2(&y, &u, &v);
-
-        // One encoder, main view then auxiliary view: one H.264 stream.
+    /// Encode the main view then the auxiliary view with one encoder: one
+    /// H.264 stream.
+    fn encode_views(main: &Planes420, aux: &Planes420) -> (Vec<u8>, Vec<u8>) {
         let config = openh264::encoder::EncoderConfig::new()
             .skip_frames(false)
             .bitrate(openh264::encoder::BitRate::from_bps(50_000_000));
@@ -325,9 +328,18 @@ mod end_to_end {
             let yuv = openh264::formats::YUVSlices::new((&planes.y, &planes.u, &planes.v), (W, H), (W, W / 2, W / 2));
             encoder.encode(&yuv).expect("encode").to_vec()
         };
-        let (main_h264, aux_h264) = (encode(&main), encode(&aux));
+        let (main_h264, aux_h264) = (encode(main), encode(aux));
         assert!(!main_h264.is_empty() && !aux_h264.is_empty(), "encoder skipped a view");
+        (main_h264, aux_h264)
+    }
 
+    /// Send one AVC444v2 PDU covering the whole surface, with both views
+    /// updating `regions`, and return the bitmap updates it produces.
+    fn decode_through_client(
+        main_h264: &[u8],
+        aux_h264: &[u8],
+        regions: &[ExclusiveRectangle],
+    ) -> Vec<(ExclusiveRectangle, Vec<u8>)> {
         let updates = Arc::new(Mutex::new(Vec::new()));
         let mut client = GraphicsPipelineClient::new(
             Box::new(Capture(Arc::clone(&updates))),
@@ -350,8 +362,8 @@ mod end_to_end {
         );
         let stream = Avc444BitmapStream {
             encoding: Encoding::LUMA_AND_CHROMA,
-            stream1: avc420_stream(&main_h264),
-            stream2: Some(avc420_stream(&aux_h264)),
+            stream1: avc420_stream(main_h264, regions),
+            stream2: Some(avc420_stream(aux_h264, regions)),
         };
         process(
             &mut client,
@@ -364,9 +376,21 @@ mod end_to_end {
             }),
         );
 
-        let updates = updates.lock().expect("lock");
+        let updates = updates.lock().expect("lock").clone();
+        updates
+    }
+
+    #[test]
+    fn avc444v2_through_the_client_keeps_full_chroma() {
+        let (y, u, v) = striped_source();
+        let (main, aux) = split_v2(&y, &u, &v);
+        let (main_h264, aux_h264) = encode_views(&main, &aux);
+
+        // Both views update the same region: one bitmap update.
+        let updates = decode_through_client(&main_h264, &aux_h264, &full_frame());
         assert_eq!(updates.len(), 1, "one bitmap update");
-        let got = &updates[0];
+        let (rect, got) = &updates[0];
+        assert_eq!(rect, &full_frame()[0]);
 
         // References without H.264 loss: the full reconstruction, and the
         // main view alone (what AVC420 would show).
@@ -376,11 +400,58 @@ mod end_to_end {
         let mut luma_only = Yuv444Frame::new(W, H).expect("frame");
         luma_only.apply_main_view(&main.view(), &full_frame()).expect("main");
 
-        let to_444 = mean_abs_error(got, &full.to_rgba(W, H).expect("rgba"));
-        let to_420 = mean_abs_error(got, &luma_only.to_rgba(W, H).expect("rgba"));
+        let to_444 = mean_abs_error(got, &full.to_rgba(&full_frame()[0]).expect("rgba"));
+        let to_420 = mean_abs_error(got, &luma_only.to_rgba(&full_frame()[0]).expect("rgba"));
         assert!(
             to_444 * 4.0 < to_420,
             "expected the output to match YUV444, not YUV420: error {to_444:.2} vs {to_420:.2}"
         );
+    }
+
+    #[test]
+    fn avc444v2_paints_only_the_updated_regions() {
+        // The reconstructed frame is current only inside the PDU's regions;
+        // painting the rest of the destination would overwrite the surface
+        // with stale or empty frame content.
+        let (y, u, v) = striped_source();
+        let (main, aux) = split_v2(&y, &u, &v);
+        let (main_h264, aux_h264) = encode_views(&main, &aux);
+        let regions = [
+            ExclusiveRectangle {
+                left: 16,
+                top: 16,
+                right: 32,
+                bottom: 32,
+            },
+            ExclusiveRectangle {
+                left: 40,
+                top: 8,
+                right: 60,
+                bottom: 20,
+            },
+        ];
+
+        let updates = decode_through_client(&main_h264, &aux_h264, &regions);
+        let rects: Vec<_> = updates.iter().map(|(rect, _)| rect.clone()).collect();
+        assert_eq!(rects, regions);
+
+        // Each update holds its own region's pixels, not the frame's top-left.
+        let mut full = Yuv444Frame::new(W, H).expect("frame");
+        full.apply_main_view(&main.view(), &full_frame()).expect("main");
+        full.apply_auxiliary_view_v2(&aux.view(), &full_frame()).expect("aux");
+        for (rect, data) in &updates {
+            let at_origin = ExclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: rect.right - rect.left,
+                bottom: rect.bottom - rect.top,
+            };
+            let to_region = mean_abs_error(data, &full.to_rgba(rect).expect("rgba"));
+            let to_origin = mean_abs_error(data, &full.to_rgba(&at_origin).expect("rgba"));
+            assert!(
+                to_region * 4.0 < to_origin,
+                "update for {rect:?} doesn't match its region: error {to_region:.2} vs {to_origin:.2} at the origin"
+            );
+        }
     }
 }
