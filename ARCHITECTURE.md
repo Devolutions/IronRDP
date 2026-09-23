@@ -310,6 +310,10 @@ Provides test case generators and oracles for use with fuzzing.
 
 Offline direct-TCP RDP capture analysis that routes recovered plaintext and exports payload-free replay diagnostics with rendered framebuffer snapshots.
 
+#### [`crates/ironrdp-bench`](./crates/ironrdp-bench)
+
+Consolidated benchmark package with Criterion targets, shared workloads, and standalone CLI binaries.
+
 #### [`fuzz`](./fuzz)
 
 Fuzz targets for code in core tier.
