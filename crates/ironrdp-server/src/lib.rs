@@ -42,7 +42,7 @@ pub use ironrdp_acceptor::Acceptor;
 pub use ironrdp_pdu::rdp::server_error_info::ErrorInfo;
 pub use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 #[cfg(feature = "usb")]
-pub use ironrdp_rdpeusb::io::{CompletionData, DeviceAnnounce, DeviceText, InternalIoControlPacket};
+pub use ironrdp_rdpeusb::io::{CompletionData, DeviceText, InternalIoControlPacket};
 pub use rdpdr::{NoopRdpdrServerBackend, RdpdrServerBackend, RdpdrServerFactory, RdpdrServerMessage};
 pub use rdpeai::{NoopRdpeaiServerBackend, RdpeaiServerBackend, RdpeaiServerFactory, RdpeaiServerMessage};
 pub use rdpei::{
@@ -60,8 +60,8 @@ pub use server::{
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 #[cfg(feature = "usb")]
 pub use urbdrc::{
-    CompletionFut, DeviceFactory, PendingHandle, PendingRequest, RdpUsbDeviceAnnounceInfo, UsbDeviceHandle,
-    UsbRedirDevice, UsbRequestCompletion,
+    CompletionFut, DeviceFactory, PendingHandle, PendingRequest, RdpUsbDeviceAnnounceInfo, UsbDeviceAnnounce,
+    UsbDeviceHandle, UsbRedirDevice, UsbRequestCompletion,
 };
 #[cfg(feature = "__bench")]
 pub mod bench {

@@ -23,7 +23,7 @@ use ironrdp_rdpeusb::{
     server::{UrbdrcControlServerBackend, UrbdrcDeviceServerBackend},
 };
 use ironrdp_usb::{
-    InterfaceSelection, TransferType,
+    InterfaceSelection, TransferType, UsbSpeed,
     control::GetDescriptorRequest,
     descriptor::{ConfigurationDescriptorSet, InterfaceDescriptor, ValidConfigurationDescriptorSet},
     endpoint::EndpointAddress,
@@ -1425,6 +1425,8 @@ pub(crate) struct UsbRedirServer {
 
 pub trait UsbRedirDevice: Send {
     /// Called when the client announces the device with `ADD_DEVICE`.
+    ///
+    /// This is the first callback, and it is invoked exactly once.
     fn device_added(&mut self, info: RdpUsbDeviceAnnounceInfo);
 
     fn device_text(&mut self, device_text: DeviceText);
@@ -1440,9 +1442,48 @@ pub trait UsbRedirDevice: Send {
     fn close(&mut self) {}
 }
 
+/// A redirected USB device as the client announced it.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct UsbDeviceAnnounce {
+    /// Identity the client assigned to the redirected device.
+    ///
+    /// It is opaque to the server and stable for the lifetime of the device
+    /// channel, which makes it usable as a key for per-device state.
+    pub device_instance_id: String,
+    /// Device identifiers reported by the client, most specific first.
+    pub hw_ids: Vec<String>,
+    /// Identifiers of the device classes the client reports the device is
+    /// compatible with, most specific first.
+    pub compat_ids: Vec<String>,
+    /// Identifier shared by every function of the same physical device, which
+    /// groups the announcements of a composite device.
+    pub container_id: String,
+    /// Bus speed the client reports the device is operating at.
+    ///
+    /// RDPEUSB reports only whether the device is operating at high speed, so
+    /// this is always either [`UsbSpeed::High`] or [`UsbSpeed::Full`]. A
+    /// low-speed device is announced as full speed, because the protocol has no
+    /// encoding to distinguish the two.
+    pub speed: UsbSpeed,
+}
+
+impl From<DeviceAnnounce> for UsbDeviceAnnounce {
+    fn from(value: DeviceAnnounce) -> Self {
+        Self {
+            device_instance_id: value.device_instance_id,
+            hw_ids: value.hw_ids,
+            compat_ids: value.compat_ids,
+            container_id: value.container_id,
+            speed: value.usb_device_caps.device_speed.into(),
+        }
+    }
+}
+
+/// A device announcement together with the handle which drives that device.
 #[derive(Debug)]
 pub struct RdpUsbDeviceAnnounceInfo {
-    pub announce: DeviceAnnounce,
+    pub announce: UsbDeviceAnnounce,
     pub usb_handle: UsbDeviceHandle,
 }
 
@@ -1508,7 +1549,7 @@ impl UsbRedirServer {
 impl UrbdrcDeviceServerBackend for UsbRedirServer {
     fn add_device(&mut self, device: DeviceAnnounce) -> PduResult<()> {
         self.device.device_added(RdpUsbDeviceAnnounceInfo {
-            announce: device,
+            announce: device.into(),
             usb_handle: self.handle.clone(),
         });
         Ok(())
