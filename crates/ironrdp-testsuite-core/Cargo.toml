@@ -72,6 +72,7 @@ pretty_assertions = "1.4"
 proptest.workspace = true
 rstest.workspace = true
 tokio = { version = "1", features = ["macros", "rt", "io-util", "sync", "test-util"] }
+tokio-rustls = "0.26"
 
 [lints]
 workspace = true
