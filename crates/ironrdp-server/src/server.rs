@@ -743,14 +743,16 @@ pub struct RdpServer {
     /// alone does not fix.
     autodetect_bandwidth: Arc<AtomicU32>,
 
-    /// Increments every time a Bandwidth Measure transaction completes
-    /// (whether or not it produced a usable figure — see
+    /// Increments every time a Bandwidth Measure transaction completes,
+    /// whether or not it produced a usable figure (see
     /// [`Self::autodetect_bandwidth`]'s doc comment on the None case).
     /// [`Self::autodetect_bandwidth`] alone cannot tell an embedder "a new
-    /// window just closed" apart from "the value happens to repeat" — this
+    /// window just closed" apart from "the value happens to repeat": that
     /// value repeats often (a quiet link reads the same low figure for
     /// several consecutive windows), so diffing it is not a valid freshness
-    /// signal. Exposed via [`Self::autodetect_bandwidth_generation_handle`].
+    /// signal. Incremented with `Release` after the bandwidth value is
+    /// stored, so an `Acquire` load of it makes that value visible.
+    /// Exposed via [`Self::autodetect_bandwidth_generation_handle`].
     autodetect_bandwidth_generation: Arc<AtomicU32>,
 
     /// Optional Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.2
@@ -1798,11 +1800,15 @@ impl RdpServer {
 
     /// Returns a handle that increments every time a Bandwidth Measure
     /// transaction completes, whether or not it produced a usable figure.
-    /// Pairs with [`Self::autodetect_bandwidth_handle`]: read this first to
-    /// detect a fresh measurement window (the bandwidth figure itself
-    /// repeats too often to be its own freshness signal), then read the
-    /// bandwidth handle for the value. Inject a shared instance at
-    /// construction with
+    /// Pairs with [`Self::autodetect_bandwidth_handle`]: load this with
+    /// `Ordering::Acquire` to detect a fresh measurement window (the
+    /// bandwidth figure itself repeats too often to be its own freshness
+    /// signal), then read the bandwidth handle for the value. The server
+    /// increments this with `Ordering::Release` after storing the value, so
+    /// the bandwidth read is at least as new as the generation observed. It
+    /// is not an exact pair: If the next window closes between the two reads,
+    /// the value can already belong to that later window. Inject a shared
+    /// instance at construction with
     /// [`RdpServerBuilder::with_autodetect_bandwidth_generation_handle`](crate::RdpServerBuilder::with_autodetect_bandwidth_generation_handle).
     pub fn autodetect_bandwidth_generation_handle(&self) -> Arc<AtomicU32> {
         Arc::clone(&self.autodetect_bandwidth_generation)
@@ -3897,35 +3903,21 @@ impl RdpServer {
                         }
                         AutoDetectOutcome::Bandwidth(Some(bandwidth_kbps)) => {
                             self.autodetect_bandwidth.store(bandwidth_kbps, Ordering::Relaxed);
-                            self.autodetect_bandwidth_generation.fetch_add(1, Ordering::Relaxed);
-                            // Logging the raw inputs, not just the computed figure: a
+                            self.autodetect_bandwidth_generation.fetch_add(1, Ordering::Release);
+                            // Logging the whole response, not just the computed figure: a
                             // damage-driven video source makes any single measurement
                             // window's byte count wildly bimodal (near-idle vs. a real
                             // frame landing in it), so bandwidth_kbps alone reads as
-                            // noise without time_delta_ms/byte_count alongside it to
-                            // show why.
-                            let rdp::autodetect::AutoDetectResponse::BandwidthMeasureResults {
-                                time_delta_ms,
-                                byte_count,
-                                ..
-                            } = &pdu.response
-                            else {
-                                unreachable!("computed_bandwidth_kbps() only returns Some for this variant")
-                            };
-                            debug!(
-                                bandwidth_kbps,
-                                time_delta_ms,
-                                byte_count,
-                                seq = pdu.response.sequence_number(),
-                                "Bandwidth measured"
-                            );
+                            // noise without the response's time_delta_ms/byte_count
+                            // alongside it to show why.
+                            debug!(bandwidth_kbps, response = ?pdu.response, "Bandwidth measured");
                         }
                         AutoDetectOutcome::Bandwidth(None) => {
                             // The manager just cleared its own figure rather than keep
                             // reporting a stale one (see `handle_response`'s doc comment);
                             // mirror that here so the exposed handle does not disagree.
                             self.autodetect_bandwidth.store(u32::MAX, Ordering::Relaxed);
-                            self.autodetect_bandwidth_generation.fetch_add(1, Ordering::Relaxed);
+                            self.autodetect_bandwidth_generation.fetch_add(1, Ordering::Release);
                             trace!(
                                 seq = pdu.response.sequence_number(),
                                 "Bandwidth measurement completed without a usable figure"
