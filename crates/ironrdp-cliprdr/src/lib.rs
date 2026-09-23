@@ -368,6 +368,31 @@ const MAX_OUTGOING_LOCKS: usize = 100;
 /// prevents unbounded growth if responses are never received.
 const MAX_PENDING_FILE_REQUESTS: usize = 1000;
 
+/// Fails one file contents request without leaving its caller waiting.
+///
+/// A rejected request is a per-request failure, not a channel failure. The
+/// backend is notified with an error response so it can release whatever is
+/// waiting on that stream id -- the same treatment `FormatListResponse::Fail`
+/// already gives pending requests -- and the error is still returned for
+/// callers that surface it.
+macro_rules! reject_file_contents_request {
+    ($self:ident, $stream_id:expr, $description:expr) => {{
+        let description = $description;
+        warn!(
+            stream_id = $stream_id,
+            reason = description,
+            "Rejecting file contents request"
+        );
+        $self
+            .backend
+            .on_file_contents_response(FileContentsResponse::new_error($stream_id));
+        return Err(ironrdp_pdu::PduError::new(
+            "request_file_contents",
+            ironrdp_pdu::PduErrorKind::Other { description },
+        ));
+    }};
+}
+
 /// CLIPRDR static virtual channel endpoint implementation
 #[derive(Debug)]
 pub struct Cliprdr<R: Role> {
@@ -399,6 +424,19 @@ pub struct Cliprdr<R: Role> {
     /// Stores the remote file list after receiving it via FormatDataResponse.
     /// Used for validating FileContentsRequest.lindex bounds.
     remote_file_list: Option<PackedFileList>,
+
+    /// [MS-RDPECLIP] 3.1.5.4.6 - Remote file list snapshots, keyed by the
+    /// `clipDataId` of the lock that was active when the list arrived.
+    ///
+    /// The receiver-side mirror of [`Self::locked_file_lists`]. A Lock PDU we
+    /// sent asks the remote to keep its File Stream data alive across a
+    /// clipboard change; 3.1.5.4.6 then says a request carrying that
+    /// `clipDataId` must be serviced from the locked data, and 3.1.5.4.5 says
+    /// the index it carries comes from a File List. It follows that such a
+    /// request must be *validated* against the File List that locked data came
+    /// with -- [`Self::remote_file_list`] may already describe a different
+    /// clipboard, or have been cleared outright by a new Format List.
+    locked_remote_file_lists: HashMap<u32, PackedFileList>,
 
     /// Format ID used by remote for FileGroupDescriptorW in FormatList they sent.
     /// Detected by finding format with name "FileGroupDescriptorW".
@@ -539,6 +577,7 @@ impl<R: Role> Cliprdr<R> {
             local_file_list_format_id: None,
             local_drop_effect_format_id: None,
             remote_file_list: None,
+            locked_remote_file_lists: HashMap::new(),
             remote_file_list_format_id: None,
             sent_file_contents_requests: HashMap::new(),
             outgoing_locks: HashMap::new(),
@@ -1052,6 +1091,7 @@ impl<R: Role> Cliprdr<R> {
 
         let cleared: Vec<u32> = self.outgoing_locks.keys().copied().collect();
         self.outgoing_locks.clear();
+        self.locked_remote_file_lists.clear();
         self.current_lock_id = None;
 
         debug!(
@@ -1153,6 +1193,9 @@ impl<R: Role> Cliprdr<R> {
         // Remove and send Unlock for each
         for clip_data_id in &expired_ids {
             if let Some(_lock) = self.outgoing_locks.remove(clip_data_id) {
+                // The remote releases its File Stream data on Unlock, so the
+                // snapshot we validated against goes with it.
+                self.locked_remote_file_lists.remove(clip_data_id);
                 debug!(clip_data_id, "Removed expired lock from tracking");
                 let pdu = ClipboardPdu::UnlockData(LockDataId(*clip_data_id));
                 messages.push(into_cliprdr_message(pdu));
@@ -1251,11 +1294,24 @@ impl<R: Role> Cliprdr<R> {
     /// - For SIZE requests: cbRequested must be 8, position must be 0
     /// - For RANGE requests: the specified range must be within file bounds
     ///
+    /// Which file list those checks run against depends on `request.data_id`.
+    /// [MS-RDPECLIP] 3.1.5.4.6 has the remote service a request carrying a
+    /// `clipDataId` from the locked File Stream data, so such a request is
+    /// validated against the list that lock covers -- not the current remote
+    /// clipboard, which a new Format List may already have replaced. Without a
+    /// `clipDataId`, or when the lock has since been released and its snapshot
+    /// dropped, validation deliberately falls back to the current list: that is
+    /// the only list the remote can still serve from.
+    ///
     /// The streamId is tracked to validate the corresponding FileContentsResponse.
     ///
     /// [2.2.5.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/cbc851d3-4e68-45f4-9292-26872a9209f2
     pub fn request_file_contents(&mut self, mut request: FileContentsRequest) -> PduResult<CliprdrSvcMessages<R>> {
-        self.require_ready("request_file_contents")?;
+        if let Err(error) = self.require_ready("request_file_contents") {
+            self.backend
+                .on_file_contents_response(FileContentsResponse::new_error(request.stream_id));
+            return Err(error);
+        }
 
         // [MS-RDPECLIP] 2.2.2.1.1.1 - CB_STREAM_FILECLIP_ENABLED must be negotiated
         if !self
@@ -1263,12 +1319,7 @@ impl<R: Role> Cliprdr<R> {
             .flags()
             .contains(ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED)
         {
-            return Err(ironrdp_pdu::PduError::new(
-                "request_file_contents",
-                ironrdp_pdu::PduErrorKind::Other {
-                    description: "CB_STREAM_FILECLIP_ENABLED not negotiated",
-                },
-            ));
+            reject_file_contents_request!(self, request.stream_id, "CB_STREAM_FILECLIP_ENABLED not negotiated");
         }
 
         // [MS-RDPECLIP] 2.2.5.3 - Include clipDataId if we have an active lock
@@ -1318,65 +1369,47 @@ impl<R: Role> Cliprdr<R> {
         // [MS-RDPECLIP] 2.2.5.3 - Validate SIZE request constraints
         if request.flags.contains(FileContentsFlags::SIZE) {
             if request.requested_size != 8 {
-                return Err(ironrdp_pdu::PduError::new(
-                    "request_file_contents",
-                    ironrdp_pdu::PduErrorKind::Other {
-                        description: "SIZE request must have requested_size=8",
-                    },
-                ));
+                reject_file_contents_request!(self, request.stream_id, "SIZE request must have requested_size=8");
             }
             if request.position != 0 {
-                return Err(ironrdp_pdu::PduError::new(
-                    "request_file_contents",
-                    ironrdp_pdu::PduErrorKind::Other {
-                        description: "SIZE request must have position=0",
-                    },
-                ));
+                reject_file_contents_request!(self, request.stream_id, "SIZE request must have position=0");
             }
         }
 
         // [MS-RDPECLIP] 3.1.5.4.5 - Validate file index is from known file list
-        let validated_file_index = usize::try_from(request.index).map_err(|_| {
-            ironrdp_pdu::PduError::new(
-                "request_file_contents",
-                ironrdp_pdu::PduErrorKind::Other {
-                    description: "file index is negative",
-                },
-            )
-        })?;
+        let Ok(validated_file_index) = usize::try_from(request.index) else {
+            reject_file_contents_request!(self, request.stream_id, "file index is negative");
+        };
 
-        if let Some(ref file_list) = self.remote_file_list {
+        // [MS-RDPECLIP] 3.1.5.4.6 - A request carrying a clipDataId is serviced
+        // from the locked File Stream data, so it is validated against the list
+        // that data came with rather than the current remote clipboard.
+        let file_list = request
+            .data_id
+            .and_then(|clip_data_id| self.locked_remote_file_lists.get(&clip_data_id))
+            .or(self.remote_file_list.as_ref());
+
+        if let Some(file_list) = file_list {
             if file_list.files.len() <= validated_file_index {
-                return Err(ironrdp_pdu::PduError::new(
-                    "request_file_contents",
-                    ironrdp_pdu::PduErrorKind::Other {
-                        description: "file index out of bounds for remote file list",
-                    },
-                ));
+                reject_file_contents_request!(self, request.stream_id, "file index out of bounds for remote file list");
             }
 
             // [MS-RDPECLIP] 3.1.5.4.5 - Validate RANGE request is within file bounds
             if request.flags.contains(FileContentsFlags::RANGE) {
                 // Validate requested_size > 0 for RANGE requests
                 if request.requested_size == 0 {
-                    return Err(ironrdp_pdu::PduError::new(
-                        "request_file_contents",
-                        ironrdp_pdu::PduErrorKind::Other {
-                            description: "RANGE request must have requested_size > 0",
-                        },
-                    ));
+                    reject_file_contents_request!(
+                        self,
+                        request.stream_id,
+                        "RANGE request must have requested_size > 0"
+                    );
                 }
 
                 if let Some(file_desc) = file_list.files.get(validated_file_index) {
                     if let Some(file_size) = file_desc.file_size {
                         let end_position = request.position.saturating_add(u64::from(request.requested_size));
                         if file_size < end_position {
-                            return Err(ironrdp_pdu::PduError::new(
-                                "request_file_contents",
-                                ironrdp_pdu::PduErrorKind::Other {
-                                    description: "RANGE request exceeds file bounds",
-                                },
-                            ));
+                            reject_file_contents_request!(self, request.stream_id, "RANGE request exceeds file bounds");
                         }
                     }
                 }
@@ -1390,12 +1423,11 @@ impl<R: Role> Cliprdr<R> {
 
             if !supports_huge_files && 0x8000_0000 <= request.position {
                 // 2^31
-                return Err(ironrdp_pdu::PduError::new(
-                    "request_file_contents",
-                    ironrdp_pdu::PduErrorKind::Other {
-                        description: "large file position requires CB_HUGE_FILE_SUPPORT_ENABLED capability",
-                    },
-                ));
+                reject_file_contents_request!(
+                    self,
+                    request.stream_id,
+                    "large file position requires CB_HUGE_FILE_SUPPORT_ENABLED capability"
+                );
             }
         } else {
             warn!("FileContentsRequest sent without remote file list");
@@ -1404,12 +1436,7 @@ impl<R: Role> Cliprdr<R> {
 
         // Reject if too many requests are already pending.
         if MAX_PENDING_FILE_REQUESTS <= self.sent_file_contents_requests.len() {
-            return Err(ironrdp_pdu::PduError::new(
-                "request_file_contents",
-                ironrdp_pdu::PduErrorKind::Other {
-                    description: "too many pending file contents requests",
-                },
-            ));
+            reject_file_contents_request!(self, request.stream_id, "too many pending file contents requests");
         }
 
         // Track this request so we can validate the response.
@@ -1761,6 +1788,23 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                                 // Notify backend with file metadata and the current lock ID
                                 // (if locking was negotiated). The lock is already held at this point.
                                 self.backend.on_remote_file_list(&file_list.files, self.current_lock_id);
+
+                                // [MS-RDPECLIP] 3.1.5.4.6 - Snapshot the list under the
+                                // active lock, so requests that carry its clipDataId keep
+                                // validating against it after the clipboard changes.
+                                if let Some(clip_data_id) = self.current_lock_id {
+                                    if MAX_LOCKED_FILE_LISTS <= self.locked_remote_file_lists.len() {
+                                        warn!(
+                                            clip_data_id,
+                                            current = self.locked_remote_file_lists.len(),
+                                            max = MAX_LOCKED_FILE_LISTS,
+                                            "Too many locked remote file lists, not snapshotting this one"
+                                        );
+                                    } else {
+                                        debug!(clip_data_id, "Snapshotting remote file list under lock");
+                                        self.locked_remote_file_lists.insert(clip_data_id, file_list.clone());
+                                    }
+                                }
 
                                 // Store the remote file list for FileContentsRequest validation.
                                 self.remote_file_list = Some(file_list);
