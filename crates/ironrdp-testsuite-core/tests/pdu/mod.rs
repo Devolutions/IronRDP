@@ -4,6 +4,7 @@ mod gcc;
 mod gfx;
 mod input;
 mod mcs;
+mod message_channel;
 #[expect(
     clippy::needless_raw_strings,
     reason = "the lint is disable to not interfere with expect! macro"
