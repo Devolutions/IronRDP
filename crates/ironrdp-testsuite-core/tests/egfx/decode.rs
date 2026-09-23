@@ -181,6 +181,39 @@ fn test_openh264_decode_annex_b_three_byte_start_codes() {
     assert_eq!(frame.height(), 16);
 }
 
+#[test]
+fn test_openh264_decode_annex_b_that_also_parses_as_avc() {
+    // `00 00 01 67` read as a length is 0x167 = 359, so a 363-byte Annex B
+    // buffer that starts with a 3-byte start code and an SPS is also a
+    // well-formed one-unit AVC buffer. The start code must win. Trailing
+    // zero bytes are allowed after the last NAL unit in Annex B.
+    let mut annex_b = vec![0x00, 0x00, 0x01];
+    annex_b.extend_from_slice(&generate_test_annex_b_bitstream()[4..]);
+    assert!(annex_b.starts_with(&[0x00, 0x00, 0x01, 0x67]));
+    assert!(annex_b.len() <= 363, "test frame too large: {}", annex_b.len());
+    annex_b.resize(363, 0);
+
+    let mut decoder = OpenH264Decoder::new().expect("decoder should initialize");
+    let frame = decoder
+        .decode(&annex_b)
+        .expect("Annex B that also parses as AVC should decode as Annex B");
+    assert_eq!(frame.width(), 16);
+    assert_eq!(frame.height(), 16);
+    assert!(!ironrdp_egfx::pdu::is_avc_format(&annex_b));
+}
+
+#[test]
+fn test_is_avc_format() {
+    use ironrdp_egfx::pdu::is_avc_format;
+
+    let annex_b = generate_test_annex_b_bitstream();
+    assert!(!is_avc_format(&annex_b));
+    assert!(is_avc_format(&annex_b_to_avc(&annex_b)));
+    assert!(!is_avc_format(&[]));
+    // A length that runs past the end is not AVC format.
+    assert!(!is_avc_format(&[0x00, 0x00, 0x00, 0x09, 0x67]));
+}
+
 // ============================================================================
 // Error Path Tests
 // ============================================================================

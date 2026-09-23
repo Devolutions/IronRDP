@@ -395,18 +395,21 @@ pub fn egfx_round_trip(data: &[u8]) {
 /// AVC420 decode-side wrapper fuzz oracle.
 ///
 /// Fuzzes the IronRDP wrapper layer between a wire `Avc420BitmapStream` and
-/// the consumer's `H264Decoder`. Specifically targets `avc_to_annex_b`, the
-/// AVC-length-prefix to Annex-B conversion that runs on length-prefixed input
-/// before OpenH264 sees it (Annex B input is passed through unchanged).
+/// the consumer's `H264Decoder`: `is_avc_format`, which decides whether the
+/// input is length-prefixed, and `avc_to_annex_b`, the conversion that
+/// `OpenH264Decoder` runs on length-prefixed input before OpenH264 sees it
+/// (Annex B input is passed through unchanged).
 ///
 /// The oracle runs two paths on each input:
 ///
-/// - Direct: call `avc_to_annex_b(data)` on the raw fuzz input. This
-///   exercises the wrapper on arbitrary byte distributions, including
+/// - Direct: run `is_avc_format` and `avc_to_annex_b` on the raw fuzz input,
+///   the conversion unconditionally so malformed length prefixes reach it.
+///   This exercises the wrapper on arbitrary byte distributions, including
 ///   inputs that do not parse as `Avc420BitmapStream`.
-/// - Decode-chain: try `Avc420BitmapStream::decode(data)`; on success, call
-///   `avc_to_annex_b(stream.data)`. This exercises the wrapper on the
-///   realistic post-decode payload distribution.
+/// - Decode-chain: try `Avc420BitmapStream::decode(data)`; on success, make
+///   the same dispatch as `OpenH264Decoder::decode` on the stream's payload.
+///   This exercises the wrapper on the realistic post-decode payload
+///   distribution.
 ///
 /// What this catches: panics in the wrapper, OOM via attacker-controlled
 /// NAL length encoding, contract violations on the produced Annex-B byte
@@ -416,13 +419,16 @@ pub fn egfx_round_trip(data: &[u8]) {
 /// post-OpenH264 YUV-to-RGBA conversion path in `OpenH264Decoder::decode`,
 /// AVC444 luma plus chroma split (covered by a sibling target).
 pub fn egfx_avc420_decode(data: &[u8]) {
-    use ironrdp_egfx::pdu::{Avc420BitmapStream, avc_to_annex_b};
+    use ironrdp_egfx::pdu::{Avc420BitmapStream, avc_to_annex_b, is_avc_format};
 
+    let _ = is_avc_format(data);
     let _ = avc_to_annex_b(data);
 
     let mut cursor = ironrdp_core::ReadCursor::new(data);
     if let Ok(stream) = ironrdp_core::decode_cursor::<Avc420BitmapStream<'_>>(&mut cursor) {
-        let _ = avc_to_annex_b(stream.data);
+        if is_avc_format(stream.data) {
+            let _ = avc_to_annex_b(stream.data);
+        }
     }
 }
 
@@ -1297,9 +1303,10 @@ pub fn message_decoding_invariants(data: &[u8]) {
 ///
 /// Sibling of [`egfx_avc420_decode`]. Fuzzes the IronRDP wrapper layer between
 /// a wire `Avc444BitmapStream` and the consumer's `H264Decoder`. Targets the
-/// AVC-length-prefix to Annex-B conversion that runs on length-prefixed input
-/// in each of the two underlying `Avc420BitmapStream`s (luma plus optional
-/// chroma) per MS-RDPEGFX 2.2.4.4.
+/// AVC-length-prefix to Annex-B conversion, called unconditionally (without
+/// the `is_avc_format` dispatch) on the raw input and on each of the two
+/// underlying `Avc420BitmapStream`s (luma plus optional chroma) per
+/// MS-RDPEGFX 2.2.4.4, so malformed length prefixes reach it.
 ///
 /// The oracle runs three paths on each input:
 ///

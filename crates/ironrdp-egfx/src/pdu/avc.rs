@@ -366,6 +366,40 @@ impl Avc420Region {
     }
 }
 
+/// Whether `data` is H.264 AVC format (4-byte big-endian length prefixes)
+/// rather than an Annex B byte stream
+///
+/// MS-RDPEGFX specifies Annex B, so a buffer that starts with a start code
+/// (`00 00 01` or `00 00 00 01`) is Annex B. Any other buffer is AVC format
+/// if its length prefixes chain exactly to the end of the buffer.
+///
+/// Checking the chain first would misread valid Annex B: `00 00 01 67`
+/// followed by 359 bytes is also a well-formed one-unit AVC buffer. Checking
+/// the start code first moves the ambiguity to AVC senders whose first NAL
+/// unit is 1 or 256..=511 bytes long, which don't follow the specification.
+pub fn is_avc_format(data: &[u8]) -> bool {
+    if data.starts_with(&[0x00, 0x00, 0x01]) || data.starts_with(&[0x00, 0x00, 0x00, 0x01]) {
+        return false;
+    }
+    let mut offset = 0usize;
+    loop {
+        if offset == data.len() {
+            return !data.is_empty();
+        }
+        let Some(len_bytes) = data.get(offset..offset + 4).and_then(|b| <[u8; 4]>::try_from(b).ok()) else {
+            return false;
+        };
+        let next = usize::try_from(u32::from_be_bytes(len_bytes))
+            .ok()
+            .filter(|&len| len > 0)
+            .and_then(|len| (offset + 4).checked_add(len));
+        match next {
+            Some(next) if next <= data.len() => offset = next,
+            _ => return false,
+        }
+    }
+}
+
 /// Convert H.264 AVC format to Annex B format
 ///
 /// OpenH264 and similar decoders consume Annex B format (start code prefixed).

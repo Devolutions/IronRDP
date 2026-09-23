@@ -251,33 +251,7 @@ mod openh264_impl {
 
     impl H264Decoder for OpenH264Decoder {
         fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
-            // AVC-format input is a chain of 4-byte BE lengths that lands exactly
-            // on the end of the buffer. Anything else is treated as the Annex B
-            // byte stream the specification defines. A start-code check alone
-            // would be ambiguous: an AVC buffer whose first NAL unit is
-            // 256..=511 bytes long also begins with 00 00 01.
-            let is_length_prefixed = {
-                let mut offset = 0usize;
-                loop {
-                    if offset == data.len() {
-                        break true;
-                    }
-                    let Some(len_bytes) = data.get(offset..offset + 4).and_then(|b| <[u8; 4]>::try_from(b).ok()) else {
-                        break false;
-                    };
-                    let nal_len = u32::from_be_bytes(len_bytes);
-                    let next = usize::try_from(nal_len)
-                        .ok()
-                        .filter(|&len| len > 0)
-                        .and_then(|len| (offset + 4).checked_add(len));
-                    match next {
-                        Some(next) if next <= data.len() => offset = next,
-                        _ => break false,
-                    }
-                }
-            };
-
-            let annex_b = if is_length_prefixed {
+            let annex_b = if crate::pdu::is_avc_format(data) {
                 crate::pdu::avc_to_annex_b_into(data, &mut self.annex_b_buffer);
                 &self.annex_b_buffer
             } else {
