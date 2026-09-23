@@ -4,12 +4,9 @@ use ironrdp_egfx::decode::{H264Decoder, OpenH264Decoder};
 // Test Helpers
 // ============================================================================
 
-/// Generate a minimal AVC-format H.264 bitstream by encoding a black 16x16 frame
-///
-/// The encoder produces Annex B format (start code prefixed). This function
-/// converts the output to AVC format (4-byte BE length prefixed) to exercise
-/// the full decode pipeline including AVC-to-Annex-B conversion.
-fn generate_test_avc_bitstream() -> Vec<u8> {
+/// Generate a minimal Annex B H.264 bitstream (start code prefixed) by
+/// encoding a black 16x16 frame. This is the format MS-RDPEGFX specifies.
+fn generate_test_annex_b_bitstream() -> Vec<u8> {
     use openh264::encoder::Encoder;
     use openh264::formats::YUVBuffer;
 
@@ -18,9 +15,16 @@ fn generate_test_avc_bitstream() -> Vec<u8> {
     // Black 16x16 YUV420p frame (all zeros)
     let yuv = YUVBuffer::new(16, 16);
     let bitstream = encoder.encode(&yuv).expect("encode should succeed");
-    let annex_b = bitstream.to_vec();
+    bitstream.to_vec()
+}
 
-    annex_b_to_avc(&annex_b)
+/// Generate a minimal AVC-format H.264 bitstream by encoding a black 16x16 frame
+///
+/// The encoder produces Annex B format (start code prefixed). This function
+/// converts the output to AVC format (4-byte BE length prefixed) to exercise
+/// the full decode pipeline including AVC-to-Annex-B conversion.
+fn generate_test_avc_bitstream() -> Vec<u8> {
+    annex_b_to_avc(&generate_test_annex_b_bitstream())
 }
 
 /// Convert Annex B format NAL units to AVC format (4-byte BE length prefix)
@@ -121,6 +125,63 @@ fn test_openh264_decoder_reset() {
 }
 
 // ============================================================================
+// Annex B Input Tests
+// ============================================================================
+
+#[test]
+fn test_openh264_decode_annex_b() {
+    // MS-RDPEGFX specifies an Annex B byte stream; it must decode as sent.
+    let annex_b = generate_test_annex_b_bitstream();
+    assert!(annex_b.starts_with(&[0x00, 0x00, 0x00, 0x01]));
+
+    let mut decoder = OpenH264Decoder::new().expect("decoder should initialize");
+    let frame = decoder.decode(&annex_b).expect("Annex B decode should succeed");
+    assert_eq!(frame.width(), 16);
+    assert_eq!(frame.height(), 16);
+}
+
+#[test]
+fn test_openh264_decode_annex_b_with_access_unit_delimiter() {
+    // GNOME Remote Desktop starts each frame with an access unit delimiter
+    // (NAL type 9). Read as AVC format, `00 00 00 01` becomes a 1-byte NAL
+    // and the bytes after it a bogus length, so the frame never decodes.
+    let mut annex_b = vec![0x00, 0x00, 0x00, 0x01, 0x09, 0x10];
+    annex_b.extend_from_slice(&generate_test_annex_b_bitstream());
+
+    let mut decoder = OpenH264Decoder::new().expect("decoder should initialize");
+    let frame = decoder
+        .decode(&annex_b)
+        .expect("Annex B decode with an access unit delimiter should succeed");
+    assert_eq!(frame.width(), 16);
+    assert_eq!(frame.height(), 16);
+}
+
+#[test]
+fn test_openh264_decode_annex_b_three_byte_start_codes() {
+    // Annex B also allows 3-byte start codes (00 00 01).
+    let annex_b = generate_test_annex_b_bitstream();
+    let mut short_codes = Vec::with_capacity(annex_b.len());
+    let mut i = 0;
+    while i < annex_b.len() {
+        if annex_b[i..].starts_with(&[0x00, 0x00, 0x00, 0x01]) {
+            short_codes.extend_from_slice(&[0x00, 0x00, 0x01]);
+            i += 4;
+        } else {
+            short_codes.push(annex_b[i]);
+            i += 1;
+        }
+    }
+    assert!(short_codes.starts_with(&[0x00, 0x00, 0x01]));
+
+    let mut decoder = OpenH264Decoder::new().expect("decoder should initialize");
+    let frame = decoder
+        .decode(&short_codes)
+        .expect("Annex B decode with 3-byte start codes should succeed");
+    assert_eq!(frame.width(), 16);
+    assert_eq!(frame.height(), 16);
+}
+
+// ============================================================================
 // Error Path Tests
 // ============================================================================
 
@@ -128,8 +189,7 @@ fn test_openh264_decoder_reset() {
 fn test_decode_empty_input() {
     let mut decoder = OpenH264Decoder::new().expect("decoder should initialize");
 
-    // Empty input has no NAL units -- the AVC-to-Annex-B converter
-    // produces nothing, and OpenH264 returns no picture.
+    // Empty input has no NAL units, so OpenH264 returns no picture.
     let result = decoder.decode(&[]);
     assert!(result.is_err(), "decoding empty input should fail");
 }
@@ -138,8 +198,8 @@ fn test_decode_empty_input() {
 fn test_decode_truncated_nal_length() {
     let mut decoder = OpenH264Decoder::new().expect("decoder should initialize");
 
-    // Less than 4 bytes: can't even read the NAL length prefix.
-    // The converter produces an empty Annex B buffer.
+    // Less than 4 bytes: can't even read a NAL length prefix, so the input
+    // is passed to OpenH264 as Annex B, which finds no picture in it.
     let result = decoder.decode(&[0x00, 0x00]);
     assert!(result.is_err(), "truncated NAL length should fail");
 }
@@ -148,8 +208,9 @@ fn test_decode_truncated_nal_length() {
 fn test_decode_nal_length_exceeds_buffer() {
     let mut decoder = OpenH264Decoder::new().expect("decoder should initialize");
 
-    // NAL length says 100 bytes but only 2 bytes follow.
-    // The converter discards the malformed NAL and produces empty output.
+    // NAL length says 100 bytes but only 2 bytes follow, so the input is not
+    // valid AVC framing. It is passed to OpenH264 as Annex B, which finds no
+    // picture in it.
     let mut data = Vec::new();
     data.extend_from_slice(&100u32.to_be_bytes());
     data.extend_from_slice(&[0x67, 0x00]); // Partial NAL

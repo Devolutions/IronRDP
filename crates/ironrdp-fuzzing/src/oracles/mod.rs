@@ -396,8 +396,8 @@ pub fn egfx_round_trip(data: &[u8]) {
 ///
 /// Fuzzes the IronRDP wrapper layer between a wire `Avc420BitmapStream` and
 /// the consumer's `H264Decoder`. Specifically targets `avc_to_annex_b`, the
-/// AVC-length-prefix to Annex-B conversion that runs before OpenH264 sees
-/// any bytes.
+/// AVC-length-prefix to Annex-B conversion that runs on length-prefixed input
+/// before OpenH264 sees it (Annex B input is passed through unchanged).
 ///
 /// The oracle runs two paths on each input:
 ///
@@ -1297,9 +1297,9 @@ pub fn message_decoding_invariants(data: &[u8]) {
 ///
 /// Sibling of [`egfx_avc420_decode`]. Fuzzes the IronRDP wrapper layer between
 /// a wire `Avc444BitmapStream` and the consumer's `H264Decoder`. Targets the
-/// AVC-length-prefix to Annex-B conversion that runs on each of the two
-/// underlying `Avc420BitmapStream`s (luma plus optional chroma) per
-/// MS-RDPEGFX 2.2.4.4.
+/// AVC-length-prefix to Annex-B conversion that runs on length-prefixed input
+/// in each of the two underlying `Avc420BitmapStream`s (luma plus optional
+/// chroma) per MS-RDPEGFX 2.2.4.4.
 ///
 /// The oracle runs three paths on each input:
 ///
