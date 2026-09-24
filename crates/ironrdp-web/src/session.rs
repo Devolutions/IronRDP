@@ -5,6 +5,14 @@ use core::time::Duration;
 use std::borrow::Cow;
 use std::rc::Rc;
 
+use crate::canvas::Canvas;
+use crate::clipboard;
+use crate::clipboard::{ClipboardData, FileMetadata, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
+use crate::error::IronError;
+use crate::image::extract_partial_image;
+use crate::input::InputTransaction;
+use crate::network_client::WasmNetworkClient;
+use crate::printer::{JsPrinterStreamCallbacks, WasmPrinter, WasmPrinterBackend, wasm_printer_pair};
 use anyhow::Context as _;
 use base64::Engine as _;
 use futures_channel::mpsc;
@@ -18,7 +26,7 @@ use ironrdp::cliprdr::CliprdrClient;
 use ironrdp::cliprdr::backend::ClipboardMessage;
 use ironrdp::cliprdr::pdu::{FileContentsFlags, FileContentsRequest, FileContentsResponse, FileDescriptor};
 use ironrdp::connector::connection_activation::ConnectionActivationState;
-use ironrdp::connector::credssp::KerberosConfig;
+use ironrdp::connector::credssp::{KdcResolution, KerberosConfig};
 use ironrdp::connector::{self, ClientConnector, Credentials};
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::dvc::DrdynvcClient;
@@ -39,15 +47,6 @@ use tracing::{debug, error, info, trace, warn};
 use wasm_bindgen::{JsCast as _, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
-
-use crate::canvas::Canvas;
-use crate::clipboard;
-use crate::clipboard::{ClipboardData, FileMetadata, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
-use crate::error::IronError;
-use crate::image::extract_partial_image;
-use crate::input::InputTransaction;
-use crate::network_client::WasmNetworkClient;
-use crate::printer::{JsPrinterStreamCallbacks, WasmPrinter, WasmPrinterBackend, wasm_printer_pair};
 
 const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 720;
@@ -1670,7 +1669,7 @@ async fn connect(
     let kerberos_config = url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str())
         .ok()
         .map(|url| KerberosConfig {
-            kdc_proxy_url: Some(url),
+            kdc_resolution: KdcResolution::KdcUrl(Some(url)),
             // HACK: It's supposed to be the computer name of the client, but since it's not easy to retrieve this information in the browser,
             // we set the destination hostname instead because it happens to work.
             hostname: destination.clone(),
