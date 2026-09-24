@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
     // `mpsc` channel for correctness-sensitive events, `watch` channels underneath
     // for high-frequency display state; see `RdpOutputEvent::drop_policy`).
     // Bridging onto the GUI event loop is the binary's job.
-    rt.spawn(async move {
+    let output_forwarder = rt.spawn(async move {
         while let Some(event) = output_event_receiver.recv().await {
             if event_loop_proxy.send_event(event).is_err() {
                 // The event loop is gone; nothing left to forward.
@@ -78,6 +78,10 @@ fn main() -> anyhow::Result<()> {
     debug!("Start RDP thread");
     std::thread::spawn(move || {
         rt.block_on(client.run());
+        // Deliver the final failure or termination event before dropping the runtime.
+        if let Err(error) = rt.block_on(output_forwarder) {
+            tracing::warn!(%error, "RDP output forwarder failed");
+        }
     });
 
     debug!("Run App");
