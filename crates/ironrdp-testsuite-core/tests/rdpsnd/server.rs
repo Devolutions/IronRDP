@@ -318,3 +318,31 @@ fn wave_confirm_reaches_the_handler() {
     // the echo is the only latency signal MS-RDPEA gives it.
     assert_eq!(rec.lock().expect("poisoned").wave_confirms, vec![(7, 0x2345)]);
 }
+
+#[test]
+fn repeated_and_unmatched_wave_confirms_still_reach_the_handler() {
+    let rec = Arc::new(Mutex::new(Recording::default()));
+    let mut server = RdpsndServer::new(Box::new(FakeHandler {
+        formats: vec![fmt(WaveFormat::PCM, 44100)],
+        rec: Arc::clone(&rec),
+        start_ok: true,
+    }));
+
+    drive_to_ready(&mut server, vec![fmt(WaveFormat::PCM, 44100)]);
+    server.wave(vec![0; 8], 0x0100).expect("wave");
+
+    // Some clients confirm one block more than once, and a confirm can name a
+    // block the server has no record of. The server's own bookkeeping for
+    // these must not hide them from the handler.
+    for (block_no, timestamp) in [(0, 0x0110), (0, 0x0120), (9, 0x0130)] {
+        let confirm = ClientAudioOutputPdu::WaveConfirm(WaveConfirmPdu { timestamp, block_no });
+        server
+            .process(&encode_vec(&confirm).expect("encode wave confirm"))
+            .expect("process wave confirm");
+    }
+
+    assert_eq!(
+        rec.lock().expect("poisoned").wave_confirms,
+        vec![(0, 0x0110), (0, 0x0120), (9, 0x0130)]
+    );
+}
