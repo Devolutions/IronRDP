@@ -9,7 +9,7 @@ use ironrdp_pdu::{self as pdu, PduError, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcMessage, SvcProcessor, SvcServerProcessor};
 use pdu::PduResult;
 use pdu::gcc::ChannelName;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::pdu::{
     CapabilitiesRequestPdu, CapsVersion, ClosePdu, CreateRequestPdu, CreationStatus, DrdynvcClientPdu,
@@ -469,7 +469,10 @@ impl SvcProcessor for DrdynvcServer {
                 if create_resp.creation_status() != CreationStatus::OK {
                     let name = c.processor.channel_name();
                     let status = create_resp.creation_status();
-                    warn!(channel_id = ?id, %name, ?status, "DVC channel creation failed");
+                    // A client answers the Create Request with a failure status when it has
+                    // no listener for the channel, so this is how an optional channel is
+                    // declined on every connect, not a fault.
+                    debug!(channel_id = ?id, %name, ?status, "DVC channel creation declined by client");
                     c.state = ChannelState::CreationFailed(status.into());
                     return Ok(resp);
                 }
