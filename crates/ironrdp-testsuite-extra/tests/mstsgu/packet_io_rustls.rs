@@ -1,5 +1,3 @@
-#![allow(unused_crate_dependencies)]
-
 use core::convert::Infallible;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -22,10 +20,13 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::Role;
 
+use super::proxy::ENVIRONMENT_LOCK;
+
 type TestBody = BoxBody<Bytes, Infallible>;
 
 #[tokio::test]
 async fn callback_validates_websocket_gateway_tls() {
+    let _environment_lock = ENVIRONMENT_LOCK.lock().await;
     let (listener, acceptor) = tls_listener().await;
     let target = gateway_target(listener.local_addr().expect("gateway listener address"));
     let (upgrade_tx, upgrade_rx) = oneshot::channel();
@@ -104,6 +105,7 @@ async fn callback_validates_websocket_gateway_tls() {
 
 #[tokio::test]
 async fn callback_validates_both_dual_http_gateway_tls_connections() {
+    let _environment_lock = ENVIRONMENT_LOCK.lock().await;
     let (listener, acceptor) = tls_listener().await;
     let target = gateway_target(listener.local_addr().expect("gateway listener address"));
     let server = tokio::spawn(async move {
@@ -175,8 +177,8 @@ fn response(status: StatusCode, body: Bytes) -> Response<TestBody> {
 
 async fn tls_listener() -> (tokio::net::TcpListener, TlsAcceptor) {
     let identity = Identity::from_pkcs8(
-        include_bytes!("../../ironrdp-tls/tests/certs/server-cert.pem"),
-        include_bytes!("../../ironrdp-tls/tests/certs/server-key.pem"),
+        include_bytes!("../../../ironrdp-tls/tests/certs/server-cert.pem"),
+        include_bytes!("../../../ironrdp-tls/tests/certs/server-key.pem"),
     )
     .expect("create TLS identity");
     let acceptor = TlsAcceptor::from(NativeTlsAcceptor::new(identity).expect("create TLS acceptor"));

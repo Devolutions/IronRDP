@@ -11,6 +11,51 @@ use crate::packet_io::{
 };
 use crate::{ConsentFallback, Error, GwClient, GwConnectTarget, GwConsentCallback};
 
+/// Test-only constructors and accessors for internal MS-TSGU protocol packets.
+pub mod proto {
+    pub use crate::proto::{ExtendedAuthPkt, HandshakeRespPkt, TunnelAuthRespPkt, TunnelReqPkt};
+
+    /// Constructs an HTTP tunnel request packet.
+    pub fn tunnel_request(caps: u32, fields_present: u16, reauth_tunnel_context: Option<u64>) -> TunnelReqPkt {
+        TunnelReqPkt {
+            caps,
+            fields_present,
+            _reserved: 0,
+            reauth_tunnel_context,
+        }
+    }
+
+    /// Constructs an HTTP extended authentication packet.
+    pub fn extended_auth_packet(error_code: u32, auth_blob: Vec<u8>) -> ExtendedAuthPkt {
+        ExtendedAuthPkt { error_code, auth_blob }
+    }
+
+    /// Returns the advertised HTTP extended-authentication flags.
+    pub fn handshake_extended_auth_bits(packet: &HandshakeRespPkt) -> u16 {
+        packet.extended_auth.bits()
+    }
+
+    /// Returns the bit representation for no HTTP extended authentication.
+    pub const fn no_extended_auth_bits() -> u16 {
+        0
+    }
+
+    /// Returns tunnel authorization redirection flags.
+    pub fn tunnel_auth_response_redirection_flags(packet: &TunnelAuthRespPkt) -> Option<u32> {
+        packet.redirection_flags
+    }
+
+    /// Returns tunnel authorization idle timeout in minutes.
+    pub fn tunnel_auth_response_idle_timeout_minutes(packet: &TunnelAuthRespPkt) -> Option<u32> {
+        packet.idle_timeout_minutes
+    }
+
+    /// Returns the tunnel authorization statement-of-health response.
+    pub fn tunnel_auth_response_soh_response(packet: &TunnelAuthRespPkt) -> Option<&[u8]> {
+        packet.soh_response.as_deref()
+    }
+}
+
 /// In-memory gateway transport used by the registered integration tests.
 pub struct GatewayTransport(NetworkGatewayTransport);
 

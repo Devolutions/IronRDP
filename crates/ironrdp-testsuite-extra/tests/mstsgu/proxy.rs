@@ -1,5 +1,3 @@
-#![allow(unused_crate_dependencies)]
-
 use core::convert::Infallible;
 use std::ffi::OsString;
 
@@ -23,7 +21,7 @@ use tokio_native_tls::native_tls::{Identity, TlsAcceptor as NativeTlsAcceptor};
 
 type TestBody = BoxBody<Bytes, Infallible>;
 
-static ENVIRONMENT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static ENVIRONMENT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[test]
 fn parses_supported_proxy_urls_without_exposing_credentials() {
@@ -339,8 +337,8 @@ impl Drop for ProxyEnvironment {
 
 async fn tls_listener() -> (TcpListener, TlsAcceptor) {
     let identity = Identity::from_pkcs8(
-        include_bytes!("../../ironrdp-tls/tests/certs/server-cert.pem"),
-        include_bytes!("../../ironrdp-tls/tests/certs/server-key.pem"),
+        include_bytes!("../../../ironrdp-tls/tests/certs/server-cert.pem"),
+        include_bytes!("../../../ironrdp-tls/tests/certs/server-key.pem"),
     )
     .expect("create TLS identity");
     let acceptor = TlsAcceptor::from(NativeTlsAcceptor::new(identity).expect("create TLS acceptor"));

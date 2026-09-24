@@ -1,21 +1,9 @@
-#![expect(
-    dead_code,
-    unreachable_pub,
-    unused_crate_dependencies,
-    reason = "tests import private protocol structures"
-)]
-
-#[path = "../src/proto.rs"]
-#[expect(
-    clippy::allow_attributes,
-    reason = "the imported protocol source contains an intentionally unfulfilled expectation"
-)]
-#[allow(unfulfilled_lint_expectations)]
-mod proto;
-
 use ironrdp_core::{Decode as _, ReadCursor};
 use ironrdp_mstsgu::GwTunnelPolicy;
-use proto::TunnelAuthRespPkt;
+use ironrdp_mstsgu::test_support::proto::{
+    TunnelAuthRespPkt, tunnel_auth_response_idle_timeout_minutes, tunnel_auth_response_redirection_flags,
+    tunnel_auth_response_soh_response,
+};
 
 #[test]
 fn tunnel_auth_response_decodes_optional_policy_fields() {
@@ -32,9 +20,12 @@ fn tunnel_auth_response_decodes_optional_policy_fields() {
     let mut cursor = ReadCursor::new(&bytes);
     let decoded = TunnelAuthRespPkt::decode(&mut cursor).expect("decode");
     assert!(cursor.eof());
-    assert_eq!(decoded.redirection_flags, Some(0x4000_0008));
-    assert_eq!(decoded.idle_timeout_minutes, Some(15));
-    assert_eq!(decoded.soh_response.as_deref(), Some(&[0x01, 0x02, 0x03][..]));
+    assert_eq!(tunnel_auth_response_redirection_flags(&decoded), Some(0x4000_0008));
+    assert_eq!(tunnel_auth_response_idle_timeout_minutes(&decoded), Some(15));
+    assert_eq!(
+        tunnel_auth_response_soh_response(&decoded),
+        Some(&[0x01, 0x02, 0x03][..])
+    );
 }
 
 #[test]
