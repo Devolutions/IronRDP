@@ -1961,6 +1961,10 @@ fn f64_to_u16_saturating_cast(value: f64) -> u16 {
 
 #[cfg(test)]
 mod tests {
+    use futures_util::io::Cursor;
+    use iron_remote_desktop::IronError as _;
+    use ironrdp_futures::bytes::BytesMut;
+
     use super::*;
 
     // Test helpers
@@ -1969,6 +1973,58 @@ mod tests {
         mpsc::UnboundedReceiver<RdpInputEvent>,
     ) {
         mpsc::unbounded()
+    }
+
+    fn rdcleanpath_framed(response: &[u8]) -> ironrdp_futures::LocalFuturesFramed<Cursor<Vec<u8>>> {
+        ironrdp_futures::LocalFuturesFramed::new_with_leftover(Cursor::new(Vec::new()), BytesMut::from(response))
+    }
+
+    fn connector_config(enable_standard_rdp_security: bool) -> connector::Config {
+        build_config(
+            String::new(),
+            String::new(),
+            None,
+            "ironrdp-web-test".to_owned(),
+            DesktopSize {
+                width: DEFAULT_WIDTH,
+                height: DEFAULT_HEIGHT,
+            },
+            false,
+            SecurityConfig {
+                enable_credssp: false,
+                enable_standard_rdp_security,
+            },
+        )
+    }
+
+    fn rdcleanpath_response(protocol: ironrdp::pdu::nego::SecurityProtocol) -> Vec<u8> {
+        let x224_response = ironrdp_core::encode_vec(&ironrdp::pdu::x224::X224(
+            ironrdp::pdu::nego::ConnectionConfirm::Response {
+                flags: ironrdp::pdu::nego::ResponseFlags::empty(),
+                protocol,
+            },
+        ))
+        .expect("encode X.224 connection response");
+
+        ironrdp_rdcleanpath::RDCleanPathPdu::new_response(
+            "127.0.0.1".to_owned(),
+            x224_response,
+            std::iter::empty::<Vec<u8>>(),
+        )
+        .expect("build RDCleanPath response")
+        .to_der()
+        .expect("encode RDCleanPath response")
+    }
+
+    fn rdcleanpath_connect_params() -> RDCleanPathConnectParams {
+        RDCleanPathConnectParams {
+            server_name: connector::ServerName::from("rdp.example.test"),
+            destination: "rdp.example.test".to_owned(),
+            proxy_auth_token: "test-token".to_owned(),
+            pcb: None,
+            vmconnect: None,
+            kerberos_config: None,
+        }
     }
 
     #[test]
@@ -2041,6 +2097,88 @@ mod tests {
                 "{case}"
             );
         }
+    }
+
+    #[test]
+    fn standard_rdp_security_accepts_empty_rdcleanpath_certificate_chain() {
+        let response = rdcleanpath_response(ironrdp::pdu::nego::SecurityProtocol::empty());
+        let mut framed = rdcleanpath_framed(&response);
+        let mut connector = ClientConnector::new(
+            connector_config(true),
+            core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
+        );
+        let mut network_client = WasmNetworkClient;
+
+        let (upgraded, server_public_key) = connect_rdcleanpath(
+            &mut framed,
+            &mut connector,
+            &mut network_client,
+            rdcleanpath_connect_params(),
+        )
+        .now_or_never()
+        .expect("in-memory RDCleanPath I/O should be ready")
+        .unwrap_or_else(|error| panic!("Standard RDP Security negotiation failed: {}", error.backtrace()));
+
+        assert!(server_public_key.is_empty());
+        let request_len = framed.get_inner().0.get_ref().len();
+        assert_ne!(request_len, 0, "RDCleanPath request was sent");
+
+        // The fixture intentionally has no MCS response. Reaching EOF only after a second
+        // write proves finalization advanced past the no-op security upgrade and sent the
+        // client's MCS Connect Initial without trying to perform TLS first.
+        let finalize_result = ironrdp_futures::connect_finalize(
+            upgraded,
+            connector,
+            &mut framed,
+            &mut network_client,
+            connector::ServerName::from("rdp.example.test"),
+            server_public_key,
+            None,
+        )
+        .now_or_never()
+        .expect("in-memory finalization I/O should be ready");
+
+        assert!(
+            finalize_result.is_err(),
+            "fixture should end while awaiting the MCS response"
+        );
+        let final_len = framed.get_inner().0.get_ref().len();
+        assert!(
+            final_len > request_len,
+            "expected finalization to write more data: {final_len} <= {request_len}"
+        );
+    }
+
+    #[test]
+    fn enhanced_security_rejects_empty_rdcleanpath_certificate_chain() {
+        let response = rdcleanpath_response(ironrdp::pdu::nego::SecurityProtocol::SSL);
+        let mut framed = rdcleanpath_framed(&response);
+        let mut connector = ClientConnector::new(
+            connector_config(false),
+            core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
+        );
+        let mut network_client = WasmNetworkClient;
+
+        let error = match connect_rdcleanpath(
+            &mut framed,
+            &mut connector,
+            &mut network_client,
+            rdcleanpath_connect_params(),
+        )
+        .now_or_never()
+        .expect("in-memory RDCleanPath I/O should be ready")
+        {
+            Ok(_) => panic!("enhanced security accepted a missing proxy certificate"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error
+                .backtrace()
+                .contains("server cert chain missing from rdcleanpath response"),
+            "unexpected error: {}",
+            error.backtrace()
+        );
     }
 
     #[test]
