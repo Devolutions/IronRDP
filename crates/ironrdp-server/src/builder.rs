@@ -506,6 +506,15 @@ impl RdpServerBuilder<BuilderDone> {
     /// connection degrades to TCP-only.
     ///
     /// `None` (the default): no UDP socket is ever bound, no behavior change.
+    ///
+    /// # Panics
+    ///
+    /// The UDP handshake is started with [`tokio::task::spawn_local`] so that
+    /// it never blocks the RDP handshake. With this option set,
+    /// [`RdpServer::run`], [`RdpServer::run_connection`] and
+    /// [`RdpServer::run_connection_with`] must therefore be driven inside a
+    /// [`tokio::task::LocalSet`]; otherwise the first client that accepts the
+    /// multitransport offer makes them panic.
     pub fn with_udp_transport(mut self, udp_bind_addr: SocketAddr) -> Self {
         self.state.udp_bind_addr = Some(udp_bind_addr);
         self
