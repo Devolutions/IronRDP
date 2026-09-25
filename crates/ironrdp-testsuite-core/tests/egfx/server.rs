@@ -5,7 +5,9 @@ use ironrdp_egfx::pdu::{
     CapabilitiesV81Flags, CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitySet,
     Codec1Type, Codec2Type, Encoding, FrameAcknowledgePdu, GfxPdu, PixelFormat, QueueDepth,
 };
-use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer, MixedTilePayload, QoeMetrics, Surface};
+use ironrdp_egfx::server::{
+    Avc444SubStream, Avc444Tile, GraphicsPipelineHandler, GraphicsPipelineServer, MixedTilePayload, QoeMetrics, Surface,
+};
 use ironrdp_graphics::zgfx::Decompressor;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
 use rstest::rstest;
@@ -326,6 +328,8 @@ fn avc444v2_sender_rejects_invalid_stream_shapes_without_queueing() {
         (Encoding::LUMA_AND_CHROMA, None, None),
         (Encoding::LUMA, Some(data.as_slice()), Some(regions.as_slice())),
         (Encoding::CHROMA, Some(data.as_slice()), Some(regions.as_slice())),
+        (Encoding::LUMA, Some(data.as_slice()), None),
+        (Encoding::LUMA, None, Some(regions.as_slice())),
         (Encoding::from_bits_retain(3), None, None),
     ] {
         assert!(
@@ -588,6 +592,211 @@ fn avc420_is_promised_beside_other_codecs_from_10_4(#[case] caps: CapabilitySet)
 #[case::v10_7(CapabilitySet::V10_7 { flags: CapabilitiesV107Flags::AVC_DISABLED })]
 fn avc420_is_not_promised_beside_other_codecs_when_the_client_disabled_avc(#[case] caps: CapabilitySet) {
     assert!(!negotiated_avc420_in_mixed_frames(caps));
+}
+
+fn avc444_tile(
+    v2: bool,
+    encoding: Encoding,
+    stream1_regions: Vec<Avc420Region>,
+    stream2_regions: Option<Vec<Avc420Region>>,
+) -> MixedTilePayload {
+    let stream1_data = vec![0x00, 0x00, 0x00, 0x01, 0x67];
+    let stream2 = stream2_regions.map(|regions| Avc444SubStream {
+        regions,
+        data: vec![0x00, 0x00, 0x00, 0x01, 0x68],
+    });
+    let tile = Avc444Tile {
+        encoding,
+        stream1_regions,
+        stream1_data,
+        stream2,
+    };
+    if v2 {
+        MixedTilePayload::Avc444v2(tile)
+    } else {
+        MixedTilePayload::Avc444(tile)
+    }
+}
+
+fn avc444_region() -> Vec<Avc420Region> {
+    vec![Avc420Region::new(0, 0, 32, 32, 22, 78)]
+}
+
+/// A server whose client negotiated 10.4, where an AVC tile may share a frame with another codec.
+fn server_at_10_4() -> (GraphicsPipelineServer, u16) {
+    mixed_frame_server(CapabilitySet::V10_4 {
+        flags: CapabilitiesV104Flags::empty(),
+    })
+}
+
+#[rstest]
+fn mixed_frame_carries_avc444_tiles_next_to_clearcodec(
+    #[values(false, true)] v2: bool,
+    #[values(Encoding::LUMA_AND_CHROMA, Encoding::LUMA, Encoding::CHROMA)] encoding: Encoding,
+) {
+    use ironrdp_graphics::clearcodec::{ClearCodecDecoder, ClearCodecEncoder};
+
+    let pixels: Vec<u8> = (0..=u8::MAX)
+        .flat_map(|i| [0x10 ^ i, 0x20 ^ i, 0x30 ^ i, 0xFF])
+        .collect();
+    let clearcodec_data = ClearCodecEncoder::new().encode(&pixels, 16, 16);
+
+    let (mut server, surface_id) = server_at_10_4();
+    let stream2_regions =
+        (encoding == Encoding::LUMA_AND_CHROMA).then(|| vec![Avc420Region::new(16, 8, 64, 48, 24, 76)]);
+
+    let tiles = vec![
+        avc444_tile(v2, encoding, avc444_region(), stream2_regions),
+        MixedTilePayload::ClearCodec {
+            destination: ExclusiveRectangle {
+                left: 48,
+                top: 48,
+                right: 64,
+                bottom: 64,
+            },
+            bitmap_data: clearcodec_data,
+        },
+    ];
+    server
+        .send_mixed_frame(surface_id, tiles, 42)
+        .expect("queue mixed frame");
+
+    let pdus = decode_drained_pdus(&mut server);
+    assert_eq!(pdus.len(), 4);
+    assert!(matches!(pdus[0], GfxPdu::StartFrame(_)));
+    assert!(matches!(pdus[3], GfxPdu::EndFrame(_)));
+
+    let GfxPdu::WireToSurface1(avc444) = &pdus[1] else {
+        panic!("expected AVC444 WireToSurface1");
+    };
+    let expected_codec = if v2 { Codec1Type::Avc444v2 } else { Codec1Type::Avc444 };
+    assert_eq!(avc444.codec_id, expected_codec);
+
+    let stream = Avc444BitmapStream::decode(&mut ReadCursor::new(&avc444.bitmap_data)).expect("decode AVC444");
+    assert_eq!(stream.encoding, encoding);
+    assert_eq!(stream.stream1.rectangles[0].right, 32);
+    assert_eq!(stream.stream1.rectangles[0].bottom, 32);
+    if encoding == Encoding::LUMA_AND_CHROMA {
+        let stream2 = stream.stream2.expect("second sub-stream");
+        assert_eq!(stream2.rectangles[0].left, 16);
+        assert_eq!(stream2.rectangles[0].bottom, 48);
+        // destRect is the bounding box of both sub-streams.
+        assert_eq!(avc444.destination_rectangle.right, 64);
+        assert_eq!(avc444.destination_rectangle.bottom, 48);
+    } else {
+        assert!(stream.stream2.is_none());
+        assert_eq!(avc444.destination_rectangle.right, 32);
+        assert_eq!(avc444.destination_rectangle.bottom, 32);
+    }
+
+    let GfxPdu::WireToSurface1(clearcodec) = &pdus[2] else {
+        panic!("expected ClearCodec WireToSurface1");
+    };
+    assert_eq!(clearcodec.codec_id, Codec1Type::ClearCodec);
+    let decoded = ClearCodecDecoder::new()
+        .decode(&clearcodec.bitmap_data, 16, 16)
+        .expect("decode ClearCodec tile");
+    assert_eq!(decoded.len(), 16 * 16 * 4);
+}
+
+#[rstest]
+#[case::lc0_without_a_second_sub_stream(avc444_tile(false, Encoding::LUMA_AND_CHROMA, avc444_region(), None))]
+#[case::lc1_with_a_second_sub_stream(avc444_tile(true, Encoding::LUMA, avc444_region(), Some(avc444_region())))]
+#[case::lc2_with_a_second_sub_stream(avc444_tile(false, Encoding::CHROMA, avc444_region(), Some(avc444_region())))]
+#[case::lc3(avc444_tile(true, Encoding::from_bits_retain(3), avc444_region(), None))]
+#[case::second_sub_stream_region_past_the_surface(avc444_tile(
+    true,
+    Encoding::LUMA_AND_CHROMA,
+    avc444_region(),
+    Some(vec![Avc420Region::new(0, 0, 80, 32, 22, 78)]),
+))]
+#[case::degenerate_first_sub_stream_region(avc444_tile(
+    false,
+    Encoding::LUMA,
+    vec![Avc420Region::new(4, 4, 4, 32, 22, 78)],
+    None,
+))]
+#[case::no_first_sub_stream_regions(avc444_tile(false, Encoding::LUMA, Vec::new(), None))]
+#[case::no_second_sub_stream_regions(avc444_tile(true, Encoding::LUMA_AND_CHROMA, avc444_region(), Some(Vec::new())))]
+#[case::qp_above_51_in_the_second_sub_stream(avc444_tile(
+    false,
+    Encoding::LUMA_AND_CHROMA,
+    avc444_region(),
+    Some(vec![Avc420Region::new(0, 0, 32, 32, 52, 78)]),
+))]
+#[case::quality_above_100_in_the_first_sub_stream(avc444_tile(
+    false,
+    Encoding::LUMA,
+    vec![Avc420Region::new(0, 0, 32, 32, 22, 101)],
+    None,
+))]
+fn mixed_frame_rejects_invalid_avc444_tiles_without_queueing(#[case] bad_tile: MixedTilePayload) {
+    let (mut server, surface_id) = server_at_10_4();
+    let tiles = vec![clearcodec_tile(0, 0, 16, 16), bad_tile];
+
+    assert!(server.send_mixed_frame(surface_id, tiles, 42).is_none());
+    assert!(!server.has_pending_output());
+    assert_eq!(server.frames_in_flight(), 0);
+}
+
+#[test]
+fn mixed_frame_rejects_avc444_tiles_without_avc444_support() {
+    let (mut server, surface_id) = mixed_frame_server(CapabilitySet::V8_1 {
+        flags: CapabilitiesV81Flags::AVC420_ENABLED,
+    });
+    assert!(server.supports_avc420());
+    assert!(!server.supports_avc444());
+
+    let tiles = vec![avc444_tile(true, Encoding::LUMA, avc444_region(), None)];
+    assert!(server.send_mixed_frame(surface_id, tiles, 42).is_none());
+    assert!(!server.has_pending_output());
+    assert_eq!(server.frames_in_flight(), 0);
+}
+
+/// MS-RDPEGFX 2.2.3.7 promises no version at which AVC444 decodes next to other codecs, so
+/// the mixed path holds it to the 10.4 floor it applies to AVC420. Each case allows AVC444
+/// and AVC420, so the refusal is for the version and not because AVC is off.
+#[rstest]
+#[case::v10(CapabilitySet::V10 { flags: CapabilitiesV10Flags::SMALL_CACHE })]
+#[case::v10_1(CapabilitySet::V10_1)]
+#[case::v10_2(CapabilitySet::V10_2 { flags: CapabilitiesV10Flags::SMALL_CACHE })]
+#[case::v10_3(CapabilitySet::V10_3 { flags: CapabilitiesV103Flags::empty() })]
+fn mixed_frame_with_avc444_and_another_codec_is_refused_before_10_4(
+    #[case] caps: CapabilitySet,
+    #[values(false, true)] v2: bool,
+) {
+    for other_tile in [
+        clearcodec_tile(48, 48, 64, 64),
+        avc420_tile(Avc420Region::new(32, 32, 64, 64, 22, 78)),
+    ] {
+        let (mut server, surface_id) = mixed_frame_server(caps.clone());
+        assert!(server.supports_avc444());
+        assert!(server.supports_avc420());
+
+        let tiles = vec![avc444_tile(v2, Encoding::LUMA, avc444_region(), None), other_tile];
+        assert!(server.send_mixed_frame(surface_id, tiles, 42).is_none());
+        assert!(!server.has_pending_output());
+        assert_eq!(server.frames_in_flight(), 0);
+    }
+}
+
+/// Tiles that all use one codec are no mix, so on an earlier version a frame of AVC444 tiles
+/// is queued.
+#[test]
+fn mixed_frame_of_avc444_tiles_alone_is_allowed_before_10_4() {
+    let (mut server, surface_id) = mixed_frame_server(CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::SMALL_CACHE,
+    });
+    let tiles = vec![
+        avc444_tile(false, Encoding::LUMA, avc444_region(), None),
+        avc444_tile(
+            true,
+            Encoding::LUMA,
+            vec![Avc420Region::new(32, 32, 64, 64, 22, 78)],
+            None,
+        ),
+    ];
+    assert!(server.send_mixed_frame(surface_id, tiles, 42).is_some());
 }
 
 // ============================================================================
