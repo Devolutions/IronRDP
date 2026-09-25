@@ -2044,6 +2044,11 @@ impl RdpServer {
     ///
     /// Equivalent to [`run_connection_with`](Self::run_connection_with) with
     /// [`TransportTls::Managed`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the server was built with `with_udp_transport` and this is
+    /// not driven inside a [`tokio::task::LocalSet`].
     pub async fn run_connection<S>(&mut self, stream: S) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
@@ -2124,6 +2129,11 @@ impl RdpServer {
     /// under [`TransportTls::AlreadyDone`] is that after the negotiation reaches
     /// the security-upgrade gate, no TLS handshake is performed on the byte
     /// stream, because the caller's stream is already past TLS at a lower layer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the server was built with `with_udp_transport` and this is
+    /// not driven inside a [`tokio::task::LocalSet`].
     pub async fn run_connection_with<S>(&mut self, stream: S, tls: TransportTls) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
@@ -2236,6 +2246,13 @@ impl RdpServer {
         Ok(())
     }
 
+    /// Bind the configured address and serve RDP connections until
+    /// [`ServerEvent::Quit`] is received or the event channel closes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the server was built with `with_udp_transport` and this is
+    /// not driven inside a [`tokio::task::LocalSet`].
     pub async fn run(&mut self) -> ServerResult<()> {
         // Create socket with control over options before binding.
         // Using TcpSocket instead of TcpListener::bind() allows setting
@@ -4331,9 +4348,10 @@ impl RdpServer {
                     };
                     // Spawned rather than awaited inline: See the comment on
                     // `pending_udp_accept`'s declaration above. `spawn_local`
-                    // requires the `LocalSet` `RdpServer::run()` already
-                    // documents as a requirement of its own (see
-                    // `finalize_timeout.rs`'s note on the same constraint).
+                    // needs the caller to drive the server inside a
+                    // `LocalSet`, a requirement documented on
+                    // `RdpServerBuilder::with_udp_transport` and on each
+                    // entry point that reaches this.
                     pending_udp_accept = Some(task::spawn_local(async move {
                         multitransport::accept(udp_bind_addr, tls_config, &request).await
                     }));
