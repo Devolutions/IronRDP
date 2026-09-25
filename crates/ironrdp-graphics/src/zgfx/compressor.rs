@@ -32,15 +32,17 @@ const COMPACT_TARGET_ENTRIES: usize = MAX_HASH_TABLE_ENTRIES / 2;
 
 /// ZGFX compressor maintaining a 2.5 MB history buffer and prefix hash table.
 pub struct Compressor {
-    history: Vec<u8>,
-    /// 3-byte prefix → history positions, for O(1) match candidate lookup
-    match_table: HashMap<[u8; 3], Vec<usize>>,
+    history: History,
+    /// 3-byte prefix → absolute stream positions, for O(1) match candidate lookup.
+    /// Positions are never rebased; candidates that have fallen out of reach are
+    /// skipped at lookup time.
+    match_table: HashMap<[u8; 3], Vec<u64>>,
 }
 
 impl Compressor {
     pub fn new() -> Self {
         Self {
-            history: Vec::with_capacity(HISTORY_SIZE),
+            history: History::new(),
             match_table: HashMap::new(),
         }
     }
@@ -71,47 +73,24 @@ impl Compressor {
         Ok(bit_writer.finish())
     }
 
-    /// Extend the sliding window, evicting oldest bytes when full.
+    /// Extend the sliding window; the ring overwrites the oldest bytes once full.
     fn add_to_history(&mut self, bytes: &[u8]) {
-        if self.history.len() + bytes.len() > HISTORY_SIZE {
-            let overflow = (self.history.len() + bytes.len()) - HISTORY_SIZE;
-
-            self.history.drain(..overflow);
-
-            // Shift all stored positions to account for evicted bytes
-            for positions in self.match_table.values_mut() {
-                positions.retain_mut(|pos| {
-                    if *pos >= overflow {
-                        *pos -= overflow;
-                        true
-                    } else {
-                        false
-                    }
-                });
-            }
-            self.match_table.retain(|_, positions| !positions.is_empty());
-        }
-
-        let base_pos = self.history.len();
-        self.history.extend_from_slice(bytes);
+        let base_pos = self.history.total();
+        self.history.push(bytes);
 
         // For large chunks (match replays), sample every 4th position to keep
         // the hash table manageable without sacrificing much compression ratio
         let step_size = if bytes.len() > 256 { 4 } else { 1 };
 
         for i in (0..bytes.len().saturating_sub(MIN_MATCH_LENGTH - 1)).step_by(step_size) {
-            let pos = base_pos + i;
-            let prefix = [self.history[pos], self.history[pos + 1], self.history[pos + 2]];
-
+            let prefix = [bytes[i], bytes[i + 1], bytes[i + 2]];
             let entry = self.match_table.entry(prefix).or_default();
 
-            if entry.len() < MAX_POSITIONS_PER_PREFIX {
-                entry.push(pos);
-            } else {
+            if entry.len() >= MAX_POSITIONS_PER_PREFIX {
                 // Evict oldest position to keep recent data preferred
                 entry.remove(0);
-                entry.push(pos);
             }
+            entry.push(base_pos + as_u64(i));
         }
 
         if self.match_table.len() > MAX_HASH_TABLE_ENTRIES {
@@ -120,18 +99,17 @@ impl Compressor {
 
         // Index positions spanning the old/new data boundary so matches
         // that straddle the append point can be found
-        for offset in [2, 1] {
-            if base_pos >= offset && bytes.len() + offset > 2 {
+        for offset in [2u64, 1] {
+            if base_pos >= offset && as_u64(bytes.len()) + offset > 2 && self.history.holds_prefix_at(base_pos - offset)
+            {
                 let pos = base_pos - offset;
-                if pos + MIN_MATCH_LENGTH <= self.history.len() {
-                    let prefix = [self.history[pos], self.history[pos + 1], self.history[pos + 2]];
-                    let entry = self.match_table.entry(prefix).or_default();
-                    if entry.last() != Some(&pos) {
-                        if entry.len() >= MAX_POSITIONS_PER_PREFIX {
-                            entry.remove(0);
-                        }
-                        entry.push(pos);
+                let prefix = self.history.prefix_at(pos);
+                let entry = self.match_table.entry(prefix).or_default();
+                if entry.last() != Some(&pos) {
+                    if entry.len() >= MAX_POSITIONS_PER_PREFIX {
+                        entry.remove(0);
                     }
+                    entry.push(pos);
                 }
             }
         }
@@ -164,7 +142,7 @@ impl Compressor {
         // MAX_MATCH_DISTANCE regardless. Each history position belongs to a
         // single prefix, so these newest positions are distinct and the cutoff
         // retains exactly COMPACT_TARGET_ENTRIES entries.
-        let mut newest: Vec<usize> = self
+        let mut newest: Vec<u64> = self
             .match_table
             .values()
             .map(|positions| positions.last().copied().unwrap_or(0))
@@ -178,7 +156,7 @@ impl Compressor {
     /// Search hash table for the longest match at `input[pos..]`.
     fn find_best_match(&self, input: &[u8], pos: usize) -> Option<Match> {
         let remaining = input.len() - pos;
-        if remaining < MIN_MATCH_LENGTH || self.history.is_empty() {
+        if remaining < MIN_MATCH_LENGTH || self.history.len() == 0 {
             return None;
         }
 
@@ -187,22 +165,26 @@ impl Compressor {
 
         let max_match_len = remaining.min(MAX_MATCH_LENGTH);
         let mut best_match: Option<Match> = None;
-        let search_limit = self.history.len().min(MAX_MATCH_DISTANCE);
+        let search_limit = as_u64(self.history.len().min(MAX_MATCH_DISTANCE));
+        let total = self.history.total();
 
         // Most recent candidates first — better locality, often longer matches
         for &hist_pos in candidates.iter().rev().take(MAX_CANDIDATES) {
-            let distance = self.history.len() - hist_pos;
-
-            if distance > search_limit {
+            // Positions are absolute, so anything older than the reachable
+            // window is simply skipped rather than rebased on every append.
+            let Some(distance) = total.checked_sub(hist_pos).filter(|d| *d <= search_limit) else {
                 continue;
-            }
+            };
+            let distance = usize::try_from(distance).expect("distance is at most MAX_MATCH_DISTANCE");
 
-            // Prefix already matched via hash table; extend from byte 3 onward
+            // Prefix already matched via hash table; extend from byte 3 onward.
+            // INVARIANT: match_len < distance, so the match reads only bytes
+            // already in the history.
             let mut match_len = MIN_MATCH_LENGTH;
 
             while match_len < max_match_len
-                && hist_pos + match_len < self.history.len()
-                && self.history[hist_pos + match_len] == input[pos + match_len]
+                && match_len < distance
+                && self.history.byte_back(distance - match_len) == input[pos + match_len]
             {
                 match_len += 1;
             }
@@ -336,6 +318,80 @@ impl Compressor {
 impl Default for Compressor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn as_u64(value: usize) -> u64 {
+    u64::try_from(value).expect("usize fits in u64")
+}
+
+/// The last `HISTORY_SIZE` bytes of the stream, kept in a fixed ring so that
+/// appending never moves existing bytes.
+struct History {
+    ring: Box<[u8]>,
+    /// Ring index the next byte is written to.
+    next: usize,
+    /// Number of valid bytes in the ring, at most `HISTORY_SIZE`.
+    len: usize,
+    /// Bytes appended since the compressor was created; the absolute stream
+    /// position of the next byte.
+    total: u64,
+}
+
+impl History {
+    fn new() -> Self {
+        Self {
+            ring: vec![0; HISTORY_SIZE].into_boxed_slice(),
+            next: 0,
+            len: 0,
+            total: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn total(&self) -> u64 {
+        self.total
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        // Only the last HISTORY_SIZE bytes can ever be referenced.
+        let kept = &bytes[bytes.len().saturating_sub(HISTORY_SIZE)..];
+        let skipped = bytes.len() - kept.len();
+        self.next = (self.next + skipped) % HISTORY_SIZE;
+
+        let first = kept.len().min(HISTORY_SIZE - self.next);
+        self.ring[self.next..self.next + first].copy_from_slice(&kept[..first]);
+        self.ring[..kept.len() - first].copy_from_slice(&kept[first..]);
+
+        self.next = (self.next + kept.len()) % HISTORY_SIZE;
+        self.len = (self.len + bytes.len()).min(HISTORY_SIZE);
+        self.total += as_u64(bytes.len());
+    }
+
+    /// The byte `distance` positions before the end of the stream.
+    ///
+    /// INVARIANT: `0 < distance <= self.len`.
+    fn byte_back(&self, distance: usize) -> u8 {
+        debug_assert!(0 < distance && distance <= self.len);
+        self.ring[(self.next + HISTORY_SIZE - distance) % HISTORY_SIZE]
+    }
+
+    /// Whether the three bytes starting at absolute position `pos` are all in
+    /// the ring.
+    fn holds_prefix_at(&self, pos: u64) -> bool {
+        pos + as_u64(MIN_MATCH_LENGTH) <= self.total && self.total - pos <= as_u64(self.len)
+    }
+
+    fn prefix_at(&self, pos: u64) -> [u8; 3] {
+        let distance = usize::try_from(self.total - pos).expect("distance is at most HISTORY_SIZE");
+        [
+            self.byte_back(distance),
+            self.byte_back(distance - 1),
+            self.byte_back(distance - 2),
+        ]
     }
 }
 
@@ -521,6 +577,66 @@ mod tests {
             "hash table must stay bounded, got {} entries",
             compressor.match_table.len()
         );
+    }
+
+    #[test]
+    fn compress_round_trips_across_history_wrap() {
+        use super::super::Decompressor;
+
+        // More than twice HISTORY_SIZE through one compressor, in segments that
+        // repeat earlier content, so matches reach back across the ring wrap
+        // point and the decompressor's history has to agree byte for byte.
+        let mut state: u32 = 0x0BAD_F00D;
+        let mut next_byte = move || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            u8::try_from(state >> 24).unwrap()
+        };
+        let blocks: Vec<Vec<u8>> =
+            core::iter::repeat_with(|| core::iter::repeat_with(&mut next_byte).take(4096).collect())
+                .take(64)
+                .collect();
+
+        let mut compressor = Compressor::new();
+        let mut decompressor = Decompressor::new();
+        let mut total = 0;
+        let mut segment_index = 0usize;
+        while total < 2 * HISTORY_SIZE + 100_000 {
+            let mut segment = Vec::with_capacity(60_000);
+            for k in 0..14 {
+                let block = &blocks[(segment_index * 7 + k * 5) % blocks.len()];
+                segment.extend_from_slice(block);
+                segment.push(next_byte());
+            }
+            segment_index += 1;
+
+            let compressed = compressor.compress(&segment).unwrap();
+            let mut output = Vec::new();
+            decompressor.decompress_segment(&compressed, &mut output).unwrap();
+            assert_eq!(output, segment, "segment {segment_index} after {total} bytes");
+            total += segment.len();
+        }
+        assert!(compressor.history.total() > u64::try_from(2 * HISTORY_SIZE).unwrap());
+    }
+
+    #[test]
+    fn history_ring_keeps_the_last_bytes_in_order() {
+        let mut history = History::new();
+        let chunk: Vec<u8> = (0..=255u8).cycle().take(HISTORY_SIZE - 10).collect();
+        history.push(&chunk);
+        history.push(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+
+        assert_eq!(history.len(), HISTORY_SIZE);
+        assert_eq!(history.byte_back(1), 15);
+        assert_eq!(history.byte_back(15), 1);
+        assert_eq!(history.byte_back(16), *chunk.last().unwrap());
+        assert_eq!(history.prefix_at(history.total() - 3), [13, 14, 15]);
+
+        // A push larger than the ring keeps only its tail.
+        let big: Vec<u8> = (0..HISTORY_SIZE + 7).map(|i| u8::try_from(i % 251).unwrap()).collect();
+        history.push(&big);
+        assert_eq!(history.len(), HISTORY_SIZE);
+        assert_eq!(history.byte_back(1), *big.last().unwrap());
+        assert_eq!(history.byte_back(HISTORY_SIZE), big[7]);
     }
 
     #[test]
