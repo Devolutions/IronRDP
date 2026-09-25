@@ -100,31 +100,80 @@ impl fmt::Display for FormatList<'_> {
     }
 }
 
-/// `wTimeStamp` of the wave last sent under each block number and not yet
-/// confirmed. A Wave Confirm answers that timestamp plus the time the client
-/// held the data, so keeping it turns each confirm into a hold time.
-struct SentBlocks([Option<u16>; 256]);
+/// Where the wave last sent under a block number stands.
+///
+/// MS-RDPEA 2.2.3.8 describes one Wave Confirm per wave, sent once the data
+/// is both received and played. Windows clients and xfreerdp3 both send two:
+/// one on receipt that echoes the wave's timestamp, and a later one for the
+/// same block whose timestamp is further on. Both are tracked so the second
+/// is recognized, and reports the hold time, instead of reading as unmatched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockState {
+    Free,
+    /// Sent with this `wTimeStamp`, no confirm yet.
+    Sent(u16),
+    /// Sent with this `wTimeStamp` and confirmed once.
+    Confirmed(u16),
+}
+
+/// What a Wave Confirm turned out to be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfirmKind {
+    /// The first confirm for a sent wave, carrying its send timestamp.
+    First(u16),
+    /// The second confirm for a wave, carrying its send timestamp.
+    Second(u16),
+    /// No wave under this block number is awaiting a confirm.
+    Unmatched,
+}
+
+/// Per block number, the wave last sent under it and how far it has been
+/// confirmed.
+struct SentBlocks([BlockState; 256]);
 
 impl SentBlocks {
     fn new() -> Self {
-        Self([None; 256])
+        Self([BlockState::Free; 256])
     }
 
     /// Records a wave sent under `block_no`, returning the timestamp of an
-    /// earlier wave under the same number that was never confirmed.
+    /// earlier wave under the same number that was never confirmed at all.
+    /// One confirmed once is fine: A client may send only the one confirm
+    /// the specification describes.
     fn record(&mut self, block_no: u8, timestamp: u16) -> Option<u16> {
-        self.0[usize::from(block_no)].replace(timestamp)
+        match core::mem::replace(&mut self.0[usize::from(block_no)], BlockState::Sent(timestamp)) {
+            BlockState::Sent(unconfirmed) => Some(unconfirmed),
+            BlockState::Free | BlockState::Confirmed(_) => None,
+        }
     }
 
-    fn take(&mut self, block_no: u8) -> Option<u16> {
-        self.0[usize::from(block_no)].take()
+    fn confirm(&mut self, block_no: u8) -> ConfirmKind {
+        let slot = &mut self.0[usize::from(block_no)];
+        match *slot {
+            BlockState::Sent(timestamp) => {
+                *slot = BlockState::Confirmed(timestamp);
+                ConfirmKind::First(timestamp)
+            }
+            BlockState::Confirmed(timestamp) => {
+                *slot = BlockState::Free;
+                ConfirmKind::Second(timestamp)
+            }
+            BlockState::Free => ConfirmKind::Unmatched,
+        }
     }
 }
 
 impl fmt::Debug for SentBlocks {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SentBlocks")
-            .field("unconfirmed", &self.0.iter().flatten().count())
+            .field(
+                "unconfirmed",
+                &self
+                    .0
+                    .iter()
+                    .filter(|state| matches!(state, BlockState::Sent(_)))
+                    .count(),
+            )
             .finish()
     }
 }
@@ -134,8 +183,10 @@ struct StreamStats {
     waves_sent: u64,
     bytes_sent: u64,
     confirms: u64,
-    /// Confirms for a block with no wave awaiting one: a repeat (some clients
-    /// confirm a block twice) or a block the server never sent.
+    /// Confirms that were the second one for their wave (see [`BlockState`]).
+    second_confirms: u64,
+    /// Confirms for a block with no wave awaiting one: a third confirm, or a
+    /// block the server never sent.
     unmatched_confirms: u64,
     /// Waves whose block number came round again before any confirm arrived.
     never_confirmed: u64,
@@ -517,20 +568,30 @@ impl SvcProcessor for RdpsndServer {
             RdpsndState::Ready => {
                 if let pdu::ClientAudioOutputPdu::WaveConfirm(c) = pdu {
                     self.stats.confirms += 1;
-                    if let Some(sent_timestamp) = self.sent_blocks.take(c.block_no) {
-                        trace!(
+                    match self.sent_blocks.confirm(c.block_no) {
+                        ConfirmKind::First(sent_timestamp) => trace!(
                             block_no = c.block_no,
                             timestamp = c.timestamp,
                             held_ms = c.timestamp.wrapping_sub(sent_timestamp),
                             "Received RDPSND wave confirm"
-                        );
-                    } else {
-                        self.stats.unmatched_confirms += 1;
-                        trace!(
-                            block_no = c.block_no,
-                            timestamp = c.timestamp,
-                            "Received RDPSND wave confirm for a block with no wave awaiting one"
-                        );
+                        ),
+                        ConfirmKind::Second(sent_timestamp) => {
+                            self.stats.second_confirms += 1;
+                            trace!(
+                                block_no = c.block_no,
+                                timestamp = c.timestamp,
+                                held_ms = c.timestamp.wrapping_sub(sent_timestamp),
+                                "Received second RDPSND wave confirm"
+                            );
+                        }
+                        ConfirmKind::Unmatched => {
+                            self.stats.unmatched_confirms += 1;
+                            trace!(
+                                block_no = c.block_no,
+                                timestamp = c.timestamp,
+                                "Received RDPSND wave confirm for a block with no wave awaiting one"
+                            );
+                        }
                     }
                     self.handler.wave_confirm(c.block_no, c.timestamp);
                 } else {
