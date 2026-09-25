@@ -86,6 +86,18 @@ const DEFAULT_MAX_FRAMES_IN_FLIGHT: u32 = 3;
 /// Special queue depth value indicating client has disabled acknowledgments
 const SUSPEND_FRAME_ACK_QUEUE_DEPTH: u32 = 0xFFFFFFFF;
 
+/// Highest QP in the H.264 range that MS-RDPEGFX [2.2.4.4.2]
+/// (`RDPGFX_AVC420_QUANT_QUALITY`) requires for the `qp` field of an AVC420
+/// region, for 8-bit video.
+///
+/// [2.2.4.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/bc54993f-2e3c-4285-b32b-58a4bf4cb02e
+const MAX_AVC_QP: u8 = 51;
+
+/// Highest `qualityVal` of an AVC420 region (MS-RDPEGFX [2.2.4.4.2]).
+///
+/// [2.2.4.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/bc54993f-2e3c-4285-b32b-58a4bf4cb02e
+const MAX_AVC_QUALITY: u8 = 100;
+
 /// Pre-encoded ZGFX-wrapped bytes for DVC transmission.
 ///
 /// `Encode::encode()` takes `&self`, but ZGFX wrapping is done in `drain_output()`
@@ -719,6 +731,18 @@ pub struct CodecCapabilities {
     pub avc420: bool,
     /// AVC444 (H.264 4:4:4) is available
     pub avc444: bool,
+    /// The negotiated capability set promises AVC420 in the same frame as other codecs
+    ///
+    /// MS-RDPEGFX [2.2.3.7] (`RDPGFX_CAPSET_VERSION104`) requires that of a
+    /// client that did not set `AVC_DISABLED` at capability version 10.4, and
+    /// [2.2.3.8], [2.2.3.9] and [2.2.3.10] carry it to 10.5, 10.6 and 10.7.
+    /// Earlier versions make no such promise.
+    ///
+    /// [2.2.3.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/be5ea8da-44db-478d-b55c-d42d82f11d26
+    /// [2.2.3.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/8fc20f1e-e63e-4b13-a546-22fba213ad83
+    /// [2.2.3.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/8d489900-e903-4778-bb83-691c5ab719d5
+    /// [2.2.3.10]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/ba94595b-04de-4fbd-8ee4-89d8ff8f5cf1
+    pub avc420_in_mixed_frames: bool,
     /// Small cache mode
     pub small_cache: bool,
     /// Thin client mode
@@ -732,24 +756,28 @@ impl CodecCapabilities {
             CapabilitySet::V8 { flags } => Self {
                 avc420: false,
                 avc444: false,
+                avc420_in_mixed_frames: false,
                 small_cache: flags.contains(CapabilitiesV8Flags::SMALL_CACHE),
                 thin_client: flags.contains(CapabilitiesV8Flags::THIN_CLIENT),
             },
             CapabilitySet::V8_1 { flags } => Self {
                 avc420: flags.contains(CapabilitiesV81Flags::AVC420_ENABLED),
                 avc444: false,
+                avc420_in_mixed_frames: false,
                 small_cache: flags.contains(CapabilitiesV81Flags::SMALL_CACHE),
                 thin_client: flags.contains(CapabilitiesV81Flags::THIN_CLIENT),
             },
             CapabilitySet::V10 { flags } | CapabilitySet::V10_2 { flags } => Self {
                 avc420: !flags.contains(CapabilitiesV10Flags::AVC_DISABLED),
                 avc444: !flags.contains(CapabilitiesV10Flags::AVC_DISABLED),
+                avc420_in_mixed_frames: false,
                 small_cache: flags.contains(CapabilitiesV10Flags::SMALL_CACHE),
                 thin_client: false,
             },
             CapabilitySet::V10_1 => Self {
                 avc420: true,
                 avc444: true,
+                avc420_in_mixed_frames: false,
                 small_cache: false,
                 thin_client: false,
             },
@@ -757,6 +785,7 @@ impl CodecCapabilities {
                 // V10.3 lacks SMALL_CACHE flag
                 avc420: !flags.contains(CapabilitiesV103Flags::AVC_DISABLED),
                 avc444: !flags.contains(CapabilitiesV103Flags::AVC_DISABLED),
+                avc420_in_mixed_frames: false,
                 small_cache: false,
                 thin_client: flags.contains(CapabilitiesV103Flags::AVC_THIN_CLIENT),
             },
@@ -766,12 +795,14 @@ impl CodecCapabilities {
             | CapabilitySet::V10_6Err { flags } => Self {
                 avc420: !flags.contains(CapabilitiesV104Flags::AVC_DISABLED),
                 avc444: !flags.contains(CapabilitiesV104Flags::AVC_DISABLED),
+                avc420_in_mixed_frames: !flags.contains(CapabilitiesV104Flags::AVC_DISABLED),
                 small_cache: flags.contains(CapabilitiesV104Flags::SMALL_CACHE),
                 thin_client: flags.contains(CapabilitiesV104Flags::AVC_THIN_CLIENT),
             },
             CapabilitySet::V10_7 { flags } => Self {
                 avc420: !flags.contains(CapabilitiesV107Flags::AVC_DISABLED),
                 avc444: !flags.contains(CapabilitiesV107Flags::AVC_DISABLED),
+                avc420_in_mixed_frames: !flags.contains(CapabilitiesV107Flags::AVC_DISABLED),
                 small_cache: flags.contains(CapabilitiesV107Flags::SMALL_CACHE),
                 thin_client: flags.contains(CapabilitiesV107Flags::AVC_THIN_CLIENT),
             },
@@ -1432,6 +1463,11 @@ impl GraphicsPipelineServer {
         }
     }
 
+    /// Whether an exclusive rectangle is non-empty and lies inside the surface.
+    fn rect_fits_surface(surface: &Surface, rect: &ExclusiveRectangle) -> bool {
+        rect.left < rect.right && rect.top < rect.bottom && rect.right <= surface.width && rect.bottom <= surface.height
+    }
+
     /// Queue an H.264 AVC420 frame for transmission
     ///
     /// Returns `Some(frame_id)` if queued, `None` if backpressure is active,
@@ -1789,6 +1825,7 @@ impl GraphicsPipelineServer {
             return None;
         }
         if self.should_backpressure() {
+            self.qoe.record_backpressure();
             return None;
         }
 
@@ -1869,10 +1906,39 @@ impl GraphicsPipelineServer {
     /// ClearCodec tiles (lossless text), Progressive tiles (photos), and H.264
     /// tiles (video), all sent between one `StartFrame`/`EndFrame` pair.
     ///
-    /// This matches how Azure VDI achieves its visual quality — each tile uses
-    /// the codec best suited to its content type.
+    /// MS-RDPEGFX [3.3.5.1] (processing an `RDPGFX_WIRE_TO_SURFACE_PDU_1`
+    /// message) has the client copy a decoded ClearCodec or AVC420 tile to the
+    /// surface when it processes the PDU, so where two such tiles overlap the
+    /// one sent later is what remains. A Progressive tile follows [3.3.5.2]
+    /// instead, which only says it SHOULD be copied once enough of it is
+    /// decoded and updated as later PDUs arrive, so the spec doesn't order it
+    /// against an overlapping tile. MS-RDPEGFX [2.2.3.7] requires a client that
+    /// did not set `AVC_DISABLED` at capability version 10.4 or later to process
+    /// AVC420 in the same frame as other codecs; earlier capability versions
+    /// make no such promise. [`CodecCapabilities::avc420_in_mixed_frames`]
+    /// reports whether the negotiated set makes it.
     ///
-    /// Returns `Some(frame_id)` if queued, `None` if not ready or backpressured.
+    /// Every tile is checked before the frame is queued. AVC420 tiles need
+    /// AVC420 support in the negotiated capabilities, and a frame that mixes an
+    /// AVC420 tile with another codec needs capability version 10.4 or later,
+    /// the versions that make that promise. A frame of AVC420 tiles alone is
+    /// not covered by it. Each AVC420 tile needs at least one region, unlike
+    /// [`Self::send_avc420_frame()`], which reads an empty list as the whole
+    /// surface: a whole-surface tile would cover the ClearCodec and AVC420
+    /// tiles sent before it. Each AVC420 region and ClearCodec destination must
+    /// be non-empty and inside the surface.
+    /// AVC420 regions also need a QP of at most 51 (for 8-bit video) and a
+    /// quality of at most 100 (MS-RDPEGFX [2.2.4.4.2]). If any check fails
+    /// nothing is queued and no frame is tracked.
+    ///
+    /// Returns `Some(frame_id)` if queued, `None` if not ready, backpressured,
+    /// or a tile failed its checks. A refusal because of the tiles or the
+    /// negotiated capabilities logs its reason at trace level.
+    ///
+    /// [3.3.5.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/3fdfcd8d-ec4f-4b7a-8e0d-0385a840ec81
+    /// [3.3.5.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/9791fc34-7644-4279-844f-7728ae9959c2
+    /// [2.2.3.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/be5ea8da-44db-478d-b55c-d42d82f11d26
+    /// [2.2.4.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/bc54993f-2e3c-4285-b32b-58a4bf4cb02e
     pub fn send_mixed_frame(
         &mut self,
         surface_id: u16,
@@ -1883,14 +1949,62 @@ impl GraphicsPipelineServer {
             return None;
         }
         if self.should_backpressure() {
+            self.qoe.record_backpressure();
             return None;
         }
         if tiles.is_empty() {
             return None;
         }
 
+        let is_avc420 = |tile: &MixedTilePayload| matches!(tile, MixedTilePayload::Avc420 { .. });
+        if tiles.iter().any(is_avc420) {
+            if !self.supports_avc420() {
+                trace!(
+                    reason = "AVC420 is not supported by the negotiated capabilities",
+                    "Mixed frame refused"
+                );
+                return None;
+            }
+            if !self.codec_caps.avc420_in_mixed_frames && tiles.iter().any(|tile| !is_avc420(tile)) {
+                trace!(
+                    reason = "AVC420 beside another codec is not promised by the negotiated capabilities",
+                    "Mixed frame refused"
+                );
+                return None;
+            }
+        }
+
         let surface = self.surfaces.get(surface_id)?;
         let pixel_format = surface.pixel_format;
+
+        let refusal = tiles.iter().find_map(|tile| match tile {
+            MixedTilePayload::ClearCodec { destination, .. } => (!Self::rect_fits_surface(surface, destination))
+                .then_some("ClearCodec destination is empty or outside the surface"),
+            MixedTilePayload::RemoteFxProgressive { .. } => None,
+            MixedTilePayload::Avc420 { regions, .. } => {
+                if regions.is_empty() {
+                    return Some("AVC420 tile has no regions");
+                }
+                if regions
+                    .iter()
+                    .any(|region| !Self::rect_fits_surface(surface, &region.to_rectangle()))
+                {
+                    return Some("AVC420 region is empty or outside the surface");
+                }
+                if regions
+                    .iter()
+                    .any(|region| MAX_AVC_QP < region.quantization_parameter || MAX_AVC_QUALITY < region.quality)
+                {
+                    return Some("AVC420 QP or quality is out of range");
+                }
+
+                None
+            }
+        });
+        if let Some(reason) = refusal {
+            trace!(reason, "Mixed frame refused");
+            return None;
+        }
 
         let timestamp = Self::make_timestamp(timestamp_ms);
         let frame_id = self.frames.begin_frame(timestamp);

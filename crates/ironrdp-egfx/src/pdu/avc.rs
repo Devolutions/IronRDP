@@ -17,9 +17,9 @@ pub struct QuantQuality {
 }
 
 // Manual `Arbitrary` impl: the encoder packs `quantization_parameter` into bits 0..6
-// via `set_bits`, which panics when the value exceeds 6 bits. Mask the field to its
-// wire-allowed range so fuzz inputs always round-trip through `Encode`. The other
-// fields use their full type range.
+// and fails when the value exceeds 6 bits. Mask the field to its wire-allowed range
+// so fuzz inputs always round-trip through `Encode`. The other fields use their full
+// type range.
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for QuantQuality {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
@@ -40,6 +40,10 @@ impl QuantQuality {
 impl Encode for QuantQuality {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
+
+        if 0x3F < self.quantization_parameter {
+            return Err(invalid_field_err!("quantization_parameter", "must fit in 6 bits", in: dst));
+        }
 
         let mut data = 0u8;
         data.set_bits(0..6, self.quantization_parameter);
@@ -565,7 +569,8 @@ pub const fn align_to_16(dimension: u32) -> u32 {
 ///
 /// # Panics
 ///
-/// Panics if internal encoding fails (should not happen with valid inputs).
+/// Panics if a region's quantization parameter is above 63, the most the 6-bit
+/// `qp` field holds.
 #[must_use]
 pub fn encode_avc420_bitmap_stream(regions: &[Avc420Region], h264_data: &[u8]) -> Vec<u8> {
     let rectangles: Vec<ExclusiveRectangle> = regions.iter().map(Avc420Region::to_rectangle).collect();

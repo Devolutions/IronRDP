@@ -2,10 +2,13 @@ use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_egfx::pdu::{
     Avc420Region, Avc444BitmapStream, CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitiesV10Flags,
-    CapabilitiesV81Flags, CapabilitySet, Codec1Type, Encoding, FrameAcknowledgePdu, GfxPdu, PixelFormat, QueueDepth,
+    CapabilitiesV81Flags, CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitySet,
+    Codec1Type, Codec2Type, Encoding, FrameAcknowledgePdu, GfxPdu, PixelFormat, QueueDepth,
 };
-use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer, QoeMetrics, Surface};
+use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer, MixedTilePayload, QoeMetrics, Surface};
 use ironrdp_graphics::zgfx::Decompressor;
+use ironrdp_pdu::geometry::ExclusiveRectangle;
+use rstest::rstest;
 
 // ============================================================================
 // Test Handler
@@ -336,6 +339,258 @@ fn avc444v2_sender_rejects_invalid_stream_shapes_without_queueing() {
 }
 
 // ============================================================================
+// Mixed-Codec Frame Tests
+// ============================================================================
+
+/// A server whose client negotiated `caps`.
+///
+/// Mixed frames that carry AVC420 beside another codec need capability version
+/// 10.4 or later, so the tests of the per-tile checks negotiate 10.4.
+fn mixed_frame_server(caps: CapabilitySet) -> (GraphicsPipelineServer, u16) {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[caps]));
+    server
+        .process(0, &encode_pdu(&client_caps_pdu))
+        .expect("process capabilities");
+    let surface_id = server.create_surface(64, 64).expect("create surface");
+    server.drain_output();
+    (server, surface_id)
+}
+
+fn decode_drained_pdus(server: &mut GraphicsPipelineServer) -> Vec<GfxPdu> {
+    let mut decompressor = Decompressor::new();
+    server
+        .drain_output()
+        .iter()
+        .map(|message| {
+            let encoded = encode_vec(message.as_ref()).expect("encode DVC message");
+            let mut decoded = Vec::new();
+            decompressor.decompress(&encoded, &mut decoded).expect("decompress PDU");
+            GfxPdu::decode(&mut ReadCursor::new(&decoded)).expect("decode PDU")
+        })
+        .collect()
+}
+
+fn clearcodec_tile(left: u16, top: u16, right: u16, bottom: u16) -> MixedTilePayload {
+    MixedTilePayload::ClearCodec {
+        destination: ExclusiveRectangle {
+            left,
+            top,
+            right,
+            bottom,
+        },
+        bitmap_data: vec![0x00, 0x00, 0x00, 0x00],
+    }
+}
+
+fn avc420_tile(region: Avc420Region) -> MixedTilePayload {
+    MixedTilePayload::Avc420 {
+        regions: vec![region],
+        h264_data: vec![0x00, 0x00, 0x00, 0x01, 0x67],
+    }
+}
+
+#[test]
+fn mixed_frame_sends_each_tile_in_order_inside_one_frame() {
+    let (mut server, surface_id) = mixed_frame_server(CapabilitySet::V10_4 {
+        flags: CapabilitiesV104Flags::SMALL_CACHE,
+    });
+
+    let tiles = vec![
+        clearcodec_tile(0, 0, 16, 16),
+        MixedTilePayload::RemoteFxProgressive {
+            codec_context_id: 7,
+            progressive_data: vec![0xCC, 0xC0, 0x06, 0x00, 0x00, 0x00],
+        },
+        avc420_tile(Avc420Region::new(16, 8, 48, 40, 22, 78)),
+    ];
+    let frame_id = server
+        .send_mixed_frame(surface_id, tiles, 42)
+        .expect("queue mixed frame");
+
+    let pdus = decode_drained_pdus(&mut server);
+    assert_eq!(pdus.len(), 5);
+    let GfxPdu::StartFrame(start) = &pdus[0] else {
+        panic!("expected StartFrame, got {:?}", pdus[0]);
+    };
+    assert_eq!(start.frame_id, frame_id);
+
+    let GfxPdu::WireToSurface1(clearcodec) = &pdus[1] else {
+        panic!("expected ClearCodec WireToSurface1");
+    };
+    assert_eq!(clearcodec.codec_id, Codec1Type::ClearCodec);
+    assert_eq!(clearcodec.destination_rectangle.right, 16);
+    assert_eq!(clearcodec.destination_rectangle.bottom, 16);
+
+    let GfxPdu::WireToSurface2(progressive) = &pdus[2] else {
+        panic!("expected Progressive WireToSurface2");
+    };
+    assert_eq!(progressive.codec_id, Codec2Type::RemoteFxProgressive);
+    assert_eq!(progressive.codec_context_id, 7);
+
+    let GfxPdu::WireToSurface1(avc420) = &pdus[3] else {
+        panic!("expected AVC420 WireToSurface1");
+    };
+    assert_eq!(avc420.codec_id, Codec1Type::Avc420);
+    assert_eq!(avc420.destination_rectangle.left, 16);
+    assert_eq!(avc420.destination_rectangle.top, 8);
+    assert_eq!(avc420.destination_rectangle.right, 48);
+    assert_eq!(avc420.destination_rectangle.bottom, 40);
+
+    let GfxPdu::EndFrame(end) = &pdus[4] else {
+        panic!("expected EndFrame, got {:?}", pdus[4]);
+    };
+    assert_eq!(end.frame_id, frame_id);
+    assert_eq!(server.frames_in_flight(), 1);
+}
+
+#[rstest]
+#[case::empty_clearcodec_destination(clearcodec_tile(8, 8, 8, 16))]
+#[case::clearcodec_destination_past_the_surface(clearcodec_tile(0, 0, 65, 16))]
+#[case::empty_avc420_region(avc420_tile(Avc420Region::new(0, 8, 32, 8, 22, 78)))]
+#[case::avc420_region_past_the_surface(avc420_tile(Avc420Region::new(0, 0, 32, 65, 22, 78)))]
+#[case::avc420_tile_with_no_regions(MixedTilePayload::Avc420 {
+    regions: Vec::new(),
+    h264_data: vec![0x00, 0x00, 0x00, 0x01, 0x67],
+})]
+#[case::avc420_qp_above_51(avc420_tile(Avc420Region::new(0, 0, 32, 32, 52, 78)))]
+#[case::avc420_qp_too_large_for_the_field(avc420_tile(Avc420Region::new(0, 0, 32, 32, 64, 78)))]
+#[case::avc420_quality_above_100(avc420_tile(Avc420Region::new(0, 0, 32, 32, 22, 101)))]
+fn mixed_frame_rejects_invalid_tiles_without_queueing(#[case] bad_tile: MixedTilePayload) {
+    let (mut server, surface_id) = mixed_frame_server(CapabilitySet::V10_4 {
+        flags: CapabilitiesV104Flags::SMALL_CACHE,
+    });
+    let tiles = vec![clearcodec_tile(0, 0, 16, 16), bad_tile];
+
+    assert!(server.send_mixed_frame(surface_id, tiles, 42).is_none());
+    assert!(!server.has_pending_output());
+    assert_eq!(server.frames_in_flight(), 0);
+}
+
+#[test]
+fn mixed_frame_rejects_avc420_tiles_when_avc_is_disabled() {
+    let (mut server, surface_id) = mixed_frame_server(CapabilitySet::V10_4 {
+        flags: CapabilitiesV104Flags::AVC_DISABLED,
+    });
+    assert!(!server.supports_avc420());
+
+    let tiles = vec![
+        clearcodec_tile(0, 0, 16, 16),
+        avc420_tile(Avc420Region::new(0, 0, 32, 32, 22, 78)),
+    ];
+    assert!(server.send_mixed_frame(surface_id, tiles, 42).is_none());
+    assert!(!server.has_pending_output());
+    assert_eq!(server.frames_in_flight(), 0);
+
+    // With no other codec in the frame the codec mix rule is out of the way, so
+    // the AVC420 support check is what refuses it.
+    let tiles = vec![avc420_tile(Avc420Region::new(0, 0, 32, 32, 22, 78))];
+    assert!(server.send_mixed_frame(surface_id, tiles, 42).is_none());
+    assert!(!server.has_pending_output());
+    assert_eq!(server.frames_in_flight(), 0);
+
+    let tiles = vec![clearcodec_tile(0, 0, 16, 16)];
+    assert!(server.send_mixed_frame(surface_id, tiles, 42).is_some());
+}
+
+/// MS-RDPEGFX 2.2.3.7 promises AVC420 in the same frame as other codecs only from
+/// capability version 10.4, so an earlier client gets no such frame. Each case
+/// allows AVC420, so it's refused for the reason under test and not because AVC is
+/// off.
+#[rstest]
+#[case::v8_1(CapabilitySet::V8_1 { flags: CapabilitiesV81Flags::AVC420_ENABLED })]
+#[case::v10(CapabilitySet::V10 { flags: CapabilitiesV10Flags::SMALL_CACHE })]
+#[case::v10_1(CapabilitySet::V10_1)]
+#[case::v10_2(CapabilitySet::V10_2 { flags: CapabilitiesV10Flags::SMALL_CACHE })]
+#[case::v10_3(CapabilitySet::V10_3 { flags: CapabilitiesV103Flags::empty() })]
+fn mixed_frame_with_avc420_and_another_codec_is_refused_before_10_4(#[case] caps: CapabilitySet) {
+    let (mut server, surface_id) = mixed_frame_server(caps);
+    assert!(server.supports_avc420());
+
+    let tiles = vec![
+        clearcodec_tile(0, 0, 16, 16),
+        avc420_tile(Avc420Region::new(0, 0, 32, 32, 22, 78)),
+    ];
+    assert!(server.send_mixed_frame(surface_id, tiles, 42).is_none());
+    assert!(!server.has_pending_output());
+    assert_eq!(server.frames_in_flight(), 0);
+}
+
+/// From capability version 10.4 the same mix is queued.
+#[test]
+fn mixed_frame_with_avc420_and_another_codec_is_allowed_at_10_4() {
+    let (mut server, surface_id) = mixed_frame_server(CapabilitySet::V10_4 {
+        flags: CapabilitiesV104Flags::empty(),
+    });
+    let tiles = vec![
+        clearcodec_tile(0, 0, 16, 16),
+        avc420_tile(Avc420Region::new(0, 0, 32, 32, 22, 78)),
+    ];
+    assert!(server.send_mixed_frame(surface_id, tiles, 42).is_some());
+}
+
+/// The promise is about AVC420 beside another codec, so tiles that are all AVC420,
+/// or none of them AVC420, are not held to it on an earlier version.
+#[rstest]
+#[case::v8_1(CapabilitySet::V8_1 { flags: CapabilitiesV81Flags::AVC420_ENABLED })]
+#[case::v10(CapabilitySet::V10 { flags: CapabilitiesV10Flags::SMALL_CACHE })]
+#[case::v10_1(CapabilitySet::V10_1)]
+#[case::v10_2(CapabilitySet::V10_2 { flags: CapabilitiesV10Flags::SMALL_CACHE })]
+#[case::v10_3(CapabilitySet::V10_3 { flags: CapabilitiesV103Flags::empty() })]
+fn mixed_frame_without_a_codec_mix_is_allowed_before_10_4(#[case] caps: CapabilitySet) {
+    let (mut server, surface_id) = mixed_frame_server(caps.clone());
+    let tiles = vec![
+        avc420_tile(Avc420Region::new(0, 0, 32, 32, 22, 78)),
+        avc420_tile(Avc420Region::new(32, 32, 64, 64, 22, 78)),
+    ];
+    assert!(server.send_mixed_frame(surface_id, tiles, 42).is_some());
+
+    let (mut server, surface_id) = mixed_frame_server(caps);
+    let tiles = vec![clearcodec_tile(0, 0, 16, 16)];
+    assert!(server.send_mixed_frame(surface_id, tiles, 42).is_some());
+}
+
+/// What the server reports for `caps`, after checking that it confirmed exactly them.
+fn negotiated_avc420_in_mixed_frames(caps: CapabilitySet) -> bool {
+    let (server, _surface_id) = mixed_frame_server(caps.clone());
+    assert_eq!(server.negotiated_capabilities(), Some(&caps));
+
+    server.codec_capabilities().avc420_in_mixed_frames
+}
+
+#[rstest]
+#[case::v8(CapabilitySet::V8 { flags: CapabilitiesV8Flags::empty() })]
+#[case::v8_1(CapabilitySet::V8_1 { flags: CapabilitiesV81Flags::AVC420_ENABLED })]
+#[case::v10(CapabilitySet::V10 { flags: CapabilitiesV10Flags::empty() })]
+#[case::v10_1(CapabilitySet::V10_1)]
+#[case::v10_2(CapabilitySet::V10_2 { flags: CapabilitiesV10Flags::empty() })]
+#[case::v10_3(CapabilitySet::V10_3 { flags: CapabilitiesV103Flags::empty() })]
+fn avc420_is_not_promised_beside_other_codecs_before_10_4(#[case] caps: CapabilitySet) {
+    assert!(!negotiated_avc420_in_mixed_frames(caps));
+}
+
+#[rstest]
+#[case::v10_4(CapabilitySet::V10_4 { flags: CapabilitiesV104Flags::empty() })]
+#[case::v10_5(CapabilitySet::V10_5 { flags: CapabilitiesV104Flags::empty() })]
+#[case::v10_6(CapabilitySet::V10_6 { flags: CapabilitiesV104Flags::empty() })]
+#[case::v10_6_err(CapabilitySet::V10_6Err { flags: CapabilitiesV104Flags::empty() })]
+#[case::v10_7(CapabilitySet::V10_7 { flags: CapabilitiesV107Flags::empty() })]
+fn avc420_is_promised_beside_other_codecs_from_10_4(#[case] caps: CapabilitySet) {
+    assert!(negotiated_avc420_in_mixed_frames(caps));
+}
+
+#[rstest]
+#[case::v10_4(CapabilitySet::V10_4 { flags: CapabilitiesV104Flags::AVC_DISABLED })]
+#[case::v10_5(CapabilitySet::V10_5 { flags: CapabilitiesV104Flags::AVC_DISABLED })]
+#[case::v10_6(CapabilitySet::V10_6 { flags: CapabilitiesV104Flags::AVC_DISABLED })]
+#[case::v10_6_err(CapabilitySet::V10_6Err { flags: CapabilitiesV104Flags::AVC_DISABLED })]
+#[case::v10_7(CapabilitySet::V10_7 { flags: CapabilitiesV107Flags::AVC_DISABLED })]
+fn avc420_is_not_promised_beside_other_codecs_when_the_client_disabled_avc(#[case] caps: CapabilitySet) {
+    assert!(!negotiated_avc420_in_mixed_frames(caps));
+}
+
+// ============================================================================
 // Planar Frame Tests
 // ============================================================================
 
@@ -643,6 +898,42 @@ fn test_qoe_reset() {
     // Reset clears all statistics.
     server.reset_qoe();
     assert!(server.qoe_snapshot().is_none());
+}
+
+#[test]
+fn mixed_and_progressive_senders_count_backpressure_in_qoe() {
+    use ironrdp_egfx::pdu::QoeFrameAcknowledgePdu;
+
+    let (mut server, surface_id) = mixed_frame_server(CapabilitySet::V10_4 {
+        flags: CapabilitiesV104Flags::empty(),
+    });
+    server.set_max_frames_in_flight(1);
+
+    // The snapshot only exists once there is a QoE report or an RTT sample.
+    let qoe_pdu = GfxPdu::QoeFrameAcknowledge(QoeFrameAcknowledgePdu {
+        frame_id: 0,
+        timestamp: 1000,
+        time_diff_se: 50,
+        time_diff_dr: 3000,
+    });
+    server.process(0, &encode_pdu(&qoe_pdu)).expect("process QoE report");
+    assert_eq!(server.qoe_snapshot().expect("QoE snapshot").backpressure_count, 0);
+
+    // One frame in flight is the limit, so the senders refuse everything after it.
+    let tiles = vec![clearcodec_tile(0, 0, 16, 16)];
+    assert!(server.send_mixed_frame(surface_id, tiles, 0).is_some());
+    assert!(server.should_backpressure());
+
+    let tiles = vec![clearcodec_tile(0, 0, 16, 16)];
+    assert!(server.send_mixed_frame(surface_id, tiles, 16).is_none());
+    assert_eq!(server.qoe_snapshot().expect("QoE snapshot").backpressure_count, 1);
+
+    assert!(
+        server
+            .send_remotefx_progressive_frame(surface_id, 1, vec![0; 4], 33)
+            .is_none()
+    );
+    assert_eq!(server.qoe_snapshot().expect("QoE snapshot").backpressure_count, 2);
 }
 
 // ============================================================================
