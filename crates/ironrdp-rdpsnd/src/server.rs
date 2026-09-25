@@ -553,7 +553,6 @@ impl SvcProcessor for RdpsndServer {
 
         let formats = self.handler.get_formats();
         debug!(
-            version = ?pdu::Version::V8,
             count = formats.len(),
             formats = %FormatList(formats),
             "Sending server audio formats"
