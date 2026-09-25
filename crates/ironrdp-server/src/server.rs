@@ -782,6 +782,14 @@ pub struct RdpServer {
     /// Tracks whether the current cookie has reached a client. Subsequent
     /// connections and hourly updates replace it with a new random.
     auto_reconnect_sent: bool,
+
+    /// Abort handle of the current connection's pending UDP multitransport
+    /// accept, if one is running. A client that could not establish the
+    /// sideband transport answers with a failure Initiate Multitransport
+    /// Response, often after finalization has completed; the message-channel
+    /// handler uses this to stop the accept instead of letting it hold its
+    /// socket until `multitransport::UDP_ACCEPT_TIMEOUT`.
+    pending_udp_accept_abort: Option<task::AbortHandle>,
 }
 
 /// Cloneable handle for updating the Server Auto-Reconnect Cookie while
@@ -1480,6 +1488,7 @@ impl RdpServer {
             auto_reconnect_cookie: None,
             previous_auto_reconnect_cookie: None,
             auto_reconnect_sent: false,
+            pending_udp_accept_abort: None,
         }
     }
 
@@ -3717,6 +3726,11 @@ impl RdpServer {
                     Ok(None) => {
                         debug!("UDP transport did not come up, continuing TCP-only for the rest of the session");
                     }
+                    Err(error) if error.is_cancelled() => {
+                        debug!(
+                            "UDP transport accept stopped after the client declined, continuing TCP-only for the rest of the session"
+                        );
+                    }
                     Err(error) => {
                         warn!(%error, "UDP transport accept task panicked, continuing TCP-only for the rest of the session");
                     }
@@ -3985,9 +3999,9 @@ impl RdpServer {
         // transport's own handshake succeeded.
         //
         // This is a one-time snapshot, not a value `client_loop` can ever
-        // revise: `handle_message_channel_data` only decodes an Auto-Detect
-        // Response off the message channel, so a Multitransport Response
-        // arriving after finalization completes is not recognized at all.
+        // revise: a Multitransport Response arriving after finalization
+        // completes is decoded by `handle_message_channel_data`, which stops a
+        // pending accept on failure but does not enable migration on success.
         // MS-RDPBCGR gives no guarantee the client resolves its own UDP
         // bootstrap (RDPEUDP2 + TLS + RDPEMT) before TCP finalization's own
         // few round trips finish, so a response landing in that gap is
@@ -3998,6 +4012,7 @@ impl RdpServer {
         // not a correctness issue.
         let pending_udp_accept =
             Self::drop_declined_udp_accept(pending_udp_accept, result.multitransport_response_success);
+        self.pending_udp_accept_abort = pending_udp_accept.as_ref().map(task::JoinHandle::abort_handle);
 
         let udp_migration_allowed = result.multitransport_response_success == Some(true)
             && result
@@ -4219,6 +4234,14 @@ impl RdpServer {
                     hr_response = format!("{:#x}", pdu.hr_response),
                     "Received Initiate Multitransport Response"
                 );
+                // E_ABORT: the client could not establish the multitransport
+                // connection (MS-RDPBCGR 2.2.15.2), so no UDP handshake is coming.
+                if !pdu.is_success()
+                    && let Some(abort) = self.pending_udp_accept_abort.take()
+                {
+                    abort.abort();
+                    debug!("Client could not establish the UDP multitransport connection, continuing TCP-only");
+                }
             }
             Err(error) => {
                 warn!(error = format!("{error:#}"), "Unhandled MCS message channel PDU");
@@ -4907,6 +4930,45 @@ mod preempt_tests {
                 assert!(RdpServer::drop_declined_udp_accept(Some(handle), Some(false)).is_none());
                 task::yield_now().await;
                 assert!(probe.is_finished());
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_late_multitransport_failure_stops_the_pending_udp_accept() {
+        use ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu;
+
+        let local = task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut server = RdpServer::builder()
+                    .with_addr((Ipv4Addr::LOCALHOST, 0))
+                    .with_no_security()
+                    .with_no_input()
+                    .with_no_display()
+                    .build();
+                let response = |pdu: &MultitransportResponsePdu| SendDataRequest {
+                    initiator_id: 1007,
+                    channel_id: 1008,
+                    user_data: encode_vec(pdu).expect("encode response").into(),
+                };
+
+                // No accept pending: a failure response is only logged.
+                server.handle_message_channel_data(response(&MultitransportResponsePdu::abort(1)));
+
+                let accept = task::spawn_local(core::future::pending::<()>());
+                server.pending_udp_accept_abort = Some(accept.abort_handle());
+
+                // Success leaves the accept running.
+                server.handle_message_channel_data(response(&MultitransportResponsePdu::success(1)));
+                task::yield_now().await;
+                assert!(!accept.is_finished());
+
+                server.handle_message_channel_data(response(&MultitransportResponsePdu::abort(1)));
+                task::yield_now().await;
+                assert!(accept.is_finished());
+                assert!(accept.await.expect_err("accept was aborted").is_cancelled());
+                assert!(server.pending_udp_accept_abort.is_none());
             })
             .await;
     }
