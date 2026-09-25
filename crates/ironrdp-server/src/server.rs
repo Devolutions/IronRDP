@@ -2792,7 +2792,16 @@ impl RdpServer {
                             }
                             rdpsnd.wave(data, ts)
                         }
-                        RdpsndServerMessage::SetVolume { left, right } => rdpsnd.set_volume(left, right),
+                        RdpsndServerMessage::SetVolume { left, right } => {
+                            // Same stale-event case as a wave: set_volume needs the
+                            // client's format flags, which a new connection does not
+                            // have until its rdpsnd channel negotiates.
+                            if !rdpsnd.is_ready() {
+                                debug!("Dropping volume change: rdpsnd channel not negotiated yet");
+                                continue;
+                            }
+                            rdpsnd.set_volume(left, right)
+                        }
                         RdpsndServerMessage::Close => rdpsnd.close(),
                         RdpsndServerMessage::Error(error) => {
                             error!(?error, "Handling rdpsnd event");

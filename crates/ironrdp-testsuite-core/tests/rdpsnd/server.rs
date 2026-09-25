@@ -283,8 +283,14 @@ fn is_ready_only_once_a_format_is_committed() {
 
     let mut negotiated = server_with(true);
     assert!(!negotiated.is_ready(), "not ready before the handshake");
+    // The failure the server's dispatch guard exists to avoid: before
+    // negotiation, both calls it protects error out.
+    assert!(negotiated.wave(vec![0; 16], 0).is_err());
+    assert!(negotiated.set_volume(0xFFFF, 0xFFFF).is_err());
     drive_to_ready(&mut negotiated, vec![fmt(WaveFormat::PCM, 44100)]);
     assert!(negotiated.is_ready());
+    // Once is_ready() holds, the call it guards goes through.
+    assert!(negotiated.wave(vec![0; 16], 0).is_ok());
 
     let mut nothing_in_common = server_with(true);
     drive_to_ready(&mut nothing_in_common, vec![fmt(WaveFormat::AAC_MS, 44100)]);
