@@ -3996,6 +3996,9 @@ impl RdpServer {
         // just stays on TCP for its lifetime rather than ever migrating,
         // which is the same safe degrade this file already takes elsewhere,
         // not a correctness issue.
+        let pending_udp_accept =
+            Self::drop_declined_udp_accept(pending_udp_accept, result.multitransport_response_success);
+
         let udp_migration_allowed = result.multitransport_response_success == Some(true)
             && result
                 .multitransport_flags
@@ -4019,6 +4022,26 @@ impl RdpServer {
             .await?;
 
         Ok(state)
+    }
+
+    /// A failure hrResponse (E_ABORT) means the client could not establish
+    /// the multitransport connection (MS-RDPBCGR 2.2.15.2), so no UDP
+    /// handshake is coming. Stop the accept now instead of holding the
+    /// socket until `multitransport::UDP_ACCEPT_TIMEOUT` and then reporting a
+    /// timeout. No response at all leaves it running: the client may still be
+    /// bringing UDP up.
+    fn drop_declined_udp_accept<T>(
+        pending_udp_accept: Option<task::JoinHandle<T>>,
+        multitransport_response_success: Option<bool>,
+    ) -> Option<task::JoinHandle<T>> {
+        match pending_udp_accept {
+            Some(handle) if multitransport_response_success == Some(false) => {
+                handle.abort();
+                debug!("Client could not establish the UDP multitransport connection, continuing TCP-only");
+                None
+            }
+            other => other,
+        }
     }
 
     async fn handle_input_backlog(
@@ -4859,6 +4882,35 @@ mod preempt_tests {
     ///
     /// Drive exactly that: a live session, a silent candidate, then end the
     /// session and require the server to still respond and still shut down.
+    #[tokio::test]
+    async fn a_declined_multitransport_response_stops_the_udp_accept() {
+        let local = task::LocalSet::new();
+        local
+            .run_until(async {
+                let pending = || Some(task::spawn_local(core::future::pending::<()>()));
+
+                let declined = RdpServer::drop_declined_udp_accept(pending(), Some(false));
+                assert!(declined.is_none());
+
+                let kept = RdpServer::drop_declined_udp_accept(pending(), None).expect("no response keeps the accept");
+                assert!(!kept.is_finished());
+                kept.abort();
+
+                let kept =
+                    RdpServer::drop_declined_udp_accept(pending(), Some(true)).expect("success keeps the accept");
+                assert!(!kept.is_finished());
+                kept.abort();
+
+                // The aborted task really stops, so its socket is released.
+                let handle = task::spawn_local(core::future::pending::<()>());
+                let probe = handle.abort_handle();
+                assert!(RdpServer::drop_declined_udp_accept(Some(handle), Some(false)).is_none());
+                task::yield_now().await;
+                assert!(probe.is_finished());
+            })
+            .await;
+    }
+
     #[tokio::test]
     async fn a_silent_candidate_cannot_wedge_the_accept_loop() {
         let local = task::LocalSet::new();
