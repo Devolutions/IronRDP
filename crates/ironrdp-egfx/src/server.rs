@@ -1044,9 +1044,9 @@ pub struct GraphicsPipelineServer {
 /// [`GraphicsPipelineServer::send_mixed_frame()`] to pack multiple codec
 /// types into a single `StartFrame`/`EndFrame` pair.
 ///
-/// Marked `#[non_exhaustive]` so future EGFX codec additions (for example,
-/// Avc444 or hardware-accelerated paths) can land without a SemVer break
-/// for downstream consumers that pattern-match on this enum.
+/// Marked `#[non_exhaustive]` so future EGFX codec additions can land
+/// without a SemVer break for downstream consumers that pattern-match on
+/// this enum.
 #[non_exhaustive]
 pub enum MixedTilePayload {
     /// Lossless ClearCodec tile (text, UI elements, icons).
@@ -1068,6 +1068,37 @@ pub enum MixedTilePayload {
     Avc420 {
         regions: Vec<Avc420Region>,
         h264_data: Vec<u8>,
+    },
+    /// H.264 AVC444 tile (`RFX_AVC444_BITMAP_STREAM`, MS-RDPEGFX 2.2.4.5).
+    ///
+    /// The fields mirror [`GraphicsPipelineServer::send_avc444v2_frame()`]:
+    /// `encoding` is the LC value, and the second sub-stream is present
+    /// exactly when it is `LUMA_AND_CHROMA`. Each sub-stream keeps its own
+    /// regions because each is a full `RFX_AVC420_BITMAP_STREAM`.
+    ///
+    /// MS-RDPEGFX 2.2.3.7 guarantees same-frame mixing only for AVC in YUV420
+    /// mode, so no capability version promises that a client decodes AVC444
+    /// next to other codecs; test the clients you target. An LC `CHROMA`
+    /// update is combined with previously decoded luma (2.2.4.5), so it must
+    /// not cover an area another codec has repainted since that area's last
+    /// luma update.
+    Avc444 {
+        encoding: Encoding,
+        stream1_regions: Vec<Avc420Region>,
+        stream1_data: Vec<u8>,
+        stream2_regions: Option<Vec<Avc420Region>>,
+        stream2_data: Option<Vec<u8>>,
+    },
+    /// H.264 AVC444v2 tile (`RFX_AVC444V2_BITMAP_STREAM`, MS-RDPEGFX 2.2.4.6).
+    ///
+    /// Identical on the wire to [`MixedTilePayload::Avc444`] except for how
+    /// the client combines the two views; the same rules apply.
+    Avc444v2 {
+        encoding: Encoding,
+        stream1_regions: Vec<Avc420Region>,
+        stream1_data: Vec<u8>,
+        stream2_regions: Option<Vec<Avc420Region>>,
+        stream2_data: Option<Vec<u8>>,
     },
 }
 
@@ -1576,13 +1607,8 @@ impl GraphicsPipelineServer {
         stream2_regions: Option<&[Avc420Region]>,
         timestamp_ms: u32,
     ) -> Option<u32> {
-        let valid_stream_shape = if encoding == Encoding::LUMA_AND_CHROMA {
-            stream2_data.is_some() && stream2_regions.is_some()
-        } else if encoding == Encoding::LUMA || encoding == Encoding::CHROMA {
-            stream2_data.is_none() && stream2_regions.is_none()
-        } else {
-            false
-        };
+        let valid_stream_shape =
+            Self::avc444_stream_shape_is_valid(encoding, stream2_data.is_some(), stream2_regions.is_some());
         if !valid_stream_shape {
             return None;
         }
@@ -1603,57 +1629,80 @@ impl GraphicsPipelineServer {
         let timestamp = Self::make_timestamp(timestamp_ms);
         let frame_id = self.frames.begin_frame(timestamp);
 
-        let stream1_rectangles: Vec<_> = stream1_regions.iter().map(Avc420Region::to_rectangle).collect();
-        let stream1_quant_vals: Vec<_> = stream1_regions.iter().map(Avc420Region::to_quant_quality).collect();
+        let wire_pdu = Self::avc444_wire_pdu(
+            codec_id,
+            surface,
+            encoding,
+            (stream1_regions, stream1_data),
+            stream2_regions.zip(stream2_data),
+        );
 
-        let stream1 = Avc420BitmapStream {
-            rectangles: stream1_rectangles,
-            quant_qual_vals: stream1_quant_vals,
-            data: stream1_data,
-        };
+        self.output_queue
+            .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
+        self.output_queue.push_back(GfxPdu::WireToSurface1(wire_pdu));
+        self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
 
-        let stream2 = if encoding == Encoding::LUMA_AND_CHROMA {
-            let stream2_data = stream2_data?;
-            let stream2_regions = stream2_regions?;
-            let stream2_rectangles: Vec<_> = stream2_regions.iter().map(Avc420Region::to_rectangle).collect();
-            let stream2_quant_vals: Vec<_> = stream2_regions.iter().map(Avc420Region::to_quant_quality).collect();
+        Some(frame_id)
+    }
 
-            Some(Avc420BitmapStream {
-                rectangles: stream2_rectangles,
-                quant_qual_vals: stream2_quant_vals,
-                data: stream2_data,
-            })
+    /// Whether the second AVC444 sub-stream is present exactly when the LC
+    /// value calls for it; LC 3 is invalid (MS-RDPEGFX 2.2.4.5).
+    fn avc444_stream_shape_is_valid(encoding: Encoding, has_stream2_data: bool, has_stream2_regions: bool) -> bool {
+        if encoding == Encoding::LUMA_AND_CHROMA {
+            has_stream2_data && has_stream2_regions
+        } else if encoding == Encoding::LUMA || encoding == Encoding::CHROMA {
+            !has_stream2_data && !has_stream2_regions
         } else {
-            None
+            false
+        }
+    }
+
+    /// Build the `WireToSurface1` PDU for an AVC444 or AVC444v2 update whose
+    /// stream shape has already been checked.
+    fn avc444_wire_pdu<'a>(
+        codec_id: Codec1Type,
+        surface: &Surface,
+        encoding: Encoding,
+        stream1: (&[Avc420Region], &'a [u8]),
+        stream2: Option<(&[Avc420Region], &'a [u8])>,
+    ) -> WireToSurface1Pdu {
+        let substream = |(regions, data): (&[Avc420Region], &'a [u8])| Avc420BitmapStream {
+            rectangles: regions.iter().map(Avc420Region::to_rectangle).collect(),
+            quant_qual_vals: regions.iter().map(Avc420Region::to_quant_quality).collect(),
+            data,
         };
 
         let avc444_stream = Avc444BitmapStream {
             encoding,
-            stream1,
-            stream2,
+            stream1: substream(stream1),
+            stream2: stream2.map(substream),
         };
 
-        let encoded_stream = encode_avc444_bitmap_stream(&avc444_stream);
-        let target_rect = if let Some(stream2_regions) = stream2_regions {
-            Self::compute_dest_rect_for_streams(stream1_regions, stream2_regions, surface.width, surface.height)
-        } else {
-            Self::compute_dest_rect(stream1_regions, surface.width, surface.height)
+        // destRect is the bounding rectangle of both sub-streams (MS-RDPEGFX 2.2.2.1).
+        let destination_rectangle = match stream2 {
+            Some((stream2_regions, _)) => {
+                Self::compute_dest_rect_for_streams(stream1.0, stream2_regions, surface.width, surface.height)
+            }
+            None => Self::compute_dest_rect(stream1.0, surface.width, surface.height),
         };
 
-        self.output_queue
-            .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
-
-        self.output_queue.push_back(GfxPdu::WireToSurface1(WireToSurface1Pdu {
-            surface_id,
+        WireToSurface1Pdu {
+            surface_id: surface.id,
             codec_id,
             pixel_format: surface.pixel_format,
-            destination_rectangle: target_rect,
-            bitmap_data: encoded_stream,
-        }));
+            destination_rectangle,
+            bitmap_data: encode_avc444_bitmap_stream(&avc444_stream),
+        }
+    }
 
-        self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
-
-        Some(frame_id)
+    /// Whether every AVC region is non-empty, inside the surface, and within
+    /// the QP and quality ranges of MS-RDPEGFX 2.2.4.4.2.
+    fn avc_regions_are_valid(regions: &[Avc420Region], surface: &Surface) -> bool {
+        regions.iter().all(|region| {
+            Self::rect_fits_surface(&region.to_rectangle(), surface)
+                && region.quantization_parameter <= MAX_AVC_QP
+                && region.quality <= MAX_AVC_QUALITY
+        })
     }
 
     fn compute_dest_rect_for_streams(
@@ -1890,11 +1939,13 @@ impl GraphicsPipelineServer {
     /// such promise.
     ///
     /// Every tile is checked before the frame is queued. AVC420 tiles need
-    /// AVC420 support in the negotiated capabilities, and each AVC420 region
-    /// and ClearCodec destination must be non-empty and inside the surface.
-    /// AVC420 regions also need a QP of at most 51 and a quality of at most
-    /// 100 (MS-RDPEGFX 2.2.4.4.2). If any check fails nothing is queued and
-    /// no frame is tracked.
+    /// AVC420 support in the negotiated capabilities and AVC444 tiles need
+    /// AVC444 support; an AVC444 tile's second sub-stream must be present
+    /// exactly when its LC is `LUMA_AND_CHROMA`. Each AVC region and
+    /// ClearCodec destination must be non-empty and inside the surface, and
+    /// AVC regions also need a QP of at most 51 and a quality of at most 100
+    /// (MS-RDPEGFX 2.2.4.4.2). If any check fails nothing is queued and no
+    /// frame is tracked.
     ///
     /// Returns `Some(frame_id)` if queued, `None` if not ready, backpressured,
     /// or a tile failed its checks.
@@ -1916,6 +1967,7 @@ impl GraphicsPipelineServer {
         }
 
         let supports_avc420 = self.supports_avc420();
+        let supports_avc444 = self.supports_avc444();
         let surface = self.surfaces.get(surface_id)?;
         let pixel_format = surface.pixel_format;
 
@@ -1923,12 +1975,28 @@ impl GraphicsPipelineServer {
             MixedTilePayload::ClearCodec { destination, .. } => Self::rect_fits_surface(destination, surface),
             MixedTilePayload::RemoteFxProgressive { .. } => true,
             MixedTilePayload::Avc420 { regions, .. } => {
-                supports_avc420
-                    && regions.iter().all(|region| {
-                        Self::rect_fits_surface(&region.to_rectangle(), surface)
-                            && region.quantization_parameter <= MAX_AVC_QP
-                            && region.quality <= MAX_AVC_QUALITY
-                    })
+                supports_avc420 && Self::avc_regions_are_valid(regions, surface)
+            }
+            MixedTilePayload::Avc444 {
+                encoding,
+                stream1_regions,
+                stream2_regions,
+                stream2_data,
+                ..
+            }
+            | MixedTilePayload::Avc444v2 {
+                encoding,
+                stream1_regions,
+                stream2_regions,
+                stream2_data,
+                ..
+            } => {
+                supports_avc444
+                    && Self::avc444_stream_shape_is_valid(*encoding, stream2_data.is_some(), stream2_regions.is_some())
+                    && Self::avc_regions_are_valid(stream1_regions, surface)
+                    && stream2_regions
+                        .as_deref()
+                        .is_none_or(|regions| Self::avc_regions_are_valid(regions, surface))
             }
         });
         if !tiles_valid {
@@ -1978,6 +2046,38 @@ impl GraphicsPipelineServer {
                         destination_rectangle: target_rect,
                         bitmap_data: encoded_stream,
                     }));
+                }
+                MixedTilePayload::Avc444 {
+                    encoding,
+                    stream1_regions,
+                    stream1_data,
+                    stream2_regions,
+                    stream2_data,
+                } => {
+                    self.output_queue
+                        .push_back(GfxPdu::WireToSurface1(Self::avc444_wire_pdu(
+                            Codec1Type::Avc444,
+                            surface,
+                            encoding,
+                            (&stream1_regions, &stream1_data),
+                            stream2_regions.as_deref().zip(stream2_data.as_deref()),
+                        )));
+                }
+                MixedTilePayload::Avc444v2 {
+                    encoding,
+                    stream1_regions,
+                    stream1_data,
+                    stream2_regions,
+                    stream2_data,
+                } => {
+                    self.output_queue
+                        .push_back(GfxPdu::WireToSurface1(Self::avc444_wire_pdu(
+                            Codec1Type::Avc444v2,
+                            surface,
+                            encoding,
+                            (&stream1_regions, &stream1_data),
+                            stream2_regions.as_deref().zip(stream2_data.as_deref()),
+                        )));
                 }
             }
         }
