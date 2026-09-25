@@ -57,6 +57,17 @@ export function enableCredssp(enable: boolean): Extension {
     return new Extension('enable_credssp', enable);
 }
 
+/**
+ * Allow unencrypted Standard RDP Security over a trusted RDCleanPath transport.
+ *
+ * Enabling this disables TLS and CredSSP protocol negotiation. Use it only when
+ * the WebSocket and proxy-to-server transports already provide the required
+ * confidentiality and peer authentication.
+ */
+export function enableStandardRdpSecurity(enable: boolean): Extension {
+    return new Extension('enable_standard_rdp_security', enable);
+}
+
 export function enableServerPointer(enable: boolean): Extension {
     return new Extension('enable_server_pointer', enable);
 }
