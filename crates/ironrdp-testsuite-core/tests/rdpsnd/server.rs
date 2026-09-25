@@ -330,11 +330,14 @@ fn repeated_and_unmatched_wave_confirms_still_reach_the_handler() {
 
     drive_to_ready(&mut server, vec![fmt(WaveFormat::PCM, 44100)]);
     server.wave(vec![0; 8], 0x0100).expect("wave");
+    server.wave(vec![0; 8], 0x0200).expect("wave");
 
-    // Some clients confirm one block more than once, and a confirm can name a
-    // block the server has no record of. The server's own bookkeeping for
-    // these must not hide them from the handler.
-    for (block_no, timestamp) in [(0, 0x0110), (0, 0x0120), (9, 0x0130)] {
+    // Windows clients and xfreerdp3 confirm each block twice (on receipt, then
+    // later), a third confirm or one naming a block the server has no record
+    // of can still arrive, and a single-confirm client leaves block 1 with one
+    // confirm only. The server's own bookkeeping for these must not hide any
+    // of them from the handler.
+    for (block_no, timestamp) in [(0, 0x0100), (0, 0x0340), (0, 0x0350), (9, 0x0360), (1, 0x0200)] {
         let confirm = ClientAudioOutputPdu::WaveConfirm(WaveConfirmPdu { timestamp, block_no });
         server
             .process(&encode_vec(&confirm).expect("encode wave confirm"))
@@ -343,6 +346,6 @@ fn repeated_and_unmatched_wave_confirms_still_reach_the_handler() {
 
     assert_eq!(
         rec.lock().expect("poisoned").wave_confirms,
-        vec![(0, 0x0110), (0, 0x0120), (9, 0x0130)]
+        vec![(0, 0x0100), (0, 0x0340), (0, 0x0350), (9, 0x0360), (1, 0x0200)]
     );
 }
