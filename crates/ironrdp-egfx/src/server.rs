@@ -1094,7 +1094,9 @@ impl GraphicsPipelineServer {
     /// When `compression_mode` is `Auto` or `Always`, `drain_output()` will
     /// compress PDUs before ZGFX wrapping, reducing bandwidth at the cost
     /// of CPU. The compressor maintains a sliding history window across
-    /// frames for back-reference efficiency.
+    /// frames for back-reference efficiency. `WireToSurface1` PDUs carrying
+    /// AVC420, AVC444 or AVC444v2 are sent uncompressed in both modes, since
+    /// H.264 is already entropy coded; their bytes still enter the history.
     pub fn with_compression(handler: Box<dyn GraphicsPipelineHandler>, compression_mode: CompressionMode) -> Self {
         let mut server = Self::new(handler);
         server.compression_mode = compression_mode;
@@ -1983,10 +1985,26 @@ impl GraphicsPipelineServer {
                 pdu.encode(&mut cursor).expect("GfxPdu encoding should not fail");
                 total_uncompressed += pdu_size;
 
+                // H.264 bitstreams are already entropy coded, so searching them
+                // for matches costs CPU under the server lock and almost never
+                // shrinks them. Send them uncompressed, but still record their
+                // bytes in the history (MS-RDPEGFX 3.1.9.1.2).
+                let is_h264 = matches!(
+                    &pdu,
+                    GfxPdu::WireToSurface1(wire)
+                        if matches!(wire.codec_id, Codec1Type::Avc420 | Codec1Type::Avc444 | Codec1Type::Avc444v2)
+                );
+
                 let wrapped = match mode {
                     CompressionMode::Never => wrap_uncompressed(&pdu_bytes),
-                    _ => compress_and_wrap_egfx(&pdu_bytes, &mut self.zgfx_compressor, mode)
-                        .unwrap_or_else(|_| wrap_uncompressed(&pdu_bytes)),
+                    CompressionMode::Auto | CompressionMode::Always if is_h264 => {
+                        self.zgfx_compressor.record_uncompressed(&pdu_bytes);
+                        wrap_uncompressed(&pdu_bytes)
+                    }
+                    CompressionMode::Auto | CompressionMode::Always => {
+                        compress_and_wrap_egfx(&pdu_bytes, &mut self.zgfx_compressor, mode)
+                            .unwrap_or_else(|_| wrap_uncompressed(&pdu_bytes))
+                    }
                 };
                 total_compressed += wrapped.len();
                 trace!(pdu_name, pdu_size, wrapped = wrapped.len(), mode = ?mode, "ZGFX output");

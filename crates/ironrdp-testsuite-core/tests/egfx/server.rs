@@ -336,6 +336,92 @@ fn avc444v2_sender_rejects_invalid_stream_shapes_without_queueing() {
 }
 
 // ============================================================================
+// ZGFX Output Tests
+// ============================================================================
+
+/// Whether the first ZGFX segment of a wrapped DVC message is compressed
+/// (MS-RDPEGFX 2.2.5.1 to 2.2.5.3; PACKET_COMPRESSED is 0x20).
+fn first_segment_is_compressed(wrapped: &[u8]) -> bool {
+    match wrapped[0] {
+        0xE0 => wrapped[1] & 0x20 != 0,
+        0xE1 => wrapped[1 + 2 + 4 + 4] & 0x20 != 0,
+        descriptor => panic!("unexpected ZGFX descriptor {descriptor:#x}"),
+    }
+}
+
+#[test]
+fn zgfx_auto_sends_h264_uncompressed_and_keeps_history_in_step() {
+    use ironrdp_graphics::zgfx::CompressionMode;
+
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::with_compression(handler, CompressionMode::Auto);
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::SMALL_CACHE,
+    }]));
+    server
+        .process(0, &encode_pdu(&client_caps_pdu))
+        .expect("process capabilities");
+    let surface_id = server.create_surface(64, 64).expect("create surface");
+
+    let mut decompressor = Decompressor::new();
+    let mut decode_all = |server: &mut GraphicsPipelineServer| -> Vec<(bool, GfxPdu)> {
+        server
+            .drain_output()
+            .iter()
+            .map(|message| {
+                let wrapped = encode_vec(message.as_ref()).expect("encode DVC message");
+                let mut decoded = Vec::new();
+                decompressor.decompress(&wrapped, &mut decoded).expect("decompress PDU");
+                let pdu = GfxPdu::decode(&mut ReadCursor::new(&decoded)).expect("decode PDU");
+                (first_segment_is_compressed(&wrapped), pdu)
+            })
+            .collect()
+    };
+    decode_all(&mut server);
+
+    let clearcodec_data = b"lossless tile bytes that repeat ".repeat(64);
+    let h264_data: Vec<u8> = (0..=u8::MAX).cycle().skip(3).step_by(7).take(8_000).collect();
+    let destination = ironrdp_pdu::geometry::ExclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: 16,
+        bottom: 16,
+    };
+
+    // ClearCodec, then H.264, then ClearCodec again: the last one only
+    // decodes if both sides recorded the H.264 bytes in their histories.
+    server
+        .send_clearcodec_frame(surface_id, destination.clone(), clearcodec_data.clone(), 42)
+        .expect("queue ClearCodec frame");
+    server
+        .send_avc420_frame(surface_id, &h264_data, &[Avc420Region::full_frame(64, 64, 22)], 42)
+        .expect("queue AVC420 frame");
+    server
+        .send_clearcodec_frame(surface_id, destination, clearcodec_data.clone(), 42)
+        .expect("queue ClearCodec frame");
+
+    let mut codecs = Vec::new();
+    for (compressed, pdu) in decode_all(&mut server) {
+        let GfxPdu::WireToSurface1(wire) = pdu else {
+            continue;
+        };
+        match wire.codec_id {
+            Codec1Type::ClearCodec => {
+                assert!(compressed, "ClearCodec PDU should be compressed");
+                assert_eq!(wire.bitmap_data, clearcodec_data);
+            }
+            Codec1Type::Avc420 => assert!(!compressed, "H.264 PDU should be sent uncompressed"),
+            other => panic!("unexpected codec {other:?}"),
+        }
+        codecs.push(wire.codec_id);
+    }
+    assert_eq!(
+        codecs,
+        [Codec1Type::ClearCodec, Codec1Type::Avc420, Codec1Type::ClearCodec]
+    );
+}
+
+// ============================================================================
 // Planar Frame Tests
 // ============================================================================
 
