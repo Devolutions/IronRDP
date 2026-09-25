@@ -73,6 +73,21 @@ impl Compressor {
         Ok(bit_writer.finish())
     }
 
+    /// Record `bytes` in the history without searching them for matches, for
+    /// data the caller sends in an uncompressed segment instead of passing it
+    /// to [`Compressor::compress`].
+    ///
+    /// MS-RDPEGFX 3.1.9.1.2 requires every output byte, including the bytes of
+    /// segments sent uncompressed, to be recorded in the history; the receiver
+    /// does so, and skipping them here would make later back-references point
+    /// at the wrong bytes. The bytes are not bulk indexed, so the search that
+    /// compression would spend on already entropy coded data is skipped. The
+    /// last two recorded bytes can still start a match, because the next
+    /// append indexes the positions that straddle the boundary.
+    pub(crate) fn record_uncompressed(&mut self, bytes: &[u8]) {
+        self.history.push(bytes);
+    }
+
     /// Extend the sliding window; the ring overwrites the oldest bytes once full.
     fn add_to_history(&mut self, bytes: &[u8]) {
         let base_pos = self.history.total();
@@ -106,10 +121,11 @@ impl Compressor {
     /// Remember that `prefix` occurs at the absolute stream position `pos`, dropping the
     /// prefix's oldest position when it already has `MAX_POSITIONS_PER_PREFIX`.
     ///
-    /// INVARIANT: each position is recorded once, when its third byte arrives. The main
-    /// loop covers the positions whose three bytes are all in the new chunk, and the
-    /// boundary loop the two positions that straddle the append point, so no position
-    /// is in both.
+    /// INVARIANT: no position is recorded twice. A position is recorded when its third byte
+    /// arrives: the main loop covers the positions whose three bytes are all in the new chunk,
+    /// and the boundary loop the two positions that straddle the append point, so no position
+    /// is in both. Bytes added with `record_uncompressed` are not indexed, apart from the
+    /// positions that straddle their end, which the next append indexes.
     fn record_position(&mut self, prefix: [u8; 3], pos: u64) {
         let positions = self.match_table.entry(prefix).or_default();
         debug_assert!(positions.last() != Some(&pos));
@@ -681,6 +697,28 @@ mod tests {
         assert_eq!(history.len(), HISTORY_SIZE);
         assert_eq!(history.byte_back(1), *big.last().unwrap());
         assert_eq!(history.byte_back(HISTORY_SIZE), big[7]);
+    }
+
+    #[test]
+    fn recorded_uncompressed_bytes_keep_histories_in_step() {
+        use super::super::{Decompressor, wrap_compressed, wrap_uncompressed};
+
+        let text = b"The same line of text, again and again. ".repeat(50);
+        let opaque: Vec<u8> = (0..=u8::MAX).cycle().skip(7).step_by(13).take(70_000).collect();
+
+        let mut compressor = Compressor::new();
+        let mut decompressor = Decompressor::new();
+        for segment in [&text, &opaque, &text, &opaque, &text] {
+            let wrapped = if segment == &opaque {
+                compressor.record_uncompressed(segment);
+                wrap_uncompressed(segment)
+            } else {
+                wrap_compressed(&compressor.compress(segment).unwrap())
+            };
+            let mut output = Vec::new();
+            decompressor.decompress(&wrapped, &mut output).unwrap();
+            assert_eq!(&output, segment);
+        }
     }
 
     #[test]

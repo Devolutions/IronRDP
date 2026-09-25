@@ -60,7 +60,9 @@ use std::time::Instant;
 
 use ironrdp_core::{Encode, EncodeResult, WriteCursor, decode, impl_as_any};
 use ironrdp_dvc::{DvcEncode, DvcMessage, DvcProcessor, DvcServerProcessor};
-use ironrdp_graphics::zgfx::{CompressionMode, Compressor, compress_and_wrap_egfx, wrap_uncompressed};
+use ironrdp_graphics::zgfx::{
+    CompressionMode, Compressor, compress_and_wrap_egfx, wrap_uncompressed, wrap_uncompressed_recorded,
+};
 use ironrdp_pdu::gcc::Monitor;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
 use ironrdp_pdu::{PduResult, decode_err};
@@ -1164,7 +1166,9 @@ impl GraphicsPipelineServer {
     /// When `compression_mode` is `Auto` or `Always`, `drain_output()` will
     /// compress PDUs before ZGFX wrapping, reducing bandwidth at the cost
     /// of CPU. The compressor maintains a sliding history window across
-    /// frames for back-reference efficiency.
+    /// frames for back-reference efficiency. `WireToSurface1` PDUs carrying
+    /// AVC420, AVC444 or AVC444v2 are sent uncompressed in both modes, since
+    /// H.264 is already entropy coded; their bytes still enter the history.
     pub fn with_compression(handler: Box<dyn GraphicsPipelineHandler>, compression_mode: CompressionMode) -> Self {
         let mut server = Self::new(handler);
         server.compression_mode = compression_mode;
@@ -2219,10 +2223,28 @@ impl GraphicsPipelineServer {
                 pdu.encode(&mut cursor).expect("GfxPdu encoding should not fail");
                 total_uncompressed += pdu_size;
 
+                // H.264 bitstreams are already entropy coded, so searching them
+                // for matches costs CPU on the caller's send path and almost never
+                // shrinks them. Send them uncompressed, but still record their
+                // bytes in the history (MS-RDPEGFX 3.1.9.1.2).
+                let is_h264 = matches!(
+                    &pdu,
+                    GfxPdu::WireToSurface1(wire)
+                        if matches!(wire.codec_id, Codec1Type::Avc420 | Codec1Type::Avc444 | Codec1Type::Avc444v2)
+                );
+
                 let wrapped = match mode {
                     CompressionMode::Never => wrap_uncompressed(&pdu_bytes),
-                    _ => compress_and_wrap_egfx(&pdu_bytes, &mut self.zgfx_compressor, mode)
-                        .unwrap_or_else(|_| wrap_uncompressed(&pdu_bytes)),
+                    CompressionMode::Auto | CompressionMode::Always if is_h264 => {
+                        wrap_uncompressed_recorded(&pdu_bytes, &mut self.zgfx_compressor)
+                    }
+                    CompressionMode::Auto | CompressionMode::Always => {
+                        compress_and_wrap_egfx(&pdu_bytes, &mut self.zgfx_compressor, mode)
+                            // None of the compressor's encoders returns an error today. If one ever did, the
+                            // tokens before it would already be in the history, so recording this PDU again
+                            // here would not bring the peer back in step. Both histories would need a reset.
+                            .unwrap_or_else(|_| wrap_uncompressed(&pdu_bytes))
+                    }
                 };
                 total_compressed += wrapped.len();
                 trace!(pdu_name, pdu_size, wrapped = wrapped.len(), mode = ?mode, "ZGFX output");
