@@ -306,6 +306,71 @@ fn avc444_sender_preserves_existing_codec_and_stream_selection() {
 }
 
 #[test]
+fn avc444_stream_info_length_is_zero_only_without_a_yuv420_frame() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    server.process(0, &payload).expect("process capabilities");
+    let surface_id = server.create_surface(64, 64).expect("create surface");
+    server.drain_output();
+
+    let stream1_data = [0x00, 0x00, 0x00, 0x01, 0x67];
+    let stream2_data = [0x00, 0x00, 0x00, 0x01, 0x68];
+    let regions = [Avc420Region::new(0, 0, 32, 32, 22, 78)];
+    let cases = [
+        (
+            Encoding::LUMA_AND_CHROMA,
+            Some(stream2_data.as_slice()),
+            Some(regions.as_slice()),
+        ),
+        (Encoding::LUMA, None, None),
+        (Encoding::CHROMA, None, None),
+    ];
+
+    for (encoding, second_data, second_regions) in cases {
+        server
+            .send_avc444v2_frame(
+                surface_id,
+                encoding,
+                &stream1_data,
+                &regions,
+                second_data,
+                second_regions,
+                42,
+            )
+            .expect("queue AVC444v2 frame");
+
+        let output = server.drain_output();
+        let mut decompressor = Decompressor::new();
+        let encoded = encode_vec(output[1].as_ref()).expect("encode DVC message");
+        let mut decoded = Vec::new();
+        decompressor
+            .decompress(&encoded, &mut decoded)
+            .expect("decompress WireToSurface1");
+        let mut cursor = ReadCursor::new(&decoded);
+        let GfxPdu::WireToSurface1(wire) = GfxPdu::decode(&mut cursor).expect("decode WireToSurface1") else {
+            panic!("expected WireToSurface1");
+        };
+
+        // MS-RDPEGFX 2.2.4.5: cbAvc420EncodedBitstream1 is the size of the YUV420
+        // frame in the first sub-stream, zero when that sub-stream holds only chroma.
+        let stream_info = u32::from_le_bytes(wire.bitmap_data[..4].try_into().expect("stream info"));
+        let stream1_len = stream_info & 0x3FFF_FFFF;
+        let stream = Avc444BitmapStream::decode(&mut ReadCursor::new(&wire.bitmap_data)).expect("decode AVC444v2");
+        if encoding == Encoding::CHROMA {
+            assert_eq!(stream1_len, 0);
+        } else {
+            let expected = u32::try_from(stream.stream1.size()).expect("stream1 size");
+            assert_eq!(stream1_len, expected);
+        }
+        assert_eq!(stream.encoding, encoding);
+    }
+}
+
+#[test]
 fn avc444v2_sender_rejects_invalid_stream_shapes_without_queueing() {
     let handler = Box::new(TestHandler::new());
     let mut server = GraphicsPipelineServer::new(handler);
