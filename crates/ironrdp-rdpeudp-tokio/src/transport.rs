@@ -222,7 +222,7 @@ pub struct UdpTransport {
     data_rx: mpsc::Receiver<Vec<u8>>,
 
     /// Sends higher-layer data into the tunnel for encryption and transmission.
-    data_tx: mpsc::Sender<Vec<u8>>,
+    data_tx: mpsc::Sender<crate::tunnel::Outgoing>,
 
     /// Shared I/O bridge between the driver and the TLS/RDPEMT layer.
     /// Held here so `shutdown()` can signal closure to both the
@@ -265,7 +265,7 @@ impl UdpTransport {
         }
 
         self.data_tx
-            .send(data)
+            .send(crate::tunnel::Outgoing::Data(data))
             .await
             .map_err(|_| UdpTransportError::driver("send", DriverError::connection_closed("send")))
     }
@@ -333,7 +333,10 @@ impl UdpTransport {
     /// For unit tests that exercise the channel-based API (FramedRead,
     /// FramedWrite) without needing a real UDP socket or TLS stack.
     #[cfg(test)]
-    pub(crate) fn from_channels(data_rx: mpsc::Receiver<Vec<u8>>, data_tx: mpsc::Sender<Vec<u8>>) -> Self {
+    pub(crate) fn from_channels(
+        data_rx: mpsc::Receiver<Vec<u8>>,
+        data_tx: mpsc::Sender<crate::tunnel::Outgoing>,
+    ) -> Self {
         Self {
             data_rx,
             data_tx,
@@ -485,11 +488,12 @@ pub async fn connect_udp(config: UdpTransportConfig) -> Result<UdpTransport, Udp
 
     // Phase 5: Set up data channels and spawn the read pump
     let (incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>(64);
-    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Vec<u8>>(64);
+    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<crate::tunnel::Outgoing>(64);
+    let auto_detect_tx = outgoing_tx.clone();
 
     // Read pump: TLS → RDPEMT decode → channel
     let pump_handle = AbortOnDrop::new(tokio::spawn(async move {
-        tunnel_data_loop(&mut tls_read, &mut tunnel, &incoming_tx).await
+        tunnel_data_loop(&mut tls_read, &mut tunnel, &incoming_tx, &auto_detect_tx).await
     }));
 
     // Write pump: channel → RDPEMT encode → TLS
@@ -663,10 +667,11 @@ async fn accept_udp_inner(socket: UdpSocket, config: UdpAcceptConfig) -> Result<
 
     // Phase 6: Set up data channels and spawn pumps (identical to client side)
     let (incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>(64);
-    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Vec<u8>>(64);
+    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<crate::tunnel::Outgoing>(64);
+    let auto_detect_tx = outgoing_tx.clone();
 
     let pump_handle = AbortOnDrop::new(tokio::spawn(async move {
-        tunnel_data_loop(&mut tls_read, &mut tunnel, &incoming_tx).await
+        tunnel_data_loop(&mut tls_read, &mut tunnel, &incoming_tx, &auto_detect_tx).await
     }));
 
     // Write pump: channel → RDPEMT encode → TLS
@@ -737,17 +742,26 @@ where
 /// Shared by both `connect_udp` and `accept_udp`. Returns the first failure
 /// encountered rather than only logging it, so `shutdown()` can surface it
 /// to the caller instead of the pump silently going quiet.
-async fn write_pump<W>(tls_write: &mut W, outgoing_rx: &mut mpsc::Receiver<Vec<u8>>) -> Result<(), UdpTransportError>
+async fn write_pump<W>(
+    tls_write: &mut W,
+    outgoing_rx: &mut mpsc::Receiver<crate::tunnel::Outgoing>,
+) -> Result<(), UdpTransportError>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    while let Some(data) = outgoing_rx.recv().await {
-        let pdu = ironrdp_rdpemt::TunnelData {
-            sub_headers: Vec::new(),
-            higher_layer_data: data,
+    while let Some(outgoing) = outgoing_rx.recv().await {
+        let encoded = match outgoing {
+            crate::tunnel::Outgoing::Data(data) => {
+                let pdu = ironrdp_rdpemt::TunnelData {
+                    sub_headers: Vec::new(),
+                    higher_layer_data: data,
+                };
+                ironrdp_core::encode_vec(&pdu).map_err(|error| {
+                    UdpTransportError::rdpemt("write pump", ironrdp_rdpemt::RdpemtError::encode(error))
+                })?
+            }
+            crate::tunnel::Outgoing::Encoded(pdu) => pdu,
         };
-        let encoded = ironrdp_core::encode_vec(&pdu)
-            .map_err(|error| UdpTransportError::rdpemt("write pump", ironrdp_rdpemt::RdpemtError::encode(error)))?;
         tls_write
             .write_all(&encoded)
             .await
@@ -834,7 +848,7 @@ mod tests {
         DRIVER_RUNNING.store(false, Ordering::SeqCst);
 
         let (_incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>(4);
-        let (outgoing_tx, _outgoing_rx) = mpsc::channel::<Vec<u8>>(4);
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel::<crate::tunnel::Outgoing>(4);
 
         let transport = UdpTransport {
             data_rx: incoming_rx,
