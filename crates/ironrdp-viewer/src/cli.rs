@@ -128,6 +128,18 @@ struct Args {
     #[clap(long, value_enum, default_value_t = KeyboardType::IbmEnhanced)]
     keyboard_type: KeyboardType,
 
+    /// Enable reliable RDP-UDP for direct connections, falling back to TCP
+    #[clap(long, env = "IRONRDP_UDP", value_parser = clap::builder::BoolishValueParser::new(), num_args = 0..=1, default_missing_value = "true")]
+    udp: Option<bool>,
+
+    /// Highest RDP-UDP protocol version to offer (1, 2 or 3)
+    #[clap(long, env = "IRONRDP_UDP_OFFER", value_parser = clap::value_parser!(u16).range(1..=3))]
+    udp_offer: Option<u16>,
+
+    /// Advertise the graphics pipeline (MS-RDPEGFX)
+    #[clap(long, env = "IRONRDP_EGFX", value_parser = clap::builder::BoolishValueParser::new(), num_args = 0..=1, default_missing_value = "true")]
+    egfx: Option<bool>,
+
     /// The keyboard subtype (an original equipment manufacturer-dependent value)
     #[clap(long, default_value_t = 0)]
     keyboard_subtype: u32,
@@ -410,6 +422,20 @@ fn apply_cli_to_builder(
     }
     if let Some(scale) = args.scale_desktop {
         builder = builder.with_desktop_scale_factor(scale);
+    }
+    if let Some(enabled) = args.udp {
+        builder = builder.with_udp_transport(enabled);
+    }
+    if let Some(version) = args.udp_offer {
+        use ironrdp::client::config::UdpVersion;
+        builder = builder.with_udp_offer_version(match version {
+            1 => UdpVersion::V1,
+            2 => UdpVersion::V2,
+            _ => UdpVersion::V3,
+        });
+    }
+    if let Some(enabled) = args.egfx {
+        builder = builder.with_graphics_pipeline(enabled);
     }
     if let Some(width) = args.desktop_width {
         builder = builder.with_desktop_width(width);
