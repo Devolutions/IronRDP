@@ -90,6 +90,7 @@ struct SessionBuilderInner {
     printer_driver_name: Option<String>,
 
     use_display_control: bool,
+    audio_playback_callback: Option<js_sys::Function>,
     enable_credssp: bool,
     enable_server_pointer: bool,
     legacy_graphics: bool,
@@ -134,6 +135,7 @@ impl Default for SessionBuilderInner {
             printer_driver_name: None,
 
             use_display_control: false,
+            audio_playback_callback: None,
             enable_credssp: true,
             enable_server_pointer: true,
             legacy_graphics: false,
@@ -254,6 +256,10 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |vmconnect: String| { self.0.borrow_mut().vmconnect = Some(vmconnect) };
             |kdc_proxy_url: String| { self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url) };
             |display_control: bool| { self.0.borrow_mut().use_display_control = display_control };
+            |audio_playback: JsValue| {
+                // A function receiving the audio (see audio::to_js); anything else turns playback off.
+                self.0.borrow_mut().audio_playback_callback = audio_playback.dyn_into::<js_sys::Function>().ok();
+            };
             |enable_credssp: bool| { self.0.borrow_mut().enable_credssp = enable_credssp };
             |enable_server_pointer: bool| { self.0.borrow_mut().enable_server_pointer = enable_server_pointer };
             |legacy_graphics: bool| { self.0.borrow_mut().legacy_graphics = legacy_graphics };
@@ -426,6 +432,9 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         let enable_credssp = self.0.borrow().enable_credssp;
         config.enable_credssp = enable_credssp;
+        // Audio playback (RDPSND) when a callback takes the audio.
+        let audio_playback_callback = self.0.borrow().audio_playback_callback.clone();
+        config.enable_audio_playback = audio_playback_callback.is_some();
 
         let enable_server_pointer = self.0.borrow().enable_server_pointer;
         config.enable_server_pointer = enable_server_pointer;
@@ -516,6 +525,9 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_driver_name,
             computer_name: client_name.clone(),
             use_display_control,
+            audio_backend: audio_playback_callback
+                .as_ref()
+                .map(|_| crate::audio::WasmAudioBackend::new(input_events_tx.clone())),
         })
         .await?;
 
@@ -536,6 +548,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             render_canvas,
             set_cursor_style_callback,
             set_cursor_style_callback_context,
+            audio_playback_callback,
 
             input_events_rx: RefCell::new(Some(input_events_rx)),
             rdp_reader: RefCell::new(Some(rdp_reader)),
@@ -555,6 +568,8 @@ pub(crate) enum RdpInputEvent {
     /// Printer backend → event loop: a print job finished and its bytes are
     /// ready for delivery to JS. See [`crate::printer::PrinterBackendMessage`].
     Printer(crate::printer::PrinterBackendMessage),
+    /// RDPSND backend → event loop: audio for the JS callback. See [`crate::audio::AudioMessage`].
+    Audio(crate::audio::AudioMessage),
     FastPath(FastPathInputEvents),
     Resize {
         width: u32,
@@ -584,6 +599,7 @@ pub(crate) struct Session {
     render_canvas: HtmlCanvasElement,
     set_cursor_style_callback: js_sys::Function,
     set_cursor_style_callback_context: JsValue,
+    audio_playback_callback: Option<js_sys::Function>,
 
     // Consumed when `run` is called
     input_events_rx: RefCell<Option<mpsc::UnboundedReceiver<RdpInputEvent>>>,
@@ -883,6 +899,14 @@ impl iron_remote_desktop::Session for Session {
                                 wasm_printer.process_message(message);
                             } else {
                                 warn!("Printer event received, but no printer is configured");
+                            }
+                            Vec::new()
+                        }
+                        RdpInputEvent::Audio(message) => {
+                            if let Some(callback) = &self.audio_playback_callback {
+                                if let Err(error) = callback.call1(&JsValue::NULL, &crate::audio::to_js(message)) {
+                                    warn!(?error, "audio playback callback failed");
+                                }
                             }
                             Vec::new()
                         }
@@ -1584,6 +1608,7 @@ struct ConnectParams {
     /// `computer_name` when constructing the `Rdpdr` processor.
     computer_name: String,
     use_display_control: bool,
+    audio_backend: Option<crate::audio::WasmAudioBackend>,
 }
 
 fn default_printer_driver_name() -> String {
@@ -1634,6 +1659,7 @@ async fn connect(
         printer_driver_name,
         computer_name,
         use_display_control,
+        audio_backend,
     }: ConnectParams,
 ) -> Result<(connector::ConnectionResult, WebSocket), IronError> {
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
@@ -1647,11 +1673,26 @@ async fn connect(
         connector.attach_static_channel(CliprdrClient::new(Box::new(clipboard_backend)));
     }
 
+    let audio = audio_backend.is_some();
+    if let Some(audio_backend) = audio_backend {
+        connector.attach_static_channel(Rdpsnd::new(Box::new(audio_backend)));
+        // Windows servers only start audio playback once RDPDR is up too (FreeRDP enables device redirection
+        // along with audio for the same reason); without a printer, a device-less RDPDR does it.
+        if printer_backend.is_none() {
+            connector.attach_static_channel(Rdpdr::new(
+                Box::new(ironrdp::rdpdr::NoopRdpdrBackend),
+                computer_name.clone(),
+            ));
+        }
+    }
+
     if let Some(printer_backend) = printer_backend {
         // Windows servers only speak on RDPDR when RDPSND is advertised too
-        // (MS-RDPEFS Appendix A<1>). We do not play audio in the web client,
-        // but the no-op RDPSND processor satisfies that channel dependency.
-        connector.attach_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend)));
+        // (MS-RDPEFS Appendix A<1>). Without audio playback, the no-op RDPSND
+        // processor satisfies that channel dependency.
+        if !audio {
+            connector.attach_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend)));
+        }
         connector.attach_static_channel(
             Rdpdr::new(Box::new(printer_backend), computer_name).with_printer_driver(
                 printer_device_id,
