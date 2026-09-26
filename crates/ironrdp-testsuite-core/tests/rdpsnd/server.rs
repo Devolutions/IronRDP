@@ -14,7 +14,9 @@ use ironrdp_rdpsnd::pdu::{
     AudioFormat, AudioFormatFlags, ClientAudioFormatPdu, ClientAudioOutputPdu, TrainingConfirmPdu, Version,
     WaveConfirmPdu, WaveFormat,
 };
-use ironrdp_rdpsnd::server::{NegotiatedFormat, RdpsndError, RdpsndServer, RdpsndServerHandler, negotiate_formats};
+use ironrdp_rdpsnd::server::{
+    ConfirmKind, NegotiatedFormat, RdpsndError, RdpsndServer, RdpsndServerHandler, SentBlocks, negotiate_formats,
+};
 use ironrdp_svc::{StaticVirtualChannel, SvcProcessor as _};
 
 fn fmt(format: WaveFormat, rate: u32) -> AudioFormat {
@@ -348,4 +350,85 @@ fn repeated_and_unmatched_wave_confirms_still_reach_the_handler() {
         rec.lock().expect("poisoned").wave_confirms,
         vec![(0, 0x0100), (0, 0x0340), (0, 0x0350), (9, 0x0360), (1, 0x0200)]
     );
+
+    // Block 0: first, second, then a third with nothing left to match. Block 9
+    // was never sent. Block 1: first only.
+    let stats = server.stats();
+    assert_eq!(stats.waves_sent, 2);
+    assert_eq!(stats.confirms, 5);
+    assert_eq!(stats.second_confirms, 1);
+    assert_eq!(stats.unmatched_confirms, 2);
+    assert_eq!(stats.stale_confirms, 0);
+    assert_eq!(stats.never_confirmed, 0);
+}
+
+#[test]
+fn block_number_wrap_counts_unconfirmed_waves_and_stale_confirms() {
+    let rec = Arc::new(Mutex::new(Recording::default()));
+    let mut server = RdpsndServer::new(Box::new(FakeHandler {
+        formats: vec![fmt(WaveFormat::PCM, 44100)],
+        rec: Arc::clone(&rec),
+        start_ok: true,
+    }));
+
+    drive_to_ready(&mut server, vec![fmt(WaveFormat::PCM, 44100)]);
+
+    // 258 waves 10 ms apart: blocks 0 and 1 come round again while their
+    // first waves are still unconfirmed.
+    for i in 0..258u32 {
+        server.wave(vec![0; 8], i * 10).expect("wave");
+    }
+
+    // A late confirm for the first wave under block 0 (sent at 0, held 500 ms)
+    // predates the second wave's send at 2560, then that wave's own confirm.
+    for (block_no, timestamp) in [(0, 500), (0, 2600)] {
+        let confirm = ClientAudioOutputPdu::WaveConfirm(WaveConfirmPdu { timestamp, block_no });
+        server
+            .process(&encode_vec(&confirm).expect("encode wave confirm"))
+            .expect("process wave confirm");
+    }
+
+    let stats = server.stats();
+    assert_eq!(stats.waves_sent, 258);
+    assert_eq!(stats.bytes_sent, 258 * 8);
+    assert_eq!(stats.never_confirmed, 2);
+    assert_eq!(stats.confirms, 2);
+    assert_eq!(stats.stale_confirms, 1);
+    assert_eq!(stats.second_confirms, 0);
+    assert_eq!(stats.unmatched_confirms, 0);
+    assert_eq!(rec.lock().expect("poisoned").wave_confirms, vec![(0, 500), (0, 2600)]);
+}
+
+#[test]
+fn late_confirm_for_a_reused_block_number_is_stale() {
+    let mut blocks = SentBlocks::default();
+
+    assert_eq!(blocks.record(5, 1000), None);
+    assert_eq!(blocks.confirm(5, 1000), ConfirmKind::First(1000));
+
+    // 256 waves later block 5 is reused before the old wave's second confirm
+    // arrives. That confirm carries the old wave's timestamp plus its hold
+    // time, which still precedes the new send.
+    assert_eq!(blocks.record(5, 2000), None);
+    assert_eq!(blocks.confirm(5, 1700), ConfirmKind::Stale);
+
+    // The stale confirm must not consume the new wave's slot.
+    assert_eq!(blocks.confirm(5, 2005), ConfirmKind::First(2000));
+    assert_eq!(blocks.confirm(5, 1999), ConfirmKind::Stale);
+    assert_eq!(blocks.confirm(5, 2400), ConfirmKind::Second(2000));
+    assert_eq!(blocks.confirm(5, 2400), ConfirmKind::Unmatched);
+}
+
+#[test]
+fn stale_check_follows_the_u16_timestamp_wrap() {
+    let mut blocks = SentBlocks::default();
+
+    blocks.record(7, 0x0010);
+    // 0xFFF0 is 32 ms before 0x0010 across the wrap, so it predates the send.
+    assert_eq!(blocks.confirm(7, 0xFFF0), ConfirmKind::Stale);
+    assert_eq!(blocks.confirm(7, 0x0030), ConfirmKind::First(0x0010));
+
+    blocks.record(8, 0xFFF0);
+    // 0x0010 is 32 ms after 0xFFF0 across the wrap.
+    assert_eq!(blocks.confirm(8, 0x0010), ConfirmKind::First(0xFFF0));
 }
