@@ -396,19 +396,21 @@ impl DrdynvcClient {
                 return Err(pdu_other_err!("soft-sync request selected an unavailable tunnel"));
             }
 
-            let mut selected_channels = Vec::new();
+            // The server lists every channel it intends to move, including channels this client
+            // declined with NO_LISTENER: Windows lists CoreInput, MouseCursor, Video and Geometry
+            // next to the graphics pipeline. Those channels carry no data, so they are skipped
+            // one by one. Refusing the whole tunnel because of them would leave the channels
+            // this client did open stranded on TCP while the server already sends on the tunnel.
             for channel_id in list.channel_ids() {
-                if self.dynamic_channels.get_by_channel_id(*channel_id).is_none() {
-                    selected_channels.clear();
-                    break;
+                if self.dynamic_channels.get_by_channel_id(*channel_id).is_some() {
+                    tunnel_channels.insert(*channel_id, list.tunnel_type());
+                } else {
+                    debug!(
+                        channel_id,
+                        tunnel_type = ?list.tunnel_type(),
+                        "Soft-Sync lists a dynamic channel this client did not open; ignoring it"
+                    );
                 }
-                selected_channels.push(*channel_id);
-            }
-            if selected_channels.is_empty() && !list.channel_ids().is_empty() {
-                continue;
-            }
-            for channel_id in selected_channels {
-                tunnel_channels.insert(channel_id, list.tunnel_type());
             }
             tunnels_to_switch.push(list.tunnel_type());
         }
