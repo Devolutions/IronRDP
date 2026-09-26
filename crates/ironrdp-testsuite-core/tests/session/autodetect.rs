@@ -130,7 +130,7 @@ fn bandwidth_measure_stop_does_not_crash() {
     let frame = encode_server_autodetect(request);
 
     let outputs = process_frame(&mut processor, &frame);
-    assert!(outputs.is_empty(), "BW stop should produce no output");
+    assert_eq!(bandwidth_result(&outputs), (200, 0x000b, 1, 0));
 }
 
 #[test]
@@ -141,4 +141,128 @@ fn bandwidth_measure_payload_does_not_crash() {
 
     let outputs = process_frame(&mut processor, &frame);
     assert!(outputs.is_empty(), "BW payload should produce no output");
+}
+
+fn timed_request(
+    processor: &mut Processor,
+    request: AutoDetectRequest,
+    millis: u64,
+) -> Vec<ironrdp_session::x224::ProcessorOutput> {
+    processor
+        .process_with_timestamp(
+            &encode_server_autodetect(request),
+            &mut None,
+            Some(ironrdp_core::MonotonicInstant::from_millis(millis)),
+        )
+        .expect("process timed auto-detect request")
+}
+
+fn bandwidth_result(outputs: &[ironrdp_session::x224::ProcessorOutput]) -> (u16, u16, u32, u32) {
+    let [ironrdp_session::x224::ProcessorOutput::ResponseFrame(frame)] = outputs else {
+        panic!("expected exactly one bandwidth response");
+    };
+    let X224(McsMessage::SendDataRequest(message)) = ironrdp_core::decode::<X224<McsMessage<'_>>>(frame).unwrap()
+    else {
+        panic!("expected main-channel response");
+    };
+    assert_eq!(message.channel_id, MESSAGE_CHANNEL_ID);
+    let response = ironrdp_core::decode::<AutoDetectRspPdu>(&message.user_data).unwrap();
+    let AutoDetectResponse::BandwidthMeasureResults {
+        sequence_number,
+        response_type,
+        time_delta_ms,
+        byte_count,
+    } = response.response
+    else {
+        panic!("expected bandwidth results");
+    };
+    (sequence_number, response_type, time_delta_ms, byte_count)
+}
+
+#[test]
+fn continuous_measurement_counts_data_without_security_headers() {
+    let mut processor = make_processor();
+    assert!(timed_request(&mut processor, AutoDetectRequest::bw_start_continuous(1), 10).is_empty());
+    timed_request(&mut processor, AutoDetectRequest::rtt_continuous(2), 20);
+    let result = timed_request(&mut processor, AutoDetectRequest::bw_stop_continuous(3), 35);
+    // RTT and Stop have six-byte auto-detect headers. Neither four-byte
+    // security header, nor TPKT/X224/MCS framing, belongs to the count.
+    assert_eq!(bandwidth_result(&result), (3, 0x000b, 25, 12));
+}
+
+#[test]
+fn connect_time_measurement_includes_payload_headers_once() {
+    let mut processor = make_processor();
+    timed_request(&mut processor, AutoDetectRequest::bw_start_connect_time(1), 100);
+    timed_request(&mut processor, AutoDetectRequest::bw_payload(2, vec![0xaa; 64]), 110);
+    timed_request(&mut processor, AutoDetectRequest::rtt_continuous(3), 112);
+    let result = timed_request(
+        &mut processor,
+        AutoDetectRequest::bw_stop_connect_time(4, vec![0xbb; 16]),
+        140,
+    );
+    assert_eq!(bandwidth_result(&result), (4, 0x0003, 40, 64 + 8 + 16 + 8));
+}
+
+#[test]
+fn repeated_start_resets_count_and_timer_and_stop_ends_window() {
+    let mut processor = make_processor();
+    timed_request(&mut processor, AutoDetectRequest::bw_start_continuous(1), 100);
+    timed_request(&mut processor, AutoDetectRequest::rtt_continuous(2), 110);
+    timed_request(&mut processor, AutoDetectRequest::bw_start_continuous(3), 200);
+    let result = timed_request(&mut processor, AutoDetectRequest::bw_stop_continuous(4), 210);
+    assert_eq!(bandwidth_result(&result), (4, 0x000b, 10, 6));
+    let repeated = timed_request(&mut processor, AutoDetectRequest::bw_stop_continuous(5), 220);
+    assert_eq!(bandwidth_result(&repeated), (5, 0x000b, 1, 0));
+}
+
+#[test]
+fn measurement_timing_saturates_and_never_reports_zero_divisor() {
+    for (start, stop, expected) in [(100, 100, 1), (100, 90, 1), (0, u64::MAX, u32::MAX)] {
+        let mut processor = make_processor();
+        timed_request(&mut processor, AutoDetectRequest::bw_start_continuous(1), start);
+        let result = timed_request(&mut processor, AutoDetectRequest::bw_stop_continuous(2), stop);
+        assert_eq!(bandwidth_result(&result), (2, 0x000b, expected, 6));
+    }
+}
+
+#[test]
+fn lossy_requests_on_main_channel_are_not_answered() {
+    use ironrdp_pdu::rdp::autodetect::{BW_START_LOSSY_UDP, BW_STOP_LOSSY_UDP};
+    let mut processor = make_processor();
+    assert!(
+        timed_request(
+            &mut processor,
+            AutoDetectRequest::BandwidthMeasureStart {
+                sequence_number: 1,
+                request_type: BW_START_LOSSY_UDP,
+            },
+            10
+        )
+        .is_empty()
+    );
+    assert!(
+        timed_request(
+            &mut processor,
+            AutoDetectRequest::BandwidthMeasureStop {
+                sequence_number: 1,
+                request_type: BW_STOP_LOSSY_UDP,
+                payload: None,
+            },
+            20
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn untimed_driver_does_not_report_accumulated_bytes_as_a_real_measurement() {
+    let mut processor = make_processor();
+    timed_request(&mut processor, AutoDetectRequest::bw_start_continuous(1), 10);
+    timed_request(&mut processor, AutoDetectRequest::rtt_continuous(2), 20);
+    let outputs = process_frame(
+        &mut processor,
+        &encode_server_autodetect(AutoDetectRequest::bw_stop_continuous(3)),
+    );
+    assert_eq!(bandwidth_result(&outputs), (3, 0x000b, 1, 0));
 }

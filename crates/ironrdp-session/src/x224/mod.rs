@@ -1,9 +1,12 @@
 use ironrdp_bulk::BulkCompressor;
-use ironrdp_core::{Decode as _, ReadCursor, WriteBuf, decode};
+use ironrdp_core::{Decode as _, MonotonicInstant, ReadCursor, WriteBuf, decode};
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelMut, DynamicChannelRef};
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndicationCtx};
-use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
+use ironrdp_pdu::rdp::autodetect::{
+    AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu, BW_RESULTS_CONNECT_TIME,
+    BW_RESULTS_CONTINUOUS, BW_START_CONNECT_TIME, BW_START_RELIABLE_UDP, BW_STOP_CONNECT_TIME, BW_STOP_RELIABLE_UDP,
+};
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, IoChannelPdu, ShareDataCtx, ShareDataPdu,
@@ -72,7 +75,7 @@ pub enum ProcessorOutput {
     /// Auto-detect network characteristics from server ([\[MS-RDPBCGR\] 2.2.14]).
     ///
     /// Currently only surfaces [`AutoDetectRequest::NetworkCharacteristicsResult`].
-    /// RTT requests are handled internally with automatic responses.
+    /// RTT and bandwidth measurement requests are answered internally.
     ///
     /// [\[MS-RDPBCGR\] 2.2.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dc672839-4f4e-40b1-a71c-cd6a959baa38
     AutoDetect(AutoDetectRequest),
@@ -107,6 +110,13 @@ pub struct Processor {
     io_channel_id: u16,
     message_channel_id: Option<u16>,
     share_id: u32,
+    bandwidth: Option<BandwidthMeasurement>,
+}
+
+struct BandwidthMeasurement {
+    started_at: MonotonicInstant,
+    bytes: u32,
+    continuous: bool,
 }
 
 impl Processor {
@@ -123,6 +133,7 @@ impl Processor {
             io_channel_id,
             message_channel_id,
             share_id,
+            bandwidth: None,
         }
     }
 
@@ -213,6 +224,19 @@ impl Processor {
         frame: &[u8],
         bulk_decompressor: &mut Option<BulkCompressor>,
     ) -> SessionResult<Vec<ProcessorOutput>> {
+        self.process_with_timestamp(frame, bulk_decompressor, None)
+    }
+
+    /// Processes a frame with its driver-observed arrival time.
+    ///
+    /// Supply the same monotonic clock for every frame. Without a timestamp,
+    /// bandwidth replies use a conservative zero-byte measurement.
+    pub fn process_with_timestamp(
+        &mut self,
+        frame: &[u8],
+        bulk_decompressor: &mut Option<BulkCompressor>,
+        received_at: Option<MonotonicInstant>,
+    ) -> SessionResult<Vec<ProcessorOutput>> {
         let data_ctx: SendDataIndicationCtx<'_> = match ironrdp_pdu::mcs::decode_send_data_indication(frame) {
             Ok(data_ctx) => data_ctx,
             Err(error) => {
@@ -232,10 +256,15 @@ impl Processor {
         };
         let channel_id = data_ctx.channel_id;
 
+        // Message-channel PDUs carry a Basic Security Header, excluded below.
+        // Ordinary session data on TLS-protected IO/SVC channels does not.
+        if self.message_channel_id != Some(channel_id) {
+            self.record_bandwidth_bytes(data_ctx.user_data.len());
+        }
         if channel_id == self.io_channel_id {
             self.process_io_channel_data_indication(data_ctx, bulk_decompressor)
         } else if self.message_channel_id == Some(channel_id) {
-            self.process_message_channel(data_ctx)
+            self.process_message_channel(data_ctx, received_at)
         } else {
             let maximum_chunk_size = self.static_channels.maximum_chunk_size();
             if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
@@ -445,6 +474,16 @@ impl Processor {
         Ok(decompressed)
     }
 
+    /// Counts session bytes after transport/security headers while a continuous
+    /// bandwidth window is open ([MS-RDPBCGR] 3.2.5.14).
+    pub(crate) fn record_bandwidth_bytes(&mut self, bytes: usize) {
+        if let Some(measurement) = self.bandwidth.as_mut().filter(|measurement| measurement.continuous) {
+            measurement.bytes = measurement
+                .bytes
+                .saturating_add(u32::try_from(bytes).unwrap_or(u32::MAX));
+        }
+    }
+
     /// Process a PDU received on the MCS message channel: auto-detect
     /// ([MS-RDPBCGR] 2.2.14), multitransport ([MS-RDPBCGR] 2.2.15), or
     /// Heartbeat ([MS-RDPBCGR] 2.2.16.1).
@@ -457,13 +496,18 @@ impl Processor {
     /// session-fatal decode error: this channel is forward-safe for future
     /// message-channel PDU types the same way the connect-time demux
     /// (`ironrdp-connector`) already is.
-    fn process_message_channel(&self, data_ctx: SendDataIndicationCtx<'_>) -> SessionResult<Vec<ProcessorOutput>> {
+    fn process_message_channel(
+        &mut self,
+        data_ctx: SendDataIndicationCtx<'_>,
+        received_at: Option<MonotonicInstant>,
+    ) -> SessionResult<Vec<ProcessorOutput>> {
         let Some(message_channel_id) = self.message_channel_id else {
             return Err(reason_err!("message channel", "no message channel negotiated"));
         };
 
         let mut peek = ReadCursor::new(data_ctx.user_data);
         let security_header = BasicSecurityHeader::decode(&mut peek).map_err(SessionError::decode)?;
+        self.record_bandwidth_bytes(peek.len());
         let flags = security_header
             .flags
             .difference(BasicSecurityHeaderFlags::RESET_SEQNO | BasicSecurityHeaderFlags::IGNORE_SEQNO);
@@ -495,29 +539,87 @@ impl Processor {
 
         let req = decode::<AutoDetectReqPdu>(data_ctx.user_data).map_err(SessionError::decode)?;
 
-        match req.request {
+        let response = match req.request {
             AutoDetectRequest::RttRequest { sequence_number, .. } => {
-                let response = AutoDetectRspPdu::new(AutoDetectResponse::RttResponse { sequence_number });
-                let mut frame = WriteBuf::new();
-                ironrdp_pdu::mcs::encode_send_data_request(
-                    self.user_channel_id,
-                    message_channel_id,
-                    &response,
-                    &mut frame,
-                )
-                .map_err(SessionError::encode)?;
-                debug!(sequence_number, "Responded to auto-detect RTT request");
-                Ok(vec![ProcessorOutput::ResponseFrame(frame.into_inner())])
+                AutoDetectResponse::RttResponse { sequence_number }
+            }
+            AutoDetectRequest::BandwidthMeasureStart { request_type, .. }
+                if matches!(request_type, BW_START_CONNECT_TIME | BW_START_RELIABLE_UDP) =>
+            {
+                self.bandwidth = received_at.map(|started_at| BandwidthMeasurement {
+                    started_at,
+                    bytes: 0,
+                    continuous: request_type == BW_START_RELIABLE_UDP,
+                });
+                return Ok(Vec::new());
+            }
+            AutoDetectRequest::BandwidthMeasurePayload { payload, .. } => {
+                if let Some(measurement) = self.bandwidth.as_mut().filter(|measurement| !measurement.continuous) {
+                    // [MS-RDPBCGR] 3.2.5.14 counts the eight-byte auto-detect
+                    // header as well as payloadLength, but not the security header.
+                    measurement.bytes = measurement
+                        .bytes
+                        .saturating_add(u32::try_from(payload.len()).unwrap_or(u32::MAX).saturating_add(8));
+                }
+                return Ok(Vec::new());
+            }
+            AutoDetectRequest::BandwidthMeasureStop {
+                sequence_number,
+                request_type,
+                payload,
+            } if matches!(request_type, BW_STOP_CONNECT_TIME | BW_STOP_RELIABLE_UDP) => {
+                let continuous = request_type == BW_STOP_RELIABLE_UDP;
+                let measurement = self
+                    .bandwidth
+                    .take()
+                    .filter(|measurement| measurement.continuous == continuous);
+                let stop_bytes = if continuous {
+                    0
+                } else {
+                    u32::try_from(payload.as_ref().map_or(0, Vec::len))
+                        .unwrap_or(u32::MAX)
+                        .saturating_add(8)
+                };
+                let (time_delta_ms, byte_count) = match (measurement, received_at) {
+                    (Some(measurement), Some(stopped_at)) => (
+                        u32::try_from(stopped_at.duration_since(measurement.started_at).as_millis())
+                            .unwrap_or(u32::MAX)
+                            .max(1),
+                        measurement.bytes.saturating_add(stop_bytes),
+                    ),
+                    _ => (1, stop_bytes),
+                };
+                AutoDetectResponse::BandwidthMeasureResults {
+                    sequence_number,
+                    response_type: if continuous {
+                        BW_RESULTS_CONTINUOUS
+                    } else {
+                        BW_RESULTS_CONNECT_TIME
+                    },
+                    time_delta_ms,
+                    byte_count,
+                }
             }
             req @ AutoDetectRequest::NetworkCharacteristicsResult { .. } => {
                 debug!(?req, "Received network characteristics from server");
-                Ok(vec![ProcessorOutput::AutoDetect(req)])
+                return Ok(vec![ProcessorOutput::AutoDetect(req)]);
             }
             req => {
-                debug!(?req, "Auto-detect request not yet implemented");
-                Ok(Vec::new())
+                // Lossy variants belong to a lossy tunnel, never this channel.
+                debug!(?req, "Ignoring auto-detect request for another transport");
+                return Ok(Vec::new());
             }
-        }
+        };
+        debug!(?response, "Responding to an auto-detect request");
+        let mut frame = WriteBuf::new();
+        ironrdp_pdu::mcs::encode_send_data_request(
+            self.user_channel_id,
+            message_channel_id,
+            &AutoDetectRspPdu::new(response),
+            &mut frame,
+        )
+        .map_err(SessionError::encode)?;
+        Ok(vec![ProcessorOutput::ResponseFrame(frame.into_inner())])
     }
 
     /// Encodes an Initiate Multitransport Response on the MCS message channel.
@@ -638,14 +740,17 @@ mod tests {
     fn processor_surfaces_multitransport_request_on_message_channel() {
         let request = multitransport_request();
         let encoded = encode_vec(&request).expect("encode multitransport request");
-        let processor = Processor::new(StaticChannelSet::new(), 1002, 1003, Some(1004), 0);
+        let mut processor = Processor::new(StaticChannelSet::new(), 1002, 1003, Some(1004), 0);
 
         let outputs = processor
-            .process_message_channel(SendDataIndicationCtx {
-                initiator_id: 1002,
-                channel_id: 1004,
-                user_data: &encoded,
-            })
+            .process_message_channel(
+                SendDataIndicationCtx {
+                    initiator_id: 1002,
+                    channel_id: 1004,
+                    user_data: &encoded,
+                },
+                None,
+            )
             .expect("surface multitransport request");
 
         assert!(matches!(

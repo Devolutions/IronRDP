@@ -3165,7 +3165,8 @@ async fn active_session(
                         Err(error) => return Err(ironrdp_session::custom_err!("read frame", error)),
                     };
                     trace!(?action, frame_length = payload.len(), "Frame received");
-                    let mut outputs = active_stage.process(&mut image, action, &payload)?;
+                    let mut outputs =
+                        active_stage.process_with_timestamp(&mut image, action, &payload, reader.last_read_at())?;
                     #[cfg(feature = "rdpdr")]
                     if let Some(output) = poll_deferred_rdpdr_output(&mut active_stage)? {
                         outputs.push(output);
