@@ -21,6 +21,11 @@ ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.7" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
 tracing = { version = "0.1", features = ["log"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = { version = "3.6", default-features = false, features = ["image-data", "wayland-data-control"] }
+ironrdp-cliprdr-format = { path = "../ironrdp-cliprdr-format", version = "0.2" }
+png = "0.18"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
