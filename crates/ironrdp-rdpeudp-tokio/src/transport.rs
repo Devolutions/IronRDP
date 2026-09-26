@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use ironrdp_rdpemt::{RdpemtErrorExt as _, TunnelConfig};
 use ironrdp_rdpeudp::pdu::V1Datagram;
 use ironrdp_rdpeudp::{ConnectionConfig, RdpeudpConnection, RdpeudpErrorExt as _};
+use ironrdp_tls::{CertificateValidation, CertificateValidationCallback};
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncWriteExt as _;
 use tokio::net::UdpSocket;
@@ -55,13 +56,16 @@ pub struct UdpTransportConfig {
     /// Maximum time to wait for the RDPEUDP2 handshake to complete.
     /// Default: 10 seconds (matching FreeRDP).
     pub handshake_timeout: Duration,
-    /// How the server's TLS certificate is validated.
+    /// Maximum time to wait for the TLS handshake to complete.
+    /// Default: 130 seconds to allow a 120-second interactive certificate decision plus handshake overhead.
     ///
-    /// `None` (the default) preserves the historic behavior: no
-    /// verification, since RDP servers commonly present self-signed
-    /// certificates. `Some(verifier)` opts into real validation, mirroring
-    /// the choice `ironrdp-tls` exposes on the TCP path.
-    pub server_cert_verifier: Option<Arc<dyn tokio_rustls::rustls::client::danger::ServerCertVerifier>>,
+    /// The timeout cancels the connection attempt, but a synchronous certificate callback already running on a blocking thread continues until it returns.
+    pub tls_timeout: Duration,
+    /// Maximum time to wait for the RDPEMT tunnel handshake to complete.
+    /// Default: 10 seconds.
+    pub tunnel_timeout: Duration,
+    /// TLS certificate-validation settings for the sideband connection.
+    pub tls: UdpTlsConfig,
 }
 
 impl UdpTransportConfig {
@@ -74,7 +78,9 @@ impl UdpTransportConfig {
             tunnel_config,
             connection_config: ConnectionConfig::default(),
             handshake_timeout: Duration::from_secs(10),
-            server_cert_verifier: None,
+            tls_timeout: Duration::from_secs(130),
+            tunnel_timeout: Duration::from_secs(10),
+            tls: UdpTlsConfig::new(server_addr.to_string()),
         }
     }
 }
@@ -87,10 +93,48 @@ impl core::fmt::Debug for UdpTransportConfig {
             .field("tunnel_config", &self.tunnel_config)
             .field("connection_config", &self.connection_config)
             .field("handshake_timeout", &self.handshake_timeout)
+            .field("tls_timeout", &self.tls_timeout)
+            .field("tunnel_timeout", &self.tunnel_timeout)
+            .field("tls", &self.tls)
+            .finish()
+    }
+}
+
+/// TLS validation settings for an RDP-UDP sideband connection.
+#[derive(Clone)]
+pub struct UdpTlsConfig {
+    /// Certificate-validation policy.
+    pub certificate_validation: CertificateValidation,
+    /// Optional callback that can accept a certificate rejected by strict validation.
+    pub certificate_validation_callback: Option<CertificateValidationCallback>,
+    /// Endpoint passed to the validation callback.
+    pub certificate_validation_endpoint: String,
+}
+
+impl UdpTlsConfig {
+    /// Creates settings that preserve the historical permissive certificate policy.
+    pub fn new(certificate_validation_endpoint: String) -> Self {
+        Self {
+            certificate_validation: CertificateValidation::default(),
+            certificate_validation_callback: None,
+            certificate_validation_endpoint,
+        }
+    }
+}
+
+impl core::fmt::Debug for UdpTlsConfig {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("UdpTlsConfig")
+            .field("certificate_validation", &self.certificate_validation)
             .field(
-                "server_cert_verifier",
-                &self.server_cert_verifier.as_ref().map(|_| "Some(..)").unwrap_or("None"),
+                "certificate_validation_callback",
+                &self
+                    .certificate_validation_callback
+                    .as_ref()
+                    .map(|_| "Some(..)")
+                    .unwrap_or("None"),
             )
+            .field("certificate_validation_endpoint", &self.certificate_validation_endpoint)
             .finish()
     }
 }
@@ -408,9 +452,19 @@ pub async fn connect_udp(config: UdpTransportConfig) -> Result<UdpTransport, Udp
 
     // Phase 3: TLS handshake over the RDPEUDP2 stream
     let rdpeudp_stream = RdpeudpStream::new(Arc::clone(&shared));
-    let tls_stream = tls_upgrade(rdpeudp_stream, &config.server_name, config.server_cert_verifier)
-        .await
-        .map_err(|error| UdpTransportError::tls("connect udp", error))?;
+    let tls_stream = tokio::time::timeout(
+        config.tls_timeout,
+        tls_upgrade(
+            rdpeudp_stream,
+            &config.server_name,
+            config.tls.certificate_validation,
+            config.tls.certificate_validation_callback,
+            &config.tls.certificate_validation_endpoint,
+        ),
+    )
+    .await
+    .map_err(|_| UdpTransportError::tls_timeout("connect udp"))?
+    .map_err(|error| UdpTransportError::tls("connect udp", error))?;
 
     tracing::debug!("TLS handshake complete, starting RDPEMT tunnel negotiation");
 
@@ -420,7 +474,12 @@ pub async fn connect_udp(config: UdpTransportConfig) -> Result<UdpTransport, Udp
     // tokio::io::split gives us independent read/write halves.
     let (mut tls_read, mut tls_write) = tokio::io::split(tls_stream);
 
-    let mut tunnel = establish_tunnel_split(&mut tls_read, &mut tls_write, config.tunnel_config).await?;
+    let mut tunnel = tokio::time::timeout(
+        config.tunnel_timeout,
+        establish_tunnel_split(&mut tls_read, &mut tls_write, config.tunnel_config),
+    )
+    .await
+    .map_err(|_| UdpTransportError::tunnel_timeout("connect udp"))??;
 
     tracing::debug!("RDPEMT tunnel established, starting data pump");
 

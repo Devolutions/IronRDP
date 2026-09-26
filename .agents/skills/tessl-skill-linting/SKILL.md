@@ -9,14 +9,14 @@ Keep repository-local agent skills correct, focused, and inexpensive to load.
 
 ## Workflow
 
-1. Identify the relevant skill directories under `.agents\skills`.
+1. Identify the relevant skill directories under `.agents/skills`.
    For an existing skill, read its `SKILL.md` before editing and preserve its intended behavior and scope.
    For a new skill, inspect neighboring skills for conventions, then create the target directory and initial `SKILL.md` from the requested scope.
 2. Inspect the frontmatter and instructions for valid structure, clear trigger conditions, focused scope, missing prerequisites, accurate and safe tooling steps, ambiguity, brittleness, redundancy, and likely failure cases.
 3. Run local structural validation for every relevant skill:
 
    ```powershell
-   pwsh <this-skill-directory>\scripts\Test-TesslSkill.ps1 -SkillDirectory <skill-directory>
+   pwsh <this-skill-directory>/scripts/Test-TesslSkill.ps1 -SkillDirectory <skill-directory>
    ```
 
    The helper stages the skill in a temporary directory, creates Tessl's required local metadata there, runs `tessl skill lint <temporary-skill-directory>`, and removes the staging directory.

@@ -3,7 +3,11 @@ use ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_svc::SvcMessage;
 
 use super::RdpdrBackend;
-use crate::pdu::efs::{DeviceControlRequest, ServerDeviceAnnounceResponse};
+use crate::pdu::RdpdrPdu;
+use crate::pdu::efs::{
+    DeviceControlRequest, DeviceIoRequest, DeviceIoResponse, DeviceWriteResponse, NtStatus,
+    ServerDeviceAnnounceResponse,
+};
 use crate::pdu::esc::{ScardCall, ScardIoCtlCode};
 
 #[derive(Debug)]
@@ -26,5 +30,14 @@ impl RdpdrBackend for NoopRdpdrBackend {
         Err(pdu_other_err!(
             "filesystem I/O is not supported by the noop RDPDR backend"
         ))
+    }
+
+    fn reject_printer_write(&mut self, req: DeviceIoRequest) -> PduResult<Vec<SvcMessage>> {
+        Ok(vec![SvcMessage::from(RdpdrPdu::DeviceWriteResponse(
+            DeviceWriteResponse {
+                device_io_reply: DeviceIoResponse::new(req, NtStatus::INVALID_PARAMETER),
+                length: 0,
+            },
+        ))])
     }
 }

@@ -33,10 +33,15 @@ rustls-ring = ["rustls-no-provider", "tokio-rustls/ring"]
 # rustls CryptoProvider as the process default before opening a connection, otherwise
 # building the client configuration panics.
 rustls-no-provider = [
-    "dep:rustls-native-certs",
-    "dep:tokio-rustls",
+    "rustls-verifier",
     "dep:x509-cert",
     "tokio/io-util",
+]
+# Shared rustls verifier support without selecting rustls as this crate's stream backend.
+# This lets an RDP-UDP sideband use rustls alongside a native-tls primary transport.
+rustls-verifier = [
+    "dep:rustls-native-certs",
+    "dep:tokio-rustls",
     "tokio-rustls/logging",
     "tokio-rustls/tls12",
 ]

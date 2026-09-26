@@ -119,6 +119,11 @@ struct Args {
     #[clap(long, requires = "vmconnect")]
     vmconnect_basic: bool,
 
+    /// Authenticate the Hyper-V host with the current Windows logon token.
+    #[cfg(windows)]
+    #[clap(long, requires = "vmconnect")]
+    vmconnect_current_user: bool,
+
     /// The keyboard type
     #[clap(long, value_enum, default_value_t = KeyboardType::IbmEnhanced)]
     keyboard_type: KeyboardType,
@@ -194,6 +199,13 @@ struct Args {
     /// Disable native MS-RDPEWA WebAuthn redirection.
     #[clap(long = "no-webauthn", action = clap::ArgAction::SetTrue, overrides_with = "webauthn")]
     no_webauthn: bool,
+
+    /// Audio input (microphone)
+    ///
+    /// Enables the AUDIO_INPUT (MS-RDPEAI) dynamic virtual channel so the local microphone is
+    /// redirected to the remote session. Disabled by default.
+    #[clap(long)]
+    microphone: bool,
 
     /// The bitmap codecs to use (remotefx:on, ...)
     #[clap(long, num_args = 1.., value_delimiter = ',')]
@@ -439,6 +451,10 @@ fn apply_cli_to_builder(
         };
         builder = builder.with_vmconnect_mode(vm_id, mode);
     }
+    #[cfg(windows)]
+    if args.vmconnect_current_user {
+        builder = builder.with_vmconnect_current_user(true);
+    }
 
     if let Some(url) = args.rdcleanpath_url {
         builder = builder.with_transport(TransportKind::RDCleanPath { url });
@@ -471,6 +487,10 @@ fn apply_cli_to_builder(
         redirect_webauthn
     };
     builder = builder.with_webauthn(webauthn);
+
+    if args.microphone {
+        builder = builder.with_audio_capture(true);
+    }
 
     // CLI-only knobs that are not representable as `.rdp` properties.
     // TODO/FIXME: Some of these, we may want to add support for storing in .rdp files (e.g.: IME file name can be reasonably seen as a connection option)

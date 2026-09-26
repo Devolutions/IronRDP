@@ -108,6 +108,7 @@ fn main() -> anyhow::Result<()> {
         Action::FuzzCorpusFetch => fuzz::corpus_fetch(&sh)?,
         Action::FuzzCorpusMin { target } => fuzz::corpus_minify(&sh, target)?,
         Action::FuzzCorpusPush => fuzz::corpus_push(&sh)?,
+        Action::FuzzCoverage { target } => fuzz::coverage(&sh, target)?,
         Action::FuzzInstall => fuzz::install(&sh)?,
         Action::FuzzList { format } => match format {
             cli::ListFormat::Human => fuzz::list_human()?,

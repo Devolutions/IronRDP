@@ -24,7 +24,7 @@ pub fn opt_string_size(value: Option<&str>) -> usize {
 
 pub fn write_string(dst: &mut WriteCursor<'_>, value: &str) -> EncodeResult<()> {
     ensure_size!(in: dst, size: string_size(value));
-    let len: u32 = cast_length!("string length", value.len())?;
+    let len: u32 = cast_length!("string length", value.len(), in: dst)?;
     dst.write_u32(len);
     dst.write_slice(value.as_bytes());
     Ok(())
@@ -35,8 +35,10 @@ pub fn read_string(src: &mut ReadCursor<'_>) -> DecodeResult<String> {
     let len = src.read_u32();
     let len = usize::try_from(len).map_err(|_| ironrdp_core::other_err!("string", "length does not fit in usize"))?;
     ensure_size!(in: src, size: len);
+    let start = src.pos();
     let bytes = src.read_slice(len);
-    String::from_utf8(bytes.to_vec()).map_err(|_| ironrdp_core::invalid_field_err!("string", "not valid UTF-8"))
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| ironrdp_core::invalid_field_err!("string", "not valid UTF-8", at: start))
 }
 
 /// Size on the wire of a length-prefixed raw byte blob.
@@ -46,7 +48,7 @@ pub fn bytes_size(value: &[u8]) -> usize {
 
 pub fn write_bytes(dst: &mut WriteCursor<'_>, value: &[u8]) -> EncodeResult<()> {
     ensure_size!(in: dst, size: bytes_size(value));
-    let len: u32 = cast_length!("bytes length", value.len())?;
+    let len: u32 = cast_length!("bytes length", value.len(), in: dst)?;
     dst.write_u32(len);
     dst.write_slice(value);
     Ok(())
@@ -58,6 +60,38 @@ pub fn read_bytes(src: &mut ReadCursor<'_>) -> DecodeResult<Vec<u8>> {
     let len = usize::try_from(len).map_err(|_| ironrdp_core::other_err!("bytes", "length does not fit in usize"))?;
     ensure_size!(in: src, size: len);
     Ok(src.read_slice(len).to_vec())
+}
+
+/// Size on the wire of an optional length-prefixed raw byte blob.
+pub fn opt_bytes_size(value: Option<&[u8]>) -> usize {
+    1 /* presence flag */ + value.map_or(0, bytes_size)
+}
+
+pub fn write_opt_bytes(dst: &mut WriteCursor<'_>, value: Option<&[u8]>) -> EncodeResult<()> {
+    ensure_size!(in: dst, size: 1);
+    match value {
+        Some(value) => {
+            dst.write_u8(1);
+            write_bytes(dst, value)
+        }
+        None => {
+            dst.write_u8(0);
+            Ok(())
+        }
+    }
+}
+
+pub fn read_opt_bytes(src: &mut ReadCursor<'_>) -> DecodeResult<Option<Vec<u8>>> {
+    ensure_size!(in: src, size: 1);
+    match src.read_u8() {
+        0 => Ok(None),
+        1 => Ok(Some(read_bytes(src)?)),
+        _ => Err(ironrdp_core::invalid_field_err!(
+            "optional bytes",
+            "invalid presence flag",
+            in: src
+        )),
+    }
 }
 
 pub fn write_opt_string(dst: &mut WriteCursor<'_>, value: Option<&str>) -> EncodeResult<()> {
@@ -81,7 +115,8 @@ pub fn read_opt_string(src: &mut ReadCursor<'_>) -> DecodeResult<Option<String>>
         1 => Ok(Some(read_string(src)?)),
         _ => Err(ironrdp_core::invalid_field_err!(
             "optional string",
-            "invalid presence flag"
+            "invalid presence flag",
+            in: src
         )),
     }
 }
@@ -106,12 +141,13 @@ pub fn write_char(dst: &mut WriteCursor<'_>, value: char) -> EncodeResult<()> {
 pub fn read_char(src: &mut ReadCursor<'_>) -> DecodeResult<char> {
     ensure_size!(in: src, size: 4);
     let code = src.read_u32();
-    char::from_u32(code).ok_or_else(|| ironrdp_core::invalid_field_err!("char", "not a valid Unicode scalar value"))
+    char::from_u32(code)
+        .ok_or_else(|| ironrdp_core::invalid_field_err!("char", "not a valid Unicode scalar value", in: src))
 }
 
 pub fn write_mouse_button(dst: &mut WriteCursor<'_>, button: MouseButton) -> EncodeResult<()> {
     ensure_size!(in: dst, size: 1);
-    let idx: u8 = cast_length!("mouse button index", button.as_idx())?;
+    let idx: u8 = cast_length!("mouse button index", button.as_idx(), in: dst)?;
     dst.write_u8(idx);
     Ok(())
 }
@@ -120,7 +156,7 @@ pub fn read_mouse_button(src: &mut ReadCursor<'_>) -> DecodeResult<MouseButton> 
     ensure_size!(in: src, size: 1);
     let idx = src.read_u8();
     MouseButton::from_idx(usize::from(idx))
-        .ok_or_else(|| ironrdp_core::invalid_field_err!("mouse button", "unknown button index"))
+        .ok_or_else(|| ironrdp_core::invalid_field_err!("mouse button", "unknown button index", in: src))
 }
 
 pub fn opt_u16_size(value: Option<u16>) -> usize {
@@ -149,7 +185,8 @@ pub fn read_opt_u16(src: &mut ReadCursor<'_>) -> DecodeResult<Option<u16>> {
         }
         _ => Err(ironrdp_core::invalid_field_err!(
             "optional u16",
-            "invalid presence flag"
+            "invalid presence flag",
+            in: src
         )),
     }
 }
@@ -181,7 +218,8 @@ pub fn read_opt_u64(src: &mut ReadCursor<'_>) -> DecodeResult<Option<u64>> {
         }
         _ => Err(ironrdp_core::invalid_field_err!(
             "optional u64",
-            "invalid presence flag"
+            "invalid presence flag",
+            in: src
         )),
     }
 }

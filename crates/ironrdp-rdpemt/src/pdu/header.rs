@@ -132,11 +132,13 @@ impl Decode<'_> for TunnelHeader {
                 Self::NAME,
                 "Flags",
                 "flags must be zero",
+                Some(src.pos()),
             ));
         }
 
-        let action = TunnelAction::from_u8(action_raw)
-            .ok_or_else(|| ironrdp_core::DecodeError::unexpected_message_type(Self::NAME, action_raw))?;
+        let action = TunnelAction::from_u8(action_raw).ok_or_else(|| {
+            ironrdp_core::DecodeError::unexpected_message_type(Self::NAME, action_raw, Some(src.pos()))
+        })?;
 
         let payload_length = src.read_u16();
         let header_length = src.read_u8();
@@ -146,6 +148,7 @@ impl Decode<'_> for TunnelHeader {
                 Self::NAME,
                 "HeaderLength",
                 "header length must be at least 4",
+                Some(src.pos()),
             ));
         }
 

@@ -32,6 +32,9 @@ TASKS:
   fuzz corpus-min [--target <NAME>]
                           Minify fuzzing corpus for a specific target (or all if unspecified)
   fuzz corpus-push        Push fuzzing corpus to Azure storage
+  fuzz coverage [--target <NAME>]
+                          Run a target (or all targets) against its existing corpus and
+                          print per-file line coverage
   fuzz install            Install dependencies required for fuzzing
   fuzz list [--format <FMT>]
                           List fuzz targets (fmt: human (default) | github-matrix)
@@ -110,6 +113,9 @@ pub enum Action {
         target: Option<String>,
     },
     FuzzCorpusPush,
+    FuzzCoverage {
+        target: Option<String>,
+    },
     FuzzInstall,
     FuzzList {
         format: ListFormat,
@@ -178,6 +184,9 @@ pub fn parse_args() -> anyhow::Result<Args> {
                     target: args.opt_value_from_str("--target")?,
                 },
                 Some("corpus-push") => Action::FuzzCorpusPush,
+                Some("coverage") => Action::FuzzCoverage {
+                    target: args.opt_value_from_str("--target")?,
+                },
                 Some("install") => Action::FuzzInstall,
                 Some("list") => Action::FuzzList {
                     format: args.opt_value_from_str("--format")?.unwrap_or(ListFormat::DEFAULT),

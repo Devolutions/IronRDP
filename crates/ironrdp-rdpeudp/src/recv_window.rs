@@ -297,7 +297,6 @@ impl RecvWindow {
     }
 
     /// Number of entries in the reorder buffer waiting to be delivered.
-    #[cfg(test)]
     pub(crate) fn reorder_buf_len(&self) -> usize {
         self.reorder_buf.len()
     }

@@ -70,6 +70,9 @@ fn rejects_missing_segment_null_terminator() {
             kind: InvalidField {
                 field: "content",
                 reason: "MULTI_SZ last segment is missing its null terminator",
+                offset: Some(
+                    10,
+                ),
             },
             source: None,
         }
@@ -87,6 +90,9 @@ fn rejects_zero_cch() {
             kind: InvalidField {
                 field: "cch",
                 reason: "zero cch for MULTI_SZ is invalid",
+                offset: Some(
+                    4,
+                ),
             },
             source: None,
         }

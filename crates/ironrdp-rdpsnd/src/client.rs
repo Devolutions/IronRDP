@@ -73,6 +73,7 @@ struct PendingWave {
 #[derive(Debug)]
 pub struct Rdpsnd {
     handler: Box<dyn RdpsndClientHandler>,
+    quality_mode: pdu::QualityMode,
     state: RdpsndState,
     server_format: Option<ServerAudioFormatPdu>,
     /// Formats advertised to the server, in wire order.
@@ -88,11 +89,18 @@ impl Rdpsnd {
     pub fn new(handler: Box<dyn RdpsndClientHandler>) -> Self {
         Self {
             handler,
+            quality_mode: pdu::QualityMode::High,
             state: RdpsndState::Start,
             server_format: None,
             client_formats: Vec::new(),
             pending_wave: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_quality_mode(mut self, quality_mode: pdu::QualityMode) -> Self {
+        self.quality_mode = quality_mode;
+        self
     }
 
     pub fn get_format(&self, format_no: u16) -> PduResult<&AudioFormat> {
@@ -150,7 +158,7 @@ impl Rdpsnd {
 
     pub fn quality_mode(&mut self) -> PduResult<RdpsndSvcMessages> {
         let pdu = pdu::QualityModePdu {
-            quality_mode: pdu::QualityMode::High,
+            quality_mode: self.quality_mode,
         };
         Ok(RdpsndSvcMessages::new(vec![
             pdu::ClientAudioOutputPdu::QualityMode(pdu).into(),

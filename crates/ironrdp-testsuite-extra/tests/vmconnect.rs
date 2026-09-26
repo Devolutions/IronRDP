@@ -82,3 +82,44 @@ async fn send_preconnection_blob_writes_encoded_pcb() {
 fn pcb_transmit_deadline_matches_ms_rdpeps() {
     assert_eq!(PCB_TRANSMIT_DEADLINE, Duration::from_secs(10));
 }
+
+#[cfg(windows)]
+#[test]
+fn native_credssp_binding_hash_matches_v5_v6_vector() {
+    const CLIENT_SERVER_HASH_MAGIC: &[u8] = b"CredSSP Client-To-Server Binding Hash\0";
+    const SERVER_CLIENT_HASH_MAGIC: &[u8] = b"CredSSP Server-To-Client Binding Hash\0";
+
+    // MS-CSSP 3.1.5: SHA256(magic || nonce || SubjectPublicKey), including the magic string's NUL.
+    let nonce = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11,
+        0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+    ];
+    let public_key = [1, 2, 3, 4];
+    let expected = [
+        0xB4, 0x4E, 0x3A, 0x42, 0x23, 0x29, 0x60, 0xBC, 0x17, 0x4B, 0x37, 0x7F, 0x77, 0xAE, 0xBF, 0xE4, 0xD6, 0x4B,
+        0xF7, 0x25, 0x41, 0x82, 0x62, 0xD8, 0x32, 0x84, 0x6B, 0xE4, 0x83, 0x29, 0x1F, 0x7B,
+    ];
+    assert_eq!(
+        ironrdp_vmconnect::__test_binding_hash(CLIENT_SERVER_HASH_MAGIC, &nonce, &public_key).as_slice(),
+        expected
+    );
+
+    let mut changed_nonce = nonce;
+    changed_nonce[0] ^= 0x80;
+    assert_ne!(
+        ironrdp_vmconnect::__test_binding_hash(CLIENT_SERVER_HASH_MAGIC, &changed_nonce, &public_key).as_slice(),
+        expected
+    );
+
+    let mut changed_public_key = public_key;
+    changed_public_key[0] ^= 0x80;
+    assert_ne!(
+        ironrdp_vmconnect::__test_binding_hash(CLIENT_SERVER_HASH_MAGIC, &nonce, &changed_public_key).as_slice(),
+        expected
+    );
+
+    assert_ne!(
+        ironrdp_vmconnect::__test_binding_hash(SERVER_CLIENT_HASH_MAGIC, &nonce, &public_key).as_slice(),
+        expected
+    );
+}

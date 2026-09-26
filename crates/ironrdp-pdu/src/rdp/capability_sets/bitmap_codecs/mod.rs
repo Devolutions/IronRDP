@@ -121,7 +121,7 @@ impl Encode for BitmapCodecs {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        dst.write_u8(cast_length!("len", self.0.len())?);
+        dst.write_u8(cast_length!("len", self.0.len(), in: dst)?);
 
         for codec in self.0.iter() {
             codec.encode(dst)?;
@@ -188,17 +188,17 @@ impl Encode for Codec {
 
         match &self.property {
             CodecProperty::NsCodec(p) => {
-                dst.write_u16(cast_length!("len", p.size())?);
+                dst.write_u16(cast_length!("len", p.size(), in: dst)?);
                 p.encode(dst)?;
             }
             CodecProperty::RemoteFx(p) => {
                 match p {
                     RemoteFxContainer::ClientContainer(container) => {
-                        dst.write_u16(cast_length!("len", container.size())?);
+                        dst.write_u16(cast_length!("len", container.size(), in: dst)?);
                         container.encode(dst)?;
                     }
                     RemoteFxContainer::ServerContainer(size) => {
-                        dst.write_u16(cast_length!("len", *size)?);
+                        dst.write_u16(cast_length!("len", *size, in: dst)?);
                         let buff = vec![0u8; *size];
                         dst.write_slice(&buff);
                     }
@@ -207,11 +207,11 @@ impl Encode for Codec {
             CodecProperty::ImageRemoteFx(p) => {
                 match p {
                     RemoteFxContainer::ClientContainer(container) => {
-                        dst.write_u16(cast_length!("len", container.size())?);
+                        dst.write_u16(cast_length!("len", container.size(), in: dst)?);
                         container.encode(dst)?;
                     }
                     RemoteFxContainer::ServerContainer(size) => {
-                        dst.write_u16(cast_length!("len", *size)?);
+                        dst.write_u16(cast_length!("len", *size, in: dst)?);
                         let buff = vec![0u8; *size];
                         dst.write_slice(&buff);
                     }
@@ -271,7 +271,7 @@ impl<'de> Decode<'de> for Codec {
             GUID_REMOTEFX | GUID_IMAGE_REMOTEFX => {
                 let byte = property_buffer
                     .first()
-                    .ok_or_else(|| invalid_field_err!("remotefx property", "must not be empty"))?;
+                    .ok_or_else(|| invalid_field_err!("remotefx property", "must not be empty", in: src))?;
                 let property = if *byte == 0 {
                     RemoteFxContainer::ServerContainer(codec_properties_len)
                 } else {
@@ -293,14 +293,14 @@ impl<'de> Decode<'de> for Codec {
             #[cfg(feature = "qoi")]
             GUID_QOI => {
                 if !property_buffer.is_empty() {
-                    return Err(invalid_field_err!("qoi property", "must be empty"));
+                    return Err(invalid_field_err!("qoi property", "must be empty", in: src));
                 }
                 CodecProperty::Qoi
             }
             #[cfg(feature = "qoiz")]
             GUID_QOIZ => {
                 if !property_buffer.is_empty() {
-                    return Err(invalid_field_err!("qoi property", "must be empty"));
+                    return Err(invalid_field_err!("qoi property", "must be empty", in: src));
                 }
                 CodecProperty::QoiZ
             }
@@ -413,9 +413,9 @@ impl Encode for RfxClientCapsContainer {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        dst.write_u32(cast_length!("len", self.size())?);
+        dst.write_u32(cast_length!("len", self.size(), in: dst)?);
         dst.write_u32(self.capture_flags.bits());
-        dst.write_u32(cast_length!("capsLen", self.caps_data.size())?);
+        dst.write_u32(cast_length!("capsLen", self.caps_data.size(), in: dst)?);
         self.caps_data.encode(dst)?;
 
         Ok(())
@@ -483,17 +483,17 @@ impl<'de> Decode<'de> for RfxCaps {
 
         let block_type = src.read_u16();
         if block_type != RFX_CAPS_BLOCK_TYPE {
-            return Err(invalid_field_err!("blockType", "invalid rfx caps block type"));
+            return Err(invalid_field_err!("blockType", "invalid rfx caps block type", in: src));
         }
 
         let block_len = src.read_u32();
         if block_len != RFX_CAPS_BLOCK_LENGTH {
-            return Err(invalid_field_err!("blockLen", "invalid rfx caps block length"));
+            return Err(invalid_field_err!("blockLen", "invalid rfx caps block length", in: src));
         }
 
         let num_capsets = src.read_u16();
         if num_capsets != RFX_CAPS_NUM_CAPSETS {
-            return Err(invalid_field_err!("numCapsets", "invalid rfx caps num capsets"));
+            return Err(invalid_field_err!("numCapsets", "invalid rfx caps num capsets", in: src));
         }
 
         let capsets_data = RfxCapset::decode(src)?;
@@ -519,12 +519,11 @@ impl Encode for RfxCapset {
         dst.write_u16(RFX_CAPSET_BLOCK_TYPE);
         dst.write_u32(cast_length!(
             "len",
-            RFX_CAPSET_STATIC_DATA_LENGTH + self.0.len() * RFX_ICAP_LENGTH
-        )?);
+            RFX_CAPSET_STATIC_DATA_LENGTH + self.0.len() * RFX_ICAP_LENGTH, in: dst)?);
         dst.write_u8(1); // codec id
         dst.write_u16(RFX_CAPSET_TYPE);
-        dst.write_u16(cast_length!("len", self.0.len())?);
-        dst.write_u16(cast_length!("len", RFX_ICAP_LENGTH)?);
+        dst.write_u16(cast_length!("len", self.0.len(), in: dst)?);
+        dst.write_u16(cast_length!("len", RFX_ICAP_LENGTH, in: dst)?);
 
         for rfx in self.0.iter() {
             rfx.encode(dst)?;
@@ -548,19 +547,19 @@ impl<'de> Decode<'de> for RfxCapset {
 
         let block_type = src.read_u16();
         if block_type != RFX_CAPSET_BLOCK_TYPE {
-            return Err(invalid_field_err!("blockType", "invalid rfx capset block type"));
+            return Err(invalid_field_err!("blockType", "invalid rfx capset block type", in: src));
         }
 
         let _block_len = src.read_u32();
 
         let codec_id = src.read_u8();
         if codec_id != 1 {
-            return Err(invalid_field_err!("codecId", "invalid rfx codec ID"));
+            return Err(invalid_field_err!("codecId", "invalid rfx codec ID", in: src));
         }
 
         let capset_type = src.read_u16();
         if capset_type != RFX_CAPSET_TYPE {
-            return Err(invalid_field_err!("capsetType", "invalid rfx capset type"));
+            return Err(invalid_field_err!("capsetType", "invalid rfx capset type", in: src));
         }
 
         let num_icaps = src.read_u16();
@@ -617,28 +616,28 @@ impl<'de> Decode<'de> for RfxICap {
 
         let version = src.read_u16();
         if version != RFX_ICAP_VERSION {
-            return Err(invalid_field_err!("version", "invalid rfx icap version"));
+            return Err(invalid_field_err!("version", "invalid rfx icap version", in: src));
         }
 
         let tile_size = src.read_u16();
         if tile_size != RFX_ICAP_TILE_SIZE {
-            return Err(invalid_field_err!("tileSize", "invalid rfx icap tile size"));
+            return Err(invalid_field_err!("tileSize", "invalid rfx icap tile size", in: src));
         }
 
         let flags = RfxICapFlags::from_bits_retain(src.read_u8());
 
         let color_conversion = src.read_u8();
         if color_conversion != RFX_ICAP_COLOR_CONVERSION {
-            return Err(invalid_field_err!("colorConv", "invalid rfx color conversion bits"));
+            return Err(invalid_field_err!("colorConv", "invalid rfx color conversion bits", in: src));
         }
 
         let transform_bits = src.read_u8();
         if transform_bits != RFX_ICAP_TRANSFORM_BITS {
-            return Err(invalid_field_err!("transformBits", "invalid rfx transform bits"));
+            return Err(invalid_field_err!("transformBits", "invalid rfx transform bits", in: src));
         }
 
         let entropy_bits = EntropyBits::from_u8(src.read_u8())
-            .ok_or_else(|| invalid_field_err!("entropyBits", "invalid rfx entropy bits"))?;
+            .ok_or_else(|| invalid_field_err!("entropyBits", "invalid rfx entropy bits", in: src))?;
 
         Ok(RfxICap { flags, entropy_bits })
     }

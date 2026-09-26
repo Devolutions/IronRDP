@@ -37,8 +37,8 @@ impl<'de> Decode<'de> for ServerSetErrorInfoPdu {
         ensure_fixed_part_size!(in: src);
 
         let error_info = src.read_u32();
-        let error_info =
-            ErrorInfo::from_u32(error_info).ok_or_else(|| invalid_field_err!("errorInfo", "unexpected info code"))?;
+        let error_info = ErrorInfo::from_u32(error_info)
+            .ok_or_else(|| invalid_field_err!("errorInfo", "unexpected info code", in: src))?;
 
         Ok(Self(error_info))
     }
@@ -127,6 +127,8 @@ pub enum ProtocolIndependentCode {
     CloseStackOnDriverIfaceFailure = 0x0000_0012,
     ServerWinlogonCrash = 0x0000_0017,
     ServerCsrssCrash = 0x0000_0018,
+    ServerShutdown = 0x0000_0019,
+    ServerReboot = 0x0000_001A,
 }
 
 impl ProtocolIndependentCode {
@@ -170,6 +172,8 @@ impl ProtocolIndependentCode {
             }
             Self::ServerWinlogonCrash => "The Winlogon process running in the remote session terminated unexpectedly",
             Self::ServerCsrssCrash => "The CSRSS process running in the remote session terminated unexpectedly",
+            Self::ServerShutdown => "The remote server is busy shutting down",
+            Self::ServerReboot => "The remote server is busy rebooting",
         }
     }
 

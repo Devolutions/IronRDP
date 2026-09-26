@@ -1,8 +1,8 @@
 use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_egfx::pdu::{
-    Avc420Region, CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags,
-    CapabilitySet, Codec1Type, GfxPdu, PixelFormat,
+    Avc420Region, Avc444BitmapStream, CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitiesV10Flags,
+    CapabilitiesV81Flags, CapabilitySet, Codec1Type, Encoding, FrameAcknowledgePdu, GfxPdu, PixelFormat, QueueDepth,
 };
 use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer, QoeMetrics, Surface};
 use ironrdp_graphics::zgfx::Decompressor;
@@ -146,6 +146,193 @@ fn test_server_not_ready_before_capabilities() {
 
     let result = server.send_avc420_frame(0, &h264_data, &regions, 0);
     assert!(result.is_none());
+}
+
+#[test]
+fn avc420_sender_preserves_exclusive_metadata_and_destination_rectangles() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
+        flags: CapabilitiesV81Flags::AVC420_ENABLED,
+    }]));
+    server
+        .process(0, &encode_pdu(&client_caps_pdu))
+        .expect("process capabilities");
+    let surface_id = server.create_surface(64, 64).expect("create surface");
+    server.drain_output();
+
+    let data = [0x00, 0x00, 0x00, 0x01, 0x67];
+    let regions = [Avc420Region::new(4, 6, 20, 22, 22, 78)];
+    server
+        .send_avc420_frame(surface_id, &data, &regions, 42)
+        .expect("queue AVC420 frame");
+
+    let output = server.drain_output();
+    let mut decompressor = Decompressor::new();
+    let encoded = encode_vec(output[1].as_ref()).expect("encode DVC message");
+    let mut decoded = Vec::new();
+    decompressor
+        .decompress(&encoded, &mut decoded)
+        .expect("decompress WireToSurface1");
+    let mut cursor = ReadCursor::new(&decoded);
+    let GfxPdu::WireToSurface1(wire) = GfxPdu::decode(&mut cursor).expect("decode WireToSurface1") else {
+        panic!("expected WireToSurface1");
+    };
+    assert_eq!(wire.destination_rectangle.left, 4);
+    assert_eq!(wire.destination_rectangle.top, 6);
+    assert_eq!(wire.destination_rectangle.right, 20);
+    assert_eq!(wire.destination_rectangle.bottom, 22);
+
+    let mut cursor = ReadCursor::new(&wire.bitmap_data);
+    let stream = ironrdp_egfx::pdu::Avc420BitmapStream::decode(&mut cursor).expect("decode AVC420 bitmap stream");
+    assert_eq!(stream.rectangles[0], wire.destination_rectangle);
+}
+
+#[test]
+fn avc444v2_sender_preserves_codec_and_lc_wire_shape() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    server.process(0, &payload).expect("process capabilities");
+    let surface_id = server.create_surface(64, 64).expect("create surface");
+    server.drain_output();
+
+    let stream1_data = [0x00, 0x00, 0x00, 0x01, 0x67];
+    let stream2_data = [0x00, 0x00, 0x00, 0x01, 0x68];
+    let stream1_regions = [Avc420Region::new(0, 0, 32, 32, 22, 78)];
+    let stream2_regions = [Avc420Region::new(16, 8, 64, 48, 24, 76)];
+    let cases = [
+        (
+            Encoding::LUMA_AND_CHROMA,
+            Some(stream2_data.as_slice()),
+            Some(stream2_regions.as_slice()),
+        ),
+        (Encoding::LUMA, None, None),
+        (Encoding::CHROMA, None, None),
+    ];
+
+    for (encoding, second_data, second_regions) in cases {
+        server
+            .send_avc444v2_frame(
+                surface_id,
+                encoding,
+                &stream1_data,
+                &stream1_regions,
+                second_data,
+                second_regions,
+                42,
+            )
+            .expect("queue AVC444v2 frame");
+
+        let output = server.drain_output();
+        let mut decompressor = Decompressor::new();
+        let encoded = encode_vec(output[1].as_ref()).expect("encode DVC message");
+        let mut decoded = Vec::new();
+        decompressor
+            .decompress(&encoded, &mut decoded)
+            .expect("decompress WireToSurface1");
+        let mut cursor = ReadCursor::new(&decoded);
+        let GfxPdu::WireToSurface1(wire) = GfxPdu::decode(&mut cursor).expect("decode WireToSurface1") else {
+            panic!("expected WireToSurface1");
+        };
+        assert_eq!(wire.codec_id, Codec1Type::Avc444v2);
+
+        let mut cursor = ReadCursor::new(&wire.bitmap_data);
+        let stream = Avc444BitmapStream::decode(&mut cursor).expect("decode AVC444v2 bitmap stream");
+        assert_eq!(stream.encoding, encoding);
+        assert_eq!(stream.stream2.is_some(), encoding == Encoding::LUMA_AND_CHROMA);
+        let expected_right = if encoding == Encoding::LUMA_AND_CHROMA { 64 } else { 32 };
+        let expected_bottom = if encoding == Encoding::LUMA_AND_CHROMA { 48 } else { 32 };
+        assert_eq!(wire.destination_rectangle.right, expected_right);
+        assert_eq!(wire.destination_rectangle.bottom, expected_bottom);
+        assert_eq!(stream.stream1.rectangles[0].right, 32);
+        assert_eq!(stream.stream1.rectangles[0].bottom, 32);
+        if let Some(stream2) = stream.stream2 {
+            assert_eq!(stream2.rectangles[0].right, 64);
+            assert_eq!(stream2.rectangles[0].bottom, 48);
+        }
+    }
+}
+
+#[test]
+fn avc444_sender_preserves_existing_codec_and_stream_selection() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    server.process(0, &payload).expect("process capabilities");
+    let surface_id = server.create_surface(64, 64).expect("create surface");
+    server.drain_output();
+
+    let luma_data = [0x00, 0x00, 0x00, 0x01, 0x67];
+    let chroma_data = [0x00, 0x00, 0x00, 0x01, 0x68];
+    let luma_regions = [Avc420Region::full_frame(64, 64, 22)];
+    let chroma_regions = [Avc420Region::full_frame(64, 64, 24)];
+    for (expected_encoding, second_data, second_regions) in [
+        (Encoding::LUMA, None, None),
+        (
+            Encoding::LUMA_AND_CHROMA,
+            Some(chroma_data.as_slice()),
+            Some(chroma_regions.as_slice()),
+        ),
+    ] {
+        server
+            .send_avc444_frame(surface_id, &luma_data, &luma_regions, second_data, second_regions, 42)
+            .expect("queue AVC444 frame");
+
+        let output = server.drain_output();
+        let mut decompressor = Decompressor::new();
+        let encoded = encode_vec(output[1].as_ref()).expect("encode DVC message");
+        let mut decoded = Vec::new();
+        decompressor
+            .decompress(&encoded, &mut decoded)
+            .expect("decompress WireToSurface1");
+        let mut cursor = ReadCursor::new(&decoded);
+        let GfxPdu::WireToSurface1(wire) = GfxPdu::decode(&mut cursor).expect("decode WireToSurface1") else {
+            panic!("expected WireToSurface1");
+        };
+        assert_eq!(wire.codec_id, Codec1Type::Avc444);
+
+        let mut cursor = ReadCursor::new(&wire.bitmap_data);
+        let stream = Avc444BitmapStream::decode(&mut cursor).expect("decode AVC444 bitmap stream");
+        assert_eq!(stream.encoding, expected_encoding);
+        assert_eq!(stream.stream2.is_some(), expected_encoding == Encoding::LUMA_AND_CHROMA);
+    }
+}
+
+#[test]
+fn avc444v2_sender_rejects_invalid_stream_shapes_without_queueing() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    server.process(0, &payload).expect("process capabilities");
+    let surface_id = server.create_surface(64, 64).expect("create surface");
+    server.drain_output();
+
+    let data = [0x00, 0x00, 0x00, 0x01, 0x67];
+    let regions = [Avc420Region::full_frame(64, 64, 22)];
+    for (encoding, second_data, second_regions) in [
+        (Encoding::LUMA_AND_CHROMA, None, None),
+        (Encoding::LUMA, Some(data.as_slice()), Some(regions.as_slice())),
+        (Encoding::CHROMA, Some(data.as_slice()), Some(regions.as_slice())),
+        (Encoding::from_bits_retain(3), None, None),
+    ] {
+        assert!(
+            server
+                .send_avc444v2_frame(surface_id, encoding, &data, &regions, second_data, second_regions, 42,)
+                .is_none()
+        );
+        assert!(!server.has_pending_output());
+        assert_eq!(server.frames_in_flight(), 0);
+    }
 }
 
 // ============================================================================
@@ -512,4 +699,157 @@ fn test_send_uncompressed_frame_backpressure() {
     // Second frame blocked by backpressure
     let frame2 = server.send_uncompressed_frame(surface_id, &pixel_data, 64, 64, 16);
     assert!(frame2.is_none());
+}
+
+#[test]
+fn test_frames_sent_while_acknowledgement_is_suspended_do_not_hold_backpressure() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    server.set_max_frames_in_flight(1);
+
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8 {
+        flags: CapabilitiesV8Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    let _output = server.process(0, &payload).expect("process failed");
+
+    let surface_id = server.create_surface(64, 64).unwrap();
+    server.drain_output();
+
+    let pixel_data = vec![0xFFu8; 64 * 64 * 4];
+
+    let frame1 = server
+        .send_uncompressed_frame(surface_id, &pixel_data, 64, 64, 0)
+        .expect("first frame");
+
+    // [MS-RDPEGFX] 2.2.2.13: a queue depth of SUSPEND_FRAME_ACKNOWLEDGEMENT
+    // means the client stops sending Frame Acknowledge until it says otherwise.
+    let suspend = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        queue_depth: QueueDepth::Suspend,
+        frame_id: frame1,
+        total_frames_decoded: 1,
+    });
+    let _output = server.process(0, &encode_pdu(&suspend)).expect("suspend ack");
+
+    // The pause outlasts the in-flight window by a wide margin, and none of
+    // these frames will be acknowledged.
+    let mut last_frame = frame1;
+    for index in 1..=5 {
+        last_frame = server
+            .send_uncompressed_frame(surface_id, &pixel_data, 64, 64, index * 16)
+            .expect("a suspended client must not throttle the encoder");
+    }
+    server.drain_output();
+
+    // The client comes back and acknowledges normally.
+    let resume = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        queue_depth: QueueDepth::AvailableBytes(8),
+        frame_id: last_frame,
+        total_frames_decoded: 6,
+    });
+    let _output = server.process(0, &encode_pdu(&resume)).expect("resume ack");
+
+    assert!(
+        server
+            .send_uncompressed_frame(surface_id, &pixel_data, 64, 64, 96)
+            .is_some(),
+        "frames counted during the pause hold backpressure on for good: with no \
+         frame going out there is no End Frame left for the client to acknowledge"
+    );
+}
+
+#[test]
+fn test_suspension_does_not_shrink_the_window_for_the_rest_of_the_connection() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    server.set_max_frames_in_flight(3);
+
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8 {
+        flags: CapabilitiesV8Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    let _output = server.process(0, &payload).expect("process failed");
+
+    let surface_id = server.create_surface(64, 64).unwrap();
+    server.drain_output();
+    let pixel_data = vec![0xFFu8; 64 * 64 * 4];
+
+    // Fill the window, then suspend. The frames already in flight will not be
+    // acknowledged either -- the suspension covers them as much as the ones
+    // that follow.
+    let mut first = None;
+    let mut last = 0;
+    for index in 0..3 {
+        let id = server
+            .send_uncompressed_frame(surface_id, &pixel_data, 64, 64, index * 16)
+            .expect("window not yet full");
+        first.get_or_insert(id);
+        last = id;
+    }
+
+    let suspend = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        queue_depth: QueueDepth::Suspend,
+        frame_id: first.expect("a frame went out"),
+        total_frames_decoded: 1,
+    });
+    let _output = server.process(0, &encode_pdu(&suspend)).expect("suspend ack");
+
+    // The client opts back in by acknowledging a frame it actually decoded
+    // ([MS-RDPEGFX] 2.2.2.13 -- the resume ack names an END_FRAME), not a
+    // fabricated id. That frame was cleared from tracking by the suspension,
+    // so this exercises the untracked-but-issued path.
+    let resume = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        queue_depth: QueueDepth::AvailableBytes(8),
+        frame_id: last,
+        total_frames_decoded: 2,
+    });
+    let _output = server.process(0, &encode_pdu(&resume)).expect("resume ack");
+    server.drain_output();
+
+    // The whole window has to be available again. Frames stranded by the
+    // suspension are never acknowledged, so leaving them tracked shrinks the
+    // window permanently -- here to one frame instead of three.
+    for index in 0..3 {
+        assert!(
+            server
+                .send_uncompressed_frame(surface_id, &pixel_data, 64, 64, 100 + index * 16)
+                .is_some(),
+            "frame {index} after resume was held back by a frame stranded in the pause"
+        );
+    }
+}
+
+#[test]
+fn test_a_suspending_acknowledgement_still_acknowledges_its_frame() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8 {
+        flags: CapabilitiesV8Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    let _output = server.process(0, &payload).expect("process failed");
+
+    let surface_id = server.create_surface(64, 64).unwrap();
+    server.drain_output();
+    let pixel_data = vec![0xFFu8; 64 * 64 * 4];
+
+    let frame_id = server
+        .send_uncompressed_frame(surface_id, &pixel_data, 64, 64, 0)
+        .expect("first frame");
+
+    // The PDU that suspends also acknowledges a frame, and that frame carries
+    // the round-trip sample the QoE report is built from. Dropping it because
+    // the same PDU happens to suspend loses the measurement.
+    let suspend = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        queue_depth: QueueDepth::Suspend,
+        frame_id,
+        total_frames_decoded: 1,
+    });
+    let _output = server.process(0, &encode_pdu(&suspend)).expect("suspend ack");
+
+    assert!(
+        server.qoe_snapshot().is_some(),
+        "the suspending acknowledgement was not counted, so no round-trip sample exists"
+    );
 }

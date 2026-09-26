@@ -204,14 +204,6 @@ jobs:
           GIT_COMMITTER_NAME: github-actions
           GIT_COMMITTER_EMAIL: github-actions@github.com
 
-      - name: Update Artifactory Cache
-        if: ${{ needs.preflight.outputs.dry-run == 'false' }}
-        run: |
-          gh workflow run update-artifactory-cache.yml --repo Devolutions/scheduled-tasks --field package_name="iron-remote-desktop"
-          gh workflow run update-artifactory-cache.yml --repo Devolutions/scheduled-tasks --field package_name="iron-remote-desktop-rdp"
-        env:
-          GH_TOKEN: ${{ secrets.DEVOLUTIONSBOT_WRITE_TOKEN }}
-
   notify:
     name: Notify failure
     if: ${{ always() && contains(needs.*.result, 'failure') && github.event_name == 'schedule' }}

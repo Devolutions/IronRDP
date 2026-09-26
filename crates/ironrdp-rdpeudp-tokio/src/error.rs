@@ -89,8 +89,14 @@ pub enum UdpTransportErrorKind {
     /// The TLS handshake failed.
     Tls(io::Error),
 
+    /// The TLS handshake did not complete within the configured budget.
+    TlsTimeout,
+
     /// The tunnel state machine rejected an operation.
     Rdpemt(RdpemtError),
+
+    /// The RDPEMT tunnel handshake did not complete within the configured budget.
+    TunnelTimeout,
 
     /// The peer rejected the tunnel creation request.
     TunnelRejected { hr_response: u32 },
@@ -117,7 +123,9 @@ impl fmt::Display for UdpTransportErrorKind {
             Self::Handshake(_) => write!(f, "RDP-UDP handshake failed"),
             Self::HandshakeTimeout => write!(f, "RDP-UDP handshake timed out"),
             Self::Tls(_) => write!(f, "TLS error"),
+            Self::TlsTimeout => write!(f, "TLS handshake timed out"),
             Self::Rdpemt(_) => write!(f, "multitransport tunnel error"),
+            Self::TunnelTimeout => write!(f, "multitransport tunnel handshake timed out"),
             Self::TunnelRejected { hr_response } => {
                 write!(f, "tunnel creation rejected: HRESULT {hr_response:#010x}")
             }
@@ -144,7 +152,11 @@ impl core::error::Error for UdpTransportErrorKind {
             Self::Handshake(error) => Some(error),
             Self::Driver(error) => Some(error),
             Self::Rdpemt(error) => Some(error),
-            Self::HandshakeTimeout | Self::TunnelRejected { .. } | Self::DriverPanic => None,
+            Self::HandshakeTimeout
+            | Self::TlsTimeout
+            | Self::TunnelTimeout
+            | Self::TunnelRejected { .. }
+            | Self::DriverPanic => None,
             Self::UnsupportedProtocol { .. } | Self::PayloadTooLarge { .. } => None,
         }
     }
@@ -155,7 +167,9 @@ pub trait UdpTransportErrorExt {
     fn handshake(context: &'static str, error: DriverError) -> Self;
     fn handshake_timeout(context: &'static str) -> Self;
     fn tls(context: &'static str, error: io::Error) -> Self;
+    fn tls_timeout(context: &'static str) -> Self;
     fn rdpemt(context: &'static str, error: RdpemtError) -> Self;
+    fn tunnel_timeout(context: &'static str) -> Self;
     fn tunnel_rejected(context: &'static str, hr_response: u32) -> Self;
     fn driver_panic(context: &'static str) -> Self;
     fn driver(context: &'static str, error: DriverError) -> Self;
@@ -185,8 +199,18 @@ impl UdpTransportErrorExt for UdpTransportError {
     }
 
     #[track_caller]
+    fn tls_timeout(context: &'static str) -> Self {
+        Self::new(context, UdpTransportErrorKind::TlsTimeout)
+    }
+
+    #[track_caller]
     fn rdpemt(context: &'static str, error: RdpemtError) -> Self {
         Self::new(context, UdpTransportErrorKind::Rdpemt(error))
+    }
+
+    #[track_caller]
+    fn tunnel_timeout(context: &'static str) -> Self {
+        Self::new(context, UdpTransportErrorKind::TunnelTimeout)
     }
 
     #[track_caller]

@@ -7,6 +7,7 @@ use ironrdp_usb::descriptor::{
 };
 use ironrdp_usb::endpoint::{EndpointAddress, EndpointAddressErrorKind, EndpointNumber, MaxPacketSize};
 use ironrdp_usb::{Direction, TransferType, UsbSpeed};
+use rstest::rstest;
 
 /// Minimal conforming device descriptor, as defined by USB 2.0 Table 9-8.
 const DEVICE_DESCRIPTOR: [u8; 18] = [
@@ -170,13 +171,27 @@ fn device_descriptor_validate_rejects_non_decimal_bcd_nibbles() {
 }
 
 #[test]
-fn endpoint_zero_max_packet_size_is_speed_dependent() {
-    let descriptor = DeviceDescriptor::parse(&DEVICE_DESCRIPTOR).unwrap();
-    assert_eq!(descriptor.endpoint_zero_max_packet_size(UsbSpeed::High), Ok(64));
-    assert_eq!(descriptor.endpoint_zero_max_packet_size(UsbSpeed::Full), Ok(64));
-    assert!(descriptor.endpoint_zero_max_packet_size(UsbSpeed::Low).is_err());
-    // SuperSpeed encodes the size as an exponent, so only 9 (meaning 512) is valid.
-    assert!(descriptor.endpoint_zero_max_packet_size(UsbSpeed::Super).is_err());
+fn endpoint_zero_max_packet_size_decodes_by_encoding() {
+    for (encoded, expected) in [(8, 8), (64, 64), (DeviceDescriptor::SUPERSPEED_MAX_PACKET_SIZE_0, 512)] {
+        let mut bytes = DEVICE_DESCRIPTOR;
+        bytes[7] = encoded;
+        let descriptor = DeviceDescriptor::parse(&bytes).unwrap();
+
+        assert_eq!(descriptor.endpoint_zero_max_packet_size(), Ok(expected));
+    }
+}
+
+#[test]
+fn endpoint_zero_max_packet_size_rejects_an_unknown_encoding() {
+    // Neither a literal USB 2.0 size nor the SuperSpeed exponent.
+    for encoded in [0, 10] {
+        let mut bytes = DEVICE_DESCRIPTOR;
+        bytes[7] = encoded;
+        let descriptor = DeviceDescriptor::parse(&bytes).unwrap();
+
+        let error = descriptor.endpoint_zero_max_packet_size().unwrap_err();
+        assert_eq!(error.encoded_max_packet_size_0(), encoded);
+    }
 }
 
 #[test]
@@ -395,72 +410,64 @@ fn max_packet_size_rejects_the_reserved_high_bandwidth_encoding() {
     );
 }
 
-#[test]
-fn validates_low_speed_packet_sizes() {
-    assert!(MaxPacketSize::from_raw(8).is_valid_for_usb2(UsbSpeed::Low, TransferType::Control));
-    assert!(!MaxPacketSize::from_raw(16).is_valid_for_usb2(UsbSpeed::Low, TransferType::Control));
-
-    assert!(MaxPacketSize::from_raw(1).is_valid_for_usb2(UsbSpeed::Low, TransferType::Interrupt));
-    assert!(MaxPacketSize::from_raw(8).is_valid_for_usb2(UsbSpeed::Low, TransferType::Interrupt));
-    assert!(!MaxPacketSize::from_raw(0).is_valid_for_usb2(UsbSpeed::Low, TransferType::Interrupt));
-    assert!(!MaxPacketSize::from_raw(9).is_valid_for_usb2(UsbSpeed::Low, TransferType::Interrupt));
-    assert!(!MaxPacketSize::from_raw(0x0808).is_valid_for_usb2(UsbSpeed::Low, TransferType::Interrupt));
-
-    assert!(!MaxPacketSize::from_raw(8).is_valid_for_usb2(UsbSpeed::Low, TransferType::Bulk));
-    assert!(!MaxPacketSize::from_raw(8).is_valid_for_usb2(UsbSpeed::Low, TransferType::Isochronous));
+#[rstest]
+#[case::low_control(UsbSpeed::Low, TransferType::Control, &[8], &[16])]
+#[case::low_interrupt(UsbSpeed::Low, TransferType::Interrupt, &[1, 8], &[0, 9, 0x0808])]
+#[case::low_bulk(UsbSpeed::Low, TransferType::Bulk, &[], &[8])]
+#[case::low_isochronous(UsbSpeed::Low, TransferType::Isochronous, &[], &[8])]
+#[case::full_control(UsbSpeed::Full, TransferType::Control, &[8, 16, 32, 64], &[0, 1, 7, 9, 63, 65, 512])]
+#[case::full_bulk(UsbSpeed::Full, TransferType::Bulk, &[8, 16, 32, 64], &[0, 1, 7, 9, 63, 65, 512])]
+#[case::full_isochronous(UsbSpeed::Full, TransferType::Isochronous, &[0, 1023], &[1024])]
+#[case::full_interrupt(UsbSpeed::Full, TransferType::Interrupt, &[1, 64], &[0, 65, 0x0840])]
+#[case::high_control(UsbSpeed::High, TransferType::Control, &[64], &[32])]
+#[case::high_bulk(UsbSpeed::High, TransferType::Bulk, &[512], &[64, 1024])]
+#[case::high_isochronous(
+    UsbSpeed::High,
+    TransferType::Isochronous,
+    &[0, 1, 1024, 0x0c00, 0x1400],
+    &[1025, 0x0800, 0x1c00, 0x2400]
+)]
+#[case::high_interrupt(
+    UsbSpeed::High,
+    TransferType::Interrupt,
+    &[1, 1024, 0x0c00, 0x1400],
+    &[0, 1025, 0x1c00, 0x2400]
+)]
+#[case::super_control(UsbSpeed::Super, TransferType::Control, &[512], &[64])]
+#[case::super_bulk(UsbSpeed::Super, TransferType::Bulk, &[1024], &[512])]
+#[case::super_isochronous(UsbSpeed::Super, TransferType::Isochronous, &[0, 1, 1024], &[1025, 0x0c00])]
+#[case::super_interrupt(UsbSpeed::Super, TransferType::Interrupt, &[1, 1024], &[0, 1025, 0x0c00])]
+#[case::super_plus_control(UsbSpeed::SuperPlus, TransferType::Control, &[512], &[64])]
+#[case::super_plus_bulk(UsbSpeed::SuperPlus, TransferType::Bulk, &[1024], &[512])]
+#[case::super_plus_isochronous(UsbSpeed::SuperPlus, TransferType::Isochronous, &[0, 1, 1024], &[1025, 0x0c00])]
+#[case::super_plus_interrupt(UsbSpeed::SuperPlus, TransferType::Interrupt, &[1, 1024], &[0, 1025, 0x0c00])]
+fn valid_speed_packet_sizes(
+    #[case] speed: UsbSpeed,
+    #[case] transfer_type: TransferType,
+    #[case] valid: &[u16],
+    #[case] invalid: &[u16],
+) {
+    for &raw in valid {
+        assert!(
+            MaxPacketSize::from_raw(raw).is_valid_for(speed, transfer_type),
+            "{raw:#06x} must be a valid {speed:?} {transfer_type:?} packet size"
+        );
+    }
+    for &raw in invalid {
+        assert!(
+            !MaxPacketSize::from_raw(raw).is_valid_for(speed, transfer_type),
+            "{raw:#06x} must be rejected as a {speed:?} {transfer_type:?} packet size"
+        );
+    }
 }
 
-#[test]
-fn validates_full_speed_packet_sizes() {
-    for packet_size in [8, 16, 32, 64] {
-        assert!(MaxPacketSize::from_raw(packet_size).is_valid_for_usb2(UsbSpeed::Full, TransferType::Control));
-        assert!(MaxPacketSize::from_raw(packet_size).is_valid_for_usb2(UsbSpeed::Full, TransferType::Bulk));
-    }
-    for packet_size in [0, 1, 7, 9, 63, 65, 512] {
-        assert!(!MaxPacketSize::from_raw(packet_size).is_valid_for_usb2(UsbSpeed::Full, TransferType::Control));
-        assert!(!MaxPacketSize::from_raw(packet_size).is_valid_for_usb2(UsbSpeed::Full, TransferType::Bulk));
-    }
-
-    assert!(MaxPacketSize::from_raw(0).is_valid_for_usb2(UsbSpeed::Full, TransferType::Isochronous));
-    assert!(MaxPacketSize::from_raw(1023).is_valid_for_usb2(UsbSpeed::Full, TransferType::Isochronous));
-    assert!(!MaxPacketSize::from_raw(1024).is_valid_for_usb2(UsbSpeed::Full, TransferType::Isochronous));
-
-    assert!(MaxPacketSize::from_raw(1).is_valid_for_usb2(UsbSpeed::Full, TransferType::Interrupt));
-    assert!(MaxPacketSize::from_raw(64).is_valid_for_usb2(UsbSpeed::Full, TransferType::Interrupt));
-    assert!(!MaxPacketSize::from_raw(0).is_valid_for_usb2(UsbSpeed::Full, TransferType::Interrupt));
-    assert!(!MaxPacketSize::from_raw(65).is_valid_for_usb2(UsbSpeed::Full, TransferType::Interrupt));
-    assert!(!MaxPacketSize::from_raw(0x0840).is_valid_for_usb2(UsbSpeed::Full, TransferType::Interrupt));
-}
-
-#[test]
-fn validates_high_speed_packet_sizes() {
-    assert!(MaxPacketSize::from_raw(64).is_valid_for_usb2(UsbSpeed::High, TransferType::Control));
-    assert!(!MaxPacketSize::from_raw(32).is_valid_for_usb2(UsbSpeed::High, TransferType::Control));
-
-    assert!(MaxPacketSize::from_raw(512).is_valid_for_usb2(UsbSpeed::High, TransferType::Bulk));
-    assert!(!MaxPacketSize::from_raw(64).is_valid_for_usb2(UsbSpeed::High, TransferType::Bulk));
-    assert!(!MaxPacketSize::from_raw(1024).is_valid_for_usb2(UsbSpeed::High, TransferType::Bulk));
-
-    for transfer_type in [TransferType::Isochronous, TransferType::Interrupt] {
-        assert!(MaxPacketSize::from_raw(1).is_valid_for_usb2(UsbSpeed::High, transfer_type));
-        assert!(MaxPacketSize::from_raw(1024).is_valid_for_usb2(UsbSpeed::High, transfer_type));
-        assert!(MaxPacketSize::from_raw(0x0c00).is_valid_for_usb2(UsbSpeed::High, transfer_type));
-        assert!(MaxPacketSize::from_raw(0x1400).is_valid_for_usb2(UsbSpeed::High, transfer_type));
-        assert!(!MaxPacketSize::from_raw(1025).is_valid_for_usb2(UsbSpeed::High, transfer_type));
-        assert!(!MaxPacketSize::from_raw(0x1c00).is_valid_for_usb2(UsbSpeed::High, transfer_type));
-        assert!(!MaxPacketSize::from_raw(0x2400).is_valid_for_usb2(UsbSpeed::High, transfer_type));
-    }
-    assert!(MaxPacketSize::from_raw(0).is_valid_for_usb2(UsbSpeed::High, TransferType::Isochronous));
-    assert!(!MaxPacketSize::from_raw(0x0800).is_valid_for_usb2(UsbSpeed::High, TransferType::Isochronous));
-    assert!(!MaxPacketSize::from_raw(0).is_valid_for_usb2(UsbSpeed::High, TransferType::Interrupt));
-}
-
-#[test]
-fn usb2_validation_rejects_superspeed_semantics() {
-    for speed in [UsbSpeed::Super, UsbSpeed::SuperPlus] {
-        assert!(!MaxPacketSize::from_raw(512).is_valid_for_usb2(speed, TransferType::Control));
-        assert!(!MaxPacketSize::from_raw(1024).is_valid_for_usb2(speed, TransferType::Isochronous));
-        assert!(!MaxPacketSize::from_raw(1024).is_valid_for_usb2(speed, TransferType::Bulk));
-        assert!(!MaxPacketSize::from_raw(1024).is_valid_for_usb2(speed, TransferType::Interrupt));
-    }
+#[rstest]
+#[case::superspeed(UsbSpeed::Super)]
+#[case::superspeed_plus(UsbSpeed::SuperPlus)]
+fn superspeed_payload_is_a_single_packet(#[case] speed: UsbSpeed) {
+    // The burst lives in the companion descriptor, so the payload is one packet.
+    assert_eq!(
+        MaxPacketSize::from_raw(1024).max_payload(speed, TransferType::Bulk),
+        Some(1024)
+    );
 }

@@ -51,6 +51,17 @@ pub struct GatewayHttpAuth {
 }
 
 impl GatewayHttpAuth {
+    /// Build SSPI state for the MS-TSGU NTLM extended-authentication exchange.
+    pub(crate) fn new_extended_auth_ntlm(username: &str, password: &str) -> Result<Self, Error> {
+        Self::new_ntlm(username, password, None)
+    }
+
+    /// Process one NTLM token from the MS-TSGU extended-authentication exchange.
+    pub(crate) fn step_extended_auth(&mut self, input: Option<&[u8]>) -> Result<(Vec<u8>, bool), Error> {
+        let token = self.initialize(input)?;
+        Ok((token, self.complete))
+    }
+
     pub fn scheme(&self) -> &'static str {
         self.scheme
     }
@@ -484,6 +495,16 @@ impl GatewayHttpAuth {
 pub fn basic_authorization(username: &str, password: &str) -> String {
     let token = STANDARD.encode(format!("{username}:{password}"));
     format!("Basic {token}")
+}
+
+pub(crate) async fn run_http_auth<T, F>(f: F) -> Result<T, Error>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, Error> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|error| custom_err!("http auth task", error))?
 }
 
 fn auth_identity(username: &str, password: &str) -> Result<AuthIdentity, Error> {

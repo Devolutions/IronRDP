@@ -6,8 +6,8 @@ fn avc420_region_full_frame() {
     let region = Avc420Region::full_frame(1920, 1080, 22);
     assert_eq!(region.left, 0);
     assert_eq!(region.top, 0);
-    assert_eq!(region.right, 1919);
-    assert_eq!(region.bottom, 1079);
+    assert_eq!(region.right, 1920);
+    assert_eq!(region.bottom, 1080);
     assert_eq!(region.quantization_parameter, 22);
     assert_eq!(region.quality, 100);
 }

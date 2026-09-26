@@ -1,13 +1,14 @@
 use core::fmt;
-use core::net::SocketAddr;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::net::{IpAddr, SocketAddr};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::time::Duration;
+#[cfg(feature = "usb")]
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Instant;
 
-use anyhow::{Context as _, Result, bail};
 use ironrdp_acceptor::{Acceptor, AcceptorResult, BeginResult, DesktopSize};
 use ironrdp_async::Framed;
 use ironrdp_cliprdr::CliprdrServer;
@@ -16,44 +17,81 @@ use ironrdp_core::{decode, encode_vec, impl_as_any};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
 use ironrdp_dvc as dvc;
+#[cfg(feature = "usb")]
+use ironrdp_dvc::DynamicChannelId;
+use ironrdp_error::ResultExt as _;
+#[cfg(feature = "usb")]
+use ironrdp_pdu::PduError;
 use ironrdp_pdu::codecs::rfx::Quant;
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
 use ironrdp_pdu::rdp::capability_sets::{
-    BitmapCodecs, CapabilitySet, CmdFlags, CodecProperty, EntropyBits, GeneralExtraFlags,
+    BitmapCodecs, CapabilitySet, CmdFlags, CodecProperty, EntropyBits, GeneralExtraFlags, LargePointerSupportFlags,
 };
 pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
+use ironrdp_rdpdr as rdpdr;
+use ironrdp_rdpeai as rdpeai;
 use ironrdp_rdpsnd as rdpsnd;
 use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor, server_encode_svc_messages};
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
 use rand::RngCore as _;
+use rdpdr::server::{RdpdrServer, RdpdrServerMessage};
+use rdpeai::server::{RdpeaiServer, RdpeaiServerMessage};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
-use tokio::net::TcpSocket;
+use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task;
 use tokio_rustls::TlsAcceptor;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
-use crate::autodetect::{AutoDetectManager, RttSnapshot};
+use crate::autodetect::{AutoDetectManager, AutoDetectOutcome, RttSnapshot};
 use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
+use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
+use crate::heartbeat::HeartbeatConfig;
+use crate::rdpeai::RdpeaiServerFactory;
 use crate::rdpei::RdpeiServerFactory;
-use crate::{SoundServerFactory, builder, capabilities};
+#[cfg(feature = "usb")]
+use crate::urbdrc::{
+    DeviceFactory, ServerDeviceIoReq, ServerUsbDevice, UrbdrcDeviceServerMessage, UrbdrcServerMessage,
+    UsbControlHandle, UsbDeviceHandle,
+};
+use crate::{RdpdrServerFactory, SoundServerFactory, builder, capabilities};
+#[cfg(feature = "usb")]
+use ironrdp_rdpeusb::{InterfaceAlloc, server::UrbdrcControlServer, server::UrbdrcDeviceServer};
 
 /// TCP listen backlog size for the RDP server socket.
 const LISTENER_BACKLOG: u32 = 1024;
 const AUTO_RECONNECT_COOKIE_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// How long a single [`ironrdp_acceptor::accept_finalize`] pass may take before
+/// the connection is dropped.
+///
+/// A client can complete the whole security handshake — X.224, TLS, and CredSSP
+/// where applicable — and then stop producing PDUs, leaving the server blocked
+/// on a socket read with no timeout. Because `RdpServer` serves one connection
+/// at a time, that connection then holds the server indefinitely: the socket
+/// stays ESTABLISHED with both TCP queues empty, and nothing tears it down.
+/// This has been observed in the field against a real client, which completed
+/// MCS Connect, Erect Domain, Attach User and every channel join and then never
+/// sent its Client Info PDU; the connection sat there for 45 minutes.
+///
+/// Generous on purpose: a healthy finalize is sub-second, and even over a slow
+/// mobile link with heavy retransmits the whole pass stays within a few
+/// seconds. A false timeout is cheap — the connection is dropped and the client
+/// reconnects (immediately, if it holds an auto-reconnect cookie).
+const FINALIZE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Monotonic milliseconds since first use, for feeding the auto-detect state machine.
 ///
@@ -148,7 +186,7 @@ pub trait ConnectionHandler: Send {
         &mut self,
         peer: SocketAddr,
         duration: Duration,
-        error: Option<&anyhow::Error>,
+        error: Option<&ServerError>,
     ) -> PostConnectionAction {
         let _ = (peer, duration, error);
         PostConnectionAction::Continue
@@ -281,6 +319,73 @@ impl CredentialValidator for ExactMatchCredentialValidator {
     }
 }
 
+/// What [`RdpServer::run`] does with a second connection that arrives while a
+/// session is already being served.
+///
+/// [`RdpServer`] serves one connection at a time. By default a second
+/// connection accepted while one is live is left unserved in the OS listen
+/// backlog -- from that client's point of view, a silent hang until the first
+/// session ends. That is `ironrdp-server`'s pre-existing behaviour, kept as the
+/// default ([`Queue`](ConnectionPolicy::Queue)) so an embedder that already
+/// relies on it is not surprised by upgrading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConnectionPolicy {
+    /// Leave the extra connection in the OS listen backlog until the running
+    /// session ends. The pre-existing behaviour: the second client is not
+    /// answered and appears to hang until the first leaves.
+    #[default]
+    Queue,
+    /// Close the extra connection immediately. The running session is never
+    /// interrupted; the new client fails fast and can retry rather than
+    /// appearing to hang.
+    ///
+    /// A connection closed this way never reaches
+    /// [`ConnectionHandler::on_accept`]: it is dropped before it enters the
+    /// handler's lifecycle, just as a connection left in the backlog under
+    /// `Queue` is not seen by the handler until it is served. The rejected
+    /// peer is logged at `debug` level.
+    Reject,
+    /// Preempt the running session with a fully-authenticated newcomer: once it
+    /// has **completed authentication**, the existing connection is told why it
+    /// is going away and dropped, and the newcomer is served in its place.
+    /// Suits a server backing a single specific session (e.g. mirroring one
+    /// desktop), where a newly connecting client should replace a stale or
+    /// abandoned one.
+    ///
+    /// # Security -- what a candidate must clear, per mode
+    ///
+    /// Evicting a live session is disruptive, so a candidate runs the FULL
+    /// negotiation -- and, under [`RdpServerSecurity::Hybrid`], CredSSP/NLA --
+    /// before the live session is touched at all. A candidate that fails at any
+    /// step leaves the live session untouched.
+    ///
+    /// How strong that bar actually is depends entirely on the security mode,
+    /// because only `Hybrid` authenticates the *client* before the point a
+    /// candidate reaches. **Read this table before selecting this variant:**
+    ///
+    /// | Security mode | Bar to preempt | Guarantee |
+    /// |---|---|---|
+    /// | [`Hybrid`](RdpServerSecurity::Hybrid) | CredSSP/NLA succeeds | an unauthenticated peer can never evict |
+    /// | [`Tls`](RdpServerSecurity::Tls) | a TLS handshake -- which authenticates the *server* to the client, not the reverse | **none against an unauthenticated peer**: any peer that can reach the port clears it, and a [`CredentialValidator`] does not run until finalization |
+    /// | [`None`](RdpServerSecurity::None) | a well-formed X.224 Connection Request | **none**: this mode authenticates nothing |
+    ///
+    /// So under `Tls` and `None` an unauthenticated peer CAN evict an
+    /// authenticated session, repeatedly -- the anti-storm cooldown bars the
+    /// victim, never the attacker. A warning is logged at startup in that case.
+    /// If you need takeover to be authentication-gated, use `Hybrid`; if you
+    /// must select it under another mode, restrict who may attempt one with
+    /// [`ConnectionHandler::on_accept`].
+    ///
+    /// Candidates are additionally gated through
+    /// [`ConnectionHandler::on_accept`] *before* they are allowed to
+    /// negotiate, so an IP allowlist or rate limiter bounds who may even
+    /// attempt a takeover. It does NOT bound how long one admitted candidate
+    /// can occupy the (single) negotiation slot before another is even
+    /// considered -- see the limitation documented on
+    /// `CANDIDATE_NEGOTIATION_TIMEOUT`.
+    Preempt,
+}
+
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct RdpServerOptions {
@@ -297,6 +402,10 @@ pub struct RdpServerOptions {
     /// server-provided size. Set via
     /// [`RdpServerBuilder::with_honor_client_desktop_size`](crate::RdpServerBuilder::with_honor_client_desktop_size).
     pub honor_client_desktop_size: Option<DesktopSize>,
+    /// What to do with a second connection while a session is being served.
+    /// Defaults to [`ConnectionPolicy::Queue`]. Set via
+    /// [`RdpServerBuilder::with_connection_policy`](crate::RdpServerBuilder::with_connection_policy).
+    pub connection_policy: ConnectionPolicy,
     /// Quantization values the RemoteFX encoder uses once selected. Defaults
     /// to [`Quant::default`], the same values Windows RDP servers send. Set
     /// via
@@ -461,6 +570,24 @@ impl DisplayControlHandler for DisplayControlBackend {
     }
 }
 
+#[cfg(feature = "usb")]
+struct ServerUsbManager {
+    factory: Box<dyn DeviceFactory>,
+    comp_iface_alloc: InterfaceAlloc,
+    router: HashMap<DynamicChannelId, Arc<ServerUsbDevice>>,
+}
+
+#[cfg(feature = "usb")]
+impl ServerUsbManager {
+    fn new(inner: Box<dyn DeviceFactory>) -> Self {
+        Self {
+            factory: inner,
+            comp_iface_alloc: InterfaceAlloc::default(),
+            router: HashMap::new(),
+        }
+    }
+}
+
 /// Selects who performs the TLS handshake for a connection accepted via
 /// [`RdpServer::run_connection_with`].
 #[derive(Debug, Clone, Copy)]
@@ -487,8 +614,7 @@ pub enum TransportTls {
 /// ```
 /// use ironrdp_server::{RdpServer, RdpServerInputHandler, RdpServerDisplay, RdpServerDisplayUpdates};
 ///
-///# use anyhow::Result;
-///# use ironrdp_server::{DisplayUpdate, DesktopSize, KeyboardEvent, MouseEvent};
+///# use ironrdp_server::{DisplayUpdate, DesktopSize, KeyboardEvent, MouseEvent, ServerResult};
 ///# use tokio_rustls::TlsAcceptor;
 ///# struct NoopInputHandler;
 ///# impl RdpServerInputHandler for NoopInputHandler {
@@ -501,11 +627,11 @@ pub enum TransportTls {
 ///#     async fn size(&mut self) -> DesktopSize {
 ///#         todo!()
 ///#     }
-///#     async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+///#     async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
 ///#         todo!()
 ///#     }
 ///# }
-///# async fn stub() -> Result<()> {
+///# async fn stub() -> ServerResult<()> {
 /// fn make_tls_acceptor() -> TlsAcceptor {
 ///    /* snip */
 ///#    todo!()
@@ -546,18 +672,37 @@ pub struct RdpServer {
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
+    rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
+    rdpeai_factory: Option<Box<dyn RdpeaiServerFactory>>,
     echo_handle: EchoServerHandle,
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
     #[cfg(feature = "egfx")]
     gfx_handle: Option<crate::gfx::GfxServerHandle>,
+    #[cfg(feature = "usb")]
+    usb_man: Option<ServerUsbManager>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     local_addr: Option<SocketAddr>,
     autodetect: Option<AutoDetectManager>,
+    heartbeat: Option<HeartbeatConfig>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
+    /// Anti-storm net for [`ConnectionPolicy::Preempt`]: the
+    /// peer most recently EVICTED by a takeover, and when it last tried to
+    /// come back.
+    ///
+    /// Telling the loser why it was evicted (see
+    /// [`ServerEvent::EvictedByOtherConnection`]) is the real fix for the
+    /// eviction loop, but whether a client honours it is client-dependent.
+    /// This bounds the damage if one doesn't: a just-evicted peer may not
+    /// immediately re-preempt, and each refused attempt RE-ARMS the window, so
+    /// an automatic reconnect storm can never win the session back, while a
+    /// human who closes the client and reconnects still can. Keyed on source
+    /// IP, since the source port changes on every reconnect. Cleared once a
+    /// session ends on its own terms rather than being replaced.
+    recently_evicted: Option<EvictedPeer>,
     /// True while the client has sent `SuppressOutput { desktop_rect: None }`
     /// — the standard RDP "I don't need display updates right now" signal
     /// (mstsc raises it on window minimize). Cleared on
@@ -587,6 +732,16 @@ pub struct RdpServer {
     /// [`Self::autodetect_rtt`]. Exposed via
     /// [`Self::autodetect_baseline_rtt_handle`].
     autodetect_baseline_rtt: Arc<AtomicU32>,
+
+    /// Latest NetworkAutoDetect measured bandwidth in kilobits per second, or
+    /// `u32::MAX` until the first measurement completes (and while auto-detect
+    /// is disabled). Updated whenever a Bandwidth Measure Results response is
+    /// processed, same trigger point as [`Self::autodetect_rtt`]. Exposed via
+    /// [`Self::autodetect_bandwidth_handle`]: without it, the server can tell
+    /// the *client* its measured bandwidth over the wire but has no way to
+    /// tell the embedder, which the connect-time figure carried to the client
+    /// alone does not fix.
+    autodetect_bandwidth: Arc<AtomicU32>,
 
     /// Optional Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.2
     /// `ARC_SC_PRIVATE_PACKET`). When `Some`, the server validates a returning
@@ -622,6 +777,11 @@ impl AutoReconnectCookieHandle {
     /// The change takes effect only after the server handles this event. `None`
     /// then disables auto-reconnect and invalidates every cookie currently held
     /// by the server.
+    #[expect(
+        clippy::result_large_err,
+        reason = "SendError<ServerEvent> hands the whole event back on a closed channel; ServerEvent's size is \
+                  driven by its largest per-channel payload (RdpdrServerMessage), not by anything this method does"
+    )]
     pub fn set(
         &self,
         cookie: Option<rdp::session_info::ServerAutoReconnect>,
@@ -630,10 +790,59 @@ impl AutoReconnectCookieHandle {
     }
 }
 
+/// Cloneable handle for gracefully disconnecting the active client with a
+/// `ServerSetErrorInfo` PDU (MS-RDPBCGR 2.2.5.1) while [`RdpServer::run`]
+/// owns the server.
+#[derive(Clone)]
+pub struct ErrorInfoDisconnectHandle {
+    sender: mpsc::UnboundedSender<ServerEvent>,
+}
+
+impl ErrorInfoDisconnectHandle {
+    /// Send `error` to the client via a `ServerSetErrorInfoPdu`, then close the
+    /// connection.
+    ///
+    /// The disconnect takes effect only after the server handles this event.
+    /// Unlike [`ServerEvent::Quit`], the client is told why: it decodes the
+    /// PDU and can surface `error` to the user before the connection drops.
+    #[expect(
+        clippy::result_large_err,
+        reason = "SendError<ServerEvent> hands the whole event back on a closed channel; ServerEvent's size is \
+                  driven by its largest per-channel payload (RdpdrServerMessage), not by anything this method does"
+    )]
+    pub fn disconnect(&self, error: ErrorInfo) -> Result<(), mpsc::error::SendError<ServerEvent>> {
+        self.sender.send(ServerEvent::Disconnect(error))
+    }
+}
+
 pub enum ServerEvent {
     Quit(String),
+    /// End this connection because an authenticated candidate is taking the
+    /// session over — a preemption, not a plain quit.
+    ///
+    /// Unlike [`Self::Quit`], this sends a Server Set Error Info PDU carrying
+    /// `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION` (MS-RDPBCGR 2.2.5.1.1 — the
+    /// code real Windows RDS uses for a session takeover) before
+    /// disconnecting. That distinction is load-bearing rather than cosmetic
+    /// whenever a Server Auto-Reconnect Cookie is in play: a client dropped
+    /// with no explanation auto-reconnects a second later, re-preempts the
+    /// client that replaced it, and the two ping-pong indefinitely. Telling
+    /// the loser WHY it was disconnected is what makes it stay away.
+    ///
+    /// A more general version of the same PDU/mechanism exists as
+    /// [`Self::Disconnect`] (upstream, `ErrorInfoDisconnectHandle`) for an
+    /// embedder-chosen [`ErrorInfo`]; this variant stays separate because its
+    /// reason is fixed (always `DisconnectedByOtherconnection`) and it is
+    /// wired specifically to the preemption race, not exposed as a public
+    /// handle.
+    EvictedByOtherConnection,
+    /// Disconnect the active client with a `ServerSetErrorInfoPdu` carrying
+    /// the given reason. See [`ErrorInfoDisconnectHandle::disconnect`].
+    Disconnect(ErrorInfo),
     Clipboard(ClipboardMessage),
     Rdpsnd(RdpsndServerMessage),
+    Rdpdr(RdpdrServerMessage),
+    Rdpeai(RdpeaiServerMessage),
     Echo(EchoServerMessage),
     SetCredentials(Credentials),
     /// Replace or clear the Server Auto-Reconnect Cookie.
@@ -643,6 +852,8 @@ pub enum ServerEvent {
     Egfx(EgfxServerMessage),
     /// Trigger an RTT measurement probe (requires auto-detect enabled).
     AutoDetectRttRequest,
+    #[cfg(feature = "usb")]
+    Usb(UrbdrcServerMessage),
 }
 
 /// Creates a fresh static-channel processor for each accepted RDP connection.
@@ -658,8 +869,12 @@ impl fmt::Debug for ServerEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Quit(reason) => f.debug_tuple("Quit").field(reason).finish(),
+            Self::EvictedByOtherConnection => f.write_str("EvictedByOtherConnection"),
+            Self::Disconnect(error) => f.debug_tuple("Disconnect").field(error).finish(),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
             Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
+            Self::Rdpdr(..) => f.write_str("Rdpdr(..)"),
+            Self::Rdpeai(..) => f.write_str("Rdpeai(..)"),
             Self::Echo(..) => f.write_str("Echo(..)"),
             Self::SetCredentials(..) => f.write_str("SetCredentials(..)"),
             Self::SetAutoReconnectCookie(Some(..)) => f.write_str("SetAutoReconnectCookie(Some(..))"),
@@ -667,6 +882,8 @@ impl fmt::Debug for ServerEvent {
             Self::GetLocalAddr(..) => f.write_str("GetLocalAddr(..)"),
             #[cfg(feature = "egfx")]
             Self::Egfx(..) => f.write_str("Egfx(..)"),
+            #[cfg(feature = "usb")]
+            Self::Usb(..) => f.write_str("Usb(..)"),
             Self::AutoDetectRttRequest => f.write_str("AutoDetectRttRequest"),
         }
     }
@@ -682,6 +899,23 @@ impl ServerEvent {
     }
 }
 
+/// The in-flight [`negotiate_candidate`] call for a candidate connection, or a
+/// never-resolving placeholder while none is being negotiated. Borrows the
+/// [`NegotiationContext`] the race built.
+type PreemptProbe<'ctx> =
+    core::pin::Pin<Box<dyn Future<Output = Option<(Box<NegotiatedCandidate>, SocketAddr)>> + 'ctx>>;
+
+/// What resolved first while a session was live, under
+/// [`ConnectionPolicy::Preempt`]: the session itself ending, a
+/// new inbound connection, or the verdict on a [`PreemptProbe`] being
+/// negotiated. The race's `select!` yields one of these and must not
+/// otherwise mutate the probe slot, whose futures it still borrows.
+enum PreemptRace {
+    Ended(ServerResult<()>),
+    Accepted(std::io::Result<(TcpStream, SocketAddr)>),
+    Probed(Option<(Box<NegotiatedCandidate>, SocketAddr)>),
+}
+
 #[derive(Debug, PartialEq)]
 enum RunState {
     Continue,
@@ -689,10 +923,440 @@ enum RunState {
     DeactivationReactivation { desktop_size: DesktopSize },
 }
 
+/// Which transport a connection ended up on after
+/// [`negotiate_and_authenticate`], carrying the framed stream in the shape the
+/// finalize step needs. The three variants exist to preserve the three
+/// pre-existing finalize behaviours exactly.
+enum NegotiatedTransport<S> {
+    /// Never upgraded ([`RdpServerSecurity::None`]): finalize without a
+    /// stream shutdown, matching the old `BeginResult::Continue` arm.
+    Continued(TokioFramed<S>),
+    /// Upgraded in-band by us ([`TransportTls::Managed`]).
+    Tls(Box<TokioFramed<tokio_rustls::server::TlsStream<S>>>),
+    /// Already past TLS at a lower layer ([`TransportTls::AlreadyDone`]).
+    Offloaded(TokioFramed<S>),
+}
+
+/// A freshly built [`Acceptor`], paired with the exact [`RdpServerSecurity`]
+/// it was constructed from.
+///
+/// Negotiation needs both together: [`Acceptor::new`] takes `security.flag()`
+/// up front, and the TLS-upgrade step later needs the full `security` value
+/// again (for the [`TlsAcceptor`] and, under Hybrid, the CredSSP public key).
+/// Threading `security` and `acceptor` as independent parameters — which an
+/// earlier revision of this refactor did — turns that pairing into a
+/// caller-enforced precondition: nothing stops a future caller from passing
+/// an `Acceptor` built from a *different* `RdpServerSecurity`, and the
+/// failure mode is a panic on a server connection path
+/// (`RdpServerSecurity::None => unreachable!()`, below). The single
+/// constructor here makes the pairing a construction-time guarantee instead:
+/// there is no way to reach [`Self::negotiate_and_authenticate`] with a
+/// mismatched pair, because there is no way to build a `PendingConnection`
+/// without going through [`Self::new`], which ties them together atomically.
+///
+/// Owns a cloned `RdpServerSecurity` rather than borrowing `&self.opts.security`
+/// — `RdpServerSecurity` is a cheap `Clone` (its `TlsAcceptor` is an `Arc`
+/// underneath) — deliberately: a caller in `run_connection_with` needs `&mut
+/// self` (for `attach_channels`) while a live `PendingConnection` is still in
+/// scope, which a borrowed `security` would conflict with for as long as the
+/// pending connection exists.
+struct PendingConnection {
+    security: RdpServerSecurity,
+    acceptor: Acceptor,
+}
+
+impl PendingConnection {
+    fn new(
+        security: RdpServerSecurity,
+        desktop_size: DesktopSize,
+        capabilities: Vec<CapabilitySet>,
+        creds: Option<Credentials>,
+        honor_client_desktop_size: Option<DesktopSize>,
+    ) -> Self {
+        let mut acceptor = Acceptor::new(security.flag(), desktop_size, capabilities, creds);
+        acceptor.set_honor_client_desktop_size(honor_client_desktop_size);
+        Self { security, acceptor }
+    }
+
+    /// Mutable access to the acceptor for the one thing that must happen
+    /// before negotiation: attaching static/dynamic channels. Negotiation
+    /// itself (`negotiate_and_authenticate`) owns the acceptor from here on,
+    /// so this is only available pre-negotiation.
+    fn acceptor_mut(&mut self) -> &mut Acceptor {
+        &mut self.acceptor
+    }
+
+    /// Negotiate `stream` and, where the security mode provides it,
+    /// AUTHENTICATE it — everything up to (but not including)
+    /// `accept_finalize`.
+    ///
+    /// Consumes `self` rather than taking `&mut self`, so it can be driven
+    /// without holding a mutable borrow of the whole server for the
+    /// duration — a future caller (a preempting connection negotiating
+    /// concurrently with the live one) needs exactly that.
+    ///
+    /// `Ok(None)` means the TLS handshake failed and was already logged — the
+    /// caller should abandon the connection quietly rather than treat it as a
+    /// connection error (preserving the pre-existing `return Ok(())` behaviour).
+    async fn negotiate_and_authenticate<S>(
+        self,
+        stream: S,
+        tls: TransportTls,
+    ) -> ServerResult<Option<NegotiatedConnection<S>>>
+    where
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    {
+        let PendingConnection { security, mut acceptor } = self;
+        let security = &security;
+        let framed = TokioFramed::new(stream);
+
+        let res = ironrdp_acceptor::accept_begin(framed, &mut acceptor)
+            .await
+            .map_err_kind("accept_begin failed", ServerErrorKind::Connector)?;
+
+        match res {
+            // The only thing that varies between the two modes is who performs
+            // the TLS handshake; everything past it is `complete_security_upgrade`.
+            BeginResult::ShouldUpgrade(stream) => match tls {
+                TransportTls::Managed => {
+                    // `RdpServerSecurity::None` can never reach this arm: `Self::new`
+                    // built `acceptor` from THIS `security` via `security.flag()`,
+                    // which is empty only for `None`, and `accept_begin` yields
+                    // `ShouldUpgrade` only when the negotiated flags are non-empty
+                    // -- `None` always yields `Continue` instead (the arm below).
+                    let tls_acceptor = match security {
+                        RdpServerSecurity::Tls(acceptor) => acceptor,
+                        RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
+                        RdpServerSecurity::None => unreachable!(),
+                    };
+                    let accept = match tls_acceptor.accept(stream).await {
+                        Ok(accept) => accept,
+                        Err(e) => {
+                            warn!("Failed to TLS accept: {}", e);
+                            return Ok(None);
+                        }
+                    };
+                    let mut framed = TokioFramed::new(accept);
+                    complete_security_upgrade(security, &mut framed, &mut acceptor).await?;
+                    Ok(Some(NegotiatedConnection {
+                        transport: NegotiatedTransport::Tls(Box::new(framed)),
+                        acceptor,
+                    }))
+                }
+                // The stream is already past TLS (terminated at a lower
+                // layer, e.g. a WSS terminator); do NOT call
+                // tls_acceptor.accept on it.
+                TransportTls::AlreadyDone => {
+                    let mut framed = TokioFramed::new(stream);
+                    complete_security_upgrade(security, &mut framed, &mut acceptor).await?;
+                    Ok(Some(NegotiatedConnection {
+                        transport: NegotiatedTransport::Offloaded(framed),
+                        acceptor,
+                    }))
+                }
+            },
+
+            BeginResult::Continue(framed) => Ok(Some(NegotiatedConnection {
+                transport: NegotiatedTransport::Continued(framed),
+                acceptor,
+            })),
+        }
+    }
+}
+
+/// The result of [`PendingConnection::negotiate_and_authenticate`]: the
+/// [`NegotiatedTransport`] it landed on, bundled with the same [`Acceptor`]
+/// that negotiated it (rather than the caller tracking the two as separate
+/// values, which is how this looked before `PendingConnection` existed).
+struct NegotiatedConnection<S> {
+    transport: NegotiatedTransport<S>,
+    acceptor: Acceptor,
+}
+
+/// Advance a stream that is now past the security upgrade: mark the acceptor
+/// accordingly and, under [`RdpServerSecurity::Hybrid`], run the CredSSP
+/// exchange.
+///
+/// Generic over the stream so both [`TransportTls`] modes can call this one
+/// definition of the exchange (the two differ only in what the framed stream
+/// wraps) — restoring, not introducing, the single-call-site property the
+/// pre-existing `finalize_after_upgrade` already had for the same two arms
+/// before this refactor split negotiation out of it. The actual reason this
+/// exists as its own function is [`negotiate_and_authenticate`]'s: a future
+/// caller (a preempting connection negotiating without holding `&mut self`)
+/// needs the CredSSP step available from a plain function it can drive
+/// itself, not bundled into a `&mut self` method.
+async fn complete_security_upgrade<S>(
+    security: &RdpServerSecurity,
+    framed: &mut TokioFramed<S>,
+    acceptor: &mut Acceptor,
+) -> ServerResult<()>
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
+    acceptor.mark_security_upgrade_as_done();
+
+    if let RdpServerSecurity::Hybrid((_, pub_key)) = security {
+        // Generic streams don't expose peer address. Use a neutral
+        // placeholder; it's unclear whether CredSSP/NTLM actually
+        // uses this value in practice.
+        let client_name = "rdp-client".to_owned();
+
+        ironrdp_acceptor::accept_credssp(
+            framed,
+            acceptor,
+            &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
+            client_name.into(),
+            pub_key.clone(),
+            None,
+        )
+        .await
+        .map_err_kind("accept_credssp", ServerErrorKind::Connector)?;
+    }
+
+    Ok(())
+}
+
+/// How long an evicted session gets to send its
+/// `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION` and wind down on its own before
+/// it is cancelled outright. Short, because the preempting client is already
+/// authenticated and waiting and a half-dead peer must not stall the takeover;
+/// exceeding it is not an error, it just degrades to an abrupt drop.
+const EVICTION_GRACE: Duration = Duration::from_millis(750);
+
+/// How long a candidate gets to complete negotiation and authentication before
+/// it is abandoned.
+///
+/// This bound is load-bearing, not a tidiness measure: `negotiate_candidate`
+/// blocks on socket reads, so without it a peer that completes the TCP
+/// handshake and then sends NOTHING parks the probe forever — which stalls
+/// accepts for the rest of the session (the accept arm is gated on `!probing`)
+/// and, once the live session ends, hangs the whole accept loop on the handoff
+/// await with no way left to observe [`ServerEvent::Quit`]. Generous enough for
+/// TLS + CredSSP over a slow link, which is sub-second on a healthy one.
+///
+/// # Known limitation: one candidate is negotiated at a time
+///
+/// `run()`'s race holds a SINGLE probe slot (`probe`/`probing`), so a peer
+/// that has already cleared [`ConnectionHandler::on_accept`] and then merely
+/// STALLS its handshake (a well-formed X.224 Connection Request, then
+/// silence before TLS — `on_accept` cannot see this in advance, since it
+/// already returned `true` for this peer) occupies the slot for up to this
+/// whole timeout, during which the accept arm is gated off and no OTHER
+/// candidate — including a legitimate one — can even begin negotiating. The
+/// live session itself is unaffected either way (this only withholds
+/// PREEMPTION, never breaks it), and it is not a regression against master's
+/// queue-behind default. But it means `on_accept` bounds who may ATTEMPT a
+/// takeover, not how long one attempt can hold up every other. Closing this
+/// properly needs a small pool of concurrent probe slots rather than one;
+/// not done here.
+const CANDIDATE_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long the accept loop will wait, AFTER the live session has ended, for a
+/// candidate that is still mid-negotiation.
+///
+/// Deliberately short and separate from [`CANDIDATE_NEGOTIATION_TIMEOUT`]:
+/// while this wait is in progress the loop is servicing nothing — no accepts,
+/// no [`ServerEvent`]s, not even [`ServerEvent::Quit`] — so it is the window in
+/// which an unauthenticated peer can make the server look hung. A candidate
+/// that cannot finish within it is dropped and simply reconnects; holding the
+/// whole listener for it is the worse trade.
+const CANDIDATE_HANDOFF_GRACE: Duration = Duration::from_millis(750);
+
+/// How long a just-evicted peer is barred from preempting its way back in —
+/// see [`RdpServer::recently_evicted`].
+const REPREEMPT_COOLDOWN: Duration = Duration::from_secs(5);
+
+/// Absolute cap on that bar, measured from the eviction itself.
+///
+/// [`refuse_reconnect_from_evicted`] re-arms its window on every refused
+/// attempt, which is what stops an auto-reconnect storm from winning the
+/// session back. Left uncapped that also permanently locks out the feature's
+/// own headline case — a client whose link dropped, whose stale session is
+/// still live, and which is auto-reconnecting to reclaim it. Past this cap the
+/// bar lifts even under a continuing storm; by then the evicted peer has had
+/// its `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION` (the real fix for the loop),
+/// and this heuristic has served its purpose as a backstop.
+const REPREEMPT_MAX_LOCKOUT: Duration = Duration::from_secs(30);
+
+/// Does this security mode authenticate the CLIENT before a candidate reaches
+/// the point where it could evict the live session?
+///
+/// Only [`RdpServerSecurity::Hybrid`] does: CredSSP/NLA runs inside
+/// [`negotiate_candidate`]. A `Tls` handshake authenticates the *server* to the
+/// client, not the reverse, and any peer that can reach the port completes one;
+/// `None` authenticates nothing. Under those two, preemption's bar is therefore
+/// NOT authentication — see the security section on
+/// [`ConnectionPolicy::Preempt`], and the startup warning in
+/// [`RdpServer::run`].
+fn authenticates_before_eviction(security: &RdpServerSecurity) -> bool {
+    matches!(security, RdpServerSecurity::Hybrid(_))
+}
+
+/// A peer barred from preempting straight back after being evicted, and when
+/// that bar started — see [`refuse_reconnect_from_evicted`].
+#[derive(Debug, Clone, Copy)]
+struct EvictedPeer {
+    ip: IpAddr,
+    /// When the eviction happened; bounds the lockout via [`REPREEMPT_MAX_LOCKOUT`].
+    evicted_at: Instant,
+    /// Most recent refused attempt; re-armed to throttle a reconnect storm.
+    last_try: Instant,
+}
+
+/// Should this candidate be refused because it is the peer that was just
+/// evicted, bouncing straight back to retake the session?
+///
+/// Each refused attempt RE-ARMS the window, so a client auto-reconnecting on a
+/// ~1 s cadence keeps resetting its own cooldown and cannot immediately win the
+/// session back, while a human who closes the client and reconnects — a gap
+/// beyond `cooldown` — still can.
+///
+/// The re-arm is bounded by `max_lockout` from the eviction, so a peer that
+/// keeps retrying is eventually let back in rather than barred forever. Without
+/// that cap this locks out exactly the case the feature exists for: a client
+/// whose network dropped, auto-reconnecting to reclaim its own stale session.
+///
+/// Keyed on source IP, because the source port changes on every reconnect. The
+/// cost is that two clients behind one NAT briefly share a bar; the cap bounds
+/// how long that lasts.
+fn refuse_reconnect_from_evicted(
+    recently_evicted: &mut Option<EvictedPeer>,
+    peer: IpAddr,
+    now: Instant,
+    cooldown: Duration,
+    max_lockout: Duration,
+) -> bool {
+    match recently_evicted {
+        Some(evicted) if evicted.ip == peer => {
+            let within_cooldown = now.duration_since(evicted.last_try) < cooldown;
+            let within_cap = now.duration_since(evicted.evicted_at) < max_lockout;
+            let refuse = within_cooldown && within_cap;
+            if refuse {
+                evicted.last_try = now;
+            }
+            refuse
+        }
+        _ => false,
+    }
+}
+
+/// A cheap, cloned snapshot of everything a preempting candidate needs to
+/// negotiate, so it can do so WITHOUT `&mut self` and therefore concurrently
+/// with the live connection's borrow. Built per race via
+/// [`RdpServer::negotiation_context`].
+///
+/// Deliberately does NOT carry the channel factories: a candidate builds no
+/// backends, because it may never be served (see the note in
+/// [`negotiate_candidate`]). Only the winner does, in
+/// [`RdpServer::serve_negotiated`], from `self`.
+struct NegotiationContext {
+    opts: RdpServerOptions,
+    creds: Option<Credentials>,
+    display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
+}
+
+/// A candidate that has negotiated AND authenticated, and so has earned the
+/// right to evict the live session. Everything needed to resume at
+/// finalization, which [`RdpServer::serve_negotiated`] does once it wins --
+/// just [`PendingConnection::negotiate_and_authenticate`]'s own result type,
+/// named for what it means in this context.
+type NegotiatedCandidate = NegotiatedConnection<TcpStream>;
+
+/// Negotiate and authenticate a candidate connection against a cloned `ctx`,
+/// touching no `&mut self` — which is what lets this run inside
+/// [`RdpServer::run`]'s preemption race, concurrently with the live
+/// connection.
+///
+/// Returns `Some` only once the candidate has genuinely earned the session:
+/// negotiation completed and, where the security mode provides it,
+/// authentication succeeded (see the table on
+/// [`ConnectionPolicy::Preempt`]). On any failure — a
+/// malformed or non-RDP handshake, TLS rejected, CredSSP rejected — returns
+/// `None` and the live session is left completely undisturbed.
+async fn negotiate_candidate(
+    ctx: &NegotiationContext,
+    stream: TcpStream,
+    peer: SocketAddr,
+) -> Option<(Box<NegotiatedCandidate>, SocketAddr)> {
+    let size = ctx.display.lock().await.size().await;
+    let capabilities = capabilities::capabilities(&ctx.opts, size);
+    let pending = PendingConnection::new(
+        ctx.opts.security.clone(),
+        size,
+        capabilities,
+        ctx.creds.clone(),
+        ctx.opts.honor_client_desktop_size,
+    );
+
+    // NOTE: deliberately NO channel attachment here. Building the cliprdr /
+    // sound / gfx backends means running user-supplied factories for a peer
+    // that has not authenticated yet — a port scan would construct and tear
+    // down backends alongside the live session's, and those factories may claim
+    // exclusive OS resources (an audio capture device, clipboard ownership).
+    // The winner attaches its own channels in `RdpServer::serve_negotiated`,
+    // which is still before `accept_finalize` — the acceptor does not consume
+    // the static channel set until it processes the MCS Connect Initial, which
+    // happens there, not in `accept_begin`.
+
+    match pending.negotiate_and_authenticate(stream, TransportTls::Managed).await {
+        Ok(Some(negotiated)) => {
+            debug!(?peer, "candidate authenticated -- eligible to preempt the live session");
+            Some((Box::new(negotiated), peer))
+        }
+        Ok(None) => {
+            debug!(
+                ?peer,
+                "candidate TLS handshake failed -- not preempting the live session"
+            );
+            None
+        }
+        Err(error) => {
+            debug!(
+                ?peer,
+                %error,
+                "candidate did not negotiate/authenticate -- not preempting the live session"
+            );
+            None
+        }
+    }
+}
+
+/// [`negotiate_candidate`] under a hard deadline.
+///
+/// The negotiation blocks on socket reads from an as-yet-unauthenticated peer,
+/// so it MUST NOT be awaited unbounded anywhere in the accept loop: a peer that
+/// connects and then says nothing would otherwise stall accepts for the rest of
+/// the session and hang the loop outright once the session ended. Timing out is
+/// treated exactly like a failed negotiation — the candidate is dropped and the
+/// live session is untouched.
+async fn negotiate_candidate_bounded(
+    ctx: &NegotiationContext,
+    stream: TcpStream,
+    peer: SocketAddr,
+) -> Option<(Box<NegotiatedCandidate>, SocketAddr)> {
+    match tokio::time::timeout(CANDIDATE_NEGOTIATION_TIMEOUT, negotiate_candidate(ctx, stream, peer)).await {
+        Ok(candidate) => candidate,
+        Err(_) => {
+            debug!(
+                ?peer,
+                timeout = ?CANDIDATE_NEGOTIATION_TIMEOUT,
+                "candidate did not finish negotiating in time -- abandoning it, the live session is untouched"
+            );
+            None
+        }
+    }
+}
+
 impl RdpServer {
     #[expect(
         clippy::too_many_arguments,
         reason = "called via the builder; positional parameters are an internal detail"
+    )]
+    #[expect(
+        clippy::similar_names,
+        reason = "rdpei (MS-RDPEI touch/pen) and rdpeai (MS-RDPEAI audio input) are distinct protocols \
+                  whose names happen to be textually close; renaming either would be less accurate"
     )]
     pub(crate) fn new(
         opts: RdpServerOptions,
@@ -702,11 +1366,15 @@ impl RdpServer {
         mut sound_factory: Option<Box<dyn SoundServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
         mut rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
+        mut rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
+        mut rdpeai_factory: Option<Box<dyn RdpeaiServerFactory>>,
         connection_handler: Option<Box<dyn ConnectionHandler>>,
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
         display_suppressed: Option<Arc<AtomicBool>>,
+        #[cfg(feature = "usb")] usb_factory: Option<Box<dyn DeviceFactory>>,
         autodetect_rtt: Option<Arc<AtomicU32>>,
         autodetect_baseline_rtt: Option<Arc<AtomicU32>>,
+        autodetect_bandwidth: Option<Arc<AtomicU32>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
@@ -718,10 +1386,17 @@ impl RdpServer {
         if let Some(rdpei) = rdpei_factory.as_mut() {
             rdpei.set_sender(ev_sender.clone());
         }
+        if let Some(rdpdr) = rdpdr_factory.as_mut() {
+            rdpdr.set_sender(ev_sender.clone());
+        }
+        if let Some(rdpeai) = rdpeai_factory.as_mut() {
+            rdpeai.set_sender(ev_sender.clone());
+        }
         #[cfg(feature = "egfx")]
         if let Some(gfx) = gfx_factory.as_mut() {
             gfx.set_sender(ev_sender.clone());
         }
+
         Self {
             opts,
             handler: Arc::new(Mutex::new(handler)),
@@ -731,18 +1406,24 @@ impl RdpServer {
             sound_factory,
             cliprdr_factory,
             rdpei_factory,
+            rdpdr_factory,
+            rdpeai_factory,
             echo_handle: EchoServerHandle::new(ev_sender.clone()),
             #[cfg(feature = "egfx")]
             gfx_factory,
             #[cfg(feature = "egfx")]
             gfx_handle: None,
+            #[cfg(feature = "usb")]
+            usb_man: usb_factory.map(ServerUsbManager::new),
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
             credential_validator: None,
             local_addr: None,
             autodetect: None,
+            heartbeat: None,
             connection_handler,
+            recently_evicted: None,
             display_suppressed: display_suppressed.unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
             autodetect_rtt: {
                 // Reset to the sentinel: an injected handle must not expose a stale value before the first measurement.
@@ -752,6 +1433,11 @@ impl RdpServer {
             },
             autodetect_baseline_rtt: {
                 let handle = autodetect_baseline_rtt.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX)));
+                handle.store(u32::MAX, Ordering::Relaxed);
+                handle
+            },
+            autodetect_bandwidth: {
+                let handle = autodetect_bandwidth.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX)));
                 handle.store(u32::MAX, Ordering::Relaxed);
                 handle
             },
@@ -822,6 +1508,14 @@ impl RdpServer {
         }
     }
 
+    /// Returns a handle for gracefully disconnecting the active client with a
+    /// `ServerSetErrorInfo` PDU while [`Self::run`] owns this server.
+    pub fn error_info_disconnect_handle(&self) -> ErrorInfoDisconnectHandle {
+        ErrorInfoDisconnectHandle {
+            sender: self.ev_sender.clone(),
+        }
+    }
+
     fn supports_auto_reconnect(&self) -> bool {
         matches!(
             &self.opts.security,
@@ -869,12 +1563,52 @@ impl RdpServer {
         }
         self.auto_reconnect_sent = true;
     }
+
+    /// (vendored, divergence 23) Invalidate whatever ARC cookie belongs to
+    /// the session that is about to be EVICTED, without disabling
+    /// auto-reconnect for the server going forward.
+    ///
+    /// MS-RDPBCGR 5.5 requires a session's auto-reconnect cookie to be
+    /// invalidated once a different client's session begins. This crate
+    /// already demotes the outgoing cookie into `previous_auto_reconnect_
+    /// cookie` on every normal rotation (`commit_auto_reconnect_rotation`) --
+    /// a network-timing tolerance for the common case of a lost Save Session
+    /// Info PDU -- which means an EVICTED peer's cookie stays valid for one
+    /// more rotation. Since `verify_auto_reconnect_cookie` accepts either
+    /// slot, and a client presenting a valid ARC cookie skips
+    /// `credential_validator` (see `client_accepted`), an evicted peer could
+    /// silently resume without a real re-authorization check -- and, because
+    /// re-authenticating via ARC needs no user interaction, do so reliably
+    /// the moment `REPREEMPT_MAX_LOCKOUT` lifts.
+    ///
+    /// Rotates to a FRESH cookie under the SAME `logon_id` (so the server
+    /// keeps issuing cookies to whoever connects next -- a normal rotation
+    /// does the same) but with new random bits, which is what actually
+    /// invalidates the old one: `ClientAutoReconnect::verify` HMACs against
+    /// `random_bits`, not `logon_id` alone. `previous_auto_reconnect_cookie`
+    /// is discarded outright here rather than demoted into, since the whole
+    /// point is that the evicted party's cookie must not remain valid even
+    /// for one more attempt.
+    ///
+    /// MUST NOT set `auto_reconnect_cookie` to `None`:
+    /// `next_auto_reconnect_cookie` treats `None` as "auto-reconnect is not
+    /// configured" and stops issuing cookies to EVERY future connection, not
+    /// just this one -- silently disabling the feature server-wide for the
+    /// rest of the process (see `next_auto_reconnect_cookie`'s early
+    /// `self.auto_reconnect_cookie.as_ref()?`). No-op if auto-reconnect isn't
+    /// configured at all.
+    fn invalidate_auto_reconnect_cookie_on_eviction(&mut self) {
+        if let Some(current) = self.auto_reconnect_cookie.as_ref() {
+            self.auto_reconnect_cookie = Some(Self::generate_auto_reconnect_cookie(current.logon_id));
+        }
+        self.previous_auto_reconnect_cookie = None;
+    }
     async fn send_auto_reconnect_cookie(
         cookie: rdp::session_info::ServerAutoReconnect,
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
-    ) -> Result<()> {
+    ) -> ServerResult<()> {
         let pdu = rdp::headers::ShareDataPdu::SaveSessionInfo(rdp::session_info::SaveSessionInfoPdu {
             info_type: rdp::session_info::InfoType::LogonExtended,
             info_data: rdp::session_info::InfoData::LogonExtended(rdp::session_info::LogonInfoExtended {
@@ -883,8 +1617,11 @@ impl RdpServer {
                 errors_info: None,
             }),
         });
-        let data = encode_share_data_pdu(pdu, io_channel_id, user_channel_id)?;
-        writer.write_all(&data).await.context("send auto-reconnect cookie")?;
+        let data = encode_share_data_pdu(pdu, user_channel_id, io_channel_id, user_channel_id)?;
+        writer
+            .write_all(&data)
+            .await
+            .map_err(|e| ServerError::io("send auto-reconnect cookie", e))?;
         debug!("Sent Server Auto-Reconnect Cookie (Save Session Info PDU)");
 
         Ok(())
@@ -895,7 +1632,7 @@ impl RdpServer {
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
-    ) -> Result<()> {
+    ) -> ServerResult<()> {
         let Some(cookie) = self.next_auto_reconnect_cookie() else {
             return Ok(());
         };
@@ -911,7 +1648,7 @@ impl RdpServer {
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
-    ) -> Result<()> {
+    ) -> ServerResult<()> {
         if !self.supports_auto_reconnect() {
             return Ok(());
         }
@@ -933,7 +1670,7 @@ impl RdpServer {
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
-    ) -> Result<()> {
+    ) -> ServerResult<()> {
         let Some(cookie) = cookie else {
             self.set_auto_reconnect_cookie(None);
             return Ok(());
@@ -954,6 +1691,29 @@ impl RdpServer {
 
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
         &self.ev_sender
+    }
+
+    #[cfg(feature = "usb")]
+    fn remove_usb_device(&mut self, dvc_id: DynamicChannelId) {
+        let Some(usb_man) = self.usb_man.as_mut() else {
+            warn!("Missing USB device factory");
+            return;
+        };
+
+        let Some(device) = usb_man.router.remove(&dvc_id) else {
+            trace!(dvc_id, "Closed USB device is absent from request router");
+            return;
+        };
+
+        // Set the terminal state before failing waiters: a woken PendingRequest
+        // must not enqueue CANCEL_REQUEST for a removed DVC. The pending map is
+        // shared, so dropping the router entry no longer drops it.
+        device.mark_closed();
+        let pending_requests = device.drain_pending();
+        debug!(
+            dvc_id,
+            pending_requests, "Removed closed USB device from request router"
+        );
     }
 
     /// Returns the shared "display suppressed" flag — `true` while the
@@ -1012,6 +1772,17 @@ impl RdpServer {
         Arc::clone(&self.autodetect_baseline_rtt)
     }
 
+    /// Returns a handle to the latest NetworkAutoDetect measured bandwidth in
+    /// kilobits per second (`u32::MAX` until the first measurement completes,
+    /// and while auto-detect is disabled). The server updates it whenever a
+    /// Bandwidth Measure Results response completes a measurement; backends
+    /// clone the handle to read the figure the server also reports to the
+    /// client on the wire. Inject a shared instance at construction with
+    /// [`RdpServerBuilder::with_autodetect_bandwidth_handle`](crate::RdpServerBuilder::with_autodetect_bandwidth_handle).
+    pub fn autodetect_bandwidth_handle(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.autodetect_bandwidth)
+    }
+
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
     pub fn echo_handle(&self) -> &EchoServerHandle {
         &self.echo_handle
@@ -1027,6 +1798,17 @@ impl RdpServer {
     /// query results with [`rtt_snapshot()`](Self::rtt_snapshot).
     pub fn enable_autodetect(&mut self) {
         self.autodetect = Some(AutoDetectManager::new());
+    }
+
+    /// Enable periodic Server Heartbeat PDUs (MS-RDPBCGR 2.2.16.1).
+    ///
+    /// Heartbeats ride the MCS message channel, so they are only emitted
+    /// when the client requested one AND advertised
+    /// `RNS_UD_CS_SUPPORT_HEARTBEAT_PDU` in its early capability flags, and,
+    /// per the spec's idle-only SHOULD, only when no other PDU went out
+    /// during the previous heartbeat interval.
+    pub fn enable_heartbeat(&mut self, config: HeartbeatConfig) {
+        self.heartbeat = Some(config);
     }
 
     /// Get the latest auto-detect RTT snapshot.
@@ -1063,6 +1845,12 @@ impl RdpServer {
             acceptor.attach_static_channel(RdpsndServer::new(backend));
         }
 
+        if let Some(factory) = self.rdpdr_factory.as_deref() {
+            let backend = factory.build_backend();
+
+            acceptor.attach_static_channel(RdpdrServer::new(backend));
+        }
+
         let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));
         let dvc = dvc::DrdynvcServer::new()
             .with_dynamic_channel(AInputHandler {
@@ -1077,6 +1865,13 @@ impl RdpServer {
 
         let dvc = if let Some(factory) = self.rdpei_factory.as_deref() {
             dvc.with_dynamic_channel(factory.build_server())
+        } else {
+            dvc
+        };
+
+        let dvc = if let Some(factory) = self.rdpeai_factory.as_deref() {
+            let backend = factory.build_backend();
+            dvc.with_dynamic_channel(RdpeaiServer::new(backend))
         } else {
             dvc
         };
@@ -1097,6 +1892,17 @@ impl RdpServer {
             dvc
         };
 
+        #[cfg(feature = "usb")]
+        let dvc = {
+            let mut dvc = dvc;
+            if self.usb_man.is_some() {
+                dvc = dvc.with_dynamic_channel(UrbdrcControlServer::new(Box::new(UsbControlHandle::new(
+                    self.ev_sender.clone(),
+                ))));
+            }
+            dvc
+        };
+
         acceptor.attach_static_channel(dvc);
 
         for factory in &self.static_channel_factories {
@@ -1104,12 +1910,105 @@ impl RdpServer {
         }
     }
 
+    /// Drop every event still queued on the server-global channel that
+    /// belongs to the SESSION just replaced, keeping only the small set of
+    /// lifecycle/control events meant to survive across connections.
+    ///
+    /// Called immediately before serving a preemption winner. The channel is
+    /// shared across every connection the server ever serves and is read by
+    /// whichever connection drains it next -- so any event the outgoing
+    /// session produced but never got around to consuming (its OWN eviction
+    /// notice, a queued clipboard message, an RDPSND wave, an EGFX frame)
+    /// would otherwise be delivered to its replacement. That is at best stale
+    /// (an audio wave from a session that no longer exists) and at worst a
+    /// real leak (the previous peer's clipboard content, handed unprompted to
+    /// the client that just replaced it).
+    ///
+    /// An ALLOWLIST of what to KEEP, not a denylist of `EvictedByOtherConnection`
+    /// alone, and deliberately so: this mirrors what `run()`'s own top-level
+    /// select already does when NOTHING is being served (only `Quit` /
+    /// `GetLocalAddr` / `SetCredentials` / `SetAutoReconnectCookie` are
+    /// meaningful there; everything else falls into its `ev => debug!("Unexpected
+    /// event")` catch-all and is discarded). A new per-session `ServerEvent`
+    /// variant is excluded here by default, instead of silently leaking across
+    /// a takeover boundary until someone remembers to add it to a denylist.
+    async fn discard_stale_session_events(&mut self) {
+        use tokio::sync::mpsc::error::TryRecvError;
+
+        let ev_receiver = Arc::clone(&self.ev_receiver);
+        let mut ev_receiver = ev_receiver.lock().await;
+
+        // Collect first, re-send after: re-sending during the drain would push
+        // events onto the back of the same queue we are draining.
+        let mut keep = Vec::new();
+        let mut discarded = 0usize;
+        loop {
+            match ev_receiver.try_recv() {
+                Ok(
+                    event @ (ServerEvent::Quit(_)
+                    | ServerEvent::GetLocalAddr(_)
+                    | ServerEvent::SetCredentials(_)
+                    | ServerEvent::SetAutoReconnectCookie(_)),
+                ) => keep.push(event),
+                Ok(_other) => discarded += 1,
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+            }
+        }
+
+        if discarded > 0 {
+            debug!(
+                discarded,
+                "dropped per-session events the replaced session never consumed -- they must not reach its replacement"
+            );
+        }
+
+        for event in keep {
+            let _ = self.ev_sender.send(event);
+        }
+    }
+
+    /// Build the cheap, cloned snapshot a preempting candidate negotiates
+    /// against — see [`NegotiationContext`].
+    fn negotiation_context(&self) -> NegotiationContext {
+        NegotiationContext {
+            opts: self.opts.clone(),
+            creds: self.creds.clone(),
+            display: Arc::clone(&self.display),
+        }
+    }
+
+    /// Serve a candidate that already won the preemption race: negotiation and
+    /// authentication are done, so this is where its channel backends are
+    /// finally built (see the body comment below for why only now) before
+    /// handing off to the same finalization the normal path uses. From here
+    /// on, a preemption winner is indistinguishable from a normally-accepted
+    /// connection.
+    async fn serve_negotiated(&mut self, candidate: Box<NegotiatedCandidate>) -> ServerResult<()> {
+        self.display_suppressed.store(false, Ordering::Relaxed);
+
+        let mut candidate = candidate;
+        // Only NOW build the channel backends: this connection has
+        // authenticated and is about to be served, so the factories run
+        // exactly once per served session, as they always have. Still ahead of
+        // `accept_finalize`, which is where the acceptor first consumes the
+        // static channel set (the MCS Connect Initial); `accept_begin`, already
+        // done, stops at the security-upgrade gate before that.
+        self.attach_channels(&mut candidate.acceptor);
+
+        self.finalize_negotiated(*candidate).await
+    }
+
     /// Run a single RDP connection over `stream`, performing the
     /// IronRDP-managed TLS handshake on `ShouldUpgrade` (standard TCP+TLS).
     ///
+    /// Socket options on `stream` are the caller's to set. In particular RDP
+    /// is a stream of small, latency-sensitive writes, so a TCP stream should
+    /// have `TCP_NODELAY` set; [`RdpServer::run`] does that for the
+    /// connections it accepts itself.
+    ///
     /// Equivalent to [`run_connection_with`](Self::run_connection_with) with
     /// [`TransportTls::Managed`].
-    pub async fn run_connection<S>(&mut self, stream: S) -> Result<()>
+    pub async fn run_connection<S>(&mut self, stream: S) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
@@ -1118,6 +2017,9 @@ impl RdpServer {
 
     /// Run a single RDP connection over `stream`, choosing who performs the TLS
     /// handshake with `tls`.
+    ///
+    /// Socket options on `stream` are the caller's to set; see
+    /// [`run_connection`](Self::run_connection).
     ///
     /// With [`TransportTls::Managed`], IronRDP performs the TLS accept on
     /// `ShouldUpgrade`, exactly as [`run_connection`](Self::run_connection).
@@ -1186,7 +2088,7 @@ impl RdpServer {
     /// under [`TransportTls::AlreadyDone`] is that after the negotiation reaches
     /// the security-upgrade gate, no TLS handshake is performed on the byte
     /// stream, because the caller's stream is already past TLS at a lower layer.
-    pub async fn run_connection_with<S>(&mut self, stream: S, tls: TransportTls) -> Result<()>
+    pub async fn run_connection_with<S>(&mut self, stream: S, tls: TransportTls) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
@@ -1203,7 +2105,7 @@ impl RdpServer {
         result
     }
 
-    async fn run_connection_inner<S>(&mut self, stream: S, tls: TransportTls) -> Result<()>
+    async fn run_connection_inner<S>(&mut self, stream: S, tls: TransportTls) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
@@ -1218,89 +2120,75 @@ impl RdpServer {
         // `set_display_suppressed_handle()`.
         self.display_suppressed.store(false, Ordering::Relaxed);
 
-        let framed = TokioFramed::new(stream);
-
         let size = self.display.lock().await.size().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
-        let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities, self.creds.clone());
-        acceptor.set_honor_client_desktop_size(self.opts.honor_client_desktop_size);
+        let mut pending = PendingConnection::new(
+            self.opts.security.clone(),
+            size,
+            capabilities,
+            self.creds.clone(),
+            self.opts.honor_client_desktop_size,
+        );
 
-        self.attach_channels(&mut acceptor);
+        self.attach_channels(pending.acceptor_mut());
 
-        let res = ironrdp_acceptor::accept_begin(framed, &mut acceptor)
-            .await
-            .context("accept_begin failed")?;
+        let Some(negotiated) = pending.negotiate_and_authenticate(stream, tls).await? else {
+            return Ok(());
+        };
 
-        match res {
-            // The only thing that varies between the two modes is who performs
-            // the TLS handshake; everything past it is `finalize_after_upgrade`.
-            BeginResult::ShouldUpgrade(stream) => match tls {
-                TransportTls::Managed => {
-                    let tls_acceptor = match &self.opts.security {
-                        RdpServerSecurity::Tls(acceptor) => acceptor,
-                        RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
-                        RdpServerSecurity::None => unreachable!(),
-                    };
-                    let accept = match tls_acceptor.accept(stream).await {
-                        Ok(accept) => accept,
-                        Err(e) => {
-                            warn!("Failed to TLS accept: {}", e);
-                            return Ok(());
-                        }
-                    };
-                    self.finalize_after_upgrade(TokioFramed::new(accept), acceptor, "TLS connection")
-                        .await?;
-                }
-                TransportTls::AlreadyDone => {
-                    // The stream is already past TLS (terminated at a lower
-                    // layer, e.g. a WSS terminator); do NOT call
-                    // tls_acceptor.accept on it.
-                    self.finalize_after_upgrade(TokioFramed::new(stream), acceptor, "TLS-offloaded stream")
-                        .await?;
-                }
-            },
+        self.finalize_negotiated(negotiated).await
+    }
 
-            BeginResult::Continue(framed) => {
+    /// Finalize a connection that has already negotiated (and, under Hybrid,
+    /// authenticated) via [`PendingConnection::negotiate_and_authenticate`].
+    /// Dispatches on which [`NegotiatedTransport`] variant it got: `Continued`
+    /// (no security upgrade happened, [`RdpServerSecurity::None`]) goes
+    /// straight to `accept_finalize` with no stream to shut down, while `Tls`
+    /// / `Offloaded` route through [`Self::finalize_and_shutdown`] for the
+    /// extra shutdown step — these three paths are NOT structurally identical
+    /// past this point, only past the handshake `negotiate_and_authenticate`
+    /// itself covers.
+    async fn finalize_negotiated<S>(&mut self, negotiated: NegotiatedConnection<S>) -> ServerResult<()>
+    where
+        S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
+    {
+        let NegotiatedConnection { transport, acceptor } = negotiated;
+        match transport {
+            // No security upgrade happened, so there is no TLS session to shut
+            // down — matches the pre-existing `BeginResult::Continue` arm.
+            NegotiatedTransport::Continued(framed) => {
                 self.accept_finalize(framed, acceptor).await?;
             }
-        };
+            NegotiatedTransport::Tls(framed) => {
+                self.finalize_and_shutdown(*framed, acceptor, "TLS connection").await?;
+            }
+            NegotiatedTransport::Offloaded(framed) => {
+                self.finalize_and_shutdown(framed, acceptor, "TLS-offloaded stream")
+                    .await?;
+            }
+        }
 
         Ok(())
     }
 
-    /// Shared post-handshake tail for both [`TransportTls`] modes: mark the
-    /// security upgrade complete, run the optional Hybrid CredSSP exchange,
-    /// finalize, and shut the stream down. Single-sourcing this is what keeps
-    /// the managed and TLS-offloaded paths structurally identical past the
-    /// handshake, so per-connection state handling cannot drift between them.
-    async fn finalize_after_upgrade<S>(
+    /// Finalize an upgraded stream and shut it down afterwards. The
+    /// negotiation and authentication that used to precede this now live in
+    /// [`negotiate_and_authenticate`], which the preemption candidate path
+    /// shares.
+    async fn finalize_and_shutdown<S>(
         &mut self,
-        mut framed: TokioFramed<S>,
-        mut acceptor: Acceptor,
+        framed: TokioFramed<S>,
+        acceptor: Acceptor,
         shutdown_label: &str,
-    ) -> Result<()>
+    ) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
-        acceptor.mark_security_upgrade_as_done();
-
-        if let RdpServerSecurity::Hybrid((_, pub_key)) = &self.opts.security {
-            // Generic streams don't expose peer address. Use a neutral
-            // placeholder; it's unclear whether CredSSP/NTLM actually
-            // uses this value in practice.
-            let client_name = "rdp-client".to_owned();
-
-            ironrdp_acceptor::accept_credssp(
-                &mut framed,
-                &mut acceptor,
-                &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
-                client_name.into(),
-                pub_key.clone(),
-                None,
-            )
-            .await?;
-        }
-
+        // No mark_security_upgrade_as_done / CredSSP here: this refactor moved
+        // both into `complete_security_upgrade`, called from
+        // `PendingConnection::negotiate_and_authenticate` before this function
+        // ever runs -- upstream's un-refactored equivalent still does that
+        // work at this point, since it has no separate negotiation step.
         let framed = self.accept_finalize(framed, acceptor).await?;
         debug!("Shutting down {}", shutdown_label);
         let (mut inner, _) = framed.into_inner();
@@ -1311,12 +2199,12 @@ impl RdpServer {
         Ok(())
     }
 
-    pub async fn run(&mut self) -> Result<()> {
+    pub async fn run(&mut self) -> ServerResult<()> {
         // Create socket with control over options before binding.
         // Using TcpSocket instead of TcpListener::bind() allows setting
         // SO_REUSEADDR and IPv6 dual-stack mode.
         let socket = match self.opts.addr {
-            SocketAddr::V4(_) => TcpSocket::new_v4().context("create IPv4 socket")?,
+            SocketAddr::V4(_) => TcpSocket::new_v4().map_err(|e| ServerError::io("create IPv4 socket", e))?,
             SocketAddr::V6(_) => {
                 // IPv6 socket: on Linux, dual-stack is the default
                 // (net.ipv6.bindv6only=0), so IPv4 clients connect as
@@ -1324,7 +2212,7 @@ impl RdpServer {
                 // where IPV6_V6ONLY defaults to 1 (Windows, some BSDs),
                 // only IPv6 clients will be accepted and a separate IPv4
                 // listener would be needed.
-                TcpSocket::new_v6().context("create IPv6 socket")?
+                TcpSocket::new_v6().map_err(|e| ServerError::io("create IPv6 socket", e))?
             }
         };
 
@@ -1333,74 +2221,380 @@ impl RdpServer {
         // on Windows SO_REUSEADDR has different semantics that allow a
         // second process to bind the same port, which is a security risk.
         #[cfg(unix)]
-        socket.set_reuseaddr(true).context("set SO_REUSEADDR")?;
+        socket
+            .set_reuseaddr(true)
+            .map_err(|e| ServerError::io("set SO_REUSEADDR", e))?;
 
-        socket.bind(self.opts.addr).context("bind listen address")?;
+        socket
+            .bind(self.opts.addr)
+            .map_err(|e| ServerError::io("bind listen address", e))?;
 
-        let listener = socket.listen(LISTENER_BACKLOG).context("start listener")?;
-        let local_addr = listener.local_addr()?;
+        let listener = socket
+            .listen(LISTENER_BACKLOG)
+            .map_err(|e| ServerError::io("start listener", e))?;
+        let local_addr = listener.local_addr().map_err(|e| ServerError::io("local_addr", e))?;
 
         debug!("Listening for connections on {local_addr}");
         self.local_addr = Some(local_addr);
 
+        // A candidate that wins a preemption race has ALREADY cleared
+        // `on_accept` and fully authenticated by the time it lands here, so it
+        // carries a negotiated candidate rather than a raw stream: the next
+        // iteration resumes it at finalization, with no second `on_accept`
+        // call (that hook is stateful for rate limiters) and no renegotiation.
+        let mut pending: Option<(Box<NegotiatedCandidate>, SocketAddr)> = None;
+
+        // Say so out loud: under these modes the bar to evict a live session is
+        // NOT authentication, whatever the option's name suggests. Restrict who
+        // may even attempt a takeover with `ConnectionHandler::on_accept`.
+        if self.opts.connection_policy == ConnectionPolicy::Preempt
+            && !authenticates_before_eviction(&self.opts.security)
+        {
+            warn!(
+                "ConnectionPolicy::Preempt is selected under a security mode that does not authenticate the client \
+                 before it could evict the live session: any peer able to complete the handshake can take the \
+                 session over. Use RdpServerSecurity::Hybrid (CredSSP/NLA) for an authentication-gated takeover, or \
+                 gate candidates with ConnectionHandler::on_accept."
+            );
+        }
+
         loop {
-            let ev_receiver = Arc::clone(&self.ev_receiver);
-            let mut ev_receiver = ev_receiver.lock().await;
-            tokio::select! {
-                Some(event) = ev_receiver.recv() => {
-                    match event {
-                        ServerEvent::Quit(reason) => {
-                            debug!("Got quit event {reason}");
-                            break;
-                        }
-                        ServerEvent::GetLocalAddr(tx) => {
-                            let _ = tx.send(self.local_addr);
-                        }
-                        ServerEvent::SetCredentials(creds) => {
-                            self.set_credentials(Some(creds));
-                        }
-                        ServerEvent::SetAutoReconnectCookie(cookie) => {
-                            self.set_auto_reconnect_cookie(cookie);
-                        }
-                        ev => {
-                            debug!("Unexpected event {:?}", ev);
-                        }
-                    }
-                },
-                Ok((stream, peer)) = listener.accept() => {
-                    debug!(?peer, "Received connection");
-                    drop(ev_receiver);
+            enum Entry {
+                Fresh(TcpStream, SocketAddr),
+                Negotiated(Box<NegotiatedCandidate>, SocketAddr),
+            }
 
-                    let accepted = self.connection_handler
-                        .as_mut()
-                        .is_none_or(|h| h.on_accept(peer));
+            let entry = match pending.take() {
+                Some((candidate, peer)) => {
+                    // The eviction event is queued on the server-global channel
+                    // but consumed by whichever connection happens to drain it.
+                    // If the incumbent was too wedged to take it within
+                    // `EVICTION_GRACE` (very plausibly the case — being wedged
+                    // is why it was evicted), it is still queued now, and the
+                    // WINNER's `client_loop` would drain it and disconnect
+                    // itself, reporting a bogus
+                    // `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION` to the client
+                    // that just took the session over. Discard any such
+                    // leftover before serving it; every other event is put back
+                    // in order.
+                    self.discard_stale_session_events().await;
+                    Entry::Negotiated(candidate, peer)
+                }
+                None => {
+                    let ev_receiver = Arc::clone(&self.ev_receiver);
+                    let mut ev_receiver = ev_receiver.lock().await;
+                    let accepted = tokio::select! {
+                        Some(event) = ev_receiver.recv() => {
+                            match event {
+                                ServerEvent::Quit(reason) => {
+                                    debug!("Got quit event {reason}");
+                                    break;
+                                }
+                                ServerEvent::GetLocalAddr(tx) => {
+                                    let _ = tx.send(self.local_addr);
+                                }
+                                ServerEvent::SetCredentials(creds) => {
+                                    self.set_credentials(Some(creds));
+                                }
+                                ServerEvent::SetAutoReconnectCookie(cookie) => {
+                                    self.set_auto_reconnect_cookie(cookie);
+                                }
+                                ev => {
+                                    debug!("Unexpected event {:?}", ev);
+                                }
+                            }
+                            continue;
+                        },
+                        Ok((stream, peer)) = listener.accept() => {
+                            drop(ev_receiver);
+                            // RDP output is small writes the peer is waiting
+                            // on: a frame, a pointer update, a channel PDU.
+                            // Nagle holds the trailing partial segment of each
+                            // until the previous is acknowledged, which
+                            // against a peer using delayed acknowledgements is
+                            // dead time on every one. Not worth refusing a
+                            // connection over, though.
+                            if let Err(error) = stream.set_nodelay(true) {
+                                warn!(?peer, %error, "Failed to set TCP_NODELAY; interactive latency may suffer");
+                            }
+                            (stream, peer)
+                        },
+                        else => break,
+                    };
+                    Entry::Fresh(accepted.0, accepted.1)
+                }
+            };
 
-                    if !accepted {
-                        debug!(?peer, "Connection rejected by handler");
-                        drop(stream);
-                    } else {
-                        let started = tokio::time::Instant::now();
-                        let result = self.run_connection(stream).await;
-                        let duration = started.elapsed();
+            let peer = match &entry {
+                Entry::Fresh(_, peer) | Entry::Negotiated(_, peer) => *peer,
+            };
+            debug!(?peer, "Received connection");
 
-                        if let Err(ref error) = result {
-                            error!(?error, "Connection error");
-                        }
+            // A `Negotiated` winner already passed `on_accept` as a candidate,
+            // inside the race below — its negotiation would not even have
+            // started otherwise. Re-running it here would double-count for a
+            // stateful handler (a rate limiter's window, an audit record).
+            let accepted = matches!(entry, Entry::Negotiated(..))
+                || self.connection_handler.as_mut().is_none_or(|h| h.on_accept(peer));
 
-                        if let Some(ref mut handler) = self.connection_handler {
-                            let action = handler.on_disconnected(
-                                peer,
-                                duration,
-                                result.as_ref().err(),
-                            );
-                            if action == PostConnectionAction::Stop {
-                                debug!(?peer, "Handler requested stop after disconnect");
-                                break;
+            if !accepted {
+                debug!(?peer, "Connection rejected by handler");
+                if let Entry::Fresh(stream, _) = entry {
+                    drop(stream);
+                }
+                continue;
+            }
+
+            let started = tokio::time::Instant::now();
+
+            let (result, preempted_by) = match self.opts.connection_policy {
+                ConnectionPolicy::Preempt => {
+                    // Serve this connection while still accepting: a newcomer that
+                    // clears `on_accept` AND fully authenticates
+                    // (`negotiate_candidate`) takes over, instead of queuing behind
+                    // the live session. Cancelling `conn` runs the same
+                    // per-connection teardown a client-side disconnect does.
+                    //
+                    // `conn` borrows `self` for the whole race, so the candidate's
+                    // `on_accept` and its negotiation work from clones taken here.
+                    let handler = self.connection_handler.take();
+                    let ctx = self.negotiation_context();
+                    let ev_sender = self.ev_sender.clone();
+                    let mut recently_evicted = self.recently_evicted.take();
+
+                    let outcome = {
+                        // Uses the anyhow-returning inner method, not the public
+                        // `run_connection` (`ServerResult`-returning as of
+                        // upstream's typed-error migration, #1242): `conn`'s
+                        // declared `Result<()>` (anyhow) must match
+                        // `serve_negotiated`'s return type across both match
+                        // arms, and `on_disconnected` below still expects
+                        // `Option<&anyhow::Error>` -- the same reason upstream's
+                        // own accept loop bypasses the public wrapper too.
+                        let mut conn: core::pin::Pin<Box<dyn Future<Output = ServerResult<()>> + '_>> = match entry {
+                            Entry::Fresh(stream, _) => {
+                                Box::pin(self.run_connection_inner(stream, TransportTls::Managed))
+                            }
+                            Entry::Negotiated(candidate, _) => Box::pin(self.serve_negotiated(candidate)),
+                        };
+                        let mut probe: PreemptProbe<'_> = Box::pin(core::future::pending());
+                        let mut handler = handler;
+                        let mut probing = false;
+
+                        loop {
+                            // This `select!` must only YIELD — never mutate
+                            // `probe`, whose futures it still borrows.
+                            let race = tokio::select! {
+                                res = &mut conn => PreemptRace::Ended(res),
+                                accepted = listener.accept(), if !probing => PreemptRace::Accepted(accepted),
+                                candidate = &mut probe => PreemptRace::Probed(candidate),
+                            };
+
+                            match race {
+                                // The session ended on its own. A candidate still
+                                // negotiating is NOT discarded — that would reset a
+                                // legitimate client that happened to connect just
+                                // as the old session ended; finish it and serve it
+                                // next if it authenticates.
+                                PreemptRace::Ended(res) => {
+                                    if probing {
+                                        // BOUNDED: nothing else is being serviced
+                                        // during this await, so a candidate that
+                                        // is not nearly done is dropped rather
+                                        // than allowed to stall the listener.
+                                        pending = match tokio::time::timeout(CANDIDATE_HANDOFF_GRACE, &mut probe).await
+                                        {
+                                            Ok(candidate) => candidate,
+                                            Err(_) => {
+                                                debug!(
+                                                    "a candidate was still negotiating when the session ended -- \
+                                                 dropping it rather than stalling the accept loop; it can reconnect"
+                                                );
+                                                None
+                                            }
+                                        };
+                                    }
+                                    break (res, None, handler, recently_evicted);
+                                }
+                                PreemptRace::Accepted(Ok((next_stream, next_peer))) => {
+                                    // Same reason as the primary accept above: RDP
+                                    // is small latency-sensitive writes, so a
+                                    // candidate that goes on to win the race and
+                                    // become the live session needs this too, not
+                                    // just the one accept path upstream's own
+                                    // (non-preemption) loop happens to have.
+                                    if let Err(error) = next_stream.set_nodelay(true) {
+                                        warn!(
+                                            ?next_peer,
+                                            %error,
+                                            "Failed to set TCP_NODELAY on a candidate; interactive latency may suffer"
+                                        );
+                                    }
+                                    // A peer evicted moments ago may not bounce
+                                    // straight back and retake the session; each
+                                    // attempt re-arms the window, so a reconnect
+                                    // storm can never win. See `recently_evicted`.
+                                    let bounced_back = refuse_reconnect_from_evicted(
+                                        &mut recently_evicted,
+                                        next_peer.ip(),
+                                        Instant::now(),
+                                        REPREEMPT_COOLDOWN,
+                                        REPREEMPT_MAX_LOCKOUT,
+                                    );
+                                    // Gate the candidate through `on_accept` BEFORE
+                                    // it may negotiate, and so before it can
+                                    // preempt anything: otherwise a candidate the
+                                    // rate limiter would reject could still evict
+                                    // the live session and only be rejected
+                                    // afterwards, once the damage was done.
+                                    let candidate_accepted =
+                                        !bounced_back && handler.as_mut().is_none_or(|h| h.on_accept(next_peer));
+
+                                    if candidate_accepted {
+                                        probing = true;
+                                        // BOUNDED: see `CANDIDATE_NEGOTIATION_TIMEOUT`.
+                                        // An unbounded probe is a remote hang of
+                                        // the whole accept loop.
+                                        probe = Box::pin(negotiate_candidate_bounded(&ctx, next_stream, next_peer));
+                                    } else if bounced_back {
+                                        info!(
+                                            ?next_peer,
+                                            "ignoring a reconnect from the peer just evicted -- it is \
+                                         auto-reconnecting into the session that replaced it"
+                                        );
+                                        drop(next_stream);
+                                    } else {
+                                        debug!(?next_peer, "candidate rejected by handler while a session was live");
+                                        drop(next_stream);
+                                    }
+                                }
+                                PreemptRace::Accepted(Err(error)) => {
+                                    warn!(?error, "accept failed while a session was live");
+                                }
+                                PreemptRace::Probed(candidate) => {
+                                    probing = false;
+                                    probe = Box::pin(core::future::pending());
+                                    // `negotiate_candidate` already logged the
+                                    // reason when it declines, so there is nothing
+                                    // to do in the `None` case.
+                                    if let Some((candidate, new_peer)) = candidate {
+                                        info!(
+                                            old_peer = ?peer,
+                                            ?new_peer,
+                                            "an authenticated client connected -- evicting the existing session"
+                                        );
+                                        let _ = ev_sender.send(ServerEvent::EvictedByOtherConnection);
+                                        let now = Instant::now();
+                                        recently_evicted = Some(EvictedPeer {
+                                            ip: peer.ip(),
+                                            evicted_at: now,
+                                            last_try: now,
+                                        });
+                                        // Let the incumbent observe the event and
+                                        // put the reason on the wire before it
+                                        // goes; bounded, so a wedged peer cannot
+                                        // stall the takeover.
+                                        match tokio::time::timeout(EVICTION_GRACE, &mut conn).await {
+                                            Ok(res) => {
+                                                break (res, Some((candidate, new_peer)), handler, recently_evicted);
+                                            }
+                                            Err(_) => {
+                                                debug!(old_peer = ?peer, "evicted session did not wind down in time");
+                                                break (Ok(()), Some((candidate, new_peer)), handler, recently_evicted);
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
+                    };
+
+                    let (result, preempted_by, handler, evicted) = outcome;
+                    self.connection_handler = handler;
+                    // Only remember an eviction that actually replaced this
+                    // session; a session that ended on its own terms leaves nobody
+                    // barred from connecting.
+                    self.recently_evicted = if preempted_by.is_some() { evicted } else { None };
+                    if preempted_by.is_some() {
+                        // Can't do this INSIDE the race above: `conn` (built from
+                        // `self.run_connection`/`self.serve_negotiated`) borrows
+                        // `self` mutably for the whole race, so no other &mut self
+                        // call is possible there. `self` is free again here, and
+                        // the ~750ms EVICTION_GRACE this waited through is
+                        // immaterial to what this closes -- a real ARC reconnect
+                        // takes far longer than that to occur.
+                        self.invalidate_auto_reconnect_cookie_on_eviction();
                     }
+                    (result, preempted_by)
                 }
-                else => break,
+                ConnectionPolicy::Reject => {
+                    // Serve while still accepting, but close any newcomer
+                    // instead of racing it (Preempt) or queuing it (Queue): the
+                    // extra connection fails fast rather than hanging in the
+                    // backlog (#1483). The session arm is polled first (biased),
+                    // so a client reconnecting the instant a session ends is
+                    // taken by the outer loop, not rejected here.
+                    let result = match entry {
+                        Entry::Fresh(stream, _) => {
+                            let mut conn = core::pin::pin!(self.run_connection_inner(stream, TransportTls::Managed));
+                            loop {
+                                tokio::select! {
+                                    biased;
+                                    res = &mut conn => break res,
+                                    accepted = listener.accept() => match accepted {
+                                        Ok((extra, extra_peer)) => {
+                                            debug!(?extra_peer, "Session active; rejecting connection");
+                                            drop(extra);
+                                        }
+                                        Err(error) => warn!(?error, "accept failed while a session was live"),
+                                    },
+                                }
+                            }
+                        }
+                        // Unreachable: Reject never produces a Negotiated candidate.
+                        Entry::Negotiated(candidate, _) => self.serve_negotiated(candidate).await,
+                    };
+                    (result, None)
+                }
+                ConnectionPolicy::Queue => {
+                    let result = match entry {
+                        // Same anyhow-vs-ServerResult reasoning as the preemption
+                        // branch above.
+                        Entry::Fresh(stream, _) => self.run_connection_inner(stream, TransportTls::Managed).await,
+                        // Unreachable in practice: `pending` is only ever populated
+                        // by the preemption branch above.
+                        Entry::Negotiated(candidate, _) => self.serve_negotiated(candidate).await,
+                    };
+                    (result, None)
+                }
+            };
+            let duration = started.elapsed();
+
+            if let Some((candidate, new_peer)) = preempted_by {
+                pending = Some((candidate, new_peer));
+            }
+
+            if let Err(ref error) = result {
+                error!(?error, "Connection error");
+            }
+
+            // NOT redundant with `run_connection_with`'s own reset (added
+            // upstream, #1721) despite resetting the same field: a preemption
+            // winner reaches this point via `serve_negotiated`, which never
+            // calls `run_connection`/`run_connection_with` at all -- so this
+            // is the only reset that path gets. Removing this because
+            // `run_connection_with` "already handles it" would silently
+            // reintroduce #1721's leak (channel backends, e.g. rdpsnd's audio
+            // capture, held open until the next client) for every preemption
+            // takeover.
+            self.static_channels = StaticChannelSet::new();
+
+            if let Some(ref mut handler) = self.connection_handler {
+                let action = handler.on_disconnected(peer, duration, result.as_ref().err());
+                if action == PostConnectionAction::Stop {
+                    debug!(?peer, "Handler requested stop after disconnect");
+                    break;
+                }
             }
         }
 
@@ -1425,18 +2619,17 @@ impl RdpServer {
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
-    ) -> Result<RunState> {
+    ) -> ServerResult<RunState> {
         match action {
             Action::FastPath => {
-                let input = decode(&bytes)?;
+                let input = decode(&bytes).map_err(ServerError::decode)?;
                 self.handle_fastpath(input).await;
             }
 
             Action::X224 => {
                 if self
                     .handle_x224(writer, io_channel_id, user_channel_id, message_channel_id, &bytes)
-                    .await
-                    .context("X224 input error")?
+                    .await?
                 {
                     debug!("Got disconnect request");
                     return Ok(RunState::Disconnect);
@@ -1454,7 +2647,7 @@ impl RdpServer {
         io_channel_id: u16,
         buffer: &mut Vec<u8>,
         mut encoder: UpdateEncoder,
-    ) -> Result<(RunState, UpdateEncoder)> {
+    ) -> ServerResult<(RunState, UpdateEncoder)> {
         if let DisplayUpdate::Resize(desktop_size) = update {
             debug!(?desktop_size, "Display resize");
             encoder.set_desktop_size(desktop_size);
@@ -1468,7 +2661,7 @@ impl RdpServer {
                 break;
             };
 
-            let mut fragmenter = fragmenter.context("error while encoding")?;
+            let mut fragmenter = fragmenter?;
             if fragmenter.size_hint() > buffer.len() {
                 buffer.resize(fragmenter.size_hint(), 0);
             }
@@ -1477,7 +2670,7 @@ impl RdpServer {
                 writer
                     .write_all(&buffer[..len])
                     .await
-                    .context("failed to write display update")?;
+                    .map_err(|e| ServerError::io("failed to write display update", e))?;
             }
         }
 
@@ -1491,7 +2684,7 @@ impl RdpServer {
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
-    ) -> Result<RunState> {
+    ) -> ServerResult<RunState> {
         // Avoid wave messages queuing up and causing extra delay. When a
         // batch carries more than `WAVE_KEEP` waves, drop the OLDEST ones
         // and keep the most recent — playing stale audio just bakes the
@@ -1513,6 +2706,55 @@ impl RdpServer {
             match event {
                 ServerEvent::Quit(reason) => {
                     debug!("Got quit event: {reason}");
+                    return Ok(RunState::Disconnect);
+                }
+                // Session takeover: tell the client WHY it is being
+                // disconnected before dropping it, so it does not read this as
+                // an unexpected drop and auto-reconnect (which ping-pongs
+                // against the preempting client — see the variant's docs).
+                ServerEvent::EvictedByOtherConnection => {
+                    debug!("evicting this connection -- another client took the session over");
+                    // KNOWN GAP: MS-RDPBCGR 3.3.5.7.1 says the Set Error Info
+                    // PDU MUST NOT be sent to a client that did not set
+                    // RNS_UD_CS_SUPPORT_ERRINFO_PDU in its Client Core Data
+                    // `earlyCapabilityFlags`, and this sends it unconditionally.
+                    // `AcceptorResult` exposes no early-capability field today,
+                    // so the check is not currently expressible here; the
+                    // pre-existing `send_access_denied` has the identical gap.
+                    // Closing it needs an ironrdp-acceptor API addition.
+                    let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(
+                        ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::DisconnectedByOtherconnection),
+                    ));
+                    // Best-effort: if the evicted peer's socket is already
+                    // half-dead the write fails, which is fine — it is leaving
+                    // either way, and the caller falls back to cancelling it.
+                    // pduSource=0, not user_channel_id -- MS-RDPBCGR 2.2.5.1.1
+                    // requires it for TS_SET_ERROR_INFO_PDU specifically.
+                    match encode_share_data_pdu(pdu, 0, io_channel_id, user_channel_id) {
+                        Ok(bytes) => {
+                            if let Err(error) = writer.write_all(&bytes).await {
+                                debug!(%error, "could not send the eviction reason; disconnecting anyway");
+                            }
+                        }
+                        Err(error) => {
+                            warn!(%error, "could not encode the eviction reason; disconnecting anyway");
+                        }
+                    }
+                    return Ok(RunState::Disconnect);
+                }
+                ServerEvent::Disconnect(error) => {
+                    debug!(?error, "Got disconnect event");
+                    let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error));
+                    // pduSource=0, not user_channel_id -- same MS-RDPBCGR
+                    // 2.2.5.1.1 requirement as the EvictedByOtherConnection
+                    // arm above; upstream's original call here (before this
+                    // merge) predated that parameter and used
+                    // user_channel_id, which this fixes to match.
+                    let data = encode_share_data_pdu(pdu, 0, io_channel_id, user_channel_id)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| ServerError::io("send server set error info", e))?;
                     return Ok(RunState::Disconnect);
                 }
                 ServerEvent::GetLocalAddr(tx) => {
@@ -1546,12 +2788,172 @@ impl RdpServer {
                             continue;
                         }
                     }
-                    .context("failed to send rdpsnd event")?;
+                    .map_err_kind("failed to send rdpsnd event", ServerErrorKind::Pdu)?;
                     let channel_id = self
                         .get_channel_id_by_type::<RdpsndServer>()
-                        .context("SVC channel not found")?;
-                    let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
-                    writer.write_all(&data).await?;
+                        .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
+                    let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| ServerError::io("write_all", e))?;
+                }
+                ServerEvent::Rdpdr(msg) => {
+                    let Some(rdpdr) = self.get_svc_processor::<RdpdrServer>() else {
+                        warn!("No rdpdr channel, dropping event");
+                        continue;
+                    };
+                    let msgs = match msg {
+                        RdpdrServerMessage::Create {
+                            device_id,
+                            path,
+                            desired_access,
+                            create_disposition,
+                            create_options,
+                        } => rdpdr.drive_create(device_id, path, desired_access, create_disposition, create_options),
+                        RdpdrServerMessage::Read {
+                            device_id,
+                            file_id,
+                            length,
+                            offset,
+                        } => rdpdr.drive_read(device_id, file_id, length, offset),
+                        RdpdrServerMessage::Write {
+                            device_id,
+                            file_id,
+                            data,
+                            offset,
+                        } => rdpdr.drive_write(device_id, file_id, data, offset),
+                        RdpdrServerMessage::Close { device_id, file_id } => rdpdr.drive_close(device_id, file_id),
+                        RdpdrServerMessage::FlushBuffers { device_id, file_id } => {
+                            rdpdr.drive_flush_buffers(device_id, file_id)
+                        }
+                        RdpdrServerMessage::QueryInformation {
+                            device_id,
+                            file_id,
+                            info_class,
+                        } => rdpdr.drive_query_information(device_id, file_id, info_class),
+                        RdpdrServerMessage::SetInformation {
+                            device_id,
+                            file_id,
+                            set_buffer,
+                        } => rdpdr.drive_set_information(device_id, file_id, set_buffer),
+                        RdpdrServerMessage::QueryDirectory {
+                            device_id,
+                            file_id,
+                            info_class,
+                            path,
+                            initial_query,
+                        } => rdpdr.drive_query_directory(device_id, file_id, info_class, path, initial_query),
+                        RdpdrServerMessage::NotifyChangeDirectory {
+                            device_id,
+                            file_id,
+                            watch_tree,
+                            completion_filter,
+                        } => rdpdr.drive_notify_change_directory(device_id, file_id, watch_tree, completion_filter),
+                        RdpdrServerMessage::QueryVolumeInformation {
+                            device_id,
+                            file_id,
+                            fs_info_class,
+                        } => rdpdr.drive_query_volume_information(device_id, file_id, fs_info_class),
+                        RdpdrServerMessage::LockControl {
+                            device_id,
+                            file_id,
+                            operation,
+                            wait,
+                            locks,
+                        } => rdpdr.drive_lock_control(device_id, file_id, operation, wait, locks),
+                        RdpdrServerMessage::QuerySecurity {
+                            device_id,
+                            file_id,
+                            security_information,
+                        } => rdpdr.drive_query_security(device_id, file_id, security_information),
+                        RdpdrServerMessage::SetSecurity {
+                            device_id,
+                            file_id,
+                            security_information,
+                            security_descriptor,
+                        } => rdpdr.drive_set_security(device_id, file_id, security_information, security_descriptor),
+                        RdpdrServerMessage::DeviceControl {
+                            device_id,
+                            file_id,
+                            io_control_code,
+                            input_buffer,
+                            output_buffer_length,
+                        } => rdpdr.drive_device_control(
+                            device_id,
+                            file_id,
+                            io_control_code,
+                            input_buffer,
+                            output_buffer_length,
+                        ),
+                    }
+                    .map_err_kind("failed to send rdpdr event", ServerErrorKind::Pdu)?;
+                    let channel_id = self
+                        .get_channel_id_by_type::<RdpdrServer>()
+                        .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
+                    let data =
+                        server_encode_svc_messages(msgs, channel_id, user_channel_id).map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| ServerError::io("write_all", e))?;
+                }
+                ServerEvent::Rdpeai(msg) => {
+                    let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>() else {
+                        warn!("No drdynvc channel, dropping AUDIO_INPUT event");
+                        continue;
+                    };
+                    let Some(channel_id) = drdynvc.get_channel_id_by_type::<RdpeaiServer>() else {
+                        warn!("No AUDIO_INPUT dynamic channel, dropping event");
+                        continue;
+                    };
+                    // dvc_by_id_mut already returns None for a channel that isn't yet
+                    // Opened, and that case is handled just below; a separate
+                    // is_channel_opened check here would only duplicate it.
+                    let Some(mut rdpeai) = drdynvc.dvc_by_id_mut::<RdpeaiServer>(channel_id) else {
+                        warn!("AUDIO_INPUT channel not opened or not found by id, dropping event");
+                        continue;
+                    };
+                    let result = match msg {
+                        RdpeaiServerMessage::Open {
+                            frames_per_packet,
+                            initial_format,
+                            capture_format,
+                        } => rdpeai
+                            .processor_mut()
+                            .open(frames_per_packet, initial_format, capture_format),
+                        RdpeaiServerMessage::ChangeFormat { new_format } => {
+                            rdpeai.processor_mut().change_format(new_format)
+                        }
+                        RdpeaiServerMessage::Error(error) => {
+                            error!(?error, "Handling AUDIO_INPUT event");
+                            continue;
+                        }
+                    };
+                    // open()/change_format() reject calls that race the channel's current
+                    // state (e.g. Open before negotiation finishes); that is an expected,
+                    // recoverable condition per their own doc comments, not a connection
+                    // fault, so drop-and-warn like every other unavailability in this arm
+                    // rather than tearing down the session.
+                    let msgs = match result {
+                        Ok(msgs) => msgs,
+                        Err(error) => {
+                            warn!(%error, "AUDIO_INPUT event rejected by current channel state, dropping");
+                            continue;
+                        }
+                    };
+                    let dvc_messages = dvc::encode_dvc_messages(channel_id, msgs, ChannelFlags::SHOW_PROTOCOL)
+                        .map_err(ServerError::encode)?;
+                    let drdynvc_channel_id = self
+                        .get_channel_id_by_type::<dvc::DrdynvcServer>()
+                        .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
+                    let data = server_encode_svc_messages(dvc_messages, drdynvc_channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| ServerError::io("write_all", e))?;
                 }
                 ServerEvent::Clipboard(c) => {
                     let Some(cliprdr) = self.get_svc_processor::<CliprdrServer>() else {
@@ -1570,12 +2972,16 @@ impl RdpServer {
                             continue;
                         }
                     }
-                    .context("failed to send clipboard event")?;
+                    .map_err_kind("failed to send clipboard event", ServerErrorKind::Pdu)?;
                     let channel_id = self
                         .get_channel_id_by_type::<CliprdrServer>()
-                        .context("SVC channel not found")?;
-                    let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
-                    writer.write_all(&data).await?;
+                        .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
+                    let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| ServerError::io("write_all", e))?;
                 }
                 ServerEvent::Echo(msg) => match msg {
                     EchoServerMessage::SendRequest { payload } => {
@@ -1598,14 +3004,195 @@ impl RdpServer {
 
                         let request = build_echo_request(payload)?;
                         let messages =
-                            dvc::encode_dvc_messages(echo_channel_id, vec![request], ChannelFlags::SHOW_PROTOCOL)?;
+                            dvc::encode_dvc_messages(echo_channel_id, vec![request], ChannelFlags::SHOW_PROTOCOL)
+                                .map_err(ServerError::encode)?;
 
                         let drdynvc_channel_id = self
                             .get_channel_id_by_type::<dvc::DrdynvcServer>()
-                            .context("DRDYNVC channel not found")?;
+                            .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
 
-                        let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)?;
-                        writer.write_all(&data).await?;
+                        let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)
+                            .map_err(ServerError::encode)?;
+                        writer
+                            .write_all(&data)
+                            .await
+                            .map_err(|e| ServerError::io("write_all", e))?;
+                    }
+                },
+                #[cfg(feature = "usb")]
+                ServerEvent::Usb(msg) => match msg {
+                    UrbdrcServerMessage::AddChan => {
+                        let create_dvc_msg = {
+                            use crate::urbdrc::UsbRedirServer;
+
+                            let Some(usb_man) = self.usb_man.as_mut() else {
+                                warn!("Missing USB device factory");
+                                continue;
+                            };
+                            let Some(drdynvc) = self
+                                .static_channels
+                                .get_by_type_mut::<dvc::DrdynvcServer>()
+                                .and_then(|svc| svc.channel_processor_downcast_mut::<dvc::DrdynvcServer>())
+                            else {
+                                warn!("No drdynvc channel, dropping URBDRC request");
+                                continue;
+                            };
+
+                            let Some(comp_iface) = usb_man.comp_iface_alloc.alloc() else {
+                                warn!("Run out of URBDRC interface IDs");
+                                continue;
+                            };
+
+                            let Some(device_backend) = usb_man.factory.create_device() else {
+                                warn!("Failed to create USB device backend");
+                                continue;
+                            };
+
+                            drdynvc
+                                .create_channel_with(|dvc_id| {
+                                    let handle = UsbDeviceHandle::new(self.ev_sender.clone(), dvc_id);
+                                    if usb_man.router.insert(dvc_id, handle.device()).is_some() {
+                                        warn!(dvc_id = dvc_id, "Replacing USB device pending-request map");
+                                    }
+                                    Ok::<_, PduError>(
+                                        UrbdrcDeviceServer::new(
+                                            Box::new(UsbRedirServer::new(device_backend, handle)),
+                                            comp_iface,
+                                        )
+                                        .expect("interface ID allocated by InterfaceAlloc must be valid"),
+                                    )
+                                })
+                                .map_err_kind("create URBDRC device channel", ServerErrorKind::Pdu)?
+                        };
+
+                        let drdynvc_channel_id = self
+                            .get_channel_id_by_type::<dvc::DrdynvcServer>()
+                            .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
+                        let data =
+                            server_encode_svc_messages(vec![create_dvc_msg], drdynvc_channel_id, user_channel_id)
+                                .map_err(ServerError::encode)?;
+
+                        writer
+                            .write_all(&data)
+                            .await
+                            .map_err(|e| ServerError::io("write_all", e))?;
+                    }
+                    UrbdrcServerMessage::Device { dvc_id, dev_msg } => {
+                        let Some(device) = self
+                            .usb_man
+                            .as_ref()
+                            .and_then(|usb_man| usb_man.router.get(&dvc_id))
+                            .map(Arc::clone)
+                        else {
+                            warn!(dvc_id, "Missing USB device state");
+                            continue;
+                        };
+
+                        // Handle checks are an early rejection for callers. This event-loop check
+                        // is authoritative because a request may already be queued when retract or
+                        // channel close changes the shared lifecycle state.
+                        if !device.is_open() {
+                            trace!(dvc_id, "Dropping request for closing or closed USB device");
+                            continue;
+                        }
+
+                        let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>() else {
+                            warn!("No drdynvc channel, dropping URBDRC request");
+                            continue;
+                        };
+
+                        let Some(mut dvc) = drdynvc.dvc_by_id_mut::<UrbdrcDeviceServer>(dvc_id) else {
+                            warn!(dvc_id, "USB dynamic channel ID mismatch");
+                            continue;
+                        };
+                        let processor = dvc.processor_mut();
+
+                        let (dvc_msgs, close_dev) = match dev_msg {
+                            UrbdrcDeviceServerMessage::QueryDeviceText { text_type, locale_id } => {
+                                let text = processor
+                                    .query_device_text(text_type, locale_id)
+                                    .map_err_kind("query USB device text", ServerErrorKind::Pdu)?;
+                                (vec![text], false)
+                            }
+                            UrbdrcDeviceServerMessage::IoReq { data, tx } => {
+                                if tx.is_closed() {
+                                    continue;
+                                }
+
+                                let request = match data {
+                                    ServerDeviceIoReq::IoControl(packet) => processor.io_control(packet),
+                                    ServerDeviceIoReq::InternalIoControl(packet) => {
+                                        processor.internal_io_control(packet)
+                                    }
+                                    ServerDeviceIoReq::TransferOut(packet) => processor.transfer_out(packet),
+                                    ServerDeviceIoReq::TransferIn(packet) => processor.transfer_in(packet),
+                                }
+                                .map_err_kind("USB I/O request", ServerErrorKind::Pdu)?;
+
+                                let pending = request
+                                    .expects_completion
+                                    .then(|| device.register_pending(request.request_id));
+
+                                // Reply before the write so the caller owns cancel-on-drop as early
+                                // as possible. A CANCEL_REQUEST it enqueues in response lands in a
+                                // later batch, so it cannot overtake this request on the wire.
+                                if tx.send(pending).is_err() && request.expects_completion {
+                                    trace!(dvc_id, "USB I/O request receiver dropped");
+                                    device.forget_pending(request.request_id);
+                                    processor.abandon_unsent(request);
+                                    (Vec::new(), false)
+                                } else {
+                                    (vec![request.message], false)
+                                }
+                            }
+                            UrbdrcDeviceServerMessage::Retract(reason) => {
+                                let request = processor
+                                    .retract_device(reason)
+                                    .map_err_kind("retract USB device", ServerErrorKind::Pdu)?;
+                                device.mark_retracting();
+                                (vec![request], true)
+                            }
+                            UrbdrcDeviceServerMessage::CancelRequest(request_id) => {
+                                if !device.is_pending(request_id) {
+                                    trace!(dvc_id, request_id, "USB I/O request is no longer pending");
+                                    continue;
+                                }
+
+                                let request = processor
+                                    .cancel_request(request_id)
+                                    .map_err_kind("cancel USB I/O request", ServerErrorKind::Pdu)?;
+
+                                (vec![request], false)
+                            }
+                        };
+
+                        let mut messages = dvc::encode_dvc_messages(dvc_id, dvc_msgs, ChannelFlags::SHOW_PROTOCOL)
+                            .map_err(ServerError::encode)?;
+
+                        if close_dev {
+                            let close_message = self
+                                .get_svc_processor::<dvc::DrdynvcServer>()
+                                .and_then(|drdynvc| drdynvc.close_channel(dvc_id))
+                                .ok_or_else(|| {
+                                    ServerError::channel("URBDRC dynamic channel disappeared before close")
+                                })?;
+                            self.remove_usb_device(dvc_id);
+                            messages.push(close_message);
+                        }
+
+                        let drdynvc_channel_id = self
+                            .get_channel_id_by_type::<dvc::DrdynvcServer>()
+                            .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
+
+                        let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)
+                            .map_err(ServerError::encode)?;
+                        writer
+                            .write_all(&data)
+                            .await
+                            .map_err(|e| ServerError::io("write_all", e))?;
+                    }
+                    UrbdrcServerMessage::DeviceClosed { dvc_id } => {
+                        self.remove_usb_device(dvc_id);
                     }
                 },
                 #[cfg(feature = "egfx")]
@@ -1613,9 +3200,13 @@ impl RdpServer {
                     EgfxServerMessage::SendMessages { messages } => {
                         let drdynvc_channel_id = self
                             .get_channel_id_by_type::<dvc::DrdynvcServer>()
-                            .context("DRDYNVC channel not found")?;
-                        let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)?;
-                        writer.write_all(&data).await?;
+                            .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
+                        let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)
+                            .map_err(ServerError::encode)?;
+                        writer
+                            .write_all(&data)
+                            .await
+                            .map_err(|e| ServerError::io("write_all", e))?;
                     }
                 },
                 ServerEvent::AutoDetectRttRequest => {
@@ -1627,7 +3218,10 @@ impl RdpServer {
                         ad.expire_stale_probes(now_ms, crate::autodetect::RTT_PROBE_MAX_AGE_MS);
                         let request = ad.send_rtt_request(now_ms);
                         let data = encode_autodetect_request(request, message_channel_id, user_channel_id)?;
-                        writer.write_all(&data).await?;
+                        writer
+                            .write_all(&data)
+                            .await
+                            .map_err(|e| ServerError::io("write_all", e))?;
 
                         // Report the measured characteristics to the client
                         // ([MS-RDPBCGR] 2.2.14.1.5). The client does not reply. Sent only
@@ -1636,7 +3230,10 @@ impl RdpServer {
                         // fast stream of unsolicited PDUs.
                         if let Some(result) = ad.build_netchar_result(now_ms) {
                             let data = encode_autodetect_request(result, message_channel_id, user_channel_id)?;
-                            writer.write_all(&data).await?;
+                            writer
+                                .write_all(&data)
+                                .await
+                                .map_err(|e| ServerError::io("write_all", e))?;
                         }
 
                         // Periodically measure bandwidth: Start on one tick, Stop several
@@ -1645,7 +3242,10 @@ impl RdpServer {
                         // has completed there is no characteristics result to send at all.
                         if let Some(pdu) = ad.build_bandwidth_measure() {
                             let data = encode_autodetect_request(pdu, message_channel_id, user_channel_id)?;
-                            writer.write_all(&data).await?;
+                            writer
+                                .write_all(&data)
+                                .await
+                                .map_err(|e| ServerError::io("write_all", e))?;
                         }
                     }
                 }
@@ -1655,6 +3255,10 @@ impl RdpServer {
         Ok(RunState::Continue)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "private per-connection entry point; the parameters are the connection's negotiated identifiers"
+    )]
     async fn client_loop<R, W>(
         &mut self,
         reader: &mut Framed<R>,
@@ -1662,27 +3266,46 @@ impl RdpServer {
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
+        client_supports_heartbeat: bool,
         mut encoder: UpdateEncoder,
-    ) -> Result<RunState>
+    ) -> ServerResult<RunState>
     where
         R: FramedRead,
         W: FramedWrite,
     {
         debug!("Starting client loop");
+        let heartbeat = if client_supports_heartbeat {
+            self.heartbeat
+        } else {
+            None
+        };
         let mut display_updates = self.display.lock().await.updates().await?;
         let mut writer = SharedWriter::new(writer);
         let mut display_writer = writer.clone();
         let mut event_writer = writer.clone();
         let mut auto_reconnect_writer = writer.clone();
+        let mut heartbeat_writer = writer.clone();
+        let write_counter = writer.write_counter();
         let ev_receiver = Arc::clone(&self.ev_receiver);
         let s = Rc::new(Mutex::new(self));
 
         let this = Rc::clone(&s);
         let dispatch_pdu = async move {
             loop {
-                let (action, bytes) = reader.read_pdu().await?;
+                let (action, bytes) = reader.read_pdu().await.map_err(|e| ServerError::io("read pdu", e))?;
+                // D8: per-PDU lock-acquisition + dispatch timing. The `this`
+                // mutex is shared with dispatch_events; when an outbound
+                // event batch is in flight, this lock wait is the latency
+                // that a FrameAcknowledge sees before it reaches its
+                // handler. Log when the dispatch itself or the lock wait
+                // exceeds 50ms.
+                let pdu_len = bytes.len();
+                let lock_start = Instant::now();
                 let mut this = this.lock().await;
-                match this
+                let lock_wait_ms = u64::try_from(lock_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+                let dispatch_start = Instant::now();
+                let result = this
                     .dispatch_pdu(
                         action,
                         bytes,
@@ -1691,8 +3314,28 @@ impl RdpServer {
                         user_channel_id,
                         message_channel_id,
                     )
-                    .await?
-                {
+                    .await?;
+                let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+                if lock_wait_ms >= 50 {
+                    tracing::warn!(
+                        pdu_len,
+                        lock_wait_ms,
+                        dispatch_ms,
+                        "dispatch_pdu delayed acquiring this.lock, contended with outbound batch (dispatch_events/dispatch_display)"
+                    );
+                } else if dispatch_ms >= 50 {
+                    tracing::warn!(
+                        pdu_len,
+                        lock_wait_ms,
+                        dispatch_ms,
+                        "dispatch_pdu ran long after acquiring this.lock immediately, handler or runtime stall, not lock contention"
+                    );
+                } else {
+                    tracing::debug!(pdu_len, lock_wait_ms, dispatch_ms, "dispatch_pdu");
+                }
+
+                match result {
                     RunState::Continue => continue,
                     state => break Ok(state),
                 }
@@ -1747,8 +3390,19 @@ impl RdpServer {
                 while let Ok(ev) = ev_receiver.try_recv() {
                     events.push(ev);
                 }
+
+                // D7: per-batch dispatch_events timing. The events Vec can
+                // grow up to 100+ entries; dispatch_server_events holds the
+                // `this` mutex AND the SharedWriter mutex for the full
+                // batch. Log batch size + total dispatch time so operators
+                // can see when an event batch ties up both locks.
+                let batch_size = events.len();
+                let lock_start = Instant::now();
                 let mut this = this.lock().await;
-                match this
+                let lock_wait_ms = u64::try_from(lock_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+                let dispatch_start = Instant::now();
+                let result = this
                     .dispatch_server_events(
                         &mut events,
                         &mut event_writer,
@@ -1756,8 +3410,21 @@ impl RdpServer {
                         user_channel_id,
                         message_channel_id,
                     )
-                    .await?
-                {
+                    .await?;
+                let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+                if lock_wait_ms >= 50 || dispatch_ms >= 100 {
+                    tracing::warn!(
+                        batch_size,
+                        lock_wait_ms,
+                        dispatch_ms,
+                        "dispatch_events batch stalled, long write or lock contention"
+                    );
+                } else if batch_size > 1 {
+                    tracing::debug!(batch_size, lock_wait_ms, dispatch_ms, "dispatch_events batch");
+                }
+
+                match result {
                     RunState::Continue => continue,
                     state => break Ok(state),
                 }
@@ -1777,11 +3444,50 @@ impl RdpServer {
             }
         };
 
+        let send_heartbeats = async move {
+            let (Some(config), Some(message_channel_id)) = (heartbeat, message_channel_id) else {
+                return core::future::pending::<ServerResult<RunState>>().await;
+            };
+            // 2.2.16.1: `period` is in seconds. A zero period is meaningless
+            // (and would panic tokio's interval), so it is bumped to one.
+            let period = Duration::from_secs(u64::from(config.period_secs.max(1)));
+            let mut interval = tokio::time::interval(period);
+            // A stalled write (TCP back-pressure) can hold this future past
+            // several tick deadlines; Burst (the default) would then fire the
+            // missed ticks back-to-back and emit a run of consecutive
+            // heartbeats on an otherwise idle link. Skip fires at the next
+            // period boundary instead.
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await; // first tick completes immediately; real waits start below
+
+            let mut writes_at_last_tick = write_counter.load(Ordering::Relaxed);
+            loop {
+                interval.tick().await;
+                let writes_now = write_counter.load(Ordering::Relaxed);
+                if writes_now != writes_at_last_tick {
+                    // 2.2.16.1: heartbeats SHOULD only be sent when no other
+                    // PDU went out in the interval; ordinary traffic doubles
+                    // as the liveness signal.
+                    writes_at_last_tick = writes_now;
+                    continue;
+                }
+                let data = encode_heartbeat(&config, message_channel_id, user_channel_id)?;
+                heartbeat_writer
+                    .write_all(&data)
+                    .await
+                    .map_err(|e| ServerError::io("send heartbeat", e))?;
+                // Re-read so the heartbeat's own write does not read as
+                // foreign traffic on the next tick.
+                writes_at_last_tick = write_counter.load(Ordering::Relaxed);
+            }
+        };
+
         let state = tokio::select!(
             state = dispatch_pdu => state,
             state = dispatch_display => state,
             state = dispatch_events => state,
             state = refresh_auto_reconnect_cookie => state,
+            state = send_heartbeats => state,
         );
 
         debug!("End of client loop: {state:?}");
@@ -1793,7 +3499,7 @@ impl RdpServer {
         reader: &mut Framed<R>,
         writer: &mut Framed<W>,
         result: AcceptorResult,
-    ) -> Result<RunState>
+    ) -> ServerResult<RunState>
     where
         R: FramedRead,
         W: FramedWrite,
@@ -1804,7 +3510,7 @@ impl RdpServer {
             if !self.verify_auto_reconnect_cookie(reconnect) {
                 warn!("Auto-reconnect cookie validation rejected");
                 send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
-                bail!("auto-reconnect cookie validation rejected");
+                return Err(ServerError::reason("auto-reconnect validation", "cookie rejected"));
             }
 
             debug!("Auto-reconnect cookie validation accepted");
@@ -1826,12 +3532,12 @@ impl RdpServer {
                     Ok(CredentialDecision::Reject) => {
                         warn!("Credential validation rejected");
                         send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
-                        bail!("credential validation rejected");
+                        return Err(ServerError::reason("credential validation", "rejected by validator"));
                     }
                     Err(e) => {
                         error!(error = %e, "Credential validator backend error");
                         send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
-                        bail!("credential validation backend error");
+                        return Err(ServerError::custom("credential validation", e));
                     }
                 }
             } else {
@@ -1868,20 +3574,29 @@ impl RdpServer {
                 let Some(channel_id) = channel_id else {
                     continue;
                 };
-                let svc_responses = channel.start()?;
-                let response = server_encode_svc_messages(svc_responses, channel_id, result.user_channel_id)?;
-                writer.write_all(&response).await?;
+                let svc_responses = channel.start().map_err_kind("svc start", ServerErrorKind::Pdu)?;
+                let response = server_encode_svc_messages(svc_responses, channel_id, result.user_channel_id)
+                    .map_err(ServerError::encode)?;
+                writer
+                    .write_all(&response)
+                    .await
+                    .map_err(|e| ServerError::io("write svc response", e))?;
             }
         }
 
         let mut update_codecs = UpdateEncoderCodecs::new();
         let mut surface_flags = CmdFlags::empty();
+        let mut pointer_cache_size: u16 = 0;
+        // Absence means the client did not send a Large Pointer Capability Set at all,
+        // which per MS-RDPBCGR 2.2.7.2.7 leaves the pointer size ceiling at 32x32 (the
+        // base Color/New Pointer Update limit with no large-pointer flags set).
+        let mut large_pointer_flags = LargePointerSupportFlags::empty();
         for c in result.capabilities {
             match c {
                 CapabilitySet::General(c) => {
                     let fastpath = c.extra_flags.contains(GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED);
                     if !fastpath {
-                        bail!("Fastpath output not supported!");
+                        return Err(ServerError::unsupported("Fastpath output"));
                     }
                 }
                 CapabilitySet::Bitmap(b) => {
@@ -1959,13 +3674,37 @@ impl RdpServer {
                         }
                     }
                 }
+                CapabilitySet::Pointer(p) => {
+                    // MS-RDPBCGR 2.2.7.1.5: pointerCacheSize is the client's advertised cache
+                    // size for the New Pointer Update specifically (colorPointerCacheSize is
+                    // the separate, always-supported Color Pointer Update cache). A zero or
+                    // absent pointerCacheSize means the client did not advertise New Pointer
+                    // Update support at all, so `UpdateEncoder` must not emit RGBAPointer, and
+                    // must not reference a cache slot via CachedPointer either, since nothing
+                    // else in this crate populates that cache via the Color Pointer Update.
+                    pointer_cache_size = p.pointer_cache_size;
+                }
+                CapabilitySet::LargePointer(lp) => {
+                    // MS-RDPBCGR 2.2.7.2.7: LARGE_POINTER_FLAG_96x96 raises the Color/New
+                    // Pointer Update ceiling from 32x32 to 96x96; LARGE_POINTER_FLAG_384x384
+                    // additionally unlocks the dedicated Fast-Path Large Pointer Update, up to
+                    // 384x384. `UpdateEncoder` uses these flags to decide which pointer
+                    // updates it can send at all, and at what size.
+                    large_pointer_flags = lp.flags;
+                }
                 _ => {}
             }
         }
 
         let desktop_size = self.display.lock().await.size().await;
-        let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs, self.opts.max_request_size)
-            .context("failed to initialize update encoder")?;
+        let encoder = UpdateEncoder::new(
+            desktop_size,
+            surface_flags,
+            update_codecs,
+            self.opts.max_request_size,
+            pointer_cache_size,
+            large_pointer_flags,
+        )?;
 
         self.send_next_auto_reconnect_cookie(writer, result.io_channel_id, result.user_channel_id)
             .await?;
@@ -1977,10 +3716,12 @@ impl RdpServer {
                 result.io_channel_id,
                 result.user_channel_id,
                 result.message_channel_id,
+                result
+                    .client_early_capability_flags
+                    .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_HEART_BEAT_PDU),
                 encoder,
             )
-            .await
-            .context("client loop failure")?;
+            .await?;
 
         Ok(state)
     }
@@ -1992,11 +3733,11 @@ impl RdpServer {
         user_channel_id: u16,
         message_channel_id: Option<u16>,
         frames: Vec<Vec<u8>>,
-    ) -> Result<()> {
+    ) -> ServerResult<()> {
         for frame in frames {
             match Action::from_fp_output_header(frame[0]) {
                 Ok(Action::FastPath) => {
-                    let input = decode(&frame)?;
+                    let input = decode(&frame).map_err(ServerError::decode)?;
                     self.handle_fastpath(input).await;
                 }
 
@@ -2050,8 +3791,8 @@ impl RdpServer {
         }
     }
 
-    async fn handle_io_channel_data(&mut self, data: SendDataRequest<'_>) -> Result<bool> {
-        let control: rdp::headers::ShareControlHeader = decode(data.user_data.as_ref())?;
+    async fn handle_io_channel_data(&mut self, data: SendDataRequest<'_>) -> ServerResult<bool> {
+        let control: rdp::headers::ShareControlHeader = decode(data.user_data.as_ref()).map_err(ServerError::decode)?;
 
         match control.share_control_pdu {
             ShareControlPdu::Data(header) => match header.share_data_pdu {
@@ -2112,23 +3853,44 @@ impl RdpServer {
         match decode::<rdp::autodetect::AutoDetectRspPdu>(data.user_data.as_ref()) {
             Ok(pdu) => {
                 if let Some(ref mut ad) = self.autodetect {
-                    if let Some(rtt_ms) = ad.handle_response(&pdu.response, monotonic_now_ms()) {
-                        self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
-                        // A matched RTT sample always updates the session-lifetime low in the
-                        // same call (see `handle_response`'s RttResponse arm), so it is available
-                        // unconditionally here, not just on a new low.
-                        let baseline_rtt_ms = ad
-                            .baseline_rtt_ms()
-                            .expect("handle_response just recorded a sample above");
-                        self.autodetect_baseline_rtt.store(baseline_rtt_ms, Ordering::Relaxed);
-                        debug!(
-                            rtt_ms,
-                            baseline_rtt_ms,
-                            seq = pdu.response.sequence_number(),
-                            "RTT measured"
-                        );
-                    } else {
-                        trace!(seq = pdu.response.sequence_number(), "Unmatched auto-detect response");
+                    match ad.handle_response(&pdu.response, monotonic_now_ms()) {
+                        AutoDetectOutcome::Rtt(rtt_ms) => {
+                            self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
+                            // A matched RTT sample always updates the session-lifetime low in the
+                            // same call (see `handle_response`'s RttResponse arm), so it is available
+                            // unconditionally here, not just on a new low.
+                            let baseline_rtt_ms = ad
+                                .baseline_rtt_ms()
+                                .expect("handle_response just recorded a sample above");
+                            self.autodetect_baseline_rtt.store(baseline_rtt_ms, Ordering::Relaxed);
+                            debug!(
+                                rtt_ms,
+                                baseline_rtt_ms,
+                                seq = pdu.response.sequence_number(),
+                                "RTT measured"
+                            );
+                        }
+                        AutoDetectOutcome::Bandwidth(Some(bandwidth_kbps)) => {
+                            self.autodetect_bandwidth.store(bandwidth_kbps, Ordering::Relaxed);
+                            debug!(
+                                bandwidth_kbps,
+                                seq = pdu.response.sequence_number(),
+                                "Bandwidth measured"
+                            );
+                        }
+                        AutoDetectOutcome::Bandwidth(None) => {
+                            // The manager just cleared its own figure rather than keep
+                            // reporting a stale one (see `handle_response`'s doc comment);
+                            // mirror that here so the exposed handle does not disagree.
+                            self.autodetect_bandwidth.store(u32::MAX, Ordering::Relaxed);
+                            trace!(
+                                seq = pdu.response.sequence_number(),
+                                "Bandwidth measurement completed without a usable figure"
+                            );
+                        }
+                        AutoDetectOutcome::Unmatched => {
+                            trace!(seq = pdu.response.sequence_number(), "Unmatched auto-detect response");
+                        }
                     }
                 }
             }
@@ -2145,8 +3907,8 @@ impl RdpServer {
         user_channel_id: u16,
         message_channel_id: Option<u16>,
         frame: &[u8],
-    ) -> Result<bool> {
-        let message = decode::<X224<mcs::McsMessage<'_>>>(frame)?;
+    ) -> ServerResult<bool> {
+        let message = decode::<X224<mcs::McsMessage<'_>>>(frame).map_err(ServerError::decode)?;
         match message.0 {
             mcs::McsMessage::SendDataRequest(data) => {
                 debug!(
@@ -2165,9 +3927,15 @@ impl RdpServer {
                 }
 
                 if let Some(svc) = self.static_channels.get_by_channel_id_mut(data.channel_id) {
-                    let response_pdus = svc.process(&data.user_data)?;
-                    let response = server_encode_svc_messages(response_pdus, data.channel_id, user_channel_id)?;
-                    writer.write_all(&response).await?;
+                    let response_pdus = svc
+                        .process(&data.user_data)
+                        .map_err_kind("svc process", ServerErrorKind::Pdu)?;
+                    let response = server_encode_svc_messages(response_pdus, data.channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&response)
+                        .await
+                        .map_err(|e| ServerError::io("write svc response", e))?;
                 } else {
                     warn!(channel_id = data.channel_id, "Unexpected channel received: ID",);
                 }
@@ -2220,14 +3988,36 @@ impl RdpServer {
         }
     }
 
-    async fn accept_finalize<S>(&mut self, mut framed: TokioFramed<S>, mut acceptor: Acceptor) -> Result<TokioFramed<S>>
+    async fn accept_finalize<S>(
+        &mut self,
+        mut framed: TokioFramed<S>,
+        mut acceptor: Acceptor,
+    ) -> ServerResult<TokioFramed<S>>
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
         loop {
-            let (new_framed, result) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor)
-                .await
-                .context("failed to accept client during finalize")?;
+            // Bounded: see `FINALIZE_TIMEOUT`. The bound belongs on THIS call
+            // and not on `accept_finalize` itself or its callers — the loop
+            // below also runs `client_accepted`, which drives the entire live
+            // session, so a timeout hoisted any higher would cap session
+            // length. Applying it per pass also gives a
+            // deactivation-reactivation its own budget rather than sharing one
+            // with the initial handshake.
+            let finalize = ironrdp_acceptor::accept_finalize(framed, &mut acceptor);
+            let (new_framed, result) = match tokio::time::timeout(FINALIZE_TIMEOUT, finalize).await {
+                Ok(res) => res.map_err_kind("failed to accept client during finalize", ServerErrorKind::Connector)?,
+                Err(_) => {
+                    warn!(
+                        timeout = ?FINALIZE_TIMEOUT,
+                        "Client stopped responding during the finalize handshake, dropping the connection"
+                    );
+                    return Err(ServerError::io(
+                        "timed out waiting for the client during finalize",
+                        std::io::Error::from(std::io::ErrorKind::TimedOut),
+                    ));
+                }
+            };
 
             let (mut reader, mut writer) = split_tokio_framed(new_framed);
 
@@ -2244,7 +4034,8 @@ impl RdpServer {
                         acceptor,
                         core::mem::take(&mut self.static_channels),
                         desktop_size,
-                    )?;
+                    )
+                    .map_err_kind("deactivation-reactivation acceptor", ServerErrorKind::Connector)?;
                     framed = unsplit_tokio_framed(reader, writer);
                     continue;
                 }
@@ -2271,17 +4062,41 @@ fn encode_autodetect_request(
     request: rdp::autodetect::AutoDetectRequest,
     message_channel_id: u16,
     user_channel_id: u16,
-) -> Result<Vec<u8>> {
+) -> ServerResult<Vec<u8>> {
     // Auto-detect rides the MCS message channel framed by a Basic Security
     // Header (SEC_AUTODETECT_REQ), not a Share Control / Share Data header.
     let pdu = rdp::autodetect::AutoDetectReqPdu::new(request);
-    let user_data = encode_vec(&pdu)?.into();
+    let user_data = encode_vec(&pdu).map_err(ServerError::encode)?.into();
     let mcs_pdu = SendDataIndication {
         initiator_id: user_channel_id,
         channel_id: message_channel_id,
         user_data,
     };
-    Ok(encode_vec(&X224(mcs_pdu))?)
+    encode_vec(&X224(mcs_pdu)).map_err(ServerError::encode)
+}
+
+/// Encode a server-initiated Heartbeat PDU for the MCS message channel.
+///
+/// Like auto-detect (see [`encode_autodetect_request`]), heartbeats are framed
+/// by a Basic Security Header (SEC_HEARTBEAT) and ride the message channel,
+/// not a Share Control / Share Data header on the I/O channel
+/// (MS-RDPBCGR 2.2.16.1).
+fn encode_heartbeat(config: &HeartbeatConfig, message_channel_id: u16, user_channel_id: u16) -> ServerResult<Vec<u8>> {
+    let pdu = rdp::heartbeat::HeartbeatPdu {
+        security_header: rdp::headers::BasicSecurityHeader {
+            flags: rdp::headers::BasicSecurityHeaderFlags::HEARTBEAT,
+        },
+        period: config.period_secs,
+        count1: config.warning_count,
+        count2: config.reconnect_count,
+    };
+    let user_data = encode_vec(&pdu).map_err(ServerError::encode)?.into();
+    let mcs_pdu = SendDataIndication {
+        initiator_id: user_channel_id,
+        channel_id: message_channel_id,
+        user_data,
+    };
+    encode_vec(&X224(mcs_pdu)).map_err(ServerError::encode)
 }
 
 /// Encode a Share Data PDU wrapped in a Share Control header and carried in an
@@ -2289,13 +4104,21 @@ fn encode_autodetect_request(
 ///
 /// A general `encode_share_data_pdu` helper previously lived here for the
 /// auto-detect path; #1348 rerouted auto-detect onto the message channel (see
-/// [`encode_autodetect_request`]), leaving this Save Session Info sender as the
-/// sole user, so the encoder now lives with it.
+/// [`encode_autodetect_request`]), leaving the Save Session Info sender as its
+/// only user until the eviction notice (`ServerEvent::EvictedByOtherConnection`)
+/// became a second one, so the encoder now lives with the former.
+///
+/// `pdu_source` is a parameter, not hardcoded, because the two callers
+/// disagree: MS-RDPBCGR 2.2.1.19 has the server echo the client's own MCS user
+/// channel ID here for a normal Share Data PDU (what Save Session Info sends),
+/// but 2.2.5.1.1 requires `pduSource` to be zero specifically for
+/// TS_SET_ERROR_INFO_PDU (what the eviction notice sends).
 fn encode_share_data_pdu(
     share_data_pdu: rdp::headers::ShareDataPdu,
+    pdu_source: u16,
     io_channel_id: u16,
     user_channel_id: u16,
-) -> Result<Vec<u8>> {
+) -> ServerResult<Vec<u8>> {
     let header = rdp::headers::ShareDataHeader {
         share_data_pdu,
         stream_priority: rdp::headers::StreamPriority::Medium,
@@ -2304,37 +4127,36 @@ fn encode_share_data_pdu(
     };
     let pdu = rdp::headers::ShareControlHeader {
         share_id: 0,
-        pdu_source: user_channel_id,
+        pdu_source,
         share_control_pdu: ShareControlPdu::Data(header),
     };
-    let user_data = encode_vec(&pdu)?.into();
+    let user_data = encode_vec(&pdu).map_err(ServerError::encode)?.into();
     let mcs_pdu = SendDataIndication {
         initiator_id: user_channel_id,
         channel_id: io_channel_id,
         user_data,
     };
-    Ok(encode_vec(&X224(mcs_pdu))?)
+    encode_vec(&X224(mcs_pdu)).map_err(ServerError::encode)
 }
 
-async fn deactivate_all(
-    io_channel_id: u16,
-    user_channel_id: u16,
-    writer: &mut impl FramedWrite,
-) -> Result<(), anyhow::Error> {
+async fn deactivate_all(io_channel_id: u16, user_channel_id: u16, writer: &mut impl FramedWrite) -> ServerResult<()> {
     let pdu = ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll);
     let pdu = rdp::headers::ShareControlHeader {
         share_id: 0,
         pdu_source: io_channel_id,
         share_control_pdu: pdu,
     };
-    let user_data = encode_vec(&pdu)?.into();
+    let user_data = encode_vec(&pdu).map_err(ServerError::encode)?.into();
     let pdu = SendDataIndication {
         initiator_id: user_channel_id,
         channel_id: io_channel_id,
         user_data,
     };
-    let msg = encode_vec(&X224(pdu))?;
-    writer.write_all(&msg).await?;
+    let msg = encode_vec(&X224(pdu)).map_err(ServerError::encode)?;
+    writer
+        .write_all(&msg)
+        .await
+        .map_err(|e| ServerError::io("write deactivate_all", e))?;
     Ok(())
 }
 
@@ -2346,29 +4168,38 @@ async fn send_access_denied(
     io_channel_id: u16,
     user_channel_id: u16,
     writer: &mut impl FramedWrite,
-) -> Result<(), anyhow::Error> {
+) -> ServerResult<()> {
     let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
         ProtocolIndependentCode::ServerDeniedConnection,
     ));
-    let user_data = encode_vec(&info)?.into();
+    let user_data = encode_vec(&info).map_err(ServerError::encode)?.into();
     let pdu = SendDataIndication {
         initiator_id: user_channel_id,
         channel_id: io_channel_id,
         user_data,
     };
-    let msg = encode_vec(&X224(pdu))?;
-    writer.write_all(&msg).await?;
+    let msg = encode_vec(&X224(pdu)).map_err(ServerError::encode)?;
+    writer
+        .write_all(&msg)
+        .await
+        .map_err(|e| ServerError::io("write access_denied", e))?;
     Ok(())
 }
 
 struct SharedWriter<'w, W: FramedWrite> {
     writer: Rc<Mutex<&'w mut W>>,
+    /// Count of successful `write_all` calls across all clones. The heartbeat
+    /// loop compares it across ticks to honor 2.2.16.1's idle-only SHOULD: a
+    /// changed count means ordinary traffic already served as the liveness
+    /// signal for that interval.
+    writes: Arc<AtomicU64>,
 }
 
 impl<W: FramedWrite> Clone for SharedWriter<'_, W> {
     fn clone(&self) -> Self {
         Self {
             writer: Rc::clone(&self.writer),
+            writes: Arc::clone(&self.writes),
         }
     }
 }
@@ -2383,11 +4214,42 @@ where
         Self: 'write;
 
     fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
-        Box::pin(async {
+        Box::pin(async move {
+            // D1: time both the lock acquisition and the actual write.
+            // Three concurrent tasks (dispatch_pdu, dispatch_display,
+            // dispatch_events) share this Rc<Mutex<W>>. When the kernel TCP
+            // send buffer fills (slow client), write_all blocks while still
+            // holding the mutex — starving the other two tasks. Logging
+            // both phases tells us whether a stall is "waiting in line for
+            // the writer" (lock-wait) or "TLS write held up by TCP back-
+            // pressure" (write-time).
+            let len = buf.len();
+            let wait_start = Instant::now();
             let mut writer = self.writer.lock().await;
+            let wait_ms = u64::try_from(wait_start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-            writer.write_all(buf).await?;
-            Ok(())
+            let write_start = Instant::now();
+            let res = writer.write_all(buf).await;
+            let write_ms = u64::try_from(write_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+            // Threshold: 50ms total budget for one write_all. Anything above
+            // is operationally interesting on a healthy LAN. Logged at WARN
+            // when stalled, DEBUG when fast (so wire-time samples are still
+            // visible during routine debugging).
+            if wait_ms + write_ms >= 50 {
+                tracing::warn!(
+                    bytes = len,
+                    lock_wait_ms = wait_ms,
+                    write_ms,
+                    "SharedWriter.write_all stalled, possible TCP back-pressure or writer-mutex contention"
+                );
+            } else {
+                tracing::debug!(bytes = len, lock_wait_ms = wait_ms, write_ms, "SharedWriter.write_all");
+            }
+            if res.is_ok() {
+                self.writes.fetch_add(1, Ordering::Relaxed);
+            }
+            res
         })
     }
 }
@@ -2396,7 +4258,607 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
     fn new(writer: &'a mut W) -> Self {
         Self {
             writer: Rc::new(Mutex::new(writer)),
+            writes: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    fn write_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.writes)
+    }
+}
+
+#[cfg(test)]
+mod preempt_tests {
+    use core::net::Ipv4Addr;
+
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpListener;
+
+    use super::*;
+
+    fn ctx_with_no_security() -> NegotiationContext {
+        struct NoDisplay;
+        #[async_trait::async_trait]
+        impl RdpServerDisplay for NoDisplay {
+            async fn size(&mut self) -> DesktopSize {
+                DesktopSize {
+                    width: 1024,
+                    height: 768,
+                }
+            }
+            async fn updates(&mut self) -> ServerResult<Box<dyn crate::RdpServerDisplayUpdates>> {
+                unreachable!("negotiation never asks for updates")
+            }
+        }
+
+        NegotiationContext {
+            opts: RdpServerOptions {
+                addr: (Ipv4Addr::LOCALHOST, 0).into(),
+                security: RdpServerSecurity::None,
+                codecs: BitmapCodecs(Vec::new()),
+                max_request_size: 8 * 1024 * 1024,
+                honor_client_desktop_size: None,
+                connection_policy: ConnectionPolicy::Preempt,
+                remotefx_quant: Quant::default(),
+                remotefx_entropy_coder: None,
+            },
+            creds: None,
+            display: Arc::new(Mutex::new(Box::new(NoDisplay))),
+        }
+    }
+
+    /// The invariant behind this feature: a connection that never completes a
+    /// real RDP negotiation must NOT be treated as an eligible candidate, and
+    /// so can never evict a live session. This is the case the earlier
+    /// two-byte `03 00` peek got wrong — it accepted anything whose first
+    /// bytes merely *looked* like a TPKT header.
+    #[tokio::test]
+    async fn a_candidate_sending_garbage_never_authenticates() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let client = tokio::spawn(async move {
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            // Starts with a plausible TPKT prefix — enough to fool a
+            // header peek — but is not a valid X.224 Connection Request.
+            stream.write_all(&[0x03, 0x00, 0xff, 0xff, 0x41, 0x41]).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let (stream, peer) = listener.accept().await.unwrap();
+        let ctx = ctx_with_no_security();
+        assert!(
+            negotiate_candidate(&ctx, stream, peer).await.is_none(),
+            "traffic that only looks like RDP must not become an eligible candidate"
+        );
+
+        client.await.unwrap();
+    }
+
+    /// The other half: a bare connect that sends nothing (a port scan, a
+    /// half-open probe) must not qualify either.
+    #[tokio::test]
+    async fn a_candidate_that_closes_immediately_never_authenticates() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let client = tokio::spawn(async move {
+            let stream = TcpStream::connect(addr).await.unwrap();
+            drop(stream);
+        });
+
+        let (stream, peer) = listener.accept().await.unwrap();
+        let ctx = ctx_with_no_security();
+        assert!(
+            negotiate_candidate(&ctx, stream, peer).await.is_none(),
+            "a connect-and-close must not become an eligible candidate"
+        );
+
+        client.await.unwrap();
+    }
+
+    /// The eviction notice must be a properly framed Share Data PDU carrying
+    /// `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION` (MS-RDPBCGR 2.2.5.1.1) — that
+    /// exact code is what tells a client it was replaced rather than dropped,
+    /// and so what stops it auto-reconnecting into a ping-pong. Round-trips
+    /// the encoding a real eviction sends.
+    #[test]
+    fn the_eviction_notice_is_a_share_data_pdu_with_the_takeover_code() {
+        let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(
+            ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::DisconnectedByOtherconnection),
+        ));
+        // pdu_source=0 here: unlike the Save Session Info sender (which
+        // echoes the client's own user_channel_id), MS-RDPBCGR 2.2.5.1.1
+        // requires pduSource to be zero for TS_SET_ERROR_INFO_PDU.
+        let bytes = encode_share_data_pdu(pdu, 0, 1003, 1002).expect("encode eviction notice");
+
+        let x224: X224<mcs::McsMessage<'_>> = decode(&bytes).expect("decode X.224/MCS");
+        let mcs::McsMessage::SendDataIndication(data) = x224.0 else {
+            panic!("eviction notice must ride an MCS Send Data Indication");
+        };
+        let control: rdp::headers::ShareControlHeader =
+            decode(data.user_data.as_ref()).expect("decode Share Control header");
+        assert_eq!(
+            control.pdu_source, 0,
+            "MS-RDPBCGR 2.2.5.1.1 requires pduSource=0 for TS_SET_ERROR_INFO_PDU"
+        );
+        let ShareControlPdu::Data(header) = control.share_control_pdu else {
+            panic!("eviction notice must be a Share Data PDU");
+        };
+        match header.share_data_pdu {
+            rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(
+                ErrorInfo::ProtocolIndependentCode(code),
+            )) => {
+                assert_eq!(code, ProtocolIndependentCode::DisconnectedByOtherconnection);
+            }
+            other => panic!("unexpected share data pdu: {other:?}"),
+        }
+    }
+
+    /// The anti-storm net: a just-evicted peer may not bounce straight back,
+    /// and every refused attempt RE-ARMS the window, so an automatic reconnect
+    /// loop cannot immediately outlast it. A peer that goes quiet for the
+    /// cooldown (a human closing the client and reconnecting) is let back in.
+    #[test]
+    fn a_just_evicted_peer_cannot_bounce_back_but_a_quiet_one_can() {
+        let cooldown = Duration::from_secs(5);
+        let max_lockout = Duration::from_secs(30);
+        let evicted: IpAddr = Ipv4Addr::new(192, 168, 4, 46).into();
+        let other: IpAddr = Ipv4Addr::new(192, 168, 4, 44).into();
+
+        let t0 = Instant::now();
+        let mut state = Some(EvictedPeer {
+            ip: evicted,
+            evicted_at: t0,
+            last_try: t0,
+        });
+
+        // An unrelated peer is never affected by someone else's eviction.
+        assert!(!refuse_reconnect_from_evicted(
+            &mut state,
+            other,
+            t0 + Duration::from_millis(500),
+            cooldown,
+            max_lockout,
+        ));
+
+        // The evicted peer auto-reconnecting ~1 s later is refused, and each
+        // attempt pushes the window out.
+        let mut at = t0;
+        for _ in 0..5 {
+            at += Duration::from_secs(1);
+            assert!(
+                refuse_reconnect_from_evicted(&mut state, evicted, at, cooldown, max_lockout),
+                "an auto-reconnect storm must not immediately win the session back"
+            );
+        }
+
+        // ...but once it stops hammering for the full cooldown, a deliberate
+        // reconnect is allowed through.
+        let quiet = at + cooldown + Duration::from_millis(1);
+        assert!(
+            !refuse_reconnect_from_evicted(&mut state, evicted, quiet, cooldown, max_lockout),
+            "a peer that waited out the cooldown must be able to connect again"
+        );
+    }
+
+    /// The re-arming window MUST NOT lock a peer out forever, or it defeats
+    /// the feature's own headline case: a client whose link dropped, whose
+    /// stale session is still live, auto-reconnecting to reclaim it. Past
+    /// `max_lockout` from the eviction the bar lifts even under a storm that
+    /// never pauses.
+    #[test]
+    fn the_reconnect_bar_lifts_once_the_absolute_cap_passes() {
+        let cooldown = Duration::from_secs(5);
+        let max_lockout = Duration::from_secs(30);
+        let evicted: IpAddr = Ipv4Addr::new(192, 168, 4, 46).into();
+
+        let t0 = Instant::now();
+        let mut state = Some(EvictedPeer {
+            ip: evicted,
+            evicted_at: t0,
+            last_try: t0,
+        });
+
+        // A relentless 1 s auto-reconnect cadence: refused while inside the
+        // cap, even though every attempt re-arms the cooldown...
+        let mut at = t0;
+        let mut refused_while_capped = 0;
+        while at < t0 + max_lockout {
+            at += Duration::from_secs(1);
+            if at < t0 + max_lockout {
+                assert!(
+                    refuse_reconnect_from_evicted(&mut state, evicted, at, cooldown, max_lockout),
+                    "still inside the cap, so the storm is throttled"
+                );
+                refused_while_capped += 1;
+            }
+        }
+        assert!(refused_while_capped > 0, "the test must exercise the throttled window");
+
+        // ...and let through the moment the cap passes, WITHOUT the peer ever
+        // having paused. Before the cap was added this returned true forever.
+        let past_cap = t0 + max_lockout + Duration::from_millis(1);
+        assert!(
+            !refuse_reconnect_from_evicted(&mut state, evicted, past_cap, cooldown, max_lockout),
+            "a peer must not be barred forever just for retrying; that locks out the case the feature exists for"
+        );
+    }
+
+    /// A silent candidate MUST NOT be able to hang the accept loop.
+    ///
+    /// `negotiate_candidate` blocks on socket reads from a peer that has not
+    /// authenticated. Before `CANDIDATE_NEGOTIATION_TIMEOUT` the probe was
+    /// awaited unbounded: a peer that connected and then sent NOTHING parked it
+    /// forever, and once the live session ended `run()` blocked on the handoff
+    /// await with no `select!` left — no further accepts, no event drain, so
+    /// not even `ServerEvent::Quit` could stop the server. An unauthenticated
+    /// remote could wedge the listener.
+    ///
+    /// Drive exactly that: a live session, a silent candidate, then end the
+    /// session and require the server to still respond and still shut down.
+    #[tokio::test]
+    async fn a_silent_candidate_cannot_wedge_the_accept_loop() {
+        let local = task::LocalSet::new();
+        local
+            .run_until(async move {
+                let mut server = RdpServer::builder()
+                    .with_addr((Ipv4Addr::LOCALHOST, 0))
+                    .with_no_security()
+                    .with_no_input()
+                    .with_no_display()
+                    .with_connection_policy(ConnectionPolicy::Preempt)
+                    .build();
+
+                let event_sender = server.event_sender().clone();
+                let run_task = task::spawn_local(async move {
+                    let _ = Box::pin(server.run()).await;
+                });
+
+                let addr = loop {
+                    let (tx, rx) = oneshot::channel();
+                    let _ = event_sender.send(ServerEvent::GetLocalAddr(tx));
+                    if let Ok(Some(addr)) = rx.await {
+                        break addr;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                };
+
+                // Client A: the live session (connect, stay silent).
+                let client_a = TcpStream::connect(addr).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                // Client B: the candidate — completes the TCP handshake, then
+                // says nothing at all, parking the probe mid-`accept_begin`.
+                let _client_b = TcpStream::connect(addr).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                // The live session ends. This is the branch that used to do a
+                // bare `probe.await` and never come back.
+                drop(client_a);
+
+                // The server must still be answering its event channel. With
+                // the unbounded await this never resolves.
+                let responsive = tokio::time::timeout(Duration::from_secs(3), async {
+                    loop {
+                        let (tx, rx) = oneshot::channel();
+                        if event_sender.send(ServerEvent::GetLocalAddr(tx)).is_err() {
+                            return;
+                        }
+                        if rx.await.is_ok() {
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await;
+                assert!(
+                    responsive.is_ok(),
+                    "the accept loop stopped servicing events while a silent candidate was in flight"
+                );
+
+                // ...and must still be stoppable.
+                let _ = event_sender.send(ServerEvent::Quit("test over".to_owned()));
+                let stopped = tokio::time::timeout(Duration::from_secs(3), run_task).await;
+                assert!(
+                    stopped.is_ok(),
+                    "the server ignored Quit -- the accept loop was wedged by an unauthenticated silent peer"
+                );
+            })
+            .await;
+    }
+
+    /// A `ConnectionHandler` that accepts the first connection and rejects
+    /// every one after, recording every peer it was consulted about.
+    struct RejectAfterFirst {
+        seen: Arc<std::sync::Mutex<Vec<SocketAddr>>>,
+        accepted_once: bool,
+    }
+
+    impl ConnectionHandler for RejectAfterFirst {
+        fn on_accept(&mut self, peer: SocketAddr) -> bool {
+            self.seen.lock().unwrap().push(peer);
+            !core::mem::replace(&mut self.accepted_once, true)
+        }
+    }
+
+    /// Drives a real `RdpServer::run()` accept loop over TCP with preemption
+    /// on. A candidate must be gated through `ConnectionHandler::on_accept`
+    /// *before* it is allowed to negotiate — so a rate limiter or IP allowlist
+    /// can stop a takeover, rather than only learning about it after the live
+    /// session was already evicted.
+    #[tokio::test]
+    async fn a_candidate_is_gated_through_on_accept_before_it_can_preempt() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_for_handler = Arc::clone(&seen);
+
+        let local = task::LocalSet::new();
+        local
+            .run_until(async move {
+                let mut server = RdpServer::builder()
+                    .with_addr((Ipv4Addr::LOCALHOST, 0))
+                    .with_no_security()
+                    .with_no_input()
+                    .with_no_display()
+                    .with_connection_handler(Some(Box::new(RejectAfterFirst {
+                        seen: seen_for_handler,
+                        accepted_once: false,
+                    })))
+                    .with_connection_policy(ConnectionPolicy::Preempt)
+                    .build();
+
+                let event_sender = server.event_sender().clone();
+                let run_task = task::spawn_local(async move {
+                    let _ = Box::pin(server.run()).await;
+                });
+
+                // Learn the ephemeral port (retrying while `run()` binds).
+                let addr = loop {
+                    let (tx, rx) = oneshot::channel();
+                    let _ = event_sender.send(ServerEvent::GetLocalAddr(tx));
+                    if let Ok(Some(addr)) = rx.await {
+                        break addr;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                };
+
+                // Client A: connect and go silent. `run_connection` parks
+                // reading the first PDU, which is all "a live session" needs
+                // to be here.
+                let mut client_a = TcpStream::connect(addr).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                // Client B: the candidate. The handler rejects it, so it must
+                // never reach negotiation, let alone evict client A.
+                let mut client_b = TcpStream::connect(addr).await.unwrap();
+                client_b.write_all(&[0x03, 0x00]).await.unwrap();
+
+                let mut buf = [0u8; 1];
+                let client_b_read = tokio::time::timeout(Duration::from_secs(2), client_b.read(&mut buf)).await;
+                assert!(
+                    matches!(client_b_read, Ok(Ok(0)) | Ok(Err(_))),
+                    "the rejected candidate's connection should be closed, got {client_b_read:?}"
+                );
+
+                // Client A is untouched: a read TIMES OUT (no EOF, no data)
+                // rather than showing the server dropped it for client B.
+                let client_a_still_alive =
+                    tokio::time::timeout(Duration::from_millis(300), client_a.read(&mut buf)).await;
+                assert!(
+                    client_a_still_alive.is_err(),
+                    "the live session must survive a rejected preemption attempt, got {client_a_still_alive:?}"
+                );
+
+                // The handler was actually consulted about the candidate —
+                // the gate ran on B, not merely on A.
+                let seen = seen.lock().unwrap().clone();
+                assert_eq!(
+                    seen.len(),
+                    2,
+                    "on_accept should have been consulted for both peers: {seen:?}"
+                );
+
+                run_task.abort();
+            })
+            .await;
+    }
+
+    /// Regression guard for the blocking review finding: invalidating an
+    /// evicted peer's ARC cookie must NOT permanently disable auto-reconnect
+    /// for the server. `next_auto_reconnect_cookie` treats
+    /// `self.auto_reconnect_cookie == None` as "unconfigured" and stops
+    /// issuing cookies to EVERY future connection -- a naive
+    /// `self.auto_reconnect_cookie = None` on eviction would have silently
+    /// killed the feature server-wide the moment the first eviction ever
+    /// happened.
+    #[test]
+    fn invalidating_the_evicted_peers_cookie_does_not_disable_auto_reconnect() {
+        let mut server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+
+        let seed = RdpServer::generate_auto_reconnect_cookie(4242);
+        server.set_auto_reconnect_cookie(Some(seed.clone()));
+        // A normal rotation would have run once by the time a real session
+        // reaches an eviction; simulate that so `previous_auto_reconnect_
+        // cookie` starts populated, which is the slot the fix must ALSO clear.
+        server.commit_auto_reconnect_rotation(RdpServer::generate_auto_reconnect_cookie(seed.logon_id));
+
+        server.invalidate_auto_reconnect_cookie_on_eviction();
+
+        let after = server
+            .auto_reconnect_cookie
+            .as_ref()
+            .expect("invalidation must not clear the cookie to None -- that permanently disables auto-reconnect");
+        assert_eq!(after.logon_id, seed.logon_id, "the logon_id lineage must be preserved");
+        assert_ne!(
+            after.random_bits, seed.random_bits,
+            "the random bits must actually change, or the evicted peer's OLD cookie would still verify"
+        );
+        assert!(
+            server.previous_auto_reconnect_cookie.is_none(),
+            "the outgoing cookie(s) must be discarded, not demoted into previous_ -- demoting would keep an \
+             evicted peer's cookie valid for one more attempt, which is exactly the gap this closes"
+        );
+    }
+
+    /// `discard_stale_session_events` must be an ALLOWLIST of lifecycle
+    /// events, not a denylist of `EvictedByOtherConnection` alone -- otherwise
+    /// a preemption winner is handed whatever per-session events (audio
+    /// waves, clipboard messages, EGFX frames) the session it replaced left
+    /// queued but never consumed.
+    #[tokio::test]
+    async fn stale_session_events_are_dropped_but_lifecycle_events_survive() {
+        let mut server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+
+        let sender = server.event_sender().clone();
+        // A representative per-session event that must NOT survive a
+        // takeover -- it belonged to the session just replaced.
+        let _ = sender.send(ServerEvent::AutoDetectRttRequest);
+        // A lifecycle event that MUST survive.
+        let _ = sender.send(ServerEvent::Quit("keep me".to_owned()));
+
+        server.discard_stale_session_events().await;
+
+        let remaining = {
+            let mut rx = server.ev_receiver.lock().await;
+            let mut events = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                events.push(event);
+            }
+            events
+        };
+
+        assert_eq!(
+            remaining.len(),
+            1,
+            "exactly the lifecycle event should have survived the drain: {remaining:?}"
+        );
+        assert!(
+            matches!(&remaining[0], ServerEvent::Quit(reason) if reason == "keep me"),
+            "the surviving event should be the Quit, not the discarded per-session event: {remaining:?}"
+        );
+    }
+
+    /// Regression guard for the "no happy-path test" review finding, and the
+    /// load-bearing claim it's actually worried about: that deferring
+    /// `attach_channels` to `serve_negotiated` does NOT silently drop a
+    /// preemption winner's channels. That claim rests entirely on
+    /// `accept_begin` stopping at `AcceptorState::SecurityUpgrade` -- before
+    /// `BasicSettingsWaitInitial` consumes `static_channels` -- for
+    /// [`RdpServerSecurity::None`]. If a future `ironrdp-acceptor` change
+    /// moved that stop point, a preemption winner would negotiate ZERO static
+    /// channels (no clipboard, no sound, no DVC) and every OTHER test in this
+    /// module would still pass, since none of them drive a candidate all the
+    /// way to `serve_negotiated`.
+    ///
+    /// Drives a REAL candidate through `negotiate_candidate` (a genuine X.224
+    /// Connection Request, matching `RdpServerSecurity::None`'s empty
+    /// protocol flags, is enough to reach `BeginResult::Continue` -- no TLS,
+    /// no MCS needed) and then `serve_negotiated`, and asserts the sound
+    /// factory's backend was actually built. `serve_negotiated` can't finish
+    /// without a full MCS/GCC handshake this test doesn't drive, so it's
+    /// bounded by a short timeout that is EXPECTED to fire -- the assertion
+    /// that matters is the side effect that happens before that point.
+    #[tokio::test]
+    async fn a_winning_candidate_actually_gets_its_channels_attached() {
+        let backend_built = Arc::new(AtomicBool::new(false));
+
+        #[derive(Debug)]
+        struct RecordingSoundHandler;
+        impl ironrdp_rdpsnd::server::RdpsndServerHandler for RecordingSoundHandler {
+            fn get_formats(&self) -> &[ironrdp_rdpsnd::pdu::AudioFormat] {
+                &[]
+            }
+            fn choose_format<'a>(
+                &mut self,
+                _common: &'a [ironrdp_rdpsnd::server::NegotiatedFormat],
+            ) -> Option<&'a ironrdp_rdpsnd::server::NegotiatedFormat> {
+                None
+            }
+            fn start(
+                &mut self,
+                _format: &ironrdp_rdpsnd::server::NegotiatedFormat,
+            ) -> Result<(), Box<dyn ironrdp_rdpsnd::server::RdpsndError>> {
+                Ok(())
+            }
+            fn stop(&mut self) {}
+        }
+
+        #[derive(Debug)]
+        struct RecordingSoundFactory(Arc<AtomicBool>);
+        impl ServerEventSender for RecordingSoundFactory {
+            fn set_sender(&mut self, _sender: mpsc::UnboundedSender<ServerEvent>) {}
+        }
+        impl SoundServerFactory for RecordingSoundFactory {
+            fn build_backend(&self) -> Box<dyn ironrdp_rdpsnd::server::RdpsndServerHandler> {
+                self.0.store(true, Ordering::SeqCst);
+                Box::new(RecordingSoundHandler)
+            }
+        }
+
+        let local = task::LocalSet::new();
+        local
+            .run_until(Box::pin(async move {
+                let mut server = RdpServer::builder()
+                    .with_addr((Ipv4Addr::LOCALHOST, 0))
+                    .with_no_security()
+                    .with_no_input()
+                    .with_no_display()
+                    .with_sound_factory(Some(Box::new(RecordingSoundFactory(Arc::clone(&backend_built)))))
+                    .build();
+
+                let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+                let addr = listener.local_addr().unwrap();
+
+                let client = tokio::spawn(async move {
+                    let mut stream = TcpStream::connect(addr).await.unwrap();
+                    let cr = nego::ConnectionRequest {
+                        nego_data: None,
+                        flags: nego::RequestFlags::empty(),
+                        // Matches `RdpServerSecurity::None`'s
+                        // `RdpServerSecurity::flag()` exactly -- this is what
+                        // makes `accept_begin` reach `BeginResult::Continue`.
+                        protocol: nego::SecurityProtocol::empty(),
+                        correlation_info: None,
+                    };
+                    let bytes = encode_vec(&X224(cr)).unwrap();
+                    stream.write_all(&bytes).await.unwrap();
+                    // Hold the connection open; `serve_negotiated` will try
+                    // to read the next (MCS) PDU, which this test never
+                    // sends, so the read simply blocks until the test ends.
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                });
+
+                let (stream, peer) = listener.accept().await.unwrap();
+                let (candidate, _peer) = negotiate_candidate(&server.negotiation_context(), stream, peer)
+                    .await
+                    .expect("a well-formed X.224 Connection Request under RdpServerSecurity::None must authenticate");
+
+                // Bounded: `serve_negotiated` cannot finish without a full
+                // MCS/GCC handshake this test doesn't drive, so timing out is
+                // the EXPECTED outcome here -- `attach_channels`'s
+                // synchronous side effect (below) already happened before
+                // `serve_negotiated` reached its first blocking read.
+                let _ = tokio::time::timeout(Duration::from_millis(300), server.serve_negotiated(candidate)).await;
+
+                assert!(
+                    backend_built.load(Ordering::SeqCst),
+                    "the winning candidate's sound backend was never built -- attach_channels was not called, \
+                     meaning this preemption winner would have gotten NO static channels at all"
+                );
+
+                client.abort();
+            }))
+            .await;
     }
 }
 

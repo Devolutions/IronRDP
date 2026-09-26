@@ -16,8 +16,10 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, PhysicalSize};
 use winit::event::{self, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::platform::scancode::PhysicalKeyExtScancode as _;
+use winit::keyboard::PhysicalKey;
 use winit::window::{CursorIcon, CustomCursor, Window, WindowAttributes};
+
+use crate::keymap::{is_modifier, map_key_code};
 
 type WindowSurface = (Arc<Window>, softbuffer::Surface<DisplayHandle<'static>, Arc<Window>>);
 
@@ -286,27 +288,38 @@ impl RpcApp {
             // TODO(#376): Implement unicode input in native client
             // }
             WindowEvent::KeyboardInput { event, .. } => {
-                if let Some(scancode) = event.physical_key.to_scancode() {
-                    let scancode = match u16::try_from(scancode) {
-                        Ok(scancode) => scancode,
-                        Err(_) => {
-                            warn!("Unsupported scancode: `{scancode:#X}`; ignored");
-                            return;
-                        }
-                    };
-                    let scancode = ironrdp::input::Scancode::from_u16(scancode);
+                let key_code = match event.physical_key {
+                    PhysicalKey::Code(key_code) => key_code,
+                    PhysicalKey::Unidentified(native_key_code) => {
+                        warn!(?native_key_code, "Unsupported physical key; ignored");
+                        return;
+                    }
+                };
 
-                    let operation = match event.state {
-                        event::ElementState::Pressed => ironrdp::input::Operation::KeyPressed(scancode),
-                        event::ElementState::Released => ironrdp::input::Operation::KeyReleased(scancode),
-                    };
-
-                    apply_and_send_fast_path_events(
-                        &self.input_target,
-                        &mut self.input_database,
-                        core::iter::once(operation),
-                    );
+                // `ModifiersChanged` is authoritative for these keys.
+                if is_modifier(key_code) {
+                    return;
                 }
+
+                let Some((scancode, release_only)) = map_key_code(key_code) else {
+                    warn!(?key_code, "Unsupported physical key; ignored");
+                    return;
+                };
+
+                let operations: SmallVec<[ironrdp::input::Operation; 2]> = match event.state {
+                    event::ElementState::Pressed => {
+                        smallvec::smallvec![ironrdp::input::Operation::KeyPressed(scancode)]
+                    }
+                    event::ElementState::Released if release_only => smallvec::smallvec![
+                        ironrdp::input::Operation::KeyPressed(scancode),
+                        ironrdp::input::Operation::KeyReleased(scancode),
+                    ],
+                    event::ElementState::Released => {
+                        smallvec::smallvec![ironrdp::input::Operation::KeyReleased(scancode)]
+                    }
+                };
+
+                apply_and_send_fast_path_events(&self.input_target, &mut self.input_database, operations);
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 const SHIFT_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x2A);
@@ -607,6 +620,9 @@ impl RpcApp {
                 debug!(?control, "RAIL control received");
             }
             RdpOutputEvent::WindowingOrders(_) => {}
+            // Only produced when the client is built with `.with_desktop_updates()`, which the
+            // viewer does not opt into: it always presents full-frame `Image` snapshots instead.
+            RdpOutputEvent::DesktopUpdate(_) => {}
         }
     }
 }

@@ -1,7 +1,6 @@
 use core::fmt;
 use core::num::NonZeroU16;
 
-use anyhow::{Context as _, Result, anyhow};
 use ironrdp_acceptor::DesktopSize;
 use ironrdp_graphics::diff::{Rect, find_different_rects_sub};
 use ironrdp_pdu::codecs::rfx::Quant;
@@ -9,17 +8,19 @@ use ironrdp_pdu::encode_vec;
 use ironrdp_pdu::fast_path::UpdateCode;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
 use ironrdp_pdu::pointer::{
-    CachedPointerAttribute, ColorPointerAttribute, Point16, PointerAttribute, PointerPositionAttribute,
+    CachedPointerAttribute, ColorPointerAttribute, LargePointerAttribute, Point16, PointerAttribute,
+    PointerPositionAttribute,
 };
-use ironrdp_pdu::rdp::capability_sets::{CmdFlags, EntropyBits};
+use ironrdp_pdu::rdp::capability_sets::{CmdFlags, EntropyBits, LargePointerSupportFlags};
 use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, SurfaceCommand};
 use tracing::{debug, warn};
 
 use self::bitmap::BitmapEncoder;
 use self::rfx::RfxEncoder;
 use super::BitmapUpdate;
+use crate::error::{ServerError, ServerErrorExt as _, ServerResult, ServerResultExt as _};
 use crate::macros::time_warn;
-use crate::{ColorPointer, DisplayUpdate, Framebuffer, RGBAPointer};
+use crate::{ColorPointer, DisplayUpdate, Framebuffer, LargePointer, RGBAPointer};
 
 mod bitmap;
 mod fast_path;
@@ -127,6 +128,17 @@ pub(crate) struct UpdateEncoder {
     /// oversized bitmaps into strips that fit within the limit when sent as
     /// uncompressed surface commands.
     max_request_size: usize,
+    /// Client's advertised New Pointer Update cache size (MS-RDPBCGR 2.2.7.1.5
+    /// `pointerCacheSize`). Zero means the client did not advertise support for the
+    /// New Pointer Update; `RGBAPointer`/`CachedPointer` emission is skipped in that
+    /// case rather than sending a PDU the client did not agree to accept.
+    pointer_cache_size: u16,
+    /// Client's advertised Large Pointer Capability Set flags (MS-RDPBCGR 2.2.7.2.7).
+    /// Empty when the client didn't send this capability set at all. Governs both the
+    /// pointer size ceiling for `RGBAPointer` (32x32 with no flags, 96x96 with
+    /// `UP_TO_96X96_PIXELS`) and whether the dedicated `LargePointer` update, up to
+    /// 384x384, is usable at all (`UP_TO_384X384_PIXELS`).
+    large_pointer_flags: LargePointerSupportFlags,
 }
 
 impl fmt::Debug for UpdateEncoder {
@@ -144,13 +156,13 @@ impl UpdateEncoder {
         surface_flags: CmdFlags,
         codecs: UpdateEncoderCodecs,
         max_request_size: u32,
-    ) -> Result<Self> {
+        pointer_cache_size: u16,
+        large_pointer_flags: LargePointerSupportFlags,
+    ) -> ServerResult<Self> {
         let bitmap_updater = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
             match codecs {
                 #[cfg(feature = "qoiz")]
-                UpdateEncoderCodecs { qoiz: Some(id), .. } => {
-                    BitmapUpdater::Qoiz(QoizHandler::new(id).context("failed to initialize qoiz handler")?)
-                }
+                UpdateEncoderCodecs { qoiz: Some(id), .. } => BitmapUpdater::Qoiz(QoizHandler::new(id)?),
                 #[cfg(feature = "qoi")]
                 UpdateEncoderCodecs { qoi: Some(id), .. } => BitmapUpdater::Qoi(QoiHandler::new(id)),
                 UpdateEncoderCodecs {
@@ -179,8 +191,38 @@ impl UpdateEncoder {
             desktop_size,
             framebuffer: None,
             bitmap_updater: Some(bitmap_updater),
-            max_request_size: usize::try_from(max_request_size).context("max_request_size")?,
+            max_request_size: usize::try_from(max_request_size)
+                .map_err(|e| ServerError::custom("max_request_size", e))?,
+            pointer_cache_size,
+            large_pointer_flags,
         })
+    }
+
+    /// Whether a `width`x`height` pointer shape fits the Color/New Pointer Update
+    /// ceiling: 96x96 if the client's Large Pointer Capability Set includes
+    /// `UP_TO_96X96_PIXELS` (MS-RDPBCGR 2.2.9.1.1.4.4's width/height field docs; New
+    /// Pointer Update carries the same `ColorPointerAttribute` internally, so the same
+    /// ceiling applies to both), 32x32 otherwise. Shapes above this ceiling need the
+    /// dedicated Large Pointer Update instead (see `large_pointer_update_supported`).
+    fn color_or_new_pointer_size_ok(&self, width: u16, height: u16) -> bool {
+        let max = if self
+            .large_pointer_flags
+            .contains(LargePointerSupportFlags::UP_TO_96X96_PIXELS)
+        {
+            96
+        } else {
+            32
+        };
+        width <= max && height <= max
+    }
+
+    /// Whether the client negotiated the dedicated Fast-Path Large Pointer Update
+    /// itself. Per MS-RDPBCGR 2.2.7.2.7, only `UP_TO_384X384_PIXELS` unlocks this PDU;
+    /// `UP_TO_96X96_PIXELS` alone only raises the Color/New Pointer Update ceiling and
+    /// does not enable it.
+    fn large_pointer_update_supported(&self) -> bool {
+        self.large_pointer_flags
+            .contains(LargePointerSupportFlags::UP_TO_384X384_PIXELS)
     }
 
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
@@ -199,7 +241,7 @@ impl UpdateEncoder {
             .set_desktop_size(size);
     }
 
-    fn rgba_pointer(ptr: RGBAPointer) -> Result<UpdateFragmenter> {
+    fn rgba_pointer(ptr: RGBAPointer) -> ServerResult<UpdateFragmenter> {
         let xor_mask = ptr.data;
 
         let hot_spot = Point16 {
@@ -218,10 +260,35 @@ impl UpdateEncoder {
             xor_bpp: 32,
             color_pointer,
         };
-        Ok(UpdateFragmenter::new(UpdateCode::NewPointer, encode_vec(&ptr)?))
+        Ok(UpdateFragmenter::new(
+            UpdateCode::NewPointer,
+            encode_vec(&ptr).map_err(ServerError::encode)?,
+        ))
     }
 
-    fn color_pointer(ptr: ColorPointer) -> Result<UpdateFragmenter> {
+    fn large_pointer(ptr: LargePointer) -> ServerResult<UpdateFragmenter> {
+        let xor_mask = ptr.data;
+
+        let hot_spot = Point16 {
+            x: ptr.hot_x,
+            y: ptr.hot_y,
+        };
+        let large_pointer = LargePointerAttribute {
+            xor_bpp: 32,
+            cache_index: ptr.cache_index,
+            hot_spot,
+            width: ptr.width,
+            height: ptr.height,
+            xor_mask: &xor_mask,
+            and_mask: &[],
+        };
+        Ok(UpdateFragmenter::new(
+            UpdateCode::LargePointer,
+            encode_vec(&large_pointer).map_err(ServerError::encode)?,
+        ))
+    }
+
+    fn color_pointer(ptr: ColorPointer) -> ServerResult<UpdateFragmenter> {
         let hot_spot = Point16 {
             x: ptr.hot_x,
             y: ptr.hot_y,
@@ -234,24 +301,33 @@ impl UpdateEncoder {
             xor_mask: &ptr.xor_mask,
             and_mask: &ptr.and_mask,
         };
-        Ok(UpdateFragmenter::new(UpdateCode::ColorPointer, encode_vec(&ptr)?))
+        Ok(UpdateFragmenter::new(
+            UpdateCode::ColorPointer,
+            encode_vec(&ptr).map_err(ServerError::encode)?,
+        ))
     }
 
-    fn cached_pointer(cache_index: u16) -> Result<UpdateFragmenter> {
+    fn cached_pointer(cache_index: u16) -> ServerResult<UpdateFragmenter> {
         let ptr = CachedPointerAttribute { cache_index };
-        Ok(UpdateFragmenter::new(UpdateCode::CachedPointer, encode_vec(&ptr)?))
+        Ok(UpdateFragmenter::new(
+            UpdateCode::CachedPointer,
+            encode_vec(&ptr).map_err(ServerError::encode)?,
+        ))
     }
 
-    fn default_pointer() -> Result<UpdateFragmenter> {
+    fn default_pointer() -> ServerResult<UpdateFragmenter> {
         Ok(UpdateFragmenter::new(UpdateCode::DefaultPointer, vec![]))
     }
 
-    fn hide_pointer() -> Result<UpdateFragmenter> {
+    fn hide_pointer() -> ServerResult<UpdateFragmenter> {
         Ok(UpdateFragmenter::new(UpdateCode::HiddenPointer, vec![]))
     }
 
-    fn pointer_position(pos: PointerPositionAttribute) -> Result<UpdateFragmenter> {
-        Ok(UpdateFragmenter::new(UpdateCode::PositionPointer, encode_vec(&pos)?))
+    fn pointer_position(pos: PointerPositionAttribute) -> ServerResult<UpdateFragmenter> {
+        Ok(UpdateFragmenter::new(
+            UpdateCode::PositionPointer,
+            encode_vec(&pos).map_err(ServerError::encode)?,
+        ))
     }
 
     fn bitmap_diffs(&mut self, bitmap: &BitmapUpdate) -> Vec<Rect> {
@@ -347,7 +423,7 @@ impl UpdateEncoder {
         }
     }
 
-    async fn bitmap(&mut self, bitmap: BitmapUpdate) -> Result<UpdateFragmenter> {
+    async fn bitmap(&mut self, bitmap: BitmapUpdate) -> ServerResult<UpdateFragmenter> {
         // Move the bitmap updater to satisfy spawn_blocking 'static requirement.
         // It is restored after the blocking operation completes.
         let mut updater = self.bitmap_updater.take().expect("bitmap updater always Some");
@@ -356,7 +432,8 @@ impl UpdateEncoder {
             let result = time_warn!("Encoding bitmap", 10, updater.handle(&bitmap));
             (result, updater)
         })
-        .await?;
+        .await
+        .map_err(|e| ServerError::custom("bitmap encoder task", e))?;
 
         self.bitmap_updater = Some(updater);
 
@@ -384,7 +461,7 @@ pub(crate) struct EncoderIter<'a> {
 
 impl EncoderIter<'_> {
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
-    pub(crate) async fn next(&mut self) -> Option<Result<UpdateFragmenter>> {
+    pub(crate) async fn next(&mut self) -> Option<ServerResult<UpdateFragmenter>> {
         loop {
             let state = core::mem::take(&mut self.state);
             let encoder = &mut self.encoder;
@@ -406,11 +483,54 @@ impl EncoderIter<'_> {
                         continue;
                     }
                     DisplayUpdate::PointerPosition(pos) => UpdateEncoder::pointer_position(pos),
-                    DisplayUpdate::RGBAPointer(ptr) => UpdateEncoder::rgba_pointer(ptr),
+                    DisplayUpdate::RGBAPointer(ptr) => {
+                        if encoder.pointer_cache_size == 0 {
+                            debug!("Dropping RGBAPointer update: client did not advertise New Pointer Update support");
+                            continue;
+                        }
+                        if !encoder.color_or_new_pointer_size_ok(ptr.width, ptr.height) {
+                            debug!(
+                                "Dropping RGBAPointer update: {}x{} exceeds the client's negotiated pointer size \
+                                 ceiling",
+                                ptr.width, ptr.height,
+                            );
+                            continue;
+                        }
+                        UpdateEncoder::rgba_pointer(ptr)
+                    }
+                    DisplayUpdate::LargePointer(ptr) => {
+                        if encoder.pointer_cache_size == 0 {
+                            debug!("Dropping LargePointer update: client did not advertise New Pointer Update support");
+                            continue;
+                        }
+                        if !encoder.large_pointer_update_supported() {
+                            debug!(
+                                "Dropping LargePointer update: client did not advertise \
+                                 LARGE_POINTER_FLAG_384x384 support"
+                            );
+                            continue;
+                        }
+                        if 384 < ptr.width || 384 < ptr.height {
+                            debug!(
+                                "Dropping LargePointer update: {}x{} exceeds the 384x384 protocol maximum",
+                                ptr.width, ptr.height,
+                            );
+                            continue;
+                        }
+                        UpdateEncoder::large_pointer(ptr)
+                    }
                     DisplayUpdate::ColorPointer(ptr) => UpdateEncoder::color_pointer(ptr),
                     DisplayUpdate::HidePointer => UpdateEncoder::hide_pointer(),
                     DisplayUpdate::DefaultPointer => UpdateEncoder::default_pointer(),
-                    DisplayUpdate::CachedPointer(idx) => UpdateEncoder::cached_pointer(idx),
+                    DisplayUpdate::CachedPointer(idx) => {
+                        if encoder.pointer_cache_size == 0 {
+                            debug!(
+                                "Dropping CachedPointer update: client did not advertise New Pointer Update support"
+                            );
+                            continue;
+                        }
+                        UpdateEncoder::cached_pointer(idx)
+                    }
                     DisplayUpdate::Resize(_) => return None,
                 },
                 State::BitmapDiffs { diffs, bitmap, pos } => {
@@ -423,25 +543,55 @@ impl EncoderIter<'_> {
 
                     let x = match u16::try_from(x) {
                         Ok(x) => x,
-                        Err(_) => return Some(Err(anyhow!("invalid `x`: out of range integral conversion"))),
+                        Err(_) => {
+                            return Some(Err(ServerError::reason(
+                                "bitmap diff",
+                                "invalid `x`: out of range integral conversion",
+                            )));
+                        }
                     };
                     let y = match u16::try_from(y) {
                         Ok(y) => y,
-                        Err(_) => return Some(Err(anyhow!("invalid `y`: out of range integral conversion"))),
+                        Err(_) => {
+                            return Some(Err(ServerError::reason(
+                                "bitmap diff",
+                                "invalid `y`: out of range integral conversion",
+                            )));
+                        }
                     };
                     let width = match u16::try_from(width) {
                         Ok(width) => match NonZeroU16::new(width) {
                             Some(width) => width,
-                            None => return Some(Err(anyhow!("rectangle width cannot be zero"))),
+                            None => {
+                                return Some(Err(ServerError::reason(
+                                    "bitmap diff",
+                                    "rectangle width cannot be zero",
+                                )));
+                            }
                         },
-                        Err(_) => return Some(Err(anyhow!("invalid `width`: out of range integral conversion"))),
+                        Err(_) => {
+                            return Some(Err(ServerError::reason(
+                                "bitmap diff",
+                                "invalid `width`: out of range integral conversion",
+                            )));
+                        }
                     };
                     let height = match u16::try_from(height) {
                         Ok(height) => match NonZeroU16::new(height) {
                             Some(height) => height,
-                            None => return Some(Err(anyhow!("rectangle height cannot be zero"))),
+                            None => {
+                                return Some(Err(ServerError::reason(
+                                    "bitmap diff",
+                                    "rectangle height cannot be zero",
+                                )));
+                            }
                         },
-                        Err(_) => return Some(Err(anyhow!("invalid `height`: out of range integral conversion"))),
+                        Err(_) => {
+                            return Some(Err(ServerError::reason(
+                                "bitmap diff",
+                                "invalid `height`: out of range integral conversion",
+                            )));
+                        }
                     };
 
                     let Some(sub) = bitmap.sub(x, y, width, height) else {
@@ -477,7 +627,7 @@ enum BitmapUpdater {
 }
 
 impl BitmapUpdater {
-    fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
+    fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter> {
         match self {
             Self::None(up) => up.handle(bitmap),
             Self::Bitmap(up) => up.handle(bitmap),
@@ -499,14 +649,14 @@ impl BitmapUpdater {
 }
 
 trait BitmapUpdateHandler {
-    fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter>;
+    fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter>;
 }
 
 #[derive(Clone, Debug)]
 struct NoneHandler;
 
 impl BitmapUpdateHandler for NoneHandler {
-    fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
+    fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter> {
         let stride = usize::from(bitmap.format.bytes_per_pixel()) * usize::from(bitmap.width.get());
         let mut data = Vec::with_capacity(stride * usize::from(bitmap.height.get()));
         for row in bitmap.data.chunks(bitmap.stride.get()).rev() {
@@ -536,7 +686,7 @@ impl BitmapHandler {
 }
 
 impl BitmapUpdateHandler for BitmapHandler {
-    fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
+    fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter> {
         let mut buffer = vec![0; bitmap.data.len() * 2]; // TODO: estimate bitmap encoded size
         let len = loop {
             match self.bitmap.encode(bitmap, buffer.as_mut_slice()) {
@@ -546,9 +696,9 @@ impl BitmapUpdateHandler for BitmapHandler {
                             buffer.resize(buffer.len() * 2, 0);
                             debug!("encoder buffer resized to: {}", buffer.len() * 2);
                         }
-                        _ => Err(e).context("bitmap encode error")?,
+                        _ => return Err(ServerError::encode(e)).with_context("bitmap encode error"),
                     },
-                    BitmapEncodeError::Rle(e) => Err(e).context("bitmap RLE encode error")?,
+                    BitmapEncodeError::Rle(e) => return Err(ServerError::custom("bitmap RLE encode error", e)),
                 },
                 Ok(len) => break len,
             }
@@ -581,7 +731,7 @@ impl RemoteFxHandler {
 }
 
 impl BitmapUpdateHandler for RemoteFxHandler {
-    fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
+    fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter> {
         let mut buffer = vec![0; bitmap.data.len()];
         let len = loop {
             match self
@@ -593,7 +743,7 @@ impl BitmapUpdateHandler for RemoteFxHandler {
                         buffer.resize(buffer.len() * 2, 0);
                         debug!("encoder buffer resized to: {}", buffer.len() * 2);
                     }
-                    _ => Err(e).context("RemoteFX encode error")?,
+                    _ => return Err(ServerError::encode(e)).with_context("RemoteFX encode error"),
                 },
                 Ok(len) => break len,
             }
@@ -618,7 +768,7 @@ impl QoiHandler {
 
 #[cfg(feature = "qoi")]
 impl BitmapUpdateHandler for QoiHandler {
-    fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
+    fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter> {
         let data = qoi_encode(bitmap)?;
         set_surface(bitmap, self.codec_id, &data)
     }
@@ -639,23 +789,29 @@ impl fmt::Debug for QoizHandler {
 
 #[cfg(feature = "qoiz")]
 impl QoizHandler {
-    fn new(codec_id: u8) -> Result<Self> {
+    fn new(codec_id: u8) -> ServerResult<Self> {
         let mut zctxt = zstd_safe::CCtx::default();
 
         zctxt
             .set_parameter(zstd_safe::CParameter::CompressionLevel(3))
             .map_err(|code| {
-                anyhow!(
-                    "failed to set zstd compression level: {}",
-                    zstd_safe::get_error_name(code)
+                ServerError::reason(
+                    "qoiz init",
+                    format!(
+                        "failed to set zstd compression level: {}",
+                        zstd_safe::get_error_name(code)
+                    ),
                 )
             })?;
         zctxt
             .set_parameter(zstd_safe::CParameter::EnableLongDistanceMatching(true))
             .map_err(|code| {
-                anyhow!(
-                    "failed to set zstd enable long distance matching: {}",
-                    zstd_safe::get_error_name(code)
+                ServerError::reason(
+                    "qoiz init",
+                    format!(
+                        "failed to set zstd enable long distance matching: {}",
+                        zstd_safe::get_error_name(code)
+                    ),
                 )
             })?;
 
@@ -665,7 +821,7 @@ impl QoizHandler {
 
 #[cfg(feature = "qoiz")]
 impl BitmapUpdateHandler for QoizHandler {
-    fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
+    fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter> {
         let qoi = qoi_encode(bitmap)?;
         let mut inb = zstd_safe::InBuffer::around(&qoi);
         let mut data = vec![0; qoi.len()];
@@ -681,7 +837,12 @@ impl BitmapUpdateHandler for QoizHandler {
                     &mut inb,
                     zstd_safe::zstd_sys::ZSTD_EndDirective::ZSTD_e_flush,
                 )
-                .map_err(|code| anyhow!("failed to Zstd compress: {}", zstd_safe::get_error_name(code)))?;
+                .map_err(|code| {
+                    ServerError::reason(
+                        "qoiz compress",
+                        format!("failed to Zstd compress: {}", zstd_safe::get_error_name(code)),
+                    )
+                })?;
             if res == 0 {
                 break;
             }
@@ -712,7 +873,7 @@ impl NsCodecHandler {
 
 #[cfg(feature = "nscodec")]
 impl BitmapUpdateHandler for NsCodecHandler {
-    fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
+    fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter> {
         let data = ironrdp_nscodec::encoder::encode(
             &bitmap.data,
             bitmap.width.get(),
@@ -726,7 +887,7 @@ impl BitmapUpdateHandler for NsCodecHandler {
 }
 
 #[cfg(feature = "qoi")]
-fn qoi_encode(bitmap: &BitmapUpdate) -> Result<Vec<u8>> {
+fn qoi_encode(bitmap: &BitmapUpdate) -> ServerResult<Vec<u8>> {
     use ironrdp_graphics::image_processing::PixelFormat::*;
     // Map every 4-byte input — whether it nominally has an alpha byte or
     // an "X" filler — to the 3-channel-output `*x` variant of
@@ -752,11 +913,12 @@ fn qoi_encode(bitmap: &BitmapUpdate) -> Result<Vec<u8>> {
     let enc = qoi::EncoderBuilder::new(&bitmap.data, bitmap.width.get().into(), bitmap.height.get().into())
         .stride(bitmap.stride.get())
         .raw_channels(raw_channels)
-        .build()?;
-    Ok(enc.encode_to_vec()?)
+        .build()
+        .map_err(|e| ServerError::custom("qoi encoder build", e))?;
+    enc.encode_to_vec().map_err(|e| ServerError::custom("qoi encode", e))
 }
 
-fn set_surface(bitmap: &BitmapUpdate, codec_id: u8, data: &[u8]) -> Result<UpdateFragmenter> {
+fn set_surface(bitmap: &BitmapUpdate, codec_id: u8, data: &[u8]) -> ServerResult<UpdateFragmenter> {
     let destination = ExclusiveRectangle {
         left: bitmap.x,
         top: bitmap.y,
@@ -776,5 +938,8 @@ fn set_surface(bitmap: &BitmapUpdate, codec_id: u8, data: &[u8]) -> Result<Updat
         extended_bitmap_data,
     };
     let cmd = SurfaceCommand::SetSurfaceBits(pdu);
-    Ok(UpdateFragmenter::new(UpdateCode::SurfaceCommands, encode_vec(&cmd)?))
+    Ok(UpdateFragmenter::new(
+        UpdateCode::SurfaceCommands,
+        encode_vec(&cmd).map_err(ServerError::encode)?,
+    ))
 }

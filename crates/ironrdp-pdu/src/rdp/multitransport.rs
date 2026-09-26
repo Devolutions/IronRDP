@@ -132,7 +132,8 @@ impl<'de> Decode<'de> for MultitransportRequestPdu {
         if flags != BasicSecurityHeaderFlags::TRANSPORT_REQ {
             return Err(invalid_field_err!(
                 "securityHeader",
-                "expected securityHeader flags to contain SEC_TRANSPORT_REQ and no other PDU-type flag"
+                "expected securityHeader flags to contain SEC_TRANSPORT_REQ and no other PDU-type flag",
+                in: src
             ));
         }
 
@@ -140,7 +141,7 @@ impl<'de> Decode<'de> for MultitransportRequestPdu {
 
         let protocol_raw = src.read_u16();
         let requested_protocol = RequestedProtocol::from_u16(protocol_raw)
-            .ok_or_else(|| invalid_field_err!("requestedProtocol", "unknown protocol value"))?;
+            .ok_or_else(|| invalid_field_err!("requestedProtocol", "unknown protocol value", in: src))?;
 
         read_padding!(src, 2);
 
@@ -256,7 +257,8 @@ impl<'de> Decode<'de> for MultitransportResponsePdu {
         if flags != BasicSecurityHeaderFlags::TRANSPORT_RSP {
             return Err(invalid_field_err!(
                 "securityHeader",
-                "expected securityHeader flags to contain SEC_TRANSPORT_RSP and no other PDU-type flag"
+                "expected securityHeader flags to contain SEC_TRANSPORT_RSP and no other PDU-type flag",
+                in: src
             ));
         }
 

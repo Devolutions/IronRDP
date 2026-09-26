@@ -9,9 +9,9 @@ use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProce
 use pdu::efs::{
     AnyIoCtlCode, Capabilities, ClientDeviceListAnnounce, ClientDeviceListRemove, ClientNameRequest,
     ClientNameRequestUnicodeFlag, CoreCapability, CoreCapabilityKind, DEFAULT_PRINTER_DRIVER_NAME,
-    DeviceAnnounceHeader, DeviceCloseResponse, DeviceControlRequest, DeviceControlResponse, DeviceIoRequest,
-    DeviceIoResponse, DeviceType, Devices, MajorFunction, NtStatus, PrinterIoRequest, ServerDeviceAnnounceResponse,
-    VERSION_MINOR_12, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
+    DeviceAnnounceHeader, DeviceCloseResponse, DeviceControlRequest, DeviceControlResponse, DeviceCreateResponse,
+    DeviceIoRequest, DeviceIoResponse, DeviceType, Devices, Information, MajorFunction, NtStatus, PrinterIoRequest,
+    ServerDeviceAnnounceResponse, VERSION_MINOR_12, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
 use pdu::{PacketId, RdpdrPdu, SharedHeader};
@@ -19,12 +19,15 @@ use tracing::{debug, trace, warn};
 
 pub mod backend;
 pub mod pdu;
+pub mod server;
 
 pub use self::backend::noop::NoopRdpdrBackend;
 pub use self::backend::{
-    RdpdrBackend, RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive,
+    RdpdrBackend, RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPrinter,
 };
 use crate::pdu::efs::ServerDriveIoRequest;
+
+const MAX_PRINTER_WRITE_BYTES: u32 = 16 * 1024 * 1024;
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].
 ///
@@ -50,11 +53,13 @@ pub struct Rdpdr {
     drive_capability_configured: bool,
     client_id: Option<u32>,
     server_capabilities_received: bool,
+    printer_capability_negotiated: bool,
     client_id_confirmed: bool,
     post_logon_devices_announced: bool,
     pending_device_announcements: Vec<u32>,
+    pending_drive_removals: Vec<u32>,
     manually_announced_device_ids: Vec<u32>,
-    activated_dynamic_drive_ids: Vec<u32>,
+    backend_active_drive_ids: Vec<u32>,
     active_device_ids: Vec<u32>,
     rejected_device_ids: Vec<u32>,
     backend: Option<Box<dyn RdpdrBackend>>,
@@ -75,11 +80,13 @@ impl Rdpdr {
             drive_capability_configured: false,
             client_id: None,
             server_capabilities_received: false,
+            printer_capability_negotiated: false,
             client_id_confirmed: false,
             post_logon_devices_announced: false,
             pending_device_announcements: Vec::new(),
+            pending_drive_removals: Vec::new(),
             manually_announced_device_ids: Vec::new(),
-            activated_dynamic_drive_ids: Vec::new(),
+            backend_active_drive_ids: Vec::new(),
             active_device_ids: Vec::new(),
             rejected_device_ids: Vec::new(),
             backend: Some(backend),
@@ -111,6 +118,11 @@ impl Rdpdr {
         self
     }
 
+    /// Returns whether this channel can accept dynamic filesystem devices.
+    pub fn drive_hotplug_available(&self) -> bool {
+        self.drive_capability_configured
+    }
+
     /// Adds printer redirection capability and announces a single
     /// virtual printer under `device_id` with the user-visible name
     /// `print_name`.
@@ -132,9 +144,22 @@ impl Rdpdr {
     /// [`DEFAULT_PRINTER_DRIVER_NAME`] for the redirected printer queue.
     #[must_use]
     pub fn with_printer_driver(mut self, device_id: u32, print_name: String, driver_name: String) -> Self {
+        self = self.with_printer_driver_and_network(device_id, print_name, driver_name, true);
+        self
+    }
+
+    /// Adds printer redirection capability with explicit driver and network-queue metadata.
+    #[must_use]
+    pub fn with_printer_driver_and_network(
+        mut self,
+        device_id: u32,
+        print_name: String,
+        driver_name: String,
+        network: bool,
+    ) -> Self {
         self.capabilities.add_printer();
         self.device_list
-            .add_printer_with_driver(device_id, print_name, driver_name);
+            .add_printer_with_driver_and_network(device_id, print_name, driver_name, network);
         self.device_types.push((device_id, DeviceType::Print));
         self
     }
@@ -158,12 +183,27 @@ impl Rdpdr {
 
     /// Activates a filesystem device and, when allowed by the current sequence,
     /// announces it to the server.
+    ///
+    /// [MS-RDPEFS section 3.2.5.1.9] permits later announcements containing only previously unannounced devices.
+    ///
+    /// [MS-RDPEFS section 3.2.5.1.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
     pub fn add_dynamic_drive(&mut self, device_id: u32, name: String) -> PduResult<Vec<SvcMessage>> {
         if name.is_empty() || name.contains('\0') {
             return Err(pdu_other_err!("dynamic drive name must be nonempty and contain no NUL"));
         }
-        if self.device_types.iter().any(|(id, _)| *id == device_id) {
-            return Err(pdu_other_err!("dynamic drive uses an already-live device ID"));
+        if let Some((_, device_type)) = self.device_types.iter().find(|(id, _)| *id == device_id) {
+            if *device_type != DeviceType::Filesystem {
+                return Err(pdu_other_err!("dynamic drive uses an already-live device ID"));
+            }
+            if self.pending_drive_removals.contains(&device_id) {
+                self.pending_drive_removals.retain(|id| *id != device_id);
+                return Ok(Vec::new());
+            }
+            if self.rejected_device_ids.contains(&device_id) {
+                self.unregister_drive(device_id)?;
+            } else {
+                return Ok(Vec::new());
+            }
         }
         if !self.drive_capability_configured && self.server_capabilities_received {
             return Err(pdu_other_err!(
@@ -176,7 +216,7 @@ impl Rdpdr {
             .as_mut()
             .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
             .add_drive(device_id)?;
-        self.activated_dynamic_drive_ids.push(device_id);
+        self.backend_active_drive_ids.push(device_id);
         self.device_list.add_drive(device_id, name.clone());
         self.device_types.push((device_id, DeviceType::Filesystem));
 
@@ -192,6 +232,10 @@ impl Rdpdr {
 
     /// Releases a filesystem device and sends its removal after pending IRP
     /// cancellations have been returned by the backend.
+    ///
+    /// [MS-RDPEFS section 3.2.5.2.2] requires post-connect removal and invalidates later requests for that device ID.
+    ///
+    /// [MS-RDPEFS section 3.2.5.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
     pub fn remove_drive(&mut self, device_id: u32) -> PduResult<Vec<SvcMessage>> {
         if !self
             .device_types
@@ -201,13 +245,14 @@ impl Rdpdr {
             return Err(pdu_other_err!("device removal requires a filesystem device"));
         }
         if self.pending_device_announcements.contains(&device_id) {
-            return Err(pdu_other_err!(
-                "device removal requires the server announcement response"
-            ));
+            if !self.pending_drive_removals.contains(&device_id) {
+                self.pending_drive_removals.push(device_id);
+            }
+            return Ok(Vec::new());
         }
 
         let was_active = self.active_device_ids.contains(&device_id);
-        let mut messages = if self.activated_dynamic_drive_ids.contains(&device_id) {
+        let mut messages = if self.backend_active_drive_ids.contains(&device_id) {
             self.backend
                 .as_mut()
                 .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
@@ -216,14 +261,7 @@ impl Rdpdr {
             Vec::new()
         };
 
-        self.device_list
-            .remove_device(device_id)
-            .ok_or_else(|| pdu_other_err!("device disappeared from the RDPDR device list"))?;
-        self.device_types.retain(|(id, _)| *id != device_id);
-        self.active_device_ids.retain(|id| *id != device_id);
-        self.rejected_device_ids.retain(|id| *id != device_id);
-        self.manually_announced_device_ids.retain(|id| *id != device_id);
-        self.activated_dynamic_drive_ids.retain(|id| *id != device_id);
+        self.unregister_drive(device_id)?;
 
         if was_active {
             messages.push(SvcMessage::from(RdpdrPdu::ClientDeviceListRemove(
@@ -232,6 +270,20 @@ impl Rdpdr {
         }
 
         Ok(messages)
+    }
+
+    fn unregister_drive(&mut self, device_id: u32) -> PduResult<()> {
+        self.device_list
+            .remove_device(device_id)
+            .ok_or_else(|| pdu_other_err!("device disappeared from the RDPDR device list"))?;
+        self.device_types.retain(|(id, _)| *id != device_id);
+        self.pending_device_announcements.retain(|id| *id != device_id);
+        self.pending_drive_removals.retain(|id| *id != device_id);
+        self.manually_announced_device_ids.retain(|id| *id != device_id);
+        self.active_device_ids.retain(|id| *id != device_id);
+        self.rejected_device_ids.retain(|id| *id != device_id);
+        self.backend_active_drive_ids.retain(|id| *id != device_id);
+        Ok(())
     }
 
     /// Builds a removal PDU for a non-filesystem or externally managed device.
@@ -259,10 +311,11 @@ impl Rdpdr {
             self.device_types.remove(index);
         }
         self.pending_device_announcements.retain(|id| *id != device_id);
+        self.pending_drive_removals.retain(|id| *id != device_id);
         self.manually_announced_device_ids.retain(|id| *id != device_id);
         self.active_device_ids.retain(|id| *id != device_id);
         self.rejected_device_ids.retain(|id| *id != device_id);
-        self.activated_dynamic_drive_ids.retain(|id| *id != device_id);
+        self.backend_active_drive_ids.retain(|id| *id != device_id);
         Some(ClientDeviceListRemove::remove_device(device_id))
     }
 
@@ -275,6 +328,9 @@ impl Rdpdr {
     }
 
     fn handle_server_announce(&mut self, req: VersionAndIdPdu) -> PduResult<Vec<SvcMessage>> {
+        for device_id in core::mem::take(&mut self.pending_drive_removals) {
+            self.unregister_drive(device_id)?;
+        }
         let configured_drive_ids = self
             .device_list
             .clone_inner()
@@ -290,12 +346,14 @@ impl Rdpdr {
                 .as_mut()
                 .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?;
             backend.reset()?;
-            for device_id in configured_drive_ids {
-                backend.restore_drive(device_id)?;
+            for device_id in &configured_drive_ids {
+                backend.restore_drive(*device_id)?;
             }
         }
+        self.backend_active_drive_ids = configured_drive_ids;
 
         self.server_capabilities_received = false;
+        self.printer_capability_negotiated = false;
         self.client_id_confirmed = false;
         self.post_logon_devices_announced = false;
         self.pending_device_announcements.clear();
@@ -336,6 +394,7 @@ impl Rdpdr {
         }
 
         self.server_capabilities_received = true;
+        self.printer_capability_negotiated = req.supports_printer();
         let client_capability_response =
             RdpdrPdu::CoreCapability(CoreCapability::new_response(self.capabilities.clone_supported_by(&req)));
         trace!("sending {:?}", client_capability_response);
@@ -363,6 +422,7 @@ impl Rdpdr {
             .zip(self.device_types.iter().copied())
             .filter(|(device, (device_id, _))| {
                 !self.manually_announced_device_ids.contains(device_id)
+                    && (device.device_type() != DeviceType::Print || self.printer_capability_negotiated)
                     && (announce_all_devices || Self::is_pre_logon_device(device))
             })
             .map(|(device, (device_id, _))| (device, device_id))
@@ -392,7 +452,9 @@ impl Rdpdr {
             .into_iter()
             .zip(self.device_types.iter().copied())
             .filter(|(device, (device_id, _))| {
-                !self.manually_announced_device_ids.contains(device_id) && !Self::is_pre_logon_device(device)
+                !self.manually_announced_device_ids.contains(device_id)
+                    && (device.device_type() != DeviceType::Print || self.printer_capability_negotiated)
+                    && !Self::is_pre_logon_device(device)
             })
             .map(|(device, (device_id, _))| (device, device_id))
             .unzip();
@@ -458,6 +520,10 @@ impl Rdpdr {
         }
 
         let device_id = pdu.device_id;
+        let device_type = self
+            .device_list
+            .for_device_type(device_id)
+            .map_err(|e| decode_err!(e))?;
         let accepted = pdu.result_code == NtStatus::SUCCESS;
         self.backend
             .as_mut()
@@ -470,10 +536,13 @@ impl Rdpdr {
                 self.active_device_ids.push(device_id);
             }
             self.rejected_device_ids.retain(|id| *id != device_id);
+            if self.pending_drive_removals.contains(&device_id) {
+                return self.remove_drive(device_id);
+            }
             return Ok(Vec::new());
         }
 
-        let mut messages = if self.activated_dynamic_drive_ids.contains(&device_id) {
+        let mut messages = if self.backend_active_drive_ids.contains(&device_id) {
             self.backend
                 .as_mut()
                 .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
@@ -481,16 +550,23 @@ impl Rdpdr {
         } else {
             Vec::new()
         };
-        self.activated_dynamic_drive_ids.retain(|id| *id != device_id);
+        self.backend_active_drive_ids.retain(|id| *id != device_id);
         self.pending_device_announcements.retain(|id| *id != device_id);
+        let removal_requested = self.pending_drive_removals.contains(&device_id);
+        self.pending_drive_removals.retain(|id| *id != device_id);
         if !self.rejected_device_ids.contains(&device_id) {
             self.rejected_device_ids.push(device_id);
         }
         self.active_device_ids.retain(|id| *id != device_id);
+        if removal_requested {
+            self.unregister_drive(device_id)?;
+        }
 
-        messages.push(SvcMessage::from(RdpdrPdu::ClientDeviceListRemove(
-            ClientDeviceListRemove::remove_device(device_id),
-        )));
+        if device_type == DeviceType::Filesystem {
+            messages.push(SvcMessage::from(RdpdrPdu::ClientDeviceListRemove(
+                ClientDeviceListRemove::remove_device(device_id),
+            )));
+        }
         Ok(messages)
     }
 
@@ -600,36 +676,97 @@ impl Rdpdr {
                     .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
                     .handle_drive_io_request(req)?)
             }
-            DeviceType::Print => match dev_io_req.major_function {
-                MajorFunction::DeviceControl => {
-                    let req =
-                        DeviceControlRequest::<AnyIoCtlCode>::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
-                    debug!(?req, "Completing printer device-control IRP");
-
-                    Ok(vec![SvcMessage::from(RdpdrPdu::DeviceControlResponse(
-                        DeviceControlResponse::new(req, NtStatus::SUCCESS, None),
-                    ))])
-                }
-                MajorFunction::Create | MajorFunction::Write | MajorFunction::Close => {
-                    let req = PrinterIoRequest::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
-                    debug!(?req, "Dispatching printer IRP to backend");
-                    self.backend
-                        .as_mut()
-                        .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
-                        .handle_printer_io_request(req)
-                }
-                _ => {
-                    debug!(
-                        major = ?dev_io_req.major_function,
-                        minor = ?dev_io_req.minor_function,
+            DeviceType::Print => {
+                if self.rejected_device_ids.contains(&dev_io_req.device_id) {
+                    warn!(
+                        device_id = dev_io_req.device_id,
                         file_id = dev_io_req.file_id,
                         completion_id = dev_io_req.completion_id,
-                        "Completing unsupported printer IRP"
+                        "Ignoring printer IRP for a rejected device"
                     );
-
-                    Ok(vec![Self::unsupported_printer_io_response(dev_io_req)])
+                    return Ok(Vec::new());
                 }
-            },
+                if !self.active_device_ids.contains(&dev_io_req.device_id) {
+                    warn!(
+                        device_id = dev_io_req.device_id,
+                        file_id = dev_io_req.file_id,
+                        completion_id = dev_io_req.completion_id,
+                        "Ignoring printer IRP before device announcement confirmation"
+                    );
+                    return Ok(Vec::new());
+                }
+
+                match dev_io_req.major_function {
+                    MajorFunction::DeviceControl => {
+                        let req = DeviceControlRequest::<AnyIoCtlCode>::decode_with_input_buffer(dev_io_req, src)
+                            .map_err(|e| decode_err!(e))?;
+                        if !src.is_empty() {
+                            return Err(pdu_other_err!(
+                                "received printer device-control IRP with trailing RDPDR data"
+                            ));
+                        }
+                        debug!(?req, "Completing printer device-control IRP");
+
+                        Ok(vec![SvcMessage::from(RdpdrPdu::DeviceControlResponse(
+                            DeviceControlResponse::new(req.request, NtStatus::SUCCESS, None),
+                        ))])
+                    }
+                    MajorFunction::Create | MajorFunction::Write | MajorFunction::Close => {
+                        if dev_io_req.major_function == MajorFunction::Create && src.len() >= 32 {
+                            let path_length =
+                                u32::from_le_bytes(src.remaining()[28..32].try_into().expect("four-byte path length"));
+                            if path_length != 0 {
+                                return Ok(vec![SvcMessage::from(RdpdrPdu::DeviceCreateResponse(
+                                    DeviceCreateResponse {
+                                        device_io_reply: DeviceIoResponse::new(dev_io_req, NtStatus::INVALID_PARAMETER),
+                                        file_id: 0,
+                                        information: Information::empty(),
+                                    },
+                                ))]);
+                            }
+                        }
+                        if dev_io_req.major_function == MajorFunction::Write && src.len() >= 4 {
+                            let write_length =
+                                u32::from_le_bytes(src.remaining()[..4].try_into().expect("four-byte write length"));
+                            if write_length > MAX_PRINTER_WRITE_BYTES {
+                                return self
+                                    .backend
+                                    .as_mut()
+                                    .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
+                                    .reject_printer_write(dev_io_req);
+                            }
+                        }
+                        if dev_io_req.major_function == MajorFunction::Close {
+                            const CLOSE_REQUEST_PADDING_SIZE: usize = 32;
+
+                            if src.len() < CLOSE_REQUEST_PADDING_SIZE {
+                                return Err(pdu_other_err!("received truncated printer close IRP"));
+                            }
+                            src.advance(CLOSE_REQUEST_PADDING_SIZE);
+                        }
+                        let req = PrinterIoRequest::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
+                        if !src.is_empty() {
+                            return Err(pdu_other_err!("received printer IRP with trailing RDPDR data"));
+                        }
+                        debug!(?req, "Dispatching printer IRP to backend");
+                        self.backend
+                            .as_mut()
+                            .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
+                            .handle_printer_io_request(req)
+                    }
+                    _ => {
+                        debug!(
+                            major = ?dev_io_req.major_function,
+                            minor = ?dev_io_req.minor_function,
+                            file_id = dev_io_req.file_id,
+                            completion_id = dev_io_req.completion_id,
+                            "Completing unsupported printer IRP"
+                        );
+
+                        Ok(vec![Self::unsupported_printer_io_response(dev_io_req)])
+                    }
+                }
+            }
             _ => {
                 // This should never happen, as we only announce devices that we support.
                 warn!(?dev_io_req, "received packet for unsupported device type");
@@ -1117,13 +1254,20 @@ mod tests {
                 .len(),
             1
         );
+        assert!(
+            rdpdr
+                .remove_drive(42)
+                .expect("defer removal until announcement response")
+                .is_empty()
+        );
+        assert_eq!(
+            rdpdr
+                .process(&encoded_server_device_announce_response(42, NtStatus::SUCCESS))
+                .expect("accept then remove dynamic drive")
+                .len(),
+            1
+        );
         assert!(rdpdr.remove_drive(42).is_err());
-        rdpdr
-            .process(&encoded_server_device_announce_response(42, NtStatus::SUCCESS))
-            .expect("process accepted device announcement");
-
-        let responses = rdpdr.remove_drive(42).expect("remove active dynamic drive");
-        assert_eq!(responses.len(), 1);
         assert_eq!(
             rdpdr
                 .downcast_backend::<TrackingBackend>()
@@ -1136,6 +1280,147 @@ mod tests {
                 .downcast_backend::<TrackingBackend>()
                 .expect("tracking backend")
                 .removed_drives,
+            vec![42]
+        );
+
+        assert_eq!(
+            rdpdr
+                .add_dynamic_drive(42, "C:".to_owned())
+                .expect("readd dynamically removed drive")
+                .len(),
+            1
+        );
+        assert!(
+            rdpdr
+                .process(&encoded_server_device_announce_response(42, NtStatus::SUCCESS))
+                .expect("accept readded dynamic drive")
+                .is_empty()
+        );
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .added_drives,
+            vec![42, 42]
+        );
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .removed_drives,
+            vec![42]
+        );
+    }
+
+    #[test]
+    fn rapid_add_remove_add_cancels_pending_removal() {
+        let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned());
+        rdpdr.add_dynamic_drive(42, "C:".to_owned()).expect("add dynamic drive");
+        let responses = rdpdr
+            .process(&encoded_server_announce(0x1234))
+            .expect("process server announce");
+        let client_id = read_u32(
+            &responses[0]
+                .encode_unframed_pdu()
+                .expect("encode client announce response"),
+            8,
+        );
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .expect("process server client ID confirm");
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+            .expect("process user logged on");
+
+        assert!(rdpdr.remove_drive(42).expect("defer pending removal").is_empty());
+        assert!(
+            rdpdr
+                .add_dynamic_drive(42, "C:".to_owned())
+                .expect("cancel pending removal")
+                .is_empty()
+        );
+        assert!(
+            rdpdr
+                .process(&encoded_server_device_announce_response(42, NtStatus::SUCCESS))
+                .expect("accept retained dynamic drive")
+                .is_empty()
+        );
+        assert!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .removed_drives
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn replacement_sequence_applies_pending_drive_removal() {
+        let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned());
+        let responses = rdpdr
+            .process(&encoded_server_announce(0x1234))
+            .expect("process server announce");
+        let client_id = read_u32(
+            &responses[0]
+                .encode_unframed_pdu()
+                .expect("encode client announce response"),
+            8,
+        );
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .expect("process server client ID confirm");
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+            .expect("process user logged on");
+        assert_eq!(
+            rdpdr
+                .add_dynamic_drive(42, "C:".to_owned())
+                .expect("announce dynamic drive")
+                .len(),
+            1
+        );
+        assert!(rdpdr.remove_drive(42).expect("defer pending removal").is_empty());
+
+        rdpdr
+            .process(&encoded_server_announce(0x5678))
+            .expect("process replacement server announce");
+        assert!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .restored_drives
+                .is_empty()
+        );
+        assert!(!rdpdr.device_types.iter().any(|(device_id, _)| *device_id == 42));
+    }
+
+    #[test]
+    fn initial_drive_can_be_removed_and_readded_dynamically() {
+        let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned())
+            .with_drives(Some(vec![(42, "C:".to_owned())]));
+        initialize_drive(&mut rdpdr, 42);
+
+        assert_eq!(rdpdr.remove_drive(42).expect("remove initial drive").len(), 1);
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .removed_drives,
+            vec![42]
+        );
+
+        assert_eq!(
+            rdpdr
+                .add_dynamic_drive(42, "C:".to_owned())
+                .expect("readd drive with its stable ID")
+                .len(),
+            1
+        );
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .added_drives,
             vec![42]
         );
     }
@@ -1160,6 +1445,12 @@ mod tests {
         rdpdr
             .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
             .expect("process user logged on");
+        assert!(
+            rdpdr
+                .remove_drive(42)
+                .expect("defer removal until rejected announcement")
+                .is_empty()
+        );
 
         assert_eq!(
             rdpdr
@@ -1175,12 +1466,7 @@ mod tests {
                 .removed_drives,
             vec![42]
         );
-        assert!(
-            rdpdr
-                .remove_drive(42)
-                .expect("remove rejected dynamic drive")
-                .is_empty()
-        );
+        assert!(rdpdr.remove_drive(42).is_err());
         assert_eq!(
             rdpdr
                 .downcast_backend::<TrackingBackend>()

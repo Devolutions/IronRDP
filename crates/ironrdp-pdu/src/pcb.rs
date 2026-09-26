@@ -51,6 +51,7 @@ impl<'de> Decode<'de> for PreconnectionBlob {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
+        let cb_size_pos = src.pos();
         let pcb_size: usize = cast_length!("cbSize", src.read_u32())?;
 
         if pcb_size < Self::FIXED_PART_SIZE {
@@ -58,6 +59,7 @@ impl<'de> Decode<'de> for PreconnectionBlob {
                 Self::NAME,
                 "cbSize",
                 "advertised size too small for Preconnection PDU V1",
+                Some(cb_size_pos),
             ));
         }
 
@@ -75,6 +77,7 @@ impl<'de> Decode<'de> for PreconnectionBlob {
         ensure_size!(in: src, size: remaining_size);
 
         if remaining_size >= 2 {
+            let cch_pcb_pos = src.pos();
             let cch_pcb = usize::from(src.read_u16());
             let cb_pcb = cch_pcb * 2;
 
@@ -83,13 +86,16 @@ impl<'de> Decode<'de> for PreconnectionBlob {
                     Self::NAME,
                     "cchPCB",
                     "PCB string bigger than advertised size",
+                    Some(cch_pcb_pos),
                 ));
             }
 
+            let wsz_pcb_pos = src.pos();
             let wsz_pcb_utf16 = src.read_slice(cb_pcb);
 
-            let payload = crate::utf16::read_utf16_string(wsz_pcb_utf16, Some(cch_pcb))
-                .map_err(|e| invalid_field_err_with_source(Self::NAME, "wszPCB", "bad UTF-16 string", e))?;
+            let payload = crate::utf16::read_utf16_string(wsz_pcb_utf16, Some(cch_pcb)).map_err(|e| {
+                invalid_field_err_with_source(Self::NAME, "wszPCB", "bad UTF-16 string", Some(wsz_pcb_pos), e)
+            })?;
 
             let leftover_size = remaining_size - 2 - cb_pcb;
             src.advance(leftover_size); // Consume (unused) leftover data
@@ -116,6 +122,7 @@ impl Encode for PreconnectionBlob {
                 Self::NAME,
                 "version",
                 "there is no string payload in Preconnection PDU V1",
+                Some(dst.pos()),
             ));
         }
 
@@ -123,7 +130,7 @@ impl Encode for PreconnectionBlob {
 
         ensure_size!(in: dst, size: pcb_size);
 
-        dst.write_u32(cast_length!("cbSize", pcb_size)?); // cbSize
+        dst.write_u32(cast_length!("cbSize", pcb_size, in: dst)?); // cbSize
         write_padding!(dst, 4); // flags
         dst.write_u32(self.version.0); // version
         dst.write_u32(self.id); // id
@@ -131,7 +138,7 @@ impl Encode for PreconnectionBlob {
         if let Some(v2_payload) = &self.v2_payload {
             // cchPCB
             let utf16_character_count = v2_payload.encode_utf16().count() + 1; // +1 for null terminator
-            dst.write_u16(cast_length!("cchPCB", utf16_character_count)?);
+            dst.write_u16(cast_length!("cchPCB", utf16_character_count, in: dst)?);
 
             // wszPCB
             v2_payload.encode_utf16().for_each(|c| dst.write_u16(c));

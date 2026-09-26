@@ -18,6 +18,7 @@ use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, Write
 // ── V1 Handshake modules ──
 
 pub mod v1_ack;
+pub mod v1_data;
 pub mod v1_flags;
 pub mod v1_header;
 pub mod v1_syn;
@@ -39,6 +40,7 @@ pub mod prefix;
 // ── Prefix re-exports ──
 pub use prefix::{PacketPrefixByte, PrefixError, decode_with_prefix, encode_with_prefix};
 pub use v1_ack::{CorrelationIdPayload, V1AckOfAcksHeader, V1AckVectorElement, V1AckVectorHeader, VectorElementState};
+pub use v1_data::{SourceData, SourcePayloadHeader};
 pub use v1_flags::V1Flags;
 pub use v1_header::FecHeader;
 pub use v1_syn::{MTU_MAX, MTU_MIN, SynDataExPayload, SynDataPayload, SynExFlags, UdpVersion};
@@ -55,8 +57,9 @@ pub use v2_header::{LOG_WINDOW_SIZE_MAX, V2Header};
 
 /// V1 flags that don't gate any optional payload; preserved on encode.
 ///
-/// DATA and FEC are payload-gating but have no corresponding fields
-/// in V1Datagram (v1 data transfer is not supported).
+/// DATA is payload-gating too and is derived from `data`. FEC is
+/// payload-gating but has no field: FEC_PAYLOAD (2.2.2.5, lossy transport)
+/// is not supported, and `decode` rejects a datagram that announces one.
 const V1_STANDALONE_FLAGS: u16 = V1Flags::FIN.bits()
     | V1Flags::CN.bits()
     | V1Flags::CWR.bits()
@@ -65,7 +68,7 @@ const V1_STANDALONE_FLAGS: u16 = V1Flags::FIN.bits()
     | V1Flags::ACKDELAYED.bits();
 
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
-/// A complete v1 datagram (SYN, SYN+ACK, or ACK).
+/// A complete v1 datagram (SYN, SYN+ACK, ACK, or Source Packet).
 ///
 /// MS-RDPEUDP Section 2.2.
 /// The FecHeader's flags field determines which optional payloads
@@ -81,6 +84,7 @@ const V1_STANDALONE_FLAGS: u16 = V1Flags::FIN.bits()
 /// 4. SynDataPayload (if SYN flag)
 /// 5. CorrelationIdPayload (if CORRELATION_ID flag)
 /// 6. SynDataExPayload (if SYNEX flag)
+/// 7. SourceData (if DATA flag; the payload runs to the end of the datagram)
 ///
 /// A SYN+ACK is the exception to the ACK flag's usual meaning. Section
 /// 2.2.2.1 defines the flag as "the ACK vector is present", but 3.1.5.1.3
@@ -90,8 +94,10 @@ const V1_STANDALONE_FLAGS: u16 = V1Flags::FIN.bits()
 /// directly, with no ACK vector between them. So on a SYN+ACK the flag says
 /// only that snSourceAck is meaningful, and `ack_vector` must be `None`.
 ///
-/// V1 data payloads (SOURCE_PAYLOAD / FEC_PAYLOAD) are not represented;
-/// this crate always negotiates v2+ for data transfer.
+/// Version 1/2 Source Packets (SOURCE_PAYLOAD, 2.2.2.4) are carried in
+/// `data`. FEC_PAYLOAD (2.2.2.5, lossy transport) is not represented:
+/// `decode` rejects a datagram with the FEC flag set, and there is no field
+/// from which `encode` could emit one.
 ///
 /// `encode` does not zero-pad SYN and SYN+ACK datagrams to the negotiated
 /// MTU that MS-RDPEUDP 3.1.5.1.1 and 3.1.5.1.3 require: this crate has no
@@ -124,6 +130,9 @@ pub struct V1Datagram {
     /// Extended SYN data (version negotiation).
     /// Gated by `V1Flags::SYNEX`.
     pub syn_data_ex: Option<SynDataExPayload>,
+
+    /// Version 1/2 Source Packet data (2.2.2.4), present when `RDPUDP_FLAG_DATA` is set.
+    pub data: Option<SourceData>,
 }
 
 impl V1Datagram {
@@ -151,6 +160,9 @@ impl V1Datagram {
         }
         if self.syn_data_ex.is_some() {
             flags |= V1Flags::SYNEX;
+        }
+        if self.data.is_some() {
+            flags |= V1Flags::DATA;
         }
 
         flags
@@ -214,6 +226,10 @@ impl Encode for V1Datagram {
         if let Some(ref syn_data_ex) = self.syn_data_ex {
             syn_data_ex.encode(dst)?;
         }
+        if let Some(ref data) = self.data {
+            data.header.encode(dst)?;
+            dst.write_slice(&data.payload);
+        }
 
         Ok(())
     }
@@ -239,6 +255,10 @@ impl Encode for V1Datagram {
         if let Some(ref sdex) = self.syn_data_ex {
             total += sdex.size();
         }
+        if let Some(ref data) = self.data {
+            total += data.size();
+        }
+
         total
     }
 }
@@ -247,20 +267,13 @@ impl Decode<'_> for V1Datagram {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = FecHeader::decode(src)?;
 
-        // V1 data payloads are not supported; reject if present since we
-        // cannot skip them without knowing their wire size.
-        if header.flags.contains(V1Flags::DATA) {
-            return Err(ironrdp_core::invalid_field_err!(
-                "V1 Datagram",
-                "flags",
-                "DATA flag is not supported in handshake datagrams"
-            ));
-        }
+        // FEC payloads (lossy transport) are not supported; reject rather
+        // than misread the bytes that follow the header.
         if header.flags.contains(V1Flags::FEC) {
             return Err(ironrdp_core::invalid_field_err!(
                 "V1 Datagram",
                 "flags",
-                "FEC flag is not supported in handshake datagrams"
+                "lossy-transport FEC payloads are not supported"
             ));
         }
 
@@ -302,6 +315,16 @@ impl Decode<'_> for V1Datagram {
         } else {
             None
         };
+        let data = if header.flags.contains(V1Flags::DATA) {
+            let source = SourcePayloadHeader::decode(src)?;
+            let payload = src.read_remaining().to_vec();
+            Some(SourceData {
+                header: source,
+                payload,
+            })
+        } else {
+            None
+        };
 
         Ok(Self {
             header,
@@ -310,6 +333,7 @@ impl Decode<'_> for V1Datagram {
             syn_data,
             correlation_id,
             syn_data_ex,
+            data,
         })
     }
 }

@@ -339,7 +339,8 @@ impl Encode for AutoDetectRequest {
                     if data.is_empty() {
                         return Err(invalid_field_err!(
                             "payload",
-                            "connect-time Bandwidth Measure Stop requires a non-empty payload"
+                            "connect-time Bandwidth Measure Stop requires a non-empty payload",
+                            in: dst
                         ));
                     }
                     dst.write_u8(0x08); // headerLength (with payload)
@@ -382,16 +383,14 @@ impl Encode for AutoDetectRequest {
                 // bandwidth where the decoder expects baseRTT, corrupting it silently.
                 let (want_base_rtt, want_bandwidth) = netchar_fields(*request_type);
                 if want_base_rtt {
-                    dst.write_u32(
-                        base_rtt_ms
-                            .ok_or_else(|| invalid_field_err!("baseRTT", "requestType requires a baseRTT value"))?,
-                    );
+                    dst.write_u32(base_rtt_ms.ok_or_else(
+                        || invalid_field_err!("baseRTT", "requestType requires a baseRTT value", in: dst),
+                    )?);
                 }
                 if want_bandwidth {
-                    dst.write_u32(
-                        bandwidth_kbps
-                            .ok_or_else(|| invalid_field_err!("bandwidth", "requestType requires a bandwidth value"))?,
-                    );
+                    dst.write_u32(bandwidth_kbps.ok_or_else(
+                        || invalid_field_err!("bandwidth", "requestType requires a bandwidth value", in: dst),
+                    )?);
                 }
                 dst.write_u32(*average_rtt_ms);
             }
@@ -442,10 +441,8 @@ impl<'de> Decode<'de> for AutoDetectRequest {
         let header_type_id = src.read_u8();
 
         if header_type_id != TYPE_ID_AUTODETECT_REQUEST {
-            return Err(invalid_field_err!(
-                "headerTypeId",
-                "expected TYPE_ID_AUTODETECT_REQUEST (0x00)"
-            ));
+            return Err(invalid_field_err!( "headerTypeId",
+                "expected TYPE_ID_AUTODETECT_REQUEST (0x00)", in: src));
         }
 
         let sequence_number = src.read_u16();
@@ -544,7 +541,7 @@ impl<'de> Decode<'de> for AutoDetectRequest {
                 })
             }
 
-            _ => Err(invalid_field_err!("requestType", "unknown autodetect request type")),
+            _ => Err(invalid_field_err!("requestType", "unknown autodetect request type", in: src)),
         }
     }
 }
@@ -699,10 +696,8 @@ impl<'de> Decode<'de> for AutoDetectResponse {
         let header_type_id = src.read_u8();
 
         if header_type_id != TYPE_ID_AUTODETECT_RESPONSE {
-            return Err(invalid_field_err!(
-                "headerTypeId",
-                "expected TYPE_ID_AUTODETECT_RESPONSE (0x01)"
-            ));
+            return Err(invalid_field_err!( "headerTypeId",
+                "expected TYPE_ID_AUTODETECT_RESPONSE (0x01)", in: src));
         }
 
         let sequence_number = src.read_u16();
@@ -734,7 +729,7 @@ impl<'de> Decode<'de> for AutoDetectResponse {
                 })
             }
 
-            _ => Err(invalid_field_err!("responseType", "unknown autodetect response type")),
+            _ => Err(invalid_field_err!("responseType", "unknown autodetect response type", in: src)),
         }
     }
 }
@@ -796,7 +791,7 @@ impl<'de> Decode<'de> for AutoDetectReqPdu {
         let security_header = BasicSecurityHeader::decode(src)?;
 
         if !security_header.flags.contains(BasicSecurityHeaderFlags::AUTODETECT_REQ) {
-            return Err(invalid_field_err!("securityHeader", "expected SEC_AUTODETECT_REQ flag"));
+            return Err(invalid_field_err!("securityHeader", "expected SEC_AUTODETECT_REQ flag", in: src));
         }
 
         let request = AutoDetectRequest::decode(src)?;
@@ -856,7 +851,7 @@ impl<'de> Decode<'de> for AutoDetectRspPdu {
         let security_header = BasicSecurityHeader::decode(src)?;
 
         if !security_header.flags.contains(BasicSecurityHeaderFlags::AUTODETECT_RSP) {
-            return Err(invalid_field_err!("securityHeader", "expected SEC_AUTODETECT_RSP flag"));
+            return Err(invalid_field_err!("securityHeader", "expected SEC_AUTODETECT_RSP flag", in: src));
         }
 
         let response = AutoDetectResponse::decode(src)?;

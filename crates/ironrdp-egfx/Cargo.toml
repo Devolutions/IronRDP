@@ -25,10 +25,11 @@ ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.9" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
 openh264 = { version = "0.9", optional = true, default-features = false }
 tracing = { version = "0.1", features = ["log"] }
+yuv = { version = "0.8", default-features = false, optional = true }
 
 [features]
 arbitrary = ["dep:arbitrary", "bitflags/arbitrary", "ironrdp-pdu/arbitrary"]
-openh264 = ["dep:openh264"]
+openh264 = ["dep:openh264", "dep:yuv"]
 openh264-bundled = ["openh264", "openh264/source"]
 openh264-libloading = ["openh264", "openh264/libloading"]
 

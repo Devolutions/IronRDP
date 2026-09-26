@@ -282,8 +282,7 @@ impl Encode for ShareControlHeader {
 
         dst.write_u16(cast_length!(
             "len",
-            self.share_control_pdu.size() + SHARE_CONTROL_HEADER_SIZE
-        )?);
+            self.share_control_pdu.size() + SHARE_CONTROL_HEADER_SIZE, in: dst)?);
         dst.write_u16(pdu_type_with_version);
         dst.write_u16(self.pdu_source);
         dst.write_u32(self.share_id);
@@ -312,10 +311,10 @@ impl<'de> Decode<'de> for ShareControlHeader {
         let share_id = if src.len() >= 4 { src.read_u32() } else { 0 };
 
         let pdu_type = ShareControlPduType::from_u16(pdu_type_with_version & SHARE_CONTROL_HEADER_MASK)
-            .ok_or_else(|| invalid_field_err!("pdu_type", "invalid pdu type"))?;
+            .ok_or_else(|| invalid_field_err!("pdu_type", "invalid pdu type", in: src))?;
         let pdu_version = pdu_type_with_version & !SHARE_CONTROL_HEADER_MASK;
         if pdu_version != PROTOCOL_VERSION {
-            return Err(invalid_field_err!("pdu_version", "invalid PDU version"));
+            return Err(invalid_field_err!("pdu_version", "invalid PDU version", in: src));
         }
 
         let share_pdu = ShareControlPdu::from_type(src, pdu_type)?;
@@ -326,25 +325,41 @@ impl<'de> Decode<'de> for ShareControlHeader {
         };
 
         if pdu_type == ShareControlPduType::DataPdu {
+            // This is the re-encoded size, which differs from the received size for a supported
+            // header-only Server Font Map because decoding substitutes `FontPdu::default()`.
             let header_length = header.size();
 
-            let is_empty_output_pdu = matches!(
-                &header.share_control_pdu,
-                ShareControlPdu::Data(ShareDataHeader {
-                    share_data_pdu: ShareDataPdu::Update(data) | ShareDataPdu::Pointer(data),
-                    ..
-                }) if data.is_empty()
-            );
+            // An empty Update/Pointer PDU is a legitimate no-op carrying a zero length.
+            let is_zero_length_empty_output_pdu = total_length == 0
+                && matches!(
+                    &header.share_control_pdu,
+                    ShareControlPdu::Data(ShareDataHeader {
+                        share_data_pdu: ShareDataPdu::Update(data) | ShareDataPdu::Pointer(data),
+                        ..
+                    }) if data.is_empty()
+                );
 
-            if header_length != total_length && !(total_length == 0 && is_empty_output_pdu) {
-                if total_length < header_length {
-                    return Err(not_enough_bytes_err!(total_length, header_length));
-                }
+            // VirtualBox's VRDP declares only the two headers of a Server Font Map (18) and
+            // omits the 8-byte body from the declared length. Keep this exception to that exact
+            // declaration; this decoder is also used for untrusted client-to-server PDUs.
+            let is_header_length_font_map = total_length
+                == ShareControlHeader::FIXED_PART_SIZE + ShareDataHeader::FIXED_PART_SIZE
+                && matches!(
+                    &header.share_control_pdu,
+                    ShareControlPdu::Data(ShareDataHeader {
+                        share_data_pdu: ShareDataPdu::FontMap(_),
+                        ..
+                    })
+                );
 
-                // Some Windows versions append padding that is not part of the inner unit.
+            if total_length > header_length {
+                // Over-declared: some Windows versions append padding past the inner unit.
+                // Unchanged, and still bounded by `ensure_size!`.
                 let padding = total_length - header_length;
                 ensure_size!(in: src, size: padding);
                 read_padding!(src, padding);
+            } else if total_length < header_length && !is_header_length_font_map && !is_zero_length_empty_output_pdu {
+                return Err(not_enough_bytes_err!(total_length, header_length));
             }
         }
 
@@ -394,7 +409,7 @@ impl ShareControlPdu {
             ShareControlPduType::DeactivateAllPdu => {
                 Ok(ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll::decode(src)?))
             }
-            _ => Err(invalid_field_err!("share_type", "unexpected share control PDU type")),
+            _ => Err(invalid_field_err!("share_type", "unexpected share control PDU type", in: src)),
         }
     }
 }
@@ -452,7 +467,7 @@ impl Encode for ShareDataHeader {
 
             write_padding!(dst, 1);
             dst.write_u8(self.stream_priority.as_u8());
-            dst.write_u16(cast_length!("uncompressedLength", self.share_data_pdu.size())?);
+            dst.write_u16(cast_length!("uncompressedLength", self.share_data_pdu.size(), in: dst)?);
             dst.write_u8(self.share_data_pdu.share_header_type().as_u8());
             dst.write_u8(compression_flags_with_type);
             dst.write_u16(0); // compressed length
@@ -478,17 +493,17 @@ impl<'de> Decode<'de> for ShareDataHeader {
 
         read_padding!(src, 1);
         let stream_priority = StreamPriority::from_u8(src.read_u8())
-            .ok_or_else(|| invalid_field_err!("streamPriority", "Invalid stream priority"))?;
+            .ok_or_else(|| invalid_field_err!("streamPriority", "Invalid stream priority", in: src))?;
         let _uncompressed_length = src.read_u16();
         let pdu_type = ShareDataPduType::from_u8(src.read_u8())
-            .ok_or_else(|| invalid_field_err!("pduType", "Invalid pdu type"))?;
+            .ok_or_else(|| invalid_field_err!("pduType", "Invalid pdu type", in: src))?;
         let compression_flags_with_type = src.read_u8();
 
         let compression_flags =
             CompressionFlags::from_bits_retain(compression_flags_with_type & !SHARE_DATA_HEADER_COMPRESSION_MASK);
         let compression_type =
             client_info::CompressionType::from_u8(compression_flags_with_type & SHARE_DATA_HEADER_COMPRESSION_MASK)
-                .ok_or_else(|| invalid_field_err!("compressionType", "Invalid compression type"))?;
+                .ok_or_else(|| invalid_field_err!("compressionType", "Invalid compression type", in: src))?;
         let _compressed_length = src.read_u16();
 
         let share_data_pdu = if compression_flags.is_empty() {
@@ -937,6 +952,21 @@ mod tests {
     }
 
     #[test]
+    fn reject_nonzero_under_declared_empty_output_data_pdu() {
+        for pdu_type in [0x02, 0x1B] {
+            for total_length in 1u16..18 {
+                let mut encoded = zero_length_empty_data_pdu(pdu_type);
+                encoded[..2].copy_from_slice(&total_length.to_le_bytes());
+
+                assert!(
+                    decode::<ShareControlHeader>(&encoded).is_err(),
+                    "accepted PDU type {pdu_type:#04x} with totalLength {total_length}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn reject_zero_length_non_output_data_pdu() {
         let encoded = zero_length_empty_data_pdu(0x25);
 
@@ -947,7 +977,32 @@ mod tests {
             error.kind(),
             ironrdp_core::DecodeErrorKind::NotEnoughBytes {
                 received: 0,
-                expected: 18
+                expected: 18,
+                ..
+            }
+        ));
+    }
+
+    /// The under-declaration carve-out must not extend past the Server Font Map case.
+    ///
+    /// A `ShutdownDenied` PDU is header-only, so 18 bytes were read; declaring 17 is neither
+    /// self-consistent with the wire nor the VRDP Font Map, and MS-RDPBCGR 3.2.5.2 asks for it
+    /// to be rejected. Guards the exact example raised in review — "a header-only PDU declared
+    /// with 1–17 bytes" — which an earlier revision of this check accepted.
+    #[test]
+    fn reject_under_declared_non_output_data_pdu() {
+        let mut encoded = zero_length_empty_data_pdu(0x25);
+        encoded[0] = 17;
+
+        let error = decode::<ShareControlHeader>(&encoded)
+            .expect_err("an under-declared length is only tolerated for a Server Font Map");
+
+        assert!(matches!(
+            error.kind(),
+            ironrdp_core::DecodeErrorKind::NotEnoughBytes {
+                received: 17,
+                expected: 18,
+                ..
             }
         ));
     }

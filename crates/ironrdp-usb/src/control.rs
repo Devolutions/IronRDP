@@ -132,6 +132,20 @@ pub mod standard_request {
     pub const SET_ISOCHRONOUS_DELAY: u8 = 0x31;
 }
 
+/// Standard feature selectors, carried in `wValue` of `CLEAR_FEATURE` and
+/// `SET_FEATURE` ([USB 2.0] Table 9-6).
+///
+/// [USB 2.0]: https://www.usb.org/document-library/usb-20-specification
+pub mod standard_feature {
+    /// Halt condition of the addressed endpoint. The only selector a `CLEAR_FEATURE`
+    /// or `SET_FEATURE` with an endpoint recipient may name.
+    pub const ENDPOINT_HALT: u16 = 0;
+    /// Device-side remote wakeup, addressed to the device.
+    pub const DEVICE_REMOTE_WAKEUP: u16 = 1;
+    /// High-speed electrical test mode, addressed to the device.
+    pub const TEST_MODE: u16 = 2;
+}
+
 /// A USB control-transfer setup packet (exactly eight bytes on the wire).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SetupPacket {

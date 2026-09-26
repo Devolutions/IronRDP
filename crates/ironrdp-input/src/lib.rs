@@ -278,7 +278,15 @@ impl Database {
                     } else {
                         PointerFlags::HORIZONTAL_WHEEL
                     },
-                    number_of_wheel_rotation_units: rotations.rotation_units,
+                    // A single OS scroll event can report a delta beyond the wire's
+                    // representable range (e.g. a fast trackpad fling), so clamp here
+                    // rather than passing it through: this is the single call site
+                    // every frontend (winit viewer, ActiveX control, daemon) funnels
+                    // through, so clamping once here covers all of them.
+                    number_of_wheel_rotation_units: rotations.rotation_units.clamp(
+                        *MousePdu::WHEEL_ROTATION_RANGE.start(),
+                        *MousePdu::WHEEL_ROTATION_RANGE.end(),
+                    ),
                     x_position: self.mouse_position.x,
                     y_position: self.mouse_position.y,
                 })),

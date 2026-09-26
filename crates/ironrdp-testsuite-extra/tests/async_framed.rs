@@ -10,6 +10,7 @@
 //! sets `[lib] test = false`, so an inline `#[cfg(test)]` module would compile
 //! and never run.
 
+use core::future::{Ready, ready};
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use core::time::Duration;
@@ -17,7 +18,16 @@ use std::collections::VecDeque;
 use std::io;
 
 use ironrdp_async::bytes::BytesMut;
-use ironrdp_async::{Framed, FramedRead, StreamWrapper};
+use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper};
+use ironrdp_core::decode;
+use ironrdp_pdu::mcs::McsMessage;
+use ironrdp_pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
+use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu, RequestedProtocol};
+use ironrdp_pdu::x224::X224;
+
+const USER_CHANNEL_ID: u16 = 1002;
+const IO_CHANNEL_ID: u16 = 1003;
+const MESSAGE_CHANNEL_ID: u16 = 1004;
 
 /// Drives a future to completion on the current thread. The mock below never
 /// yields, so polling in a loop is enough and saves pulling in a runtime.
@@ -35,6 +45,7 @@ fn block_on<F: Future>(fut: F) -> F::Output {
 /// decide exactly which PDUs share a socket read and which get their own.
 struct ChunkedStream {
     chunks: VecDeque<Vec<u8>>,
+    writes: Vec<u8>,
     /// Delay applied before each read completes, so consecutive reads land on
     /// distinguishable instants rather than relying on clock resolution.
     delay: Duration,
@@ -44,6 +55,7 @@ impl ChunkedStream {
     fn new(chunks: impl IntoIterator<Item = Vec<u8>>) -> Self {
         Self {
             chunks: chunks.into_iter().collect(),
+            writes: Vec::new(),
             delay: Duration::from_millis(5),
         }
     }
@@ -86,6 +98,29 @@ impl FramedRead for ChunkedStream {
                 None => Ok(0),
             }
         })
+    }
+}
+
+impl FramedWrite for ChunkedStream {
+    type WriteAllFut<'write>
+        = Ready<io::Result<()>>
+    where
+        Self: 'write;
+
+    fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
+        self.writes.extend_from_slice(buf);
+        ready(Ok(()))
+    }
+}
+
+struct UnusedNetworkClient;
+
+impl NetworkClient for UnusedNetworkClient {
+    async fn send(
+        &mut self,
+        _: &ironrdp::connector::sspi::generator::NetworkRequest,
+    ) -> ironrdp::connector::ConnectorResult<Vec<u8>> {
+        Err(ironrdp::connector::general_err!("unexpected network request"))
     }
 }
 
@@ -163,4 +198,66 @@ fn leftover_carried_into_a_new_framed_has_no_arrival_time() {
         framed.last_read_at().is_none(),
         "a frame served from leftover was never read by this Framed, so it has no arrival time"
     );
+}
+
+#[test]
+fn multitransport_handler_error_reports_abort_and_preserves_the_error() {
+    let mut connector = ironrdp::connector::ClientConnector::new(
+        crate::e2e::default_client_config(),
+        "127.0.0.1:3389".parse().unwrap(),
+    );
+    connector.state = ironrdp::connector::ClientConnectorState::EnhancedSecurityUpgrade {
+        selected_protocol: ironrdp_pdu::nego::SecurityProtocol::empty(),
+    };
+    let should_upgrade = ironrdp_async::skip_connect_begin(&mut connector);
+    let upgraded = ironrdp_async::mark_as_upgraded(should_upgrade, &mut connector);
+    connector.state = ironrdp::connector::ClientConnectorState::MultitransportPending {
+        io_channel_id: IO_CHANNEL_ID,
+        user_channel_id: USER_CHANNEL_ID,
+        message_channel_id: Some(MESSAGE_CHANNEL_ID),
+        request: MultitransportRequestPdu {
+            security_header: BasicSecurityHeader {
+                flags: BasicSecurityHeaderFlags::TRANSPORT_REQ,
+            },
+            request_id: 42,
+            requested_protocol: RequestedProtocol::UdpFecR,
+            security_cookie: [0; 16],
+        },
+        requests_seen: 1,
+        soft_sync: true,
+    };
+    let mut framed = Framed::<ChunkedStream>::new(ChunkedStream::new([]));
+    let mut network_client = UnusedNetworkClient;
+
+    let error = block_on(ironrdp_async::connect_finalize_with_multitransport(
+        upgraded,
+        connector,
+        &mut framed,
+        &mut network_client,
+        ironrdp::connector::ServerName::new("server"),
+        Vec::new(),
+        None,
+        |request: MultitransportRequestPdu, soft_sync: bool| async move {
+            assert_eq!(request.request_id, 42);
+            assert!(soft_sync);
+            Err(ironrdp::connector::general_err!("test multitransport setup failure"))
+        },
+    ))
+    .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "[test multitransport setup failure] general error",
+        "the handler error must win over abort reporting"
+    );
+
+    let (stream, _) = framed.get_inner();
+    let X224(McsMessage::SendDataRequest(request)) = decode(stream.writes.as_slice()).unwrap() else {
+        panic!("the handler error must send an abort response");
+    };
+    assert_eq!(request.channel_id, MESSAGE_CHANNEL_ID);
+
+    let response: MultitransportResponsePdu = decode(&request.user_data).unwrap();
+    assert_eq!(response.request_id, 42);
+    assert_eq!(response.hr_response, MultitransportResponsePdu::E_ABORT);
 }

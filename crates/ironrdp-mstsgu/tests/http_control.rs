@@ -118,10 +118,10 @@ fn reauth_message_roundtrip() {
 }
 
 #[test]
-fn handshake_response_preserves_advertised_extended_auth_flags() {
+fn handshake_response_preserves_advertised_extended_auth_capabilities() {
     assert_eq!(HttpExtendedAuth::HTTP_EXTENDED_AUTH_NONE.bits(), 0);
 
-    for flags in [0x0000u16, 0x0007, 0x8004] {
+    for flags in [0x0000u16, 0x0003, 0x0004, 0x8000] {
         let mut bytes = [
             0x02, 0x00, // packetType
             0x00, 0x00, // reserved

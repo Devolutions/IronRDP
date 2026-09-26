@@ -188,6 +188,7 @@ impl BitmapStreamEncoder {
                     "BitmapStreamData",
                     remaining,
                     needed,
+                    None,
                 )));
             }
 
@@ -263,6 +264,7 @@ impl BitmapStreamEncoder {
                     "BitmapStreamData",
                     remaining,
                     needed,
+                    None,
                 )));
             }
 

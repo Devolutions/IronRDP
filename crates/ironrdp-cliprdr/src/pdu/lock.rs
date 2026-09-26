@@ -18,7 +18,7 @@ impl LockDataId {
 
 impl Encode for LockDataId {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        let header = PartialHeader::new(cast_int!("dataLen", Self::FIXED_PART_SIZE)?);
+        let header = PartialHeader::new(cast_int!("dataLen", Self::FIXED_PART_SIZE, in: dst)?);
         header.encode(dst)?;
 
         ensure_fixed_part_size!(in: dst);

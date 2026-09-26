@@ -57,6 +57,14 @@ export function enableCredssp(enable: boolean): Extension {
     return new Extension('enable_credssp', enable);
 }
 
+export function enableServerPointer(enable: boolean): Extension {
+    return new Extension('enable_server_pointer', enable);
+}
+
+export function legacyGraphics(enable: boolean): Extension {
+    return new Extension('legacy_graphics', enable);
+}
+
 // --- File transfer (RDP-specific) ---
 
 export { RdpFileTransferProvider } from './RdpFileTransferProvider';

@@ -40,11 +40,6 @@
     "description": "Improvements or additions to documentation"
   },
   {
-    "name": "duplicate",
-    "color": "cfd3d7",
-    "description": "This issue or pull request already exists"
-  },
-  {
     "name": "size/XS",
     "color": "f9d0c4",
     "description": "Size: up to 49 counted lines and 2 files"
@@ -115,6 +110,11 @@
     "description": "A classifier flagged at least one commit for legitimacy triage"
   },
   {
+    "name": "triage/overlap",
+    "color": "fbca04",
+    "description": "Possible overlap with another pull request; advisory only"
+  },
+  {
     "name": "ai-reviewed/1",
     "color": "000000",
     "description": "One automated review completed"
@@ -127,6 +127,6 @@
   {
     "name": "ai-review/allow-oversized",
     "color": "fbca04",
-    "description": "Allows normal automated review of an oversized pull request"
+    "description": "Raises the automated-review evidence diff limit from 1 MiB to 4 MiB"
   }
 ]

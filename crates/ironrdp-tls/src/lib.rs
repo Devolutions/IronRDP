@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "rustls-verifier")]
+use tokio as _;
 #[cfg(any(feature = "native-tls", test))]
 use tokio_native_tls as _;
 
@@ -18,8 +20,16 @@ mod impl_;
 #[path = "stub.rs"]
 mod impl_;
 
+#[cfg(feature = "rustls-verifier")]
+mod rustls_verifier;
+
 #[cfg(any(
-    not(any(feature = "stub", feature = "native-tls", feature = "rustls-no-provider")),
+    not(any(
+        feature = "stub",
+        feature = "native-tls",
+        feature = "rustls-no-provider",
+        feature = "rustls-verifier"
+    )),
     all(feature = "stub", feature = "native-tls"),
     all(feature = "stub", feature = "rustls-no-provider"),
     all(feature = "rustls-no-provider", feature = "native-tls"),
@@ -33,6 +43,8 @@ pub use impl_::{
     TlsStream, negotiated, upgrade, upgrade_with_certificate_validation, upgrade_with_certificate_validation_callback,
     upgrade_with_certificate_validation_callback_for_endpoint,
 };
+#[cfg(feature = "rustls-verifier")]
+pub use rustls_verifier::rustls_client_config;
 
 /// Called when the Rustls backend cannot validate a server certificate.
 ///

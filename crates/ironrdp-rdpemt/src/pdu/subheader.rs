@@ -112,12 +112,13 @@ impl Decode<'_> for TunnelSubHeader {
                 Self::NAME,
                 "SubHeaderLength",
                 "sub-header length must be at least 2",
+                Some(src.pos()),
             ));
         }
 
         let type_raw = src.read_u8();
         let sub_header_type = SubHeaderType::from_u8(type_raw)
-            .ok_or_else(|| ironrdp_core::DecodeError::unexpected_message_type(Self::NAME, type_raw))?;
+            .ok_or_else(|| ironrdp_core::DecodeError::unexpected_message_type(Self::NAME, type_raw, Some(src.pos())))?;
 
         let data_len = usize::from(sub_header_length) - Self::MIN_WIRE_SIZE;
         ironrdp_core::ensure_size!(in: src, size: data_len);

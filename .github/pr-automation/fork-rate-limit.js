@@ -1,11 +1,7 @@
 "use strict";
 
-const { qualifyingMergedPrs } = require("./resolve-state");
-
-const AUTHOR_QUOTA = 5;
-const ESTABLISHED_AUTHOR_QUOTA = 10;
-const ESTABLISHED_MERGED_PRS = 15;
-const GLOBAL_QUOTA = 30;
+const GLOBAL_QUOTA = 50;
+const QUOTA_EXEMPT_ASSOCIATIONS = new Set(["OWNER", "MEMBER"]);
 
 function unavailable(reason) {
   return { status: "unavailable", scope: "unknown", reason };
@@ -36,27 +32,18 @@ async function forkRateLimit({ github, owner, repo, pr, author } = {}) {
   if (!github?.paginate?.iterator || !github?.rest?.pulls?.list || typeof owner !== "string" || typeof repo !== "string" ||
       !pr || typeof pr !== "object") return unavailable("invalid rate-limit input");
   if (isSameRepository(pr, owner, repo)) return { status: "allowed", scope: "same-repository" };
+  if (QUOTA_EXEMPT_ASSOCIATIONS.has(pr.author_association ?? author?.association)) {
+    return { status: "allowed", scope: "author-association" };
+  }
 
-  const authorNodeId = author?.nodeId ?? pr.user?.node_id;
   const currentPrNumber = pr.number;
   const currentCreatedAt = timestamp(pr.created_at);
   const range = utcDayRange(currentCreatedAt);
-  if (typeof authorNodeId !== "string" || !authorNodeId || !Number.isSafeInteger(currentPrNumber) ||
-      currentPrNumber <= 0 || !range) {
+  if (!Number.isSafeInteger(currentPrNumber) || currentPrNumber <= 0 || !range) {
     return unavailable("invalid pull request data");
   }
 
-  let merged;
-  try {
-    merged = await qualifyingMergedPrs({
-      github, owner, repo, authorNodeId, currentPrNumber, stopAt: ESTABLISHED_MERGED_PRS,
-    });
-  } catch {
-    return unavailable("GitHub API unavailable");
-  }
-  const quota = merged >= ESTABLISHED_MERGED_PRS ? ESTABLISHED_AUTHOR_QUOTA : AUTHOR_QUOTA;
-  let authorCount = 1; // Include the current fork PR, which is necessarily in its creation-day window.
-  let globalCount = 1;
+  let globalCount = 1; // Include the current non-member fork PR in its creation-day window.
 
   try {
     for await (const response of github.paginate.iterator(github.rest.pulls.list, {
@@ -70,24 +57,22 @@ async function forkRateLimit({ github, owner, repo, pr, author } = {}) {
         const createdAt = timestamp(candidate.created_at);
         if (createdAt === null) throw new Error("invalid pull request timestamp");
         if (createdAt < range.start) {
-          return { status: "allowed", scope: "author", quota, count: authorCount };
+          return { status: "allowed", scope: "global", quota: GLOBAL_QUOTA, count: globalCount };
         }
         if (createdAt >= range.end || candidate.number === currentPrNumber) continue;
 
         const isFork = !isSameRepository(candidate, owner, repo);
-        if (isFork && candidate.user?.node_id === authorNodeId) authorCount += 1;
-        if (isFork) globalCount += 1;
-        if (authorCount > quota) return { status: "limited", scope: "author", quota, count: authorCount };
+        if (isFork && !QUOTA_EXEMPT_ASSOCIATIONS.has(candidate.author_association)) globalCount += 1;
         if (globalCount > GLOBAL_QUOTA) return { status: "limited", scope: "global", quota: GLOBAL_QUOTA, count: globalCount };
       }
     }
   } catch {
     return unavailable("GitHub API unavailable");
   }
-  return { status: "allowed", scope: "author", quota, count: authorCount };
+  return { status: "allowed", scope: "global", quota: GLOBAL_QUOTA, count: globalCount };
 }
 
 module.exports = {
-  AUTHOR_QUOTA, ESTABLISHED_AUTHOR_QUOTA, ESTABLISHED_MERGED_PRS, GLOBAL_QUOTA,
+  GLOBAL_QUOTA,
   forkRateLimit, isSameRepository, utcDayRange,
 };

@@ -17,7 +17,10 @@ use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use crate::ipc::{Request, Response};
 
 /// Upper bound on a single framed message, guarding against absurd length prefixes.
-const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
+///
+/// `pub(crate)` so `ipc` can derive payload-specific limits (e.g. the clipboard image cap) from
+/// the actual transport ceiling instead of an unrelated number that happens to also be a size.
+pub(crate) const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
 
 /// Writes `message` to `stream`, length-delimited.
 pub async fn write_message<S, M>(stream: &mut S, message: &M) -> anyhow::Result<()>

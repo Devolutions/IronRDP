@@ -3,6 +3,7 @@
 
 pub mod backend;
 pub mod chunked_fetch;
+pub mod loop_detector;
 pub mod pdu;
 
 use std::collections::HashMap;

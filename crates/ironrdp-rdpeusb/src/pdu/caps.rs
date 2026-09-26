@@ -56,7 +56,8 @@ impl RimExchangeCapabilityRequest {
         if src.read_u32() != 1 {
             return Err(invalid_field_err!(
                 "RIM_EXCHANGE_CAPABILITY_REQUEST::CapabilityValue",
-                "is not 0x1 (RIM_CAPABILITY_VERSION_01)"
+                "is not 0x1 (RIM_CAPABILITY_VERSION_01)",
+                in: src,
             ));
         }
         Ok(Self {
@@ -118,7 +119,8 @@ impl RimExchangeCapabilityResponse {
         if src.read_u32() != 1 {
             return Err(invalid_field_err!(
                 "RIM_EXCHANGE_CAPABILITY_RESPONSE::CapabilityValue",
-                "is not 0x1 (RIM_CAPABILITY_VERSION_01)"
+                "is not 0x1 (RIM_CAPABILITY_VERSION_01)",
+                in: src,
             ));
         };
         let result = src.read_u32();

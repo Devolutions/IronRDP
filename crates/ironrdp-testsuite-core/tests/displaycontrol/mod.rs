@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 use ironrdp_core::decode;
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_displaycontrol::pdu;
+use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
 use ironrdp_dvc::DvcProcessor as _;
+use ironrdp_pdu::{PduResult, decode_err};
 use ironrdp_testsuite_core::encode_decode_test;
 
 encode_decode_test! {
@@ -216,4 +218,75 @@ fn client_process_rejects_trailing_bytes_after_caps() {
         "bytes left over after decoding the caps body should be rejected"
     );
     assert!(!client.ready());
+}
+
+struct OutOfRangeCapsHandler;
+
+impl DisplayControlHandler for OutOfRangeCapsHandler {
+    fn capabilities(&self) -> PduResult<pdu::DisplayControlCapabilities> {
+        // More than 1024 monitors is rejected by DisplayControlCapabilities::new, per
+        // invalid_caps above.
+        pdu::DisplayControlCapabilities::new(2000, 100, 100).map_err(|e| decode_err!(e))
+    }
+}
+
+#[test]
+fn server_start_propagates_an_invalid_capabilities_override_as_an_error() {
+    // A handler deriving capabilities from real runtime state can hit the wire-encoding bound
+    // DisplayControlCapabilities::new enforces; start() must surface that as a PduResult::Err
+    // rather than let a handler's own expect()/panic tear down the connection.
+    let mut server = DisplayControlServer::new(Box::new(OutOfRangeCapsHandler));
+    assert!(server.start(0).is_err());
+}
+
+/// Decode a `DvcMessage` produced by `DisplayControlServer::start()` back into the
+/// `DisplayControlPdu` it encodes, the same round trip a real client would perform.
+fn decode_dvc(msg: &ironrdp_dvc::DvcMessage) -> pdu::DisplayControlPdu {
+    let bytes = ironrdp_core::encode_vec(msg.as_ref()).expect("encode dvc message");
+    decode(&bytes).expect("decode dvc message")
+}
+
+struct MultiMonitorCapsHandler;
+
+impl DisplayControlHandler for MultiMonitorCapsHandler {
+    fn capabilities(&self) -> PduResult<pdu::DisplayControlCapabilities> {
+        pdu::DisplayControlCapabilities::new(2, 3840, 2400).map_err(|e| decode_err!(e))
+    }
+}
+
+#[test]
+fn server_start_encodes_a_multi_monitor_override() {
+    // The motivating case for a fallible, overridable capabilities(): a handler
+    // advertising more than the hardcoded single-monitor default. Verify the
+    // override's values actually reach the encoded DISPLAYCONTROL_CAPS_PDU, not
+    // just that start() succeeds.
+    let mut server = DisplayControlServer::new(Box::new(MultiMonitorCapsHandler));
+    let messages = server.start(0).expect("valid override should not error");
+    assert_eq!(messages.len(), 1);
+    match decode_dvc(&messages[0]) {
+        pdu::DisplayControlPdu::Caps(caps) => {
+            assert_eq!(caps, pdu::DisplayControlCapabilities::new(2, 3840, 2400).unwrap());
+        }
+        other => panic!("expected DisplayControlPdu::Caps, got {other:?}"),
+    }
+}
+
+struct DefaultCapsHandler;
+
+impl DisplayControlHandler for DefaultCapsHandler {}
+
+#[test]
+fn server_start_encodes_the_default_capabilities_when_not_overridden() {
+    // The default capabilities() impl (single monitor, 3840x2400) was the
+    // hardcoded start() literal before this PR and remains untested; pin it so a
+    // regression in the default constants or the .into() encoding step is caught.
+    let mut server = DisplayControlServer::new(Box::new(DefaultCapsHandler));
+    let messages = server.start(0).expect("default capabilities should not error");
+    assert_eq!(messages.len(), 1);
+    match decode_dvc(&messages[0]) {
+        pdu::DisplayControlPdu::Caps(caps) => {
+            assert_eq!(caps, pdu::DisplayControlCapabilities::new(1, 3840, 2400).unwrap());
+        }
+        other => panic!("expected DisplayControlPdu::Caps, got {other:?}"),
+    }
 }

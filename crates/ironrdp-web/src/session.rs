@@ -24,7 +24,7 @@ use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
-use ironrdp::pdu::rdp::capability_sets::client_codecs_capabilities;
+use ironrdp::pdu::rdp::capability_sets::{BitmapCodecs, client_codecs_capabilities};
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp::rdpdr::Rdpdr;
 use ironrdp::rdpdr::pdu::efs::{DEFAULT_PRINTER_DRIVER_NAME, MICROSOFT_PRINT_TO_PDF_DRIVER_NAME};
@@ -91,9 +91,9 @@ struct SessionBuilderInner {
 
     use_display_control: bool,
     enable_credssp: bool,
-    outbound_message_size_limit: Option<usize>,
-    // tdmanh1 24/08/2026 expose more flag for wasm app
     enable_server_pointer: bool,
+    legacy_graphics: bool,
+    outbound_message_size_limit: Option<usize>,
     pointer_software_rendering: bool,
     enable_audio_playback: bool,
     desktop_scale_factor: u32,
@@ -138,10 +138,9 @@ impl Default for SessionBuilderInner {
 
             use_display_control: false,
             enable_credssp: true,
+            enable_server_pointer: true,
+            legacy_graphics: false,
             outbound_message_size_limit: None,
-
-            // tdmanh1 24/08/2026 expose more flag for wasm app
-            enable_server_pointer: false,
             pointer_software_rendering: false,
             enable_audio_playback: false,
             desktop_scale_factor: 0,
@@ -262,6 +261,8 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |kdc_proxy_url: String| { self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url) };
             |display_control: bool| { self.0.borrow_mut().use_display_control = display_control };
             |enable_credssp: bool| { self.0.borrow_mut().enable_credssp = enable_credssp };
+            |enable_server_pointer: bool| { self.0.borrow_mut().enable_server_pointer = enable_server_pointer };
+            |legacy_graphics: bool| { self.0.borrow_mut().legacy_graphics = legacy_graphics };
             |outbound_message_size_limit: f64| {
                 let limit = if outbound_message_size_limit >= 0.0 && outbound_message_size_limit <= f64::from(u32::MAX) {
                     #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -272,8 +273,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 };
                 self.0.borrow_mut().outbound_message_size_limit = if limit > 0 { Some(limit) } else { None };
             };
-            // tdmanh1 24/08/2026 expose more flag for wasm app
-            |enable_server_pointer: bool| { self.0.borrow_mut().enable_server_pointer = enable_server_pointer };
             |pointer_software_rendering: bool| { self.0.borrow_mut().pointer_software_rendering = pointer_software_rendering };
             |enable_audio_playback: bool| { self.0.borrow_mut().enable_audio_playback = enable_audio_playback };
             |desktop_scale_factor: f64| {
@@ -383,11 +382,10 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_device_id,
             printer_driver_name,
             outbound_message_size_limit,
-            // tdmanh1 24/08/2026 expose more flag for wasm app
-            enable_server_pointer,
             pointer_software_rendering,
             enable_audio_playback,
             desktop_scale_factor,
+            legacy_graphics,
         );
 
         {
@@ -404,8 +402,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             kdc_proxy_url = inner.kdc_proxy_url.clone();
             client_name = inner.client_name.clone();
             desktop_size = inner.desktop_size;
-            // tdmanh1 24/08/2026 expose more flag for wasm app
-            enable_server_pointer = inner.enable_server_pointer;
             pointer_software_rendering = inner.pointer_software_rendering;
             enable_audio_playback = inner.enable_audio_playback;
             desktop_scale_factor = inner.desktop_scale_factor;
@@ -434,6 +430,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_device_id = inner.printer_device_id;
             printer_driver_name = inner.printer_driver_name.clone();
             outbound_message_size_limit = inner.outbound_message_size_limit;
+            legacy_graphics = inner.legacy_graphics;
         }
 
         if pcb.is_some() && vmconnect.is_some() {
@@ -448,15 +445,17 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             server_domain,
             client_name.clone(),
             desktop_size,
-            // tdmanh1 24/08/2026 expose more flag for wasm app
-            enable_server_pointer,
             pointer_software_rendering,
             enable_audio_playback,
             desktop_scale_factor,
+            legacy_graphics,
         );
 
         let enable_credssp = self.0.borrow().enable_credssp;
         config.enable_credssp = enable_credssp;
+
+        let enable_server_pointer = self.0.borrow().enable_server_pointer;
+        config.enable_server_pointer = enable_server_pointer;
 
         let (input_events_tx, input_events_rx) = mpsc::unbounded();
 
@@ -1487,11 +1486,26 @@ fn build_config(
     domain: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
-    enable_server_pointer: bool,
     pointer_software_rendering: bool,
     enable_audio_playback: bool,
     desktop_scale_factor: u32,
+    legacy_graphics: bool,
 ) -> connector::Config {
+    // Win7-class servers need 32-bpp lossless bitmaps and no advertised codecs.
+    let bitmap = if legacy_graphics {
+        connector::BitmapConfig {
+            color_depth: 32,
+            lossy_compression: false,
+            codecs: BitmapCodecs(Vec::new()),
+        }
+    } else {
+        connector::BitmapConfig {
+            color_depth: 16,
+            lossy_compression: true,
+            codecs: client_codecs_capabilities(&[]).expect("can't panic for &[]"),
+        }
+    };
+
     connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
         domain,
@@ -1511,11 +1525,7 @@ fn build_config(
             height: desktop_size.height,
         },
         monitor_layout: None,
-        bitmap: Some(connector::BitmapConfig {
-            color_depth: 16,
-            lossy_compression: true,
-            codecs: client_codecs_capabilities(&[]).expect("can't panic for &[]"),
-        }),
+        bitmap: Some(bitmap),
         #[expect(
             clippy::arithmetic_side_effects,
             reason = "fine unless we end up with an insanely big version"
@@ -1530,13 +1540,14 @@ fn build_config(
         client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
         compression_type: None,
-        enable_server_pointer,
+        enable_server_pointer: true,
         autologon: false,
         enable_audio_playback,
         enable_audio_capture: false,
         request_data: None,
         pointer_software_rendering,
         multitransport_flags: None,
+        support_dyn_vc_gfx_protocol: false,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor,
         hardware_id: None,

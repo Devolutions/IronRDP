@@ -95,7 +95,7 @@ impl IoControlCompletion {
                     return Err(invalid_field_err!(
                         "Information != OutputBufferSize",
                         "HResult is: 0x0 (IOCTL success), but Information != OutputBufferSize"
-                    ));
+                    , in: src));
                 }
                 ensure_size!(in: src, size: n);
                 src.read_slice(n).to_vec()
@@ -114,7 +114,7 @@ impl IoControlCompletion {
                         "OutputBufferSize",
                         "HResult is not one of: 0x0 (success), 0x8007007A (insufficient buffer error), \
                     so expected OutputBufferSize: 0x0"
-                    ));
+                    , in: src));
                 }
                 Vec::new()
             }

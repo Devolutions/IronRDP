@@ -140,8 +140,7 @@ impl RdpdrPdu {
             packet_id => Err(unsupported_value_err!(
                 "RdpdrPdu::decode_body",
                 "PacketId",
-                format!("{packet_id} ({:#06X})", u16::from(packet_id))
-            )),
+                format!("{packet_id} ({:#06X})", u16::from(packet_id)), in: src)),
         }
     }
 

@@ -1,0 +1,872 @@
+name: Pull request automation
+# Prefer an exact PR number when the event carries one; otherwise identify the CI head that triggered the workflow.
+# The trailing mode mirrors the route the triggering event takes, so classifier and reviewer runs are told apart at a glance.
+run-name: >-
+  ${{
+    format('{0} ({1})',
+      github.event.pull_request.number && format('PR #{0}', github.event.pull_request.number)
+      || inputs.pr-number && format('PR #{0}', inputs.pr-number)
+      || github.event.client_payload.pr_number && format('PR #{0}', github.event.client_payload.pr_number)
+      || github.event.workflow_run.pull_requests[0].number && format('PR #{0}', github.event.workflow_run.pull_requests[0].number)
+      || github.event.workflow_run.head_branch && format('{0} @ {1}', github.event.workflow_run.head_branch, github.event.workflow_run.head_sha)
+      || format('run {0}', github.run_id),
+      (github.event_name == 'workflow_run' || github.event_name == 'repository_dispatch'
+        || (github.event_name == 'workflow_dispatch' && inputs.review)) && 'review' || 'classify')
+  }}
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, edited, labeled, unlabeled]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  repository_dispatch:
+    types: [pr-automation-classified]
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: Pull request number to classify or review
+        required: true
+        type: number
+      review:
+        description: Run the review route instead of classification
+        required: true
+        default: false
+        type: boolean
+      force:
+        description: Bypass automation gates for this manual classifier or reviewer run
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  # Keep event routes separate so a stale CI completion cannot cancel newer PR-head automation.
+  # Group CI completions by source commit because their associated PR may already have moved ahead.
+  # Non-request labels get their own group, so their no-op runs cannot cancel active automation.
+  group: >-
+    pr-automation-${{ github.event_name }}-${{ github.event.workflow_run.head_sha ||
+    github.event.pull_request.number || inputs.pr-number ||
+    github.event.client_payload.pr_number ||
+    github.run_id }}-${{ github.event.label.name == 'ai-review/allow-oversized' && 'pr' ||
+    github.event.label.name && format('label-{0}', github.event.label.name) || 'pr' }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  resolve-pr:
+    name: Resolve pull request
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      ok: ${{ steps.resolve.outputs.ok }}
+      route: ${{ steps.resolve.outputs.route }}
+      pr-number: ${{ steps.resolve.outputs.pr-number }}
+      head-sha: ${{ steps.resolve.outputs.head-sha }}
+      base-sha: ${{ steps.resolve.outputs.base-sha }}
+      labels: ${{ steps.resolve.outputs.labels }}
+      author: ${{ steps.resolve.outputs.author }}
+      force: ${{ steps.resolve.outputs.force }}
+      review-requested: ${{ steps.resolve.outputs.review-requested }}
+      classification-requested: ${{ steps.resolve.outputs.classification-requested }}
+      review-route: ${{ steps.resolve.outputs.review-route }}
+      classifier-lane: ${{ steps.resolve.outputs.classifier-lane }}
+      reviewer-pipeline-lane: ${{ steps.resolve.outputs.reviewer-pipeline-lane }}
+      evidence-max-bytes: ${{ steps.resolve.outputs.evidence-max-bytes }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - id: resolve
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_URL_BASE: ${{ github.server_url }}/${{ github.repository }}/pull
+        with:
+          script: |
+            const { resolvePr } = require("./.github/pr-automation/resolve-pr");
+            const result = await resolvePr({
+              github,
+              context,
+              inputs: {
+                prNumber: context.payload.inputs?.["pr-number"],
+                force: context.payload.inputs?.force,
+                review: context.payload.inputs?.review,
+              },
+            });
+            core.setOutput("ok", result.ok === true);
+            core.setOutput("route", result.route ?? "");
+            core.setOutput("pr-number", result.prNumber ?? "");
+            core.setOutput("head-sha", result.headSha ?? "");
+            core.setOutput("base-sha", result.baseSha ?? "");
+            core.setOutput("labels", JSON.stringify(result.labels ?? []));
+            core.setOutput("author", JSON.stringify(result.author ?? null));
+            core.setOutput("force", result.force === true);
+            core.setOutput("review-requested", result.reviewRequested === true);
+            core.setOutput("classification-requested", result.classificationRequested === true);
+            core.setOutput("review-route", result.reviewRoute === true);
+            core.setOutput("classifier-lane", result.prNumber ? (Number(result.prNumber) % 4) + 1 : "");
+            core.setOutput("reviewer-pipeline-lane", result.prNumber ? (Number(result.prNumber) % 7) + 1 : "");
+            core.setOutput("evidence-max-bytes", result.evidenceMaxBytes ?? "");
+            core.info(JSON.stringify({ event: "pr-automation.resolve-pr", decision: result }));
+            if (result.prNumber) {
+              const prUrl = `${process.env.PULL_REQUEST_URL_BASE}/${result.prNumber}`;
+              await core.summary
+                .addRaw(`Resolved pull request [#${result.prNumber}](${prUrl}).`, true)
+                .write();
+            }
+            if (!result.ok) core.warning(`PR automation did not start: ${result.reason}`);
+
+  classification-gate:
+    name: Gate pull request classification
+    needs: resolve-pr
+    if: >-
+      needs.resolve-pr.outputs.ok == 'true' &&
+      needs.resolve-pr.outputs.classification-requested == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      contents: read
+    outputs:
+      required: ${{ steps.gate.outputs.required }}
+      available: ${{ steps.gate.outputs.available }}
+      completed: ${{ steps.gate.outputs.completed }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - id: gate
+        uses: actions/github-script@v8
+        env:
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          FORCE: ${{ needs.resolve-pr.outputs.force }}
+          RETRY_WITH_LARGER_EVIDENCE: ${{ needs.resolve-pr.outputs.review-requested }}
+        with:
+          script: |
+            const { resolveClassificationGate } = require("./.github/pr-automation/classification-gate");
+            const decision = await resolveClassificationGate({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              expectedSha: process.env.HEAD_SHA,
+              force: process.env.FORCE === "true",
+              retryWithLargerEvidence: process.env.RETRY_WITH_LARGER_EVIDENCE === "true",
+            });
+            core.setOutput("required", decision.required);
+            core.setOutput("available", decision.available);
+            core.setOutput("completed", decision.completed === true);
+            core.setOutput("reason", decision.reason);
+            if (decision.error) core.warning(`Classification gate unavailable: ${decision.error}`);
+            core.info(JSON.stringify({
+              event: "pr-automation.classification-gate",
+              decision,
+            }));
+
+  deterministic-analysis:
+    name: Calculate deterministic labels
+    needs: resolve-pr
+    if: >-
+      needs.resolve-pr.outputs.ok == 'true' &&
+      needs.resolve-pr.outputs.classification-requested == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      # github-script owns the result output and overwrites it with the script return value.
+      analysis: ${{ steps.analyze.outputs.analysis }}
+      ok: ${{ steps.analyze.outputs.ok }}
+      size-label: ${{ steps.analyze.outputs.size-label }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - id: analyze
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+        with:
+          script: |
+            const { deterministicAnalysis } = require("./.github/pr-automation/deterministic-analysis");
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: Number(process.env.PULL_REQUEST_NUMBER),
+            });
+            const result = await deterministicAnalysis({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              prNumber: pullRequest.number,
+              authorAssociation: pullRequest.author_association,
+              labelerPath: "./.github/labeler.yml",
+            });
+            core.setOutput("analysis", JSON.stringify(result));
+            core.setOutput("ok", result.ok === true);
+            core.setOutput("size-label", result.sizeLabel || "");
+            core.info(JSON.stringify({ event: "pr-automation.deterministic-analysis", decision: result }));
+
+  fork-rate-limit:
+    name: Check fork automation quota
+    needs: resolve-pr
+    if: needs.resolve-pr.outputs.ok == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      quota: ${{ steps.limit.outputs.quota }}
+      allowed: ${{ steps.limit.outputs.allowed }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - id: limit
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+          AUTHOR: ${{ needs.resolve-pr.outputs.author }}
+        with:
+          script: |
+            const { forkRateLimit } = require("./.github/pr-automation/fork-rate-limit");
+            let author = null;
+            let result;
+            try {
+              author = JSON.parse(process.env.AUTHOR);
+              const { data: pullRequest } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: Number(process.env.PULL_REQUEST_NUMBER),
+              });
+              result = await forkRateLimit({
+                github,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pr: pullRequest,
+                author,
+              });
+            } catch {
+              result = { status: "unavailable", scope: "unknown", reason: "GitHub API unavailable" };
+            }
+            core.setOutput("quota", JSON.stringify(result));
+            core.setOutput("allowed", result.status === "allowed");
+            core.info(JSON.stringify({ event: "pr-automation.fork-rate-limit", decision: result }));
+
+  semver:
+    name: Check public API compatibility
+    needs: [resolve-pr, classification-gate]
+    if: >-
+      always() && !cancelled() &&
+      needs.resolve-pr.outputs.ok == 'true' &&
+      needs.resolve-pr.outputs.classification-requested == 'true' &&
+      (needs.resolve-pr.outputs.force == 'true' ||
+      (needs.classification-gate.outputs.available == 'true' &&
+      needs.classification-gate.outputs.required == 'true'))
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      compatibility: ${{ steps.semver.outputs.compatibility }}
+    env:
+      CARGO_SEMVER_CHECKS_VERSION: "0.49.0"
+      CARGO_SEMVER_CHECKS_SHA256: "72f6834d75d28a66e02c9fd6a230ce901bb30eee6067b85867a97445df040e4a"
+      CARGO_SEMVER_CHECKS_FEATURES: "core,pdu,cliprdr,connector,acceptor,session,graphics,input,server,svc,dvc,rdpdr,rdpsnd,displaycontrol,echo,mstsgu,client,rustls,client-all,qoi,qoiz"
+      CARGO_SEMVER_CHECKS_DIR: /tmp/ironrdp-cargo-semver-checks-${{ github.run_id }}-${{ github.run_attempt }}
+      SEMVER_WORKSPACE: /tmp/ironrdp-semver-workspace-${{ github.run_id }}-${{ github.run_attempt }}
+      SEMVER_STATE_DIR: /tmp/ironrdp-semver-state-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - id: fetch
+        shell: bash
+        env:
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
+        run: |
+          set -euo pipefail
+          workspace="$SEMVER_WORKSPACE"
+          install -d -m 755 "$workspace"
+          cd "$workspace"
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          git init .
+          git config --local core.hooksPath /dev/null
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags origin "+$HEAD_SHA:refs/remotes/origin/pull-request-head"
+          git fetch --no-tags origin "+$BASE_SHA:refs/remotes/origin/pull-request-base"
+          git checkout --detach origin/pull-request-head
+
+      - id: install
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get -y install libasound2-dev
+          install -d -m 700 "$CARGO_SEMVER_CHECKS_DIR"
+          curl --fail --location \
+            "https://github.com/obi1kenobi/cargo-semver-checks/releases/download/v${CARGO_SEMVER_CHECKS_VERSION}/cargo-semver-checks-x86_64-unknown-linux-gnu.tar.gz" \
+            --output /tmp/cargo-semver-checks.tar.gz
+          echo "$CARGO_SEMVER_CHECKS_SHA256  /tmp/cargo-semver-checks.tar.gz" | sha256sum --check --strict
+          tar -xzf /tmp/cargo-semver-checks.tar.gz -C "$CARGO_SEMVER_CHECKS_DIR" cargo-semver-checks
+          sudo chown -R nobody:nogroup "$CARGO_SEMVER_CHECKS_DIR"
+          sudo chmod 700 "$CARGO_SEMVER_CHECKS_DIR/cargo-semver-checks"
+
+      - id: semver
+        shell: bash
+        env:
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
+        run: |
+          set -euo pipefail
+          semver_home="$SEMVER_STATE_DIR/home"
+          semver_cargo="$SEMVER_STATE_DIR/cargo"
+          semver_target="$SEMVER_STATE_DIR/target"
+          semver_bin="$CARGO_SEMVER_CHECKS_DIR/cargo-semver-checks"
+          workspace="$SEMVER_WORKSPACE"
+          rustc_bin="$(rustup which rustc)"
+          rust_toolchain_dir="$(dirname "$(dirname "$rustc_bin")")"
+          rust_bin_dir="$rust_toolchain_dir/bin"
+          install -d -m 700 "$semver_home" "$semver_cargo" "$semver_target"
+          chmod -R a+rX "$workspace"
+          sudo chown -R nobody:nogroup "$workspace" "$semver_home" "$semver_cargo" "$semver_target"
+          sudo chmod o+x "$HOME" "$HOME/.rustup" "$HOME/.rustup/toolchains"
+          sudo chmod -R a+rX "$rust_toolchain_dir"
+          cd "$workspace"
+
+          # Build scripts and proc macros run as nobody, which cannot read the runner command files.
+          set +e
+          sudo -u nobody env -i \
+            HOME="$semver_home" \
+            CARGO_HOME="$semver_cargo" \
+            CARGO_TARGET_DIR="$semver_target" \
+            PATH="$rust_bin_dir:$PATH" \
+            "$semver_bin" \
+            --package ironrdp \
+            --only-explicit-features \
+            --features "$CARGO_SEMVER_CHECKS_FEATURES" \
+            --baseline-rev "$BASE_SHA"
+          status=$?
+          set -e
+          case "$status" in
+            0) status=not-suspected ;;
+            100) status=suspected ;;
+            *) exit "$status" ;;
+          esac
+          echo "compatibility={\"head_sha\":\"$HEAD_SHA\",\"status\":\"$status\"}" >> "$GITHUB_OUTPUT"
+          echo "::notice title=PR automation semver decision::head_sha=$HEAD_SHA status=$status"
+
+  classifier:
+    name: Classify pull request
+    needs: [resolve-pr, classification-gate, deterministic-analysis, fork-rate-limit]
+    if: >-
+      always() && !cancelled() &&
+      needs.resolve-pr.outputs.ok == 'true' &&
+      needs.deterministic-analysis.result == 'success' &&
+      needs.deterministic-analysis.outputs.ok == 'true' &&
+      (needs.resolve-pr.outputs.force == 'true' ||
+      (needs.classification-gate.outputs.available == 'true' &&
+      needs.classification-gate.outputs.required == 'true' &&
+      needs.fork-rate-limit.result == 'success' &&
+      needs.fork-rate-limit.outputs.allowed == 'true'))
+    runs-on: ubuntu-latest
+    concurrency:
+      group: llm-classifier-${{ needs.resolve-pr.outputs.classifier-lane }}
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      pull-requests: read
+    environment: llm-providers
+    outputs:
+      output: ${{ steps.agent.outputs.structured-output }}
+      failure-reason: ${{ steps.evidence.outputs.failure-reason || steps.agent.outputs.failure-reason }}
+      overlap-candidates: ${{ steps.overlap-candidates.outputs.manifest }}
+    steps:
+      - id: evidence
+        name: Fetch base and PR head without credentials
+        shell: bash
+        env:
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
+          EVIDENCE_MAX_BYTES: ${{ needs.resolve-pr.outputs.evidence-max-bytes }}
+        run: |
+          set -euo pipefail
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          git init .
+          git config --local core.hooksPath /dev/null
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags origin +master:refs/remotes/origin/master
+          git checkout --detach origin/master
+          if ! bash ./.github/pr-automation/fetch-pr-evidence.sh \
+            "$HEAD_SHA" "$BASE_SHA" "$EVIDENCE_MAX_BYTES"; then
+            reason="pull request evidence unavailable"
+            if test -f pr-evidence/failure-reason.txt; then
+              reason="$(cat pr-evidence/failure-reason.txt)"
+            fi
+            echo "failure-reason=$reason" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - id: overlap-candidates
+        name: Fetch bounded overlap candidates
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { data } = await github.rest.pulls.list({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: "open", sort: "updated", direction: "desc", per_page: 100,
+            });
+            const current = Number(process.env.PULL_REQUEST_NUMBER);
+            const candidates = data.filter((pull) => pull.number !== current).slice(0, 30)
+              .map((pull) => ({
+                number: pull.number,
+                url: pull.html_url,
+                title: String(pull.title || "").slice(0, 300),
+                body: String(pull.body || "").slice(0, 1000),
+                head_sha: pull.head?.sha || "",
+              }));
+            fs.writeFileSync(
+              "pr-evidence/overlap-candidates.json",
+              JSON.stringify({ candidates }, null, 2),
+            );
+            core.setOutput("manifest", JSON.stringify(
+              candidates.map(({ number, url }) => ({ number, url })),
+            ));
+
+      - name: Write classifier context
+        uses: actions/github-script@v8
+        env:
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+        with:
+          script: |
+            require("node:fs").writeFileSync(
+              "pr-automation-context.json",
+              JSON.stringify({ head_sha: process.env.HEAD_SHA }, null, 2),
+            );
+
+      - id: agent
+        continue-on-error: true
+        uses: ./.github/actions/openai-agent
+        with:
+          api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
+          base-url: https://api.helmcode.com/v1
+          config-file: .github/pr-automation/agents/classifier.json
+
+  resolve-classification-state:
+    name: Resolve classification state
+    needs: [resolve-pr, classification-gate, deterministic-analysis, fork-rate-limit, semver, classifier]
+    if: always() && !cancelled() && needs.resolve-pr.outputs.ok == 'true' &&
+      needs.resolve-pr.outputs.classification-requested == 'true' &&
+      (needs.classification-gate.outputs.required == 'true' ||
+      needs.classification-gate.outputs.available != 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      state: ${{ steps.resolve.outputs.state }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - id: resolve
+        uses: actions/github-script@v8
+        env:
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          LABELS: ${{ needs.resolve-pr.outputs.labels }}
+          PR_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+          DETERMINISTIC: ${{ needs.deterministic-analysis.outputs.analysis }}
+          CLASSIFIER: ${{ needs.classifier.outputs.output }}
+          CLASSIFIER_REASON: ${{ needs.classifier.outputs.failure-reason }}
+          OVERLAP_CANDIDATES: ${{ needs.classifier.outputs.overlap-candidates }}
+          CLASSIFICATION_GATE_AVAILABLE: ${{ needs.classification-gate.outputs.available }}
+          CLASSIFICATION_GATE_COMPLETED: ${{ needs.classification-gate.outputs.completed }}
+          CLASSIFICATION_GATE_REASON: ${{ needs.classification-gate.outputs.reason }}
+          FORK_RATE_LIMIT: ${{ needs.fork-rate-limit.outputs.quota }}
+          SEMVER: ${{ needs.semver.outputs.compatibility }}
+          FORCE: ${{ needs.resolve-pr.outputs.force }}
+        with:
+          script: |
+            const { resolveClassificationState } = require("./.github/pr-automation/resolve-state");
+            const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
+            const state = resolveClassificationState({
+              expectedSha: process.env.HEAD_SHA,
+              labels: parse(process.env.LABELS, []),
+              prNumber: Number(process.env.PR_NUMBER),
+              deterministic: parse(process.env.DETERMINISTIC, {}),
+              classifier: process.env.CLASSIFIER || "",
+              classifierReason: process.env.CLASSIFIER_REASON || "",
+              overlapCandidates: parse(process.env.OVERLAP_CANDIDATES, []),
+              classificationGate: {
+                available: process.env.CLASSIFICATION_GATE_AVAILABLE === "true",
+                completed: process.env.CLASSIFICATION_GATE_COMPLETED === "true",
+                reason: process.env.CLASSIFICATION_GATE_REASON || "",
+              },
+              rateLimit: parse(process.env.FORK_RATE_LIMIT, {}),
+              semver: parse(process.env.SEMVER, {}),
+              force: process.env.FORCE === "true",
+            });
+            core.setOutput("state", JSON.stringify(state));
+            core.info(JSON.stringify({
+              event: "pr-automation.classification-state",
+              decision: {
+                ok: state.ok, mode: state.mode, failed: state.failed === true,
+                oversized: state.oversized === true, expectedSha: state.expectedSha,
+              },
+            }));
+
+  review-gate:
+    name: Gate automated review
+    needs: resolve-pr
+    if: >-
+      needs.resolve-pr.outputs.ok == 'true' &&
+      needs.resolve-pr.outputs.review-route == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      gate: ${{ steps.gate.outputs.gate }}
+      eligible: ${{ steps.gate.outputs.eligible }}
+      specialist-reviewers: ${{ steps.gate.outputs.specialist-reviewers }}
+      required-reviewers: ${{ steps.gate.outputs.required-reviewers }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - id: gate
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          ROUTE: ${{ needs.resolve-pr.outputs.route }}
+          LABELS: ${{ needs.resolve-pr.outputs.labels }}
+          AUTHOR: ${{ needs.resolve-pr.outputs.author }}
+          FORCE: ${{ needs.resolve-pr.outputs.force }}
+        with:
+          script: |
+            const { SCHEMA_VERSION, parseCheckState } = require("./.github/pr-automation/validate-classifier");
+            const { contributorEligibility, reviewPolicyEligible } = require("./.github/pr-automation/resolve-state");
+            const { resolveReviewerRoute } = require("./.github/pr-automation/routing");
+            const prNumber = Number(process.env.PULL_REQUEST_NUMBER);
+            const headSha = process.env.HEAD_SHA;
+            const force = process.env.FORCE === "true";
+            const manual = process.env.ROUTE === "dispatch";
+            let resolvedLabels = [];
+            let author = null;
+            try { resolvedLabels = JSON.parse(process.env.LABELS || "[]"); } catch {}
+            try { author = JSON.parse(process.env.AUTHOR || "null"); } catch {}
+            const publish = (gate, eligible = gate.ok) => {
+              const requiredReviewers = (gate.specialistReviewers || []).filter((reviewer) =>
+                (reviewer === "protocol" && gate.protocolRelated === true) ||
+                (reviewer === "skeptical" && ["medium", "high"].includes(gate.risk)));
+              core.setOutput("gate", JSON.stringify(gate));
+              core.setOutput("eligible", eligible);
+              core.setOutput("specialist-reviewers", JSON.stringify(gate.specialistReviewers || []));
+              core.setOutput("required-reviewers", JSON.stringify(requiredReviewers));
+              core.info(JSON.stringify({
+                event: "pr-automation.review-gate",
+                decision: gate,
+              }));
+            };
+            try {
+              const classificationRuns = await github.rest.checks.listForRef({
+                owner: context.repo.owner, repo: context.repo.repo, ref: headSha,
+                check_name: "AI classification", per_page: 100,
+              });
+              const completed = (runs, externalId) => runs.data.check_runs
+                .filter((run) => run.external_id === externalId)
+                .sort((left, right) => right.id - left.id)[0];
+              const classification = completed(classificationRuns, `${SCHEMA_VERSION}:${headSha}`);
+              const classificationOwned = classification?.conclusion === "success" &&
+                classification.app?.slug === "github-actions";
+              // A check without the current machine-readable state predates this contract: fail closed
+              // and wait for a later classification event to rewrite it.
+              const protocolState = classificationOwned ? parseCheckState(classification.output?.summary) : null;
+              const classificationValid = classificationOwned && protocolState !== null;
+              const classificationCheck = classificationValid &&
+                classification.output?.title === "Classification complete" &&
+                protocolState.automaticReviewEligible === true;
+              const legitimacyStopped = classificationOwned &&
+                classification.output?.title === "Automation stopped";
+              const protocolRelated = protocolState?.protocolRelated === true;
+              if (!classificationValid && (force || manual)) {
+                publish({
+                  ok: false, force, head_sha: headSha, classificationValid: false,
+                  classificationCheck: false, legitimacyStopped, ciGreen: false,
+                  secondReviewEligible: false, policyEligible: false, labels: resolvedLabels,
+                  protocolRelated: false, risk: "unknown", specialistReviewers: [],
+                  contributor: { status: force ? "forced" : "unavailable" },
+                  reason: "valid classification unavailable",
+                }, false);
+                core.setFailed("manual or forced review requires a valid classification for the current head");
+                return;
+              }
+              if (force) {
+                const route = resolveReviewerRoute({
+                  suggestedReviewers: protocolState.specialistReviewers,
+                  protocolRelated,
+                  risk: protocolState.risk,
+                });
+                publish({
+                  ok: route.ok, force: true, head_sha: headSha, classificationValid, classificationCheck,
+                  legitimacyStopped, ciGreen: false, secondReviewEligible: true,
+                  policyEligible: true, labels: resolvedLabels, protocolRelated,
+                  risk: protocolState.risk,
+                  specialistReviewers: route.ok ? route.reviewers : [],
+                  contributor: { status: "forced" },
+                });
+                return;
+              }
+              const { data: issue } = await github.rest.issues.get({
+                owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber,
+              });
+              const labels = issue.labels.map((label) => typeof label === "string" ? label : label.name);
+              const reviewRuns = await github.rest.checks.listForRef({
+                owner: context.repo.owner, repo: context.repo.repo, ref: headSha,
+                check_name: "AI automated review", per_page: 100,
+              });
+              const reviewAtHead = reviewRuns.data.check_runs.some((run) =>
+                run.conclusion === "success" && run.app?.slug === "github-actions");
+              const workflowRuns = process.env.ROUTE === "ci" ? [context.payload.workflow_run] :
+                (await github.rest.actions.listWorkflowRunsForRepo({
+                  owner: context.repo.owner, repo: context.repo.repo, head_sha: headSha, per_page: 100,
+                })).data.workflow_runs;
+              const ciGreen = workflowRuns.some((run) => run?.name === "CI" && run?.conclusion === "success");
+              const secondReviewEligible = !labels.includes("ai-reviewed/1") || !reviewAtHead;
+              const policyEligible = reviewPolicyEligible({ labels, legitimacyStopped });
+              const contributor = await contributorEligibility({
+                github, owner: context.repo.owner, repo: context.repo.repo, author,
+                currentPrNumber: prNumber,
+              });
+              publish({
+                ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible &&
+                  contributor.status === "eligible",
+                force: false, head_sha: headSha, classificationValid, classificationCheck, legitimacyStopped,
+                ciGreen, secondReviewEligible, policyEligible, labels, contributor,
+                protocolRelated, risk: protocolState?.risk || "unknown",
+                specialistReviewers: protocolState?.specialistReviewers || [],
+              });
+            } catch (error) {
+              core.warning(`Review gate unavailable: ${error.message}`);
+              publish({
+                ok: false, force, head_sha: headSha, classificationValid: false, classificationCheck: false,
+                legitimacyStopped: false, ciGreen: false, secondReviewEligible: force,
+                policyEligible: false, labels: force ? resolvedLabels : [], protocolRelated: false,
+                risk: "unknown", specialistReviewers: [],
+                contributor: force ? { status: "forced" } : { status: "unavailable" },
+                reason: error.message,
+              }, false);
+            }
+
+  review-pipeline:
+    name: Run automated review pipeline
+    needs: [resolve-pr, fork-rate-limit, review-gate]
+    if: >-
+      always() && !cancelled() &&
+      needs.resolve-pr.outputs.ok == 'true' &&
+      needs.resolve-pr.outputs.review-route == 'true' &&
+      needs.review-gate.outputs.eligible == 'true' &&
+      (needs.resolve-pr.outputs.force == 'true' ||
+      (needs.fork-rate-limit.result == 'success' &&
+      needs.fork-rate-limit.outputs.allowed == 'true'))
+    concurrency:
+      group: llm-reviewer-pipeline-${{ needs.resolve-pr.outputs.reviewer-pipeline-lane }}
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      issues: read
+      pull-requests: read
+    uses: ./.github/workflows/review-pipeline.yml
+    with:
+      pr-number: ${{ needs.resolve-pr.outputs.pr-number }}
+      head-sha: ${{ needs.resolve-pr.outputs.head-sha }}
+      base-sha: ${{ needs.resolve-pr.outputs.base-sha }}
+      gate: ${{ needs.review-gate.outputs.gate }}
+      specialist-reviewers: ${{ needs.review-gate.outputs.specialist-reviewers }}
+      required-reviewers: ${{ needs.review-gate.outputs.required-reviewers }}
+      evidence-max-bytes: ${{ needs.resolve-pr.outputs.evidence-max-bytes }}
+    # Work around actions/runner#4453: environment secrets otherwise resolve empty in reusable jobs.
+    # This exposes caller-accessible secrets, so the called workflow must remain trusted and not execute PR code.
+    secrets: inherit
+
+  resolve-review-state:
+    name: Resolve review state
+    needs: [resolve-pr, fork-rate-limit, review-gate, review-pipeline]
+    if: always() && !cancelled() && needs.resolve-pr.outputs.ok == 'true' &&
+      needs.resolve-pr.outputs.review-route == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      state: ${{ steps.resolve.outputs.state }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - id: resolve
+        uses: actions/github-script@v8
+        env:
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
+          GATE: ${{ needs.review-gate.outputs.gate }}
+          REVIEW_GATE_RESULT: ${{ needs.review-gate.result }}
+          FORK_RATE_LIMIT: ${{ needs.fork-rate-limit.outputs.quota }}
+          FORK_RATE_LIMIT_RESULT: ${{ needs.fork-rate-limit.result }}
+          RAW_OUTPUT: ${{ needs.review-pipeline.outputs.output }}
+          REVIEWER_REASON: ${{ needs.review-pipeline.outputs.failure-reason }}
+          REVIEW_REPORT: ${{ needs.review-pipeline.outputs.report }}
+          REVIEW_PIPELINE_RESULT: ${{ needs.review-pipeline.result }}
+          FORCE: ${{ needs.resolve-pr.outputs.force }}
+          LABELS: ${{ needs.resolve-pr.outputs.labels }}
+          REVIEW_MARKER_ID: ${{ github.run_id }}
+          SUMMARY_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+             const { resolveReviewState, reviewOutcome } = require("./.github/pr-automation/resolve-state");
+             const { reviewSkipReasons } = require("./.github/pr-automation/review-skip-summary");
+             const { parseReport } = require("./.github/pr-automation/review-report");
+             const { renderReviewReport } = require("./.github/pr-automation/review-report-summary");
+             const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
+             const force = process.env.FORCE === "true";
+             const gate = parse(process.env.GATE, {});
+             const report = parseReport(process.env.REVIEW_REPORT);
+             const recovered = report.stages.filter((stage) => stage.attempts === 2);
+             const reducedCoverage = report.stages
+               .filter((stage) => stage.id.startsWith("specialist:") &&
+                 stage.status === "failed" && stage.required !== true)
+               .map((stage) => stage.id.slice("specialist:".length));
+             const failureReasons = report.stages.filter((stage) => stage.status === "failed")
+               .map((stage) => `${stage.id}: ${stage.reason || stage.category}`);
+             const reviewerReason = report.status === "failed"
+               ? failureReasons.join("; ") || process.env.REVIEWER_REASON || "review pipeline failed"
+               : process.env.REVIEWER_REASON;
+             const state = resolveReviewState({
+               expectedSha: process.env.HEAD_SHA,
+               labels: gate.labels ?? [],
+               gate,
+               contributor: gate.contributor ?? {},
+               rateLimit: parse(process.env.FORK_RATE_LIMIT, {}),
+               reviewer: report.status === "success" ? parse(process.env.RAW_OUTPUT, null) : null,
+               reviewerReason,
+               force,
+               reviewMarkerId: process.env.REVIEW_MARKER_ID,
+               reducedCoverage,
+             });
+             core.setOutput("state", JSON.stringify(state));
+             core.info(JSON.stringify({
+               event: "pr-automation.review-state",
+               decision: {
+                 ok: state.ok, mode: state.mode, failed: state.failed === true,
+                 expectedSha: state.expectedSha, hasReview: (state.comments || [])
+                   .some((comment) => comment.kind === "review"),
+               },
+             }));
+             if (process.env.REVIEW_PIPELINE_RESULT === "skipped") {
+               const reasons = reviewSkipReasons({
+                 gate,
+                 gateResult: process.env.REVIEW_GATE_RESULT,
+                 rateLimit: parse(process.env.FORK_RATE_LIMIT, null),
+                 rateLimitResult: process.env.FORK_RATE_LIMIT_RESULT,
+               });
+               await core.summary
+                 .addHeading("Automated review skipped")
+                 .addRaw("The automated review did not run because:", true)
+                 .addList(reasons)
+                 .write();
+             } else {
+               const outcome = reviewOutcome({
+                 reportStatus: report.status, state, recovered: recovered.length > 0,
+                 reducedCoverage,
+               });
+               const rendered = renderReviewReport({
+                 report, outcome, summaryUrl: process.env.SUMMARY_URL, reducedCoverage,
+               });
+               if (state.check) {
+                 state.check.title = rendered.title;
+                 state.check.summary = rendered.checkSummary;
+                 state.check.conclusion = outcome === "unavailable" ? "neutral" : "success";
+                 core.setOutput("state", JSON.stringify(state));
+               }
+               await core.summary
+                 .addRaw(rendered.workflowSummary, true)
+                 .write();
+             }
+
+  write-state:
+    name: Write pull request state
+    needs: [resolve-pr, classification-gate, deterministic-analysis, fork-rate-limit, semver,
+      classifier, resolve-classification-state, review-gate, review-pipeline, resolve-review-state]
+    if: always() && !cancelled() && needs.resolve-pr.outputs.ok == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pr-automation-write-${{ needs.resolve-pr.outputs.pr-number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      checks: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+          REVIEW_REQUESTED: ${{ needs.resolve-pr.outputs.review-requested }}
+          CLASSIFICATION_STATE: ${{ needs.resolve-classification-state.outputs.state }}
+          REVIEW_STATE: ${{ needs.resolve-review-state.outputs.state }}
+          UPSTREAM_RESULTS: >-
+            {"classification-gate":"${{ needs.classification-gate.result }}","deterministic-analysis":"${{ needs.deterministic-analysis.result }}","fork-rate-limit":"${{ needs.fork-rate-limit.result }}","semver":"${{ needs.semver.result }}","classifier":"${{ needs.classifier.result }}","resolve-classification-state":"${{ needs.resolve-classification-state.result }}","review-gate":"${{ needs.review-gate.result }}","review-pipeline":"${{ needs.review-pipeline.result }}","resolve-review-state":"${{ needs.resolve-review-state.result }}"}
+        with:
+          script: |
+            const { writeState } = require("./.github/pr-automation/write-state");
+            const parse = (value) => { try { return JSON.parse(value || ""); } catch { return null; } };
+            const state = parse(process.env.REVIEW_STATE) ?? parse(process.env.CLASSIFICATION_STATE);
+            const upstreamResults = JSON.parse(process.env.UPSTREAM_RESULTS);
+            core.info(JSON.stringify({
+              event: "pr-automation.write-state",
+              upstreamResults,
+              selectedState: state ? {
+                ok: state.ok, mode: state.mode, failed: state.failed === true,
+                expectedSha: state.expectedSha,
+              } : null,
+            }));
+            if (!state) {
+              core.warning("No normalized state was available; no PR mutation was attempted");
+              return;
+            }
+            await writeState({
+              github, owner: context.repo.owner, repo: context.repo.repo,
+              prNumber: Number(process.env.PULL_REQUEST_NUMBER), state,
+              botLogin: "github-actions[bot]",
+              reviewRequested: process.env.REVIEW_REQUESTED === "true",
+            });
+            core.info(JSON.stringify({
+              event: "pr-automation.write-state-complete",
+              decision: { expectedSha: state.expectedSha, mode: state.mode },
+            }));
