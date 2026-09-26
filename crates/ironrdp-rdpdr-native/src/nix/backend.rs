@@ -5,13 +5,17 @@ use std::os::unix::fs::MetadataExt;
 
 use ironrdp_core::impl_as_any;
 use ironrdp_pdu::{PduResult, encode_err};
-use ironrdp_rdpdr::RdpdrBackend;
 use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::pdu::efs::*;
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
+use ironrdp_rdpdr::{
+    RdpdrBackend, RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPrinter,
+};
 use ironrdp_svc::SvcMessage;
 use nix::dir::{Dir, OwningIter};
 use tracing::{debug, warn};
+
+use super::printer::{PrintTarget, PrinterSpooler};
 
 #[derive(Debug, Default)]
 pub struct NixRdpdrBackend {
@@ -20,6 +24,8 @@ pub struct NixRdpdrBackend {
     file_map: std::collections::HashMap<u32, std::fs::File>,
     file_path_map: std::collections::HashMap<u32, String>,
     file_dir_map: std::collections::HashMap<u32, OwningIter>,
+    /// Print-job handling for the virtual printer, when one is announced.
+    printer: Option<PrinterSpooler>,
 }
 
 impl NixRdpdrBackend {
@@ -29,13 +35,102 @@ impl NixRdpdrBackend {
             ..Default::default()
         }
     }
+
+    /// Accepts print jobs for the announced virtual printer and sends them to `target`.
+    #[must_use]
+    pub fn with_printer(mut self, target: PrintTarget) -> Self {
+        self.printer = Some(PrinterSpooler::new(target));
+        self
+    }
 }
 
 impl_as_any!(NixRdpdrBackend);
 
+/// Builds a [`NixRdpdrBackend`] for every RDPDR channel lifetime.
+///
+/// `drives` are announced as redirected folders; `printer` announces a virtual
+/// printer named after the client, whose jobs go to the given target.
+#[derive(Debug, Clone)]
+pub struct NixRdpdrBackendFactory {
+    file_base: String,
+    drives: Vec<(u32, String)>,
+    printer: Option<(String, PrintTarget)>,
+}
+
+impl NixRdpdrBackendFactory {
+    pub fn new(file_base: String) -> Self {
+        Self {
+            file_base,
+            drives: Vec::new(),
+            printer: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_drive(mut self, device_id: u32, name: String) -> Self {
+        self.drives.push((device_id, name));
+        self
+    }
+
+    #[must_use]
+    pub fn with_printer(mut self, name: String, target: PrintTarget) -> Self {
+        self.printer = Some((name, target));
+        self
+    }
+}
+
+/// Device id of the virtual printer; drives use the ids given to [`NixRdpdrBackendFactory::with_drive`].
+pub const PRINTER_DEVICE_ID: u32 = 0x0001_0000;
+
+impl RdpdrBackendFactory for NixRdpdrBackendFactory {
+    fn build_rdpdr_backend(&self) -> RdpdrBackendFactoryResult<RdpdrBackendProduct> {
+        let mut backend = NixRdpdrBackend::new(self.file_base.clone());
+        if let Some((_, target)) = &self.printer {
+            backend = backend.with_printer(target.clone());
+        }
+        let drives = self
+            .drives
+            .iter()
+            .map(|(id, name)| RdpdrDrive::new(*id, name.clone()))
+            .collect();
+        let mut product = RdpdrBackendProduct::new(Box::new(backend), drives);
+        if let Some((name, _)) = &self.printer {
+            product = product.with_printer(RdpdrPrinter::new(
+                PRINTER_DEVICE_ID,
+                name.clone(),
+                DEFAULT_PRINTER_DRIVER_NAME.to_owned(),
+            ));
+        }
+        Ok(product)
+    }
+}
+
 impl RdpdrBackend for NixRdpdrBackend {
-    fn handle_server_device_announce_response(&mut self, _pdu: ServerDeviceAnnounceResponse) -> PduResult<()> {
+    fn handle_server_device_announce_response(&mut self, pdu: ServerDeviceAnnounceResponse) -> PduResult<()> {
+        if pdu.device_id == PRINTER_DEVICE_ID {
+            if pdu.result_code == NtStatus::SUCCESS {
+                tracing::info!("The server accepted the redirected printer");
+            } else {
+                warn!(?pdu.result_code, "The server rejected the redirected printer");
+            }
+        }
         Ok(())
+    }
+    fn handle_printer_io_request(&mut self, req: PrinterIoRequest) -> PduResult<Vec<SvcMessage>> {
+        match self.printer.as_mut() {
+            Some(spooler) => spooler.handle(req),
+            None => Ok(vec![SvcMessage::from(RdpdrPdu::DeviceCloseResponse(
+                DeviceCloseResponse {
+                    device_io_response: DeviceIoResponse::new(req.into_device_io_request(), NtStatus::NOT_SUPPORTED),
+                },
+            ))]),
+        }
+    }
+    fn reject_printer_write(&mut self, req: DeviceIoRequest) -> PduResult<Vec<SvcMessage>> {
+        match self.printer.as_mut() {
+            Some(spooler) => spooler.reject_write(req),
+            None => Err(ironrdp_pdu::pdu_other_err!("no printer announced")),
+        }
     }
     fn handle_scard_call(
         &mut self,
