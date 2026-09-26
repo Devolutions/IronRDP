@@ -130,6 +130,7 @@ pub struct DrdynvcClient {
     cap_handshake_done: bool,
     available_tunnels: BTreeSet<SoftSyncTunnelType>,
     tunnel_channels: BTreeMap<DynamicChannelId, SoftSyncTunnelType>,
+    switched_tunnels: BTreeSet<SoftSyncTunnelType>,
     soft_sync_complete: bool,
 }
 
@@ -157,6 +158,7 @@ impl DrdynvcClient {
             cap_handshake_done: false,
             available_tunnels: BTreeSet::new(),
             tunnel_channels: BTreeMap::new(),
+            switched_tunnels: BTreeSet::new(),
             soft_sync_complete: false,
         }
     }
@@ -344,6 +346,14 @@ impl DrdynvcClient {
         self.tunnel_channels.values().any(|selected| *selected == tunnel_type)
     }
 
+    /// Returns whether the Soft-Sync response switched DVC traffic to `tunnel_type`.
+    ///
+    /// The tunnel stays in use after every channel bound to it has closed, because the server
+    /// can open new channels on it at any time.
+    pub fn switched_to_tunnel(&self, tunnel_type: SoftSyncTunnelType) -> bool {
+        self.switched_tunnels.contains(&tunnel_type)
+    }
+
     /// Processes raw DRDYNVC data received through `tunnel_type`.
     ///
     /// The channel's Soft-Sync-selected route is validated before the dynamic channel sees the
@@ -351,15 +361,15 @@ impl DrdynvcClient {
     /// The returned batch carries the channel ID so response messages can be routed back onto
     /// the same tunnel.
     ///
-    /// Once Soft-Sync has completed, the server may also open and close dynamic channels
-    /// directly on a tunnel: Windows creates `AUDIO_PLAYBACK_DVC` and `RDS::Input` on the
-    /// reliable UDP tunnel. A channel created on a tunnel is bound to that tunnel for the rest
-    /// of its life, and every response in the returned batch belongs on the tunnel the request
-    /// arrived on, including the response to a Create Request this client declines.
+    /// Once the Soft-Sync response has switched to a tunnel, the server may also open and close
+    /// dynamic channels directly on it: Windows creates `AUDIO_PLAYBACK_DVC` and `RDS::Input`
+    /// on the reliable UDP tunnel. A channel created on a tunnel is bound to that tunnel for the
+    /// rest of its life, and every response in the returned batch belongs on the tunnel the
+    /// request arrived on, including the response to a Create Request this client declines.
     pub fn process_tunnel(&mut self, tunnel_type: SoftSyncTunnelType, payload: &[u8]) -> PduResult<DvcMessageBatch> {
-        if !self.soft_sync_complete {
+        if !self.switched_tunnels.contains(&tunnel_type) {
             return Err(pdu_other_err!(
-                "received tunneled DVC traffic before Soft-Sync completed"
+                "received tunneled DVC traffic on a tunnel Soft-Sync did not switch to"
             ));
         }
         let pdu = decode_dvc_message(payload).map_err(|e| decode_err!(e))?;
@@ -498,6 +508,7 @@ impl DrdynvcClient {
             tunnels_to_switch.push(list.tunnel_type());
         }
 
+        self.switched_tunnels = tunnels_to_switch.iter().copied().collect();
         let response = SvcMessage::from(DrdynvcClientPdu::SoftSyncResponse(SoftSyncResponsePdu::new(
             tunnels_to_switch,
         )));

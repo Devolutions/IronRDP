@@ -555,11 +555,11 @@ impl ActiveStage {
         Ok(())
     }
 
-    /// Returns whether Soft-Sync moved any DVC to the reliable UDP tunnel.
+    /// Returns whether the Soft-Sync response switched DVC traffic to the reliable UDP tunnel.
     pub fn reliable_udp_dvc_tunnel_in_use(&self) -> bool {
         self.x224_processor
             .get_svc_processor::<DrdynvcClient>()
-            .is_some_and(|drdynvc| drdynvc.has_channels_on_tunnel(SoftSyncTunnelType::RELIABLE_UDP))
+            .is_some_and(|drdynvc| drdynvc.switched_to_tunnel(SoftSyncTunnelType::RELIABLE_UDP))
     }
 
     /// Returns the Soft-Sync tunnel selected for client messages on `channel_id`.
@@ -1069,7 +1069,7 @@ mod tests {
     use ironrdp_core::{Decode as _, encode_vec};
     use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlPdu};
     use ironrdp_dvc::pdu::{
-        CreateRequestPdu, DataPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu,
+        ClosePdu, CreateRequestPdu, DataPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu,
     };
     use ironrdp_graphics::image_processing::PixelFormat;
     use ironrdp_pdu::gcc::MonitorFlags;
@@ -1511,6 +1511,16 @@ mod tests {
             .unwrap();
         assert_prepared_batch(&response, 2);
         assert!(outputs.is_empty());
+
+        // The tunnel stays in use after the server closes every channel routed to it.
+        for channel_id in [1, 2] {
+            process_drdynvc_pdu(
+                stage.get_svc_processor_mut::<DrdynvcClient>().unwrap(),
+                DrdynvcServerPdu::Close(ClosePdu::new(channel_id)),
+            );
+        }
+        assert_eq!(stage.dvc_tunnel_for_channel(2), None);
+        assert!(stage.reliable_udp_dvc_tunnel_in_use());
     }
 
     fn active_stage_with_ready_dvcs() -> ActiveStage {

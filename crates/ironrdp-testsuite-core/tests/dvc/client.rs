@@ -285,3 +285,37 @@ fn channels_created_on_a_tunnel_are_bound_to_it() {
     assert!(matches!(decode_client_pdu(response), DrdynvcClientPdu::Close(_)));
     assert_eq!(client.tunnel_for_channel(16), None);
 }
+
+#[test]
+fn tunnel_stays_in_use_after_its_channels_close() {
+    let mut client = DrdynvcClient::new().with_dynamic_channel(TunnelCreatedDvc);
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("recorded channel should attach");
+    client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+
+    let soft_sync = encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
+        SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, vec![7]),
+    ])))
+    .expect("Soft-Sync request should encode");
+    client
+        .process(&soft_sync)
+        .expect("Soft-Sync request should be accepted");
+    assert!(client.switched_to_tunnel(SoftSyncTunnelType::RELIABLE_UDP));
+
+    let close = encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(7))).expect("Close should encode");
+    client.process(&close).expect("Close should be processed");
+    assert!(!client.has_channels_on_tunnel(SoftSyncTunnelType::RELIABLE_UDP));
+    assert!(client.switched_to_tunnel(SoftSyncTunnelType::RELIABLE_UDP));
+
+    // The server can still open a channel on the tunnel after the last one closed.
+    let create = encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+        16,
+        "tunnel-created".to_owned(),
+    )))
+    .expect("Create Request should encode");
+    client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &create)
+        .expect("Create Request on the tunnel should be processed");
+    assert_eq!(client.tunnel_for_channel(16), Some(SoftSyncTunnelType::RELIABLE_UDP));
+}
