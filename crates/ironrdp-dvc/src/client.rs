@@ -350,24 +350,107 @@ impl DrdynvcClient {
     /// data, so data arriving on the wrong tunnel is rejected (MS-RDPEDYC 3.1.5.4.3, 3.2.5.3.2).
     /// The returned batch carries the channel ID so response messages can be routed back onto
     /// the same tunnel.
+    ///
+    /// Once Soft-Sync has completed, the server may also open and close dynamic channels
+    /// directly on a tunnel: Windows creates `AUDIO_PLAYBACK_DVC` and `RDS::Input` on the
+    /// reliable UDP tunnel. A channel created on a tunnel is bound to that tunnel for the rest
+    /// of its life, and every response in the returned batch belongs on the tunnel the request
+    /// arrived on, including the response to a Create Request this client declines.
     pub fn process_tunnel(&mut self, tunnel_type: SoftSyncTunnelType, payload: &[u8]) -> PduResult<DvcMessageBatch> {
-        let pdu = decode_dvc_message(payload).map_err(|e| decode_err!(e))?;
-        let DrdynvcServerPdu::Data(data) = pdu else {
-            return Err(pdu_other_err!("only DVC data is permitted on a multitransport tunnel"));
-        };
-        let channel_id = data.channel_id();
-        let selected_tunnel = self
-            .tunnel_channels
-            .get(&channel_id)
-            .copied()
-            .ok_or_else(|| pdu_other_err!("received tunneled data for a channel not selected by Soft-Sync"))?;
-        if tunnel_type != selected_tunnel {
+        if !self.soft_sync_complete {
             return Err(pdu_other_err!(
-                "received tunneled data on a tunnel not selected for the dynamic channel"
+                "received tunneled DVC traffic before Soft-Sync completed"
             ));
         }
-        let messages = self.process_data(data)?;
-        Ok(DvcMessageBatch::new(channel_id, messages))
+        let pdu = decode_dvc_message(payload).map_err(|e| decode_err!(e))?;
+        match pdu {
+            DrdynvcServerPdu::Data(data) => {
+                let channel_id = data.channel_id();
+                let selected_tunnel =
+                    self.tunnel_channels.get(&channel_id).copied().ok_or_else(|| {
+                        pdu_other_err!("received tunneled data for a channel not selected by Soft-Sync")
+                    })?;
+                if tunnel_type != selected_tunnel {
+                    return Err(pdu_other_err!(
+                        "received tunneled data on a tunnel not selected for the dynamic channel"
+                    ));
+                }
+                let messages = self.process_data(data)?;
+                Ok(DvcMessageBatch::new(channel_id, messages))
+            }
+            DrdynvcServerPdu::Create(create_request) => {
+                debug!(
+                    ?tunnel_type,
+                    "Got DVC Create Request PDU on a multitransport tunnel: {create_request:?}"
+                );
+                let channel_id = create_request.channel_id();
+                let (created, messages) = self.process_create(create_request)?;
+                if created {
+                    self.tunnel_channels.insert(channel_id, tunnel_type);
+                }
+                Ok(DvcMessageBatch::new(channel_id, messages))
+            }
+            DrdynvcServerPdu::Close(close) => {
+                debug!(?tunnel_type, "Got DVC Close PDU on a multitransport tunnel: {close:?}");
+                let channel_id = close.channel_id();
+                let messages = self.process_close(channel_id);
+                Ok(DvcMessageBatch::new(channel_id, messages))
+            }
+            DrdynvcServerPdu::Capabilities(_) | DrdynvcServerPdu::SoftSyncRequest(_) => Err(pdu_other_err!(
+                "only DVC data, create and close PDUs are permitted on a multitransport tunnel"
+            )),
+        }
+    }
+
+    /// Opens the requested dynamic channel and builds its Create Response, followed by any
+    /// start messages. Also returns whether the channel was opened.
+    fn process_create(&mut self, create_request: crate::pdu::CreateRequestPdu) -> PduResult<(bool, Vec<SvcMessage>)> {
+        let channel_id = create_request.channel_id();
+        let channel_name = create_request.into_channel_name();
+        let mut responses = Vec::new();
+
+        let (creation_status, start_messages) =
+            if let Some(dvc) = self.dynamic_channels.try_create_channel(&channel_name, channel_id) {
+                match dvc.start(channel_id) {
+                    Ok(messages) => (CreationStatus::OK, messages),
+                    Err(e) => {
+                        debug!(
+                            ?channel_id, error = %e,
+                            "DVC start failed; removing channel and reporting NO_LISTENER"
+                        );
+                        self.dynamic_channels.remove_by_channel_id(channel_id);
+                        (CreationStatus::NO_LISTENER, Vec::new())
+                    }
+                }
+            } else {
+                (CreationStatus::NO_LISTENER, Vec::new())
+            };
+
+        let create_response = DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, creation_status));
+        debug!("Send DVC Create Response PDU: {create_response:?}");
+        responses.push(SvcMessage::from(create_response));
+
+        // If this DVC has start messages, send them.
+        if !start_messages.is_empty() {
+            responses.extend(
+                encode_dvc_messages(channel_id, start_messages, ChannelFlags::empty()).map_err(|e| encode_err!(e))?,
+            );
+        }
+
+        Ok((creation_status == CreationStatus::OK, responses))
+    }
+
+    /// Closes a dynamic channel at the server's request. The Close response is only sent for a
+    /// channel that was open.
+    fn process_close(&mut self, channel_id: DynamicChannelId) -> Vec<SvcMessage> {
+        self.tunnel_channels.remove(&channel_id);
+        if self.dynamic_channels.remove_by_channel_id(channel_id).is_some() {
+            let close_response = DrdynvcClientPdu::Close(ClosePdu::new(channel_id));
+            debug!("Send DVC Close Response PDU: {close_response:?}");
+            alloc::vec![SvcMessage::from(close_response)]
+        } else {
+            Vec::new()
+        }
     }
 
     fn process_data(&mut self, data: DrdynvcDataPdu) -> PduResult<Vec<SvcMessage>> {
@@ -450,8 +533,6 @@ impl SvcProcessor for DrdynvcClient {
             }
             DrdynvcServerPdu::Create(create_request) => {
                 debug!("Got DVC Create Request PDU: {create_request:?}");
-                let channel_id = create_request.channel_id();
-                let channel_name = create_request.into_channel_name();
 
                 if !self.cap_handshake_done {
                     debug!(
@@ -461,43 +542,12 @@ impl SvcProcessor for DrdynvcClient {
                     responses.push(self.create_capabilities_response(CapsVersion::V2));
                 }
 
-                let (creation_status, start_messages) =
-                    if let Some(dvc) = self.dynamic_channels.try_create_channel(&channel_name, channel_id) {
-                        match dvc.start(channel_id) {
-                            Ok(messages) => (CreationStatus::OK, messages),
-                            Err(e) => {
-                                debug!(
-                                    ?channel_id, error = %e,
-                                    "DVC start failed; removing channel and reporting NO_LISTENER"
-                                );
-                                self.dynamic_channels.remove_by_channel_id(channel_id);
-                                (CreationStatus::NO_LISTENER, Vec::new())
-                            }
-                        }
-                    } else {
-                        (CreationStatus::NO_LISTENER, Vec::new())
-                    };
-
-                let create_response = DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, creation_status));
-                debug!("Send DVC Create Response PDU: {create_response:?}");
-                responses.push(SvcMessage::from(create_response));
-
-                // If this DVC has start messages, send them.
-                if !start_messages.is_empty() {
-                    responses.extend(
-                        encode_dvc_messages(channel_id, start_messages, ChannelFlags::empty())
-                            .map_err(|e| encode_err!(e))?,
-                    );
-                }
+                let (_, messages) = self.process_create(create_request)?;
+                responses.extend(messages);
             }
             DrdynvcServerPdu::Close(close) => {
                 debug!("Got DVC Close PDU: {close:?}");
-                let channel_id = close.channel_id();
-                if self.dynamic_channels.remove_by_channel_id(channel_id).is_some() {
-                    let close_response = DrdynvcClientPdu::Close(ClosePdu::new(channel_id));
-                    debug!("Send DVC Close Response PDU: {close_response:?}");
-                    responses.push(SvcMessage::from(close_response));
-                }
+                responses.extend(self.process_close(close.channel_id()));
             }
             DrdynvcServerPdu::Data(data) => {
                 if self.tunnel_channels.contains_key(&data.channel_id()) {
