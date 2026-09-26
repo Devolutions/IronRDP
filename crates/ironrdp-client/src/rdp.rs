@@ -640,6 +640,9 @@ const DISPLAY_CONTROL_READY_TIMEOUT: Duration = Duration::from_secs(3);
 struct ResizeQueue {
     in_flight: Option<TimedResizeRequest>,
     pending: Option<TimedResizeRequest>,
+    /// Scale factor and physical size of the layout last requested from the server, starting
+    /// with the ones the connection was made with.
+    layout: (u32, Option<(u32, u32)>),
 }
 
 impl ResizeQueue {
@@ -660,6 +663,7 @@ impl ResizeQueue {
     }
 
     fn mark_in_flight(&mut self, request: ResizeRequest) {
+        self.layout = (request.scale_factor, request.physical_size);
         self.in_flight = Some(TimedResizeRequest {
             request,
             deadline: tokio::time::Instant::now() + DISPLAY_CONTROL_READY_TIMEOUT,
@@ -668,6 +672,14 @@ impl ResizeQueue {
 
     fn completed(&mut self) {
         self.in_flight = None;
+    }
+
+    /// Whether `request` asks for the layout the server already has, with nothing in flight
+    /// that could change it. The server treats such a layout as a no-op and never completes it.
+    fn asks_for_current_layout(&self, request: &ResizeRequest, desktop_size: (u16, u16)) -> bool {
+        self.in_flight.is_none()
+            && (request.width, request.height) == desktop_size
+            && (request.scale_factor, request.physical_size) == self.layout
     }
 
     fn timed_out_request(&self, now: tokio::time::Instant) -> Option<(ResizeRequest, DisplayResizeFallbackReason)> {
@@ -1102,6 +1114,7 @@ impl RdpClient {
                 framed,
                 connection_result,
                 udp_tunnel,
+                self.config.connector.desktop_scale_factor,
                 self.config.rail_initial_execute.clone(),
                 &self.output_event_sender,
                 self.desktop_update_enabled,
@@ -3015,6 +3028,7 @@ async fn active_session(
     connection_result: ConnectionResult,
     #[cfg(feature = "udp")] mut udp_tunnel: UdpTunnel,
     #[cfg(not(feature = "udp"))] _udp_tunnel: UdpTunnel,
+    desktop_scale_factor: u32,
     initial_rail_execute: Option<ExecutePdu>,
     output_event_sender: &crate::output_channel::OutputEventSender,
     desktop_update_enabled: bool,
@@ -3080,7 +3094,10 @@ async fn active_session(
     let mut input_batcher = FastPathInputBatcher::new(input_send_interval, now);
     let mut fake_events_interval =
         fake_events_interval.map(|interval| tokio::time::interval(core::cmp::max(interval, Duration::from_secs(1))));
-    let mut resize_queue = ResizeQueue::default();
+    let mut resize_queue = ResizeQueue {
+        layout: (desktop_scale_factor, None),
+        ..ResizeQueue::default()
+    };
     let mut rail_queue_release_deadline = None;
     let mut graceful_shutdown_sent = false;
     let mut post_logon_redraw_requested = false;
@@ -3101,6 +3118,7 @@ async fn active_session(
     let _ = clipboard_event_receiver;
 
     let disconnect_reason = 'outer: loop {
+        let framebuffer_size = (image.width(), image.height());
         let resize_deadline = resize_queue.deadline();
         let input_batch_deadline = input_batcher.deadline();
         let mut malformed_bitmap_redraw_queued = false;
@@ -3311,7 +3329,12 @@ async fn active_session(
                             scale_factor,
                             physical_size,
                         };
-                        if resize_queue.in_flight.is_some() || active_stage.display_control_ready() == Some(false) {
+                        if resize_queue.asks_for_current_layout(&request, (image.width(), image.height())) {
+                            // This request also supersedes a deferred one.
+                            debug!(width, height, "Display already has the requested layout");
+                            resize_queue.pending = None;
+                            ActiveSessionIteration::outputs(Vec::new())
+                        } else if resize_queue.in_flight.is_some() || active_stage.display_control_ready() == Some(false) {
                             resize_queue.defer(request);
                             ActiveSessionIteration::outputs(Vec::new())
                         } else if let Some(dvc_batch) = active_stage.prepare_resize(
@@ -3680,6 +3703,19 @@ async fn active_session(
                 }
             }
         };
+
+        // With the graphics pipeline, the server completes a Display Control resize with a
+        // ResetGraphics declaring the new output size instead of a Deactivation-Reactivation
+        // Sequence, and the session follows it by resizing the framebuffer. Waiting on for a
+        // reactivation would end in a needless reconnect once the deadline passes.
+        if resize_queue.in_flight.is_some() && (image.width(), image.height()) != framebuffer_size {
+            debug!(
+                width = image.width(),
+                height = image.height(),
+                "Graphics pipeline output reset completed the resize"
+            );
+            resize_queue.completed();
+        }
 
         if let Some(batch) = iteration.dvc_batch {
             let channel_id = batch.channel_id();
@@ -4716,6 +4752,31 @@ mod tests {
             queue.timed_out_request(deadline),
             Some((request, DisplayResizeFallbackReason::CapabilitiesTimedOut))
         );
+    }
+
+    #[test]
+    fn resize_queue_recognizes_a_request_for_the_current_layout() {
+        let mut queue = ResizeQueue {
+            layout: (100, None),
+            ..ResizeQueue::default()
+        };
+        let current = resize_request(1024, 768);
+        assert_eq!((current.scale_factor, current.physical_size), (100, None));
+
+        assert!(queue.asks_for_current_layout(&current, (1024, 768)));
+        assert!(!queue.asks_for_current_layout(&current, (1280, 720)));
+        let rescaled = ResizeRequest {
+            scale_factor: 150,
+            ..current
+        };
+        assert!(!queue.asks_for_current_layout(&rescaled, (1024, 768)));
+
+        // A request in flight can still change the layout, so nothing is a no-op meanwhile.
+        queue.mark_in_flight(rescaled);
+        assert!(!queue.asks_for_current_layout(&rescaled, (1024, 768)));
+        queue.completed();
+        assert!(queue.asks_for_current_layout(&rescaled, (1024, 768)));
+        assert!(!queue.asks_for_current_layout(&current, (1024, 768)));
     }
 
     #[test]
