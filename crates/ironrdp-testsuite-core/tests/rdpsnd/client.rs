@@ -412,6 +412,24 @@ fn client_format_negotiation_ignores_derived_fields() {
 }
 
 #[test]
+fn training_confirm_echoes_the_training_pdu_size() {
+    let mut client = client_in_ready(pdu::Version::V8);
+    let training = encode_vec(&pdu::ServerAudioOutputPdu::Training(pdu::TrainingPdu {
+        timestamp: 0x1234,
+        data: vec![0xAB; 32],
+    }))
+    .unwrap();
+
+    let confirm = decode_single_response(&client.process(&training).unwrap());
+    let pdu::ClientAudioOutputPdu::TrainingConfirm(confirm) = confirm else {
+        panic!("expected TrainingConfirm");
+    };
+    assert_eq!(confirm.timestamp, 0x1234);
+    // MS-RDPEA 2.2.3.2: the Training PDU's wPackSize, i.e. the size of the whole PDU.
+    assert_eq!(usize::from(confirm.pack_size), training.len());
+}
+
+#[test]
 fn ready_training_sends_confirm() {
     let mut client = client_in_ready(pdu::Version::V8);
 
