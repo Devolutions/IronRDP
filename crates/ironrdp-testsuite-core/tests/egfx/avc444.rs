@@ -294,7 +294,7 @@ fn cropped_frame_reads_auxiliary_view_at_coded_width() {
     let (y, u, v) = source_frame();
     let (main, aux) = split_v2(&y, &u, &v);
 
-    for (width, height) in [(W - 6, H), (W - 7, H - 1)] {
+    for (width, height) in [(W - 6, H), (W - 7, H - 1), (W - 5, H)] {
         let region = [ExclusiveRectangle {
             left: 0,
             top: 0,
@@ -303,6 +303,13 @@ fn cropped_frame_reads_auxiliary_view_at_coded_width() {
         }];
         let mut frame = Yuv444Frame::new(width, height).expect("frame");
         frame.apply_main_view(&main.view(), &region).expect("main view");
+        for row in 0..height {
+            for col in 0..width {
+                let (i, j) = (row * width + col, row / 2 * (W / 2) + col / 2);
+                assert_eq!(frame.u()[i], main.u[j], "{width}x{height}: main U at ({col},{row})");
+                assert_eq!(frame.v()[i], main.v[j], "{width}x{height}: main V at ({col},{row})");
+            }
+        }
         frame
             .apply_auxiliary_view_v2(&aux.view(), &region)
             .expect("auxiliary view");

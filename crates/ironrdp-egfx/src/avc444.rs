@@ -106,12 +106,29 @@ impl Yuv444Frame {
                 let dst = y * self.width;
                 self.y[dst + left..dst + right].copy_from_slice(&main.y[src + left..src + right]);
             }
+            // Row slices rather than per-sample indexing: bounds are checked
+            // once per row, with no division per sample. `left` is a
+            // macroblock edge unless the region is empty; when the frame width
+            // is odd, the last column is a block of its own.
+            let (from, to) = (left / 2, right / 2);
             for y in top..bottom {
                 let (src_u, src_v) = ((y / 2) * main.u_stride, (y / 2) * main.v_stride);
                 let dst = y * self.width;
-                for x in left..right {
-                    self.u[dst + x] = main.u[src_u + x / 2];
-                    self.v[dst + x] = main.v[src_v + x / 2];
+                for (pair, &u) in self.u[dst + 2 * from..dst + 2 * to]
+                    .chunks_exact_mut(2)
+                    .zip(&main.u[src_u + from..src_u + to])
+                {
+                    pair.fill(u);
+                }
+                for (pair, &v) in self.v[dst + 2 * from..dst + 2 * to]
+                    .chunks_exact_mut(2)
+                    .zip(&main.v[src_v + from..src_v + to])
+                {
+                    pair.fill(v);
+                }
+                if right % 2 == 1 && left < right {
+                    self.u[dst + right - 1] = main.u[src_u + to];
+                    self.v[dst + right - 1] = main.v[src_v + to];
                 }
             }
         }
@@ -146,22 +163,48 @@ impl Yuv444Frame {
             let (left, top, right, bottom) = self.macroblock_bounds(region);
 
             // B4, B5: odd columns of every row.
+            let (from, to) = (left / 2, right / 2);
             for y in top..bottom {
                 let src = y * aux.y_stride;
                 let dst = y * self.width;
-                for x in (left / 2)..(right / 2) {
-                    self.u[dst + 2 * x + 1] = aux.y[src + x];
-                    self.v[dst + 2 * x + 1] = aux.y[src + half + x];
+                for (pair, &u) in self.u[dst + 2 * from..dst + 2 * to]
+                    .chunks_exact_mut(2)
+                    .zip(&aux.y[src + from..src + to])
+                {
+                    pair[1] = u;
+                }
+                for (pair, &v) in self.v[dst + 2 * from..dst + 2 * to]
+                    .chunks_exact_mut(2)
+                    .zip(&aux.y[src + half + from..src + half + to])
+                {
+                    pair[1] = v;
                 }
             }
 
-            // B6-B9: even columns of odd rows. `left` rounds up, so a region
-            // clamped to an empty one at a right edge that isn't a multiple of
-            // 4 covers no group.
+            // B6-B9: even columns of odd rows.
+            let (from, to) = (left / 4, right / 4);
             for y in (top / 2)..(bottom / 2) {
                 let (src_u, src_v) = (y * aux.u_stride, y * aux.v_stride);
                 let dst = (2 * y + 1) * self.width;
-                for x in left.div_ceil(4)..right.div_ceil(4) {
+                let u_samples = aux.u[src_u + from..src_u + to]
+                    .iter()
+                    .zip(&aux.v[src_v + from..src_v + to]);
+                for (quad, (&at_0, &at_2)) in self.u[dst + 4 * from..dst + 4 * to].chunks_exact_mut(4).zip(u_samples) {
+                    quad[0] = at_0;
+                    quad[2] = at_2;
+                }
+                let v_samples = aux.u[src_u + quarter + from..src_u + quarter + to]
+                    .iter()
+                    .zip(&aux.v[src_v + quarter + from..src_v + quarter + to]);
+                for (quad, (&at_0, &at_2)) in self.v[dst + 4 * from..dst + 4 * to].chunks_exact_mut(4).zip(v_samples) {
+                    quad[0] = at_0;
+                    quad[2] = at_2;
+                }
+                // The last group when the width isn't a multiple of 4, which
+                // may have no column 2. A region clamped to an empty one at
+                // that edge covers no group.
+                if right % 4 != 0 && left < right {
+                    let x = to;
                     self.u[dst + 4 * x] = aux.u[src_u + x];
                     self.v[dst + 4 * x] = aux.u[src_u + quarter + x];
                     if 4 * x + 2 < right {
