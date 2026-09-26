@@ -107,7 +107,7 @@ impl fmt::Display for FormatList<'_> {
 /// one on receipt that echoes the wave's timestamp, and a later one for the
 /// same block whose timestamp is further on. Both are tracked so the second
 /// is recognized, and reports the hold time, instead of reading as unmatched.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 enum BlockState {
     Free,
     /// Sent with this `wTimeStamp`, no confirm yet.
@@ -117,7 +117,8 @@ enum BlockState {
 }
 
 /// What a Wave Confirm turned out to be.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "__test", visibility::make(pub))]
+#[derive(Debug, PartialEq)]
 enum ConfirmKind {
     /// The first confirm for a sent wave, carrying its send timestamp.
     First(u16),
@@ -125,21 +126,38 @@ enum ConfirmKind {
     Second(u16),
     /// No wave under this block number is awaiting a confirm.
     Unmatched,
+    /// A confirm for an earlier wave whose block number has since been
+    /// reused: Its timestamp precedes the send timestamp of the wave now
+    /// under that number.
+    Stale,
 }
 
 /// Per block number, the wave last sent under it and how far it has been
 /// confirmed.
+///
+/// The block number is only eight bits, so a slot is reused every 256 waves.
+/// A confirm's `wTimeStamp` is the wave's own timestamp plus the time the
+/// client held it (MS-RDPEA 3.2.5.2.1.6), so a confirm whose timestamp
+/// precedes the slot's send timestamp cannot belong to the wave now in that
+/// slot and is reported as stale. A late confirm whose timestamp happens to
+/// fall after the newer send cannot be told apart from that wave's own, so
+/// the classification is exact only while fewer than 256 waves are sent
+/// within the client's confirm delay.
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 struct SentBlocks([BlockState; 256]);
 
-impl SentBlocks {
-    fn new() -> Self {
+impl Default for SentBlocks {
+    fn default() -> Self {
         Self([BlockState::Free; 256])
     }
+}
 
+impl SentBlocks {
     /// Records a wave sent under `block_no`, returning the timestamp of an
     /// earlier wave under the same number that was never confirmed at all.
     /// One confirmed once is fine: A client may send only the one confirm
     /// the specification describes.
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     fn record(&mut self, block_no: u8, timestamp: u16) -> Option<u16> {
         match core::mem::replace(&mut self.0[usize::from(block_no)], BlockState::Sent(timestamp)) {
             BlockState::Sent(unconfirmed) => Some(unconfirmed),
@@ -147,9 +165,15 @@ impl SentBlocks {
         }
     }
 
-    fn confirm(&mut self, block_no: u8) -> ConfirmKind {
+    /// Classifies a Wave Confirm for `block_no` carrying `timestamp`.
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
+    fn confirm(&mut self, block_no: u8, timestamp: u16) -> ConfirmKind {
         let slot = &mut self.0[usize::from(block_no)];
         match *slot {
+            // A negative wrapping difference: the confirm predates this send.
+            BlockState::Sent(sent) | BlockState::Confirmed(sent) if timestamp.wrapping_sub(sent) & 0x8000 != 0 => {
+                ConfirmKind::Stale
+            }
             BlockState::Sent(timestamp) => {
                 *slot = BlockState::Confirmed(timestamp);
                 ConfirmKind::First(timestamp)
@@ -178,18 +202,22 @@ impl fmt::Debug for SentBlocks {
     }
 }
 
+/// Stream counters, logged when the stream ends.
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 #[derive(Debug, Default)]
 struct StreamStats {
-    waves_sent: u64,
-    bytes_sent: u64,
-    confirms: u64,
+    pub waves_sent: u64,
+    pub bytes_sent: u64,
+    pub confirms: u64,
     /// Confirms that were the second one for their wave (see [`BlockState`]).
-    second_confirms: u64,
+    pub second_confirms: u64,
     /// Confirms for a block with no wave awaiting one: a third confirm, or a
     /// block the server never sent.
-    unmatched_confirms: u64,
+    pub unmatched_confirms: u64,
     /// Waves whose block number came round again before any confirm arrived.
-    never_confirmed: u64,
+    pub never_confirmed: u64,
+    /// Confirms for an earlier wave whose block number had already been reused.
+    pub stale_confirms: u64,
 }
 
 /// Handler for the server side of the Audio Output Virtual Channel (`RDPSND`).
@@ -292,7 +320,7 @@ impl RdpsndServer {
             quality_mode: None,
             format_no: None,
             block_no: 0,
-            sent_blocks: SentBlocks::new(),
+            sent_blocks: SentBlocks::default(),
             stats: StreamStats::default(),
         }
     }
@@ -310,6 +338,11 @@ impl RdpsndServer {
     /// has somewhere to go.
     pub fn is_ready(&self) -> bool {
         self.state == RdpsndState::Ready && self.format_no.is_some()
+    }
+
+    #[cfg(feature = "__test")]
+    pub fn stats(&self) -> &StreamStats {
+        &self.stats
     }
 
     pub fn flags(&self) -> PduResult<pdu::AudioFormatFlags> {
@@ -568,7 +601,7 @@ impl SvcProcessor for RdpsndServer {
             RdpsndState::Ready => {
                 if let pdu::ClientAudioOutputPdu::WaveConfirm(c) = pdu {
                     self.stats.confirms += 1;
-                    match self.sent_blocks.confirm(c.block_no) {
+                    match self.sent_blocks.confirm(c.block_no, c.timestamp) {
                         ConfirmKind::First(sent_timestamp) => trace!(
                             block_no = c.block_no,
                             timestamp = c.timestamp,
@@ -582,6 +615,14 @@ impl SvcProcessor for RdpsndServer {
                                 timestamp = c.timestamp,
                                 held_ms = c.timestamp.wrapping_sub(sent_timestamp),
                                 "Received second RDPSND wave confirm"
+                            );
+                        }
+                        ConfirmKind::Stale => {
+                            self.stats.stale_confirms += 1;
+                            trace!(
+                                block_no = c.block_no,
+                                timestamp = c.timestamp,
+                                "Received RDPSND wave confirm for a wave whose block number was already reused"
                             );
                         }
                         ConfirmKind::Unmatched => {
