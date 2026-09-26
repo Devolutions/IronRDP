@@ -420,8 +420,8 @@ fn buffer_length_is_correct_for_cache_import_reply() {
 }
 
 #[test]
-fn from_buffer_consume_correctly_parses_incorrect_len_avc_444_message() {
-    let buffer = AVC_444_MESSAGE_INCORRECT_LEN.as_ref();
+fn from_buffer_consume_correctly_parses_chroma_only_avc_444_message() {
+    let buffer = AVC_444_CHROMA_MESSAGE.as_ref();
 
     let mut cursor = ReadCursor::new(buffer);
     assert_eq!(*AVC_444_BITMAP, decode_cursor(&mut cursor).unwrap());
@@ -429,8 +429,8 @@ fn from_buffer_consume_correctly_parses_incorrect_len_avc_444_message() {
 }
 
 #[test]
-fn from_buffer_consume_correctly_parses_avc_444_message() {
-    let buffer = AVC_444_MESSAGE_CORRECT_LEN.as_ref();
+fn from_buffer_consume_correctly_parses_chroma_only_avc_444_message_with_len() {
+    let buffer = AVC_444_CHROMA_MESSAGE_WITH_LEN.as_ref();
 
     let mut cursor = ReadCursor::new(buffer);
     assert_eq!(*AVC_444_BITMAP, decode_cursor(&mut cursor).unwrap());
@@ -438,9 +438,9 @@ fn from_buffer_consume_correctly_parses_avc_444_message() {
 }
 
 #[test]
-fn to_buffer_consume_correctly_serializes_avc_444_message() {
+fn to_buffer_consume_correctly_serializes_chroma_only_avc_444_message() {
     let buffer = encode_vec(&*AVC_444_BITMAP).unwrap();
-    let expected = AVC_444_MESSAGE_CORRECT_LEN.as_ref();
+    let expected = AVC_444_CHROMA_MESSAGE.as_ref();
 
     assert_eq!(expected, buffer.as_slice());
 }

@@ -244,6 +244,17 @@ fn avc444v2_sender_preserves_codec_and_lc_wire_shape() {
         let stream = Avc444BitmapStream::decode(&mut cursor).expect("decode AVC444v2 bitmap stream");
         assert_eq!(stream.encoding, encoding);
         assert_eq!(stream.stream2.is_some(), encoding == Encoding::LUMA_AND_CHROMA);
+
+        // MS-RDPEGFX 2.2.4.5: cbAvc420EncodedBitstream1 is the size of the YUV420
+        // frame in the first sub-stream, zero when that sub-stream holds only chroma.
+        let stream_info = u32::from_le_bytes(wire.bitmap_data[..4].try_into().expect("stream info"));
+        let stream1_len = stream_info & 0x3FFF_FFFF;
+        if encoding == Encoding::CHROMA {
+            assert_eq!(stream1_len, 0);
+        } else {
+            let expected = u32::try_from(stream.stream1.size()).expect("stream1 size");
+            assert_eq!(stream1_len, expected);
+        }
         let expected_right = if encoding == Encoding::LUMA_AND_CHROMA { 64 } else { 32 };
         let expected_bottom = if encoding == Encoding::LUMA_AND_CHROMA { 48 } else { 32 };
         assert_eq!(wire.destination_rectangle.right, expected_right);
