@@ -203,6 +203,12 @@ impl Encode for Avc444BitmapStream<'_> {
         // cbAvc420EncodedBitstream1 is the size of the YUV420 frame in the first
         // sub-stream and MUST be zero when there is none (MS-RDPEGFX 2.2.4.5, 2.2.4.6).
         // With LC set to CHROMA the first sub-stream carries only the Chroma420 view.
+        //
+        // The zero is safe for clients that follow the spec. FreeRDP's client reads
+        // this field only when LC is 0 and takes the rest of the command as stream 1
+        // otherwise, and the decoder below accepts both forms, so nothing known
+        // depends on the non-zero value. Restoring the sub-stream length would need a
+        // client that does.
         let stream1_size = if self.encoding == Encoding::CHROMA {
             0
         } else {
