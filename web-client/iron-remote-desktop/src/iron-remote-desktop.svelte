@@ -24,6 +24,7 @@
     import { isComponentDestroyed } from './lib/stores/componentLifecycleStore';
     import { runWhenFocusedQueue } from './lib/stores/runWhenFocusedStore';
     import { ClipboardService } from './services/clipboard.service';
+    import { availableAreaCorner, windowCorner } from './lib/availableArea';
 
     let {
         scale,
@@ -203,7 +204,7 @@
     }
 
     function fitResize(realSizeLimit = false) {
-        const windowSize = getWindowSize();
+        const windowSize = getAvailableCorner();
         const wrapperBoundingBox = wrapper.getBoundingClientRect();
 
         const containerWidth = windowSize.x - wrapperBoundingBox.x;
@@ -227,7 +228,7 @@
     }
 
     function realResize() {
-        const windowSize = getWindowSize();
+        const windowSize = getAvailableCorner();
         const wrapperBoundingBox = wrapper.getBoundingClientRect();
 
         const containerWidth = windowSize.x - wrapperBoundingBox.x;
@@ -285,13 +286,12 @@
     }
 
     function getWindowSize() {
-        const win = window;
-        const doc = document;
-        const docElem = doc.documentElement;
-        const body = doc.getElementsByTagName('body')[0];
-        const x = win.innerWidth ?? docElem.clientWidth ?? body.clientWidth;
-        const y = win.innerHeight ?? docElem.clientHeight ?? body.clientHeight;
-        return { x, y };
+        return windowCorner();
+    }
+
+    // The fit and real scalings stay within the host element, which can be smaller than the window.
+    function getAvailableCorner() {
+        return availableAreaCorner($host());
     }
 
     async function initcanvas() {
