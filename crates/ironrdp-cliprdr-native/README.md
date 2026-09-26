@@ -1,6 +1,6 @@
 # IronRDP CLIPRDR native backends
 
-Native CLIPRDR backend implementations. Windows has a full backend; Linux has a Wayland clipboard client that a backend can be built on.
+Native CLIPRDR backend implementations: Windows (`WinClipboard`) and Linux desktops over X11 and Wayland (`LinuxClipboard`, text and images).
 
 This crate is part of the [IronRDP] project.
 

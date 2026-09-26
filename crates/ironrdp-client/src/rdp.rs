@@ -790,14 +790,21 @@ impl RdpClient {
         // ── Clipboard initialisation (compile-time gated) ─────────────────────
         //
         // On Windows the WinClipboard object must outlive the entire connection loop, so we
-        // keep it alive via `_win_clipboard`.  On non-Windows a StubClipboard backend is used
-        // and its ownership can be released immediately after the factory is extracted.
+        // keep it alive via `_win_clipboard`; the same goes for LinuxClipboard and
+        // `_linux_clipboard`. Elsewhere a StubClipboard backend is used and its ownership can be
+        // released immediately after the factory is extracted.
         #[cfg(all(windows, feature = "clipboard"))]
         #[expect(
             clippy::collection_is_never_read,
             reason = "binding owns the Windows clipboard so it stays alive for the connection's lifetime"
         )]
         let _win_clipboard;
+        #[cfg(all(target_os = "linux", feature = "clipboard"))]
+        #[expect(
+            clippy::collection_is_never_read,
+            reason = "binding owns the Linux clipboard so it stays alive for the connection's lifetime"
+        )]
+        let _linux_clipboard;
 
         #[cfg(feature = "clipboard")]
         let cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>;
@@ -812,12 +819,20 @@ impl RdpClient {
                     {
                         _win_clipboard = None;
                     }
+                    #[cfg(target_os = "linux")]
+                    {
+                        _linux_clipboard = None;
+                    }
                 }
                 (ClipboardType::Disable, _) => {
                     cliprdr_factory = None;
                     #[cfg(windows)]
                     {
                         _win_clipboard = None;
+                    }
+                    #[cfg(target_os = "linux")]
+                    {
+                        _linux_clipboard = None;
                     }
                 }
                 (ClipboardType::Stub, _) => {
@@ -827,6 +842,10 @@ impl RdpClient {
                     #[cfg(windows)]
                     {
                         _win_clipboard = None;
+                    }
+                    #[cfg(target_os = "linux")]
+                    {
+                        _linux_clipboard = None;
                     }
                 }
                 (ClipboardType::Enable, None) => {
@@ -852,7 +871,26 @@ impl RdpClient {
                         }
                     }
 
-                    #[cfg(not(windows))]
+                    #[cfg(target_os = "linux")]
+                    {
+                        use crate::clipboard::ClientClipboardMessageProxy;
+                        use ironrdp_cliprdr_native::{LinuxClipboard, StubClipboard};
+                        match LinuxClipboard::new(ClientClipboardMessageProxy::new(self.input_event_sender.clone())) {
+                            Ok(clipboard) => {
+                                cliprdr_factory = Some(clipboard.backend_factory());
+                                _linux_clipboard = Some(clipboard);
+                            }
+                            Err(error) => {
+                                // Without a desktop clipboard there is nothing to bridge, and the
+                                // session is still useful, so this is not a connection failure.
+                                warn!(%error, "OS clipboard unavailable; clipboard redirection is off for this session");
+                                cliprdr_factory = Some(StubClipboard::new().backend_factory());
+                                _linux_clipboard = None;
+                            }
+                        }
+                    }
+
+                    #[cfg(not(any(windows, target_os = "linux")))]
                     {
                         use ironrdp_cliprdr_native::StubClipboard;
                         let stub = StubClipboard::new();
