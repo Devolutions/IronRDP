@@ -927,6 +927,15 @@ impl RdpeudpConnection {
         self.params.as_ref().map(|p| p.mtu)
     }
 
+    /// The protocol version the handshake settled on, once it is complete: version 1 or 2
+    /// for MS-RDPEUDP, version 3 for MS-RDPEUDP2.
+    pub fn negotiated_version(&self) -> Option<UdpVersion> {
+        self.params.as_ref().map(|params| match params.wire {
+            WireFormat::V1 { version } => UdpVersion(version),
+            WireFormat::V2 => UdpVersion::V3,
+        })
+    }
+
     /// Diagnostics for the MS-RDPEUDP version 1/2 data path; `None` on MS-RDPEUDP2.
     pub fn v1_stats(&self) -> Option<V1Stats> {
         let params = self.params.as_ref()?;

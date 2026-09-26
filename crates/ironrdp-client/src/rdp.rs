@@ -200,6 +200,20 @@ pub enum RdpOutputEvent {
     /// A cookie-based reconnect has completed successfully.
     AutoReconnected,
     Terminated(SessionResult<GracefulDisconnectReason>),
+    /// The transport carrying the dynamic channels changed.
+    ///
+    /// Sent once the session is active, and again whenever a reliable RDP-UDP tunnel is
+    /// established, Soft-Sync moves the dynamic channels onto it, or the session falls back
+    /// to TCP.
+    #[cfg(feature = "udp")]
+    Transport {
+        /// The dynamic channels, the graphics pipeline among them, travel over the reliable
+        /// RDP-UDP tunnel.
+        reliable_udp: bool,
+        /// The RDP-UDP version the tunnel's handshake settled on, while a tunnel is open,
+        /// whether or not Soft-Sync has moved channels onto it yet.
+        udp_version: Option<ironrdp_rdpeudp::pdu::UdpVersion>,
+    },
 }
 
 /// A tightly packed changed region from the composited desktop framebuffer.
@@ -3085,6 +3099,8 @@ async fn active_session(
     let mut graceful_shutdown_sent = false;
     let mut post_logon_redraw_requested = false;
     let mut pending_udp_payload: Option<Vec<u8>> = None;
+    #[cfg(feature = "udp")]
+    let mut announced_transport = None;
     let mut initial_outputs = if *graceful_close_receiver.borrow_and_update() {
         graceful_shutdown_sent = true;
         Some(active_stage.graceful_shutdown()?)
@@ -4238,6 +4254,31 @@ async fn active_session(
                 return Ok(RdpControlFlow::TerminatedGracefully(
                     GracefulDisconnectReason::UserInitiated,
                 ));
+            }
+        }
+
+        #[cfg(feature = "udp")]
+        {
+            let transport = (
+                active_stage.reliable_udp_dvc_tunnel_in_use(),
+                udp_tunnel
+                    .transport
+                    .as_ref()
+                    .and_then(ironrdp_rdpeudp_tokio::UdpTransport::negotiated_version),
+            );
+            if announced_transport != Some(transport) {
+                announced_transport = Some(transport);
+                let (reliable_udp, udp_version) = transport;
+                info!(reliable_udp, ?udp_version, "Session transport");
+                let event = RdpOutputEvent::Transport {
+                    reliable_udp,
+                    udp_version,
+                };
+                if !send_active_output_event(output_event_sender, event, close_receiver).await? {
+                    return Ok(RdpControlFlow::TerminatedGracefully(
+                        GracefulDisconnectReason::UserInitiated,
+                    ));
+                }
             }
         }
 

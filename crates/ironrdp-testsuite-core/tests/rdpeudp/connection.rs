@@ -130,6 +130,7 @@ fn full_handshake_client_server() {
         .expect("handle SYN+ACK");
 
     assert!(client.is_established());
+    assert_eq!(client.negotiated_version(), Some(UdpVersion::V3));
 
     // Client should emit Connected event
     let event = client.poll_event().expect("should have event");
@@ -1221,11 +1222,13 @@ fn a_client_follows_a_syn_ack_that_settles_on_version_2() {
     let mut client = RdpeudpConnection::connect(default_config(100), t).expect("connect");
     client.poll_transmit(t).expect("SYN");
 
+    assert_eq!(client.negotiated_version(), None);
     let mut bytes = version_2_syn_ack();
     client
         .handle_datagram(&mut bytes, later(t, 50))
         .expect("version 2 is a version both endpoints support");
     assert!(client.is_established());
+    assert_eq!(client.negotiated_version(), Some(UdpVersion::V2));
 
     // The final handshake ACK acknowledges the SYN+ACK in MS-RDPEUDP framing.
     let ack = client.poll_transmit(later(t, 50)).expect("final ACK");
