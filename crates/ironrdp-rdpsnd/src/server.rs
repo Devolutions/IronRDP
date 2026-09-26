@@ -1,8 +1,10 @@
+use core::fmt;
+
 use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 use ironrdp_svc::{CompressionCondition, SvcMessage, SvcProcessor, SvcProcessorMessages, SvcServerProcessor};
-use tracing::{debug, error};
+use tracing::{debug, error, trace, warn};
 
 use crate::pdu::{self, ClientAudioFormatPdu, QualityMode};
 
@@ -68,12 +70,162 @@ impl NegotiatedFormat {
     }
 }
 
+/// Log rendering of one format: tag, rate, channels, bits and block alignment.
+struct FormatSummary<'a>(&'a pdu::AudioFormat);
+
+impl fmt::Display for FormatSummary<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let format = self.0;
+        write!(
+            f,
+            "{} {}Hz {}ch {}bit align={}",
+            format.format, format.n_samples_per_sec, format.n_channels, format.bits_per_sample, format.n_block_align
+        )
+    }
+}
+
+/// Log rendering of a format list. Each entry carries its position, which for
+/// the client's list is the `wFormatNo` waves are sent under.
+struct FormatList<'a>(&'a [pdu::AudioFormat]);
+
+impl fmt::Display for FormatList<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, format) in self.0.iter().enumerate() {
+            if index > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "[{index}] {}", FormatSummary(format))?;
+        }
+        Ok(())
+    }
+}
+
+/// Where the wave last sent under a block number stands.
+///
+/// MS-RDPEA 2.2.3.8 describes one Wave Confirm per wave, sent once the data
+/// is both received and played. Windows clients and xfreerdp3 both send two:
+/// one on receipt that echoes the wave's timestamp, and a later one for the
+/// same block whose timestamp is further on. Both are tracked so the second
+/// is recognized, and reports the hold time, instead of reading as unmatched.
+#[derive(Clone, Copy)]
+enum BlockState {
+    Free,
+    /// Sent with this `wTimeStamp`, no confirm yet.
+    Sent(u16),
+    /// Sent with this `wTimeStamp` and confirmed once.
+    Confirmed(u16),
+}
+
+/// What a Wave Confirm turned out to be.
+#[cfg_attr(feature = "__test", visibility::make(pub))]
+#[derive(Debug, PartialEq)]
+enum ConfirmKind {
+    /// The first confirm for a sent wave, carrying its send timestamp.
+    First(u16),
+    /// The second confirm for a wave, carrying its send timestamp.
+    Second(u16),
+    /// No wave under this block number is awaiting a confirm.
+    Unmatched,
+    /// A confirm for an earlier wave whose block number has since been
+    /// reused: Its timestamp precedes the send timestamp of the wave now
+    /// under that number.
+    Stale,
+}
+
+/// Per block number, the wave last sent under it and how far it has been
+/// confirmed.
+///
+/// The block number is only eight bits, so a slot is reused every 256 waves.
+/// A confirm's `wTimeStamp` is the wave's own timestamp plus the time the
+/// client held it (MS-RDPEA 3.2.5.2.1.6), so a confirm whose timestamp
+/// precedes the slot's send timestamp cannot belong to the wave now in that
+/// slot and is reported as stale. A late confirm whose timestamp happens to
+/// fall after the newer send cannot be told apart from that wave's own, so
+/// the classification is exact only while fewer than 256 waves are sent
+/// within the client's confirm delay.
+#[cfg_attr(feature = "__test", visibility::make(pub))]
+struct SentBlocks([BlockState; 256]);
+
+impl Default for SentBlocks {
+    fn default() -> Self {
+        Self([BlockState::Free; 256])
+    }
+}
+
+impl SentBlocks {
+    /// Records a wave sent under `block_no`, returning the timestamp of an
+    /// earlier wave under the same number that was never confirmed at all.
+    /// One confirmed once is fine: A client may send only the one confirm
+    /// the specification describes.
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
+    fn record(&mut self, block_no: u8, timestamp: u16) -> Option<u16> {
+        match core::mem::replace(&mut self.0[usize::from(block_no)], BlockState::Sent(timestamp)) {
+            BlockState::Sent(unconfirmed) => Some(unconfirmed),
+            BlockState::Free | BlockState::Confirmed(_) => None,
+        }
+    }
+
+    /// Classifies a Wave Confirm for `block_no` carrying `timestamp`.
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
+    fn confirm(&mut self, block_no: u8, timestamp: u16) -> ConfirmKind {
+        let slot = &mut self.0[usize::from(block_no)];
+        match *slot {
+            // A negative wrapping difference: the confirm predates this send.
+            BlockState::Sent(sent) | BlockState::Confirmed(sent) if timestamp.wrapping_sub(sent) & 0x8000 != 0 => {
+                ConfirmKind::Stale
+            }
+            BlockState::Sent(timestamp) => {
+                *slot = BlockState::Confirmed(timestamp);
+                ConfirmKind::First(timestamp)
+            }
+            BlockState::Confirmed(timestamp) => {
+                *slot = BlockState::Free;
+                ConfirmKind::Second(timestamp)
+            }
+            BlockState::Free => ConfirmKind::Unmatched,
+        }
+    }
+}
+
+impl fmt::Debug for SentBlocks {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SentBlocks")
+            .field(
+                "unconfirmed",
+                &self
+                    .0
+                    .iter()
+                    .filter(|state| matches!(state, BlockState::Sent(_)))
+                    .count(),
+            )
+            .finish()
+    }
+}
+
+/// Stream counters, logged when the stream ends.
+#[cfg_attr(feature = "__test", visibility::make(pub))]
+#[derive(Debug, Default)]
+struct StreamStats {
+    pub waves_sent: u64,
+    pub bytes_sent: u64,
+    pub confirms: u64,
+    /// Confirms that were the second one for their wave (see [`BlockState`]).
+    pub second_confirms: u64,
+    /// Confirms for a block with no wave awaiting one: a third confirm, or a
+    /// block the server never sent.
+    pub unmatched_confirms: u64,
+    /// Waves whose block number came round again before any confirm arrived.
+    pub never_confirmed: u64,
+    /// Confirms for an earlier wave whose block number had already been reused.
+    pub stale_confirms: u64,
+}
+
 /// Handler for the server side of the Audio Output Virtual Channel (`RDPSND`).
 ///
 /// Implementations supply the list of audio formats the server offers, choose
 /// which negotiated format to use once the client replies, and produce the
 /// audio waves to stream (via [`RdpsndServer::wave`]).
-pub trait RdpsndServerHandler: Send + core::fmt::Debug {
+pub trait RdpsndServerHandler: Send + fmt::Debug {
     /// The audio formats the server advertises in the Server Audio Formats and
     /// Version PDU (MS-RDPEA 2.2.2.1).
     fn get_formats(&self) -> &[pdu::AudioFormat];
@@ -153,6 +305,8 @@ pub struct RdpsndServer {
     quality_mode: Option<QualityMode>,
     block_no: u8,
     format_no: Option<u16>,
+    sent_blocks: SentBlocks,
+    stats: StreamStats,
 }
 
 impl RdpsndServer {
@@ -166,6 +320,8 @@ impl RdpsndServer {
             quality_mode: None,
             format_no: None,
             block_no: 0,
+            sent_blocks: SentBlocks::default(),
+            stats: StreamStats::default(),
         }
     }
 
@@ -176,6 +332,11 @@ impl RdpsndServer {
             .ok_or_else(|| pdu_other_err!("invalid state, client format not yet received"))?;
 
         Ok(client_format.version)
+    }
+
+    #[cfg(feature = "__test")]
+    pub fn stats(&self) -> &StreamStats {
+        &self.stats
     }
 
     pub fn flags(&self) -> PduResult<pdu::AudioFormatFlags> {
@@ -192,6 +353,7 @@ impl RdpsndServer {
             timestamp: 4231, // a random number
             data: vec![],
         };
+        debug!(timestamp = pdu.timestamp, "Sending RDPSND training PDU");
         Ok(RdpsndSvcMessages::new(vec![
             pdu::ServerAudioOutputPdu::Training(pdu).into(),
         ]))
@@ -210,6 +372,7 @@ impl RdpsndServer {
         // instant.
         let [timestamp_lo, timestamp_hi, _, _] = ts.to_le_bytes();
         let wire_timestamp = u16::from_le_bytes([timestamp_lo, timestamp_hi]);
+        let data_len = data.len();
 
         // The server doesn't wait for wave confirm, apparently FreeRDP neither.
         let msg = if version >= pdu::Version::V8 {
@@ -246,6 +409,23 @@ impl RdpsndServer {
             RdpsndSvcMessages::new(vec![pdu::ServerAudioOutputPdu::Wave(info).into(), wave_data.into()])
         };
 
+        if let Some(sent_timestamp) = self.sent_blocks.record(self.block_no, wire_timestamp) {
+            self.stats.never_confirmed += 1;
+            trace!(
+                block_no = self.block_no,
+                sent_timestamp, "Reusing the block number of a wave the client never confirmed"
+            );
+        }
+        self.stats.waves_sent += 1;
+        self.stats.bytes_sent += u64::try_from(data_len).unwrap_or(u64::MAX);
+        trace!(
+            block_no = self.block_no,
+            format_no,
+            audio_timestamp = ts,
+            len = data_len,
+            "Sending RDPSND wave"
+        );
+
         self.block_no = self.block_no.overflowing_add(1).0;
 
         Ok(msg)
@@ -259,12 +439,14 @@ impl RdpsndServer {
             volume_left,
             volume_right,
         };
+        debug!(volume_left, volume_right, "Sending RDPSND volume");
         Ok(RdpsndSvcMessages::new(vec![
             pdu::ServerAudioOutputPdu::Volume(pdu).into(),
         ]))
     }
 
     pub fn close(&mut self) -> PduResult<RdpsndSvcMessages> {
+        debug!("Sending RDPSND close");
         Ok(RdpsndSvcMessages::new(vec![pdu::ServerAudioOutputPdu::Close.into()]))
     }
 }
@@ -308,14 +490,29 @@ impl SvcProcessor for RdpsndServer {
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
         let pdu = pdu::ClientAudioOutputPdu::decode(&mut ReadCursor::new(payload)).map_err(|e| decode_err!(e))?;
-        debug!(?pdu);
         let msg = match self.state {
             RdpsndState::WaitingForClientFormats => {
                 let pdu::ClientAudioOutputPdu::AudioFormat(af) = pdu else {
-                    error!("Invalid PDU");
+                    error!(?pdu, "Expected the client audio formats; stopping the RDPSND channel");
                     self.state = RdpsndState::Stop;
                     return Ok(vec![]);
                 };
+                debug!(
+                    version = ?af.version,
+                    flags = ?af.flags,
+                    volume_left = af.volume_left,
+                    volume_right = af.volume_right,
+                    pitch = af.pitch,
+                    dgram_port = af.dgram_port,
+                    count = af.formats.len(),
+                    formats = %FormatList(&af.formats),
+                    "Received client audio formats"
+                );
+                // MS-RDPEA 2.2.2.2: without TSSNDCAPS_ALIVE the client does not
+                // consume audio, whatever format ends up negotiated.
+                if !af.flags.contains(pdu::AudioFormatFlags::ALIVE) {
+                    warn!(flags = ?af.flags, "Client audio formats lack the ALIVE flag; the client may play nothing");
+                }
                 self.client_format = Some(af);
                 if self.version()? >= pdu::Version::V6 {
                     self.state = RdpsndState::WaitingForQualityMode;
@@ -327,20 +524,29 @@ impl SvcProcessor for RdpsndServer {
             }
             RdpsndState::WaitingForQualityMode => {
                 let pdu::ClientAudioOutputPdu::QualityMode(pdu) = pdu else {
-                    error!("Invalid PDU");
+                    error!(?pdu, "Expected the client quality mode; stopping the RDPSND channel");
                     self.state = RdpsndState::Stop;
                     return Ok(vec![]);
                 };
+                debug!(quality_mode = ?pdu.quality_mode, "Received client quality mode");
                 self.quality_mode = Some(pdu.quality_mode);
                 self.state = RdpsndState::WaitingForTrainingConfirm;
                 self.training_pdu()?.into()
             }
             RdpsndState::WaitingForTrainingConfirm => {
-                let pdu::ClientAudioOutputPdu::TrainingConfirm(_) = pdu else {
-                    error!("Invalid PDU");
+                let pdu::ClientAudioOutputPdu::TrainingConfirm(training_confirm) = pdu else {
+                    error!(
+                        ?pdu,
+                        "Expected the client training confirm; stopping the RDPSND channel"
+                    );
                     self.state = RdpsndState::Stop;
                     return Ok(vec![]);
                 };
+                debug!(
+                    timestamp = training_confirm.timestamp,
+                    pack_size = training_confirm.pack_size,
+                    "Received RDPSND training confirm"
+                );
                 let client_format = self.client_format.as_ref().expect("available in this state");
                 // Formats common to server and client, in the server's
                 // preference order, each tagged with its wFormatNo (its
@@ -350,11 +556,21 @@ impl SvcProcessor for RdpsndServer {
                 let common = negotiate_formats(self.handler.get_formats(), &client_format.formats);
                 self.state = RdpsndState::Ready;
                 if common.is_empty() {
-                    debug!("No audio format in common with the client; audio disabled");
+                    debug!(
+                        server_formats = self.handler.get_formats().len(),
+                        client_formats = client_format.formats.len(),
+                        "No audio format in common with the client; audio disabled"
+                    );
                 } else if let Some(chosen) = self.handler.choose_format(&common) {
                     // `chosen` borrows `common` (a local), not `self`, so the
                     // handler is free to borrow `&mut self` again for `start`.
                     let wformat_no = chosen.wformat_no;
+                    debug!(
+                        wformat_no,
+                        format = %FormatSummary(chosen.format()),
+                        common = common.len(),
+                        "Audio format chosen"
+                    );
                     // Commit the index BEFORE the `start` lifecycle hook: if `start`
                     // spawns a producer that emits a wave immediately, `wave()` must
                     // already see a valid `format_no` rather than racing an unset one.
@@ -369,19 +585,57 @@ impl SvcProcessor for RdpsndServer {
                         self.format_no = None;
                     }
                 } else {
-                    debug!("Handler declined every common audio format; audio disabled");
+                    debug!(
+                        common = common.len(),
+                        "Handler declined every common audio format; audio disabled"
+                    );
                 }
                 vec![]
             }
             RdpsndState::Ready => {
                 if let pdu::ClientAudioOutputPdu::WaveConfirm(c) = pdu {
-                    debug!(?c);
+                    self.stats.confirms += 1;
+                    match self.sent_blocks.confirm(c.block_no, c.timestamp) {
+                        ConfirmKind::First(sent_timestamp) => trace!(
+                            block_no = c.block_no,
+                            timestamp = c.timestamp,
+                            held_ms = c.timestamp.wrapping_sub(sent_timestamp),
+                            "Received RDPSND wave confirm"
+                        ),
+                        ConfirmKind::Second(sent_timestamp) => {
+                            self.stats.second_confirms += 1;
+                            trace!(
+                                block_no = c.block_no,
+                                timestamp = c.timestamp,
+                                held_ms = c.timestamp.wrapping_sub(sent_timestamp),
+                                "Received second RDPSND wave confirm"
+                            );
+                        }
+                        ConfirmKind::Stale => {
+                            self.stats.stale_confirms += 1;
+                            trace!(
+                                block_no = c.block_no,
+                                timestamp = c.timestamp,
+                                "Received RDPSND wave confirm for a wave whose block number was already reused"
+                            );
+                        }
+                        ConfirmKind::Unmatched => {
+                            self.stats.unmatched_confirms += 1;
+                            trace!(
+                                block_no = c.block_no,
+                                timestamp = c.timestamp,
+                                "Received RDPSND wave confirm for a block with no wave awaiting one"
+                            );
+                        }
+                    }
                     self.handler.wave_confirm(c.block_no, c.timestamp);
+                } else {
+                    debug!(?pdu, "Ignoring RDPSND PDU received after negotiation");
                 }
                 vec![]
             }
             state => {
-                error!(?state, "Invalid state");
+                error!(?state, ?pdu, "Received an RDPSND PDU in a state that expects none");
                 vec![]
             }
         };
@@ -390,12 +644,18 @@ impl SvcProcessor for RdpsndServer {
 
     fn start(&mut self) -> PduResult<Vec<SvcMessage>> {
         if self.state != RdpsndState::Start {
-            error!("Attempted to start rdpsnd channel in invalid state");
+            error!(state = ?self.state, "Attempted to start rdpsnd channel in invalid state");
         }
 
+        let formats = self.handler.get_formats();
+        debug!(
+            count = formats.len(),
+            formats = %FormatList(formats),
+            "Sending server audio formats"
+        );
         let pdu = pdu::ServerAudioOutputPdu::AudioFormat(pdu::ServerAudioFormatPdu {
             version: pdu::Version::V8,
-            formats: self.handler.get_formats().into(),
+            formats: formats.into(),
         });
 
         self.state = RdpsndState::WaitingForClientFormats;
@@ -405,6 +665,9 @@ impl SvcProcessor for RdpsndServer {
 
 impl Drop for RdpsndServer {
     fn drop(&mut self) {
+        if self.stats.waves_sent > 0 {
+            debug!(stats = ?self.stats, "RDPSND stream ended");
+        }
         self.handler.stop();
     }
 }
