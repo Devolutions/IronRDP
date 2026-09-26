@@ -25,7 +25,7 @@ use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::rdp::capability_sets::{BitmapCodecs, client_codecs_capabilities};
-use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+use ironrdp::pdu::rdp::client_info::{OptionalSystemTime, PerformanceFlags, TimezoneInfo};
 use ironrdp::rdpdr::Rdpdr;
 use ironrdp::rdpdr::pdu::efs::{DEFAULT_PRINTER_DRIVER_NAME, MICROSOFT_PRINT_TO_PDF_DRIVER_NAME};
 use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
@@ -95,8 +95,9 @@ struct SessionBuilderInner {
     legacy_graphics: bool,
     outbound_message_size_limit: Option<usize>,
     pointer_software_rendering: bool,
-    enable_audio_playback: bool,
     desktop_scale_factor: u32,
+    performance_flags: PerformanceFlags,
+    timezone_info: TimezoneInfo,
 }
 
 impl Default for SessionBuilderInner {
@@ -142,8 +143,9 @@ impl Default for SessionBuilderInner {
             legacy_graphics: false,
             outbound_message_size_limit: None,
             pointer_software_rendering: false,
-            enable_audio_playback: false,
             desktop_scale_factor: 0,
+            performance_flags: PerformanceFlags::default(),
+            timezone_info: TimezoneInfo::default(),
         }
     }
 }
@@ -274,7 +276,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 self.0.borrow_mut().outbound_message_size_limit = if limit > 0 { Some(limit) } else { None };
             };
             |pointer_software_rendering: bool| { self.0.borrow_mut().pointer_software_rendering = pointer_software_rendering };
-            |enable_audio_playback: bool| { self.0.borrow_mut().enable_audio_playback = enable_audio_playback };
             |desktop_scale_factor: f64| {
                 // Zero means the server picks a factor matching the requested desktop size.
                 let scale_factor = if desktop_scale_factor >= 0.0 && desktop_scale_factor <= f64::from(u32::MAX) {
@@ -285,6 +286,30 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                     0
                 };
                 self.0.borrow_mut().desktop_scale_factor = scale_factor;
+            };
+            // Bitmask of `PerformanceFlags`. Disabling wallpaper, theming, font smoothing and
+            // desktop composition cuts both bandwidth and CPU, which is what a browser client
+            // over a slow link needs.
+            |performance_flags: f64| {
+                let bits = if performance_flags >= 0.0 && performance_flags <= f64::from(u32::MAX) {
+                    #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    { performance_flags as u32 }
+                } else {
+                    warn!(performance_flags, "Invalid performance_flags; falling back to default");
+                    0
+                };
+                self.0.borrow_mut().performance_flags = PerformanceFlags::from_bits_truncate(bits);
+            };
+            // Timezone of the browser user, so clocks shown by the remote session match local time.
+            // DST transition dates are left unset: the browser only exposes the current UTC offset.
+            |timezone_info: JsValue| {
+                match parse_timezone_info(timezone_info) {
+                    Ok(info) => self.0.borrow_mut().timezone_info = info,
+                    Err(error) => {
+                        let reason = iron_remote_desktop::IronError::backtrace(&error);
+                        warn!(%reason, "Invalid timezone_info; falling back to default");
+                    }
+                }
             };
             // File transfer callbacks - protocol-specific, routed through extension()
             // rather than dedicated trait methods to keep iron-remote-desktop protocol-agnostic.
@@ -383,8 +408,9 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_driver_name,
             outbound_message_size_limit,
             pointer_software_rendering,
-            enable_audio_playback,
             desktop_scale_factor,
+            performance_flags,
+            timezone_info,
             legacy_graphics,
         );
 
@@ -403,8 +429,9 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             client_name = inner.client_name.clone();
             desktop_size = inner.desktop_size;
             pointer_software_rendering = inner.pointer_software_rendering;
-            enable_audio_playback = inner.enable_audio_playback;
             desktop_scale_factor = inner.desktop_scale_factor;
+            performance_flags = inner.performance_flags;
+            timezone_info = inner.timezone_info.clone();
             render_canvas = inner.render_canvas.clone().context("render_canvas missing")?;
 
             set_cursor_style_callback = inner
@@ -446,8 +473,9 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             client_name.clone(),
             desktop_size,
             pointer_software_rendering,
-            enable_audio_playback,
             desktop_scale_factor,
+            performance_flags,
+            timezone_info,
             legacy_graphics,
         );
 
@@ -1348,6 +1376,17 @@ fn get_u64(obj: &js_sys::Object, key: &str) -> Result<u64, IronError> {
     Ok(f as u64)
 }
 
+fn get_str(obj: &js_sys::Object, key: &str) -> Result<String, IronError> {
+    let val = js_sys::Reflect::get(obj, &JsValue::from_str(key))
+        .map_err(|e| anyhow::anyhow!("get property `{key}`: {e:?}"))?;
+    if val.is_undefined() || val.is_null() {
+        return Ok(String::new());
+    }
+    val.as_string()
+        .with_context(|| format!("invalid type for property `{key}`"))
+        .map_err(Into::into)
+}
+
 fn get_bool(obj: &js_sys::Object, key: &str) -> Result<bool, IronError> {
     let val = js_sys::Reflect::get(obj, &JsValue::from_str(key))
         .map_err(|e| anyhow::anyhow!("get property `{key}`: {e:?}"))?;
@@ -1366,6 +1405,35 @@ fn get_u32_opt(obj: &js_sys::Object, key: &str) -> Result<Option<u32>, IronError
         .as_f64()
         .with_context(|| format!("invalid type for property `{key}`"))?;
     Ok(Some(f64_to_u32_saturating_cast(f)))
+}
+
+/// Builds a `TimezoneInfo` from the browser timezone reported through the extension.
+///
+/// `bias` follows the MS-RDPBCGR convention and matches `Date::getTimezoneOffset()`:
+/// a client ahead of UTC sends a negative value. DST transition dates stay unset
+/// because the browser only exposes the offset in effect right now.
+fn parse_timezone_info(value: JsValue) -> Result<TimezoneInfo, IronError> {
+    // The name fields are 64 bytes of UTF-16, so 32 code units fit.
+    const MAX_NAME_CHARS: usize = 32;
+
+    let obj = into_object(value)?;
+    let bias = get_i32(&obj, "bias")?;
+
+    if !(-1440..=1440).contains(&bias) {
+        return Err(anyhow::anyhow!("timezone_info bias {bias} is out of range").into());
+    }
+
+    let truncate = |name: String| -> String { name.chars().take(MAX_NAME_CHARS).collect() };
+
+    Ok(TimezoneInfo {
+        bias,
+        standard_name: truncate(get_str(&obj, "standard_name")?),
+        standard_date: OptionalSystemTime(None),
+        standard_bias: 0,
+        daylight_name: truncate(get_str(&obj, "daylight_name")?),
+        daylight_date: OptionalSystemTime(None),
+        daylight_bias: 0,
+    })
 }
 
 fn parse_print_job_stream_callbacks(callbacks: JsValue) -> anyhow::Result<JsPrinterStreamCallbacks> {
@@ -1487,8 +1555,9 @@ fn build_config(
     client_name: String,
     desktop_size: DesktopSize,
     pointer_software_rendering: bool,
-    enable_audio_playback: bool,
     desktop_scale_factor: u32,
+    performance_flags: PerformanceFlags,
+    timezone_info: TimezoneInfo,
     legacy_graphics: bool,
 ) -> connector::Config {
     // Win7-class servers need 32-bpp lossless bitmaps and no advertised codecs.
@@ -1542,17 +1611,19 @@ fn build_config(
         compression_type: None,
         enable_server_pointer: true,
         autologon: false,
-        enable_audio_playback,
+        // Audio is not played by the web client: RDPSND is attached with a no-op backend, so
+        // advertising playback would only make the server send audio that is then discarded.
+        enable_audio_playback: false,
         enable_audio_capture: false,
         request_data: None,
         pointer_software_rendering,
         multitransport_flags: None,
         support_dyn_vc_gfx_protocol: false,
-        performance_flags: PerformanceFlags::default(),
+        performance_flags,
         desktop_scale_factor,
         hardware_id: None,
         license_cache: None,
-        timezone_info: TimezoneInfo::default(),
+        timezone_info,
         alternate_shell: String::new(),
         work_dir: String::new(),
         remote_application_mode: false,
