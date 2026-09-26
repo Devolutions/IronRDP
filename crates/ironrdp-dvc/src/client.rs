@@ -12,7 +12,7 @@ use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::PduResult;
 use pdu::gcc::ChannelName;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::pdu::{
     CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
@@ -372,11 +372,17 @@ impl DrdynvcClient {
 
     fn process_data(&mut self, data: DrdynvcDataPdu) -> PduResult<Vec<SvcMessage>> {
         let channel_id = data.channel_id();
-        let messages = self
-            .dynamic_channels
-            .get_by_channel_id_mut(channel_id)
-            .ok_or_else(|| pdu_other_err!("access to non existing DVC channel"))?
-            .process(data)?;
+        let Some(channel) = self.dynamic_channels.get_by_channel_id_mut(channel_id) else {
+            // A server can send data on a channel before it sees the client decline it in the
+            // Create Response (GNOME Remote Desktop does this for AUDIO_PLAYBACK_DVC). The data has
+            // nowhere to go; dropping it is enough, ending the session over it is not warranted.
+            warn!(
+                channel_id,
+                "Dropping data for a dynamic virtual channel that is not open"
+            );
+            return Ok(Vec::new());
+        };
+        let messages = channel.process(data)?;
 
         encode_dvc_messages(channel_id, messages, ChannelFlags::empty()).map_err(|e| encode_err!(e))
     }

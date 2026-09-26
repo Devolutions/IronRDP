@@ -55,6 +55,41 @@ impl DvcProcessor for FailingDvc {
 impl DvcClientProcessor for FailingDvc {}
 
 #[test]
+fn data_for_a_channel_that_is_not_open_is_dropped() {
+    // A server can send data on a channel before it sees the client decline it in the Create
+    // Response (GNOME Remote Desktop does this for AUDIO_PLAYBACK_DVC). The session must survive it.
+    let mut client = DrdynvcClient::new();
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("recorded channel should attach");
+    let data = |channel_id: u32, payload: &[u8]| {
+        encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+            channel_id,
+            payload.to_vec(),
+        ))))
+        .expect("DVC data should encode")
+    };
+
+    assert!(
+        client
+            .process(&data(4, b"declined"))
+            .expect("data for a channel that is not open should be dropped, not fail")
+            .is_empty()
+    );
+    assert!(
+        client
+            .process(&data(7, b"open"))
+            .expect("open channels are unaffected")
+            .is_empty()
+    );
+
+    let channel = client
+        .get_dvc_by_channel_id::<RecordedDvc>(7)
+        .expect("recorded channel should remain attached");
+    assert_eq!(channel.processor().received, vec![b"open".to_vec()]);
+}
+
+#[test]
 fn established_dynamic_channel_routes_recorded_data_without_negotiation() {
     let mut client = DrdynvcClient::new();
     client
