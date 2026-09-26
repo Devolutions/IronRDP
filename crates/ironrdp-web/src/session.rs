@@ -209,31 +209,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         self.clone()
     }
 
-    // tdmanh1 24/08/2026 expose more function for wasm app
-    /// Optional
-    fn set_enable_server_pointer(&self, enable_server_pointer: bool) -> Self {
-        self.0.borrow_mut().enable_server_pointer = enable_server_pointer;
-        self.clone()
-    }
-
-    /// Optional
-    fn set_pointer_software_rendering(&self, pointer_software_rendering: bool) -> Self {
-        self.0.borrow_mut().pointer_software_rendering = pointer_software_rendering;
-        self.clone()
-    }
-
-    /// Optional
-    fn set_enable_audio_playback(&self, enable_audio_playback: bool) -> Self {
-        self.0.borrow_mut().enable_audio_playback = enable_audio_playback;
-        self.clone()
-    }
-
-    /// Optional
-    fn set_desktop_scale_factor(&self, desktop_scale_factor: u32) -> Self {
-        self.0.borrow_mut().desktop_scale_factor = desktop_scale_factor;
-        self.clone()
-    }
-
     /// Required.
     ///
     /// # Callback signature:
@@ -296,6 +271,21 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                     0 // Fallback to no limit for invalid values.
                 };
                 self.0.borrow_mut().outbound_message_size_limit = if limit > 0 { Some(limit) } else { None };
+            };
+            // tdmanh1 24/08/2026 expose more flag for wasm app
+            |enable_server_pointer: bool| { self.0.borrow_mut().enable_server_pointer = enable_server_pointer };
+            |pointer_software_rendering: bool| { self.0.borrow_mut().pointer_software_rendering = pointer_software_rendering };
+            |enable_audio_playback: bool| { self.0.borrow_mut().enable_audio_playback = enable_audio_playback };
+            |desktop_scale_factor: f64| {
+                // Zero means the server picks a factor matching the requested desktop size.
+                let scale_factor = if desktop_scale_factor >= 0.0 && desktop_scale_factor <= f64::from(u32::MAX) {
+                    #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    { desktop_scale_factor as u32 }
+                } else {
+                    warn!(desktop_scale_factor, "Invalid desktop scale factor; falling back to default");
+                    0
+                };
+                self.0.borrow_mut().desktop_scale_factor = scale_factor;
             };
             // File transfer callbacks - protocol-specific, routed through extension()
             // rather than dedicated trait methods to keep iron-remote-desktop protocol-agnostic.
@@ -453,16 +443,16 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         info!("Connect to RDP host");
 
         let mut config = build_config(
-            username, 
-            password, 
-            server_domain, 
-            client_name.clone(), 
+            username,
+            password,
+            server_domain,
+            client_name.clone(),
             desktop_size,
             // tdmanh1 24/08/2026 expose more flag for wasm app
             enable_server_pointer,
             pointer_software_rendering,
             enable_audio_playback,
-            desktop_scale_factor
+            desktop_scale_factor,
         );
 
         let enable_credssp = self.0.borrow().enable_credssp;
@@ -1490,13 +1480,13 @@ fn parse_file_metadata_array(files: JsValue) -> Result<Vec<FileMetadata>, IronEr
     Ok(file_list)
 }
 
+#[expect(clippy::too_many_arguments)]
 fn build_config(
     username: String,
     password: String,
     domain: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
-    // tdmanh1 24/08/2026 expose more flag for wasm app
     enable_server_pointer: bool,
     pointer_software_rendering: bool,
     enable_audio_playback: bool,
@@ -1540,17 +1530,15 @@ fn build_config(
         client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
         compression_type: None,
-        // tdmanh1 24/08/2026 expose more flag for wasm app
-        enable_server_pointer: enable_server_pointer,
+        enable_server_pointer,
         autologon: false,
-        enable_audio_playback: enable_audio_playback,
+        enable_audio_playback,
         enable_audio_capture: false,
         request_data: None,
-        pointer_software_rendering: pointer_software_rendering,
+        pointer_software_rendering,
         multitransport_flags: None,
         performance_flags: PerformanceFlags::default(),
-        // tdmanh1 24/08/2026 expose more flag for wasm app
-        desktop_scale_factor: desktop_scale_factor,
+        desktop_scale_factor,
         hardware_id: None,
         license_cache: None,
         timezone_info: TimezoneInfo::default(),
