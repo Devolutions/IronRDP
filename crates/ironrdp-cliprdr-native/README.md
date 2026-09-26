@@ -1,6 +1,6 @@
 # IronRDP CLIPRDR native backends
 
-Native CLIPRDR backend implementations. Windows has a full backend; Linux has a Wayland clipboard client that a backend can be built on.
+Native CLIPRDR backend implementations: Windows (`WinClipboard`) and Linux desktops over X11 and Wayland (`LinuxClipboard`, text and images).
 
 This crate is part of the [IronRDP] project.
 
@@ -8,7 +8,5 @@ This crate is part of the [IronRDP] project.
 
 ## Linux
 
-The `data_control` module is a clipboard client for Wayland compositors that
-offer `ext-data-control-v1` or `wlr-data-control-unstable-v1`. It reads and sets
-the clipboard without a window and supports delayed rendering, so the data for a
-paste can be produced when the paste happens.
+The `data_control` module is a clipboard client for Wayland compositors that offer `ext-data-control-v1` or `wlr-data-control-unstable-v1`.
+It supports clipboard change notifications and delayed rendering.
