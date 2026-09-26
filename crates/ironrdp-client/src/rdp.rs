@@ -4269,7 +4269,6 @@ async fn active_session(
             if announced_transport != Some(transport) {
                 announced_transport = Some(transport);
                 let (reliable_udp, udp_version) = transport;
-                info!(reliable_udp, ?udp_version, "Session transport");
                 let event = RdpOutputEvent::Transport {
                     reliable_udp,
                     udp_version,
