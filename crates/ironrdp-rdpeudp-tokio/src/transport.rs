@@ -323,6 +323,12 @@ impl UdpTransport {
         }
     }
 
+    /// The RDP-UDP version the handshake settled on: version 1 or 2 for MS-RDPEUDP,
+    /// version 3 for MS-RDPEUDP2.
+    pub fn negotiated_version(&self) -> Option<ironrdp_rdpeudp::pdu::UdpVersion> {
+        self.shared.lock().ok().and_then(|shared| shared.negotiated_version)
+    }
+
     /// Whether the driver task is still running.
     pub fn is_alive(&self) -> bool {
         !self.driver_handle.is_finished()
