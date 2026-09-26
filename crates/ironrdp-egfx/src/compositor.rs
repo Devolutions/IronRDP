@@ -186,7 +186,10 @@ impl Compositor {
         self.surfaces.clear();
         self.frame.clear();
         self.ready.clear();
-        // Only the cache keeps its allocations, so only its charge remains.
+        // Only the cache keeps its allocations, so only its charge remains. The server must
+        // keep the cache within 100 MB, or 16 MB when it confirms SMALL_CACHE (MS-RDPEGFX
+        // 3.3.1.4), so a conforming server still has room in the budget for the surfaces it
+        // creates after the reset.
         self.allocated_bytes = self.cache.values().map(|tile| tile.data.len()).sum();
     }
 
