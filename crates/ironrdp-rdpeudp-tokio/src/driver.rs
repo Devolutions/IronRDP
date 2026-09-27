@@ -20,6 +20,7 @@ use ironrdp_rdpeudp::pdu::{V1Datagram, V1Flags};
 use ironrdp_rdpeudp::{Event, RdpeudpConnection, RdpeudpError, RdpeudpErrorKind, SendError};
 use tokio::net::UdpSocket;
 use tokio::sync::Notify;
+use tracing::{debug, info, trace};
 
 use crate::error::{DriverError, DriverErrorExt as _, DriverErrorKind};
 use crate::stream::SharedIo;
@@ -89,7 +90,20 @@ impl Driver {
 
     /// Run the driver event loop until the connection closes or errors.
     pub(crate) async fn run(mut self) -> Result<(), DriverError> {
+        debug!(
+            local_addr = ?self.socket.local_addr().ok(),
+            peer = ?self.socket.peer_addr().ok(),
+            "UDP driver started"
+        );
+
         let result = self.run_to_completion().await;
+
+        match (&result, self.connected_signaled) {
+            (Ok(()), true) => info!("RDP-UDP connection closed"),
+            (Err(error), true) => info!(%error, "RDP-UDP connection closed on error"),
+            (Ok(()), false) => debug!("UDP driver stopped before the handshake completed"),
+            (Err(error), false) => debug!(%error, "UDP driver failed before the handshake completed"),
+        }
 
         // However this ended, the stream side has to hear about it. A reader
         // parked in `poll_read` has left its waker here and nothing else will
@@ -134,6 +148,9 @@ impl Driver {
             // Reading a datagram may append to `read_buf`, so stop reading while
             // it is over its mark and wait for the consumer instead.
             let has_room = self.read_buf_has_room();
+            if !has_room {
+                trace!("Read buffer over its high-water mark, pausing socket reads");
+            }
 
             // Not `biased`: branches 1-3 can all be genuinely ready at once
             // (incoming data, a queued TLS write, and an expired timer), and
@@ -144,11 +161,14 @@ impl Driver {
             // guards, so fairness between them is moot either way.
             tokio::select! {
                 // Branch 0: the consumer caught up, so go round again and read.
-                _ = ReadBufDrained::new(&self.shared), if !has_room => {}
+                _ = ReadBufDrained::new(&self.shared), if !has_room => {
+                    trace!("Read buffer drained, resuming socket reads");
+                }
 
                 // Branch 1: Incoming UDP datagram (highest priority)
                 result = self.socket.recv(&mut self.recv_buf), if has_room => {
                     let n = result.map_err(|error| DriverError::socket("receive datagram", error))?;
+                    trace!(len = n, "Received datagram");
                     let now = self.clock.now();
 
                     // handle_datagram takes &mut [u8] for in-place prefix byte swap
@@ -163,7 +183,7 @@ impl Driver {
                         // carry on; a genuinely dead connection still closes
                         // on the idle timeout.
                         Err(error) if is_droppable(&error) => {
-                            tracing::debug!(%error, "dropping an unusable datagram");
+                            debug!(%error, len = n, "Dropped unusable datagram");
                         }
 
                         Err(error) => return Err(DriverError::rdpeudp("handle datagram", error)),
@@ -197,19 +217,27 @@ impl Driver {
                         waker.wake();
                     }
                     if stream_closed {
+                        debug!("Stream closed locally, closing RDP-UDP connection");
                         self.conn.close();
                         self.drain_events();
                         return Ok(());
                     }
-                    if !data.is_empty() && self.queue_write(data)? {
-                        self.drain_transmits().await?;
+                    if !data.is_empty() {
+                        trace!(len = data.len(), "Took outbound data from the write buffer");
+                        if self.queue_write(data)? {
+                            self.drain_transmits().await?;
+                        }
                     }
                 }
 
                 // Branch 3: Timer expiry
                 _ = optional_sleep(timeout) => {
+                    trace!("Connection timer fired");
                     let now = self.clock.now();
                     self.conn.handle_timeout(now);
+                    if self.conn.is_closed() {
+                        debug!("RDP-UDP connection closed by timeout");
+                    }
                     self.drain_transmits().await?;
                     self.drain_events();
                 }
@@ -262,6 +290,7 @@ impl Driver {
                 .send(&bytes)
                 .await
                 .map_err(|error| DriverError::socket("send datagram", error))?;
+            trace!(len = bytes.len(), "Sent datagram");
         }
         Ok(())
     }
@@ -281,6 +310,7 @@ impl Driver {
         match self.conn.send(data) {
             Ok(()) => Ok(true),
             Err(SendError { error, data }) if matches!(error.kind(), RdpeudpErrorKind::SendBufferFull) => {
+                trace!(len = data.len(), "Send buffer full, holding write for retry");
                 self.pending_write = Some(data);
                 Ok(false)
             }
@@ -302,6 +332,7 @@ impl Driver {
             return Ok(());
         };
 
+        trace!(len = data.len(), "Retrying held write");
         if self.queue_write(data)? {
             self.drain_transmits().await?;
         }
@@ -315,11 +346,13 @@ impl Driver {
             match event {
                 Event::Connected => {
                     if !self.connected_signaled {
+                        debug!("RDP-UDP handshake complete");
                         self.connected_signaled = true;
                         self.connected_notify.notify_one();
                     }
                 }
                 Event::DataReceived(data) => {
+                    trace!(len = data.len(), "Delivered received data to the stream");
                     if let Ok(mut shared) = self.shared.lock() {
                         shared.read_buf.extend_from_slice(&data);
                         if let Some(waker) = shared.read_waker.take() {
@@ -328,6 +361,7 @@ impl Driver {
                     }
                 }
                 Event::ConnectionClosed => {
+                    debug!("RDP-UDP connection reported closed");
                     if let Ok(mut shared) = self.shared.lock() {
                         shared.close();
                     }
@@ -343,6 +377,7 @@ impl Drop for Driver {
             return;
         }
 
+        debug!("UDP driver dropped without finishing, aborting the stream");
         if let Ok(mut shared) = self.shared.lock() {
             shared.error.get_or_insert(io::ErrorKind::ConnectionAborted);
             shared.close();
