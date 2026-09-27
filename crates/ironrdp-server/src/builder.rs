@@ -495,7 +495,10 @@ impl RdpServerBuilder<BuilderDone> {
     /// with its own accept loop (rather than [`RdpServer::run`]) may not have
     /// `addr` bound to anything real, so it cannot be inferred. Typically the
     /// same host and port as the TCP listener (UDP and TCP occupy independent
-    /// port spaces at the same number).
+    /// port spaces at the same number). When its IP is unspecified, each
+    /// connection's socket binds to the local address that client reached
+    /// instead, so replies leave from the address the client sent to; see
+    /// [`RdpServer::set_connection_local_addr`].
     ///
     /// Once established, the transport is used to migrate EGFX graphics
     /// traffic off TCP; a failure to establish it at any stage falls back to

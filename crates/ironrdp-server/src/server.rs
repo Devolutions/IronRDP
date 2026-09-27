@@ -724,6 +724,9 @@ pub struct RdpServer {
     creds: Option<Credentials>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     local_addr: Option<SocketAddr>,
+    /// The local address the current client reached. See
+    /// [`Self::set_connection_local_addr`].
+    connection_local_addr: Option<SocketAddr>,
     autodetect: Option<AutoDetectManager>,
     heartbeat: Option<HeartbeatConfig>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
@@ -1114,6 +1117,7 @@ impl PendingConnection {
                     Ok(Some(NegotiatedConnection {
                         transport: NegotiatedTransport::Tls(Box::new(framed)),
                         acceptor,
+                        local_addr: None,
                     }))
                 }
                 // The stream is already past TLS (terminated at a lower
@@ -1125,6 +1129,7 @@ impl PendingConnection {
                     Ok(Some(NegotiatedConnection {
                         transport: NegotiatedTransport::Offloaded(framed),
                         acceptor,
+                        local_addr: None,
                     }))
                 }
             },
@@ -1132,6 +1137,7 @@ impl PendingConnection {
             BeginResult::Continue(framed) => Ok(Some(NegotiatedConnection {
                 transport: NegotiatedTransport::Continued(framed),
                 acceptor,
+                local_addr: None,
             })),
         }
     }
@@ -1144,6 +1150,9 @@ impl PendingConnection {
 struct NegotiatedConnection<S> {
     transport: NegotiatedTransport<S>,
     acceptor: Acceptor,
+    /// The local address the client reached, when the stream is a socket
+    /// the server accepted itself; see [`RdpServer::set_connection_local_addr`].
+    local_addr: Option<SocketAddr>,
 }
 
 /// Advance a stream that is now past the security upgrade: mark the acceptor
@@ -1373,9 +1382,11 @@ async fn negotiate_candidate(
     // the static channel set until it processes the MCS Connect Initial, which
     // happens there, not in `accept_begin`.
 
+    let local_addr = stream.local_addr().ok();
     match pending.negotiate_and_authenticate(stream, TransportTls::Managed).await {
-        Ok(Some(negotiated)) => {
+        Ok(Some(mut negotiated)) => {
             debug!(?peer, "candidate authenticated -- eligible to preempt the live session");
+            negotiated.local_addr = local_addr;
             Some((Box::new(negotiated), peer))
         }
         Ok(None) => {
@@ -1495,6 +1506,7 @@ impl RdpServer {
             creds: None,
             credential_validator: None,
             local_addr: None,
+            connection_local_addr: None,
             autodetect: None,
             heartbeat: None,
             connection_handler,
@@ -2206,6 +2218,7 @@ impl RdpServer {
         // connections through this method with the previous session's backends
         // still live until the next client attached new ones.
         self.static_channels = StaticChannelSet::new();
+        self.connection_local_addr = None;
 
         result
     }
@@ -2259,7 +2272,14 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
-        let NegotiatedConnection { transport, acceptor } = negotiated;
+        let NegotiatedConnection {
+            transport,
+            acceptor,
+            local_addr,
+        } = negotiated;
+        if local_addr.is_some() {
+            self.connection_local_addr = local_addr;
+        }
         match transport {
             // No security upgrade happened, so there is no TLS session to shut
             // down — matches the pre-existing `BeginResult::Continue` arm.
@@ -2442,6 +2462,9 @@ impl RdpServer {
             let peer = match &entry {
                 Entry::Fresh(_, peer) | Entry::Negotiated(_, peer) => *peer,
             };
+            if let Entry::Fresh(stream, _) = &entry {
+                self.connection_local_addr = stream.local_addr().ok();
+            }
             debug!(?peer, "Received connection");
 
             // A `Negotiated` winner already passed `on_accept` as a candidate,
@@ -2702,6 +2725,7 @@ impl RdpServer {
             // capture, held open until the next client) for every preemption
             // takeover.
             self.static_channels = StaticChannelSet::new();
+            self.connection_local_addr = None;
 
             if let Some(ref mut handler) = self.connection_handler {
                 let action = handler.on_disconnected(peer, duration, result.as_ref().err());
@@ -4435,7 +4459,10 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
-        let udp_bind_addr = self.opts.udp_bind_addr;
+        let udp_bind_addr = self
+            .opts
+            .udp_bind_addr
+            .map(|bind| multitransport::sideband_bind_addr(bind, self.connection_local_addr));
         let tls_config = self
             .opts
             .security
@@ -4547,6 +4574,24 @@ impl RdpServer {
     pub fn set_credentials(&mut self, creds: Option<Credentials>) {
         debug!(?creds, "Changing credentials");
         self.creds = creds
+    }
+
+    /// Tell the server which local address the next client reached, for
+    /// connections driven through [`Self::run_connection`] or
+    /// [`Self::run_connection_with`]. [`Self::run`] sets it itself.
+    ///
+    /// When the UDP transport address (see
+    /// [`RdpServerBuilder::with_udp_transport`](crate::RdpServerBuilder::with_udp_transport))
+    /// has an unspecified IP, the sideband socket binds to this address
+    /// instead. A socket bound to the unspecified address replies from
+    /// whichever local address the routing table picks, and on a host with
+    /// several addresses (IPv6 temporary addresses, for example) that is not
+    /// always the one the client sent to. The client then drops the replies
+    /// and the UDP handshake never completes.
+    ///
+    /// Cleared when the connection ends.
+    pub fn set_connection_local_addr(&mut self, addr: Option<SocketAddr>) {
+        self.connection_local_addr = addr;
     }
 }
 

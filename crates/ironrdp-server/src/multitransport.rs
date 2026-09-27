@@ -9,7 +9,7 @@
 //!
 //! [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b8e7c588-51cb-455b-bb73-92d480903133
 
-use core::net::SocketAddr;
+use core::net::{SocketAddr, SocketAddrV6};
 use core::time::Duration;
 use std::sync::Arc;
 
@@ -80,6 +80,26 @@ impl UdpTransportHandle {
     }
 }
 
+/// The address to bind the sideband UDP socket to: `bind` itself, unless its
+/// IP is unspecified and the local address the client reached over TCP is
+/// known, in which case that address (at `bind`'s port). Replies must leave
+/// from the address the client sent to, which a socket bound to the
+/// unspecified address does not guarantee on a host with several addresses.
+///
+/// A link-local IPv6 address keeps its scope ID, without which it cannot be
+/// bound.
+pub(crate) fn sideband_bind_addr(bind: SocketAddr, connection_local: Option<SocketAddr>) -> SocketAddr {
+    let Some(local) = connection_local.filter(|_| bind.ip().is_unspecified()) else {
+        return bind;
+    };
+    match local {
+        SocketAddr::V6(v6) if v6.ip().to_ipv4_mapped().is_none() => {
+            SocketAddr::V6(SocketAddrV6::new(*v6.ip(), bind.port(), 0, v6.scope_id()))
+        }
+        _ => SocketAddr::new(local.ip().to_canonical(), bind.port()),
+    }
+}
+
 /// Attempts to establish the sideband UDP transport for one Initiate
 /// Multitransport Request.
 ///
@@ -130,5 +150,58 @@ pub(crate) async fn accept(
             warn!(%error, "Failed to establish sideband UDP transport, continuing TCP-only");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    use super::*;
+
+    const V6_LOCAL: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xc518);
+
+    #[test]
+    fn unspecified_bind_takes_the_connection_address() {
+        let bind = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 3389);
+        let local = SocketAddr::new(IpAddr::V6(V6_LOCAL), 3389);
+        assert_eq!(
+            sideband_bind_addr(bind, Some(local)),
+            SocketAddr::new(IpAddr::V6(V6_LOCAL), 3389)
+        );
+    }
+
+    #[test]
+    fn ipv4_client_on_a_dual_stack_listener_binds_ipv4() {
+        let bind = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 3389);
+        let mapped = SocketAddr::new(IpAddr::V6(Ipv4Addr::new(192, 0, 2, 7).to_ipv6_mapped()), 3389);
+        assert_eq!(
+            sideband_bind_addr(bind, Some(mapped)),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)), 3389)
+        );
+    }
+
+    #[test]
+    fn a_link_local_address_keeps_its_scope() {
+        let bind = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 3389);
+        let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+        let local = SocketAddr::V6(SocketAddrV6::new(link_local, 50000, 0, 2));
+        assert_eq!(
+            sideband_bind_addr(bind, Some(local)),
+            SocketAddr::V6(SocketAddrV6::new(link_local, 3389, 0, 2))
+        );
+    }
+
+    #[test]
+    fn an_explicit_bind_address_is_kept() {
+        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 3390);
+        let local = SocketAddr::new(IpAddr::V6(V6_LOCAL), 3389);
+        assert_eq!(sideband_bind_addr(bind, Some(local)), bind);
+    }
+
+    #[test]
+    fn unknown_connection_address_keeps_the_bind() {
+        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 3389);
+        assert_eq!(sideband_bind_addr(bind, None), bind);
     }
 }
