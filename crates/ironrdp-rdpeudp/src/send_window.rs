@@ -21,6 +21,8 @@ use alloc::collections::VecDeque;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
+use tracing::trace;
+
 /// State of a packet in the send window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SendEntryState {
@@ -152,6 +154,7 @@ impl SendWindow {
     /// Returns `None` if the window is full.
     pub(crate) fn push(&mut self, data: Vec<u8>, now: MonotonicInstant) -> Option<(u64, u64)> {
         if !self.has_capacity() {
+            trace!(max_entries = self.max_entries, "Send window full, packet not queued");
             return None;
         }
 
@@ -185,6 +188,11 @@ impl SendWindow {
     /// Returns `None` if the window is full.
     pub(crate) fn push_retransmit(&mut self, channel_seq: u64, data: Vec<u8>, now: MonotonicInstant) -> Option<u64> {
         if !self.has_capacity() {
+            trace!(
+                channel_seq,
+                max_entries = self.max_entries,
+                "Send window full, retransmit not queued"
+            );
             return None;
         }
 
@@ -216,12 +224,21 @@ impl SendWindow {
         let entry = self.entries.iter_mut().find(|e| e.data_seq == data_seq)?;
 
         if entry.state != SendEntryState::Pending {
+            trace!(data_seq, "Packet already acknowledged");
             return None;
         }
 
         entry.state = SendEntryState::Received;
         let size = entry.size;
+        let channel_seq = entry.channel_seq;
         self.bytes_in_flight -= u64::try_from(size).expect("packet size fits in u64");
+        trace!(
+            data_seq,
+            channel_seq,
+            size,
+            bytes_in_flight = self.bytes_in_flight,
+            "Packet acknowledged"
+        );
 
         // Remove data: no longer needed for retransmission.
         self.data_store.retain(|(seq, _)| *seq != data_seq);
@@ -272,12 +289,21 @@ impl SendWindow {
         let entry_idx = self.entries.iter().position(|e| e.data_seq == data_seq)?;
 
         if self.entries[entry_idx].state != SendEntryState::Pending {
+            trace!(data_seq, "Packet already acknowledged, not marked lost");
             return None;
         }
 
         // Extract the entry.
         let entry = self.entries.remove(entry_idx).expect("index is valid");
         self.bytes_in_flight -= u64::try_from(entry.size).expect("packet size fits in u64");
+        trace!(
+            data_seq,
+            channel_seq = entry.channel_seq,
+            size = entry.size,
+            transmit_count = entry.transmit_count,
+            bytes_in_flight = self.bytes_in_flight,
+            "Packet marked lost"
+        );
 
         // Extract the data.
         let data = self
