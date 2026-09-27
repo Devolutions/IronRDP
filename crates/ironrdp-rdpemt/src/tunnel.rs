@@ -23,6 +23,7 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use subtle::ConstantTimeEq as _;
+use tracing::{debug, trace, warn};
 
 use crate::error::{RdpemtError, RdpemtErrorExt as _};
 use crate::pdu::create_request::SECURITY_COOKIE_LEN;
@@ -162,6 +163,7 @@ impl RdpemtTunnel {
             events: VecDeque::new(),
         };
         tunnel.enqueue_create_request();
+        debug!(request_id = tunnel.config.request_id, "Queued tunnel create request");
         tunnel
     }
 
@@ -170,6 +172,7 @@ impl RdpemtTunnel {
     /// The tunnel waits for a CreateRequest from the client. The config
     /// provides the expected request_id + security_cookie for validation.
     pub fn server(config: TunnelConfig) -> Self {
+        debug!(request_id = config.request_id, "Awaiting tunnel create request");
         Self {
             side: Side::Server,
             state: TunnelState::Created,
@@ -191,15 +194,30 @@ impl RdpemtTunnel {
     /// After calling this, use `poll_event()` to retrieve any events
     /// and `poll_pdu()` to retrieve any response PDUs.
     pub fn handle_pdu(&mut self, data: &[u8]) -> Result<(), RdpemtError> {
-        let pdu: TunnelPdu = ironrdp_core::decode(data).map_err(RdpemtError::decode)?;
+        let pdu: TunnelPdu = match ironrdp_core::decode(data) {
+            Ok(pdu) => pdu,
+            Err(error) => {
+                warn!(%error, len = data.len(), side = ?self.side, "Failed to decode tunnel PDU");
+                return Err(RdpemtError::decode(error));
+            }
+        };
 
         match (&self.state, &self.side, pdu) {
             // Client in AwaitingResponse receives CreateResponse
             (TunnelState::AwaitingResponse, Side::Client, TunnelPdu::CreateResponse(resp)) => {
                 if resp.is_success() {
+                    debug!(
+                        request_id = self.config.request_id,
+                        "Tunnel create response accepted, tunnel established"
+                    );
                     self.state = TunnelState::Established;
                     self.events.push_back(TunnelEvent::Established);
                 } else {
+                    warn!(
+                        request_id = self.config.request_id,
+                        hr_response = resp.hr_response,
+                        "Server rejected tunnel create request"
+                    );
                     self.state = TunnelState::Failed;
                     self.events.push_back(TunnelEvent::Failed {
                         hr_response: resp.hr_response,
@@ -214,11 +232,23 @@ impl RdpemtTunnel {
                 // a variable-time compare would leak how many leading bytes
                 // an attacker guessed correctly.
                 let cookie_matches: bool = req.security_cookie.ct_eq(&self.config.security_cookie).into();
-                if req.request_id == self.config.request_id && cookie_matches {
+                let request_id_matches = req.request_id == self.config.request_id;
+                if request_id_matches && cookie_matches {
+                    debug!(
+                        request_id = req.request_id,
+                        "Tunnel create request validated, tunnel established"
+                    );
                     self.state = TunnelState::Established;
                     self.enqueue_create_response(TunnelCreateResponse::S_OK);
                     self.events.push_back(TunnelEvent::Established);
                 } else {
+                    warn!(
+                        request_id = req.request_id,
+                        expected_request_id = self.config.request_id,
+                        request_id_matches,
+                        cookie_matches,
+                        "Rejected tunnel create request"
+                    );
                     self.state = TunnelState::Failed;
                     // E_ACCESSDENIED
                     let hr = 0x80070005u32;
@@ -229,6 +259,11 @@ impl RdpemtTunnel {
 
             // Either side in Established receives Data
             (TunnelState::Established, _, TunnelPdu::Data(data_pdu)) => {
+                trace!(
+                    len = data_pdu.higher_layer_data.len(),
+                    sub_headers = data_pdu.sub_headers.len(),
+                    "Received tunnel data"
+                );
                 self.events.push_back(TunnelEvent::Data {
                     sub_headers: data_pdu.sub_headers,
                     data: data_pdu.higher_layer_data,
@@ -236,7 +271,15 @@ impl RdpemtTunnel {
             }
 
             // Any other combination is a state violation
-            _ => return Err(RdpemtError::invalid_state("handle tunnel PDU")),
+            (state, side, pdu) => {
+                warn!(
+                    ?state,
+                    ?side,
+                    pdu = pdu_kind(&pdu),
+                    "Rejected tunnel PDU unexpected in current state"
+                );
+                return Err(RdpemtError::invalid_state("handle tunnel PDU"));
+            }
         }
 
         Ok(())
@@ -276,6 +319,7 @@ impl RdpemtTunnel {
         data: &[u8],
     ) -> Result<(), RdpemtError> {
         if self.state != TunnelState::Established {
+            debug!(state = ?self.state, "Refused to send tunnel data before establishment");
             return Err(RdpemtError::invalid_state("send tunnel data"));
         }
 
@@ -285,6 +329,12 @@ impl RdpemtTunnel {
         };
 
         let encoded = ironrdp_core::encode_vec(&pdu).map_err(RdpemtError::encode)?;
+        trace!(
+            len = data.len(),
+            sub_headers = pdu.sub_headers.len(),
+            encoded_len = encoded.len(),
+            "Queued tunnel data"
+        );
         self.outgoing.push_back(encoded);
 
         Ok(())
@@ -322,7 +372,16 @@ impl RdpemtTunnel {
         let pdu = TunnelCreateResponse { hr_response };
 
         let encoded = ironrdp_core::encode_vec(&pdu).expect("CreateResponse encoding is infallible for valid inputs");
+        debug!(hr_response, "Queued tunnel create response");
         self.outgoing.push_back(encoded);
+    }
+}
+
+fn pdu_kind(pdu: &TunnelPdu) -> &'static str {
+    match pdu {
+        TunnelPdu::CreateRequest(_) => "CreateRequest",
+        TunnelPdu::CreateResponse(_) => "CreateResponse",
+        TunnelPdu::Data(_) => "Data",
     }
 }
 
