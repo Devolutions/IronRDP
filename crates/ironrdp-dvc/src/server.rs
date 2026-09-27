@@ -420,6 +420,11 @@ impl DrdynvcServer {
         // reporting a tunnel for a channel the response declined, or the
         // caller pushes outgoing frames onto a receive path the client never
         // set up for it.
+        debug!(
+            tunnels = ?response.tunnels_to_switch(),
+            channels = ?accepted_channels.keys().collect::<Vec<_>>(),
+            "Soft-Sync response received"
+        );
         self.outgoing_tunnel_channels = accepted_channels.clone();
         self.incoming_tunnel_channels = accepted_channels;
         *response_received = true;

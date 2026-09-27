@@ -835,6 +835,9 @@ pub struct RdpServer {
     /// handler sets it when the response comes later, which is the usual
     /// case with mstsc, whose UDP bootstrap outlasts the TCP finalization.
     udp_migration_allowed: bool,
+    /// Whether the current connection's EGFX data has started going over the
+    /// sideband transport, so the switch is logged once.
+    egfx_on_udp: bool,
 }
 
 /// Cloneable handle for updating the Server Auto-Reconnect Cookie while
@@ -1548,6 +1551,7 @@ impl RdpServer {
             pending_udp_accept_abort: None,
             soft_sync_negotiated: false,
             udp_migration_allowed: false,
+            egfx_on_udp: false,
         }
     }
 
@@ -3473,22 +3477,36 @@ impl RdpServer {
         // successful Initiate Multitransport Response was actually received,
         // neither of which the sideband transport's own handshake succeeding
         // (`udp_transport.is_some()`) establishes on its own.
+        let mut newly_on_udp = None;
         if self.udp_migration_allowed
             && let Some(udp_transport) = udp_transport
             && let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>()
-            && let Some(egfx_dvc_id) = drdynvc.get_channel_id_by_type::<ironrdp_egfx::server::GraphicsPipelineServer>()
         {
+            let Some(egfx_dvc_id) = crate::gfx::egfx_channel_id(drdynvc) else {
+                trace!("EGFX channel not open yet, staying on TCP");
+                return self
+                    .write_egfx_over_tcp(messages, writer, drdynvc_channel_id, user_channel_id)
+                    .await;
+            };
+
             // First time EGFX has data to send after the tunnel exists: ask
             // to migrate it. "Already requested" (a previous batch already
             // asked) and "channel not open" (raced with the client closing
             // it) are both expected steady-state outcomes here, not errors.
-            if let Ok(request) = drdynvc.request_reliable_udp(vec![egfx_dvc_id]) {
-                let data = server_encode_svc_messages(vec![request], drdynvc_channel_id, user_channel_id)
-                    .map_err(ServerError::encode)?;
-                writer
-                    .write_all(&data)
-                    .await
-                    .map_err(|e| ServerError::io("write_all", e))?;
+            match drdynvc.request_reliable_udp(vec![egfx_dvc_id]) {
+                Ok(request) => {
+                    let data = server_encode_svc_messages(vec![request], drdynvc_channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| ServerError::io("write_all", e))?;
+                    debug!(
+                        egfx_dvc_id,
+                        "Soft-Sync request sent, asking to move EGFX to reliable UDP"
+                    );
+                }
+                Err(error) => trace!(%error, "No Soft-Sync request sent"),
             }
 
             // Only once the client has acknowledged: pushing frame data onto
@@ -3498,23 +3516,41 @@ impl RdpServer {
                 && drdynvc.tunnel_for_outgoing_channel(egfx_dvc_id) == Some(dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP);
 
             if route_over_udp {
+                if !self.egfx_on_udp {
+                    newly_on_udp = Some(egfx_dvc_id);
+                }
                 for message in &messages {
                     let payload = message.encode_unframed_pdu().map_err(ServerError::encode)?;
                     udp_transport.send(payload).await;
                 }
             }
         }
-
-        if !route_over_udp {
-            let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)
-                .map_err(ServerError::encode)?;
-            writer
-                .write_all(&data)
-                .await
-                .map_err(|e| ServerError::io("write_all", e))?;
+        if let Some(egfx_dvc_id) = newly_on_udp {
+            self.egfx_on_udp = true;
+            debug!(egfx_dvc_id, "EGFX is now sent over the UDP transport");
         }
 
-        Ok(())
+        if route_over_udp {
+            return Ok(());
+        }
+        self.write_egfx_over_tcp(messages, writer, drdynvc_channel_id, user_channel_id)
+            .await
+    }
+
+    #[cfg(feature = "egfx")]
+    async fn write_egfx_over_tcp(
+        &mut self,
+        messages: Vec<ironrdp_svc::SvcMessage>,
+        writer: &mut impl FramedWrite,
+        drdynvc_channel_id: u16,
+        user_channel_id: u16,
+    ) -> ServerResult<()> {
+        let data =
+            server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id).map_err(ServerError::encode)?;
+        writer
+            .write_all(&data)
+            .await
+            .map_err(|e| ServerError::io("write_all", e))
     }
 
     /// Decodes and dispatches one payload received over the sideband UDP
@@ -4455,6 +4491,7 @@ impl RdpServer {
         // its own negotiated flags and response.
         self.soft_sync_negotiated = false;
         self.udp_migration_allowed = false;
+        self.egfx_on_udp = false;
 
         let udp_bind_addr = self
             .opts
