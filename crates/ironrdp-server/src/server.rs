@@ -823,6 +823,18 @@ pub struct RdpServer {
     /// handler uses this to stop the accept instead of letting it hold its
     /// socket until `multitransport::UDP_ACCEPT_TIMEOUT`.
     pending_udp_accept_abort: Option<task::AbortHandle>,
+    /// Whether the current connection negotiated SOFT_SYNC_TCP_TO_UDP, one of
+    /// the two conditions for migrating a channel onto the sideband
+    /// transport (see [`Self::udp_migration_allowed`]).
+    soft_sync_negotiated: bool,
+    /// Whether the current connection may migrate EGFX onto the sideband
+    /// transport. MS-RDPEDYC 3.1.5.3/3.3.5.3.1: Soft-Sync MUST NOT be used
+    /// unless both peers negotiated SOFT_SYNC_TCP_TO_UDP and a successful
+    /// Initiate Multitransport Response was received. Finalization sets it
+    /// when the response came during finalization; the message-channel
+    /// handler sets it when the response comes later, which is the usual
+    /// case with mstsc, whose UDP bootstrap outlasts the TCP finalization.
+    udp_migration_allowed: bool,
 }
 
 /// Cloneable handle for updating the Server Auto-Reconnect Cookie while
@@ -1534,6 +1546,8 @@ impl RdpServer {
             previous_auto_reconnect_cookie: None,
             auto_reconnect_sent: false,
             pending_udp_accept_abort: None,
+            soft_sync_negotiated: false,
+            udp_migration_allowed: false,
         }
     }
 
@@ -2815,10 +2829,6 @@ impl RdpServer {
         Ok((RunState::Continue, encoder))
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "private per-connection dispatch entry point; the parameters are the connection's negotiated identifiers"
-    )]
     async fn dispatch_server_events(
         &mut self,
         events: &mut Vec<ServerEvent>,
@@ -2827,14 +2837,12 @@ impl RdpServer {
         user_channel_id: u16,
         message_channel_id: Option<u16>,
         udp_transport: Option<&multitransport::UdpTransportHandle>,
-        udp_migration_allowed: bool,
     ) -> ServerResult<RunState> {
         // Only referenced under `#[cfg(feature = "egfx")]` below (the only
-        // channel this integration migrates); this keeps the parameters
-        // themselves unconditional so callers don't need their own `egfx`
-        // gate.
+        // channel this integration migrates); this keeps the parameter
+        // itself unconditional so callers don't need their own `egfx` gate.
         #[cfg(not(feature = "egfx"))]
-        let _ = (&udp_transport, udp_migration_allowed);
+        let _ = &udp_transport;
 
         // Avoid wave messages queuing up and causing extra delay. When a
         // batch carries more than `WAVE_KEEP` waves, drop the OLDEST ones
@@ -3384,14 +3392,8 @@ impl RdpServer {
                 #[cfg(feature = "egfx")]
                 ServerEvent::Egfx(msg) => match msg {
                     EgfxServerMessage::SendMessages { messages } => {
-                        self.dispatch_egfx_messages(
-                            messages,
-                            writer,
-                            user_channel_id,
-                            udp_transport,
-                            udp_migration_allowed,
-                        )
-                        .await?;
+                        self.dispatch_egfx_messages(messages, writer, user_channel_id, udp_transport)
+                            .await?;
                     }
                 },
                 ServerEvent::AutoDetectRttRequest => {
@@ -3458,7 +3460,6 @@ impl RdpServer {
         writer: &mut impl FramedWrite,
         user_channel_id: u16,
         udp_transport: Option<&multitransport::UdpTransportHandle>,
-        udp_migration_allowed: bool,
     ) -> ServerResult<()> {
         let drdynvc_channel_id = self
             .get_channel_id_by_type::<dvc::DrdynvcServer>()
@@ -3466,13 +3467,13 @@ impl RdpServer {
 
         let mut route_over_udp = false;
 
-        // `udp_migration_allowed` gates the Soft-Sync Request itself
+        // `self.udp_migration_allowed` gates the Soft-Sync Request itself
         // (`request_reliable_udp` below): MS-RDPEDYC 3.1.5.3/3.3.5.3.1 forbid
         // it unless both peers negotiated SOFT_SYNC_TCP_TO_UDP and a
         // successful Initiate Multitransport Response was actually received,
         // neither of which the sideband transport's own handshake succeeding
         // (`udp_transport.is_some()`) establishes on its own.
-        if udp_migration_allowed
+        if self.udp_migration_allowed
             && let Some(udp_transport) = udp_transport
             && let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>()
             && let Some(egfx_dvc_id) = drdynvc.get_channel_id_by_type::<ironrdp_egfx::server::GraphicsPipelineServer>()
@@ -3582,7 +3583,6 @@ impl RdpServer {
         mut encoder: UpdateEncoder,
         udp_transport: Rc<RefCell<Option<multitransport::UdpTransportHandle>>>,
         pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>>,
-        udp_migration_allowed: bool,
     ) -> ServerResult<RunState>
     where
         R: FramedRead,
@@ -3732,7 +3732,6 @@ impl RdpServer {
                         user_channel_id,
                         message_channel_id,
                         current_udp_transport.as_ref(),
-                        udp_migration_allowed,
                     )
                     .await?;
                 let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -4102,32 +4101,19 @@ impl RdpServer {
         self.send_next_auto_reconnect_cookie(writer, result.io_channel_id, result.user_channel_id)
             .await?;
 
-        // MS-RDPEDYC 3.1.5.3/3.3.5.3.1: Soft-Sync (and the tunneling it
-        // gates) MUST NOT be used unless both peers negotiated
-        // SOFT_SYNC_TCP_TO_UDP and a successful Initiate Multitransport
-        // Response was actually received, not merely that the sideband
-        // transport's own handshake succeeded.
-        //
-        // This is a one-time snapshot, not a value `client_loop` can ever
-        // revise: a Multitransport Response arriving after finalization
-        // completes is decoded by `handle_message_channel_data`, which stops a
-        // pending accept on failure but does not enable migration on success.
-        // MS-RDPBCGR gives no guarantee the client resolves its own UDP
-        // bootstrap (RDPEUDP2 + TLS + RDPEMT) before TCP finalization's own
-        // few round trips finish, so a response landing in that gap is
-        // possible in principle. Accepted tradeoff, same shape as the
-        // `pending_udp_accept`-across-reactivation one below: the session
-        // just stays on TCP for its lifetime rather than ever migrating,
-        // which is the same safe degrade this file already takes elsewhere,
-        // not a correctness issue.
         let pending_udp_accept =
             Self::drop_declined_udp_accept(pending_udp_accept, result.multitransport_response_success);
         self.pending_udp_accept_abort = pending_udp_accept.as_ref().map(task::JoinHandle::abort_handle);
 
-        let udp_migration_allowed = result.multitransport_response_success == Some(true)
-            && result
-                .multitransport_flags
-                .contains(ironrdp_pdu::gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP);
+        // See `udp_migration_allowed`: a successful response that arrives
+        // after this point enables migration from the message-channel handler.
+        // Only ever raised here, never lowered: a deactivation-reactivation
+        // pass lands here again without repeating the multitransport exchange,
+        // and must not take back a migration the session may already be using.
+        self.soft_sync_negotiated |= result
+            .multitransport_flags
+            .contains(ironrdp_pdu::gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP);
+        self.udp_migration_allowed |= self.soft_sync_negotiated && result.multitransport_response_success == Some(true);
 
         let state = self
             .client_loop(
@@ -4142,7 +4128,6 @@ impl RdpServer {
                 encoder,
                 udp_transport,
                 pending_udp_accept,
-                udp_migration_allowed,
             )
             .await?;
 
@@ -4356,6 +4341,13 @@ impl RdpServer {
                     abort.abort();
                     debug!("Client could not establish the UDP multitransport connection, continuing TCP-only");
                 }
+                // A success after finalization, the usual order with mstsc,
+                // completes the condition finalization could not see (see
+                // `udp_migration_allowed`), so EGFX can migrate from here on.
+                if pdu.is_success() && self.soft_sync_negotiated && !self.udp_migration_allowed {
+                    self.udp_migration_allowed = true;
+                    debug!("Multitransport confirmed after finalization, EGFX may migrate to UDP");
+                }
             }
             Err(error) => {
                 warn!(error = format!("{error:#}"), "Unhandled MCS message channel PDU");
@@ -4459,6 +4451,11 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
+        // Per-connection: set again once this connection's finalization knows
+        // its own negotiated flags and response.
+        self.soft_sync_negotiated = false;
+        self.udp_migration_allowed = false;
+
         let udp_bind_addr = self
             .opts
             .udp_bind_addr
@@ -5067,6 +5064,36 @@ mod preempt_tests {
                 assert!(probe.is_finished());
             })
             .await;
+    }
+
+    #[test]
+    fn a_late_multitransport_success_enables_migration_only_with_soft_sync() {
+        use ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu;
+
+        let mut server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+        let response = |pdu: &MultitransportResponsePdu| SendDataRequest {
+            initiator_id: 1007,
+            channel_id: 1008,
+            user_data: encode_vec(pdu).expect("encode response").into(),
+        };
+
+        // Soft-Sync not negotiated: MS-RDPEDYC forbids migration whatever the response.
+        server.handle_message_channel_data(response(&MultitransportResponsePdu::success(1)));
+        assert!(!server.udp_migration_allowed);
+
+        // Negotiated, but the client could not bring UDP up.
+        server.soft_sync_negotiated = true;
+        server.handle_message_channel_data(response(&MultitransportResponsePdu::abort(1)));
+        assert!(!server.udp_migration_allowed);
+
+        // Negotiated, and the success arrives after finalization.
+        server.handle_message_channel_data(response(&MultitransportResponsePdu::success(1)));
+        assert!(server.udp_migration_allowed);
     }
 
     #[tokio::test]
