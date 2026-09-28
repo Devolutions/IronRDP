@@ -4116,6 +4116,71 @@ mod tests {
     }
 
     #[test]
+    fn region_with_failing_tiles_returns_the_first_error_in_block_order() {
+        use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveTile, TileSimple};
+
+        // Tile 3 is a difference tile without a reference and tile 7 has a
+        // truncated payload; the other ten tiles are valid originals.
+        let data = encode_full_quality_component(7);
+        let region: Vec<ProgressiveTile<'_>> = (0..12u16)
+            .map(|i| {
+                ProgressiveTile::Simple(TileSimple {
+                    quant_idx_y: 0,
+                    quant_idx_cb: 0,
+                    quant_idx_cr: 0,
+                    x_idx: i % 4,
+                    y_idx: i / 4,
+                    flags: if i == 3 { TILE_FLAG_DIFFERENCE } else { 0 },
+                    y_data: &data,
+                    cb_data: &data,
+                    cr_data: if i == 7 { &[] } else { &data },
+                    tail_data: &[],
+                })
+            })
+            .collect();
+        let mut surface = SurfaceTiles::new(256, 192, false).unwrap();
+        let mut references = BTreeMap::new();
+
+        let result = decode_tile_blocks(
+            1,
+            &mut surface,
+            &mut references,
+            &region,
+            &[ComponentCodecQuant::LOSSLESS],
+            &[],
+            false,
+        );
+
+        assert!(matches!(
+            result,
+            Err(ProgressiveDecodeError::MissingTileReference { x_idx: 3, y_idx: 0 })
+        ));
+
+        // The sequential path stops at tile 3. The parallel path decodes every
+        // tile: the valid ones advance their state and reference, and tile 7
+        // keeps the state created for it.
+        let (expected_state, expected_reference): (Vec<u16>, Vec<u16>) = if cfg!(feature = "rayon") {
+            (
+                (0..12).filter(|&i| i != 3).collect(),
+                (0..12).filter(|&i| i != 3 && i != 7).collect(),
+            )
+        } else {
+            ((0..3).collect(), (0..3).collect())
+        };
+        for i in 0..12u16 {
+            assert_eq!(
+                surface.tiles[usize::from(i)].is_some(),
+                expected_state.contains(&i),
+                "tile {i} state"
+            );
+        }
+        let mut tiles_with_reference: Vec<u16> =
+            references.keys().map(|&(_, x_idx, y_idx)| y_idx * 4 + x_idx).collect();
+        tiles_with_reference.sort_unstable();
+        assert_eq!(tiles_with_reference, expected_reference);
+    }
+
+    #[test]
     fn large_region_decodes_the_same_as_tile_by_tile() {
         use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveTile, TileSimple};
 
