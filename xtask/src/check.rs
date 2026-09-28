@@ -251,6 +251,11 @@ pub fn tests_compile(sh: &Shell) -> anyhow::Result<()> {
         "{CARGO} test -p ironrdp-mstsgu --test http_auth --features native-tls,smartcard --locked --no-run"
     )
     .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-graphics --lib --features rayon --locked --no-run"
+    )
+    .run()?;
     println!("All good!");
     Ok(())
 }
@@ -273,6 +278,7 @@ pub fn tests_run(sh: &Shell) -> anyhow::Result<()> {
         "{CARGO} test -p ironrdp-mstsgu --test http_auth --features native-tls,smartcard --locked"
     )
     .run()?;
+    cmd!(sh, "{CARGO} test -p ironrdp-graphics --lib --features rayon --locked").run()?;
     println!("All good!");
     Ok(())
 }
