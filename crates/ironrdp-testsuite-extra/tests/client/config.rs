@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use std::sync::Arc;
 
-use ironrdp::connector::sspi::KdcResolution;
+use ironrdp::connector::credssp::KdcResolution;
 #[cfg(windows)]
 use ironrdp_cfg::GatewayCredentialsSource;
 use ironrdp_cfg::PropertySetExt as _;
