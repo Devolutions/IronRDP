@@ -309,8 +309,8 @@ impl DrdynvcClient {
     }
 
     pub fn close_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
-        self.dynamic_channels.remove_by_channel_id(channel_id)?;
         self.tunnel_channels.remove(&channel_id);
+        self.dynamic_channels.remove_by_channel_id(channel_id)?;
         Some(SvcMessage::from(DrdynvcClientPdu::Close(ClosePdu::new(channel_id))))
     }
 
@@ -453,14 +453,11 @@ impl DrdynvcClient {
     /// Closes a dynamic channel at the server's request. The Close response is only sent for a
     /// channel that was open.
     fn process_close(&mut self, channel_id: DynamicChannelId) -> Vec<SvcMessage> {
-        self.tunnel_channels.remove(&channel_id);
-        if self.dynamic_channels.remove_by_channel_id(channel_id).is_some() {
-            let close_response = DrdynvcClientPdu::Close(ClosePdu::new(channel_id));
-            debug!("Send DVC Close Response PDU: {close_response:?}");
-            alloc::vec![SvcMessage::from(close_response)]
-        } else {
-            Vec::new()
-        }
+        let Some(close_response) = self.close_channel(channel_id) else {
+            return Vec::new();
+        };
+        debug!(channel_id, "Send DVC Close Response PDU");
+        alloc::vec![close_response]
     }
 
     fn process_data(&mut self, data: DrdynvcDataPdu) -> PduResult<Vec<SvcMessage>> {
