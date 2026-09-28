@@ -213,9 +213,13 @@ impl ActiveStage {
         let (mut stage_outputs, processor_updates) = match action {
             Action::FastPath => {
                 // A continuous bandwidth measurement counts what follows the fast-path header.
-                let mut header = ReadCursor::new(frame);
-                FastPathHeader::decode(&mut header).map_err(SessionError::decode)?;
-                self.x224_processor.record_bandwidth_bytes(header.len());
+                // The header is decoded again by `process`, so only pay for it here while a
+                // measurement is running.
+                if self.x224_processor.is_counting_bandwidth() {
+                    let mut header = ReadCursor::new(frame);
+                    FastPathHeader::decode(&mut header).map_err(SessionError::decode)?;
+                    self.x224_processor.record_bandwidth_bytes(header.len());
+                }
                 let mut output = WriteBuf::new();
                 let processor_updates =
                     self.fast_path_processor

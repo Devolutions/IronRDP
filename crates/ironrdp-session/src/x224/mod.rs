@@ -472,6 +472,11 @@ impl Processor {
         self.auto_detect.record_bytes(bytes);
     }
 
+    /// Whether a continuous bandwidth window is open, so session bytes are being counted.
+    pub(crate) fn is_counting_bandwidth(&self) -> bool {
+        self.auto_detect.is_counting()
+    }
+
     /// Process a PDU received on the MCS message channel: auto-detect
     /// ([MS-RDPBCGR] 2.2.14), multitransport ([MS-RDPBCGR] 2.2.15), or
     /// Heartbeat ([MS-RDPBCGR] 2.2.16.1).
