@@ -18,7 +18,7 @@ const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
 const {
   resolveClassificationState, resolveReviewState, reviewOutcome, reviewPolicyEligible, OVERLAP_MARKER,
   OVERLAP_LABEL,
-  CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
+  EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERSIZED_MARKER, OVERSIZED_REVIEW_LABEL, contributorEligibility,
 } = require("./resolve-state");
 const { resolvePr } = require("./resolve-pr");
@@ -2045,7 +2045,6 @@ test("review blockers distinguish gate and contributor history failures", () => 
   assert.deepEqual(ineligible.labelSets, []);
   assert.deepEqual(ineligible.addLabels, ["maintainer-required"]);
   assert.deepEqual(ineligible.comments, []);
-  assert.equal(ineligible.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), true);
 
   const unavailable = resolveReviewState({
     ...args, contributor: { status: "unavailable", reason: "GitHub API unavailable" },
@@ -2053,7 +2052,6 @@ test("review blockers distinguish gate and contributor history failures", () => 
   assert.equal(unavailable.ok, true);
   assert.equal(unavailable.failed, true);
   assert.equal(unavailable.reason, "contributor eligibility unavailable: GitHub API unavailable");
-  assert.equal(unavailable.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), true);
 
   const ciPending = resolveReviewState({
     ...args, gate: { ...args.gate, ok: false, ciGreen: false },
@@ -2089,20 +2087,6 @@ test("review blockers distinguish gate and contributor history failures", () => 
   });
   assert.equal(advisory.failed, undefined);
   assert.deepEqual(advisory.labelSets[0].desired, ["ai-reviewed/1"]);
-});
-
-test("a later eligible review removes the contributor-ineligible comment", () => {
-  const state = resolveReviewState({
-    expectedSha: SHA, labels: ["risk/low"], reviewer: review({ findings: [] }),
-    gate: {
-      ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true,
-      risk: "low", protocolRelated: false, specialistReviewers: ["code-compressor"],
-    },
-    contributor: { status: "eligible" },
-  });
-
-  assert.equal(state.failed, undefined);
-  assert.equal(state.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), true);
 });
 
 test("an unavailable mandatory protocol specialist blocks the review count", () => {
@@ -2193,10 +2177,8 @@ test("writer stops before mutations when review policy or count changes", async 
   assert.equal(writes, 0);
 });
 
-test("writer posts no comment for a bot-authored pull request and clears any legacy one", async () => {
-  const issueComments = [{
-    id: 1, body: `${CONTRIBUTOR_INELIGIBLE_MARKER}\n\nlegacy comment`, user: { login: "github-actions[bot]" },
-  }];
+test("writer posts no comment for a bot-authored pull request", async () => {
+  const issueComments = [];
   const github = {
     paginate: { iterator: async function* () { yield { data: issueComments }; } },
     rest: {
@@ -2205,9 +2187,7 @@ test("writer posts no comment for a bot-authored pull request and clears any leg
         get: async () => ({ data: { labels: ["maintainer-required", "risk/low"] } }),
         listComments: () => {},
         createComment: async () => { throw new Error("must not create a comment for a bot author"); },
-        deleteComment: async ({ comment_id: commentId }) => {
-          issueComments.splice(issueComments.findIndex((comment) => comment.id === commentId), 1);
-        },
+        deleteComment: async () => { throw new Error("must not delete a comment for a bot author"); },
       },
     },
   };

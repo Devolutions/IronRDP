@@ -17,10 +17,6 @@ const LEGACY_XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
 const FORK_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-quota -->";
 const GLOBAL_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-global-budget -->";
 const EVIDENCE_LIMIT_MARKER = "<!-- ironrdp-pr-automation:evidence-limit -->";
-// Legacy marker: no comment is created with this marker anymore (bot-authored pull requests are
-// silently skipped without a GitHub comment), but the string must stay stable so it can still be
-// matched and deleted from pull requests that already carry one from before this change.
-const CONTRIBUTOR_INELIGIBLE_MARKER = "<!-- ironrdp-pr-automation:contributor-ineligible -->";
 const EVIDENCE_LIMIT_REASON = /^pull request diff exceeds the (1|4) MiB evidence limit$/;
 
 function labelsOf(labels) {
@@ -244,7 +240,6 @@ function resolveReviewState({
         ...(comments.some((comment) => comment.kind === "evidence-limit") ? [] : [EVIDENCE_LIMIT_MARKER]),
         FORK_QUOTA_MARKER,
         ...(comments.some((comment) => comment.kind === "global-quota") ? [] : [GLOBAL_QUOTA_MARKER]),
-        CONTRIBUTOR_INELIGIBLE_MARKER,
       ],
       ...(report ? { check: {
         name: "AI automated review", externalId: expectedSha,
@@ -313,10 +308,7 @@ function resolveReviewState({
       kind: "review", marker: reviewMarker, review: reviewerResult.value,
       reducedCoverage: Array.isArray(reducedCoverage) ? reducedCoverage : [],
     }],
-    removeCommentMarkers: [
-      EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER,
-      CONTRIBUTOR_INELIGIBLE_MARKER,
-    ],
+    removeCommentMarkers: [EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER],
     check: { name: "AI automated review", externalId: expectedSha },
     expectedReviewCount,
     forced,
@@ -333,7 +325,7 @@ function reviewOutcome({ reportStatus, state, recovered = false, reducedCoverage
 }
 
 module.exports = {
-  AI_COUNTS, CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER,
+  AI_COUNTS, EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER,
   GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERLAP_LABEL, OVERLAP_MARKER, OVERSIZED_REVIEW_LABEL, RISK,
   OVERSIZED_MARKER,
