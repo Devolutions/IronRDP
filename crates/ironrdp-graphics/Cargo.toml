@@ -17,7 +17,6 @@ doctest = false
 # test = false
 
 [features]
-default = ["rayon"]
 # Decodes large progressive regions' tiles on several threads.
 rayon = ["dep:rayon"]
 
