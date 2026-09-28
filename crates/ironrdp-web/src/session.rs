@@ -2009,7 +2009,7 @@ mod tests {
         ironrdp_rdcleanpath::RDCleanPathPdu::new_response(
             "127.0.0.1".to_owned(),
             x224_response,
-            std::iter::empty::<Vec<u8>>(),
+            core::iter::empty::<Vec<u8>>(),
         )
         .expect("build RDCleanPath response")
         .to_der()
