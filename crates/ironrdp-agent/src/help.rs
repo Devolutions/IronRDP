@@ -154,10 +154,12 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
 ## Clipboard
 
-Text (`CF_UNICODETEXT`), images (`CF_DIB`/`CF_DIBV5`, as PNG files), and HTML fragments
-(`HTML Format`); no file transfer. Local content is a single logical item: setting one replaces
-whatever was set before, regardless of kind. A remote copy is requested image over HTML over text,
-richest representation first, when the remote offers more than one.
+Text (`CF_UNICODETEXT`), images (`CF_DIB`/`CF_DIBV5`, as PNG files), HTML fragments
+(`HTML Format`), and files (the `FileGroupDescriptorW` file-list mechanism); no folders. Local
+content is a single logical item: setting one replaces whatever was set before, regardless of kind.
+A remote copy is requested files over image over HTML over text, richest representation first,
+when the remote offers more than one. File listing is metadata only; a file's contents are fetched
+only on explicit request.
 
 - `clipboard-get`                    Print the last text received from the remote clipboard, or
                                       `(empty)` if none has arrived yet. Requires an active session.
@@ -172,10 +174,28 @@ richest representation first, when the remote offers more than one.
                                       `clipboard-set`.
 - `clipboard-get-html`               Print the last HTML fragment received from the remote
                                       clipboard, or `(empty)` if the current remote item isn't
-                                      HTML (nothing has arrived, or the last copy was text or an
-                                      image).
+                                      HTML (nothing has arrived, or the last copy was text, an
+                                      image, or files).
 - `clipboard-set-html --html HTML`   Set the local clipboard HTML fragment and advertise it to the
                                       remote. Same before-connect behavior as `clipboard-set`.
+- `clipboard-set-files PATH...`      Offer one or more local files to the remote via the clipboard
+                                      file-list mechanism. Each path must be a regular file; a
+                                      directory is rejected outright, not skipped. Works before a
+                                      session connects too: the offer is stored and advertised as
+                                      soon as the clipboard channel initializes. Once a session is
+                                      active, it must have negotiated file transfer support, or the
+                                      call fails.
+- `clipboard-list-files`             List the remote's currently offered files (name, path within
+                                      the copied collection, size, last-write time as Unix seconds,
+                                      and whether it is a directory entry), or a no-files message if
+                                      none are offered. Nothing is downloaded; this only inspects
+                                      metadata already received.
+- `clipboard-get-file INDEX --out PATH`
+                                      Fetch one file's full contents by its position in the last
+                                      `clipboard-list-files` listing and write it to `PATH`. Fails
+                                      cleanly on a directory entry, an out-of-range index, or a
+                                      file too large for the RPC transport, rather than attempt a
+                                      partial or corrupted download.
 
 ## NOW remote execution (requires an active, connected RDP session)
 

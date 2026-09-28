@@ -36,6 +36,7 @@ ironrdp-rail = { version = "0.1.0", path = "../ironrdp-rail" }
 ironrdp-connector = { path = "../ironrdp-connector" }
 ironrdp-session = { path = "../ironrdp-session" }
 now-proto-pdu = { version = "0.4", features = ["std"] }
+tokio = { version = "1", features = ["test-util"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
