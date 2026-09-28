@@ -558,3 +558,60 @@ impl From<io::Error> for RlgrError {
         Self::Io(err)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bit_reader_reads_across_byte_boundaries() {
+        let mut bits = BitReader::new(&[0b1011_0011, 0b1100_0101, 0xFF, 0x00, 0xAA, 0x55, 0x0F, 0xF0, 0x81]);
+
+        assert_eq!(bits.read(3), Some(0b101));
+        assert_eq!(bits.read(0), Some(0));
+        assert_eq!(bits.read(7), Some(0b100_1111));
+        assert_eq!(bits.read(10), Some(0b00_0101_1111));
+        // Straddles the end of the first 64-bit window.
+        assert_eq!(bits.read(32), Some(0b1111_0000_0000_1010_1010_0101_0101_0000));
+        assert_eq!(bits.remaining(), 20);
+        assert_eq!(bits.read(20), Some(0b1111_1111_0000_1000_0001));
+        assert_eq!(bits.remaining(), 0);
+    }
+
+    #[test]
+    fn bit_reader_refuses_reads_past_the_end() {
+        let mut bits = BitReader::new(&[0xAB, 0xCD]);
+
+        assert_eq!(bits.read(5), Some(0b10101));
+        assert_eq!(bits.read(12), None);
+        // A refused read consumes nothing.
+        assert_eq!(bits.remaining(), 11);
+        assert_eq!(bits.read(11), Some(0b011_1100_1101));
+        assert_eq!(bits.read(1), None);
+        assert_eq!(bits.read(0), Some(0));
+    }
+
+    #[test]
+    fn bit_reader_zero_run_stops_at_the_end() {
+        let mut bits = BitReader::new(&[0xFF, 0x00, 0x00]);
+
+        assert_eq!(bits.read(4), Some(0xF));
+        assert_eq!(bits.skip_run(true), 4);
+        assert_eq!(bits.skip_run(false), 16);
+        assert_eq!(bits.remaining(), 0);
+        assert_eq!(bits.skip_run(false), 0);
+    }
+
+    #[test]
+    fn bit_reader_one_run_stops_at_the_end() {
+        // A run longer than one 64-bit window.
+        let mut data = vec![0x0F];
+        data.extend([0xFF; 11]);
+        let mut bits = BitReader::new(&data);
+
+        assert_eq!(bits.skip_run(false), 4);
+        assert_eq!(bits.skip_run(true), 92);
+        assert_eq!(bits.remaining(), 0);
+        assert_eq!(bits.read(1), None);
+    }
+}
