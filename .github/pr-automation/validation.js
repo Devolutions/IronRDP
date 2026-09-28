@@ -23,12 +23,13 @@ function exactKeys(value, keys) {
 }
 
 function unicodeLength(value) {
-  return [...value].length;
+  return value.isWellFormed() ? [...value].length : Number.POSITIVE_INFINITY;
 }
 
 function normalizeText(value, maximumLength) {
   if (typeof value !== "string") return null;
-  if (unicodeLength(value) > maximumLength || FORBIDDEN_TEXT_CONTROL.test(value)) return null;
+  if (!value.isWellFormed() || unicodeLength(value) > maximumLength ||
+      FORBIDDEN_TEXT_CONTROL.test(value)) return null;
   // Structured output occasionally represents an empty string as the literal text `""`.
   const normalized = (value === '""' ? "" : value).replace(/\s+/g, " ").trim();
   return normalized;

@@ -49,6 +49,10 @@ function validateClassifier(raw, {
 
   const overlapKeys = ["detected", "similar_pr_number", "similar_pr_url", "confidence", "rationale"];
   const overlap = value.overlap;
+  if (exactKeys(overlap, overlapKeys) && Number.isSafeInteger(overlap.similar_pr_number) &&
+      overlap.similar_pr_number > MAXIMUM_GITHUB_INTEGER) {
+    return invalid(`similar_pr_number must be between 1 and ${MAXIMUM_GITHUB_INTEGER}`);
+  }
   if (!exactKeys(overlap, overlapKeys) || typeof overlap.detected !== "boolean" ||
       !Number.isFinite(overlap.confidence) || overlap.confidence < 0 || overlap.confidence > 1 ||
       !((Number.isSafeInteger(overlap.similar_pr_number) && overlap.similar_pr_number > 0 &&

@@ -158,10 +158,17 @@ function compileOutputValidator(schema) {
     } catch {
       return { ok: false, layer: "json", reason: "response was not valid JSON" };
     }
+    if (containsUnpairedSurrogate(value)) {
+      return { ok: false, layer: "unicode", reason: "response contains ill-formed Unicode" };
+    }
     if (!validate(value)) {
       const errors = (validate.errors || []).slice(0, 10)
         .map((error) => {
-          const detail = error.keyword === "required" ? ` ${error.params.missingProperty}` : "";
+          const detail = error.keyword === "required"
+            ? ` ${error.params.missingProperty}`
+            : error.keyword === "maximum"
+              ? ` must be at most ${error.params.limit}`
+              : "";
           return `${error.schemaPath || "/"}: ${error.keyword}${detail}`;
         })
         .join("; ");
@@ -177,6 +184,13 @@ function compileOutputValidator(schema) {
     }
     return { ok: true, output, value };
   };
+}
+
+function containsUnpairedSurrogate(value) {
+  if (typeof value === "string") return !value.isWellFormed();
+  if (Array.isArray(value)) return value.some(containsUnpairedSurrogate);
+  return value !== null && typeof value === "object" &&
+    Object.values(value).some(containsUnpairedSurrogate);
 }
 
 function initialMessages(prompt, methodologies, schema) {

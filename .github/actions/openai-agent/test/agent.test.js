@@ -146,6 +146,16 @@ test("runtime applies its model-message-content fallback only after non-streamed
   assert.equal(requests.length, 1);
 });
 
+test("output validation rejects unpaired UTF-16 surrogates and accepts non-BMP text", () => {
+  const validate = compileOutputValidator(schema);
+  for (const value of ["\uD800", "\uDC00"]) {
+    assert.deepEqual(validate(JSON.stringify({ answer: value })), {
+      ok: false, layer: "unicode", reason: "response contains ill-formed Unicode",
+    });
+  }
+  assert.equal(validate(JSON.stringify({ answer: "😀" })).ok, true);
+});
+
 test("runtime enforces aggregate tool-call and turn bounds", async () => {
   const calls = [call("one", "read_file", { path: "x" }), call("two", "read_file", { path: "x" })];
   await assert.rejects(

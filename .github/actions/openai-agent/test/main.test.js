@@ -12,11 +12,13 @@ const { scratchWorkspace, write } = require("./helpers");
 test("action metadata exposes only configured inputs and required outputs on node24", () => {
   const action = fs.readFileSync(path.join(__dirname, "..", "action.yml"), "utf8");
   assert.match(action, /runs:\r?\n  using: node24\r?\n  main: dist\/index\.js/);
-  for (const input of ["api-key", "base-url", "config-file", "validator", "validator-metadata"]) {
+  for (const input of [
+    "api-key", "base-url", "config-file", "validator", "validator-metadata", "structured-output-file",
+  ]) {
     assert.match(action, new RegExp(`^  ${input}:\\r?$`, "m"));
   }
   for (const output of [
-    "structured-output", "failure-reason", "turn-count", "tool-call-count", "diagnostics",
+    "structured-output", "structured-output-file", "failure-reason", "turn-count", "tool-call-count", "diagnostics",
     "failure-category", "retryable",
   ]) {
     assert.match(action, new RegExp(`^  ${output}:\\r?$`, "m"));
@@ -122,6 +124,36 @@ test("main masks the key immediately, rejects redirects, and emits only bounded 
     ]) {
       assert.doesNotMatch(logs, new RegExp(forbidden));
     }
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test("main transports accepted output through a workflow-controlled file without an output value", async () => {
+  const workspace = actionFixture();
+  const answer = "😀".repeat(36_000);
+  assert.ok(Buffer.byteLength(JSON.stringify({ answer }), "utf8") > 128 * 1024);
+  const core = mockCore({
+    "api-key": "key",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+    "structured-output-file": ".openai-agent-output/review.json",
+  });
+  class MockOpenAI {
+    constructor() {
+      this.chat = { completions: { create: async () => ({
+        choices: [{ message: { content: JSON.stringify({ answer }) } }],
+      }) } };
+    }
+  }
+  try {
+    await main(core, { GITHUB_WORKSPACE: workspace.directory }, MockOpenAI);
+    assert.equal(core.outputs.get("structured-output"), "");
+    assert.equal(core.outputs.get("structured-output-file"), ".openai-agent-output/review.json");
+    assert.equal(
+      fs.readFileSync(path.join(workspace.directory, ".openai-agent-output", "review.json"), "utf8"),
+      JSON.stringify({ answer }),
+    );
   } finally {
     workspace.cleanup();
   }

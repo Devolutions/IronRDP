@@ -39,15 +39,9 @@ on:
         type: string
         default: "120"
     outputs:
-      output:
-        description: Validated final review JSON
-        value: ${{ jobs.validate.outputs.output }}
       failure-reason:
         description: Bounded failure reason when no valid review was produced
         value: ${{ jobs.validate.outputs.reason }}
-      report:
-        description: Canonical per-stage outcome and metric report
-        value: ${{ jobs.report.outputs.report }}
 
 permissions: {}
 
@@ -329,6 +323,7 @@ jobs:
           config-file: .github/pr-automation/agents/${{ matrix.reviewer }}.json
           validator: .github/pr-automation/agent-validator.js#validateSpecialist
           validator-metadata: ${{ steps.plan.outputs.metadata }}
+          structured-output-file: .openai-agent-output/${{ matrix.reviewer }}-initial.json
 
       - id: retry-gate
         name: Decide on a delayed retry
@@ -362,6 +357,7 @@ jobs:
           config-file: .github/pr-automation/agents/${{ matrix.reviewer }}.json
           validator: .github/pr-automation/agent-validator.js#validateSpecialist
           validator-metadata: ${{ steps.plan.outputs.metadata }}
+          structured-output-file: .openai-agent-output/${{ matrix.reviewer }}-retry.json
 
       - id: validate
         name: Validate specialist result
@@ -373,7 +369,7 @@ jobs:
           OPENSPECS_SHA: ${{ needs.evidence.outputs.openspecs-sha }}
           REQUIRED_REVIEWERS: ${{ needs.evidence.outputs.required-reviewers }}
           SELECTED_REVIEWERS: ${{ inputs.specialist-reviewers }}
-          RAW_OUTPUT: ${{ steps.agent-retry.outputs.structured-output || steps.agent.outputs.structured-output }}
+          OUTPUT_FILE: ${{ steps.agent-retry.outputs.structured-output-file || steps.agent.outputs.structured-output-file }}
           MODEL_REASON: ${{ steps.agent-retry.outputs.failure-reason || steps.agent.outputs.failure-reason }}
           FAILURE_CATEGORY: ${{ steps.agent-retry.outputs.failure-category || steps.agent.outputs.failure-category }}
           DIAGNOSTICS: ${{ steps.agent.outputs.diagnostics }}
@@ -408,7 +404,9 @@ jobs:
                   expectedCorpusSha: process.env.OPENSPECS_SHA,
                 })
                 : undefined;
-              const result = validateSpecialistRun(process.env.RAW_OUTPUT || "", {
+              const outputFile = process.env.OUTPUT_FILE || "";
+              const output = outputFile === "" ? "" : fs.readFileSync(outputFile, "utf8");
+              const result = validateSpecialistRun(output, {
                 reviewer,
                 expectedSha: process.env.HEAD_SHA,
                 changedPaths: validation.changed_paths,
@@ -611,6 +609,7 @@ jobs:
           config-file: .github/pr-automation/agents/general-reviewer.json
           validator: .github/pr-automation/agent-validator.js#validateGeneral
           validator-metadata: ${{ steps.plan.outputs.metadata }}
+          structured-output-file: .openai-agent-output/general-initial.json
 
       - id: retry-gate
         name: Decide on a delayed retry
@@ -644,13 +643,14 @@ jobs:
           config-file: .github/pr-automation/agents/general-reviewer.json
           validator: .github/pr-automation/agent-validator.js#validateGeneral
           validator-metadata: ${{ steps.plan.outputs.metadata }}
+          structured-output-file: .openai-agent-output/general-retry.json
 
       - id: persist
         name: Persist general review result
         if: always()
         uses: actions/github-script@v8
         env:
-          RAW_OUTPUT: ${{ steps.agent-retry.outputs.structured-output || steps.agent.outputs.structured-output }}
+          OUTPUT_FILE: ${{ steps.agent-retry.outputs.structured-output-file || steps.agent.outputs.structured-output-file }}
           MODEL_REASON: ${{ steps.agent-retry.outputs.failure-reason || steps.agent.outputs.failure-reason }}
           FAILURE_CATEGORY: ${{ steps.agent-retry.outputs.failure-category || steps.agent.outputs.failure-category }}
           DIAGNOSTICS: ${{ steps.agent.outputs.diagnostics }}
@@ -667,7 +667,14 @@ jobs:
             } = require("./.github/pr-automation/review-pipeline");
             const { stageOutcome } = require("./.github/pr-automation/review-report");
             const retried = process.env.RETRIED === "true";
-            const output = process.env.RAW_OUTPUT || "";
+            let output = "";
+            try {
+              if (process.env.OUTPUT_FILE) {
+                output = fs.readFileSync(process.env.OUTPUT_FILE, "utf8");
+              }
+            } catch (error) {
+              core.warning(`General review output unavailable: ${error.message}`);
+            }
             const decline = process.env.RETRYABLE === "true" && !retried
               ? process.env.RETRY_DECLINE
               : "";
@@ -716,7 +723,6 @@ jobs:
     permissions:
       contents: read
     outputs:
-      output: ${{ steps.final.outputs.output }}
       reason: ${{ steps.final.outputs.reason }}
       stage: ${{ steps.final.outputs.stage }}
     steps:
@@ -763,7 +769,8 @@ jobs:
             const { validateFinalReview } = require("./.github/pr-automation/validate-final-review");
             const { stageOutcome } = require("./.github/pr-automation/review-report");
             const finish = (output, reason, category) => {
-              core.setOutput("output", output);
+              fs.mkdirSync("final-review", { recursive: true });
+              fs.writeFileSync("final-review/result.json", JSON.stringify({ output, reason }));
               core.setOutput("reason", reason);
               core.setOutput("stage", JSON.stringify(stageOutcome({
                 id: "validate",
@@ -829,6 +836,16 @@ jobs:
             if (!result.ok) return finish("", result.reason, "invalid-final-review");
             return finish(JSON.stringify(result.value), "", "");
 
+      - name: Upload final review result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: review-final-${{ inputs.head-sha }}
+          path: final-review/result.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
   report:
     name: Report stage outcomes
     needs: [evidence, specialists, aggregate, general, validate]
@@ -836,8 +853,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    outputs:
-      report: ${{ steps.report.outputs.report }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -954,7 +969,7 @@ jobs:
               category: "validation-unavailable",
             }));
             const report = buildReport(stages);
-            core.setOutput("report", JSON.stringify(report));
+            fs.writeFileSync("review-report.json", JSON.stringify(report));
             core.info(JSON.stringify({
               event: "pr-automation.review-report",
               status: report.status,
@@ -963,3 +978,13 @@ jobs:
                 .map((stage) => stage.id),
               stage_retries: report.metrics.stage_retries,
             }));
+
+      - name: Upload canonical report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: review-report-${{ inputs.head-sha }}
+          path: review-report.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true

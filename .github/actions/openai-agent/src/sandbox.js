@@ -12,6 +12,8 @@ const {
 } = require("./limits");
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
+const OUTPUT_DIRECTORY = ".openai-agent-output";
+const OUTPUT_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$/;
 
 function isInside(parent, child) {
   const relative = path.relative(parent, child);
@@ -32,6 +34,57 @@ function normalizeRepositoryPath(value) {
     fail("invalid path");
   }
   return segments.join("/");
+}
+
+function validateOutputFilePath(value) {
+  if (value === "") return "";
+  const relative = normalizeRepositoryPath(value);
+  const prefix = `${OUTPUT_DIRECTORY}/`;
+  const name = relative.startsWith(prefix) ? relative.slice(prefix.length) : "";
+  if (relative !== value || name.includes("/") || !OUTPUT_FILE.test(name)) {
+    fail("invalid structured output file");
+  }
+  return relative;
+}
+
+function writeOutputFile(workspace, repositoryPath, content) {
+  const relative = validateOutputFilePath(repositoryPath);
+  if (relative === "") return "";
+  const sandbox = new WorkspaceSandbox(workspace);
+  const directory = path.join(sandbox.workspace, OUTPUT_DIRECTORY);
+  try {
+    fs.mkdirSync(directory, { mode: 0o700 });
+  } catch (error) {
+    if (error?.code !== "EEXIST") fail("structured output directory is unavailable");
+  }
+  try {
+    const metadata = fs.lstatSync(directory);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      fail("structured output directory is unavailable");
+    }
+  } catch (error) {
+    if (error instanceof ActionError) throw error;
+    fail("structured output directory is unavailable");
+  }
+
+  let descriptor;
+  try {
+    descriptor = fs.openSync(
+      path.join(directory, path.basename(relative)),
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL |
+        (fs.constants.O_NOFOLLOW || 0),
+      0o600,
+    );
+    if (!fs.fstatSync(descriptor).isFile()) fail("structured output path is not a regular file");
+    fs.writeFileSync(descriptor, content, "utf8");
+    fs.fsyncSync(descriptor);
+    return relative;
+  } catch (error) {
+    if (error instanceof ActionError) throw error;
+    fail("structured output file is unavailable");
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
 }
 
 function decodeText(buffer) {
@@ -339,4 +392,7 @@ function positiveInteger(value, code) {
   return value;
 }
 
-module.exports = { WorkspaceSandbox, boundJson, normalizeRepositoryPath };
+module.exports = {
+  OUTPUT_DIRECTORY, WorkspaceSandbox, boundJson, normalizeRepositoryPath, validateOutputFilePath,
+  writeOutputFile,
+};

@@ -86,8 +86,7 @@ const candidateReview = (reviewer = "skeptical", changes = {}) => ({
   findings: [candidateFinding()], ...changes,
 });
 
-const MAXIMUM_GITHUB_JOB_OUTPUT_UTF16_BYTES = 512 * 1024;
-const MAXIMUM_GITHUB_OUTPUT_UTF16_BYTES = 1024 * 1024;
+const MAXIMUM_LINUX_ENVIRONMENT_ENTRY_BYTES = 128 * 1024;
 const REVIEWERS = ["protocol", "skeptical", "code-compressor"];
 const MAXIMUM_NUMBER = 2_147_483_647;
 const HIGH_PRECISION_CONFIDENCE = 0.9999999999999999;
@@ -393,6 +392,10 @@ async function runReviewGateScript({
 async function runResolveReviewScript({ report, pipelineResult = "success" }) {
   const outputs = new Map();
   const summary = [];
+  const files = new Map([
+    ["review-pipeline/final/result.json", JSON.stringify({ output: JSON.stringify(review({ findings: [] })) })],
+    ["review-pipeline/report/review-report.json", JSON.stringify(report)],
+  ]);
   const core = {
     setOutput: (name, value) => outputs.set(name, value),
     info: () => {},
@@ -405,9 +408,21 @@ async function runResolveReviewScript({ report, pipelineResult = "success" }) {
   };
   const rootRequire = createRequire(path.join(__dirname, "..", "..", "labeler.js"));
   const reportModule = path.join(__dirname, "review-report.js");
-  const requireWithReport = (name) => name === "./.github/pr-automation/review-report"
-    ? fs.existsSync(reportModule) ? rootRequire(name) : { parseReport: () => report }
-    : rootRequire(name);
+  const requireWithReport = (name) => {
+    if (name === "node:fs") {
+      return {
+        existsSync: (file) => files.has(file),
+        readFileSync: (file) => {
+          if (!files.has(file)) throw new Error("missing fixture file");
+          return files.get(file);
+        },
+        writeFileSync: (file, content) => files.set(file, content),
+      };
+    }
+    return name === "./.github/pr-automation/review-report"
+      ? fs.existsSync(reportModule) ? rootRequire(name) : { parseReport: () => report }
+      : rootRequire(name);
+  };
   const process = { env: {
     HEAD_SHA: SHA, BASE_SHA: "c".repeat(40),
     GATE: JSON.stringify({
@@ -417,15 +432,14 @@ async function runResolveReviewScript({ report, pipelineResult = "success" }) {
       specialistReviewers: [], contributor: { status: "eligible" },
     }),
     REVIEW_GATE_RESULT: "success", FORK_RATE_LIMIT: JSON.stringify({ status: "allowed" }),
-    FORK_RATE_LIMIT_RESULT: "success", RAW_OUTPUT: JSON.stringify(review({ findings: [] })),
-    REVIEWER_REASON: "", REVIEW_REPORT: JSON.stringify(report), REVIEW_PIPELINE_RESULT: pipelineResult,
+    FORK_RATE_LIMIT_RESULT: "success", REVIEWER_REASON: "", REVIEW_PIPELINE_RESULT: pipelineResult,
     FORCE: "false", LABELS: JSON.stringify(["risk/low"]), REVIEW_MARKER_ID: "123",
     SUMMARY_URL: "https://github.example/actions/runs/123",
   } };
   await new AsyncFunction("core", "require", "process", resolveReviewScript())(
     core, requireWithReport, process,
   );
-  return { state: JSON.parse(outputs.get("state")), summary: summary.join("\n") };
+  return { state: JSON.parse(files.get("review-state.json")), summary: summary.join("\n") };
 }
 
 test("reusable review keeps inherited secrets inside the trusted workflow", () => {
@@ -490,9 +504,11 @@ test("automatic review requires exact-head CI and only reruns after a later push
     "stage-recovery-delay", "review-recovery-preflight", "review-recovery-claim", "review-pipeline-recovery",
   ]) assert.doesNotMatch(workflow, new RegExp(`  ${retiredJob}:`));
   const reviewState = workflowJob(workflow, "resolve-review-state");
-  assert.match(reviewState, /REVIEW_REPORT: \$\{\{ needs\.review-pipeline\.outputs\.report \}\}/);
-  assert.match(reviewState, /parseReport\(process\.env\.REVIEW_REPORT\)/);
-  assert.match(reviewState, /report\.status === "success" \? parse\(process\.env\.RAW_OUTPUT, null\) : null/);
+  assert.match(reviewState, /name: review-final-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
+  assert.match(reviewState, /name: review-report-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
+  assert.match(reviewState, /parseReport\(fs\.existsSync\("review-pipeline\/report\/review-report\.json"\)/);
+  assert.match(reviewState, /report\.status === "success" \? parse\(persisted\?\.output, null\) : null/);
+  assert.doesNotMatch(reviewState, /RAW_OUTPUT|REVIEW_REPORT/);
   assert.match(reviewState, /renderReviewReport/);
   assert.doesNotMatch(reviewState, /specialistReviewers: \["skeptical", "code-compressor"\]/);
   assert.match(reviewState, /REVIEW_GATE_RESULT: \$\{\{ needs\.review-gate\.result \}\}/);
@@ -1153,6 +1169,9 @@ test("maximum schema outputs stay accepted through action and review validation"
   const classifierOutput = maximumClassifier();
   const classifierCandidate = classifierSchema(JSON.stringify(classifierOutput));
   assert.equal(classifierCandidate.ok, true);
+  assert.ok(Buffer.byteLength(`CLASSIFIER=${classifierCandidate.output}`, "utf8") <= 16 * 1024);
+  assert.ok(Buffer.byteLength(`CLASSIFIER=${classifierCandidate.output}`, "utf8") <
+    MAXIMUM_LINUX_ENVIRONMENT_ENTRY_BYTES);
   assert.equal(validateClassifier(classifierCandidate.value, {
     expectedSha: SHA,
     prNumber: 1,
@@ -1170,6 +1189,8 @@ test("maximum schema outputs stay accepted through action and review validation"
     expectedReviewer: "skeptical",
     changedPaths: candidateOutput.findings.map((finding) => finding.path),
   }).ok, true);
+  assert.ok(Buffer.byteLength(candidateCandidate.output, "utf8") >
+    MAXIMUM_LINUX_ENVIRONMENT_ENTRY_BYTES);
 
   const specialistRuns = REVIEWERS.map((reviewer) => {
     const candidate = maximumCandidate(reviewer, { references: reviewer === "protocol" });
@@ -1199,14 +1220,60 @@ test("maximum schema outputs stay accepted through action and review validation"
   });
   assert.equal(finalValidation.ok, true);
 
-  const finalJobOutputs = {
-    output: JSON.stringify(finalValidation.value),
-    reason: "",
-    stage: JSON.stringify({ id: "validate", status: "success", required: true }),
-  };
-  const outputBytes = Buffer.byteLength(JSON.stringify(finalJobOutputs), "utf16le");
-  assert.equal(outputBytes < MAXIMUM_GITHUB_JOB_OUTPUT_UTF16_BYTES, true);
-  assert.equal(outputBytes < MAXIMUM_GITHUB_OUTPUT_UTF16_BYTES, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(finalValidation.value), "utf8") <
+    1024 * 1024);
+});
+
+test("semantic validators reject unpaired UTF-16 surrogates and state GitHub integer ranges", () => {
+  const unicode = "\uD800";
+  assert.equal(validateClassifier(classifier({ summary: unicode }), { expectedSha: SHA }).ok, false);
+  assert.equal(validateCandidateReview(candidateReview("skeptical", { summary: unicode }), {
+    expectedSha: SHA, expectedReviewer: "skeptical", changedPaths: ["src/lib.rs"],
+  }).ok, false);
+  const finalWithInvalidSummary = maximumFinalReview();
+  finalWithInvalidSummary.summary = unicode;
+  assert.equal(validateFinalReview(finalWithInvalidSummary, {
+    expectedSha: SHA,
+    changedPaths: finalWithInvalidSummary.findings.map((finding) => finding.path),
+    specialistAggregate: maximumSpecialistAggregate(),
+  }).ok, false);
+  const candidateWithInvalidPath = candidateReview("skeptical");
+  candidateWithInvalidPath.findings[0].path = `src/${unicode}.rs`;
+  assert.equal(validateCandidateReview(candidateWithInvalidPath, {
+    expectedSha: SHA,
+    expectedReviewer: "skeptical",
+    changedPaths: [candidateWithInvalidPath.findings[0].path],
+  }).ok, false);
+  const finalWithInvalidPath = maximumFinalReview();
+  finalWithInvalidPath.findings[0].path = `src/${unicode}.rs`;
+  assert.equal(validateFinalReview(finalWithInvalidPath, {
+    expectedSha: SHA,
+    changedPaths: finalWithInvalidPath.findings.map((finding) => finding.path),
+    specialistAggregate: maximumSpecialistAggregate(),
+  }).ok, false);
+  assert.equal(validateClassifier({
+    ...maximumClassifier(),
+    overlap: {
+      ...maximumClassifier().overlap,
+      similar_pr_number: MAXIMUM_NUMBER + 1,
+    },
+  }, { expectedSha: SHA }).reason,
+  `similar_pr_number must be between 1 and ${MAXIMUM_NUMBER}`);
+  const candidate = maximumCandidate("skeptical");
+  candidate.findings[0].start_line = MAXIMUM_NUMBER + 1;
+  assert.equal(validateCandidateReview(candidate, {
+    expectedSha: SHA,
+    expectedReviewer: "skeptical",
+    changedPaths: candidate.findings.map((finding) => finding.path),
+  }).reason, `candidate finding lines must be between 1 and ${MAXIMUM_NUMBER}`);
+  const final = maximumFinalReview();
+  final.findings[0].end_line = MAXIMUM_NUMBER + 1;
+  assert.equal(validateFinalReview(final, {
+    expectedSha: SHA,
+    changedPaths: final.findings.map((finding) => finding.path),
+    specialistAggregate: maximumSpecialistAggregate(),
+  }).reason,
+  `invalid final review finding at index 0: start_line and end_line must be between 1 and ${MAXIMUM_NUMBER}`);
 });
 
 test("schema output bounds cover escaped strings, protocol coordinates, and GitHub integers", () => {
@@ -4412,7 +4479,25 @@ test("the reusable pipeline stays caller-driven and reports every stage back", (
 
   const outputs = workflow.slice(workflow.indexOf("    outputs:"), workflow.indexOf("\npermissions:"));
   assert.deepEqual(outputs.match(/\n {6}[a-z-]+:/g).map((name) => name.trim()),
-    ["output:", "failure-reason:", "report:"]);
+    ["failure-reason:"]);
+});
+
+test("maximum review payloads traverse workflow-controlled files and artifacts", () => {
+  const caller = readWorkflow();
+  const pipeline = readReviewWorkflow();
+  const action = fs.readFileSync(path.join(__dirname, "..", "actions", "openai-agent", "action.yml"), "utf8");
+  assert.equal((pipeline.match(/structured-output-file: \.openai-agent-output\//g) || []).length, 4);
+  assert.doesNotMatch(pipeline, /RAW_OUTPUT|structured-output \}\}/);
+  assert.match(pipeline, /name: review-final-\$\{\{ inputs\.head-sha \}\}/);
+  assert.match(pipeline, /name: review-report-\$\{\{ inputs\.head-sha \}\}/);
+  assert.match(caller, /name: review-final-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
+  assert.match(caller, /name: review-report-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
+  assert.match(caller, /name: review-state-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
+  assert.doesNotMatch(workflowJob(caller, "resolve-review-state"), /RAW_OUTPUT|REVIEW_REPORT/);
+  assert.doesNotMatch(workflowJob(caller, "write-state"), /REVIEW_STATE/);
+  assert.match(workflowJob(caller, "write-state"), /CLASSIFICATION_STATE/);
+  assert.doesNotMatch(caller, /classification-state-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
+  assert.match(action, /structured-output-file:/);
 });
 
 test("specialist concurrency is a provider allocation, not a reviewer cap", () => {
@@ -4784,6 +4869,8 @@ test("publication stays fail closed on required coverage and independent validat
   assert.match(report, /if: always\(\) && !cancelled\(\)/);
   assert.match(report, /buildReport/);
   // The published review is whatever independent validation accepted, and nothing else.
-  assert.match(workflow, /value: \$\{\{ jobs\.validate\.outputs\.output \}\}/);
+  assert.doesNotMatch(workflow, /jobs\.validate\.outputs\.output/);
+  assert.match(validate, /fs\.writeFileSync\("final-review\/result\.json", JSON\.stringify\(\{ output, reason \}\)\)/);
+  assert.match(workflow, /name: review-final-\$\{\{ inputs\.head-sha \}\}/);
   assert.match(report, /\.filter\(\(stage\) => stage\.status === "failed"\)/);
 });

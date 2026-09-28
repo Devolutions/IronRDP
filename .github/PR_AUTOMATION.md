@@ -46,6 +46,8 @@ Protocol candidates also carry structured protocol references.
 Schema line and pull-request numbers stop at the signed 32-bit GitHub API integer maximum, while validators retain safe-integer checks.
 One specialist never receives another specialist's output.
 The validated aggregate of all selected specialists is bounded to 1 MiB, which accommodates every maximum schema-valid specialist result.
+Review payloads move between action, validation, reusable workflow, caller, and writer as workspace files and one-day artifacts rather than environment variables or job outputs.
+The classifier alone uses a direct output because its tested maximum serialized environment entry is at most 16 KiB, well below Linux's 128 KiB per-entry limit.
 
 The general reviewer independently inspects the pull request, attempts to falsify every candidate, and records exactly one `accepted`, `refined`, or `rejected` disposition per candidate.
 A candidate is one entry in the findings of a reviewer the aggregate reports as valid, so a reviewer that failed or reported nothing contributes none.
@@ -136,6 +138,7 @@ It loads a workflow-controlled agent configuration, prompt, output schema, metho
 It exposes only `read_file`, `list_files`, and `search_text`.
 Its workflow-controlled configuration enforces turn, tool-call, path, byte, line, recursion, result, request-timeout, request-retry, and output-repair limits.
 The output schemas, rather than profile byte limits, bound accepted model output.
+For large review schemas, accepted output is written once to a workflow-controlled file in the action's dedicated workspace directory; the action rejects symlinks, existing targets, and paths outside that directory.
 The caller can opt into a trusted validator from the workflow checkout and pass bounded invocation metadata.
 The action validates JSON and schema before the validator, then preserves the conversation for bounded correction turns.
 For validator checks, `previousCandidate` is the earliest JSON-parsed candidate in the repair sequence, including a value that did not pass local schema and may be any JSON type.

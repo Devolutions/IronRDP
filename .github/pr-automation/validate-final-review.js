@@ -242,6 +242,11 @@ function normalizeFinding(finding, changedPaths, changedLines, dispositions, ref
     return rejected(`sources must be an array of at most ${MAXIMUM_CANDIDATES} entries`);
   }
 
+  const lineIsAboveGitHubMaximum = [finding.start_line, finding.end_line].some((line) =>
+    Number.isSafeInteger(line) && line > MAXIMUM_GITHUB_INTEGER);
+  if (lineIsAboveGitHubMaximum) {
+    return rejected(`start_line and end_line must be between 1 and ${MAXIMUM_GITHUB_INTEGER}`);
+  }
   const linesAreNull = finding.start_line === null && finding.end_line === null;
   const linesAreIntegers = Number.isSafeInteger(finding.start_line) && finding.start_line >= 1 &&
     finding.start_line <= MAXIMUM_GITHUB_INTEGER &&
