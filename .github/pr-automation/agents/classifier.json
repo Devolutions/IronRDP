@@ -13,7 +13,6 @@
     "pr-evidence/overlap-candidates.json",
     "pr-evidence/pull-request.diff"
   ],
-  "max_output_bytes": 4096,
   "max_turns": 20,
   "max_tool_calls": 64,
   "max_request_retries": 4

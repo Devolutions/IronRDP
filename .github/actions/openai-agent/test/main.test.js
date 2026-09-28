@@ -44,7 +44,6 @@ function actionFixture() {
     methodology_files: [],
     allowed_roots: ["evidence"],
     allowed_files: [],
-    max_output_bytes: 32 * 1024,
     max_turns: 3,
     max_tool_calls: 2,
   }));
@@ -138,7 +137,6 @@ test("configuration supplies recovery limits and canonical diagnostics", async (
     methodology_files: [],
     allowed_roots: ["evidence"],
     allowed_files: [],
-    max_output_bytes: 2048,
     max_turns: 4,
     max_tool_calls: 1,
     request_timeout_ms: 90_000,
@@ -278,6 +276,7 @@ test("main emits a bounded provider request ID without raw errors", async () => 
         throw Object.assign(new Error("RAW_PROVIDER_SECRET_SENTINEL"), {
           status: 403,
           requestID: "req_safe-123",
+          code: "access_denied",
           headers: { get: () => "RAW_HEADER_SECRET_SENTINEL" },
         });
       } } };
@@ -297,8 +296,10 @@ test("main emits a bounded provider request ID without raw errors", async () => 
         retryable: false,
         status: 403,
         requestId: "req_safe-123",
+        providerCode: "access_denied",
       },
     );
+    assert.equal(JSON.parse(core.outputs.get("diagnostics")).providerErrorCode, "access_denied");
     assert.doesNotMatch(observable, /RAW_PROVIDER_SECRET_SENTINEL|RAW_HEADER_SECRET_SENTINEL/);
   } finally {
     workspace.cleanup();
@@ -566,8 +567,7 @@ function reviewFixture(workspace, { candidates = 4 } = {}) {
       }],
     }),
     // Schema-valid in every field, and wrong in four different ways at once: a duplicate, an
-    // unknown candidate, a rationale the schema counts in characters and the validator in bytes,
-    // and every remaining candidate left out.
+    // unknown candidate, a forbidden control character, and every remaining candidate left out.
     mixed: () => ({
       head_sha: sha,
       summary: "verified",
@@ -575,7 +575,7 @@ function reviewFixture(workspace, { candidates = 4 } = {}) {
         { reviewer: "skeptical", finding_id: `${secret}-1`, disposition: "rejected", rationale: "unsupported" },
         { reviewer: "skeptical", finding_id: `${secret}-1`, disposition: "rejected", rationale: "unsupported again" },
         { reviewer: "skeptical", finding_id: "ghost-candidate", disposition: "rejected", rationale: "unsupported" },
-        { reviewer: "skeptical", finding_id: `${secret}-2`, disposition: "rejected", rationale: "\u00e9".repeat(401) },
+        { reviewer: "skeptical", finding_id: `${secret}-2`, disposition: "rejected", rationale: "unsupported\u0000" },
       ],
       findings: [],
     }),
@@ -710,11 +710,10 @@ test("a review wrong in several ways at once keeps every category through the ru
     assert.match(expected, /candidates lack a valid disposition|candidates have no valid disposition/);
     assert.match(expected, /1 unknown|1 entry naming a candidate the specialists did not report/);
     assert.match(expected, /1 duplicate|1 entry repeating a candidate an earlier entry already covered/);
-    assert.match(expected, /over 800 UTF-8 byte rationale|within 800 UTF-8 bytes/);
+    assert.match(expected, /forbidden-control/);
 
-    // Both runtime paths carry that reason unchanged: the repair request, the telemetry entry, and
-    // the terminal failure. A slice at 240 bytes would truncate any of them.
-    assert.ok(requests[1].messages.at(-1).content.includes(expected), expected);
+    // The repair prompt carries bounded validation feedback without model text.
+    assert.match(requests[1].messages.at(-1).content, /Correct every reported validation error/);
     const diagnostics = JSON.parse(core.outputs.get("diagnostics"));
     assert.deepEqual(diagnostics.outputRejections.map((entry) => entry.reason), [expected, expected]);
     assert.equal(core.outputs.get("failure-reason"),

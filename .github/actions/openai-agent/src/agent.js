@@ -5,9 +5,9 @@ const { APIConnectionError, APIConnectionTimeoutError } = require("openai");
 
 const { ActionError, fail } = require("./errors");
 const {
-  DEFAULT_OUTPUT_REPAIRS, MAX_MODEL_OUTPUT_BYTES, MAX_TOOL_ARGUMENT_BYTES,
+  DEFAULT_OUTPUT_REPAIRS, MAX_ASSISTANT_CONTENT_BYTES, MAX_TOOL_ARGUMENT_BYTES,
 } = require("./limits");
-const { sanitizeReason } = require("./provider");
+const { providerErrorCode, sanitizeReason } = require("./provider");
 
 const TOOLS = [
   {
@@ -119,21 +119,26 @@ function providerFailureReason(error) {
 }
 
 function providerFailureDiagnostic(error) {
-  const status = Number(error?.status);
-  if (!Number.isInteger(status) || status < 400 || status > 599) return null;
+  const rawStatus = Number(error?.status);
+  const status = Number.isInteger(rawStatus) && rawStatus >= 400 && rawStatus <= 599
+    ? rawStatus
+    : undefined;
   const requestId = [
     error?.requestID,
     error?.request_id,
     error?.headers?.get?.("x-request-id"),
     error?.headers?.get?.("request-id"),
   ].find((value) => typeof value === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(value));
+  const providerCode = providerErrorCode(error);
+  if (status === undefined && requestId === undefined && providerCode === undefined) return null;
   return {
-    status,
+    ...(status === undefined ? {} : { status }),
     ...(requestId === undefined ? {} : { requestId }),
+    ...(providerCode === undefined ? {} : { providerCode }),
   };
 }
 
-function compileOutputValidator(schema, maximumBytes = MAX_MODEL_OUTPUT_BYTES) {
+function compileOutputValidator(schema) {
   let validate;
   try {
     validate = new Ajv({ allErrors: true, strict: false, validateFormats: false }).compile(schema);
@@ -144,8 +149,8 @@ function compileOutputValidator(schema, maximumBytes = MAX_MODEL_OUTPUT_BYTES) {
     if (typeof raw !== "string" || raw.length === 0) {
       return { ok: false, layer: "empty", reason: "response was empty" };
     }
-    if (Buffer.byteLength(raw, "utf8") > maximumBytes) {
-      return { ok: false, layer: "size", reason: "response exceeded the configured byte limit" };
+    if (Buffer.byteLength(raw, "utf8") > MAX_ASSISTANT_CONTENT_BYTES) {
+      return { ok: false, layer: "size", reason: "response exceeded the assistant-content byte limit" };
     }
     let value;
     try {
@@ -165,9 +170,9 @@ function compileOutputValidator(schema, maximumBytes = MAX_MODEL_OUTPUT_BYTES) {
       };
     }
     const output = JSON.stringify(value);
-    if (Buffer.byteLength(output, "utf8") > maximumBytes) {
+    if (Buffer.byteLength(output, "utf8") > MAX_ASSISTANT_CONTENT_BYTES) {
       return {
-        ok: false, layer: "size", reason: "response exceeded the configured byte limit", value,
+        ok: false, layer: "size", reason: "response exceeded the assistant-content byte limit", value,
       };
     }
     return { ok: true, output, value };
@@ -197,7 +202,7 @@ async function runAgent({
     max_output_repair_attempts: config.max_output_repair_attempts ?? DEFAULT_OUTPUT_REPAIRS,
     output_format: config.output_format || "json_object",
   };
-  const validateOutput = compileOutputValidator(schema, config.max_output_bytes);
+  const validateOutput = compileOutputValidator(schema);
   const state = {
     providerCalls: 0,
     toolCalls: 0,
@@ -238,6 +243,7 @@ async function runAgent({
       for (const call of calls) {
         state.toolCalls++;
         const toolResult = executeTool(call, sandbox);
+        metrics?.recordToolResult(toolResult);
         messages.push({
           role: "tool",
           tool_call_id: call.id,
@@ -324,6 +330,7 @@ async function runAgent({
           for (const call of calls) {
             state.toolCalls++;
             const toolResult = executeTool(call, sandbox);
+            metrics?.recordToolResult(toolResult);
             messages.push({ role: "tool", tool_call_id: call.id, content: toolResult });
           }
           toolsPermitted = false;
@@ -377,7 +384,6 @@ async function runAgent({
       throw limitFailure("maximum turn count exceeded", state);
     }
     state.providerCalls++;
-    const requestMetrics = metrics?.beginRequest(activity);
     const request = { model: config.model, messages };
     if (allowTools) {
       request.tools = TOOLS;
@@ -397,6 +403,7 @@ async function runAgent({
         }
         : { type: "json_object" };
     }
+    const requestMetrics = metrics?.beginRequest(activity, request);
     try {
       const response = await client.chat.completions.create(request);
       metrics?.recordCompletion(requestMetrics, response);
@@ -414,8 +421,8 @@ function firstMessage(response) {
     throw new AgentFailure("provider response was malformed", { category: "provider-response" });
   }
   if (typeof message.content === "string" &&
-      Buffer.byteLength(message.content, "utf8") > MAX_MODEL_OUTPUT_BYTES) {
-    throw new AgentFailure("provider response exceeded byte limit", { category: "provider-response" });
+      Buffer.byteLength(message.content, "utf8") > MAX_ASSISTANT_CONTENT_BYTES) {
+    throw new AgentFailure("assistant content exceeded byte limit", { category: "provider-response" });
   }
   return {
     role: "assistant",

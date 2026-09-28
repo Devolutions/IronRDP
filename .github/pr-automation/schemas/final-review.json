@@ -31,8 +31,8 @@
           "question": { "type": "boolean" },
           "severity": { "enum": ["critical", "high", "medium", "low"] },
           "path": { "type": "string", "minLength": 1, "maxLength": 300, "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$)).+$" },
-          "start_line": { "type": ["integer", "null"], "minimum": 1 },
-          "end_line": { "type": ["integer", "null"], "minimum": 1 },
+          "start_line": { "type": ["integer", "null"], "minimum": 1, "maximum": 2147483647 },
+          "end_line": { "type": ["integer", "null"], "minimum": 1, "maximum": 2147483647 },
           "title": { "type": "string", "minLength": 1, "maxLength": 200 },
           "rationale": { "type": "string", "minLength": 1, "maxLength": 1200 },
           "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
@@ -55,7 +55,7 @@
           {
             "if": { "properties": { "start_line": { "type": "null" } }, "required": ["start_line"] },
             "then": { "properties": { "end_line": { "type": "null" } } },
-            "else": { "properties": { "end_line": { "type": "integer", "minimum": 1 } } }
+            "else": { "properties": { "end_line": { "type": "integer", "minimum": 1, "maximum": 2147483647 } } }
           }
         ]
       }

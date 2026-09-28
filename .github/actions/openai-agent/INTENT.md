@@ -1,6 +1,8 @@
 ## Terms
 
-- **Request retry:** resend the same provider request after a transient failure, without changing the conversation.
+- **Logical model call:** one invocation of the provider client for the current conversation.
+- **HTTP attempt:** one network request made for a logical model call.
+- **Request retry:** an additional HTTP attempt for the same logical model call after a transient failure, without changing the conversation.
 - **Output repair:** ask the model to correct an invalid response using validation feedback and the existing investigation context.
 
 ## Inputs
@@ -14,7 +16,6 @@
 - Maximum request retries.
 - Maximum model turns.
 - Maximum tool calls.
-- Maximum output size.
 - Maximum output-repair attempts.
 - Optional validator for task-specific checks.
 
@@ -25,16 +26,20 @@
 Expose these diagnostics:
 
 - Activity (such as investigation, final output, or repair).
-- Duration of each provider attempt.
+- Deterministic logical-call and HTTP-attempt indices.
+- Message count, serialized request bytes, and accumulated tool-result bytes for each logical model call.
+- Duration of each HTTP attempt.
 - Request-retry count.
 - Output-repair count.
 - Provider-reported stop reason (such as completion or token limit).
+- A bounded provider error code when the terminal provider failure supplies one.
 - Token usage when available.
 - Accumulated turn and tool-call counts, including on failure.
 - Each rejected output attempt, naming which validation rejected it and why.
 
 ## Request retries
 
+- One model turn is one logical model call, regardless of its HTTP attempts.
 - Retry transient provider failures with backoff.
 - Do not automatically retry invalid configuration, rejected credentials, or exhausted quota.
 - Apply the configured retry limit per request after the initial attempt.
@@ -48,6 +53,9 @@ Prefer the OpenAI SDK for `Retry-After` handling and request retries (`maxRetrie
 
 ## Output validation and repair
 
+- Every configured output schema bounds its accepted serialized representation.
+- The current transport is non-streaming, so the implementation-level 1 MiB assistant-content ceiling is checked only after a response arrives.
+- PR 2 may move that resource ceiling into the response transport.
 - Use provider-enforced schema output where supported, otherwise JSON mode where supported.
 - Accept validators only from trusted caller configuration, never from untrusted evidence or model output.
 - Validate JSON and schema locally, then run the supplied validator.

@@ -28,7 +28,6 @@ const baseConfig = {
   methodology_files: [],
   allowed_roots: [],
   allowed_files: [],
-  max_output_bytes: 32 * 1024,
   max_turns: 4,
   max_tool_calls: 4,
 };
@@ -135,14 +134,14 @@ test("runtime rejects malformed tool call envelopes", async () => {
   );
 });
 
-test("runtime rejects oversized provider text without attempting repair", async () => {
+test("runtime applies its assistant-content fallback only after non-streamed text arrives", async () => {
   const requests = [];
   await assert.rejects(
     runAgent({
       client: clientFrom([message("x".repeat(1024 * 1024 + 1))], requests),
       config: baseConfig, methodologies: [], prompt: "p", sandbox, schema,
     }),
-    (error) => error.reason === "provider response exceeded byte limit" && error.turnCount === 1,
+    (error) => error.reason === "assistant content exceeded byte limit" && error.turnCount === 1,
   );
   assert.equal(requests.length, 1);
 });
@@ -305,10 +304,10 @@ test("exhausting repairs reports the layer and reason that ended the stage", asy
     runAgent({
       client: clientFrom([
         message("not-json"),
-        message(JSON.stringify({ answer: "x".repeat(2000) })),
+        message('{"wrong":true}'),
         message('{"wrong":true}'),
       ]),
-      config: { ...baseConfig, max_output_bytes: 1024, max_output_repair_attempts: 2 },
+      config: { ...baseConfig, max_output_repair_attempts: 2 },
       methodologies: [], prompt: "p", sandbox, schema, metrics,
     }),
     (error) => error.reason ===
@@ -320,8 +319,8 @@ test("exhausting repairs reports the layer and reason that ended the stage", asy
     {
       attempt: 2,
       activity: "repairing",
-      layer: "size",
-      reason: "response exceeded the configured byte limit",
+      layer: "schema",
+      reason: "response did not match the schema: #/required: required answer; #/additionalProperties: additionalProperties",
     },
     {
       attempt: 3,
@@ -691,21 +690,21 @@ test("validation diagnostics do not expose model-provided property names", () =>
   assert.doesNotMatch(candidate.reason, /MODEL_RESPONSE_SECRET_SENTINEL/);
 });
 
-test("runtime repairs schema-valid output that exceeds the configured byte budget", async () => {
+test("runtime accepts schema-valid output that exceeds removed profile byte budgets", async () => {
   const requests = [];
+  const output = JSON.stringify({ answer: "x".repeat(2000) });
   const result = await runAgent({
     client: clientFrom([
-      message(JSON.stringify({ answer: "x".repeat(2000) })),
-      message('{"answer":"bounded"}'),
+      message(output),
     ], requests),
-    config: { ...baseConfig, max_output_bytes: 1024 },
+    config: baseConfig,
     methodologies: [],
     prompt: "p",
     sandbox,
     schema,
   });
-  assert.equal(result.output, '{"answer":"bounded"}');
-  assert.equal(requests.length, 2);
+  assert.equal(result.output, output);
+  assert.equal(requests.length, 1);
 });
 
 test("repair rejects provider tool calls and does not execute them", async () => {

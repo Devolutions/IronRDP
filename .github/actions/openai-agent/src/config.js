@@ -6,7 +6,7 @@ const { fail } = require("./errors");
 const {
   DEFAULT_OUTPUT_REPAIRS, DEFAULT_REQUEST_RETRIES, DEFAULT_REQUEST_TIMEOUT_MS,
   MAX_CONFIG_BYTES, MAX_METHODOLOGY_BYTES, MAX_METHODOLOGY_TOTAL_BYTES, MAX_PROMPT_BYTES,
-  MAX_MODEL_OUTPUT_BYTES, MAX_OUTPUT_REPAIRS, MAX_REQUEST_RETRIES, MAX_REQUEST_TIMEOUT_MS,
+  MAX_OUTPUT_REPAIRS, MAX_REQUEST_RETRIES, MAX_REQUEST_TIMEOUT_MS,
   MAX_SCHEMA_BYTES, MAX_TOOL_CALLS, MAX_TURNS,
 } = require("./limits");
 const { WorkspaceSandbox } = require("./sandbox");
@@ -19,7 +19,7 @@ const CONFIG_SCHEMA = {
   additionalProperties: false,
   required: [
     "id", "model", "prompt_file", "schema_file", "allowed_roots", "allowed_files",
-    "max_output_bytes", "max_turns", "max_tool_calls",
+    "max_turns", "max_tool_calls",
   ],
   properties: {
     id: { type: "string", pattern: SAFE_ID.source },
@@ -43,7 +43,6 @@ const CONFIG_SCHEMA = {
       uniqueItems: true,
       items: { type: "string", minLength: 1 },
     },
-    max_output_bytes: { type: "integer", minimum: 1024, maximum: MAX_MODEL_OUTPUT_BYTES },
     max_turns: { type: "integer", minimum: 1, maximum: MAX_TURNS },
     max_tool_calls: { type: "integer", minimum: 0, maximum: MAX_TOOL_CALLS },
     request_timeout_ms: { type: "integer", minimum: 1, maximum: MAX_REQUEST_TIMEOUT_MS },

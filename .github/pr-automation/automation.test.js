@@ -86,6 +86,133 @@ const candidateReview = (reviewer = "skeptical", changes = {}) => ({
   findings: [candidateFinding()], ...changes,
 });
 
+const MAXIMUM_GITHUB_JOB_OUTPUT_UTF16_BYTES = 512 * 1024;
+const MAXIMUM_GITHUB_OUTPUT_UTF16_BYTES = 1024 * 1024;
+const REVIEWERS = ["protocol", "skeptical", "code-compressor"];
+const MAXIMUM_NUMBER = 2_147_483_647;
+const HIGH_PRECISION_CONFIDENCE = 0.9999999999999999;
+
+function maximumText(length) {
+  const prefix = "😀\"\\";
+  return prefix + "😀".repeat(length - [...prefix].length);
+}
+
+function escapedMaximumText(length) {
+  const suffix = "\u0000😀\"\\\u001F";
+  return "\u0000".repeat(length - [...suffix].length) + suffix;
+}
+
+function maximumFindingId(index) {
+  return `f${String(index).padStart(2, "0")}${"a".repeat(61)}`;
+}
+
+function maximumPath(index) {
+  return `src/${String(index).padStart(3, "0")}${"😀".repeat(293)}`;
+}
+
+function maximumProtocolReference() {
+  return {
+    protocol_id: `MS-${"A".repeat(37)}`,
+    section: `${"1.".repeat(39)}11`,
+    heading: maximumText(200),
+  };
+}
+
+function maximumCandidate(reviewer, { references = false, escaped = false } = {}) {
+  const text = escaped ? escapedMaximumText : maximumText;
+  return {
+    head_sha: SHA,
+    reviewer,
+    summary: text(1000),
+    findings: Array.from({ length: 20 }, (_, index) => ({
+      id: maximumFindingId(index),
+      question: false,
+      severity: "high",
+      path: maximumPath(index),
+      start_line: MAXIMUM_NUMBER,
+      end_line: MAXIMUM_NUMBER,
+      title: text(200),
+      rationale: text(1200),
+      confidence: HIGH_PRECISION_CONFIDENCE,
+      references: references ? Array.from({ length: 5 }, maximumProtocolReference) : [],
+    })),
+  };
+}
+
+function maximumClassifier({ escaped = false } = {}) {
+  const text = escaped ? escapedMaximumText : maximumText;
+  const number = MAXIMUM_NUMBER;
+  return {
+    head_sha: SHA,
+    risk: "high",
+    technical_debt: false,
+    documentation_only: false,
+    cross_cutting: true,
+    overlap: {
+      detected: true,
+      similar_pr_number: number,
+      similar_pr_url: `https://github.com/Devolutions/IronRDP/pull/${number}`,
+      confidence: HIGH_PRECISION_CONFIDENCE,
+      rationale: text(500),
+    },
+    likely_non_legitimate: true,
+    non_legitimate_confidence: HIGH_PRECISION_CONFIDENCE,
+    non_legitimate_reason: text(500),
+    breaking_change_suspected: true,
+    breaking_change_rationale: text(500),
+    breaking_change_surface: text(200),
+    protocol_related: true,
+    summary: text(1000),
+  };
+}
+
+function maximumFinalReview({ repeatedSources = false, escaped = false } = {}) {
+  const text = escaped ? escapedMaximumText : maximumText;
+  const candidates = REVIEWERS.flatMap((reviewer) =>
+    Array.from({ length: 20 }, (_, index) => ({ reviewer, finding_id: maximumFindingId(index) })));
+  return {
+    head_sha: SHA,
+    summary: text(1000),
+    candidate_dispositions: candidates.map((source) => ({
+      ...source, disposition: "accepted", rationale: text(800),
+    })),
+    findings: Array.from({ length: 20 }, (_, index) => ({
+      question: false,
+      severity: "high",
+      path: maximumPath(index),
+      start_line: MAXIMUM_NUMBER,
+      end_line: MAXIMUM_NUMBER,
+      title: text(200),
+      rationale: text(1200),
+      confidence: HIGH_PRECISION_CONFIDENCE,
+      sources: repeatedSources || index === 0 ? candidates : [],
+    })),
+  };
+}
+
+function maximumSpecialistAggregate() {
+  return {
+    head_sha: SHA,
+    reviewers: REVIEWERS.map((reviewer) => ({
+      reviewer,
+      status: "valid",
+      summary: "valid",
+      findings: Array.from({ length: 20 }, (_, index) => ({
+        id: maximumFindingId(index),
+        question: false,
+        severity: "high",
+        path: "src/lib.rs",
+        start_line: null,
+        end_line: null,
+        title: "valid",
+        rationale: "valid",
+        confidence: 1,
+        references: [],
+      })),
+    })),
+  };
+}
+
 function workflowJob(workflow, name) {
   const start = workflow.indexOf(`  ${name}:\n`);
   assert.notEqual(start, -1, `${name} job is missing`);
@@ -1012,6 +1139,196 @@ test("classifier schema and semantic validation require overlap", () => {
       assert.equal(validateClassifier(invalid, context).ok, false);
     }
   }
+});
+
+test("maximum schema outputs stay accepted through action and review validation", () => {
+  const loadSchema = (name) => JSON.parse(fs.readFileSync(
+    path.join(__dirname, "schemas", name), "utf8",
+  ));
+  const classifierSchema = compileOutputValidator(loadSchema("classifier.json"));
+  const candidateSchema = compileOutputValidator(loadSchema("candidate-review.json"));
+  const finalSchema = compileOutputValidator(loadSchema("final-review.json"));
+
+  const classifierOutput = maximumClassifier();
+  const classifierCandidate = classifierSchema(JSON.stringify(classifierOutput));
+  assert.equal(classifierCandidate.ok, true);
+  assert.equal(validateClassifier(classifierCandidate.value, {
+    expectedSha: SHA,
+    prNumber: 1,
+    overlapCandidates: [{
+      number: MAXIMUM_NUMBER,
+      url: `https://github.com/Devolutions/IronRDP/pull/${MAXIMUM_NUMBER}`,
+    }],
+  }).ok, true);
+
+  const candidateOutput = maximumCandidate("skeptical");
+  const candidateCandidate = candidateSchema(JSON.stringify(candidateOutput));
+  assert.equal(candidateCandidate.ok, true);
+  assert.equal(validateCandidateReview(candidateCandidate.value, {
+    expectedSha: SHA,
+    expectedReviewer: "skeptical",
+    changedPaths: candidateOutput.findings.map((finding) => finding.path),
+  }).ok, true);
+
+  const specialistRuns = REVIEWERS.map((reviewer) => {
+    const candidate = maximumCandidate(reviewer, { references: reviewer === "protocol" });
+    return {
+      reviewer,
+      status: "valid",
+      summary: candidate.summary,
+      findings: candidate.findings,
+    };
+  });
+  const specialistAggregate = buildSpecialistAggregate({
+    expectedSha: SHA,
+    selectedReviewers: REVIEWERS,
+    runs: specialistRuns,
+    requiredReviewers: ["protocol", "skeptical"],
+  });
+  assert.equal(specialistAggregate.ok, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(specialistAggregate.value), "utf8") < 1024 * 1024);
+
+  const finalOutput = maximumFinalReview();
+  const finalCandidate = finalSchema(JSON.stringify(finalOutput));
+  assert.equal(finalCandidate.ok, true);
+  const finalValidation = validateFinalReview(finalCandidate.value, {
+    expectedSha: SHA,
+    changedPaths: finalOutput.findings.map((finding) => finding.path),
+    specialistAggregate: maximumSpecialistAggregate(),
+  });
+  assert.equal(finalValidation.ok, true);
+
+  const finalJobOutputs = {
+    output: JSON.stringify(finalValidation.value),
+    reason: "",
+    stage: JSON.stringify({ id: "validate", status: "success", required: true }),
+  };
+  const outputBytes = Buffer.byteLength(JSON.stringify(finalJobOutputs), "utf16le");
+  assert.equal(outputBytes < MAXIMUM_GITHUB_JOB_OUTPUT_UTF16_BYTES, true);
+  assert.equal(outputBytes < MAXIMUM_GITHUB_OUTPUT_UTF16_BYTES, true);
+});
+
+test("schema output bounds cover escaped strings, protocol coordinates, and GitHub integers", () => {
+  const candidateSchema = compileOutputValidator(JSON.parse(fs.readFileSync(
+    path.join(__dirname, "schemas", "candidate-review.json"), "utf8",
+  )));
+  const classifierSchema = compileOutputValidator(JSON.parse(fs.readFileSync(
+    path.join(__dirname, "schemas", "classifier.json"), "utf8",
+  )));
+  const finalSchema = compileOutputValidator(JSON.parse(fs.readFileSync(
+    path.join(__dirname, "schemas", "final-review.json"), "utf8",
+  )));
+
+  const escapedClassifier = JSON.stringify(maximumClassifier({ escaped: true }));
+  assert.match(escapedClassifier, /\\u0000.*\\".*\\\\.*\\u001f/s);
+  assert.equal(classifierSchema(escapedClassifier).ok, true);
+
+  const protocolCandidate = maximumCandidate("protocol", { references: true, escaped: true });
+  assert.equal(candidateSchema(JSON.stringify(protocolCandidate)).ok, true);
+  assert.equal(protocolCandidate.findings.length, 20);
+  assert.ok(protocolCandidate.findings.every((finding) => finding.references.length === 5));
+  assert.equal(protocolCandidate.findings[0].references[0].protocol_id.length, 40);
+  assert.equal(protocolCandidate.findings[0].references[0].section.length, 80);
+  assert.equal(candidateSchema(JSON.stringify({
+    ...protocolCandidate,
+    findings: [{
+      ...protocolCandidate.findings[0],
+      references: [{
+        ...protocolCandidate.findings[0].references[0],
+        protocol_id: `${protocolCandidate.findings[0].references[0].protocol_id}A`,
+      }],
+    }],
+  })).ok, false);
+
+  const escapedFinal = maximumFinalReview({ repeatedSources: true, escaped: true });
+  assert.equal(finalSchema(JSON.stringify(escapedFinal)).ok, true);
+  assert.equal(escapedFinal.candidate_dispositions.length, 60);
+  assert.equal(escapedFinal.findings.length, 20);
+  assert.ok(escapedFinal.findings.every((finding) => finding.sources.length === 60));
+  assert.ok(escapedFinal.findings.every((finding) =>
+    new Set(finding.sources.map((source) => `${source.reviewer}\0${source.finding_id}`)).size === 60));
+
+  for (const [validator, valid, invalid] of [
+    [
+      classifierSchema,
+      maximumClassifier(),
+      { ...maximumClassifier(), overlap: {
+        ...maximumClassifier().overlap,
+        similar_pr_number: MAXIMUM_NUMBER + 1,
+      } },
+    ],
+    [
+      candidateSchema,
+      maximumCandidate("skeptical"),
+      {
+        ...maximumCandidate("skeptical"),
+        findings: [{
+          ...maximumCandidate("skeptical").findings[0],
+          start_line: MAXIMUM_NUMBER + 1,
+          end_line: MAXIMUM_NUMBER + 1,
+        }],
+      },
+    ],
+    [
+      finalSchema,
+      maximumFinalReview(),
+      {
+        ...maximumFinalReview(),
+        findings: [{
+          ...maximumFinalReview().findings[0],
+          start_line: MAXIMUM_NUMBER + 1,
+          end_line: MAXIMUM_NUMBER + 1,
+        }],
+      },
+    ],
+  ]) {
+    assert.equal(validator(JSON.stringify(valid)).ok, true);
+    assert.equal(validator(JSON.stringify(invalid)).ok, false);
+  }
+
+  const overlongNormalizedSummary = {
+    ...maximumClassifier(),
+    summary: `a${" ".repeat(1000)}b`,
+  };
+  assert.equal(validateClassifier(overlongNormalizedSummary, {
+    expectedSha: SHA,
+    prNumber: 1,
+    overlapCandidates: [{
+      number: MAXIMUM_NUMBER,
+      url: `https://github.com/Devolutions/IronRDP/pull/${MAXIMUM_NUMBER}`,
+    }],
+  }).ok, false);
+
+  const invalidClassifierNumber = maximumClassifier();
+  invalidClassifierNumber.overlap.similar_pr_number = MAXIMUM_NUMBER + 1;
+  invalidClassifierNumber.overlap.similar_pr_url =
+    `https://github.com/Devolutions/IronRDP/pull/${MAXIMUM_NUMBER + 1}`;
+  assert.equal(validateClassifier(invalidClassifierNumber, {
+    expectedSha: SHA,
+    prNumber: 1,
+    overlapCandidates: [{
+      number: MAXIMUM_NUMBER + 1,
+      url: invalidClassifierNumber.overlap.similar_pr_url,
+    }],
+  }).ok, false);
+
+  const invalidCandidateLine = maximumCandidate("skeptical");
+  invalidCandidateLine.findings[0].start_line = MAXIMUM_NUMBER + 1;
+  invalidCandidateLine.findings[0].end_line = MAXIMUM_NUMBER + 1;
+  assert.equal(validateCandidateReview(invalidCandidateLine, {
+    expectedSha: SHA,
+    expectedReviewer: "skeptical",
+    changedPaths: invalidCandidateLine.findings.map((finding) => finding.path),
+  }).ok, false);
+
+  const invalidFinalLine = maximumFinalReview();
+  invalidFinalLine.findings[0].start_line = MAXIMUM_NUMBER + 1;
+  invalidFinalLine.findings[0].end_line = MAXIMUM_NUMBER + 1;
+  assert.equal(validateFinalReview(invalidFinalLine, {
+    expectedSha: SHA,
+    changedPaths: invalidFinalLine.findings.map((finding) => finding.path),
+    specialistAggregate: maximumSpecialistAggregate(),
+  }).ok, false);
 });
 
 test("classifier workflow carries bounded overlap metadata into advisory state", async () => {
@@ -3199,14 +3516,15 @@ test("repair may correct an identity the validators would never accept", () => {
   assert.deepEqual(validateGeneral(finalReview(), { metadata: general, previousCandidate: overlong }),
     { ok: true });
 
-  // The review validators cap a title at 200 UTF-8 bytes, which is stricter than the schema's 200
-  // characters, so a title only they reject is not protected either.
-  const overweight = finalReview({
+  // Schema-valid non-BMP text is accepted and therefore remains protected during repair.
+  const unicode = finalReview({
     findings: [{ ...finalReview().findings[0], title: "\u00e9".repeat(101) }],
   });
-  assert.deepEqual(validateGeneral(finalReview(), {
-    metadata: general, previousCandidate: overweight,
-  }), { ok: true });
+  const droppedUnicode = validateGeneral(finalReview(), {
+    metadata: general, previousCandidate: unicode,
+  });
+  assert.equal(droppedUnicode.ok, false);
+  assert.match(droppedUnicode.reason, /restore the one it dropped/);
 
   // A disposition for a candidate the specialists never produced is rejected by final validation,
   // so the repair has to drop it and that is not a withdrawal.
@@ -3372,7 +3690,7 @@ test("final review diagnostics report the whole disposition map in one rejection
   assert.match(mixed.reason, /3\/4 candidates lack a valid disposition/);
   assert.match(mixed.reason, /1 unknown/);
   assert.match(mixed.reason, /1 duplicate/);
-  assert.match(mixed.reason, /1 with a blank, forbidden-control, or over 800 UTF-8 byte rationale/);
+  assert.match(mixed.reason, /1 with a blank, forbidden-control, or over 800 character rationale/);
   assert.match(mixed.reason, /1 malformed/);
   assertReasonSurvivesRuntime(mixed.reason);
 
@@ -3387,7 +3705,7 @@ test("final review diagnostics report the whole disposition map in one rejection
   assert.match(saturated.reason, /3\/4 candidates lack a valid disposition/);
   assert.match(saturated.reason, /15 unknown/);
   assert.match(saturated.reason, /28 duplicate/);
-  assert.match(saturated.reason, /15 with a blank, forbidden-control, or over 800 UTF-8 byte rationale/);
+  assert.match(saturated.reason, /15 with a blank, forbidden-control, or over 800 character rationale/);
   assert.match(saturated.reason, /15 malformed/);
   assertReasonSurvivesRuntime(saturated.reason);
 
@@ -3399,7 +3717,7 @@ test("final review diagnostics report the whole disposition map in one rejection
 });
 
 test("final review diagnostics report duplicate and rationale failures independently", () => {
-  for (const rationale of [" ", "x\u0000y", "\u00e9".repeat(401)]) {
+  for (const rationale of [" ", "x\u0000y", "x".repeat(801)]) {
     for (const rationales of [
       [rationale, "supported"],
       ["supported", rationale],
@@ -3428,20 +3746,19 @@ test("final review diagnostics report duplicate and rationale failures independe
   assert.equal(validateFinalReview(finalOutput([disposition(1)]), finalContext(1)).ok, true);
 });
 
-// The schema bounds a rationale in characters while the validator bounds it in bytes and forbids
-// control characters, so these failures reach the validator and have to be explained accurately.
+// The validator adds non-blank and control-character requirements to the schema's character limits.
 test("final review diagnostics explain text normalization the schema does not enforce", () => {
   const context = finalContext(1);
-  const accented = "\u00e9".repeat(401);
-  assert.ok(accented.length <= 800 && Buffer.byteLength(accented, "utf8") > 800);
+  const overlong = "x".repeat(801);
+  assert.equal(overlong.length > 800, true);
 
-  for (const rationale of [" ", '""', accented, "supported\u0000claim"]) {
+  for (const rationale of [" ", '""', overlong, "supported\u0000claim"]) {
     const result = validateFinalReview(finalOutput([disposition(1, { rationale })]), context);
     assert.equal(result.ok, false, rationale);
     // The constraint and both counts are what a repair needs, so they survive even though the
     // second coordinate does not fit beside them.
     assert.match(result.reason, /1 of 1 candidate has no valid disposition/);
-    assert.match(result.reason, /1 entry with a rationale that must be non-blank and free of forbidden control characters, within 800 UTF-8 bytes/);
+    assert.match(result.reason, /1 entry with a rationale that must be non-blank and free of forbidden control characters, within 800 characters/);
     assertReasonSurvivesRuntime(result.reason);
   }
 
@@ -3457,7 +3774,7 @@ test("final review diagnostics explain text normalization the schema does not en
     { ...finalOutput([disposition(1)]), summary: "verified\u0000review" }, context,
   );
   assert.equal(summary.ok, false);
-  assert.match(summary.reason, /summary must be non-blank and free of forbidden control characters, within 1000 UTF-8 bytes/);
+  assert.match(summary.reason, /summary must be non-blank and free of forbidden control characters, within 1000 characters/);
 
   const finding = (changes = {}) => ({
     question: false, severity: "high", path: "src/lib.rs", start_line: 4, end_line: 4,
@@ -3465,7 +3782,7 @@ test("final review diagnostics explain text normalization the schema does not en
     sources: [{ reviewer: "skeptical", finding_id: "finding-1" }], ...changes,
   });
   const accepted = [disposition(1, { disposition: "accepted" })];
-  for (const changes of [{ title: " " }, { rationale: "\u00e9".repeat(601) }, { rationale: "a\u0000b" }]) {
+  for (const changes of [{ title: " " }, { rationale: "x".repeat(1201) }, { rationale: "a\u0000b" }]) {
     const result = validateFinalReview(finalOutput(accepted, [finding(changes)]), context);
     assert.equal(result.ok, false, JSON.stringify(changes));
     assert.match(result.reason, /invalid final review finding at index 0: title and rationale must be non-blank and free of forbidden control characters/);
@@ -3473,8 +3790,8 @@ test("final review diagnostics explain text normalization the schema does not en
   const bothInvalid = validateFinalReview(finalOutput(accepted, [
     finding({ title: " ", rationale: "a\u0000b" }),
   ]), context);
-  assert.match(bothInvalid.reason, /title 200 bytes/);
-  assert.match(bothInvalid.reason, /rationale 1200 bytes/);
+  assert.match(bothInvalid.reason, /title 200/);
+  assert.match(bothInvalid.reason, /rationale 1200/);
   assert.match(bothInvalid.reason, /forbidden control characters/);
   assertReasonSurvivesRuntime(bothInvalid.reason);
 
@@ -3495,14 +3812,14 @@ test("final review diagnostics explain text normalization the schema does not en
   assert.match(lines.reason, /end_line at or after start_line/);
 
   // A path the pull request changed can still be too long, so the condition names that bound too.
-  const long = `src/${"\u00e9".repeat(150)}.rs`;
-  assert.ok(long.length < 300 && Buffer.byteLength(long, "utf8") > 300);
+  const long = `src/${"a".repeat(297)}`;
+  assert.equal(long.length, 301);
   const oversized = validateFinalReview(finalOutput(accepted, [finding({ path: long })]), {
     ...context, changedPaths: ["src/lib.rs", long],
     changedLines: { "src/lib.rs": [4], [long]: [4] },
   });
   assert.equal(oversized.ok, false);
-  assert.match(oversized.reason, /path must be a repository path this pull request changed, within 300 UTF-8 bytes/);
+  assert.match(oversized.reason, /path must be a repository path this pull request changed, within 300 characters/);
   assertReasonSurvivesRuntime(oversized.reason);
 });
 

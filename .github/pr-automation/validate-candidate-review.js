@@ -1,7 +1,9 @@
 "use strict";
 
 const {
-  REPO_PATH, SHA, exactKeys, invalid, linesAreValidated, normalizeText, parseJson,
+  MAXIMUM_GITHUB_INTEGER, REPO_PATH, SHA, exactKeys, invalid, linesAreValidated, normalizeText,
+  parseJson,
+  unicodeLength,
 } = require("./validation");
 const { REVIEWER_ORDER: REVIEWERS } = require("./routing");
 
@@ -29,7 +31,7 @@ function normalizeReference(value) {
 function normalizeCandidateReview(raw, {
   expectedSha, expectedReviewer, changedPaths = [], changedLines = {},
 } = {}) {
-  const value = parseJson(raw, 32768);
+  const value = parseJson(raw);
   if (!exactKeys(value, ["head_sha", "reviewer", "summary", "findings"]) ||
       !SHA.test(value.head_sha) || value.head_sha !== expectedSha ||
       !REVIEWERS.includes(value.reviewer) || value.reviewer !== expectedReviewer ||
@@ -52,7 +54,7 @@ function normalizeCandidateReview(raw, {
     const rationale = normalizeText(finding.rationale, 1200);
     if (!id || !FINDING_ID.test(id) || ids.has(id) ||
         typeof finding.question !== "boolean" || !SEVERITIES.has(finding.severity) ||
-        path === null || Buffer.byteLength(path, "utf8") > 300 || path.includes("\\") ||
+        path === null || unicodeLength(path) > 300 || path.includes("\\") ||
         !REPO_PATH.test(path) || !paths.has(path) || !title || !rationale ||
         !Number.isFinite(finding.confidence) || finding.confidence < 0 || finding.confidence > 1 ||
         !Array.isArray(finding.references) || finding.references.length > 5 ||
@@ -62,7 +64,9 @@ function normalizeCandidateReview(raw, {
 
     const linesAreNull = finding.start_line === null && finding.end_line === null;
     const linesAreIntegers = Number.isSafeInteger(finding.start_line) && finding.start_line >= 1 &&
-      Number.isSafeInteger(finding.end_line) && finding.end_line >= finding.start_line;
+      finding.start_line <= MAXIMUM_GITHUB_INTEGER &&
+      Number.isSafeInteger(finding.end_line) && finding.end_line >= finding.start_line &&
+      finding.end_line <= MAXIMUM_GITHUB_INTEGER;
     if (!linesAreNull && !linesAreIntegers) return invalid("invalid candidate finding lines");
 
     const references = [];
@@ -95,9 +99,6 @@ function normalizeCandidateReview(raw, {
     summary,
     findings,
   };
-  if (Buffer.byteLength(JSON.stringify(normalized), "utf8") > 32768) {
-    return invalid("candidate review output too large");
-  }
   return { ok: true, status: "valid", value: normalized };
 }
 
