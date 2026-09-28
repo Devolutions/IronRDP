@@ -30,8 +30,8 @@ function reviewSkipReasons({ gate, gateResult, rateLimit, rateLimitResult } = {}
     }
 
     const contributor = gate.contributor;
-    if (contributor?.status === "ineligible") {
-      reasons.push(`The contributor is not eligible for automated review${contributor.reason ? `: ${contributor.reason}` : ""}.`);
+    if (contributor?.status === "bot") {
+      reasons.push("The pull request was opened by a bot account.");
     } else if (contributor?.status !== "eligible" && contributor?.status !== "forced") {
       reasons.push(`Contributor eligibility is unavailable${contributor?.reason ? `: ${contributor.reason}` : ""}.`);
     }

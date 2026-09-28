@@ -17,6 +17,9 @@ const LEGACY_XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
 const FORK_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-quota -->";
 const GLOBAL_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-global-budget -->";
 const EVIDENCE_LIMIT_MARKER = "<!-- ironrdp-pr-automation:evidence-limit -->";
+// Legacy marker: no comment is created with this marker anymore (bot-authored pull requests are
+// silently skipped without a GitHub comment), but the string must stay stable so it can still be
+// matched and deleted from pull requests that already carry one from before this change.
 const CONTRIBUTOR_INELIGIBLE_MARKER = "<!-- ironrdp-pr-automation:contributor-ineligible -->";
 const EVIDENCE_LIMIT_REASON = /^pull request diff exceeds the (1|4) MiB evidence limit$/;
 
@@ -214,7 +217,7 @@ async function contributorEligibility({ author } = {}) {
     return { status: "unavailable", reason: "missing author identity" };
   }
   if (author.type === "Bot" || /\[bot\]$/i.test(author.login || "")) {
-    return { status: "ineligible", reason: "bot author" };
+    return { status: "bot" };
   }
   return { status: "eligible", association: author.association ?? null };
 }
@@ -241,7 +244,7 @@ function resolveReviewState({
         ...(comments.some((comment) => comment.kind === "evidence-limit") ? [] : [EVIDENCE_LIMIT_MARKER]),
         FORK_QUOTA_MARKER,
         ...(comments.some((comment) => comment.kind === "global-quota") ? [] : [GLOBAL_QUOTA_MARKER]),
-        ...(forced || contributor?.status === "eligible" ? [CONTRIBUTOR_INELIGIBLE_MARKER] : []),
+        CONTRIBUTOR_INELIGIBLE_MARKER,
       ],
       ...(report ? { check: {
         name: "AI automated review", externalId: expectedSha,
@@ -272,9 +275,8 @@ function resolveReviewState({
     if (!reviewPolicyEligible({
       labels, legitimacyStopped: gate.legitimacyStopped,
     })) return fail("review is not eligible");
-    if (contributor?.status === "ineligible") {
-      const reason = `contributor ineligible${contributor.reason ? `: ${contributor.reason}` : ""}`;
-      return fail(reason, false, { kind: "contributor-ineligible", marker: CONTRIBUTOR_INELIGIBLE_MARKER });
+    if (contributor?.status === "bot") {
+      return fail("author is a bot account");
     }
     if (contributor?.status !== "eligible") {
       const reason = contributor?.reason

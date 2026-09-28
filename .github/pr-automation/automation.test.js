@@ -383,7 +383,7 @@ test("review skip summary lists every failed gate condition", () => {
       policyEligible: false,
       legitimacyStopped: true,
       labels: ["ai-reviewed/2", "triage/legitimacy"],
-      contributor: { status: "ineligible", reason: "bot author" },
+      contributor: { status: "bot" },
     },
     rateLimitResult: "success",
     rateLimit: { status: "allowed" },
@@ -393,7 +393,7 @@ test("review skip summary lists every failed gate condition", () => {
     "An automated review has already run for this head; push a new commit before the next review.",
     "The pull request has reached the two-review limit.",
     "The pull request requires a maintainer legitimacy decision.",
-    "The contributor is not eligible for automated review: bot author.",
+    "The pull request was opened by a bot account.",
   ]);
 });
 
@@ -1939,7 +1939,7 @@ test("forced review bypasses eligibility while retaining publication gates", () 
       ok: true, force: true, head_sha: SHA, classificationValid: true, protocolRelated: false,
       risk: "unknown", specialistReviewers: ["skeptical"],
     },
-    contributor: { status: "ineligible" },
+    contributor: { status: "bot" },
     rateLimit: { status: "limited", scope: "global", quota: 50, count: 51 },
     force: true,
     reviewMarkerId: "1234",
@@ -2037,17 +2037,15 @@ test("review blockers distinguish gate and contributor history failures", () => 
   assert.equal(invalidGate.reason, "review gate unavailable: checks unavailable");
 
   const ineligible = resolveReviewState({
-    ...args, contributor: { status: "ineligible", reason: "bot author" },
+    ...args, contributor: { status: "bot" },
   });
   assert.equal(ineligible.ok, true);
   assert.equal(ineligible.failed, true);
-  assert.equal(ineligible.reason, "contributor ineligible: bot author");
+  assert.equal(ineligible.reason, "author is a bot account");
   assert.deepEqual(ineligible.labelSets, []);
   assert.deepEqual(ineligible.addLabels, ["maintainer-required"]);
-  assert.deepEqual(ineligible.comments, [{
-    kind: "contributor-ineligible", marker: CONTRIBUTOR_INELIGIBLE_MARKER,
-  }]);
-  assert.equal(ineligible.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), false);
+  assert.deepEqual(ineligible.comments, []);
+  assert.equal(ineligible.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), true);
 
   const unavailable = resolveReviewState({
     ...args, contributor: { status: "unavailable", reason: "GitHub API unavailable" },
@@ -2055,7 +2053,7 @@ test("review blockers distinguish gate and contributor history failures", () => 
   assert.equal(unavailable.ok, true);
   assert.equal(unavailable.failed, true);
   assert.equal(unavailable.reason, "contributor eligibility unavailable: GitHub API unavailable");
-  assert.equal(unavailable.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), false);
+  assert.equal(unavailable.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), true);
 
   const ciPending = resolveReviewState({
     ...args, gate: { ...args.gate, ok: false, ciGreen: false },
@@ -2195,9 +2193,10 @@ test("writer stops before mutations when review policy or count changes", async 
   assert.equal(writes, 0);
 });
 
-test("writer keeps one contributor-ineligible comment and removes it after eligibility changes", async () => {
-  const issueComments = [];
-  let nextCommentId = 1;
+test("writer posts no comment for a bot-authored pull request and clears any legacy one", async () => {
+  const issueComments = [{
+    id: 1, body: `${CONTRIBUTOR_INELIGIBLE_MARKER}\n\nlegacy comment`, user: { login: "github-actions[bot]" },
+  }];
   const github = {
     paginate: { iterator: async function* () { yield { data: issueComments }; } },
     rest: {
@@ -2205,9 +2204,7 @@ test("writer keeps one contributor-ineligible comment and removes it after eligi
       issues: {
         get: async () => ({ data: { labels: ["maintainer-required", "risk/low"] } }),
         listComments: () => {},
-        createComment: async ({ body }) => {
-          issueComments.push({ id: nextCommentId++, body, user: { login: "github-actions[bot]" } });
-        },
+        createComment: async () => { throw new Error("must not create a comment for a bot author"); },
         deleteComment: async ({ comment_id: commentId }) => {
           issueComments.splice(issueComments.findIndex((comment) => comment.id === commentId), 1);
         },
@@ -2220,24 +2217,15 @@ test("writer keeps one contributor-ineligible comment and removes it after eligi
   };
   const state = resolveReviewState({
     expectedSha: SHA, labels: ["risk/low"], gate,
-    contributor: { status: "ineligible", reason: "bot author" },
+    contributor: { status: "bot" },
   });
-  const args = {
+  assert.deepEqual(state.comments, []);
+  assert.deepEqual(state.addLabels, ["maintainer-required"]);
+
+  await writeState({
     github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
-    botLogin: "github-actions[bot]",
-  };
-
-  await writeState({ ...args, state });
-  await writeState({ ...args, state });
-  assert.equal(issueComments.length, 1);
-  assert.equal(issueComments[0].body.startsWith(CONTRIBUTOR_INELIGIBLE_MARKER), true);
-
-  const eligibleState = resolveReviewState({
-    expectedSha: SHA, labels: ["risk/low"],
-    gate: { ...gate, classificationCheck: false },
-    contributor: { status: "eligible" },
+    botLogin: "github-actions[bot]", state,
   });
-  await writeState({ ...args, state: eligibleState });
   assert.deepEqual(issueComments, []);
 });
 
@@ -2970,7 +2958,7 @@ test("bot authors remain ineligible regardless of association", async () => {
   assert.deepEqual(await contributorEligibility({
     github: paginated({}), owner: "Devolutions", repo: "IronRDP",
     author: { association: "MEMBER", login: "service[bot]", type: "Bot" }, currentPrNumber: 1,
-  }), { status: "ineligible", reason: "bot author" });
+  }), { status: "bot" });
 });
 
 test("a missing or malformed author identity fails closed instead of eligible", async () => {
