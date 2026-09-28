@@ -19,7 +19,6 @@ const GLOBAL_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-global-budget -
 const EVIDENCE_LIMIT_MARKER = "<!-- ironrdp-pr-automation:evidence-limit -->";
 const CONTRIBUTOR_INELIGIBLE_MARKER = "<!-- ironrdp-pr-automation:contributor-ineligible -->";
 const EVIDENCE_LIMIT_REASON = /^pull request diff exceeds the (1|4) MiB evidence limit$/;
-const ELIGIBLE_MERGED_PRS = 1;
 
 function labelsOf(labels) {
   return new Set((labels || []).map((label) => typeof label === "string" ? label : label?.name).filter(Boolean));
@@ -274,13 +273,8 @@ function resolveReviewState({
       labels, legitimacyStopped: gate.legitimacyStopped,
     })) return fail("review is not eligible");
     if (contributor?.status === "ineligible") {
-      const reason = Number.isSafeInteger(contributor.merged)
-        ? `contributor history ineligible (merged: ${contributor.merged}, required: ${ELIGIBLE_MERGED_PRS})`
-        : `contributor history ineligible${contributor.reason ? `: ${contributor.reason}` : ""}`;
-      const comment = Number.isSafeInteger(contributor.merged)
-        ? { kind: "contributor-ineligible", marker: CONTRIBUTOR_INELIGIBLE_MARKER }
-        : null;
-      return fail(reason, false, comment);
+      const reason = `contributor ineligible${contributor.reason ? `: ${contributor.reason}` : ""}`;
+      return fail(reason, false, { kind: "contributor-ineligible", marker: CONTRIBUTOR_INELIGIBLE_MARKER });
     }
     if (contributor?.status !== "eligible") {
       const reason = contributor?.reason
@@ -340,7 +334,7 @@ module.exports = {
   AI_COUNTS, CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER,
   GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERLAP_LABEL, OVERLAP_MARKER, OVERSIZED_REVIEW_LABEL, RISK,
-  OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS,
+  OVERSIZED_MARKER,
   contributorEligibility, resolveClassificationState,
   resolveReviewState, reviewOutcome, reviewPolicyEligible,
 };

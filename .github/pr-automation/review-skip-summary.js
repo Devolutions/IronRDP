@@ -31,11 +31,7 @@ function reviewSkipReasons({ gate, gateResult, rateLimit, rateLimitResult } = {}
 
     const contributor = gate.contributor;
     if (contributor?.status === "ineligible") {
-      if (Number.isSafeInteger(contributor.merged)) {
-        reasons.push(`The contributor has ${contributor.merged} qualifying merged pull requests; at least one is required.`);
-      } else {
-        reasons.push(`The contributor is not eligible for automated review${contributor.reason ? `: ${contributor.reason}` : ""}.`);
-      }
+      reasons.push(`The contributor is not eligible for automated review${contributor.reason ? `: ${contributor.reason}` : ""}.`);
     } else if (contributor?.status !== "eligible" && contributor?.status !== "forced") {
       reasons.push(`Contributor eligibility is unavailable${contributor?.reason ? `: ${contributor.reason}` : ""}.`);
     }

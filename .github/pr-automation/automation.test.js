@@ -383,7 +383,7 @@ test("review skip summary lists every failed gate condition", () => {
       policyEligible: false,
       legitimacyStopped: true,
       labels: ["ai-reviewed/2", "triage/legitimacy"],
-      contributor: { status: "ineligible", merged: 0 },
+      contributor: { status: "ineligible", reason: "bot author" },
     },
     rateLimitResult: "success",
     rateLimit: { status: "allowed" },
@@ -393,7 +393,7 @@ test("review skip summary lists every failed gate condition", () => {
     "An automated review has already run for this head; push a new commit before the next review.",
     "The pull request has reached the two-review limit.",
     "The pull request requires a maintainer legitimacy decision.",
-    "The contributor has 0 qualifying merged pull requests; at least one is required.",
+    "The contributor is not eligible for automated review: bot author.",
   ]);
 });
 
@@ -2037,11 +2037,11 @@ test("review blockers distinguish gate and contributor history failures", () => 
   assert.equal(invalidGate.reason, "review gate unavailable: checks unavailable");
 
   const ineligible = resolveReviewState({
-    ...args, contributor: { status: "ineligible", merged: 0 },
+    ...args, contributor: { status: "ineligible", reason: "bot author" },
   });
   assert.equal(ineligible.ok, true);
   assert.equal(ineligible.failed, true);
-  assert.equal(ineligible.reason, "contributor history ineligible (merged: 0, required: 1)");
+  assert.equal(ineligible.reason, "contributor ineligible: bot author");
   assert.deepEqual(ineligible.labelSets, []);
   assert.deepEqual(ineligible.addLabels, ["maintainer-required"]);
   assert.deepEqual(ineligible.comments, [{
@@ -2100,7 +2100,7 @@ test("a later eligible review removes the contributor-ineligible comment", () =>
       ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true,
       risk: "low", protocolRelated: false, specialistReviewers: ["code-compressor"],
     },
-    contributor: { status: "eligible", merged: 1 },
+    contributor: { status: "eligible" },
   });
 
   assert.equal(state.failed, undefined);
@@ -2220,7 +2220,7 @@ test("writer keeps one contributor-ineligible comment and removes it after eligi
   };
   const state = resolveReviewState({
     expectedSha: SHA, labels: ["risk/low"], gate,
-    contributor: { status: "ineligible", merged: 0 },
+    contributor: { status: "ineligible", reason: "bot author" },
   });
   const args = {
     github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
@@ -2235,7 +2235,7 @@ test("writer keeps one contributor-ineligible comment and removes it after eligi
   const eligibleState = resolveReviewState({
     expectedSha: SHA, labels: ["risk/low"],
     gate: { ...gate, classificationCheck: false },
-    contributor: { status: "eligible", merged: 1 },
+    contributor: { status: "eligible" },
   });
   await writeState({ ...args, state: eligibleState });
   assert.deepEqual(issueComments, []);
