@@ -27,7 +27,7 @@ The pipeline performs these stages:
 
 `.github/workflows/review-pipeline.yml` is reusable and `workflow_call` is its only trigger.
 The caller owns the concurrency lane, reviewer selection, and publication.
-The pipeline owns evidence, specialists, aggregation, the general review, validation, and stage recovery.
+The pipeline owns evidence, specialists, aggregation, the general review, and validation.
 
 `required-reviewers` names the specialists that must succeed, and the caller is authoritative.
 The pipeline only falls back to the classification gate when that input is absent.
@@ -72,28 +72,16 @@ Repair may correct a finding but may never drop one, and a stage fails when it c
 
 Repair happens inside one invocation, so the pipeline never restarts a reviewer to fix its output and keeps no checkpoints of its own.
 
-## Stage recovery
+## Stage execution
 
-A transient provider failure costs one extra invocation of that stage, not a replay of the review.
-
-The runtime decides whether a failure is retryable, and the pipeline keeps no failure taxonomy of its own.
-A retryable stage waits for `retry-delay-seconds` (120 by default), re-decides review eligibility against the pull request as it is after the delay, and runs exactly once more inside the same job.
-That recheck repeats the caller's own gate: open state, exact head and base, draft state, review policy labels, the classification bound to this head and its reviewer set, an already-published review, the newest CI run, contributor eligibility, the fork quota, and the evidence size limit still in force.
-A caller `force` bypasses review policy and CI, and never the safety checks.
-A declined retry is reported with its reason.
-Every stage that already succeeded keeps its result, so a recovered review repeats only the work that failed.
-Recovery is bounded to one delayed retry per stage, so a stage reports at most two attempts and the pipeline cannot loop.
-
-The runtime marks transient provider failures retryable: timeouts, dropped connections, conflicts, rate limits, and service errors.
-Exhausted output repair is settled: the runtime already corrected inside the same conversation, so repeating the request cannot help.
-An unreachable API means the retry is not attempted, because a review that cannot be proved wanted is not worth a second request.
-
-Evidence is prepared once and every stage, including a delayed retry, reads those exact bytes.
+Transient failures retry only within the logical model call that experienced them.
+Reviewer stages never restart, so each pipeline stage has one outcome and one set of diagnostics.
+Evidence is prepared once and every stage reads the same bytes.
 Artifacts stay inside the pipeline execution, and a later caller run starts fresh rather than inheriting results across runs.
 
 The pipeline returns every failed stage with its reason and failure category, not just the first failure.
-It also returns per-stage token usage, elapsed time, request-retry count, output-repair count, the number of recovered stages, and, for a recovered stage, the failure its first attempt reported.
-Unmeasured metrics are reported as missing rather than as zero, and a retried stage is charged for both of its attempts.
+It also returns per-stage token usage, elapsed time, request-retry count, and output-repair count.
+Unmeasured metrics are reported as missing rather than as zero.
 The aggregate marks itself incomplete whenever a stage that called a provider could not account for its usage.
 Each stage records whether it called a provider, so the caller's totals are the pipeline's own.
 
@@ -154,7 +142,7 @@ The checked-in profiles request high reasoning effort and leave the provider tok
 The runtime assembles reasoning, content, usage, finish reason, and indexed tool-call fragments, and no tool executes until the complete batch passes preflight.
 Strict provider JSON Schema mode is opt-in only for a configured supported endpoint; local validation always remains enforced.
 It reports safe activity, deterministic logical-call and HTTP-attempt indices, request and tool-result byte counts, retry and repair counts, finish reason, available token usage with completeness state, bounded provider error codes, and machine-readable terminal or transient failure categories through one diagnostics output.
-The workflow job timeout exceeds the full initial stage, delayed stage retry, and cleanup allowance so a bounded failure can still be persisted.
+The workflow job timeout covers one reviewer stage plus cleanup so a bounded failure can still be persisted.
 
 The action exposes no command execution, writes, Git operations, GitHub APIs, environment access, arbitrary network access, or generic URL fetching.
 It logs bounded metadata only and never logs prompts, pull request content, tool arguments, tool results, model responses, provider response bodies, or credentials.
@@ -175,7 +163,6 @@ The runtime rejects absolute paths, traversal, `.git`, symlinks, junctions, real
 
 The evidence job fetches bounded pull request discussion and line-location data with read-only GitHub permissions.
 It verifies the head before and after collection.
-A recovery attempt restores the pinned evidence instead of refetching it, and still reverifies that the pull request is open at the same head.
 Final publication rechecks the current head before mutation.
 
 ## Protocol corpus
@@ -186,7 +173,6 @@ It excludes skills, instruction files, symlinks, submodules, executables, and li
 
 Citation validation uses the same corpus commit that the specialist read, and the evidence job records its SHA in the job summary.
 Every protocol ID, section number, and heading must exist in that fetched commit.
-A recovery attempt restores the pinned corpus instead of refetching the latest master, so recovering a review cannot invalidate the work it is recovering.
 An unavailable corpus, protocol specialist, or protocol validation blocks publication for a mandatory protocol review.
 
 ## Classification and review policy
@@ -247,7 +233,7 @@ Same-repository pull requests are also exempt.
 ## State, publication, and failure behavior
 
 SHA-bound GitHub checks carry classification and review state between permission-isolated jobs.
-Attempt-scoped workflow artifacts carry evidence and validated results between review-pipeline jobs and across recovery attempts.
+Workflow artifacts carry evidence and validated results between review-pipeline jobs.
 Only the final writer mutates pull request state, and it serializes those mutations per pull request.
 Model-execution jobs have read-only or empty permissions.
 The run summary links the pull request the run resolved.

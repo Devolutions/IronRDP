@@ -14,7 +14,7 @@ Reviewer findings use severity and a question boolean.
 
 - Configure reviewer actions for at most four request retries after the initial attempt.
 - Stream provider responses under idle, byte, and monotonic stage budgets.
-- Keep each provider job alive long enough to persist a bounded failure after the initial stage and its one delayed recovery attempt.
+- Keep each provider job alive long enough to persist a bounded stage failure.
 
 ### Specialist reviewers
 
@@ -27,12 +27,11 @@ Supported specialists include:
 
 Run selected specialists in a multi-job matrix, with at most three running at once per pipeline.
 
-### Stage recovery
+### Failure and repair
 
-Stage recovery happens within one workflow invocation and keeps the results of stages that already succeeded.
-
-- Retry a stage once, after a delay, when the provider fails transiently.
-- Recheck the head and review prerequisites before a delayed retry.
+- Retry transient provider failures only within the logical call that failed.
+- Never restart a reviewer stage or discard its completed conversation.
+- Set the 130-minute reviewer job timeout to cover one stage and cleanup.
 - Produce schema-conforming output with minimal, bounded repair and review-specific semantic validation.
 - Report each rejected output attempt's validation reason with bounded, sanitized diagnostics.
 - Never discard findings during output repair; fail the stage if repair cannot produce valid output.
@@ -51,7 +50,5 @@ Return metrics only for LLM-powered stages, including failed attempts and markin
 - Elapsed time in seconds; label summed durations as cumulative rather than wall-clock time.
 - Request-retry count.
 - Output-repair count.
-- Stage-recovery count.
-- Which stages repeated during recovery.
 
 Count each provider attempt only once.

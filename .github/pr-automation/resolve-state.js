@@ -324,12 +324,12 @@ function resolveReviewState({
   };
 }
 
-function reviewOutcome({ reportStatus, state, recovered = false, reducedCoverage = [] } = {}) {
+function reviewOutcome({ reportStatus, state, reducedCoverage = [] } = {}) {
   if (reportStatus !== "success" || state?.failed === true) return "unavailable";
   if (Array.isArray(reducedCoverage) && reducedCoverage.length > 0) {
-    return recovered ? "recovered-reduced-coverage" : "reduced-coverage";
+    return "reduced-coverage";
   }
-  return recovered ? "recovered" : "complete";
+  return "complete";
 }
 
 module.exports = {

@@ -41,15 +41,12 @@ const {
   corpusFromDirectory, validateProtocolReferences,
 } = require("./validate-protocol-review");
 const {
-  isRetryableFailure, mergeDiagnostics, parseDiagnostics, providerWasCalled,
-  resolveRequiredReviewers,
+  parseDiagnostics, providerWasCalled, resolveRequiredReviewers,
 } = require("./review-pipeline");
 const {
   REPORT_VERSION, buildReport, parseReport, stageIds, stageOutcome,
 } = require("./review-report");
-const {
-  MAXIMUM_DELAY_SECONDS, StaleHeadError, delayedRetryGate, retryGateStep,
-} = require("./review-retry");
+const { StaleHeadError } = require("./current-head");
 const {
   TERMINAL_CODE, validateGeneral, validateSpecialist,
 } = require("./agent-validator");
@@ -88,6 +85,7 @@ const candidateReview = (reviewer = "skeptical", changes = {}) => ({
 
 const MAXIMUM_LINUX_ENVIRONMENT_ENTRY_BYTES = 128 * 1024;
 const REVIEWERS = ["protocol", "skeptical", "code-compressor"];
+const REVIEWABLE_REVIEWERS = ["protocol", "skeptical", "code-compressor"];
 const MAXIMUM_NUMBER = 2_147_483_647;
 const HIGH_PRECISION_CONFIDENCE = 0.9999999999999999;
 
@@ -621,76 +619,68 @@ test("review outcome requires validated final output", () => {
   assert.equal(reviewOutcome({
     reportStatus: "success",
     state: { failed: true, reason: "invalid final review" },
-    recovered: true,
   }), "unavailable");
-  assert.equal(reviewOutcome({ reportStatus: "success", state: {}, recovered: true }), "recovered");
-  assert.equal(reviewOutcome({ reportStatus: "success", state: {}, recovered: false }), "complete");
+  assert.equal(reviewOutcome({ reportStatus: "success", state: {} }), "complete");
   assert.equal(reviewOutcome({
     reportStatus: "success", state: {}, reducedCoverage: ["code-compressor"],
   }), "reduced-coverage");
-  assert.equal(reviewOutcome({
-    reportStatus: "success", state: {}, recovered: true, reducedCoverage: ["code-compressor"],
-  }), "recovered-reduced-coverage");
-  assert.equal(reviewOutcome({ reportStatus: "failed", state: {}, recovered: true }), "unavailable");
+  assert.equal(reviewOutcome({ reportStatus: "failed", state: {} }), "unavailable");
 });
 
-test("resolve review state renders bounded recovery diagnostics in the check and summary", async () => {
+test("resolve review state renders bounded stage diagnostics in the check and summary", async () => {
   const stages = [
     {
-      id: "evidence", status: "success", attempts: 1,
+      id: "evidence", status: "success",
       metrics: { tokens: null, elapsed_ms: 0, request_retries: null, output_repairs: null },
     },
     {
-      id: "general", status: "success", attempts: 2, provider: true,
-      previous_reason: "retry declined | malformed <payload>",
+      id: "general", status: "success", provider: true,
       metrics: {
         tokens: { input: 0, output: 4, complete: false },
         elapsed_ms: 0, request_retries: 0, output_repairs: 0,
       },
     },
     {
-      id: "validate", status: "success", attempts: 1,
+      id: "validate", status: "success",
       metrics: { tokens: null, elapsed_ms: null, request_retries: null, output_repairs: null },
     },
   ];
-  const recovered = await runResolveReviewScript({
+  const complete = await runResolveReviewScript({
     report: {
-      v: 1, status: "success", stages: [
+      v: REPORT_VERSION, status: "success", stages: [
         ...stages.slice(0, 2),
         {
-          id: "aggregate", status: "success", attempts: 1,
+          id: "aggregate", status: "success",
           metrics: { tokens: null, elapsed_ms: 0, request_retries: null, output_repairs: null },
         },
         stages[2],
       ],
       metrics: {
         tokens: { input: 0, output: 4 }, tokens_complete: false,
-        elapsed_ms: 0, request_retries: 0, output_repairs: 0, stage_retries: 1,
+        elapsed_ms: 0, request_retries: 0, output_repairs: 0,
       },
     },
   });
-  assert.match(recovered.state.check.summary, /Validated automated review was produced after stage recovery/);
-  assert.doesNotMatch(recovered.state.check.summary, /retry declined \\| malformed &lt;payload&gt;/);
-  assert.match(recovered.state.check.summary, /Input tokens/);
-  assert.match(recovered.state.check.summary, /Cumulative elapsed/);
-  assert.match(recovered.state.check.summary, /\| 0 \|/);
-  assert.match(recovered.state.check.summary, /unavailable/);
-  assert.match(recovered.state.check.summary, /View the workflow summary/);
-  assert.equal(recovered.state.check.conclusion, "success");
-  assert.match(recovered.summary, /retry declined \\| malformed &lt;payload&gt;/);
-  assert.match(recovered.summary, /LLM stage metrics/);
+  assert.match(complete.state.check.summary, /Validated automated review is bound to this commit/);
+  assert.match(complete.state.check.summary, /Input tokens/);
+  assert.match(complete.state.check.summary, /Cumulative elapsed/);
+  assert.match(complete.state.check.summary, /\| 0 \|/);
+  assert.match(complete.state.check.summary, /unavailable/);
+  assert.match(complete.state.check.summary, /View the workflow summary/);
+  assert.equal(complete.state.check.conclusion, "success");
+  assert.match(complete.summary, /LLM stage metrics/);
 
   const terminal = await runResolveReviewScript({
     report: {
-      v: 1, status: "failed",
+      v: REPORT_VERSION, status: "failed",
       stages: [
         {
           id: "evidence", status: "success", required: true,
           metrics: { tokens: null, elapsed_ms: 0, request_retries: null, output_repairs: null },
         },
         {
-          id: "protocol", status: "failed", required: true, attempts: 2, reason: "provider unavailable",
-          category: "retry-declined", metrics: {
+          id: "protocol", status: "failed", required: true, reason: "provider unavailable",
+          category: "provider-unavailable", metrics: {
             tokens: null, elapsed_ms: null, request_retries: null, output_repairs: null,
           },
         },
@@ -709,25 +699,24 @@ test("resolve review state renders bounded recovery diagnostics in the check and
       ],
       metrics: {
         tokens: null, tokens_complete: false, elapsed_ms: null, request_retries: null,
-        output_repairs: null, stage_retries: 1,
+        output_repairs: null,
       },
     },
   });
   assert.doesNotMatch(terminal.state.check.summary, /provider unavailable/);
-  assert.doesNotMatch(terminal.state.check.summary, /retry-declined/);
   assert.match(terminal.state.check.summary, /unavailable/);
   assert.equal(terminal.state.check.conclusion, "neutral");
 
   const missing = await runResolveReviewScript({
     report: {
-      v: 1, status: "failed",
+      v: REPORT_VERSION, status: "failed",
       stages: [{
-        id: "pipeline", status: "failed", attempts: 1, reason: "no usable report",
+        id: "pipeline", status: "failed", reason: "no usable report",
         metrics: { tokens: null, elapsed_ms: null, request_retries: null, output_repairs: null },
       }],
       metrics: {
         tokens: null, tokens_complete: false, elapsed_ms: null, request_retries: null,
-        output_repairs: null, stage_retries: null,
+        output_repairs: null,
       },
     },
   });
@@ -737,9 +726,8 @@ test("resolve review state renders bounded recovery diagnostics in the check and
   const bounded = renderReviewReport({
     report: {
       stages: Array.from({ length: 16 }, (_, index) => ({
-        id: `stage-${index}-${"'".repeat(300)}`, status: "failed", attempts: 2,
+        id: `stage-${index}-${"'".repeat(300)}`, status: "failed",
         reason: "'".repeat(300), category: "retry-declined",
-        previous_reason: "'".repeat(300),
         metrics: {
           tokens: { input: 0, output: 0, total: 0, complete: true },
           elapsed_ms: 0, request_retries: 0, output_repairs: 0,
@@ -747,7 +735,7 @@ test("resolve review state renders bounded recovery diagnostics in the check and
       })),
       metrics: {
         tokens: { input: 0, output: 0, total: 0 }, tokens_complete: true,
-        elapsed_ms: 0, request_retries: 0, output_repairs: 0, stage_retries: 16,
+        elapsed_ms: 0, request_retries: 0, output_repairs: 0,
       },
     },
     outcome: "unavailable", detail: "review unavailable",
@@ -3305,11 +3293,11 @@ test("review checks name reduced coverage without publishing failure reasons", (
     { id: "validate", status: "success", required: true },
   ]);
   const rendered = renderReviewReport({
-    report, outcome: "recovered-reduced-coverage", reducedCoverage: ["code-compressor"],
+    report, outcome: "reduced-coverage", reducedCoverage: ["code-compressor"],
     summaryUrl: "https://github.example/actions/runs/123",
   });
   assert.equal(rendered.checkSummary.split("\n\n")[0],
-    "Validated automated review was produced after stage recovery with reduced coverage: " +
+    "Validated automated review is bound to this commit with reduced coverage: " +
     "optional reviewer code-compressor was unavailable.");
   assert.match(rendered.checkSummary, /code-compressor/);
   assert.doesNotMatch(rendered.checkSummary, /provider timeout with internal details/);
@@ -3468,7 +3456,7 @@ test("a missing or malformed author identity fails closed instead of eligible", 
   }
 });
 
-// ---- reviewer stage recovery, reporting, and metrics ----
+// ---- reviewer stage reporting and metrics ----
 
 function trustedFile(root, name, value) {
   const file = path.join(root, name);
@@ -4156,266 +4144,6 @@ test("unmeasured provider usage is reported as unknown, never as zero", () => {
   assert.deepEqual(partial.tokens, { input: 5, output: null, total: null, complete: false });
 });
 
-test("a retried stage reports what both of its attempts spent", () => {
-  const attempt = (changes = {}) => parseDiagnostics(JSON.stringify({
-    durationMs: 1000, requestRetryCount: 4, outputRepairCount: 1,
-    providerAttempts: [{ activity: "review" }],
-    tokenUsage: { complete: true, inputTokens: 100, outputTokens: 20, totalTokens: 120 },
-    ...changes,
-  }));
-
-  assert.deepEqual(mergeDiagnostics(attempt(), attempt()), {
-    elapsed_ms: 2000, request_retries: 8, output_repairs: 2, provider_attempts: 2,
-    tokens: { input: 200, output: 40, total: 240, complete: true },
-  });
-
-  // One unmeasured attempt must not disappear into the other attempt's number.
-  const half = mergeDiagnostics(attempt(), parseDiagnostics(""));
-  assert.equal(half.elapsed_ms, null);
-  assert.equal(half.tokens.complete, false);
-  assert.equal(half.tokens.input, 100);
-
-  // A stage that only ever ran once keeps its single measurement.
-  assert.deepEqual(mergeDiagnostics(attempt(), null), attempt());
-  assert.deepEqual(mergeDiagnostics(null, attempt()), attempt());
-});
-
-const REVIEWABLE_REVIEWERS = ["protocol", "skeptical", "code-compressor"];
-const BASE_SHA = "c".repeat(40);
-
-function reviewableState(changes = {}) {
-  return {
-    state: "open", draft: false, headSha: SHA, baseSha: BASE_SHA, labels: [],
-    authorType: "User", association: "MEMBER",
-    classificationConclusion: "success", classificationHeadSha: SHA,
-    classificationTitle: "Classification complete",
-    automaticReviewEligible: true, classifiedReviewers: REVIEWABLE_REVIEWERS,
-    alreadyReviewed: false, ciConclusion: "success", ciRuns: null, classificationRuns: null,
-    diffBytes: 64 * 1024,
-    ...changes,
-  };
-}
-
-// A pull request the caller's gate would still admit, with one attribute at a time knocked out.
-function reviewablePullRequest(changes = {}, live = null) {
-  const initial = reviewableState(changes);
-  const now = () => (live ? reviewableState(live()) : initial);
-  const github = {
-    paginate: { iterator: () => ({ [Symbol.asyncIterator]: async function* () {} }) },
-    rest: {
-      pulls: {
-        list: async () => ({ data: [] }),
-        get: async () => {
-          const state = now();
-          return { data: {
-            number: 1,
-            state: state.state,
-            draft: state.draft,
-            head: { sha: state.headSha, repo: { full_name: "Devolutions/IronRDP" } },
-            base: { sha: state.baseSha },
-            labels: state.labels.map((name) => ({ name })),
-            author_association: state.association,
-            user: { login: "octocat", type: state.authorType, node_id: "U_kgDOAoctocat" },
-          } };
-        },
-      },
-      checks: {
-        listForRef: async ({ check_name: checkName }) => {
-          const state = now();
-          if (checkName === "AI automated review") {
-            return { data: { check_runs: state.alreadyReviewed
-              ? [{ conclusion: "success", app: { slug: "github-actions" } }]
-              : [] } };
-          }
-          const summaryFor = (run) => `Validated classification.\n\n${encodeCheckState({
-            protocolRelated: true, risk: "medium",
-            specialistReviewers: run.reviewers ?? state.classifiedReviewers,
-            automaticReviewEligible: run.eligible ?? state.automaticReviewEligible,
-          })}`;
-          const runs = state.classificationRuns ?? [{ id: 1, title: state.classificationTitle }];
-          return { data: { check_runs: runs.map((run) => ({
-            id: run.id,
-            external_id: `${CLASSIFIER_SCHEMA_VERSION}:${state.classificationHeadSha}`,
-            conclusion: run.conclusion ?? state.classificationConclusion,
-            app: { slug: "github-actions" },
-            output: { title: run.title, summary: summaryFor(run) },
-          })) } };
-        },
-      },
-      actions: {
-        listWorkflowRunsForRepo: async () => {
-          const state = now();
-          return { data: { workflow_runs: state.ciRuns ?? [
-            { name: "CI", conclusion: state.ciConclusion, run_started_at: "2026-01-01T00:00:00Z" },
-          ] } };
-        },
-      },
-    },
-  };
-  return {
-    github, owner: "Devolutions", repo: "IronRDP", pullNumber: 1,
-    expectedHeadSha: SHA, expectedBaseSha: BASE_SHA,
-    selectedReviewers: REVIEWABLE_REVIEWERS, requiredReviewers: ["protocol"],
-    diffBytes: initial.diffBytes,
-  };
-}
-
-test("a delayed retry is spent only on a failure the runtime itself called retryable", async () => {
-  const slept = [];
-  const gate = (changes = {}) => delayedRetryGate({
-    ...reviewablePullRequest(), retryable: "true", failureCategory: "provider-timeout",
-    delaySeconds: 120, sleep: async (ms) => { slept.push(ms); },
-    ...changes,
-  });
-
-  assert.deepEqual(await gate(), { retry: true, reason: "" });
-  assert.deepEqual(slept, [120000]);
-
-  // The runtime owns the taxonomy. Every category it marks retryable is retried, and the pipeline
-  // never second-guesses it with a category list of its own.
-  for (const category of [
-    "provider-timeout", "provider-conflict", "provider-rate-limit", "provider-service",
-    "provider-connection", "a-category-invented-after-this-test-was-written",
-  ]) {
-    assert.equal((await gate({ failureCategory: category })).retry, true, category);
-  }
-
-  // Terminal failures never reach a second request, whatever they are called.
-  for (const failure of [
-    { retryable: "false", failureCategory: "provider-quota" },
-    { retryable: "false", failureCategory: "output-invalid" },
-    { retryable: "false", failureCategory: "provider-credential" },
-    { retryable: "", failureCategory: "" },
-    { retryable: undefined, failureCategory: undefined },
-  ]) {
-    const result = await gate(failure);
-    assert.equal(result.retry, false);
-    assert.match(result.reason, /not retryable/);
-  }
-
-  // The delay is bounded no matter what the caller asks for.
-  slept.length = 0;
-  await gate({ delaySeconds: 60 * 60 });
-  await gate({ delaySeconds: -1 });
-  await gate({ delaySeconds: Number.NaN });
-  assert.deepEqual(slept, [MAXIMUM_DELAY_SECONDS * 1000, 0, 0]);
-});
-
-test("a retry re-decides review eligibility against the pull request as it is after the delay", async () => {
-  const gate = (state = {}, extra = {}) => delayedRetryGate({
-    ...reviewablePullRequest(state), retryable: "true", failureCategory: "provider-timeout",
-    delaySeconds: 0, sleep: async () => {},
-    ...extra,
-  });
-
-  assert.equal((await gate()).retry, true);
-
-  // Everything the caller checked before the pipeline started is checked again, because the delay
-  // is long enough for any of it to change.
-  const declined = {
-    "pull request is no longer open": { state: "closed" },
-    "pull request head is no longer current": { headSha: OTHER_SHA },
-    "pull request base moved away from the reviewed evidence": { baseSha: OTHER_SHA },
-    "pull request is a draft": { draft: true },
-    "review is no longer policy eligible": { labels: ["triage/legitimacy"] },
-    "pull request evidence exceeds the current evidence limit": { diffBytes: 2 * 1024 * 1024 },
-    // Evidence that cannot be measured cannot be shown to fit, so it fails closed.
-    "pull request evidence is unavailable": { diffBytes: null },
-    "classification is no longer valid for this head": { classificationConclusion: "failure" },
-    "classification no longer authorizes an automatic review": { automaticReviewEligible: false },
-    "classification now selects a different reviewer set": { classifiedReviewers: ["protocol", "skeptical"] },
-    "this head was already reviewed": { alreadyReviewed: true },
-    "CI is not green at the reviewed head": { ciConclusion: "failure" },
-    "pull request author is a bot": { authorType: "Bot" },
-  };
-  for (const [reason, state] of Object.entries(declined)) {
-    assert.deepEqual(await gate(state), { retry: false, reason }, reason);
-  }
-
-  // A suspected overlap is advisory, so a retry earned by a transient provider failure still runs.
-  assert.deepEqual(await gate({ labels: [OVERLAP_LABEL] }), { retry: true, reason: "" });
-
-  // A classification that stopped the automation still carries automaticReviewEligible, so only its
-  // title separates it from one that authorizes a review. Losing the legitimacy label while the
-  // stage sleeps must not buy a second provider request.
-  assert.deepEqual(await gate({ classificationTitle: "Automation stopped" }),
-    { retry: false, reason: "classification no longer authorizes an automatic review" });
-  assert.deepEqual(await gate({ classificationTitle: "Automation stopped" }, { force: true }),
-    { retry: true, reason: "" });
-  const reviewGate = workflowJob(readWorkflow(path.join(__dirname, "..")), "review-gate");
-  assert.match(reviewGate, /const classificationValid = classificationOwned && protocolState !== null;/);
-  assert.match(reviewGate, /const classificationCheck = classificationValid &&\s+classification\.output\?\.title === "Classification complete"/);
-
-  // A stale classification bound to an older head cannot authorize this one.
-  assert.equal((await gate({ classificationHeadSha: OTHER_SHA })).retry, false);
-
-  // A newer failing CI run is not excused by an older successful one.
-  assert.equal((await gate({ ciRuns: [
-    { name: "CI", conclusion: "success", run_started_at: "2026-01-01T00:00:00Z" },
-    { name: "CI", conclusion: "failure", run_started_at: "2026-01-02T00:00:00Z" },
-  ] })).retry, false);
-
-  // Two classification runs can share one external ID. The newest decides, whatever order the API
-  // lists them in, so a superseded "Classification complete" cannot authorize the retry.
-  assert.deepEqual(await gate({ classificationRuns: [
-    { id: 41, title: "Classification complete" },
-    { id: 42, title: "Automation stopped" },
-  ] }), { retry: false, reason: "classification no longer authorizes an automatic review" });
-  assert.equal((await gate({ classificationRuns: [
-    { id: 42, title: "Classification complete" },
-    { id: 41, title: "Automation stopped" },
-  ] })).retry, true);
-
-  // An unreachable API proves nothing, and proving nothing is not permission to spend a request.
-  const broken = { retry: false, reason: "review eligibility could not be confirmed" };
-  assert.deepEqual(await gate({}, { github: { rest: { pulls: {
-    get: async () => { throw new Error("secret-bearing rate limit detail"); },
-  } } } }), broken);
-});
-
-test("the caller's force bypasses review policy, and nothing that makes a review unsafe", async () => {
-  const gate = (state = {}) => delayedRetryGate({
-    ...reviewablePullRequest(state), retryable: "true", failureCategory: "provider-timeout",
-    delaySeconds: 0, sleep: async () => {}, force: true,
-  });
-
-  for (const state of [
-    { draft: true }, { labels: ["triage/legitimacy"] }, { ciConclusion: "failure" },
-    { alreadyReviewed: true }, { authorType: "Bot" },
-  ]) {
-    assert.equal((await gate(state)).retry, true, JSON.stringify(state));
-  }
-
-  // Safety is not policy: a moved head, a closed pull request, and evidence that does not fit the
-  // cap now in force stay fatal under force.
-  for (const state of [
-    { state: "closed" }, { headSha: OTHER_SHA }, { baseSha: OTHER_SHA },
-    { diffBytes: 2 * 1024 * 1024 }, { diffBytes: null },
-  ]) {
-    assert.equal((await gate(state)).retry, false, JSON.stringify(state));
-  }
-
-  // The oversized allowance raises the cap it was granted for, and only that far.
-  assert.equal((await gate({
-    diffBytes: 2 * 1024 * 1024, labels: ["ai-review/allow-oversized"],
-  })).retry, true);
-  assert.equal((await gate({
-    diffBytes: 5 * 1024 * 1024, labels: ["ai-review/allow-oversized"],
-  })).retry, false);
-});
-
-test("a retry decision is made after the delay, not before it", async () => {
-  let current = reviewableState();
-  const decision = await delayedRetryGate({
-    ...reviewablePullRequest(current, () => current),
-    retryable: "true", failureCategory: "provider-service", delaySeconds: 30,
-    // The pull request is closed while the pipeline waits, which is exactly the case a
-    // before-the-delay check would miss.
-    sleep: async () => { current = reviewableState({ state: "closed", draft: true }); },
-  });
-  assert.deepEqual(decision, { retry: false, reason: "pull request is no longer open" });
-});
-
 test("every failed stage is reported, not just the first", () => {
   const report = buildReport([
     { id: "evidence", status: "success", required: true },
@@ -4440,44 +4168,6 @@ test("every failed stage is reported, not just the first", () => {
   assert.equal(buildReport(report.stages.map((stage) => stage.id === "validate"
     ? { ...stage, status: "success" }
     : stage)).status, "failed");
-});
-
-test("recovery repeats only the failed work and keeps every earlier success", () => {
-  // Incident 1912: the compressor produced a valid review, the skeptical reviewer timed out, and
-  // the protocol reviewer exhausted output repair. Only the timeout is worth a second request.
-  const spent = { tokens: { complete: true, input: 100, output: 20, total: 120 }, elapsed_ms: 1000,
-    request_retries: 4, output_repairs: 0 };
-  const report = buildReport([
-    { id: "evidence", status: "success", required: true, metrics: { elapsed_ms: 500 } },
-    { id: "specialist:code-compressor", status: "success", required: true, provider: true,
-      attempts: 1, metrics: spent },
-    { id: "specialist:skeptical", status: "success", required: true, provider: true,
-      attempts: 2, previous_reason: "provider request timed out",
-      metrics: { ...spent, elapsed_ms: 2000, request_retries: 8 } },
-    { id: "specialist:protocol", status: "failed", required: true, provider: true,
-      attempts: 1, reason: "model output was not valid JSON",
-      category: "output-repair-exhausted", metrics: spent },
-    { id: "aggregate", status: "success", required: true },
-    { id: "general", status: "skipped", required: true, provider: true },
-    { id: "validate", status: "skipped", required: true },
-  ]);
-
-  const stage = (id) => report.stages.find((entry) => entry.id === id);
-  assert.equal(stage("specialist:code-compressor").attempts, 1);
-  assert.equal(stage("specialist:skeptical").status, "success");
-  // A recovered stage still explains the attempt it lost.
-  assert.equal(stage("specialist:skeptical").previous_reason, "provider request timed out");
-  assert.equal(stage("specialist:protocol").attempts, 1);
-  // A stage its dependency skipped was never attempted, so the report must not read as a call.
-  assert.equal(stage("general").attempts, 0);
-  assert.equal(stage("validate").attempts, 0);
-  assert.equal(stageOutcome({ id: "general", status: "skipped", attempts: 2 }).attempts, 0);
-  assert.equal(report.metrics.stage_retries, 1);
-  assert.equal(report.metrics.request_retries, 16);
-  // Both attempts of the recovered stage are charged.
-  assert.equal(report.metrics.tokens.input, 300);
-  assert.equal(report.metrics.tokens_complete, true);
-  assert.equal(report.status, "failed");
 });
 
 test("a provider stage that never reported usage keeps the totals honest", () => {
@@ -4505,14 +4195,13 @@ test("a provider stage that never reported usage keeps the totals honest", () =>
 
   // Diagnostics that never arrived prove nothing, so the stage still counts as spending.
   assert.equal(providerWasCalled(parseDiagnostics("")), true);
-  assert.equal(providerWasCalled(mergeDiagnostics(beforeAnyRequest, parseDiagnostics(""))), true);
   assert.equal(buildReport([
     { id: "general", status: "failed", required: true, reason: "provider unavailable",
       provider: providerWasCalled(parseDiagnostics("")), metrics: parseDiagnostics("") },
   ]).metrics.tokens_complete, false);
 
   const metrics = buildReport([
-    { id: "evidence", status: "success", required: true, attempts: 2, metrics: {
+    { id: "evidence", status: "success", required: true, metrics: {
       tokens: { input: 100, output: 20, total: 120, complete: true },
       elapsed_ms: 1000, request_retries: 3, output_repairs: 2,
     } },
@@ -4527,15 +4216,13 @@ test("a provider stage that never reported usage keeps the totals honest", () =>
     elapsed_ms: 100,
     request_retries: 1,
     output_repairs: 0,
-    stage_retries: 0,
   });
 });
 
 test("the caller reads exactly what the pipeline wrote, and never reads garbage as success", () => {
   const produced = buildReport([
     { id: "evidence", status: "success", required: true, metrics: { elapsed_ms: 500 } },
-    { id: "specialist:skeptical", status: "success", required: true, provider: true, attempts: 2,
-      previous_reason: "provider request timed out",
+    { id: "specialist:skeptical", status: "success", required: true, provider: true,
       metrics: { tokens: { complete: true, input: 10, output: 5 }, elapsed_ms: 20,
         request_retries: 4, output_repairs: 1 } },
     { id: "specialist:protocol", status: "failed", required: true, provider: true,
@@ -4551,8 +4238,6 @@ test("the caller reads exactly what the pipeline wrote, and never reads garbage 
   const parsed = parseReport(JSON.stringify(produced));
   assert.deepEqual(parsed, produced);
   assert.equal(parsed.v, REPORT_VERSION);
-  assert.equal(parsed.stages.find((stage) => stage.id === "specialist:skeptical").previous_reason,
-    "provider request timed out");
   // Which stages paid a provider crosses the wire too, so the consumer's totals are the producer's.
   assert.equal(parsed.metrics.tokens_complete, false);
   assert.equal(parsed.stages.find((stage) => stage.id === "specialist:protocol").provider, true);
@@ -4570,7 +4255,7 @@ test("the caller reads exactly what the pipeline wrote, and never reads garbage 
   assert.match(unusable(JSON.stringify({ v: 99 })).stages[0].reason, /unsupported report version/);
 
   // A producer cannot claim success it did not earn, and a producer that failed is believed.
-  assert.equal(parseReport(JSON.stringify({ v: 1, status: "success", stages: [
+  assert.equal(parseReport(JSON.stringify({ v: REPORT_VERSION, status: "success", stages: [
     { id: "validate", status: "success", required: true },
     { id: "general", status: "failed", required: true },
   ] })).status, "failed");
@@ -4595,13 +4280,17 @@ test("the caller reads exactly what the pipeline wrote, and never reads garbage 
   const unmarked = ["evidence", "aggregate", "general", "validate"]
     .map((id) => ({ id, status: "success" }));
   assert.equal(buildReport(unmarked).status, "success");
-  assert.equal(parseReport(JSON.stringify({ v: 1, status: "success", stages: unmarked })).status,
+  assert.equal(parseReport(JSON.stringify({
+    v: REPORT_VERSION, status: "success", stages: unmarked,
+  })).status,
     "success");
   for (const failed of ["evidence", "aggregate", "general", "validate"]) {
     const stages = unmarked.map((stage) =>
       stage.id === failed ? { ...stage, status: "failed" } : stage);
     assert.equal(buildReport(stages).status, "failed", `${failed} must not be waved through`);
-    assert.equal(parseReport(JSON.stringify({ v: 1, status: "success", stages })).status, "failed");
+    assert.equal(parseReport(JSON.stringify({
+      v: REPORT_VERSION, status: "success", stages,
+    })).status, "failed");
   }
 });
 
@@ -4613,10 +4302,9 @@ test("the reusable pipeline stays caller-driven and reports every stage back", (
   assert.doesNotMatch(triggers, /\n {2}(pull_request|push|schedule|workflow_dispatch|issue_comment):/);
 
   for (const input of ["pr-number", "head-sha", "base-sha", "specialist-reviewers",
-    "evidence-max-bytes", "required-reviewers", "gate", "retry-delay-seconds"]) {
+    "evidence-max-bytes", "required-reviewers", "gate"]) {
     assert.match(workflow, new RegExp(`\\n {6}${input}:\\n`), `${input} input is missing`);
   }
-  // The caller owns publication and scheduling; recovery is settled inside one call.
   for (const removed of ["prior-results", "recovery-attempt", "provenance"]) {
     assert.doesNotMatch(workflow, new RegExp(removed), `${removed} should no longer exist`);
   }
@@ -4630,7 +4318,7 @@ test("maximum review payloads traverse workflow-controlled files and artifacts",
   const caller = readWorkflow();
   const pipeline = readReviewWorkflow();
   const action = fs.readFileSync(path.join(__dirname, "..", "actions", "openai-agent", "action.yml"), "utf8");
-  assert.equal((pipeline.match(/structured-output-file: \.openai-agent-output\//g) || []).length, 4);
+  assert.equal((pipeline.match(/structured-output-file: \.openai-agent-output\//g) || []).length, 2);
   assert.doesNotMatch(pipeline, /RAW_OUTPUT|structured-output \}\}/);
   assert.match(pipeline, /name: review-final-\$\{\{ inputs\.head-sha \}\}/);
   assert.match(pipeline, /name: review-report-\$\{\{ inputs\.head-sha \}\}/);
@@ -4647,7 +4335,6 @@ test("maximum review payloads traverse workflow-controlled files and artifacts",
   assert.doesNotMatch(caller, /classification-state-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
   assert.match(action, /structured-output-file:/);
   assert.equal((action.match(/^  structured-output-file:/gm) || []).length, 1);
-  assert.match(pipeline, /steps\.agent-retry\.outcome == 'success'/);
 });
 
 test("specialist concurrency is a provider allocation, not a reviewer cap", () => {
@@ -4670,93 +4357,8 @@ test("reviewer actions retry four provider requests and repair output in convers
     assert.equal(config.stage_timeout_ms, 7_200_000, `${agent} must use the reviewer stage budget`);
     assert.equal(config.stream_idle_timeout_ms, 300_000, `${agent} must use the stream idle budget`);
   }
-  assert.match(workflowJob(workflow, "specialists"), /timeout-minutes: 250/);
-  assert.match(workflowJob(workflow, "general"), /timeout-minutes: 250/);
-});
-
-test("the shared retry gate carries the resolved plan into its decision", async () => {
-  const os = require("node:os");
-  const fixture = reviewablePullRequest();
-  const run = async (env) => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-gate-"));
-    fs.mkdirSync(path.join(directory, "pr-evidence"));
-    fs.writeFileSync(path.join(directory, "pr-evidence", "pull-request.diff"), "x".repeat(2048));
-    const previous = process.cwd();
-    const outputs = {};
-    const logged = [];
-    try {
-      process.chdir(directory);
-      await retryGateStep({
-        github: fixture.github,
-        context: { repo: { owner: "Devolutions", repo: "IronRDP" } },
-        core: {
-          setOutput: (key, value) => { outputs[key] = value; },
-          info: (line) => logged.push(JSON.parse(line)),
-        },
-        env: {
-          PULL_REQUEST_NUMBER: "1", HEAD_SHA: SHA, BASE_SHA: BASE_SHA,
-          RETRYABLE: "true", FAILURE_CATEGORY: "provider-timeout", RETRY_DELAY_SECONDS: "0",
-          SELECTED_REVIEWERS: JSON.stringify(REVIEWABLE_REVIEWERS),
-          ...env,
-        },
-        stage: "specialist",
-      });
-    } finally {
-      process.chdir(previous);
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
-    return { outputs, logged };
-  };
-
-  const allowed = await run({ REQUIRED_REVIEWERS: JSON.stringify(["protocol"]) });
-  assert.equal(allowed.outputs.retry, "true");
-  assert.deepEqual(allowed.logged, [{
-    event: "pr-automation.retry-gate", stage: "specialist", retry: true, reason: "",
-  }]);
-
-  // A reviewer the plan makes mandatory but the classification no longer selects cannot be
-  // recovered, and an unreadable plan must not quietly drop that check.
-  const dropped = await run({ REQUIRED_REVIEWERS: JSON.stringify(["security"]) });
-  assert.equal(dropped.outputs.retry, "false");
-  assert.match(dropped.outputs.reason, /required reviewer is no longer selected/);
-});
-
-test("stage recovery costs one extra invocation and re-proves the review first", () => {
-  const workflow = readReviewWorkflow();
-  const adapter = fs.readFileSync(
-    path.join(__dirname, "review-retry.js"), "utf8",
-  );
-
-  // Both reviewer jobs share one gate adapter, and it re-decides eligibility on the real pull
-  // request rather than on the head alone.
-  assert.match(adapter, /retryable: env\.RETRYABLE/, "the gate must trust the runtime");
-  assert.doesNotMatch(adapter, /RETRYABLE_CATEGORIES/);
-  for (const input of ["expectedBaseSha", "force", "selectedReviewers", "requiredReviewers", "diffBytes"]) {
-    assert.match(adapter, new RegExp(`\\b${input}\\b`), `the gate must receive ${input}`);
-  }
-
-  for (const [name, stage] of [["specialists", "specialist"], ["general", "general"]]) {
-    const job = workflowJob(workflow, name);
-    assert.match(job, new RegExp(`retryGateStep\\([\\s\\S]*?stage: "${stage}"`),
-      `${name} must gate its retry`);
-    assert.match(job, /retry-delay-seconds/, `${name} must honour the caller delay`);
-    // Exactly one retry invocation: recovery is bounded, not a loop.
-    assert.equal((job.match(/id: agent-retry\n/g) || []).length, 1);
-    assert.match(job, /if: steps\.retry-gate\.outputs\.retry == 'true'/);
-    for (const variable of ["RETRYABLE", "GATE", "SELECTED_REVIEWERS", "REQUIRED_REVIEWERS"]) {
-      assert.match(job, new RegExp(`${variable}: `), `${name} must pass ${variable} to the gate`);
-    }
-    // Reading that pull request needs read-only scopes, and grants no write anywhere.
-    const permissions = job.slice(job.indexOf("permissions:"), job.indexOf("steps:"));
-    for (const scope of ["actions: read", "checks: read", "issues: read", "pull-requests: read"]) {
-      assert.match(permissions, new RegExp(scope), `${name} must be able to re-check eligibility`);
-    }
-    assert.doesNotMatch(permissions, /: write/);
-
-    // A declined retry is a review outcome the caller has to be able to read.
-    assert.match(job, /RETRY_DECLINE: \$\{\{ steps\.retry-gate\.outputs\.reason \}\}/);
-    assert.match(job, /no retry: \$\{decline\}/);
-  }
+  assert.match(workflowJob(workflow, "specialists"), /timeout-minutes: 130/);
+  assert.match(workflowJob(workflow, "general"), /timeout-minutes: 130/);
 });
 
 test("the preparation job checks out the automation before any step requires it", async () => {

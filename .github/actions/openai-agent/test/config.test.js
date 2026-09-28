@@ -57,7 +57,6 @@ test("configuration rejects unknown fields, unsafe models, and empty capabilitie
     { max_output_bytes: 32 * 1024 },
     { max_turns: 51 },
     { max_tool_calls: 201 },
-    { request_timeout_ms: 120_000 },
     { stream_idle_timeout_ms: 300_001 },
     { stage_timeout_ms: 7_200_001 },
     { max_request_retries: 11 },

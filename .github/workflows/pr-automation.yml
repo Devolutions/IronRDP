@@ -768,7 +768,6 @@ jobs:
              const report = parseReport(fs.existsSync("review-pipeline/review-report.json")
                ? fs.readFileSync("review-pipeline/review-report.json", "utf8")
                : "");
-             const recovered = report.stages.filter((stage) => stage.attempts === 2);
              const selectedReviewers = new Set(Array.isArray(gate.specialistReviewers)
                ? gate.specialistReviewers
                : []);
@@ -850,8 +849,7 @@ jobs:
                  .write();
              } else {
                const outcome = reviewOutcome({
-                 reportStatus: report.status, state, recovered: recovered.length > 0,
-                 reducedCoverage,
+                 reportStatus: report.status, state, reducedCoverage,
                });
                const rendered = renderReviewReport({
                  report, outcome, summaryUrl: process.env.SUMMARY_URL, reducedCoverage,

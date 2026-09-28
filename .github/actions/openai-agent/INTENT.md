@@ -1,62 +1,103 @@
-# Purpose and trust boundary
+# OpenAI filesystem agent intent
 
-This action runs a bounded filesystem agent against an OpenAI-compatible chat-completions API.
-Workflow configuration, prompts, output schemas, and optional validator modules are trusted.
-Repository evidence, tool arguments, and provider responses are untrusted.
-The model receives only configured read-only filesystem capabilities.
-The action has no general write capability.
+This action runs a narrowly capable, bounded filesystem agent against an OpenAI-compatible chat-completions API.
+It exists to let trusted workflows use model reasoning and read-only evidence lookup without granting command execution, arbitrary network access, or general filesystem writes.
+Repository evidence, tool arguments, and provider responses remain untrusted throughout the invocation.
 
-# Execution and recovery
+## Terms
 
 - A **logical model call** sends one message history to the provider.
 - An **HTTP attempt** is one network request for a logical model call.
 - A **request retry** resends the unchanged logical call after a transient failure.
-- An **output repair** asks the model to correct a rejected value within the existing conversation.
+- An **output repair** asks the model to correct a rejected value using validation feedback and the existing conversation.
 
-Every invocation has finite turn, tool-call, repair, and stage wall-clock budgets.
-Every HTTP attempt has finite streamed-byte and idle-progress budgets.
-The stage deadline uses monotonic time and covers provider attempts, retry waits, tools, validation, and repairs.
-The idle deadline starts before the first response byte and resets only when the response body makes progress.
-The action retries transient failures within the logical call's request budget and remaining stage time.
-Retries discard all fragments from the failed attempt and preserve the unchanged message history.
-Provider-directed retry delays and fallback backoff consume the same stage budget.
-Configuration errors, rejected credentials, exhausted quota, invalid output, and exhausted limits are terminal.
+## Trusted inputs and capabilities
 
-The action assembles each streamed response completely before using it.
-Content, reasoning, usage, finish reason, and indexed tool-call fragments are accumulated independently.
-Missing optional reasoning or usage metadata does not invalidate otherwise accepted text.
+The workflow controls:
+
+- Provider connection details and credentials.
+- Model and instructions.
+- Output schema.
+- Read-only filesystem capabilities.
+- Stage, stream-idle, request-retry, model-turn, tool-call, and output-repair limits.
+- An optional task-specific validator and its bounded metadata.
+- An optional structured-output file target.
+
+Configuration, prompts, schemas, and validator modules are trusted workflow inputs.
+Evidence and model-produced tool arguments never grant capabilities.
+The model can call only the declared `read_file`, `list_files`, and `search_text` tools within the configured paths and resource limits.
+
+## Streaming and stage limits
+
+Every model call uses streaming so active reasoning and generation are not bounded by a short whole-request timeout.
+The action requests high reasoning effort and leaves the provider token cap unset.
+
+The stage has one monotonic deadline covering provider attempts, retry waits, tool execution, validation, and output repair.
+Every HTTP attempt has independent raw-response-byte and idle-progress limits.
+The idle limit begins before the first response byte and resets only when the response body makes progress.
+The raw-stream limit includes framing bytes before the SDK parses server-sent events.
+
+The action assembles reasoning, content, usage, finish reason, and indexed tool-call fragments independently.
 Every accepted stream carries a terminal finish reason so cleanly truncated responses are retried rather than accepted.
-Tool calls execute only after the stream ends cleanly, the provider reports a tool-call finish, every envelope is complete, and the whole batch fits the remaining tool budget.
+Missing optional reasoning or usage metadata makes diagnostics incomplete but does not invalidate otherwise acceptable text.
+
+Tool calls execute only after the complete stream has arrived, the provider reports a tool-call finish, every envelope is structurally valid, and the whole batch fits the remaining tool budget.
 No tool from an incomplete or malformed batch executes.
 
-# Output acceptance and repair
+## Request retries
 
+One model turn is one logical model call regardless of its number of HTTP attempts.
+The action retries only transient provider failures and never retries invalid configuration, rejected credentials, exhausted quota, invalid model output, or exhausted local limits.
+The configured request-retry limit applies after the initial HTTP attempt.
+Retries reuse the unchanged message history and discard every fragment from the failed attempt.
+An interrupted streamed body is safe to retry because no partial assistant message or tool call has been committed.
+
+For retryable responses, the action honors a valid provider `Retry-After` value and otherwise uses bounded exponential backoff with jitter.
+Retry delays and repeated attempts consume the same stage deadline.
+A reviewer workflow does not restart the whole action after this per-call recovery is exhausted.
+
+## Output acceptance and repair
+
+The action returns JSON accepted by the local schema and any supplied validator, or an explicit bounded failure reason.
 Raw model content is bounded before it enters local JSON parsing or message history.
-Checked-in schemas bound retained text and collections, while runtime limits independently bound raw streams and accepted serialization.
+Accepted serialization is bounded independently of the configured schema.
+Checked-in schemas also bound their retained text and collections.
+
 Unpaired UTF-16 surrogates are replaced with the Unicode replacement character before validation.
-Sanitization rejects object keys that would become ambiguous after replacement.
+Sanitization rejects distinct object keys that would collide after replacement.
 
-Provider output constraints are generation aids selected only for model and schema combinations known to support them.
-They never widen local acceptance.
+Provider JSON or JSON Schema constraints are generation aids selected only for model and schema combinations known to support them.
 They may be narrower than local acceptance when a trusted normalizer can preserve useful work without ambiguity.
-Local JSON parsing, schema validation, and the trusted semantic validator are authoritative.
-Local acceptance preserves useful work by normalizing unambiguous representation defects before applying downstream constraints.
-Missing provider diagnostics do not narrow that local acceptance.
+They never widen local acceptance.
+Local JSON parsing, schema validation, and the trusted semantic validator remain authoritative.
 
-Rejected JSON, schema, and semantic output may be repaired within the configured budget.
-Repair may read only necessary evidence and must preserve every usable finding from earlier candidates.
-Every rejection records its validation layer and a bounded, sanitized reason.
-The action fails when the repair budget ends without an accepted value.
+The action repairs rejected JSON, schema, and semantic output within the configured repair budget and existing conversation.
+A semantic repair may use only necessary read-only evidence lookup.
+After evidence lookup, the corrected value is requested without tools so the configured provider output format applies where supported.
+Every parsed candidate is supplied to the validator in original order so repair cannot silently discard usable findings.
+Every rejected attempt records the validation layer and a bounded, sanitized reason.
+The final rejection reason is retained when the repair budget is exhausted.
 
-# Output transport
+## Structured output files
 
 Accepted JSON is returned as a step output unless the caller supplies a workflow-controlled output-file target.
-An output-file target is input only, and the action outcome reports whether the write succeeded.
-File transport is confined to a new regular JSON file in the action's dedicated workspace directory.
-The action rejects existing targets, symbolic links, symbolic-link directories, and paths outside that directory.
+The target is input only; the action step outcome reports whether generation, validation, and the write succeeded.
+The target must name one new `.json` file below `.openai-agent-output` under the real workspace root.
+The action rejects symbolic-link directories, symbolic links, existing targets, and paths outside that directory.
+This exception transports accepted output without turning the action into a general write capability.
 
-# Observability
+## Diagnostics
 
-Diagnostics identify logical calls and physical attempts without exposing prompts, model content, credentials, or raw provider errors.
-They retain bounded request sizes, tool-result sizes, durations, retry and repair counts, provider stop and error codes, token usage when available, and validation rejections.
-Turn and tool counts remain available on failure.
+Expose these bounded diagnostics:
+
+- Activity such as investigation, finalization, or repair.
+- Deterministic logical-call and HTTP-attempt indices.
+- Message count, serialized request bytes, and accumulated tool-result bytes for each logical call.
+- Duration of each HTTP attempt and the full invocation.
+- Request-retry and output-repair counts.
+- Provider finish reason and bounded error code when available.
+- Token usage and whether it is complete.
+- Accumulated turn and tool-call counts, including on failure.
+- Every rejected output attempt with its validation layer and sanitized reason.
+
+Diagnostics and logs never expose credentials, prompts, repository evidence, tool arguments, tool results, reasoning, model content, or raw provider errors.
