@@ -178,6 +178,12 @@ impl RdpsndServer {
         Ok(client_format.version)
     }
 
+    /// Whether negotiation has finished and a format was accepted, so wave data
+    /// has somewhere to go.
+    pub fn is_ready(&self) -> bool {
+        self.state == RdpsndState::Ready && self.format_no.is_some()
+    }
+
     pub fn flags(&self) -> PduResult<pdu::AudioFormatFlags> {
         let client_format = self
             .client_format
