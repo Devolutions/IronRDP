@@ -1,4 +1,4 @@
-use ironrdp_core::{encode_vec, impl_as_any};
+use ironrdp_core::{Decode as _, ReadCursor, encode_vec, impl_as_any};
 use ironrdp_dvc::ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_dvc::pdu::{
     DataPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu,
@@ -132,6 +132,41 @@ fn soft_sync_rejects_a_tunnel_that_became_unavailable_before_migration() {
     assert!(!client.soft_sync_complete());
     assert_eq!(client.tunnel_for_channel(7), None);
     assert!(!client.has_channels_on_tunnel(SoftSyncTunnelType::RELIABLE_UDP));
+}
+
+#[test]
+fn soft_sync_skips_channels_the_client_did_not_open() {
+    let mut client = DrdynvcClient::new();
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("recorded channel should attach");
+    client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+
+    // Windows lists the channels this client answered with NO_LISTENER (2, 6, 8..=12) next to
+    // the graphics pipeline it accepted (7). The tunnel must still be switched for channel 7.
+    let request = encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
+        SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, vec![2, 6, 7, 8, 9, 10, 11, 12]),
+    ])))
+    .expect("Soft-Sync request should encode");
+
+    let responses = client.process(&request).expect("Soft-Sync request should be accepted");
+    let [response] = responses.as_slice() else {
+        panic!("expected exactly one Soft-Sync response");
+    };
+    let encoded = response
+        .encode_unframed_pdu()
+        .expect("Soft-Sync response should encode");
+    let DrdynvcClientPdu::SoftSyncResponse(response) =
+        DrdynvcClientPdu::decode(&mut ReadCursor::new(&encoded)).expect("Soft-Sync response should decode")
+    else {
+        panic!("expected a Soft-Sync response");
+    };
+    assert_eq!(response.tunnels_to_switch(), &[SoftSyncTunnelType::RELIABLE_UDP]);
+
+    assert!(client.soft_sync_complete());
+    assert_eq!(client.tunnel_for_channel(7), Some(SoftSyncTunnelType::RELIABLE_UDP));
+    assert_eq!(client.tunnel_for_channel(2), None);
+    assert!(client.has_channels_on_tunnel(SoftSyncTunnelType::RELIABLE_UDP));
 }
 
 #[test]
