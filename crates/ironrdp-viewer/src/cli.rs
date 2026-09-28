@@ -132,7 +132,7 @@ struct Args {
     #[clap(long, env = "IRONRDP_UDP", value_parser = clap::builder::BoolishValueParser::new(), num_args = 0..=1, default_missing_value = "true")]
     udp: Option<bool>,
 
-    /// Highest RDP-UDP protocol version to offer (1, 2 or 3)
+    /// Highest RDP-UDP protocol version to offer (1, 2 or 3). Requires --udp
     #[clap(long, env = "IRONRDP_UDP_OFFER", value_parser = clap::value_parser!(u16).range(1..=3))]
     udp_offer: Option<u16>,
 
@@ -331,6 +331,11 @@ impl ViewerConfig {
                 rpc: true,
                 rpc_endpoint: args.rpc_endpoint,
             });
+        }
+
+        // Only the UDP handshake reads the offered version, so without `--udp` it would do nothing.
+        if args.udp_offer.is_some() && args.udp.is_none() {
+            anyhow::bail!("--udp-offer (IRONRDP_UDP_OFFER) requires --udp (IRONRDP_UDP)");
         }
 
         // The library overlays everything expressible as a `.rdp` property: destination, credentials,

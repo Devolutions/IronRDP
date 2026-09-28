@@ -6,7 +6,9 @@ use std::sync::Arc;
 #[cfg(windows)]
 use ironrdp_cfg::GatewayCredentialsSource;
 use ironrdp_cfg::PropertySetExt as _;
-use ironrdp_client::config::{AudioQualityMode, ClipboardType, ConfigBuilder, Destination, Transport, VmConnectMode};
+use ironrdp_client::config::{
+    AudioQualityMode, ClipboardType, ConfigBuilder, Destination, Transport, UdpVersion, VmConnectMode,
+};
 #[cfg(windows)]
 use ironrdp_client::config::{MissingField, TransportKind};
 use ironrdp_pdu::gcc::{ClientMonitorData, Monitor, MonitorFlags};
@@ -679,6 +681,63 @@ fn reliable_udp_is_opt_in() {
         .build()
         .expect("UDP-enabled config");
     assert!(config.udp_transport_enabled());
+}
+
+#[test]
+fn udp_offer_defaults_to_version_3_and_can_be_lowered() {
+    let config = complete_builder().build().expect("default config");
+    assert_eq!(config.udp_offer_version(), UdpVersion::V3);
+
+    for version in [UdpVersion::V1, UdpVersion::V2, UdpVersion::V3] {
+        let config = complete_builder()
+            .with_udp_offer_version(version)
+            .build()
+            .expect("config with a UDP offer version");
+        assert_eq!(config.udp_offer_version(), version);
+    }
+}
+
+#[test]
+fn graphics_pipeline_is_opt_in() {
+    let config = complete_builder().build().expect("default config");
+    assert!(!config.connector().support_dyn_vc_gfx_protocol);
+
+    let config = complete_builder()
+        .with_graphics_pipeline(true)
+        .build()
+        .expect("graphics pipeline config");
+    assert!(config.connector().support_dyn_vc_gfx_protocol);
+}
+
+#[test]
+fn udp_and_graphics_pipeline_cli_flags_reach_the_config() {
+    let rdp = "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\n";
+
+    let config = parse_config_from_rdp(rdp, &[]);
+    assert!(!config.udp_transport_enabled());
+    assert_eq!(config.udp_offer_version(), UdpVersion::V3);
+    assert!(!config.connector().support_dyn_vc_gfx_protocol);
+
+    let config = parse_config_from_rdp(rdp, &["--udp", "--udp-offer", "2", "--egfx"]);
+    assert!(config.udp_transport_enabled());
+    assert_eq!(config.udp_offer_version(), UdpVersion::V2);
+    assert!(config.connector().support_dyn_vc_gfx_protocol);
+
+    let config = parse_config_from_rdp(rdp, &["--udp", "--udp-offer", "1"]);
+    assert_eq!(config.udp_offer_version(), UdpVersion::V1);
+}
+
+#[test]
+fn udp_offer_without_udp_is_rejected() {
+    let rdp = "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\n";
+
+    let error = parse_config_from_rdp_result(rdp, &["--udp-offer", "2"])
+        .expect_err("--udp-offer is only used with --udp, so it must not be accepted alone");
+    assert!(error.to_string().contains("requires --udp"), "{error:?}");
+
+    // Turning UDP off explicitly leaves nothing to be surprised by.
+    let config = parse_config_from_rdp(rdp, &["--udp=false", "--udp-offer", "2"]);
+    assert!(!config.udp_transport_enabled());
 }
 
 #[test]
