@@ -33,9 +33,9 @@ impl FramedRead for UdpTransport {
             // puts no minimum on HigherLayerData, and [MS-RDPBCGR] 1.3.9 sends
             // the four Continuous Auto-Detection messages "encapsulated in the
             // RDP_TUNNEL_SUBHEADER structure ... over the sideband channels
-            // that are in active use". The tunnel has already taken what it
-            // needs from those subheaders by the time we get here, leaving a
-            // payload of nothing to pass on.
+            // that are in active use". `recv` drops those subheaders (a caller
+            // that needs them uses `recv_message`), leaving a payload of
+            // nothing to pass on.
             loop {
                 match self.recv().await {
                     Some(data) if data.is_empty() => {

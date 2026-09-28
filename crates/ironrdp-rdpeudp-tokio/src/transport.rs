@@ -221,7 +221,7 @@ impl<T> Drop for AbortOnDrop<T> {
 /// [MS-RDPBCGR] 1.3.9 sends over a sideband channel in use, such as a
 /// bandwidth measurement's Start and Stop and the client's results. `data`
 /// may be empty when a message carries only sub-headers.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TunnelMessage {
     pub sub_headers: Vec<ironrdp_rdpemt::TunnelSubHeader>,
     pub data: Vec<u8>,
