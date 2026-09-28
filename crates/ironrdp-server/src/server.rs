@@ -3489,10 +3489,11 @@ impl RdpServer {
                         }
 
                         // While no large graphics write has been bracketed recently (see
-                        // `write_egfx_over_tcp`), measure bandwidth over a window of ticks: Start on
-                        // one, Stop several later, with ordinary traffic in between counted
-                        // by the client, then a Bandwidth Measure Results PDU in reply. Until
-                        // one has completed there is no characteristics result to send.
+                        // `write_egfx_over_tcp` and `write_egfx_over_udp`), measure
+                        // bandwidth over a window of ticks: Start on one, Stop several later,
+                        // with ordinary traffic in between counted by the client, then a
+                        // Bandwidth Measure Results PDU in reply. Until one has completed
+                        // there is no characteristics result to send.
                         if let Some(pdu) = ad.build_bandwidth_measure() {
                             let data = encode_autodetect_request(pdu, message_channel_id, user_channel_id)?;
                             writer
@@ -3805,27 +3806,8 @@ impl RdpServer {
         conn: &mut ConnectionState,
         sub_headers: &[ironrdp_rdpemt::TunnelSubHeader],
     ) {
-        for sub_header in sub_headers {
-            if sub_header.sub_header_type != ironrdp_rdpemt::SubHeaderType::AutoDetectResponse {
-                trace!(sub_header_type = ?sub_header.sub_header_type, "Ignoring a UDP tunnel sub-header the client does not send");
-                continue;
-            }
-            // The sub-header's own two bytes are the response's headerLength
-            // and headerTypeId ([MS-RDPEMT] 2.2.1.1.1), so the response is
-            // decoded from the whole sub-header, not from its data alone.
-            let bytes = match encode_vec(sub_header) {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    warn!(%error, "Failed to re-encode a UDP tunnel sub-header, dropping it");
-                    continue;
-                }
-            };
-            match decode::<rdp::autodetect::AutoDetectResponse>(&bytes) {
-                Ok(response) => self.record_autodetect_response(conn, &response),
-                Err(error) => {
-                    warn!(%error, "Failed to decode an auto-detect response from the UDP tunnel, dropping it")
-                }
-            }
+        for response in sub_headers.iter().filter_map(autodetect_response_from_sub_header) {
+            self.record_autodetect_response(conn, &response);
         }
     }
 
@@ -5059,6 +5041,7 @@ const AUTODETECT_HEADER_SIZE: usize = 2;
 /// SubHeaderLength and SubHeaderType are the request's headerLength and
 /// headerTypeId, so SubHeaderData starts at the sequence number.
 #[cfg(feature = "egfx")]
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 fn autodetect_sub_header(
     request: &rdp::autodetect::AutoDetectRequest,
 ) -> ServerResult<ironrdp_rdpeudp_tokio::TunnelMessage> {
@@ -5073,6 +5056,40 @@ fn autodetect_sub_header(
         }],
         data: Vec::new(),
     })
+}
+
+/// Reads the client's auto-detect response out of a tunnel sub-header
+/// ([MS-RDPBCGR] 1.3.9), or `None` when the sub-header is not one or does not
+/// decode.
+///
+/// A sub-header the client should not send, or a malformed one, is logged and
+/// dropped rather than treated as an error: nothing about the primary TCP
+/// session depends on the sideband transport's correctness.
+#[cfg_attr(feature = "__test", visibility::make(pub))]
+fn autodetect_response_from_sub_header(
+    sub_header: &ironrdp_rdpemt::TunnelSubHeader,
+) -> Option<rdp::autodetect::AutoDetectResponse> {
+    if sub_header.sub_header_type != ironrdp_rdpemt::SubHeaderType::AutoDetectResponse {
+        trace!(sub_header_type = ?sub_header.sub_header_type, "Ignoring a UDP tunnel sub-header the client does not send");
+        return None;
+    }
+    // The sub-header's own two bytes are the response's headerLength and
+    // headerTypeId ([MS-RDPEMT] 2.2.1.1.1), so the response is decoded from
+    // the whole sub-header, not from its data alone.
+    let bytes = match encode_vec(sub_header) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            warn!(%error, "Failed to re-encode a UDP tunnel sub-header, dropping it");
+            return None;
+        }
+    };
+    match decode::<rdp::autodetect::AutoDetectResponse>(&bytes) {
+        Ok(response) => Some(response),
+        Err(error) => {
+            warn!(%error, "Failed to decode an auto-detect response from the UDP tunnel, dropping it");
+            None
+        }
+    }
 }
 
 /// Encode a server-initiated Heartbeat PDU for the MCS message channel.
@@ -5978,114 +5995,6 @@ mod preempt_tests {
                 client.abort();
             }))
             .await;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use core::net::Ipv4Addr;
-
-    use super::*;
-
-    fn conn_with_autodetect() -> ConnectionState {
-        ConnectionState {
-            autodetect: Some(AutoDetectManager::new()),
-            ..ConnectionState::default()
-        }
-    }
-
-    /// On the tunnel the request is the sub-header itself, in a PDU with no
-    /// data, so the client's byte count covers only the payloads sent
-    /// between Start and Stop.
-    #[cfg(feature = "egfx")]
-    #[test]
-    fn a_tunnel_auto_detect_request_is_bare_and_alone() {
-        let message = autodetect_sub_header(&rdp::autodetect::AutoDetectRequest::bw_start_continuous(7))
-            .expect("encode Bandwidth Measure Start");
-
-        assert!(message.data.is_empty());
-        assert_eq!(message.sub_headers.len(), 1);
-        assert_eq!(
-            message.sub_headers[0].sub_header_type,
-            ironrdp_rdpemt::SubHeaderType::AutoDetectRequest
-        );
-        // RDP_BW_START is the sub-header: SubHeaderLength/headerLength 6,
-        // SubHeaderType/headerTypeId TYPE_ID_AUTODETECT_REQUEST, then
-        // sequenceNumber 7 and requestType 0x0014 as SubHeaderData.
-        assert_eq!(message.sub_headers[0].data, [0x07, 0x00, 0x14, 0x00]);
-        assert_eq!(
-            encode_vec(&message.sub_headers[0]).expect("encode the sub-header"),
-            [0x06, 0x00, 0x07, 0x00, 0x14, 0x00]
-        );
-    }
-
-    /// A measurement the tunnel took with it when it closed does not hold
-    /// up the next one, which after the fallback goes over TCP.
-    #[test]
-    fn the_tunnel_closing_cancels_its_bandwidth_measurement() {
-        let mut server = RdpServer::builder()
-            .with_addr((Ipv4Addr::LOCALHOST, 0))
-            .with_no_security()
-            .with_no_input()
-            .with_no_display()
-            .build();
-        let mut conn = conn_with_autodetect();
-        let ad = conn.autodetect.as_mut().expect("auto-detect enabled");
-        ad.begin_bandwidth_measure(crate::autodetect::BW_BRACKET_MIN_BYTES, 0)
-            .expect("a large write starts a measurement");
-        ad.end_bandwidth_measure().expect("the measurement is open");
-        conn.bandwidth_measure_on_udp = true;
-
-        server.cancel_udp_bandwidth_measure(&mut conn);
-
-        let ad = conn.autodetect.as_mut().expect("auto-detect enabled");
-        assert!(
-            ad.begin_bandwidth_measure(crate::autodetect::BW_BRACKET_MIN_BYTES, 1_000)
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn bandwidth_results_on_the_tunnel_complete_the_measurement() {
-        let mut server = RdpServer::builder()
-            .with_addr((Ipv4Addr::LOCALHOST, 0))
-            .with_no_security()
-            .with_no_input()
-            .with_no_display()
-            .build();
-        let mut conn = conn_with_autodetect();
-        let ad = conn.autodetect.as_mut().expect("auto-detect enabled");
-        let start = ad
-            .begin_bandwidth_measure(crate::autodetect::BW_BRACKET_MIN_BYTES, 0)
-            .expect("a large write starts a measurement");
-        ad.end_bandwidth_measure().expect("the measurement is open");
-
-        let results = rdp::autodetect::AutoDetectResponse::BandwidthMeasureResults {
-            sequence_number: start.sequence_number(),
-            response_type: 0x000B,
-            time_delta_ms: 1000,
-            byte_count: 125_000,
-        };
-        server.record_tunnel_sub_headers(
-            &mut conn,
-            &[
-                // Malformed, dropped without affecting the one after it.
-                ironrdp_rdpemt::TunnelSubHeader {
-                    sub_header_type: ironrdp_rdpemt::SubHeaderType::AutoDetectResponse,
-                    data: vec![0x01],
-                },
-                ironrdp_rdpemt::TunnelSubHeader {
-                    sub_header_type: ironrdp_rdpemt::SubHeaderType::AutoDetectResponse,
-                    // The sub-header supplies headerLength and headerTypeId itself.
-                    data: encode_vec(&results).expect("encode Bandwidth Measure Results")[2..].to_vec(),
-                },
-            ],
-        );
-
-        assert_eq!(
-            conn.autodetect.as_ref().and_then(AutoDetectManager::bandwidth_kbps),
-            Some(1000)
-        );
     }
 }
 
