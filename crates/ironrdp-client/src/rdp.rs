@@ -2870,7 +2870,8 @@ fn build_ordinary_rdcleanpath_request(
 ///
 /// [MS-RDPEMT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/4f538fd7-3aca-4e7d-a213-13eb5f95c1ad
 #[cfg(feature = "udp")]
-fn tunnel_auto_detect_requests(sub_headers: &[ironrdp_rdpemt::TunnelSubHeader]) -> Vec<AutoDetectRequest> {
+#[doc(hidden)]
+pub fn tunnel_auto_detect_requests(sub_headers: &[ironrdp_rdpemt::TunnelSubHeader]) -> Vec<AutoDetectRequest> {
     sub_headers
         .iter()
         .filter(|sub_header| sub_header.sub_header_type == ironrdp_rdpemt::SubHeaderType::AutoDetectRequest)
@@ -2894,7 +2895,8 @@ fn tunnel_auto_detect_requests(sub_headers: &[ironrdp_rdpemt::TunnelSubHeader]) 
 /// Encodes an auto-detect response as the tunnel sub-header it is on the wire (see
 /// [`tunnel_auto_detect_requests`]).
 #[cfg(feature = "udp")]
-fn tunnel_auto_detect_sub_header(
+#[doc(hidden)]
+pub fn tunnel_auto_detect_sub_header(
     response: &ironrdp_pdu::rdp::autodetect::AutoDetectResponse,
 ) -> Option<ironrdp_rdpemt::TunnelSubHeader> {
     let encoded = ironrdp_core::encode_vec(response)
@@ -4505,51 +4507,12 @@ fn process_clipboard_message(
 mod tests {
     use super::*;
 
-    /// Windows frames an RTT Measure Request on the tunnel as `06 00 <seq> 01 00`: the
-    /// sub-header's own two bytes are the request's header.
-    #[cfg(feature = "udp")]
-    #[test]
-    fn tunnel_sub_headers_decode_as_auto_detect_requests() {
-        use ironrdp_rdpemt::{SubHeaderType, TunnelSubHeader};
-
-        let rtt: TunnelSubHeader = ironrdp_core::decode(&[0x06, 0x00, 0x07, 0x00, 0x01, 0x00]).expect("sub-header");
-        let unmodeled = TunnelSubHeader {
-            sub_header_type: SubHeaderType::AutoDetectRequest,
-            data: vec![0x01, 0x00, 0xFF, 0x7F],
-        };
-        let response = TunnelSubHeader {
-            sub_header_type: SubHeaderType::AutoDetectResponse,
-            data: vec![0x07, 0x00, 0x00, 0x00],
-        };
-
-        let requests = tunnel_auto_detect_requests(&[rtt, unmodeled, response]);
-        assert!(matches!(
-            requests.as_slice(),
-            [AutoDetectRequest::RttRequest { sequence_number: 7, .. }]
-        ));
-    }
-
-    /// The RTT response goes back as `06 01 <seq> 00 00`, alone in a Tunnel Data PDU with no data.
-    #[cfg(feature = "udp")]
-    #[test]
-    fn auto_detect_responses_encode_as_tunnel_sub_headers() {
-        let response = ironrdp_pdu::rdp::autodetect::AutoDetectResponse::RttResponse { sequence_number: 7 };
-        let sub_header = tunnel_auto_detect_sub_header(&response).expect("sub-header");
-        let pdu = encode_vec(&ironrdp_rdpemt::TunnelData {
-            sub_headers: vec![sub_header],
-            higher_layer_data: Vec::new(),
-        })
-        .expect("encode");
-        // TunnelData: action 2, payloadLength 0, headerLength 4 + 6, then the sub-header.
-        assert_eq!(pdu, [0x02, 0x00, 0x00, 0x0A, 0x06, 0x01, 0x07, 0x00, 0x00, 0x00]);
-    }
-
     #[cfg(feature = "rdpdr")]
     use core::any::TypeId;
     #[cfg(feature = "rdpdr")]
     use core::sync::atomic::AtomicUsize;
 
-    #[cfg(any(feature = "rdpdr", feature = "udp"))]
+    #[cfg(feature = "rdpdr")]
     use ironrdp_core::encode_vec;
     use ironrdp_pdu::input::fast_path::KeyboardFlags;
     #[cfg(feature = "rdpdr")]

@@ -345,3 +345,74 @@ fn continuous_measurement_counts_fast_path_data_only_inside_the_window() {
     // six-byte auto-detect header, as in the message-channel tests above.
     assert_eq!(bandwidth_result_frame(response), (2, 0x000b, 30, 3 + 100 + 6));
 }
+
+fn at(millis: u64) -> Option<ironrdp_core::MonotonicInstant> {
+    Some(ironrdp_core::MonotonicInstant::from_millis(millis))
+}
+
+#[test]
+fn tunnel_auto_detect_answers_an_rtt_request() {
+    let mut stage = make_active_stage();
+    let responses = stage.process_tunnel_auto_detect(vec![AutoDetectRequest::rtt_continuous(7)], 10, at(1_000));
+    assert_eq!(responses, [AutoDetectResponse::RttResponse { sequence_number: 7 }]);
+}
+
+/// The data of the PDU that carries the Start follows it on the wire and is counted; the data
+/// of the one that carries the Stop is not.
+#[test]
+fn tunnel_auto_detect_counts_the_data_between_start_and_stop() {
+    let mut stage = make_active_stage();
+
+    assert!(
+        stage
+            .process_tunnel_auto_detect(vec![AutoDetectRequest::bw_start_continuous(1)], 7, at(1_000))
+            .is_empty()
+    );
+    assert!(stage.process_tunnel_auto_detect(Vec::new(), 100, at(1_010)).is_empty());
+    let responses = stage.process_tunnel_auto_detect(vec![AutoDetectRequest::bw_stop_continuous(3)], 50, at(1_040));
+
+    let [
+        AutoDetectResponse::BandwidthMeasureResults {
+            sequence_number,
+            time_delta_ms,
+            byte_count,
+            ..
+        },
+    ] = responses.as_slice()
+    else {
+        panic!("expected one bandwidth result, got {responses:?}");
+    };
+    assert_eq!((*sequence_number, *time_delta_ms, *byte_count), (3, 40, 7 + 100));
+}
+
+/// The tunnel and the main connection each keep their own measurement, so data received on one
+/// is not counted in the other's, even while both windows are open.
+#[test]
+fn tunnel_and_main_connection_measure_separately() {
+    let mut stage = make_active_stage();
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 64, 64);
+
+    let start = encode_server_autodetect(AutoDetectRequest::bw_start_continuous(1));
+    process_stage_frame(&mut stage, &mut image, Action::X224, &start, 1_000);
+    stage.process_tunnel_auto_detect(vec![AutoDetectRequest::bw_start_continuous(1)], 0, at(1_000));
+
+    process_stage_frame(&mut stage, &mut image, Action::FastPath, &fast_path_frame(100), 1_010);
+    stage.process_tunnel_auto_detect(Vec::new(), 500, at(1_010));
+
+    let tunnel = stage.process_tunnel_auto_detect(vec![AutoDetectRequest::bw_stop_continuous(2)], 0, at(1_020));
+    assert!(
+        matches!(
+            tunnel.as_slice(),
+            [AutoDetectResponse::BandwidthMeasureResults { byte_count: 500, .. }]
+        ),
+        "{tunnel:?}"
+    );
+
+    let stop = encode_server_autodetect(AutoDetectRequest::bw_stop_continuous(2));
+    let outputs = process_stage_frame(&mut stage, &mut image, Action::X224, &stop, 1_020);
+    let [ActiveStageOutput::ResponseFrame(response)] = outputs.as_slice() else {
+        panic!("expected exactly one bandwidth response, got {outputs:?}");
+    };
+    // The fast-path data and the Stop's own six bytes, but none of the tunnel's 500.
+    assert_eq!(bandwidth_result_frame(response), (2, 0x000b, 20, 3 + 100 + 6));
+}
