@@ -1199,6 +1199,9 @@ struct ConnectionState {
     /// response over TCP, so its first tunnel data can overtake it; this holds
     /// that data until the response is in instead of dropping it.
     early_tunnel_payloads: VecDeque<Vec<u8>>,
+    /// Whether the last bandwidth measurement went out on the sideband
+    /// transport, so that transport closing can cancel it.
+    bandwidth_measure_on_udp: bool,
 }
 
 impl ConnectionState {
@@ -3534,7 +3537,7 @@ impl RdpServer {
             .get_channel_id_by_type::<dvc::DrdynvcServer>()
             .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
 
-        let mut route_over_udp = false;
+        let mut udp_route = None;
 
         // `conn.udp_migration_allowed` gates the Soft-Sync Request itself
         // (`request_reliable_udp` below): MS-RDPEDYC 3.1.5.3/3.3.5.3.1 forbid
@@ -3587,16 +3590,13 @@ impl RdpServer {
             // MUST keep using the tunnel it named immediately after sending it
             // (3.3.5.3.1). The client does not read the tunnel until the
             // request has arrived (3.2.5.3.1), so data that overtakes it waits.
-            route_over_udp =
+            let route_over_udp =
                 drdynvc.tunnel_for_outgoing_channel(egfx_dvc_id) == Some(dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP);
 
             if route_over_udp {
+                udp_route = Some(udp_transport);
                 if !conn.egfx_on_udp {
                     newly_on_udp = Some(egfx_dvc_id);
-                }
-                for message in &messages {
-                    let payload = message.encode_unframed_pdu().map_err(ServerError::encode)?;
-                    udp_transport.send(payload).await;
                 }
             }
         }
@@ -3605,8 +3605,9 @@ impl RdpServer {
             debug!(egfx_dvc_id, "EGFX is now sent over the UDP transport");
         }
 
-        if route_over_udp {
-            return Ok(());
+        if let Some(udp_transport) = udp_route {
+            // Boxed to keep `run`'s future under `clippy::large_futures`.
+            return Box::pin(self.write_egfx_over_udp(conn, messages, udp_transport)).await;
         }
         self.write_egfx_over_tcp(
             conn,
@@ -3617,6 +3618,54 @@ impl RdpServer {
             message_channel_id,
         )
         .await
+    }
+
+    /// Sends EGFX messages over the UDP tunnel, one Tunnel Data PDU each.
+    ///
+    /// A batch large enough to measure is bracketed as on TCP (see
+    /// [`Self::write_egfx_over_tcp`]), except that Start and Stop travel in
+    /// RDP_TUNNEL_SUBHEADERs rather than on the MCS message channel
+    /// ([MS-RDPBCGR] 1.3.9): The client counts the bytes that arrive on the
+    /// transport carrying Start, and the graphics are no longer on TCP. Each
+    /// goes in a PDU with no data of its own, so the count is exactly the
+    /// graphics payloads between them whichever way the client orders a
+    /// PDU's sub-headers and data.
+    #[cfg(feature = "egfx")]
+    async fn write_egfx_over_udp(
+        &mut self,
+        conn: &mut ConnectionState,
+        messages: Vec<ironrdp_svc::SvcMessage>,
+        udp_transport: &multitransport::UdpTransportHandle,
+    ) -> ServerResult<()> {
+        let payloads = messages
+            .iter()
+            .map(ironrdp_svc::SvcMessage::encode_unframed_pdu)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ServerError::encode)?;
+        let len = payloads.iter().map(Vec::len).sum();
+
+        let start = conn
+            .autodetect
+            .as_mut()
+            .and_then(|ad| ad.begin_bandwidth_measure(len, monotonic_now_ms()));
+        let bracketed = start.is_some();
+        if let Some(start) = start {
+            trace!(len, "Bracketing a UDP graphics write for a bandwidth measurement");
+            conn.bandwidth_measure_on_udp = true;
+            udp_transport.send_message(autodetect_sub_header(&start)?).await;
+        }
+        for payload in payloads {
+            udp_transport.send(payload).await;
+        }
+        if bracketed
+            && let Some(stop) = conn
+                .autodetect
+                .as_mut()
+                .and_then(AutoDetectManager::end_bandwidth_measure)
+        {
+            udp_transport.send_message(autodetect_sub_header(&stop)?).await;
+        }
+        Ok(())
     }
 
     #[cfg(feature = "egfx")]
@@ -3640,6 +3689,7 @@ impl RdpServer {
         if let (Some(ad), Some(message_channel_id)) = (conn.autodetect.as_mut(), message_channel_id)
             && let Some(start) = ad.begin_bandwidth_measure(data.len(), monotonic_now_ms())
         {
+            conn.bandwidth_measure_on_udp = false;
             let start = encode_autodetect_request(start, message_channel_id, user_channel_id)?;
             writer
                 .write_all(&start)
@@ -3743,6 +3793,46 @@ impl RdpServer {
                 .await?;
         }
         Ok(())
+    }
+
+    /// Records the auto-detect responses carried in sub-headers on the UDP
+    /// tunnel, where the client may return Bandwidth Measure Results for a
+    /// measurement started there ([MS-RDPBCGR] 1.3.9). Results that come
+    /// back on the message channel instead go through
+    /// [`Self::handle_message_channel_data`].
+    fn record_tunnel_sub_headers(
+        &mut self,
+        conn: &mut ConnectionState,
+        sub_headers: &[ironrdp_rdpemt::TunnelSubHeader],
+    ) {
+        for sub_header in sub_headers {
+            if sub_header.sub_header_type != ironrdp_rdpemt::SubHeaderType::AutoDetectResponse {
+                trace!(sub_header_type = ?sub_header.sub_header_type, "Ignoring a UDP tunnel sub-header the client does not send");
+                continue;
+            }
+            match decode::<rdp::autodetect::AutoDetectResponse>(&sub_header.data) {
+                Ok(response) => self.record_autodetect_response(conn, &response),
+                Err(error) => {
+                    warn!(%error, "Failed to decode an auto-detect response from the UDP tunnel, dropping it")
+                }
+            }
+        }
+    }
+
+    /// Drops a bandwidth measurement that went out on the sideband transport
+    /// once that transport has closed: Its results can no longer arrive, and
+    /// while it is outstanding no measurement starts on TCP either.
+    fn cancel_udp_bandwidth_measure(&mut self, conn: &mut ConnectionState) {
+        if !core::mem::take(&mut conn.bandwidth_measure_on_udp) {
+            return;
+        }
+        if conn
+            .autodetect
+            .as_mut()
+            .is_some_and(AutoDetectManager::cancel_bandwidth_measure)
+        {
+            debug!("UDP transport closed with a bandwidth measurement outstanding, dropping it");
+        }
     }
 
     /// Decodes and dispatches one payload received over the sideband UDP
@@ -4112,7 +4202,7 @@ impl RdpServer {
                 return core::future::pending::<ServerResult<RunState>>().await;
             };
             loop {
-                let Some(payload) = transport.recv().await else {
+                let Some(message) = transport.recv().await else {
                     // Soft-Sync only moves channels onto a tunnel (MS-RDPEDYC
                     // 2.2.5.1 has no TCP tunnel type), its request promised
                     // no more of their data over TCP (SOFT_SYNC_TCP_FLUSHED),
@@ -4120,7 +4210,7 @@ impl RdpServer {
                     // (MS-RDPEMT 1.3.3). A client whose channels moved has
                     // nowhere left to read them, so end the connection and let
                     // it reconnect rather than keep a session it cannot draw.
-                    let (_, conn) = &mut *this.lock().await;
+                    let (server, conn) = &mut *this.lock().await;
                     if conn.egfx_on_udp {
                         warn!("UDP transport lost with EGFX on it, ending the connection");
                         return Err(ServerError::reason(
@@ -4134,14 +4224,19 @@ impl RdpServer {
                     // silently dropping every future EGFX batch instead of
                     // actually falling back to TCP as this log claims.
                     *udp_transport.borrow_mut() = None;
+                    server.cancel_udp_bandwidth_measure(conn);
                     return core::future::pending::<ServerResult<RunState>>().await;
                 };
                 let mut this = this.lock().await;
                 let (server, conn) = &mut *this;
+                server.record_tunnel_sub_headers(conn, &message.sub_headers);
+                if message.data.is_empty() {
+                    continue;
+                }
                 let result = server
                     .dispatch_udp_tunnel_payload(
                         conn,
-                        &payload,
+                        &message.data,
                         &mut udp_tunnel_writer,
                         user_channel_id,
                         Some(&transport),
@@ -4577,54 +4672,65 @@ impl RdpServer {
         Ok(false)
     }
 
+    /// Records a client Auto-Detect Response, whether it came on the MCS
+    /// message channel or in a sub-header on the UDP tunnel.
+    fn record_autodetect_response(
+        &mut self,
+        conn: &mut ConnectionState,
+        response: &rdp::autodetect::AutoDetectResponse,
+    ) {
+        let Some(ad) = conn.autodetect.as_mut() else {
+            return;
+        };
+        match ad.handle_response(response, monotonic_now_ms()) {
+            AutoDetectOutcome::Rtt(rtt_ms) => {
+                self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
+                // A matched RTT sample always updates the session-lifetime low in the
+                // same call (see `handle_response`'s RttResponse arm), so it is available
+                // unconditionally here, not just on a new low.
+                let baseline_rtt_ms = ad
+                    .baseline_rtt_ms()
+                    .expect("handle_response just recorded a sample above");
+                self.autodetect_baseline_rtt.store(baseline_rtt_ms, Ordering::Relaxed);
+                debug!(
+                    rtt_ms,
+                    baseline_rtt_ms,
+                    seq = response.sequence_number(),
+                    "RTT measured"
+                );
+            }
+            AutoDetectOutcome::Bandwidth(Some(bandwidth_kbps)) => {
+                self.autodetect_bandwidth.store(bandwidth_kbps, Ordering::Relaxed);
+                self.autodetect_bandwidth_generation.fetch_add(1, Ordering::Release);
+                // Logging the whole response, not just the computed figure: a
+                // damage-driven video source makes any single measurement
+                // window's byte count wildly bimodal (near-idle vs. a real
+                // frame landing in it), so bandwidth_kbps alone reads as
+                // noise without the response's time_delta_ms/byte_count
+                // alongside it to show why.
+                debug!(bandwidth_kbps, ?response, "Bandwidth measured");
+            }
+            AutoDetectOutcome::Bandwidth(None) => {
+                // The manager just cleared its own figure rather than keep
+                // reporting a stale one (see `handle_response`'s doc comment);
+                // mirror that here so the exposed handle does not disagree.
+                self.autodetect_bandwidth.store(u32::MAX, Ordering::Relaxed);
+                self.autodetect_bandwidth_generation.fetch_add(1, Ordering::Release);
+                trace!(
+                    seq = response.sequence_number(),
+                    "Bandwidth measurement completed without a usable figure"
+                );
+            }
+            AutoDetectOutcome::Unmatched => {
+                trace!(seq = response.sequence_number(), "Unmatched auto-detect response");
+            }
+        }
+    }
+
     fn handle_message_channel_data(&mut self, conn: &mut ConnectionState, data: SendDataRequest<'_>) {
         match decode::<rdp::message_channel::ClientMessageChannelPdu>(data.user_data.as_ref()) {
             Ok(rdp::message_channel::ClientMessageChannelPdu::AutoDetectResponse(pdu)) => {
-                if let Some(ref mut ad) = conn.autodetect {
-                    match ad.handle_response(&pdu.response, monotonic_now_ms()) {
-                        AutoDetectOutcome::Rtt(rtt_ms) => {
-                            self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
-                            // A matched RTT sample always updates the session-lifetime low in the
-                            // same call (see `handle_response`'s RttResponse arm), so it is available
-                            // unconditionally here, not just on a new low.
-                            let baseline_rtt_ms = ad
-                                .baseline_rtt_ms()
-                                .expect("handle_response just recorded a sample above");
-                            self.autodetect_baseline_rtt.store(baseline_rtt_ms, Ordering::Relaxed);
-                            debug!(
-                                rtt_ms,
-                                baseline_rtt_ms,
-                                seq = pdu.response.sequence_number(),
-                                "RTT measured"
-                            );
-                        }
-                        AutoDetectOutcome::Bandwidth(Some(bandwidth_kbps)) => {
-                            self.autodetect_bandwidth.store(bandwidth_kbps, Ordering::Relaxed);
-                            self.autodetect_bandwidth_generation.fetch_add(1, Ordering::Release);
-                            // Logging the whole response, not just the computed figure: a
-                            // damage-driven video source makes any single measurement
-                            // window's byte count wildly bimodal (near-idle vs. a real
-                            // frame landing in it), so bandwidth_kbps alone reads as
-                            // noise without the response's time_delta_ms/byte_count
-                            // alongside it to show why.
-                            debug!(bandwidth_kbps, response = ?pdu.response, "Bandwidth measured");
-                        }
-                        AutoDetectOutcome::Bandwidth(None) => {
-                            // The manager just cleared its own figure rather than keep
-                            // reporting a stale one (see `handle_response`'s doc comment);
-                            // mirror that here so the exposed handle does not disagree.
-                            self.autodetect_bandwidth.store(u32::MAX, Ordering::Relaxed);
-                            self.autodetect_bandwidth_generation.fetch_add(1, Ordering::Release);
-                            trace!(
-                                seq = pdu.response.sequence_number(),
-                                "Bandwidth measurement completed without a usable figure"
-                            );
-                        }
-                        AutoDetectOutcome::Unmatched => {
-                            trace!(seq = pdu.response.sequence_number(), "Unmatched auto-detect response");
-                        }
-                    }
-                }
+                self.record_autodetect_response(conn, &pdu.response);
             }
             Ok(rdp::message_channel::ClientMessageChannelPdu::MultitransportResponse(pdu)) => {
                 // A failure code is not a decode error: the client is correctly reporting
@@ -4928,6 +5034,26 @@ fn encode_autodetect_request(
         user_data,
     };
     encode_vec(&X224(mcs_pdu)).map_err(ServerError::encode)
+}
+
+/// Wraps an auto-detect request in an RDP_TUNNEL_SUBHEADER, alone in a
+/// Tunnel Data PDU of its own ([MS-RDPBCGR] 1.3.9, [MS-RDPEMT] 2.2.1.1.1).
+///
+/// The sub-header carries the bare request, with none of the security
+/// header [`encode_autodetect_request`] frames it with on the message
+/// channel.
+#[cfg(feature = "egfx")]
+fn autodetect_sub_header(
+    request: &rdp::autodetect::AutoDetectRequest,
+) -> ServerResult<ironrdp_rdpeudp_tokio::TunnelMessage> {
+    let data = encode_vec(request).map_err(ServerError::encode)?;
+    Ok(ironrdp_rdpeudp_tokio::TunnelMessage {
+        sub_headers: vec![ironrdp_rdpemt::TunnelSubHeader {
+            sub_header_type: ironrdp_rdpemt::SubHeaderType::AutoDetectRequest,
+            data,
+        }],
+        data: Vec::new(),
+    })
 }
 
 /// Encode a server-initiated Heartbeat PDU for the MCS message channel.
@@ -5833,6 +5959,107 @@ mod preempt_tests {
                 client.abort();
             }))
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::net::Ipv4Addr;
+
+    use super::*;
+
+    fn conn_with_autodetect() -> ConnectionState {
+        ConnectionState {
+            autodetect: Some(AutoDetectManager::new()),
+            ..ConnectionState::default()
+        }
+    }
+
+    /// On the tunnel the request goes bare in the sub-header, in a PDU with
+    /// no data, so the client's byte count covers only the payloads sent
+    /// between Start and Stop.
+    #[cfg(feature = "egfx")]
+    #[test]
+    fn a_tunnel_auto_detect_request_is_bare_and_alone() {
+        let message = autodetect_sub_header(&rdp::autodetect::AutoDetectRequest::bw_start_continuous(7))
+            .expect("encode Bandwidth Measure Start");
+
+        assert!(message.data.is_empty());
+        assert_eq!(message.sub_headers.len(), 1);
+        assert_eq!(
+            message.sub_headers[0].sub_header_type,
+            ironrdp_rdpemt::SubHeaderType::AutoDetectRequest
+        );
+        // RDP_BW_START: headerLength, TYPE_ID_AUTODETECT_REQUEST, sequenceNumber 7, requestType 0x0014.
+        assert_eq!(message.sub_headers[0].data, [0x06, 0x00, 0x07, 0x00, 0x14, 0x00]);
+    }
+
+    /// A measurement the tunnel took with it when it closed does not hold
+    /// up the next one, which after the fallback goes over TCP.
+    #[test]
+    fn the_tunnel_closing_cancels_its_bandwidth_measurement() {
+        let mut server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+        let mut conn = conn_with_autodetect();
+        let ad = conn.autodetect.as_mut().expect("auto-detect enabled");
+        ad.begin_bandwidth_measure(crate::autodetect::BW_BRACKET_MIN_BYTES, 0)
+            .expect("a large write starts a measurement");
+        ad.end_bandwidth_measure().expect("the measurement is open");
+        conn.bandwidth_measure_on_udp = true;
+
+        server.cancel_udp_bandwidth_measure(&mut conn);
+
+        let ad = conn.autodetect.as_mut().expect("auto-detect enabled");
+        assert!(
+            ad.begin_bandwidth_measure(crate::autodetect::BW_BRACKET_MIN_BYTES, 1_000)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn bandwidth_results_on_the_tunnel_complete_the_measurement() {
+        let mut server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+        let mut conn = conn_with_autodetect();
+        let ad = conn.autodetect.as_mut().expect("auto-detect enabled");
+        let start = ad
+            .begin_bandwidth_measure(crate::autodetect::BW_BRACKET_MIN_BYTES, 0)
+            .expect("a large write starts a measurement");
+        ad.end_bandwidth_measure().expect("the measurement is open");
+
+        let results = rdp::autodetect::AutoDetectResponse::BandwidthMeasureResults {
+            sequence_number: start.sequence_number(),
+            response_type: 0x000B,
+            time_delta_ms: 1000,
+            byte_count: 125_000,
+        };
+        server.record_tunnel_sub_headers(
+            &mut conn,
+            &[
+                // Malformed, dropped without affecting the one after it.
+                ironrdp_rdpemt::TunnelSubHeader {
+                    sub_header_type: ironrdp_rdpemt::SubHeaderType::AutoDetectResponse,
+                    data: vec![0x01],
+                },
+                ironrdp_rdpemt::TunnelSubHeader {
+                    sub_header_type: ironrdp_rdpemt::SubHeaderType::AutoDetectResponse,
+                    data: encode_vec(&results).expect("encode Bandwidth Measure Results"),
+                },
+            ],
+        );
+
+        assert_eq!(
+            conn.autodetect.as_ref().and_then(AutoDetectManager::bandwidth_kbps),
+            Some(1000)
+        );
     }
 }
 
