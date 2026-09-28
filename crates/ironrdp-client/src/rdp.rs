@@ -9,7 +9,7 @@ use std::io;
 use std::sync::Arc;
 #[cfg(feature = "location")]
 use std::sync::mpsc as std_mpsc;
-#[cfg(feature = "location")]
+#[cfg(any(feature = "location", feature = "udp"))]
 use std::time::Instant;
 
 #[cfg(feature = "clipboard")]
@@ -39,6 +39,7 @@ use ironrdp_pdu::input::mouse::PointerFlags;
     all(windows, feature = "webauthn")
 ))]
 use ironrdp_pdu::pdu_other_err;
+use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
 use ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu;
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 #[cfg(feature = "rdpdr")]
@@ -2855,6 +2856,56 @@ fn build_ordinary_rdcleanpath_request(
 
 // ── Active session ────────────────────────────────────────────────────────────
 
+/// Decodes the auto-detect requests among the sub-headers of a Tunnel Data PDU.
+///
+/// Such a sub-header is the request structure itself: its SubHeaderLength and SubHeaderType
+/// are the request's headerLength and headerTypeId ([MS-RDPEMT] 2.2.1.1.1), so the request is
+/// decoded from the whole sub-header. Windows also sends request types the decoder does not
+/// model; those are skipped.
+///
+/// [MS-RDPEMT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/4f538fd7-3aca-4e7d-a213-13eb5f95c1ad
+#[cfg(feature = "udp")]
+fn tunnel_auto_detect_requests(sub_headers: &[ironrdp_rdpemt::TunnelSubHeader]) -> Vec<AutoDetectRequest> {
+    sub_headers
+        .iter()
+        .filter(|sub_header| sub_header.sub_header_type == ironrdp_rdpemt::SubHeaderType::AutoDetectRequest)
+        .filter_map(|sub_header| {
+            let decoded = ironrdp_core::encode_vec(sub_header)
+                .map_err(|error| error.to_string())
+                .and_then(|structure| {
+                    ironrdp_core::decode::<AutoDetectRequest>(&structure).map_err(|error| error.to_string())
+                });
+            match decoded {
+                Ok(request) => Some(request),
+                Err(error) => {
+                    debug!(%error, data = ?sub_header.data, "Ignoring an undecodable auto-detect request on the tunnel");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// Encodes an auto-detect response as the tunnel sub-header it is on the wire (see
+/// [`tunnel_auto_detect_requests`]).
+#[cfg(feature = "udp")]
+fn tunnel_auto_detect_sub_header(
+    response: &ironrdp_pdu::rdp::autodetect::AutoDetectResponse,
+) -> Option<ironrdp_rdpemt::TunnelSubHeader> {
+    let encoded = ironrdp_core::encode_vec(response)
+        .map_err(|error| error.to_string())
+        .and_then(|structure| {
+            ironrdp_core::decode::<ironrdp_rdpemt::TunnelSubHeader>(&structure).map_err(|error| error.to_string())
+        });
+    match encoded {
+        Ok(sub_header) => Some(sub_header),
+        Err(error) => {
+            debug!(%error, ?response, "Could not encode an auto-detect response for the tunnel");
+            None
+        }
+    }
+}
+
 enum RdpControlFlow {
     ReconnectWithNewSize {
         width: u16,
@@ -3103,6 +3154,9 @@ async fn active_session(
     let mut graceful_shutdown_sent = false;
     let mut post_logon_redraw_requested = false;
     let mut pending_udp_payload: Option<Vec<u8>> = None;
+    // Auto-detect on the tunnel is timed against its own monotonic clock.
+    #[cfg(feature = "udp")]
+    let tunnel_clock = Instant::now();
     let mut initial_outputs = if *graceful_close_receiver.borrow_and_update() {
         graceful_shutdown_sent = true;
         Some(active_stage.graceful_shutdown()?)
@@ -3247,22 +3301,25 @@ async fn active_session(
                     }
                     ActiveSessionIteration::outputs(outputs)
                 }
-                udp_payload = async {
+                udp_message = async {
                     #[cfg(feature = "udp")]
                     {
                         match (udp_tunnel.transport.as_mut(), pending_udp_payload.is_none()) {
-                            (Some(transport), true) => transport.recv().await,
+                            (Some(transport), true) => transport
+                                .recv_message()
+                                .await
+                                .map(|message| (tunnel_auto_detect_requests(&message.sub_headers), message.data)),
                             (Some(_), false) | (None, _) => {
-                                core::future::pending::<Option<Vec<u8>>>().await
+                                core::future::pending::<Option<(Vec<AutoDetectRequest>, Vec<u8>)>>().await
                             }
                         }
                     }
                     #[cfg(not(feature = "udp"))]
                     {
-                        core::future::pending::<Option<Vec<u8>>>().await
+                        core::future::pending::<Option<(Vec<AutoDetectRequest>, Vec<u8>)>>().await
                     }
                 } => {
-                    match udp_payload {
+                    match udp_message {
                     None => {
                         if active_stage.reliable_udp_dvc_tunnel_in_use() {
                             return Ok(RdpControlFlow::TransportFailure(
@@ -3277,12 +3334,45 @@ async fn active_session(
                         warn!("Reliable UDP tunnel closed before Soft-Sync; continuing with TCP");
                         ActiveSessionIteration::outputs(Vec::new())
                     }
-                    Some(payload) if payload.is_empty() => {
-                        trace!("Ignoring reliable UDP tunnel PDU without higher-layer data");
-                        ActiveSessionIteration::outputs(Vec::new())
-                    }
-                    Some(payload) => {
-                        if active_stage.reliable_udp_dvc_tunnel_in_use() {
+                    Some((auto_detect_requests, payload)) => {
+                        #[cfg(feature = "udp")]
+                        {
+                            let received_at = ironrdp_core::MonotonicInstant::from_millis(
+                                u64::try_from(tunnel_clock.elapsed().as_millis()).unwrap_or(u64::MAX),
+                            );
+                            let responses = active_stage.process_tunnel_auto_detect(
+                                auto_detect_requests,
+                                payload.len(),
+                                Some(received_at),
+                            );
+                            let sub_headers: Vec<_> = responses.iter().filter_map(tunnel_auto_detect_sub_header).collect();
+                            if let (false, Some(transport)) = (sub_headers.is_empty(), udp_tunnel.transport.as_ref()) {
+                                let reply = ironrdp_rdpeudp_tokio::TunnelMessage {
+                                    sub_headers,
+                                    data: Vec::new(),
+                                };
+                                let Some(result) =
+                                    cancelable_operation(transport.send_message(reply), close_receiver).await
+                                else {
+                                    return Ok(RdpControlFlow::TerminatedGracefully(
+                                        GracefulDisconnectReason::UserInitiated,
+                                    ));
+                                };
+                                if let Err(error) = result {
+                                    return Ok(RdpControlFlow::TransportFailure(ironrdp_session::custom_err!(
+                                        "answer reliable UDP tunnel auto-detect",
+                                        error
+                                    )));
+                                }
+                            }
+                        }
+                        #[cfg(not(feature = "udp"))]
+                        let _ = auto_detect_requests;
+
+                        if payload.is_empty() {
+                            trace!("Reliable UDP tunnel PDU without higher-layer data");
+                            ActiveSessionIteration::outputs(Vec::new())
+                        } else if active_stage.reliable_udp_dvc_tunnel_in_use() {
                             ActiveSessionIteration::tunnel(
                                 SoftSyncTunnelType::RELIABLE_UDP,
                                 active_stage.process_dvc_tunnel(
@@ -4410,12 +4500,51 @@ fn process_clipboard_message(
 mod tests {
     use super::*;
 
+    /// Windows frames an RTT Measure Request on the tunnel as `06 00 <seq> 01 00`: the
+    /// sub-header's own two bytes are the request's header.
+    #[cfg(feature = "udp")]
+    #[test]
+    fn tunnel_sub_headers_decode_as_auto_detect_requests() {
+        use ironrdp_rdpemt::{SubHeaderType, TunnelSubHeader};
+
+        let rtt: TunnelSubHeader = ironrdp_core::decode(&[0x06, 0x00, 0x07, 0x00, 0x01, 0x00]).expect("sub-header");
+        let unmodeled = TunnelSubHeader {
+            sub_header_type: SubHeaderType::AutoDetectRequest,
+            data: vec![0x01, 0x00, 0xFF, 0x7F],
+        };
+        let response = TunnelSubHeader {
+            sub_header_type: SubHeaderType::AutoDetectResponse,
+            data: vec![0x07, 0x00, 0x00, 0x00],
+        };
+
+        let requests = tunnel_auto_detect_requests(&[rtt, unmodeled, response]);
+        assert!(matches!(
+            requests.as_slice(),
+            [AutoDetectRequest::RttRequest { sequence_number: 7, .. }]
+        ));
+    }
+
+    /// The RTT response goes back as `06 01 <seq> 00 00`, alone in a Tunnel Data PDU with no data.
+    #[cfg(feature = "udp")]
+    #[test]
+    fn auto_detect_responses_encode_as_tunnel_sub_headers() {
+        let response = ironrdp_pdu::rdp::autodetect::AutoDetectResponse::RttResponse { sequence_number: 7 };
+        let sub_header = tunnel_auto_detect_sub_header(&response).expect("sub-header");
+        let pdu = encode_vec(&ironrdp_rdpemt::TunnelData {
+            sub_headers: vec![sub_header],
+            higher_layer_data: Vec::new(),
+        })
+        .expect("encode");
+        // TunnelData: action 2, payloadLength 0, headerLength 4 + 6, then the sub-header.
+        assert_eq!(pdu, [0x02, 0x00, 0x00, 0x0A, 0x06, 0x01, 0x07, 0x00, 0x00, 0x00]);
+    }
+
     #[cfg(feature = "rdpdr")]
     use core::any::TypeId;
     #[cfg(feature = "rdpdr")]
     use core::sync::atomic::AtomicUsize;
 
-    #[cfg(feature = "rdpdr")]
+    #[cfg(any(feature = "rdpdr", feature = "udp"))]
     use ironrdp_core::encode_vec;
     use ironrdp_pdu::input::fast_path::KeyboardFlags;
     #[cfg(feature = "rdpdr")]
