@@ -1789,8 +1789,21 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                                 // [MS-RDPECLIP] 3.1.5.4.6 - Snapshot the list under the
                                 // active lock, so requests that carry its clipDataId keep
                                 // validating against it after the clipboard changes.
+                                //
+                                // Defense-in-depth: `locked_remote_file_lists` keys are always a
+                                // subset of `outgoing_locks` keys (insertion requires
+                                // `current_lock_id`, which only exists for a live outgoing lock,
+                                // itself capped at `MAX_OUTGOING_LOCKS` by `send_lock`), so the
+                                // cap below cannot be reached by growth today. It guards against
+                                // that invariant drifting apart in the future. The existing-key
+                                // check keeps a re-snapshot of the still-current lock (e.g. a
+                                // second FileGroupDescriptorW under the same lock) from being
+                                // skipped as if it were growth.
                                 if let Some(clip_data_id) = self.current_lock_id {
-                                    if MAX_LOCKED_FILE_LISTS <= self.locked_remote_file_lists.len() {
+                                    let already_snapshotted = self.locked_remote_file_lists.contains_key(&clip_data_id);
+                                    if !already_snapshotted
+                                        && MAX_LOCKED_FILE_LISTS <= self.locked_remote_file_lists.len()
+                                    {
                                         warn!(
                                             clip_data_id,
                                             current = self.locked_remote_file_lists.len(),
