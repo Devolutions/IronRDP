@@ -3134,6 +3134,7 @@ dependencies = [
  "ironrdp-pdu",
  "num-derive 0.5.1",
  "num-traits",
+ "rayon",
  "visibility",
  "wide 0.7.33",
  "yuv",
