@@ -21,6 +21,24 @@ pub(crate) struct AutoDetectResponder {
     bandwidth: Option<BandwidthMeasurement>,
 }
 
+/// Size of the auto-detect header fields [MS-RDPBCGR] 3.2.5.14 counts along with payloadLength:
+/// headerLength, headerTypeId, sequenceNumber, requestType and payloadLength itself.
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/16ffa852-8aa7-481c-99a0-36c1a9a198f6
+const AUTO_DETECT_HEADER_LEN: u32 = 8;
+
+/// Reported as `timeDelta` for a window that was not timed, and the floor for one that was:
+/// a server computing `byteCount * 8 / timeDelta` divides by it ([MS-RDPBCGR] 3.3.5.14).
+const UNMEASURABLE_INTERVAL_MS: u32 = 1;
+
+/// Bytes a connect-time Payload or Stop adds to the count: payloadLength plus the auto-detect
+/// header, but not the security header. This is the rule the connector applies to the same PDUs.
+fn counted_len(payload_len: usize) -> u32 {
+    u32::try_from(payload_len)
+        .unwrap_or(u32::MAX)
+        .saturating_add(AUTO_DETECT_HEADER_LEN)
+}
+
 #[derive(Debug)]
 struct BandwidthMeasurement {
     started_at: MonotonicInstant,
@@ -29,6 +47,13 @@ struct BandwidthMeasurement {
 }
 
 impl AutoDetectResponder {
+    /// Whether a continuous bandwidth window is open, so received bytes are being counted.
+    pub(crate) fn is_counting(&self) -> bool {
+        self.bandwidth
+            .as_ref()
+            .is_some_and(|measurement| measurement.continuous)
+    }
+
     /// Counts received bytes while a continuous bandwidth window is open.
     pub(crate) fn record_bytes(&mut self, bytes: usize) {
         if let Some(measurement) = self.bandwidth.as_mut().filter(|measurement| measurement.continuous) {
@@ -63,11 +88,7 @@ impl AutoDetectResponder {
             }
             AutoDetectRequest::BandwidthMeasurePayload { payload, .. } => {
                 if let Some(measurement) = self.bandwidth.as_mut().filter(|measurement| !measurement.continuous) {
-                    // [MS-RDPBCGR] 3.2.5.14 counts the eight-byte auto-detect
-                    // header as well as payloadLength, but not the security header.
-                    measurement.bytes = measurement
-                        .bytes
-                        .saturating_add(u32::try_from(payload.len()).unwrap_or(u32::MAX).saturating_add(8));
+                    measurement.bytes = measurement.bytes.saturating_add(counted_len(payload.len()));
                 }
                 None
             }
@@ -84,18 +105,27 @@ impl AutoDetectResponder {
                 let stop_bytes = if continuous {
                     0
                 } else {
-                    u32::try_from(payload.as_ref().map_or(0, Vec::len))
-                        .unwrap_or(u32::MAX)
-                        .saturating_add(8)
+                    counted_len(payload.as_ref().map_or(0, Vec::len))
                 };
                 let (time_delta_ms, byte_count) = match (measurement, received_at) {
                     (Some(measurement), Some(stopped_at)) => (
                         u32::try_from(stopped_at.duration_since(measurement.started_at).as_millis())
                             .unwrap_or(u32::MAX)
-                            .max(1),
+                            .max(UNMEASURABLE_INTERVAL_MS),
                         measurement.bytes.saturating_add(stop_bytes),
                     ),
-                    _ => (1, stop_bytes),
+                    (Some(measurement), None) => {
+                        // The window was timed but this Stop was not, so there is nothing to
+                        // divide the count by. Log the drop so it does not look like the
+                        // ordinary no-window case.
+                        debug!(
+                            dropped_bytes = measurement.bytes,
+                            "Bandwidth Measure Stop arrived with no arrival time although its window was open; \
+                             dropping the accumulated count"
+                        );
+                        (UNMEASURABLE_INTERVAL_MS, stop_bytes)
+                    }
+                    (None, _) => (UNMEASURABLE_INTERVAL_MS, stop_bytes),
                 };
                 Some(AutoDetectResponse::BandwidthMeasureResults {
                     sequence_number,
