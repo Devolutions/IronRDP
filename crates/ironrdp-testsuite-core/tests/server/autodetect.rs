@@ -544,6 +544,58 @@ fn with_autodetect_bandwidth_handle_round_trips_the_same_arc() {
 }
 
 #[test]
+fn autodetect_bandwidth_generation_handle_defaults_to_zero() {
+    use core::net::{Ipv4Addr, SocketAddr};
+    use core::sync::atomic::Ordering;
+
+    use ironrdp_server::RdpServer;
+
+    let server = RdpServer::builder()
+        .with_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .with_no_security()
+        .with_no_input()
+        .with_no_display()
+        .build();
+
+    assert_eq!(
+        server.autodetect_bandwidth_generation_handle().load(Ordering::Acquire),
+        0
+    );
+}
+
+#[test]
+fn with_autodetect_bandwidth_generation_handle_round_trips_the_same_arc() {
+    use core::net::{Ipv4Addr, SocketAddr};
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    use ironrdp_server::RdpServer;
+
+    let handle = Arc::new(AtomicU32::new(7));
+    let server = RdpServer::builder()
+        .with_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .with_no_security()
+        .with_no_input()
+        .with_no_display()
+        .with_autodetect_bandwidth_generation_handle(Arc::clone(&handle))
+        .build();
+
+    assert!(Arc::ptr_eq(&handle, &server.autodetect_bandwidth_generation_handle()));
+    // Unlike the bandwidth value, an injected generation counter is not reset at
+    // construction: an embedder sharing one counter across servers keeps counting.
+    assert_eq!(
+        server.autodetect_bandwidth_generation_handle().load(Ordering::Acquire),
+        7
+    );
+    // The Arc is shared: advancing the original is visible through the server's handle.
+    handle.fetch_add(1, Ordering::Release);
+    assert_eq!(
+        server.autodetect_bandwidth_generation_handle().load(Ordering::Acquire),
+        8
+    );
+}
+
+#[test]
 fn stale_probe_expiry() {
     let mut mgr = AutoDetectManager::new();
     let _ = mgr.send_rtt_request(0);
