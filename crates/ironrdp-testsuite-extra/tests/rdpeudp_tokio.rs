@@ -232,7 +232,9 @@ async fn full_stack_sub_headers() {
     let start = TunnelMessage {
         sub_headers: vec![TunnelSubHeader {
             sub_header_type: SubHeaderType::AutoDetectRequest,
-            data: vec![0x06, 0x00, 0x07, 0x00, 0x14, 0x00],
+            // A Bandwidth Measure Start: sequenceNumber 7, requestType 0x0014. The
+            // sub-header's own two bytes are its headerLength and headerTypeId.
+            data: vec![0x07, 0x00, 0x14, 0x00],
         }],
         data: Vec::new(),
     };

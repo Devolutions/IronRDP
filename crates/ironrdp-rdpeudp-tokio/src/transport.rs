@@ -1114,7 +1114,9 @@ mod tests {
 
         let sub_header = TunnelSubHeader {
             sub_header_type: SubHeaderType::AutoDetectRequest,
-            data: vec![0x06, 0x00, 0x07, 0x00, 0x14, 0x00],
+            // A Bandwidth Measure Start: sequenceNumber 7, requestType 0x0014. The
+            // sub-header's own two bytes are its headerLength and headerTypeId.
+            data: vec![0x07, 0x00, 0x14, 0x00],
         };
         let (tx, mut rx) = mpsc::channel(4);
         tx.send(TunnelMessage {
