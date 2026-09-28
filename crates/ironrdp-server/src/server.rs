@@ -1939,6 +1939,21 @@ impl RdpServer {
         self.autodetect = Some(AutoDetectManager::new());
     }
 
+    /// The auto-detect manager, for the integration testsuite behind the
+    /// private `__test` feature. Not a stable API.
+    #[cfg(feature = "__test")]
+    pub fn autodetect_mut(&mut self) -> Option<&mut AutoDetectManager> {
+        self.autodetect.as_mut()
+    }
+
+    /// Records the outstanding bandwidth measurement as sent on the sideband
+    /// transport, as a bracketed write over it does, for the integration
+    /// testsuite behind the private `__test` feature. Not a stable API.
+    #[cfg(feature = "__test")]
+    pub fn mark_bandwidth_measure_on_udp(&mut self) {
+        self.bandwidth_measure_on_udp = true;
+    }
+
     /// Enable periodic Server Heartbeat PDUs (MS-RDPBCGR 2.2.16.1).
     ///
     /// Heartbeats ride the MCS message channel, so they are only emitted
@@ -3446,10 +3461,11 @@ impl RdpServer {
                         }
 
                         // While no large graphics write has been bracketed recently (see
-                        // the Egfx arm), measure bandwidth over a window of ticks: Start on
-                        // one, Stop several later, with ordinary traffic in between counted
-                        // by the client, then a Bandwidth Measure Results PDU in reply. Until
-                        // one has completed there is no characteristics result to send.
+                        // `write_egfx_over_tcp` and `write_egfx_over_udp`), measure
+                        // bandwidth over a window of ticks: Start on one, Stop several later,
+                        // with ordinary traffic in between counted by the client, then a
+                        // Bandwidth Measure Results PDU in reply. Until one has completed
+                        // there is no characteristics result to send.
                         if let Some(pdu) = ad.build_bandwidth_measure() {
                             let data = encode_autodetect_request(pdu, message_channel_id, user_channel_id)?;
                             writer
@@ -3751,6 +3767,7 @@ impl RdpServer {
     /// measurement started there ([MS-RDPBCGR] 1.3.9). Results that come
     /// back on the message channel instead go through
     /// [`Self::handle_message_channel_data`].
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     fn record_tunnel_sub_headers(&mut self, sub_headers: &[ironrdp_rdpemt::TunnelSubHeader]) {
         for sub_header in sub_headers {
             if sub_header.sub_header_type != ironrdp_rdpemt::SubHeaderType::AutoDetectResponse {
@@ -3779,6 +3796,7 @@ impl RdpServer {
     /// Drops a bandwidth measurement that went out on the sideband transport
     /// once that transport has closed: Its results can no longer arrive, and
     /// while it is outstanding no measurement starts on TCP either.
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     fn cancel_udp_bandwidth_measure(&mut self) {
         if !core::mem::take(&mut self.bandwidth_measure_on_udp) {
             return;
@@ -4976,6 +4994,7 @@ const AUTODETECT_HEADER_SIZE: usize = 2;
 /// SubHeaderLength and SubHeaderType are the request's headerLength and
 /// headerTypeId, so SubHeaderData starts at the sequence number.
 #[cfg(feature = "egfx")]
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 fn autodetect_sub_header(
     request: &rdp::autodetect::AutoDetectRequest,
 ) -> ServerResult<ironrdp_rdpeudp_tokio::TunnelMessage> {
@@ -5880,8 +5899,6 @@ mod preempt_tests {
 
 #[cfg(test)]
 mod tests {
-    use core::net::Ipv4Addr;
-
     use ironrdp_core::impl_as_any;
     use ironrdp_pdu::gcc::ChannelName;
     use ironrdp_svc::{SvcMessage, SvcServerProcessor};
@@ -5934,97 +5951,6 @@ mod tests {
         assert!(
             released.load(Ordering::Relaxed),
             "the channel backends of a finished connection must be released, not held until the next client"
-        );
-    }
-
-    /// On the tunnel the request is the sub-header itself, in a PDU with no
-    /// data, so the client's byte count covers only the payloads sent
-    /// between Start and Stop.
-    #[cfg(feature = "egfx")]
-    #[test]
-    fn a_tunnel_auto_detect_request_is_bare_and_alone() {
-        let message = autodetect_sub_header(&rdp::autodetect::AutoDetectRequest::bw_start_continuous(7))
-            .expect("encode Bandwidth Measure Start");
-
-        assert!(message.data.is_empty());
-        assert_eq!(message.sub_headers.len(), 1);
-        assert_eq!(
-            message.sub_headers[0].sub_header_type,
-            ironrdp_rdpemt::SubHeaderType::AutoDetectRequest
-        );
-        // RDP_BW_START is the sub-header: SubHeaderLength/headerLength 6,
-        // SubHeaderType/headerTypeId TYPE_ID_AUTODETECT_REQUEST, then
-        // sequenceNumber 7 and requestType 0x0014 as SubHeaderData.
-        assert_eq!(message.sub_headers[0].data, [0x07, 0x00, 0x14, 0x00]);
-        assert_eq!(
-            encode_vec(&message.sub_headers[0]).expect("encode the sub-header"),
-            [0x06, 0x00, 0x07, 0x00, 0x14, 0x00]
-        );
-    }
-
-    /// A measurement the tunnel took with it when it closed does not hold
-    /// up the next one, which after the fallback goes over TCP.
-    #[test]
-    fn the_tunnel_closing_cancels_its_bandwidth_measurement() {
-        let mut server = RdpServer::builder()
-            .with_addr((Ipv4Addr::LOCALHOST, 0))
-            .with_no_security()
-            .with_no_input()
-            .with_no_display()
-            .build();
-        server.enable_autodetect();
-        let ad = server.autodetect.as_mut().expect("auto-detect enabled");
-        ad.begin_bandwidth_measure(crate::autodetect::BW_BRACKET_MIN_BYTES, 0)
-            .expect("a large write starts a measurement");
-        ad.end_bandwidth_measure().expect("the measurement is open");
-        server.bandwidth_measure_on_udp = true;
-
-        server.cancel_udp_bandwidth_measure();
-
-        let ad = server.autodetect.as_mut().expect("auto-detect enabled");
-        assert!(
-            ad.begin_bandwidth_measure(crate::autodetect::BW_BRACKET_MIN_BYTES, 1_000)
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn bandwidth_results_on_the_tunnel_complete_the_measurement() {
-        let mut server = RdpServer::builder()
-            .with_addr((Ipv4Addr::LOCALHOST, 0))
-            .with_no_security()
-            .with_no_input()
-            .with_no_display()
-            .build();
-        server.enable_autodetect();
-        let ad = server.autodetect.as_mut().expect("auto-detect enabled");
-        let start = ad
-            .begin_bandwidth_measure(crate::autodetect::BW_BRACKET_MIN_BYTES, 0)
-            .expect("a large write starts a measurement");
-        ad.end_bandwidth_measure().expect("the measurement is open");
-
-        let results = rdp::autodetect::AutoDetectResponse::BandwidthMeasureResults {
-            sequence_number: start.sequence_number(),
-            response_type: 0x000B,
-            time_delta_ms: 1000,
-            byte_count: 125_000,
-        };
-        server.record_tunnel_sub_headers(&[
-            // Malformed, dropped without affecting the one after it.
-            ironrdp_rdpemt::TunnelSubHeader {
-                sub_header_type: ironrdp_rdpemt::SubHeaderType::AutoDetectResponse,
-                data: vec![0x01],
-            },
-            ironrdp_rdpemt::TunnelSubHeader {
-                sub_header_type: ironrdp_rdpemt::SubHeaderType::AutoDetectResponse,
-                // The sub-header supplies headerLength and headerTypeId itself.
-                data: encode_vec(&results).expect("encode Bandwidth Measure Results")[2..].to_vec(),
-            },
-        ]);
-
-        assert_eq!(
-            server.autodetect.as_ref().and_then(AutoDetectManager::bandwidth_kbps),
-            Some(1000)
         );
     }
 }
