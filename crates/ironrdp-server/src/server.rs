@@ -3847,11 +3847,8 @@ impl RdpServer {
     }
 
     fn handle_message_channel_data(&mut self, data: SendDataRequest<'_>) {
-        // The MCS message channel currently carries only the auto-detect
-        // response. It is framed by a Basic Security Header (SEC_AUTODETECT_RSP),
-        // not a Share Control header.
-        match decode::<rdp::autodetect::AutoDetectRspPdu>(data.user_data.as_ref()) {
-            Ok(pdu) => {
+        match decode::<rdp::message_channel::ClientMessageChannelPdu>(data.user_data.as_ref()) {
+            Ok(rdp::message_channel::ClientMessageChannelPdu::AutoDetectResponse(pdu)) => {
                 if let Some(ref mut ad) = self.autodetect {
                     match ad.handle_response(&pdu.response, monotonic_now_ms()) {
                         AutoDetectOutcome::Rtt(rtt_ms) => {
@@ -3893,6 +3890,17 @@ impl RdpServer {
                         }
                     }
                 }
+            }
+            Ok(rdp::message_channel::ClientMessageChannelPdu::MultitransportResponse(pdu)) => {
+                // A failure code is not a decode error: the client is correctly reporting
+                // that the sideband UDP attempt failed, and the session continues on the
+                // main transport either way.
+                debug!(
+                    request_id = pdu.request_id,
+                    success = pdu.is_success(),
+                    hr_response = format!("{:#x}", pdu.hr_response),
+                    "Received Initiate Multitransport Response"
+                );
             }
             Err(error) => {
                 warn!(error = format!("{error:#}"), "Unhandled MCS message channel PDU");
