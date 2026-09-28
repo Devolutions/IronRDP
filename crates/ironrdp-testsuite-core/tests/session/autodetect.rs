@@ -1,10 +1,15 @@
 use std::borrow::Cow;
 
 use ironrdp_core::encode_vec;
+use ironrdp_graphics::image_processing::PixelFormat;
+use ironrdp_pdu::Action;
+use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
 use ironrdp_pdu::mcs::{McsMessage, SendDataIndication};
 use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
 use ironrdp_pdu::x224::X224;
+use ironrdp_session::image::DecodedImage;
 use ironrdp_session::x224::Processor;
+use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_svc::StaticChannelSet;
 
 const USER_CHANNEL_ID: u16 = 1002;
@@ -161,6 +166,10 @@ fn bandwidth_result(outputs: &[ironrdp_session::x224::ProcessorOutput]) -> (u16,
     let [ironrdp_session::x224::ProcessorOutput::ResponseFrame(frame)] = outputs else {
         panic!("expected exactly one bandwidth response");
     };
+    bandwidth_result_frame(frame)
+}
+
+fn bandwidth_result_frame(frame: &[u8]) -> (u16, u16, u32, u32) {
     let X224(McsMessage::SendDataRequest(message)) = ironrdp_core::decode::<X224<McsMessage<'_>>>(frame).unwrap()
     else {
         panic!("expected main-channel response");
@@ -265,4 +274,74 @@ fn untimed_driver_does_not_report_accumulated_bytes_as_a_real_measurement() {
         &encode_server_autodetect(AutoDetectRequest::bw_stop_continuous(3)),
     );
     assert_eq!(bandwidth_result(&outputs), (3, 0x000b, 1, 0));
+}
+
+fn make_active_stage() -> ActiveStage {
+    ActiveStageBuilder {
+        static_channels: StaticChannelSet::new(),
+        user_channel_id: USER_CHANNEL_ID,
+        io_channel_id: IO_CHANNEL_ID,
+        message_channel_id: Some(MESSAGE_CHANNEL_ID),
+        share_id: SHARE_ID,
+        compression_type: None,
+        enable_server_pointer: false,
+        pointer_software_rendering: false,
+    }
+    .build()
+}
+
+/// A fast-path frame carrying one Synchronize update with `data_len` bytes of data.
+fn fast_path_frame(data_len: usize) -> Vec<u8> {
+    let data = vec![0; data_len];
+    let update = encode_vec(&FastPathUpdatePdu {
+        fragmentation: Fragmentation::Single,
+        update_code: UpdateCode::Synchronize,
+        compression_flags: None,
+        compression_type: None,
+        data: &data,
+    })
+    .unwrap();
+    let mut frame = encode_vec(&FastPathHeader::new(EncryptionFlags::empty(), update.len())).unwrap();
+    frame.extend_from_slice(&update);
+    frame
+}
+
+fn process_stage_frame(
+    stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    action: Action,
+    frame: &[u8],
+    millis: u64,
+) -> Vec<ActiveStageOutput> {
+    stage
+        .process_with_timestamp(
+            image,
+            action,
+            frame,
+            Some(ironrdp_core::MonotonicInstant::from_millis(millis)),
+        )
+        .expect("process timed frame")
+}
+
+#[test]
+fn continuous_measurement_counts_fast_path_data_only_inside_the_window() {
+    let mut stage = make_active_stage();
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 64, 64);
+    let frame = fast_path_frame(100);
+
+    process_stage_frame(&mut stage, &mut image, Action::FastPath, &frame, 5);
+    let start = encode_server_autodetect(AutoDetectRequest::bw_start_continuous(1));
+    process_stage_frame(&mut stage, &mut image, Action::X224, &start, 10);
+    process_stage_frame(&mut stage, &mut image, Action::FastPath, &frame, 20);
+    let stop = encode_server_autodetect(AutoDetectRequest::bw_stop_continuous(2));
+    let outputs = process_stage_frame(&mut stage, &mut image, Action::X224, &stop, 40);
+    process_stage_frame(&mut stage, &mut image, Action::FastPath, &frame, 50);
+
+    let [ActiveStageOutput::ResponseFrame(response)] = outputs.as_slice() else {
+        panic!("expected exactly one bandwidth response, got {outputs:?}");
+    };
+    // The frame between Start and Stop counts without its fast-path header: a
+    // three-byte update header and 100 bytes of update data. The Stop adds its
+    // six-byte auto-detect header, as in the message-channel tests above.
+    assert_eq!(bandwidth_result_frame(response), (2, 0x000b, 30, 3 + 100 + 6));
 }
