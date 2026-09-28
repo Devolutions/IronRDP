@@ -2600,6 +2600,7 @@ dependencies = [
  "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "rand 0.9.4",
  "tracing",
 ]
 
