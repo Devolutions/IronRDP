@@ -5,9 +5,9 @@ const { APIConnectionError, APIConnectionTimeoutError } = require("openai");
 
 const { ActionError, fail } = require("./errors");
 const {
-  DEFAULT_OUTPUT_REPAIRS, MAX_MODEL_OUTPUT_BYTES, MAX_TOOL_ARGUMENT_BYTES,
+  DEFAULT_OUTPUT_REPAIRS, MAX_MODEL_MESSAGE_CONTENT_BYTES, MAX_TOOL_ARGUMENT_BYTES,
 } = require("./limits");
-const { sanitizeReason } = require("./provider");
+const { providerErrorCode, sanitizeReason } = require("./provider");
 
 const TOOLS = [
   {
@@ -119,21 +119,26 @@ function providerFailureReason(error) {
 }
 
 function providerFailureDiagnostic(error) {
-  const status = Number(error?.status);
-  if (!Number.isInteger(status) || status < 400 || status > 599) return null;
+  const rawStatus = Number(error?.status);
+  const status = Number.isInteger(rawStatus) && rawStatus >= 400 && rawStatus <= 599
+    ? rawStatus
+    : undefined;
   const requestId = [
     error?.requestID,
     error?.request_id,
     error?.headers?.get?.("x-request-id"),
     error?.headers?.get?.("request-id"),
   ].find((value) => typeof value === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(value));
+  const providerCode = providerErrorCode(error);
+  if (status === undefined && requestId === undefined && providerCode === undefined) return null;
   return {
-    status,
+    ...(status === undefined ? {} : { status }),
     ...(requestId === undefined ? {} : { requestId }),
+    ...(providerCode === undefined ? {} : { providerCode }),
   };
 }
 
-function compileOutputValidator(schema, maximumBytes = MAX_MODEL_OUTPUT_BYTES) {
+function compileOutputValidator(schema) {
   let validate;
   try {
     validate = new Ajv({ allErrors: true, strict: false, validateFormats: false }).compile(schema);
@@ -144,8 +149,8 @@ function compileOutputValidator(schema, maximumBytes = MAX_MODEL_OUTPUT_BYTES) {
     if (typeof raw !== "string" || raw.length === 0) {
       return { ok: false, layer: "empty", reason: "response was empty" };
     }
-    if (Buffer.byteLength(raw, "utf8") > maximumBytes) {
-      return { ok: false, layer: "size", reason: "response exceeded the configured byte limit" };
+    if (Buffer.byteLength(raw, "utf8") > MAX_MODEL_MESSAGE_CONTENT_BYTES) {
+      return { ok: false, layer: "size", reason: "model message content exceeded the byte limit" };
     }
     let value;
     try {
@@ -153,10 +158,17 @@ function compileOutputValidator(schema, maximumBytes = MAX_MODEL_OUTPUT_BYTES) {
     } catch {
       return { ok: false, layer: "json", reason: "response was not valid JSON" };
     }
+    if (containsUnpairedSurrogate(value)) {
+      return { ok: false, layer: "unicode", reason: "response contains ill-formed Unicode" };
+    }
     if (!validate(value)) {
       const errors = (validate.errors || []).slice(0, 10)
         .map((error) => {
-          const detail = error.keyword === "required" ? ` ${error.params.missingProperty}` : "";
+          const detail = error.keyword === "required"
+            ? ` ${error.params.missingProperty}`
+            : error.keyword === "maximum"
+              ? ` must be at most ${error.params.limit}`
+              : "";
           return `${error.schemaPath || "/"}: ${error.keyword}${detail}`;
         })
         .join("; ");
@@ -165,13 +177,31 @@ function compileOutputValidator(schema, maximumBytes = MAX_MODEL_OUTPUT_BYTES) {
       };
     }
     const output = JSON.stringify(value);
-    if (Buffer.byteLength(output, "utf8") > maximumBytes) {
+    if (Buffer.byteLength(output, "utf8") > MAX_MODEL_MESSAGE_CONTENT_BYTES) {
       return {
-        ok: false, layer: "size", reason: "response exceeded the configured byte limit", value,
+        ok: false, layer: "size", reason: "model message content exceeded the byte limit", value,
       };
     }
     return { ok: true, output, value };
   };
+}
+
+function containsUnpairedSurrogate(value) {
+  const pending = [value];
+  while (pending.length !== 0) {
+    const current = pending.pop();
+    if (typeof current === "string") {
+      if (!current.isWellFormed()) return true;
+    } else if (Array.isArray(current)) {
+      for (const entry of current) pending.push(entry);
+    } else if (current !== null && typeof current === "object") {
+      for (const [key, entry] of Object.entries(current)) {
+        if (!key.isWellFormed()) return true;
+        pending.push(entry);
+      }
+    }
+  }
+  return false;
 }
 
 function initialMessages(prompt, methodologies, schema) {
@@ -197,7 +227,7 @@ async function runAgent({
     max_output_repair_attempts: config.max_output_repair_attempts ?? DEFAULT_OUTPUT_REPAIRS,
     output_format: config.output_format || "json_object",
   };
-  const validateOutput = compileOutputValidator(schema, config.max_output_bytes);
+  const validateOutput = compileOutputValidator(schema);
   const state = {
     providerCalls: 0,
     toolCalls: 0,
@@ -235,15 +265,7 @@ async function runAgent({
       if (calls.length > config.max_tool_calls - state.toolCalls) {
         throw limitFailure("maximum tool call count exceeded", state);
       }
-      for (const call of calls) {
-        state.toolCalls++;
-        const toolResult = executeTool(call, sandbox);
-        messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: toolResult,
-        });
-      }
+      executeToolCalls(messages, calls);
     }
     return finalize(messages);
   }
@@ -321,11 +343,7 @@ async function runAgent({
           if (calls.length > config.max_tool_calls - state.toolCalls) {
             throw limitFailure("maximum tool call count exceeded", state);
           }
-          for (const call of calls) {
-            state.toolCalls++;
-            const toolResult = executeTool(call, sandbox);
-            messages.push({ role: "tool", tool_call_id: call.id, content: toolResult });
-          }
+          executeToolCalls(messages, calls);
           toolsPermitted = false;
           if (state.providerCalls >= config.max_turns) {
             throw limitFailure("maximum turn count exceeded", state);
@@ -377,7 +395,6 @@ async function runAgent({
       throw limitFailure("maximum turn count exceeded", state);
     }
     state.providerCalls++;
-    const requestMetrics = metrics?.beginRequest(activity);
     const request = { model: config.model, messages };
     if (allowTools) {
       request.tools = TOOLS;
@@ -397,6 +414,7 @@ async function runAgent({
         }
         : { type: "json_object" };
     }
+    const requestMetrics = metrics?.beginRequest(activity, request);
     try {
       const response = await client.chat.completions.create(request);
       metrics?.recordCompletion(requestMetrics, response);
@@ -404,6 +422,15 @@ async function runAgent({
     } catch (error) {
       metrics?.finishActiveAttempt();
       throw withState(error, state);
+    }
+  }
+
+  function executeToolCalls(messages, calls) {
+    for (const call of calls) {
+      state.toolCalls++;
+      const toolResult = executeTool(call, sandbox);
+      metrics?.recordToolResult(toolResult);
+      messages.push({ role: "tool", tool_call_id: call.id, content: toolResult });
     }
   }
 }
@@ -414,8 +441,8 @@ function firstMessage(response) {
     throw new AgentFailure("provider response was malformed", { category: "provider-response" });
   }
   if (typeof message.content === "string" &&
-      Buffer.byteLength(message.content, "utf8") > MAX_MODEL_OUTPUT_BYTES) {
-    throw new AgentFailure("provider response exceeded byte limit", { category: "provider-response" });
+      Buffer.byteLength(message.content, "utf8") > MAX_MODEL_MESSAGE_CONTENT_BYTES) {
+    throw new AgentFailure("model message content exceeded byte limit", { category: "provider-response" });
   }
   return {
     role: "assistant",

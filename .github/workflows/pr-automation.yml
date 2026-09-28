@@ -717,13 +717,39 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    outputs:
-      state: ${{ steps.resolve.outputs.state }}
     steps:
       - uses: actions/checkout@v6
         with:
           ref: master
           persist-credentials: false
+
+      - name: Download final review result
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: review-final-${{ needs.resolve-pr.outputs.head-sha }}
+          path: review-pipeline/final
+
+      - name: Download review report
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: review-report-${{ needs.resolve-pr.outputs.head-sha }}
+          path: review-pipeline/report
+
+      - name: Download review validation context
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: review-validation-${{ needs.resolve-pr.outputs.head-sha }}
+          path: review-pipeline/validation
+
+      - name: Download specialist aggregate
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: review-aggregate-${{ needs.resolve-pr.outputs.head-sha }}
+          path: review-pipeline/aggregate
 
       - id: resolve
         uses: actions/github-script@v8
@@ -734,9 +760,7 @@ jobs:
           REVIEW_GATE_RESULT: ${{ needs.review-gate.result }}
           FORK_RATE_LIMIT: ${{ needs.fork-rate-limit.outputs.quota }}
           FORK_RATE_LIMIT_RESULT: ${{ needs.fork-rate-limit.result }}
-          RAW_OUTPUT: ${{ needs.review-pipeline.outputs.output }}
           REVIEWER_REASON: ${{ needs.review-pipeline.outputs.failure-reason }}
-          REVIEW_REPORT: ${{ needs.review-pipeline.outputs.report }}
           REVIEW_PIPELINE_RESULT: ${{ needs.review-pipeline.result }}
           FORCE: ${{ needs.resolve-pr.outputs.force }}
           LABELS: ${{ needs.resolve-pr.outputs.labels }}
@@ -744,37 +768,85 @@ jobs:
           SUMMARY_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
           script: |
+             const fs = require("node:fs");
              const { resolveReviewState, reviewOutcome } = require("./.github/pr-automation/resolve-state");
              const { reviewSkipReasons } = require("./.github/pr-automation/review-skip-summary");
              const { parseReport } = require("./.github/pr-automation/review-report");
              const { renderReviewReport } = require("./.github/pr-automation/review-report-summary");
+             const { validateFinalReview } = require("./.github/pr-automation/validate-final-review");
              const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
              const force = process.env.FORCE === "true";
              const gate = parse(process.env.GATE, {});
-             const report = parseReport(process.env.REVIEW_REPORT);
+             const readJson = (file) => {
+               try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
+             };
+             const persisted = readJson("review-pipeline/final/result.json");
+             const validationContext = readJson("review-pipeline/validation/validation-context.json");
+             const specialistAggregate =
+               readJson("review-pipeline/aggregate/validated-specialist-findings.json");
+             const report = parseReport(fs.existsSync("review-pipeline/report/review-report.json")
+               ? fs.readFileSync("review-pipeline/report/review-report.json", "utf8")
+               : "");
              const recovered = report.stages.filter((stage) => stage.attempts === 2);
-             const reducedCoverage = report.stages
-               .filter((stage) => stage.id.startsWith("specialist:") &&
-                 stage.status === "failed" && stage.required !== true)
-               .map((stage) => stage.id.slice("specialist:".length));
+             const selectedReviewers = new Set(Array.isArray(gate.specialistReviewers)
+               ? gate.specialistReviewers
+               : []);
+             const aggregateReviewers = Array.isArray(specialistAggregate?.reviewers)
+               ? specialistAggregate.reviewers
+               : [];
+             const specialistStages = new Map(report.stages
+               .filter((stage) => stage.id.startsWith("specialist:"))
+               .map((stage) => [stage.id.slice("specialist:".length), stage]));
+             const artifactsAgree =
+               validationContext?.head_sha === process.env.HEAD_SHA &&
+               specialistAggregate?.head_sha === process.env.HEAD_SHA &&
+               aggregateReviewers.length === selectedReviewers.size &&
+               aggregateReviewers.every((reviewer) => {
+                 const stage = specialistStages.get(reviewer.reviewer);
+                 return selectedReviewers.has(reviewer.reviewer) &&
+                   stage?.status === (reviewer.status === "valid" ? "success" : "failed");
+               }) &&
+               specialistStages.size === selectedReviewers.size;
+             const reducedCoverage = artifactsAgree
+               ? aggregateReviewers
+                 .filter((reviewer) => reviewer.status === "failed" &&
+                   specialistStages.get(reviewer.reviewer)?.required !== true)
+                 .map((reviewer) => reviewer.reviewer)
+               : [];
              const failureReasons = report.stages.filter((stage) => stage.status === "failed")
                .map((stage) => `${stage.id}: ${stage.reason || stage.category}`);
-             const reviewerReason = report.status === "failed"
-               ? failureReasons.join("; ") || process.env.REVIEWER_REASON || "review pipeline failed"
-               : process.env.REVIEWER_REASON;
+             const reviewerReason = !artifactsAgree
+               ? "review artifacts disagree"
+               : report.status === "failed"
+                 ? failureReasons.join("; ") || process.env.REVIEWER_REASON || "review pipeline failed"
+                 : process.env.REVIEWER_REASON;
+             const revalidated = artifactsAgree && report.status === "success" && persisted
+               ? validateFinalReview(persisted.raw_output, {
+                 expectedSha: process.env.HEAD_SHA,
+                 changedPaths: validationContext.changed_paths,
+                 changedLines: validationContext.changed_lines,
+                 specialistAggregate,
+               })
+               : null;
+             const reviewer = revalidated?.ok &&
+                 JSON.stringify(revalidated.value) === persisted.output
+               ? revalidated.value
+               : null;
              const state = resolveReviewState({
                expectedSha: process.env.HEAD_SHA,
                labels: gate.labels ?? [],
                gate,
                contributor: gate.contributor ?? {},
                rateLimit: parse(process.env.FORK_RATE_LIMIT, {}),
-               reviewer: report.status === "success" ? parse(process.env.RAW_OUTPUT, null) : null,
+               reviewer,
                reviewerReason,
                force,
                reviewMarkerId: process.env.REVIEW_MARKER_ID,
                reducedCoverage,
+               reviewerValidationContext: validationContext,
+               specialistAggregate,
+               requireReviewerContext: true,
              });
-             core.setOutput("state", JSON.stringify(state));
              core.info(JSON.stringify({
                event: "pr-automation.review-state",
                decision: {
@@ -807,12 +879,22 @@ jobs:
                  state.check.title = rendered.title;
                  state.check.summary = rendered.checkSummary;
                  state.check.conclusion = outcome === "unavailable" ? "neutral" : "success";
-                 core.setOutput("state", JSON.stringify(state));
                }
                await core.summary
                  .addRaw(rendered.workflowSummary, true)
                  .write();
              }
+             fs.writeFileSync("review-state.json", JSON.stringify(state));
+
+      - name: Upload review state
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: review-state-${{ needs.resolve-pr.outputs.head-sha }}
+          path: review-state.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
 
   write-state:
     name: Write pull request state
@@ -834,19 +916,31 @@ jobs:
           ref: master
           persist-credentials: false
 
+      - name: Download review state
+        if: needs.resolve-review-state.result == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: review-state-${{ needs.resolve-pr.outputs.head-sha }}
+          path: workflow-state/review
+
       - uses: actions/github-script@v8
         env:
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
           REVIEW_REQUESTED: ${{ needs.resolve-pr.outputs.review-requested }}
           CLASSIFICATION_STATE: ${{ needs.resolve-classification-state.outputs.state }}
-          REVIEW_STATE: ${{ needs.resolve-review-state.outputs.state }}
           UPSTREAM_RESULTS: >-
             {"classification-gate":"${{ needs.classification-gate.result }}","deterministic-analysis":"${{ needs.deterministic-analysis.result }}","fork-rate-limit":"${{ needs.fork-rate-limit.result }}","semver":"${{ needs.semver.result }}","classifier":"${{ needs.classifier.result }}","resolve-classification-state":"${{ needs.resolve-classification-state.result }}","review-gate":"${{ needs.review-gate.result }}","review-pipeline":"${{ needs.review-pipeline.result }}","resolve-review-state":"${{ needs.resolve-review-state.result }}"}
         with:
           script: |
+            const fs = require("node:fs");
             const { writeState } = require("./.github/pr-automation/write-state");
             const parse = (value) => { try { return JSON.parse(value || ""); } catch { return null; } };
-            const state = parse(process.env.REVIEW_STATE) ?? parse(process.env.CLASSIFICATION_STATE);
+            const readState = (file) => {
+              try { return parse(fs.readFileSync(file, "utf8")); } catch { return null; }
+            };
+            const state = readState("workflow-state/review/review-state.json") ??
+              parse(process.env.CLASSIFICATION_STATE);
             const upstreamResults = JSON.parse(process.env.UPSTREAM_RESULTS);
             core.info(JSON.stringify({
               event: "pr-automation.write-state",

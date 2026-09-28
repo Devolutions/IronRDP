@@ -12,11 +12,13 @@ const { scratchWorkspace, write } = require("./helpers");
 test("action metadata exposes only configured inputs and required outputs on node24", () => {
   const action = fs.readFileSync(path.join(__dirname, "..", "action.yml"), "utf8");
   assert.match(action, /runs:\r?\n  using: node24\r?\n  main: dist\/index\.js/);
-  for (const input of ["api-key", "base-url", "config-file", "validator", "validator-metadata"]) {
+  for (const input of [
+    "api-key", "base-url", "config-file", "validator", "validator-metadata", "structured-output-file",
+  ]) {
     assert.match(action, new RegExp(`^  ${input}:\\r?$`, "m"));
   }
   for (const output of [
-    "structured-output", "failure-reason", "turn-count", "tool-call-count", "diagnostics",
+    "structured-output", "structured-output-file", "failure-reason", "turn-count", "tool-call-count", "diagnostics",
     "failure-category", "retryable",
   ]) {
     assert.match(action, new RegExp(`^  ${output}:\\r?$`, "m"));
@@ -44,7 +46,6 @@ function actionFixture() {
     methodology_files: [],
     allowed_roots: ["evidence"],
     allowed_files: [],
-    max_output_bytes: 32 * 1024,
     max_turns: 3,
     max_tool_calls: 2,
   }));
@@ -128,6 +129,36 @@ test("main masks the key immediately, rejects redirects, and emits only bounded 
   }
 });
 
+test("main transports accepted output through a workflow-controlled file without an output value", async () => {
+  const workspace = actionFixture();
+  const answer = "😀".repeat(36_000);
+  assert.ok(Buffer.byteLength(JSON.stringify({ answer }), "utf8") > 128 * 1024);
+  const core = mockCore({
+    "api-key": "key",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+    "structured-output-file": ".openai-agent-output/review.json",
+  });
+  class MockOpenAI {
+    constructor() {
+      this.chat = { completions: { create: async () => ({
+        choices: [{ message: { content: JSON.stringify({ answer }) } }],
+      }) } };
+    }
+  }
+  try {
+    await main(core, { GITHUB_WORKSPACE: workspace.directory }, MockOpenAI);
+    assert.equal(core.outputs.get("structured-output"), "");
+    assert.equal(core.outputs.get("structured-output-file"), ".openai-agent-output/review.json");
+    assert.equal(
+      fs.readFileSync(path.join(workspace.directory, ".openai-agent-output", "review.json"), "utf8"),
+      JSON.stringify({ answer }),
+    );
+  } finally {
+    workspace.cleanup();
+  }
+});
+
 test("configuration supplies recovery limits and canonical diagnostics", async () => {
   const workspace = actionFixture();
   write(workspace.directory, "config.json", JSON.stringify({
@@ -138,7 +169,6 @@ test("configuration supplies recovery limits and canonical diagnostics", async (
     methodology_files: [],
     allowed_roots: ["evidence"],
     allowed_files: [],
-    max_output_bytes: 2048,
     max_turns: 4,
     max_tool_calls: 1,
     request_timeout_ms: 90_000,
@@ -278,6 +308,7 @@ test("main emits a bounded provider request ID without raw errors", async () => 
         throw Object.assign(new Error("RAW_PROVIDER_SECRET_SENTINEL"), {
           status: 403,
           requestID: "req_safe-123",
+          code: "access_denied",
           headers: { get: () => "RAW_HEADER_SECRET_SENTINEL" },
         });
       } } };
@@ -297,8 +328,10 @@ test("main emits a bounded provider request ID without raw errors", async () => 
         retryable: false,
         status: 403,
         requestId: "req_safe-123",
+        providerCode: "access_denied",
       },
     );
+    assert.equal(JSON.parse(core.outputs.get("diagnostics")).providerErrorCode, "access_denied");
     assert.doesNotMatch(observable, /RAW_PROVIDER_SECRET_SENTINEL|RAW_HEADER_SECRET_SENTINEL/);
   } finally {
     workspace.cleanup();
@@ -566,8 +599,7 @@ function reviewFixture(workspace, { candidates = 4 } = {}) {
       }],
     }),
     // Schema-valid in every field, and wrong in four different ways at once: a duplicate, an
-    // unknown candidate, a rationale the schema counts in characters and the validator in bytes,
-    // and every remaining candidate left out.
+    // unknown candidate, a forbidden control character, and every remaining candidate left out.
     mixed: () => ({
       head_sha: sha,
       summary: "verified",
@@ -575,7 +607,7 @@ function reviewFixture(workspace, { candidates = 4 } = {}) {
         { reviewer: "skeptical", finding_id: `${secret}-1`, disposition: "rejected", rationale: "unsupported" },
         { reviewer: "skeptical", finding_id: `${secret}-1`, disposition: "rejected", rationale: "unsupported again" },
         { reviewer: "skeptical", finding_id: "ghost-candidate", disposition: "rejected", rationale: "unsupported" },
-        { reviewer: "skeptical", finding_id: `${secret}-2`, disposition: "rejected", rationale: "\u00e9".repeat(401) },
+        { reviewer: "skeptical", finding_id: `${secret}-2`, disposition: "rejected", rationale: "unsupported\u0000" },
       ],
       findings: [],
     }),
@@ -710,11 +742,10 @@ test("a review wrong in several ways at once keeps every category through the ru
     assert.match(expected, /candidates lack a valid disposition|candidates have no valid disposition/);
     assert.match(expected, /1 unknown|1 entry naming a candidate the specialists did not report/);
     assert.match(expected, /1 duplicate|1 entry repeating a candidate an earlier entry already covered/);
-    assert.match(expected, /over 800 UTF-8 byte rationale|within 800 UTF-8 bytes/);
+    assert.match(expected, /forbidden-control/);
 
-    // Both runtime paths carry that reason unchanged: the repair request, the telemetry entry, and
-    // the terminal failure. A slice at 240 bytes would truncate any of them.
-    assert.ok(requests[1].messages.at(-1).content.includes(expected), expected);
+    // The repair prompt carries bounded validation feedback without model text.
+    assert.match(requests[1].messages.at(-1).content, /Correct every reported validation error/);
     const diagnostics = JSON.parse(core.outputs.get("diagnostics"));
     assert.deepEqual(diagnostics.outputRejections.map((entry) => entry.reason), [expected, expected]);
     assert.equal(core.outputs.get("failure-reason"),

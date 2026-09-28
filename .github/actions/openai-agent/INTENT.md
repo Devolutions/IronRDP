@@ -1,6 +1,8 @@
 ## Terms
 
-- **Request retry:** resend the same provider request after a transient failure, without changing the conversation.
+- **Logical model call:** one invocation of the provider client for the current message history.
+- **HTTP attempt:** one network request made for a logical model call.
+- **Request retry:** an additional HTTP attempt for the same logical model call after a transient failure, without changing the message history.
 - **Output repair:** ask the model to correct an invalid response using validation feedback and the existing investigation context.
 
 ## Inputs
@@ -14,27 +16,31 @@
 - Maximum request retries.
 - Maximum model turns.
 - Maximum tool calls.
-- Maximum output size.
 - Maximum output-repair attempts.
 - Optional validator for task-specific checks.
 
 ## Outputs
 
 - JSON accepted by the schema and any supplied validator, or an explicit failure reason.
+- A caller that supplies a workflow-controlled output filename receives accepted JSON in a new regular file below the action's dedicated workspace directory instead of a step output.
 
 Expose these diagnostics:
 
 - Activity (such as investigation, final output, or repair).
-- Duration of each provider attempt.
+- Deterministic logical-call and HTTP-attempt indices.
+- Message count, serialized request bytes, and accumulated tool-result bytes for each logical model call.
+- Duration of each HTTP attempt.
 - Request-retry count.
 - Output-repair count.
 - Provider-reported stop reason (such as completion or token limit).
+- A bounded provider error code when the terminal provider failure supplies one.
 - Token usage when available.
 - Accumulated turn and tool-call counts, including on failure.
 - Each rejected output attempt, naming which validation rejected it and why.
 
 ## Request retries
 
+- One model turn is one logical model call, regardless of its HTTP attempts.
 - Retry transient provider failures with backoff.
 - Do not automatically retry invalid configuration, rejected credentials, or exhausted quota.
 - Apply the configured retry limit per request after the initial attempt.
@@ -48,6 +54,9 @@ Prefer the OpenAI SDK for `Retry-After` handling and request retries (`maxRetrie
 
 ## Output validation and repair
 
+- Every configured output schema bounds its accepted serialized representation.
+- Reject model message content above 1 MiB before JSON parsing so malformed output cannot enter validation or message history without a resource bound.
+- Reject strings with unpaired UTF-16 surrogates before schema acceptance so serialized byte bounds describe well-formed Unicode.
 - Use provider-enforced schema output where supported, otherwise JSON mode where supported.
 - Accept validators only from trusted caller configuration, never from untrusted evidence or model output.
 - Validate JSON and schema locally, then run the supplied validator.
@@ -61,3 +70,8 @@ Prefer the OpenAI SDK for `Retry-After` handling and request retries (`maxRetrie
 Local schema and validator acceptance is always the authority.
 Provider-enforced schema output constrains what the model returns; it never widens what this action accepts.
 Support for it is per-model and per-schema, so a configuration selects it only where it is known to hold.
+
+## Structured output files
+
+- The optional output filename is restricted to one new `.json` file in `.openai-agent-output` below the real workspace root.
+- The action refuses symbolic-link directories, symbolic links, existing targets, and paths outside that directory, so output transport cannot become a general write capability.

@@ -6,6 +6,7 @@ const { AgentFailure, providerFailureDiagnostic, runAgent } = require("./agent")
 const { loadConfiguration, validateBaseUrl } = require("./config");
 const { ActionError } = require("./errors");
 const { RuntimeMetrics, createProviderClient } = require("./provider");
+const { validateOutputFilePath, writeOutputFile } = require("./sandbox");
 const { ValidatorFailure, loadValidator, parseMetadata } = require("./validator");
 
 async function main(core, environment = process.env, OpenAIClient = OpenAI) {
@@ -13,10 +14,11 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
   let turnCount = 0;
   let toolCallCount = 0;
   let outputRepairCount = 0;
+  let structuredOutputFile = "";
   let phase = "input";
   const metrics = new RuntimeMetrics();
   setOutputs(core, {
-    output: "", failureReason: "", failureCategory: "", retryable: false,
+    output: "", structuredOutputFile, failureReason: "", failureCategory: "", retryable: false,
     turnCount, toolCallCount, outputRepairCount, metrics,
   });
 
@@ -28,6 +30,7 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
     const configFile = requiredInput(core, "config-file", "config file input is missing");
     const validatorSelector = core.getInput("validator");
     const validatorMetadata = parseMetadata(core.getInput("validator-metadata"));
+    const outputFile = validateOutputFilePath(core.getInput("structured-output-file"));
     if (validatorSelector === "" && Object.keys(validatorMetadata).length !== 0) {
       throw new ActionError("validator metadata requires a validator", "input");
     }
@@ -66,8 +69,10 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
     turnCount = result.turnCount;
     toolCallCount = result.toolCallCount;
     outputRepairCount = result.outputRepairCount;
+    structuredOutputFile = writeOutputFile(workspace, outputFile, result.output);
     setOutputs(core, {
-      output: result.output,
+      output: structuredOutputFile === "" ? result.output : "",
+      structuredOutputFile,
       failureReason: "",
       failureCategory: "",
       retryable: false,
@@ -90,6 +95,7 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       toolCallCount = error.toolCallCount;
       outputRepairCount = error.outputRepairCount;
       const diagnostic = providerFailureDiagnostic(error.cause);
+      metrics.recordProviderFailure(diagnostic);
       if (error.cause) {
         core.info(JSON.stringify({
           event: "openai-agent.provider-failure",
@@ -105,7 +111,8 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       logActionFailure(core, error instanceof ActionError ? error.phase : phase, outcome);
     }
     setOutputs(core, {
-      output: "", failureReason, failureCategory: outcome.category, retryable: outcome.retryable,
+      output: "", structuredOutputFile: "", failureReason, failureCategory: outcome.category,
+      retryable: outcome.retryable,
       turnCount, toolCallCount, outputRepairCount, metrics,
     });
     core.setFailed(failureReason);
@@ -153,7 +160,8 @@ function logActionFailure(core, phase, outcome) {
 }
 
 function setOutputs(core, {
-  output, failureReason, failureCategory, retryable, turnCount, toolCallCount, outputRepairCount, metrics,
+  output, structuredOutputFile, failureReason, failureCategory, retryable, turnCount, toolCallCount,
+  outputRepairCount, metrics,
 }) {
   const diagnostics = metrics.snapshot({
     outputRepairCount,
@@ -163,6 +171,7 @@ function setOutputs(core, {
     retryable,
   });
   core.setOutput("structured-output", output);
+  core.setOutput("structured-output-file", structuredOutputFile);
   core.setOutput("failure-reason", failureReason);
   core.setOutput("turn-count", String(turnCount));
   core.setOutput("tool-call-count", String(toolCallCount));

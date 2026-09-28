@@ -16,7 +16,7 @@
 const fs = require("node:fs");
 
 const { REVIEWER_ORDER } = require("./routing");
-const { normalizeText } = require("./validation");
+const { MAXIMUM_GITHUB_INTEGER, linesAreInRange, normalizeText } = require("./validation");
 const { corpusFromDirectory, validateProtocolReferences } = require("./validate-protocol-review");
 const { normalizeCandidateReview } = require("./validate-candidate-review");
 const { validateFinalReview } = require("./validate-final-review");
@@ -29,9 +29,7 @@ const MAXIMUM_TRUSTED_BYTES = 8 * 1024 * 1024;
 const CANDIDATE_LIMITS = require("./schemas/candidate-review.json").properties.findings;
 const FINAL_LIMITS = require("./schemas/final-review.json").properties.findings;
 const CANDIDATE_FINDING_ID = new RegExp(CANDIDATE_LIMITS.items.properties.id.pattern);
-// The review validators cap a title at 200 UTF-8 bytes, which is stricter than the schema's
-// character limit, so the byte limit is what a repair can actually reach.
-const MAX_TITLE_BYTES = 200;
+const MAX_TITLE_LENGTH = FINAL_LIMITS.items.properties.title.maxLength;
 const DISPOSITION_REVIEWERS = require("./schemas/final-review.json")
   .properties.candidate_dispositions.items.properties.reviewer.enum;
 
@@ -119,10 +117,9 @@ function diagnoseCandidate(candidate, { expectedSha, reviewer, changedPaths }) {
       return `finding at index ${index} must cite a path changed by this pull request`;
     }
     const linesAreNull = finding.start_line === null && finding.end_line === null;
-    const linesAreIntegers = Number.isSafeInteger(finding.start_line) && finding.start_line >= 1 &&
-      Number.isSafeInteger(finding.end_line) && finding.end_line >= finding.start_line;
+    const linesAreIntegers = linesAreInRange(finding.start_line, finding.end_line);
     if (!linesAreNull && !linesAreIntegers) {
-      return `finding at index ${index} must use integer lines with end_line at or after start_line, or null lines`;
+      return `finding at index ${index} must use lines between 1 and ${MAXIMUM_GITHUB_INTEGER} with end_line at or after start_line, or null lines`;
     }
     if (reviewer !== "protocol" && Array.isArray(finding.references) && finding.references.length > 0) {
       return `finding at index ${index} must not carry protocol references`;
@@ -207,7 +204,7 @@ const candidateIdentity = (finding) =>
 // line range, never the issue a finding reports. The title is normalized exactly as the review
 // validators do, so a title only they would reject is never protected.
 const finalIdentity = (finding) => {
-  const title = normalizeText(finding?.title, MAX_TITLE_BYTES);
+  const title = normalizeText(finding?.title, MAX_TITLE_LENGTH);
   return title ? title.toLowerCase() : null;
 };
 

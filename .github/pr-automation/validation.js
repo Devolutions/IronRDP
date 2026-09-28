@@ -5,6 +5,8 @@
 
 const SHA = /^[0-9a-f]{40}$/;
 const REPO_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$)).+$/;
+const MAXIMUM_GITHUB_INTEGER = 2_147_483_647;
+const FORBIDDEN_TEXT_CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
 
 function invalid(reason) {
   return { ok: false, status: "unavailable", reason };
@@ -20,23 +22,31 @@ function exactKeys(value, keys) {
     keys.every((key) => Object.hasOwn(value, key));
 }
 
-function normalizeText(value, maximum) {
+function unicodeLength(value) {
+  return value.isWellFormed() ? [...value].length : Number.POSITIVE_INFINITY;
+}
+
+function normalizeText(value, maximumLength) {
   if (typeof value !== "string") return null;
+  if (!value.isWellFormed() || unicodeLength(value) > maximumLength ||
+      FORBIDDEN_TEXT_CONTROL.test(value)) return null;
   // Structured output occasionally represents an empty string as the literal text `""`.
   const normalized = (value === '""' ? "" : value).replace(/\s+/g, " ").trim();
-  if (Buffer.byteLength(normalized, "utf8") > maximum ||
-      /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(normalized)) return null;
   return normalized;
 }
 
-function parseJson(raw, maximumBytes) {
+function parseJson(raw) {
   if (typeof raw !== "string") return raw;
-  if (Buffer.byteLength(raw, "utf8") > maximumBytes) return null;
   try { return JSON.parse(raw); } catch { return null; }
 }
 
 function isBoundedArray(value, maximum) {
   return Array.isArray(value) && value.length <= maximum;
+}
+
+function linesAreInRange(start, end) {
+  return Number.isSafeInteger(start) && start >= 1 && start <= MAXIMUM_GITHUB_INTEGER &&
+    Number.isSafeInteger(end) && end >= start && end <= MAXIMUM_GITHUB_INTEGER;
 }
 
 function linesAreValidated(path, start, end, changedLines) {
@@ -49,6 +59,7 @@ function linesAreValidated(path, start, end, changedLines) {
 }
 
 module.exports = {
-  REPO_PATH, SHA,
-  exactKeys, invalid, isBoundedArray, isPlainObject, linesAreValidated, normalizeText, parseJson,
+  MAXIMUM_GITHUB_INTEGER, REPO_PATH, SHA,
+  exactKeys, invalid, isBoundedArray, isPlainObject, linesAreInRange, linesAreValidated,
+  normalizeText, parseJson, unicodeLength,
 };

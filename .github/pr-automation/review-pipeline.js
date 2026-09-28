@@ -8,6 +8,9 @@ const {
 const { SHA, exactKeys, invalid, normalizeText } = require("./validation");
 const { normalizeStageMetrics } = require("./review-report");
 
+// Covers all schema-valid specialist results while bounding the artifact read by the general reviewer.
+const MAXIMUM_SPECIALIST_AGGREGATE_BYTES = 1024 * 1024;
+
 function validateSpecialistRun(raw, {
   reviewer, expectedSha, changedPaths, changedLines, corpus, expectedCorpusSha, failureReason,
 } = {}) {
@@ -135,7 +138,7 @@ function buildSpecialistAggregate({
   }
 
   const aggregate = { head_sha: expectedSha, reviewers };
-  if (Buffer.byteLength(JSON.stringify(aggregate), "utf8") > 128 * 1024) {
+  if (Buffer.byteLength(JSON.stringify(aggregate), "utf8") > MAXIMUM_SPECIALIST_AGGREGATE_BYTES) {
     return invalid("specialist aggregate too large");
   }
   const mandatory = resolveRequiredReviewers({

@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const OpenAI = require("openai");
 
 const {
-  RuntimeMetrics, createProviderClient, hasKnownQuotaCode, retryAfterMilliseconds,
+  RuntimeMetrics, createProviderClient, hasKnownQuotaCode, providerErrorCode, retryAfterMilliseconds,
 } = require("../src/provider");
 
 class BaseClient {
@@ -21,6 +21,16 @@ class BaseClient {
     return this.makeRequest(options, retriesRemaining - 1, requestLogID);
   }
 }
+
+test("provider error codes use bounded documented locations", () => {
+  assert.equal(providerErrorCode({ code: "top_level" }), "top_level");
+  assert.equal(providerErrorCode({
+    provider_specific_fields: { code: "surface_not_credit_eligible" },
+  }), "surface_not_credit_eligible");
+  assert.equal(providerErrorCode({ detail: { code: "metering_unavailable" } }), "metering_unavailable");
+  assert.equal(providerErrorCode({ body: { error: { code: "monthly_cap_reached" } } }), "monthly_cap_reached");
+  assert.equal(providerErrorCode({ code: "unsafe value" }), undefined);
+});
 
 test("SDK adapter suppresses known quota retries without exposing bodies", async () => {
   const metrics = new RuntimeMetrics();
@@ -100,7 +110,8 @@ test("SDK adapter prohibits policy-terminal retries despite provider headers", a
 
 test("runtime metrics retain activity and mark partial usage incomplete", async () => {
   const metrics = new RuntimeMetrics(() => 0);
-  const request = metrics.beginRequest("repairing");
+  const requestBody = { model: "test", messages: [{ role: "user", content: "prompt" }] };
+  const request = metrics.beginRequest("repairing", requestBody);
   const first = metrics.beginAttempt();
   metrics.observeResponse(first, new Response("", { status: 429 }));
   metrics.finishAttempt(first);
@@ -127,9 +138,23 @@ test("runtime metrics retain activity and mark partial usage incomplete", async 
     totalTokens: 7,
   });
   assert.deepEqual(snapshot.providerAttempts, [
-    { activity: "repairing", durationMs: 0, status: 429 },
     {
       activity: "repairing",
+      logicalCall: 1,
+      attempt: 1,
+      messageCount: 1,
+      requestBytes: Buffer.byteLength(JSON.stringify(requestBody), "utf8"),
+      toolResultBytes: 0,
+      durationMs: 0,
+      status: 429,
+    },
+    {
+      activity: "repairing",
+      logicalCall: 1,
+      attempt: 2,
+      messageCount: 1,
+      requestBytes: Buffer.byteLength(JSON.stringify(requestBody), "utf8"),
+      toolResultBytes: 0,
       durationMs: 0,
       status: 200,
       requestId: "req_safe-123",
@@ -137,6 +162,56 @@ test("runtime metrics retain activity and mark partial usage incomplete", async 
       usage: { inputTokens: 4, outputTokens: 3, totalTokens: 7 },
     },
   ]);
+});
+
+test("runtime metrics index logical calls and accumulate tool-result bytes without content", () => {
+  const metrics = new RuntimeMetrics(() => 0);
+  const first = metrics.beginRequest("investigating", {
+    model: "test", messages: [{ role: "system", content: "instructions" }],
+  });
+  const firstAttempt = metrics.beginAttempt();
+  metrics.finishAttempt(firstAttempt);
+  metrics.recordCompletion(first, { choices: [{ finish_reason: "tool_calls" }] });
+  metrics.recordToolResult('{"ok":true}');
+
+  const secondBody = {
+    model: "test",
+    messages: [
+      { role: "system", content: "instructions" },
+      { role: "assistant", content: null, tool_calls: [] },
+      { role: "tool", tool_call_id: "tool", content: '{"ok":true}' },
+    ],
+  };
+  const second = metrics.beginRequest("finalizing", secondBody);
+  const secondAttempt = metrics.beginAttempt();
+  metrics.finishAttempt(secondAttempt);
+  metrics.recordCompletion(second, { choices: [{ finish_reason: "stop" }] });
+
+  assert.deepEqual(metrics.snapshot().providerAttempts.map((attempt) => ({
+    logicalCall: attempt.logicalCall,
+    attempt: attempt.attempt,
+    messageCount: attempt.messageCount,
+    requestBytes: attempt.requestBytes,
+    toolResultBytes: attempt.toolResultBytes,
+  })), [
+    {
+      logicalCall: 1,
+      attempt: 1,
+      messageCount: 1,
+      requestBytes: Buffer.byteLength(JSON.stringify({
+        model: "test", messages: [{ role: "system", content: "instructions" }],
+      }), "utf8"),
+      toolResultBytes: 0,
+    },
+    {
+      logicalCall: 2,
+      attempt: 2,
+      messageCount: 3,
+      requestBytes: Buffer.byteLength(JSON.stringify(secondBody), "utf8"),
+      toolResultBytes: Buffer.byteLength('{"ok":true}', "utf8"),
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(metrics.snapshot()), /instructions|tool_call_id/);
 });
 
 test("runtime metrics mark individual missing usage fields incomplete", () => {

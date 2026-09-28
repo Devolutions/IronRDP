@@ -18,6 +18,18 @@ const UNSAFE_REASON_CHARACTER = /[^A-Za-z0-9 #.,:;()/_-]+/g;
 const RETRIES_REMAINING = "openai-agent-retries-remaining";
 const MAX_TIMEOUT = 2_147_483_647;
 
+function providerErrorCode(error) {
+  return [
+    error?.code,
+    error?.provider_specific_fields?.code,
+    error?.detail?.code,
+    error?.error?.code,
+    error?.error?.provider_specific_fields?.code,
+    error?.body?.error?.code,
+    error?.type,
+  ].find((value) => typeof value === "string" && SAFE_DIAGNOSTIC_VALUE.test(value));
+}
+
 class RuntimeMetrics {
   constructor(now = Date.now) {
     this.now = now;
@@ -26,19 +38,31 @@ class RuntimeMetrics {
     this.requests = [];
     this.activeRequest = null;
     this.outputRejections = [];
+    this.attemptCount = 0;
+    this.toolResultBytes = 0;
+    this.providerErrorCode = undefined;
   }
 
-  beginRequest(activity) {
+  beginRequest(activity, request) {
     this.activity = activity;
-    const request = { activity, attempts: [] };
-    this.requests.push(request);
-    this.activeRequest = request;
-    return request;
+    const logicalCall = this.requests.length + 1;
+    const details = {
+      activity,
+      logicalCall,
+      messageCount: Array.isArray(request?.messages) ? request.messages.length : 0,
+      requestBytes: Buffer.byteLength(JSON.stringify(request ?? {}), "utf8"),
+      toolResultBytes: this.toolResultBytes,
+      attempts: [],
+    };
+    this.requests.push(details);
+    this.activeRequest = details;
+    return details;
   }
 
   beginAttempt(timeoutMs) {
     const attempt = {
       activity: this.activeRequest?.activity || this.activity,
+      attempt: ++this.attemptCount,
       startedAt: this.now(),
       timeoutMs,
     };
@@ -90,6 +114,15 @@ class RuntimeMetrics {
     if (usage) attempt.usage = usage;
   }
 
+  recordToolResult(result) {
+    this.toolResultBytes += Buffer.byteLength(String(result), "utf8");
+  }
+
+  recordProviderFailure(diagnostic) {
+    const code = diagnostic?.providerCode;
+    if (code !== undefined) this.providerErrorCode = code;
+  }
+
   // A rejected output attempt is the only evidence left of why a stage exhausted its repairs, so it
   // is kept as bounded telemetry rather than being reduced to the exhaustion itself.
   recordOutputRejection({ activity, layer, reason }) {
@@ -105,6 +138,11 @@ class RuntimeMetrics {
   snapshot(details = {}) {
     const providerAttempts = this.requests.flatMap((request) => request.attempts.map((attempt) => ({
       activity: attempt.activity,
+      logicalCall: request.logicalCall,
+      attempt: attempt.attempt,
+      messageCount: request.messageCount,
+      requestBytes: request.requestBytes,
+      toolResultBytes: request.toolResultBytes,
       durationMs: attempt.durationMs ?? Math.max(0, this.now() - attempt.startedAt),
       ...(attempt.status === undefined ? {} : { status: attempt.status }),
       ...(attempt.requestId === undefined ? {} : { requestId: attempt.requestId }),
@@ -124,6 +162,7 @@ class RuntimeMetrics {
       providerFinishReason: finishReason || null,
       tokenUsage: usage,
       providerAttempts,
+      ...(this.providerErrorCode === undefined ? {} : { providerErrorCode: this.providerErrorCode }),
       ...(this.outputRejections.length === 0
         ? {}
         : { outputRejections: this.outputRejections }),
@@ -359,5 +398,6 @@ function summarizeUsage(attempts) {
 }
 
 module.exports = {
-  RuntimeMetrics, createProviderClient, hasKnownQuotaCode, retryAfterMilliseconds, sanitizeReason,
+  RuntimeMetrics, createProviderClient, hasKnownQuotaCode, providerErrorCode, retryAfterMilliseconds,
+  sanitizeReason,
 };

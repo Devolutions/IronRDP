@@ -221,6 +221,7 @@ async function contributorEligibility({ author } = {}) {
 function resolveReviewState({
   expectedSha, labels, reviewer, gate, contributor,
   rateLimit, reviewerReason, force, reviewMarkerId, reducedCoverage,
+  reviewerValidationContext, specialistAggregate, requireReviewerContext = false,
 } = {}) {
   const existing = labelsOf(labels);
   const forced = force === true;
@@ -285,7 +286,14 @@ function resolveReviewState({
     if (gate.ciGreen !== true) return fail("CI has not succeeded", false, null, "remove");
     if (!gate.ok) return fail("review gate unavailable");
   }
-  const reviewerResult = validateNormalizedFinalReview(reviewer, expectedSha);
+  const reviewerContextMatches = reviewerValidationContext?.head_sha === expectedSha;
+  const reviewerResult = validateNormalizedFinalReview(reviewer, {
+    expectedSha,
+    changedPaths: reviewerContextMatches ? reviewerValidationContext.changed_paths : undefined,
+    changedLines: reviewerContextMatches ? reviewerValidationContext.changed_lines : undefined,
+    specialistAggregate,
+    requireContext: requireReviewerContext,
+  });
   if (!reviewerResult?.ok || reviewerResult.value?.head_sha !== expectedSha) {
     return fail(reviewerReason || reviewerResult?.reason || "reviewer unavailable", true);
   }
