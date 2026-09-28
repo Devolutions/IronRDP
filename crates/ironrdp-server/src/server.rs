@@ -5046,6 +5046,11 @@ fn encode_autodetect_request(
     encode_vec(&X224(mcs_pdu)).map_err(ServerError::encode)
 }
 
+/// headerLength and headerTypeId, common to every auto-detect structure
+/// ([MS-RDPBCGR] 2.2.14.1).
+#[cfg(feature = "egfx")]
+const AUTODETECT_HEADER_SIZE: usize = 2;
+
 /// Carries an auto-detect request as an RDP_TUNNEL_SUBHEADER, alone in a
 /// Tunnel Data PDU of its own ([MS-RDPBCGR] 1.3.9, [MS-RDPEMT] 2.2.1.1.1).
 ///
@@ -5053,11 +5058,6 @@ fn encode_autodetect_request(
 /// [`encode_autodetect_request`] frames it with on the message channel: Its
 /// SubHeaderLength and SubHeaderType are the request's headerLength and
 /// headerTypeId, so SubHeaderData starts at the sequence number.
-/// headerLength and headerTypeId, common to every auto-detect structure
-/// ([MS-RDPBCGR] 2.2.14.1).
-#[cfg(feature = "egfx")]
-const AUTODETECT_HEADER_SIZE: usize = 2;
-
 #[cfg(feature = "egfx")]
 fn autodetect_sub_header(
     request: &rdp::autodetect::AutoDetectRequest,
