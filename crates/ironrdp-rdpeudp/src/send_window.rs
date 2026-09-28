@@ -154,7 +154,6 @@ impl SendWindow {
     /// Returns `None` if the window is full.
     pub(crate) fn push(&mut self, data: Vec<u8>, now: MonotonicInstant) -> Option<(u64, u64)> {
         if !self.has_capacity() {
-            trace!(max_entries = self.max_entries, "Send window full, packet not queued");
             return None;
         }
 
@@ -188,11 +187,6 @@ impl SendWindow {
     /// Returns `None` if the window is full.
     pub(crate) fn push_retransmit(&mut self, channel_seq: u64, data: Vec<u8>, now: MonotonicInstant) -> Option<u64> {
         if !self.has_capacity() {
-            trace!(
-                channel_seq,
-                max_entries = self.max_entries,
-                "Send window full, retransmit not queued"
-            );
             return None;
         }
 

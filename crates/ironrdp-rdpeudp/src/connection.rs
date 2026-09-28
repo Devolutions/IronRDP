@@ -1026,6 +1026,17 @@ impl RdpeudpConnection {
         })
     }
 
+    /// Arms the ACK delay timer unless it is already running, so a pending
+    /// acknowledgement goes out within the delay even if no data follows.
+    fn arm_ack_delay(&mut self, now: MonotonicInstant) {
+        if !self.timers.is_set(Timer::AckDelay) {
+            let ack_delay = self.ack_delay_timeout();
+            trace!(ack_delay_ms = ack_delay.as_millis(), "Armed ACK delay timer");
+            self.timers.set(Timer::AckDelay, now + ack_delay);
+            self.ack_delay_started_at = Some(now);
+        }
+    }
+
     /// The ACK delay timeout to use right now.
     ///
     /// [MS-RDPEUDP2] 3.1.5.2 gives the receiver's assumed default as "half
@@ -1504,7 +1515,7 @@ impl RdpeudpConnection {
         // delivered, discarding real in-flight application data on a single
         // malformed or hostile ACK.
         if acked_seq >= send_window.next_data_seq() {
-            warn!(
+            debug!(
                 acked_seq,
                 next_data_seq = send_window.next_data_seq(),
                 "Ignored ACK for a DataSeqNum never sent"
@@ -1706,12 +1717,7 @@ impl RdpeudpConnection {
         }
 
         self.ack_pending = true;
-        if !self.timers.is_set(Timer::AckDelay) {
-            let ack_delay = self.ack_delay_timeout();
-            trace!(ack_delay_ms = ack_delay.as_millis(), "Armed ACK delay timer");
-            self.timers.set(Timer::AckDelay, now + ack_delay);
-            self.ack_delay_started_at = Some(now);
-        }
+        self.arm_ack_delay(now);
     }
 
     fn process_data(&mut self, dh: &DataHeader, db: &DataBody, now: MonotonicInstant) {
@@ -1746,12 +1752,7 @@ impl RdpeudpConnection {
 
             // Schedule ACK (either piggybacked on next data or standalone)
             self.ack_pending = true;
-            if !self.timers.is_set(Timer::AckDelay) {
-                let ack_delay = self.ack_delay_timeout();
-                trace!(ack_delay_ms = ack_delay.as_millis(), "Armed ACK delay timer");
-                self.timers.set(Timer::AckDelay, now + ack_delay);
-                self.ack_delay_started_at = Some(now);
-            }
+            self.arm_ack_delay(now);
         }
     }
 
@@ -2475,7 +2476,7 @@ impl RdpeudpConnection {
         // that does would push the window base into the future and leave every
         // later Source Packet below it; drop it instead.
         if reset > reference {
-            warn!(
+            debug!(
                 reset_seq = reset,
                 highest_seq = reference,
                 "Ignored AckOfAcks ahead of received data"
@@ -2507,12 +2508,7 @@ impl RdpeudpConnection {
         }
 
         self.ack_pending = true;
-        if !self.timers.is_set(Timer::AckDelay) {
-            let ack_delay = self.ack_delay_timeout();
-            trace!(ack_delay_ms = ack_delay.as_millis(), "Armed ACK delay timer");
-            self.timers.set(Timer::AckDelay, now + ack_delay);
-            self.ack_delay_started_at = Some(now);
-        }
+        self.arm_ack_delay(now);
     }
 
     /// The `RDPUDP_FEC_HEADER` and ACK vector describing what we have received
