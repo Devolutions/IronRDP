@@ -278,8 +278,8 @@ function resolveReviewState({
     }
     if (contributor?.status !== "eligible") {
       const reason = contributor?.reason
-        ? `contributor history unavailable: ${contributor.reason}`
-        : "contributor history unavailable";
+        ? `contributor eligibility unavailable: ${contributor.reason}`
+        : "contributor eligibility unavailable";
       return fail(reason);
     }
     if (existing.has("ai-reviewed/1") && gate.secondReviewEligible !== true) {

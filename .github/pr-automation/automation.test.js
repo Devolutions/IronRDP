@@ -2054,7 +2054,7 @@ test("review blockers distinguish gate and contributor history failures", () => 
   });
   assert.equal(unavailable.ok, true);
   assert.equal(unavailable.failed, true);
-  assert.equal(unavailable.reason, "contributor history unavailable: GitHub API unavailable");
+  assert.equal(unavailable.reason, "contributor eligibility unavailable: GitHub API unavailable");
   assert.equal(unavailable.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), false);
 
   const ciPending = resolveReviewState({
