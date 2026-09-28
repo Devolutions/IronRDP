@@ -3,10 +3,7 @@ use ironrdp_core::{Decode as _, MonotonicInstant, ReadCursor, WriteBuf, decode};
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelMut, DynamicChannelRef};
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndicationCtx};
-use ironrdp_pdu::rdp::autodetect::{
-    AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu, BW_RESULTS_CONNECT_TIME,
-    BW_RESULTS_CONTINUOUS, BW_START_CONNECT_TIME, BW_START_RELIABLE_UDP, BW_STOP_CONNECT_TIME, BW_STOP_RELIABLE_UDP,
-};
+use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectRspPdu};
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, IoChannelPdu, ShareDataCtx, ShareDataPdu,
@@ -21,6 +18,7 @@ use ironrdp_svc::{
 };
 use tracing::debug;
 
+use crate::autodetect::AutoDetectResponder;
 use crate::{SessionError, SessionErrorExt as _, SessionResult, reason_err};
 
 /// X224 Processor output
@@ -110,13 +108,7 @@ pub struct Processor {
     io_channel_id: u16,
     message_channel_id: Option<u16>,
     share_id: u32,
-    bandwidth: Option<BandwidthMeasurement>,
-}
-
-struct BandwidthMeasurement {
-    started_at: MonotonicInstant,
-    bytes: u32,
-    continuous: bool,
+    auto_detect: AutoDetectResponder,
 }
 
 impl Processor {
@@ -133,7 +125,7 @@ impl Processor {
             io_channel_id,
             message_channel_id,
             share_id,
-            bandwidth: None,
+            auto_detect: AutoDetectResponder::default(),
         }
     }
 
@@ -477,11 +469,7 @@ impl Processor {
     /// Counts session bytes after transport/security headers while a continuous
     /// bandwidth window is open ([MS-RDPBCGR] 3.2.5.14).
     pub(crate) fn record_bandwidth_bytes(&mut self, bytes: usize) {
-        if let Some(measurement) = self.bandwidth.as_mut().filter(|measurement| measurement.continuous) {
-            measurement.bytes = measurement
-                .bytes
-                .saturating_add(u32::try_from(bytes).unwrap_or(u32::MAX));
-        }
+        self.auto_detect.record_bytes(bytes);
     }
 
     /// Process a PDU received on the MCS message channel: auto-detect
@@ -539,76 +527,12 @@ impl Processor {
 
         let req = decode::<AutoDetectReqPdu>(data_ctx.user_data).map_err(SessionError::decode)?;
 
-        let response = match req.request {
-            AutoDetectRequest::RttRequest { sequence_number, .. } => {
-                AutoDetectResponse::RttResponse { sequence_number }
-            }
-            AutoDetectRequest::BandwidthMeasureStart { request_type, .. }
-                if matches!(request_type, BW_START_CONNECT_TIME | BW_START_RELIABLE_UDP) =>
-            {
-                self.bandwidth = received_at.map(|started_at| BandwidthMeasurement {
-                    started_at,
-                    bytes: 0,
-                    continuous: request_type == BW_START_RELIABLE_UDP,
-                });
-                return Ok(Vec::new());
-            }
-            AutoDetectRequest::BandwidthMeasurePayload { payload, .. } => {
-                if let Some(measurement) = self.bandwidth.as_mut().filter(|measurement| !measurement.continuous) {
-                    // [MS-RDPBCGR] 3.2.5.14 counts the eight-byte auto-detect
-                    // header as well as payloadLength, but not the security header.
-                    measurement.bytes = measurement
-                        .bytes
-                        .saturating_add(u32::try_from(payload.len()).unwrap_or(u32::MAX).saturating_add(8));
-                }
-                return Ok(Vec::new());
-            }
-            AutoDetectRequest::BandwidthMeasureStop {
-                sequence_number,
-                request_type,
-                payload,
-            } if matches!(request_type, BW_STOP_CONNECT_TIME | BW_STOP_RELIABLE_UDP) => {
-                let continuous = request_type == BW_STOP_RELIABLE_UDP;
-                let measurement = self
-                    .bandwidth
-                    .take()
-                    .filter(|measurement| measurement.continuous == continuous);
-                let stop_bytes = if continuous {
-                    0
-                } else {
-                    u32::try_from(payload.as_ref().map_or(0, Vec::len))
-                        .unwrap_or(u32::MAX)
-                        .saturating_add(8)
-                };
-                let (time_delta_ms, byte_count) = match (measurement, received_at) {
-                    (Some(measurement), Some(stopped_at)) => (
-                        u32::try_from(stopped_at.duration_since(measurement.started_at).as_millis())
-                            .unwrap_or(u32::MAX)
-                            .max(1),
-                        measurement.bytes.saturating_add(stop_bytes),
-                    ),
-                    _ => (1, stop_bytes),
-                };
-                AutoDetectResponse::BandwidthMeasureResults {
-                    sequence_number,
-                    response_type: if continuous {
-                        BW_RESULTS_CONTINUOUS
-                    } else {
-                        BW_RESULTS_CONNECT_TIME
-                    },
-                    time_delta_ms,
-                    byte_count,
-                }
-            }
-            req @ AutoDetectRequest::NetworkCharacteristicsResult { .. } => {
-                debug!(?req, "Received network characteristics from server");
-                return Ok(vec![ProcessorOutput::AutoDetect(req)]);
-            }
-            req => {
-                // Lossy variants belong to a lossy tunnel, never this channel.
-                debug!(?req, "Ignoring auto-detect request for another transport");
-                return Ok(Vec::new());
-            }
+        if let request @ AutoDetectRequest::NetworkCharacteristicsResult { .. } = req.request {
+            debug!(?request, "Received network characteristics from server");
+            return Ok(vec![ProcessorOutput::AutoDetect(request)]);
+        }
+        let Some(response) = self.auto_detect.respond(req.request, received_at) else {
+            return Ok(Vec::new());
         };
         debug!(?response, "Responding to an auto-detect request");
         let mut frame = WriteBuf::new();
