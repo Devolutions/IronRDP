@@ -18,8 +18,8 @@ std = ["alloc", "ironrdp-core/std", "dep:ironrdp-svc"]
 alloc = ["dep:ironrdp-core", "ironrdp-core/alloc"]
 
 [dependencies]
-ironrdp-core = { path = "../ironrdp-core", version = "0.2", default-features = false, optional = true } # public
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.8", optional = true } # public
+ironrdp-core = { path = "../ironrdp-core", version = "0.3", default-features = false, optional = true } # public
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.9", optional = true } # public
 
 [lints]
 workspace = true

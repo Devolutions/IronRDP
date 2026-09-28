@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-pdu"
-version = "0.9.0"
+version = "0.10.0"
 readme = "README.md"
 description = "RDP PDU encoding and decoding"
 edition.workspace = true
@@ -26,7 +26,7 @@ arbitrary = ["alloc", "dep:arbitrary", "bitflags/arbitrary"]
 
 [dependencies]
 bitflags = "2.11"
-ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["std"] } # public
+ironrdp-core = { path = "../ironrdp-core", version = "0.3", features = ["std"] } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.2" } # public
 arbitrary = { version = "1", features = ["derive"], optional = true }
 tap = "1"
