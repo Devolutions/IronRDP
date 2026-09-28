@@ -20,7 +20,6 @@ const EVIDENCE_LIMIT_MARKER = "<!-- ironrdp-pr-automation:evidence-limit -->";
 const CONTRIBUTOR_INELIGIBLE_MARKER = "<!-- ironrdp-pr-automation:contributor-ineligible -->";
 const EVIDENCE_LIMIT_REASON = /^pull request diff exceeds the (1|4) MiB evidence limit$/;
 const ELIGIBLE_MERGED_PRS = 1;
-const ELIGIBLE_ASSOCIATIONS = new Set(["OWNER", "MEMBER"]);
 
 function labelsOf(labels) {
   return new Set((labels || []).map((label) => typeof label === "string" ? label : label?.name).filter(Boolean));
@@ -206,51 +205,14 @@ function resolveClassificationState({
   };
 }
 
-function isBot(user) {
-  return user?.type === "Bot" || /\[bot\]$/i.test(user?.login || "");
-}
-
-// Counts an author's merged pull requests, stopping at stopAt so a prolific contributor does not
-// force a walk of the whole closed-PR history. Callers only ever compare against a threshold.
-async function qualifyingMergedPrs({ github, owner, repo, authorNodeId, currentPrNumber, stopAt }) {
-  let merged = 0;
-  for await (const response of github.paginate.iterator(github.rest.pulls.list, {
-    owner, repo, state: "closed", sort: "updated", direction: "desc", per_page: 100,
-  })) {
-    if (!Array.isArray(response?.data)) throw new Error("invalid pull request data");
-    for (const pr of response.data) {
-      if (!pr || typeof pr !== "object") throw new Error("invalid pull request data");
-      if (pr.merged_at !== null && pr.merged_at !== undefined &&
-          (typeof pr.merged_at !== "string" || Number.isNaN(Date.parse(pr.merged_at)))) {
-        throw new Error("invalid pull request timestamp");
-      }
-      if (pr.number === currentPrNumber || !pr.merged_at || pr.base?.ref !== "master" ||
-          pr.user?.node_id !== authorNodeId || isBot(pr.user)) continue;
-      merged += 1;
-      if (merged >= stopAt) return merged;
-    }
-  }
-  return merged;
-}
-
-async function contributorEligibility({ github, owner, repo, author, currentPrNumber }) {
+// Every non-bot author is eligible for automatic review immediately; there is no merged-PR
+// history requirement. `github`/`owner`/`repo`/`currentPrNumber` are accepted for call-site
+// compatibility but no history lookup is performed.
+async function contributorEligibility({ author } = {}) {
   if (author?.type === "Bot" || /\[bot\]$/i.test(author?.login || "")) {
     return { status: "ineligible", reason: "bot author" };
   }
-  if (ELIGIBLE_ASSOCIATIONS.has(author?.association)) {
-    return { status: "eligible", association: author.association };
-  }
-  if (!author?.nodeId) {
-    return { status: "ineligible", reason: "bot or missing immutable author" };
-  }
-  try {
-    const merged = await qualifyingMergedPrs({
-      github, owner, repo, authorNodeId: author.nodeId, currentPrNumber, stopAt: ELIGIBLE_MERGED_PRS,
-    });
-    return { status: merged >= ELIGIBLE_MERGED_PRS ? "eligible" : "ineligible", merged };
-  } catch {
-    return { status: "unavailable", reason: "GitHub API unavailable" };
-  }
+  return { status: "eligible", association: author?.association ?? null };
 }
 
 function resolveReviewState({
@@ -374,6 +336,6 @@ module.exports = {
   GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERLAP_LABEL, OVERLAP_MARKER, OVERSIZED_REVIEW_LABEL, RISK,
   OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS,
-  contributorEligibility, qualifyingMergedPrs, resolveClassificationState,
+  contributorEligibility, resolveClassificationState,
   resolveReviewState, reviewOutcome, reviewPolicyEligible,
 };

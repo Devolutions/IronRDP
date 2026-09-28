@@ -194,9 +194,7 @@ Path rules can add `scope/core`, `scope/web`, `scope/ffi`, and `scope/tooling`.
 The classifier controls `scope/cross-cutting`, `kind/technical-debt`, and documentation-only classification.
 
 Automatic review runs for every non-draft pull request that passes the remaining gates.
-`OWNER` and `MEMBER` authors are eligible without contributor history.
-Other human authors need one qualifying merged IronRDP pull request from the same immutable author.
-A qualifying pull request is any pull request from that author merged into `master`.
+Every non-bot author is eligible immediately, including first-time contributors; there is no prior-merge requirement.
 Automatic review requires successful CI for the exact classified head.
 After the first review, a later push starts the second review when CI succeeds for that new head.
 Legitimacy triage and `ai-reviewed/2` block automatic review.

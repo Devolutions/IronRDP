@@ -2955,34 +2955,15 @@ test("owner and member authors are eligible without contributor history", async 
   }
 });
 
-test("other human authors need one same-author pull request merged into master", async () => {
+test("other human authors are eligible immediately without contributor history", async () => {
+  const unavailable = {
+    paginate: { iterator: () => { throw new Error("must not query history"); } },
+    rest: { pulls: { list: () => {} } },
+  };
   const author = { nodeId: "author", login: "author", type: "User", association: "CONTRIBUTOR" };
-  for (const candidate of [
-    pull(2, { merged_at: "2026-01-01T00:00:00Z", labels: ["trivial"] }),
-    pull(3, { merged_at: "2026-01-01T00:00:00Z", labels: ["reverted"] }),
-    pull(4, { merged_at: "2026-01-01T00:00:00Z", title: "Revert bad change" }),
-    pull(5, {
-      merged_at: "2026-01-01T00:00:00Z",
-      user: { node_id: "author", login: "renamed-author", type: "User" },
-    }),
-  ]) {
-    assert.deepEqual(await contributorEligibility({
-      github: paginated({ closed: [[candidate]] }), owner: "Devolutions", repo: "IronRDP",
-      author, currentPrNumber: 1,
-    }), { status: "eligible", merged: 1 });
-  }
-
   assert.deepEqual(await contributorEligibility({
-    github: paginated({ closed: [[
-      pull(6),
-      pull(7, { merged_at: "2026-01-01T00:00:00Z", base: { ref: "release" } }),
-      pull(8, {
-        merged_at: "2026-01-01T00:00:00Z",
-        user: { node_id: "different-author", login: "author", type: "User" },
-      }),
-    ]] }), owner: "Devolutions", repo: "IronRDP",
-    author, currentPrNumber: 1,
-  }), { status: "ineligible", merged: 0 });
+    github: unavailable, owner: "Devolutions", repo: "IronRDP", author, currentPrNumber: 1,
+  }), { status: "eligible", association: "CONTRIBUTOR" });
 });
 
 test("bot authors remain ineligible regardless of association", async () => {
