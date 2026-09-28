@@ -2,35 +2,14 @@
 
 const { encodeCheckState } = require("./validate-classifier");
 const { provenancePrefix } = require("./validate-final-review");
+const {
+  escapeMarkdown, inlineReviewCommentBody, reducedCoverageText, reviewBody,
+} = require("./review-render");
 const { reviewPolicyEligible } = require("./routing");
 const { assertCurrentHead } = require("./review-retry");
 
-const SEVERITY_EMOJI = {
-  critical: ":purple_circle:",
-  high: ":red_circle:",
-  medium: ":orange_circle:",
-  low: ":yellow_circle:",
-};
-
 class StalePolicyError extends Error {
   constructor() { super("pull request review policy changed"); this.name = "StalePolicyError"; }
-}
-
-// Model output is treated as hostile, so it is neutralized before it reaches a bot-authored
-// comment or review. HTML, code spans, mentions, and issue references are defused, and the
-// Markdown constructs that would otherwise still render as active links, images, or formatting are
-// backslash-escaped so that text such as `[label](https://example.invalid)` stays inert prose.
-function escapeMarkdown(value) {
-  return String(value).replace(/\\/g, "\\\\")
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/`/g, "&#96;")
-    .replace(/@(?=[\w-])/g, "`@`").replace(/(?<!&)#(?=\d)/g, "`#`")
-    .replace(/[[\]()!*_~|]/g, "\\$&");
-}
-
-function findingIndicator(finding) {
-  return `${finding.severity} ${SEVERITY_EMOJI[finding.severity]}` +
-    `${finding.question ? " :question:" : ""}`;
 }
 
 async function issueLabels(github, owner, repo, prNumber) {
@@ -91,24 +70,6 @@ async function deleteMarkedComment(github, owner, repo, prNumber, expectedSha, b
   return true;
 }
 
-function reviewBody(marker, review, reducedCoverage = []) {
-  const findings = review.findings.filter((finding) => finding.start_line === null).map((finding, index) => {
-    return `${index + 1}. **${provenancePrefix(finding.sources)} ${escapeMarkdown(finding.title)}** — ` +
-      `${findingIndicator(finding)} — ${escapeMarkdown(finding.path)}\n` +
-      `   ${escapeMarkdown(finding.rationale)}`;
-  }).join("\n");
-  const clean = review.findings.length === 0 ? ":green_circle: " : "";
-  const coverage = reducedCoverage.length === 0
-    ? ""
-    : `\n\nReduced coverage:${reducedCoverageText(reducedCoverage.map(escapeMarkdown))}.`;
-  return `${marker}\n\n${clean}${escapeMarkdown(review.summary)}${coverage}${findings ? `\n\n${findings}` : ""}`;
-}
-
-function reducedCoverageText(reducedCoverage) {
-  return ` optional reviewer${reducedCoverage.length === 1 ? "" : "s"} ` +
-    `${reducedCoverage.join(", ")} ${reducedCoverage.length === 1 ? "was" : "were"} unavailable`;
-}
-
 async function reviews(github, owner, repo, prNumber) {
   const result = [];
   for await (const response of github.paginate.iterator(github.rest.pulls.listReviews, {
@@ -137,8 +98,7 @@ async function publishReview(github, owner, repo, prNumber, state, botLogin, com
   const inline = review.findings.filter((finding) => finding.start_line !== null).map((finding) => {
     const comment = {
       path: finding.path, line: finding.end_line, side: "RIGHT",
-      body: `**${provenancePrefix(finding.sources)} ${escapeMarkdown(finding.title)}** — ` +
-        `${findingIndicator(finding)} — ${escapeMarkdown(finding.rationale)}`,
+      body: inlineReviewCommentBody(finding, provenancePrefix),
     };
     if (finding.start_line !== finding.end_line) {
       comment.start_line = finding.start_line;
@@ -150,7 +110,7 @@ async function publishReview(github, owner, repo, prNumber, state, botLogin, com
   assertReviewPolicy(await issueLabels(github, owner, repo, prNumber), state);
   await github.rest.pulls.createReview({
     owner, repo, pull_number: prNumber, commit_id: state.expectedSha, event: "COMMENT",
-    body: reviewBody(comment.marker, review, comment.reducedCoverage), comments: inline,
+    body: reviewBody(comment.marker, review, comment.reducedCoverage, provenancePrefix), comments: inline,
   });
   return true;
 }

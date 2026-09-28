@@ -187,11 +187,21 @@ function compileOutputValidator(schema) {
 }
 
 function containsUnpairedSurrogate(value) {
-  if (typeof value === "string") return !value.isWellFormed();
-  if (Array.isArray(value)) return value.some(containsUnpairedSurrogate);
-  return value !== null && typeof value === "object" &&
-    Object.entries(value).some(([key, entry]) =>
-      !key.isWellFormed() || containsUnpairedSurrogate(entry));
+  const pending = [value];
+  while (pending.length !== 0) {
+    const current = pending.pop();
+    if (typeof current === "string") {
+      if (!current.isWellFormed()) return true;
+    } else if (Array.isArray(current)) {
+      for (const entry of current) pending.push(entry);
+    } else if (current !== null && typeof current === "object") {
+      for (const [key, entry] of Object.entries(current)) {
+        if (!key.isWellFormed()) return true;
+        pending.push(entry);
+      }
+    }
+  }
+  return false;
 }
 
 function initialMessages(prompt, methodologies, schema) {

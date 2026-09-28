@@ -157,6 +157,11 @@ test("output validation rejects unpaired UTF-16 surrogates and accepts non-BMP t
   assert.deepEqual(dynamic(JSON.stringify({ nested: { ["\uD800"]: "accepted" } })), {
     ok: false, layer: "unicode", reason: "response contains ill-formed Unicode",
   });
+  const depth = 20_000;
+  const deeplyNested = `${'{"nested":'.repeat(depth)}"\uD800"${"}".repeat(depth)}`;
+  assert.deepEqual(dynamic(deeplyNested), {
+    ok: false, layer: "unicode", reason: "response contains ill-formed Unicode",
+  });
   assert.equal(validate(JSON.stringify({ answer: "😀" })).ok, true);
 });
 

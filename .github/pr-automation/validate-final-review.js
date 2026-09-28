@@ -5,6 +5,9 @@ const {
   normalizeText, parseJson,
   unicodeLength,
 } = require("./validation");
+const {
+  MAXIMUM_GITHUB_REVIEW_BODY_CHARACTERS, inlineReviewCommentBody, reviewBody,
+} = require("./review-render");
 const { REVIEWER_ORDER: REVIEWERS } = require("./routing");
 
 const MAXIMUM_CANDIDATES = 60;
@@ -18,6 +21,8 @@ const SEVERITIES = new Set(["critical", "high", "medium", "low"]);
 const DISPOSITIONS = new Set(["accepted", "refined", "rejected"]);
 const FINDING_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const REVIEWER_ORDER = new Map(REVIEWERS.map((reviewer, index) => [reviewer, index]));
+const MAXIMUM_REVIEW_MARKER =
+  `<!-- ironrdp-pr-automation:review:${"f".repeat(40)}:force:${"9".repeat(20)} -->`;
 
 // A rejection is both repair feedback and a published stage reason, and the runtime is the tighter
 // of the two consumers: `sanitizeReason` keeps 240 bytes of the reason for its diagnostics, and the
@@ -54,6 +59,16 @@ function sourceCategories(sources) {
 
 function provenancePrefix(sources) {
   return `[${sourceCategories(sources).join(" + ")}]`;
+}
+
+function publicationFits(review) {
+  if (reviewBody(MAXIMUM_REVIEW_MARKER, review, REVIEWERS, provenancePrefix).length >
+      MAXIMUM_GITHUB_REVIEW_BODY_CHARACTERS) return false;
+  return review.findings
+    .filter((finding) => finding.start_line !== null)
+    .every((finding) =>
+      inlineReviewCommentBody(finding, provenancePrefix).length <=
+        MAXIMUM_GITHUB_REVIEW_BODY_CHARACTERS);
 }
 
 // A repair has to find the candidate a diagnostic is about without the diagnostic quoting anything
@@ -364,6 +379,11 @@ function validateFinalReview(raw, {
     summary,
     findings,
   };
+  if (!publicationFits(normalized)) {
+    return invalid(
+      "final review exceeds GitHub's review-body limit after Markdown escaping; shorten its summary, titles, paths, or rationales",
+    );
+  }
   return { ok: true, status: "valid", value: normalized };
 }
 
@@ -384,6 +404,7 @@ function validateNormalizedFinalReview(value, expectedSha) {
       return invalid("invalid validated final review source");
     }
   }
+  if (!publicationFits(value)) return invalid("validated final review exceeds GitHub's review-body limit");
   return { ok: true, status: "valid", value };
 }
 

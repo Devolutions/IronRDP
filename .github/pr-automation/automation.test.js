@@ -1221,12 +1221,35 @@ test("maximum schema outputs stay accepted through action and review validation"
   const finalValidation = validateFinalReview(finalCandidate.value, {
     expectedSha: SHA,
     changedPaths: finalOutput.findings.map((finding) => finding.path),
+    changedLines: Object.fromEntries(
+      finalOutput.findings.map((finding) => [finding.path, [MAXIMUM_NUMBER]]),
+    ),
     specialistAggregate: maximumSpecialistAggregate(),
   });
   assert.equal(finalValidation.ok, true);
 
   assert.ok(Buffer.byteLength(JSON.stringify(finalValidation.value), "utf8") <
     1024 * 1024);
+});
+
+test("final review validation bounds the escaped GitHub publication body", () => {
+  const output = maximumFinalReview();
+  output.summary = "'".repeat(1000);
+  output.findings = output.findings.map((finding, index) => ({
+    ...finding,
+    path: `src/${String(index).padStart(3, "0")}${"'".repeat(293)}`,
+    start_line: null,
+    end_line: null,
+    title: "'".repeat(200),
+    rationale: "'".repeat(1200),
+  }));
+  const result = validateFinalReview(output, {
+    expectedSha: SHA,
+    changedPaths: output.findings.map((finding) => finding.path),
+    specialistAggregate: maximumSpecialistAggregate(),
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /exceeds GitHub's review-body limit after Markdown escaping/);
 });
 
 test("semantic validators reject unpaired UTF-16 surrogates and state GitHub integer ranges", () => {

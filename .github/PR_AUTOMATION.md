@@ -53,6 +53,7 @@ The general reviewer independently inspects the pull request, attempts to falsif
 A candidate is one entry in the findings of a reviewer the aggregate reports as valid, so a reviewer that failed or reported nothing contributes none.
 It can merge overlapping candidates and add findings that no specialist reported.
 Only the validated general-review result can be published.
+Final review validation renders the escaped GitHub review payload and rejects output above GitHub's 65,536-character review-body limit before publication.
 
 ## Reviewer output validation
 
