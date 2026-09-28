@@ -190,7 +190,8 @@ function containsUnpairedSurrogate(value) {
   if (typeof value === "string") return !value.isWellFormed();
   if (Array.isArray(value)) return value.some(containsUnpairedSurrogate);
   return value !== null && typeof value === "object" &&
-    Object.values(value).some(containsUnpairedSurrogate);
+    Object.entries(value).some(([key, entry]) =>
+      !key.isWellFormed() || containsUnpairedSurrogate(entry));
 }
 
 function initialMessages(prompt, methodologies, schema) {

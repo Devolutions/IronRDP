@@ -153,6 +153,10 @@ test("output validation rejects unpaired UTF-16 surrogates and accepts non-BMP t
       ok: false, layer: "unicode", reason: "response contains ill-formed Unicode",
     });
   }
+  const dynamic = compileOutputValidator({ type: "object" });
+  assert.deepEqual(dynamic(JSON.stringify({ nested: { ["\uD800"]: "accepted" } })), {
+    ok: false, layer: "unicode", reason: "response contains ill-formed Unicode",
+  });
   assert.equal(validate(JSON.stringify({ answer: "😀" })).ok, true);
 });
 

@@ -47,7 +47,7 @@ Schema line and pull-request numbers stop at the signed 32-bit GitHub API intege
 One specialist never receives another specialist's output.
 The validated aggregate of all selected specialists is bounded to 1 MiB, which accommodates every maximum schema-valid specialist result.
 Review payloads move between action, validation, reusable workflow, caller, and writer as workspace files and one-day artifacts rather than environment variables or job outputs.
-The classifier alone uses a direct output because its tested maximum serialized environment entry is at most 16 KiB, well below Linux's 128 KiB per-entry limit.
+The classifier alone uses a direct output because a conservatively escaped maximum schema payload stays below 32 KiB, well below Linux's 128 KiB per-entry limit.
 
 The general reviewer independently inspects the pull request, attempts to falsify every candidate, and records exactly one `accepted`, `refined`, or `rejected` disposition per candidate.
 A candidate is one entry in the findings of a reviewer the aggregate reports as valid, so a reviewer that failed or reported nothing contributes none.

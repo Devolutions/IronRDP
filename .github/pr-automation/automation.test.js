@@ -1169,8 +1169,13 @@ test("maximum schema outputs stay accepted through action and review validation"
   const classifierOutput = maximumClassifier();
   const classifierCandidate = classifierSchema(JSON.stringify(classifierOutput));
   assert.equal(classifierCandidate.ok, true);
-  assert.ok(Buffer.byteLength(`CLASSIFIER=${classifierCandidate.output}`, "utf8") <= 16 * 1024);
-  assert.ok(Buffer.byteLength(`CLASSIFIER=${classifierCandidate.output}`, "utf8") <
+  const escapedClassifier = maximumClassifier({ escaped: true });
+  escapedClassifier.overlap.similar_pr_url =
+    `https://github.com/Devolutions/IronRDP/pull/${"1".repeat(156)}`;
+  const escapedClassifierCandidate = classifierSchema(JSON.stringify(escapedClassifier));
+  assert.equal(escapedClassifierCandidate.ok, true);
+  assert.ok(Buffer.byteLength(`CLASSIFIER=${escapedClassifierCandidate.output}`, "utf8") <= 32 * 1024);
+  assert.ok(Buffer.byteLength(`CLASSIFIER=${escapedClassifierCandidate.output}`, "utf8") <
     MAXIMUM_LINUX_ENVIRONMENT_ENTRY_BYTES);
   assert.equal(validateClassifier(classifierCandidate.value, {
     expectedSha: SHA,
