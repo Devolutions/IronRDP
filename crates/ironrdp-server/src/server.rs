@@ -2054,15 +2054,17 @@ impl RdpServer {
     /// belongs to the SESSION just replaced, keeping only the small set of
     /// lifecycle/control events meant to survive across connections.
     ///
-    /// Called immediately before serving a preemption winner. The channel is
-    /// shared across every connection the server ever serves and is read by
-    /// whichever connection drains it next -- so any event the outgoing
-    /// session produced but never got around to consuming (its OWN eviction
-    /// notice, a queued clipboard message, an RDPSND wave, an EGFX frame)
-    /// would otherwise be delivered to its replacement. That is at best stale
-    /// (an audio wave from a session that no longer exists) and at worst a
-    /// real leak (the previous peer's clipboard content, handed unprompted to
-    /// the client that just replaced it).
+    /// Called before every connection starts negotiating, and immediately
+    /// before serving a preemption winner. The channel is shared across every
+    /// connection the server ever serves and is read by whichever connection
+    /// drains it next -- so any event the outgoing session produced but never
+    /// got around to consuming (its OWN eviction notice, a queued clipboard
+    /// message, an RDPSND wave, an EGFX frame) would otherwise be delivered to
+    /// its replacement. That is at best stale (an audio wave from a session
+    /// that no longer exists), at worst a real leak (the previous peer's
+    /// clipboard content, handed unprompted to the client that just replaced
+    /// it) or a broken connection (an EGFX frame on a dynamic channel the new
+    /// client has not opened yet).
     ///
     /// An ALLOWLIST of what to KEEP, not a denylist of `EvictedByOtherConnection`
     /// alone, and deliberately so: this mirrors what `run()`'s own top-level
@@ -2261,6 +2263,14 @@ impl RdpServer {
         // here also covers backends that share an externally-created Arc via
         // `set_display_suppressed_handle()`.
         self.display_suppressed.store(false, Ordering::Relaxed);
+
+        // A session that ended mid-send leaves what it had queued but not
+        // consumed on the server-global channel. A client reconnecting within
+        // milliseconds, before `run()`'s idle loop drains it or with no such
+        // loop at all when an embedder drives connections itself, was sent
+        // the previous session's EGFX frame as its first write, on a dynamic
+        // channel it had not opened yet, and dropped the connection.
+        self.discard_stale_session_events().await;
 
         let size = self.display.lock().await.size().await;
         let monitor_count = self.display.lock().await.monitor_count().await;
@@ -5591,6 +5601,42 @@ mod preempt_tests {
         assert!(
             matches!(&remaining[0], ServerEvent::Quit(reason) if reason == "keep me"),
             "the surviving event should be the Quit, not the discarded per-session event: {remaining:?}"
+        );
+    }
+
+    /// Events the previous session left queued never reach the next
+    /// connection, including one an embedder drives through `run_connection`
+    /// without `run()`'s idle loop in between.
+    #[tokio::test]
+    async fn a_new_connection_starts_without_the_previous_sessions_events() {
+        let mut server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+
+        let sender = server.event_sender().clone();
+        let _ = sender.send(ServerEvent::AutoDetectRttRequest);
+        let _ = sender.send(ServerEvent::Quit("keep me".to_owned()));
+
+        // The client is already gone, so negotiation fails at once; the
+        // discard happens before it starts.
+        let (stream, client) = tokio::io::duplex(64);
+        drop(client);
+        let _ = server.run_connection(stream).await;
+
+        let remaining = {
+            let mut rx = server.ev_receiver.lock().await;
+            let mut events = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                events.push(event);
+            }
+            events
+        };
+        assert!(
+            matches!(remaining.as_slice(), [ServerEvent::Quit(reason)] if reason == "keep me"),
+            "only the lifecycle event should be left: {remaining:?}"
         );
     }
 
