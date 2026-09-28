@@ -1,8 +1,8 @@
 "use strict";
 
 const {
-  MAXIMUM_GITHUB_INTEGER, REPO_PATH, SHA, exactKeys, invalid, isBoundedArray, linesAreValidated,
-  normalizeText, parseJson,
+  MAXIMUM_GITHUB_INTEGER, REPO_PATH, SHA, exactKeys, invalid, isBoundedArray, linesAreInRange,
+  linesAreValidated, normalizeText, parseJson,
   unicodeLength,
 } = require("./validation");
 const {
@@ -263,10 +263,7 @@ function normalizeFinding(finding, changedPaths, changedLines, dispositions, ref
     return rejected(`start_line and end_line must be between 1 and ${MAXIMUM_GITHUB_INTEGER}`);
   }
   const linesAreNull = finding.start_line === null && finding.end_line === null;
-  const linesAreIntegers = Number.isSafeInteger(finding.start_line) && finding.start_line >= 1 &&
-    finding.start_line <= MAXIMUM_GITHUB_INTEGER &&
-    Number.isSafeInteger(finding.end_line) && finding.end_line >= finding.start_line &&
-    finding.end_line <= MAXIMUM_GITHUB_INTEGER;
+  const linesAreIntegers = linesAreInRange(finding.start_line, finding.end_line);
   if (!linesAreNull && !linesAreIntegers) {
     return rejected("start_line and end_line must both be null or integers with end_line at or after start_line");
   }
@@ -423,10 +420,7 @@ function validateNormalizedFinalReview(value, expectedShaOrContext) {
       return invalid("invalid validated final review finding");
     }
     const linesAreNull = finding.start_line === null && finding.end_line === null;
-    const linesAreIntegers = Number.isSafeInteger(finding.start_line) && finding.start_line >= 1 &&
-      finding.start_line <= MAXIMUM_GITHUB_INTEGER &&
-      Number.isSafeInteger(finding.end_line) && finding.end_line >= finding.start_line &&
-      finding.end_line <= MAXIMUM_GITHUB_INTEGER;
+    const linesAreIntegers = linesAreInRange(finding.start_line, finding.end_line);
     if (!linesAreNull && (!linesAreIntegers ||
         (changedLines && !linesAreValidated(
           finding.path, finding.start_line, finding.end_line, changedLines)))) {

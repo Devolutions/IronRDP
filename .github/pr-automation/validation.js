@@ -44,6 +44,11 @@ function isBoundedArray(value, maximum) {
   return Array.isArray(value) && value.length <= maximum;
 }
 
+function linesAreInRange(start, end) {
+  return Number.isSafeInteger(start) && start >= 1 && start <= MAXIMUM_GITHUB_INTEGER &&
+    Number.isSafeInteger(end) && end >= start && end <= MAXIMUM_GITHUB_INTEGER;
+}
+
 function linesAreValidated(path, start, end, changedLines) {
   const lines = changedLines instanceof Map ? changedLines.get(path) : changedLines?.[path];
   const changed = lines instanceof Set ? lines :
@@ -55,6 +60,6 @@ function linesAreValidated(path, start, end, changedLines) {
 
 module.exports = {
   MAXIMUM_GITHUB_INTEGER, REPO_PATH, SHA,
-  exactKeys, invalid, isBoundedArray, isPlainObject, linesAreValidated, normalizeText, parseJson,
-  unicodeLength,
+  exactKeys, invalid, isBoundedArray, isPlainObject, linesAreInRange, linesAreValidated,
+  normalizeText, parseJson, unicodeLength,
 };

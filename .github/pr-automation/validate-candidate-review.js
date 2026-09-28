@@ -1,8 +1,8 @@
 "use strict";
 
 const {
-  MAXIMUM_GITHUB_INTEGER, REPO_PATH, SHA, exactKeys, invalid, linesAreValidated, normalizeText,
-  parseJson,
+  MAXIMUM_GITHUB_INTEGER, REPO_PATH, SHA, exactKeys, invalid, linesAreInRange, linesAreValidated,
+  normalizeText, parseJson,
   unicodeLength,
 } = require("./validation");
 const { REVIEWER_ORDER: REVIEWERS } = require("./routing");
@@ -68,10 +68,7 @@ function normalizeCandidateReview(raw, {
       return invalid(`candidate finding lines must be between 1 and ${MAXIMUM_GITHUB_INTEGER}`);
     }
     const linesAreNull = finding.start_line === null && finding.end_line === null;
-    const linesAreIntegers = Number.isSafeInteger(finding.start_line) && finding.start_line >= 1 &&
-      finding.start_line <= MAXIMUM_GITHUB_INTEGER &&
-      Number.isSafeInteger(finding.end_line) && finding.end_line >= finding.start_line &&
-      finding.end_line <= MAXIMUM_GITHUB_INTEGER;
+    const linesAreIntegers = linesAreInRange(finding.start_line, finding.end_line);
     if (!linesAreNull && !linesAreIntegers) return invalid("invalid candidate finding lines");
 
     const references = [];

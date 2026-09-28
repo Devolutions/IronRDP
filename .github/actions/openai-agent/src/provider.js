@@ -118,8 +118,8 @@ class RuntimeMetrics {
     this.toolResultBytes += Buffer.byteLength(String(result), "utf8");
   }
 
-  recordProviderFailure(error) {
-    const code = providerErrorCode(error);
+  recordProviderFailure(diagnostic) {
+    const code = diagnostic?.providerCode;
     if (code !== undefined) this.providerErrorCode = code;
   }
 

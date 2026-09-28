@@ -3532,7 +3532,7 @@ test("the review validator turns correctable model errors into targeted repair f
     }), /must cite a path changed by this pull request/],
     [candidateReview("skeptical", {
       findings: [candidateFinding({ start_line: 9, end_line: 4 })],
-    }), /must use integer lines with end_line at or after start_line/],
+    }), /must use lines between 1 and 2147483647 with end_line at or after start_line/],
     [candidateReview("skeptical", {
       findings: [candidateFinding({ references: [{
         protocol_id: "MS-RDPBCGR", section: "2.2.1", heading: "Heading",

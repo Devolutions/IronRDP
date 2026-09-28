@@ -95,7 +95,7 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       toolCallCount = error.toolCallCount;
       outputRepairCount = error.outputRepairCount;
       const diagnostic = providerFailureDiagnostic(error.cause);
-      metrics.recordProviderFailure(error.cause);
+      metrics.recordProviderFailure(diagnostic);
       if (error.cause) {
         core.info(JSON.stringify({
           event: "openai-agent.provider-failure",
