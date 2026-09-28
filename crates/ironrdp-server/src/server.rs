@@ -5,6 +5,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::time::Duration;
 #[cfg(feature = "usb")]
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -387,6 +388,10 @@ pub enum ConnectionPolicy {
     /// `CANDIDATE_NEGOTIATION_TIMEOUT`.
     Preempt,
 }
+
+/// Tunnel payloads held while a Soft-Sync response is pending; beyond this the
+/// client is sending far more than the handful of messages the race allows.
+const MAX_EARLY_TUNNEL_PAYLOADS: usize = 64;
 
 #[derive(Clone)]
 #[non_exhaustive]
@@ -838,6 +843,11 @@ pub struct RdpServer {
     /// Whether the current connection's EGFX data has started going over the
     /// sideband transport, so the switch is logged once.
     egfx_on_udp: bool,
+    /// Tunnel payloads that arrived while a Soft-Sync request was waiting for
+    /// its response. The client writes on the tunnel right after sending the
+    /// response over TCP, so its first tunnel data can overtake it; this holds
+    /// that data until the response is in instead of dropping it.
+    early_tunnel_payloads: VecDeque<Vec<u8>>,
 }
 
 /// Cloneable handle for updating the Server Auto-Reconnect Cookie while
@@ -1552,6 +1562,7 @@ impl RdpServer {
             soft_sync_negotiated: false,
             udp_migration_allowed: false,
             egfx_on_udp: false,
+            early_tunnel_payloads: VecDeque::new(),
         }
     }
 
@@ -2133,11 +2144,6 @@ impl RdpServer {
     ///
     /// Equivalent to [`run_connection_with`](Self::run_connection_with) with
     /// [`TransportTls::Managed`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if the server was built with `with_udp_transport` and this is
-    /// not driven inside a [`tokio::task::LocalSet`].
     pub async fn run_connection<S>(&mut self, stream: S) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
@@ -2218,11 +2224,6 @@ impl RdpServer {
     /// under [`TransportTls::AlreadyDone`] is that after the negotiation reaches
     /// the security-upgrade gate, no TLS handshake is performed on the byte
     /// stream, because the caller's stream is already past TLS at a lower layer.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the server was built with `with_udp_transport` and this is
-    /// not driven inside a [`tokio::task::LocalSet`].
     pub async fn run_connection_with<S>(&mut self, stream: S, tls: TransportTls) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
@@ -2346,11 +2347,6 @@ impl RdpServer {
 
     /// Bind the configured address and serve RDP connections until
     /// [`ServerEvent::Quit`] is received or the event channel closes.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the server was built with `with_udp_transport` and this is
-    /// not driven inside a [`tokio::task::LocalSet`].
     pub async fn run(&mut self) -> ServerResult<()> {
         // Create socket with control over options before binding.
         // Using TcpSocket instead of TcpListener::bind() allows setting
@@ -2767,6 +2763,10 @@ impl RdpServer {
         self.static_channels.get_channel_id_by_type::<T>()
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "private per-connection dispatch; the parameters are the connection's negotiated identifiers and transports"
+    )]
     async fn dispatch_pdu(
         &mut self,
         action: Action,
@@ -2775,6 +2775,7 @@ impl RdpServer {
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
+        udp_transport: Option<&multitransport::UdpTransportHandle>,
     ) -> ServerResult<RunState> {
         match action {
             Action::FastPath => {
@@ -2784,7 +2785,14 @@ impl RdpServer {
 
             Action::X224 => {
                 if self
-                    .handle_x224(writer, io_channel_id, user_channel_id, message_channel_id, &bytes)
+                    .handle_x224(
+                        writer,
+                        io_channel_id,
+                        user_channel_id,
+                        message_channel_id,
+                        &bytes,
+                        udp_transport,
+                    )
                     .await?
                 {
                     debug!("Got disconnect request");
@@ -3509,11 +3517,14 @@ impl RdpServer {
                 Err(error) => trace!(%error, "No Soft-Sync request sent"),
             }
 
-            // Only once the client has acknowledged: pushing frame data onto
-            // the tunnel before the client processed the request would land
-            // on a receive path it has not set up yet.
-            route_over_udp = drdynvc.soft_sync_response_received()
-                && drdynvc.tunnel_for_outgoing_channel(egfx_dvc_id) == Some(dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP);
+            // From the request on, not from the client's response: The request
+            // carries SOFT_SYNC_TCP_FLUSHED, "no more data will be sent over
+            // TCP for the specified DVCs" (MS-RDPEDYC 2.2.5.1), and the server
+            // MUST keep using the tunnel it named immediately after sending it
+            // (3.3.5.3.1). The client does not read the tunnel until the
+            // request has arrived (3.2.5.3.1), so data that overtakes it waits.
+            route_over_udp =
+                drdynvc.tunnel_for_outgoing_channel(egfx_dvc_id) == Some(dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP);
 
             if route_over_udp {
                 if !self.egfx_on_udp {
@@ -3553,6 +3564,82 @@ impl RdpServer {
             .map_err(|e| ServerError::io("write_all", e))
     }
 
+    /// Writes DRDYNVC output, sending the data of any channel the Soft-Sync
+    /// request moved over the tunnel and everything else over TCP.
+    ///
+    /// Once the request is sent the server MUST keep using the tunnel it named
+    /// for those channels (MS-RDPEDYC 3.3.5.3.1), and that covers a channel's
+    /// replies to the client as well as data the server sends unprompted.
+    /// Without a live tunnel everything goes over TCP.
+    async fn write_drdynvc_output(
+        &mut self,
+        messages: Vec<ironrdp_svc::SvcMessage>,
+        writer: &mut impl FramedWrite,
+        drdynvc_channel_id: u16,
+        user_channel_id: u16,
+        udp_transport: Option<&multitransport::UdpTransportHandle>,
+    ) -> ServerResult<()> {
+        let mut over_tcp = Vec::with_capacity(messages.len());
+        match (udp_transport, self.get_svc_processor::<dvc::DrdynvcServer>()) {
+            (Some(udp_transport), Some(drdynvc)) => {
+                for message in messages {
+                    let payload = message.encode_unframed_pdu().map_err(ServerError::encode)?;
+                    let tunneled = match decode::<dvc::pdu::DrdynvcServerPdu>(&payload) {
+                        Ok(dvc::pdu::DrdynvcServerPdu::Data(data)) => {
+                            drdynvc.tunnel_for_outgoing_channel(data.channel_id())
+                                == Some(dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP)
+                        }
+                        _ => false,
+                    };
+                    if tunneled {
+                        udp_transport.send(payload).await;
+                    } else {
+                        over_tcp.push(message);
+                    }
+                }
+            }
+            _ => over_tcp = messages,
+        }
+
+        if over_tcp.is_empty() {
+            return Ok(());
+        }
+        let data =
+            server_encode_svc_messages(over_tcp, drdynvc_channel_id, user_channel_id).map_err(ServerError::encode)?;
+        writer
+            .write_all(&data)
+            .await
+            .map_err(|e| ServerError::io("write drdynvc output", e))?;
+        Ok(())
+    }
+
+    /// Feeds tunnel payloads held back by [`Self::dispatch_udp_tunnel_payload`]
+    /// through, in arrival order, once the Soft-Sync response they were
+    /// waiting on has been processed.
+    async fn replay_early_tunnel_payloads(
+        &mut self,
+        writer: &mut impl FramedWrite,
+        user_channel_id: u16,
+        udp_transport: Option<&multitransport::UdpTransportHandle>,
+    ) -> ServerResult<()> {
+        if self.early_tunnel_payloads.is_empty()
+            || !self
+                .get_svc_processor::<dvc::DrdynvcServer>()
+                .is_some_and(|drdynvc| drdynvc.soft_sync_response_received())
+        {
+            return Ok(());
+        }
+        debug!(
+            count = self.early_tunnel_payloads.len(),
+            "Soft-Sync response received, processing the tunnel payloads held for it"
+        );
+        while let Some(payload) = self.early_tunnel_payloads.pop_front() {
+            self.dispatch_udp_tunnel_payload(&payload, writer, user_channel_id, udp_transport)
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Decodes and dispatches one payload received over the sideband UDP
     /// transport (MS-RDPEMT TunnelData): raw DRDYNVC bytes, per
     /// [`dvc::DrdynvcServer::process_tunnel`]. Any resulting response
@@ -3568,6 +3655,7 @@ impl RdpServer {
         payload: &[u8],
         writer: &mut impl FramedWrite,
         user_channel_id: u16,
+        udp_transport: Option<&multitransport::UdpTransportHandle>,
     ) -> ServerResult<RunState> {
         // A single guard: `get_channel_id_by_type` and `get_svc_processor`
         // both key off the same registered processor's `TypeId`, so one
@@ -3582,6 +3670,23 @@ impl RdpServer {
             return Ok(RunState::Continue);
         };
 
+        // MS-RDPEDYC 3.3.5.3.2: the server MUST NOT begin to read tunnel data
+        // until the Soft-Sync response has arrived. Hold it rather than drop
+        // it; `replay_early_tunnel_payloads` feeds it through once the
+        // response is in.
+        if drdynvc.soft_sync_awaiting_response() {
+            if self.early_tunnel_payloads.len() < MAX_EARLY_TUNNEL_PAYLOADS {
+                trace!(
+                    len = payload.len(),
+                    "Holding a tunnel payload until the Soft-Sync response arrives"
+                );
+                self.early_tunnel_payloads.push_back(payload.to_vec());
+            } else {
+                warn!("Too many tunnel payloads ahead of the Soft-Sync response, dropping one");
+            }
+            return Ok(RunState::Continue);
+        }
+
         let messages = match drdynvc.process_tunnel(payload) {
             Ok(messages) => messages,
             Err(error) => {
@@ -3594,12 +3699,8 @@ impl RdpServer {
             return Ok(RunState::Continue);
         }
 
-        let data =
-            server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id).map_err(ServerError::encode)?;
-        writer
-            .write_all(&data)
-            .await
-            .map_err(|e| ServerError::io("write tunnel response", e))?;
+        self.write_drdynvc_output(messages, writer, drdynvc_channel_id, user_channel_id, udp_transport)
+            .await?;
 
         Ok(RunState::Continue)
     }
@@ -3638,6 +3739,7 @@ impl RdpServer {
         let mut heartbeat_writer = writer.clone();
         let mut udp_tunnel_writer = writer.clone();
         let udp_transport_for_events = Rc::clone(&udp_transport);
+        let udp_transport_for_pdus = Rc::clone(&udp_transport);
         let write_counter = writer.write_counter();
         let ev_receiver = Arc::clone(&self.ev_receiver);
         let s = Rc::new(Mutex::new(self));
@@ -3658,6 +3760,7 @@ impl RdpServer {
                 let lock_wait_ms = u64::try_from(lock_start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
                 let dispatch_start = Instant::now();
+                let current_udp_transport = udp_transport_for_pdus.borrow().clone();
                 let result = this
                     .dispatch_pdu(
                         action,
@@ -3666,6 +3769,7 @@ impl RdpServer {
                         io_channel_id,
                         user_channel_id,
                         message_channel_id,
+                        current_udp_transport.as_ref(),
                     )
                     .await?;
                 let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -3882,11 +3986,13 @@ impl RdpServer {
                 }
             }
 
+            // This future is the cell's only writer, so the handle cannot
+            // change under the loop below.
+            let current = udp_transport.borrow().clone();
+            let Some(transport) = current else {
+                return core::future::pending::<ServerResult<RunState>>().await;
+            };
             loop {
-                let current = udp_transport.borrow().clone();
-                let Some(transport) = current else {
-                    return core::future::pending::<ServerResult<RunState>>().await;
-                };
                 let Some(payload) = transport.recv().await else {
                     debug!("UDP transport closed, continuing TCP-only for the rest of the session");
                     // Without this, `dispatch_egfx_messages` would keep seeing
@@ -3898,7 +4004,7 @@ impl RdpServer {
                 };
                 let mut this = this.lock().await;
                 let result = this
-                    .dispatch_udp_tunnel_payload(&payload, &mut udp_tunnel_writer, user_channel_id)
+                    .dispatch_udp_tunnel_payload(&payload, &mut udp_tunnel_writer, user_channel_id, Some(&transport))
                     .await?;
                 match result {
                     RunState::Continue => continue,
@@ -3985,12 +4091,15 @@ impl RdpServer {
 
         if !result.input_events.is_empty() {
             debug!("Handling input event backlog from acceptor sequence");
+            // Set on a reactivation pass, where EGFX may already be on the tunnel.
+            let current_udp_transport = udp_transport.borrow().clone();
             self.handle_input_backlog(
                 writer,
                 result.io_channel_id,
                 result.user_channel_id,
                 result.message_channel_id,
                 result.input_events,
+                current_udp_transport.as_ref(),
             )
             .await?;
         }
@@ -4197,6 +4306,7 @@ impl RdpServer {
         user_channel_id: u16,
         message_channel_id: Option<u16>,
         frames: Vec<Vec<u8>>,
+        udp_transport: Option<&multitransport::UdpTransportHandle>,
     ) -> ServerResult<()> {
         for frame in frames {
             match Action::from_fp_output_header(frame[0]) {
@@ -4207,7 +4317,14 @@ impl RdpServer {
 
                 Ok(Action::X224) => {
                     let _ = self
-                        .handle_x224(writer, io_channel_id, user_channel_id, message_channel_id, &frame)
+                        .handle_x224(
+                            writer,
+                            io_channel_id,
+                            user_channel_id,
+                            message_channel_id,
+                            &frame,
+                            udp_transport,
+                        )
                         .await;
                 }
 
@@ -4398,6 +4515,7 @@ impl RdpServer {
         user_channel_id: u16,
         message_channel_id: Option<u16>,
         frame: &[u8],
+        udp_transport: Option<&multitransport::UdpTransportHandle>,
     ) -> ServerResult<bool> {
         let message = decode::<X224<mcs::McsMessage<'_>>>(frame).map_err(ServerError::decode)?;
         match message.0 {
@@ -4421,12 +4539,25 @@ impl RdpServer {
                     let response_pdus = svc
                         .process(&data.user_data)
                         .map_err_kind("svc process", ServerErrorKind::Pdu)?;
-                    let response = server_encode_svc_messages(response_pdus, data.channel_id, user_channel_id)
-                        .map_err(ServerError::encode)?;
-                    writer
-                        .write_all(&response)
-                        .await
-                        .map_err(|e| ServerError::io("write svc response", e))?;
+                    if self.get_channel_id_by_type::<dvc::DrdynvcServer>() == Some(data.channel_id) {
+                        self.write_drdynvc_output(
+                            response_pdus,
+                            writer,
+                            data.channel_id,
+                            user_channel_id,
+                            udp_transport,
+                        )
+                        .await?;
+                        self.replay_early_tunnel_payloads(writer, user_channel_id, udp_transport)
+                            .await?;
+                    } else {
+                        let response = server_encode_svc_messages(response_pdus, data.channel_id, user_channel_id)
+                            .map_err(ServerError::encode)?;
+                        writer
+                            .write_all(&response)
+                            .await
+                            .map_err(|e| ServerError::io("write svc response", e))?;
+                    }
                 } else {
                     warn!(channel_id = data.channel_id, "Unexpected channel received: ID",);
                 }
@@ -4492,6 +4623,7 @@ impl RdpServer {
         self.soft_sync_negotiated = false;
         self.udp_migration_allowed = false;
         self.egfx_on_udp = false;
+        self.early_tunnel_payloads.clear();
 
         let udp_bind_addr = self
             .opts
@@ -4544,12 +4676,8 @@ impl RdpServer {
                         return;
                     };
                     // Spawned rather than awaited inline: See the comment on
-                    // `pending_udp_accept`'s declaration above. `spawn_local`
-                    // needs the caller to drive the server inside a
-                    // `LocalSet`, a requirement documented on
-                    // `RdpServerBuilder::with_udp_transport` and on each
-                    // entry point that reaches this.
-                    pending_udp_accept = Some(task::spawn_local(async move {
+                    // `pending_udp_accept`'s declaration above.
+                    pending_udp_accept = Some(task::spawn(async move {
                         multitransport::accept(udp_bind_addr, tls_config, &request).await
                     }));
                 },
