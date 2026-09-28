@@ -5689,7 +5689,7 @@ mod cliprdr_error_tests {
 
         let mut writer = CapturingWriter::default();
         let state = server
-            .dispatch_server_events(&mut events, &mut writer, 1003, 1002, None)
+            .dispatch_server_events(&mut events, &mut writer, 1003, 1002, None, None)
             .await
             .expect("a refused clipboard message must not surface as a session error");
 
