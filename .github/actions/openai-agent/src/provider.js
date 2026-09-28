@@ -10,6 +10,28 @@ const SAFE_DIAGNOSTIC_VALUE = /^[A-Za-z0-9._:-]{1,128}$/;
 const UNSAFE_REASON_CHARACTER = /[^A-Za-z0-9 #.,:;()/_-]+/g;
 const RESPONSE_BODY_MONITOR = Symbol("response-body-monitor");
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const STREAM_STRUCTURAL_VIOLATIONS = new Set([
+  "choice-delta-invalid",
+  "choice-index-invalid",
+  "choice-index-missing-multiple",
+  "choice-invalid",
+  "choice-missing",
+  "chunk-invalid",
+  "delta-value-invalid",
+  "finish-reason-invalid",
+  "post-finish",
+  "role-invalid",
+  "sse-json-invalid",
+  "stream-structure-invalid",
+  "tool-call-function-invalid",
+  "tool-call-index-gap",
+  "tool-call-index-invalid",
+  "tool-call-index-missing-fragmented",
+  "tool-call-index-missing-multiple",
+  "tool-call-index-mixed",
+  "tool-call-invalid",
+  "tool-calls-invalid",
+]);
 
 function providerErrorCode(error) {
   return [
@@ -35,6 +57,7 @@ class RuntimeMetrics {
     this.attemptCount = 0;
     this.toolResultBytes = 0;
     this.providerErrorCode = undefined;
+    this.streamStructuralViolation = undefined;
   }
 
   beginRequest(activity, request) {
@@ -106,6 +129,13 @@ class RuntimeMetrics {
     if (code !== undefined) this.providerErrorCode = code;
   }
 
+  recordStreamStructuralViolation(violation) {
+    if (this.streamStructuralViolation === undefined &&
+        STREAM_STRUCTURAL_VIOLATIONS.has(violation)) {
+      this.streamStructuralViolation = violation;
+    }
+  }
+
   // A rejected output attempt is the only evidence left of why a stage exhausted its repairs, so it
   // is kept as bounded telemetry rather than being reduced to the exhaustion itself.
   recordOutputRejection({ activity, layer, reason }) {
@@ -146,6 +176,9 @@ class RuntimeMetrics {
       tokenUsage: usage,
       providerAttempts,
       ...(this.providerErrorCode === undefined ? {} : { providerErrorCode: this.providerErrorCode }),
+      ...(this.streamStructuralViolation === undefined
+        ? {}
+        : { streamStructuralViolation: this.streamStructuralViolation }),
       ...(this.outputRejections.length === 0
         ? {}
         : { outputRejections: this.outputRejections }),

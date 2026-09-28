@@ -75,6 +75,15 @@ test("response monitor counts raw body bytes before parsing", async () => {
   assert.equal(monitor.failure instanceof ResponseBodySizeError, true);
 });
 
+test("stream structural diagnostics use a closed first-write-wins vocabulary", () => {
+  const metrics = new RuntimeMetrics();
+  metrics.recordStreamStructuralViolation("MODEL_STREAM_SECRET_SENTINEL");
+  assert.equal(metrics.snapshot().streamStructuralViolation, undefined);
+  metrics.recordStreamStructuralViolation("choice-index-invalid");
+  metrics.recordStreamStructuralViolation("tool-call-index-mixed");
+  assert.equal(metrics.snapshot().streamStructuralViolation, "choice-index-invalid");
+});
+
 test("runtime metrics retain activity and mark partial usage incomplete", async () => {
   const metrics = new RuntimeMetrics(() => 0);
   const requestBody = { model: "test", messages: [{ role: "user", content: "prompt" }] };

@@ -38,6 +38,7 @@ The idle limit begins before the first response byte and resets only when the re
 The raw-stream limit includes framing bytes before the SDK parses server-sent events.
 
 The action assembles reasoning, content, usage, finish reason, and indexed tool-call fragments independently.
+An omitted choice index is accepted only for a single-choice chunk, and one complete index-less tool-call envelope is accepted only when the response contains no indexed fragments.
 Every accepted stream carries a terminal finish reason so cleanly truncated responses are retried rather than accepted.
 Missing optional reasoning or usage metadata makes diagnostics incomplete but does not invalidate otherwise acceptable text.
 
@@ -99,5 +100,7 @@ Expose these bounded diagnostics:
 - Token usage and whether it is complete.
 - Accumulated turn and tool-call counts, including on failure.
 - Every rejected output attempt with its validation layer and sanitized reason.
+- The first stream structural violation as a closed static value with no provider data.
 
 Diagnostics and logs never expose credentials, prompts, repository evidence, tool arguments, tool results, reasoning, model content, or raw provider errors.
+Stream structural diagnostics use only a closed static vocabulary.
