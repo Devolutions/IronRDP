@@ -2973,6 +2973,14 @@ test("bot authors remain ineligible regardless of association", async () => {
   }), { status: "ineligible", reason: "bot author" });
 });
 
+test("a missing or malformed author identity fails closed instead of eligible", async () => {
+  for (const author of [undefined, null, {}, { association: "CONTRIBUTOR" }]) {
+    assert.deepEqual(await contributorEligibility({
+      github: paginated({}), owner: "Devolutions", repo: "IronRDP", author, currentPrNumber: 1,
+    }), { status: "unavailable", reason: "missing author identity" });
+  }
+});
+
 // ---- reviewer stage recovery, reporting, and metrics ----
 
 function trustedFile(root, name, value) {

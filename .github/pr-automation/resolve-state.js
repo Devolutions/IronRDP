@@ -207,12 +207,17 @@ function resolveClassificationState({
 
 // Every non-bot author is eligible for automatic review immediately; there is no merged-PR
 // history requirement. `github`/`owner`/`repo`/`currentPrNumber` are accepted for call-site
-// compatibility but no history lookup is performed.
+// compatibility but no history lookup is performed. Author identity is required to distinguish a
+// bot from a human at all: a missing/null `user` (both `login` and `type` absent) cannot be
+// classified, so it reports unavailable rather than eligible.
 async function contributorEligibility({ author } = {}) {
-  if (author?.type === "Bot" || /\[bot\]$/i.test(author?.login || "")) {
+  if (typeof author?.login !== "string" && typeof author?.type !== "string") {
+    return { status: "unavailable", reason: "missing author identity" };
+  }
+  if (author.type === "Bot" || /\[bot\]$/i.test(author.login || "")) {
     return { status: "ineligible", reason: "bot author" };
   }
-  return { status: "eligible", association: author?.association ?? null };
+  return { status: "eligible", association: author.association ?? null };
 }
 
 function resolveReviewState({

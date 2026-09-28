@@ -76,8 +76,7 @@ When a review reports findings, the next step belongs to the contributor, even a
 Once `ai-reviewed/2` is set, classification applies the label on the next push, when the outstanding findings are presumed addressed.
 Apply it earlier only when automation stops and needs maintainer intervention.
 
-`OWNER` and `MEMBER` authors are always eligible.
-Other authors need one pull request from the same immutable human author merged into `master`.
+Every non-bot author is eligible immediately; there is no prior-merge requirement.
 
 Block review for likely non-legitimate changes.
 Label a suspected overlap with another pull request at confidence 0.85 or greater as `triage/overlap`, and keep it advisory: it never blocks review and never asks for maintainer handoff on its own.
