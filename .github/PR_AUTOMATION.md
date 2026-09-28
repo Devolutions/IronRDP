@@ -147,7 +147,7 @@ The configured request timeout bounds individual network attempts and non-succes
 A known response-body transport failure that escapes SDK retries is categorized as a stage-recoverable connection failure.
 Strict provider JSON Schema mode is opt-in only for a configured supported endpoint; local validation always remains enforced.
 It reports safe activity, deterministic logical-call and HTTP-attempt indices, request and tool-result byte counts, retry and repair counts, finish reason, available token usage with completeness state, bounded provider error codes, and machine-readable terminal or transient failure categories through one diagnostics output.
-The current non-streaming transport applies its 1 MiB assistant-content fallback after the provider response arrives.
+The current non-streaming transport applies its 1 MiB model-message-content fallback after the provider response arrives.
 
 The action exposes no command execution, writes, Git operations, GitHub APIs, environment access, arbitrary network access, or generic URL fetching.
 It logs bounded metadata only and never logs prompts, pull request content, tool arguments, tool results, model responses, provider response bodies, or credentials.

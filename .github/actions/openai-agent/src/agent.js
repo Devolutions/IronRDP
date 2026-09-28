@@ -5,7 +5,7 @@ const { APIConnectionError, APIConnectionTimeoutError } = require("openai");
 
 const { ActionError, fail } = require("./errors");
 const {
-  DEFAULT_OUTPUT_REPAIRS, MAX_ASSISTANT_CONTENT_BYTES, MAX_TOOL_ARGUMENT_BYTES,
+  DEFAULT_OUTPUT_REPAIRS, MAX_MODEL_MESSAGE_CONTENT_BYTES, MAX_TOOL_ARGUMENT_BYTES,
 } = require("./limits");
 const { providerErrorCode, sanitizeReason } = require("./provider");
 
@@ -149,8 +149,8 @@ function compileOutputValidator(schema) {
     if (typeof raw !== "string" || raw.length === 0) {
       return { ok: false, layer: "empty", reason: "response was empty" };
     }
-    if (Buffer.byteLength(raw, "utf8") > MAX_ASSISTANT_CONTENT_BYTES) {
-      return { ok: false, layer: "size", reason: "response exceeded the assistant-content byte limit" };
+    if (Buffer.byteLength(raw, "utf8") > MAX_MODEL_MESSAGE_CONTENT_BYTES) {
+      return { ok: false, layer: "size", reason: "model message content exceeded the byte limit" };
     }
     let value;
     try {
@@ -170,9 +170,9 @@ function compileOutputValidator(schema) {
       };
     }
     const output = JSON.stringify(value);
-    if (Buffer.byteLength(output, "utf8") > MAX_ASSISTANT_CONTENT_BYTES) {
+    if (Buffer.byteLength(output, "utf8") > MAX_MODEL_MESSAGE_CONTENT_BYTES) {
       return {
-        ok: false, layer: "size", reason: "response exceeded the assistant-content byte limit", value,
+        ok: false, layer: "size", reason: "model message content exceeded the byte limit", value,
       };
     }
     return { ok: true, output, value };
@@ -421,8 +421,8 @@ function firstMessage(response) {
     throw new AgentFailure("provider response was malformed", { category: "provider-response" });
   }
   if (typeof message.content === "string" &&
-      Buffer.byteLength(message.content, "utf8") > MAX_ASSISTANT_CONTENT_BYTES) {
-    throw new AgentFailure("assistant content exceeded byte limit", { category: "provider-response" });
+      Buffer.byteLength(message.content, "utf8") > MAX_MODEL_MESSAGE_CONTENT_BYTES) {
+    throw new AgentFailure("model message content exceeded byte limit", { category: "provider-response" });
   }
   return {
     role: "assistant",

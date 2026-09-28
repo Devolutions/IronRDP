@@ -1,8 +1,8 @@
 ## Terms
 
-- **Logical model call:** one invocation of the provider client for the current conversation.
+- **Logical model call:** one invocation of the provider client for the current message history.
 - **HTTP attempt:** one network request made for a logical model call.
-- **Request retry:** an additional HTTP attempt for the same logical model call after a transient failure, without changing the conversation.
+- **Request retry:** an additional HTTP attempt for the same logical model call after a transient failure, without changing the message history.
 - **Output repair:** ask the model to correct an invalid response using validation feedback and the existing investigation context.
 
 ## Inputs
@@ -54,8 +54,7 @@ Prefer the OpenAI SDK for `Retry-After` handling and request retries (`maxRetrie
 ## Output validation and repair
 
 - Every configured output schema bounds its accepted serialized representation.
-- The current transport is non-streaming, so the implementation-level 1 MiB assistant-content ceiling is checked only after a response arrives.
-- PR 2 may move that resource ceiling into the response transport.
+- Reject model message content above 1 MiB before JSON parsing so malformed output cannot enter validation or message history without a resource bound.
 - Use provider-enforced schema output where supported, otherwise JSON mode where supported.
 - Accept validators only from trusted caller configuration, never from untrusted evidence or model output.
 - Validate JSON and schema locally, then run the supplied validator.

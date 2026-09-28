@@ -134,14 +134,14 @@ test("runtime rejects malformed tool call envelopes", async () => {
   );
 });
 
-test("runtime applies its assistant-content fallback only after non-streamed text arrives", async () => {
+test("runtime applies its model-message-content fallback only after non-streamed text arrives", async () => {
   const requests = [];
   await assert.rejects(
     runAgent({
       client: clientFrom([message("x".repeat(1024 * 1024 + 1))], requests),
       config: baseConfig, methodologies: [], prompt: "p", sandbox, schema,
     }),
-    (error) => error.reason === "assistant content exceeded byte limit" && error.turnCount === 1,
+    (error) => error.reason === "model message content exceeded byte limit" && error.turnCount === 1,
   );
   assert.equal(requests.length, 1);
 });

@@ -8,6 +8,7 @@ const {
 const { SHA, exactKeys, invalid, normalizeText } = require("./validation");
 const { normalizeStageMetrics } = require("./review-report");
 
+// Covers all schema-valid specialist results while bounding the artifact read by the general reviewer.
 const MAXIMUM_SPECIALIST_AGGREGATE_BYTES = 1024 * 1024;
 
 function validateSpecialistRun(raw, {
