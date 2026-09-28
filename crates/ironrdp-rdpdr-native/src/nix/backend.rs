@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ffi::CString;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsFd, AsRawFd};
@@ -15,7 +16,7 @@ use ironrdp_svc::SvcMessage;
 use nix::dir::{Dir, OwningIter};
 use tracing::{debug, warn};
 
-use super::printer::{PrintTarget, PrinterSpooler};
+use super::printer::{PrintTarget, PrinterSpooler, unsupported_response, write_response};
 
 #[derive(Debug, Default)]
 pub struct NixRdpdrBackend {
@@ -25,7 +26,13 @@ pub struct NixRdpdrBackend {
     file_path_map: std::collections::HashMap<u32, String>,
     file_dir_map: std::collections::HashMap<u32, OwningIter>,
     /// Print-job handling for the virtual printer, when one is announced.
-    printer: Option<PrinterSpooler>,
+    printer: Option<Printer>,
+}
+
+#[derive(Debug)]
+struct Printer {
+    device_id: u32,
+    spooler: PrinterSpooler,
 }
 
 impl NixRdpdrBackend {
@@ -36,10 +43,14 @@ impl NixRdpdrBackend {
         }
     }
 
-    /// Accepts print jobs for the announced virtual printer and sends them to `target`.
+    /// Accepts print jobs for the virtual printer announced as `device_id` and sends them to
+    /// `target`.
     #[must_use]
-    pub fn with_printer(mut self, target: PrintTarget) -> Self {
-        self.printer = Some(PrinterSpooler::new(target));
+    pub fn with_printer(mut self, device_id: u32, target: PrintTarget) -> Self {
+        self.printer = Some(Printer {
+            device_id,
+            spooler: PrinterSpooler::new(target),
+        });
         self
     }
 }
@@ -49,7 +60,10 @@ impl_as_any!(NixRdpdrBackend);
 /// Builds a [`NixRdpdrBackend`] for every RDPDR channel lifetime.
 ///
 /// `drives` are announced as redirected folders; `printer` announces a virtual
-/// printer named after the client, whose jobs go to the given target.
+/// printer named after the client, whose jobs go to the given target. Drive
+/// device IDs must be unique and nonzero, and the printer takes the highest ID
+/// no drive uses; [`RdpdrBackendFactory::build_rdpdr_backend`] reports a
+/// configuration that breaks this with a [`NixRdpdrBackendFactoryError`].
 #[derive(Debug, Clone)]
 pub struct NixRdpdrBackendFactory {
     file_base: String,
@@ -79,35 +93,88 @@ impl NixRdpdrBackendFactory {
     }
 }
 
-/// Device id of the virtual printer; drives use the ids given to [`NixRdpdrBackendFactory::with_drive`].
-pub const PRINTER_DEVICE_ID: u32 = 0x0001_0000;
+/// The device ID the virtual printer takes unless a drive uses it.
+const DEFAULT_PRINTER_DEVICE_ID: u32 = u32::MAX - 1;
 
 impl RdpdrBackendFactory for NixRdpdrBackendFactory {
     fn build_rdpdr_backend(&self) -> RdpdrBackendFactoryResult<RdpdrBackendProduct> {
-        let mut backend = NixRdpdrBackend::new(self.file_base.clone());
-        if let Some((_, target)) = &self.printer {
-            backend = backend.with_printer(target.clone());
+        let mut device_ids = HashSet::with_capacity(self.drives.len());
+        for (device_id, _) in &self.drives {
+            if *device_id == 0 {
+                return Err(Box::new(NixRdpdrBackendFactoryError::ReservedDeviceId));
+            }
+            if !device_ids.insert(*device_id) {
+                return Err(Box::new(NixRdpdrBackendFactoryError::DuplicateDeviceId(*device_id)));
+            }
         }
+
+        let mut backend = NixRdpdrBackend::new(self.file_base.clone());
+        let mut printer = None;
+        if let Some((name, target)) = &self.printer {
+            let mut device_id = DEFAULT_PRINTER_DEVICE_ID;
+            while device_ids.contains(&device_id) {
+                device_id = device_id
+                    .checked_sub(1)
+                    .filter(|device_id| *device_id != 0)
+                    .ok_or(NixRdpdrBackendFactoryError::NoPrinterDeviceId)?;
+            }
+            backend = backend.with_printer(device_id, target.clone());
+            printer = Some(RdpdrPrinter::new(
+                device_id,
+                name.clone(),
+                DEFAULT_PRINTER_DRIVER_NAME.to_owned(),
+            ));
+        }
+
         let drives = self
             .drives
             .iter()
             .map(|(id, name)| RdpdrDrive::new(*id, name.clone()))
             .collect();
         let mut product = RdpdrBackendProduct::new(Box::new(backend), drives);
-        if let Some((name, _)) = &self.printer {
-            product = product.with_printer(RdpdrPrinter::new(
-                PRINTER_DEVICE_ID,
-                name.clone(),
-                DEFAULT_PRINTER_DRIVER_NAME.to_owned(),
-            ));
+        if let Some(printer) = printer {
+            product = product.with_printer(printer);
         }
         Ok(product)
     }
 }
 
+/// Invalid [`NixRdpdrBackendFactory`] configuration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NixRdpdrBackendFactoryError {
+    /// A drive used device ID 0.
+    ReservedDeviceId,
+    /// More than one drive used the same device ID.
+    DuplicateDeviceId(u32),
+    /// The drives use every device ID the printer could take.
+    NoPrinterDeviceId,
+}
+
+impl core::fmt::Display for NixRdpdrBackendFactoryError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::ReservedDeviceId => f.write_str("RDPDR device ID 0 is reserved"),
+            Self::DuplicateDeviceId(device_id) => write!(f, "duplicate RDPDR device ID {device_id}"),
+            Self::NoPrinterDeviceId => f.write_str("no RDPDR device ID is available for the printer"),
+        }
+    }
+}
+
+impl core::error::Error for NixRdpdrBackendFactoryError {}
+
 impl RdpdrBackend for NixRdpdrBackend {
+    fn reset(&mut self) -> PduResult<()> {
+        if let Some(printer) = self.printer.as_mut() {
+            printer.spooler.reset();
+        }
+        Ok(())
+    }
     fn handle_server_device_announce_response(&mut self, pdu: ServerDeviceAnnounceResponse) -> PduResult<()> {
-        if pdu.device_id == PRINTER_DEVICE_ID {
+        if self
+            .printer
+            .as_ref()
+            .is_some_and(|printer| printer.device_id == pdu.device_id)
+        {
             if pdu.result_code == NtStatus::SUCCESS {
                 tracing::info!("The server accepted the redirected printer");
             } else {
@@ -118,18 +185,14 @@ impl RdpdrBackend for NixRdpdrBackend {
     }
     fn handle_printer_io_request(&mut self, req: PrinterIoRequest) -> PduResult<Vec<SvcMessage>> {
         match self.printer.as_mut() {
-            Some(spooler) => spooler.handle(req),
-            None => Ok(vec![SvcMessage::from(RdpdrPdu::DeviceCloseResponse(
-                DeviceCloseResponse {
-                    device_io_response: DeviceIoResponse::new(req.into_device_io_request(), NtStatus::NOT_SUPPORTED),
-                },
-            ))]),
+            Some(printer) => printer.spooler.handle(req),
+            None => Ok(vec![SvcMessage::from(unsupported_response(req))]),
         }
     }
     fn reject_printer_write(&mut self, req: DeviceIoRequest) -> PduResult<Vec<SvcMessage>> {
         match self.printer.as_mut() {
-            Some(spooler) => spooler.reject_write(req),
-            None => Err(ironrdp_pdu::pdu_other_err!("no printer announced")),
+            Some(printer) => printer.spooler.reject_write(req),
+            None => Ok(vec![SvcMessage::from(write_response(req, 0, NtStatus::NOT_SUPPORTED))]),
         }
     }
     fn handle_scard_call(
@@ -894,5 +957,45 @@ pub(crate) fn process_dependent_file(
     match backend.file_map.get_mut(&request.file_id) {
         None => error_fx(request),
         Some(file) => fx(file, request),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn build_error(factory: &NixRdpdrBackendFactory) -> NixRdpdrBackendFactoryError {
+        let Err(error) = factory.build_rdpdr_backend() else {
+            panic!("the factory accepted an invalid configuration");
+        };
+        *error
+            .downcast_ref::<NixRdpdrBackendFactoryError>()
+            .expect("a factory configuration error")
+    }
+
+    #[test]
+    fn the_factory_rejects_reserved_and_duplicate_drive_ids() {
+        let factory = NixRdpdrBackendFactory::new("/tmp".to_owned());
+        assert_eq!(
+            build_error(&factory.clone().with_drive(0, "zero".to_owned())),
+            NixRdpdrBackendFactoryError::ReservedDeviceId
+        );
+        assert_eq!(
+            build_error(&factory.with_drive(1, "a".to_owned()).with_drive(1, "b".to_owned())),
+            NixRdpdrBackendFactoryError::DuplicateDeviceId(1)
+        );
+    }
+
+    #[test]
+    fn the_printer_takes_an_id_no_drive_uses() {
+        let product = NixRdpdrBackendFactory::new("/tmp".to_owned())
+            .with_drive(DEFAULT_PRINTER_DEVICE_ID, "taken".to_owned())
+            .with_printer("printer".to_owned(), PrintTarget::DefaultPrinter)
+            .build_rdpdr_backend()
+            .expect("valid configuration");
+        assert_eq!(
+            product.printer().expect("printer").device_id(),
+            DEFAULT_PRINTER_DEVICE_ID - 1
+        );
     }
 }
