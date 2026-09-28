@@ -99,9 +99,12 @@ const DEFAULT_PRINTER_DEVICE_ID: u32 = u32::MAX - 1;
 impl RdpdrBackendFactory for NixRdpdrBackendFactory {
     fn build_rdpdr_backend(&self) -> RdpdrBackendFactoryResult<RdpdrBackendProduct> {
         let mut device_ids = HashSet::with_capacity(self.drives.len());
-        for (device_id, _) in &self.drives {
+        for (device_id, name) in &self.drives {
             if *device_id == 0 {
                 return Err(Box::new(NixRdpdrBackendFactoryError::ReservedDeviceId));
+            }
+            if !is_valid_device_name(name) {
+                return Err(Box::new(NixRdpdrBackendFactoryError::InvalidDriveName(*device_id)));
             }
             if !device_ids.insert(*device_id) {
                 return Err(Box::new(NixRdpdrBackendFactoryError::DuplicateDeviceId(*device_id)));
@@ -111,6 +114,9 @@ impl RdpdrBackendFactory for NixRdpdrBackendFactory {
         let mut backend = NixRdpdrBackend::new(self.file_base.clone());
         let mut printer = None;
         if let Some((name, target)) = &self.printer {
+            if !is_valid_device_name(name) {
+                return Err(Box::new(NixRdpdrBackendFactoryError::InvalidPrinterName));
+            }
             let mut device_id = DEFAULT_PRINTER_DEVICE_ID;
             while device_ids.contains(&device_id) {
                 device_id = device_id
@@ -139,6 +145,12 @@ impl RdpdrBackendFactory for NixRdpdrBackendFactory {
     }
 }
 
+/// Device names are announced as NUL-terminated strings, so an empty name or one with an embedded
+/// NUL would reach the server empty or cut short.
+fn is_valid_device_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains('\0')
+}
+
 /// Invalid [`NixRdpdrBackendFactory`] configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NixRdpdrBackendFactoryError {
@@ -148,6 +160,10 @@ pub enum NixRdpdrBackendFactoryError {
     DuplicateDeviceId(u32),
     /// The drives use every device ID the printer could take.
     NoPrinterDeviceId,
+    /// The drive with this device ID has an empty name or one with an embedded NUL.
+    InvalidDriveName(u32),
+    /// The printer has an empty name or one with an embedded NUL.
+    InvalidPrinterName,
 }
 
 impl core::fmt::Display for NixRdpdrBackendFactoryError {
@@ -156,6 +172,13 @@ impl core::fmt::Display for NixRdpdrBackendFactoryError {
             Self::ReservedDeviceId => f.write_str("RDPDR device ID 0 is reserved"),
             Self::DuplicateDeviceId(device_id) => write!(f, "duplicate RDPDR device ID {device_id}"),
             Self::NoPrinterDeviceId => f.write_str("no RDPDR device ID is available for the printer"),
+            Self::InvalidDriveName(device_id) => {
+                write!(
+                    f,
+                    "RDPDR drive {device_id} has an empty name or one with an embedded NUL"
+                )
+            }
+            Self::InvalidPrinterName => f.write_str("the RDPDR printer has an empty name or one with an embedded NUL"),
         }
     }
 }
@@ -983,6 +1006,23 @@ mod tests {
         assert_eq!(
             build_error(&factory.with_drive(1, "a".to_owned()).with_drive(1, "b".to_owned())),
             NixRdpdrBackendFactoryError::DuplicateDeviceId(1)
+        );
+    }
+
+    #[test]
+    fn the_factory_rejects_empty_and_nul_names() {
+        let factory = NixRdpdrBackendFactory::new("/tmp".to_owned());
+        assert_eq!(
+            build_error(&factory.clone().with_drive(1, String::new())),
+            NixRdpdrBackendFactoryError::InvalidDriveName(1)
+        );
+        assert_eq!(
+            build_error(&factory.clone().with_drive(2, "home\0x".to_owned())),
+            NixRdpdrBackendFactoryError::InvalidDriveName(2)
+        );
+        assert_eq!(
+            build_error(&factory.with_printer(String::new(), PrintTarget::DefaultPrinter)),
+            NixRdpdrBackendFactoryError::InvalidPrinterName
         );
     }
 

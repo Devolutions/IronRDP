@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::io::{Read as _, Write as _};
+use std::io::{Read, Write as _};
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -182,16 +182,20 @@ impl PrinterSpooler {
 
     fn close(&mut self, request: DeviceIoRequest) -> RdpdrPdu {
         let file_id = request.file_id;
-        if !self.abandoned.remove(&file_id)
-            && let Some(Job { spool, file, bytes }) = self.jobs.remove(&file_id)
-        {
-            drop(file);
-            if bytes == 0 {
-                debug!(?spool, "Empty print job discarded");
-                let _ = std::fs::remove_file(spool);
-            } else {
-                self.queue_submission(FinishedJob { spool, bytes });
-            }
+        if self.abandoned.remove(&file_id) {
+            return close_response(request, NtStatus::SUCCESS);
+        }
+        // MS-RDPEFS 3.1.5.2: a FileId that no open job owns, such as one already closed, is
+        // answered with STATUS_UNSUCCESSFUL.
+        let Some(Job { spool, file, bytes }) = self.jobs.remove(&file_id) else {
+            return close_response(request, NtStatus::UNSUCCESSFUL);
+        };
+        drop(file);
+        if bytes == 0 {
+            debug!(?spool, "Empty print job discarded");
+            let _ = std::fs::remove_file(spool);
+        } else {
+            self.queue_submission(FinishedJob { spool, bytes });
         }
         close_response(request, NtStatus::SUCCESS)
     }
@@ -305,6 +309,9 @@ fn print(job: &FinishedJob, destination: Option<&str>) {
             return;
         }
     };
+    // The pipes are drained while lp runs, so output beyond the pipe buffer cannot block it.
+    let stdout = child.stdout.take().and_then(drain);
+    let stderr = child.stderr.take().and_then(drain);
     let deadline = Instant::now() + LP_TIMEOUT;
     let status = loop {
         match child.try_wait() {
@@ -324,19 +331,26 @@ fn print(job: &FinishedJob, destination: Option<&str>) {
             }
         }
     };
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_string(&mut stdout);
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_string(&mut stderr);
-    }
+    let stdout = stdout.and_then(|reader| reader.join().ok()).unwrap_or_default();
+    let stderr = stderr.and_then(|reader| reader.join().ok()).unwrap_or_default();
     if status.success() {
         info!(bytes = job.bytes, "Print job handed to lp: {}", stdout.trim());
     } else {
         warn!("lp refused the print job ({}); the job is discarded", stderr.trim());
     }
+}
+
+/// Reads `pipe` to its end on a thread of its own. Without the thread, the pipe is dropped,
+/// which a writer sees as a closed pipe rather than a block.
+fn drain<R: Read + Send + 'static>(mut pipe: R) -> Option<JoinHandle<String>> {
+    std::thread::Builder::new()
+        .name("ironrdp-print-lp-output".to_owned())
+        .spawn(move || {
+            let mut output = String::new();
+            let _ = pipe.read_to_string(&mut output);
+            output
+        })
+        .ok()
 }
 
 /// Copies the spooled job into `dir` under a readable name.
@@ -542,6 +556,29 @@ mod tests {
             panic!("expected a write response");
         };
         assert_eq!(response.length, 0);
+    }
+
+    #[test]
+    fn closing_a_file_id_that_is_not_open_fails() {
+        let mut spooler = PrinterSpooler::new(PrintTarget::DefaultPrinter);
+        let file_id = open_job(&mut spooler);
+        let status = |pdu| match pdu {
+            RdpdrPdu::DeviceCloseResponse(response) => response.device_io_response.io_status,
+            other => panic!("expected a close response, got {other:?}"),
+        };
+        assert_eq!(
+            status(spooler.close(io(file_id, MajorFunction::Close))),
+            NtStatus::SUCCESS
+        );
+        assert_eq!(
+            status(spooler.close(io(file_id, MajorFunction::Close))),
+            NtStatus::UNSUCCESSFUL,
+            "a second close of the same job"
+        );
+        assert_eq!(
+            status(spooler.close(io(u32::MAX, MajorFunction::Close))),
+            NtStatus::UNSUCCESSFUL
+        );
     }
 
     #[test]
