@@ -439,16 +439,102 @@ fn bracketed_measurements_are_paced_and_never_overlap() {
     complete_bracket(&mut mgr, &next, 1_010);
 }
 
-/// Once the session has large writes to measure across, the tick window (which
-/// times idle stretches as well as traffic) stops opening.
+/// While large writes keep coming, the tick window (which times idle stretches
+/// as well as traffic) stays closed.
 #[test]
-fn the_tick_window_retires_after_a_bracketed_measurement() {
+fn the_tick_window_stays_closed_while_brackets_recur() {
+    let mut mgr = AutoDetectManager::new();
+    for round in 0..16u64 {
+        let now_ms = round * 1_000;
+        let start = mgr.begin_bandwidth_measure(64 * 1024, now_ms).expect("measured");
+        complete_bracket(&mut mgr, &start, now_ms + 10);
+        for _ in 0..4 {
+            assert!(mgr.build_bandwidth_measure().is_none());
+        }
+    }
+}
+
+/// A session that stops sending large writes, such as one whose only large
+/// frame was the initial render, goes back to the tick window rather than
+/// keeping the last bracketed figure forever.
+#[test]
+fn the_tick_window_resumes_when_brackets_stop() {
     let mut mgr = AutoDetectManager::new();
     let start = mgr.begin_bandwidth_measure(64 * 1024, 0).expect("measured");
     complete_bracket(&mut mgr, &start, 10);
+    assert!(
+        mgr.build_bandwidth_measure().is_none(),
+        "not on the tick right after a bracket"
+    );
+    drive_bandwidth_start_and_stop(&mut mgr);
+}
+
+/// A bracketed Start whose Stop is never sent does not block bandwidth
+/// measurement for the rest of the session.
+#[test]
+fn an_unended_bracket_expires() {
+    let mut mgr = AutoDetectManager::new();
+    let _ = mgr.begin_bandwidth_measure(64 * 1024, 0).expect("measured");
+    mgr.expire_stale_probes(29_999, 30_000);
+    assert!(
+        mgr.begin_bandwidth_measure(64 * 1024, 29_999).is_none(),
+        "still pending before the maximum age"
+    );
+    mgr.expire_stale_probes(30_000, 30_000);
+    let next = mgr
+        .begin_bandwidth_measure(64 * 1024, 30_000)
+        .expect("a new bracket once the stale one expired");
+    complete_bracket(&mut mgr, &next, 30_010);
+}
+
+/// A Stop the client never answers does not block bandwidth measurement for
+/// the rest of the session, and results that arrive after it expired are not
+/// taken as a measurement.
+#[test]
+fn an_unanswered_measurement_expires() {
+    let mut mgr = AutoDetectManager::new();
+    let sequence = drive_bandwidth_start_and_stop(&mut mgr);
+    // The tick has no clock, so the first expiry pass stamps the measurement.
+    mgr.expire_stale_probes(1_000, 30_000);
+    mgr.expire_stale_probes(30_999, 30_000);
+    assert!(
+        mgr.begin_bandwidth_measure(64 * 1024, 30_999).is_none(),
+        "still pending before the maximum age"
+    );
+    mgr.expire_stale_probes(31_000, 30_000);
+    let late = AutoDetectResponse::BandwidthMeasureResults {
+        sequence_number: sequence,
+        response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
+        time_delta_ms: 2,
+        byte_count: 20_000,
+    };
+    assert_eq!(mgr.handle_response(&late, 31_010), AutoDetectOutcome::Unmatched);
+    drive_bandwidth_start_and_stop(&mut mgr);
+}
+
+/// A tick window stays open across ticks however far apart they are: only the
+/// wait for results after its Stop is timed.
+#[test]
+fn a_slow_tick_window_is_not_cut_short() {
+    let mut mgr = AutoDetectManager::new();
+    let mut now_ms = 0;
+    let mut start_sequence = None;
     for _ in 0..MAX_BANDWIDTH_TICKS {
-        assert!(mgr.build_bandwidth_measure().is_none());
+        now_ms += 20_000;
+        mgr.expire_stale_probes(now_ms, 30_000);
+        match (start_sequence, mgr.build_bandwidth_measure()) {
+            (_, None) => {}
+            (None, Some(AutoDetectRequest::BandwidthMeasureStart { sequence_number, .. })) => {
+                start_sequence = Some(sequence_number);
+            }
+            (Some(start), Some(AutoDetectRequest::BandwidthMeasureStop { sequence_number, .. })) => {
+                assert_eq!(sequence_number, start);
+                return;
+            }
+            (_, Some(other)) => panic!("unexpected {other:?}"),
+        }
     }
+    panic!("the tick window never sent its Stop");
 }
 
 /// Two consecutive measurements landing on the identical kbps figure (plausible on a

@@ -79,9 +79,15 @@ pub struct AutoDetectManager {
     bandwidth_kbps: Option<u32>,
     /// Counts RTT ticks to pace bandwidth measurements (see [`BW_MEASURE_INTERVAL_TICKS`]).
     bw_tick_count: u32,
-    /// When the last bracketed measurement began. Once set, the session has
-    /// graphics writes to measure across and the tick window stops opening.
+    /// When the last bracketed measurement began, for pacing brackets.
     last_bracket_start_ms: Option<u64>,
+    /// When the pending bracketed measurement began, or when a tick-window
+    /// measurement started waiting for its results, so
+    /// [`expire_stale_probes()`](Self::expire_stale_probes) can give up on one
+    /// the client never answers. A tick window's wait is stamped by the first
+    /// expiry pass that sees it, since the tick has no clock; the open window
+    /// before its Stop closes itself and is never timed.
+    bw_pending_since_ms: Option<u64>,
     /// When the last Network Characteristics Result was built, for pacing.
     last_netchar_result_ms: Option<u64>,
     /// Lowest RTT observed over the whole session, for the wire `baseRTT`.
@@ -144,6 +150,7 @@ impl AutoDetectManager {
             bandwidth_kbps: None,
             bw_tick_count: 0,
             last_bracket_start_ms: None,
+            bw_pending_since_ms: None,
             last_netchar_result_ms: None,
             rtt_is_fresh: false,
             bandwidth_is_fresh: false,
@@ -158,8 +165,7 @@ impl AutoDetectManager {
     /// header ([MS-RDPBCGR] 2.2.14.3). `now_ms` is recorded as the send time
     /// and is what [`handle_response()`](Self::handle_response) measures against.
     pub fn send_rtt_request(&mut self, now_ms: u64) -> AutoDetectRequest {
-        let seq = self.next_sequence;
-        self.next_sequence = seq.wrapping_add(1);
+        let seq = self.allocate_sequence();
         self.pending_probes.push((seq, now_ms));
         AutoDetectRequest::rtt_continuous(seq)
     }
@@ -186,6 +192,8 @@ impl AutoDetectManager {
             }) => {
                 if *ticks_remaining == 0 {
                     let sequence = *sequence;
+                    // Timed from here: the open window closes itself on the tick count.
+                    self.bw_pending_since_ms = None;
                     self.pending_bw = Some(PendingBandwidth::AwaitingResults { sequence });
                     return Some(AutoDetectRequest::bw_stop_continuous(sequence));
                 }
@@ -193,14 +201,13 @@ impl AutoDetectManager {
                 None
             }
             Some(PendingBandwidth::AwaitingResults { .. } | PendingBandwidth::Bracketing { .. }) => None,
-            None if self.last_bracket_start_ms.is_some() => None,
             None => {
                 self.bw_tick_count = self.bw_tick_count.wrapping_add(1);
                 if !self.bw_tick_count.is_multiple_of(BW_MEASURE_INTERVAL_TICKS) {
                     return None;
                 }
-                let seq = self.next_sequence;
-                self.next_sequence = seq.wrapping_add(1);
+                let seq = self.allocate_sequence();
+                self.bw_pending_since_ms = None;
                 self.pending_bw = Some(PendingBandwidth::Open {
                     sequence: seq,
                     ticks_remaining: BW_WINDOW_TICKS,
@@ -224,10 +231,11 @@ impl AutoDetectManager {
     ///
     /// Returns `None` for a write smaller than [`BW_BRACKET_MIN_BYTES`], while
     /// another measurement is outstanding, and within
-    /// [`BW_BRACKET_MIN_INTERVAL_MS`] of the previous bracketed Start. The
-    /// first successful call also retires the tick window of
-    /// [`build_bandwidth_measure()`](Self::build_bandwidth_measure) for the
-    /// rest of the session.
+    /// `BW_BRACKET_MIN_INTERVAL_MS` of the previous bracketed Start. Each
+    /// successful call also holds off the tick window of
+    /// [`build_bandwidth_measure()`](Self::build_bandwidth_measure) for another
+    /// `BW_MEASURE_INTERVAL_TICKS` ticks, so it only measures while no large
+    /// writes are coming.
     pub fn begin_bandwidth_measure(&mut self, write_len: usize, now_ms: u64) -> Option<AutoDetectRequest> {
         if write_len < BW_BRACKET_MIN_BYTES || self.pending_bw.is_some() {
             return None;
@@ -238,8 +246,9 @@ impl AutoDetectManager {
             }
         }
         self.last_bracket_start_ms = Some(now_ms);
-        let sequence = self.next_sequence;
-        self.next_sequence = sequence.wrapping_add(1);
+        self.bw_tick_count = 0;
+        let sequence = self.allocate_sequence();
+        self.bw_pending_since_ms = Some(now_ms);
         self.pending_bw = Some(PendingBandwidth::Bracketing { sequence });
         Some(AutoDetectRequest::bw_start_continuous(sequence))
     }
@@ -305,8 +314,7 @@ impl AutoDetectManager {
         self.rtt_is_fresh = false;
         self.bandwidth_is_fresh = false;
 
-        let seq = self.next_sequence;
-        self.next_sequence = seq.wrapping_add(1);
+        let seq = self.allocate_sequence();
         Some(AutoDetectRequest::netchar_result(
             seq,
             base_rtt_ms,
@@ -349,7 +357,12 @@ impl AutoDetectManager {
 
                 AutoDetectOutcome::Rtt(rtt_ms)
             }
-            AutoDetectResponse::BandwidthMeasureResults { sequence_number, .. } => {
+            AutoDetectResponse::BandwidthMeasureResults {
+                sequence_number,
+                time_delta_ms,
+                byte_count,
+                ..
+            } => {
                 let awaiting = matches!(
                     self.pending_bw,
                     Some(PendingBandwidth::AwaitingResults { sequence }) if sequence == *sequence_number
@@ -358,11 +371,12 @@ impl AutoDetectManager {
                     return AutoDetectOutcome::Unmatched;
                 }
                 self.pending_bw = None;
+                self.bw_pending_since_ms = None;
                 // A transaction that completes without a usable figure clears the
                 // previous one rather than leaving it in place, so a run of failures
                 // withholds the result (see `build_netchar_result`) instead of
                 // reporting an increasingly stale bandwidth.
-                self.bandwidth_kbps = measured_bandwidth_kbps(response);
+                self.bandwidth_kbps = measured_bandwidth_kbps(*time_delta_ms, *byte_count);
                 if self.bandwidth_kbps.is_some() {
                     self.bandwidth_is_fresh = true;
                 }
@@ -420,13 +434,45 @@ impl AutoDetectManager {
         self.bandwidth_kbps
     }
 
-    /// Discard probes older than `max_age_ms` to prevent unbounded growth.
+    /// Discard probes older than `max_age_ms` to prevent unbounded growth, and
+    /// give up on a bandwidth measurement that has waited that long.
+    ///
+    /// A measurement is otherwise only finished by the client's results, or for
+    /// a bracketed one by [`end_bandwidth_measure()`](Self::end_bandwidth_measure)
+    /// first, so a client that never answers or a Stop that is never sent would
+    /// stop bandwidth measurement for the rest of the session. A tick window
+    /// that is still open is left alone, since it sends its own Stop. Results
+    /// that arrive after this are unmatched.
     ///
     /// `now_ms` is on the same clock passed to
     /// [`send_rtt_request()`](Self::send_rtt_request).
     pub fn expire_stale_probes(&mut self, now_ms: u64, max_age_ms: u64) {
         self.pending_probes
             .retain(|(_, sent_at_ms)| now_ms.saturating_sub(*sent_at_ms) < max_age_ms);
+
+        if !matches!(
+            self.pending_bw,
+            Some(PendingBandwidth::Bracketing { .. } | PendingBandwidth::AwaitingResults { .. })
+        ) {
+            self.bw_pending_since_ms = None;
+            return;
+        }
+        match self.bw_pending_since_ms {
+            None => self.bw_pending_since_ms = Some(now_ms),
+            Some(since) if now_ms.saturating_sub(since) >= max_age_ms => {
+                self.pending_bw = None;
+                self.bw_pending_since_ms = None;
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Returns the sequence number for the next request and advances the
+    /// counter, wrapping at `u16::MAX`.
+    fn allocate_sequence(&mut self) -> u16 {
+        let sequence = self.next_sequence;
+        self.next_sequence = sequence.wrapping_add(1);
+        sequence
     }
 }
 
@@ -436,19 +482,11 @@ impl AutoDetectManager {
 /// The client's timer has millisecond resolution, so a burst that crosses a
 /// fast link within one millisecond reports a zero time. That is a real
 /// measurement, bounded below by one millisecond, not a failed one.
-fn measured_bandwidth_kbps(response: &AutoDetectResponse) -> Option<u32> {
-    let AutoDetectResponse::BandwidthMeasureResults {
-        time_delta_ms,
-        byte_count,
-        ..
-    } = response
-    else {
-        return None;
-    };
-    if *byte_count == 0 {
+fn measured_bandwidth_kbps(time_delta_ms: u32, byte_count: u32) -> Option<u32> {
+    if byte_count == 0 {
         return None;
     }
-    let kbps = u64::from(*byte_count) * 8 / u64::from((*time_delta_ms).max(1));
+    let kbps = u64::from(byte_count) * 8 / u64::from(time_delta_ms.max(1));
     Some(u32::try_from(kbps).unwrap_or(u32::MAX))
 }
 

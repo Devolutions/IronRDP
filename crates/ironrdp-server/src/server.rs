@@ -3441,10 +3441,10 @@ impl RdpServer {
                                 .map_err(|e| ServerError::io("write_all", e))?;
                         }
 
-                        // Until a large graphics write has been bracketed (see the Egfx
-                        // arm), measure bandwidth over a window of ticks: Start on one,
-                        // Stop several later, with ordinary traffic in between counted by
-                        // the client, then a Bandwidth Measure Results PDU in reply. Until
+                        // While no large graphics write has been bracketed recently (see
+                        // the Egfx arm), measure bandwidth over a window of ticks: Start on
+                        // one, Stop several later, with ordinary traffic in between counted
+                        // by the client, then a Bandwidth Measure Results PDU in reply. Until
                         // one has completed there is no characteristics result to send.
                         if let Some(pdu) = ad.build_bandwidth_measure() {
                             let data = encode_autodetect_request(pdu, message_channel_id, user_channel_id)?;
@@ -3589,39 +3589,34 @@ impl RdpServer {
         // go out back to back on the same stream, so the client times a
         // burst rather than whatever idle stretch a fixed window happens
         // to span.
-        let bracket = match (self.autodetect.as_mut(), message_channel_id) {
-            (Some(ad), Some(message_channel_id)) => ad
-                .begin_bandwidth_measure(data.len(), monotonic_now_ms())
-                .map(|start| (start, message_channel_id)),
-            _ => None,
-        };
-        let bracket_channel_id = match bracket {
-            Some((start, message_channel_id)) => {
-                let start = encode_autodetect_request(start, message_channel_id, user_channel_id)?;
-                writer
-                    .write_all(&start)
-                    .await
-                    .map_err(|e| ServerError::io("write_all", e))?;
-                Some(message_channel_id)
-            }
-            None => None,
+        let bracket_channel_id = if let (Some(ad), Some(message_channel_id)) =
+            (self.autodetect.as_mut(), message_channel_id)
+            && let Some(start) = ad.begin_bandwidth_measure(data.len(), monotonic_now_ms())
+        {
+            let start = encode_autodetect_request(start, message_channel_id, user_channel_id)?;
+            writer
+                .write_all(&start)
+                .await
+                .map_err(|e| ServerError::io("write_all", e))?;
+            Some(message_channel_id)
+        } else {
+            None
         };
         writer
             .write_all(&data)
             .await
             .map_err(|e| ServerError::io("write_all", e))?;
-        if let Some(message_channel_id) = bracket_channel_id {
-            if let Some(stop) = self
+        if let Some(message_channel_id) = bracket_channel_id
+            && let Some(stop) = self
                 .autodetect
                 .as_mut()
                 .and_then(AutoDetectManager::end_bandwidth_measure)
-            {
-                let stop = encode_autodetect_request(stop, message_channel_id, user_channel_id)?;
-                writer
-                    .write_all(&stop)
-                    .await
-                    .map_err(|e| ServerError::io("write_all", e))?;
-            }
+        {
+            let stop = encode_autodetect_request(stop, message_channel_id, user_channel_id)?;
+            writer
+                .write_all(&stop)
+                .await
+                .map_err(|e| ServerError::io("write_all", e))?;
         }
         Ok(())
     }
