@@ -93,8 +93,6 @@ function assertReviewPolicy(labels, state) {
 
 async function publishReview(github, owner, repo, prNumber, state, botLogin, comment) {
   if (!botLogin || typeof botLogin !== "string") throw new Error("botLogin is required for review ownership");
-  if ((await reviews(github, owner, repo, prNumber)).some((review) =>
-    review.user?.login === botLogin && typeof review.body === "string" && review.body.includes(comment.marker))) return false;
   const review = comment.review;
   const reducedCoverage = comment.reducedCoverage ?? [];
   if (!Array.isArray(reducedCoverage) || new Set(reducedCoverage).size !== reducedCoverage.length ||
@@ -117,6 +115,10 @@ async function publishReview(github, owner, repo, prNumber, state, botLogin, com
       inline.some((entry) => entry.body.length > MAXIMUM_GITHUB_REVIEW_BODY_CHARACTERS)) {
     throw new Error("review publication exceeds GitHub body limit");
   }
+  if ((await reviews(github, owner, repo, prNumber)).some((published) =>
+    published.user?.login === botLogin &&
+    typeof published.body === "string" &&
+    published.body.includes(comment.marker))) return false;
   await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha });
   assertReviewPolicy(await issueLabels(github, owner, repo, prNumber), state);
   await github.rest.pulls.createReview({

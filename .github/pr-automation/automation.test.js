@@ -3213,6 +3213,21 @@ test("writer rejects tampered publication payloads before calling GitHub", async
       comments: [{ ...state.comments[0], review: review(), reducedCoverage: ["invented"] }],
     },
   }), /invalid review coverage/);
+  const existingGithub = {
+    ...github,
+    paginate: {
+      iterator: async function* () {
+        yield { data: [{
+          user: { login: "github-actions[bot]" },
+          body: state.comments[0].marker,
+        }] };
+      },
+    },
+  };
+  await assert.rejects(writeState({
+    github: existingGithub, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+    botLogin: "github-actions[bot]", state,
+  }), /review publication exceeds GitHub body limit/);
   assert.equal(published, false);
 });
 
