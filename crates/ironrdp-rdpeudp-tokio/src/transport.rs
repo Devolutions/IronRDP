@@ -29,7 +29,10 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
 use crate::driver::Driver;
-use crate::error::{DriverError, DriverErrorExt as _, DriverErrorKind, UdpTransportError, UdpTransportErrorExt as _};
+use crate::error::{
+    DriverError, DriverErrorExt as _, DriverErrorKind, UdpTransportError, UdpTransportErrorExt as _,
+    UdpTransportErrorKind,
+};
 use crate::stream::{RdpeudpStream, SharedIo};
 use crate::tls::{tls_accept, tls_upgrade};
 use crate::tunnel::{read_tunnel_pdu, tunnel_data_loop, write_tunnel_pdu};
@@ -211,6 +214,28 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
+/// One RDPEMT Tunnel Data PDU's content: the higher-layer data and the
+/// sub-headers carried beside it ([MS-RDPEMT] 2.2.2.3).
+///
+/// The sub-headers carry the Continuous Auto-Detection messages that
+/// [MS-RDPBCGR] 1.3.9 sends over a sideband channel in use, such as a
+/// bandwidth measurement's Start and Stop and the client's results. `data`
+/// may be empty when a message carries only sub-headers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TunnelMessage {
+    pub sub_headers: Vec<ironrdp_rdpemt::TunnelSubHeader>,
+    pub data: Vec<u8>,
+}
+
+impl From<Vec<u8>> for TunnelMessage {
+    fn from(data: Vec<u8>) -> Self {
+        Self {
+            sub_headers: Vec::new(),
+            data,
+        }
+    }
+}
+
 /// A cloneable handle for sending data over an established UDP transport,
 /// obtained from [`UdpTransport::sender`].
 ///
@@ -218,7 +243,7 @@ impl<T> Drop for AbortOnDrop<T> {
 /// and receiving already run over separate channels fed by separate
 /// background tasks, so this never contends with a concurrent `recv()`.
 #[derive(Clone)]
-pub struct UdpTransportSender(mpsc::Sender<Vec<u8>>);
+pub struct UdpTransportSender(mpsc::Sender<TunnelMessage>);
 
 impl UdpTransportSender {
     /// Send a higher-layer data frame through the tunnel.
@@ -231,13 +256,36 @@ impl UdpTransportSender {
     /// Returns `PayloadTooLarge` if `data` exceeds 65535 bytes, the wire
     /// `PayloadLength` field's capacity ([MS-RDPEMT] 2.2.2.3).
     pub async fn send(&self, data: Vec<u8>) -> Result<(), UdpTransportError> {
-        if data.len() > usize::from(u16::MAX) {
-            debug!(len = data.len(), "Rejected oversized tunnel payload");
-            return Err(UdpTransportError::payload_too_large("send", data.len()));
+        self.send_message(TunnelMessage::from(data)).await
+    }
+
+    /// Send higher-layer data through the tunnel with sub-headers beside it
+    /// in the same Tunnel Data PDU.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::send`], for `message.data`, and `SubHeadersTooLarge` if
+    /// the sub-headers do not fit the one-byte `HeaderLength` field
+    /// ([MS-RDPEMT] 2.2.1.1), checked here for the same reason.
+    pub async fn send_message(&self, message: TunnelMessage) -> Result<(), UdpTransportError> {
+        if message.data.len() > usize::from(u16::MAX) {
+            debug!(len = message.data.len(), "Rejected oversized tunnel payload");
+            return Err(UdpTransportError::payload_too_large("send", message.data.len()));
+        }
+        let sub_headers_len = message
+            .sub_headers
+            .iter()
+            .map(ironrdp_rdpemt::TunnelSubHeader::wire_size)
+            .sum::<usize>();
+        if 4 /* RDP_TUNNEL_HEADER */ + sub_headers_len > usize::from(u8::MAX) {
+            return Err(UdpTransportError::new(
+                "send",
+                UdpTransportErrorKind::SubHeadersTooLarge { len: sub_headers_len },
+            ));
         }
 
         self.0
-            .send(data)
+            .send(message)
             .await
             .map_err(|_| UdpTransportError::driver("send", DriverError::connection_closed("send")))
     }
@@ -252,10 +300,10 @@ impl UdpTransportSender {
 /// Drop this handle to initiate shutdown of the background tasks.
 pub struct UdpTransport {
     /// Receives higher-layer data (DVC frames) from the tunnel.
-    data_rx: mpsc::Receiver<Vec<u8>>,
+    data_rx: mpsc::Receiver<TunnelMessage>,
 
     /// Sends higher-layer data into the tunnel for encryption and transmission.
-    data_tx: mpsc::Sender<Vec<u8>>,
+    data_tx: mpsc::Sender<TunnelMessage>,
 
     /// Shared I/O bridge between the driver and the TLS/RDPEMT layer.
     /// Held here so `shutdown()` can signal closure to both the
@@ -275,8 +323,16 @@ pub struct UdpTransport {
 impl UdpTransport {
     /// Receive the next higher-layer data frame from the tunnel.
     ///
-    /// Returns `None` when the tunnel is closed.
+    /// Returns `None` when the tunnel is closed. Any sub-headers that came
+    /// with the frame are dropped; use [`Self::recv_message`] to keep them.
     pub async fn recv(&mut self) -> Option<Vec<u8>> {
+        self.recv_message().await.map(|message| message.data)
+    }
+
+    /// Receive the next Tunnel Data PDU's content, sub-headers included.
+    ///
+    /// Returns `None` when the tunnel is closed.
+    pub async fn recv_message(&mut self) -> Option<TunnelMessage> {
         self.data_rx.recv().await
     }
 
@@ -294,6 +350,16 @@ impl UdpTransport {
     /// to a caller who already received `Ok(())` from a channel send.
     pub async fn send(&self, data: Vec<u8>) -> Result<(), UdpTransportError> {
         self.sender().send(data).await
+    }
+
+    /// Send higher-layer data through the tunnel with sub-headers beside it
+    /// in the same Tunnel Data PDU.
+    ///
+    /// # Errors
+    ///
+    /// As [`UdpTransportSender::send_message`].
+    pub async fn send_message(&self, message: TunnelMessage) -> Result<(), UdpTransportError> {
+        self.sender().send_message(message).await
     }
 
     /// Returns a cloneable handle for sending data, independent of this
@@ -380,7 +446,7 @@ impl UdpTransport {
     /// For unit tests that exercise the channel-based API (FramedRead,
     /// FramedWrite) without needing a real UDP socket or TLS stack.
     #[cfg(test)]
-    pub(crate) fn from_channels(data_rx: mpsc::Receiver<Vec<u8>>, data_tx: mpsc::Sender<Vec<u8>>) -> Self {
+    pub(crate) fn from_channels(data_rx: mpsc::Receiver<TunnelMessage>, data_tx: mpsc::Sender<TunnelMessage>) -> Self {
         Self {
             data_rx,
             data_tx,
@@ -548,8 +614,8 @@ pub async fn connect_udp(config: UdpTransportConfig) -> Result<UdpTransport, Udp
     debug!("RDPEMT tunnel established, starting data pump");
 
     // Phase 5: Set up data channels and spawn the read pump
-    let (incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>(64);
-    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Vec<u8>>(64);
+    let (incoming_tx, incoming_rx) = mpsc::channel::<TunnelMessage>(64);
+    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<TunnelMessage>(64);
 
     // Read pump: TLS → RDPEMT decode → channel
     let pump_handle = AbortOnDrop::new(tokio::spawn(async move {
@@ -740,8 +806,8 @@ async fn accept_udp_inner(socket: UdpSocket, config: UdpAcceptConfig) -> Result<
     debug!("RDPEMT server tunnel established, starting data pump");
 
     // Phase 6: Set up data channels and spawn pumps (identical to client side)
-    let (incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>(64);
-    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Vec<u8>>(64);
+    let (incoming_tx, incoming_rx) = mpsc::channel::<TunnelMessage>(64);
+    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<TunnelMessage>(64);
 
     let pump_handle = AbortOnDrop::new(tokio::spawn(async move {
         tunnel_data_loop(&mut tls_read, &mut tunnel, &incoming_tx).await
@@ -818,15 +884,19 @@ where
 /// Shared by both `connect_udp` and `accept_udp`. Returns the first failure
 /// encountered rather than only logging it, so `shutdown()` can surface it
 /// to the caller instead of the pump silently going quiet.
-async fn write_pump<W>(tls_write: &mut W, outgoing_rx: &mut mpsc::Receiver<Vec<u8>>) -> Result<(), UdpTransportError>
+async fn write_pump<W>(
+    tls_write: &mut W,
+    outgoing_rx: &mut mpsc::Receiver<TunnelMessage>,
+) -> Result<(), UdpTransportError>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    while let Some(data) = outgoing_rx.recv().await {
-        let len = data.len();
+    while let Some(message) = outgoing_rx.recv().await {
+        let len = message.data.len();
+        let sub_headers = message.sub_headers.len();
         let pdu = ironrdp_rdpemt::TunnelData {
-            sub_headers: Vec::new(),
-            higher_layer_data: data,
+            sub_headers: message.sub_headers,
+            higher_layer_data: message.data,
         };
         let encoded = ironrdp_core::encode_vec(&pdu)
             .map_err(|error| UdpTransportError::rdpemt("write pump", ironrdp_rdpemt::RdpemtError::encode(error)))?;
@@ -838,7 +908,7 @@ where
             debug!(%error, "Write pump failed to flush tunnel data");
             UdpTransportError::tls("write pump", error)
         })?;
-        trace!(len, encoded_len = encoded.len(), "Sent tunnel data");
+        trace!(len, sub_headers, encoded_len = encoded.len(), "Sent tunnel data");
     }
     debug!("Write pump stopped, send channel closed");
     Ok(())
@@ -917,8 +987,8 @@ mod tests {
         static DRIVER_RUNNING: AtomicBool = AtomicBool::new(false);
         DRIVER_RUNNING.store(false, Ordering::SeqCst);
 
-        let (_incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>(4);
-        let (outgoing_tx, _outgoing_rx) = mpsc::channel::<Vec<u8>>(4);
+        let (_incoming_tx, incoming_rx) = mpsc::channel::<TunnelMessage>(4);
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel::<TunnelMessage>(4);
 
         let transport = UdpTransport {
             data_rx: incoming_rx,
@@ -960,7 +1030,7 @@ mod tests {
         let error = driver_exit_during_handshake("test", Ok(Err(driver_error)));
 
         assert!(
-            matches!(error.kind(), crate::error::UdpTransportErrorKind::Handshake(_)),
+            matches!(error.kind(), UdpTransportErrorKind::Handshake(_)),
             "got {error:?}, expected a Handshake error carrying the driver's own cause"
         );
     }
@@ -973,7 +1043,7 @@ mod tests {
         let error = driver_exit_during_handshake("test", Ok(Ok(())));
 
         assert!(
-            matches!(error.kind(), crate::error::UdpTransportErrorKind::Handshake(_)),
+            matches!(error.kind(), UdpTransportErrorKind::Handshake(_)),
             "got {error:?}, expected a Handshake error for an unexpectedly-clean driver exit"
         );
     }
@@ -988,7 +1058,7 @@ mod tests {
         let error = driver_exit_during_handshake("test", join_result);
 
         assert!(
-            matches!(error.kind(), crate::error::UdpTransportErrorKind::DriverPanic),
+            matches!(error.kind(), UdpTransportErrorKind::DriverPanic),
             "got {error:?}, expected DriverPanic"
         );
     }
@@ -1031,8 +1101,90 @@ mod tests {
         .expect("the driver branch should resolve almost immediately, well inside 5 seconds");
 
         assert!(
-            matches!(outcome.kind(), crate::error::UdpTransportErrorKind::Handshake(_)),
+            matches!(outcome.kind(), UdpTransportErrorKind::Handshake(_)),
             "got {outcome:?}, expected the driver's real error to surface"
         );
+    }
+
+    /// A message's sub-headers go into the Tunnel Data PDU beside its data.
+    #[tokio::test]
+    async fn the_write_pump_encodes_sub_headers() {
+        use ironrdp_rdpemt::{SubHeaderType, TunnelData, TunnelSubHeader};
+        use tokio::io::AsyncReadExt as _;
+
+        let sub_header = TunnelSubHeader {
+            sub_header_type: SubHeaderType::AutoDetectRequest,
+            data: vec![0x06, 0x00, 0x07, 0x00, 0x14, 0x00],
+        };
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.send(TunnelMessage {
+            sub_headers: vec![sub_header.clone()],
+            data: vec![0xaa, 0xbb],
+        })
+        .await
+        .expect("queue message");
+        drop(tx);
+
+        let (mut writer, mut reader) = tokio::io::duplex(1024);
+        write_pump(&mut writer, &mut rx).await.expect("pump drains");
+        drop(writer);
+
+        let mut wire = Vec::new();
+        reader.read_to_end(&mut wire).await.expect("read back");
+        let pdu: TunnelData = ironrdp_core::decode(&wire).expect("decode");
+        assert_eq!(pdu.sub_headers, vec![sub_header]);
+        assert_eq!(pdu.higher_layer_data, vec![0xaa, 0xbb]);
+    }
+
+    /// `recv` keeps its old shape and drops sub-headers; `recv_message` keeps them.
+    #[tokio::test]
+    async fn recv_message_keeps_what_recv_drops() {
+        use ironrdp_rdpemt::{SubHeaderType, TunnelSubHeader};
+
+        let (incoming_tx, incoming_rx) = mpsc::channel(4);
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(4);
+        let mut transport = UdpTransport::from_channels(incoming_rx, outgoing_tx);
+        let message = TunnelMessage {
+            sub_headers: vec![TunnelSubHeader {
+                sub_header_type: SubHeaderType::AutoDetectResponse,
+                data: vec![0x01],
+            }],
+            data: vec![0x02],
+        };
+
+        incoming_tx.send(message.clone()).await.expect("queue");
+        incoming_tx.send(message.clone()).await.expect("queue");
+
+        assert_eq!(transport.recv().await, Some(vec![0x02]));
+        assert_eq!(transport.recv_message().await, Some(message));
+    }
+
+    /// Sub-headers that would overflow `HeaderLength` are refused at the
+    /// call, not left to fail the write pump; the largest that fit go out.
+    #[tokio::test]
+    async fn send_message_refuses_sub_headers_the_header_cannot_hold() {
+        use ironrdp_rdpemt::{SubHeaderType, TunnelSubHeader};
+
+        let (_incoming_tx, incoming_rx) = mpsc::channel(4);
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
+        let transport = UdpTransport::from_channels(incoming_rx, outgoing_tx);
+        let message = |data_len| TunnelMessage {
+            sub_headers: vec![TunnelSubHeader {
+                sub_header_type: SubHeaderType::AutoDetectRequest,
+                data: vec![0; data_len],
+            }],
+            data: Vec::new(),
+        };
+
+        // 4 (tunnel header) + 2 (sub-header header) + 249 = 255.
+        transport.send_message(message(249)).await.expect("fits");
+        let error = transport.send_message(message(250)).await.expect_err("one byte over");
+        assert!(matches!(
+            error.kind(),
+            UdpTransportErrorKind::SubHeadersTooLarge { len: 252 }
+        ));
+
+        assert_eq!(outgoing_rx.recv().await, Some(message(249)));
+        assert!(outgoing_rx.try_recv().is_err(), "the refused message was not queued");
     }
 }

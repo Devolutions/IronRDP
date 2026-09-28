@@ -11,10 +11,11 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use std::sync::Arc;
 
-use ironrdp_rdpemt::TunnelConfig;
+use ironrdp_rdpemt::{SubHeaderType, TunnelConfig, TunnelSubHeader};
 use ironrdp_rdpeudp::ConnectionConfig;
 use ironrdp_rdpeudp_tokio::{
-    MultitransportBootstrap, UdpAcceptConfig, UdpTlsConfig, UdpTransport, UdpTransportConfig, accept_udp, connect_udp,
+    MultitransportBootstrap, TunnelMessage, UdpAcceptConfig, UdpTlsConfig, UdpTransport, UdpTransportConfig,
+    accept_udp, connect_udp,
 };
 use ironrdp_tls::{CertificateValidation, CertificateValidationCallback};
 use tokio::net::UdpSocket;
@@ -217,6 +218,42 @@ async fn full_stack_bidirectional_data() {
     server.send(vec![0x04, 0x05, 0x06]).await.expect("server send");
     let received = client.recv().await.expect("client recv");
     assert_eq!(received, vec![0x04, 0x05, 0x06]);
+
+    client.shutdown().await.expect("client shutdown");
+    server.shutdown().await.expect("server shutdown");
+}
+
+/// Sub-headers cross the full stack beside their data, and a message may
+/// carry sub-headers alone, as an auto-detect Start or Stop does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_stack_sub_headers() {
+    let (mut client, server) = establish_loopback_pair_on("127.0.0.1:0").await;
+
+    let start = TunnelMessage {
+        sub_headers: vec![TunnelSubHeader {
+            sub_header_type: SubHeaderType::AutoDetectRequest,
+            data: vec![0x06, 0x00, 0x07, 0x00, 0x14, 0x00],
+        }],
+        data: Vec::new(),
+    };
+    let graphics = TunnelMessage {
+        sub_headers: vec![TunnelSubHeader {
+            sub_header_type: SubHeaderType::AutoDetectRequest,
+            data: vec![0x08],
+        }],
+        data: vec![0x01, 0x02, 0x03],
+    };
+    server
+        .send_message(start.clone())
+        .await
+        .expect("send sub-headers alone");
+    server
+        .send_message(graphics.clone())
+        .await
+        .expect("send sub-headers with data");
+
+    assert_eq!(client.recv_message().await.expect("recv"), start);
+    assert_eq!(client.recv_message().await.expect("recv"), graphics);
 
     client.shutdown().await.expect("client shutdown");
     server.shutdown().await.expect("server shutdown");
