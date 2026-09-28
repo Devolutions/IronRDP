@@ -1507,8 +1507,13 @@ test("real SDK finishes idle attempts after response headers", async () => {
   assert.equal(metrics.snapshot().providerAttempts[0].durationMs >= 0, true);
 });
 
-test("real SDK applies the idle limit to stalled non-success response bodies", async () => {
-  for (const status of [503, 429, 401]) {
+test("real SDK preserves known status when an error response body stalls", async () => {
+  for (const [status, category, retryable] of [
+    [503, "provider-service", true],
+    [429, "provider-rate-limit", true],
+    [401, "provider-credential", false],
+    [400, "provider-request", false],
+  ]) {
     const metrics = new RuntimeMetrics();
     let calls = 0;
     const client = createProviderClient(OpenAI, {
@@ -1537,8 +1542,14 @@ test("real SDK applies the idle limit to stalled non-success response bodies", a
         schema,
         metrics,
       }),
-      (error) => error instanceof AgentFailure && error.category === "provider-timeout" &&
-        error.retryable && error.turnCount === 1,
+      (error) => {
+        assert.equal(error instanceof AgentFailure, true);
+        assert.equal(error.category, category);
+        assert.equal(error.retryable, retryable);
+        assert.equal(error.turnCount, 1);
+        assert.equal(providerFailureDiagnostic(error.cause).status, status);
+        return true;
+      },
     );
     const elapsed = Date.now() - started;
     assert.equal(elapsed >= 25, true);

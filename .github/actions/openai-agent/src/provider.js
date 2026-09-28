@@ -192,11 +192,15 @@ class ResponseBodyMonitor {
     this.finishAttempt();
     this.bytes = 0;
     this.failure = null;
+    this.status = undefined;
+    this.headers = undefined;
     this.abort = abort;
     this.resetIdleTimer();
   }
 
   wrap(response) {
+    this.status = response.status;
+    this.headers = response.headers;
     if (!response.body) {
       this.finishAttempt();
       return response;
@@ -242,6 +246,8 @@ class ResponseBodyMonitor {
 
   fail(error) {
     if (this.failure) return this.failure;
+    if (Number.isInteger(this.status)) error.status = this.status;
+    if (this.headers) error.headers = this.headers;
     this.failure = error;
     const abort = this.abort;
     this.finishAttempt();

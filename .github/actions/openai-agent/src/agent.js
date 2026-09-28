@@ -81,12 +81,6 @@ class AgentFailure extends Error {
 }
 
 function providerFailure(error) {
-  if (error instanceof ResponseBodyIdleError) {
-    return failure("provider stream made no progress before the idle limit", "provider-timeout", true);
-  }
-  if (error instanceof ResponseBodySizeError) {
-    return failure("provider stream exceeded the byte limit", "limit");
-  }
   const status = Number(error?.status);
   if (status === 401) return failure("provider credential rejected", "provider-credential");
   if (status === 402) return failure("provider quota exhausted", "provider-quota");
@@ -104,6 +98,12 @@ function providerFailure(error) {
     return failure("provider service unavailable", "provider-service", true);
   }
   if (status >= 400 && status <= 499) return failure("provider rejected the request", "provider-request");
+  if (error instanceof ResponseBodyIdleError) {
+    return failure("provider stream made no progress before the idle limit", "provider-timeout", true);
+  }
+  if (error instanceof ResponseBodySizeError) {
+    return failure("provider stream exceeded the byte limit", "limit");
+  }
   if (error?.constructor === APIConnectionTimeoutError) {
     return failure("provider request timed out", "provider-timeout", true);
   }
