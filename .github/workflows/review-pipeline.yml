@@ -768,9 +768,12 @@ jobs:
             const fs = require("node:fs");
             const { validateFinalReview } = require("./.github/pr-automation/validate-final-review");
             const { stageOutcome } = require("./.github/pr-automation/review-report");
-            const finish = (output, reason, category) => {
+            const finish = (output, reason, category, rawOutput = "") => {
               fs.mkdirSync("final-review", { recursive: true });
-              fs.writeFileSync("final-review/result.json", JSON.stringify({ output, reason }));
+              fs.writeFileSync(
+                "final-review/result.json",
+                JSON.stringify({ output, raw_output: rawOutput, reason }),
+              );
               core.setOutput("reason", reason);
               core.setOutput("stage", JSON.stringify(stageOutcome({
                 id: "validate",
@@ -834,7 +837,7 @@ jobs:
               specialistAggregate: aggregate,
             });
             if (!result.ok) return finish("", result.reason, "invalid-final-review");
-            return finish(JSON.stringify(result.value), "", "");
+            return finish(JSON.stringify(result.value), "", "", persisted.output);
 
       - name: Upload final review result
         if: always()

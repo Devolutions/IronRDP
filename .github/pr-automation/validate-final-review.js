@@ -387,21 +387,67 @@ function validateFinalReview(raw, {
   return { ok: true, status: "valid", value: normalized };
 }
 
-function validateNormalizedFinalReview(value, expectedSha) {
+function validateNormalizedFinalReview(value, expectedShaOrContext) {
+  const context = typeof expectedShaOrContext === "string"
+    ? { expectedSha: expectedShaOrContext }
+    : expectedShaOrContext ?? {};
+  const {
+    expectedSha, changedPaths, changedLines, specialistAggregate, requireContext = false,
+  } = context;
   if (!exactKeys(value, [
     "head_sha", "summary", "findings",
   ]) || value.head_sha !== expectedSha || !SHA.test(value.head_sha) ||
       !isBoundedArray(value.findings, MAXIMUM_FINDINGS)) return invalid("invalid validated final review");
+  const summary = normalizeText(value.summary, MAXIMUM_SUMMARY_LENGTH);
+  if (!summary || summary !== value.summary) return invalid("invalid validated final review summary");
+  const paths = Array.isArray(changedPaths) ? new Set(changedPaths) : null;
+  const candidates = specialistAggregate === undefined
+    ? null
+    : aggregateCandidates(specialistAggregate, expectedSha);
+  if (requireContext && (!paths || changedLines === null || typeof changedLines !== "object" ||
+      candidates === null)) {
+    return invalid("validated final review context unavailable");
+  }
+  const referencedCandidates = new Set();
   for (const finding of value.findings) {
     if (!exactKeys(finding, [
       "question", "severity", "path", "start_line", "end_line", "title", "rationale",
       "confidence", "sources",
     ]) || typeof finding.question !== "boolean" ||
-        !SEVERITIES.has(finding.severity)) return invalid("invalid validated final review finding");
-    try {
-      provenancePrefix(finding.sources);
-    } catch {
-      return invalid("invalid validated final review source");
+        !SEVERITIES.has(finding.severity) ||
+        typeof finding.path !== "string" || unicodeLength(finding.path) > MAXIMUM_PATH_LENGTH ||
+        finding.path.includes("\\") || !REPO_PATH.test(finding.path) ||
+        (paths && !paths.has(finding.path)) ||
+        !Number.isFinite(finding.confidence) || finding.confidence < 0 || finding.confidence > 1 ||
+        !isBoundedArray(finding.sources, MAXIMUM_CANDIDATES)) {
+      return invalid("invalid validated final review finding");
+    }
+    const linesAreNull = finding.start_line === null && finding.end_line === null;
+    const linesAreIntegers = Number.isSafeInteger(finding.start_line) && finding.start_line >= 1 &&
+      finding.start_line <= MAXIMUM_GITHUB_INTEGER &&
+      Number.isSafeInteger(finding.end_line) && finding.end_line >= finding.start_line &&
+      finding.end_line <= MAXIMUM_GITHUB_INTEGER;
+    if (!linesAreNull && (!linesAreIntegers ||
+        (changedLines && !linesAreValidated(
+          finding.path, finding.start_line, finding.end_line, changedLines)))) {
+      return invalid("invalid validated final review finding lines");
+    }
+    const title = normalizeText(finding.title, MAXIMUM_TITLE_LENGTH);
+    const rationale = normalizeText(finding.rationale, MAXIMUM_RATIONALE_LENGTH);
+    if (!title || title !== finding.title || !rationale || rationale !== finding.rationale) {
+      return invalid("invalid validated final review finding text");
+    }
+    const localSources = new Set();
+    for (const source of finding.sources) {
+      const reference = normalizeReference(source);
+      if (reference === null) return invalid("invalid validated final review source");
+      const key = referenceKey(reference);
+      if (localSources.has(key) || referencedCandidates.has(key) ||
+          (candidates && !candidates.has(key))) {
+        return invalid("invalid validated final review source");
+      }
+      localSources.add(key);
+      referencedCandidates.add(key);
     }
   }
   if (!publicationFits(value)) return invalid("validated final review exceeds GitHub's review-body limit");

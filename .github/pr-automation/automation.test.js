@@ -392,9 +392,26 @@ async function runReviewGateScript({
 async function runResolveReviewScript({ report, pipelineResult = "success" }) {
   const outputs = new Map();
   const summary = [];
+  const rawReview = {
+    head_sha: SHA,
+    summary: "No findings identified.",
+    candidate_dispositions: [],
+    findings: [],
+  };
   const files = new Map([
-    ["review-pipeline/final/result.json", JSON.stringify({ output: JSON.stringify(review({ findings: [] })) })],
+    ["review-pipeline/final/result.json", JSON.stringify({
+      output: JSON.stringify(review({ summary: rawReview.summary, findings: [] })),
+      raw_output: JSON.stringify(rawReview),
+    })],
     ["review-pipeline/report/review-report.json", JSON.stringify(report)],
+    ["review-pipeline/validation/validation-context.json", JSON.stringify({
+      changed_paths: [],
+      changed_lines: {},
+    })],
+    ["review-pipeline/aggregate/validated-specialist-findings.json", JSON.stringify({
+      head_sha: SHA,
+      reviewers: [],
+    })],
   ]);
   const core = {
     setOutput: (name, value) => outputs.set(name, value),
@@ -507,7 +524,8 @@ test("automatic review requires exact-head CI and only reruns after a later push
   assert.match(reviewState, /name: review-final-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
   assert.match(reviewState, /name: review-report-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
   assert.match(reviewState, /parseReport\(fs\.existsSync\("review-pipeline\/report\/review-report\.json"\)/);
-  assert.match(reviewState, /report\.status === "success" \? parse\(persisted\?\.output, null\) : null/);
+  assert.match(reviewState, /validateFinalReview\(persisted\.raw_output/);
+  assert.match(reviewState, /JSON\.stringify\(revalidated\.value\) === persisted\.output/);
   assert.doesNotMatch(reviewState, /RAW_OUTPUT|REVIEW_REPORT/);
   assert.match(reviewState, /renderReviewReport/);
   assert.doesNotMatch(reviewState, /specialistReviewers: \["skeptical", "code-compressor"\]/);
@@ -1753,8 +1771,35 @@ test("general reviewer accounts for every candidate and derives validated proven
   const result = validateFinalReview(raw, context);
   assert.equal(result.ok, true);
   assert.equal(provenancePrefix(result.value.findings[0].sources), "[skeptical]");
-  assert.equal(validateNormalizedFinalReview(result.value, SHA).ok, true);
+  const normalizedContext = { ...context, requireContext: true };
+  assert.equal(validateNormalizedFinalReview(result.value, normalizedContext).ok, true);
   assert.equal(validateNormalizedFinalReview({ ...result.value, has_findings: true }, SHA).ok, false);
+  for (const tampered of [
+    { ...result.value, summary: { text: "verified" } },
+    { ...result.value, summary: "\uD800" },
+    { ...result.value, findings: [{ ...result.value.findings[0], path: "/etc/passwd" }] },
+    { ...result.value, findings: [{ ...result.value.findings[0], path: "src/other.rs" }] },
+    { ...result.value, findings: [{
+      ...result.value.findings[0], start_line: 4, end_line: null,
+    }] },
+    { ...result.value, findings: [{
+      ...result.value.findings[0], start_line: 5, end_line: 5,
+    }] },
+    { ...result.value, findings: [{ ...result.value.findings[0], confidence: "certain" }] },
+    { ...result.value, findings: [{
+      ...result.value.findings[0],
+      sources: [
+        ...result.value.findings[0].sources,
+        ...result.value.findings[0].sources,
+      ],
+    }] },
+    { ...result.value, findings: [{
+      ...result.value.findings[0],
+      sources: [{ reviewer: "skeptical", finding_id: "invented" }],
+    }] },
+  ]) {
+    assert.equal(validateNormalizedFinalReview(tampered, normalizedContext).ok, false);
+  }
   assert.equal(validateFinalReview({ ...raw, candidate_dispositions: [] }, context).ok, false);
   assert.equal(validateFinalReview({
     ...raw,
@@ -3124,6 +3169,52 @@ test("writer publishes each finding either inline or in the review body", async 
   assert.doesNotMatch(published.body, /inline-only rationale/);
 });
 
+test("writer rejects tampered publication payloads before calling GitHub", async () => {
+  let published = false;
+  const github = {
+    paginate: { iterator: async function* () { yield { data: [] }; } },
+    rest: {
+      pulls: {
+        listReviews: () => {},
+        get: async () => ({ data: { state: "open", head: { sha: SHA } } }),
+        createReview: async () => { published = true; },
+      },
+    },
+  };
+  const oversized = maximumFinalReview();
+  oversized.summary = "'".repeat(1000);
+  oversized.findings = oversized.findings.map((entry, index) => ({
+    ...entry,
+    path: `src/${String(index).padStart(3, "0")}${"'".repeat(293)}`,
+    start_line: null,
+    end_line: null,
+    title: "'".repeat(200),
+    rationale: "'".repeat(1200),
+  }));
+  const state = {
+    ok: true, mode: "review", expectedSha: SHA, labelSets: [], addLabels: [],
+    expectedReviewCount: null, forced: false, protocolRelated: false,
+    comments: [{
+      kind: "review",
+      marker: `<!-- ironrdp-pr-automation:review:${SHA} -->`,
+      review: oversized,
+    }],
+  };
+  await assert.rejects(writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+    botLogin: "github-actions[bot]", state,
+  }), /review publication exceeds GitHub body limit/);
+  await assert.rejects(writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+    botLogin: "github-actions[bot]",
+    state: {
+      ...state,
+      comments: [{ ...state.comments[0], review: review(), reducedCoverage: ["invented"] }],
+    },
+  }), /invalid review coverage/);
+  assert.equal(published, false);
+});
+
 test("writer publishes a green main comment when no findings remain", async () => {
   let published;
   const github = {
@@ -4469,6 +4560,10 @@ test("the caller reads exactly what the pipeline wrote, and never reads garbage 
     .map((id) => ({ id, status: "success", required: true })));
   assert.equal(clean.status, "success");
   assert.equal(parseReport(JSON.stringify(clean)).status, "success");
+  assert.equal(buildReport([
+    ...clean.stages,
+    { id: `specialist:${"x".repeat(70_000)}`, status: "failed", required: false },
+  ]).status, "failed");
   for (const status of [undefined, "", null, "succeeded", 1]) {
     assert.equal(parseReport(JSON.stringify({ ...clean, status })).status, "failed");
   }
@@ -4520,8 +4615,14 @@ test("maximum review payloads traverse workflow-controlled files and artifacts",
   assert.match(pipeline, /name: review-report-\$\{\{ inputs\.head-sha \}\}/);
   assert.match(caller, /name: review-final-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
   assert.match(caller, /name: review-report-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
+  assert.match(caller, /name: review-validation-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
+  assert.match(caller, /name: review-aggregate-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
   assert.match(caller, /name: review-state-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
-  assert.doesNotMatch(workflowJob(caller, "resolve-review-state"), /RAW_OUTPUT|REVIEW_REPORT/);
+  const resolveReviewStateJob = workflowJob(caller, "resolve-review-state");
+  assert.doesNotMatch(resolveReviewStateJob, /RAW_OUTPUT|REVIEW_REPORT/);
+  assert.match(resolveReviewStateJob, /requireReviewerContext: true/);
+  assert.match(resolveReviewStateJob, /validateFinalReview\(persisted\.raw_output/);
+  assert.match(pipeline, /raw_output: rawOutput/);
   assert.doesNotMatch(workflowJob(caller, "write-state"), /REVIEW_STATE/);
   assert.match(workflowJob(caller, "write-state"), /CLASSIFICATION_STATE/);
   assert.doesNotMatch(caller, /classification-state-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
@@ -4898,7 +4999,7 @@ test("publication stays fail closed on required coverage and independent validat
   assert.match(report, /buildReport/);
   // The published review is whatever independent validation accepted, and nothing else.
   assert.doesNotMatch(workflow, /jobs\.validate\.outputs\.output/);
-  assert.match(validate, /fs\.writeFileSync\("final-review\/result\.json", JSON\.stringify\(\{ output, reason \}\)\)/);
+  assert.match(validate, /JSON\.stringify\(\{ output, raw_output: rawOutput, reason \}\)/);
   assert.match(workflow, /name: review-final-\$\{\{ inputs\.head-sha \}\}/);
   assert.match(report, /\.filter\(\(stage\) => stage\.status === "failed"\)/);
 });

@@ -737,6 +737,20 @@ jobs:
           name: review-report-${{ needs.resolve-pr.outputs.head-sha }}
           path: review-pipeline/report
 
+      - name: Download review validation context
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: review-validation-${{ needs.resolve-pr.outputs.head-sha }}
+          path: review-pipeline/validation
+
+      - name: Download specialist aggregate
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: review-aggregate-${{ needs.resolve-pr.outputs.head-sha }}
+          path: review-pipeline/aggregate
+
       - id: resolve
         uses: actions/github-script@v8
         env:
@@ -759,6 +773,7 @@ jobs:
              const { reviewSkipReasons } = require("./.github/pr-automation/review-skip-summary");
              const { parseReport } = require("./.github/pr-automation/review-report");
              const { renderReviewReport } = require("./.github/pr-automation/review-report-summary");
+             const { validateFinalReview } = require("./.github/pr-automation/validate-final-review");
              const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
              const force = process.env.FORCE === "true";
              const gate = parse(process.env.GATE, {});
@@ -766,12 +781,19 @@ jobs:
                try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
              };
              const persisted = readJson("review-pipeline/final/result.json");
+             const validationContext = readJson("review-pipeline/validation/validation-context.json");
+             const specialistAggregate =
+               readJson("review-pipeline/aggregate/validated-specialist-findings.json");
              const report = parseReport(fs.existsSync("review-pipeline/report/review-report.json")
                ? fs.readFileSync("review-pipeline/report/review-report.json", "utf8")
                : "");
              const recovered = report.stages.filter((stage) => stage.attempts === 2);
+             const selectedReviewers = new Set(Array.isArray(gate.specialistReviewers)
+               ? gate.specialistReviewers
+               : []);
              const reducedCoverage = report.stages
                .filter((stage) => stage.id.startsWith("specialist:") &&
+                 selectedReviewers.has(stage.id.slice("specialist:".length)) &&
                  stage.status === "failed" && stage.required !== true)
                .map((stage) => stage.id.slice("specialist:".length));
              const failureReasons = report.stages.filter((stage) => stage.status === "failed")
@@ -779,17 +801,33 @@ jobs:
              const reviewerReason = report.status === "failed"
                ? failureReasons.join("; ") || process.env.REVIEWER_REASON || "review pipeline failed"
                : process.env.REVIEWER_REASON;
+             const revalidated = report.status === "success" && persisted && validationContext &&
+                 specialistAggregate
+               ? validateFinalReview(persisted.raw_output, {
+                 expectedSha: process.env.HEAD_SHA,
+                 changedPaths: validationContext.changed_paths,
+                 changedLines: validationContext.changed_lines,
+                 specialistAggregate,
+               })
+               : null;
+             const reviewer = revalidated?.ok &&
+                 JSON.stringify(revalidated.value) === persisted.output
+               ? revalidated.value
+               : null;
              const state = resolveReviewState({
                expectedSha: process.env.HEAD_SHA,
                labels: gate.labels ?? [],
                gate,
                contributor: gate.contributor ?? {},
                rateLimit: parse(process.env.FORK_RATE_LIMIT, {}),
-               reviewer: report.status === "success" ? parse(persisted?.output, null) : null,
+               reviewer,
                reviewerReason,
                force,
                reviewMarkerId: process.env.REVIEW_MARKER_ID,
                reducedCoverage,
+               reviewerValidationContext: validationContext,
+               specialistAggregate,
+               requireReviewerContext: true,
              });
              core.info(JSON.stringify({
                event: "pr-automation.review-state",
