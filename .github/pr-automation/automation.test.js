@@ -18,7 +18,7 @@ const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
 const {
   resolveClassificationState, resolveReviewState, reviewOutcome, reviewPolicyEligible, OVERLAP_MARKER,
   OVERLAP_LABEL,
-  CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
+  EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERSIZED_MARKER, OVERSIZED_REVIEW_LABEL, contributorEligibility,
 } = require("./resolve-state");
 const { resolvePr } = require("./resolve-pr");
@@ -383,7 +383,7 @@ test("review skip summary lists every failed gate condition", () => {
       policyEligible: false,
       legitimacyStopped: true,
       labels: ["ai-reviewed/2", "triage/legitimacy"],
-      contributor: { status: "ineligible", merged: 0 },
+      contributor: { status: "bot" },
     },
     rateLimitResult: "success",
     rateLimit: { status: "allowed" },
@@ -393,7 +393,7 @@ test("review skip summary lists every failed gate condition", () => {
     "An automated review has already run for this head; push a new commit before the next review.",
     "The pull request has reached the two-review limit.",
     "The pull request requires a maintainer legitimacy decision.",
-    "The contributor has 0 qualifying merged pull requests; at least one is required.",
+    "The pull request was opened by a bot account.",
   ]);
 });
 
@@ -1939,7 +1939,7 @@ test("forced review bypasses eligibility while retaining publication gates", () 
       ok: true, force: true, head_sha: SHA, classificationValid: true, protocolRelated: false,
       risk: "unknown", specialistReviewers: ["skeptical"],
     },
-    contributor: { status: "ineligible" },
+    contributor: { status: "bot" },
     rateLimit: { status: "limited", scope: "global", quota: 50, count: 51 },
     force: true,
     reviewMarkerId: "1234",
@@ -2037,25 +2037,21 @@ test("review blockers distinguish gate and contributor history failures", () => 
   assert.equal(invalidGate.reason, "review gate unavailable: checks unavailable");
 
   const ineligible = resolveReviewState({
-    ...args, contributor: { status: "ineligible", merged: 0 },
+    ...args, contributor: { status: "bot" },
   });
   assert.equal(ineligible.ok, true);
   assert.equal(ineligible.failed, true);
-  assert.equal(ineligible.reason, "contributor history ineligible (merged: 0, required: 1)");
+  assert.equal(ineligible.reason, "author is a bot account");
   assert.deepEqual(ineligible.labelSets, []);
   assert.deepEqual(ineligible.addLabels, ["maintainer-required"]);
-  assert.deepEqual(ineligible.comments, [{
-    kind: "contributor-ineligible", marker: CONTRIBUTOR_INELIGIBLE_MARKER,
-  }]);
-  assert.equal(ineligible.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), false);
+  assert.deepEqual(ineligible.comments, []);
 
   const unavailable = resolveReviewState({
     ...args, contributor: { status: "unavailable", reason: "GitHub API unavailable" },
   });
   assert.equal(unavailable.ok, true);
   assert.equal(unavailable.failed, true);
-  assert.equal(unavailable.reason, "contributor history unavailable: GitHub API unavailable");
-  assert.equal(unavailable.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), false);
+  assert.equal(unavailable.reason, "contributor eligibility unavailable: GitHub API unavailable");
 
   const ciPending = resolveReviewState({
     ...args, gate: { ...args.gate, ok: false, ciGreen: false },
@@ -2091,20 +2087,6 @@ test("review blockers distinguish gate and contributor history failures", () => 
   });
   assert.equal(advisory.failed, undefined);
   assert.deepEqual(advisory.labelSets[0].desired, ["ai-reviewed/1"]);
-});
-
-test("a later eligible review removes the contributor-ineligible comment", () => {
-  const state = resolveReviewState({
-    expectedSha: SHA, labels: ["risk/low"], reviewer: review({ findings: [] }),
-    gate: {
-      ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true,
-      risk: "low", protocolRelated: false, specialistReviewers: ["code-compressor"],
-    },
-    contributor: { status: "eligible", merged: 1 },
-  });
-
-  assert.equal(state.failed, undefined);
-  assert.equal(state.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), true);
 });
 
 test("an unavailable mandatory protocol specialist blocks the review count", () => {
@@ -2195,9 +2177,8 @@ test("writer stops before mutations when review policy or count changes", async 
   assert.equal(writes, 0);
 });
 
-test("writer keeps one contributor-ineligible comment and removes it after eligibility changes", async () => {
+test("writer posts no comment for a bot-authored pull request", async () => {
   const issueComments = [];
-  let nextCommentId = 1;
   const github = {
     paginate: { iterator: async function* () { yield { data: issueComments }; } },
     rest: {
@@ -2205,12 +2186,8 @@ test("writer keeps one contributor-ineligible comment and removes it after eligi
       issues: {
         get: async () => ({ data: { labels: ["maintainer-required", "risk/low"] } }),
         listComments: () => {},
-        createComment: async ({ body }) => {
-          issueComments.push({ id: nextCommentId++, body, user: { login: "github-actions[bot]" } });
-        },
-        deleteComment: async ({ comment_id: commentId }) => {
-          issueComments.splice(issueComments.findIndex((comment) => comment.id === commentId), 1);
-        },
+        createComment: async () => { throw new Error("must not create a comment for a bot author"); },
+        deleteComment: async () => { throw new Error("must not delete a comment for a bot author"); },
       },
     },
   };
@@ -2220,24 +2197,15 @@ test("writer keeps one contributor-ineligible comment and removes it after eligi
   };
   const state = resolveReviewState({
     expectedSha: SHA, labels: ["risk/low"], gate,
-    contributor: { status: "ineligible", merged: 0 },
+    contributor: { status: "bot" },
   });
-  const args = {
+  assert.deepEqual(state.comments, []);
+  assert.deepEqual(state.addLabels, ["maintainer-required"]);
+
+  await writeState({
     github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
-    botLogin: "github-actions[bot]",
-  };
-
-  await writeState({ ...args, state });
-  await writeState({ ...args, state });
-  assert.equal(issueComments.length, 1);
-  assert.equal(issueComments[0].body.startsWith(CONTRIBUTOR_INELIGIBLE_MARKER), true);
-
-  const eligibleState = resolveReviewState({
-    expectedSha: SHA, labels: ["risk/low"],
-    gate: { ...gate, classificationCheck: false },
-    contributor: { status: "eligible", merged: 1 },
+    botLogin: "github-actions[bot]", state,
   });
-  await writeState({ ...args, state: eligibleState });
   assert.deepEqual(issueComments, []);
 });
 
@@ -2955,41 +2923,30 @@ test("owner and member authors are eligible without contributor history", async 
   }
 });
 
-test("other human authors need one same-author pull request merged into master", async () => {
+test("other human authors are eligible immediately without contributor history", async () => {
+  const unavailable = {
+    paginate: { iterator: () => { throw new Error("must not query history"); } },
+    rest: { pulls: { list: () => {} } },
+  };
   const author = { nodeId: "author", login: "author", type: "User", association: "CONTRIBUTOR" };
-  for (const candidate of [
-    pull(2, { merged_at: "2026-01-01T00:00:00Z", labels: ["trivial"] }),
-    pull(3, { merged_at: "2026-01-01T00:00:00Z", labels: ["reverted"] }),
-    pull(4, { merged_at: "2026-01-01T00:00:00Z", title: "Revert bad change" }),
-    pull(5, {
-      merged_at: "2026-01-01T00:00:00Z",
-      user: { node_id: "author", login: "renamed-author", type: "User" },
-    }),
-  ]) {
-    assert.deepEqual(await contributorEligibility({
-      github: paginated({ closed: [[candidate]] }), owner: "Devolutions", repo: "IronRDP",
-      author, currentPrNumber: 1,
-    }), { status: "eligible", merged: 1 });
-  }
-
   assert.deepEqual(await contributorEligibility({
-    github: paginated({ closed: [[
-      pull(6),
-      pull(7, { merged_at: "2026-01-01T00:00:00Z", base: { ref: "release" } }),
-      pull(8, {
-        merged_at: "2026-01-01T00:00:00Z",
-        user: { node_id: "different-author", login: "author", type: "User" },
-      }),
-    ]] }), owner: "Devolutions", repo: "IronRDP",
-    author, currentPrNumber: 1,
-  }), { status: "ineligible", merged: 0 });
+    github: unavailable, owner: "Devolutions", repo: "IronRDP", author, currentPrNumber: 1,
+  }), { status: "eligible", association: "CONTRIBUTOR" });
 });
 
 test("bot authors remain ineligible regardless of association", async () => {
   assert.deepEqual(await contributorEligibility({
     github: paginated({}), owner: "Devolutions", repo: "IronRDP",
     author: { association: "MEMBER", login: "service[bot]", type: "Bot" }, currentPrNumber: 1,
-  }), { status: "ineligible", reason: "bot author" });
+  }), { status: "bot" });
+});
+
+test("a missing or malformed author identity fails closed instead of eligible", async () => {
+  for (const author of [undefined, null, {}, { association: "CONTRIBUTOR" }]) {
+    assert.deepEqual(await contributorEligibility({
+      github: paginated({}), owner: "Devolutions", repo: "IronRDP", author, currentPrNumber: 1,
+    }), { status: "unavailable", reason: "missing author identity" });
+  }
 });
 
 // ---- reviewer stage recovery, reporting, and metrics ----

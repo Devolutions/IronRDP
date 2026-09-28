@@ -17,10 +17,7 @@ const LEGACY_XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
 const FORK_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-quota -->";
 const GLOBAL_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-global-budget -->";
 const EVIDENCE_LIMIT_MARKER = "<!-- ironrdp-pr-automation:evidence-limit -->";
-const CONTRIBUTOR_INELIGIBLE_MARKER = "<!-- ironrdp-pr-automation:contributor-ineligible -->";
 const EVIDENCE_LIMIT_REASON = /^pull request diff exceeds the (1|4) MiB evidence limit$/;
-const ELIGIBLE_MERGED_PRS = 1;
-const ELIGIBLE_ASSOCIATIONS = new Set(["OWNER", "MEMBER"]);
 
 function labelsOf(labels) {
   return new Set((labels || []).map((label) => typeof label === "string" ? label : label?.name).filter(Boolean));
@@ -206,51 +203,19 @@ function resolveClassificationState({
   };
 }
 
-function isBot(user) {
-  return user?.type === "Bot" || /\[bot\]$/i.test(user?.login || "");
-}
-
-// Counts an author's merged pull requests, stopping at stopAt so a prolific contributor does not
-// force a walk of the whole closed-PR history. Callers only ever compare against a threshold.
-async function qualifyingMergedPrs({ github, owner, repo, authorNodeId, currentPrNumber, stopAt }) {
-  let merged = 0;
-  for await (const response of github.paginate.iterator(github.rest.pulls.list, {
-    owner, repo, state: "closed", sort: "updated", direction: "desc", per_page: 100,
-  })) {
-    if (!Array.isArray(response?.data)) throw new Error("invalid pull request data");
-    for (const pr of response.data) {
-      if (!pr || typeof pr !== "object") throw new Error("invalid pull request data");
-      if (pr.merged_at !== null && pr.merged_at !== undefined &&
-          (typeof pr.merged_at !== "string" || Number.isNaN(Date.parse(pr.merged_at)))) {
-        throw new Error("invalid pull request timestamp");
-      }
-      if (pr.number === currentPrNumber || !pr.merged_at || pr.base?.ref !== "master" ||
-          pr.user?.node_id !== authorNodeId || isBot(pr.user)) continue;
-      merged += 1;
-      if (merged >= stopAt) return merged;
-    }
+// Every non-bot author is eligible for automatic review immediately; there is no merged-PR
+// history requirement. `github`/`owner`/`repo`/`currentPrNumber` are accepted for call-site
+// compatibility but no history lookup is performed. Author identity is required to distinguish a
+// bot from a human at all: a missing/null `user` (both `login` and `type` absent) cannot be
+// classified, so it reports unavailable rather than eligible.
+async function contributorEligibility({ author } = {}) {
+  if (typeof author?.login !== "string" && typeof author?.type !== "string") {
+    return { status: "unavailable", reason: "missing author identity" };
   }
-  return merged;
-}
-
-async function contributorEligibility({ github, owner, repo, author, currentPrNumber }) {
-  if (author?.type === "Bot" || /\[bot\]$/i.test(author?.login || "")) {
-    return { status: "ineligible", reason: "bot author" };
+  if (author.type === "Bot" || /\[bot\]$/i.test(author.login || "")) {
+    return { status: "bot" };
   }
-  if (ELIGIBLE_ASSOCIATIONS.has(author?.association)) {
-    return { status: "eligible", association: author.association };
-  }
-  if (!author?.nodeId) {
-    return { status: "ineligible", reason: "bot or missing immutable author" };
-  }
-  try {
-    const merged = await qualifyingMergedPrs({
-      github, owner, repo, authorNodeId: author.nodeId, currentPrNumber, stopAt: ELIGIBLE_MERGED_PRS,
-    });
-    return { status: merged >= ELIGIBLE_MERGED_PRS ? "eligible" : "ineligible", merged };
-  } catch {
-    return { status: "unavailable", reason: "GitHub API unavailable" };
-  }
+  return { status: "eligible", association: author.association ?? null };
 }
 
 function resolveReviewState({
@@ -275,7 +240,6 @@ function resolveReviewState({
         ...(comments.some((comment) => comment.kind === "evidence-limit") ? [] : [EVIDENCE_LIMIT_MARKER]),
         FORK_QUOTA_MARKER,
         ...(comments.some((comment) => comment.kind === "global-quota") ? [] : [GLOBAL_QUOTA_MARKER]),
-        ...(forced || contributor?.status === "eligible" ? [CONTRIBUTOR_INELIGIBLE_MARKER] : []),
       ],
       ...(report ? { check: {
         name: "AI automated review", externalId: expectedSha,
@@ -306,19 +270,13 @@ function resolveReviewState({
     if (!reviewPolicyEligible({
       labels, legitimacyStopped: gate.legitimacyStopped,
     })) return fail("review is not eligible");
-    if (contributor?.status === "ineligible") {
-      const reason = Number.isSafeInteger(contributor.merged)
-        ? `contributor history ineligible (merged: ${contributor.merged}, required: ${ELIGIBLE_MERGED_PRS})`
-        : `contributor history ineligible${contributor.reason ? `: ${contributor.reason}` : ""}`;
-      const comment = Number.isSafeInteger(contributor.merged)
-        ? { kind: "contributor-ineligible", marker: CONTRIBUTOR_INELIGIBLE_MARKER }
-        : null;
-      return fail(reason, false, comment);
+    if (contributor?.status === "bot") {
+      return fail("author is a bot account");
     }
     if (contributor?.status !== "eligible") {
       const reason = contributor?.reason
-        ? `contributor history unavailable: ${contributor.reason}`
-        : "contributor history unavailable";
+        ? `contributor eligibility unavailable: ${contributor.reason}`
+        : "contributor eligibility unavailable";
       return fail(reason);
     }
     if (existing.has("ai-reviewed/1") && gate.secondReviewEligible !== true) {
@@ -350,10 +308,7 @@ function resolveReviewState({
       kind: "review", marker: reviewMarker, review: reviewerResult.value,
       reducedCoverage: Array.isArray(reducedCoverage) ? reducedCoverage : [],
     }],
-    removeCommentMarkers: [
-      EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER,
-      CONTRIBUTOR_INELIGIBLE_MARKER,
-    ],
+    removeCommentMarkers: [EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER],
     check: { name: "AI automated review", externalId: expectedSha },
     expectedReviewCount,
     forced,
@@ -370,10 +325,10 @@ function reviewOutcome({ reportStatus, state, recovered = false, reducedCoverage
 }
 
 module.exports = {
-  AI_COUNTS, CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER,
+  AI_COUNTS, EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER,
   GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERLAP_LABEL, OVERLAP_MARKER, OVERSIZED_REVIEW_LABEL, RISK,
-  OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS,
-  contributorEligibility, qualifyingMergedPrs, resolveClassificationState,
+  OVERSIZED_MARKER,
+  contributorEligibility, resolveClassificationState,
   resolveReviewState, reviewOutcome, reviewPolicyEligible,
 };
