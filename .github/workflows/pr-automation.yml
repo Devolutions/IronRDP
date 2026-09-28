@@ -376,6 +376,7 @@ jobs:
       needs.fork-rate-limit.result == 'success' &&
       needs.fork-rate-limit.outputs.allowed == 'true'))
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     concurrency:
       group: llm-classifier-${{ needs.resolve-pr.outputs.classifier-lane }}
       cancel-in-progress: false
@@ -723,33 +724,14 @@ jobs:
           ref: master
           persist-credentials: false
 
-      - name: Download final review result
+      - name: Download review resolver artifacts
+        if: needs.review-pipeline.result != 'skipped'
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
-          name: review-final-${{ needs.resolve-pr.outputs.head-sha }}
-          path: review-pipeline/final
-
-      - name: Download review report
-        continue-on-error: true
-        uses: actions/download-artifact@v8
-        with:
-          name: review-report-${{ needs.resolve-pr.outputs.head-sha }}
-          path: review-pipeline/report
-
-      - name: Download review validation context
-        continue-on-error: true
-        uses: actions/download-artifact@v8
-        with:
-          name: review-validation-${{ needs.resolve-pr.outputs.head-sha }}
-          path: review-pipeline/validation
-
-      - name: Download specialist aggregate
-        continue-on-error: true
-        uses: actions/download-artifact@v8
-        with:
-          name: review-aggregate-${{ needs.resolve-pr.outputs.head-sha }}
-          path: review-pipeline/aggregate
+          pattern: review-{final,report,validation,aggregate}-${{ needs.resolve-pr.outputs.head-sha }}
+          path: review-pipeline
+          merge-multiple: true
 
       - id: resolve
         uses: actions/github-script@v8
@@ -780,14 +762,12 @@ jobs:
              const readJson = (file) => {
                try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
              };
-             const persisted = readJson("review-pipeline/final/result.json");
-             const validationContext = readJson("review-pipeline/validation/validation-context.json");
-             const specialistAggregate =
-               readJson("review-pipeline/aggregate/validated-specialist-findings.json");
-             const report = parseReport(fs.existsSync("review-pipeline/report/review-report.json")
-               ? fs.readFileSync("review-pipeline/report/review-report.json", "utf8")
+             const persisted = readJson("review-pipeline/result.json");
+             const validationContext = readJson("review-pipeline/validation-context.json");
+             const specialistAggregate = readJson("review-pipeline/validated-specialist-findings.json");
+             const report = parseReport(fs.existsSync("review-pipeline/review-report.json")
+               ? fs.readFileSync("review-pipeline/review-report.json", "utf8")
                : "");
-             const recovered = report.stages.filter((stage) => stage.attempts === 2);
              const selectedReviewers = new Set(Array.isArray(gate.specialistReviewers)
                ? gate.specialistReviewers
                : []);
@@ -869,8 +849,7 @@ jobs:
                  .write();
              } else {
                const outcome = reviewOutcome({
-                 reportStatus: report.status, state, recovered: recovered.length > 0,
-                 reducedCoverage,
+                 reportStatus: report.status, state, reducedCoverage,
                });
                const rendered = renderReviewReport({
                  report, outcome, summaryUrl: process.env.SUMMARY_URL, reducedCoverage,

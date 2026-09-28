@@ -30,6 +30,7 @@ const baseConfig = {
   allowed_files: [],
   max_turns: 4,
   max_tool_calls: 4,
+  max_request_retries: 0,
 };
 
 const sandbox = {
@@ -54,6 +55,67 @@ function call(id, name, args) {
   };
 }
 
+function completionStream(response, { fragments = null, usage = undefined } = {}) {
+  const controller = new AbortController();
+  return {
+    controller,
+    async *[Symbol.asyncIterator]() {
+      if (fragments) {
+        for (const fragment of fragments) yield fragment;
+        return;
+      }
+      const choice = response?.choices?.[0];
+      const source = choice?.message;
+      const toolCalls = Array.isArray(source?.tool_calls)
+        ? source.tool_calls.map((toolCall, index) => ({ index, ...toolCall }))
+        : undefined;
+      yield {
+        choices: [{
+          index: 0,
+          delta: {
+            ...(source?.content === undefined ? {} : { content: source.content }),
+            ...(source?.reasoning_content === undefined
+              ? {}
+              : { reasoning_content: source.reasoning_content }),
+            ...(toolCalls === undefined ? {} : { tool_calls: toolCalls }),
+          },
+          finish_reason: toolCalls?.length ? "tool_calls" : "stop",
+        }],
+      };
+      if (usage !== undefined) yield { choices: [], usage };
+    },
+  };
+}
+
+function sseResponse(content, { headers = {}, usage = undefined } = {}) {
+  const events = [{
+    id: "completion",
+    object: "chat.completion.chunk",
+    created: 0,
+    model: "test",
+    choices: [{
+      index: 0,
+      delta: { content },
+      finish_reason: "stop",
+    }],
+  }];
+  if (usage !== undefined) {
+    events.push({
+      id: "completion",
+      object: "chat.completion.chunk",
+      created: 0,
+      model: "test",
+      choices: [],
+      usage,
+    });
+  }
+  const body = `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`;
+  return new Response(body, {
+    status: 200,
+    headers: { "content-type": "text/event-stream", ...headers },
+  });
+}
+
 function clientFrom(sequence, requests = []) {
   return {
     chat: {
@@ -62,8 +124,8 @@ function clientFrom(sequence, requests = []) {
           requests.push(structuredClone(request));
           const next = sequence.shift();
           if (next instanceof Error || next?.throw) throw next.throw || next;
-          if (typeof next === "function") return next(request);
-          return next;
+          const response = typeof next === "function" ? await next(request) : next;
+          return response?.[Symbol.asyncIterator] ? response : completionStream(response);
         },
       },
     },
@@ -102,6 +164,310 @@ test("runtime executes only declared tools and returns schema-validated canonica
   ]);
 });
 
+test("runtime assembles streamed reasoning, content, usage, and request controls", async () => {
+  const requests = [];
+  const metrics = new RuntimeMetrics();
+  const fragments = [
+    {
+      choices: [{
+        index: 0,
+        delta: { role: "assistant", reasoning_content: "checked ", content: '{"ans' },
+        finish_reason: null,
+      }],
+    },
+    {
+      choices: [{
+        index: 0,
+        delta: { reasoning_content: "carefully", content: 'wer":"done"}' },
+        finish_reason: "stop",
+      }],
+    },
+    {
+      choices: [],
+      usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+    },
+  ];
+  const stream = completionStream(null, { fragments });
+  const result = await runAgent({
+    client: {
+      chat: {
+        completions: {
+          async create(request) {
+            requests.push(structuredClone(request));
+            metrics.beginAttempt();
+            return stream;
+          },
+        },
+      },
+    },
+    config: { ...baseConfig, max_tool_calls: 0 },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+    metrics,
+  });
+
+  assert.equal(result.output, '{"answer":"done"}');
+  assert.equal(requests[0].stream, true);
+  assert.deepEqual(requests[0].stream_options, { include_usage: true });
+  assert.equal(requests[0].reasoning_effort, "high");
+  assert.equal(requests[0].max_tokens, undefined);
+  assert.deepEqual(metrics.snapshot().tokenUsage, {
+    complete: true,
+    knownAttemptCount: 1,
+    unknownAttemptCount: 0,
+    inputTokens: 5,
+    outputTokens: 3,
+    totalTokens: 8,
+  });
+});
+
+test("runtime assembles interleaved tool fragments before executing the whole batch", async () => {
+  const requests = [];
+  const executions = [];
+  const guardedSandbox = {
+    readFile(args) {
+      executions.push(["read", args.path]);
+      return JSON.stringify({ ok: true });
+    },
+    listFiles(args) {
+      executions.push(["list", args.path]);
+      return JSON.stringify({ ok: true });
+    },
+    searchText() {
+      throw new Error("unexpected search");
+    },
+  };
+  const toolStream = {
+    controller: new AbortController(),
+    async *[Symbol.asyncIterator]() {
+      yield {
+        choices: [{
+          index: 0,
+          delta: {
+            reasoning_content: "inspect",
+            tool_calls: [{
+              index: 1,
+              id: "second",
+              type: "function",
+              function: { name: "list_", arguments: '{"pa' },
+            }],
+          },
+          finish_reason: null,
+        }],
+      };
+      assert.deepEqual(executions, []);
+      yield {
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                id: "first",
+                type: "function",
+                function: { name: "read_", arguments: '{"path":"a' },
+              },
+              {
+                index: 1,
+                function: { name: "files", arguments: 'th":"root"}' },
+              },
+            ],
+          },
+          finish_reason: null,
+        }],
+      };
+      assert.deepEqual(executions, []);
+      yield {
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: 0,
+              function: { name: "file", arguments: '"}' },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      };
+    },
+  };
+  const result = await runAgent({
+    client: clientFrom([toolStream, message('{"answer":"done"}')], requests),
+    config: baseConfig,
+    methodologies: [],
+    prompt: "p",
+    sandbox: guardedSandbox,
+    schema,
+  });
+
+  assert.equal(result.output, '{"answer":"done"}');
+  assert.deepEqual(executions, [["read", "a"], ["list", "root"]]);
+  assert.equal(requests[1].messages.at(-2).tool_call_id, "first");
+  assert.equal(requests[1].messages.at(-1).tool_call_id, "second");
+  assert.equal(requests[1].messages.at(-3).reasoning_content, "inspect");
+});
+
+test("runtime executes no tool when any streamed envelope is incomplete", async () => {
+  let executions = 0;
+  const fragments = [{
+    choices: [{
+      index: 0,
+      delta: {
+        tool_calls: [
+          { index: 0, id: "valid", type: "function", function: { name: "read_file", arguments: "{}" } },
+          { index: 1, type: "function", function: { name: "read_file", arguments: "{}" } },
+        ],
+      },
+      finish_reason: "tool_calls",
+    }],
+  }];
+  await assert.rejects(
+    runAgent({
+      client: clientFrom([completionStream(null, { fragments })]),
+      config: baseConfig,
+      methodologies: [],
+      prompt: "p",
+      sandbox: {
+        ...sandbox,
+        readFile() {
+          executions++;
+          return "{}";
+        },
+      },
+      schema,
+    }),
+    (error) => error.reason === "provider returned a malformed tool call",
+  );
+  assert.equal(executions, 0);
+});
+
+test("stream retry discards partial fragments without spending another logical turn", async () => {
+  let executions = 0;
+  const interrupted = {
+    controller: new AbortController(),
+    async *[Symbol.asyncIterator]() {
+      yield {
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "partial",
+              type: "function",
+              function: { name: "read_file", arguments: '{"path":"' },
+            }],
+          },
+          finish_reason: null,
+        }],
+      };
+      throw Object.assign(new TypeError("terminated"), { cause: { code: "UND_ERR_SOCKET" } });
+    },
+  };
+  const result = await runAgent({
+    client: clientFrom([interrupted, message('{"answer":"retry"}')]),
+    config: { ...baseConfig, max_request_retries: 1 },
+    methodologies: [],
+    prompt: "p",
+    sandbox: {
+      ...sandbox,
+      readFile() {
+        executions++;
+        return "{}";
+      },
+    },
+    schema,
+    retrySleep: async () => {},
+  });
+
+  assert.equal(result.output, '{"answer":"retry"}');
+  assert.equal(result.turnCount, 1);
+  assert.equal(executions, 0);
+});
+
+test("runtime accepts length-finished text and marks missing completion metadata retryable", async () => {
+  const text = completionStream(null, {
+    fragments: [{ choices: [{ index: 0, delta: { content: '{"answer":"done"}' }, finish_reason: "length" }] }],
+  });
+  const result = await runAgent({
+    client: clientFrom([text]),
+    config: { ...baseConfig, max_tool_calls: 0 },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+  });
+  assert.equal(result.output, '{"answer":"done"}');
+
+  const incomplete = completionStream(null, {
+    fragments: [{
+      choices: [{
+        index: 0,
+        delta: { content: '{"answer":"truncated"}' },
+        finish_reason: null,
+      }],
+    }],
+  });
+  await assert.rejects(
+    runAgent({
+      client: clientFrom([incomplete]),
+      config: { ...baseConfig, max_tool_calls: 0 },
+      methodologies: [],
+      prompt: "p",
+      sandbox,
+      schema,
+    }),
+    (error) => error.reason === "provider stream ended without completion metadata" &&
+      error.category === "provider-connection" && error.retryable,
+  );
+});
+
+test("stage deadline aborts a stalled stream", async () => {
+  const stalled = {
+    controller: new AbortController(),
+    [Symbol.asyncIterator]() {
+      return {
+        next: () => new Promise(() => {}),
+        return: async () => ({ done: true }),
+      };
+    },
+  };
+  await assert.rejects(
+    runAgent({
+      client: clientFrom([stalled]),
+      config: { ...baseConfig, stage_timeout_ms: 20 },
+      methodologies: [],
+      prompt: "p",
+      sandbox,
+      schema,
+    }),
+    (error) => error.reason === "stage deadline exceeded" && error.category === "limit",
+  );
+  assert.equal(stalled.controller.signal.aborted, true);
+});
+
+test("stage deadline rejects a synchronous validator that returns too late", async () => {
+  await assert.rejects(
+    runAgent({
+      client: clientFrom([message('{"answer":"done"}')]),
+      config: { ...baseConfig, max_tool_calls: 0, stage_timeout_ms: 10 },
+      methodologies: [],
+      prompt: "p",
+      sandbox,
+      schema,
+      validator() {
+        const deadline = performance.now() + 40;
+        while (performance.now() < deadline) {
+          // Deliberately block the event loop so only the monotonic post-check can catch the overrun.
+        }
+        return { ok: true };
+      },
+    }),
+    (error) => error.reason === "stage deadline exceeded" && error.category === "limit",
+  );
+});
+
 test("runtime reports malformed arguments and unknown tools without executing them", async () => {
   const requests = [];
   let executions = 0;
@@ -134,7 +500,7 @@ test("runtime rejects malformed tool call envelopes", async () => {
   );
 });
 
-test("runtime applies its model-message-content fallback only after non-streamed text arrives", async () => {
+test("runtime applies its model-message-content limit while assembling streamed text", async () => {
   const requests = [];
   await assert.rejects(
     runAgent({
@@ -146,21 +512,31 @@ test("runtime applies its model-message-content fallback only after non-streamed
   assert.equal(requests.length, 1);
 });
 
-test("output validation rejects unpaired UTF-16 surrogates and accepts non-BMP text", () => {
+test("output validation sanitizes unpaired UTF-16 surrogates and rejects key collisions", () => {
   const validate = compileOutputValidator(schema);
   for (const value of ["\uD800", "\uDC00"]) {
     assert.deepEqual(validate(JSON.stringify({ answer: value })), {
-      ok: false, layer: "unicode", reason: "response contains ill-formed Unicode",
+      ok: true,
+      output: '{"answer":"�"}',
+      value: { answer: "�" },
     });
   }
   const dynamic = compileOutputValidator({ type: "object" });
   assert.deepEqual(dynamic(JSON.stringify({ nested: { ["\uD800"]: "accepted" } })), {
-    ok: false, layer: "unicode", reason: "response contains ill-formed Unicode",
+    ok: true,
+    output: '{"nested":{"�":"accepted"}}',
+    value: { nested: { "�": "accepted" } },
   });
   const depth = 20_000;
   const deeplyNested = `${'{"nested":'.repeat(depth)}"\uD800"${"}".repeat(depth)}`;
-  assert.deepEqual(dynamic(deeplyNested), {
-    ok: false, layer: "unicode", reason: "response contains ill-formed Unicode",
+  const deeplyNestedResult = dynamic(deeplyNested);
+  assert.equal(deeplyNestedResult.ok, false);
+  assert.equal(deeplyNestedResult.layer, "json");
+  assert.equal(deeplyNestedResult.reason, "response nesting exceeded the serialization limit");
+  assert.deepEqual(dynamic('{"\\ud800":"first","�":"second"}'), {
+    ok: false,
+    layer: "unicode",
+    reason: "response property names collide after Unicode sanitization",
   });
   assert.equal(validate(JSON.stringify({ answer: "😀" })).ok, true);
 });
@@ -693,7 +1069,7 @@ test("runtime rejects malformed content without attempting repair", async () => 
       sandbox,
       schema,
     }),
-    (error) => error.reason === "provider response did not contain text",
+    (error) => error.reason === "provider stream was malformed",
   );
   assert.equal(requests.length, 1);
 });
@@ -779,6 +1155,10 @@ test("provider errors are reduced to fixed non-sensitive categories", () => {
   assert.equal(providerFailureReason({ status: 401, message: "secret" }), "provider credential rejected");
   assert.equal(providerFailureReason({ status: 403, message: "secret" }), "provider access forbidden");
   assert.equal(providerFailureReason({ status: 429, message: "secret" }), "provider rate limit reached");
+  assert.equal(providerFailureReason({
+    status: 429,
+    error: { provider_specific_fields: { code: "monthly_cap_reached" } },
+  }), "provider quota exhausted");
   assert.equal(providerFailureReason({ status: 408, message: "secret" }), "provider request timed out");
   assert.equal(providerFailureReason({ status: 409, message: "secret" }), "provider request conflict");
   assert.equal(providerFailureReason({ status: 503, message: "secret" }), "provider service unavailable");
@@ -805,16 +1185,34 @@ test("provider errors are reduced to fixed non-sensitive categories", () => {
   assert.equal(providerFailureReason(new Error("secret")), "provider request failed");
 });
 
+test("Retry-After cannot outlive the remaining stage budget", async () => {
+  let slept = false;
+  const error = Object.assign(new Error("busy"), {
+    status: 503,
+    headers: new Headers({ "retry-after": "600" }),
+  });
+  await assert.rejects(
+    runAgent({
+      client: clientFrom([error]),
+      config: { ...baseConfig, max_request_retries: 1, stage_timeout_ms: 100 },
+      methodologies: [],
+      prompt: "p",
+      sandbox,
+      schema,
+      retrySleep: async () => { slept = true; },
+    }),
+    (failure) => failure.reason === "stage deadline exceeded before the next retry" &&
+      failure.category === "limit",
+  );
+  assert.equal(slept, false);
+});
+
 test("real SDK classifies interrupted response bodies as recoverable connections", async () => {
   const metrics = new RuntimeMetrics();
   let calls = 0;
   const client = createProviderClient(OpenAI, {
     apiKey: "test-key",
     baseURL: "https://provider.example/v1",
-    maxRetries: 0,
-    // The request timeout is far longer than the interruption so the classification under test is
-    // never decided by which timer a loaded machine happens to run first.
-    timeout: 30_000,
   }, metrics, async () => {
     calls++;
     return new Response(new ReadableStream({
@@ -843,6 +1241,41 @@ test("real SDK classifies interrupted response bodies as recoverable connections
   assert.equal(metrics.snapshot().providerAttempts[0].durationMs >= 40, true);
 });
 
+test("real SDK does not treat ordinary EOF as streamed completion", async () => {
+  const metrics = new RuntimeMetrics();
+  const client = createProviderClient(OpenAI, {
+    apiKey: "test-key",
+    baseURL: "https://provider.example/v1",
+  }, metrics, async () => new Response(
+    `data: ${JSON.stringify({
+      id: "completion",
+      object: "chat.completion.chunk",
+      created: 0,
+      model: "test",
+      choices: [{
+        index: 0,
+        delta: { content: '{"answer":"truncated"}' },
+        finish_reason: null,
+      }],
+    })}\n\n`,
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  ));
+
+  await assert.rejects(
+    runAgent({
+      client,
+      config: { ...baseConfig, max_tool_calls: 0 },
+      methodologies: [],
+      prompt: "p",
+      sandbox,
+      schema,
+      metrics,
+    }),
+    (error) => error.reason === "provider stream ended without completion metadata" &&
+      error.category === "provider-connection" && error.retryable,
+  );
+});
+
 test("real SDK retries interrupted response bodies within one retry budget", async () => {
   const metrics = new RuntimeMetrics();
   const delays = [];
@@ -850,17 +1283,10 @@ test("real SDK retries interrupted response bodies within one retry budget", asy
   const client = createProviderClient(OpenAI, {
     apiKey: "test-key",
     baseURL: "https://provider.example/v1",
-    maxRetries: 4,
-    timeout: 100,
   }, metrics, async () => {
     calls++;
     if (calls === 5) {
-      return new Response(JSON.stringify({
-        choices: [{ finish_reason: "stop", message: { content: '{"answer":"done"}' } }],
-      }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+      return sseResponse('{"answer":"done"}');
     }
     return new Response(new ReadableStream({
       start(controller) {
@@ -875,15 +1301,25 @@ test("real SDK retries interrupted response bodies within one retry budget", asy
         "retry-after-ms": "0",
       },
     });
-  }, async (milliseconds) => { delays.push(milliseconds); });
+  });
 
   const result = await runAgent({
-    client, config: baseConfig, methodologies: [], prompt: "p", sandbox, schema, metrics,
+    client,
+    config: { ...baseConfig, max_request_retries: 4 },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+    metrics,
+    retrySleep: async (milliseconds) => { delays.push(milliseconds); },
   });
 
   assert.equal(result.turnCount, 1);
   assert.equal(calls, 5);
-  assert.deepEqual(delays, [0, 0, 0, 0]);
+  assert.equal(delays.every((value, index) => {
+    const maximum = 500 * 2 ** index;
+    return value >= maximum * 0.75 && value <= maximum;
+  }), true);
   assert.equal(metrics.snapshot().requestRetryCount, 4);
   assert.equal(metrics.snapshot().providerAttempts.length, 5);
 });
@@ -895,8 +1331,6 @@ test("real SDK shares retries between status and body failures", async () => {
   const client = createProviderClient(OpenAI, {
     apiKey: "test-key",
     baseURL: "https://provider.example/v1",
-    maxRetries: 4,
-    timeout: 100,
   }, metrics, async () => {
     calls++;
     if (calls === 1) {
@@ -924,21 +1358,24 @@ test("real SDK shares retries between status and body failures", async () => {
         },
       });
     }
-    return new Response(JSON.stringify({
-      choices: [{ finish_reason: "stop", message: { content: '{"answer":"done"}' } }],
-    }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  }, async (milliseconds) => { delays.push(milliseconds); });
+    return sseResponse('{"answer":"done"}');
+  });
 
   const result = await runAgent({
-    client, config: baseConfig, methodologies: [], prompt: "p", sandbox, schema, metrics,
+    client,
+    config: { ...baseConfig, max_request_retries: 4 },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+    metrics,
+    retrySleep: async (milliseconds) => { delays.push(milliseconds); },
   });
 
   assert.equal(result.turnCount, 1);
   assert.equal(calls, 3);
-  assert.deepEqual(delays, [0, 0]);
+  assert.equal(delays[0], 0);
+  assert.equal(delays[1] >= 750 && delays[1] <= 1000, true);
   assert.equal(metrics.snapshot().requestRetryCount, 2);
   assert.deepEqual(
     metrics.snapshot().providerAttempts.map((attempt) => attempt.status),
@@ -958,8 +1395,6 @@ test("real SDK does not retry policy-terminal responses", async () => {
     const client = createProviderClient(OpenAI, {
       apiKey: "test-key",
       baseURL: "https://provider.example/v1",
-      maxRetries: 4,
-      timeout: 100,
     }, metrics, async () => {
       calls++;
       return new Response(JSON.stringify(body), {
@@ -970,8 +1405,6 @@ test("real SDK does not retry policy-terminal responses", async () => {
           "x-should-retry": "true",
         },
       });
-    }, async () => {
-      throw new Error("policy-terminal responses must not delay");
     });
 
     await assert.rejects(
@@ -994,8 +1427,6 @@ test("real SDK retries transient responses despite negative provider hints", asy
     const client = createProviderClient(OpenAI, {
       apiKey: "test-key",
       baseURL: "https://provider.example/v1",
-      maxRetries: 4,
-      timeout: 100,
     }, metrics, async () => {
       calls++;
       if (calls === 1) {
@@ -1008,16 +1439,18 @@ test("real SDK retries transient responses despite negative provider hints", asy
           },
         });
       }
-      return new Response(JSON.stringify({
-        choices: [{ finish_reason: "stop", message: { content: '{"answer":"done"}' } }],
-      }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }, async (milliseconds) => { delays.push(milliseconds); });
+      return sseResponse('{"answer":"done"}');
+    });
 
     const result = await runAgent({
-      client, config: baseConfig, methodologies: [], prompt: "p", sandbox, schema, metrics,
+      client,
+      config: { ...baseConfig, max_request_retries: 1 },
+      methodologies: [],
+      prompt: "p",
+      sandbox,
+      schema,
+      metrics,
+      retrySleep: async (milliseconds) => { delays.push(milliseconds); },
     });
     assert.equal(result.turnCount, 1);
     assert.equal(calls, 2);
@@ -1026,7 +1459,7 @@ test("real SDK retries transient responses despite negative provider hints", asy
   }
 });
 
-test("real SDK finishes timeout attempts after response headers", async () => {
+test("real SDK finishes idle attempts after response headers", async () => {
   const metrics = new RuntimeMetrics();
   let responseAdvanced = false;
   const observeResponse = metrics.observeResponse.bind(metrics);
@@ -1043,12 +1476,9 @@ test("real SDK finishes timeout attempts after response headers", async () => {
   const client = createProviderClient(OpenAI, {
     apiKey: "test-key",
     baseURL: "https://provider.example/v1",
-    maxRetries: 0,
-    timeout: 20,
   }, metrics, async (_url, options) => {
     calls++;
-    // The body only ever ends because the request timeout aborts it, so the outcome under test does
-    // not depend on a body timer losing a race against the timeout on a loaded machine.
+    // The body only ever ends because the stream-idle monitor aborts it.
     return new Response(new ReadableStream({
       start(controller) {
         options.signal.addEventListener("abort", () => controller.error(options.signal.reason));
@@ -1061,7 +1491,13 @@ test("real SDK finishes timeout attempts after response headers", async () => {
 
   await assert.rejects(
     runAgent({
-      client, config: baseConfig, methodologies: [], prompt: "p", sandbox, schema, metrics,
+      client,
+      config: { ...baseConfig, stream_idle_timeout_ms: 20 },
+      methodologies: [],
+      prompt: "p",
+      sandbox,
+      schema,
+      metrics,
     }),
     (error) => error instanceof AgentFailure && error.category === "provider-timeout" &&
       error.retryable && error.turnCount === 1,
@@ -1071,19 +1507,18 @@ test("real SDK finishes timeout attempts after response headers", async () => {
   assert.equal(metrics.snapshot().providerAttempts[0].durationMs >= 0, true);
 });
 
-test("real SDK bounds stalled non-success response bodies", async () => {
+test("real SDK preserves known status when an error response body stalls", async () => {
   for (const [status, category, retryable] of [
     [503, "provider-service", true],
     [429, "provider-rate-limit", true],
     [401, "provider-credential", false],
+    [400, "provider-request", false],
   ]) {
     const metrics = new RuntimeMetrics();
     let calls = 0;
     const client = createProviderClient(OpenAI, {
       apiKey: "test-key",
       baseURL: "https://provider.example/v1",
-      maxRetries: 0,
-      timeout: 25,
     }, metrics, async (_url, options) => {
       calls++;
       return new Response(new ReadableStream({
@@ -1099,14 +1534,23 @@ test("real SDK bounds stalled non-success response bodies", async () => {
     const started = Date.now();
     await assert.rejects(
       runAgent({
-        client, config: baseConfig, methodologies: [], prompt: "p", sandbox, schema, metrics,
+        client,
+        config: { ...baseConfig, stream_idle_timeout_ms: 25 },
+        methodologies: [],
+        prompt: "p",
+        sandbox,
+        schema,
+        metrics,
       }),
-      (error) => error instanceof AgentFailure && error.category === category &&
-        error.retryable === retryable && error.turnCount === 1,
+      (error) => {
+        assert.equal(error instanceof AgentFailure, true);
+        assert.equal(error.category, category);
+        assert.equal(error.retryable, retryable);
+        assert.equal(error.turnCount, 1);
+        assert.equal(providerFailureDiagnostic(error.cause).status, status);
+        return true;
+      },
     );
-    // The SDK arms the request timeout before it calls fetch, so the attempt clock starts fractionally
-    // after the deadline it is measured against and can report just under it. Assert the timeout on
-    // this enclosing clock, which cannot start late, and require the attempt to fall inside it.
     const elapsed = Date.now() - started;
     assert.equal(elapsed >= 25, true);
     assert.equal(elapsed < 200, true);
@@ -1161,7 +1605,7 @@ test("repair failures retain the completed output repair count", async () => {
       sandbox,
       schema,
     }),
-    (error) => error.reason === "provider response did not contain text" &&
+    (error) => error.reason === "provider stream was malformed" &&
       error.outputRepairCount === 1,
   );
 });

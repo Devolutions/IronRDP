@@ -14,11 +14,10 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
   let turnCount = 0;
   let toolCallCount = 0;
   let outputRepairCount = 0;
-  let structuredOutputFile = "";
   let phase = "input";
   const metrics = new RuntimeMetrics();
   setOutputs(core, {
-    output: "", structuredOutputFile, failureReason: "", failureCategory: "", retryable: false,
+    output: "", failureReason: "", failureCategory: "", retryable: false,
     turnCount, toolCallCount, outputRepairCount, metrics,
   });
 
@@ -47,6 +46,8 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       event: "openai-agent.start",
       id: config.id,
       model: config.model,
+      stageTimeoutMs: config.stage_timeout_ms,
+      streamIdleTimeoutMs: config.stream_idle_timeout_ms,
       maxTurns: config.max_turns,
       maxToolCalls: config.max_tool_calls,
     }));
@@ -57,8 +58,7 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       client = createProviderClient(OpenAIClient, {
         apiKey,
         baseURL,
-        maxRetries: config.max_request_retries,
-        timeout: config.request_timeout_ms,
+        maxRetries: 0,
         fetchOptions: { redirect: "error" },
       }, metrics);
     } catch {
@@ -69,10 +69,9 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
     turnCount = result.turnCount;
     toolCallCount = result.toolCallCount;
     outputRepairCount = result.outputRepairCount;
-    structuredOutputFile = writeOutputFile(workspace, outputFile, result.output);
+    writeOutputFile(workspace, outputFile, result.output);
     setOutputs(core, {
-      output: structuredOutputFile === "" ? result.output : "",
-      structuredOutputFile,
+      output: outputFile === "" ? result.output : "",
       failureReason: "",
       failureCategory: "",
       retryable: false,
@@ -111,7 +110,7 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       logActionFailure(core, error instanceof ActionError ? error.phase : phase, outcome);
     }
     setOutputs(core, {
-      output: "", structuredOutputFile: "", failureReason, failureCategory: outcome.category,
+      output: "", failureReason, failureCategory: outcome.category,
       retryable: outcome.retryable,
       turnCount, toolCallCount, outputRepairCount, metrics,
     });
@@ -160,8 +159,8 @@ function logActionFailure(core, phase, outcome) {
 }
 
 function setOutputs(core, {
-  output, structuredOutputFile, failureReason, failureCategory, retryable, turnCount, toolCallCount,
-  outputRepairCount, metrics,
+  output, failureReason, failureCategory, retryable, turnCount, toolCallCount, outputRepairCount,
+  metrics,
 }) {
   const diagnostics = metrics.snapshot({
     outputRepairCount,
@@ -171,7 +170,6 @@ function setOutputs(core, {
     retryable,
   });
   core.setOutput("structured-output", output);
-  core.setOutput("structured-output-file", structuredOutputFile);
   core.setOutput("failure-reason", failureReason);
   core.setOutput("turn-count", String(turnCount));
   core.setOutput("tool-call-count", String(toolCallCount));

@@ -18,7 +18,7 @@ test("action metadata exposes only configured inputs and required outputs on nod
     assert.match(action, new RegExp(`^  ${input}:\\r?$`, "m"));
   }
   for (const output of [
-    "structured-output", "structured-output-file", "failure-reason", "turn-count", "tool-call-count", "diagnostics",
+    "structured-output", "failure-reason", "turn-count", "tool-call-count", "diagnostics",
     "failure-category", "retryable",
   ]) {
     assert.match(action, new RegExp(`^  ${output}:\\r?$`, "m"));
@@ -48,6 +48,7 @@ function actionFixture() {
     allowed_files: [],
     max_turns: 3,
     max_tool_calls: 2,
+    max_request_retries: 0,
   }));
   return workspace;
 }
@@ -78,6 +79,28 @@ function mockCore(inputs) {
   };
 }
 
+function completionStream(response) {
+  return {
+    controller: new AbortController(),
+    async *[Symbol.asyncIterator]() {
+      const source = response.choices[0].message;
+      const toolCalls = Array.isArray(source.tool_calls)
+        ? source.tool_calls.map((toolCall, index) => ({ index, ...toolCall }))
+        : undefined;
+      yield {
+        choices: [{
+          index: 0,
+          delta: {
+            ...(source.content === undefined ? {} : { content: source.content }),
+            ...(toolCalls === undefined ? {} : { tool_calls: toolCalls }),
+          },
+          finish_reason: toolCalls?.length ? "tool_calls" : "stop",
+        }],
+      };
+    },
+  };
+}
+
 test("main masks the key immediately, rejects redirects, and emits only bounded metadata", async () => {
   const workspace = actionFixture();
   const core = mockCore({
@@ -92,7 +115,9 @@ test("main masks the key immediately, rejects redirects, and emits only bounded 
       options = received;
       this.chat = { completions: { create: async (value) => {
         request = value;
-        return { choices: [{ message: { content: '{"answer":"MODEL_RESPONSE_SENTINEL"}' } }] };
+        return completionStream({
+          choices: [{ message: { content: '{"answer":"MODEL_RESPONSE_SENTINEL"}' } }],
+        });
       } } };
     }
   }
@@ -107,10 +132,14 @@ test("main masks the key immediately, rejects redirects, and emits only bounded 
     assert.equal(secretIndex < secondInputIndex, true);
     assert.equal(options.apiKey, "API_KEY_SECRET_SENTINEL");
     assert.equal(options.baseURL, "https://provider.example/v1");
-    assert.equal(options.maxRetries, 2);
-    assert.equal(options.timeout, 120_000);
+    assert.equal(options.maxRetries, 0);
+    assert.equal(options.timeout, undefined);
     assert.deepEqual(options.fetchOptions, { redirect: "error" });
     assert.equal(request.model, "safe-model");
+    assert.equal(request.stream, true);
+    assert.equal(request.reasoning_effort, "high");
+    assert.deepEqual(request.stream_options, { include_usage: true });
+    assert.equal(request.max_tokens, undefined);
     assert.equal(core.outputs.get("structured-output"), '{"answer":"MODEL_RESPONSE_SENTINEL"}');
     assert.equal(core.outputs.get("failure-reason"), "");
     assert.equal(core.outputs.get("turn-count"), "1");
@@ -141,7 +170,7 @@ test("main transports accepted output through a workflow-controlled file without
   });
   class MockOpenAI {
     constructor() {
-      this.chat = { completions: { create: async () => ({
+      this.chat = { completions: { create: async () => completionStream({
         choices: [{ message: { content: JSON.stringify({ answer }) } }],
       }) } };
     }
@@ -149,7 +178,7 @@ test("main transports accepted output through a workflow-controlled file without
   try {
     await main(core, { GITHUB_WORKSPACE: workspace.directory }, MockOpenAI);
     assert.equal(core.outputs.get("structured-output"), "");
-    assert.equal(core.outputs.get("structured-output-file"), ".openai-agent-output/review.json");
+    assert.equal(core.outputs.has("structured-output-file"), false);
     assert.equal(
       fs.readFileSync(path.join(workspace.directory, ".openai-agent-output", "review.json"), "utf8"),
       JSON.stringify({ answer }),
@@ -171,7 +200,8 @@ test("configuration supplies recovery limits and canonical diagnostics", async (
     allowed_files: [],
     max_turns: 4,
     max_tool_calls: 1,
-    request_timeout_ms: 90_000,
+    stream_idle_timeout_ms: 90_000,
+    stage_timeout_ms: 900_000,
     max_request_retries: 4,
     max_output_repair_attempts: 2,
   }));
@@ -184,15 +214,15 @@ test("configuration supplies recovery limits and canonical diagnostics", async (
   class MockOpenAI {
     constructor(received) {
       options = received;
-      this.chat = { completions: { create: async () => ({
+      this.chat = { completions: { create: async () => completionStream({
         choices: [{ message: { content: '{"answer":"ok"}' } }],
       }) } };
     }
   }
   try {
     await main(core, { GITHUB_WORKSPACE: workspace.directory }, MockOpenAI);
-    assert.equal(options.timeout, 90_000);
-    assert.equal(options.maxRetries, 4);
+    assert.equal(options.timeout, undefined);
+    assert.equal(options.maxRetries, 0);
     assert.equal(core.outputs.get("turn-count"), "1");
     assert.equal(core.outputs.get("failure-category"), "");
     assert.equal(core.outputs.get("retryable"), "false");
@@ -233,7 +263,7 @@ test("main repairs a final response with no text", async () => {
     constructor() {
       this.chat = { completions: { create: async (request) => {
         requests.push(structuredClone(request));
-        return responses.shift();
+        return completionStream(responses.shift());
       } } };
     }
   }
@@ -431,7 +461,7 @@ test("main reports why repaired output remains invalid", async () => {
   ];
   class InvalidRepairOpenAI {
     constructor() {
-      this.chat = { completions: { create: async () => responses.shift() } };
+      this.chat = { completions: { create: async () => completionStream(responses.shift()) } };
     }
   }
   const reason =
@@ -514,7 +544,7 @@ test("review rejection diagnostics and failure logs never echo finding text", as
     const responses = [candidate, scenario === "preservation" ? { ...candidate, findings: [] } : candidate];
     class InvalidReviewOpenAI {
       constructor() {
-        this.chat = { completions: { create: async () => ({
+        this.chat = { completions: { create: async () => completionStream({
           choices: [{ message: { content: JSON.stringify(responses.shift()) } }],
         }) } };
       }
@@ -630,7 +660,9 @@ function mockProvider(responses, requests) {
         // The runtime appends to one conversation, so a request is only readable afterwards if the
         // messages it carried are copied as they were sent.
         requests.push({ ...request, messages: request.messages.map((message) => ({ ...message })) });
-        return { choices: [{ message: { content: JSON.stringify(responses.shift()) } }] };
+        return completionStream({
+          choices: [{ message: { content: JSON.stringify(responses.shift()) } }],
+        });
       } } };
     }
   };

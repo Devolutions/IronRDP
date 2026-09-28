@@ -7,7 +7,7 @@ const {
   reducedCoverageText, reviewBody,
 } = require("./review-render");
 const { reviewPolicyEligible } = require("./routing");
-const { assertCurrentHead } = require("./review-retry");
+const { assertCurrentHead } = require("./current-head");
 
 class StalePolicyError extends Error {
   constructor() { super("pull request review policy changed"); this.name = "StalePolicyError"; }

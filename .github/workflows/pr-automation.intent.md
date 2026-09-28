@@ -41,6 +41,7 @@ The review pipeline must therefore live in a reusable workflow, with lane concur
 ## Classification
 
 - Configure the classifier action for at most four request retries after the initial attempt.
+- Bound the streamed classifier stage independently of its enclosing job's cleanup allowance.
 
 ## Reviewer pipeline
 
@@ -54,13 +55,14 @@ Append `:question:` for questions, and show `:green_circle:` in the main comment
 Disclose reduced coverage from optional reviewer failures in the published review and review check, naming each failed reviewer.
 Keep detailed failure reasons in the workflow summary only.
 
-### Stage recovery
+### Stage execution
 
-- Start a bounded pipeline that recovers transient stages within its invocation while retaining successful results.
-- A later workflow run starts a fresh recovery budget.
+- Retry transient provider failures only within the logical model call that failed.
+- Never restart a reviewer stage or rerun a completed stage.
+- Set the 130-minute reviewer job timeout to cover one stage and cleanup.
 - Keep all eligibility checks, resource limits, and stale-head protections in effect.
 - Never publish the same review twice, and count only published reviews toward the two-review limit.
-- Show the pipeline-reported recovery outcome and LLM-stage metrics including unavailable usage in the review check and workflow summary.
+- Show the pipeline-reported outcome and LLM-stage metrics including unavailable usage in the review check and workflow summary.
 - Link to the summary from the `AI automated review` check; keep metrics out of review comments.
 
 ## Activation policy

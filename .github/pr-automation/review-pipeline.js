@@ -158,12 +158,6 @@ function buildSpecialistAggregate({
   };
 }
 
-// The runtime classifies its own failures and reports `retryable`. Re-deriving that here from
-// category names would silently diverge from it.
-function isRetryableFailure(retryable) {
-  return retryable === true || retryable === "true";
-}
-
 // The runtime reports measurements in one canonical diagnostics object, freshly built per
 // invocation. A stage that cannot read it reports every measurement as unavailable, never as zero.
 function parseDiagnostics(raw) {
@@ -199,31 +193,6 @@ function parseDiagnostics(raw) {
   };
 }
 
-// Diagnostics are per invocation, so a retried stage spent both attempts. Summing keeps the cost
-// honest, and one unmeasured attempt must not silently disappear into the other's number.
-function mergeDiagnostics(first, second) {
-  if (!second) return first;
-  if (!first) return second;
-  const add = (left, right) => left === null || right === null ? null : left + right;
-  const tokens = (() => {
-    if (!first.tokens && !second.tokens) return null;
-    if (!first.tokens || !second.tokens) return { ...(first.tokens ?? second.tokens), complete: false };
-    return {
-      input: add(first.tokens.input, second.tokens.input),
-      output: add(first.tokens.output, second.tokens.output),
-      total: add(first.tokens.total, second.tokens.total),
-      complete: first.tokens.complete && second.tokens.complete,
-    };
-  })();
-  return {
-    elapsed_ms: add(first.elapsed_ms, second.elapsed_ms),
-    request_retries: add(first.request_retries, second.request_retries),
-    output_repairs: add(first.output_repairs, second.output_repairs),
-    provider_attempts: add(first.provider_attempts, second.provider_attempts),
-    tokens,
-  };
-}
-
 // A stage that never reached the provider spent nothing, so its zero is a measurement rather than a
 // gap in the report. Diagnostics that cannot be read prove nothing, so they still count as spending.
 function providerWasCalled(diagnostics) {
@@ -244,7 +213,6 @@ function plannedRequiredReviewers(raw, selectedReviewers = []) {
 
 module.exports = {
   SPECIALIST_ORDER,
-  buildSpecialistAggregate, failedRun, isRetryableFailure, mergeDiagnostics, parseDiagnostics,
-  plannedRequiredReviewers, providerWasCalled, resolveRequiredReviewers, validateSpecialistRun,
-  validateReviewGate,
+  buildSpecialistAggregate, failedRun, parseDiagnostics, plannedRequiredReviewers,
+  providerWasCalled, resolveRequiredReviewers, validateSpecialistRun, validateReviewGate,
 };
