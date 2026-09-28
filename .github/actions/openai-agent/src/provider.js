@@ -1,31 +1,25 @@
 "use strict";
 
 const {
-  MAX_OUTPUT_REJECTION_REASON_BYTES, MAX_OUTPUT_REJECTIONS, MAX_PROVIDER_ERROR_BYTES,
-  MAX_REQUEST_TIMEOUT_MS,
+  MAX_OUTPUT_REJECTION_REASON_BYTES, MAX_OUTPUT_REJECTIONS,
 } = require("./limits");
 
-const KNOWN_QUOTA_CODES = new Set([
-  "billing_hard_limit_reached",
-  "insufficient_quota",
-  "quota_exceeded",
-  "quota_exhausted",
-]);
 const SAFE_DIAGNOSTIC_VALUE = /^[A-Za-z0-9._:-]{1,128}$/;
 // Rejection reasons are assembled from the trusted output schema and from validator text that the
 // validator loader has already restricted, so this only bounds what a future caller could add.
 const UNSAFE_REASON_CHARACTER = /[^A-Za-z0-9 #.,:;()/_-]+/g;
-const RETRIES_REMAINING = "openai-agent-retries-remaining";
-const MAX_TIMEOUT = 2_147_483_647;
+const RESPONSE_BODY_MONITOR = Symbol("response-body-monitor");
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 function providerErrorCode(error) {
   return [
-    error?.code,
     error?.provider_specific_fields?.code,
     error?.detail?.code,
-    error?.error?.code,
     error?.error?.provider_specific_fields?.code,
+    error?.body?.error?.provider_specific_fields?.code,
+    error?.error?.code,
     error?.body?.error?.code,
+    error?.code,
     error?.type,
   ].find((value) => typeof value === "string" && SAFE_DIAGNOSTIC_VALUE.test(value));
 }
@@ -59,12 +53,11 @@ class RuntimeMetrics {
     return details;
   }
 
-  beginAttempt(timeoutMs) {
+  beginAttempt() {
     const attempt = {
       activity: this.activeRequest?.activity || this.activity,
       attempt: ++this.attemptCount,
       startedAt: this.now(),
-      timeoutMs,
     };
     this.activeRequest?.attempts.push(attempt);
     return attempt;
@@ -84,22 +77,12 @@ class RuntimeMetrics {
 
   finishAttempt(attempt) {
     if (!attempt || attempt.durationMs !== undefined) return;
-    if (attempt.deadline !== undefined) clearTimeout(attempt.deadline);
     attempt.removeAbortListener?.();
     attempt.durationMs = Math.max(0, this.now() - attempt.startedAt);
   }
 
-  remainingAttemptTimeout(attempt) {
-    if (!attempt || !Number.isSafeInteger(attempt.timeoutMs)) return 0;
-    return Math.max(0, attempt.timeoutMs - (this.now() - attempt.startedAt));
-  }
-
   finishActiveAttempt() {
     this.finishAttempt(this.activeRequest?.attempts.at(-1));
-  }
-
-  remainingActiveAttemptTimeout() {
-    return this.remainingAttemptTimeout(this.activeRequest?.attempts.at(-1));
   }
 
   recordCompletion(request, response) {
@@ -181,161 +164,146 @@ function sanitizeReason(reason) {
     .trimEnd();
 }
 
-function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis.fetch, sleep = delay) {
+class ResponseBodyIdleError extends Error {
+  constructor() {
+    super("provider stream made no progress before the idle limit");
+    this.name = "ResponseBodyIdleError";
+  }
+}
+
+class ResponseBodySizeError extends Error {
+  constructor() {
+    super("provider stream exceeded the byte limit");
+    this.name = "ResponseBodySizeError";
+  }
+}
+
+class ResponseBodyMonitor {
+  constructor({ idleTimeoutMs, maximumBytes }) {
+    this.idleTimeoutMs = idleTimeoutMs;
+    this.maximumBytes = maximumBytes;
+    this.bytes = 0;
+    this.failure = null;
+    this.abort = null;
+    this.idleTimer = null;
+  }
+
+  beginAttempt(abort) {
+    this.finishAttempt();
+    this.bytes = 0;
+    this.failure = null;
+    this.abort = abort;
+    this.resetIdleTimer();
+  }
+
+  wrap(response) {
+    if (!response.body) {
+      this.finishAttempt();
+      return response;
+    }
+    const monitor = this;
+    const body = response.body.pipeThrough(new TransformStream({
+      transform(chunk, controller) {
+        const failure = monitor.observe(chunk);
+        if (failure) {
+          controller.error(failure);
+          return;
+        }
+        controller.enqueue(chunk);
+      },
+      flush() {
+        monitor.finishAttempt();
+      },
+    }));
+    const wrapped = new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+    for (const property of ["url", "redirected", "type"]) {
+      Object.defineProperty(wrapped, property, { value: response[property] });
+    }
+    return wrapped;
+  }
+
+  observe(chunk) {
+    const length = Number(chunk?.byteLength);
+    if (!Number.isSafeInteger(length) || length < 0) {
+      return this.fail(new ResponseBodySizeError());
+    }
+    if (length === 0) return null;
+    this.bytes += length;
+    if (!Number.isSafeInteger(this.bytes) || this.bytes > this.maximumBytes) {
+      return this.fail(new ResponseBodySizeError());
+    }
+    this.resetIdleTimer();
+    return null;
+  }
+
+  fail(error) {
+    if (this.failure) return this.failure;
+    this.failure = error;
+    const abort = this.abort;
+    this.finishAttempt();
+    abort?.(error);
+    return error;
+  }
+
+  finishAttempt() {
+    if (this.idleTimer !== null) clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+    this.abort = null;
+  }
+
+  resetIdleTimer() {
+    if (this.idleTimer !== null) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(
+      () => this.fail(new ResponseBodyIdleError()),
+      this.idleTimeoutMs,
+    );
+  }
+}
+
+function createResponseBodyMonitor(options) {
+  return new ResponseBodyMonitor(options);
+}
+
+function responseBodyMonitorFetchOptions(monitor) {
+  return { [RESPONSE_BODY_MONITOR]: monitor };
+}
+
+function createProviderClient(OpenAIClient, options, metrics, fetch = globalThis.fetch) {
   const instrumentedFetch = async (...args) => {
-    const attempt = metrics.beginAttempt(options.timeout);
     const [url, requestOptions = {}] = args;
+    const monitor = requestOptions[RESPONSE_BODY_MONITOR];
+    const fetchOptions = { ...requestOptions };
+    delete fetchOptions[RESPONSE_BODY_MONITOR];
+    const attempt = metrics.beginAttempt();
     const controller = new AbortController();
-    const parentSignal = requestOptions.signal;
-    const abort = () => controller.abort();
+    const parentSignal = fetchOptions.signal;
+    const abort = () => {
+      monitor?.finishAttempt();
+      controller.abort(parentSignal?.reason);
+    };
     if (parentSignal?.aborted) {
       abort();
     } else {
       parentSignal?.addEventListener("abort", abort, { once: true });
       attempt.removeAbortListener = () => parentSignal?.removeEventListener("abort", abort);
     }
+    monitor?.beginAttempt((reason) => controller.abort(reason));
     try {
-      const response = await fetch(url, { ...requestOptions, signal: controller.signal });
+      const response = await fetch(url, { ...fetchOptions, signal: controller.signal });
       metrics.observeResponse(attempt, response);
-      if (!response.ok) {
-        attempt.deadline = setTimeout(abort, metrics.remainingAttemptTimeout(attempt));
-      }
-      return response;
+      return monitor ? monitor.wrap(response) : response;
     } catch (error) {
+      const monitoredFailure = monitor?.failure;
+      monitor?.finishAttempt();
       metrics.finishAttempt(attempt);
-      throw error;
+      throw monitoredFailure || error;
     }
   };
-  const client = new OpenAIClient({ ...options, fetch: instrumentedFetch });
-  if (typeof client.makeRequest === "function") {
-    const makeRequest = client.makeRequest.bind(client);
-    client.makeRequest = async (requestOptions, retriesRemaining, retryOfRequestLogID) => {
-      const resolvedOptions = await requestOptions;
-      const maximumRetries = resolvedOptions.maxRetries ?? client.maxRetries;
-      resolvedOptions.__metadata = {
-        ...resolvedOptions.__metadata,
-        [RETRIES_REMAINING]: retriesRemaining ?? maximumRetries,
-      };
-      return makeRequest(resolvedOptions, retriesRemaining, retryOfRequestLogID);
-    };
-  }
-  if (typeof client.shouldRetry === "function") {
-    const shouldRetry = client.shouldRetry.bind(client);
-    client.shouldRetry = async (response) => {
-      const policy = await retryPolicy(response, metrics.remainingActiveAttemptTimeout());
-      return policy ?? shouldRetry(response);
-    };
-  }
-  if (typeof client.retryRequest === "function") {
-    const retryRequest = client.retryRequest.bind(client);
-    client.retryRequest = async (requestOptions, retriesRemaining, requestLogID, responseHeaders) => {
-      metrics.finishActiveAttempt();
-      const retryAfter = retryAfterMilliseconds(responseHeaders);
-      if (retryAfter === undefined) {
-        return retryRequest(requestOptions, retriesRemaining, requestLogID, responseHeaders);
-      }
-      await sleep(retryAfter);
-      return client.makeRequest(requestOptions, retriesRemaining - 1, requestLogID);
-    };
-  }
-  if (typeof client.parseResponseWithTimeout === "function") {
-    const parseResponseWithTimeout = client.parseResponseWithTimeout.bind(client);
-    client.parseResponseWithTimeout = async (sdkClient, props) => {
-      while (true) {
-        try {
-          return await parseResponseWithTimeout(sdkClient, props);
-        } catch (error) {
-          const retriesRemaining = props.options.__metadata?.[RETRIES_REMAINING];
-          if (!isResponseBodyTransportFailure(error) || !retriesRemaining ||
-              props.options.__metadata?.hasStreamingBody) {
-            throw error;
-          }
-          const next = await client.retryRequest(
-            props.options,
-            retriesRemaining,
-            props.retryOfRequestLogID ?? props.requestLogID,
-            props.response.headers,
-          );
-          Object.assign(props, next);
-        }
-      }
-    };
-  }
-  return client;
-}
-
-async function retryPolicy(response, timeoutMs) {
-  const status = Number(response?.status);
-  if (status === 401 || status === 403) return false;
-  if (status === 408 || status === 409 || status >= 500 && status <= 599) return true;
-  if (status === 429) return !(await hasKnownQuotaCode(response, timeoutMs));
-  if (status >= 400 && status <= 499) return false;
-  return null;
-}
-
-function isResponseBodyTransportFailure(error) {
-  return error?.constructor === TypeError && error?.cause?.code === "UND_ERR_SOCKET";
-}
-
-async function hasKnownQuotaCode(response, timeoutMs = MAX_REQUEST_TIMEOUT_MS) {
-  let text;
-  try {
-    text = await readBoundedBody(response.clone(), timeoutMs);
-  } catch {
-    return false;
-  }
-  if (text === null) return false;
-  try {
-    const body = JSON.parse(text);
-    const error = body?.error && typeof body.error === "object" ? body.error : body;
-    return [error?.code, error?.type].some((value) =>
-      typeof value === "string" && KNOWN_QUOTA_CODES.has(value));
-  } catch {
-    return false;
-  }
-}
-
-async function readBoundedBody(response, timeoutMs) {
-  const reader = response.body?.getReader?.();
-  if (!reader) return null;
-  const chunks = [];
-  let length = 0;
-  let timeout;
-  let timedOut = false;
-  try {
-    const content = await Promise.race([
-      (async () => {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done || timedOut) break;
-          length += value.byteLength;
-          if (length > MAX_PROVIDER_ERROR_BYTES) return null;
-          chunks.push(value);
-        }
-        return new TextDecoder("utf-8", { fatal: true }).decode(concatenate(chunks, length));
-      })().catch(() => null),
-      new Promise((resolve) => {
-        timeout = setTimeout(() => {
-          timedOut = true;
-          resolve(null);
-        }, timeoutMs);
-      }),
-    ]);
-    return content;
-  } finally {
-    if (timeout !== undefined) clearTimeout(timeout);
-    void reader.cancel().catch(() => undefined);
-  }
-}
-
-function concatenate(chunks, length) {
-  const combined = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return combined;
+  return new OpenAIClient({ ...options, maxRetries: 0, fetch: instrumentedFetch });
 }
 
 function retryAfterMilliseconds(headers, now = Date.now()) {
@@ -355,11 +323,22 @@ function parseDelay(value, multiplier) {
   return Number.isFinite(delay) && delay >= 0 ? delay : undefined;
 }
 
-async function delay(milliseconds) {
+async function delay(milliseconds, signal) {
   let remaining = milliseconds;
-  while (remaining > 0) {
-    const chunk = Math.min(remaining, MAX_TIMEOUT);
-    await new Promise((resolve) => setTimeout(resolve, chunk));
+  while (remaining > 0 && !signal?.aborted) {
+    const chunk = Math.min(remaining, MAX_TIMER_DELAY_MS);
+    await new Promise((resolve) => {
+      const timer = setTimeout(done, chunk);
+      const abort = () => {
+        clearTimeout(timer);
+        done();
+      };
+      function done() {
+        signal?.removeEventListener("abort", abort);
+        resolve();
+      }
+      signal?.addEventListener("abort", abort, { once: true });
+    });
     remaining -= chunk;
   }
 }
@@ -398,6 +377,7 @@ function summarizeUsage(attempts) {
 }
 
 module.exports = {
-  RuntimeMetrics, createProviderClient, hasKnownQuotaCode, providerErrorCode, retryAfterMilliseconds,
-  sanitizeReason,
+  ResponseBodyIdleError, ResponseBodySizeError, RuntimeMetrics, createProviderClient,
+  createResponseBodyMonitor, delay, providerErrorCode, responseBodyMonitorFetchOptions,
+  retryAfterMilliseconds, sanitizeReason,
 };

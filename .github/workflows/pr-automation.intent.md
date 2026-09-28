@@ -41,6 +41,7 @@ The review pipeline must therefore live in a reusable workflow, with lane concur
 ## Classification
 
 - Configure the classifier action for at most four request retries after the initial attempt.
+- Bound the streamed classifier stage independently of its enclosing job's cleanup allowance.
 
 ## Reviewer pipeline
 

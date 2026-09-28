@@ -399,17 +399,17 @@ async function runResolveReviewScript({ report, pipelineResult = "success" }) {
     findings: [],
   };
   const files = new Map([
-    ["review-pipeline/final/result.json", JSON.stringify({
+    ["review-pipeline/result.json", JSON.stringify({
       output: JSON.stringify(review({ summary: rawReview.summary, findings: [] })),
       raw_output: JSON.stringify(rawReview),
     })],
-    ["review-pipeline/report/review-report.json", JSON.stringify(report)],
-    ["review-pipeline/validation/validation-context.json", JSON.stringify({
+    ["review-pipeline/review-report.json", JSON.stringify(report)],
+    ["review-pipeline/validation-context.json", JSON.stringify({
       head_sha: SHA,
       changed_paths: [],
       changed_lines: {},
     })],
-    ["review-pipeline/aggregate/validated-specialist-findings.json", JSON.stringify({
+    ["review-pipeline/validated-specialist-findings.json", JSON.stringify({
       head_sha: SHA,
       reviewers: [],
     })],
@@ -494,7 +494,10 @@ test("automatic review requires exact-head CI and only reruns after a later push
     "utf8",
   ));
   assert.equal(classifierConfig.max_request_retries, 4);
+  assert.equal(classifierConfig.stage_timeout_ms, 1_800_000);
+  assert.equal(classifierConfig.stream_idle_timeout_ms, 300_000);
   assert.doesNotMatch(classifier, /max-request-retries:/);
+  assert.match(classifier, /timeout-minutes: 40/);
   assert.match(reviewGate, /ref: headSha/);
   assert.match(reviewGate, /head_sha: headSha/);
   assert.match(reviewGate,
@@ -522,9 +525,11 @@ test("automatic review requires exact-head CI and only reruns after a later push
     "stage-recovery-delay", "review-recovery-preflight", "review-recovery-claim", "review-pipeline-recovery",
   ]) assert.doesNotMatch(workflow, new RegExp(`  ${retiredJob}:`));
   const reviewState = workflowJob(workflow, "resolve-review-state");
-  assert.match(reviewState, /name: review-final-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
-  assert.match(reviewState, /name: review-report-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
-  assert.match(reviewState, /parseReport\(fs\.existsSync\("review-pipeline\/report\/review-report\.json"\)/);
+  assert.match(reviewState,
+    /pattern: review-\{final,report,validation,aggregate\}-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
+  assert.match(reviewState, /if: needs\.review-pipeline\.result != 'skipped'/);
+  assert.match(reviewState, /merge-multiple: true/);
+  assert.match(reviewState, /parseReport\(fs\.existsSync\("review-pipeline\/review-report\.json"\)/);
   assert.match(reviewState, /validateFinalReview\(persisted\.raw_output/);
   assert.match(reviewState, /JSON\.stringify\(revalidated\.value\) === persisted\.output/);
   assert.doesNotMatch(reviewState, /RAW_OUTPUT|REVIEW_REPORT/);
@@ -4629,10 +4634,8 @@ test("maximum review payloads traverse workflow-controlled files and artifacts",
   assert.doesNotMatch(pipeline, /RAW_OUTPUT|structured-output \}\}/);
   assert.match(pipeline, /name: review-final-\$\{\{ inputs\.head-sha \}\}/);
   assert.match(pipeline, /name: review-report-\$\{\{ inputs\.head-sha \}\}/);
-  assert.match(caller, /name: review-final-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
-  assert.match(caller, /name: review-report-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
-  assert.match(caller, /name: review-validation-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
-  assert.match(caller, /name: review-aggregate-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
+  assert.match(caller,
+    /pattern: review-\{final,report,validation,aggregate\}-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
   assert.match(caller, /name: review-state-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
   const resolveReviewStateJob = workflowJob(caller, "resolve-review-state");
   assert.doesNotMatch(resolveReviewStateJob, /RAW_OUTPUT|REVIEW_REPORT/);
@@ -4643,6 +4646,8 @@ test("maximum review payloads traverse workflow-controlled files and artifacts",
   assert.match(workflowJob(caller, "write-state"), /CLASSIFICATION_STATE/);
   assert.doesNotMatch(caller, /classification-state-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
   assert.match(action, /structured-output-file:/);
+  assert.equal((action.match(/^  structured-output-file:/gm) || []).length, 1);
+  assert.match(pipeline, /steps\.agent-retry\.outcome == 'success'/);
 });
 
 test("specialist concurrency is a provider allocation, not a reviewer cap", () => {
@@ -4662,7 +4667,11 @@ test("reviewer actions retry four provider requests and repair output in convers
     const config = JSON.parse(fs.readFileSync(path.join(__dirname, "agents", `${agent}.json`), "utf8"));
     assert.equal(config.max_request_retries, 4, `${agent} must retry four requests`);
     assert.equal(config.max_output_repair_attempts, 2, `${agent} must repair output in conversation`);
+    assert.equal(config.stage_timeout_ms, 7_200_000, `${agent} must use the reviewer stage budget`);
+    assert.equal(config.stream_idle_timeout_ms, 300_000, `${agent} must use the stream idle budget`);
   }
+  assert.match(workflowJob(workflow, "specialists"), /timeout-minutes: 250/);
+  assert.match(workflowJob(workflow, "general"), /timeout-minutes: 250/);
 });
 
 test("the shared retry gate carries the resolved plan into its decision", async () => {

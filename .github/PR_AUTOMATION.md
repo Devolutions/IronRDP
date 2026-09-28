@@ -137,21 +137,24 @@ Model-generated titles and rationales remain untrusted and are escaped independe
 `.github/actions/openai-agent` is a bundled JavaScript action built on the official OpenAI SDK.
 It loads a workflow-controlled agent configuration, prompt, output schema, methodology, and filesystem capability list.
 It exposes only `read_file`, `list_files`, and `search_text`.
-Its workflow-controlled configuration enforces turn, tool-call, path, byte, line, recursion, result, request-timeout, request-retry, and output-repair limits.
-The output schemas, rather than profile byte limits, bound accepted model output.
-For large review schemas, accepted output is written once to a workflow-controlled file in the action's dedicated workspace directory; the action rejects symlinks, existing targets, and paths outside that directory.
+Its workflow-controlled configuration enforces turn, tool-call, path, byte, line, recursion, result, stream-idle, stage, request-retry, and output-repair limits.
+The runtime bounds raw streamed bodies and accepted serialization independently of schema value bounds.
+For large review schemas, accepted output is written once to a workflow-controlled target in the action's dedicated workspace directory; the action rejects symlinks, existing targets, and paths outside that directory.
+The target is action input rather than an echoed success output, and workflow consumers select their known path from the action step outcome.
 The caller can opt into a trusted validator from the workflow checkout and pass bounded invocation metadata.
 The action validates JSON and schema before the validator, then preserves the conversation for bounded correction turns.
 For validator checks, `previousCandidate` is the earliest JSON-parsed candidate in the repair sequence, including a value that did not pass local schema and may be any JSON type.
 Validator-directed corrections may use only necessary bounded read-only evidence lookup, while invalid output remains terminal after its configured repair budget.
 One model turn is one logical model call.
-The SDK adapter owns retry HTTP attempts for that logical call within its configured retry budget and honors valid `Retry-After` delays.
-Known transient statuses retry and known terminal statuses stop despite provider retry hints; unrecognized responses use SDK policy.
-The configured request timeout bounds individual network attempts and non-success response bodies.
-A known response-body transport failure that escapes SDK retries is categorized as a stage-recoverable connection failure.
+The action owns retry HTTP attempts for that logical call through the SDK's public completion API and honors valid `Retry-After` delays.
+Pre-header failures, status failures, and interrupted streams share one retry budget and discard partial response state before resending the unchanged history.
+Known transient statuses retry, while known terminal statuses stop despite provider retry hints.
+Every request streams under a per-attempt raw-body and idle-progress budget plus one monotonic stage deadline that also covers backoff, tools, validation, and repair.
+The checked-in profiles request high reasoning effort and leave the provider token cap unset.
+The runtime assembles reasoning, content, usage, finish reason, and indexed tool-call fragments, and no tool executes until the complete batch passes preflight.
 Strict provider JSON Schema mode is opt-in only for a configured supported endpoint; local validation always remains enforced.
 It reports safe activity, deterministic logical-call and HTTP-attempt indices, request and tool-result byte counts, retry and repair counts, finish reason, available token usage with completeness state, bounded provider error codes, and machine-readable terminal or transient failure categories through one diagnostics output.
-The current non-streaming transport applies its 1 MiB model-message-content fallback after the provider response arrives.
+The workflow job timeout exceeds the full initial stage, delayed stage retry, and cleanup allowance so a bounded failure can still be persisted.
 
 The action exposes no command execution, writes, Git operations, GitHub APIs, environment access, arbitrary network access, or generic URL fetching.
 It logs bounded metadata only and never logs prompts, pull request content, tool arguments, tool results, model responses, provider response bodies, or credentials.

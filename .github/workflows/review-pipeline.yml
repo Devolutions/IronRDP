@@ -259,6 +259,7 @@ jobs:
     needs: evidence
     if: needs.evidence.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 250
     permissions:
       contents: read
       # Read-only, and used for one thing: re-deciding review eligibility before a delayed retry
@@ -370,7 +371,11 @@ jobs:
           OPENSPECS_SHA: ${{ needs.evidence.outputs.openspecs-sha }}
           REQUIRED_REVIEWERS: ${{ needs.evidence.outputs.required-reviewers }}
           SELECTED_REVIEWERS: ${{ inputs.specialist-reviewers }}
-          OUTPUT_FILE: ${{ steps.agent-retry.outputs.structured-output-file || steps.agent.outputs.structured-output-file }}
+          OUTPUT_FILE: >-
+            ${{ steps.agent-retry.outcome == 'success' &&
+            format('.openai-agent-output/{0}-retry.json', matrix.reviewer) ||
+            steps.agent.outcome == 'success' &&
+            format('.openai-agent-output/{0}-initial.json', matrix.reviewer) || '' }}
           MODEL_REASON: ${{ steps.agent-retry.outputs.failure-reason || steps.agent.outputs.failure-reason }}
           FAILURE_CATEGORY: ${{ steps.agent-retry.outputs.failure-category || steps.agent.outputs.failure-category }}
           DIAGNOSTICS: ${{ steps.agent.outputs.diagnostics }}
@@ -557,6 +562,7 @@ jobs:
     needs: [evidence, aggregate]
     if: needs.aggregate.result == 'success' && needs.aggregate.outputs.ready == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 250
     permissions:
       contents: read
       # Read-only, and used for one thing: re-deciding review eligibility before a delayed retry
@@ -651,7 +657,11 @@ jobs:
         if: always()
         uses: actions/github-script@v8
         env:
-          OUTPUT_FILE: ${{ steps.agent-retry.outputs.structured-output-file || steps.agent.outputs.structured-output-file }}
+          OUTPUT_FILE: >-
+            ${{ steps.agent-retry.outcome == 'success' &&
+            '.openai-agent-output/general-retry.json' ||
+            steps.agent.outcome == 'success' &&
+            '.openai-agent-output/general-initial.json' || '' }}
           MODEL_REASON: ${{ steps.agent-retry.outputs.failure-reason || steps.agent.outputs.failure-reason }}
           FAILURE_CATEGORY: ${{ steps.agent-retry.outputs.failure-category || steps.agent.outputs.failure-category }}
           DIAGNOSTICS: ${{ steps.agent.outputs.diagnostics }}

@@ -27,8 +27,6 @@ inputs:
 outputs:
   structured-output:
     description: Schema-validated JSON when no structured-output-file is requested
-  structured-output-file:
-    description: Workspace-relative file containing schema-validated JSON
   failure-reason:
     description: Bounded failure category when no valid output was produced
   turn-count:

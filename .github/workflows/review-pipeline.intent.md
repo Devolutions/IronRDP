@@ -13,6 +13,8 @@ It can merge overlapping candidates and add findings that no specialist reported
 Reviewer findings use severity and a question boolean.
 
 - Configure reviewer actions for at most four request retries after the initial attempt.
+- Stream provider responses under idle, byte, and monotonic stage budgets.
+- Keep each provider job alive long enough to persist a bounded failure after the initial stage and its one delayed recovery attempt.
 
 ### Specialist reviewers
 

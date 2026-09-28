@@ -5,7 +5,8 @@ const assert = require("node:assert/strict");
 const OpenAI = require("openai");
 
 const {
-  RuntimeMetrics, createProviderClient, hasKnownQuotaCode, providerErrorCode, retryAfterMilliseconds,
+  ResponseBodySizeError, RuntimeMetrics, createProviderClient, createResponseBodyMonitor,
+  providerErrorCode, retryAfterMilliseconds,
 } = require("../src/provider");
 
 class BaseClient {
@@ -27,48 +28,25 @@ test("provider error codes use bounded documented locations", () => {
   assert.equal(providerErrorCode({
     provider_specific_fields: { code: "surface_not_credit_eligible" },
   }), "surface_not_credit_eligible");
+  assert.equal(providerErrorCode({
+    code: "503",
+    error: { provider_specific_fields: { code: "surface_not_credit_eligible" } },
+  }), "surface_not_credit_eligible");
   assert.equal(providerErrorCode({ detail: { code: "metering_unavailable" } }), "metering_unavailable");
   assert.equal(providerErrorCode({ body: { error: { code: "monthly_cap_reached" } } }), "monthly_cap_reached");
   assert.equal(providerErrorCode({ code: "unsafe value" }), undefined);
 });
 
-test("SDK adapter suppresses known quota retries without exposing bodies", async () => {
-  const metrics = new RuntimeMetrics();
-  const client = createProviderClient(OpenAI, {
-    apiKey: "test-key",
-    baseURL: "https://provider.example/v1",
-  }, metrics);
-  assert.equal(await client.shouldRetry(new Response(JSON.stringify({
-    error: { code: "insufficient_quota", message: "secret" },
-  }), { status: 429 })), false);
-  assert.equal(await client.shouldRetry(new Response(JSON.stringify({
-    error: { code: "temporarily_limited", message: "secret" },
-  }), { status: 429 })), true);
-  assert.equal(await hasKnownQuotaCode(new Response(JSON.stringify({
-    error: { type: "quota_exhausted", message: "secret" },
-  }), { status: 429 })), true);
-  const started = Date.now();
-  assert.equal(await hasKnownQuotaCode(new Response("x".repeat(8 * 1024 + 1), {
-    status: 429,
-  }), 100), false);
-  assert.equal(Date.now() - started < 100, true);
-});
-
-test("SDK adapter honors valid Retry-After without another retry budget", async () => {
-  const delays = [];
+test("provider client disables SDK retry ownership", () => {
   const client = createProviderClient(
     BaseClient,
-    { timeout: 120_000 },
+    { maxRetries: 9 },
     new RuntimeMetrics(),
-    globalThis.fetch,
-    async (milliseconds) => { delays.push(milliseconds); },
   );
-  client.makeRequest = async (options, retriesRemaining, requestLogID) => ({
-    options, retriesRemaining, requestLogID,
-  });
-  const result = await client.retryRequest({}, 4, "request", new Headers({ "retry-after": "600" }));
-  assert.deepEqual(delays, [600_000]);
-  assert.deepEqual(result, { options: {}, retriesRemaining: 3, requestLogID: "request" });
+  assert.equal(client.options.maxRetries, 0);
+});
+
+test("Retry-After parsing accepts bounded syntax without clipping the stage policy", () => {
   assert.equal(retryAfterMilliseconds(new Headers({ "retry-after-ms": "250" })), 250);
   assert.equal(
     retryAfterMilliseconds(new Headers({ "retry-after-ms": "3000000000" })),
@@ -84,28 +62,17 @@ test("SDK adapter honors valid Retry-After without another retry budget", async 
   assert.equal(retryAfterMilliseconds(new Headers({ "retry-after": "invalid" })), undefined);
 });
 
-test("SDK adapter prohibits policy-terminal retries despite provider headers", async () => {
-  const client = createProviderClient(OpenAI, {
-    apiKey: "test-key",
-    baseURL: "https://provider.example/v1",
-  }, new RuntimeMetrics());
-  for (const [status, body] of [
-    [401, {}],
-    [403, {}],
-    [400, {}],
-    [429, { error: { code: "insufficient_quota" } }],
-  ]) {
-    assert.equal(await client.shouldRetry(new Response(JSON.stringify(body), {
-      status,
-      headers: { "x-should-retry": "true" },
-    })), false);
-  }
-  for (const status of [408, 409, 429, 503]) {
-    assert.equal(await client.shouldRetry(new Response("", {
-      status,
-      headers: { "x-should-retry": "false" },
-    })), true);
-  }
+test("response monitor counts raw body bytes before parsing", async () => {
+  const monitor = createResponseBodyMonitor({ idleTimeoutMs: 1000, maximumBytes: 4 });
+  let aborted = false;
+  monitor.beginAttempt(() => { aborted = true; });
+  const response = monitor.wrap(new Response(new Uint8Array([1, 2, 3, 4, 5])));
+  await assert.rejects(
+    response.arrayBuffer(),
+    (error) => error instanceof ResponseBodySizeError,
+  );
+  assert.equal(aborted, true);
+  assert.equal(monitor.failure instanceof ResponseBodySizeError, true);
 });
 
 test("runtime metrics retain activity and mark partial usage incomplete", async () => {
@@ -245,7 +212,7 @@ test("provider attempts include full response-body consumption time", async () =
   const metrics = new RuntimeMetrics();
   const client = createProviderClient(
     BaseClient,
-    { timeout: 1_000 },
+    {},
     metrics,
     async () => new Response(new ReadableStream({
       start(controller) {
