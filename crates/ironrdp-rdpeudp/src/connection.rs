@@ -772,15 +772,7 @@ impl RdpeudpConnection {
         self.timers.set(Timer::Idle, now + self.config.idle_timeout);
 
         let state = self.state;
-        let result = self.dispatch_datagram(wire, now);
-        if let Err(error) = &result {
-            debug!(?error, ?state, len = wire.len(), "Rejected datagram");
-        }
-        result
-    }
-
-    fn dispatch_datagram(&mut self, wire: &mut [u8], now: MonotonicInstant) -> Result<(), RdpeudpError> {
-        match self.state {
+        let result = match self.state {
             State::SynSent => self.handle_syn_ack(wire, now),
             State::SynReceived => self.handle_final_ack(wire, now),
             State::Established => {
@@ -799,7 +791,11 @@ impl RdpeudpConnection {
                 }
             }
             State::Closed => Err(RdpeudpError::connection_closed("handle datagram")),
+        };
+        if let Err(error) = &result {
+            debug!(?error, ?state, len = wire.len(), "Rejected datagram");
         }
+        result
     }
 
     /// Whether `wire` is the server repeating the SYN+ACK we already
