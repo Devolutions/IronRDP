@@ -393,6 +393,14 @@ impl DrdynvcClient {
                     ?tunnel_type,
                     "Got DVC Create Request PDU on a multitransport tunnel: {create_request:?}"
                 );
+                // The TCP path answers a Create Request that arrives before the capabilities
+                // exchange with a Capabilities Response first. Capabilities PDUs are not exchanged
+                // on a tunnel, so a tunnel refuses the out-of-order request instead.
+                if !self.cap_handshake_done {
+                    return Err(pdu_other_err!(
+                        "received a DVC Create Request on a multitransport tunnel before the capabilities exchange"
+                    ));
+                }
                 let channel_id = create_request.channel_id();
                 let (created, messages) = self.process_create(create_request)?;
                 if created {

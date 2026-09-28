@@ -1,8 +1,8 @@
 use ironrdp_core::{Decode as _, ReadCursor, encode_vec, impl_as_any};
 use ironrdp_dvc::ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_dvc::pdu::{
-    ClosePdu, CreateRequestPdu, CreationStatus, DataPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu,
-    SoftSyncChannelList, SoftSyncRequestPdu, SoftSyncTunnelType,
+    CapabilitiesRequestPdu, CapsVersion, ClosePdu, CreateRequestPdu, CreationStatus, DataPdu, DrdynvcClientPdu,
+    DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu, SoftSyncTunnelType,
 };
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessage, DvcMessageBatch, DvcProcessor};
 use ironrdp_svc::SvcMessage;
@@ -77,6 +77,15 @@ impl DvcClientProcessor for TunnelCreatedDvc {}
 fn decode_client_pdu(message: &SvcMessage) -> DrdynvcClientPdu {
     let encoded = message.encode_unframed_pdu().expect("DVC response should encode");
     DrdynvcClientPdu::decode(&mut ReadCursor::new(&encoded)).expect("DVC response should decode")
+}
+
+fn exchange_capabilities(client: &mut DrdynvcClient) {
+    let caps = encode_vec(&DrdynvcServerPdu::Capabilities(CapabilitiesRequestPdu::new(
+        CapsVersion::V3,
+        None,
+    )))
+    .expect("Capabilities Request should encode");
+    client.process(&caps).expect("Capabilities Request should be processed");
 }
 
 #[test]
@@ -207,6 +216,7 @@ fn message_batch_rejects_a_mismatched_channel_id() {
 #[test]
 fn channels_created_on_a_tunnel_are_bound_to_it() {
     let mut client = DrdynvcClient::new().with_dynamic_channel(TunnelCreatedDvc);
+    exchange_capabilities(&mut client);
     client
         .attach_established_dynamic_channel(7, RecordedDvc::default())
         .expect("recorded channel should attach");
@@ -289,6 +299,7 @@ fn channels_created_on_a_tunnel_are_bound_to_it() {
 #[test]
 fn tunnel_stays_in_use_after_its_channels_close() {
     let mut client = DrdynvcClient::new().with_dynamic_channel(TunnelCreatedDvc);
+    exchange_capabilities(&mut client);
     client
         .attach_established_dynamic_channel(7, RecordedDvc::default())
         .expect("recorded channel should attach");
@@ -317,5 +328,40 @@ fn tunnel_stays_in_use_after_its_channels_close() {
     client
         .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &create)
         .expect("Create Request on the tunnel should be processed");
+    assert_eq!(client.tunnel_for_channel(16), Some(SoftSyncTunnelType::RELIABLE_UDP));
+}
+
+#[test]
+fn tunnel_refuses_a_create_request_before_the_capabilities_exchange() {
+    let mut client = DrdynvcClient::new().with_dynamic_channel(TunnelCreatedDvc);
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("recorded channel should attach");
+    client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+
+    let soft_sync = encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
+        SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, vec![7]),
+    ])))
+    .expect("Soft-Sync request should encode");
+    client
+        .process(&soft_sync)
+        .expect("Soft-Sync request should be accepted");
+
+    let create = encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+        16,
+        "tunnel-created".to_owned(),
+    )))
+    .expect("Create Request should encode");
+    assert!(
+        client
+            .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &create)
+            .is_err()
+    );
+    assert_eq!(client.tunnel_for_channel(16), None);
+
+    exchange_capabilities(&mut client);
+    client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &create)
+        .expect("Create Request on the tunnel should be processed after the capabilities exchange");
     assert_eq!(client.tunnel_for_channel(16), Some(SoftSyncTunnelType::RELIABLE_UDP));
 }
