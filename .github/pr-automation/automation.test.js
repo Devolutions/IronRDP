@@ -213,6 +213,10 @@ function maximumSpecialistAggregate() {
   };
 }
 
+function loadOutputSchema(name) {
+  return JSON.parse(fs.readFileSync(path.join(__dirname, "schemas", name), "utf8"));
+}
+
 function workflowJob(workflow, name) {
   const start = workflow.indexOf(`  ${name}:\n`);
   assert.notEqual(start, -1, `${name} job is missing`);
@@ -1142,12 +1146,9 @@ test("classifier schema and semantic validation require overlap", () => {
 });
 
 test("maximum schema outputs stay accepted through action and review validation", () => {
-  const loadSchema = (name) => JSON.parse(fs.readFileSync(
-    path.join(__dirname, "schemas", name), "utf8",
-  ));
-  const classifierSchema = compileOutputValidator(loadSchema("classifier.json"));
-  const candidateSchema = compileOutputValidator(loadSchema("candidate-review.json"));
-  const finalSchema = compileOutputValidator(loadSchema("final-review.json"));
+  const classifierSchema = compileOutputValidator(loadOutputSchema("classifier.json"));
+  const candidateSchema = compileOutputValidator(loadOutputSchema("candidate-review.json"));
+  const finalSchema = compileOutputValidator(loadOutputSchema("final-review.json"));
 
   const classifierOutput = maximumClassifier();
   const classifierCandidate = classifierSchema(JSON.stringify(classifierOutput));
@@ -1209,15 +1210,9 @@ test("maximum schema outputs stay accepted through action and review validation"
 });
 
 test("schema output bounds cover escaped strings, protocol coordinates, and GitHub integers", () => {
-  const candidateSchema = compileOutputValidator(JSON.parse(fs.readFileSync(
-    path.join(__dirname, "schemas", "candidate-review.json"), "utf8",
-  )));
-  const classifierSchema = compileOutputValidator(JSON.parse(fs.readFileSync(
-    path.join(__dirname, "schemas", "classifier.json"), "utf8",
-  )));
-  const finalSchema = compileOutputValidator(JSON.parse(fs.readFileSync(
-    path.join(__dirname, "schemas", "final-review.json"), "utf8",
-  )));
+  const candidateSchema = compileOutputValidator(loadOutputSchema("candidate-review.json"));
+  const classifierSchema = compileOutputValidator(loadOutputSchema("classifier.json"));
+  const finalSchema = compileOutputValidator(loadOutputSchema("final-review.json"));
 
   const escapedClassifier = JSON.stringify(maximumClassifier({ escaped: true }));
   assert.match(escapedClassifier, /\\u0000.*\\".*\\\\.*\\u001f/s);

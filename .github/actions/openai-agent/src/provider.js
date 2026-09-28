@@ -62,7 +62,6 @@ class RuntimeMetrics {
   beginAttempt(timeoutMs) {
     const attempt = {
       activity: this.activeRequest?.activity || this.activity,
-      logicalCall: this.activeRequest?.logicalCall || 0,
       attempt: ++this.attemptCount,
       startedAt: this.now(),
       timeoutMs,

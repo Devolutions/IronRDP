@@ -29,7 +29,7 @@ const MAXIMUM_TRUSTED_BYTES = 8 * 1024 * 1024;
 const CANDIDATE_LIMITS = require("./schemas/candidate-review.json").properties.findings;
 const FINAL_LIMITS = require("./schemas/final-review.json").properties.findings;
 const CANDIDATE_FINDING_ID = new RegExp(CANDIDATE_LIMITS.items.properties.id.pattern);
-const MAX_TITLE_LENGTH = 200;
+const MAX_TITLE_LENGTH = FINAL_LIMITS.items.properties.title.maxLength;
 const DISPOSITION_REVIEWERS = require("./schemas/final-review.json")
   .properties.candidate_dispositions.items.properties.reviewer.enum;
 

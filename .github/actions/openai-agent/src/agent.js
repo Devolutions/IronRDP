@@ -240,16 +240,7 @@ async function runAgent({
       if (calls.length > config.max_tool_calls - state.toolCalls) {
         throw limitFailure("maximum tool call count exceeded", state);
       }
-      for (const call of calls) {
-        state.toolCalls++;
-        const toolResult = executeTool(call, sandbox);
-        metrics?.recordToolResult(toolResult);
-        messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: toolResult,
-        });
-      }
+      executeToolCalls(messages, calls);
     }
     return finalize(messages);
   }
@@ -327,12 +318,7 @@ async function runAgent({
           if (calls.length > config.max_tool_calls - state.toolCalls) {
             throw limitFailure("maximum tool call count exceeded", state);
           }
-          for (const call of calls) {
-            state.toolCalls++;
-            const toolResult = executeTool(call, sandbox);
-            metrics?.recordToolResult(toolResult);
-            messages.push({ role: "tool", tool_call_id: call.id, content: toolResult });
-          }
+          executeToolCalls(messages, calls);
           toolsPermitted = false;
           if (state.providerCalls >= config.max_turns) {
             throw limitFailure("maximum turn count exceeded", state);
@@ -411,6 +397,15 @@ async function runAgent({
     } catch (error) {
       metrics?.finishActiveAttempt();
       throw withState(error, state);
+    }
+  }
+
+  function executeToolCalls(messages, calls) {
+    for (const call of calls) {
+      state.toolCalls++;
+      const toolResult = executeTool(call, sandbox);
+      metrics?.recordToolResult(toolResult);
+      messages.push({ role: "tool", tool_call_id: call.id, content: toolResult });
     }
   }
 }
