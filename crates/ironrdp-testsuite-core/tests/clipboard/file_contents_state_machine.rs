@@ -435,3 +435,120 @@ fn duplicate_stream_id_overwrites_tracking() {
         "tracking should reflect the second request's file index"
     );
 }
+
+// ── Rejection reporting ─────────────────────────────────────────────
+
+/// A rejected request must not leave its caller waiting.
+///
+/// Every rejection inside `request_file_contents` reports an error response to
+/// the backend -- the same treatment `FormatListResponse::Fail` already gives
+/// pending requests. Without it the only signal is the `Err` returned to the
+/// embedder, which carries no stream id, so whatever was awaiting that transfer
+/// hangs until an unrelated timeout fires.
+#[test]
+fn a_rejected_request_fails_its_stream_on_the_backend() {
+    let responses = Arc::new(Mutex::new(Vec::new()));
+    let backend = RecordingBackend {
+        responses: Arc::clone(&responses),
+    };
+    let mut cliprdr = CliprdrClient::new(Box::new(backend));
+    *cliprdr.__test_state_mut() = CliprdrState::Ready;
+    *cliprdr.__test_remote_file_list_mut() = Some(file_list(&["only.txt"]));
+
+    // Index 1 does not exist in a one-file list.
+    let request = FileContentsRequest {
+        stream_id: 7,
+        index: 1,
+        flags: FileContentsFlags::SIZE,
+        position: 0,
+        requested_size: 8,
+        data_id: None,
+    };
+    assert!(
+        cliprdr.request_file_contents(request).is_err(),
+        "an out-of-bounds index is still an error for the caller"
+    );
+
+    let received = responses.lock().unwrap();
+    assert_eq!(
+        received.len(),
+        1,
+        "the backend must be told the request failed, so it can release stream 7"
+    );
+    assert_eq!(received[0].stream_id, 7);
+    assert!(received[0].is_error);
+}
+
+/// A request rejected before the channel is usable reports too.
+///
+/// `require_ready` and the capability check fire before any per-request
+/// validation, and they were the two paths most likely to strand a caller.
+#[test]
+fn a_request_rejected_before_ready_fails_its_stream_on_the_backend() {
+    let responses = Arc::new(Mutex::new(Vec::new()));
+    let backend = RecordingBackend {
+        responses: Arc::clone(&responses),
+    };
+    // Left in its initial state: not Ready.
+    let mut cliprdr = CliprdrClient::new(Box::new(backend));
+
+    let request = FileContentsRequest {
+        stream_id: 9,
+        index: 0,
+        flags: FileContentsFlags::SIZE,
+        position: 0,
+        requested_size: 8,
+        data_id: None,
+    };
+    assert!(cliprdr.request_file_contents(request).is_err());
+
+    let received = responses.lock().unwrap();
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].stream_id, 9);
+    assert!(received[0].is_error);
+}
+
+/// A malformed flag combination fails its stream too.
+///
+/// `FileContentsFlags::validate` rejects a request before it is ever recorded in
+/// `sent_file_contents_requests`, so the timeout sweep -- the one mechanism that
+/// retires a stream nobody answered -- can never reach it. Without a synthetic
+/// error response here, a caller awaiting this stream waits forever.
+#[test]
+fn a_malformed_flag_combination_fails_its_stream_on_the_backend() {
+    for (stream_id, flags, case) in [
+        (11, FileContentsFlags::SIZE | FileContentsFlags::RANGE, "both set"),
+        (12, FileContentsFlags::empty(), "neither set"),
+    ] {
+        let responses = Arc::new(Mutex::new(Vec::new()));
+        let backend = RecordingBackend {
+            responses: Arc::clone(&responses),
+        };
+        let mut cliprdr = CliprdrClient::new(Box::new(backend));
+        *cliprdr.__test_state_mut() = CliprdrState::Ready;
+        *cliprdr.__test_remote_file_list_mut() = Some(file_list(&["only.txt"]));
+
+        let request = FileContentsRequest {
+            stream_id,
+            index: 0,
+            flags,
+            position: 0,
+            requested_size: 8,
+            data_id: None,
+        };
+        assert!(
+            cliprdr.request_file_contents(request).is_err(),
+            "{case}: a malformed flag combination is still an error for the caller"
+        );
+
+        assert!(
+            cliprdr.__test_sent_file_contents_requests().is_empty(),
+            "{case}: a rejected request is never tracked, so the timeout sweep cannot fail it"
+        );
+
+        let received = responses.lock().unwrap();
+        assert_eq!(received.len(), 1, "{case}: the backend must be told the request failed");
+        assert_eq!(received[0].stream_id, stream_id);
+        assert!(received[0].is_error);
+    }
+}
