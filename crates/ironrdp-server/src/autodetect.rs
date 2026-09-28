@@ -264,6 +264,18 @@ impl AutoDetectManager {
         Some(AutoDetectRequest::bw_stop_continuous(sequence))
     }
 
+    /// Drop the outstanding bandwidth measurement, if any, returning whether
+    /// there was one.
+    ///
+    /// For when the transport it went out on has closed: its results can no
+    /// longer arrive, and until they do no other measurement starts. A late
+    /// Bandwidth Measure Results for it is then
+    /// [`AutoDetectOutcome::Unmatched`].
+    pub fn cancel_bandwidth_measure(&mut self) -> bool {
+        self.bw_pending_since_ms = None;
+        self.pending_bw.take().is_some()
+    }
+
     /// Build a Network Characteristics Result reporting the measured network.
     ///
     /// Returns `None` until the network has actually been characterised, which
