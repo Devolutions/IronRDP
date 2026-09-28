@@ -50,6 +50,7 @@ webauthn = ["dep:ironrdp-rdpewa", "dep:ironrdp-rdpewa-native", "dvc-com-plugin"]
 vmconnect = ["dep:ironrdp-vmconnect"]
 location = ["dep:ironrdp-rdpel"]
 udp = [
+    "dep:ironrdp-rdpemt",
     "dep:ironrdp-rdpeudp",
     "dep:ironrdp-rdpeudp-tokio",
     "ironrdp-rdpeudp-tokio/rustls-aws-lc-rs",
@@ -82,6 +83,7 @@ ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.8" }
 ironrdp-echo = { path = "../ironrdp-echo", version = "0.4" }
 ironrdp-egfx = { path = "../ironrdp-egfx", version = "0.3" }
 ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" }
+ironrdp-rdpemt = { path = "../ironrdp-rdpemt", version = "0.1", optional = true }
 ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", version = "0.1", optional = true }
 ironrdp-rdpeudp-tokio = { path = "../ironrdp-rdpeudp-tokio", version = "0.1", optional = true }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" } # public

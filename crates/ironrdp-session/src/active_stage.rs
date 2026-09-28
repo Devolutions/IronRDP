@@ -11,7 +11,7 @@ use ironrdp_pdu::fast_path::FastPathHeader;
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
-use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
+use ironrdp_pdu::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse};
 use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
@@ -28,6 +28,7 @@ use ironrdp_rdpei::RdpeiClient;
 use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
 use tracing::{debug, warn};
 
+use crate::autodetect::AutoDetectResponder;
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
 use crate::{SessionError, SessionErrorExt as _, SessionResult, fast_path, x224};
@@ -50,6 +51,8 @@ pub struct ActiveStage {
     window_support_level: Option<WindowSupportLevel>,
     graphics_output_needs_full_refresh: bool,
     damage_regions: Vec<InclusiveRectangle>,
+    /// Answers the auto-detect requests carried on the reliable UDP tunnel.
+    tunnel_auto_detect: AutoDetectResponder,
 }
 
 /// Builder for [`ActiveStage`].
@@ -108,6 +111,7 @@ impl ActiveStageBuilder {
             window_support_level: None,
             graphics_output_needs_full_refresh: false,
             damage_regions: Vec::new(),
+            tunnel_auto_detect: AutoDetectResponder::default(),
         }
     }
 }
@@ -590,6 +594,33 @@ impl ActiveStage {
         self.x224_processor
             .get_svc_processor::<DrdynvcClient>()
             .is_some_and(|drdynvc| drdynvc.switched_to_tunnel(SoftSyncTunnelType::RELIABLE_UDP))
+    }
+
+    /// Answers the auto-detect requests the server sends in the sub-headers of one Tunnel Data
+    /// PDU ([MS-RDPEMT] 2.2.1.1.1), and counts the `data_len` bytes of higher-layer data the PDU
+    /// carries for an open bandwidth measurement. Returns the responses to send back on the
+    /// tunnel.
+    ///
+    /// The tunnel keeps its own measurement, apart from the message channel's, because a
+    /// measurement on the tunnel counts only the data that follows the tunnel PDU header
+    /// ([MS-RDPBCGR] 3.2.5.14). That data follows the sub-headers on the wire, so the data of the
+    /// PDU that carries a Start is counted and the data of the one that carries a Stop is not.
+    /// `received_at` is the time the PDU arrived, from one monotonic clock for the whole tunnel.
+    ///
+    /// [MS-RDPEMT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/4f538fd7-3aca-4e7d-a213-13eb5f95c1ad
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/16ffa852-8aa7-481c-99a0-36c1a9a198f6
+    pub fn process_tunnel_auto_detect(
+        &mut self,
+        requests: Vec<AutoDetectRequest>,
+        data_len: usize,
+        received_at: Option<MonotonicInstant>,
+    ) -> Vec<AutoDetectResponse> {
+        let responses = requests
+            .into_iter()
+            .filter_map(|request| self.tunnel_auto_detect.respond(request, received_at))
+            .collect();
+        self.tunnel_auto_detect.record_bytes(data_len);
+        responses
     }
 
     /// Returns the Soft-Sync tunnel selected for client messages on `channel_id`.
@@ -1108,6 +1139,76 @@ mod tests {
     use ironrdp_pdu::input::mouse::PointerFlags;
     use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerUpdateData};
     use ironrdp_rdpei::pdu::{PenEventPdu, RdpInputProtocolVersion, RdpeiPdu, ScReadyPdu, TouchEventPdu};
+
+    fn tunnel_test_stage() -> ActiveStage {
+        ActiveStageBuilder {
+            static_channels: StaticChannelSet::new(),
+            user_channel_id: 1001,
+            io_channel_id: 1003,
+            message_channel_id: None,
+            share_id: 1,
+            compression_type: None,
+            enable_server_pointer: true,
+            pointer_software_rendering: false,
+        }
+        .build()
+    }
+
+    #[test]
+    fn tunnel_auto_detect_answers_an_rtt_request() {
+        let mut stage = tunnel_test_stage();
+        let responses = stage.process_tunnel_auto_detect(
+            vec![AutoDetectRequest::rtt_continuous(7)],
+            10,
+            Some(MonotonicInstant::from_millis(1_000)),
+        );
+        assert_eq!(responses, [AutoDetectResponse::RttResponse { sequence_number: 7 }]);
+    }
+
+    /// The data of the PDU that carries the Start follows it on the wire and is counted; the data
+    /// of the one that carries the Stop is not.
+    #[test]
+    fn tunnel_auto_detect_counts_the_data_between_start_and_stop() {
+        let mut stage = tunnel_test_stage();
+        let at = |millis| Some(MonotonicInstant::from_millis(millis));
+
+        assert!(
+            stage
+                .process_tunnel_auto_detect(vec![AutoDetectRequest::bw_start_continuous(1)], 7, at(1_000))
+                .is_empty()
+        );
+        assert!(stage.process_tunnel_auto_detect(Vec::new(), 100, at(1_010)).is_empty());
+        let responses = stage.process_tunnel_auto_detect(vec![AutoDetectRequest::bw_stop_continuous(3)], 50, at(1_040));
+
+        let [
+            AutoDetectResponse::BandwidthMeasureResults {
+                sequence_number,
+                time_delta_ms,
+                byte_count,
+                ..
+            },
+        ] = responses.as_slice()
+        else {
+            panic!("expected one bandwidth result, got {responses:?}");
+        };
+        assert_eq!((*sequence_number, *time_delta_ms, *byte_count), (3, 40, 7 + 100));
+    }
+
+    /// The tunnel's measurement is separate from the message channel's, so data that arrives over
+    /// TCP is not counted in it.
+    #[test]
+    fn tunnel_auto_detect_keeps_its_own_window() {
+        let mut stage = tunnel_test_stage();
+        let at = |millis| Some(MonotonicInstant::from_millis(millis));
+
+        stage.process_tunnel_auto_detect(vec![AutoDetectRequest::bw_start_continuous(1)], 0, at(1_000));
+        stage.x224_processor.record_bandwidth_bytes(500);
+        let responses = stage.process_tunnel_auto_detect(vec![AutoDetectRequest::bw_stop_continuous(2)], 0, at(1_020));
+        assert!(matches!(
+            responses.as_slice(),
+            [AutoDetectResponse::BandwidthMeasureResults { byte_count: 0, .. }]
+        ));
+    }
 
     #[test]
     fn full_redraw_prefers_suppress_output_toggle_when_supported() {
