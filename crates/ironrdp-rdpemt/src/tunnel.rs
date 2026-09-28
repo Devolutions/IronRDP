@@ -194,13 +194,9 @@ impl RdpemtTunnel {
     /// After calling this, use `poll_event()` to retrieve any events
     /// and `poll_pdu()` to retrieve any response PDUs.
     pub fn handle_pdu(&mut self, data: &[u8]) -> Result<(), RdpemtError> {
-        let pdu: TunnelPdu = match ironrdp_core::decode(data) {
-            Ok(pdu) => pdu,
-            Err(error) => {
-                warn!(%error, len = data.len(), side = ?self.side, "Failed to decode tunnel PDU");
-                return Err(RdpemtError::decode(error));
-            }
-        };
+        let pdu: TunnelPdu = ironrdp_core::decode(data)
+            .inspect_err(|error| warn!(%error, len = data.len(), side = ?self.side, "Failed to decode tunnel PDU"))
+            .map_err(RdpemtError::decode)?;
 
         match (&self.state, &self.side, pdu) {
             // Client in AwaitingResponse receives CreateResponse
@@ -272,10 +268,17 @@ impl RdpemtTunnel {
 
             // Any other combination is a state violation
             (state, side, pdu) => {
+                // Variant name only: Debug on the PDU would print the security
+                // cookie a CreateRequest carries.
+                let pdu_kind = match pdu {
+                    TunnelPdu::CreateRequest(_) => "CreateRequest",
+                    TunnelPdu::CreateResponse(_) => "CreateResponse",
+                    TunnelPdu::Data(_) => "Data",
+                };
                 warn!(
                     ?state,
                     ?side,
-                    pdu = pdu_kind(&pdu),
+                    pdu_kind,
                     "Rejected tunnel PDU unexpected in current state"
                 );
                 return Err(RdpemtError::invalid_state("handle tunnel PDU"));
@@ -374,14 +377,6 @@ impl RdpemtTunnel {
         let encoded = ironrdp_core::encode_vec(&pdu).expect("CreateResponse encoding is infallible for valid inputs");
         debug!(hr_response, "Queued tunnel create response");
         self.outgoing.push_back(encoded);
-    }
-}
-
-fn pdu_kind(pdu: &TunnelPdu) -> &'static str {
-    match pdu {
-        TunnelPdu::CreateRequest(_) => "CreateRequest",
-        TunnelPdu::CreateResponse(_) => "CreateResponse",
-        TunnelPdu::Data(_) => "Data",
     }
 }
 
