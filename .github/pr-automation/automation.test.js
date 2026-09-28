@@ -405,6 +405,7 @@ async function runResolveReviewScript({ report, pipelineResult = "success" }) {
     })],
     ["review-pipeline/report/review-report.json", JSON.stringify(report)],
     ["review-pipeline/validation/validation-context.json", JSON.stringify({
+      head_sha: SHA,
       changed_paths: [],
       changed_lines: {},
     })],

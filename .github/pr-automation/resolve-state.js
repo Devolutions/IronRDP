@@ -286,10 +286,11 @@ function resolveReviewState({
     if (gate.ciGreen !== true) return fail("CI has not succeeded", false, null, "remove");
     if (!gate.ok) return fail("review gate unavailable");
   }
+  const reviewerContextMatches = reviewerValidationContext?.head_sha === expectedSha;
   const reviewerResult = validateNormalizedFinalReview(reviewer, {
     expectedSha,
-    changedPaths: reviewerValidationContext?.changed_paths,
-    changedLines: reviewerValidationContext?.changed_lines,
+    changedPaths: reviewerContextMatches ? reviewerValidationContext.changed_paths : undefined,
+    changedLines: reviewerContextMatches ? reviewerValidationContext.changed_lines : undefined,
     specialistAggregate,
     requireContext: requireReviewerContext,
   });

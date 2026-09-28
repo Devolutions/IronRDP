@@ -161,6 +161,7 @@ jobs:
             fs.writeFileSync(
               "pr-evidence/validation-context.json",
               JSON.stringify({
+                head_sha: expectedSha,
                 changed_paths: files.map((file) => file.filename),
                 changed_lines: addedLinesByPath(files),
               }),

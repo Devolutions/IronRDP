@@ -791,18 +791,36 @@ jobs:
              const selectedReviewers = new Set(Array.isArray(gate.specialistReviewers)
                ? gate.specialistReviewers
                : []);
-             const reducedCoverage = report.stages
-               .filter((stage) => stage.id.startsWith("specialist:") &&
-                 selectedReviewers.has(stage.id.slice("specialist:".length)) &&
-                 stage.status === "failed" && stage.required !== true)
-               .map((stage) => stage.id.slice("specialist:".length));
+             const aggregateReviewers = Array.isArray(specialistAggregate?.reviewers)
+               ? specialistAggregate.reviewers
+               : [];
+             const specialistStages = new Map(report.stages
+               .filter((stage) => stage.id.startsWith("specialist:"))
+               .map((stage) => [stage.id.slice("specialist:".length), stage]));
+             const artifactsAgree =
+               validationContext?.head_sha === process.env.HEAD_SHA &&
+               specialistAggregate?.head_sha === process.env.HEAD_SHA &&
+               aggregateReviewers.length === selectedReviewers.size &&
+               aggregateReviewers.every((reviewer) => {
+                 const stage = specialistStages.get(reviewer.reviewer);
+                 return selectedReviewers.has(reviewer.reviewer) &&
+                   stage?.status === (reviewer.status === "valid" ? "success" : "failed");
+               }) &&
+               specialistStages.size === selectedReviewers.size;
+             const reducedCoverage = artifactsAgree
+               ? aggregateReviewers
+                 .filter((reviewer) => reviewer.status === "failed" &&
+                   specialistStages.get(reviewer.reviewer)?.required !== true)
+                 .map((reviewer) => reviewer.reviewer)
+               : [];
              const failureReasons = report.stages.filter((stage) => stage.status === "failed")
                .map((stage) => `${stage.id}: ${stage.reason || stage.category}`);
-             const reviewerReason = report.status === "failed"
-               ? failureReasons.join("; ") || process.env.REVIEWER_REASON || "review pipeline failed"
-               : process.env.REVIEWER_REASON;
-             const revalidated = report.status === "success" && persisted && validationContext &&
-                 specialistAggregate
+             const reviewerReason = !artifactsAgree
+               ? "review artifacts disagree"
+               : report.status === "failed"
+                 ? failureReasons.join("; ") || process.env.REVIEWER_REASON || "review pipeline failed"
+                 : process.env.REVIEWER_REASON;
+             const revalidated = artifactsAgree && report.status === "success" && persisted
                ? validateFinalReview(persisted.raw_output, {
                  expectedSha: process.env.HEAD_SHA,
                  changedPaths: validationContext.changed_paths,
