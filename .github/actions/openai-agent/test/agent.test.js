@@ -223,7 +223,67 @@ test("runtime assembles streamed reasoning, content, usage, and request controls
   });
 });
 
-test("runtime assembles interleaved tool fragments before executing the whole batch", async () => {
+test("runtime accepts an omitted choice index in a single-choice chunk", async () => {
+  const result = await runAgent({
+    client: clientFrom([completionStream(null, {
+      fragments: [{
+        choices: [{
+          delta: { content: '{"answer":"done"}' },
+          finish_reason: "stop",
+        }],
+      }],
+    })]),
+    config: { ...baseConfig, max_tool_calls: 0 },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+  });
+
+  assert.equal(result.output, '{"answer":"done"}');
+});
+
+test("runtime accepts one complete index-less tool call before a terminal chunk", async () => {
+  const executions = [];
+  const result = await runAgent({
+    client: clientFrom([
+      completionStream(null, {
+        fragments: [
+          {
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  id: "call-1",
+                  type: "function",
+                  function: { name: "read_file", arguments: '{"path":"root/a"}' },
+                }],
+              },
+              finish_reason: null,
+            }],
+          },
+          { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+        ],
+      }),
+      message('{"answer":"done"}'),
+    ]),
+    config: baseConfig,
+    methodologies: [],
+    prompt: "p",
+    sandbox: {
+      ...sandbox,
+      readFile(args) {
+        executions.push(args.path);
+        return JSON.stringify({ ok: true });
+      },
+    },
+    schema,
+  });
+
+  assert.equal(result.output, '{"answer":"done"}');
+  assert.deepEqual(executions, ["root/a"]);
+});
+
+test("runtime continues to assemble indexed interleaved tool fragments before executing the whole batch", async () => {
   const requests = [];
   const executions = [];
   const guardedSandbox = {
@@ -307,6 +367,165 @@ test("runtime assembles interleaved tool fragments before executing the whole ba
   assert.equal(requests[1].messages.at(-2).tool_call_id, "first");
   assert.equal(requests[1].messages.at(-1).tool_call_id, "second");
   assert.equal(requests[1].messages.at(-3).reasoning_content, "inspect");
+});
+
+test("runtime rejects incompatible streamed indices without executing tools or exposing provider data", async () => {
+  const sentinel = "MODEL_STREAM_SECRET_SENTINEL";
+  const fullCall = () => ({
+    id: `${sentinel}_ID`,
+    type: "function",
+    function: { name: "read_file", arguments: `{"path":"${sentinel}_ARGUMENTS"}` },
+  });
+  const cases = [
+    {
+      name: "partial index-less tool call",
+      violation: "tool-call-index-missing-fragmented",
+      fragments: [{
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              id: `${sentinel}_ID`,
+              type: "function",
+              function: { name: "read_file" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      }],
+    },
+    {
+      name: "index-less tool call with empty arguments",
+      violation: "tool-call-index-missing-fragmented",
+      fragments: [{
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              id: `${sentinel}_ID`,
+              type: "function",
+              function: { name: "read_file", arguments: "" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      }],
+    },
+    {
+      name: "multiple index-less tool calls",
+      violation: "tool-call-index-missing-multiple",
+      fragments: [{
+        choices: [{
+          index: 0,
+          delta: { tool_calls: [fullCall(), fullCall()] },
+          finish_reason: "tool_calls",
+        }],
+      }],
+    },
+    {
+      name: "mixed indexed and index-less tool calls",
+      violation: "tool-call-index-mixed",
+      fragments: [
+        {
+          choices: [{
+            index: 0,
+            delta: { tool_calls: [{ index: 0, ...fullCall() }] },
+            finish_reason: null,
+          }],
+        },
+        {
+          choices: [{
+            index: 0,
+            delta: { tool_calls: [fullCall()] },
+            finish_reason: "tool_calls",
+          }],
+        },
+      ],
+    },
+    {
+      name: "invalid indexed tool call",
+      violation: "tool-call-index-invalid",
+      fragments: [{
+        choices: [{
+          index: 0,
+          delta: { tool_calls: [{ index: "zero", ...fullCall() }] },
+          finish_reason: "tool_calls",
+        }],
+      }],
+    },
+    {
+      name: "tool call with non-tool-call finish reason",
+      violation: "finish-tool-call-mismatch",
+      fragments: [{
+        choices: [{
+          index: 0,
+          delta: { tool_calls: [fullCall()] },
+          finish_reason: "stop",
+        }],
+      }],
+    },
+    {
+      name: "tool-call finish reason without tool calls",
+      violation: "finish-tool-call-mismatch",
+      fragments: [{
+        choices: [{
+          index: 0,
+          delta: {},
+          finish_reason: "tool_calls",
+        }],
+      }],
+    },
+    ...[null, "zero", -1, 1].map((index) => ({
+      name: `invalid choice index ${String(index)}`,
+      violation: "choice-index-invalid",
+      fragments: [{
+        choices: [{
+          index,
+          delta: { content: sentinel },
+          finish_reason: "stop",
+        }],
+      }],
+    })),
+    {
+      name: "ambiguous multi-choice omission",
+      violation: "choice-index-missing-multiple",
+      fragments: [{
+        choices: [
+          { delta: { content: sentinel }, finish_reason: "stop" },
+          { delta: { content: sentinel }, finish_reason: "stop" },
+        ],
+      }],
+    },
+  ];
+
+  for (const streamCase of cases) {
+    const metrics = new RuntimeMetrics();
+    let executions = 0;
+    await assert.rejects(
+      runAgent({
+        client: clientFrom([completionStream(null, { fragments: streamCase.fragments })]),
+        config: baseConfig,
+        methodologies: [],
+        prompt: "p",
+        sandbox: {
+          ...sandbox,
+          readFile() {
+            executions++;
+            return "{}";
+          },
+        },
+        schema,
+        metrics,
+      }),
+      (error) => error.reason === "provider stream was malformed",
+      streamCase.name,
+    );
+    assert.equal(executions, 0, streamCase.name);
+    const diagnostics = metrics.snapshot();
+    assert.equal(diagnostics.streamStructuralViolation, streamCase.violation, streamCase.name);
+    assert.match(diagnostics.streamStructuralViolation, /^[a-z-]+$/, streamCase.name);
+    assert.doesNotMatch(JSON.stringify(diagnostics), new RegExp(sentinel), streamCase.name);
+  }
 });
 
 test("runtime executes no tool when any streamed envelope is incomplete", async () => {

@@ -89,6 +89,7 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
   } catch (error) {
     const outcome = failure(error, phase);
     const failureReason = outcome.reason;
+    const streamStructuralViolation = metrics.snapshot().streamStructuralViolation;
     if (error instanceof AgentFailure) {
       turnCount = error.turnCount;
       toolCallCount = error.toolCallCount;
@@ -102,12 +103,18 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
           category: outcome.category,
           retryable: outcome.retryable,
           ...(diagnostic || {}),
+          ...(streamStructuralViolation === undefined ? {} : { streamStructuralViolation }),
         }));
       } else {
-        logActionFailure(core, "runtime", outcome);
+        logActionFailure(core, "runtime", outcome, streamStructuralViolation);
       }
     } else {
-      logActionFailure(core, error instanceof ActionError ? error.phase : phase, outcome);
+      logActionFailure(
+        core,
+        error instanceof ActionError ? error.phase : phase,
+        outcome,
+        streamStructuralViolation,
+      );
     }
     setOutputs(core, {
       output: "", failureReason, failureCategory: outcome.category,
@@ -148,13 +155,14 @@ function failure(error, phase) {
   }
 }
 
-function logActionFailure(core, phase, outcome) {
+function logActionFailure(core, phase, outcome, streamStructuralViolation) {
   core.info(JSON.stringify({
     event: "openai-agent.failure",
     phase,
     reason: outcome.reason,
     category: outcome.category,
     retryable: outcome.retryable,
+    ...(streamStructuralViolation === undefined ? {} : { streamStructuralViolation }),
   }));
 }
 

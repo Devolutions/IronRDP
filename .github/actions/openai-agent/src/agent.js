@@ -551,7 +551,7 @@ async function runAgent({
           timeout: stage.remaining(),
           fetchOptions: responseBodyMonitorFetchOptions(monitor),
         }), state);
-        const response = await consumeCompletionStream(stream, stage, state);
+        const response = await consumeCompletionStream(stream, stage, state, metrics);
         if (monitor.failure) throw monitor.failure;
         metrics?.recordCompletion(requestMetrics, response);
         return response;
@@ -564,6 +564,7 @@ async function runAgent({
           : providerFailure(error);
         if (!outcome.retryable || attempt === config.max_request_retries) {
           if (error instanceof SyntaxError) {
+            metrics?.recordStreamStructuralViolation("sse-json-invalid");
             throw new AgentFailure("provider stream was malformed", {
               cause: error, category: "provider-response", state,
             });
@@ -594,7 +595,7 @@ async function runAgent({
   }
 }
 
-async function consumeCompletionStream(stream, stage, state) {
+async function consumeCompletionStream(stream, stage, state, metrics) {
   if (!stream || typeof stream[Symbol.asyncIterator] !== "function") {
     throw new AgentFailure("provider response was not a stream", {
       category: "provider-response", state,
@@ -608,6 +609,8 @@ async function consumeCompletionStream(stream, stage, state) {
   let finishReason = null;
   let usage;
   let sawChoice = false;
+  let sawIndexedToolCall = false;
+  let sawIndexlessToolCall = false;
   let completed = false;
   const iterator = stream[Symbol.asyncIterator]();
 
@@ -621,41 +624,89 @@ async function consumeCompletionStream(stream, stage, state) {
       const chunk = next.value;
       if (chunk === null || typeof chunk !== "object" || Array.isArray(chunk) ||
           !Array.isArray(chunk.choices)) {
-        throw malformedStream(state);
+        throw malformedStream(state, metrics, "chunk-invalid");
       }
       if (chunk.usage !== null && typeof chunk.usage === "object" &&
           !Array.isArray(chunk.usage)) {
         usage = chunk.usage;
       }
       for (const choice of chunk.choices) {
-        if (finishReason !== null ||
-            choice === null || typeof choice !== "object" || Array.isArray(choice) ||
-            choice.index !== 0 || choice.delta === null || typeof choice.delta !== "object" ||
+        if (finishReason !== null) {
+          throw malformedStream(state, metrics, "post-finish");
+        }
+        if (choice === null || typeof choice !== "object" || Array.isArray(choice)) {
+          throw malformedStream(state, metrics, "choice-invalid");
+        }
+        if (choice.index === undefined) {
+          if (chunk.choices.length !== 1) {
+            throw malformedStream(state, metrics, "choice-index-missing-multiple");
+          }
+        } else if (choice.index !== 0) {
+          throw malformedStream(state, metrics, "choice-index-invalid");
+        }
+        if (choice.delta === null || typeof choice.delta !== "object" ||
             Array.isArray(choice.delta)) {
-          throw malformedStream(state);
+          throw malformedStream(state, metrics, "choice-delta-invalid");
         }
         sawChoice = true;
         if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
           if (typeof choice.finish_reason !== "string" ||
               finishReason !== null && finishReason !== choice.finish_reason) {
-            throw malformedStream(state);
+            throw malformedStream(state, metrics, "finish-reason-invalid");
           }
           finishReason = choice.finish_reason;
         }
         const delta = choice.delta;
         if (delta.role !== undefined && delta.role !== "assistant") {
-          throw malformedStream(state);
+          throw malformedStream(state, metrics, "role-invalid");
         }
         append(delta.content, content, true);
         append(delta.reasoning_content, reasoning);
         if (delta.tool_calls !== undefined) {
-          if (!Array.isArray(delta.tool_calls)) throw malformedStream(state);
+          if (!Array.isArray(delta.tool_calls)) {
+            throw malformedStream(state, metrics, "tool-calls-invalid");
+          }
           for (const fragment of delta.tool_calls) {
-            if (fragment === null || typeof fragment !== "object" || Array.isArray(fragment) ||
-                !Number.isSafeInteger(fragment.index) || fragment.index < 0 ||
-                fragment.index >= MAX_TOOL_CALLS) {
-              throw malformedStream(state);
+            if (fragment === null || typeof fragment !== "object" || Array.isArray(fragment)) {
+              throw malformedStream(state, metrics, "tool-call-invalid");
             }
+            if (fragment.index === undefined) {
+              if (sawIndexedToolCall ||
+                  delta.tool_calls.some((entry) => entry?.index !== undefined)) {
+                throw malformedStream(state, metrics, "tool-call-index-mixed");
+              }
+              if (sawIndexlessToolCall || delta.tool_calls.length !== 1) {
+                throw malformedStream(state, metrics, "tool-call-index-missing-multiple");
+              }
+              if (typeof fragment.id !== "string" || fragment.id.length === 0 ||
+                  fragment.type !== "function" || fragment.function === null ||
+                  typeof fragment.function !== "object" || Array.isArray(fragment.function) ||
+                  typeof fragment.function.name !== "string" || fragment.function.name.length === 0 ||
+                  typeof fragment.function.arguments !== "string" ||
+                  fragment.function.arguments.length === 0) {
+                throw malformedStream(state, metrics, "tool-call-index-missing-fragmented");
+              }
+              const call = {
+                id: [],
+                type: [],
+                function: { name: [], arguments: [] },
+              };
+              append(fragment.id, call.id);
+              append(fragment.type, call.type);
+              append(fragment.function.name, call.function.name);
+              append(fragment.function.arguments, call.function.arguments);
+              toolCalls.set(0, call);
+              sawIndexlessToolCall = true;
+              continue;
+            }
+            if (!Number.isSafeInteger(fragment.index) || fragment.index < 0 ||
+                fragment.index >= MAX_TOOL_CALLS) {
+              throw malformedStream(state, metrics, "tool-call-index-invalid");
+            }
+            if (sawIndexlessToolCall) {
+              throw malformedStream(state, metrics, "tool-call-index-mixed");
+            }
+            sawIndexedToolCall = true;
             let call = toolCalls.get(fragment.index);
             if (!call) {
               call = {
@@ -670,7 +721,7 @@ async function consumeCompletionStream(stream, stage, state) {
             if (fragment.function !== undefined) {
               if (fragment.function === null || typeof fragment.function !== "object" ||
                   Array.isArray(fragment.function)) {
-                throw malformedStream(state);
+                throw malformedStream(state, metrics, "tool-call-function-invalid");
               }
               append(fragment.function.name, call.function.name);
               append(fragment.function.arguments, call.function.arguments);
@@ -691,7 +742,7 @@ async function consumeCompletionStream(stream, stage, state) {
     }
   }
 
-  if (!sawChoice) throw malformedStream(state);
+  if (!sawChoice) throw malformedStream(state, metrics, "choice-missing");
   if (finishReason === null) {
     throw new AgentFailure("provider stream ended without completion metadata", {
       category: "provider-connection", retryable: true, state,
@@ -699,7 +750,7 @@ async function consumeCompletionStream(stream, stage, state) {
   }
   const calls = [...toolCalls].sort(([left], [right]) => left - right)
     .map(([index, call], position) => {
-      if (index !== position) throw malformedStream(state);
+      if (index !== position) throw malformedStream(state, metrics, "tool-call-index-gap");
       return {
         id: call.id.join(""),
         type: call.type.join(""),
@@ -711,9 +762,7 @@ async function consumeCompletionStream(stream, stage, state) {
     });
   if ((calls.length !== 0 && finishReason !== "tool_calls") ||
       (calls.length === 0 && finishReason === "tool_calls")) {
-    throw new AgentFailure("provider stream ended with inconsistent tool-call control", {
-      category: "provider-response", state,
-    });
+    throw malformedStream(state, metrics, "finish-tool-call-mismatch");
   }
   const message = {
     role: "assistant",
@@ -728,7 +777,7 @@ async function consumeCompletionStream(stream, stage, state) {
 
   function append(fragment, target, isContent = false) {
     if (fragment === undefined || fragment === null) return;
-    if (typeof fragment !== "string") throw malformedStream(state);
+    if (typeof fragment !== "string") throw malformedStream(state, metrics, "delta-value-invalid");
     const bytes = Buffer.byteLength(fragment, "utf8");
     modelDataBytes += bytes;
     if (!Number.isSafeInteger(modelDataBytes) ||
@@ -749,7 +798,8 @@ async function consumeCompletionStream(stream, stage, state) {
   }
 }
 
-function malformedStream(state) {
+function malformedStream(state, metrics, violation = "stream-structure-invalid") {
+  metrics?.recordStreamStructuralViolation(violation);
   return new AgentFailure("provider stream was malformed", {
     category: "provider-response", state,
   });

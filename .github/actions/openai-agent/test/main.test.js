@@ -448,6 +448,94 @@ test("main safely distinguishes provider transport failures", async () => {
   }
 });
 
+test("main logs only the static stream structural violation", async () => {
+  const workspace = actionFixture();
+  const core = mockCore({
+    "api-key": "key",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+  });
+  const sentinel = "MODEL_STREAM_SECRET_SENTINEL";
+  class MalformedStreamOpenAI {
+    constructor() {
+      this.chat = { completions: { create: async () => ({
+        controller: new AbortController(),
+        async *[Symbol.asyncIterator]() {
+          yield {
+            choices: [{
+              index: null,
+              delta: { content: sentinel },
+              finish_reason: "stop",
+            }],
+          };
+        },
+      }) } };
+    }
+  }
+  try {
+    await main(core, { GITHUB_WORKSPACE: workspace.directory }, MalformedStreamOpenAI);
+    assert.equal(core.outputs.get("failure-reason"), "provider stream was malformed");
+    assert.equal(
+      JSON.parse(core.outputs.get("diagnostics")).streamStructuralViolation,
+      "choice-index-invalid",
+    );
+    assert.deepEqual(
+      core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
+        .find((event) => event.event === "openai-agent.failure"),
+      {
+        event: "openai-agent.failure",
+        phase: "runtime",
+        reason: "provider stream was malformed",
+        category: "provider-response",
+        retryable: false,
+        streamStructuralViolation: "choice-index-invalid",
+      },
+    );
+    assert.doesNotMatch(JSON.stringify(core.events), new RegExp(sentinel));
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test("main reduces malformed SSE parser errors to a static structural violation", async () => {
+  const workspace = actionFixture();
+  const core = mockCore({
+    "api-key": "key",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+  });
+  const sentinel = "RAW_SSE_SECRET_SENTINEL";
+  class MalformedSseOpenAI {
+    constructor() {
+      this.chat = { completions: { create: async () => {
+        throw new SyntaxError(sentinel);
+      } } };
+    }
+  }
+  try {
+    await main(core, { GITHUB_WORKSPACE: workspace.directory }, MalformedSseOpenAI);
+    assert.equal(core.outputs.get("failure-reason"), "provider stream was malformed");
+    assert.equal(
+      JSON.parse(core.outputs.get("diagnostics")).streamStructuralViolation,
+      "sse-json-invalid",
+    );
+    assert.deepEqual(
+      core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
+        .find((event) => event.event === "openai-agent.provider-failure"),
+      {
+        event: "openai-agent.provider-failure",
+        reason: "provider stream was malformed",
+        category: "provider-response",
+        retryable: false,
+        streamStructuralViolation: "sse-json-invalid",
+      },
+    );
+    assert.doesNotMatch(JSON.stringify(core.events), new RegExp(sentinel));
+  } finally {
+    workspace.cleanup();
+  }
+});
+
 test("main reports why repaired output remains invalid", async () => {
   const workspace = actionFixture();
   const core = mockCore({
