@@ -77,6 +77,10 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       retryable: false,
       turnCount, toolCallCount, outputRepairCount, metrics,
     });
+    const {
+      ignoredPostFinishEmptyDeltaChoices,
+      ignoredRepeatedTerminalChoices,
+    } = metrics.snapshot();
     core.info(JSON.stringify({
       event: "openai-agent.complete",
       id: config.id,
@@ -85,11 +89,14 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       toolCallCount,
       outputRepairCount,
       outputBytes: Buffer.byteLength(result.output, "utf8"),
+      ignoredPostFinishEmptyDeltaChoices,
+      ignoredRepeatedTerminalChoices,
     }));
   } catch (error) {
     const outcome = failure(error, phase);
     const failureReason = outcome.reason;
-    const streamStructuralViolation = metrics.snapshot().streamStructuralViolation;
+    const streamDiagnostics = metrics.snapshot();
+    const { streamStructuralViolation, postFinishShape } = streamDiagnostics;
     if (error instanceof AgentFailure) {
       turnCount = error.turnCount;
       toolCallCount = error.toolCallCount;
@@ -104,9 +111,10 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
           retryable: outcome.retryable,
           ...(diagnostic || {}),
           ...(streamStructuralViolation === undefined ? {} : { streamStructuralViolation }),
+          ...(postFinishShape === undefined ? {} : { postFinishShape }),
         }));
       } else {
-        logActionFailure(core, "runtime", outcome, streamStructuralViolation);
+        logActionFailure(core, "runtime", outcome, streamStructuralViolation, postFinishShape);
       }
     } else {
       logActionFailure(
@@ -114,6 +122,7 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
         error instanceof ActionError ? error.phase : phase,
         outcome,
         streamStructuralViolation,
+        postFinishShape,
       );
     }
     setOutputs(core, {
@@ -155,7 +164,7 @@ function failure(error, phase) {
   }
 }
 
-function logActionFailure(core, phase, outcome, streamStructuralViolation) {
+function logActionFailure(core, phase, outcome, streamStructuralViolation, postFinishShape) {
   core.info(JSON.stringify({
     event: "openai-agent.failure",
     phase,
@@ -163,6 +172,7 @@ function logActionFailure(core, phase, outcome, streamStructuralViolation) {
     category: outcome.category,
     retryable: outcome.retryable,
     ...(streamStructuralViolation === undefined ? {} : { streamStructuralViolation }),
+    ...(postFinishShape === undefined ? {} : { postFinishShape }),
   }));
 }
 

@@ -115,9 +115,19 @@ test("main masks the key immediately, rejects redirects, and emits only bounded 
       options = received;
       this.chat = { completions: { create: async (value) => {
         request = value;
-        return completionStream({
-          choices: [{ message: { content: '{"answer":"MODEL_RESPONSE_SENTINEL"}' } }],
-        });
+        return {
+          controller: new AbortController(),
+          async *[Symbol.asyncIterator]() {
+            yield {
+              choices: [{
+                index: 0,
+                delta: { content: '{"answer":"MODEL_RESPONSE_SENTINEL"}' },
+                finish_reason: "stop",
+              }],
+            };
+            yield { choices: [{ index: 0, delta: {} }] };
+          },
+        };
       } } };
     }
   }
@@ -153,6 +163,10 @@ test("main masks the key immediately, rejects redirects, and emits only bounded 
     ]) {
       assert.doesNotMatch(logs, new RegExp(forbidden));
     }
+    const completion = core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
+      .find((event) => event.event === "openai-agent.complete");
+    assert.equal(completion.ignoredPostFinishEmptyDeltaChoices, 1);
+    assert.equal(completion.ignoredRepeatedTerminalChoices, 0);
   } finally {
     workspace.cleanup();
   }
@@ -241,6 +255,8 @@ test("configuration supplies recovery limits and canonical diagnostics", async (
       failureCategory: null,
       retryable: false,
       providerAttempts: [],
+      ignoredPostFinishEmptyDeltaChoices: 0,
+      ignoredRepeatedTerminalChoices: 0,
     });
   } finally {
     workspace.cleanup();
@@ -448,7 +464,7 @@ test("main safely distinguishes provider transport failures", async () => {
   }
 });
 
-test("main logs only the static stream structural violation", async () => {
+test("main logs only static post-finish diagnostics", async () => {
   const workspace = actionFixture();
   const core = mockCore({
     "api-key": "key",
@@ -463,9 +479,15 @@ test("main logs only the static stream structural violation", async () => {
         async *[Symbol.asyncIterator]() {
           yield {
             choices: [{
-              index: null,
-              delta: { content: sentinel },
+              index: 0,
+              delta: { content: '{"answer":"done"}' },
               finish_reason: "stop",
+            }],
+          };
+          yield {
+            choices: [{
+              index: 0,
+              delta: { content: sentinel },
             }],
           };
         },
@@ -477,8 +499,9 @@ test("main logs only the static stream structural violation", async () => {
     assert.equal(core.outputs.get("failure-reason"), "provider stream was malformed");
     assert.equal(
       JSON.parse(core.outputs.get("diagnostics")).streamStructuralViolation,
-      "choice-index-invalid",
+      "post-finish",
     );
+    assert.equal(JSON.parse(core.outputs.get("diagnostics")).postFinishShape, "delta-content");
     assert.deepEqual(
       core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
         .find((event) => event.event === "openai-agent.failure"),
@@ -488,7 +511,8 @@ test("main logs only the static stream structural violation", async () => {
         reason: "provider stream was malformed",
         category: "provider-response",
         retryable: false,
-        streamStructuralViolation: "choice-index-invalid",
+        streamStructuralViolation: "post-finish",
+        postFinishShape: "delta-content",
       },
     );
     assert.doesNotMatch(JSON.stringify(core.events), new RegExp(sentinel));

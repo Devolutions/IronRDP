@@ -630,8 +630,20 @@ async function consumeCompletionStream(stream, stage, state, metrics) {
           !Array.isArray(chunk.usage)) {
         usage = chunk.usage;
       }
+      if (finishReason !== null && chunk.choices.length === 0) {
+        // OpenAI conventionally appends usage in an otherwise empty final chunk.
+        continue;
+      }
       for (const choice of chunk.choices) {
         if (finishReason !== null) {
+          const postFinishShape = classifyPostFinishChoice(chunk.choices, choice, finishReason);
+          if (postFinishShape === undefined) {
+            metrics?.recordIgnoredPostFinishEmptyDeltaChoice(
+              choice.finish_reason === finishReason,
+            );
+            continue;
+          }
+          metrics?.recordPostFinishShape(postFinishShape);
           throw malformedStream(state, metrics, "post-finish");
         }
         if (choice === null || typeof choice !== "object" || Array.isArray(choice)) {
@@ -796,6 +808,35 @@ async function consumeCompletionStream(stream, stage, state, metrics) {
     }
     target.push(fragment);
   }
+}
+
+function classifyPostFinishChoice(choices, choice, finishReason) {
+  if (choices.length !== 1) return "choice-count";
+  if (choice === null || typeof choice !== "object" || Array.isArray(choice)) {
+    return "choice-object";
+  }
+  const hasIndex = Object.hasOwn(choice, "index");
+  if (hasIndex ? choice.index !== 0 : "index" in choice) return "choice-index";
+  const hasFinishReason = Object.hasOwn(choice, "finish_reason");
+  if (hasFinishReason
+      ? choice.finish_reason === undefined ||
+        choice.finish_reason !== null && choice.finish_reason !== finishReason
+      : "finish_reason" in choice) {
+    return "finish-mismatch";
+  }
+  if (!Object.hasOwn(choice, "delta")) return "delta-invalid";
+  const delta = choice.delta;
+  if (delta === null || typeof delta !== "object" || Array.isArray(delta)) {
+    return "delta-invalid";
+  }
+  const prototype = Object.getPrototypeOf(delta);
+  if (prototype !== Object.prototype && prototype !== null) {
+    return "delta-invalid";
+  }
+  if (Object.hasOwn(delta, "content")) return "delta-content";
+  if (Object.hasOwn(delta, "reasoning_content")) return "delta-reasoning";
+  if (Object.hasOwn(delta, "tool_calls")) return "delta-tool-calls";
+  return Reflect.ownKeys(delta).length === 0 ? undefined : "delta-extension";
 }
 
 function malformedStream(state, metrics, violation = "stream-structure-invalid") {

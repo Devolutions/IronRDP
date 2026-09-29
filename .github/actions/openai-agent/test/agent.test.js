@@ -221,26 +221,36 @@ test("runtime assembles streamed reasoning, content, usage, and request controls
     outputTokens: 3,
     totalTokens: 8,
   });
+  assert.equal(metrics.snapshot().ignoredPostFinishEmptyDeltaChoices, 0);
+  assert.equal(metrics.snapshot().ignoredRepeatedTerminalChoices, 0);
 });
 
 test("runtime accepts an omitted choice index in a single-choice chunk", async () => {
+  const metrics = new RuntimeMetrics();
+  const emptyNullPrototypeDelta = Object.create(null);
   const result = await runAgent({
     client: clientFrom([completionStream(null, {
-      fragments: [{
-        choices: [{
-          delta: { content: '{"answer":"done"}' },
-          finish_reason: "stop",
-        }],
-      }],
+      fragments: [
+        {
+          choices: [{
+            delta: { content: '{"answer":"done"}' },
+            finish_reason: "stop",
+          }],
+        },
+        { choices: [{ delta: emptyNullPrototypeDelta }] },
+      ],
     })]),
     config: { ...baseConfig, max_tool_calls: 0 },
     methodologies: [],
     prompt: "p",
     sandbox,
     schema,
+    metrics,
   });
 
   assert.equal(result.output, '{"answer":"done"}');
+  assert.equal(metrics.snapshot().ignoredPostFinishEmptyDeltaChoices, 1);
+  assert.equal(metrics.snapshot().ignoredRepeatedTerminalChoices, 0);
 });
 
 test("runtime accepts one complete index-less tool call before a terminal chunk", async () => {
@@ -281,6 +291,142 @@ test("runtime accepts one complete index-less tool call before a terminal chunk"
 
   assert.equal(result.output, '{"answer":"done"}');
   assert.deepEqual(executions, ["root/a"]);
+});
+
+test("runtime preserves a usage-only post-finish tail before executing a completed tool call", async () => {
+  const executions = [];
+  const metrics = new RuntimeMetrics();
+  let streamCompleted = false;
+  const toolStream = {
+    controller: new AbortController(),
+    async *[Symbol.asyncIterator]() {
+      yield {
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call-1",
+              type: "function",
+              function: { name: "read_", arguments: '{"path":"' },
+            }],
+          },
+          finish_reason: null,
+        }],
+      };
+      yield {
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: 0,
+              function: { name: "file", arguments: 'root/a"}' },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      };
+      yield {
+        choices: [],
+        usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+      };
+      streamCompleted = true;
+    },
+  };
+  const client = clientFrom([
+    toolStream,
+    message('{"answer":"done"}'),
+  ]);
+  const create = client.chat.completions.create;
+  client.chat.completions.create = async (request) => {
+    metrics.beginAttempt();
+    return create(request);
+  };
+  const result = await runAgent({
+    client,
+    config: baseConfig,
+    methodologies: [],
+    prompt: "p",
+    sandbox: {
+      ...sandbox,
+      readFile(args) {
+        assert.equal(streamCompleted, true, "tool execution must wait for stream completion");
+        executions.push(args.path);
+        return JSON.stringify({ ok: true });
+      },
+    },
+    schema,
+    metrics,
+  });
+
+  assert.equal(result.output, '{"answer":"done"}');
+  assert.deepEqual(executions, ["root/a"]);
+  assert.equal(metrics.snapshot().ignoredPostFinishEmptyDeltaChoices, 0);
+  assert.equal(metrics.snapshot().ignoredRepeatedTerminalChoices, 0);
+  assert.deepEqual(metrics.snapshot().tokenUsage, {
+    complete: false,
+    knownAttemptCount: 1,
+    unknownAttemptCount: 1,
+    inputTokens: 5,
+    outputTokens: 3,
+    totalTokens: 8,
+  });
+});
+
+test("runtime ignores and counts a repeated terminal with an empty delta", async () => {
+  const metrics = new RuntimeMetrics();
+  const result = await runAgent({
+    client: clientFrom([completionStream(null, {
+      fragments: [
+        {
+          choices: [{
+            index: 0,
+            delta: { content: '{"answer":"done"}' },
+            finish_reason: "stop",
+          }],
+        },
+        { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+      ],
+    })]),
+    config: { ...baseConfig, max_tool_calls: 0 },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+    metrics,
+  });
+
+  assert.equal(result.output, '{"answer":"done"}');
+  assert.equal(metrics.snapshot().ignoredPostFinishEmptyDeltaChoices, 1);
+  assert.equal(metrics.snapshot().ignoredRepeatedTerminalChoices, 1);
+});
+
+test("runtime accepts a no-op post-finish tail with an explicit null finish reason", async () => {
+  const metrics = new RuntimeMetrics();
+  const result = await runAgent({
+    client: clientFrom([completionStream(null, {
+      fragments: [
+        {
+          choices: [{
+            index: 0,
+            delta: { content: '{"answer":"done"}' },
+            finish_reason: "stop",
+          }],
+        },
+        { choices: [{ index: 0, delta: {}, finish_reason: null }] },
+      ],
+    })]),
+    config: { ...baseConfig, max_tool_calls: 0 },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+    metrics,
+  });
+
+  assert.equal(result.output, '{"answer":"done"}');
+  assert.equal(metrics.snapshot().ignoredPostFinishEmptyDeltaChoices, 1);
+  assert.equal(metrics.snapshot().ignoredRepeatedTerminalChoices, 0);
 });
 
 test("runtime continues to assemble indexed interleaved tool fragments before executing the whole batch", async () => {
@@ -524,6 +670,166 @@ test("runtime rejects incompatible streamed indices without executing tools or e
     const diagnostics = metrics.snapshot();
     assert.equal(diagnostics.streamStructuralViolation, streamCase.violation, streamCase.name);
     assert.match(diagnostics.streamStructuralViolation, /^[a-z-]+$/, streamCase.name);
+    assert.doesNotMatch(JSON.stringify(diagnostics), new RegExp(sentinel), streamCase.name);
+  }
+});
+
+test("runtime rejects every non-no-op post-finish tail without executing tools", async () => {
+  const sentinel = "POST_FINISH_STREAM_SECRET_SENTINEL";
+  const toolCall = {
+    index: 0,
+    id: `${sentinel}_ID`,
+    type: "function",
+    function: { name: "read_file", arguments: `{"path":"${sentinel}_ARGUMENTS"}` },
+  };
+  const cases = [
+    {
+      name: "multiple choices",
+      shape: "choice-count",
+      choices: [{ index: 0, delta: {} }, { index: 0, delta: {} }],
+    },
+    { name: "choice object", shape: "choice-object", choices: [null] },
+    ...[null, "zero", -1, 1].map((index) => ({
+      name: `bad index ${String(index)}`,
+      shape: "choice-index",
+      choices: [{ index, delta: {} }],
+    })),
+    {
+      name: "own undefined index",
+      shape: "choice-index",
+      choices: [{ index: undefined, delta: {} }],
+    },
+    {
+      name: "inherited index",
+      shape: "choice-index",
+      choices: [Object.assign(Object.create({ index: 0 }), { delta: {} })],
+    },
+    {
+      name: "ambiguous omitted index",
+      shape: "choice-count",
+      choices: [{ delta: {} }, { delta: {} }],
+    },
+    {
+      name: "distinct finish reason",
+      shape: "finish-mismatch",
+      choices: [{ index: 0, delta: {}, finish_reason: "length" }],
+    },
+    {
+      name: "own undefined finish reason",
+      shape: "finish-mismatch",
+      choices: [{ index: 0, delta: {}, finish_reason: undefined }],
+    },
+    {
+      name: "inherited finish reason",
+      shape: "finish-mismatch",
+      choices: [Object.assign(Object.create({ finish_reason: "tool_calls" }), {
+        index: 0, delta: {},
+      })],
+    },
+    {
+      name: "invalid delta",
+      shape: "delta-invalid",
+      choices: [{ index: 0, delta: null }],
+    },
+    {
+      name: "array delta",
+      shape: "delta-invalid",
+      choices: [{ index: 0, delta: [] }],
+    },
+    {
+      name: "inherited delta",
+      shape: "delta-invalid",
+      choices: [Object.assign(Object.create({ delta: {} }), { index: 0 })],
+    },
+    {
+      name: "custom-prototype delta",
+      shape: "delta-invalid",
+      choices: [{ index: 0, delta: Object.create({}) }],
+    },
+    {
+      name: "late content",
+      shape: "delta-content",
+      choices: [{ index: 0, delta: { content: sentinel } }],
+    },
+    {
+      name: "empty content key",
+      shape: "delta-content",
+      choices: [{ index: 0, delta: { content: "" } }],
+    },
+    {
+      name: "late reasoning",
+      shape: "delta-reasoning",
+      choices: [{ index: 0, delta: { reasoning_content: sentinel } }],
+    },
+    {
+      name: "empty reasoning",
+      shape: "delta-reasoning",
+      choices: [{ index: 0, delta: { reasoning_content: "" } }],
+    },
+    {
+      name: "late tool calls",
+      shape: "delta-tool-calls",
+      choices: [{ index: 0, delta: { tool_calls: [toolCall] } }],
+    },
+    {
+      name: "empty tool calls",
+      shape: "delta-tool-calls",
+      choices: [{ index: 0, delta: { tool_calls: [] } }],
+    },
+    ...["role", "function_call", "refusal", "audio", "extension"].flatMap((key) => [
+      {
+        name: key,
+        shape: "delta-extension",
+        choices: [{ index: 0, delta: { [key]: sentinel } }],
+      },
+      {
+        name: `empty ${key}`,
+        shape: "delta-extension",
+        choices: [{ index: 0, delta: { [key]: "" } }],
+      },
+    ]),
+  ];
+
+  for (const streamCase of cases) {
+    const metrics = new RuntimeMetrics();
+    let executions = 0;
+    await assert.rejects(
+      runAgent({
+        client: clientFrom([completionStream(null, {
+          fragments: [
+            {
+              choices: [{
+                index: 0,
+                delta: { tool_calls: [toolCall] },
+                finish_reason: "tool_calls",
+              }],
+            },
+            { choices: streamCase.choices },
+          ],
+        })]),
+        config: baseConfig,
+        methodologies: [],
+        prompt: "p",
+        sandbox: {
+          ...sandbox,
+          readFile() {
+            executions++;
+            return "{}";
+          },
+        },
+        schema,
+        metrics,
+      }),
+      (error) => error.reason === "provider stream was malformed",
+      streamCase.name,
+    );
+    assert.equal(executions, 0, streamCase.name);
+    const diagnostics = metrics.snapshot();
+    assert.equal(diagnostics.streamStructuralViolation, "post-finish", streamCase.name);
+    assert.equal(diagnostics.postFinishShape, streamCase.shape, streamCase.name);
+    assert.equal(diagnostics.ignoredPostFinishEmptyDeltaChoices, 0, streamCase.name);
+    assert.equal(diagnostics.ignoredRepeatedTerminalChoices, 0, streamCase.name);
+    assert.match(diagnostics.postFinishShape, /^[a-z-]+$/, streamCase.name);
     assert.doesNotMatch(JSON.stringify(diagnostics), new RegExp(sentinel), streamCase.name);
   }
 });

@@ -33,6 +33,17 @@ const STREAM_STRUCTURAL_VIOLATIONS = new Set([
   "tool-call-invalid",
   "tool-calls-invalid",
 ]);
+const POST_FINISH_SHAPES = new Set([
+  "choice-count",
+  "choice-object",
+  "choice-index",
+  "finish-mismatch",
+  "delta-invalid",
+  "delta-content",
+  "delta-reasoning",
+  "delta-tool-calls",
+  "delta-extension",
+]);
 
 function providerErrorCode(error) {
   return [
@@ -59,6 +70,9 @@ class RuntimeMetrics {
     this.toolResultBytes = 0;
     this.providerErrorCode = undefined;
     this.streamStructuralViolation = undefined;
+    this.ignoredPostFinishEmptyDeltaChoices = 0;
+    this.ignoredRepeatedTerminalChoices = 0;
+    this.postFinishShape = undefined;
   }
 
   beginRequest(activity, request) {
@@ -137,6 +151,23 @@ class RuntimeMetrics {
     }
   }
 
+  recordIgnoredPostFinishEmptyDeltaChoice(repeatedTerminal) {
+    this.ignoredPostFinishEmptyDeltaChoices = saturatingIncrement(
+      this.ignoredPostFinishEmptyDeltaChoices,
+    );
+    if (repeatedTerminal) {
+      this.ignoredRepeatedTerminalChoices = saturatingIncrement(
+        this.ignoredRepeatedTerminalChoices,
+      );
+    }
+  }
+
+  recordPostFinishShape(shape) {
+    if (this.postFinishShape === undefined && POST_FINISH_SHAPES.has(shape)) {
+      this.postFinishShape = shape;
+    }
+  }
+
   // A rejected output attempt is the only evidence left of why a stage exhausted its repairs, so it
   // is kept as bounded telemetry rather than being reduced to the exhaustion itself.
   recordOutputRejection({ activity, layer, reason }) {
@@ -176,15 +207,22 @@ class RuntimeMetrics {
       providerFinishReason: finishReason || null,
       tokenUsage: usage,
       providerAttempts,
+      ignoredPostFinishEmptyDeltaChoices: this.ignoredPostFinishEmptyDeltaChoices,
+      ignoredRepeatedTerminalChoices: this.ignoredRepeatedTerminalChoices,
       ...(this.providerErrorCode === undefined ? {} : { providerErrorCode: this.providerErrorCode }),
       ...(this.streamStructuralViolation === undefined
         ? {}
         : { streamStructuralViolation: this.streamStructuralViolation }),
+      ...(this.postFinishShape === undefined ? {} : { postFinishShape: this.postFinishShape }),
       ...(this.outputRejections.length === 0
         ? {}
         : { outputRejections: this.outputRejections }),
     };
   }
+}
+
+function saturatingIncrement(value) {
+  return value < Number.MAX_SAFE_INTEGER ? value + 1 : value;
 }
 
 // The alphabet is entirely ASCII, so what survives it measures the same in characters as in bytes and
