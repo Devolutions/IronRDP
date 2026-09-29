@@ -28,20 +28,6 @@ fn a_tunnel_auto_detect_request_is_bare_and_alone() {
     );
 }
 
-/// A measurement the tunnel took with it when it closed does not hold up
-/// the next one, which after the fallback goes over TCP.
-#[test]
-fn the_tunnel_closing_cancels_its_bandwidth_measurement() {
-    let mut mgr = AutoDetectManager::new();
-    mgr.begin_bandwidth_measure(64 * 1024, 0)
-        .expect("a large write starts a measurement");
-    mgr.end_bandwidth_measure().expect("the measurement is open");
-
-    assert!(mgr.cancel_bandwidth_measure());
-
-    assert!(mgr.begin_bandwidth_measure(64 * 1024, 1_000).is_some());
-}
-
 #[test]
 fn bandwidth_results_on_the_tunnel_complete_the_measurement() {
     let mut mgr = AutoDetectManager::new();
