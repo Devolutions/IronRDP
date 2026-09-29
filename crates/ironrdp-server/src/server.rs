@@ -2406,7 +2406,7 @@ impl RdpServer {
         self.gfx_handle.as_ref()
     }
 
-    fn attach_channels(&mut self, acceptor: &mut Acceptor, monitor_count: u32, offer_display_control: bool) {
+    async fn attach_channels(&mut self, acceptor: &mut Acceptor) {
         if let Some(cliprdr_factory) = self.cliprdr_factory.as_deref() {
             let backend = cliprdr_factory.build_cliprdr_backend();
 
@@ -2432,7 +2432,11 @@ impl RdpServer {
             active: Arc::clone(&self.advanced_input_active),
         });
 
+        // `monitor_count` is only asked when the channel is offered, since its
+        // contract is tied to the channel opening.
+        let offer_display_control = self.display.lock().await.offers_display_control().await;
         let dvc = if offer_display_control {
+            let monitor_count = self.display.lock().await.monitor_count().await;
             let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display), monitor_count);
             dvc.with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)))
         } else {
@@ -2589,9 +2593,7 @@ impl RdpServer {
         // `accept_finalize`, which is where the acceptor first consumes the
         // static channel set (the MCS Connect Initial); `accept_begin`, already
         // done, stops at the security-upgrade gate before that.
-        let monitor_count = self.display.lock().await.monitor_count().await;
-        let offer_display_control = self.display.lock().await.offers_display_control().await;
-        self.attach_channels(&mut candidate.acceptor, monitor_count, offer_display_control);
+        self.attach_channels(&mut candidate.acceptor).await;
 
         self.finalize_negotiated(*candidate).await
     }
@@ -2738,7 +2740,6 @@ impl RdpServer {
         self.discard_stale_session_events().await;
 
         let size = self.display.lock().await.size().await;
-        let monitor_count = self.display.lock().await.monitor_count().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
         let mut pending = PendingConnection::new(
             self.opts.security.clone(),
@@ -2754,8 +2755,7 @@ impl RdpServer {
             },
         );
 
-        let offer_display_control = self.display.lock().await.offers_display_control().await;
-        self.attach_channels(pending.acceptor_mut(), monitor_count, offer_display_control);
+        self.attach_channels(pending.acceptor_mut()).await;
 
         let Some(negotiated) = pending.negotiate_and_authenticate(stream, tls).await? else {
             return Ok(());

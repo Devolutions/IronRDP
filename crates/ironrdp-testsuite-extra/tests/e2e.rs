@@ -52,7 +52,6 @@ const DESKTOP_WIDTH: u16 = 1024;
 const DESKTOP_HEIGHT: u16 = 768;
 const USERNAME: &str = "";
 const PASSWORD: &str = "";
-const DISPLAY_CONTROL_CHANNEL_NAME: &str = "Microsoft::Windows::RDS::DisplayControl";
 const RDPDR_DEVICE_ID: u32 = 1;
 const RDPDR_CLIENT_ID: u32 = 0x1234;
 const RDPDR_COMPLETION_ID: u32 = 1;
@@ -394,9 +393,11 @@ async fn display_control_channel_is_not_created_when_the_display_declines_it() {
 /// Connects a real client that registers a Display Control channel and an
 /// echo channel, and reports whether each was created by the server.
 ///
-/// The server creates its dynamic channels in registration order, with Display
-/// Control ahead of echo, so once the echo channel has opened the answer for
-/// Display Control is final and no timing window is involved.
+/// The server sends the Create request for every dynamic channel together, in
+/// its reply to the client's capabilities. Once the echo channel has opened and
+/// the connection then goes quiet, every one of them has been processed, so the
+/// answer for Display Control is final whatever order the channels were
+/// registered in.
 async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool) {
     let echo_started = Arc::new(AtomicBool::new(false));
     let display_control_started = Arc::new(AtomicBool::new(false));
@@ -406,8 +407,8 @@ async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool)
     let observed_echo = Arc::clone(&echo_started);
 
     client_server_with_display(
-        move |rx| ConfigurableDisplay {
-            inner: TestDisplay { rx },
+        move |rx| TestDisplay {
+            rx,
             offers_display_control,
         },
         default_client_config(),
@@ -416,7 +417,7 @@ async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool)
             connector.with_static_channel(
                 DrdynvcClient::new()
                     .with_dynamic_channel(StartRecorder::new(
-                        DISPLAY_CONTROL_CHANNEL_NAME,
+                        ironrdp::displaycontrol::CHANNEL_NAME,
                         connector_display_control,
                     ))
                     .with_dynamic_channel(StartRecorder::new(ironrdp::echo::CHANNEL_NAME, connector_echo)),
@@ -427,9 +428,11 @@ async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool)
             let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
 
             let deadline = Instant::now() + Duration::from_secs(5);
-            while !observed_echo.load(Ordering::Relaxed) && Instant::now() < deadline {
+            let mut settled = false;
+            while !settled && Instant::now() < deadline {
                 let read_result = tokio::time::timeout(Duration::from_millis(150), framed.read_pdu()).await;
                 let Ok(Ok((action, frame))) = read_result else {
+                    settled = observed_echo.load(Ordering::Relaxed);
                     continue;
                 };
 
@@ -618,6 +621,7 @@ impl RdpServerDisplayUpdates for TestDisplayUpdates {
 
 struct TestDisplay {
     rx: DisplayUpdatesRx,
+    offers_display_control: bool,
 }
 
 #[async_trait::async_trait]
@@ -633,24 +637,6 @@ impl RdpServerDisplay for TestDisplay {
         Ok(Box::new(TestDisplayUpdates {
             rx: Arc::clone(&self.rx),
         }))
-    }
-}
-
-/// Wraps [`TestDisplay`] so a test can choose whether the server offers the
-/// Display Control channel.
-struct ConfigurableDisplay {
-    inner: TestDisplay,
-    offers_display_control: bool,
-}
-
-#[async_trait::async_trait]
-impl RdpServerDisplay for ConfigurableDisplay {
-    async fn size(&mut self) -> DesktopSize {
-        self.inner.size().await
-    }
-
-    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
-        self.inner.updates().await
     }
 
     async fn offers_display_control(&mut self) -> bool {
@@ -1157,7 +1143,10 @@ async fn client_server_impl<F, Fut, C>(
     C: FnOnce(connector::ClientConnector) -> connector::ClientConnector + 'static,
 {
     client_server_with_display(
-        |rx| TestDisplay { rx },
+        |rx| TestDisplay {
+            rx,
+            offers_display_control: true,
+        },
         client_config,
         static_channel_factories,
         connector_factory,
