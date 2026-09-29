@@ -136,6 +136,9 @@ pub struct ConnectionInfo {
     pub keyboard_type: ironrdp_pdu::gcc::KeyboardType,
     /// See [`ironrdp_acceptor::AcceptorResult::ime_file_name`].
     pub ime_file_name: String,
+    /// The client came back with an auto-reconnect cookie the server
+    /// verified, in place of its credentials.
+    pub auto_reconnect: bool,
 }
 
 impl ConnectionInfo {
@@ -148,6 +151,7 @@ impl ConnectionInfo {
             keyboard_layout,
             keyboard_type,
             ime_file_name,
+            auto_reconnect: false,
         }
     }
 }
@@ -1061,6 +1065,10 @@ pub struct RdpServer {
     /// Tracks whether the current cookie has reached a client. Subsequent
     /// connections and hourly updates replace it with a new random.
     auto_reconnect_sent: bool,
+    /// Issue cookies only when asked (`SetAutoReconnectCookie`), or to a
+    /// client that came back with a verified one; see
+    /// [`Self::set_auto_reconnect_on_request`].
+    auto_reconnect_on_request: bool,
 }
 
 /// Cloneable handle for updating the Server Auto-Reconnect Cookie while
@@ -1521,6 +1529,10 @@ struct ConnectionState {
     /// response over TCP, so its first tunnel data can overtake it; this holds
     /// that data until the response is in instead of dropping it.
     early_tunnel_payloads: VecDeque<Vec<u8>>,
+    /// Whether this connection has been sent a cookie, which is what makes it
+    /// eligible for the hourly update when cookies are on request (see
+    /// [`RdpServer::set_auto_reconnect_on_request`]).
+    auto_reconnect_issued: bool,
 }
 
 impl ConnectionState {
@@ -1952,6 +1964,7 @@ impl RdpServer {
             auto_reconnect_cookie: None,
             previous_auto_reconnect_cookie: None,
             auto_reconnect_sent: false,
+            auto_reconnect_on_request: false,
         }
     }
 
@@ -1993,6 +2006,10 @@ impl RdpServer {
     /// RDP Security. The [`ServerAutoReconnect`] `logon_id` identifies the
     /// session; the server generates replacement randoms with a CSPRNG.
     ///
+    /// With [`Self::set_auto_reconnect_on_request`] the cookie is sent only on
+    /// request, and the server regenerates it when the embedder vouches for a
+    /// connection instead of after every accepted connection.
+    ///
     /// Pass `None` (the default) to send no cookie.
     ///
     /// Most callers should configure this at construction time via the builder
@@ -2005,6 +2022,39 @@ impl RdpServer {
         self.auto_reconnect_cookie = cookie;
         self.previous_auto_reconnect_cookie = None;
         self.auto_reconnect_sent = false;
+    }
+
+    /// Send a cookie only to a connection the embedder vouches for, by
+    /// sending [`ServerEvent::SetAutoReconnectCookie`] (through
+    /// [`Self::auto_reconnect_cookie_handle`]) once it has authenticated the
+    /// user itself, or to a client that returned with a verified cookie.
+    ///
+    /// For embedders that accept a connection before the user has proved
+    /// anything, for instance to draw their own logon screen after a
+    /// credential validator hands off: by default the cookie goes to every
+    /// connection at activation, and such a connection could present it on
+    /// reconnecting and skip that screen.
+    ///
+    /// The regeneration on connect that MS-RDPBCGR 5.5 describes then happens
+    /// when the embedder vouches for a connection: the cookie it sends replaces
+    /// the current one and the previous one stops working at once, and a client
+    /// that returns with a verified cookie is given a new one. A connection that
+    /// is never vouched for changes nothing, so it can neither receive a cookie
+    /// nor invalidate the one a legitimate user holds. An embedder that
+    /// authenticates a different user must therefore vouch for that connection,
+    /// or the previous user's cookie stays valid.
+    ///
+    /// A vouch belongs to the connection that was current when it was sent. If
+    /// that connection is replaced before the server reads the vouch, the vouch
+    /// is dropped and the replacement gets no cookie until the embedder vouches
+    /// for it.
+    ///
+    /// A server with a connection binder (see [`Self::set_connection_binder`])
+    /// refuses every auto-reconnect attempt, because a reconnect can't restore
+    /// a credential-bound connection safely, so this option has no useful
+    /// effect there.
+    pub fn set_auto_reconnect_on_request(&mut self, on_request: bool) {
+        self.auto_reconnect_on_request = on_request;
     }
 
     /// Returns a handle for replacing the cookie while [`Self::run`] owns this
@@ -2136,6 +2186,7 @@ impl RdpServer {
 
     async fn send_next_auto_reconnect_cookie(
         &mut self,
+        conn: &mut ConnectionState,
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
@@ -2146,17 +2197,21 @@ impl RdpServer {
 
         Self::send_auto_reconnect_cookie(cookie.clone(), writer, io_channel_id, user_channel_id).await?;
         self.commit_auto_reconnect_rotation(cookie);
+        conn.auto_reconnect_issued = true;
 
         Ok(())
     }
 
     async fn rotate_auto_reconnect_cookie(
         &mut self,
+        conn: &mut ConnectionState,
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
     ) -> ServerResult<()> {
-        if !self.supports_auto_reconnect() {
+        // On request, the hourly update goes only to a connection that was issued a cookie.
+        let may_rotate = !self.auto_reconnect_on_request || conn.auto_reconnect_issued;
+        if !self.supports_auto_reconnect() || !may_rotate {
             return Ok(());
         }
 
@@ -2173,6 +2228,7 @@ impl RdpServer {
 
     async fn update_auto_reconnect_cookie(
         &mut self,
+        conn: &mut ConnectionState,
         cookie: Option<rdp::session_info::ServerAutoReconnect>,
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
@@ -2191,6 +2247,7 @@ impl RdpServer {
         Self::send_auto_reconnect_cookie(cookie.clone(), writer, io_channel_id, user_channel_id).await?;
         self.auto_reconnect_cookie = Some(cookie);
         self.previous_auto_reconnect_cookie = None;
+        conn.auto_reconnect_issued = true;
         self.auto_reconnect_sent = true;
 
         Ok(())
@@ -2454,9 +2511,13 @@ impl RdpServer {
     /// event")` catch-all and is discarded). A new per-session `ServerEvent`
     /// variant is excluded here by default, instead of silently leaking across
     /// a takeover boundary until someone remembers to add it to a denylist.
+    ///
+    /// `SetAutoReconnectCookie` carries a cookie across the boundary only when
+    /// the embedder is replacing the stored cookie on its own account. With
+    /// [`RdpServer::set_auto_reconnect_on_request`] it is a vouch for one
+    /// connection, so a vouch the replaced connection never consumed is dropped
+    /// here instead of reaching the connection that replaced it.
     async fn discard_stale_session_events(&mut self) {
-        use tokio::sync::mpsc::error::TryRecvError;
-
         let ev_receiver = Arc::clone(&self.ev_receiver);
         let mut ev_receiver = ev_receiver.lock().await;
 
@@ -2464,16 +2525,23 @@ impl RdpServer {
         // events onto the back of the same queue we are draining.
         let mut keep = Vec::new();
         let mut discarded = 0usize;
-        loop {
-            match ev_receiver.try_recv() {
-                Ok(
-                    event @ (ServerEvent::Quit(_)
-                    | ServerEvent::GetLocalAddr(_)
-                    | ServerEvent::SetCredentials(_)
-                    | ServerEvent::SetAutoReconnectCookie(_)),
-                ) => keep.push(event),
-                Ok(_other) => discarded += 1,
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+        while let Ok(event) = ev_receiver.try_recv() {
+            let survives = match &event {
+                ServerEvent::Quit(_)
+                | ServerEvent::GetLocalAddr(_)
+                | ServerEvent::SetCredentials(_)
+                | ServerEvent::SetAutoReconnectCookie(None) => true,
+                // On request, a cookie is a vouch that the connection that was
+                // current when it was sent has authenticated its user. That
+                // connection is gone, and the one replacing it has proved
+                // nothing.
+                ServerEvent::SetAutoReconnectCookie(Some(_)) => !self.auto_reconnect_on_request,
+                _ => false,
+            };
+            if survives {
+                keep.push(event);
+            } else {
+                discarded += 1;
             }
         }
 
@@ -3385,7 +3453,7 @@ impl RdpServer {
                     self.set_credentials(Some(creds));
                 }
                 ServerEvent::SetAutoReconnectCookie(cookie) => {
-                    self.update_auto_reconnect_cookie(cookie, writer, io_channel_id, user_channel_id)
+                    self.update_auto_reconnect_cookie(conn, cookie, writer, io_channel_id, user_channel_id)
                         .await?;
                 }
                 ServerEvent::Rdpsnd(s) => {
@@ -4366,9 +4434,9 @@ impl RdpServer {
             loop {
                 interval.tick().await;
                 let mut this = this.lock().await;
-                let (server, _) = &mut *this;
+                let (server, conn) = &mut *this;
                 server
-                    .rotate_auto_reconnect_cookie(&mut auto_reconnect_writer, io_channel_id, user_channel_id)
+                    .rotate_auto_reconnect_cookie(conn, &mut auto_reconnect_writer, io_channel_id, user_channel_id)
                     .await?;
             }
         };
@@ -4592,6 +4660,7 @@ impl RdpServer {
                     keyboard_layout: result.keyboard_layout,
                     keyboard_type: result.keyboard_type,
                     ime_file_name: result.ime_file_name.clone(),
+                    auto_reconnect: is_auto_reconnect,
                 });
             });
         }
@@ -4757,8 +4826,12 @@ impl RdpServer {
             large_pointer_flags,
         )?;
 
-        self.send_next_auto_reconnect_cookie(writer, result.io_channel_id, result.user_channel_id)
-            .await?;
+        // By default every connection gets a cookie at activation. On request, only one that came
+        // back with a verified cookie does.
+        if !self.auto_reconnect_on_request || is_auto_reconnect {
+            self.send_next_auto_reconnect_cookie(conn, writer, result.io_channel_id, result.user_channel_id)
+                .await?;
+        }
 
         let pending_udp_accept =
             Self::drop_declined_udp_accept(pending_udp_accept, result.multitransport_response_success);
