@@ -2644,8 +2644,10 @@ name = "ironrdp-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bytes",
  "clap",
+ "crossterm",
  "h2",
  "http",
  "ironrdp-cfg",
@@ -2655,7 +2657,9 @@ dependencies = [
  "ironrdp-propertyset",
  "ironrdp-rdpfile",
  "ironrdp-rpc",
+ "libc",
  "md-5 0.10.6",
+ "png",
  "serde",
  "serde_json",
  "tokio",
@@ -2871,6 +2875,7 @@ dependencies = [
  "now-client",
  "now-proto-pdu",
  "png",
+ "sha2 0.10.9",
  "tokio",
  "tracing",
  "tracing-subscriber",

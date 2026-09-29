@@ -45,6 +45,9 @@ use crate::ipc::{
     RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo, TouchFrameRequest, pen_event_from_request,
     touch_event_from_request,
 };
+use crate::known_certificates::{
+    ACCEPT_CERTIFICATE_PROPERTY, CertificateRejection, Fingerprint, KnownCertificates, normalize_endpoint,
+};
 use crate::logbuf::{self, LogBuffer};
 use crate::now::NowEndpoint;
 use crate::operations::{OperationAttachment, OperationManager};
@@ -56,7 +59,19 @@ use crate::transport::{Endpoint, Listener, read_message, write_message};
 /// (overlay wins), so any setting — credentials in particular — can be preconfigured without the
 /// caller ever supplying it.
 pub async fn run(endpoint: Endpoint, overlay: PropertySet, options: DaemonOptions) -> anyhow::Result<()> {
-    init_daemon_logging();
+    init_daemon_logging(None);
+    let daemon = Arc::new(Daemon::with_options(overlay, options)?);
+    serve(endpoint, daemon).await
+}
+
+/// Runs a detached daemon with operational logging written to `log` instead of its parent's console.
+pub async fn run_with_log(
+    endpoint: Endpoint,
+    overlay: PropertySet,
+    options: DaemonOptions,
+    log: std::fs::File,
+) -> anyhow::Result<()> {
+    init_daemon_logging(Some(log));
     let daemon = Arc::new(Daemon::with_options(overlay, options)?);
     serve(endpoint, daemon).await
 }
@@ -65,11 +80,16 @@ pub async fn run(endpoint: Endpoint, overlay: PropertySet, options: DaemonOption
 ///
 /// The caller owns the daemon so it can share the same session state with another frontend, such
 /// as the viewer window.
+///
+/// # Panics
+///
+/// Panics if the daemon or session state mutex is poisoned while awaiting a graceful shutdown.
 pub async fn serve(endpoint: Endpoint, daemon: Arc<Daemon>) -> anyhow::Result<()> {
     crate::transport::prepare_endpoint(&endpoint).await?;
     let mut listener = Listener::bind(&endpoint).with_context(|| format!("bind IPC endpoint {endpoint}"))?;
     info!(%endpoint, "Daemon listening");
     let mut shutdown = daemon.shutdown_receiver();
+    let mut requested_shutdown = false;
     loop {
         tokio::select! {
             result = listener.accept() => {
@@ -84,6 +104,7 @@ pub async fn serve(endpoint: Endpoint, daemon: Arc<Daemon>) -> anyhow::Result<()
             result = shutdown.changed() => {
                 result.context("wait for shutdown signal")?;
                 info!("Received shutdown request, stopping");
+                requested_shutdown = true;
                 break;
             }
             _ = tokio::signal::ctrl_c() => {
@@ -91,6 +112,27 @@ pub async fn serve(endpoint: Endpoint, daemon: Arc<Daemon>) -> anyhow::Result<()
                 break;
             }
         }
+    }
+
+    if requested_shutdown {
+        let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let finished = {
+                    let guard = daemon.state.lock().expect("daemon state poisoned");
+                    guard.as_ref().is_none_or(|session| {
+                        matches!(
+                            session.live.lock().expect("session live state poisoned").state,
+                            ConnState::Disconnected | ConnState::Failed
+                        )
+                    })
+                };
+                if finished {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
     }
 
     Ok(())
@@ -101,6 +143,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let request: Request = read_message(&mut stream).await?;
+    let stopping = matches!(request, Request::DaemonStop);
     trace!(?request, "Handling IPC request");
     let response = daemon.handle(request).await;
     trace!(ok = response.response().is_ok(), "Replying to IPC request");
@@ -115,6 +158,10 @@ where
                 write_message(&mut stream, &Response::Ok(Payload::NowEvent(event))).await?;
             }
         }
+    }
+    if stopping {
+        let _ = daemon.disconnect();
+        daemon.shutdown();
     }
     Ok(())
 }
@@ -374,6 +421,9 @@ struct Live {
     frame: Option<Frame>,
     rail_initial_execute: Option<(u16, String)>,
     rail: RailLedger,
+    /// Set by the certificate callback when strict validation rejects an untrusted certificate, so
+    /// the connection failure can tell the caller which fingerprint to trust.
+    certificate_rejection: Arc<Mutex<Option<CertificateRejection>>>,
 }
 
 const MAX_PENDING_RAIL_LAUNCHES: usize = 64;
@@ -630,6 +680,8 @@ impl Daemon {
                 log_directive,
             } => DaemonResponse::Single(self.connect(properties, log_directive)),
             Request::Disconnect => DaemonResponse::Single(self.disconnect()),
+            Request::DisconnectMatching { server } => DaemonResponse::Single(self.disconnect_matching(Some(&server))),
+            Request::DaemonStop => DaemonResponse::Single(Response::ok()),
             Request::Status => DaemonResponse::Single(self.status()),
             Request::QueryProps { filter } => DaemonResponse::Single(self.query_props(filter.as_ref())),
             Request::QueryLogs { substring, last } => {
@@ -721,7 +773,10 @@ impl Daemon {
                     debug!("Refusing connect: a session is already active");
                     return Response::typed_error(
                         crate::ipc::AgentErrorCategory::Conflict,
-                        "a session is already active; disconnect first",
+                        format!(
+                            "a session is already active at {}; run `ironrdp-agent session list` or `ironrdp-agent session disconnect`",
+                            session.destination
+                        ),
                     );
                 }
             }
@@ -777,6 +832,55 @@ impl Daemon {
             // Headless: composite the remote cursor into the framebuffer so it appears in
             // screenshots (there is no separate overlay to draw it).
             .with_pointer_software_rendering(true);
+        // Under strict validation, a certificate that fails is still accepted when the user has
+        // pinned its exact fingerprint for this endpoint in the known-certificates store.
+        let certificate_rejection = Arc::new(Mutex::new(None));
+        let builder = if certificate_validation == CertificateValidation::Strict {
+            let mut store = match KnownCertificates::default_path().and_then(|path| KnownCertificates::load(&path)) {
+                Ok(store) => store,
+                Err(error) => {
+                    return Response::typed_error(
+                        crate::ipc::AgentErrorCategory::InvalidRequest,
+                        format!("invalid known-certificates store: {error:#}"),
+                    );
+                }
+            };
+            // A caller may accept one pinned certificate for this connection only (like mstsc's
+            // "Yes" without "Don't ask me again"). It is no broader than an entry in the store.
+            if let Some(entry) = properties.get::<&str>(ACCEPT_CERTIFICATE_PROPERTY) {
+                match KnownCertificates::parse(entry) {
+                    Ok(accepted) => {
+                        for (endpoint, fingerprint) in accepted.entries() {
+                            let _ = store.trust(endpoint, fingerprint);
+                        }
+                    }
+                    Err(error) => {
+                        return Response::typed_error(
+                            crate::ipc::AgentErrorCategory::InvalidRequest,
+                            format!("invalid {ACCEPT_CERTIFICATE_PROPERTY} property: {error:#}"),
+                        );
+                    }
+                }
+            }
+            let rejection = Arc::clone(&certificate_rejection);
+            let callback: ironrdp_tls::CertificateValidationCallback = Arc::new(move |der, endpoint, reason| {
+                if store.is_trusted(endpoint, der) {
+                    info!(%endpoint, "Accepted a server certificate pinned in the known-certificates store");
+                    return true;
+                }
+                let fingerprint = Fingerprint::of_certificate(der);
+                warn!(%endpoint, %fingerprint, %reason, "Rejected an untrusted server certificate");
+                *rejection.lock().expect("certificate rejection poisoned") = Some(CertificateRejection {
+                    endpoint: endpoint.to_owned(),
+                    fingerprint,
+                    reason: reason.to_owned(),
+                });
+                false
+            });
+            builder.with_certificate_validation_callback(callback)
+        } else {
+            builder
+        };
         // Prefer an explicit connect/overlay property; otherwise use the daemon startup default.
         // Always set smartcard explicitly so the client feature default (`true`) cannot announce a
         // smartcard device without a matching WinSCard backend.
@@ -897,6 +1001,7 @@ impl Daemon {
                 1,
                 initial_rail_execute,
             ),
+            certificate_rejection,
         }));
 
         // Capture this session's logs into the ring buffer (queryable via `Request::QueryLogs`)
@@ -952,8 +1057,22 @@ impl Daemon {
     ///
     /// # Panics
     ///
-    /// Panics if the daemon state mutex is poisoned.
+    /// Panics if the connect lock, daemon state, or session state mutex is poisoned.
     pub fn disconnect(&self) -> Response {
+        self.disconnect_matching(None)
+    }
+
+    fn disconnect_matching(&self, server: Option<&str>) -> Response {
+        let expected = match server.map(normalize_endpoint).transpose() {
+            Ok(expected) => expected,
+            Err(error) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::InvalidRequest,
+                    format!("invalid server: {error}"),
+                );
+            }
+        };
+        let _connect_guard = self.connect_lock.lock().expect("connect state poisoned");
         let mut guard = self.state.lock().expect("daemon state poisoned");
         match guard.as_mut() {
             None => {
@@ -961,6 +1080,26 @@ impl Daemon {
                 Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session")
             }
             Some(session) => {
+                if let Some(expected) = &expected {
+                    let actual = match normalize_endpoint(&session.destination) {
+                        Ok(actual) => actual,
+                        Err(error) => {
+                            return Response::typed_error(
+                                crate::ipc::AgentErrorCategory::Internal,
+                                format!("invalid active destination: {error}"),
+                            );
+                        }
+                    };
+                    if actual != *expected {
+                        return Response::typed_error(
+                            crate::ipc::AgentErrorCategory::Conflict,
+                            format!(
+                                "active session is {}, not {expected}; run `ironrdp-agent session list`",
+                                session.destination
+                            ),
+                        );
+                    }
+                }
                 let mut live = session.live.lock().expect("session live state poisoned");
                 match live.state {
                     ConnState::Connecting => {
@@ -992,12 +1131,28 @@ impl Daemon {
                 height: None,
                 message: None,
                 credentials_loaded: self.credentials_loaded,
+                untrusted_certificate: None,
             },
             Some(session) => {
                 let live = session.live.lock().expect("session live state poisoned");
                 let (width, height) = match &live.frame {
                     Some(frame) => (Some(frame.width), Some(frame.height)),
                     None => (None, None),
+                };
+                let untrusted_certificate = if live.state == ConnState::Failed {
+                    live.certificate_rejection
+                        .lock()
+                        .expect("certificate rejection poisoned")
+                        .as_ref()
+                        .map(|rejection| {
+                            Box::new(crate::ipc::UntrustedCertificate {
+                                endpoint: rejection.endpoint.clone(),
+                                sha256: rejection.fingerprint.to_string(),
+                                reason: rejection.reason.clone(),
+                            })
+                        })
+                } else {
+                    None
                 };
                 StatusInfo {
                     state: live.state,
@@ -1006,6 +1161,7 @@ impl Daemon {
                     height,
                     message: live.error.clone(),
                     credentials_loaded: self.credentials_loaded,
+                    untrusted_certificate,
                 }
             }
         };
@@ -2069,7 +2225,15 @@ async fn consume_output(
             RdpOutputEvent::ConnectionFailure(error) => {
                 guard.state = ConnState::Failed;
                 let error = error.report();
-                guard.error = Some(error.to_string());
+                let rejection = guard
+                    .certificate_rejection
+                    .lock()
+                    .expect("certificate rejection poisoned")
+                    .clone();
+                guard.error = Some(match rejection {
+                    Some(rejection) => format!("{error}; {rejection}"),
+                    None => error.to_string(),
+                });
                 let rail_changed = guard.rail.fail_pending_launches();
                 error!(%error, "Session connection failed");
                 rail_changed
@@ -2152,9 +2316,10 @@ fn encode_png(width: u16, height: u16, pixels: &[u32]) -> anyhow::Result<Vec<u8>
 /// `ironrdp-viewer` but quieter by default. The RDP session's logs are captured separately into a
 /// ring buffer (see [`logbuf::session_dispatch`]). Best-effort: a no-op if a global subscriber is
 /// already set.
-fn init_daemon_logging() {
+fn init_daemon_logging(log: Option<std::fs::File>) {
     use tracing::level_filters::LevelFilter;
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::fmt::writer::BoxMakeWriter;
     use tracing_subscriber::prelude::*;
 
     let env_filter = EnvFilter::builder()
@@ -2162,7 +2327,11 @@ fn init_daemon_logging() {
         .with_env_var("IRONRDP_LOG")
         .from_env_lossy();
 
-    let fmt_layer = tracing_subscriber::fmt::layer().compact().with_writer(std::io::stderr);
+    let writer = match log {
+        Some(file) => BoxMakeWriter::new(file),
+        None => BoxMakeWriter::new(std::io::stderr),
+    };
+    let fmt_layer = tracing_subscriber::fmt::layer().compact().with_writer(writer);
 
     let _ = tracing_subscriber::registry()
         .with(env_filter)
@@ -2299,6 +2468,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
+    use crate::known_certificates::{CertificateRejection, Fingerprint};
+
     use ironrdp_cfg::{GatewayUsageMethod, PropertySetExt as _};
     use tokio::sync::mpsc;
 
@@ -2315,7 +2486,7 @@ mod tests {
         MAX_UNICODE_TEXT_CHARS, NowEndpoint, OperationManager, RailLedger, RdpdrDriveConfig, ResizeError, Session,
         consume_output, enqueue_unicode_text, filetime_to_unix_secs, notify, system_time_to_filetime,
     };
-    use crate::ipc::{Payload, Response};
+    use crate::ipc::{AgentErrorCategory, Payload, Response};
     use ironrdp_rpc::ipc::{RailEventKind, RailExecuteRequest, RailLaunchInfo};
     use ironrdp_tls::CertificateValidation;
 
@@ -2453,6 +2624,7 @@ mod tests {
             frame: None,
             rail_initial_execute: Some((0, "notepad.exe".to_owned())),
             rail: RailLedger::new(1, 1, Some((0, "notepad.exe".to_owned()))),
+            certificate_rejection: Arc::default(),
         }));
         {
             let mut guard = live.lock().expect("session live state poisoned");
@@ -2513,6 +2685,7 @@ mod tests {
             frame: None,
             rail_initial_execute: None,
             rail: RailLedger::new(1, 1, None),
+            certificate_rejection: Arc::default(),
         }));
         let rail_notify = Arc::new(tokio::sync::Notify::new());
         *daemon.state.lock().expect("daemon state poisoned") = Some(Session {
@@ -2527,6 +2700,32 @@ mod tests {
             now_endpoint,
         });
         (daemon, input_rx, live, rail_notify)
+    }
+
+    #[test]
+    fn guarded_disconnect_only_closes_the_matching_session() {
+        let (daemon, _input_rx, live, _) = active_rail_session(false);
+        assert!(matches!(
+            daemon.disconnect_matching(Some("other.example")),
+            Response::Err(error) if error.category == AgentErrorCategory::Conflict
+        ));
+        assert_eq!(
+            live.lock().expect("session live state poisoned").state,
+            ConnState::Connected
+        );
+        assert!(matches!(
+            daemon.disconnect_matching(Some("server.example:notaport")),
+            Response::Err(error) if error.category == AgentErrorCategory::InvalidRequest
+        ));
+        assert_eq!(
+            live.lock().expect("session live state poisoned").state,
+            ConnState::Connected
+        );
+        assert!(daemon.disconnect_matching(Some("SERVER.EXAMPLE:3389")).is_ok());
+        assert_eq!(
+            live.lock().expect("session live state poisoned").state,
+            ConnState::Disconnecting
+        );
     }
 
     #[tokio::test]
@@ -2813,6 +3012,54 @@ mod tests {
         assert_eq!(
             message,
             "[GW connect] custom error, caused by: [send rdg authentication request] custom error, caused by: connection reset"
+        );
+    }
+
+    #[tokio::test]
+    async fn certificate_rejection_explains_how_to_trust_the_certificate() {
+        let (daemon, _, live, rail_notify) = active_rail_session(false);
+        let fingerprint = Fingerprint::of_certificate(b"certificate");
+        *live
+            .lock()
+            .expect("session live state poisoned")
+            .certificate_rejection
+            .lock()
+            .expect("certificate rejection poisoned") = Some(CertificateRejection {
+            endpoint: "it-help-rdm:3389".to_owned(),
+            fingerprint,
+            reason: "name mismatch".to_owned(),
+        });
+        let (output_tx, output_rx) = output_channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            live,
+            None,
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::ConnectionFailure(
+                ironrdp_connector::custom_err!("TLS upgrade", std::io::Error::other("invalid peer certificate")),
+            ))
+            .await
+            .expect("send connection failure");
+        drop(output_tx);
+        consumer.await.expect("consume output");
+
+        let Response::Ok(Payload::Status(status)) = daemon.status() else {
+            panic!("expected status response");
+        };
+        let message = status.message.expect("connection failure message");
+
+        assert!(message.starts_with("[TLS upgrade] custom error, caused by: invalid peer certificate; "));
+        assert!(message.contains(&format!("ironrdp-agent cert trust it-help-rdm:3389 {fingerprint}")));
+        assert_eq!(
+            status.untrusted_certificate,
+            Some(Box::new(crate::ipc::UntrustedCertificate {
+                endpoint: "it-help-rdm:3389".to_owned(),
+                sha256: fingerprint.to_string(),
+                reason: "name mismatch".to_owned(),
+            }))
         );
     }
 

@@ -437,6 +437,10 @@ pub enum Request {
     },
     /// Tear down the current RDP session (the daemon keeps running).
     Disconnect,
+    /// Disconnect only if the active session belongs to `server` (`host[:port]`).
+    DisconnectMatching { server: String },
+    /// Shut down the daemon after its reply has been written.
+    DaemonStop,
     /// Query the current session status.
     Status,
     /// Query the live session property bag, optionally filtered.
@@ -568,6 +572,10 @@ impl fmt::Debug for Request {
                 .field("log_directive", log_directive)
                 .finish(),
             Self::Disconnect => f.write_str("Disconnect"),
+            Self::DisconnectMatching { server } => {
+                f.debug_struct("DisconnectMatching").field("server", server).finish()
+            }
+            Self::DaemonStop => f.write_str("DaemonStop"),
             Self::Status => f.write_str("Status"),
             Self::QueryProps { filter } => f.debug_struct("QueryProps").field("filter", filter).finish(),
             Self::QueryLogs { substring, last } => f
@@ -1282,6 +1290,20 @@ pub struct StatusInfo {
     /// When set, a caller driving `connect` does not need to supply a password (or other secrets):
     /// the daemon layers the overlay on top of the request before building the configuration.
     pub credentials_loaded: bool,
+    /// The server certificate that failed strict validation and is not trusted, when that is why the
+    /// session failed. Interactive callers can offer to trust it and reconnect.
+    pub untrusted_certificate: Option<Box<UntrustedCertificate>>,
+}
+
+/// A server certificate rejected by strict validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UntrustedCertificate {
+    /// TLS endpoint (`host:port`) that presented the certificate.
+    pub endpoint: String,
+    /// Lowercase hex SHA-256 fingerprint of the DER certificate.
+    pub sha256: String,
+    /// Why validation failed.
+    pub reason: String,
 }
 
 /// A bulk dump of live properties.
@@ -1595,7 +1617,14 @@ impl Encode for StatusInfo {
         write_opt_u16(dst, self.width)?;
         write_opt_u16(dst, self.height)?;
         write_opt_string(dst, self.message.as_deref())?;
-        write_bool(dst, self.credentials_loaded)
+        write_bool(dst, self.credentials_loaded)?;
+        write_bool(dst, self.untrusted_certificate.is_some())?;
+        if let Some(certificate) = &self.untrusted_certificate {
+            write_string(dst, &certificate.endpoint)?;
+            write_string(dst, &certificate.sha256)?;
+            write_string(dst, &certificate.reason)?;
+        }
+        Ok(())
     }
 
     fn name(&self) -> &'static str {
@@ -1609,6 +1638,10 @@ impl Encode for StatusInfo {
             + opt_u16_size(self.height)
             + opt_string_size(self.message.as_deref())
             + 1 /* credentials_loaded */
+            + 1 /* untrusted_certificate presence */
+            + self.untrusted_certificate.as_ref().map_or(0, |certificate| {
+                string_size(&certificate.endpoint) + string_size(&certificate.sha256) + string_size(&certificate.reason)
+            })
     }
 }
 
@@ -1621,6 +1654,15 @@ impl Decode<'_> for StatusInfo {
         let height = read_opt_u16(src)?;
         let message = read_opt_string(src)?;
         let credentials_loaded = read_bool(src)?;
+        let untrusted_certificate = if read_bool(src)? {
+            Some(Box::new(UntrustedCertificate {
+                endpoint: read_string(src)?,
+                sha256: read_string(src)?,
+                reason: read_string(src)?,
+            }))
+        } else {
+            None
+        };
         Ok(Self {
             state,
             destination,
@@ -1628,6 +1670,7 @@ impl Decode<'_> for StatusInfo {
             height,
             message,
             credentials_loaded,
+            untrusted_certificate,
         })
     }
 }
@@ -2346,6 +2389,11 @@ impl Encode for Request {
                 write_opt_string(dst, log_directive.as_deref())?;
             }
             Self::Disconnect => dst.write_u8(1),
+            Self::DisconnectMatching { server } => {
+                dst.write_u8(39);
+                write_string(dst, server)?;
+            }
+            Self::DaemonStop => dst.write_u8(38),
             Self::Status => dst.write_u8(2),
             Self::QueryProps { filter } => {
                 dst.write_u8(3);
@@ -2540,6 +2588,7 @@ impl Encode for Request {
                     propertyset::size(properties) + opt_string_size(log_directive.as_deref())
                 }
                 Self::Disconnect
+                | Self::DaemonStop
                 | Self::Status
                 | Self::Screenshot
                 | Self::NowCapabilities
@@ -2549,6 +2598,7 @@ impl Encode for Request {
                 | Self::ClipboardGet
                 | Self::ClipboardGetImage
                 | Self::ClipboardGetHtml => 0,
+                Self::DisconnectMatching { server } => string_size(server),
                 Self::QueryProps { filter } => 1 /* presence */ + filter.as_ref().map_or(0, Encode::size),
                 Self::QueryLogs { substring, last } => {
                     opt_string_size(substring.as_deref()) + 1 /* presence */ + last.map_or(0, |_| 4)
@@ -2613,6 +2663,10 @@ impl Decode<'_> for Request {
                 })
             }
             1 => Ok(Self::Disconnect),
+            39 => Ok(Self::DisconnectMatching {
+                server: read_string(src)?,
+            }),
+            38 => Ok(Self::DaemonStop),
             2 => Ok(Self::Status),
             3 => {
                 ensure_size!(in: src, size: 1);
@@ -3199,7 +3253,24 @@ impl_pdu_pod!(OperationEvent);
 mod tests {
     use ironrdp_core::{decode, encode_vec};
 
-    use super::{MAX_RAIL_EVENT_DUMP_EVENTS, RailEvent, RailEventDump, RailEventKind, RailExecuteRequest};
+    use super::{MAX_RAIL_EVENT_DUMP_EVENTS, RailEvent, RailEventDump, RailEventKind, RailExecuteRequest, Request};
+
+    #[test]
+    fn daemon_stop_has_a_distinct_request_tag() {
+        let encoded = encode_vec(&Request::DaemonStop).expect("encode");
+        assert_eq!(encoded, [38]);
+        assert_eq!(decode::<Request>(&encoded).expect("decode"), Request::DaemonStop);
+    }
+
+    #[test]
+    fn guarded_disconnect_round_trips_with_a_new_request_tag() {
+        let request = Request::DisconnectMatching {
+            server: "IT-HELP-RDM:3389".to_owned(),
+        };
+        let encoded = encode_vec(&request).expect("encode");
+        assert_eq!(encoded[0], 39);
+        assert_eq!(decode::<Request>(&encoded).expect("decode"), request);
+    }
 
     #[test]
     fn rail_execute_debug_redacts_command_fields() {
