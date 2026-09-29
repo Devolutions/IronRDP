@@ -1012,8 +1012,7 @@ impl GraphicsPipelineClient {
             // No region metadata: fall back to the single bounding-box update,
             // copying from the frame origin. This matches the pre-#2042 behavior
             // for streams that legitimately omit regionRects.
-            let cropped_data =
-                crop_decoded_frame(frame.data(), frame.width(), frame.height(), dest_width, dest_height);
+            let cropped_data = crop_decoded_frame(frame.data(), frame.width(), frame.height(), dest_width, dest_height);
             let update = BitmapUpdate {
                 surface_id,
                 destination_rectangle: dest_rect.clone(),
@@ -2478,10 +2477,7 @@ mod tests {
                 updates: Arc::clone(&updates),
                 unhandled: Arc::clone(&unhandled),
             }),
-            Some(Box::new(CoordinateDecoder {
-                width: 64,
-                height: 64,
-            })),
+            Some(Box::new(CoordinateDecoder { width: 64, height: 64 })),
         );
 
         client
@@ -2504,11 +2500,20 @@ mod tests {
             }))
             .expect("decode avc420");
 
-        assert_eq!(*unhandled.lock().expect("unhandled lock"), 0, "AVC420 must not fall through");
+        assert_eq!(
+            *unhandled.lock().expect("unhandled lock"),
+            0,
+            "AVC420 must not fall through"
+        );
 
         let updates = updates.lock().expect("updates lock");
         // One surface update per region rectangle.
-        assert_eq!(updates.len(), 2, "expected one update per regionRect, got {}", updates.len());
+        assert_eq!(
+            updates.len(),
+            2,
+            "expected one update per regionRect, got {}",
+            updates.len()
+        );
 
         // Helper: top-left pixel (R, G) of an update's RGBA buffer.
         let top_left = |data: &[u8]| (data[0], data[1]);
@@ -2538,7 +2543,9 @@ mod tests {
         }
 
         // Specifically prove region B is present with its correct origin pixel.
-        let has_region_b = updates.iter().any(|(_, _, _, data)| top_left(data) == origin_rg(&rect_b));
+        let has_region_b = updates
+            .iter()
+            .any(|(_, _, _, data)| top_left(data) == origin_rg(&rect_b));
         assert!(
             has_region_b,
             "region B at (32, 32) was not drawn from its own coordinates -- \
