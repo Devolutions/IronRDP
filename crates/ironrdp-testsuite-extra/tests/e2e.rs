@@ -1068,6 +1068,10 @@ async fn client_server_with_connector<F, Fut, C>(
 /// The client writes on the tunnel as soon as it has sent the Soft-Sync
 /// Response, so its first tunnel data can reach the server before the response
 /// does. The test forces that order and checks the server still processes it.
+///
+/// Soft-Sync has no tunnel type that moves a channel back to TCP (2.2.5.1),
+/// and the tunnel lasts as long as the connection (MS-RDPEMT 1.3.3), so when
+/// the tunnel closes under EGFX the server has to end the connection.
 #[tokio::test]
 async fn egfx_moves_onto_the_udp_tunnel_with_soft_sync() {
     let _ = tracing_subscriber::fmt()
@@ -1308,15 +1312,27 @@ async fn egfx_moves_onto_the_udp_tunnel_with_soft_sync() {
                     .expect("the server processed the early tunnel data")
                     .expect("capabilities reached the EGFX handler");
 
+                // With EGFX on the tunnel there is no way back to TCP, so the
+                // server ends the connection when the tunnel closes. Graphics
+                // still being sent is what shows the server the tunnel is gone.
                 drop(tunnel);
-                for output in stage.graceful_shutdown().expect("shutdown") {
-                    if let ActiveStageOutput::ResponseFrame(frame) = output {
-                        framed.write_all(&frame).await.expect("write frame");
+                let messages = ironrdp_dvc::encode_dvc_messages(
+                    egfx_channel_id,
+                    vec![Box::new(RawDvcPayload(b"after the tunnel closed".to_vec()))],
+                    ironrdp::svc::ChannelFlags::empty(),
+                )
+                .expect("encode EGFX batch");
+                ev.send(ServerEvent::Egfx(ironrdp_server::EgfxServerMessage::SendMessages {
+                    messages,
+                }))
+                .unwrap();
+                tokio::time::timeout(Duration::from_secs(20), async {
+                    while let Ok(pdu) = framed.read_pdu().await {
+                        debug!(?pdu);
                     }
-                }
-                while let Ok(pdu) = framed.read_pdu().await {
-                    debug!(?pdu);
-                }
+                })
+                .await
+                .expect("the server ended the connection once the tunnel closed");
                 ev.send(ServerEvent::Quit("bye".into())).unwrap();
             });
 
