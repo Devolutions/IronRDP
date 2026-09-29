@@ -12,6 +12,7 @@ use std::io;
 
 use ironrdp_rdpemt::{RdpemtTunnel, TunnelEvent};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
+use tracing::{debug, trace};
 
 use crate::error::{UdpTransportError, UdpTransportErrorExt as _};
 
@@ -49,9 +50,15 @@ where
     // not a clean close.
     let mut header = [0u8; 4];
     match stream.read(&mut header[..1]).await {
-        Ok(0) => return Ok(None),
+        Ok(0) => {
+            trace!("Tunnel stream ended between PDUs");
+            return Ok(None);
+        }
         Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+            trace!("Tunnel stream ended between PDUs");
+            return Ok(None);
+        }
         Err(error) => return Err(UdpTransportError::tls("read tunnel pdu", error)),
     }
 
@@ -89,6 +96,8 @@ where
             .map_err(|error| UdpTransportError::tls("read tunnel pdu", error))?;
     }
 
+    trace!(len = buf.len(), header_len, payload_len, "Read tunnel PDU");
+
     Ok(Some(buf))
 }
 
@@ -105,6 +114,7 @@ where
         .flush()
         .await
         .map_err(|error| UdpTransportError::tls("write tunnel pdu", error))?;
+    trace!(len = pdu.len(), "Wrote tunnel PDU");
     Ok(())
 }
 
@@ -127,13 +137,20 @@ where
         let pdu = match read_tunnel_pdu(stream).await {
             Ok(Some(pdu)) => pdu,
             // Clean shutdown: EOF before any byte of a new PDU.
-            Ok(None) => return Ok(()),
-            Err(e) => return Err(e),
+            Ok(None) => {
+                debug!("Tunnel closed by peer, stopping read pump");
+                return Ok(());
+            }
+            Err(e) => {
+                debug!(error = %e, "Tunnel read failed, stopping read pump");
+                return Err(e);
+            }
         };
 
-        tunnel
-            .handle_pdu(&pdu)
-            .map_err(|error| UdpTransportError::rdpemt("tunnel data loop", error))?;
+        tunnel.handle_pdu(&pdu).map_err(|error| {
+            debug!(%error, "Tunnel PDU rejected, stopping read pump");
+            UdpTransportError::rdpemt("tunnel data loop", error)
+        })?;
 
         while let Some(event) = tunnel.poll_event() {
             match event {
@@ -142,7 +159,9 @@ where
                 // payload through. A future auto-detect integration would need to
                 // dispatch them instead of discarding them.
                 TunnelEvent::Data { data, .. } => {
+                    trace!(len = data.len(), "Forwarding tunnel data");
                     if data_tx.send(data).await.is_err() {
+                        debug!("Tunnel data receiver dropped, stopping read pump");
                         // Application dropped the receiver
                         return Ok(());
                     }
@@ -151,6 +170,7 @@ where
                     // Already established, ignore duplicate
                 }
                 TunnelEvent::Failed { hr_response } => {
+                    debug!(hr_response, "Tunnel failed, stopping read pump");
                     return Err(UdpTransportError::tunnel_rejected("tunnel data loop", hr_response));
                 }
                 // `TunnelEvent` is `#[non_exhaustive]`; a variant this driver
