@@ -84,6 +84,31 @@ test("stream structural diagnostics use a closed first-write-wins vocabulary", (
   assert.equal(metrics.snapshot().streamStructuralViolation, "choice-index-invalid");
 });
 
+test("post-finish diagnostics use closed shapes and saturating counters", () => {
+  const metrics = new RuntimeMetrics();
+  metrics.recordPostFinishShape("POST_FINISH_STREAM_SECRET_SENTINEL");
+  metrics.recordPostFinishShape("delta-content");
+  metrics.recordPostFinishShape("delta-extension");
+  metrics.recordIgnoredPostFinishEmptyDeltaChoice(false);
+  metrics.recordIgnoredPostFinishEmptyDeltaChoice(true);
+  assert.deepEqual({
+    ignoredPostFinishEmptyDeltaChoices: metrics.snapshot().ignoredPostFinishEmptyDeltaChoices,
+    ignoredRepeatedTerminalChoices: metrics.snapshot().ignoredRepeatedTerminalChoices,
+    postFinishShape: metrics.snapshot().postFinishShape,
+  }, {
+    ignoredPostFinishEmptyDeltaChoices: 2,
+    ignoredRepeatedTerminalChoices: 1,
+    postFinishShape: "delta-content",
+  });
+
+  metrics.ignoredPostFinishEmptyDeltaChoices = Number.MAX_SAFE_INTEGER;
+  metrics.ignoredRepeatedTerminalChoices = Number.MAX_SAFE_INTEGER;
+  metrics.recordIgnoredPostFinishEmptyDeltaChoice(true);
+  assert.equal(metrics.snapshot().ignoredPostFinishEmptyDeltaChoices, Number.MAX_SAFE_INTEGER);
+  assert.equal(metrics.snapshot().ignoredRepeatedTerminalChoices, Number.MAX_SAFE_INTEGER);
+  assert.doesNotMatch(JSON.stringify(metrics.snapshot()), /POST_FINISH_STREAM_SECRET_SENTINEL/);
+});
+
 test("runtime metrics retain activity and mark partial usage incomplete", async () => {
   const metrics = new RuntimeMetrics(() => 0);
   const requestBody = { model: "test", messages: [{ role: "user", content: "prompt" }] };

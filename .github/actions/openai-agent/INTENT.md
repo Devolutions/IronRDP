@@ -40,6 +40,9 @@ The raw-stream limit includes framing bytes before the SDK parses server-sent ev
 The action assembles reasoning, content, usage, finish reason, and indexed tool-call fragments independently.
 An omitted choice index is accepted only for a single-choice chunk, and one complete index-less tool-call envelope is accepted only when the response contains no indexed fragments.
 Every accepted stream carries a terminal finish reason so cleanly truncated responses are retried rather than accepted.
+After that terminal reason, the conventional `choices: []` usage-only tail is preserved unchanged.
+The only accepted nonempty tail is one choice with an empty delta and an omitted or matching finish reason, which maintains compatibility with providers that include usage metadata there.
+Every other nonempty post-finish tail remains a structural violation.
 Missing optional reasoning or usage metadata makes diagnostics incomplete but does not invalidate otherwise acceptable text.
 
 Tool calls execute only after the complete stream has arrived, the provider reports a tool-call finish, every envelope is structurally valid, and the whole batch fits the remaining tool budget.
@@ -101,6 +104,7 @@ Expose these bounded diagnostics:
 - Accumulated turn and tool-call counts, including on failure.
 - Every rejected output attempt with its validation layer and sanitized reason.
 - The first stream structural violation as a closed static value with no provider data.
+- Ignored empty post-finish choices, repeated terminal-choice subsets, and the first rejected post-finish shape as closed, content-free values.
 
 Diagnostics and logs never expose credentials, prompts, repository evidence, tool arguments, tool results, reasoning, model content, or raw provider errors.
 Stream structural diagnostics use only a closed static vocabulary.
