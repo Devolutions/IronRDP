@@ -8,105 +8,44 @@
 //! FormatLists a few milliseconds apart, and a backend that fetches on each
 //! announcement has a request outstanding when it issues the next one.
 
-use std::sync::{Arc, Mutex};
-
 use ironrdp_cliprdr::CliprdrClient;
-use ironrdp_cliprdr::backend::CliprdrBackend;
 use ironrdp_cliprdr::pdu::{
-    ClipboardFileAttributes, ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags,
-    ClipboardPdu, FileDescriptor, FormatDataResponse, FormatList, FormatListResponse, PackedFileList,
+    ClipboardFileAttributes, ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardPdu, FileDescriptor,
+    FormatDataResponse, FormatList, PackedFileList,
 };
-use ironrdp_core::{AsAny, IntoOwned as _};
 use ironrdp_svc::SvcProcessor as _;
+
+use super::test_helpers::{FormatDataRecordingBackend, init_ready_client_with_backend};
 
 fn file_list_format() -> ClipboardFormatId {
     ClipboardFormatId::new(0xC0BC)
 }
 
-#[derive(Debug, Default)]
-struct Seen {
-    /// Payloads delivered through `on_format_data_response` (`None` = an error response).
-    data_responses: Vec<Option<Vec<u8>>>,
-    file_lists: Vec<Vec<FileDescriptor>>,
-}
-
-#[derive(Debug)]
-struct RecordingBackend {
-    seen: Arc<Mutex<Seen>>,
-}
-
-impl CliprdrBackend for RecordingBackend {
-    fn temporary_directory(&self) -> &str {
-        "/tmp/test"
+/// The remote announces a copy offering text and, optionally, a file list.
+fn announce(cliprdr: &mut CliprdrClient, with_file_list: bool) {
+    let mut formats = vec![ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)];
+    if with_file_list {
+        formats.push(ClipboardFormat::new(file_list_format()).with_name(ClipboardFormatName::FILE_LIST));
     }
-
-    fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags {
-        ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES
-            | ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED
-            | ClipboardGeneralCapabilityFlags::FILECLIP_NO_FILE_PATHS
-    }
-
-    fn on_ready(&mut self) {}
-    fn on_request_format_list(&mut self) {}
-    fn on_process_negotiated_capabilities(&mut self, _capabilities: ClipboardGeneralCapabilityFlags) {}
-    fn on_remote_copy(&mut self, _available_formats: &[ClipboardFormat]) {}
-    fn on_format_data_request(&mut self, _request: ironrdp_cliprdr::pdu::FormatDataRequest) {}
-
-    fn on_format_data_response(&mut self, response: FormatDataResponse<'_>) {
-        let payload = (!response.is_error()).then(|| response.data().to_vec());
-        self.seen.lock().unwrap().data_responses.push(payload);
-    }
-
-    fn on_file_contents_request(&mut self, _request: ironrdp_cliprdr::pdu::FileContentsRequest) {}
-    fn on_file_contents_response(&mut self, _response: ironrdp_cliprdr::pdu::FileContentsResponse<'_>) {}
-    fn on_lock(&mut self, _data_id: ironrdp_cliprdr::pdu::LockDataId) {}
-    fn on_unlock(&mut self, _data_id: ironrdp_cliprdr::pdu::LockDataId) {}
-
-    fn on_remote_file_list(&mut self, files: &[FileDescriptor], _clip_data_id: Option<u32>) {
-        self.seen.lock().unwrap().file_lists.push(files.to_vec());
-    }
-
-    fn now_ms(&self) -> u64 {
-        0
-    }
-
-    fn elapsed_ms(&self, _since: u64) -> u64 {
-        0
-    }
-}
-
-impl AsAny for RecordingBackend {
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-}
-
-/// A ready client whose remote clipboard offers text and a file list.
-fn ready_client() -> (CliprdrClient, Arc<Mutex<Seen>>) {
-    let seen = Arc::new(Mutex::new(Seen::default()));
-    let mut cliprdr = CliprdrClient::new(Box::new(RecordingBackend {
-        seen: Arc::clone(&seen),
-    }));
-
-    let _: Vec<_> = cliprdr.initiate_copy(&[]).unwrap().into();
-    let _: Vec<_> = cliprdr
-        .process(&ironrdp_core::encode_vec(&ClipboardPdu::FormatListResponse(FormatListResponse::Ok)).unwrap())
-        .unwrap();
-
-    let formats = vec![
-        ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
-        ClipboardFormat::new(file_list_format()).with_name(ClipboardFormatName::FILE_LIST),
-    ];
     let format_list = ClipboardPdu::FormatList(FormatList::new_unicode(&formats, true).unwrap());
     let _: Vec<_> = cliprdr
         .process(&ironrdp_core::encode_vec(&format_list).unwrap())
         .unwrap();
+}
 
-    (cliprdr, seen)
+/// A ready client whose remote clipboard offers text and a file list.
+fn ready_client() -> CliprdrClient {
+    let mut cliprdr = init_ready_client_with_backend(Box::new(FormatDataRecordingBackend::default()));
+    announce(&mut cliprdr, true);
+    cliprdr
+}
+
+fn backend(cliprdr: &CliprdrClient) -> &FormatDataRecordingBackend {
+    cliprdr.downcast_backend::<FormatDataRecordingBackend>().unwrap()
+}
+
+fn paste(cliprdr: &mut CliprdrClient, format: ClipboardFormatId) {
+    let _: Vec<_> = cliprdr.initiate_paste(format).unwrap().into();
 }
 
 fn respond(cliprdr: &mut CliprdrClient, response: FormatDataResponse<'_>) {
@@ -122,23 +61,22 @@ fn file_list_response() -> FormatDataResponse<'static> {
                 .with_file_size(1024),
         ],
     };
-    FormatDataResponse::new_file_list(&list).unwrap().into_owned()
+    FormatDataResponse::new_file_list(&list).unwrap()
 }
 
 fn text_response() -> FormatDataResponse<'static> {
-    FormatDataResponse::new_unicode_string("hello").into_owned()
+    FormatDataResponse::new_unicode_string("hello")
 }
 
 /// Control: one request, one response — the file list is recognised.
 #[test]
 fn a_single_file_list_request_is_recognised() {
-    let (mut cliprdr, seen) = ready_client();
-    let _: Vec<_> = cliprdr.initiate_paste(file_list_format()).unwrap().into();
+    let mut cliprdr = ready_client();
+    paste(&mut cliprdr, file_list_format());
     respond(&mut cliprdr, file_list_response());
 
-    let seen = seen.lock().unwrap();
-    assert_eq!(seen.file_lists.len(), 1);
-    assert!(seen.data_responses.is_empty());
+    assert_eq!(backend(&cliprdr).file_lists.len(), 1);
+    assert!(backend(&cliprdr).data_responses.is_empty());
 }
 
 /// Text requested, then the file list requested before the text arrived. The
@@ -146,26 +84,19 @@ fn a_single_file_list_request_is_recognised() {
 /// data, and the second — the real file list — must be recognised as one.
 #[test]
 fn a_text_response_is_not_taken_for_a_later_file_list_request() {
-    let (mut cliprdr, seen) = ready_client();
-    let _: Vec<_> = cliprdr
-        .initiate_paste(ClipboardFormatId::CF_UNICODETEXT)
-        .unwrap()
-        .into();
-    let _: Vec<_> = cliprdr.initiate_paste(file_list_format()).unwrap().into();
+    let mut cliprdr = ready_client();
+    paste(&mut cliprdr, ClipboardFormatId::CF_UNICODETEXT);
+    paste(&mut cliprdr, file_list_format());
 
     respond(&mut cliprdr, text_response());
     respond(&mut cliprdr, file_list_response());
 
-    let seen = seen.lock().unwrap();
-    assert_eq!(
-        seen.file_lists.len(),
-        1,
-        "the file list response must be recognised as the file list"
-    );
+    let seen = backend(&cliprdr);
+    assert_eq!(seen.file_lists.len(), 1, "the file list must be recognised");
     assert_eq!(seen.file_lists[0][0].name, "document.pdf");
     assert_eq!(
         seen.data_responses,
-        vec![Some(text_response().data().to_vec())],
+        vec![text_response().data().to_vec()],
         "the text response must reach the backend as data"
     );
 }
@@ -175,21 +106,18 @@ fn a_text_response_is_not_taken_for_a_later_file_list_request() {
 /// rather than handed to the backend as if it were the text.
 #[test]
 fn a_file_list_response_is_not_taken_for_a_later_text_request() {
-    let (mut cliprdr, seen) = ready_client();
-    let _: Vec<_> = cliprdr.initiate_paste(file_list_format()).unwrap().into();
-    let _: Vec<_> = cliprdr
-        .initiate_paste(ClipboardFormatId::CF_UNICODETEXT)
-        .unwrap()
-        .into();
+    let mut cliprdr = ready_client();
+    paste(&mut cliprdr, file_list_format());
+    paste(&mut cliprdr, ClipboardFormatId::CF_UNICODETEXT);
 
     respond(&mut cliprdr, file_list_response());
     respond(&mut cliprdr, text_response());
 
-    let seen = seen.lock().unwrap();
+    let seen = backend(&cliprdr);
     assert_eq!(seen.file_lists.len(), 1, "the file list must be recognised");
     assert_eq!(
         seen.data_responses,
-        vec![Some(text_response().data().to_vec())],
+        vec![text_response().data().to_vec()],
         "only the text response reaches the backend as data"
     );
 }
@@ -200,21 +128,83 @@ fn a_file_list_response_is_not_taken_for_a_later_text_request() {
 /// the file list.
 #[test]
 fn a_repeated_format_list_does_not_orphan_an_outstanding_request() {
-    let (mut cliprdr, seen) = ready_client();
-    let _: Vec<_> = cliprdr.initiate_paste(file_list_format()).unwrap().into();
-
-    let formats = vec![
-        ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
-        ClipboardFormat::new(file_list_format()).with_name(ClipboardFormatName::FILE_LIST),
-    ];
-    let format_list = ClipboardPdu::FormatList(FormatList::new_unicode(&formats, true).unwrap());
-    let _: Vec<_> = cliprdr
-        .process(&ironrdp_core::encode_vec(&format_list).unwrap())
-        .unwrap();
-
+    let mut cliprdr = ready_client();
+    paste(&mut cliprdr, file_list_format());
+    announce(&mut cliprdr, true);
     respond(&mut cliprdr, file_list_response());
 
-    let seen = seen.lock().unwrap();
+    assert_eq!(
+        backend(&cliprdr).file_lists.len(),
+        1,
+        "the file list must be recognised"
+    );
+    assert!(backend(&cliprdr).data_responses.is_empty());
+}
+
+/// A response is classified by what was requested, not by the clipboard state
+/// when it arrives: a FormatList that no longer offers a file list must not
+/// turn the answer to a file list request into plain data.
+#[test]
+fn a_file_list_request_is_classified_when_it_is_sent() {
+    let mut cliprdr = ready_client();
+    paste(&mut cliprdr, file_list_format());
+    announce(&mut cliprdr, false);
+    respond(&mut cliprdr, file_list_response());
+
+    assert_eq!(
+        backend(&cliprdr).file_lists.len(),
+        1,
+        "the file list must be recognised"
+    );
+    assert!(backend(&cliprdr).data_responses.is_empty());
+}
+
+/// A response is never given up on, however late it arrives: a response
+/// carries no ID, so a late answer to an abandoned request would pair with the
+/// next request instead. Here the text request is answered ten minutes late,
+/// after the timer has run and a file list request has been queued behind it.
+#[test]
+fn a_late_response_is_still_correlated() {
+    let mut cliprdr = ready_client();
+    paste(&mut cliprdr, ClipboardFormatId::CF_UNICODETEXT);
+
+    backend(&cliprdr).advance_ms(10 * 60 * 1000);
+    let _: Vec<_> = cliprdr.drive_timeouts().unwrap().into();
+    paste(&mut cliprdr, file_list_format());
+
+    respond(&mut cliprdr, text_response());
+    respond(&mut cliprdr, file_list_response());
+
+    let seen = backend(&cliprdr);
     assert_eq!(seen.file_lists.len(), 1, "the file list must be recognised");
-    assert!(seen.data_responses.is_empty());
+    assert_eq!(seen.data_responses, vec![text_response().data().to_vec()]);
+    assert_eq!(seen.error_responses, 0, "nothing was answered with a synthetic error");
+}
+
+/// A failed response still answers its request: the one behind it stays
+/// correlated.
+#[test]
+fn a_failed_response_keeps_later_responses_aligned() {
+    let mut cliprdr = ready_client();
+    paste(&mut cliprdr, file_list_format());
+    paste(&mut cliprdr, ClipboardFormatId::CF_UNICODETEXT);
+
+    respond(&mut cliprdr, FormatDataResponse::new_error());
+    respond(&mut cliprdr, text_response());
+
+    let seen = backend(&cliprdr);
+    assert_eq!(seen.error_responses, 1, "the file list request failed");
+    assert!(seen.file_lists.is_empty());
+    assert_eq!(seen.data_responses, vec![text_response().data().to_vec()]);
+}
+
+/// A peer that stops answering cannot grow the queue without bound: past the
+/// cap, `initiate_paste` fails instead of queueing.
+#[test]
+fn the_pending_request_queue_is_capped() {
+    let mut cliprdr = ready_client();
+    for _ in 0..64 {
+        paste(&mut cliprdr, ClipboardFormatId::CF_UNICODETEXT);
+    }
+    assert!(cliprdr.initiate_paste(ClipboardFormatId::CF_UNICODETEXT).is_err());
 }

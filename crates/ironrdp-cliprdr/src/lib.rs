@@ -37,6 +37,18 @@ pub(crate) enum CliprdrState {
     Ready,
 }
 
+/// A FormatDataRequest sent to the remote and not yet answered.
+#[derive(Debug, Clone, Copy)]
+struct PendingFormatDataRequest {
+    format: ClipboardFormatId,
+    /// Whether this was a request for the remote's file list, decided when the
+    /// request was sent. The response carries no format ID, and a FormatList
+    /// arriving in between can change or drop the file list format, so the
+    /// response is classified by what was requested, not by the state at
+    /// response time.
+    is_file_list: bool,
+}
+
 /// [MS-RDPECLIP] 2.2.5.3 / 2.2.5.4 - Tracks state of a file contents transfer
 ///
 /// Used to validate FileContentsResponse matches the corresponding FileContentsRequest
@@ -418,7 +430,14 @@ pub struct Cliprdr<R: Role> {
     /// with two FormatLists in quick succession, as Firefox and Word do — and
     /// a single slot then pairs the earlier request's response with the later
     /// request.
-    pending_format_data_requests: VecDeque<ClipboardFormatId>,
+    ///
+    /// Deliberately no timeout: a response carries no ID, so a request given up
+    /// on could not be told apart from a late answer, and that late answer
+    /// would then pair with the next request — the misattribution this queue
+    /// exists to prevent. A conformant peer answers every request, with
+    /// CB_RESPONSE_FAIL if it can't produce the data (3.1.5.4.3);
+    /// [`MAX_PENDING_FORMAT_DATA_REQUESTS`] bounds one that doesn't.
+    pending_format_data_requests: VecDeque<PendingFormatDataRequest>,
 
     /// Stores the local file list when initiating a file copy operation.
     /// Set by initiate_file_copy(), used to respond to FormatDataRequest.
@@ -918,7 +937,10 @@ impl<R: Role> Cliprdr<R> {
         // When user initiates paste, send format data request to server, and expect to
         // receive response with contents via `FormatDataResponse` PDU.
         // Track the format so we can correlate the response correctly.
-        self.pending_format_data_requests.push_back(requested_format);
+        self.pending_format_data_requests.push_back(PendingFormatDataRequest {
+            format: requested_format,
+            is_file_list: Some(requested_format) == self.remote_file_list_format_id,
+        });
 
         if Some(requested_format) == self.remote_file_list_format_id {
             trace!(format_id = ?requested_format, "User initiated paste for FileGroupDescriptorW");
@@ -1728,9 +1750,9 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                 // Correlate this response with the oldest unanswered FormatDataRequest.
                 // Only intercept as a file list if the request was for the file list format;
                 // forward all other responses (text, images, etc.) to the backend.
-                let requested_format = self.pending_format_data_requests.pop_front();
-                let is_file_list_response =
-                    requested_format.is_some() && requested_format == self.remote_file_list_format_id;
+                let requested = self.pending_format_data_requests.pop_front();
+                let requested_format = requested.map(|request| request.format);
+                let is_file_list_response = requested.is_some_and(|request| request.is_file_list);
 
                 if is_file_list_response {
                     if response.is_error() {

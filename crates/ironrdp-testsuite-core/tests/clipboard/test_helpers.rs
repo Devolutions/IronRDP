@@ -196,6 +196,75 @@ impl AsAny for RecordingBackend {
     }
 }
 
+// ── FormatDataRecordingBackend ──────────────────────────────────────
+
+/// Backend that records FormatDataResponse and remote file list callbacks,
+/// with a mock clock. Used to verify which request each response is
+/// correlated with, and the expiry of unanswered requests.
+#[derive(Debug, Default)]
+pub(super) struct FormatDataRecordingBackend {
+    pub clock_ms: Cell<u64>,
+    /// Payloads of successful FormatDataResponses forwarded to the backend.
+    pub data_responses: Vec<Vec<u8>>,
+    /// Error FormatDataResponses forwarded to the backend, real or synthetic.
+    pub error_responses: usize,
+    /// File lists delivered through `on_remote_file_list`.
+    pub file_lists: Vec<Vec<FileDescriptor>>,
+}
+
+impl FormatDataRecordingBackend {
+    /// Advance the mock clock by `ms` milliseconds.
+    pub fn advance_ms(&self, ms: u64) {
+        self.clock_ms.set(self.clock_ms.get() + ms);
+    }
+}
+
+impl CliprdrBackend for FormatDataRecordingBackend {
+    fn temporary_directory(&self) -> &str {
+        "/tmp"
+    }
+    fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags {
+        ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES
+            | ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED
+            | ClipboardGeneralCapabilityFlags::FILECLIP_NO_FILE_PATHS
+    }
+    fn on_ready(&mut self) {}
+    fn on_request_format_list(&mut self) {}
+    fn on_process_negotiated_capabilities(&mut self, _: ClipboardGeneralCapabilityFlags) {}
+    fn on_remote_copy(&mut self, _: &[ClipboardFormat]) {}
+    fn on_format_data_request(&mut self, _: FormatDataRequest) {}
+    fn on_format_data_response(&mut self, response: FormatDataResponse<'_>) {
+        if response.is_error() {
+            self.error_responses += 1;
+        } else {
+            self.data_responses.push(response.data().to_vec());
+        }
+    }
+    fn on_file_contents_request(&mut self, _: FileContentsRequest) {}
+    fn on_file_contents_response(&mut self, _: FileContentsResponse<'_>) {}
+    fn on_lock(&mut self, _: LockDataId) {}
+    fn on_unlock(&mut self, _: LockDataId) {}
+    fn on_remote_file_list(&mut self, files: &[FileDescriptor], _clip_data_id: Option<u32>) {
+        self.file_lists.push(files.to_vec());
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.clock_ms.get()
+    }
+    fn elapsed_ms(&self, since: u64) -> u64 {
+        self.now_ms().saturating_sub(since)
+    }
+}
+
+impl AsAny for FormatDataRecordingBackend {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
+    }
+}
+
 // ── TimedRecordingBackend ───────────────────────────────────────────
 
 /// Backend combining mock clock, response recording, and unlock
