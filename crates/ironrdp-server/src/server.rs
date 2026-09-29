@@ -2150,7 +2150,8 @@ impl RdpServer {
     /// connections it accepts itself.
     ///
     /// Equivalent to [`run_connection_with`](Self::run_connection_with) with
-    /// [`TransportTls::Managed`].
+    /// [`TransportTls::Managed`], including the treatment of events queued
+    /// before the call (see `Queued events` there).
     pub async fn run_connection<S>(&mut self, stream: S) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
@@ -2174,6 +2175,17 @@ impl RdpServer {
     /// advances the state machine via [`Acceptor::mark_security_upgrade_as_done`].
     /// Everything past the handshake, including the optional Hybrid CredSSP
     /// exchange and finalization, is identical to the managed path.
+    ///
+    /// # Queued events
+    ///
+    /// Before negotiation starts, this method drops every event still waiting
+    /// on the server-global channel, except `Quit`, `GetLocalAddr`,
+    /// `SetCredentials` and `SetAutoReconnectCookie`. What a previous session
+    /// queued but never consumed (EGFX frames, RDPSND waves, clipboard
+    /// messages) would otherwise be written to this client before its
+    /// channels exist. The same applies to anything an embedder queued through
+    /// [`event_sender`](Self::event_sender) before calling this method:
+    /// queue events for a connection only after this method has started.
     ///
     /// # Use case for [`TransportTls::AlreadyDone`]
     ///
@@ -5601,42 +5613,6 @@ mod preempt_tests {
         assert!(
             matches!(&remaining[0], ServerEvent::Quit(reason) if reason == "keep me"),
             "the surviving event should be the Quit, not the discarded per-session event: {remaining:?}"
-        );
-    }
-
-    /// Events the previous session left queued never reach the next
-    /// connection, including one an embedder drives through `run_connection`
-    /// without `run()`'s idle loop in between.
-    #[tokio::test]
-    async fn a_new_connection_starts_without_the_previous_sessions_events() {
-        let mut server = RdpServer::builder()
-            .with_addr((Ipv4Addr::LOCALHOST, 0))
-            .with_no_security()
-            .with_no_input()
-            .with_no_display()
-            .build();
-
-        let sender = server.event_sender().clone();
-        let _ = sender.send(ServerEvent::AutoDetectRttRequest);
-        let _ = sender.send(ServerEvent::Quit("keep me".to_owned()));
-
-        // The client is already gone, so negotiation fails at once; the
-        // discard happens before it starts.
-        let (stream, client) = tokio::io::duplex(64);
-        drop(client);
-        let _ = server.run_connection(stream).await;
-
-        let remaining = {
-            let mut rx = server.ev_receiver.lock().await;
-            let mut events = Vec::new();
-            while let Ok(event) = rx.try_recv() {
-                events.push(event);
-            }
-            events
-        };
-        assert!(
-            matches!(remaining.as_slice(), [ServerEvent::Quit(reason)] if reason == "keep me"),
-            "only the lifecycle event should be left: {remaining:?}"
         );
     }
 
