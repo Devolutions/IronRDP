@@ -38,6 +38,9 @@ const { encodeCheckState, parseCheckState } = require("./validate-classifier");
 const { sanitizeReason } = require("../actions/openai-agent/src/provider");
 const { compileOutputValidator } = require("../actions/openai-agent/src/agent");
 const {
+  normalizeClassifier, normalizeGeneral, normalizeSpecialist,
+} = require("./output-normalizer");
+const {
   corpusFromDirectory, validateProtocolReferences,
 } = require("./validate-protocol-review");
 const {
@@ -81,6 +84,60 @@ const candidateFinding = (changes = {}) => ({
 const candidateReview = (reviewer = "skeptical", changes = {}) => ({
   head_sha: SHA, reviewer, summary: "candidate review",
   findings: [candidateFinding()], ...changes,
+});
+
+test("trusted output normalizers project strict boundaries and only trim declared prose tails", () => {
+  const classified = normalizeClassifier(classifier({
+    summary: `  ${"😀".repeat(1001)}  `,
+    overlap: {
+      detected: false, similar_pr_number: null, similar_pr_url: null, confidence: 0, rationale: "",
+      provider_noise: "discarded",
+    },
+    provider_noise: "discarded",
+  }));
+  assert.equal(Object.hasOwn(classified, "provider_noise"), false);
+  assert.equal(Object.hasOwn(classified.overlap, "provider_noise"), false);
+  assert.equal([...classified.summary].length, 1000);
+  assert.equal(classified.summary.endsWith("…"), true);
+
+  const specialist = normalizeSpecialist(candidateReview("skeptical", {
+    summary: "  compact \n summary  ",
+    findings: [candidateFinding({
+      title: "  must remain unchanged  ",
+      rationale: "x".repeat(1201),
+      provider_noise: "discarded",
+      references: [{ protocol_id: "MS-RDP", section: "1", heading: " h ", provider_noise: "discarded" }],
+    })],
+    provider_noise: "discarded",
+  }));
+  assert.equal(specialist.summary, "compact summary");
+  assert.equal(specialist.findings[0].title, "  must remain unchanged  ");
+  assert.equal(specialist.findings[0].rationale.length, 1201);
+  assert.equal(Object.hasOwn(specialist.findings[0], "provider_noise"), false);
+  assert.equal(Object.hasOwn(specialist.findings[0].references[0], "provider_noise"), false);
+
+  const general = normalizeGeneral(review({
+    summary: "  general  ",
+    candidate_dispositions: [{
+      reviewer: "skeptical", finding_id: "finding-1", disposition: "accepted",
+      rationale: ` ${"😀".repeat(801)} `,
+      provider_noise: "discarded",
+    }],
+    findings: [finding({ sources: [{ reviewer: "skeptical", finding_id: "finding-1", provider_noise: "discarded" }] })],
+  }));
+  assert.equal(general.summary, "general");
+  assert.equal([...general.candidate_dispositions[0].rationale].length, 800);
+  assert.equal(general.candidate_dispositions[0].rationale.endsWith("…"), true);
+  assert.equal(Object.hasOwn(general.candidate_dispositions[0], "provider_noise"), false);
+  assert.equal(Object.hasOwn(general.findings[0].sources[0], "provider_noise"), false);
+
+  const controlled = normalizeClassifier(classifier({
+    summary: `${"x".repeat(1001)}\u000Bhidden`,
+    overlap: { detected: false, similar_pr_number: null, similar_pr_url: null, confidence: 0, rationale: "\u000C" },
+  }));
+  assert.equal(controlled.summary.includes("\u000B"), true);
+  assert.equal(controlled.overlap.rationale, "\u000C");
+  assert.equal(validateClassifier(controlled, { expectedSha: SHA }).ok, false);
 });
 
 const MAXIMUM_LINUX_ENVIRONMENT_ENTRY_BYTES = 128 * 1024;
@@ -4359,6 +4416,22 @@ test("reviewer actions retry four provider requests and repair output in convers
   }
   assert.match(workflowJob(workflow, "specialists"), /timeout-minutes: 130/);
   assert.match(workflowJob(workflow, "general"), /timeout-minutes: 130/);
+});
+
+test("every model stage uses its stage-specific trusted output normalizer", () => {
+  assert.match(
+    workflowJob(readWorkflow(), "classifier"),
+    /normalizer: \.github\/pr-automation\/output-normalizer\.js#normalizeClassifier/,
+  );
+  const workflow = readReviewWorkflow();
+  assert.match(
+    workflowJob(workflow, "specialists"),
+    /normalizer: \.github\/pr-automation\/output-normalizer\.js#normalizeSpecialist/,
+  );
+  assert.match(
+    workflowJob(workflow, "general"),
+    /normalizer: \.github\/pr-automation\/output-normalizer\.js#normalizeGeneral/,
+  );
 });
 
 test("the preparation job checks out the automation before any step requires it", async () => {

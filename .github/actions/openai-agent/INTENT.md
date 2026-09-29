@@ -20,10 +20,11 @@ The workflow controls:
 - Output schema.
 - Read-only filesystem capabilities.
 - Stage, stream-idle, request-retry, model-turn, tool-call, and output-repair limits.
+- An optional synchronous task-specific output normalizer.
 - An optional task-specific validator and its bounded metadata.
 - An optional structured-output file target.
 
-Configuration, prompts, schemas, and validator modules are trusted workflow inputs.
+Configuration, prompts, schemas, normalizer modules, and validator modules are trusted workflow inputs.
 Evidence and model-produced tool arguments never grant capabilities.
 The model can call only the declared `read_file`, `list_files`, and `search_text` tools within the configured paths and resource limits.
 
@@ -69,8 +70,15 @@ Raw model content is bounded before it enters local JSON parsing or message hist
 Accepted serialization is bounded independently of the configured schema.
 Checked-in schemas also bound their retained text and collections.
 
-Unpaired UTF-16 surrogates are replaced with the Unicode replacement character before validation.
-Sanitization rejects distinct object keys that would collide after replacement.
+The core output transformation follows this order: raw byte limit, JSON parse, Unicode sanitization with key-collision rejection, stage check, synchronous normalization, stage check, genuine-JSON-value validation, Unicode sanitization again, serialization and byte limit, JSON Schema validation, and the optional semantic validator.
+Deadline checks also surround candidate validation and the guarded semantic validator.
+Unpaired UTF-16 surrogates are replaced with the Unicode replacement character before validation, and sanitization rejects distinct object keys that would collide after replacement.
+The normalizer receives the parsed and sanitized value and returns the canonical value.
+It is trusted workflow code, may only run synchronously, and cannot be preempted while it runs, so the stage deadline is checked immediately before and after it.
+Normalizer loading, execution, and return-value failures are static non-retryable `normalizer-error` failures that expose neither exception nor model content and consume no repair attempt.
+Only the workflow-declared normalizer may project unknown properties or canonicalize non-authoritative prose.
+The repository normalizer may truncate only the classifier `summary`, `breaking_change_rationale`, and `breaking_change_surface`, specialist `summary`, general `summary`, and general `candidate_dispositions[*].rationale` tails.
+Identity, findings, evidence, locations, severity, provenance, and publication-safety fields remain strict.
 
 Provider JSON or JSON Schema constraints are generation aids selected only for model and schema combinations known to support them.
 They may be narrower than local acceptance when a trusted normalizer can preserve useful work without ambiguity.
@@ -80,7 +88,8 @@ Local JSON parsing, schema validation, and the trusted semantic validator remain
 The action repairs rejected JSON, schema, and semantic output within the configured repair budget and existing conversation.
 A semantic repair may use only necessary read-only evidence lookup.
 After evidence lookup, the corrected value is requested without tools so the configured provider output format applies where supported.
-Every parsed candidate is supplied to the validator in original order so repair cannot silently discard usable findings.
+Every schema-invalid canonical candidate is supplied to the validator in canonical order wherever parsed candidates are retained, so repair cannot silently discard usable findings.
+Normalizer failures create no repair-history entry.
 Every rejected attempt records the validation layer and a bounded, sanitized reason.
 The final rejection reason is retained when the repair budget is exhausted.
 

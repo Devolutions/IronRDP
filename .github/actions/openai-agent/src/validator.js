@@ -2,7 +2,7 @@
 
 const path = require("node:path");
 
-const { ActionError, fail } = require("./errors");
+const { fail } = require("./errors");
 const { MAX_VALIDATION_REASON_BYTES, MAX_VALIDATOR_METADATA_BYTES } = require("./limits");
 const { WorkspaceSandbox } = require("./sandbox");
 
@@ -35,29 +35,42 @@ function parseMetadata(raw) {
   return metadata;
 }
 
-function loadValidator(workspace, selector, metadata) {
-  if (selector === "") return null;
+function resolveSelector(workspace, selector, kind) {
   const marker = selector.lastIndexOf("#");
   if (marker <= 0 || marker === selector.length - 1) {
-    fail("invalid validator selector", "input");
+    fail(`invalid ${kind} selector`, "input");
   }
   const modulePath = selector.slice(0, marker);
   const exportName = selector.slice(marker + 1);
-  if (!SAFE_EXPORT.test(exportName)) fail("invalid validator selector", "input");
+  if (!SAFE_EXPORT.test(exportName)) fail(`invalid ${kind} selector`, "input");
 
   const sandbox = new WorkspaceSandbox(workspace);
-  const target = sandbox.resolve(modulePath, "file", false);
+  let target;
+  try {
+    target = sandbox.resolve(modulePath, "file", false);
+  } catch (error) {
+    if (kind === "normalizer") {
+      throw new ValidatorFailure("normalizer module could not be loaded", "normalizer-error");
+    }
+    throw error;
+  }
   let exports;
   try {
     delete require.cache[require.resolve(target.real)];
     exports = require(target.real);
   } catch {
-    throw new ValidatorFailure("validator module could not be loaded", "validator-error");
+    throw new ValidatorFailure(`${kind} module could not be loaded`, `${kind}-error`);
   }
-  const validate = exports?.[exportName];
-  if (typeof validate !== "function") {
-    throw new ValidatorFailure("validator export is unavailable", "validator-error");
+  const callback = exports?.[exportName];
+  if (typeof callback !== "function") {
+    throw new ValidatorFailure(`${kind} export is unavailable`, `${kind}-error`);
   }
+  return callback;
+}
+
+function loadValidator(workspace, selector, metadata) {
+  if (selector === "") return null;
+  const validate = resolveSelector(workspace, selector, "validator");
   return async (candidate, context) => {
     try {
       const result = await validate(candidate, {
@@ -82,6 +95,18 @@ function loadValidator(workspace, selector, metadata) {
   };
 }
 
+function loadNormalizer(workspace, selector) {
+  if (selector === "") return null;
+  const normalize = resolveSelector(workspace, selector, "normalizer");
+  return (candidate) => {
+    try {
+      return normalize(candidate);
+    } catch {
+      throw new ValidatorFailure("normalizer execution failed", "normalizer-error");
+    }
+  };
+}
+
 function safeReason(reason) {
   return typeof reason === "string" &&
     Buffer.byteLength(reason, "utf8") <= MAX_VALIDATION_REASON_BYTES &&
@@ -98,4 +123,4 @@ function terminalValidatorFailure(error) {
   return new ValidatorFailure("validator execution failed", "validator-error");
 }
 
-module.exports = { ValidatorFailure, loadValidator, parseMetadata };
+module.exports = { ValidatorFailure, loadNormalizer, loadValidator, parseMetadata };

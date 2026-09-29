@@ -7,7 +7,7 @@ const { loadConfiguration, validateBaseUrl } = require("./config");
 const { ActionError } = require("./errors");
 const { RuntimeMetrics, createProviderClient } = require("./provider");
 const { validateOutputFilePath, writeOutputFile } = require("./sandbox");
-const { ValidatorFailure, loadValidator, parseMetadata } = require("./validator");
+const { ValidatorFailure, loadNormalizer, loadValidator, parseMetadata } = require("./validator");
 
 async function main(core, environment = process.env, OpenAIClient = OpenAI) {
   let apiKey = "";
@@ -28,6 +28,7 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
     const baseUrlInput = requiredInput(core, "base-url", "base URL input is missing");
     const configFile = requiredInput(core, "config-file", "config file input is missing");
     const validatorSelector = core.getInput("validator");
+    const normalizerSelector = core.getInput("normalizer");
     const validatorMetadata = parseMetadata(core.getInput("validator-metadata"));
     const outputFile = validateOutputFilePath(core.getInput("structured-output-file"));
     if (validatorSelector === "" && Object.keys(validatorMetadata).length !== 0) {
@@ -42,6 +43,7 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
     const loaded = loadConfiguration(workspace, configFile);
     const config = loaded.config;
     const validator = loadValidator(workspace, validatorSelector, validatorMetadata);
+    const normalizer = loadNormalizer(workspace, normalizerSelector);
     core.info(JSON.stringify({
       event: "openai-agent.start",
       id: config.id,
@@ -65,7 +67,7 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       throw new ActionError("provider client initialization failed", "initialization");
     }
     phase = "runtime";
-    const result = await runAgent({ client, ...loaded, config, validator, metrics });
+    const result = await runAgent({ client, ...loaded, config, normalizer, validator, metrics });
     turnCount = result.turnCount;
     toolCallCount = result.toolCallCount;
     outputRepairCount = result.outputRepairCount;

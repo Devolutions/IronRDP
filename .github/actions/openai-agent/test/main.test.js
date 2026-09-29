@@ -13,7 +13,8 @@ test("action metadata exposes only configured inputs and required outputs on nod
   const action = fs.readFileSync(path.join(__dirname, "..", "action.yml"), "utf8");
   assert.match(action, /runs:\r?\n  using: node24\r?\n  main: dist\/index\.js/);
   for (const input of [
-    "api-key", "base-url", "config-file", "validator", "validator-metadata", "structured-output-file",
+    "api-key", "base-url", "config-file", "validator", "normalizer", "validator-metadata",
+    "structured-output-file",
   ]) {
     assert.match(action, new RegExp(`^  ${input}:\\r?$`, "m"));
   }
@@ -590,7 +591,7 @@ test("main reports why repaired output remains invalid", async () => {
         attempt: 1,
         activity: "investigating",
         layer: "schema",
-        reason: "response did not match the schema: #/required: required answer; #/additionalProperties: additionalProperties",
+        reason: "response did not match the schema: #: required answer; #: has an unexpected property",
       },
       { attempt: 2, activity: "repairing", layer: "json", reason: "response was not valid JSON" },
     ]);

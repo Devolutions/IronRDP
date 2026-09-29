@@ -59,8 +59,10 @@ Final review validation renders the escaped GitHub review payload and rejects ou
 
 Every logical model call can make up to four retry HTTP attempts after its initial HTTP attempt.
 
-`.github/pr-automation/agent-validator.js` is the trusted review validator the model runtime calls.
-The runtime validates JSON and the output schema, then hands the parsed candidate to this module together with bounded metadata naming the stage, the reviewer, the expected SHAs, and the trusted context files.
+`.github/pr-automation/output-normalizer.js` is the trusted stage-specific canonicalizer.
+It projects unknown properties only at strict schema-object boundaries and normalizes only product-declared non-authoritative summary tails before local schema validation.
+The classifier uses its normalizer without a semantic validator.
+Specialist and general stages normalize first, validate the local JSON Schema, then call `.github/pr-automation/agent-validator.js` with bounded metadata naming the stage, reviewer, expected SHA, and trusted context files.
 The validator reads the changed-file manifest, the protocol corpus, and the specialist aggregate itself, from paths only the trusted workflow can write.
 
 The validator distinguishes two outcomes.
@@ -129,9 +131,9 @@ Its workflow-controlled configuration enforces turn, tool-call, path, byte, line
 The runtime bounds raw streamed bodies and accepted serialization independently of schema value bounds.
 For large review schemas, accepted output is written once to a workflow-controlled target in the action's dedicated workspace directory; the action rejects symlinks, existing targets, and paths outside that directory.
 The target is action input rather than an echoed success output, and workflow consumers select their known path from the action step outcome.
-The caller can opt into a trusted validator from the workflow checkout and pass bounded invocation metadata.
-The action validates JSON and schema before the validator, then preserves the conversation for bounded correction turns.
-For validator checks, `previousCandidate` is the earliest JSON-parsed candidate in the repair sequence, including a value that did not pass local schema and may be any JSON type.
+The caller can opt into a trusted synchronous normalizer and a trusted validator from the workflow checkout and pass bounded validator metadata.
+The action normalizes after parsed-value Unicode sanitization, then validates a genuine JSON value, serialization bound, and schema before the validator.
+For validator checks, `previousCandidate` is the earliest canonical JSON-parsed candidate in the repair sequence, including a value that did not pass local schema and may be any JSON type.
 Validator-directed corrections may use only necessary bounded read-only evidence lookup, while invalid output remains terminal after its configured repair budget.
 One model turn is one logical model call.
 The action owns retry HTTP attempts for that logical call through the SDK's public completion API and honors valid `Retry-After` delays.

@@ -3,7 +3,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { ValidatorFailure, loadValidator, parseMetadata } = require("../src/validator");
+const {
+  ValidatorFailure, loadNormalizer, loadValidator, parseMetadata,
+} = require("../src/validator");
 const { scratchWorkspace, write } = require("./helpers");
 
 test("trusted validator receives opaque metadata and prior candidates", async () => {
@@ -57,6 +59,38 @@ test("validator metadata and execution failures are bounded and classified", asy
       (error) => error instanceof ValidatorFailure &&
         error.category === "validator-error" &&
         error.reason === "validator execution failed",
+    );
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test("normalizer selectors and loader failures are static and input-safe", () => {
+  const workspace = scratchWorkspace();
+  write(workspace.directory, "normalizer.js", [
+    "exports.normalize = (value) => ({ ...value, answer: 'canonical' });",
+    "exports.crash = () => { throw new Error('MODEL_SECRET_SENTINEL'); };",
+  ].join("\n"));
+  try {
+    assert.throws(() => loadNormalizer(workspace.directory, "normalizer.js"), /invalid normalizer selector/);
+    assert.throws(
+      () => loadNormalizer(workspace.directory, "missing.js#normalize"),
+      (error) => error instanceof ValidatorFailure &&
+        error.category === "normalizer-error" && error.reason === "normalizer module could not be loaded",
+    );
+    assert.throws(
+      () => loadNormalizer(workspace.directory, "normalizer.js#missing"),
+      (error) => error instanceof ValidatorFailure &&
+        error.category === "normalizer-error" && error.reason === "normalizer export is unavailable",
+    );
+    assert.deepEqual(
+      loadNormalizer(workspace.directory, "normalizer.js#normalize")({ answer: "raw" }),
+      { answer: "canonical" },
+    );
+    assert.throws(
+      () => loadNormalizer(workspace.directory, "normalizer.js#crash")({}),
+      (error) => error instanceof ValidatorFailure &&
+        error.category === "normalizer-error" && error.reason === "normalizer execution failed",
     );
   } finally {
     workspace.cleanup();

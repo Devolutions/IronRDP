@@ -1417,6 +1417,116 @@ test("output validation sanitizes unpaired UTF-16 surrogates and rejects key col
   assert.equal(validate(JSON.stringify({ answer: "😀" })).ok, true);
 });
 
+test("output normalization is canonical, ordered, and rejects invalid trusted returns", async () => {
+  const calls = [];
+  const normalize = (value) => {
+    calls.push("normalize");
+    return { answer: value.answer.trim() };
+  };
+  const validate = compileOutputValidator(schema, normalize);
+  assert.deepEqual(validate('{"answer":" done ","extra":"discarded"}'), {
+    ok: true, output: '{"answer":"done"}', value: { answer: "done" },
+  });
+  assert.deepEqual(calls, ["normalize"]);
+
+  let invoked = false;
+  const never = compileOutputValidator(schema, () => { invoked = true; return {}; });
+  assert.equal(never("{").layer, "json");
+  assert.equal(never('{"\\ud800":"first","�":"second"}').layer, "unicode");
+  assert.equal(invoked, false);
+
+  for (const value of [
+    Promise.resolve({}), { then() {} }, (() => { const cycle = {}; cycle.self = cycle; return cycle; })(),
+    NaN, 1n, undefined, () => {}, Symbol("value"), new Date(),
+  ]) {
+    assert.throws(
+      () => compileOutputValidator(schema, () => value)('{"answer":"safe"}'),
+      (error) => error.category === "normalizer-error" &&
+        error.reason === "normalizer returned an invalid JSON value",
+    );
+  }
+  let thenGetterCalls = 0;
+  const accessor = {};
+  Object.defineProperty(accessor, "then", {
+    enumerable: true,
+    get() {
+      thenGetterCalls++;
+      return () => {};
+    },
+  });
+  assert.throws(
+    () => compileOutputValidator(schema, () => accessor)('{"answer":"safe"}'),
+    (error) => error.category === "normalizer-error",
+  );
+  assert.equal(thenGetterCalls, 0);
+  const symbolKeyed = { answer: "safe", [Symbol("hidden")]: "value" };
+  assert.throws(
+    () => compileOutputValidator(schema, () => symbolKeyed)('{"answer":"safe"}'),
+    (error) => error.category === "normalizer-error",
+  );
+  assert.throws(
+    () => compileOutputValidator(schema, () => ({ "\ud800": "first", "�": "second" }))(
+      '{"answer":"safe"}',
+    ),
+    (error) => error.category === "normalizer-error",
+  );
+
+  const semanticCalls = [];
+  const result = await runAgent({
+    client: clientFrom([message('{"answer":" normalized "}')]),
+    config: { ...baseConfig, max_tool_calls: 0 },
+    methodologies: [], normalizer: normalize, prompt: "p", sandbox, schema,
+    validator: async (candidate) => {
+      semanticCalls.push(candidate.answer);
+      return { ok: candidate.answer === "normalized" };
+    },
+  });
+  assert.equal(result.output, '{"answer":"normalized"}');
+  assert.deepEqual(semanticCalls, ["normalized"]);
+
+  await assert.rejects(
+    runAgent({
+      client: clientFrom([message('{"answer":"safe"}')]),
+      config: { ...baseConfig, max_tool_calls: 0 },
+      methodologies: [], normalizer: () => { throw new Error("MODEL_SECRET_SENTINEL"); },
+      prompt: "p", sandbox, schema,
+    }),
+    (error) => error.category === "normalizer-error" &&
+      error.reason === "normalizer returned an invalid JSON value" &&
+      error.outputRepairCount === 0,
+  );
+});
+
+test("schema repair diagnostics are bounded, actionable, and provider-data-free", () => {
+  const cases = [
+    [{ type: "object", required: ["safe"], properties: { safe: { type: "string" } } }, {}, "required safe"],
+    [{ type: "string", maxLength: 1 }, "xx", "at most 1 characters"],
+    [{ type: "string", minLength: 2 }, "x", "at least 2 characters"],
+    [{ type: "array", maxItems: 1 }, [1, 2], "at most 1 items"],
+    [{ type: "array", minItems: 2 }, [1], "at least 2 items"],
+    [{ type: "number", maximum: 1 }, 2, "at most 1"],
+    [{ type: "number", minimum: 1 }, 0, "at least 1"],
+    [{ type: "string" }, 1, "wrong type"],
+    [{ enum: ["safe"] }, "MODEL_RESPONSE_SECRET_SENTINEL", "unsupported value"],
+    [{ type: "string", pattern: "^safe$" }, "MODEL_RESPONSE_SECRET_SENTINEL", "invalid format"],
+    [{ type: "object", additionalProperties: false }, { MODEL_RESPONSE_SECRET_SENTINEL: true }, "unexpected property"],
+    [{ type: "array", uniqueItems: true }, ["safe", "safe"], "duplicate items"],
+  ];
+  for (const [schema, value, detail] of cases) {
+    const result = compileOutputValidator(schema)(JSON.stringify(value));
+    assert.equal(result.ok, false);
+    assert.equal(result.layer, "schema");
+    assert.match(result.reason, new RegExp(detail));
+    assert.doesNotMatch(result.reason, /MODEL_RESPONSE_SECRET_SENTINEL/);
+    assert.ok(Buffer.byteLength(result.reason, "utf8") <= 512);
+  }
+  const nested = compileOutputValidator({
+    type: "object",
+    properties: { items: { type: "array", items: { type: "object", properties: { safe: { type: "string" } } } } },
+  })('{"items":[{"safe":1}]}');
+  assert.match(nested.reason, /#\/items\/0\/safe: has wrong type/);
+});
+
 test("runtime enforces aggregate tool-call and turn bounds", async () => {
   const calls = [call("one", "read_file", { path: "x" }), call("two", "read_file", { path: "x" })];
   await assert.rejects(
@@ -1582,7 +1692,7 @@ test("exhausting repairs reports the layer and reason that ended the stage", asy
       methodologies: [], prompt: "p", sandbox, schema, metrics,
     }),
     (error) => error.reason ===
-      "output remained invalid after the repair limit: schema: response did not match the schema: #/required: required answer; #/additionalProperties: additionalProperties" &&
+      "output remained invalid after the repair limit: schema: response did not match the schema: #: required answer; #: has an unexpected property" &&
       error.category === "output-invalid" && !error.retryable && error.outputRepairCount === 2,
   );
   assert.deepEqual(metrics.snapshot().outputRejections, [
@@ -1591,13 +1701,13 @@ test("exhausting repairs reports the layer and reason that ended the stage", asy
       attempt: 2,
       activity: "repairing",
       layer: "schema",
-      reason: "response did not match the schema: #/required: required answer; #/additionalProperties: additionalProperties",
+      reason: "response did not match the schema: #: required answer; #: has an unexpected property",
     },
     {
       attempt: 3,
       activity: "repairing",
       layer: "schema",
-      reason: "response did not match the schema: #/required: required answer; #/additionalProperties: additionalProperties",
+      reason: "response did not match the schema: #: required answer; #: has an unexpected property",
     },
   ]);
 });

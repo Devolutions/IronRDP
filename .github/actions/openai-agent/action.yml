@@ -15,6 +15,10 @@ inputs:
     description: Trusted workflow validator module selector in path#export form
     required: false
     default: ""
+  normalizer:
+    description: Trusted synchronous output normalizer module selector in path#export form
+    required: false
+    default: ""
   validator-metadata:
     description: Trusted JSON object passed opaquely to the selected validator
     required: false
