@@ -37,7 +37,9 @@ Every HTTP attempt has independent raw-response-byte and idle-progress limits.
 The idle limit begins before the first response byte and resets only when the response body makes progress.
 The raw-stream limit includes framing bytes before the SDK parses server-sent events.
 
-The action assembles reasoning, content, usage, finish reason, and indexed tool-call fragments independently.
+The action accumulates reasoning, content, usage, finish reason, and indexed tool-call fragments independently.
+Truthy indexed tool identity snapshots (`id`, `type`, and `function.name`) replace earlier values, while `function.arguments` appends in arrival order.
+Reasoning remains separate from tool-call accumulation.
 An omitted choice index is accepted only for a single-choice chunk, and one complete index-less tool-call envelope is accepted only when the response contains no indexed fragments.
 Every accepted stream carries a terminal finish reason so cleanly truncated responses are retried rather than accepted.
 After that terminal reason, the conventional `choices: []` usage-only tail is preserved unchanged.
