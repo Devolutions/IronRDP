@@ -6,7 +6,7 @@ pub mod chunked_fetch;
 pub mod loop_detector;
 pub mod pdu;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use backend::CliprdrBackend;
 use ironrdp_core::{AsAny, EncodeResult, IntoOwned as _, decode};
@@ -368,6 +368,13 @@ const MAX_OUTGOING_LOCKS: usize = 100;
 /// prevents unbounded growth if responses are never received.
 const MAX_PENDING_FILE_REQUESTS: usize = 1000;
 
+/// Maximum number of unanswered format data requests.
+///
+/// Every [`Cliprdr::initiate_paste`] queues the requested format until its
+/// [`FormatDataResponse`] arrives. The remote must answer every request, so
+/// this only bounds a peer that stops answering.
+const MAX_PENDING_FORMAT_DATA_REQUESTS: usize = 64;
+
 /// Fails one file contents request without leaving its caller waiting.
 ///
 /// A rejected request is a per-request failure, not a channel failure. The
@@ -400,11 +407,18 @@ pub struct Cliprdr<R: Role> {
     capabilities: Capabilities,
     state: CliprdrState,
 
-    /// Tracks the format ID of the most recently sent FormatDataRequest.
-    /// Used to correlate FormatDataResponse with the request that produced it,
-    /// so we only intercept responses for the file list format and forward all
-    /// others to the backend.
-    pending_format_data_request: Option<ClipboardFormatId>,
+    /// Format IDs of the sent FormatDataRequests not yet answered, oldest
+    /// first. A FormatDataResponse names no format, but [MS-RDPECLIP] requires
+    /// one response per request (3.1.5.4.2) and the channel is ordered, so the
+    /// oldest entry is the request each response answers. Used to intercept
+    /// only the file list response and forward all others to the backend.
+    ///
+    /// A queue rather than a single slot: a second paste can be initiated
+    /// before the first is answered — e.g. when the remote announces one copy
+    /// with two FormatLists in quick succession, as Firefox and Word do — and
+    /// a single slot then pairs the earlier request's response with the later
+    /// request.
+    pending_format_data_requests: VecDeque<ClipboardFormatId>,
 
     /// Stores the local file list when initiating a file copy operation.
     /// Set by initiate_file_copy(), used to respond to FormatDataRequest.
@@ -559,7 +573,7 @@ impl<R: Role> Cliprdr<R> {
             backend,
             state: CliprdrState::Initialization,
             capabilities: Capabilities::new(ClipboardProtocolVersion::V2, flags),
-            pending_format_data_request: None,
+            pending_format_data_requests: VecDeque::new(),
             local_file_list: None,
             local_file_list_format_id: None,
             local_drop_effect_format_id: None,
@@ -699,7 +713,9 @@ impl<R: Role> Cliprdr<R> {
         // Clear any previous remote clipboard state since new content is available
         self.remote_file_list = None;
         self.remote_file_list_format_id = None;
-        self.pending_format_data_request = None;
+        // Requests already sent are still answered, in order, after a new
+        // FormatList — so pending requests are kept, not cleared, or their
+        // responses would pair with the wrong request.
 
         // [MS-RDPECLIP] 2.2.4.2 - Expire locks when clipboard changes
         // Locks enter grace period with activity-based timeout
@@ -880,14 +896,29 @@ impl<R: Role> Cliprdr<R> {
         Ok(pdus.into_iter().map(into_cliprdr_message).collect::<Vec<_>>().into())
     }
 
-    /// Takes `&mut self` because it tracks `pending_format_data_request` for response correlation.
+    /// Takes `&mut self` because it tracks `pending_format_data_requests` for response correlation.
+    ///
+    /// Fails if too many requests are already unanswered (a peer that stopped answering).
     pub fn initiate_paste(&mut self, requested_format: ClipboardFormatId) -> PduResult<CliprdrSvcMessages<R>> {
         self.require_ready("initiate_paste")?;
+
+        if self.pending_format_data_requests.len() >= MAX_PENDING_FORMAT_DATA_REQUESTS {
+            warn!(
+                pending = self.pending_format_data_requests.len(),
+                "Rejecting paste: too many unanswered format data requests"
+            );
+            return Err(ironrdp_pdu::PduError::new(
+                "initiate_paste",
+                ironrdp_pdu::PduErrorKind::Other {
+                    description: "too many unanswered format data requests",
+                },
+            ));
+        }
 
         // When user initiates paste, send format data request to server, and expect to
         // receive response with contents via `FormatDataResponse` PDU.
         // Track the format so we can correlate the response correctly.
-        self.pending_format_data_request = Some(requested_format);
+        self.pending_format_data_requests.push_back(requested_format);
 
         if Some(requested_format) == self.remote_file_list_format_id {
             trace!(format_id = ?requested_format, "User initiated paste for FileGroupDescriptorW");
@@ -1694,10 +1725,10 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                 Ok(Vec::new())
             }
             ClipboardPdu::FormatDataResponse(response) => {
-                // Correlate this response with the most recently sent FormatDataRequest.
+                // Correlate this response with the oldest unanswered FormatDataRequest.
                 // Only intercept as a file list if the request was for the file list format;
                 // forward all other responses (text, images, etc.) to the backend.
-                let requested_format = self.pending_format_data_request.take();
+                let requested_format = self.pending_format_data_requests.pop_front();
                 let is_file_list_response =
                     requested_format.is_some() && requested_format == self.remote_file_list_format_id;
 
