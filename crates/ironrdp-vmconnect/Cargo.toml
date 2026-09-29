@@ -30,7 +30,7 @@ tracing = { version = "0.1", features = ["log"] }
 
 [target.'cfg(windows)'.dependencies]
 ironrdp-dvc = { version = "0.8.0", path = "../ironrdp-dvc" } # public
-sha2 = "0.10"
+sha2 = "0.11"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Security",
