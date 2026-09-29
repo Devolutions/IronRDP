@@ -29,10 +29,14 @@ function unicodeLength(value) {
 function normalizeText(value, maximumLength) {
   if (typeof value !== "string") return null;
   if (!value.isWellFormed() || unicodeLength(value) > maximumLength ||
-      FORBIDDEN_TEXT_CONTROL.test(value)) return null;
+      hasForbiddenTextControl(value)) return null;
   // Structured output occasionally represents an empty string as the literal text `""`.
   const normalized = (value === '""' ? "" : value).replace(/\s+/g, " ").trim();
   return normalized;
+}
+
+function hasForbiddenTextControl(value) {
+  return typeof value === "string" && FORBIDDEN_TEXT_CONTROL.test(value);
 }
 
 function parseJson(raw) {
@@ -61,5 +65,5 @@ function linesAreValidated(path, start, end, changedLines) {
 module.exports = {
   MAXIMUM_GITHUB_INTEGER, REPO_PATH, SHA,
   exactKeys, invalid, isBoundedArray, isPlainObject, linesAreInRange, linesAreValidated,
-  normalizeText, parseJson, unicodeLength,
+  hasForbiddenTextControl, normalizeText, parseJson, unicodeLength,
 };

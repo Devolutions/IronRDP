@@ -462,6 +462,7 @@ jobs:
           api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
           base-url: https://api.helmcode.com/v1
           config-file: .github/pr-automation/agents/classifier.json
+          normalizer: .github/pr-automation/output-normalizer.js#normalizeClassifier
 
   resolve-classification-state:
     name: Resolve classification state

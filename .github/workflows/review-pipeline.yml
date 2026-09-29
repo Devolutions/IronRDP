@@ -312,6 +312,7 @@ jobs:
           api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
           base-url: https://api.helmcode.com/v1
           config-file: .github/pr-automation/agents/${{ matrix.reviewer }}.json
+          normalizer: .github/pr-automation/output-normalizer.js#normalizeSpecialist
           validator: .github/pr-automation/agent-validator.js#validateSpecialist
           validator-metadata: ${{ steps.plan.outputs.metadata }}
           structured-output-file: .openai-agent-output/${{ matrix.reviewer }}.json
@@ -543,6 +544,7 @@ jobs:
           api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
           base-url: https://api.helmcode.com/v1
           config-file: .github/pr-automation/agents/general-reviewer.json
+          normalizer: .github/pr-automation/output-normalizer.js#normalizeGeneral
           validator: .github/pr-automation/agent-validator.js#validateGeneral
           validator-metadata: ${{ steps.plan.outputs.metadata }}
           structured-output-file: .openai-agent-output/general.json

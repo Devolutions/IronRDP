@@ -8,6 +8,7 @@ const {
   DEFAULT_OUTPUT_REPAIRS, DEFAULT_REQUEST_RETRIES, DEFAULT_STAGE_TIMEOUT_MS,
   DEFAULT_STREAM_IDLE_TIMEOUT_MS, MAX_MODEL_MESSAGE_CONTENT_BYTES,
   MAX_STREAMED_MODEL_DATA_BYTES, MAX_STREAMED_RESPONSE_BYTES, MAX_TOOL_ARGUMENT_BYTES,
+  MAX_VALIDATION_REASON_BYTES,
   MAX_TOOL_CALLS,
 } = require("./limits");
 const {
@@ -162,14 +163,14 @@ function providerFailureDiagnostic(error) {
   };
 }
 
-function compileOutputValidator(schema) {
+function compileOutputValidator(schema, normalizer = null) {
   let validate;
   try {
     validate = new Ajv({ allErrors: true, strict: false, validateFormats: false }).compile(schema);
   } catch {
     fail("output schema cannot be compiled");
   }
-  return (raw) => {
+  return (raw, checkStage = null) => {
     if (typeof raw !== "string" || raw.length === 0) {
       return { ok: false, layer: "empty", reason: "response was empty" };
     }
@@ -191,20 +192,22 @@ function compileOutputValidator(schema) {
       };
     }
     value = sanitized.value;
-    if (!validate(value)) {
-      const errors = (validate.errors || []).slice(0, 10)
-        .map((error) => {
-          const detail = error.keyword === "required"
-            ? ` ${error.params.missingProperty}`
-            : error.keyword === "maximum"
-              ? ` must be at most ${error.params.limit}`
-              : "";
-          return `${error.schemaPath || "/"}: ${error.keyword}${detail}`;
-        })
-        .join("; ");
-      return {
-        ok: false, layer: "schema", reason: `response did not match the schema: ${errors}`, value,
-      };
+    if (normalizer !== null) {
+      checkStage?.();
+      try {
+        value = normalizer(value);
+      } catch (error) {
+        throw normalizerError(error);
+      }
+      checkStage?.();
+      try {
+        if (!isJsonValue(value)) throw normalizerError();
+        const normalized = sanitizeUnicode(value);
+        if (!normalized.ok) throw normalizerError();
+        value = normalized.value;
+      } catch {
+        throw normalizerError();
+      }
     }
     let output;
     try {
@@ -219,8 +222,137 @@ function compileOutputValidator(schema) {
         ok: false, layer: "size", reason: "model message content exceeded the byte limit", value,
       };
     }
+    if (!validate(value)) {
+      return {
+        ok: false,
+        layer: "schema",
+        reason: schemaRejectionReason(schema, validate.errors || []),
+        value,
+      };
+    }
     return { ok: true, output, value };
   };
+}
+
+function normalizerError() {
+  const error = new Error("normalizer returned an invalid JSON value");
+  error.reason = "normalizer returned an invalid JSON value";
+  error.category = "normalizer-error";
+  return error;
+}
+
+function isJsonValue(value) {
+  const pending = [value];
+  const seen = new Set();
+  while (pending.length !== 0) {
+    const current = pending.pop();
+    if (current === null || typeof current === "string" || typeof current === "boolean") continue;
+    if (typeof current === "number") {
+      if (Number.isFinite(current)) continue;
+      return false;
+    }
+    if (typeof current !== "object") return false;
+    if (seen.has(current)) return false;
+    seen.add(current);
+    if (Array.isArray(current)) {
+      if (Object.getPrototypeOf(current) !== Array.prototype ||
+          Object.getOwnPropertySymbols(current).length !== 0) return false;
+      for (let index = 0; index < current.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(current, String(index));
+        if (!descriptor || !Object.hasOwn(descriptor, "value")) return false;
+        pending.push(descriptor.value);
+      }
+      if (Object.getOwnPropertyNames(current).some((key) =>
+        key !== "length" && !/^(?:0|[1-9][0-9]*)$/.test(key))) return false;
+      continue;
+    }
+    const prototype = Object.getPrototypeOf(current);
+    if ((prototype !== Object.prototype && prototype !== null) ||
+        Object.getOwnPropertySymbols(current).length !== 0) return false;
+    for (const key of Object.getOwnPropertyNames(current)) {
+      const descriptor = Object.getOwnPropertyDescriptor(current, key);
+      if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) return false;
+      pending.push(descriptor.value);
+    }
+  }
+  return true;
+}
+
+const SAFE_SCHEMA_PROPERTY = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
+function schemaRejectionReason(schema, errors) {
+  const details = errors.slice(0, 10).map((error) => formatSchemaError(schema, error));
+  const prefix = "response did not match the schema: ";
+  const reason = `${prefix}${details.length === 0 ? "validation failed" : details.join("; ")}`;
+  return Buffer.byteLength(reason, "utf8") <= MAX_VALIDATION_REASON_BYTES
+    ? reason
+    : `${reason.slice(0, MAX_VALIDATION_REASON_BYTES - 3)}...`;
+}
+
+function formatSchemaError(schema, error) {
+  const path = safeSchemaPath(schema, error.instancePath);
+  const limit = Number.isSafeInteger(error.params?.limit) ? error.params.limit : null;
+  switch (error.keyword) {
+    case "required": {
+      const property = declaredProperty(schemaAtPath(schema, error.instancePath), error.params?.missingProperty);
+      return property === null ? `${path}: required property` : `${path}: required ${property}`;
+    }
+    case "maxLength": return limit === null ? `${path}: exceeds maximum length` : `${path}: must be at most ${limit} characters`;
+    case "minLength": return limit === null ? `${path}: is shorter than minimum length` : `${path}: must be at least ${limit} characters`;
+    case "maxItems": return limit === null ? `${path}: has too many items` : `${path}: must have at most ${limit} items`;
+    case "minItems": return limit === null ? `${path}: has too few items` : `${path}: must have at least ${limit} items`;
+    case "maximum": return limit === null ? `${path}: exceeds maximum` : `${path}: must be at most ${limit}`;
+    case "minimum": return limit === null ? `${path}: is below minimum` : `${path}: must be at least ${limit}`;
+    case "type": return `${path}: has wrong type`;
+    case "enum": return `${path}: has unsupported value`;
+    case "pattern": return `${path}: has invalid format`;
+    case "additionalProperties": return `${path}: has an unexpected property`;
+    case "uniqueItems": return `${path}: has duplicate items`;
+    default: return `${path}: validation failed`;
+  }
+}
+
+function schemaAtPath(schema, instancePath) {
+  let current = schema;
+  for (const segment of String(instancePath || "").split("/").slice(1)) {
+    const key = decodeJsonPointer(segment);
+    if (/^(?:0|[1-9][0-9]*)$/.test(key) && current?.items) {
+      current = current.items;
+    } else if (declaredProperty(current, key) !== null) {
+      current = current.properties[key];
+    } else {
+      return null;
+    }
+  }
+  return current;
+}
+
+function safeSchemaPath(schema, instancePath) {
+  let current = schema;
+  const parts = ["#"];
+  for (const segment of String(instancePath || "").split("/").slice(1)) {
+    const key = decodeJsonPointer(segment);
+    if (/^(?:0|[1-9][0-9]*)$/.test(key) && current?.items) {
+      parts.push(key);
+      current = current.items;
+    } else if (declaredProperty(current, key) !== null) {
+      parts.push(key);
+      current = current.properties[key];
+    } else {
+      parts.push("property");
+      break;
+    }
+  }
+  return parts.join("/");
+}
+
+function declaredProperty(schema, key) {
+  return typeof key === "string" && SAFE_SCHEMA_PROPERTY.test(key) &&
+    Object.hasOwn(schema?.properties || {}, key) ? key : null;
+}
+
+function decodeJsonPointer(segment) {
+  return segment.replace(/~1/g, "/").replace(/~0/g, "~");
 }
 
 function sanitizeUnicode(value) {
@@ -325,7 +457,7 @@ class StageDeadline {
 }
 
 async function runAgent({
-  client, config, methodologies, prompt, sandbox, schema, validator = null, metrics = null,
+  client, config, methodologies, normalizer = null, prompt, sandbox, schema, validator = null, metrics = null,
   retrySleep = delay,
 }) {
   config = {
@@ -337,7 +469,7 @@ async function runAgent({
       config.stream_idle_timeout_ms ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS,
     output_format: config.output_format || "json_object",
   };
-  const validateOutput = compileOutputValidator(schema);
+  const validateOutput = compileOutputValidator(schema, normalizer);
   const state = {
     providerCalls: 0,
     toolCalls: 0,
@@ -472,7 +604,15 @@ async function runAgent({
 
   async function validateCandidate(raw, activity) {
     stage.check(state);
-    const candidate = validateOutput(raw);
+    let candidate;
+    try {
+      candidate = validateOutput(raw, () => stage.check(state));
+    } catch (error) {
+      if (error instanceof AgentFailure) throw error;
+      throw new AgentFailure(error.reason || "normalizer execution failed", {
+        category: error.category || "normalizer-error", state,
+      });
+    }
     stage.check(state);
     if (!candidate.ok) {
       if (validator && Object.hasOwn(candidate, "value")) state.candidates.push(candidate.value);
