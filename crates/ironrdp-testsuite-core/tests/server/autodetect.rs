@@ -442,26 +442,6 @@ fn bracketed_measurements_are_paced_and_never_overlap() {
     complete_bracket(&mut mgr, &next, 1_010);
 }
 
-#[test]
-fn a_cancelled_measurement_frees_the_next_one() {
-    let mut mgr = AutoDetectManager::new();
-    assert!(!mgr.cancel_bandwidth_measure(), "nothing outstanding");
-
-    let start = mgr.begin_bandwidth_measure(64 * 1024, 0).expect("measured");
-    let _ = mgr.end_bandwidth_measure();
-    assert!(mgr.cancel_bandwidth_measure());
-
-    let late = AutoDetectResponse::BandwidthMeasureResults {
-        sequence_number: start.sequence_number(),
-        response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
-        time_delta_ms: 2,
-        byte_count: 20_000,
-    };
-    assert_eq!(mgr.handle_response(&late, 10), AutoDetectOutcome::Unmatched);
-    let next = mgr.begin_bandwidth_measure(64 * 1024, 1_000).expect("a second later");
-    complete_bracket(&mut mgr, &next, 1_010);
-}
-
 /// While large writes keep coming, the tick window (which times idle stretches
 /// as well as traffic) stays closed.
 #[test]

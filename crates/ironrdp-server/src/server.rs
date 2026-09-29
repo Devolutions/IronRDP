@@ -1551,9 +1551,6 @@ struct ConnectionState {
     /// eligible for the hourly update when cookies are on request (see
     /// [`RdpServer::set_auto_reconnect_on_request`]).
     auto_reconnect_issued: bool,
-    /// Whether the last bandwidth measurement went out on the sideband
-    /// transport, so that transport closing can cancel it.
-    bandwidth_measure_on_udp: bool,
 }
 
 impl ConnectionState {
@@ -4148,7 +4145,6 @@ impl RdpServer {
         let bracketed = start.is_some();
         if let Some(start) = start {
             trace!(len, "Bracketing a UDP graphics write for a bandwidth measurement");
-            conn.bandwidth_measure_on_udp = true;
             udp_transport.send_message(autodetect_sub_header(&start)?).await;
         }
         for payload in payloads {
@@ -4186,7 +4182,6 @@ impl RdpServer {
         if let (Some(ad), Some(message_channel_id)) = (conn.autodetect.as_mut(), message_channel_id)
             && let Some(start) = ad.begin_bandwidth_measure(data.len(), monotonic_now_ms())
         {
-            conn.bandwidth_measure_on_udp = false;
             let start = encode_autodetect_request(start, message_channel_id, user_channel_id)?;
             writer
                 .write_all(&start)
@@ -4304,22 +4299,6 @@ impl RdpServer {
     ) {
         for response in sub_headers.iter().filter_map(autodetect_response_from_sub_header) {
             self.record_autodetect_response(conn, &response);
-        }
-    }
-
-    /// Drops a bandwidth measurement that went out on the sideband transport
-    /// once that transport has closed: Its results can no longer arrive, and
-    /// while it is outstanding no measurement starts on TCP either.
-    fn cancel_udp_bandwidth_measure(&mut self, conn: &mut ConnectionState) {
-        if !core::mem::take(&mut conn.bandwidth_measure_on_udp) {
-            return;
-        }
-        if conn
-            .autodetect
-            .as_mut()
-            .is_some_and(AutoDetectManager::cancel_bandwidth_measure)
-        {
-            debug!("UDP transport closed with a bandwidth measurement outstanding, dropping it");
         }
     }
 
@@ -4698,7 +4677,7 @@ impl RdpServer {
                     // (MS-RDPEMT 1.3.3). A client whose channels moved has
                     // nowhere left to read them, so end the connection and let
                     // it reconnect rather than keep a session it cannot draw.
-                    let (server, conn) = &mut *this.lock().await;
+                    let (_, conn) = &mut *this.lock().await;
                     if conn.egfx_on_udp {
                         warn!("UDP transport lost with EGFX on it, ending the connection");
                         return Err(ServerError::reason(
@@ -4712,7 +4691,6 @@ impl RdpServer {
                     // silently dropping every future EGFX batch instead of
                     // actually falling back to TCP as this log claims.
                     *udp_transport.borrow_mut() = None;
-                    server.cancel_udp_bandwidth_measure(conn);
                     return core::future::pending::<ServerResult<RunState>>().await;
                 };
                 let mut this = this.lock().await;
