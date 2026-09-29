@@ -63,6 +63,7 @@ pub struct BuilderDone {
     autodetect_bandwidth_generation: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
+    auto_reconnect_on_request: bool,
     connection_policy: ConnectionPolicy,
     remotefx_quant: Quant,
     remotefx_entropy_coder: Option<EntropyBits>,
@@ -178,6 +179,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 honor_client_desktop_size: None,
                 connection_policy: ConnectionPolicy::default(),
                 auto_reconnect_cookie: None,
+                auto_reconnect_on_request: false,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
             },
@@ -213,6 +215,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 honor_client_desktop_size: None,
                 connection_policy: ConnectionPolicy::default(),
                 auto_reconnect_cookie: None,
+                auto_reconnect_on_request: false,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
             },
@@ -451,6 +454,12 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// See [`RdpServer::set_auto_reconnect_on_request`].
+    pub fn with_auto_reconnect_on_request(mut self, on_request: bool) -> Self {
+        self.state.auto_reconnect_on_request = on_request;
+        self
+    }
+
     /// Set the quantization values the RemoteFX encoder uses once selected.
     /// Defaults to [`Quant::default`], the same values Windows RDP servers
     /// send. Build a validated [`Quant`] with [`Quant::try_new`].
@@ -512,6 +521,7 @@ impl RdpServerBuilder<BuilderDone> {
         );
         server.set_credential_validator(self.state.credential_validator);
         server.set_auto_reconnect_cookie(self.state.auto_reconnect_cookie);
+        server.set_auto_reconnect_on_request(self.state.auto_reconnect_on_request);
         server
     }
 }

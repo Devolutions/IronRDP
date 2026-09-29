@@ -1,5 +1,6 @@
 // FIXME: tests in this module can probably be rewritten to be much shorter using the ironrdp-client crate.
 
+use core::net::SocketAddr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::path::Path;
@@ -16,6 +17,7 @@ use ironrdp::pdu::geometry::InclusiveRectangle;
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::pdu::rdp::client_info::CompressionType as PduCompressionType;
 use ironrdp::pdu::rdp::headers::CompressionFlags;
+use ironrdp::pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp::pdu::{self, gcc};
 use ironrdp::server::{
     self, Acceptor, DesktopSize, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer, RdpServerDisplay,
@@ -99,57 +101,7 @@ async fn test_deactivation_reactivation() {
                 let out = outputs.into_iter().next().unwrap();
                 match out {
                     ActiveStageOutput::DeactivateAll => {
-                        // TODO: factor this out in common client code
-                        // Execute the Deactivation-Reactivation Sequence:
-                        // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
-                        debug!("Received Server Deactivate All PDU, executing Deactivation-Reactivation Sequence");
-                        let mut connection_activation = activation_factory.create();
-                        let mut buf = pdu::WriteBuf::new();
-                        'activation_seq: loop {
-                            let written = ironrdp_async::single_sequence_step_read(
-                                &mut framed,
-                                &mut connection_activation,
-                                &mut buf,
-                            )
-                            .await
-                            .map_err(|e| session::custom_err!("read deactivation-reactivation sequence step", e))
-                            .unwrap();
-
-                            if written.size().is_some() {
-                                framed
-                                    .write_all(buf.filled())
-                                    .await
-                                    .map_err(|e| {
-                                        session::custom_err!("write deactivation-reactivation sequence step", e)
-                                    })
-                                    .unwrap();
-                            }
-
-                            if let connector::connection_activation::ConnectionActivationState::Finalized {
-                                desktop_size,
-                                share_id,
-                                input_flags: _,
-                                enable_server_pointer,
-                                pointer_software_rendering,
-                                static_channel_chunk_size,
-                                ..
-                            } = connection_activation.connection_activation_state()
-                            {
-                                debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
-                                // Update image size with the new desktop size.
-                                // image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
-                                // Update the active stage with the new channel IDs and pointer settings.
-                                assert!(stage.reactivate(
-                                    connection_activation.io_channel_id(),
-                                    connection_activation.user_channel_id(),
-                                    share_id,
-                                    enable_server_pointer,
-                                    pointer_software_rendering,
-                                    static_channel_chunk_size,
-                                ));
-                                break 'activation_seq;
-                            }
-                        }
+                        run_reactivation(&mut stage, &activation_factory, &mut framed).await;
                     }
                     _ => unreachable!(),
                 }
@@ -158,6 +110,55 @@ async fn test_deactivation_reactivation() {
         },
     )
     .await
+}
+
+/// Executes the client side of the Deactivation-Reactivation Sequence, after the server's
+/// Deactivate All PDU has been received:
+/// <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432>
+async fn run_reactivation(
+    stage: &mut ActiveStage,
+    activation_factory: &connector::connection_activation::ConnectionActivationFactory,
+    framed: &mut Framed<TokioStream<TlsStream<TcpStream>>>,
+) {
+    debug!("Received Server Deactivate All PDU, executing Deactivation-Reactivation Sequence");
+    let mut connection_activation = activation_factory.create();
+    let mut buf = pdu::WriteBuf::new();
+    loop {
+        let written = ironrdp_async::single_sequence_step_read(framed, &mut connection_activation, &mut buf)
+            .await
+            .map_err(|e| session::custom_err!("read deactivation-reactivation sequence step", e))
+            .unwrap();
+
+        if written.size().is_some() {
+            framed
+                .write_all(buf.filled())
+                .await
+                .map_err(|e| session::custom_err!("write deactivation-reactivation sequence step", e))
+                .unwrap();
+        }
+
+        if let connector::connection_activation::ConnectionActivationState::Finalized {
+            desktop_size,
+            share_id,
+            enable_server_pointer,
+            pointer_software_rendering,
+            static_channel_chunk_size,
+            ..
+        } = connection_activation.connection_activation_state()
+        {
+            debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
+            // Update the active stage with the new channel IDs and pointer settings.
+            assert!(stage.reactivate(
+                connection_activation.io_channel_id(),
+                connection_activation.user_channel_id(),
+                share_id,
+                enable_server_pointer,
+                pointer_software_rendering,
+                static_channel_chunk_size,
+            ));
+            return;
+        }
+    }
 }
 
 #[test]
@@ -950,52 +951,10 @@ async fn client_server_with_connector<F, Fut, C>(
                 let (tx, rx) = oneshot::channel();
                 ev.send(ServerEvent::GetLocalAddr(tx)).unwrap();
                 let server_addr = rx.await.unwrap().unwrap();
-                let tcp_stream = TcpStream::connect(server_addr).await.expect("TCP connect");
-                let client_addr = tcp_stream.local_addr().expect("local_addr");
-                let mut framed = ironrdp_tokio::TokioFramed::new(tcp_stream);
-                let connector = connector::ClientConnector::new(client_config, client_addr);
-                let mut connector = connector_factory(connector);
-                let should_upgrade = ironrdp_async::connect_begin(&mut framed, &mut connector)
-                    .await
-                    .expect("begin connection");
-                let initial_stream = framed.into_inner_no_leftover();
-                let (upgraded_stream, tls_cert) = ironrdp_tls::upgrade_with_certificate_validation(
-                    initial_stream,
-                    "localhost",
-                    ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate,
-                )
-                .await
-                .expect("TLS upgrade");
-                let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
-                let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
-                let server_public_key =
-                    ironrdp_tls::extract_tls_server_public_key(&tls_cert).expect("extract server public key");
-                let connection_result = ironrdp_async::connect_finalize(
-                    upgraded,
-                    connector,
-                    &mut upgraded_framed,
-                    &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
-                    "localhost".into(),
-                    server_public_key.to_owned(),
-                    None,
-                )
-                .await
-                .expect("finalize connection");
-
-                // Retain the connection activation factory so the client closure can drive its own
+                // The activation factory is retained so the client closure can drive its own
                 // Deactivation-Reactivation Sequence.
-                let activation_factory = connection_result.activation_factory;
-                let active_stage = ActiveStageBuilder {
-                    static_channels: connection_result.static_channels,
-                    user_channel_id: connection_result.user_channel_id,
-                    io_channel_id: connection_result.io_channel_id,
-                    message_channel_id: connection_result.message_channel_id,
-                    share_id: connection_result.share_id,
-                    compression_type: connection_result.compression_type,
-                    enable_server_pointer: connection_result.enable_server_pointer,
-                    pointer_software_rendering: connection_result.pointer_software_rendering,
-                }
-                .build();
+                let (active_stage, activation_factory, upgraded_framed) =
+                    connect_client(server_addr, client_config, connector_factory).await;
                 let (active_stage, mut upgraded_framed) = clientfn(
                     active_stage,
                     activation_factory,
@@ -1024,6 +983,401 @@ async fn client_server_with_connector<F, Fut, C>(
             tokio::try_join!(server, client).expect("join");
         })
         .await;
+}
+
+/// By default a connection is sent an auto-reconnect cookie as soon as it is
+/// active.
+#[tokio::test]
+async fn an_auto_reconnect_cookie_is_sent_at_activation_by_default() {
+    let (at_activation, _) = auto_reconnect_session(false).await;
+    assert!(at_activation, "the cookie goes to every connection at activation");
+}
+
+/// On request, a connection gets no cookie at activation, only once the
+/// embedder issues one, for instance after its own logon screen.
+#[tokio::test]
+async fn an_auto_reconnect_cookie_on_request_waits_for_the_embedder() {
+    let (at_activation, after_request) = auto_reconnect_session(true).await;
+    assert!(!at_activation, "no cookie before the embedder asks for one");
+    assert!(after_request, "the cookie the embedder issued reaches the client");
+}
+
+/// The hourly cookie update keeps reaching a connection that was issued a cookie, also
+/// after a Deactivation-Reactivation pass on that connection. Time is paused once the
+/// connection is up, so the hour passes at once without tripping the server's own handshake
+/// timeout.
+#[tokio::test]
+async fn the_hourly_auto_reconnect_update_survives_a_reactivation() {
+    let update_after_reactivation = with_auto_reconnect_server(true, async |server_addr, cookie_handle, display_tx| {
+        let mut probe = CookieProbe::connect(server_addr, None).await;
+        cookie_handle
+            .set(Some(ServerAutoReconnect {
+                logon_id: 1,
+                random_bits: [0x33; 16],
+            }))
+            .expect("issue the cookie");
+        assert!(
+            probe.cookie_within(Duration::from_secs(5)).await,
+            "the issued cookie arrives"
+        );
+
+        probe.reactivate(&display_tx).await;
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(60 * 60 + 1)).await;
+        let update = probe.cookie_within(Duration::from_secs(30)).await;
+        probe.disconnect().await;
+        update
+    })
+    .await;
+
+    assert!(
+        update_after_reactivation,
+        "the hourly update still goes to the connection that holds a cookie"
+    );
+}
+
+/// The hourly cookie update goes only to a connection that was issued a cookie: a
+/// connection the embedder never vouched for gets none, even when an earlier connection
+/// was issued one, and also after its own Deactivation-Reactivation pass.
+#[tokio::test]
+async fn the_hourly_auto_reconnect_update_skips_a_connection_that_was_never_issued_a_cookie() {
+    let update = with_auto_reconnect_server(true, async |server_addr, cookie_handle, display_tx| {
+        let mut issued = CookieProbe::connect(server_addr, None).await;
+        cookie_handle
+            .set(Some(ServerAutoReconnect {
+                logon_id: 1,
+                random_bits: [0x44; 16],
+            }))
+            .expect("issue the cookie");
+        assert!(
+            issued.cookie_within(Duration::from_secs(5)).await,
+            "the issued cookie arrives"
+        );
+        issued.disconnect().await;
+
+        let mut unvouched = CookieProbe::connect(server_addr, None).await;
+        unvouched.reactivate(&display_tx).await;
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(60 * 60 + 1)).await;
+        let update = unvouched.cookie_within(Duration::from_secs(30)).await;
+        unvouched.disconnect().await;
+        update
+    })
+    .await;
+
+    assert!(!update, "no cookie goes to a connection the embedder never vouched for");
+}
+
+/// Connects a client to `server_addr` and completes the handshake, returning the state
+/// needed to drive the connection.
+///
+/// `connector_factory` customises the connector before the handshake, for instance to
+/// present an auto-reconnect cookie.
+async fn connect_client<C>(
+    server_addr: SocketAddr,
+    client_config: connector::Config,
+    connector_factory: C,
+) -> (
+    ActiveStage,
+    connector::connection_activation::ConnectionActivationFactory,
+    Framed<TokioStream<TlsStream<TcpStream>>>,
+)
+where
+    C: FnOnce(connector::ClientConnector) -> connector::ClientConnector,
+{
+    let tcp_stream = TcpStream::connect(server_addr).await.expect("TCP connect");
+    let client_addr = tcp_stream.local_addr().expect("local_addr");
+    let mut framed = ironrdp_tokio::TokioFramed::new(tcp_stream);
+    let connector = connector::ClientConnector::new(client_config, client_addr);
+    let mut connector = connector_factory(connector);
+    let should_upgrade = ironrdp_async::connect_begin(&mut framed, &mut connector)
+        .await
+        .expect("begin connection");
+    let initial_stream = framed.into_inner_no_leftover();
+    let (upgraded_stream, tls_cert) = ironrdp_tls::upgrade_with_certificate_validation(
+        initial_stream,
+        "localhost",
+        ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate,
+    )
+    .await
+    .expect("TLS upgrade");
+    let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
+    let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
+    let server_public_key = ironrdp_tls::extract_tls_server_public_key(&tls_cert).expect("extract server public key");
+    let connection_result = ironrdp_async::connect_finalize(
+        upgraded,
+        connector,
+        &mut upgraded_framed,
+        &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
+        "localhost".into(),
+        server_public_key.to_owned(),
+        None,
+    )
+    .await
+    .expect("finalize connection");
+
+    let activation_factory = connection_result.activation_factory;
+    let active_stage = ActiveStageBuilder {
+        static_channels: connection_result.static_channels,
+        user_channel_id: connection_result.user_channel_id,
+        io_channel_id: connection_result.io_channel_id,
+        message_channel_id: connection_result.message_channel_id,
+        share_id: connection_result.share_id,
+        compression_type: connection_result.compression_type,
+        enable_server_pointer: connection_result.enable_server_pointer,
+        pointer_software_rendering: connection_result.pointer_software_rendering,
+    }
+    .build();
+
+    (active_stage, activation_factory, upgraded_framed)
+}
+
+/// Runs `client` against a server that holds an auto-reconnect cookie and whose cookies are
+/// issued on request or at activation. `client` gets the server address, the cookie handle
+/// and the channel that feeds the server's display, and the server quits when it returns.
+async fn with_auto_reconnect_server<F, Fut, T>(on_request: bool, client: F) -> T
+where
+    F: FnOnce(SocketAddr, server::AutoReconnectCookieHandle, UnboundedSender<DisplayUpdate>) -> Fut + 'static,
+    Fut: Future<Output = T>,
+    T: 'static,
+{
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
+
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    let (display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+        })
+        .with_auto_reconnect_cookie(Some(ServerAutoReconnect {
+            logon_id: 1,
+            random_bits: [0x5a; 16],
+        }))
+        .with_auto_reconnect_on_request(on_request)
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+    let cookie_handle = server.auto_reconnect_cookie_handle();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server = tokio::task::spawn_local(async move {
+                server.run().await.unwrap();
+            });
+
+            let client = tokio::task::spawn_local(async move {
+                let (tx, rx) = oneshot::channel();
+                ev.send(ServerEvent::GetLocalAddr(tx)).unwrap();
+                let server_addr = rx.await.unwrap().unwrap();
+                let result = client(server_addr, cookie_handle, display_tx).await;
+                ev.send(ServerEvent::Quit("bye".into())).unwrap();
+                result
+            });
+
+            let (server, client) = tokio::join!(server, client);
+            server.expect("server task");
+            client.expect("client task")
+        })
+        .await
+}
+
+/// A connected client that reports whether the server sends it an auto-reconnect cookie.
+struct CookieProbe {
+    stage: ActiveStage,
+    activation_factory: connector::connection_activation::ConnectionActivationFactory,
+    framed: Framed<TokioStream<TlsStream<TcpStream>>>,
+    image: DecodedImage,
+}
+
+impl CookieProbe {
+    /// Connects to `server_addr`, presenting `cookie` as an auto-reconnect cookie if given.
+    async fn connect(server_addr: SocketAddr, cookie: Option<ServerAutoReconnect>) -> Self {
+        let (stage, activation_factory, framed) =
+            connect_client(server_addr, default_client_config(), |connector| match cookie {
+                Some(cookie) => connector.with_auto_reconnect_cookie(cookie),
+                None => connector,
+            })
+            .await;
+
+        Self {
+            stage,
+            activation_factory,
+            framed,
+            image: DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT),
+        }
+    }
+
+    /// Whether a cookie arrives while reading for `window`.
+    async fn cookie_within(&mut self, window: Duration) -> bool {
+        let deadline = Instant::now() + window;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            let Ok(read) = tokio::time::timeout(left, self.framed.read_pdu()).await else {
+                break;
+            };
+            let (action, frame) = read.expect("read PDU");
+            for output in self
+                .stage
+                .process(&mut self.image, action, &frame)
+                .expect("stage process")
+            {
+                match output {
+                    ActiveStageOutput::AutoReconnectCookie(_) => return true,
+                    ActiveStageOutput::ResponseFrame(frame) => {
+                        self.framed.write_all(&frame).await.expect("write response frame");
+                    }
+                    _ => {}
+                }
+            }
+        }
+        false
+    }
+
+    /// Has the server run a Deactivation-Reactivation Sequence, by resizing its display.
+    async fn reactivate(&mut self, display_tx: &UnboundedSender<DisplayUpdate>) {
+        display_tx
+            .send(DisplayUpdate::Resize(DesktopSize {
+                width: 2048,
+                height: 2048,
+            }))
+            .expect("resize the server display");
+        loop {
+            let (action, frame) = self.framed.read_pdu().await.expect("read PDU");
+            let outputs = self
+                .stage
+                .process(&mut self.image, action, &frame)
+                .expect("stage process");
+            if outputs
+                .iter()
+                .any(|output| matches!(output, ActiveStageOutput::DeactivateAll))
+            {
+                run_reactivation(&mut self.stage, &self.activation_factory, &mut self.framed).await;
+                return;
+            }
+        }
+    }
+
+    /// Whether the server accepts the cookie this client presented. An accepted cookie is
+    /// answered with a fresh one at activation; a rejected cookie ends the connection.
+    async fn cookie_accepted(&mut self, window: Duration) -> bool {
+        let deadline = Instant::now() + window;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            let Ok(Ok((action, frame))) = tokio::time::timeout(left, self.framed.read_pdu()).await else {
+                return false;
+            };
+            let Ok(outputs) = self.stage.process(&mut self.image, action, &frame) else {
+                return false;
+            };
+            for output in outputs {
+                match output {
+                    ActiveStageOutput::AutoReconnectCookie(_) => return true,
+                    ActiveStageOutput::ResponseFrame(frame) => {
+                        if self.framed.write_all(&frame).await.is_err() {
+                            return false;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        false
+    }
+
+    async fn disconnect(mut self) {
+        for output in self.stage.graceful_shutdown().expect("shutdown") {
+            if let ActiveStageOutput::ResponseFrame(frame) = output {
+                self.framed.write_all(&frame).await.expect("write frame");
+            }
+        }
+        while let Ok(pdu) = self.framed.read_pdu().await {
+            debug!(?pdu);
+        }
+    }
+}
+
+/// Connects a client to a server holding an auto-reconnect cookie, and
+/// reports whether the client received a cookie at activation and whether it
+/// received one after the server was handed a new one.
+async fn auto_reconnect_session(on_request: bool) -> (bool, bool) {
+    with_auto_reconnect_server(on_request, async |server_addr, cookie_handle, _display_tx| {
+        let mut probe = CookieProbe::connect(server_addr, None).await;
+        let at_activation = probe.cookie_within(Duration::from_secs(1)).await;
+        cookie_handle
+            .set(Some(ServerAutoReconnect {
+                logon_id: 1,
+                random_bits: [0xa5; 16],
+            }))
+            .expect("send the new cookie to the server");
+        let after_request = probe.cookie_within(Duration::from_secs(5)).await;
+        probe.disconnect().await;
+        (at_activation, after_request)
+    })
+    .await
+}
+
+/// A cookie the embedder issues replaces the one before it at once, so a client
+/// holding the earlier cookie can no longer reconnect with it (MS-RDPBCGR 5.5), while
+/// the newer one still works.
+#[tokio::test]
+async fn an_auto_reconnect_cookie_the_embedder_issues_invalidates_the_previous_one() {
+    let first = ServerAutoReconnect {
+        logon_id: 1,
+        random_bits: [0x11; 16],
+    };
+    let second = ServerAutoReconnect {
+        logon_id: 1,
+        random_bits: [0x22; 16],
+    };
+
+    let (first_still_works, second_works) = with_auto_reconnect_server(true, {
+        let (first, second) = (first.clone(), second.clone());
+        async move |server_addr, cookie_handle, _display_tx| {
+            // The embedder vouches for one connection, then for another.
+            for cookie in [&first, &second] {
+                let mut probe = CookieProbe::connect(server_addr, None).await;
+                assert!(
+                    !probe.cookie_within(Duration::from_secs(1)).await,
+                    "no cookie at activation"
+                );
+                cookie_handle.set(Some(cookie.clone())).expect("issue the cookie");
+                assert!(
+                    probe.cookie_within(Duration::from_secs(5)).await,
+                    "the issued cookie arrives"
+                );
+                probe.disconnect().await;
+            }
+
+            // A verified cookie is sent another one at activation; a rejected one ends the connection.
+            let mut with_first = CookieProbe::connect(server_addr, Some(first)).await;
+            let first_still_works = with_first.cookie_accepted(Duration::from_secs(1)).await;
+            drop(with_first);
+
+            let mut with_second = CookieProbe::connect(server_addr, Some(second)).await;
+            let second_works = with_second.cookie_accepted(Duration::from_secs(1)).await;
+            with_second.disconnect().await;
+
+            (first_still_works, second_works)
+        }
+    })
+    .await;
+
+    assert!(!first_still_works, "the earlier client's cookie is no longer accepted");
+    assert!(second_works, "the newest cookie is accepted");
 }
 
 pub(super) fn default_client_config() -> connector::Config {
