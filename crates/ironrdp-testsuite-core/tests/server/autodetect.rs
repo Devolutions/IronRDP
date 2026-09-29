@@ -595,6 +595,41 @@ fn with_autodetect_bandwidth_generation_handle_round_trips_the_same_arc() {
     );
 }
 
+/// A new connection does not inherit the previous one's network figures: the
+/// handles read "not measured" again until this client has been measured.
+#[tokio::test]
+async fn a_new_connection_starts_with_no_measurements() {
+    use core::net::{Ipv4Addr, SocketAddr};
+    use core::sync::atomic::Ordering;
+
+    use ironrdp_server::RdpServer;
+
+    let mut server = RdpServer::builder()
+        .with_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .with_no_security()
+        .with_no_input()
+        .with_no_display()
+        .build();
+    server.enable_autodetect();
+
+    // What an earlier connection left behind.
+    let rtt = server.autodetect_rtt_handle();
+    let baseline_rtt = server.autodetect_baseline_rtt_handle();
+    let bandwidth = server.autodetect_bandwidth_handle();
+    rtt.store(12, Ordering::Relaxed);
+    baseline_rtt.store(3, Ordering::Relaxed);
+    bandwidth.store(80_000, Ordering::Relaxed);
+
+    // A client that vanishes straight away still starts a connection.
+    let (client, server_side) = tokio::io::duplex(64);
+    drop(client);
+    let _ = server.run_connection(server_side).await;
+
+    assert_eq!(rtt.load(Ordering::Relaxed), u32::MAX);
+    assert_eq!(baseline_rtt.load(Ordering::Relaxed), u32::MAX);
+    assert_eq!(bandwidth.load(Ordering::Relaxed), u32::MAX);
+}
+
 #[test]
 fn stale_probe_expiry() {
     let mut mgr = AutoDetectManager::new();

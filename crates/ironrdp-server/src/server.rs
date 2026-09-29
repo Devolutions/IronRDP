@@ -2033,7 +2033,7 @@ impl RdpServer {
     /// on, a preemption winner is indistinguishable from a normally-accepted
     /// connection.
     async fn serve_negotiated(&mut self, candidate: Box<NegotiatedCandidate>) -> ServerResult<()> {
-        self.display_suppressed.store(false, Ordering::Relaxed);
+        self.reset_connection_state();
 
         let mut candidate = candidate;
         // Only NOW build the channel backends: this connection has
@@ -2155,20 +2155,37 @@ impl RdpServer {
         result
     }
 
+    /// Per-connection state must start fresh for every client, on both the
+    /// normal path and a preemption winner.
+    fn reset_connection_state(&mut self) {
+        // If the previous client disconnected while it had sent
+        // `SuppressOutput { None }` (e.g., closed the mstsc window while
+        // minimized so the matching resume PDU never arrived), the flag would
+        // still read `true` here and the display backend would silently drop
+        // frames for the entire new session until/unless the new client
+        // happens to send a `RefreshRectangle` or `SuppressOutput { Some(rect) }`.
+        // Resetting here also covers backends that share an externally-created
+        // Arc via `set_display_suppressed_handle()`.
+        self.display_suppressed.store(false, Ordering::Relaxed);
+
+        // Network characteristics describe one client's path. Kept across
+        // connections, the previous client's round trips would hold down this
+        // one's baseRTT (the lowest RTT seen, MS-RDPBCGR 2.2.14.1.5), its
+        // figures would be reported until overwritten, and a measurement it
+        // left pending would hold up the next one.
+        if self.autodetect.is_some() {
+            self.autodetect = Some(AutoDetectManager::new());
+        }
+        self.autodetect_rtt.store(u32::MAX, Ordering::Relaxed);
+        self.autodetect_baseline_rtt.store(u32::MAX, Ordering::Relaxed);
+        self.autodetect_bandwidth.store(u32::MAX, Ordering::Relaxed);
+    }
+
     async fn run_connection_inner<S>(&mut self, stream: S, tls: TransportTls) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
-        // Per-connection state must start fresh: if the previous client
-        // disconnected while it had sent `SuppressOutput { None }` (e.g.,
-        // closed the mstsc window while minimized so the matching resume
-        // PDU never arrived), the flag would still read `true` here and the
-        // display backend would silently drop frames for the entire new
-        // session until/unless the new client happens to send a
-        // `RefreshRectangle` or `SuppressOutput { Some(rect) }`. Resetting
-        // here also covers backends that share an externally-created Arc via
-        // `set_display_suppressed_handle()`.
-        self.display_suppressed.store(false, Ordering::Relaxed);
+        self.reset_connection_state();
 
         let size = self.display.lock().await.size().await;
         let monitor_count = self.display.lock().await.monitor_count().await;
