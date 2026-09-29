@@ -762,9 +762,7 @@ async function consumeCompletionStream(stream, stage, state, metrics) {
     });
   if ((calls.length !== 0 && finishReason !== "tool_calls") ||
       (calls.length === 0 && finishReason === "tool_calls")) {
-    throw new AgentFailure("provider stream ended with inconsistent tool-call control", {
-      category: "provider-response", state,
-    });
+    throw malformedStream(state, metrics, "finish-tool-call-mismatch");
   }
   const message = {
     role: "assistant",

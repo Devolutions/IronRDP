@@ -19,6 +19,7 @@ const STREAM_STRUCTURAL_VIOLATIONS = new Set([
   "chunk-invalid",
   "delta-value-invalid",
   "finish-reason-invalid",
+  "finish-tool-call-mismatch",
   "post-finish",
   "role-invalid",
   "sse-json-invalid",

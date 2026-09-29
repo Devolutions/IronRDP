@@ -453,6 +453,28 @@ test("runtime rejects incompatible streamed indices without executing tools or e
         }],
       }],
     },
+    {
+      name: "tool call with non-tool-call finish reason",
+      violation: "finish-tool-call-mismatch",
+      fragments: [{
+        choices: [{
+          index: 0,
+          delta: { tool_calls: [fullCall()] },
+          finish_reason: "stop",
+        }],
+      }],
+    },
+    {
+      name: "tool-call finish reason without tool calls",
+      violation: "finish-tool-call-mismatch",
+      fragments: [{
+        choices: [{
+          index: 0,
+          delta: {},
+          finish_reason: "tool_calls",
+        }],
+      }],
+    },
     ...[null, "zero", -1, 1].map((index) => ({
       name: `invalid choice index ${String(index)}`,
       violation: "choice-index-invalid",
