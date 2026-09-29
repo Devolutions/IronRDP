@@ -277,6 +277,9 @@ impl UdpTransportSender {
             .iter()
             .map(ironrdp_rdpemt::TunnelSubHeader::wire_size)
             .sum::<usize>();
+        // HeaderLength is one byte and counts the 4 byte fixed part of the tunnel
+        // header plus the sub-headers ([MS-RDPEMT] 2.2.1.1). The write pump's
+        // TunnelData encoder enforces the same bound; a test pins the two together.
         if 4 /* RDP_TUNNEL_HEADER */ + sub_headers_len > usize::from(u8::MAX) {
             return Err(UdpTransportError::new(
                 "send",
@@ -1162,10 +1165,12 @@ mod tests {
     }
 
     /// Sub-headers that would overflow `HeaderLength` are refused at the
-    /// call, not left to fail the write pump; the largest that fit go out.
+    /// call, not left to fail the write pump; the largest that fit go out. The
+    /// boundary is also checked against the real `TunnelData` encoder, so the
+    /// precheck cannot drift from the bound the write pump enforces.
     #[tokio::test]
     async fn send_message_refuses_sub_headers_the_header_cannot_hold() {
-        use ironrdp_rdpemt::{SubHeaderType, TunnelSubHeader};
+        use ironrdp_rdpemt::{SubHeaderType, TunnelData, TunnelSubHeader};
 
         let (_incoming_tx, incoming_rx) = mpsc::channel(4);
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
@@ -1188,5 +1193,20 @@ mod tests {
 
         assert_eq!(outgoing_rx.recv().await, Some(message(249)));
         assert!(outgoing_rx.try_recv().is_err(), "the refused message was not queued");
+
+        let encode = |message: TunnelMessage| {
+            ironrdp_core::encode_vec(&TunnelData {
+                sub_headers: message.sub_headers,
+                higher_layer_data: message.data,
+            })
+        };
+        assert!(
+            encode(message(249)).is_ok(),
+            "the encoder accepts what the precheck accepts"
+        );
+        assert!(
+            encode(message(250)).is_err(),
+            "the encoder refuses what the precheck refuses"
+        );
     }
 }
