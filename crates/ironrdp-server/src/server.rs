@@ -2433,10 +2433,17 @@ impl RdpServer {
         });
 
         // `monitor_count` is only asked when the channel is offered, since its
-        // contract is tied to the channel opening.
-        let offer_display_control = self.display.lock().await.offers_display_control().await;
-        let dvc = if offer_display_control {
-            let monitor_count = self.display.lock().await.monitor_count().await;
+        // contract is tied to the channel opening. Both queries share one guard,
+        // so no other task can interleave between them.
+        let display_control_monitors = {
+            let mut display = self.display.lock().await;
+            if display.offers_display_control().await {
+                Some(display.monitor_count().await)
+            } else {
+                None
+            }
+        };
+        let dvc = if let Some(monitor_count) = display_control_monitors {
             let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display), monitor_count);
             dvc.with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)))
         } else {
