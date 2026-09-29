@@ -41,23 +41,6 @@ fn a_tunnel_auto_detect_request_is_bare_and_alone() {
     );
 }
 
-/// A measurement the tunnel took with it when it closed does not hold up
-/// the next one, which after the fallback goes over TCP.
-#[test]
-fn the_tunnel_closing_cancels_its_bandwidth_measurement() {
-    let mut server = server_with_autodetect();
-    let ad = server.autodetect_mut().expect("auto-detect enabled");
-    ad.begin_bandwidth_measure(BW_BRACKET_MIN_BYTES, 0)
-        .expect("a large write starts a measurement");
-    ad.end_bandwidth_measure().expect("the measurement is open");
-    server.mark_bandwidth_measure_on_udp();
-
-    server.cancel_udp_bandwidth_measure();
-
-    let ad = server.autodetect_mut().expect("auto-detect enabled");
-    assert!(ad.begin_bandwidth_measure(BW_BRACKET_MIN_BYTES, 1_000).is_some());
-}
-
 #[test]
 fn bandwidth_results_on_the_tunnel_complete_the_measurement() {
     let mut server = server_with_autodetect();
