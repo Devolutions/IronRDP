@@ -2187,6 +2187,14 @@ impl RdpServer {
     /// [`event_sender`](Self::event_sender) before calling this method:
     /// queue events for a connection only after this method has started.
     ///
+    /// This is a drain, not a barrier: an event that a producer of the previous
+    /// session sends after it has run still reaches this connection. The
+    /// backends the server built for that session are dropped before this
+    /// method returns, but a task the embedder runs with its own
+    /// [`event_sender`](Self::event_sender) clone or one of the server's
+    /// handles is not, so stop such producers before starting the next
+    /// connection.
+    ///
     /// # Use case for [`TransportTls::AlreadyDone`]
     ///
     /// This mode decouples transport encryption from the RDP security-upgrade
@@ -2276,12 +2284,9 @@ impl RdpServer {
         // `set_display_suppressed_handle()`.
         self.display_suppressed.store(false, Ordering::Relaxed);
 
-        // A session that ended mid-send leaves what it had queued but not
-        // consumed on the server-global channel. A client reconnecting within
-        // milliseconds, before `run()`'s idle loop drains it or with no such
-        // loop at all when an embedder drives connections itself, was sent
-        // the previous session's EGFX frame as its first write, on a dynamic
-        // channel it had not opened yet, and dropped the connection.
+        // Before negotiation, so nothing the previous session left queued can
+        // reach this client ahead of its own channels. See
+        // `discard_stale_session_events`.
         self.discard_stale_session_events().await;
 
         let size = self.display.lock().await.size().await;

@@ -264,6 +264,46 @@ fn compressed_bitmap_fastpath_frame(compressor: &mut BulkCompressor) -> (Vec<u8>
     (frame, flags)
 }
 
+/// Sends echo requests and serves the client session until the server reports
+/// the round trip for `payload`, or five seconds pass.
+async fn drive_echo_round_trip(
+    stage: &mut ActiveStage,
+    framed: &mut Framed<TokioStream<TlsStream<TcpStream>>>,
+    echo_handle: &server::EchoServerHandle,
+    payload: &[u8],
+) -> Option<server::EchoRoundTripMeasurement> {
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+    let deadline = Instant::now() + Duration::from_secs(5);
+
+    while Instant::now() < deadline {
+        echo_handle.send_request(payload.to_vec()).expect("send echo request");
+
+        for _ in 0..20 {
+            if let Some(measurement) = echo_handle
+                .take_measurements()
+                .into_iter()
+                .find(|measurement| measurement.payload == payload)
+            {
+                return Some(measurement);
+            }
+
+            let read_result = tokio::time::timeout(Duration::from_millis(150), framed.read_pdu()).await;
+            let Ok(Ok((action, frame))) = read_result else {
+                continue;
+            };
+
+            let outputs = stage.process(&mut image, action, &frame).expect("stage process");
+            for output in outputs {
+                if let ActiveStageOutput::ResponseFrame(frame) = output {
+                    framed.write_all(&frame).await.expect("write response frame");
+                }
+            }
+        }
+    }
+
+    None
+}
+
 #[tokio::test]
 async fn test_echo_virtual_channel_end_to_end() {
     let payload = b"ironrdp echo e2e".to_vec();
@@ -276,42 +316,10 @@ async fn test_echo_virtual_channel_end_to_end() {
         |connector| connector.with_static_channel(DrdynvcClient::new().with_dynamic_channel(EchoClient::new())),
         move |mut stage, _activation_factory, mut framed, display_tx, echo_handle| async move {
             let _display_tx = display_tx;
-            let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
 
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let mut matched_measurement = None;
-
-            while Instant::now() < deadline {
-                echo_handle
-                    .send_request(echo_payload.clone())
-                    .expect("send echo request");
-
-                for _ in 0..20 {
-                    let measurements = echo_handle.take_measurements();
-                    if let Some(measurement) = measurements.into_iter().find(|m| m.payload == echo_payload) {
-                        matched_measurement = Some(measurement);
-                        break;
-                    }
-
-                    let read_result = tokio::time::timeout(Duration::from_millis(150), framed.read_pdu()).await;
-                    let Ok(Ok((action, frame))) = read_result else {
-                        continue;
-                    };
-
-                    let outputs = stage.process(&mut image, action, &frame).expect("stage process");
-                    for output in outputs {
-                        if let ActiveStageOutput::ResponseFrame(frame) = output {
-                            framed.write_all(&frame).await.expect("write response frame");
-                        }
-                    }
-                }
-
-                if matched_measurement.is_some() {
-                    break;
-                }
-            }
-
-            let measurement = matched_measurement.expect("echo RTT measurement was not produced");
+            let measurement = drive_echo_round_trip(&mut stage, &mut framed, &echo_handle, &echo_payload)
+                .await
+                .expect("echo RTT measurement was not produced");
             assert_eq!(measurement.payload, echo_payload);
 
             (stage, framed)
@@ -340,42 +348,11 @@ async fn a_new_connection_starts_without_the_previous_sessions_events() {
         |connector| connector.with_static_channel(DrdynvcClient::new().with_dynamic_channel(EchoClient::new())),
         move |mut stage, _activation_factory, mut framed, display_tx, echo_handle| async move {
             let _display_tx = display_tx;
-            let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
-
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let mut round_trip_completed = false;
-
-            while !round_trip_completed && Instant::now() < deadline {
-                echo_handle
-                    .send_request(echo_payload.clone())
-                    .expect("send echo request");
-
-                for _ in 0..20 {
-                    if echo_handle
-                        .take_measurements()
-                        .into_iter()
-                        .any(|measurement| measurement.payload == echo_payload)
-                    {
-                        round_trip_completed = true;
-                        break;
-                    }
-
-                    let read_result = tokio::time::timeout(Duration::from_millis(150), framed.read_pdu()).await;
-                    let Ok(Ok((action, frame))) = read_result else {
-                        continue;
-                    };
-
-                    let outputs = stage.process(&mut image, action, &frame).expect("stage process");
-                    for output in outputs {
-                        if let ActiveStageOutput::ResponseFrame(frame) = output {
-                            framed.write_all(&frame).await.expect("write response frame");
-                        }
-                    }
-                }
-            }
 
             assert!(
-                round_trip_completed,
+                drive_echo_round_trip(&mut stage, &mut framed, &echo_handle, &echo_payload)
+                    .await
+                    .is_some(),
                 "the connection did not survive a Disconnect event queued before it started"
             );
 
