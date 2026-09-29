@@ -699,14 +699,11 @@ async function consumeCompletionStream(stream, stage, state, metrics) {
                 throw malformedStream(state, metrics, "tool-call-index-missing-fragmented");
               }
               const call = {
-                id: [],
-                type: [],
-                function: { name: [], arguments: [] },
+                id: undefined,
+                type: undefined,
+                function: { name: "", arguments: "" },
               };
-              append(fragment.id, call.id);
-              append(fragment.type, call.type);
-              append(fragment.function.name, call.function.name);
-              append(fragment.function.arguments, call.function.arguments);
+              appendToolCallFragment(call, fragment);
               toolCalls.set(0, call);
               sawIndexlessToolCall = true;
               continue;
@@ -722,22 +719,13 @@ async function consumeCompletionStream(stream, stage, state, metrics) {
             let call = toolCalls.get(fragment.index);
             if (!call) {
               call = {
-                id: [],
-                type: [],
-                function: { name: [], arguments: [] },
+                id: undefined,
+                type: undefined,
+                function: { name: "", arguments: "" },
               };
               toolCalls.set(fragment.index, call);
             }
-            append(fragment.id, call.id);
-            append(fragment.type, call.type);
-            if (fragment.function !== undefined) {
-              if (fragment.function === null || typeof fragment.function !== "object" ||
-                  Array.isArray(fragment.function)) {
-                throw malformedStream(state, metrics, "tool-call-function-invalid");
-              }
-              append(fragment.function.name, call.function.name);
-              append(fragment.function.arguments, call.function.arguments);
-            }
+            appendToolCallFragment(call, fragment);
           }
         }
       }
@@ -763,14 +751,7 @@ async function consumeCompletionStream(stream, stage, state, metrics) {
   const calls = [...toolCalls].sort(([left], [right]) => left - right)
     .map(([index, call], position) => {
       if (index !== position) throw malformedStream(state, metrics, "tool-call-index-gap");
-      return {
-        id: call.id.join(""),
-        type: call.type.join(""),
-        function: {
-          name: call.function.name.join(""),
-          arguments: call.function.arguments.join(""),
-        },
-      };
+      return call;
     });
   if ((calls.length !== 0 && finishReason !== "tool_calls") ||
       (calls.length === 0 && finishReason === "tool_calls")) {
@@ -788,6 +769,29 @@ async function consumeCompletionStream(stream, stage, state, metrics) {
   };
 
   function append(fragment, target, isContent = false) {
+    const value = streamString(fragment, isContent);
+    if (value !== undefined) target.push(value);
+  }
+
+  function appendToolCallFragment(call, fragment) {
+    call.id = replaceSnapshot(fragment.id, call.id);
+    call.type = replaceSnapshot(fragment.type, call.type);
+    if (fragment.function === undefined) return;
+    if (fragment.function === null || typeof fragment.function !== "object" ||
+        Array.isArray(fragment.function)) {
+      throw malformedStream(state, metrics, "tool-call-function-invalid");
+    }
+    call.function.name = replaceSnapshot(fragment.function.name, call.function.name);
+    const argumentsFragment = streamString(fragment.function.arguments);
+    if (argumentsFragment !== undefined) call.function.arguments += argumentsFragment;
+  }
+
+  function replaceSnapshot(fragment, previous) {
+    const value = streamString(fragment);
+    return value || previous;
+  }
+
+  function streamString(fragment, isContent = false) {
     if (fragment === undefined || fragment === null) return;
     if (typeof fragment !== "string") throw malformedStream(state, metrics, "delta-value-invalid");
     const bytes = Buffer.byteLength(fragment, "utf8");
@@ -806,7 +810,7 @@ async function consumeCompletionStream(stream, stage, state, metrics) {
         });
       }
     }
-    target.push(fragment);
+    return fragment;
   }
 }
 

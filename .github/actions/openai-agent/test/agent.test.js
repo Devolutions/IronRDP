@@ -11,6 +11,7 @@ const {
   AgentFailure, TOOLS, compileOutputValidator, executeTool, providerFailureDiagnostic,
   providerFailureReason, runAgent,
 } = require("../src/agent");
+const { MAX_STREAMED_MODEL_DATA_BYTES } = require("../src/limits");
 const { RuntimeMetrics, createProviderClient, sanitizeReason } = require("../src/provider");
 
 const schema = {
@@ -225,6 +226,31 @@ test("runtime assembles streamed reasoning, content, usage, and request controls
   assert.equal(metrics.snapshot().ignoredRepeatedTerminalChoices, 0);
 });
 
+test("runtime passes a stage-derived SDK timeout above 120 seconds", async () => {
+  let options;
+  const result = await runAgent({
+    client: {
+      chat: {
+        completions: {
+          async create(_request, requestOptions) {
+            options = requestOptions;
+            return completionStream(message('{"answer":"done"}'));
+          },
+        },
+      },
+    },
+    config: { ...baseConfig, max_tool_calls: 0, stage_timeout_ms: 180_000 },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+  });
+
+  assert.equal(result.output, '{"answer":"done"}');
+  assert.ok(options.timeout > 120_000);
+  assert.ok(options.timeout <= 180_000);
+});
+
 test("runtime accepts an omitted choice index in a single-choice chunk", async () => {
   const metrics = new RuntimeMetrics();
   const emptyNullPrototypeDelta = Object.create(null);
@@ -308,7 +334,7 @@ test("runtime preserves a usage-only post-finish tail before executing a complet
               index: 0,
               id: "call-1",
               type: "function",
-              function: { name: "read_", arguments: '{"path":"' },
+              function: { name: "read_file", arguments: '{"path":"' },
             }],
           },
           finish_reason: null,
@@ -320,7 +346,7 @@ test("runtime preserves a usage-only post-finish tail before executing a complet
           delta: {
             tool_calls: [{
               index: 0,
-              function: { name: "file", arguments: 'root/a"}' },
+              function: { arguments: 'root/a"}' },
             }],
           },
           finish_reason: "tool_calls",
@@ -457,7 +483,7 @@ test("runtime continues to assemble indexed interleaved tool fragments before ex
               index: 1,
               id: "second",
               type: "function",
-              function: { name: "list_", arguments: '{"pa' },
+              function: { name: "list_files", arguments: '{"pa' },
             }],
           },
           finish_reason: null,
@@ -473,11 +499,11 @@ test("runtime continues to assemble indexed interleaved tool fragments before ex
                 index: 0,
                 id: "first",
                 type: "function",
-                function: { name: "read_", arguments: '{"path":"a' },
+                function: { name: "read_file", arguments: '{"path":"a' },
               },
               {
                 index: 1,
-                function: { name: "files", arguments: 'th":"root"}' },
+                function: { arguments: 'th":"root"}' },
               },
             ],
           },
@@ -491,7 +517,7 @@ test("runtime continues to assemble indexed interleaved tool fragments before ex
           delta: {
             tool_calls: [{
               index: 0,
-              function: { name: "file", arguments: '"}' },
+              function: { arguments: '"}' },
             }],
           },
           finish_reason: "tool_calls",
@@ -513,6 +539,331 @@ test("runtime continues to assemble indexed interleaved tool fragments before ex
   assert.equal(requests[1].messages.at(-2).tool_call_id, "first");
   assert.equal(requests[1].messages.at(-1).tool_call_id, "second");
   assert.equal(requests[1].messages.at(-3).reasoning_content, "inspect");
+});
+
+test("runtime replaces repeated indexed tool identity snapshots and appends arguments", async () => {
+  const executions = [];
+  const requests = [];
+  const result = await runAgent({
+    client: clientFrom([
+      completionStream(null, {
+        fragments: [
+          {
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: "call-1",
+                  type: "function",
+                  function: { name: "read_file", arguments: '{"path":"' },
+                }],
+              },
+              finish_reason: null,
+            }],
+          },
+          {
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: "call-1",
+                  type: "function",
+                  function: { name: "read_file", arguments: 'root/a"}' },
+                }],
+              },
+              finish_reason: "tool_calls",
+            }],
+          },
+        ],
+      }),
+      message('{"answer":"done"}'),
+    ], requests),
+    config: baseConfig,
+    methodologies: [],
+    prompt: "p",
+    sandbox: {
+      ...sandbox,
+      readFile(args) {
+        executions.push(args.path);
+        return JSON.stringify({ ok: true });
+      },
+    },
+    schema,
+  });
+
+  assert.equal(result.output, '{"answer":"done"}');
+  assert.deepEqual(executions, ["root/a"]);
+  assert.equal(requests[1].messages.at(-1).tool_call_id, "call-1");
+  assert.deepEqual(requests[1].messages.at(-2).tool_calls, [{
+    id: "call-1",
+    type: "function",
+    function: { name: "read_file", arguments: '{"path":"root/a"}' },
+  }]);
+});
+
+test("runtime retains the latest truthy indexed tool identity snapshots", async () => {
+  const executions = [];
+  const requests = [];
+  const result = await runAgent({
+    client: clientFrom([
+      completionStream(null, {
+        fragments: [
+          {
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: "call-old",
+                  type: "not-a-function",
+                  function: { name: "unknown_tool", arguments: '{"path":"' },
+                }],
+              },
+              finish_reason: null,
+            }],
+          },
+          {
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: "call-new",
+                  type: "function",
+                  function: { name: "read_file", arguments: 'root/a"}' },
+                }],
+              },
+              finish_reason: "tool_calls",
+            }],
+          },
+        ],
+      }),
+      message('{"answer":"done"}'),
+    ], requests),
+    config: baseConfig,
+    methodologies: [],
+    prompt: "p",
+    sandbox: {
+      ...sandbox,
+      readFile(args) {
+        executions.push(args.path);
+        return JSON.stringify({ ok: true });
+      },
+    },
+    schema,
+  });
+
+  assert.equal(result.output, '{"answer":"done"}');
+  assert.deepEqual(executions, ["root/a"]);
+  assert.equal(requests[1].messages.at(-1).tool_call_id, "call-new");
+  assert.deepEqual(requests[1].messages.at(-2).tool_calls, [{
+    id: "call-new",
+    type: "function",
+    function: { name: "read_file", arguments: '{"path":"root/a"}' },
+  }]);
+});
+
+test("runtime retains truthy indexed tool identities when later fragments omit them", async () => {
+  const executions = [];
+  const result = await runAgent({
+    client: clientFrom([
+      completionStream(null, {
+        fragments: [
+          {
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: "call-1",
+                  type: "function",
+                  function: { name: "read_file", arguments: '{"path":"' },
+                }],
+              },
+              finish_reason: null,
+            }],
+          },
+          {
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  type: null,
+                  function: { name: "", arguments: 'root/a"}' },
+                }],
+              },
+              finish_reason: "tool_calls",
+            }],
+          },
+        ],
+      }),
+      message('{"answer":"done"}'),
+    ]),
+    config: baseConfig,
+    methodologies: [],
+    prompt: "p",
+    sandbox: {
+      ...sandbox,
+      readFile(args) {
+        executions.push(args.path);
+        return JSON.stringify({ ok: true });
+      },
+    },
+    schema,
+  });
+
+  assert.equal(result.output, '{"answer":"done"}');
+  assert.deepEqual(executions, ["root/a"]);
+});
+
+test("runtime rejects final indexed tool calls with an absent or empty ID or non-function type", async () => {
+  const cases = [
+    {
+      name: "absent ID",
+      toolCall: { index: 0, type: "function", function: { name: "read_file", arguments: "{}" } },
+    },
+    {
+      name: "empty ID",
+      toolCall: { index: 0, id: "", type: "function", function: { name: "read_file", arguments: "{}" } },
+    },
+    {
+      name: "non-function type",
+      toolCall: { index: 0, id: "call-1", type: "tool", function: { name: "read_file", arguments: "{}" } },
+    },
+  ];
+
+  for (const streamCase of cases) {
+    let executions = 0;
+    await assert.rejects(
+      runAgent({
+        client: clientFrom([completionStream(null, {
+          fragments: [{
+            choices: [{
+              index: 0,
+              delta: { tool_calls: [streamCase.toolCall] },
+              finish_reason: "tool_calls",
+            }],
+          }],
+        })]),
+        config: baseConfig,
+        methodologies: [],
+        prompt: "p",
+        sandbox: {
+          ...sandbox,
+          readFile() {
+            executions++;
+            return "{}";
+          },
+        },
+        schema,
+      }),
+      (error) => error.reason === "provider returned a malformed tool call",
+      streamCase.name,
+    );
+    assert.equal(executions, 0, streamCase.name);
+  }
+});
+
+test("runtime rejects non-string indexed tool identity snapshots as malformed streams", async () => {
+  const cases = [
+    {
+      name: "ID",
+      toolCall: { index: 0, id: 1, type: "function", function: { name: "read_file", arguments: "{}" } },
+    },
+    {
+      name: "type",
+      toolCall: { index: 0, id: "call-1", type: 1, function: { name: "read_file", arguments: "{}" } },
+    },
+    {
+      name: "function name",
+      toolCall: { index: 0, id: "call-1", type: "function", function: { name: 1, arguments: "{}" } },
+    },
+  ];
+
+  for (const streamCase of cases) {
+    const metrics = new RuntimeMetrics();
+    let executions = 0;
+    await assert.rejects(
+      runAgent({
+        client: clientFrom([completionStream(null, {
+          fragments: [{
+            choices: [{
+              index: 0,
+              delta: { tool_calls: [streamCase.toolCall] },
+              finish_reason: "tool_calls",
+            }],
+          }],
+        })]),
+        config: baseConfig,
+        methodologies: [],
+        prompt: "p",
+        sandbox: {
+          ...sandbox,
+          readFile() {
+            executions++;
+            return "{}";
+          },
+        },
+        schema,
+        metrics,
+      }),
+      (error) => error.reason === "provider stream was malformed",
+      streamCase.name,
+    );
+    assert.equal(executions, 0, streamCase.name);
+    assert.equal(metrics.snapshot().streamStructuralViolation, "delta-value-invalid", streamCase.name);
+  }
+});
+
+test("runtime counts repeated indexed tool identity snapshots against streamed model data", async () => {
+  const identity = "x".repeat(Math.ceil(MAX_STREAMED_MODEL_DATA_BYTES / 2));
+  let executions = 0;
+  await assert.rejects(
+    runAgent({
+      client: clientFrom([completionStream(null, {
+        fragments: [
+          {
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: identity,
+                  type: "function",
+                  function: { name: "read_file", arguments: "{}" },
+                }],
+              },
+              finish_reason: null,
+            }],
+          },
+          {
+            choices: [{
+              index: 0,
+              delta: { tool_calls: [{ index: 0, id: identity }] },
+              finish_reason: "tool_calls",
+            }],
+          },
+        ],
+      })]),
+      config: baseConfig,
+      methodologies: [],
+      prompt: "p",
+      sandbox: {
+        ...sandbox,
+        readFile() {
+          executions++;
+          return "{}";
+        },
+      },
+      schema,
+    }),
+    (error) => error.reason === "streamed model data exceeded the byte limit" &&
+      error.category === "limit",
+  );
+  assert.equal(executions, 0);
 });
 
 test("runtime rejects incompatible streamed indices without executing tools or exposing provider data", async () => {
