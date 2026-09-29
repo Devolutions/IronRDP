@@ -8,3 +8,4 @@ mod multitransport_finalize;
 mod rdpdr;
 mod rdpei;
 mod remotefx_entropy_coder;
+mod tunnel_autodetect;

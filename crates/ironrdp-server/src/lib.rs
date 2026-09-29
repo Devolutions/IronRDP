@@ -18,6 +18,7 @@ mod handler;
 pub mod heartbeat;
 #[cfg(feature = "helper")]
 mod helper;
+mod multitransport;
 mod rdpdr;
 mod rdpeai;
 mod rdpei;
@@ -51,6 +52,8 @@ pub use rdpei::{
     RdpeiServerFactory, ScReadyFeatures, TouchContact, TouchContactDataFlags, TouchContactFields, TouchContactFlags,
     TouchEventPdu, TouchFrame,
 };
+#[cfg(all(feature = "__test", feature = "egfx"))]
+pub use server::autodetect_sub_header;
 pub use server::{
     AutoReconnectCookieHandle, ConnectionHandler, ConnectionInfo, ConnectionPolicy, CredentialDecision,
     CredentialValidationError, CredentialValidator, Credentials, ErrorInfoDisconnectHandle,

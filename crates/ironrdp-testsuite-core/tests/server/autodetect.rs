@@ -1,5 +1,5 @@
 use ironrdp_pdu::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse};
-use ironrdp_server::autodetect::{AutoDetectManager, AutoDetectOutcome};
+use ironrdp_server::autodetect::{AutoDetectManager, AutoDetectOutcome, BW_BRACKET_MIN_BYTES};
 
 /// Upper bound on ticks to drive while waiting for a bandwidth transaction:
 /// generous enough to cover the pacing plus the window, tight enough that a
@@ -296,12 +296,12 @@ fn mismatched_bandwidth_sequence_is_ignored() {
     );
 }
 
-/// A Bandwidth Measure Results with `time_delta_ms: 0` cannot compute a
+/// A Bandwidth Measure Results in which the client counted no bytes carries no
 /// figure. It must not be reported, and it must not leave a stale
 /// `bandwidth_kbps` from an earlier successful measurement on the wire as if
 /// it were current.
 #[test]
-fn zero_time_delta_ages_out_a_previous_bandwidth_figure() {
+fn zero_byte_count_ages_out_a_previous_bandwidth_figure() {
     let mut mgr = AutoDetectManager::new();
     let req = mgr.send_rtt_request(0);
     let _ = mgr.handle_response(
@@ -328,7 +328,7 @@ fn zero_time_delta_ages_out_a_previous_bandwidth_figure() {
         "a real bandwidth figure is known"
     );
 
-    // Second measurement fails: timeDelta 0.
+    // Second measurement fails: no bytes counted.
     let req = mgr.send_rtt_request(1_000);
     let _ = mgr.handle_response(
         &AutoDetectResponse::RttResponse {
@@ -340,8 +340,8 @@ fn zero_time_delta_ages_out_a_previous_bandwidth_figure() {
     let zero_delta_results = AutoDetectResponse::BandwidthMeasureResults {
         sequence_number: bw_seq,
         response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
-        time_delta_ms: 0,
-        byte_count: 100_000,
+        time_delta_ms: 10,
+        byte_count: 0,
     };
     // Matched (it completes the outstanding transaction), but unusable: distinct from
     // an unmatched reply, and distinct from `Bandwidth(Some(_))`. A caller collapsing
@@ -358,6 +358,183 @@ fn zero_time_delta_ages_out_a_previous_bandwidth_figure() {
         mgr.build_netchar_result(2_000).is_none(),
         "the aged-out bandwidth figure must withhold the result, not report the stale one"
     );
+}
+
+/// The client times the window in whole milliseconds, so a burst that crosses a
+/// fast link within one reports zero. That is a measurement bounded by one
+/// millisecond, not a failure.
+#[test]
+fn zero_time_delta_counts_as_one_millisecond() {
+    let mut mgr = AutoDetectManager::new();
+    let bw_seq = drive_bandwidth_start_and_stop(&mut mgr);
+    let results = AutoDetectResponse::BandwidthMeasureResults {
+        sequence_number: bw_seq,
+        response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
+        time_delta_ms: 0,
+        byte_count: 100_000,
+    };
+    assert_eq!(
+        mgr.handle_response(&results, 20),
+        AutoDetectOutcome::Bandwidth(Some(800_000))
+    );
+}
+
+/// Completes the bracketed measurement `start` opened, with a usable figure.
+fn complete_bracket(mgr: &mut AutoDetectManager, start: &AutoDetectRequest, now_ms: u64) {
+    let stop = mgr.end_bandwidth_measure().expect("Stop after a bracketed Start");
+    assert_eq!(stop.sequence_number(), start.sequence_number());
+    let results = AutoDetectResponse::BandwidthMeasureResults {
+        sequence_number: stop.sequence_number(),
+        response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
+        time_delta_ms: 2,
+        byte_count: 20_000,
+    };
+    assert_eq!(
+        mgr.handle_response(&results, now_ms),
+        AutoDetectOutcome::Bandwidth(Some(80_000))
+    );
+}
+
+#[test]
+fn a_large_write_is_bracketed_by_start_and_stop() {
+    let mut mgr = AutoDetectManager::new();
+    let start = mgr
+        .begin_bandwidth_measure(BW_BRACKET_MIN_BYTES, 0)
+        .expect("a write at the threshold is measured");
+    assert!(matches!(start, AutoDetectRequest::BandwidthMeasureStart { .. }));
+    let stop = mgr.end_bandwidth_measure().expect("Stop follows the write");
+    assert!(matches!(stop, AutoDetectRequest::BandwidthMeasureStop { .. }));
+    assert_eq!(stop.sequence_number(), start.sequence_number());
+    assert!(mgr.end_bandwidth_measure().is_none(), "one Stop per Start");
+}
+
+#[test]
+fn a_small_write_is_not_bracketed() {
+    let mut mgr = AutoDetectManager::new();
+    assert!(mgr.begin_bandwidth_measure(BW_BRACKET_MIN_BYTES - 1, 0).is_none());
+    assert!(mgr.end_bandwidth_measure().is_none());
+}
+
+#[test]
+fn bracketed_measurements_are_paced_and_never_overlap() {
+    let mut mgr = AutoDetectManager::new();
+    let start = mgr.begin_bandwidth_measure(64 * 1024, 0).expect("first write measured");
+    let _ = mgr.end_bandwidth_measure();
+    assert!(
+        mgr.begin_bandwidth_measure(64 * 1024, 5_000).is_none(),
+        "no new measurement while the client's results are outstanding"
+    );
+    let results = AutoDetectResponse::BandwidthMeasureResults {
+        sequence_number: start.sequence_number(),
+        response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
+        time_delta_ms: 2,
+        byte_count: 20_000,
+    };
+    let _ = mgr.handle_response(&results, 10);
+    assert!(
+        mgr.begin_bandwidth_measure(64 * 1024, 999).is_none(),
+        "within a second of the previous Start"
+    );
+    let next = mgr.begin_bandwidth_measure(64 * 1024, 1_000).expect("a second later");
+    complete_bracket(&mut mgr, &next, 1_010);
+}
+
+/// While large writes keep coming, the tick window (which times idle stretches
+/// as well as traffic) stays closed.
+#[test]
+fn the_tick_window_stays_closed_while_brackets_recur() {
+    let mut mgr = AutoDetectManager::new();
+    for round in 0..16u64 {
+        let now_ms = round * 1_000;
+        let start = mgr.begin_bandwidth_measure(64 * 1024, now_ms).expect("measured");
+        complete_bracket(&mut mgr, &start, now_ms + 10);
+        for _ in 0..4 {
+            assert!(mgr.build_bandwidth_measure().is_none());
+        }
+    }
+}
+
+/// A session that stops sending large writes, such as one whose only large
+/// frame was the initial render, goes back to the tick window rather than
+/// keeping the last bracketed figure forever.
+#[test]
+fn the_tick_window_resumes_when_brackets_stop() {
+    let mut mgr = AutoDetectManager::new();
+    let start = mgr.begin_bandwidth_measure(64 * 1024, 0).expect("measured");
+    complete_bracket(&mut mgr, &start, 10);
+    assert!(
+        mgr.build_bandwidth_measure().is_none(),
+        "not on the tick right after a bracket"
+    );
+    drive_bandwidth_start_and_stop(&mut mgr);
+}
+
+/// A bracketed Start whose Stop is never sent does not block bandwidth
+/// measurement for the rest of the session.
+#[test]
+fn an_unended_bracket_expires() {
+    let mut mgr = AutoDetectManager::new();
+    let _ = mgr.begin_bandwidth_measure(64 * 1024, 0).expect("measured");
+    mgr.expire_stale_probes(29_999, 30_000);
+    assert!(
+        mgr.begin_bandwidth_measure(64 * 1024, 29_999).is_none(),
+        "still pending before the maximum age"
+    );
+    mgr.expire_stale_probes(30_000, 30_000);
+    let next = mgr
+        .begin_bandwidth_measure(64 * 1024, 30_000)
+        .expect("a new bracket once the stale one expired");
+    complete_bracket(&mut mgr, &next, 30_010);
+}
+
+/// A Stop the client never answers does not block bandwidth measurement for
+/// the rest of the session, and results that arrive after it expired are not
+/// taken as a measurement.
+#[test]
+fn an_unanswered_measurement_expires() {
+    let mut mgr = AutoDetectManager::new();
+    let sequence = drive_bandwidth_start_and_stop(&mut mgr);
+    // The tick has no clock, so the first expiry pass stamps the measurement.
+    mgr.expire_stale_probes(1_000, 30_000);
+    mgr.expire_stale_probes(30_999, 30_000);
+    assert!(
+        mgr.begin_bandwidth_measure(64 * 1024, 30_999).is_none(),
+        "still pending before the maximum age"
+    );
+    mgr.expire_stale_probes(31_000, 30_000);
+    let late = AutoDetectResponse::BandwidthMeasureResults {
+        sequence_number: sequence,
+        response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
+        time_delta_ms: 2,
+        byte_count: 20_000,
+    };
+    assert_eq!(mgr.handle_response(&late, 31_010), AutoDetectOutcome::Unmatched);
+    drive_bandwidth_start_and_stop(&mut mgr);
+}
+
+/// A tick window stays open across ticks however far apart they are: only the
+/// wait for results after its Stop is timed.
+#[test]
+fn a_slow_tick_window_is_not_cut_short() {
+    let mut mgr = AutoDetectManager::new();
+    let mut now_ms = 0;
+    let mut start_sequence = None;
+    for _ in 0..MAX_BANDWIDTH_TICKS {
+        now_ms += 20_000;
+        mgr.expire_stale_probes(now_ms, 30_000);
+        match (start_sequence, mgr.build_bandwidth_measure()) {
+            (_, None) => {}
+            (None, Some(AutoDetectRequest::BandwidthMeasureStart { sequence_number, .. })) => {
+                start_sequence = Some(sequence_number);
+            }
+            (Some(start), Some(AutoDetectRequest::BandwidthMeasureStop { sequence_number, .. })) => {
+                assert_eq!(sequence_number, start);
+                return;
+            }
+            (_, Some(other)) => panic!("unexpected {other:?}"),
+        }
+    }
+    panic!("the tick window never sent its Stop");
 }
 
 /// Two consecutive measurements landing on the identical kbps figure (plausible on a
