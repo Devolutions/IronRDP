@@ -401,6 +401,34 @@ test("runtime ignores and counts a repeated terminal with an empty delta", async
   assert.equal(metrics.snapshot().ignoredRepeatedTerminalChoices, 1);
 });
 
+test("runtime accepts a no-op post-finish tail with an explicit null finish reason", async () => {
+  const metrics = new RuntimeMetrics();
+  const result = await runAgent({
+    client: clientFrom([completionStream(null, {
+      fragments: [
+        {
+          choices: [{
+            index: 0,
+            delta: { content: '{"answer":"done"}' },
+            finish_reason: "stop",
+          }],
+        },
+        { choices: [{ index: 0, delta: {}, finish_reason: null }] },
+      ],
+    })]),
+    config: { ...baseConfig, max_tool_calls: 0 },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+    metrics,
+  });
+
+  assert.equal(result.output, '{"answer":"done"}');
+  assert.equal(metrics.snapshot().ignoredPostFinishEmptyDeltaChoices, 1);
+  assert.equal(metrics.snapshot().ignoredRepeatedTerminalChoices, 0);
+});
+
 test("runtime continues to assemble indexed interleaved tool fragments before executing the whole batch", async () => {
   const requests = [];
   const executions = [];

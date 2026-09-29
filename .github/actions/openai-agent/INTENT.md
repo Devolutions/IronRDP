@@ -41,7 +41,7 @@ The action assembles reasoning, content, usage, finish reason, and indexed tool-
 An omitted choice index is accepted only for a single-choice chunk, and one complete index-less tool-call envelope is accepted only when the response contains no indexed fragments.
 Every accepted stream carries a terminal finish reason so cleanly truncated responses are retried rather than accepted.
 After that terminal reason, the conventional `choices: []` usage-only tail is preserved unchanged.
-The only accepted nonempty tail is one choice with an empty delta and an omitted or matching finish reason, which maintains compatibility with providers that include usage metadata there.
+The only accepted nonempty tail is one choice with an empty delta and an omitted, null, or matching finish reason, which maintains compatibility with providers that include usage metadata there.
 Every other nonempty post-finish tail remains a structural violation.
 Missing optional reasoning or usage metadata makes diagnostics incomplete but does not invalidate otherwise acceptable text.
 
