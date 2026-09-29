@@ -311,6 +311,12 @@ impl DrdynvcServer {
     /// This API emits exactly one `ReliableUdp` channel list and maps every supplied
     /// channel to that list. A future multi-tunnel request API must establish an
     /// explicit response-routing mapping before it is exposed.
+    ///
+    /// A connection gets one request: The state never returns to idle, so a
+    /// later call returns an error. The request declares the TCP path flushed for
+    /// the supplied channels (SOFT_SYNC_TCP_FLUSHED, [MS-RDPEDYC] 2.2.5.1), so the
+    /// server sends their data over the tunnel from then on ([MS-RDPEDYC]
+    /// 3.3.5.3.1), whatever the client's response lists.
     pub fn request_reliable_udp(&mut self, channel_ids: Vec<u32>) -> PduResult<SvcMessage> {
         if channel_ids.is_empty() {
             return Err(pdu_other_err!("soft-sync requires at least one dynamic channel"));

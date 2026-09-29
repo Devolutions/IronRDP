@@ -3463,8 +3463,12 @@ impl RdpServer {
     /// give an earlier point where EGFX's dynamic channel id is known to be
     /// open (dynamic channels open lazily, driven by the client, well after
     /// the transport could have already come up during multitransport
-    /// bootstrapping). A repeat request (already migrated) is a no-op, per
-    /// [`dvc::DrdynvcServer::request_reliable_udp`]'s own idempotency guard.
+    /// bootstrapping). The request is made once per connection: A later attempt
+    /// gets an "already requested" error from
+    /// [`dvc::DrdynvcServer::request_reliable_udp`], which is expected and only
+    /// traced. The request declares the TCP path flushed for the channel
+    /// (SOFT_SYNC_TCP_FLUSHED, MS-RDPEDYC 2.2.5.1), so its data goes over the
+    /// tunnel from then on (3.3.5.3.1), whatever the client's response lists.
     #[cfg(feature = "egfx")]
     async fn dispatch_egfx_messages(
         &mut self,
