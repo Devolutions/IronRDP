@@ -15,7 +15,7 @@ use ironrdp_cliprdr::pdu::{
 };
 use ironrdp_svc::SvcProcessor as _;
 
-use super::test_helpers::{FormatDataRecordingBackend, init_ready_client_with_backend};
+use ironrdp_testsuite_core::clipboard::{FormatDataRecordingBackend, init_ready_client_with_backend};
 
 fn file_list_format() -> ClipboardFormatId {
     ClipboardFormatId::new(0xC0BC)

@@ -25,9 +25,11 @@ harness = true
 [dependencies]
 array-concat = "0.5"
 expect-test = "1"
+ironrdp-cliprdr.path = "../ironrdp-cliprdr"
 ironrdp-core.path = "../ironrdp-core"
 ironrdp-egfx.path = "../ironrdp-egfx"
 ironrdp-pdu.path = "../ironrdp-pdu"
+ironrdp-svc.path = "../ironrdp-svc"
 paste = "1"
 openh264 = { version = "0.9", optional = true, default-features = false, features = ["source"] }
 visibility = { version = "0.1", optional = true }
