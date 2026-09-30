@@ -68,21 +68,25 @@ Keep detailed failure reasons in the workflow summary only.
 ## Activation policy
 
 Classify every non-draft, human-authored pull request that passes the integrity and capacity gates.
-Run automated review after CI succeeds for the exact classified head.
+Run automated review after the latest CI generation succeeds for the exact classified head.
 Run the second review after a later push reaches green exact-head CI.
-At `ai-reviewed/2`, the review pipeline stops; classification and its labels keep updating.
+At `ai-reviewed/2`, the review pipeline stops and the review route hands a green pull request to `needs-review`.
 
-Use `maintainer-required` only when maintainer action is the next step.
-On the normal review path, apply it only after exact-head CI succeeds and an automated review reports no findings.
-When a review reports findings, the next step belongs to the contributor, even at `ai-reviewed/2`.
-Once `ai-reviewed/2` is set, classification applies the label on the next push, when the outstanding findings are presumed addressed.
-Apply it earlier only when automation stops and needs maintainer intervention.
+`needs-review` means a human reviewer is the next actor, and `needs-author-action` means the author is the next actor.
+They are automation-owned and mutually exclusive.
+An attempted exact-head classification or eligible review failure applies only `automation-failed`.
+Successful normal classification can clear stale actor and failure labels before it dispatches review.
+An automated review with findings applies `needs-author-action`, and one without findings applies `needs-review`.
+Valid classification plus green CI hands legitimacy triage to `needs-review` without a model call.
+Blocked and duplicate review routes preserve or clear actor state through their resolved state without creating a failure label.
+The final writer accepts successful non-forced review and handoff state only when the stored CI generation is still the latest green exact-head CI generation.
+Prompt lifecycle clearing and convergence are deferred to the supersession and reconciliation follow-up.
 
 Every non-bot author is eligible immediately; there is no prior-merge requirement.
 
-Block review for likely non-legitimate changes.
+Block model review for likely non-legitimate changes and hand the green exact head to a human reviewer.
 Label a suspected overlap with another pull request at confidence 0.85 or greater as `triage/overlap`, and keep it advisory: it never blocks review and never asks for maintainer handoff on its own.
-Unavailable or invalid classification fails closed to maintainer review.
+Unavailable or invalid exact-head classification applies only `automation-failed`.
 Risk and protocol relevance select reviewers but do not suppress review.
 
 Fork pull requests share a quota of 50 per UTC day.

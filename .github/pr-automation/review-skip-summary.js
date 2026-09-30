@@ -22,7 +22,7 @@ function reviewSkipReasons({ gate, gateResult, rateLimit, rateLimitResult } = {}
       const policyReasonStart = reasons.length;
       if (labels.has("ai-reviewed/2")) reasons.push("The pull request has reached the two-review limit.");
       if (labels.has("triage/legitimacy") || gate.legitimacyStopped === true) {
-        reasons.push("The pull request requires a maintainer legitimacy decision.");
+        reasons.push("The pull request is awaiting its green exact-head CI handoff for legitimacy triage.");
       }
       if (reasons.length === policyReasonStart) {
         reasons.push("The pull request is not eligible under the automated review policy.");

@@ -100,7 +100,7 @@ function renderReviewReport({ report, outcome, summaryUrl, reducedCoverage = [] 
   }[outcome];
   const outcomeText = outcome === "complete" || outcome === "reduced-coverage"
     ? "Validated automated review is bound to this commit"
-    : "Automated review is unavailable. Maintainer review is required";
+    : "Automated review is unavailable. Automation remains blocked until retry or repair";
   const coverage = outcome.endsWith("reduced-coverage")
     ? ` with reduced coverage:${reducedCoverageText(
       reducedCoverage.map((reviewer) => text(reviewer, MAX_CHECK_TEXT_LENGTH)),
