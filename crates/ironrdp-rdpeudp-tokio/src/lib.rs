@@ -14,4 +14,6 @@ pub(crate) mod tunnel;
 
 pub use self::error::{DriverError, DriverErrorKind, UdpTransportError, UdpTransportErrorKind};
 pub use self::multitransport::MultitransportBootstrap;
-pub use self::transport::{UdpAcceptConfig, UdpTlsConfig, UdpTransport, UdpTransportConfig, accept_udp, connect_udp};
+pub use self::transport::{
+    UdpAcceptConfig, UdpTlsConfig, UdpTransport, UdpTransportConfig, UdpTransportSender, accept_udp, connect_udp,
+};

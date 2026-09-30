@@ -15,14 +15,22 @@ inputs:
     description: Trusted workflow validator module selector in path#export form
     required: false
     default: ""
+  normalizer:
+    description: Trusted synchronous output normalizer module selector in path#export form
+    required: false
+    default: ""
   validator-metadata:
     description: Trusted JSON object passed opaquely to the selected validator
+    required: false
+    default: ""
+  structured-output-file:
+    description: Workflow-controlled filename in the action output directory for accepted JSON
     required: false
     default: ""
 
 outputs:
   structured-output:
-    description: Schema-validated JSON returned by the selected model
+    description: Schema-validated JSON when no structured-output-file is requested
   failure-reason:
     description: Bounded failure category when no valid output was produced
   turn-count:

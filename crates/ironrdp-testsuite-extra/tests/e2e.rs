@@ -1,5 +1,6 @@
 // FIXME: tests in this module can probably be rewritten to be much shorter using the ironrdp-client crate.
 
+use core::net::SocketAddr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::path::Path;
@@ -26,6 +27,8 @@ use ironrdp::session::{self, ActiveStage, ActiveStageBuilder, ActiveStageOutput}
 use ironrdp::svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcServerProcessor};
 use ironrdp_async::{Framed, FramedWrite as _};
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType, flags as bulk_flags};
+use ironrdp_dvc::{DvcClientProcessor, DvcEncode, DvcMessage, DvcProcessor};
+use ironrdp_egfx::pdu::{CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitySet, GfxPdu};
 use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::pdu::efs::{
     Capabilities, CoreCapability, CoreCapabilityKind, DeviceCreateResponse, DeviceIoRequest, DeviceIoResponse,
@@ -34,6 +37,7 @@ use ironrdp_rdpdr::pdu::efs::{
 };
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
 use ironrdp_rdpdr::{Rdpdr, RdpdrBackend, RdpdrBackendFactory, RdpdrBackendProduct, RdpdrDrive};
+use ironrdp_server::{GfxServerFactory, ServerEventSender};
 use ironrdp_testsuite_extra as _;
 use ironrdp_tls::TlsStream;
 use ironrdp_tokio::TokioStream;
@@ -59,6 +63,24 @@ async fn test_client_server() {
         |stage, _activation_factory, framed, _display_tx| async { (stage, framed) },
     )
     .await
+}
+
+/// Configuring UDP multitransport on the server must not disturb a client
+/// that never advertises support for it: `set_multitransport_offer` gates on
+/// the client's own GCC `MultiTransportChannelData` reciprocating, so with
+/// `multitransport_flags: None` (the default) the acceptor never sends the
+/// Initiate Multitransport Request and the connection proceeds exactly as it
+/// does with no UDP transport configured at all.
+#[tokio::test]
+async fn test_client_server_with_udp_transport_configured_but_unused() {
+    client_server_with_connector(
+        default_client_config(),
+        Vec::new(),
+        Some(([127, 0, 0, 1], 0).into()),
+        |connector| connector,
+        |stage, _activation_factory, framed, _display_tx, _echo_handle| async { (stage, framed) },
+    )
+    .await;
 }
 
 /// Advertising the Graphics Pipeline early-capability bit must not disturb connection establishment.
@@ -249,6 +271,7 @@ async fn test_echo_virtual_channel_end_to_end() {
     client_server_with_connector(
         default_client_config(),
         Vec::new(),
+        None,
         |connector| connector.with_static_channel(DrdynvcClient::new().with_dynamic_channel(EchoClient::new())),
         move |mut stage, _activation_factory, mut framed, display_tx, echo_handle| async move {
             let _display_tx = display_tx;
@@ -304,6 +327,7 @@ async fn rdpdr_static_channel_announces_a_drive_and_completes_an_unsupported_cre
     client_server_with_connector(
         default_client_config(),
         vec![Box::new(fixture)],
+        None,
         |connector| connector.with_static_channel(test_rdpdr_channel()),
         move |stage, _activation_factory, framed, display_tx, _echo_handle| {
             drive_rdpdr_until_complete(stage, framed, display_tx, fixture_state)
@@ -332,6 +356,7 @@ async fn rdpdr_static_channel_creates_a_file_with_the_windows_backend() {
     client_server_with_connector(
         default_client_config(),
         vec![Box::new(fixture)],
+        None,
         move |connector| connector.with_static_channel(rdpdr_channel(&factory)),
         move |stage, _activation_factory, framed, display_tx, _echo_handle| {
             drive_rdpdr_until_complete(stage, framed, display_tx, fixture_state_for_client)
@@ -369,6 +394,7 @@ async fn rdpdr_static_channel_preserves_large_read_response_lengths() {
     client_server_with_connector(
         default_client_config(),
         vec![Box::new(fixture)],
+        None,
         move |connector| connector.with_static_channel(rdpdr_channel(&factory)),
         move |stage, _activation_factory, framed, display_tx, _echo_handle| {
             drive_rdpdr_until_complete(stage, framed, display_tx, fixture_state_for_client)
@@ -884,6 +910,7 @@ where
     client_server_with_connector(
         client_config,
         Vec::new(),
+        None,
         |connector| connector,
         move |stage, connection_activation, framed, display_tx, _echo_handle| {
             clientfn(stage, connection_activation, framed, display_tx)
@@ -895,6 +922,7 @@ where
 async fn client_server_with_connector<F, Fut, C>(
     client_config: connector::Config,
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+    server_udp_addr: Option<SocketAddr>,
     connector_factory: C,
     clientfn: F,
 ) where
@@ -929,6 +957,9 @@ async fn client_server_with_connector<F, Fut, C>(
         });
     for factory in static_channel_factories {
         server_builder = server_builder.with_static_channel_factory(factory);
+    }
+    if let Some(udp_addr) = server_udp_addr {
+        server_builder = server_builder.with_udp_transport(udp_addr);
     }
     let mut server = server_builder.build();
     server.set_credentials(Some(server::Credentials {
@@ -1025,6 +1056,372 @@ async fn client_server_with_connector<F, Fut, C>(
         })
         .await;
 }
+
+/// EGFX moves onto the UDP tunnel with Soft-Sync (MS-RDPEDYC 3.1.5.3), end to end.
+///
+/// The server sends the Soft-Sync Request when EGFX first has data to send, and
+/// from then on every server message on that channel goes over the tunnel
+/// (3.3.5.3.1): the batch that triggered the request, and the channel's reply to
+/// a client message. The IronRDP client rejects TCP data for a channel it moved
+/// to the tunnel, so any EGFX data sent over TCP after the request fails the test.
+///
+/// The client writes on the tunnel as soon as it has sent the Soft-Sync
+/// Response, so its first tunnel data can reach the server before the response
+/// does. The test forces that order and checks the server still processes it.
+///
+/// Soft-Sync has no tunnel type that moves a channel back to TCP (2.2.5.1),
+/// and the tunnel lasts as long as the connection (MS-RDPEMT 1.3.3), so when
+/// the tunnel closes under EGFX the server has to end the connection.
+#[tokio::test]
+async fn egfx_moves_onto_the_udp_tunnel_with_soft_sync() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
+
+    // The server binds its sideband socket to the configured port, so the
+    // client has to know that port before the server reports it.
+    let udp_port = std::net::UdpSocket::bind("127.0.0.1:0")
+        .and_then(|socket| socket.local_addr())
+        .expect("pick a free UDP port")
+        .port();
+    let udp_addr: SocketAddr = ([127, 0, 0, 1], udp_port).into();
+
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    let (caps_tx, mut caps_rx) = mpsc::unbounded_channel();
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+        })
+        .with_gfx_factory(Some(Box::new(TestGfxFactory { caps_tx })))
+        .with_udp_transport(udp_addr)
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server = tokio::task::spawn_local(async move {
+                server.run().await.unwrap();
+            });
+
+            let client = tokio::task::spawn_local(async move {
+                let (tx, rx) = oneshot::channel();
+                ev.send(ServerEvent::GetLocalAddr(tx)).unwrap();
+                let server_addr = rx.await.unwrap().unwrap();
+                let tcp_stream = TcpStream::connect(server_addr).await.expect("TCP connect");
+                let client_addr = tcp_stream.local_addr().expect("local_addr");
+
+                let egfx = TestEgfxClient::default();
+                let egfx_channel = Arc::clone(&egfx.channel_id);
+                let egfx_received = Arc::clone(&egfx.received);
+                let client_config = connector::Config {
+                    support_dyn_vc_gfx_protocol: true,
+                    multitransport_flags: Some(
+                        gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR
+                            | gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP,
+                    ),
+                    ..default_client_config()
+                };
+                let mut connector = connector::ClientConnector::new(client_config, client_addr)
+                    .with_static_channel(DrdynvcClient::new().with_dynamic_channel(egfx));
+
+                let mut framed = ironrdp_tokio::TokioFramed::new(tcp_stream);
+                let should_upgrade = ironrdp_async::connect_begin(&mut framed, &mut connector)
+                    .await
+                    .expect("begin connection");
+                let (upgraded_stream, tls_cert) = ironrdp_tls::upgrade_with_certificate_validation(
+                    framed.into_inner_no_leftover(),
+                    "localhost",
+                    ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate,
+                )
+                .await
+                .expect("TLS upgrade");
+                let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
+                let mut framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
+                let server_public_key =
+                    ironrdp_tls::extract_tls_server_public_key(&tls_cert).expect("extract server public key");
+
+                let mut tunnel = None;
+                let connection_result = ironrdp_async::connect_finalize_with_multitransport(
+                    upgraded,
+                    connector,
+                    &mut framed,
+                    &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
+                    "localhost".into(),
+                    server_public_key.to_owned(),
+                    None,
+                    async |request, soft_sync| {
+                        assert!(soft_sync, "both peers advertised SOFT_SYNC_TCP_TO_UDP");
+                        let mut bootstrap = ironrdp_rdpeudp_tokio::MultitransportBootstrap::new(request);
+                        bootstrap
+                            .connect(
+                                udp_addr,
+                                "localhost".into(),
+                                ironrdp_rdpeudp::ConnectionConfig::default(),
+                                ironrdp_rdpeudp_tokio::UdpTlsConfig::new("localhost".into()),
+                            )
+                            .await
+                            .expect("UDP tunnel handshake");
+                        tunnel = bootstrap.take_transport();
+                        Ok(connector::MultitransportResult::Success)
+                    },
+                )
+                .await
+                .expect("finalize connection");
+                let mut tunnel = tunnel.expect("the server sent an Initiate Multitransport Request");
+
+                let mut stage = ActiveStageBuilder {
+                    static_channels: connection_result.static_channels,
+                    user_channel_id: connection_result.user_channel_id,
+                    io_channel_id: connection_result.io_channel_id,
+                    message_channel_id: connection_result.message_channel_id,
+                    share_id: connection_result.share_id,
+                    compression_type: connection_result.compression_type,
+                    enable_server_pointer: connection_result.enable_server_pointer,
+                    pointer_software_rendering: connection_result.pointer_software_rendering,
+                }
+                .build();
+                stage.enable_reliable_udp_dvc_tunnel().expect("DRDYNVC is present");
+                let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+
+                // The client advertises its capabilities over TCP when the channel
+                // opens, as a real client does; the server handler seeing them means
+                // the server has the channel open too.
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        tokio::select! {
+                            caps = caps_rx.recv() => {
+                                caps.expect("capabilities reached the EGFX handler");
+                                break;
+                            }
+                            pdu = framed.read_pdu() => {
+                                let (action, frame) = pdu.expect("read PDU");
+                                for output in stage.process(&mut image, action, &frame).expect("stage process") {
+                                    if let ActiveStageOutput::ResponseFrame(frame) = output {
+                                        framed.write_all(&frame).await.expect("write response frame");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })
+                .await
+                .expect("the server opened the EGFX channel");
+                let egfx_channel_id = egfx_channel
+                    .lock()
+                    .unwrap()
+                    .expect("the client opened the EGFX channel");
+
+                let batch = b"first egfx batch".to_vec();
+                let messages = ironrdp_dvc::encode_dvc_messages(
+                    egfx_channel_id,
+                    vec![Box::new(RawDvcPayload(batch.clone()))],
+                    ironrdp::svc::ChannelFlags::empty(),
+                )
+                .expect("encode EGFX batch");
+                ev.send(ServerEvent::Egfx(ironrdp_server::EgfxServerMessage::SendMessages {
+                    messages,
+                }))
+                .unwrap();
+
+                // Process TCP until the Soft-Sync Request has moved the channel,
+                // holding back the Soft-Sync Response it produced.
+                let held_response = tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        let (action, frame) = framed.read_pdu().await.expect("read PDU");
+                        let mut responses = Vec::new();
+                        for output in stage.process(&mut image, action, &frame).expect("stage process") {
+                            if let ActiveStageOutput::ResponseFrame(frame) = output {
+                                responses.push(frame);
+                            }
+                        }
+                        if stage.dvc_tunnel_for_channel(egfx_channel_id)
+                            == Some(ironrdp_dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP)
+                        {
+                            break responses;
+                        }
+                        for frame in responses {
+                            framed.write_all(&frame).await.expect("write response frame");
+                        }
+                    }
+                })
+                .await
+                .expect("the server sent a Soft-Sync Request for EGFX");
+
+                // Client data on the tunnel that reaches the server ahead of the
+                // Soft-Sync Response, and that the EGFX channel answers: a second
+                // capabilities advertisement, which a client sends to reset its
+                // decoder.
+                let caps = ironrdp_dvc::pdu::DrdynvcClientPdu::Data(ironrdp_dvc::pdu::DrdynvcDataPdu::Data(
+                    ironrdp_dvc::pdu::DataPdu::new(egfx_channel_id, encode_vec(&v8_capabilities()).unwrap()),
+                ));
+                tunnel
+                    .send(encode_vec(&caps).unwrap())
+                    .await
+                    .expect("send on the tunnel");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                for frame in held_response {
+                    framed.write_all(&frame).await.expect("write Soft-Sync Response");
+                }
+
+                // Over TCP, the confirmation of the first capabilities. Over the
+                // tunnel, the triggering batch and the second confirmation.
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    while egfx_received.lock().unwrap().len() < 3 {
+                        tokio::select! {
+                            payload = tunnel.recv() => {
+                                let payload = payload.expect("tunnel open");
+                                stage
+                                    .process_dvc_tunnel(&mut image, ironrdp_dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP, &payload)
+                                    .expect("DVC data for the tunneled channel");
+                            }
+                            pdu = framed.read_pdu() => {
+                                let (action, frame) = pdu.expect("read PDU");
+                                for output in stage.process(&mut image, action, &frame).expect("stage process") {
+                                    if let ActiveStageOutput::ResponseFrame(frame) = output {
+                                        framed.write_all(&frame).await.expect("write response frame");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })
+                .await
+                .expect("EGFX batch and capabilities reply arrived on the tunnel");
+                assert_eq!(
+                    egfx_received.lock().unwrap()[1],
+                    batch,
+                    "the batch that triggered the request goes over the tunnel"
+                );
+
+                tokio::time::timeout(Duration::from_secs(10), caps_rx.recv())
+                    .await
+                    .expect("the server processed the early tunnel data")
+                    .expect("capabilities reached the EGFX handler");
+
+                // With EGFX on the tunnel there is no way back to TCP, so the
+                // server ends the connection when the tunnel closes. Graphics
+                // still being sent is what shows the server the tunnel is gone.
+                drop(tunnel);
+                let messages = ironrdp_dvc::encode_dvc_messages(
+                    egfx_channel_id,
+                    vec![Box::new(RawDvcPayload(b"after the tunnel closed".to_vec()))],
+                    ironrdp::svc::ChannelFlags::empty(),
+                )
+                .expect("encode EGFX batch");
+                ev.send(ServerEvent::Egfx(ironrdp_server::EgfxServerMessage::SendMessages {
+                    messages,
+                }))
+                .unwrap();
+                tokio::time::timeout(Duration::from_secs(20), async {
+                    while let Ok(pdu) = framed.read_pdu().await {
+                        debug!(?pdu);
+                    }
+                })
+                .await
+                .expect("the server ended the connection once the tunnel closed");
+                ev.send(ServerEvent::Quit("bye".into())).unwrap();
+            });
+
+            tokio::try_join!(server, client).expect("join");
+        })
+        .await;
+}
+
+/// Server EGFX handler that reports the client's advertised capabilities.
+struct TestGfxFactory {
+    caps_tx: UnboundedSender<()>,
+}
+
+impl ServerEventSender for TestGfxFactory {
+    fn set_sender(&mut self, _sender: UnboundedSender<ServerEvent>) {}
+}
+
+impl GfxServerFactory for TestGfxFactory {
+    fn build_gfx_handler(&self) -> Box<dyn ironrdp_egfx::server::GraphicsPipelineHandler> {
+        Box::new(TestGfxHandler {
+            caps_tx: self.caps_tx.clone(),
+        })
+    }
+}
+
+struct TestGfxHandler {
+    caps_tx: UnboundedSender<()>,
+}
+
+impl ironrdp_egfx::server::GraphicsPipelineHandler for TestGfxHandler {
+    fn capabilities_advertise(&mut self, _pdu: &CapabilitiesAdvertisePdu) {
+        let _ = self.caps_tx.send(());
+    }
+
+    fn on_ready(&mut self, _negotiated: &CapabilitySet) {}
+}
+
+/// Client end of the EGFX channel that records what the server sends on it.
+#[derive(Default)]
+struct TestEgfxClient {
+    channel_id: Arc<StdMutex<Option<u32>>>,
+    received: Arc<StdMutex<Vec<Vec<u8>>>>,
+}
+
+impl_as_any!(TestEgfxClient);
+
+impl DvcProcessor for TestEgfxClient {
+    fn channel_name(&self) -> &str {
+        "Microsoft::Windows::RDS::Graphics"
+    }
+
+    fn start(&mut self, channel_id: u32) -> pdu::PduResult<Vec<DvcMessage>> {
+        *self.channel_id.lock().unwrap() = Some(channel_id);
+        Ok(vec![Box::new(v8_capabilities())])
+    }
+
+    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> pdu::PduResult<Vec<DvcMessage>> {
+        self.received.lock().unwrap().push(payload.to_vec());
+        Ok(Vec::new())
+    }
+}
+
+impl DvcClientProcessor for TestEgfxClient {}
+
+fn v8_capabilities() -> GfxPdu {
+    GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8 {
+        flags: CapabilitiesV8Flags::empty(),
+    }]))
+}
+
+struct RawDvcPayload(Vec<u8>);
+
+impl ironrdp::core::Encode for RawDvcPayload {
+    fn encode(&self, dst: &mut ironrdp::core::WriteCursor<'_>) -> ironrdp::core::EncodeResult<()> {
+        ironrdp::core::ensure_size!(in: dst, size: self.0.len());
+        dst.write_slice(&self.0);
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "RawDvcPayload"
+    }
+
+    fn size(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl DvcEncode for RawDvcPayload {}
 
 pub(super) fn default_client_config() -> connector::Config {
     connector::Config {

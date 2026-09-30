@@ -6,7 +6,7 @@ pub mod chunked_fetch;
 pub mod loop_detector;
 pub mod pdu;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use backend::CliprdrBackend;
 use ironrdp_core::{AsAny, EncodeResult, IntoOwned as _, decode};
@@ -35,6 +35,17 @@ pub type CliprdrSvcMessages<R> = SvcProcessorMessages<Cliprdr<R>>;
 pub(crate) enum CliprdrState {
     Initialization,
     Ready,
+}
+
+/// A FormatDataRequest sent to the remote and not yet answered.
+#[derive(Debug, Clone, Copy)]
+struct PendingFormatDataRequest {
+    /// Whether this was a request for the remote's file list, decided when the
+    /// request was sent. The response carries no format ID, and a FormatList
+    /// arriving in between can change or drop the file list format, so the
+    /// response is classified by what was requested, not by the state at
+    /// response time.
+    is_file_list: bool,
 }
 
 /// [MS-RDPECLIP] 2.2.5.3 / 2.2.5.4 - Tracks state of a file contents transfer
@@ -368,6 +379,40 @@ const MAX_OUTGOING_LOCKS: usize = 100;
 /// prevents unbounded growth if responses are never received.
 const MAX_PENDING_FILE_REQUESTS: usize = 1000;
 
+/// Maximum number of unanswered format data requests.
+///
+/// Every [`Cliprdr::initiate_paste`] queues the request until its
+/// [`FormatDataResponse`] arrives. The remote must answer every request, so
+/// this only bounds a peer that stops answering. A paste past the cap isn't
+/// sent: the backend gets a failed response for it instead, and the session
+/// carries on.
+const MAX_PENDING_FORMAT_DATA_REQUESTS: usize = 64;
+
+/// Fails one file contents request without leaving its caller waiting.
+///
+/// A rejected request is a per-request failure, not a channel failure. The
+/// backend is notified with an error response so it can release whatever is
+/// waiting on that stream id -- the same treatment `FormatListResponse::Fail`
+/// already gives pending requests -- and the error is still returned for
+/// callers that surface it.
+macro_rules! reject_file_contents_request {
+    ($self:ident, $stream_id:expr, $description:expr) => {{
+        let description = $description;
+        warn!(
+            stream_id = $stream_id,
+            reason = description,
+            "Rejecting file contents request"
+        );
+        $self
+            .backend
+            .on_file_contents_response(FileContentsResponse::new_error($stream_id));
+        return Err(ironrdp_pdu::PduError::new(
+            "request_file_contents",
+            ironrdp_pdu::PduErrorKind::Other { description },
+        ));
+    }};
+}
+
 /// CLIPRDR static virtual channel endpoint implementation
 #[derive(Debug)]
 pub struct Cliprdr<R: Role> {
@@ -375,11 +420,25 @@ pub struct Cliprdr<R: Role> {
     capabilities: Capabilities,
     state: CliprdrState,
 
-    /// Tracks the format ID of the most recently sent FormatDataRequest.
-    /// Used to correlate FormatDataResponse with the request that produced it,
-    /// so we only intercept responses for the file list format and forward all
-    /// others to the backend.
-    pending_format_data_request: Option<ClipboardFormatId>,
+    /// Format IDs of the sent FormatDataRequests not yet answered, oldest
+    /// first. A FormatDataResponse names no format, but [MS-RDPECLIP] requires
+    /// one response per request (3.1.5.4.2) and the channel is ordered, so the
+    /// oldest entry is the request each response answers. Used to intercept
+    /// only the file list response and forward all others to the backend.
+    ///
+    /// A queue rather than a single slot: a second paste can be initiated
+    /// before the first is answered — e.g. when the remote announces one copy
+    /// with two FormatLists in quick succession, as Firefox and Word do — and
+    /// a single slot then pairs the earlier request's response with the later
+    /// request.
+    ///
+    /// Deliberately no timeout: a response carries no ID, so a request given up
+    /// on could not be told apart from a late answer, and that late answer
+    /// would then pair with the next request — the misattribution this queue
+    /// exists to prevent. A conformant peer answers every request, with
+    /// CB_RESPONSE_FAIL if it can't produce the data (3.1.5.4.3);
+    /// [`MAX_PENDING_FORMAT_DATA_REQUESTS`] bounds one that doesn't.
+    pending_format_data_requests: VecDeque<PendingFormatDataRequest>,
 
     /// Stores the local file list when initiating a file copy operation.
     /// Set by initiate_file_copy(), used to respond to FormatDataRequest.
@@ -534,7 +593,7 @@ impl<R: Role> Cliprdr<R> {
             backend,
             state: CliprdrState::Initialization,
             capabilities: Capabilities::new(ClipboardProtocolVersion::V2, flags),
-            pending_format_data_request: None,
+            pending_format_data_requests: VecDeque::new(),
             local_file_list: None,
             local_file_list_format_id: None,
             local_drop_effect_format_id: None,
@@ -674,7 +733,9 @@ impl<R: Role> Cliprdr<R> {
         // Clear any previous remote clipboard state since new content is available
         self.remote_file_list = None;
         self.remote_file_list_format_id = None;
-        self.pending_format_data_request = None;
+        // Requests already sent are still answered, in order, after a new
+        // FormatList — so pending requests are kept, not cleared, or their
+        // responses would pair with the wrong request.
 
         // [MS-RDPECLIP] 2.2.4.2 - Expire locks when clipboard changes
         // Locks enter grace period with activity-based timeout
@@ -855,16 +916,34 @@ impl<R: Role> Cliprdr<R> {
         Ok(pdus.into_iter().map(into_cliprdr_message).collect::<Vec<_>>().into())
     }
 
-    /// Takes `&mut self` because it tracks `pending_format_data_request` for response correlation.
+    /// Takes `&mut self` because it tracks `pending_format_data_requests` for response correlation.
+    ///
+    /// If too many requests are already unanswered (a peer that stopped
+    /// answering), nothing is sent and the backend gets a failed
+    /// [`FormatDataResponse`] for this paste instead — not an error, which
+    /// embedders commonly propagate out of the session loop.
     pub fn initiate_paste(&mut self, requested_format: ClipboardFormatId) -> PduResult<CliprdrSvcMessages<R>> {
         self.require_ready("initiate_paste")?;
 
+        if self.pending_format_data_requests.len() >= MAX_PENDING_FORMAT_DATA_REQUESTS {
+            warn!(
+                pending = self.pending_format_data_requests.len(),
+                format_id = ?requested_format,
+                "Not sending paste: too many unanswered format data requests; failing it locally"
+            );
+            self.backend
+                .on_format_data_response(OwnedFormatDataResponse::new_error());
+            return Ok(Vec::new().into());
+        }
+
         // When user initiates paste, send format data request to server, and expect to
         // receive response with contents via `FormatDataResponse` PDU.
-        // Track the format so we can correlate the response correctly.
-        self.pending_format_data_request = Some(requested_format);
+        // Track the request so we can correlate the response correctly.
+        let is_file_list = Some(requested_format) == self.remote_file_list_format_id;
+        self.pending_format_data_requests
+            .push_back(PendingFormatDataRequest { is_file_list });
 
-        if Some(requested_format) == self.remote_file_list_format_id {
+        if is_file_list {
             trace!(format_id = ?requested_format, "User initiated paste for FileGroupDescriptorW");
         }
 
@@ -1255,7 +1334,11 @@ impl<R: Role> Cliprdr<R> {
     ///
     /// [2.2.5.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/cbc851d3-4e68-45f4-9292-26872a9209f2
     pub fn request_file_contents(&mut self, mut request: FileContentsRequest) -> PduResult<CliprdrSvcMessages<R>> {
-        self.require_ready("request_file_contents")?;
+        if let Err(error) = self.require_ready("request_file_contents") {
+            self.backend
+                .on_file_contents_response(FileContentsResponse::new_error(request.stream_id));
+            return Err(error);
+        }
 
         // [MS-RDPECLIP] 2.2.2.1.1.1 - CB_STREAM_FILECLIP_ENABLED must be negotiated
         if !self
@@ -1263,12 +1346,7 @@ impl<R: Role> Cliprdr<R> {
             .flags()
             .contains(ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED)
         {
-            return Err(ironrdp_pdu::PduError::new(
-                "request_file_contents",
-                ironrdp_pdu::PduErrorKind::Other {
-                    description: "CB_STREAM_FILECLIP_ENABLED not negotiated",
-                },
-            ));
+            reject_file_contents_request!(self, request.stream_id, "CB_STREAM_FILECLIP_ENABLED not negotiated");
         }
 
         // [MS-RDPECLIP] 2.2.5.3 - Include clipDataId if we have an active lock
@@ -1309,74 +1387,45 @@ impl<R: Role> Cliprdr<R> {
 
         // [MS-RDPECLIP] 2.2.5.3 - Validate flags are spec-compliant
         if let Err(e) = request.flags.validate() {
-            return Err(ironrdp_pdu::PduError::new(
-                "request_file_contents",
-                ironrdp_pdu::PduErrorKind::Other { description: e },
-            ));
+            reject_file_contents_request!(self, request.stream_id, e);
         }
 
         // [MS-RDPECLIP] 2.2.5.3 - Validate SIZE request constraints
         if request.flags.contains(FileContentsFlags::SIZE) {
             if request.requested_size != 8 {
-                return Err(ironrdp_pdu::PduError::new(
-                    "request_file_contents",
-                    ironrdp_pdu::PduErrorKind::Other {
-                        description: "SIZE request must have requested_size=8",
-                    },
-                ));
+                reject_file_contents_request!(self, request.stream_id, "SIZE request must have requested_size=8");
             }
             if request.position != 0 {
-                return Err(ironrdp_pdu::PduError::new(
-                    "request_file_contents",
-                    ironrdp_pdu::PduErrorKind::Other {
-                        description: "SIZE request must have position=0",
-                    },
-                ));
+                reject_file_contents_request!(self, request.stream_id, "SIZE request must have position=0");
             }
         }
 
         // [MS-RDPECLIP] 3.1.5.4.5 - Validate file index is from known file list
-        let validated_file_index = usize::try_from(request.index).map_err(|_| {
-            ironrdp_pdu::PduError::new(
-                "request_file_contents",
-                ironrdp_pdu::PduErrorKind::Other {
-                    description: "file index is negative",
-                },
-            )
-        })?;
+        let Ok(validated_file_index) = usize::try_from(request.index) else {
+            reject_file_contents_request!(self, request.stream_id, "file index is negative");
+        };
 
         if let Some(ref file_list) = self.remote_file_list {
             if file_list.files.len() <= validated_file_index {
-                return Err(ironrdp_pdu::PduError::new(
-                    "request_file_contents",
-                    ironrdp_pdu::PduErrorKind::Other {
-                        description: "file index out of bounds for remote file list",
-                    },
-                ));
+                reject_file_contents_request!(self, request.stream_id, "file index out of bounds for remote file list");
             }
 
             // [MS-RDPECLIP] 3.1.5.4.5 - Validate RANGE request is within file bounds
             if request.flags.contains(FileContentsFlags::RANGE) {
                 // Validate requested_size > 0 for RANGE requests
                 if request.requested_size == 0 {
-                    return Err(ironrdp_pdu::PduError::new(
-                        "request_file_contents",
-                        ironrdp_pdu::PduErrorKind::Other {
-                            description: "RANGE request must have requested_size > 0",
-                        },
-                    ));
+                    reject_file_contents_request!(
+                        self,
+                        request.stream_id,
+                        "RANGE request must have requested_size > 0"
+                    );
                 }
 
                 if let Some(file_desc) = file_list.files.get(validated_file_index) {
                     if let Some(file_size) = file_desc.file_size {
                         let end_position = request.position.saturating_add(u64::from(request.requested_size));
                         if file_size < end_position {
-                            return Err(ironrdp_pdu::PduError::new(
-                                "request_file_contents",
-                                ironrdp_pdu::PduErrorKind::Other {
-                                    description: "RANGE request exceeds file bounds",
-                                },
-                            ));
+                            reject_file_contents_request!(self, request.stream_id, "RANGE request exceeds file bounds");
                         }
                     }
                 }
@@ -1390,12 +1439,11 @@ impl<R: Role> Cliprdr<R> {
 
             if !supports_huge_files && 0x8000_0000 <= request.position {
                 // 2^31
-                return Err(ironrdp_pdu::PduError::new(
-                    "request_file_contents",
-                    ironrdp_pdu::PduErrorKind::Other {
-                        description: "large file position requires CB_HUGE_FILE_SUPPORT_ENABLED capability",
-                    },
-                ));
+                reject_file_contents_request!(
+                    self,
+                    request.stream_id,
+                    "large file position requires CB_HUGE_FILE_SUPPORT_ENABLED capability"
+                );
             }
         } else {
             warn!("FileContentsRequest sent without remote file list");
@@ -1404,12 +1452,7 @@ impl<R: Role> Cliprdr<R> {
 
         // Reject if too many requests are already pending.
         if MAX_PENDING_FILE_REQUESTS <= self.sent_file_contents_requests.len() {
-            return Err(ironrdp_pdu::PduError::new(
-                "request_file_contents",
-                ironrdp_pdu::PduErrorKind::Other {
-                    description: "too many pending file contents requests",
-                },
-            ));
+            reject_file_contents_request!(self, request.stream_id, "too many pending file contents requests");
         }
 
         // Track this request so we can validate the response.
@@ -1705,16 +1748,17 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                 Ok(Vec::new())
             }
             ClipboardPdu::FormatDataResponse(response) => {
-                // Correlate this response with the most recently sent FormatDataRequest.
+                // Correlate this response with the oldest unanswered FormatDataRequest.
                 // Only intercept as a file list if the request was for the file list format;
                 // forward all other responses (text, images, etc.) to the backend.
-                let requested_format = self.pending_format_data_request.take();
-                let is_file_list_response =
-                    requested_format.is_some() && requested_format == self.remote_file_list_format_id;
+                let is_file_list_response = self
+                    .pending_format_data_requests
+                    .pop_front()
+                    .is_some_and(|request| request.is_file_list);
 
                 if is_file_list_response {
                     if response.is_error() {
-                        warn!(?requested_format, "FileGroupDescriptorW request failed");
+                        warn!("FileGroupDescriptorW request failed");
                         self.backend.on_format_data_response(response);
                         Ok(Vec::new())
                     } else {

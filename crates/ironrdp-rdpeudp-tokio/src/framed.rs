@@ -13,6 +13,7 @@ use std::io;
 
 use bytes::BytesMut;
 use ironrdp_async::{FramedRead, FramedWrite};
+use tracing::trace;
 
 use crate::transport::UdpTransport;
 
@@ -37,7 +38,10 @@ impl FramedRead for UdpTransport {
             // payload of nothing to pass on.
             loop {
                 match self.recv().await {
-                    Some(data) if data.is_empty() => continue,
+                    Some(data) if data.is_empty() => {
+                        trace!("Skipped empty tunnel message");
+                        continue;
+                    }
                     Some(data) => {
                         let n = data.len();
                         buf.extend_from_slice(&data);

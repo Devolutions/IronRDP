@@ -9,7 +9,10 @@ const {
   MAX_LIST_ENTRIES, MAX_RECURSION_DEPTH, MAX_SEARCH_RESULTS, MAX_SOURCE_FILE_BYTES,
   MAX_TOOL_RESULT_BYTES, MAX_WALK_ENTRIES,
 } = require("../src/limits");
-const { WorkspaceSandbox, boundJson, normalizeRepositoryPath } = require("../src/sandbox");
+const {
+  OUTPUT_DIRECTORY, WorkspaceSandbox, boundJson, normalizeRepositoryPath, validateOutputFilePath,
+  writeOutputFile,
+} = require("../src/sandbox");
 const { scratchWorkspace, write } = require("./helpers");
 
 function fixture() {
@@ -60,6 +63,40 @@ test("repository paths reject absolute, traversal, control, and git paths", () =
     assert.throws(() => normalizeRepositoryPath(invalid), /invalid path/, invalid);
   }
   assert.equal(normalizeRepositoryPath("root/nested/a.txt"), "root/nested/a.txt");
+});
+
+test("structured output files stay in a dedicated non-overwritable regular-file directory", (t) => {
+  const current = fixture();
+  const external = scratchWorkspace();
+  try {
+    const output = `${OUTPUT_DIRECTORY}/review.json`;
+    assert.equal(validateOutputFilePath(output), output);
+    assert.equal(writeOutputFile(current.directory, output, '{"answer":"ok"}'), output);
+    assert.equal(fs.readFileSync(path.join(current.directory, output), "utf8"), '{"answer":"ok"}');
+    assert.throws(() => writeOutputFile(current.directory, output, "{}"), /output file is unavailable/);
+    for (const invalid of [
+      "review.json", `${OUTPUT_DIRECTORY}/nested/review.json`, `${OUTPUT_DIRECTORY}/review.txt`,
+      `${OUTPUT_DIRECTORY}/../review.json`, ".github/workflows/review.yml",
+    ]) {
+      assert.throws(() => validateOutputFilePath(invalid), /structured output file|invalid path/, invalid);
+    }
+    const linkedWorkspace = scratchWorkspace();
+    try {
+      fs.symlinkSync(external.directory, path.join(linkedWorkspace.directory, OUTPUT_DIRECTORY),
+        process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      t.skip(`symlink creation unavailable: ${error.code}`);
+      return;
+    }
+    assert.throws(
+      () => writeOutputFile(linkedWorkspace.directory, `${OUTPUT_DIRECTORY}/review.json`, "{}"),
+      /structured output directory is unavailable/,
+    );
+    linkedWorkspace.cleanup();
+  } finally {
+    current.cleanup();
+    external.cleanup();
+  }
 });
 
 test("sandbox rejects symlinks and junctions before realpath access", (t) => {

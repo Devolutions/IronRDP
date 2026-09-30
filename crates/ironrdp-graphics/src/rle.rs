@@ -119,6 +119,10 @@ pub enum RleError {
     },
     EmptyImage,
     UnexpectedZeroLength,
+    DimensionsTooLarge {
+        width: usize,
+        height: usize,
+    },
 }
 
 impl fmt::Display for RleError {
@@ -140,9 +144,30 @@ impl fmt::Display for RleError {
             }
             RleError::EmptyImage => write!(f, "height or width is zero"),
             RleError::UnexpectedZeroLength => write!(f, "unexpected zero-length"),
+            RleError::DimensionsTooLarge { width, height } => {
+                write!(
+                    f,
+                    "width {width} or height {height} exceeds {MAX_DECODE_DIM}-pixel decoder limit"
+                )
+            }
         }
     }
 }
+
+// Cap allocation to prevent OOM from adversarial dimensions: `width` and
+// `height` here come directly from TS_BITMAP_DATA's wire-decoded, unvalidated
+// width/height fields (MS-RDPBCGR 2.2.9.1.1.3.1.2.2, both 16-bit unsigned
+// integers with no normative maximum), so the worst case before this cap was
+// 65535 * 65535 * 3 bytes (24 bpp) = ~12.6 GB from a few attacker-controlled
+// bytes. 8192 matches the existing per-axis cap in ironrdp-graphics's
+// ClearCodec decoder (crates/ironrdp-graphics/src/clearcodec/mod.rs), and
+// also matches MS-RDPBCGR's own documented maximum desktop width for current
+// Windows RDP server versions (RDP 8.0 and later; section 3.3.5.3.3, note
+// <46>). The per-axis form, not a per-pixel-count form, is deliberate: a
+// pixel-count cap alone accepts degenerate aspect ratios (e.g. very wide,
+// very short) that still allocate hundreds of megabytes from a small input,
+// as ClearCodec's own history shows.
+const MAX_DECODE_DIM: usize = 8192;
 
 fn decompress_helper<Mode: DepthMode>(
     src: &[u8],
@@ -152,6 +177,10 @@ fn decompress_helper<Mode: DepthMode>(
 ) -> Result<RlePixelFormat, RleError> {
     if width == 0 || height == 0 {
         return Err(RleError::EmptyImage);
+    }
+
+    if width > MAX_DECODE_DIM || height > MAX_DECODE_DIM {
+        return Err(RleError::DimensionsTooLarge { width, height });
     }
 
     let row_delta = Mode::COLOR_DEPTH * width;
@@ -870,5 +899,53 @@ mod tests {
 
         assert_eq!(format, RlePixelFormat::Rgb16);
         assert_eq!(output, [0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn width_over_the_decode_limit_is_rejected_before_allocating() {
+        let mut output = Vec::new();
+
+        let error = decompress_24_bpp(&[], &mut output, MAX_DECODE_DIM + 1, 1).unwrap_err();
+
+        assert_eq!(
+            error,
+            RleError::DimensionsTooLarge {
+                width: MAX_DECODE_DIM + 1,
+                height: 1
+            }
+        );
+        assert!(output.is_empty(), "must reject before touching the output buffer");
+    }
+
+    #[test]
+    fn height_over_the_decode_limit_is_rejected_before_allocating() {
+        let mut output = Vec::new();
+
+        let error = decompress_24_bpp(&[], &mut output, 1, MAX_DECODE_DIM + 1).unwrap_err();
+
+        assert_eq!(
+            error,
+            RleError::DimensionsTooLarge {
+                width: 1,
+                height: MAX_DECODE_DIM + 1
+            }
+        );
+        assert!(output.is_empty(), "must reject before touching the output buffer");
+    }
+
+    #[test]
+    fn dimensions_at_the_decode_limit_are_not_rejected_by_the_dimension_check() {
+        let mut output = Vec::new();
+
+        // An empty `src` decodes trivially (the main loop never runs, so
+        // there is nothing to be a decode error), which is exactly what
+        // makes this a clean boundary check: reaching `Ok` at all proves
+        // the dimension check let `MAX_DECODE_DIM` itself through, and the
+        // resized-but-untouched output proves it was the real allocation
+        // path, not a short-circuit.
+        let format = decompress_24_bpp(&[], &mut output, MAX_DECODE_DIM, MAX_DECODE_DIM).unwrap();
+
+        assert_eq!(format, RlePixelFormat::Rgb24);
+        assert_eq!(output.len(), Mode24Bpp::COLOR_DEPTH * MAX_DECODE_DIM * MAX_DECODE_DIM);
     }
 }

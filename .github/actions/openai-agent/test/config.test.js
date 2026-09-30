@@ -27,7 +27,6 @@ function configurationFixture(changes = {}) {
     methodology_files: ["method.md"],
     allowed_roots: ["root"],
     allowed_files: [],
-    max_output_bytes: 32 * 1024,
     max_turns: 10,
     max_tool_calls: 20,
     ...changes,
@@ -55,10 +54,11 @@ test("configuration rejects unknown fields, unsafe models, and empty capabilitie
     { unexpected: true },
     { model: "unsafe model\n" },
     { allowed_roots: [], allowed_files: [] },
-    { max_output_bytes: 1023 },
+    { max_output_bytes: 32 * 1024 },
     { max_turns: 51 },
     { max_tool_calls: 201 },
-    { request_timeout_ms: 600_001 },
+    { stream_idle_timeout_ms: 300_001 },
+    { stage_timeout_ms: 7_200_001 },
     { max_request_retries: 11 },
     { max_output_repair_attempts: 6 },
     { output_format: "unsupported" },
@@ -74,14 +74,16 @@ test("configuration rejects unknown fields, unsafe models, and empty capabilitie
 
 test("configuration accepts bounded recovery controls and gates strict schema output", () => {
   const workspace = configurationFixture({
-    request_timeout_ms: 90_000,
+    stream_idle_timeout_ms: 90_000,
+    stage_timeout_ms: 900_000,
     max_request_retries: 4,
     max_output_repair_attempts: 2,
     output_format: "json_schema",
   });
   try {
     const loaded = loadConfiguration(workspace.directory, "config.json");
-    assert.equal(loaded.config.request_timeout_ms, 90_000);
+    assert.equal(loaded.config.stream_idle_timeout_ms, 90_000);
+    assert.equal(loaded.config.stage_timeout_ms, 900_000);
     assert.equal(loaded.config.max_request_retries, 4);
     assert.equal(loaded.config.max_output_repair_attempts, 2);
     assert.equal(loaded.config.output_format, "json_schema");

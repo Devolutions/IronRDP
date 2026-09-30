@@ -1,22 +1,28 @@
 "use strict";
 
 const {
-  REPO_PATH, SHA, exactKeys, invalid, isBoundedArray, linesAreValidated, normalizeText, parseJson,
+  MAXIMUM_GITHUB_INTEGER, REPO_PATH, SHA, exactKeys, invalid, isBoundedArray, linesAreInRange,
+  linesAreValidated, normalizeText, parseJson,
+  unicodeLength,
 } = require("./validation");
+const {
+  MAXIMUM_GITHUB_REVIEW_BODY_CHARACTERS, inlineReviewCommentBody, reviewBody,
+} = require("./review-render");
 const { REVIEWER_ORDER: REVIEWERS } = require("./routing");
 
-const MAXIMUM_BYTES = 65536;
 const MAXIMUM_CANDIDATES = 60;
 const MAXIMUM_FINDINGS = 20;
-const MAXIMUM_SUMMARY_BYTES = 1000;
-const MAXIMUM_DISPOSITION_RATIONALE_BYTES = 800;
-const MAXIMUM_TITLE_BYTES = 200;
-const MAXIMUM_RATIONALE_BYTES = 1200;
-const MAXIMUM_PATH_BYTES = 300;
+const MAXIMUM_SUMMARY_LENGTH = 1000;
+const MAXIMUM_DISPOSITION_RATIONALE_LENGTH = 800;
+const MAXIMUM_TITLE_LENGTH = 200;
+const MAXIMUM_RATIONALE_LENGTH = 1200;
+const MAXIMUM_PATH_LENGTH = 300;
 const SEVERITIES = new Set(["critical", "high", "medium", "low"]);
 const DISPOSITIONS = new Set(["accepted", "refined", "rejected"]);
 const FINDING_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const REVIEWER_ORDER = new Map(REVIEWERS.map((reviewer, index) => [reviewer, index]));
+const MAXIMUM_REVIEW_MARKER =
+  `<!-- ironrdp-pr-automation:review:${"f".repeat(40)}:force:${"9".repeat(20)} -->`;
 
 // A rejection is both repair feedback and a published stage reason, and the runtime is the tighter
 // of the two consumers: `sanitizeReason` keeps 240 bytes of the reason for its diagnostics, and the
@@ -29,7 +35,7 @@ const MAXIMUM_COORDINATES = 8;
 
 const count = (value, noun) => `${value} ${noun}${value === 1 ? "" : "s"}`;
 
-// `normalizeText` checks byte limits and forbidden controls; callers also reject empty results.
+// `normalizeText` checks character limits and forbidden controls; callers also reject empty results.
 const NORMALIZED_TEXT_RULE = "non-blank and free of forbidden control characters";
 
 function referenceKey(reference) {
@@ -53,6 +59,16 @@ function sourceCategories(sources) {
 
 function provenancePrefix(sources) {
   return `[${sourceCategories(sources).join(" + ")}]`;
+}
+
+function publicationFits(review) {
+  if (reviewBody(MAXIMUM_REVIEW_MARKER, review, REVIEWERS, provenancePrefix).length >
+      MAXIMUM_GITHUB_REVIEW_BODY_CHARACTERS) return false;
+  return review.findings
+    .filter((finding) => finding.start_line !== null)
+    .every((finding) =>
+      inlineReviewCommentBody(finding, provenancePrefix).length <=
+        MAXIMUM_GITHUB_REVIEW_BODY_CHARACTERS);
 }
 
 // A repair has to find the candidate a diagnostic is about without the diagnostic quoting anything
@@ -183,7 +199,7 @@ function diagnoseDispositions(entries, candidates) {
       if (seenCandidates.has(key)) duplicated.push(index);
       seenCandidates.add(key);
     }
-    const rationale = normalizeText(entry.rationale, MAXIMUM_DISPOSITION_RATIONALE_BYTES);
+    const rationale = normalizeText(entry.rationale, MAXIMUM_DISPOSITION_RATIONALE_LENGTH);
     if (!rationale) {
       unusableRationale.push(index);
     } else if (known && !byCandidate.has(key)) {
@@ -205,8 +221,8 @@ function diagnoseDispositions(entries, candidates) {
     [unknown, "naming a candidate the specialists did not report", "unknown"],
     [duplicated, "repeating a candidate an earlier entry already covered", "duplicate"],
     [unusableRationale,
-      `with a rationale that must be ${NORMALIZED_TEXT_RULE}, within ${MAXIMUM_DISPOSITION_RATIONALE_BYTES} UTF-8 bytes`,
-      `with a blank, forbidden-control, or over ${MAXIMUM_DISPOSITION_RATIONALE_BYTES} UTF-8 byte rationale`],
+      `with a rationale that must be ${NORMALIZED_TEXT_RULE}, within ${MAXIMUM_DISPOSITION_RATIONALE_LENGTH} characters`,
+      `with a blank, forbidden-control, or over ${MAXIMUM_DISPOSITION_RATIONALE_LENGTH} character rationale`],
     [malformed, "not well formed for a known reviewer", "malformed"],
   ]) {
     if (indexes.length === 0) continue;
@@ -233,25 +249,29 @@ function normalizeFinding(finding, changedPaths, changedLines, dispositions, ref
       !Number.isFinite(finding.confidence) || finding.confidence < 0 || finding.confidence > 1) {
     return rejected("it must carry exactly the required fields, a boolean question, a known severity, and a confidence between 0 and 1");
   }
-  if (typeof finding.path !== "string" || Buffer.byteLength(finding.path, "utf8") > MAXIMUM_PATH_BYTES ||
+  if (typeof finding.path !== "string" || unicodeLength(finding.path) > MAXIMUM_PATH_LENGTH ||
       finding.path.includes("\\") || !REPO_PATH.test(finding.path) || !changedPaths.has(finding.path)) {
-    return rejected(`path must be a repository path this pull request changed, within ${MAXIMUM_PATH_BYTES} UTF-8 bytes`);
+    return rejected(`path must be a repository path this pull request changed, within ${MAXIMUM_PATH_LENGTH} characters`);
   }
   if (!isBoundedArray(finding.sources, MAXIMUM_CANDIDATES)) {
     return rejected(`sources must be an array of at most ${MAXIMUM_CANDIDATES} entries`);
   }
 
+  const lineIsAboveGitHubMaximum = [finding.start_line, finding.end_line].some((line) =>
+    Number.isSafeInteger(line) && line > MAXIMUM_GITHUB_INTEGER);
+  if (lineIsAboveGitHubMaximum) {
+    return rejected(`start_line and end_line must be between 1 and ${MAXIMUM_GITHUB_INTEGER}`);
+  }
   const linesAreNull = finding.start_line === null && finding.end_line === null;
-  const linesAreIntegers = Number.isSafeInteger(finding.start_line) && finding.start_line >= 1 &&
-    Number.isSafeInteger(finding.end_line) && finding.end_line >= finding.start_line;
+  const linesAreIntegers = linesAreInRange(finding.start_line, finding.end_line);
   if (!linesAreNull && !linesAreIntegers) {
     return rejected("start_line and end_line must both be null or integers with end_line at or after start_line");
   }
 
-  const title = normalizeText(finding.title, MAXIMUM_TITLE_BYTES);
-  const rationale = normalizeText(finding.rationale, MAXIMUM_RATIONALE_BYTES);
+  const title = normalizeText(finding.title, MAXIMUM_TITLE_LENGTH);
+  const rationale = normalizeText(finding.rationale, MAXIMUM_RATIONALE_LENGTH);
   if (!title || !rationale) {
-    return rejected(`title and rationale must be ${NORMALIZED_TEXT_RULE}; UTF-8 limits: title ${MAXIMUM_TITLE_BYTES} bytes, rationale ${MAXIMUM_RATIONALE_BYTES} bytes`);
+    return rejected(`title and rationale must be ${NORMALIZED_TEXT_RULE}; character limits: title ${MAXIMUM_TITLE_LENGTH}, rationale ${MAXIMUM_RATIONALE_LENGTH}`);
   }
 
   const sources = [];
@@ -304,15 +324,15 @@ function validateFinalReview(raw, {
   const candidates = aggregateCandidates(specialistAggregate, expectedSha);
   if (candidates === null) return invalid("validated specialist findings unavailable");
 
-  const value = parseJson(raw, MAXIMUM_BYTES);
+  const value = parseJson(raw);
   if (!exactKeys(value, ["head_sha", "summary", "candidate_dispositions", "findings"]) ||
       !SHA.test(value.head_sha) || value.head_sha !== expectedSha ||
       !isBoundedArray(value.findings, MAXIMUM_FINDINGS)) {
     return invalid("invalid final review object");
   }
-  const summary = normalizeText(value.summary, MAXIMUM_SUMMARY_BYTES);
+  const summary = normalizeText(value.summary, MAXIMUM_SUMMARY_LENGTH);
   if (!summary) {
-    return invalid(`invalid final review summary: summary must be ${NORMALIZED_TEXT_RULE}, within ${MAXIMUM_SUMMARY_BYTES} UTF-8 bytes`);
+    return invalid(`invalid final review summary: summary must be ${NORMALIZED_TEXT_RULE}, within ${MAXIMUM_SUMMARY_LENGTH} characters`);
   }
 
   const dispositions = diagnoseDispositions(value.candidate_dispositions, candidates);
@@ -356,29 +376,75 @@ function validateFinalReview(raw, {
     summary,
     findings,
   };
-  if (Buffer.byteLength(JSON.stringify(normalized), "utf8") > MAXIMUM_BYTES) {
-    return invalid("final review output too large");
+  if (!publicationFits(normalized)) {
+    return invalid(
+      "final review exceeds GitHub's review-body limit after Markdown escaping; shorten its summary, titles, paths, or rationales",
+    );
   }
   return { ok: true, status: "valid", value: normalized };
 }
 
-function validateNormalizedFinalReview(value, expectedSha) {
+function validateNormalizedFinalReview(value, expectedShaOrContext) {
+  const context = typeof expectedShaOrContext === "string"
+    ? { expectedSha: expectedShaOrContext }
+    : expectedShaOrContext ?? {};
+  const {
+    expectedSha, changedPaths, changedLines, specialistAggregate, requireContext = false,
+  } = context;
   if (!exactKeys(value, [
     "head_sha", "summary", "findings",
   ]) || value.head_sha !== expectedSha || !SHA.test(value.head_sha) ||
       !isBoundedArray(value.findings, MAXIMUM_FINDINGS)) return invalid("invalid validated final review");
+  const summary = normalizeText(value.summary, MAXIMUM_SUMMARY_LENGTH);
+  if (!summary || summary !== value.summary) return invalid("invalid validated final review summary");
+  const paths = Array.isArray(changedPaths) ? new Set(changedPaths) : null;
+  const candidates = specialistAggregate === undefined
+    ? null
+    : aggregateCandidates(specialistAggregate, expectedSha);
+  if (requireContext && (!paths || changedLines === null || typeof changedLines !== "object" ||
+      candidates === null)) {
+    return invalid("validated final review context unavailable");
+  }
+  const referencedCandidates = new Set();
   for (const finding of value.findings) {
     if (!exactKeys(finding, [
       "question", "severity", "path", "start_line", "end_line", "title", "rationale",
       "confidence", "sources",
     ]) || typeof finding.question !== "boolean" ||
-        !SEVERITIES.has(finding.severity)) return invalid("invalid validated final review finding");
-    try {
-      provenancePrefix(finding.sources);
-    } catch {
-      return invalid("invalid validated final review source");
+        !SEVERITIES.has(finding.severity) ||
+        typeof finding.path !== "string" || unicodeLength(finding.path) > MAXIMUM_PATH_LENGTH ||
+        finding.path.includes("\\") || !REPO_PATH.test(finding.path) ||
+        (paths && !paths.has(finding.path)) ||
+        !Number.isFinite(finding.confidence) || finding.confidence < 0 || finding.confidence > 1 ||
+        !isBoundedArray(finding.sources, MAXIMUM_CANDIDATES)) {
+      return invalid("invalid validated final review finding");
+    }
+    const linesAreNull = finding.start_line === null && finding.end_line === null;
+    const linesAreIntegers = linesAreInRange(finding.start_line, finding.end_line);
+    if (!linesAreNull && (!linesAreIntegers ||
+        (changedLines && !linesAreValidated(
+          finding.path, finding.start_line, finding.end_line, changedLines)))) {
+      return invalid("invalid validated final review finding lines");
+    }
+    const title = normalizeText(finding.title, MAXIMUM_TITLE_LENGTH);
+    const rationale = normalizeText(finding.rationale, MAXIMUM_RATIONALE_LENGTH);
+    if (!title || title !== finding.title || !rationale || rationale !== finding.rationale) {
+      return invalid("invalid validated final review finding text");
+    }
+    const localSources = new Set();
+    for (const source of finding.sources) {
+      const reference = normalizeReference(source);
+      if (reference === null) return invalid("invalid validated final review source");
+      const key = referenceKey(reference);
+      if (localSources.has(key) || referencedCandidates.has(key) ||
+          (candidates && !candidates.has(key))) {
+        return invalid("invalid validated final review source");
+      }
+      localSources.add(key);
+      referencedCandidates.add(key);
     }
   }
+  if (!publicationFits(value)) return invalid("validated final review exceeds GitHub's review-body limit");
   return { ok: true, status: "valid", value };
 }
 

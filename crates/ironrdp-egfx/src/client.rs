@@ -990,19 +990,96 @@ impl GraphicsPipelineClient {
             return Err(pdu_other_err!("decoded frame smaller than destination rectangle"));
         }
 
-        let cropped_data = crop_decoded_frame(frame.data(), frame.width(), frame.height(), dest_width, dest_height);
+        // MS-RDPEGFX 2.2.4.4 (RFX_AVC420_METABLOCK): `regionRects` lists the
+        // sub-regions of the frame that actually changed. Each rectangle is in
+        // the same coordinate space as the destination rectangle, and its pixels
+        // come from the MATCHING (x, y) in the decoded frame -- source equals
+        // destination. The destination rectangle on the PDU is only the bounding
+        // box of these rects, not a copy source.
+        //
+        // Emitting one surface update per region rectangle (copying each from its
+        // own coordinate) is what fixes issue #2042: previously the code ignored
+        // `regionRects` and blitted a single bounding-box block copied from the
+        // frame origin (0, 0), so partial updates drew pixels from the top-left
+        // corner and overwrote the gaps between regions.
+        let surface_bounds = self
+            .surfaces
+            .get(&surface_id)
+            .map(|s| (s.width, s.height))
+            .unwrap_or((dest_rect.right, dest_rect.bottom));
 
-        let update = BitmapUpdate {
-            surface_id,
-            destination_rectangle: dest_rect.clone(),
-            codec_id: Codec1Type::Avc420,
-            data: cropped_data,
-            width: dest_width,
-            height: dest_height,
+        // Build and emit one AVC420 surface update from a destination rectangle
+        // and its pixel data. Shared by the no-regionRects fallback and the
+        // per-region loop so the BitmapUpdate shape lives in one place (mirrors
+        // the `emit_update` closure on the uncompressed path).
+        let compositor = &mut self.compositor;
+        let handler = &mut self.handler;
+        let mut emit_avc420 = |destination_rectangle: ExclusiveRectangle, data: Vec<u8>| {
+            let width = destination_rectangle.right - destination_rectangle.left;
+            let height = destination_rectangle.bottom - destination_rectangle.top;
+            let update = BitmapUpdate {
+                surface_id,
+                destination_rectangle,
+                codec_id: Codec1Type::Avc420,
+                data,
+                width,
+                height,
+            };
+            compositor.apply_bitmap(update.surface_id, &update.destination_rectangle, &update.data);
+            handler.on_bitmap_updated(&update);
         };
 
-        self.compositor.apply_bitmap(surface_id, dest_rect, &update.data);
-        self.handler.on_bitmap_updated(&update);
+        if stream.rectangles.is_empty() {
+            // No region metadata: fall back to the single bounding-box update,
+            // copying from the frame origin. This matches the pre-#2042 behavior
+            // for streams that legitimately omit regionRects.
+            let cropped_data = crop_decoded_frame(frame.data(), frame.width(), frame.height(), dest_width, dest_height);
+            emit_avc420(dest_rect.clone(), cropped_data);
+            return Ok(());
+        }
+
+        for region in &stream.rectangles {
+            // Clip the region to the surface and the decoded frame so a
+            // malformed or over-large rect cannot read out of bounds or paint
+            // outside the surface.
+            let frame_w = u16::try_from(frame.width()).unwrap_or(u16::MAX);
+            let frame_h = u16::try_from(frame.height()).unwrap_or(u16::MAX);
+            let clip_right = region.right.min(surface_bounds.0).min(frame_w);
+            let clip_bottom = region.bottom.min(surface_bounds.1).min(frame_h);
+            if region.left >= clip_right || region.top >= clip_bottom {
+                // A region that clips away to nothing is dropped here. Log it:
+                // a silent skip would leave a permanently stale screen area with
+                // no trace if a server's coordinate convention ever disagreed
+                // with the surface/frame bounds -- the same undebuggable class of
+                // rendering defect this change fixes.
+                warn!(
+                    surface_id,
+                    region_left = region.left,
+                    region_top = region.top,
+                    region_right = region.right,
+                    region_bottom = region.bottom,
+                    clip_right,
+                    clip_bottom,
+                    surface_width = surface_bounds.0,
+                    surface_height = surface_bounds.1,
+                    frame_width = frame_w,
+                    frame_height = frame_h,
+                    "AVC420 regionRect empty after clipping to surface/frame bounds -- skipped"
+                );
+                continue;
+            }
+            let clipped = ExclusiveRectangle {
+                left: region.left,
+                top: region.top,
+                right: clip_right,
+                bottom: clip_bottom,
+            };
+
+            // Copy pixels (x, y) -> (x, y): the source in the decoded frame is the
+            // region's own top-left, not the frame origin.
+            let data = copy_frame_region(frame.data(), frame.width(), &clipped);
+            emit_avc420(clipped, data);
+        }
         Ok(())
     }
 
@@ -1262,6 +1339,11 @@ fn convert_uncompressed_to_rgba(src: &[u8]) -> Vec<u8> {
 /// H.264 frames are macroblock-aligned (16x16), so decoded frames
 /// may be larger than the destination rectangle. This function
 /// extracts the top-left region matching the target size.
+///
+/// This is the frame-origin special case of [`copy_frame_region`] (a region
+/// anchored at `(0, 0)`); it delegates the row copy there so there is a single
+/// RGBA row-copy implementation, keeping only the zero-dimension guard, the
+/// equal-dimensions fast path, and the truncation warning here.
 fn crop_decoded_frame(
     data: &[u8],
     decoded_width: u32,
@@ -1281,24 +1363,21 @@ fn crop_decoded_frame(
         return data.to_vec();
     }
 
-    let src_stride = decoded_width.saturating_mul(4);
+    // Clamp the origin region to the decoded frame so `copy_frame_region` reads
+    // at most `src_stride` bytes per row -- the same clamp the old inline loop
+    // did with `dst_stride.min(src_stride)`.
+    let right = u16::try_from(tw.min(decoded_width)).unwrap_or(u16::MAX);
+    let bottom = u16::try_from(th.min(decoded_height)).unwrap_or(u16::MAX);
+    let origin_region = ExclusiveRectangle {
+        left: 0,
+        top: 0,
+        right,
+        bottom,
+    };
+    let cropped = copy_frame_region(data, decoded_width, &origin_region);
+
     let dst_stride = tw.saturating_mul(4);
     let rows = th.min(decoded_height);
-
-    #[expect(clippy::as_conversions, reason = "product of u32 values bounded by frame dimensions")]
-    let mut cropped = Vec::with_capacity((dst_stride as usize).saturating_mul(rows as usize));
-
-    for row in 0..rows {
-        #[expect(clippy::as_conversions, reason = "row * src_stride bounded by frame size")]
-        let src_start = (row.saturating_mul(src_stride)) as usize;
-        #[expect(clippy::as_conversions, reason = "bounded by frame dimensions")]
-        let copy_len = dst_stride.min(src_stride) as usize;
-        let src_end = src_start.saturating_add(copy_len);
-        if src_end <= data.len() {
-            cropped.extend_from_slice(&data[src_start..src_end]);
-        }
-    }
-
     #[expect(clippy::as_conversions, reason = "dst_stride * rows bounded by frame dimensions")]
     let expected_len = (dst_stride as usize).saturating_mul(rows as usize);
     if cropped.len() < expected_len {
@@ -1310,6 +1389,42 @@ fn crop_decoded_frame(
     }
 
     cropped
+}
+
+/// Copy one region out of a decoded RGBA frame, taking pixels from the SAME
+/// coordinates the region occupies (source `(x, y)` -> destination `(x, y)`).
+///
+/// This is the per-region-rectangle counterpart to [`crop_decoded_frame`], which
+/// only ever copies the top-left block from the frame origin. AVC420 partial
+/// updates ([MS-RDPEGFX] 2.2.4.4 `regionRects`) require copying each region from
+/// its own position in the frame; see `decode_avc420` and issue #2042.
+///
+/// `region` must already be clipped to the frame bounds by the caller.
+fn copy_frame_region(frame_data: &[u8], frame_width: u32, region: &ExclusiveRectangle) -> Vec<u8> {
+    const BYTES_PER_PIXEL: usize = 4;
+
+    let src_stride = usize::try_from(frame_width)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(BYTES_PER_PIXEL);
+    let region_width = usize::from(region.right - region.left);
+    let region_height = usize::from(region.bottom - region.top);
+    let row_bytes = region_width.saturating_mul(BYTES_PER_PIXEL);
+    let left_off = usize::from(region.left).saturating_mul(BYTES_PER_PIXEL);
+
+    let mut out = Vec::with_capacity(row_bytes.saturating_mul(region_height));
+    for row in 0..region_height {
+        let src_row = usize::from(region.top).saturating_add(row);
+        let src_start = src_row.saturating_mul(src_stride).saturating_add(left_off);
+        let src_end = src_start.saturating_add(row_bytes);
+        if src_end <= frame_data.len() {
+            out.extend_from_slice(&frame_data[src_start..src_end]);
+        } else {
+            // Defensive: the caller clips to frame bounds, so this should not
+            // happen, but never read out of bounds if it does.
+            break;
+        }
+    }
+    out
 }
 
 /// Unit tests that require access to private fields (state, surfaces, frame tracking).
@@ -2277,5 +2392,295 @@ mod tests {
                 }))
                 .unwrap();
         });
+    }
+
+    // ========================================================================
+    // AVC420 region rectangles (regionRects) -- issue #2042
+    //
+    // Reference: this test adapts the region-rects harness proposed by issue
+    // author se-wo (`c06_avc420_region_rects.rs`, se-wo analysis/chroma fork).
+    // The recipe it encodes: an AVC420 WireToSurface1 carries an
+    // `RFX_AVC420_METABLOCK` whose `regionRects` list is the set of sub-regions
+    // that actually changed. Every rectangle takes its pixels from the SAME
+    // (x, y) coordinate in the decoded frame (source == destination), and each
+    // rectangle is a separate surface update. The destination rectangle on the
+    // PDU is only the bounding box of those rects, NOT a copy source.
+    //
+    // Before the fix, `decode_avc420` ignored `stream.rectangles` entirely and
+    // `crop_decoded_frame` copied a single bounding-box block starting at the
+    // decoded frame's origin (0, 0). So a partial update whose region did not
+    // sit at the origin was blitted with pixels taken from the top-left corner,
+    // and the gaps between regions were overwritten -- exactly the "horizontal
+    // lines + unfilled rectangle outlines" artifact reported downstream.
+    // ========================================================================
+
+    /// Deterministic stand-in for an H.264 decoder: returns a frame of the
+    /// requested size where every pixel encodes its own coordinate as
+    /// `R = x & 0xFF`, `G = y & 0xFF`, `B = 0`, `A = 0xFF`. This lets a test
+    /// assert *which* source pixel landed in a destination region.
+    struct CoordinateDecoder {
+        width: u32,
+        height: u32,
+    }
+
+    impl H264Decoder for CoordinateDecoder {
+        fn decode(&mut self, _data: &[u8]) -> crate::decode::DecoderResult<crate::decode::DecodedFrame> {
+            let (w, h) = (self.width, self.height);
+            let mut data = Vec::with_capacity(usize::try_from(w * h * 4).unwrap_or(0));
+            for y in 0..h {
+                for x in 0..w {
+                    let px = u8::try_from(x & 0xFF).unwrap_or(0);
+                    let py = u8::try_from(y & 0xFF).unwrap_or(0);
+                    data.extend_from_slice(&[px, py, 0, 0xFF]);
+                }
+            }
+            Ok(crate::decode::DecodedFrame::new(data, w, h))
+        }
+    }
+
+    /// Encode an `Avc420BitmapStream` wire payload from a set of region rects.
+    /// The H.264 `data` is opaque to the test decoder, so a single byte suffices.
+    fn encode_avc420_wire(rects: &[ExclusiveRectangle]) -> Vec<u8> {
+        use ironrdp_core::{Encode as _, WriteCursor};
+
+        use crate::pdu::QuantQuality;
+
+        let stream = Avc420BitmapStream {
+            rectangles: rects.to_vec(),
+            quant_qual_vals: rects
+                .iter()
+                .map(|_| QuantQuality {
+                    quantization_parameter: 22,
+                    progressive: false,
+                    quality: 100,
+                })
+                .collect(),
+            data: &[0u8], // opaque to CoordinateDecoder
+        };
+        let mut buf = vec![0u8; stream.size()];
+        let mut cursor = WriteCursor::new(&mut buf);
+        stream.encode(&mut cursor).expect("encode avc420 stream");
+        buf
+    }
+
+    /// A partial AVC420 update must draw each region rectangle from its OWN
+    /// (x, y) in the decoded frame, as a separate surface update -- not blit
+    /// one bounding-box block copied from the frame origin.
+    #[test]
+    fn avc420_region_rects_draw_from_matching_coordinates() {
+        const SURFACE: u16 = 100;
+        // Two disjoint regions, neither anchored at the origin, with a gap.
+        let rect_a = ExclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 16,
+            bottom: 16,
+        };
+        let rect_b = ExclusiveRectangle {
+            left: 32,
+            top: 32,
+            right: 48,
+            bottom: 48,
+        };
+        // Bounding box of both regions -- this is what the server puts on the PDU.
+        let dest_rect = ExclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 48,
+            bottom: 48,
+        };
+
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let unhandled = Arc::new(Mutex::new(0));
+        let mut client = GraphicsPipelineClient::new(
+            Box::new(CapturingHandler {
+                updates: Arc::clone(&updates),
+                unhandled: Arc::clone(&unhandled),
+            }),
+            Some(Box::new(CoordinateDecoder { width: 64, height: 64 })),
+        );
+
+        client
+            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                surface_id: SURFACE,
+                width: SURFACE,
+                height: SURFACE,
+                pixel_format: PixelFormat::XRgb,
+            }))
+            .expect("create surface");
+
+        let bitmap_data = encode_avc420_wire(&[rect_a.clone(), rect_b.clone()]);
+        client
+            .handle_pdu(GfxPdu::WireToSurface1(crate::pdu::WireToSurface1Pdu {
+                surface_id: SURFACE,
+                codec_id: Codec1Type::Avc420,
+                pixel_format: PixelFormat::XRgb,
+                destination_rectangle: dest_rect,
+                bitmap_data,
+            }))
+            .expect("decode avc420");
+
+        assert_eq!(
+            *unhandled.lock().expect("unhandled lock"),
+            0,
+            "AVC420 must not fall through"
+        );
+
+        let updates = updates.lock().expect("updates lock");
+        // One surface update per region rectangle.
+        assert_eq!(
+            updates.len(),
+            2,
+            "expected one update per regionRect, got {}",
+            updates.len()
+        );
+
+        // Helper: top-left pixel (R, G) of an update's RGBA buffer.
+        let top_left = |data: &[u8]| (data[0], data[1]);
+        // Region origin as the (R, G) the CoordinateDecoder stamps there.
+        let origin_rg = |rect: &ExclusiveRectangle| {
+            (
+                u8::try_from(rect.left).expect("test coord fits u8"),
+                u8::try_from(rect.top).expect("test coord fits u8"),
+            )
+        };
+
+        // Match updates to regions by their dimensions and assert the source pixel.
+        for (codec_id, width, height, data) in updates.iter() {
+            assert_eq!(*codec_id, Codec1Type::Avc420);
+            assert_eq!(*width, 16, "each region is 16 wide");
+            assert_eq!(*height, 16, "each region is 16 tall");
+            let (r, g) = top_left(data);
+            // The CoordinateDecoder stamps R=x, G=y at each pixel. The top-left
+            // pixel of a region drawn correctly must carry that region's own
+            // (left, top). Region B lives at (32, 32); if the fix copies from the
+            // frame origin, this would be (0, 0) instead.
+            assert!(
+                (r, g) == origin_rg(&rect_a) || (r, g) == origin_rg(&rect_b),
+                "region top-left pixel ({r}, {g}) does not match either region origin; \
+                 pixels were copied from the wrong source coordinate (issue #2042)"
+            );
+        }
+
+        // Specifically prove region B is present with its correct origin pixel.
+        let has_region_b = updates
+            .iter()
+            .any(|(_, _, _, data)| top_left(data) == origin_rg(&rect_b));
+        assert!(
+            has_region_b,
+            "region B at (32, 32) was not drawn from its own coordinates -- \
+             AVC420 partial update took pixels from the frame origin (issue #2042)"
+        );
+    }
+
+    /// Pins the coordinate CONVENTION: regionRects are surface/frame-absolute,
+    /// NOT relative to the destination rectangle's origin. The test above uses
+    /// `dest_rect` at `(0, 0)`, where absolute and destRect-relative readings
+    /// coincide and so cannot tell them apart. Here both the destination
+    /// rectangle origin and the region origins are non-zero, so a regression to
+    /// destRect-relative placement (subtracting `dest_rect.left/top` from the
+    /// source offset) would copy from the wrong pixels and fail. MS-RDPEGFX
+    /// 2.2.2.1 defines `dest_rect` as the bounding box of `regionRects`, which
+    /// only holds if the rects share the surface/frame coordinate space.
+    #[test]
+    fn avc420_region_rects_are_surface_absolute_not_dest_relative() {
+        const SURFACE: u16 = 200;
+        // Two disjoint regions, both far from the origin.
+        let rect_a = ExclusiveRectangle {
+            left: 72,
+            top: 72,
+            right: 88,
+            bottom: 88,
+        };
+        let rect_b = ExclusiveRectangle {
+            left: 100,
+            top: 104,
+            right: 116,
+            bottom: 120,
+        };
+        // Bounding box of both regions -- origin is non-zero (72, 72), which is
+        // the whole point: a destRect-relative reading would offset by it.
+        let dest_rect = ExclusiveRectangle {
+            left: 72,
+            top: 72,
+            right: 116,
+            bottom: 120,
+        };
+
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let unhandled = Arc::new(Mutex::new(0));
+        let mut client = GraphicsPipelineClient::new(
+            Box::new(CapturingHandler {
+                updates: Arc::clone(&updates),
+                unhandled: Arc::clone(&unhandled),
+            }),
+            // Frame large enough to contain both regions at their absolute coords.
+            Some(Box::new(CoordinateDecoder {
+                width: 128,
+                height: 128,
+            })),
+        );
+
+        client
+            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                surface_id: SURFACE,
+                width: SURFACE,
+                height: SURFACE,
+                pixel_format: PixelFormat::XRgb,
+            }))
+            .expect("create surface");
+
+        let bitmap_data = encode_avc420_wire(&[rect_a.clone(), rect_b.clone()]);
+        client
+            .handle_pdu(GfxPdu::WireToSurface1(crate::pdu::WireToSurface1Pdu {
+                surface_id: SURFACE,
+                codec_id: Codec1Type::Avc420,
+                pixel_format: PixelFormat::XRgb,
+                destination_rectangle: dest_rect,
+                bitmap_data,
+            }))
+            .expect("decode avc420");
+
+        assert_eq!(
+            *unhandled.lock().expect("unhandled lock"),
+            0,
+            "AVC420 must not fall through"
+        );
+
+        let updates = updates.lock().expect("updates lock");
+        assert_eq!(
+            updates.len(),
+            2,
+            "expected one update per regionRect, got {}",
+            updates.len()
+        );
+
+        let top_left = |data: &[u8]| (data[0], data[1]);
+        let origin_rg = |rect: &ExclusiveRectangle| {
+            (
+                u8::try_from(rect.left).expect("test coord fits u8"),
+                u8::try_from(rect.top).expect("test coord fits u8"),
+            )
+        };
+
+        // Each update's top-left pixel must equal its region's ABSOLUTE origin
+        // (72, 72) / (100, 104). A destRect-relative reading would instead copy
+        // from (left - 72, top - 72), i.e. (0, 0) / (28, 32) -- caught here.
+        let a_ok = updates
+            .iter()
+            .any(|(_, _, _, data)| top_left(data) == origin_rg(&rect_a));
+        let b_ok = updates
+            .iter()
+            .any(|(_, _, _, data)| top_left(data) == origin_rg(&rect_b));
+        assert!(
+            a_ok,
+            "region A must be drawn from its absolute origin (72, 72); \
+             a destRect-relative reading would take (0, 0) instead (issue #2042)"
+        );
+        assert!(
+            b_ok,
+            "region B must be drawn from its absolute origin (100, 104); \
+             a destRect-relative reading would take (28, 32) instead (issue #2042)"
+        );
     }
 }

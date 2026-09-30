@@ -66,7 +66,11 @@ fn install_wasm2wat(sh: &Shell) -> anyhow::Result<()> {
             return Ok(());
         }
     } else {
-        "linux-x64"
+        if cfg!(target_arch = "aarch64") {
+            "linux-arm64"
+        } else {
+            "linux-x64"
+        }
     };
 
     let url = format!(

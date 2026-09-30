@@ -4,8 +4,9 @@
 // here so the producer and the consumer can never drift into two slightly different schemas.
 
 const { normalizeText } = require("./validation");
+const { REVIEWER_ORDER } = require("./routing");
 
-const REPORT_VERSION = 1;
+const REPORT_VERSION = 2;
 const STAGE_STATUS = new Set(["success", "failed", "skipped"]);
 
 function count(value) {
@@ -41,25 +42,24 @@ function normalizeStageMetrics(metrics = {}) {
 }
 
 const MANDATORY_STAGES = ["evidence", "aggregate", "general", "validate"];
+const REVIEW_STAGE_IDS = new Set([
+  ...MANDATORY_STAGES,
+  ...REVIEWER_ORDER.map((reviewer) => `specialist:${reviewer}`),
+]);
 
-// A stage that ran was attempted once, or twice when it took its single delayed retry, and a
-// skipped stage was never attempted at all. `previous_reason` keeps the first attempt's failure
-// visible even when the retry succeeded.
 function stageOutcome(raw) {
   const {
-    id, status, required = false, reason = "", category = "", attempts = 1,
-    previous_reason: previousReason = "", provider = false, metrics = {},
+    id, status, required = false, reason = "", category = "", provider = false, metrics = {},
   } = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   const outcome = STAGE_STATUS.has(status) ? status : "failed";
+  const normalizedId = normalizeText(id, 80);
   return {
-    id: typeof id === "string" ? id : "",
+    id: normalizedId === id ? id : "",
     status: outcome,
     required: required === true,
     provider: provider === true,
     reason: normalizeText(reason, 300) || "",
     category: normalizeText(category, 60) || "",
-    attempts: outcome === "skipped" ? 0 : attempts === 2 ? 2 : 1,
-    previous_reason: normalizeText(previousReason, 300) || "",
     metrics: normalizeStageMetrics(metrics),
   };
 }
@@ -70,7 +70,6 @@ const UNKNOWN_METRICS = {
   elapsed_ms: null,
   request_retries: null,
   output_repairs: null,
-  stage_retries: null,
 };
 
 function aggregateMetrics(outcomes) {
@@ -80,12 +79,10 @@ function aggregateMetrics(outcomes) {
     elapsed_ms: 0,
     request_retries: 0,
     output_repairs: 0,
-    stage_retries: 0,
   };
   let anyTokens = false;
   for (const stage of outcomes) {
     if (!stage.provider) continue;
-    if (stage.attempts === 2) metrics.stage_retries += 1;
     const ran = stage.status !== "skipped";
     if (stage.metrics.tokens) {
       anyTokens = true;
@@ -119,7 +116,7 @@ function buildReport(stages = []) {
   const outcomes = (Array.isArray(stages) ? stages : []).map(stageOutcome);
   const ids = outcomes.map((stage) => stage.id);
   const byId = new Map(outcomes.map((stage) => [stage.id, stage]));
-  const wellFormed = ids.every((id) => id !== "") &&
+  const wellFormed = ids.every((id) => REVIEW_STAGE_IDS.has(id)) &&
     new Set(ids).size === ids.length &&
     MANDATORY_STAGES.every((id) => byId.get(id)?.status === "success");
   const published = outcomes.some((stage) =>

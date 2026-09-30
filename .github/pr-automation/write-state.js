@@ -1,36 +1,19 @@
 "use strict";
 
 const { encodeCheckState } = require("./validate-classifier");
-const { provenancePrefix } = require("./validate-final-review");
+const { REVIEWERS, provenancePrefix } = require("./validate-final-review");
+const { readCheckRuns } = require("./check-runs");
+const {
+  MAXIMUM_GITHUB_REVIEW_BODY_CHARACTERS, escapeMarkdown, inlineReviewCommentBody,
+  reducedCoverageText, reviewBody,
+} = require("./review-render");
 const { reviewPolicyEligible } = require("./routing");
-const { assertCurrentHead } = require("./review-retry");
-
-const SEVERITY_EMOJI = {
-  critical: ":purple_circle:",
-  high: ":red_circle:",
-  medium: ":orange_circle:",
-  low: ":yellow_circle:",
-};
+const { assertCurrentHead } = require("./current-head");
+const { matchesGeneration, readLatestExactHeadCiRun } = require("./ci-state");
+const { ACTOR_LABELS } = require("./resolve-state");
 
 class StalePolicyError extends Error {
   constructor() { super("pull request review policy changed"); this.name = "StalePolicyError"; }
-}
-
-// Model output is treated as hostile, so it is neutralized before it reaches a bot-authored
-// comment or review. HTML, code spans, mentions, and issue references are defused, and the
-// Markdown constructs that would otherwise still render as active links, images, or formatting are
-// backslash-escaped so that text such as `[label](https://example.invalid)` stays inert prose.
-function escapeMarkdown(value) {
-  return String(value).replace(/\\/g, "\\\\")
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/`/g, "&#96;")
-    .replace(/@(?=[\w-])/g, "`@`").replace(/(?<!&)#(?=\d)/g, "`#`")
-    .replace(/[[\]()!*_~|]/g, "\\$&");
-}
-
-function findingIndicator(finding) {
-  return `${finding.severity} ${SEVERITY_EMOJI[finding.severity]}` +
-    `${finding.question ? " :question:" : ""}`;
 }
 
 async function issueLabels(github, owner, repo, prNumber) {
@@ -51,19 +34,16 @@ function markerBody(comment, owner, repo) {
     return `${comment.marker}\n\nThis pull request may overlap with ${escapeMarkdown(comment.url)}.\n\n${escapeMarkdown(comment.rationale)}\n\nThis notice is advisory only. Automated review continues as usual, and how these pull requests relate is for maintainers and authors to decide.\n\n> [!NOTE]\n> LLM-assisted content (no human feedback).`;
   }
   if (comment.kind === "legitimacy") {
-    return `${comment.marker}\n\nAutomated review stopped because commit \`${escapeMarkdown(comment.sha)}\` has strong indicators requiring maintainer triage.\n\n${escapeMarkdown(comment.reason)}\n\nThis comment remains as an audit record if later classifications differ. Maintainer review is required.`;
+    return `${comment.marker}\n\nAutomated review stopped because commit \`${escapeMarkdown(comment.sha)}\` has strong indicators requiring legitimacy triage.\n\n${escapeMarkdown(comment.reason)}\n\nThis comment remains as an audit record if later classifications differ. When CI succeeds for this exact head, automation will hand it to a human reviewer.`;
   }
   if (comment.kind === "global-quota") {
-    return `${comment.marker}\n\nAutomated classification and review capacity for fork pull requests has reached its daily UTC limit.\n\nSee the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md). Maintainer review is required.`;
+    return `${comment.marker}\n\nAutomated classification and review capacity for fork pull requests has reached its daily UTC limit.\n\nSee the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md). Automation remains blocked until capacity is available and it is retried.`;
   }
   if (comment.kind === "evidence-limit") {
     const guidance = comment.limitMiB === 1
       ? "A maintainer can add `ai-review/allow-oversized` to retry with the runtime maximum of 4 MiB. Otherwise, split the change into focused pull requests or reduce generated content."
       : "The 4 MiB limit is the model runtime maximum. Please split the change into focused pull requests or reduce generated content.";
-    return `${comment.marker}\n\nAutomated model analysis stopped because this pull request's diff exceeds the ${comment.limitMiB} MiB evidence limit. No model was invoked with partial evidence.\n\n${guidance} Maintainer review is required.`;
-  }
-  if (comment.kind === "contributor-ineligible") {
-    return `${comment.marker}\n\nAutomated review will not run because this contributor is not yet eligible under the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md).\n\nContributors become eligible after one qualifying IronRDP pull request is merged into \`master\`. Maintainer review is required.`;
+    return `${comment.marker}\n\nAutomated model analysis stopped because this pull request's diff exceeds the ${comment.limitMiB} MiB evidence limit. No model was invoked with partial evidence.\n\n${guidance} Automation remains blocked until retry or repair.`;
   }
   throw new Error("unsupported issue comment");
 }
@@ -94,24 +74,6 @@ async function deleteMarkedComment(github, owner, repo, prNumber, expectedSha, b
   return true;
 }
 
-function reviewBody(marker, review, reducedCoverage = []) {
-  const findings = review.findings.filter((finding) => finding.start_line === null).map((finding, index) => {
-    return `${index + 1}. **${provenancePrefix(finding.sources)} ${escapeMarkdown(finding.title)}** — ` +
-      `${findingIndicator(finding)} — ${escapeMarkdown(finding.path)}\n` +
-      `   ${escapeMarkdown(finding.rationale)}`;
-  }).join("\n");
-  const clean = review.findings.length === 0 ? ":green_circle: " : "";
-  const coverage = reducedCoverage.length === 0
-    ? ""
-    : `\n\nReduced coverage:${reducedCoverageText(reducedCoverage.map(escapeMarkdown))}.`;
-  return `${marker}\n\n${clean}${escapeMarkdown(review.summary)}${coverage}${findings ? `\n\n${findings}` : ""}`;
-}
-
-function reducedCoverageText(reducedCoverage) {
-  return ` optional reviewer${reducedCoverage.length === 1 ? "" : "s"} ` +
-    `${reducedCoverage.join(", ")} ${reducedCoverage.length === 1 ? "was" : "were"} unavailable`;
-}
-
 async function reviews(github, owner, repo, prNumber) {
   const result = [];
   for await (const response of github.paginate.iterator(github.rest.pulls.listReviews, {
@@ -124,6 +86,14 @@ function assertReviewPolicy(labels, state) {
   const currentReviewCount = labels.has("ai-reviewed/2") ? "ai-reviewed/2"
     : labels.has("ai-reviewed/1") ? "ai-reviewed/1"
     : null;
+  if (state.handoff === "terminal") {
+    if (!labels.has("ai-reviewed/2")) throw new StalePolicyError();
+    return;
+  }
+  if (state.handoff === "legitimacy") {
+    if (!labels.has("triage/legitimacy")) throw new StalePolicyError();
+    return;
+  }
   if (currentReviewCount !== state.expectedReviewCount ||
       (!state.forced && !reviewPolicyEligible({
         labels: [...labels],
@@ -132,16 +102,36 @@ function assertReviewPolicy(labels, state) {
   }
 }
 
-async function publishReview(github, owner, repo, prNumber, state, botLogin, comment) {
+function requiresFreshCi(state) {
+  return state.mode === "review" && state.forced !== true && state.failed !== true && state.blocked !== true;
+}
+
+// A listing that has not caught up to the authorized generation is retried briefly rather than
+// treated as stale. A newer generation is returned without retry and still fails the check.
+async function assertFreshCi(github, owner, repo, state, ciRetry = {}) {
+  if (!requiresFreshCi(state)) return;
+  const latest = await readLatestExactHeadCiRun({
+    github, owner, repo, expectedSha: state.expectedSha,
+    expectedGeneration: { id: state.ciRunId, attempt: state.ciRunAttempt }, ...ciRetry,
+  });
+  if (latest?.conclusion !== "success" ||
+      !matchesGeneration(latest, state.ciRunId, state.ciRunAttempt)) {
+    throw new StalePolicyError();
+  }
+}
+
+async function publishReview(github, owner, repo, prNumber, state, botLogin, comment, ciRetry) {
   if (!botLogin || typeof botLogin !== "string") throw new Error("botLogin is required for review ownership");
-  if ((await reviews(github, owner, repo, prNumber)).some((review) =>
-    review.user?.login === botLogin && typeof review.body === "string" && review.body.includes(comment.marker))) return false;
   const review = comment.review;
+  const reducedCoverage = comment.reducedCoverage ?? [];
+  if (!Array.isArray(reducedCoverage) || new Set(reducedCoverage).size !== reducedCoverage.length ||
+      reducedCoverage.some((reviewer) => !REVIEWERS.includes(reviewer))) {
+    throw new Error("invalid review coverage");
+  }
   const inline = review.findings.filter((finding) => finding.start_line !== null).map((finding) => {
     const comment = {
       path: finding.path, line: finding.end_line, side: "RIGHT",
-      body: `**${provenancePrefix(finding.sources)} ${escapeMarkdown(finding.title)}** — ` +
-        `${findingIndicator(finding)} — ${escapeMarkdown(finding.rationale)}`,
+      body: inlineReviewCommentBody(finding, provenancePrefix),
     };
     if (finding.start_line !== finding.end_line) {
       comment.start_line = finding.start_line;
@@ -149,25 +139,34 @@ async function publishReview(github, owner, repo, prNumber, state, botLogin, com
     }
     return comment;
   });
-  await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha });
+  const body = reviewBody(comment.marker, review, reducedCoverage, provenancePrefix);
+  if (body.length > MAXIMUM_GITHUB_REVIEW_BODY_CHARACTERS ||
+      inline.some((entry) => entry.body.length > MAXIMUM_GITHUB_REVIEW_BODY_CHARACTERS)) {
+    throw new Error("review publication exceeds GitHub body limit");
+  }
+  if ((await reviews(github, owner, repo, prNumber)).some((published) =>
+    published.user?.login === botLogin &&
+    typeof published.body === "string" &&
+    published.body.includes(comment.marker))) return false;
+  await assertFreshCi(github, owner, repo, state, ciRetry);
+  await assertCurrentHead({
+    github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha,
+  });
   assertReviewPolicy(await issueLabels(github, owner, repo, prNumber), state);
   await github.rest.pulls.createReview({
     owner, repo, pull_number: prNumber, commit_id: state.expectedSha, event: "COMMENT",
-    body: reviewBody(comment.marker, review, comment.reducedCoverage), comments: inline,
+    body, comments: inline,
   });
   return true;
 }
 
 async function findCheck(github, owner, repo, expectedSha, check) {
-  let found = null;
-  for await (const response of github.paginate.iterator(github.rest.checks.listForRef, {
-    owner, repo, ref: expectedSha, check_name: check.name, per_page: 100,
-  })) {
-    for (const run of response.data) {
-      if (run.external_id === check.externalId && (!found || run.id > found.id)) found = run;
-    }
-  }
-  return found;
+  const runs = await readCheckRuns({
+    github, owner, repo, ref: expectedSha, checkName: check.name,
+  });
+  return runs
+    .filter((run) => run.external_id === check.externalId)
+    .reduce((found, run) => !found || run.id > found.id ? run : found, null);
 }
 
 async function ensureClassificationCheck(github, owner, repo, prNumber, expectedSha, check) {
@@ -176,7 +175,9 @@ async function ensureClassificationCheck(github, owner, repo, prNumber, expected
   const existing = await findCheck(github, owner, repo, expectedSha, check);
   if (existing?.conclusion === conclusion && existing.output?.title === check.title &&
       existing.output?.summary === summary) return false;
-  await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha });
+  await assertCurrentHead({
+    github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha,
+  });
   const payload = {
     owner, repo, name: check.name, head_sha: expectedSha, external_id: check.externalId,
     status: "completed", conclusion,
@@ -190,17 +191,20 @@ async function ensureClassificationCheck(github, owner, repo, prNumber, expected
   return true;
 }
 
-async function ensureReviewCheck(github, owner, repo, prNumber, expectedSha, check, state) {
+async function ensureReviewCheck(github, owner, repo, prNumber, expectedSha, check, state, ciRetry) {
   const conclusion = check.conclusion ?? "success";
   const title = check.title ?? "Automated review complete";
   const summary = check.summary ?? "Validated automated review is bound to this commit.";
   const existing = await findCheck(github, owner, repo, expectedSha, check);
   if (existing?.conclusion === conclusion && existing.output?.title === title &&
       existing.output?.summary === summary) return false;
-  if (state.failed !== true) {
+  if (state.failed !== true && state.blocked !== true) {
+    await assertFreshCi(github, owner, repo, state, ciRetry);
     assertReviewPolicy(await issueLabels(github, owner, repo, prNumber), state);
   }
-  await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha });
+  await assertCurrentHead({
+    github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha,
+  });
   const payload = {
     owner, repo, name: check.name, head_sha: expectedSha, external_id: check.externalId,
     status: "completed", conclusion, output: { title, summary },
@@ -214,7 +218,9 @@ async function ensureReviewCheck(github, owner, repo, prNumber, expectedSha, che
 }
 
 async function dispatchClassificationComplete(github, owner, repo, prNumber, expectedSha) {
-  await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha });
+  await assertCurrentHead({
+    github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha,
+  });
   await github.rest.repos.createDispatchEvent({
     owner, repo, event_type: "pr-automation-classified",
     client_payload: { pr_number: prNumber, head_sha: expectedSha },
@@ -236,44 +242,70 @@ async function applyLabels(github, owner, repo, prNumber, state, currentLabels) 
   const additions = [...add].filter((label) => !current.has(label));
   const removals = [...remove].filter((label) => current.has(label));
   if (additions.length === 0 && removals.length === 0) return false;
-  await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha });
-  if (additions.length > 0) {
-    await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: additions });
+  await assertCurrentHead({
+    github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha,
+  });
+  // The actor labels are mutually exclusive. Remove a stale actor before adding its replacement so
+  // a failed add leaves no actor selected rather than two conflicting actors. Other labels retain
+  // the established add-before-remove ordering.
+  const actorAdditions = new Set(additions.filter((label) => ACTOR_LABELS.includes(label)));
+  const actorRemovals = new Set(removals.filter((label) => ACTOR_LABELS.includes(label)));
+  if (actorAdditions.size > 0) {
+    for (const label of ACTOR_LABELS) {
+      if (current.has(label) && !actorAdditions.has(label)) actorRemovals.add(label);
+    }
   }
-  for (const label of removals) {
+  const removeLabel = async (label) => {
     try {
       await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name: label });
     } catch (error) {
       if (error?.status !== 404) throw error;
     }
+  };
+  for (const label of actorRemovals) await removeLabel(label);
+  if (additions.length > 0) {
+    await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: additions });
+  }
+  for (const label of removals.filter((label) => !ACTOR_LABELS.includes(label))) {
+    await removeLabel(label);
   }
   return true;
 }
 
-async function writeState({ github, owner, repo, prNumber, state, botLogin, reviewRequested = false }) {
+async function writeState({
+  github, owner, repo, prNumber, state, botLogin, reviewRequested = false, ciRetry = {},
+}) {
   if (!state?.ok || !["classification", "review"].includes(state.mode) ||
       typeof state.expectedSha !== "string" || !Number.isSafeInteger(prNumber) || prNumber <= 0) {
     throw new Error("invalid normalized state");
   }
-  await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha });
+  await assertCurrentHead({
+    github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha,
+  });
   if (state.mode === "review") {
     const comments = state.comments || [];
     for (const comment of comments.filter((comment) => comment.kind === "review")) {
-      await publishReview(github, owner, repo, prNumber, state, botLogin, comment);
+      await publishReview(github, owner, repo, prNumber, state, botLogin, comment, ciRetry);
     }
     if (state.check) {
-      await ensureReviewCheck(github, owner, repo, prNumber, state.expectedSha, state.check, state);
+      await ensureReviewCheck(
+        github, owner, repo, prNumber, state.expectedSha, state.check, state, ciRetry);
     }
-    const latestLabels = state.failed === true
+    const latestLabels = state.failed === true || state.blocked === true
       ? undefined
       : await issueLabels(github, owner, repo, prNumber);
-    if (latestLabels) assertReviewPolicy(latestLabels, state);
+    if (latestLabels) {
+      await assertFreshCi(github, owner, repo, state, ciRetry);
+      assertReviewPolicy(latestLabels, state);
+    }
     await applyLabels(github, owner, repo, prNumber, state, latestLabels);
     for (const comment of comments.filter((comment) => comment.kind !== "review")) {
-      await upsertMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
+      await upsertMarkedComment(
+        github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
     }
     for (const marker of new Set(state.removeCommentMarkers || [])) {
-      await deleteMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, marker);
+      await deleteMarkedComment(
+        github, owner, repo, prNumber, state.expectedSha, botLogin, marker);
     }
   } else {
     await applyLabels(github, owner, repo, prNumber, state);
@@ -282,12 +314,14 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin, revi
     for (const comment of state.auditComments || []) await upsertMarkedComment(
       github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
     for (const marker of new Set(state.removeCommentMarkers || [])) {
-      await deleteMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, marker);
+      await deleteMarkedComment(
+        github, owner, repo, prNumber, state.expectedSha, botLogin, marker);
     }
     if (state.check) {
       const changed = await ensureClassificationCheck(
         github, owner, repo, prNumber, state.expectedSha, state.check);
-      if ((changed || reviewRequested) && state.check.title === "Classification complete" &&
+      if ((changed || reviewRequested) &&
+          ["Classification complete", "Automation stopped"].includes(state.check.title) &&
           state.dispatchReview !== false) {
         await dispatchClassificationComplete(github, owner, repo, prNumber, state.expectedSha);
       }

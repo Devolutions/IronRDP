@@ -16,13 +16,15 @@ const {
 const { buildSpecialistAggregate, validateReviewGate, validateSpecialistRun } = require("./review-pipeline");
 const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
 const {
-  resolveClassificationState, resolveReviewState, reviewOutcome, reviewPolicyEligible, OVERLAP_MARKER,
+  ACTOR_LABELS, FAILURE_LABEL, resolveClassificationState, resolveReviewState,
+  reviewOutcome, reviewPolicyEligible, OVERLAP_MARKER,
   OVERLAP_LABEL,
-  CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
+  EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERSIZED_MARKER, OVERSIZED_REVIEW_LABEL, contributorEligibility,
 } = require("./resolve-state");
 const { resolvePr } = require("./resolve-pr");
 const { resolveClassificationGate } = require("./classification-gate");
+const { latestExactHeadCiRun, readLatestExactHeadCiRun } = require("./ci-state");
 const {
   StalePolicyError, applyLabels, escapeMarkdown, markerBody, writeState,
 } = require("./write-state");
@@ -38,24 +40,29 @@ const { encodeCheckState, parseCheckState } = require("./validate-classifier");
 const { sanitizeReason } = require("../actions/openai-agent/src/provider");
 const { compileOutputValidator } = require("../actions/openai-agent/src/agent");
 const {
+  normalizeClassifier, normalizeGeneral, normalizeSpecialist,
+} = require("./output-normalizer");
+const {
   corpusFromDirectory, validateProtocolReferences,
 } = require("./validate-protocol-review");
 const {
-  isRetryableFailure, mergeDiagnostics, parseDiagnostics, providerWasCalled,
-  resolveRequiredReviewers,
+  parseDiagnostics, providerWasCalled, resolveRequiredReviewers,
 } = require("./review-pipeline");
 const {
   REPORT_VERSION, buildReport, parseReport, stageIds, stageOutcome,
 } = require("./review-report");
-const {
-  MAXIMUM_DELAY_SECONDS, StaleHeadError, delayedRetryGate, retryGateStep,
-} = require("./review-retry");
+const { StaleHeadError } = require("./current-head");
 const {
   TERMINAL_CODE, validateGeneral, validateSpecialist,
 } = require("./agent-validator");
 
 const SHA = "a".repeat(40);
 const OTHER_SHA = "b".repeat(40);
+
+function desiredLabels(state, owned) {
+  return state.labelSets.find((set) => set.owned.includes(owned)).desired;
+}
+
 const classifier = (changes = {}) => ({
   head_sha: SHA, risk: "low", technical_debt: false, documentation_only: false,
   cross_cutting: false,
@@ -85,6 +92,191 @@ const candidateReview = (reviewer = "skeptical", changes = {}) => ({
   head_sha: SHA, reviewer, summary: "candidate review",
   findings: [candidateFinding()], ...changes,
 });
+
+test("trusted output normalizers project strict boundaries and only trim declared prose tails", () => {
+  const classified = normalizeClassifier(classifier({
+    summary: `  ${"😀".repeat(1001)}  `,
+    overlap: {
+      detected: false, similar_pr_number: null, similar_pr_url: null, confidence: 0, rationale: "",
+      provider_noise: "discarded",
+    },
+    provider_noise: "discarded",
+  }));
+  assert.equal(Object.hasOwn(classified, "provider_noise"), false);
+  assert.equal(Object.hasOwn(classified.overlap, "provider_noise"), false);
+  assert.equal([...classified.summary].length, 1000);
+  assert.equal(classified.summary.endsWith("…"), true);
+
+  const specialist = normalizeSpecialist(candidateReview("skeptical", {
+    summary: "  compact \n summary  ",
+    findings: [candidateFinding({
+      title: "  must remain unchanged  ",
+      rationale: "x".repeat(1201),
+      provider_noise: "discarded",
+      references: [{ protocol_id: "MS-RDP", section: "1", heading: " h ", provider_noise: "discarded" }],
+    })],
+    provider_noise: "discarded",
+  }));
+  assert.equal(specialist.summary, "compact summary");
+  assert.equal(specialist.findings[0].title, "  must remain unchanged  ");
+  assert.equal(specialist.findings[0].rationale.length, 1201);
+  assert.equal(Object.hasOwn(specialist.findings[0], "provider_noise"), false);
+  assert.equal(Object.hasOwn(specialist.findings[0].references[0], "provider_noise"), false);
+
+  const general = normalizeGeneral(review({
+    summary: "  general  ",
+    candidate_dispositions: [{
+      reviewer: "skeptical", finding_id: "finding-1", disposition: "accepted",
+      rationale: ` ${"😀".repeat(801)} `,
+      provider_noise: "discarded",
+    }],
+    findings: [finding({ sources: [{ reviewer: "skeptical", finding_id: "finding-1", provider_noise: "discarded" }] })],
+  }));
+  assert.equal(general.summary, "general");
+  assert.equal([...general.candidate_dispositions[0].rationale].length, 800);
+  assert.equal(general.candidate_dispositions[0].rationale.endsWith("…"), true);
+  assert.equal(Object.hasOwn(general.candidate_dispositions[0], "provider_noise"), false);
+  assert.equal(Object.hasOwn(general.findings[0].sources[0], "provider_noise"), false);
+
+  const controlled = normalizeClassifier(classifier({
+    summary: `${"x".repeat(1001)}\u000Bhidden`,
+    overlap: { detected: false, similar_pr_number: null, similar_pr_url: null, confidence: 0, rationale: "\u000C" },
+  }));
+  assert.equal(controlled.summary.includes("\u000B"), true);
+  assert.equal(controlled.overlap.rationale, "\u000C");
+  assert.equal(validateClassifier(controlled, { expectedSha: SHA }).ok, false);
+});
+
+const MAXIMUM_LINUX_ENVIRONMENT_ENTRY_BYTES = 128 * 1024;
+const REVIEWERS = ["protocol", "skeptical", "code-compressor"];
+const REVIEWABLE_REVIEWERS = ["protocol", "skeptical", "code-compressor"];
+const MAXIMUM_NUMBER = 2_147_483_647;
+const HIGH_PRECISION_CONFIDENCE = 0.9999999999999999;
+
+function maximumText(length) {
+  const prefix = "😀\"\\";
+  return prefix + "😀".repeat(length - [...prefix].length);
+}
+
+function escapedMaximumText(length) {
+  const suffix = "\u0000😀\"\\\u001F";
+  return "\u0000".repeat(length - [...suffix].length) + suffix;
+}
+
+function maximumFindingId(index) {
+  return `f${String(index).padStart(2, "0")}${"a".repeat(61)}`;
+}
+
+function maximumPath(index) {
+  return `src/${String(index).padStart(3, "0")}${"😀".repeat(293)}`;
+}
+
+function maximumProtocolReference() {
+  return {
+    protocol_id: `MS-${"A".repeat(37)}`,
+    section: `${"1.".repeat(39)}11`,
+    heading: maximumText(200),
+  };
+}
+
+function maximumCandidate(reviewer, { references = false, escaped = false } = {}) {
+  const text = escaped ? escapedMaximumText : maximumText;
+  return {
+    head_sha: SHA,
+    reviewer,
+    summary: text(1000),
+    findings: Array.from({ length: 20 }, (_, index) => ({
+      id: maximumFindingId(index),
+      question: false,
+      severity: "high",
+      path: maximumPath(index),
+      start_line: MAXIMUM_NUMBER,
+      end_line: MAXIMUM_NUMBER,
+      title: text(200),
+      rationale: text(1200),
+      confidence: HIGH_PRECISION_CONFIDENCE,
+      references: references ? Array.from({ length: 5 }, maximumProtocolReference) : [],
+    })),
+  };
+}
+
+function maximumClassifier({ escaped = false } = {}) {
+  const text = escaped ? escapedMaximumText : maximumText;
+  const number = MAXIMUM_NUMBER;
+  return {
+    head_sha: SHA,
+    risk: "high",
+    technical_debt: false,
+    documentation_only: false,
+    cross_cutting: true,
+    overlap: {
+      detected: true,
+      similar_pr_number: number,
+      similar_pr_url: `https://github.com/Devolutions/IronRDP/pull/${number}`,
+      confidence: HIGH_PRECISION_CONFIDENCE,
+      rationale: text(500),
+    },
+    likely_non_legitimate: true,
+    non_legitimate_confidence: HIGH_PRECISION_CONFIDENCE,
+    non_legitimate_reason: text(500),
+    breaking_change_suspected: true,
+    breaking_change_rationale: text(500),
+    breaking_change_surface: text(200),
+    protocol_related: true,
+    summary: text(1000),
+  };
+}
+
+function maximumFinalReview({ repeatedSources = false, escaped = false } = {}) {
+  const text = escaped ? escapedMaximumText : maximumText;
+  const candidates = REVIEWERS.flatMap((reviewer) =>
+    Array.from({ length: 20 }, (_, index) => ({ reviewer, finding_id: maximumFindingId(index) })));
+  return {
+    head_sha: SHA,
+    summary: text(1000),
+    candidate_dispositions: candidates.map((source) => ({
+      ...source, disposition: "accepted", rationale: text(800),
+    })),
+    findings: Array.from({ length: 20 }, (_, index) => ({
+      question: false,
+      severity: "high",
+      path: maximumPath(index),
+      start_line: MAXIMUM_NUMBER,
+      end_line: MAXIMUM_NUMBER,
+      title: text(200),
+      rationale: text(1200),
+      confidence: HIGH_PRECISION_CONFIDENCE,
+      sources: repeatedSources || index === 0 ? candidates : [],
+    })),
+  };
+}
+
+function maximumSpecialistAggregate() {
+  return {
+    head_sha: SHA,
+    reviewers: REVIEWERS.map((reviewer) => ({
+      reviewer,
+      status: "valid",
+      summary: "valid",
+      findings: Array.from({ length: 20 }, (_, index) => ({
+        id: maximumFindingId(index),
+        question: false,
+        severity: "high",
+        path: "src/lib.rs",
+        start_line: null,
+        end_line: null,
+        title: "valid",
+        rationale: "valid",
+        confidence: 1,
+        references: [],
+      })),
+    })),
+  };
+}
+
+function loadOutputSchema(name) {
+  return JSON.parse(fs.readFileSync(path.join(__dirname, "schemas", name), "utf8"));
+}
 
 function workflowJob(workflow, name) {
   const start = workflow.indexOf(`  ${name}:\n`);
@@ -223,7 +415,14 @@ function reviewGateScript(workflow = readWorkflow()) {
 async function runReviewGateScript({
   force = false, route = "classification-complete", classificationRuns = [], labels = [],
   author = { type: "User", login: "member", nodeId: "U_1", association: "MEMBER" },
+  workflowRuns = [{ id: 1, run_attempt: 1, name: "CI", head_sha: SHA, conclusion: "success" }],
+  workflowRunPages = [workflowRuns],
+  classificationRunPages = [classificationRuns],
+  reviewRuns = [],
+  reviewRunPages = [reviewRuns],
+  observedRun = null,
 } = {}) {
+  let workflowRunPolls = 0;
   const outputs = new Map();
   const failures = [];
   const core = {
@@ -232,36 +431,79 @@ async function runReviewGateScript({
     info: () => {},
     warning: () => {},
   };
+  const listCheckRuns = () => {};
   const github = {
+    paginate: { iterator: async function* (method, parameters) {
+      if (method === github.rest.actions.listWorkflowRunsForRepo) {
+        workflowRunPolls += 1;
+        for (const page of workflowRunPages) yield { data: page };
+      }
+      if (method === listCheckRuns) {
+        const pages = parameters.check_name === "AI classification"
+          ? classificationRunPages
+          : reviewRunPages;
+        for (const page of pages) yield { data: page };
+      }
+    } },
     rest: {
       checks: {
-        listForRef: async () => ({ data: { check_runs: classificationRuns } }),
+        listForRef: listCheckRuns,
       },
       issues: {
         get: async () => ({ data: { labels: labels.map((name) => ({ name })) } }),
       },
       actions: {
-        listWorkflowRunsForRepo: async () => ({ data: {
-          workflow_runs: [{ name: "CI", conclusion: "success" }],
-        } }),
+        listWorkflowRunsForRepo: () => {},
       },
     },
   };
-  const context = { repo: { owner: "Devolutions", repo: "IronRDP" } };
+  const context = {
+    repo: { owner: "Devolutions", repo: "IronRDP" },
+    payload: { workflow_run: workflowRuns[0] },
+  };
   const process = { env: {
     PULL_REQUEST_NUMBER: "1", HEAD_SHA: SHA, FORCE: String(force),
     LABELS: JSON.stringify(labels), AUTHOR: JSON.stringify(author), ROUTE: route,
+    OBSERVED_CI_RUN: observedRun ? JSON.stringify(observedRun) : "",
   } };
   const rootRequire = createRequire(path.join(__dirname, "..", "..", "labeler.js"));
+  const ciState = rootRequire("./.github/pr-automation/ci-state");
+  const requireWithFastCi = (name) => name === "./.github/pr-automation/ci-state"
+    ? { ...ciState, readLatestExactHeadCiRun: (options) => ciState.readLatestExactHeadCiRun({ delayMs: 0, ...options }) }
+    : rootRequire(name);
   await new AsyncFunction("core", "github", "context", "require", "process", reviewGateScript())(
-    core, github, context, rootRequire, process,
+    core, github, context, requireWithFastCi, process,
   );
-  return { gate: JSON.parse(outputs.get("gate")), eligible: outputs.get("eligible"), failures };
+  return {
+    gate: JSON.parse(outputs.get("gate")), eligible: outputs.get("eligible"), failures, workflowRunPolls,
+  };
 }
 
 async function runResolveReviewScript({ report, pipelineResult = "success" }) {
   const outputs = new Map();
   const summary = [];
+  const rawReview = {
+    head_sha: SHA,
+    summary: "No findings identified.",
+    candidate_dispositions: [],
+    findings: [],
+  };
+  const files = new Map([
+    ["review-pipeline/result.json", JSON.stringify({
+      output: JSON.stringify(review({ summary: rawReview.summary, findings: [] })),
+      raw_output: JSON.stringify(rawReview),
+    })],
+    ["review-pipeline/review-report.json", JSON.stringify(report)],
+    ["review-pipeline/validation-context.json", JSON.stringify({
+      head_sha: SHA,
+      changed_paths: [],
+      changed_lines: {},
+    })],
+    ["review-pipeline/validated-specialist-findings.json", JSON.stringify({
+      head_sha: SHA,
+      reviewers: [],
+    })],
+  ]);
   const core = {
     setOutput: (name, value) => outputs.set(name, value),
     info: () => {},
@@ -274,9 +516,21 @@ async function runResolveReviewScript({ report, pipelineResult = "success" }) {
   };
   const rootRequire = createRequire(path.join(__dirname, "..", "..", "labeler.js"));
   const reportModule = path.join(__dirname, "review-report.js");
-  const requireWithReport = (name) => name === "./.github/pr-automation/review-report"
-    ? fs.existsSync(reportModule) ? rootRequire(name) : { parseReport: () => report }
-    : rootRequire(name);
+  const requireWithReport = (name) => {
+    if (name === "node:fs") {
+      return {
+        existsSync: (file) => files.has(file),
+        readFileSync: (file) => {
+          if (!files.has(file)) throw new Error("missing fixture file");
+          return files.get(file);
+        },
+        writeFileSync: (file, content) => files.set(file, content),
+      };
+    }
+    return name === "./.github/pr-automation/review-report"
+      ? fs.existsSync(reportModule) ? rootRequire(name) : { parseReport: () => report }
+      : rootRequire(name);
+  };
   const process = { env: {
     HEAD_SHA: SHA, BASE_SHA: "c".repeat(40),
     GATE: JSON.stringify({
@@ -286,15 +540,14 @@ async function runResolveReviewScript({ report, pipelineResult = "success" }) {
       specialistReviewers: [], contributor: { status: "eligible" },
     }),
     REVIEW_GATE_RESULT: "success", FORK_RATE_LIMIT: JSON.stringify({ status: "allowed" }),
-    FORK_RATE_LIMIT_RESULT: "success", RAW_OUTPUT: JSON.stringify(review({ findings: [] })),
-    REVIEWER_REASON: "", REVIEW_REPORT: JSON.stringify(report), REVIEW_PIPELINE_RESULT: pipelineResult,
+    FORK_RATE_LIMIT_RESULT: "success", REVIEWER_REASON: "", REVIEW_PIPELINE_RESULT: pipelineResult,
     FORCE: "false", LABELS: JSON.stringify(["risk/low"]), REVIEW_MARKER_ID: "123",
     SUMMARY_URL: "https://github.example/actions/runs/123",
   } };
   await new AsyncFunction("core", "require", "process", resolveReviewScript())(
     core, requireWithReport, process,
   );
-  return { state: JSON.parse(outputs.get("state")), summary: summary.join("\n") };
+  return { state: JSON.parse(files.get("review-state.json")), summary: summary.join("\n") };
 }
 
 test("reusable review keeps inherited secrets inside the trusted workflow", () => {
@@ -331,13 +584,18 @@ test("automatic review requires exact-head CI and only reruns after a later push
     "utf8",
   ));
   assert.equal(classifierConfig.max_request_retries, 4);
+  assert.equal(classifierConfig.stage_timeout_ms, 1_800_000);
+  assert.equal(classifierConfig.stream_idle_timeout_ms, 300_000);
   assert.doesNotMatch(classifier, /max-request-retries:/);
+  assert.match(classifier, /timeout-minutes: 40/);
   assert.match(reviewGate, /ref: headSha/);
   assert.match(reviewGate, /head_sha: headSha/);
+  assert.match(reviewGate, /readLatestExactHeadCiRun/);
+  assert.match(reviewGate, /const ciGeneration = generation\(latestCiRun\)/);
+  assert.match(reviewGate, /ciRunId: ciGeneration\?\.id \?\? null/);
+  assert.match(workflowJob(workflow, "write-state"), /actions: read/);
   assert.match(reviewGate,
-    /workflowRuns\.some\(\(run\) => run\?\.name === "CI" && run\?\.conclusion === "success"\)/);
-  assert.match(reviewGate,
-    /run\.conclusion === "success" && run\.app\?\.slug === "github-actions"/);
+    /run\.external_id === headSha && run\.conclusion === "success" &&[\s\S]*run\.app\?\.slug === "github-actions"/);
   assert.match(reviewGate, /const secondReviewEligible = !labels\.includes\("ai-reviewed\/1"\) \|\| !reviewAtHead/);
   assert.match(reviewGate,
     /ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible/);
@@ -359,9 +617,14 @@ test("automatic review requires exact-head CI and only reruns after a later push
     "stage-recovery-delay", "review-recovery-preflight", "review-recovery-claim", "review-pipeline-recovery",
   ]) assert.doesNotMatch(workflow, new RegExp(`  ${retiredJob}:`));
   const reviewState = workflowJob(workflow, "resolve-review-state");
-  assert.match(reviewState, /REVIEW_REPORT: \$\{\{ needs\.review-pipeline\.outputs\.report \}\}/);
-  assert.match(reviewState, /parseReport\(process\.env\.REVIEW_REPORT\)/);
-  assert.match(reviewState, /report\.status === "success" \? parse\(process\.env\.RAW_OUTPUT, null\) : null/);
+  assert.match(reviewState,
+    /pattern: review-\{final,report,validation,aggregate\}-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
+  assert.match(reviewState, /if: needs\.review-pipeline\.result != 'skipped'/);
+  assert.match(reviewState, /merge-multiple: true/);
+  assert.match(reviewState, /parseReport\(fs\.existsSync\("review-pipeline\/review-report\.json"\)/);
+  assert.match(reviewState, /validateFinalReview\(persisted\.raw_output/);
+  assert.match(reviewState, /JSON\.stringify\(revalidated\.value\) === persisted\.output/);
+  assert.doesNotMatch(reviewState, /RAW_OUTPUT|REVIEW_REPORT/);
   assert.match(reviewState, /renderReviewReport/);
   assert.doesNotMatch(reviewState, /specialistReviewers: \["skeptical", "code-compressor"\]/);
   assert.match(reviewState, /REVIEW_GATE_RESULT: \$\{\{ needs\.review-gate\.result \}\}/);
@@ -370,6 +633,20 @@ test("automatic review requires exact-head CI and only reruns after a later push
   assert.match(reviewState,
     /SUMMARY_URL: \$\{\{ github\.server_url \}\}\/\$\{\{ github\.repository \}\}\/actions\/runs\/\$\{\{ github\.run_id \}\}/);
   assert.match(reviewState, /addHeading\("Automated review skipped"\)/);
+  assert.match(reviewState, /reviewAttempted: \["success", "failure"\]\.includes/);
+  assert.match(workflow, /types: \[completed\]/);
+  assert.doesNotMatch(workflow, /types: \[requested, in_progress, completed\]|converted_to_draft|reconcile-lifecycle/);
+});
+
+test("workflow cancellation retains the established event and label groups", () => {
+  const workflow = readWorkflow();
+  const concurrency = workflow.slice(workflow.indexOf("\nconcurrency:"), workflow.indexOf("\npermissions:"));
+  assert.match(concurrency, /github\.event_name/);
+  assert.match(concurrency, /github\.event\.workflow_run\.head_sha/);
+  assert.match(concurrency, /github\.event\.pull_request\.number/);
+  assert.match(concurrency, /github\.event\.label\.name == 'ai-review\/allow-oversized' && 'pr'/);
+  assert.doesNotMatch(concurrency, /lifecycle|ci-completion|dispatch-review|manual-/);
+  assert.match(concurrency, /cancel-in-progress: true/);
 });
 
 test("review skip summary lists every failed gate condition", () => {
@@ -383,7 +660,7 @@ test("review skip summary lists every failed gate condition", () => {
       policyEligible: false,
       legitimacyStopped: true,
       labels: ["ai-reviewed/2", "triage/legitimacy"],
-      contributor: { status: "ineligible", merged: 0 },
+      contributor: { status: "bot" },
     },
     rateLimitResult: "success",
     rateLimit: { status: "allowed" },
@@ -392,8 +669,8 @@ test("review skip summary lists every failed gate condition", () => {
     "CI has not succeeded for this head.",
     "An automated review has already run for this head; push a new commit before the next review.",
     "The pull request has reached the two-review limit.",
-    "The pull request requires a maintainer legitimacy decision.",
-    "The contributor has 0 qualifying merged pull requests; at least one is required.",
+    "The pull request is awaiting its green exact-head CI handoff for legitimacy triage.",
+    "The pull request was opened by a bot account.",
   ]);
 });
 
@@ -403,7 +680,7 @@ test("manual reviews with no valid classification fail as invocation errors", as
     assert.deepEqual(result.gate, {
       ok: false, force, head_sha: SHA, classificationValid: false,
       classificationCheck: false, legitimacyStopped: false, ciGreen: false,
-      secondReviewEligible: false, policyEligible: false, labels: [],
+      secondReviewEligible: false, reviewAtHead: false, policyEligible: false, labels: [],
       protocolRelated: false, risk: "unknown", specialistReviewers: [],
       contributor: { status: force ? "forced" : "unavailable" },
       reason: "valid classification unavailable",
@@ -446,80 +723,276 @@ test("automatic policy ineligibility remains a non-error gate skip", async () =>
   assert.deepEqual(eligible.failures, []);
 });
 
+test("the latest exact-head CI generation decides review readiness", async () => {
+  const machineState = {
+    protocolRelated: false, risk: "low", specialistReviewers: [],
+    automaticReviewEligible: true,
+  };
+  const classificationRuns = [{
+    id: 1, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "success",
+    app: { slug: "github-actions" },
+    output: {
+      title: "Classification complete",
+      summary: `Validated classification.\n\n${encodeCheckState(machineState)}`,
+    },
+  }];
+  const result = await runReviewGateScript({
+    classificationRuns,
+    workflowRuns: [
+      { id: 1, run_attempt: 1, name: "CI", head_sha: SHA, conclusion: "success" },
+      { id: 2, run_attempt: 1, name: "CI", head_sha: SHA, conclusion: "failure" },
+    ],
+  });
+  assert.equal(result.gate.ciGreen, false);
+  assert.equal(result.gate.ciRunId, 2);
+  assert.equal(result.gate.ciRunAttempt, 1);
+  assert.equal(result.eligible, false);
+});
+
+test("CI generation selection paginates and ignores late older attempts", async () => {
+  const pages = [
+    [{ id: 9, run_attempt: 1, name: "CI", head_sha: SHA, conclusion: "success" }],
+    [
+      { id: 9, run_attempt: 2, name: "CI", head_sha: SHA, conclusion: "in_progress" },
+      { id: 10, run_attempt: 1, name: "CI", head_sha: OTHER_SHA, conclusion: "success" },
+    ],
+  ];
+  assert.equal(latestExactHeadCiRun(pages.flat(), SHA).run_attempt, 2);
+  const github = {
+    paginate: { iterator: async function* () {
+      for (const workflowRuns of pages) yield { data: workflowRuns };
+    } },
+    rest: { actions: { listWorkflowRunsForRepo: () => {} } },
+  };
+  const latest = await readLatestExactHeadCiRun({
+    github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA, delayMs: 0,
+  });
+  assert.deepEqual({ id: latest.id, attempt: latest.run_attempt, conclusion: latest.conclusion }, {
+    id: 9, attempt: 2, conclusion: "in_progress",
+  });
+});
+
+const ciRun = (changes = {}) => ({
+  id: 5, run_attempt: 1, name: "CI", head_sha: SHA, status: "completed", conclusion: "success", ...changes,
+});
+
+function ciListing(pages) {
+  let polls = 0;
+  const listRuns = () => {};
+  const github = {
+    paginate: { iterator: async function* (method) {
+      assert.equal(method, listRuns);
+      const page = pages[Math.min(polls, pages.length - 1)];
+      polls += 1;
+      yield { data: { workflow_runs: page } };
+    } },
+    rest: { actions: { listWorkflowRunsForRepo: listRuns } },
+  };
+  return { github, polls: () => polls };
+}
+
+test("the triggering CI run is authoritative for its own generation", async () => {
+  const observedRun = ciRun();
+  for (const listed of [[], [ciRun({ status: "in_progress", conclusion: null })]]) {
+    assert.equal(latestExactHeadCiRun(listed, SHA, observedRun), observedRun);
+    const { github, polls } = ciListing([listed]);
+    const latest = await readLatestExactHeadCiRun({
+      github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA, observedRun, delayMs: 0,
+    });
+    assert.equal(latest, observedRun);
+    assert.equal(polls(), 1);
+  }
+});
+
+test("a newer listed CI generation wins over the triggering run without retry", async () => {
+  const observedRun = ciRun();
+  for (const newer of [
+    ciRun({ run_attempt: 2, status: "in_progress", conclusion: null }),
+    ciRun({ id: 6, status: "queued", conclusion: null }),
+  ]) {
+    const { github, polls } = ciListing([[observedRun, newer]]);
+    let sleeps = 0;
+    const latest = await readLatestExactHeadCiRun({
+      github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA, observedRun,
+      sleep: async () => { sleeps += 1; },
+    });
+    assert.equal(latest, newer);
+    assert.deepEqual({ polls: polls(), sleeps }, { polls: 1, sleeps: 0 });
+  }
+});
+
+test("the triggering CI run is ignored for another head or workflow", () => {
+  const listed = ciRun({ status: "in_progress", conclusion: null });
+  for (const observedRun of [ciRun({ head_sha: OTHER_SHA }), ciRun({ name: "Fuzz" })]) {
+    assert.equal(latestExactHeadCiRun([listed], SHA, observedRun), listed);
+    assert.equal(latestExactHeadCiRun([], SHA, observedRun), null);
+  }
+});
+
+test("CI listing lag is retried up to its cap", async () => {
+  const lagging = ciRun({ status: "in_progress", conclusion: null });
+  const { github, polls } = ciListing([[], [lagging]]);
+  const delays = [];
+  const latest = await readLatestExactHeadCiRun({
+    github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA,
+    expectedGeneration: { id: 5, attempt: 1 }, retries: 2, delayMs: 7,
+    sleep: async (ms) => { delays.push(ms); },
+  });
+  assert.equal(latest, lagging);
+  assert.equal(polls(), 3);
+  assert.deepEqual(delays, [7, 7]);
+
+  const settled = ciListing([[ciRun({ id: 4 })], [ciRun()]]);
+  const caughtUp = await readLatestExactHeadCiRun({
+    github: settled.github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA,
+    expectedGeneration: { id: 5, attempt: 1 }, delayMs: 0,
+  });
+  assert.deepEqual({ id: caughtUp.id, polls: settled.polls() }, { id: 5, polls: 2 });
+
+  // Without a reference generation, an older failed run must not mask a newer run the listing lacks.
+  const masked = ciListing([[ciRun({ id: 4, conclusion: "failure" })], [ciRun({ id: 4, conclusion: "failure" }), ciRun()]]);
+  const unmasked = await readLatestExactHeadCiRun({
+    github: masked.github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA, delayMs: 0,
+  });
+  assert.deepEqual({ id: unmasked.id, polls: masked.polls() }, { id: 5, polls: 2 });
+  const failed = ciListing([[ciRun({ conclusion: "failure" })]]);
+  await readLatestExactHeadCiRun({
+    github: failed.github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA, delayMs: 0,
+  });
+  assert.equal(failed.polls(), 4);
+  const referenced = ciListing([[ciRun({ conclusion: "failure" })]]);
+  await readLatestExactHeadCiRun({
+    github: referenced.github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA,
+    expectedGeneration: { id: 5, attempt: 1 }, delayMs: 0,
+  });
+  assert.equal(referenced.polls(), 1);
+});
+
+test("review gate trusts the completed CI event over a lagging listing", async () => {
+  const machineState = {
+    protocolRelated: false, risk: "low", specialistReviewers: [], automaticReviewEligible: true,
+  };
+  const classificationRuns = [{
+    id: 1, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "success",
+    app: { slug: "github-actions" },
+    output: { title: "Classification complete", summary: `ok\n\n${encodeCheckState(machineState)}` },
+  }];
+  const observedRun = ciRun({ id: 36709031420 });
+  for (const workflowRuns of [[], [{ ...observedRun, status: "in_progress", conclusion: null }]]) {
+    const result = await runReviewGateScript({
+      route: "ci", classificationRuns, labels: ["risk/low"], workflowRuns, observedRun,
+    });
+    assert.deepEqual({
+      ciGreen: result.gate.ciGreen, ciSource: result.gate.ciSource, id: result.gate.ciRunId,
+      polls: result.workflowRunPolls,
+    }, { ciGreen: true, ciSource: "event", id: 36709031420, polls: 1 });
+  }
+  const newer = await runReviewGateScript({
+    route: "ci", classificationRuns, labels: ["risk/low"], observedRun,
+    workflowRuns: [{ ...observedRun, run_attempt: 2, status: "in_progress", conclusion: null }],
+  });
+  assert.deepEqual({
+    ciGreen: newer.gate.ciGreen, ciSource: newer.gate.ciSource, attempt: newer.gate.ciRunAttempt,
+    eligible: newer.eligible, polls: newer.workflowRunPolls,
+  }, { ciGreen: false, ciSource: "listing", attempt: 2, eligible: false, polls: 1 });
+});
+
+test("review gate reads paginated check runs and preserves exact ownership", async () => {
+  const machineState = {
+    protocolRelated: false, risk: "low", specialistReviewers: [],
+    automaticReviewEligible: true,
+  };
+  const irrelevant = Array.from({ length: 100 }, (_, id) => ({
+    id, external_id: `other:${id}`, conclusion: "success", app: { slug: "github-actions" },
+  }));
+  const classification = {
+    id: 101, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "success",
+    app: { slug: "github-actions" },
+    output: {
+      title: "Classification complete",
+      summary: `Validated classification.\n\n${encodeCheckState(machineState)}`,
+    },
+  };
+  const review = {
+    id: 102, external_id: SHA, conclusion: "success", app: { slug: "github-actions" },
+  };
+  const result = await runReviewGateScript({
+    labels: ["ai-reviewed/1"],
+    classificationRunPages: [irrelevant, [classification]],
+    reviewRunPages: [irrelevant, [review]],
+  });
+  assert.equal(result.gate.classificationValid, true);
+  assert.equal(result.gate.reviewAtHead, true);
+  assert.equal(result.gate.secondReviewEligible, false);
+  assert.equal(result.eligible, false);
+});
+
 test("review outcome requires validated final output", () => {
   assert.equal(reviewOutcome({
     reportStatus: "success",
     state: { failed: true, reason: "invalid final review" },
-    recovered: true,
   }), "unavailable");
-  assert.equal(reviewOutcome({ reportStatus: "success", state: {}, recovered: true }), "recovered");
-  assert.equal(reviewOutcome({ reportStatus: "success", state: {}, recovered: false }), "complete");
+  assert.equal(reviewOutcome({ reportStatus: "success", state: {} }), "complete");
   assert.equal(reviewOutcome({
     reportStatus: "success", state: {}, reducedCoverage: ["code-compressor"],
   }), "reduced-coverage");
-  assert.equal(reviewOutcome({
-    reportStatus: "success", state: {}, recovered: true, reducedCoverage: ["code-compressor"],
-  }), "recovered-reduced-coverage");
-  assert.equal(reviewOutcome({ reportStatus: "failed", state: {}, recovered: true }), "unavailable");
+  assert.equal(reviewOutcome({ reportStatus: "failed", state: {} }), "unavailable");
 });
 
-test("resolve review state renders bounded recovery diagnostics in the check and summary", async () => {
+test("resolve review state renders bounded stage diagnostics in the check and summary", async () => {
   const stages = [
     {
-      id: "evidence", status: "success", attempts: 1,
+      id: "evidence", status: "success",
       metrics: { tokens: null, elapsed_ms: 0, request_retries: null, output_repairs: null },
     },
     {
-      id: "general", status: "success", attempts: 2, provider: true,
-      previous_reason: "retry declined | malformed <payload>",
+      id: "general", status: "success", provider: true,
       metrics: {
         tokens: { input: 0, output: 4, complete: false },
         elapsed_ms: 0, request_retries: 0, output_repairs: 0,
       },
     },
     {
-      id: "validate", status: "success", attempts: 1,
+      id: "validate", status: "success",
       metrics: { tokens: null, elapsed_ms: null, request_retries: null, output_repairs: null },
     },
   ];
-  const recovered = await runResolveReviewScript({
+  const complete = await runResolveReviewScript({
     report: {
-      v: 1, status: "success", stages: [
+      v: REPORT_VERSION, status: "success", stages: [
         ...stages.slice(0, 2),
         {
-          id: "aggregate", status: "success", attempts: 1,
+          id: "aggregate", status: "success",
           metrics: { tokens: null, elapsed_ms: 0, request_retries: null, output_repairs: null },
         },
         stages[2],
       ],
       metrics: {
         tokens: { input: 0, output: 4 }, tokens_complete: false,
-        elapsed_ms: 0, request_retries: 0, output_repairs: 0, stage_retries: 1,
+        elapsed_ms: 0, request_retries: 0, output_repairs: 0,
       },
     },
   });
-  assert.match(recovered.state.check.summary, /Validated automated review was produced after stage recovery/);
-  assert.doesNotMatch(recovered.state.check.summary, /retry declined \\| malformed &lt;payload&gt;/);
-  assert.match(recovered.state.check.summary, /Input tokens/);
-  assert.match(recovered.state.check.summary, /Cumulative elapsed/);
-  assert.match(recovered.state.check.summary, /\| 0 \|/);
-  assert.match(recovered.state.check.summary, /unavailable/);
-  assert.match(recovered.state.check.summary, /View the workflow summary/);
-  assert.equal(recovered.state.check.conclusion, "success");
-  assert.match(recovered.summary, /retry declined \\| malformed &lt;payload&gt;/);
-  assert.match(recovered.summary, /LLM stage metrics/);
+  assert.match(complete.state.check.summary, /Validated automated review is bound to this commit/);
+  assert.match(complete.state.check.summary, /Input tokens/);
+  assert.match(complete.state.check.summary, /Cumulative elapsed/);
+  assert.match(complete.state.check.summary, /\| 0 \|/);
+  assert.match(complete.state.check.summary, /unavailable/);
+  assert.match(complete.state.check.summary, /View the workflow summary/);
+  assert.equal(complete.state.check.conclusion, "success");
+  assert.match(complete.summary, /LLM stage metrics/);
 
   const terminal = await runResolveReviewScript({
     report: {
-      v: 1, status: "failed",
+      v: REPORT_VERSION, status: "failed",
       stages: [
         {
           id: "evidence", status: "success", required: true,
           metrics: { tokens: null, elapsed_ms: 0, request_retries: null, output_repairs: null },
         },
         {
-          id: "protocol", status: "failed", required: true, attempts: 2, reason: "provider unavailable",
-          category: "retry-declined", metrics: {
+          id: "protocol", status: "failed", required: true, reason: "provider unavailable",
+          category: "provider-unavailable", metrics: {
             tokens: null, elapsed_ms: null, request_retries: null, output_repairs: null,
           },
         },
@@ -538,25 +1011,24 @@ test("resolve review state renders bounded recovery diagnostics in the check and
       ],
       metrics: {
         tokens: null, tokens_complete: false, elapsed_ms: null, request_retries: null,
-        output_repairs: null, stage_retries: 1,
+        output_repairs: null,
       },
     },
   });
   assert.doesNotMatch(terminal.state.check.summary, /provider unavailable/);
-  assert.doesNotMatch(terminal.state.check.summary, /retry-declined/);
   assert.match(terminal.state.check.summary, /unavailable/);
   assert.equal(terminal.state.check.conclusion, "neutral");
 
   const missing = await runResolveReviewScript({
     report: {
-      v: 1, status: "failed",
+      v: REPORT_VERSION, status: "failed",
       stages: [{
-        id: "pipeline", status: "failed", attempts: 1, reason: "no usable report",
+        id: "pipeline", status: "failed", reason: "no usable report",
         metrics: { tokens: null, elapsed_ms: null, request_retries: null, output_repairs: null },
       }],
       metrics: {
         tokens: null, tokens_complete: false, elapsed_ms: null, request_retries: null,
-        output_repairs: null, stage_retries: null,
+        output_repairs: null,
       },
     },
   });
@@ -566,9 +1038,8 @@ test("resolve review state renders bounded recovery diagnostics in the check and
   const bounded = renderReviewReport({
     report: {
       stages: Array.from({ length: 16 }, (_, index) => ({
-        id: `stage-${index}-${"'".repeat(300)}`, status: "failed", attempts: 2,
+        id: `stage-${index}-${"'".repeat(300)}`, status: "failed",
         reason: "'".repeat(300), category: "retry-declined",
-        previous_reason: "'".repeat(300),
         metrics: {
           tokens: { input: 0, output: 0, total: 0, complete: true },
           elapsed_ms: 0, request_retries: 0, output_repairs: 0,
@@ -576,7 +1047,7 @@ test("resolve review state renders bounded recovery diagnostics in the check and
       })),
       metrics: {
         tokens: { input: 0, output: 0, total: 0 }, tokens_complete: true,
-        elapsed_ms: 0, request_retries: 0, output_repairs: 0, stage_retries: 16,
+        elapsed_ms: 0, request_retries: 0, output_repairs: 0,
       },
     },
     outcome: "unavailable", detail: "review unavailable",
@@ -634,15 +1105,21 @@ test("review skip summary explains gate and quota failures", () => {
   }), ["The workflow's automated review conditions were not satisfied."]);
 });
 
-test("classification gate reuses completed state but forces oversized retries", async () => {
+test("classification gate reuses paginated completed state but forces oversized retries", async () => {
   let reads = 0;
   const machineState = {
     protocolRelated: false, risk: "low", specialistReviewers: [],
     automaticReviewEligible: true,
   };
-  const github = { rest: { checks: { listForRef: async () => {
-    reads += 1;
-    return { data: { check_runs: [{
+  const listCheckRuns = () => {};
+  const github = {
+    paginate: { iterator: async function* (method) {
+      assert.equal(method, listCheckRuns);
+      reads += 1;
+      yield { data: Array.from({ length: 100 }, (_, id) => ({
+        id, external_id: `other:${id}`, conclusion: "success", app: { slug: "github-actions" },
+      })) };
+      yield { data: [{
       external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
       conclusion: "success",
       app: { slug: "github-actions" },
@@ -650,8 +1127,10 @@ test("classification gate reuses completed state but forces oversized retries", 
         title: "Classification complete",
         summary: `Validated classification.\n\n${encodeCheckState(machineState)}`,
       },
-    }] } };
-  } } } };
+      }] };
+    } },
+    rest: { checks: { listForRef: listCheckRuns } },
+  };
   const args = { github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA };
 
   const cached = await resolveClassificationGate(args);
@@ -669,7 +1148,10 @@ test("classification gate reuses completed state but forces oversized retries", 
 
   const unavailable = await resolveClassificationGate({
     ...args,
-    github: { rest: { checks: { listForRef: async () => { throw new Error("unavailable"); } } } },
+    github: {
+      paginate: { iterator: async function* () { throw new Error("unavailable"); } },
+      rest: { checks: { listForRef: () => {} } },
+    },
   });
   assert.deepEqual(unavailable, {
     available: false,
@@ -904,7 +1386,7 @@ test("every deterministic label is declared and the repository rules classify to
   ).map((label) => label.name));
   for (const label of [
     ...Object.keys(rules), ...SIZE_LABELS, "contributor/first-time", "kind/protocol", LEGITIMACY_LABEL,
-    OVERLAP_LABEL,
+    OVERLAP_LABEL, ...ACTOR_LABELS, FAILURE_LABEL,
   ]) {
     assert.equal(declaredLabels.has(label), true, `${label} is missing from labels.json`);
   }
@@ -1012,6 +1494,266 @@ test("classifier schema and semantic validation require overlap", () => {
       assert.equal(validateClassifier(invalid, context).ok, false);
     }
   }
+});
+
+test("maximum schema outputs stay accepted through action and review validation", () => {
+  const classifierSchema = compileOutputValidator(loadOutputSchema("classifier.json"));
+  const candidateSchema = compileOutputValidator(loadOutputSchema("candidate-review.json"));
+  const finalSchema = compileOutputValidator(loadOutputSchema("final-review.json"));
+
+  const classifierOutput = maximumClassifier();
+  const classifierCandidate = classifierSchema(JSON.stringify(classifierOutput));
+  assert.equal(classifierCandidate.ok, true);
+  const escapedClassifier = maximumClassifier({ escaped: true });
+  escapedClassifier.overlap.similar_pr_url =
+    `https://github.com/Devolutions/IronRDP/pull/${"1".repeat(156)}`;
+  const escapedClassifierCandidate = classifierSchema(JSON.stringify(escapedClassifier));
+  assert.equal(escapedClassifierCandidate.ok, true);
+  assert.ok(Buffer.byteLength(`CLASSIFIER=${escapedClassifierCandidate.output}`, "utf8") <= 32 * 1024);
+  assert.ok(Buffer.byteLength(`CLASSIFIER=${escapedClassifierCandidate.output}`, "utf8") <
+    MAXIMUM_LINUX_ENVIRONMENT_ENTRY_BYTES);
+  assert.equal(validateClassifier(classifierCandidate.value, {
+    expectedSha: SHA,
+    prNumber: 1,
+    overlapCandidates: [{
+      number: MAXIMUM_NUMBER,
+      url: `https://github.com/Devolutions/IronRDP/pull/${MAXIMUM_NUMBER}`,
+    }],
+  }).ok, true);
+
+  const candidateOutput = maximumCandidate("skeptical");
+  const candidateCandidate = candidateSchema(JSON.stringify(candidateOutput));
+  assert.equal(candidateCandidate.ok, true);
+  assert.equal(validateCandidateReview(candidateCandidate.value, {
+    expectedSha: SHA,
+    expectedReviewer: "skeptical",
+    changedPaths: candidateOutput.findings.map((finding) => finding.path),
+  }).ok, true);
+  assert.ok(Buffer.byteLength(candidateCandidate.output, "utf8") >
+    MAXIMUM_LINUX_ENVIRONMENT_ENTRY_BYTES);
+
+  const specialistRuns = REVIEWERS.map((reviewer) => {
+    const candidate = maximumCandidate(reviewer, { references: reviewer === "protocol" });
+    return {
+      reviewer,
+      status: "valid",
+      summary: candidate.summary,
+      findings: candidate.findings,
+    };
+  });
+  const specialistAggregate = buildSpecialistAggregate({
+    expectedSha: SHA,
+    selectedReviewers: REVIEWERS,
+    runs: specialistRuns,
+    requiredReviewers: ["protocol", "skeptical"],
+  });
+  assert.equal(specialistAggregate.ok, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(specialistAggregate.value), "utf8") < 1024 * 1024);
+
+  const finalOutput = maximumFinalReview();
+  const finalCandidate = finalSchema(JSON.stringify(finalOutput));
+  assert.equal(finalCandidate.ok, true);
+  const finalValidation = validateFinalReview(finalCandidate.value, {
+    expectedSha: SHA,
+    changedPaths: finalOutput.findings.map((finding) => finding.path),
+    changedLines: Object.fromEntries(
+      finalOutput.findings.map((finding) => [finding.path, [MAXIMUM_NUMBER]]),
+    ),
+    specialistAggregate: maximumSpecialistAggregate(),
+  });
+  assert.equal(finalValidation.ok, true);
+
+  assert.ok(Buffer.byteLength(JSON.stringify(finalValidation.value), "utf8") <
+    1024 * 1024);
+});
+
+test("final review validation bounds the escaped GitHub publication body", () => {
+  const output = maximumFinalReview();
+  output.summary = "'".repeat(1000);
+  output.findings = output.findings.map((finding, index) => ({
+    ...finding,
+    path: `src/${String(index).padStart(3, "0")}${"'".repeat(293)}`,
+    start_line: null,
+    end_line: null,
+    title: "'".repeat(200),
+    rationale: "'".repeat(1200),
+  }));
+  const result = validateFinalReview(output, {
+    expectedSha: SHA,
+    changedPaths: output.findings.map((finding) => finding.path),
+    specialistAggregate: maximumSpecialistAggregate(),
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /exceeds GitHub's review-body limit after Markdown escaping/);
+});
+
+test("semantic validators reject unpaired UTF-16 surrogates and state GitHub integer ranges", () => {
+  const unicode = "\uD800";
+  assert.equal(validateClassifier(classifier({ summary: unicode }), { expectedSha: SHA }).ok, false);
+  assert.equal(validateCandidateReview(candidateReview("skeptical", { summary: unicode }), {
+    expectedSha: SHA, expectedReviewer: "skeptical", changedPaths: ["src/lib.rs"],
+  }).ok, false);
+  const finalWithInvalidSummary = maximumFinalReview();
+  finalWithInvalidSummary.summary = unicode;
+  assert.equal(validateFinalReview(finalWithInvalidSummary, {
+    expectedSha: SHA,
+    changedPaths: finalWithInvalidSummary.findings.map((finding) => finding.path),
+    specialistAggregate: maximumSpecialistAggregate(),
+  }).ok, false);
+  const candidateWithInvalidPath = candidateReview("skeptical");
+  candidateWithInvalidPath.findings[0].path = `src/${unicode}.rs`;
+  assert.equal(validateCandidateReview(candidateWithInvalidPath, {
+    expectedSha: SHA,
+    expectedReviewer: "skeptical",
+    changedPaths: [candidateWithInvalidPath.findings[0].path],
+  }).ok, false);
+  const finalWithInvalidPath = maximumFinalReview();
+  finalWithInvalidPath.findings[0].path = `src/${unicode}.rs`;
+  assert.equal(validateFinalReview(finalWithInvalidPath, {
+    expectedSha: SHA,
+    changedPaths: finalWithInvalidPath.findings.map((finding) => finding.path),
+    specialistAggregate: maximumSpecialistAggregate(),
+  }).ok, false);
+  assert.equal(validateClassifier({
+    ...maximumClassifier(),
+    overlap: {
+      ...maximumClassifier().overlap,
+      similar_pr_number: MAXIMUM_NUMBER + 1,
+    },
+  }, { expectedSha: SHA }).reason,
+  `similar_pr_number must be between 1 and ${MAXIMUM_NUMBER}`);
+  const candidate = maximumCandidate("skeptical");
+  candidate.findings[0].start_line = MAXIMUM_NUMBER + 1;
+  assert.equal(validateCandidateReview(candidate, {
+    expectedSha: SHA,
+    expectedReviewer: "skeptical",
+    changedPaths: candidate.findings.map((finding) => finding.path),
+  }).reason, `candidate finding lines must be between 1 and ${MAXIMUM_NUMBER}`);
+  const final = maximumFinalReview();
+  final.findings[0].end_line = MAXIMUM_NUMBER + 1;
+  assert.equal(validateFinalReview(final, {
+    expectedSha: SHA,
+    changedPaths: final.findings.map((finding) => finding.path),
+    specialistAggregate: maximumSpecialistAggregate(),
+  }).reason,
+  `invalid final review finding at index 0: start_line and end_line must be between 1 and ${MAXIMUM_NUMBER}`);
+});
+
+test("schema output bounds cover escaped strings, protocol coordinates, and GitHub integers", () => {
+  const candidateSchema = compileOutputValidator(loadOutputSchema("candidate-review.json"));
+  const classifierSchema = compileOutputValidator(loadOutputSchema("classifier.json"));
+  const finalSchema = compileOutputValidator(loadOutputSchema("final-review.json"));
+
+  const escapedClassifier = JSON.stringify(maximumClassifier({ escaped: true }));
+  assert.match(escapedClassifier, /\\u0000.*\\".*\\\\.*\\u001f/s);
+  assert.equal(classifierSchema(escapedClassifier).ok, true);
+
+  const protocolCandidate = maximumCandidate("protocol", { references: true, escaped: true });
+  assert.equal(candidateSchema(JSON.stringify(protocolCandidate)).ok, true);
+  assert.equal(protocolCandidate.findings.length, 20);
+  assert.ok(protocolCandidate.findings.every((finding) => finding.references.length === 5));
+  assert.equal(protocolCandidate.findings[0].references[0].protocol_id.length, 40);
+  assert.equal(protocolCandidate.findings[0].references[0].section.length, 80);
+  assert.equal(candidateSchema(JSON.stringify({
+    ...protocolCandidate,
+    findings: [{
+      ...protocolCandidate.findings[0],
+      references: [{
+        ...protocolCandidate.findings[0].references[0],
+        protocol_id: `${protocolCandidate.findings[0].references[0].protocol_id}A`,
+      }],
+    }],
+  })).ok, false);
+
+  const escapedFinal = maximumFinalReview({ repeatedSources: true, escaped: true });
+  assert.equal(finalSchema(JSON.stringify(escapedFinal)).ok, true);
+  assert.equal(escapedFinal.candidate_dispositions.length, 60);
+  assert.equal(escapedFinal.findings.length, 20);
+  assert.ok(escapedFinal.findings.every((finding) => finding.sources.length === 60));
+  assert.ok(escapedFinal.findings.every((finding) =>
+    new Set(finding.sources.map((source) => `${source.reviewer}\0${source.finding_id}`)).size === 60));
+
+  for (const [validator, valid, invalid] of [
+    [
+      classifierSchema,
+      maximumClassifier(),
+      { ...maximumClassifier(), overlap: {
+        ...maximumClassifier().overlap,
+        similar_pr_number: MAXIMUM_NUMBER + 1,
+      } },
+    ],
+    [
+      candidateSchema,
+      maximumCandidate("skeptical"),
+      {
+        ...maximumCandidate("skeptical"),
+        findings: [{
+          ...maximumCandidate("skeptical").findings[0],
+          start_line: MAXIMUM_NUMBER + 1,
+          end_line: MAXIMUM_NUMBER + 1,
+        }],
+      },
+    ],
+    [
+      finalSchema,
+      maximumFinalReview(),
+      {
+        ...maximumFinalReview(),
+        findings: [{
+          ...maximumFinalReview().findings[0],
+          start_line: MAXIMUM_NUMBER + 1,
+          end_line: MAXIMUM_NUMBER + 1,
+        }],
+      },
+    ],
+  ]) {
+    assert.equal(validator(JSON.stringify(valid)).ok, true);
+    assert.equal(validator(JSON.stringify(invalid)).ok, false);
+  }
+
+  const overlongNormalizedSummary = {
+    ...maximumClassifier(),
+    summary: `a${" ".repeat(1000)}b`,
+  };
+  assert.equal(validateClassifier(overlongNormalizedSummary, {
+    expectedSha: SHA,
+    prNumber: 1,
+    overlapCandidates: [{
+      number: MAXIMUM_NUMBER,
+      url: `https://github.com/Devolutions/IronRDP/pull/${MAXIMUM_NUMBER}`,
+    }],
+  }).ok, false);
+
+  const invalidClassifierNumber = maximumClassifier();
+  invalidClassifierNumber.overlap.similar_pr_number = MAXIMUM_NUMBER + 1;
+  invalidClassifierNumber.overlap.similar_pr_url =
+    `https://github.com/Devolutions/IronRDP/pull/${MAXIMUM_NUMBER + 1}`;
+  assert.equal(validateClassifier(invalidClassifierNumber, {
+    expectedSha: SHA,
+    prNumber: 1,
+    overlapCandidates: [{
+      number: MAXIMUM_NUMBER + 1,
+      url: invalidClassifierNumber.overlap.similar_pr_url,
+    }],
+  }).ok, false);
+
+  const invalidCandidateLine = maximumCandidate("skeptical");
+  invalidCandidateLine.findings[0].start_line = MAXIMUM_NUMBER + 1;
+  invalidCandidateLine.findings[0].end_line = MAXIMUM_NUMBER + 1;
+  assert.equal(validateCandidateReview(invalidCandidateLine, {
+    expectedSha: SHA,
+    expectedReviewer: "skeptical",
+    changedPaths: invalidCandidateLine.findings.map((finding) => finding.path),
+  }).ok, false);
+
+  const invalidFinalLine = maximumFinalReview();
+  invalidFinalLine.findings[0].start_line = MAXIMUM_NUMBER + 1;
+  invalidFinalLine.findings[0].end_line = MAXIMUM_NUMBER + 1;
+  assert.equal(validateFinalReview(invalidFinalLine, {
+    expectedSha: SHA,
+    changedPaths: invalidFinalLine.findings.map((finding) => finding.path),
+    specialistAggregate: maximumSpecialistAggregate(),
+  }).ok, false);
 });
 
 test("classifier workflow carries bounded overlap metadata into advisory state", async () => {
@@ -1346,8 +2088,35 @@ test("general reviewer accounts for every candidate and derives validated proven
   const result = validateFinalReview(raw, context);
   assert.equal(result.ok, true);
   assert.equal(provenancePrefix(result.value.findings[0].sources), "[skeptical]");
-  assert.equal(validateNormalizedFinalReview(result.value, SHA).ok, true);
+  const normalizedContext = { ...context, requireContext: true };
+  assert.equal(validateNormalizedFinalReview(result.value, normalizedContext).ok, true);
   assert.equal(validateNormalizedFinalReview({ ...result.value, has_findings: true }, SHA).ok, false);
+  for (const tampered of [
+    { ...result.value, summary: { text: "verified" } },
+    { ...result.value, summary: "\uD800" },
+    { ...result.value, findings: [{ ...result.value.findings[0], path: "/etc/passwd" }] },
+    { ...result.value, findings: [{ ...result.value.findings[0], path: "src/other.rs" }] },
+    { ...result.value, findings: [{
+      ...result.value.findings[0], start_line: 4, end_line: null,
+    }] },
+    { ...result.value, findings: [{
+      ...result.value.findings[0], start_line: 5, end_line: 5,
+    }] },
+    { ...result.value, findings: [{ ...result.value.findings[0], confidence: "certain" }] },
+    { ...result.value, findings: [{
+      ...result.value.findings[0],
+      sources: [
+        ...result.value.findings[0].sources,
+        ...result.value.findings[0].sources,
+      ],
+    }] },
+    { ...result.value, findings: [{
+      ...result.value.findings[0],
+      sources: [{ reviewer: "skeptical", finding_id: "invented" }],
+    }] },
+  ]) {
+    assert.equal(validateNormalizedFinalReview(tampered, normalizedContext).ok, false);
+  }
   assert.equal(validateFinalReview({ ...raw, candidate_dispositions: [] }, context).ok, false);
   assert.equal(validateFinalReview({
     ...raw,
@@ -1459,6 +2228,31 @@ test("bot authors are excluded from automation", async () => {
   assert.equal(human.evidenceMaxBytes, 1024 * 1024);
 });
 
+test("only the CI route forwards its triggering run", async () => {
+  const pr = {
+    number: 7, draft: false, state: "open", labels: [],
+    user: { node_id: "U_1", login: "contributor", type: "User" },
+    head: { sha: SHA }, base: { sha: "b".repeat(40) },
+  };
+  const resolve = (eventName, payload) => resolvePr({
+    github: { rest: { pulls: { get: async () => ({ data: pr }) } } },
+    context: { eventName, repo: { owner: "Devolutions", repo: "IronRDP" }, payload },
+    inputs: {},
+  });
+  const ci = await resolve("workflow_run", { workflow_run: {
+    id: 36709031420, run_attempt: 1, name: "CI", head_sha: SHA, status: "completed",
+    conclusion: "success", pull_requests: [{ number: 7 }], head_branch: "topic",
+  } });
+  assert.deepEqual(ci.observedCiRun, {
+    id: 36709031420, run_attempt: 1, head_sha: SHA, name: "CI", status: "completed", conclusion: "success",
+  });
+  const classified = await resolve("repository_dispatch", {
+    action: "pr-automation-classified", client_payload: { pr_number: 7, head_sha: SHA },
+  });
+  assert.equal(classified.ok, true);
+  assert.equal(classified.observedCiRun, null);
+});
+
 test("force is dispatch-only and bypasses draft and bot eligibility", async () => {
   const pullRequest = (changes = {}) => ({
     number: 7, draft: false, state: "open", labels: [],
@@ -1502,6 +2296,30 @@ test("force is dispatch-only and bypasses draft and bot eligibility", async () =
   assert.equal(automaticBot.reason, "bot-authored pull request");
 });
 
+test("pull request events request classification without lifecycle metadata", async () => {
+  const pr = {
+    number: 7, draft: false, state: "open", labels: [],
+    user: { node_id: "U_1", login: "contributor", type: "User" },
+    head: { sha: SHA }, base: { sha: "b".repeat(40) },
+  };
+  const github = {
+    paginate: { iterator: async function* () { yield { data: [pr] }; } },
+    rest: { pulls: { get: async () => ({ data: pr }), list: async () => ({ data: [pr] }) } },
+  };
+  const pullRequestEvent = async (action) => resolvePr({
+    github,
+    context: {
+      eventName: "pull_request_target", repo: { owner: "Devolutions", repo: "IronRDP" },
+      payload: { action, pull_request: { number: 7 } },
+    },
+  });
+  for (const action of ["opened", "reopened", "synchronize", "ready_for_review", "edited"]) {
+    const classification = await pullRequestEvent(action);
+    assert.equal(classification.classificationRequested, true);
+    assert.equal("lifecycleOnly" in classification, false);
+  }
+});
+
 test("only oversized-review label changes start automation from label events", async () => {
   const pullRequest = (labels = []) => ({
     number: 7, draft: false, state: "open", labels,
@@ -1531,6 +2349,8 @@ test("only oversized-review label changes start automation from label events", a
   assert.equal(revoked.reviewRequested, false);
   assert.equal(revoked.evidenceMaxBytes, 1024 * 1024);
   assert.equal((await resolve("breaking-change")).reason, "unrelated pull request label");
+  assert.equal((await resolve("needs-review")).reason, "unrelated pull request label");
+  assert.equal((await resolve(FAILURE_LABEL)).reason, "unrelated pull request label");
   assert.equal((await resolve("size/XXL")).reason, "unrelated pull request label");
   assert.equal((await resolve("size/XXL", "unlabeled", [])).reason, "unrelated pull request label");
 });
@@ -1556,8 +2376,9 @@ test("deterministic semver outranks the model and a model-only break cannot stay
     semver: { head_sha: SHA, status: "unavailable" },
   });
   assert.equal(unavailable.failed, true);
-  assert.deepEqual(unavailable.addLabels, ["maintainer-required"]);
-  assert.deepEqual(unavailable.labelSets.at(-1).desired, ["risk/unknown"]);
+  assert.deepEqual(desiredLabels(unavailable, "needs-review"), []);
+  assert.deepEqual(desiredLabels(unavailable, FAILURE_LABEL), [FAILURE_LABEL]);
+  assert.deepEqual(desiredLabels(unavailable, "risk/unknown"), ["risk/unknown"]);
   assert.equal(unavailable.check.title, "Classification unavailable");
   assert.equal(unavailable.check.conclusion, "neutral");
   assert.match(unavailable.check.summary, /public API compatibility unavailable/);
@@ -1654,24 +2475,26 @@ test("successful classification preserves the first-time contributor label", () 
     ["contributor/first-time"]);
 });
 
-test("same-head reclassification preserves an existing maintainer handoff", () => {
+test("successful normal classification clears state while forced classification preserves it", () => {
   const deterministic = {
     ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/S",
     sizeLabels: ["size/S"], firstTime: false,
   };
-  const classify = (completed) => resolveClassificationState({
+  const classify = (force = false) => resolveClassificationState({
     expectedSha: SHA,
-    labels: ["maintainer-required"],
+    labels: [...ACTOR_LABELS, FAILURE_LABEL],
     deterministic,
     classifier: classifier(),
-    classificationGate: { available: true, completed },
     semver: { head_sha: SHA, status: "not-suspected" },
+    force,
   });
 
-  assert.deepEqual(classify(true).addLabels, ["maintainer-required"]);
-  assert.deepEqual(classify(true).removeLabels, []);
-  assert.deepEqual(classify(false).addLabels, []);
-  assert.deepEqual(classify(false).removeLabels, ["maintainer-required"]);
+  assert.deepEqual(desiredLabels(classify(), "needs-review"), []);
+  assert.deepEqual(desiredLabels(classify(), FAILURE_LABEL), []);
+  // Contradictory actor state fails closed instead of preserving both labels.
+  assert.deepEqual(desiredLabels(classify(true), "needs-review"), []);
+  assert.deepEqual(desiredLabels(classify(true), FAILURE_LABEL), [FAILURE_LABEL]);
+  assert.equal(classify(true).dispatchReview, false);
 });
 
 test("terminal review count stops only the review pipeline", () => {
@@ -1695,9 +2518,9 @@ test("terminal review count stops only the review pipeline", () => {
   assert.equal(state.check.title, "Classification complete");
   assert.deepEqual(state.labelSets.find((set) => set.owned.includes("risk/unknown")).desired,
     ["risk/medium"]);
-  assert.deepEqual(state.addLabels, ["maintainer-required"]);
-  assert.deepEqual(state.removeLabels, []);
-  assert.equal(state.dispatchReview, false);
+  assert.deepEqual(desiredLabels(state, "needs-review"), []);
+  assert.deepEqual(desiredLabels(state, FAILURE_LABEL), []);
+  assert.equal(state.dispatchReview, true);
   assert.equal(reviewPolicyEligible({ labels: ["ai-reviewed/2", "risk/medium"] }), false);
 });
 
@@ -1778,7 +2601,7 @@ test("size/XXL remains informational and does not suppress classification", () =
   assert.deepEqual(desired.sort(), ["breaking-change", "contributor/first-time", "risk/high",
     "scope/core", "scope/web", "size/XXL"]);
   assert.deepEqual(state.addLabels, []);
-  assert.deepEqual(state.removeLabels, ["maintainer-required"]);
+  assert.deepEqual(desiredLabels(state, "needs-review"), []);
   assert.deepEqual(state.comments, []);
   assert.equal(state.check.title, "Classification complete");
   assert.equal(state.check.machineState.automaticReviewEligible, true);
@@ -1802,7 +2625,7 @@ test("suspected overlap is advisory and is withdrawn once it no longer holds", (
   const flagged = state(true);
   // Overlap alone neither hands the pull request to a maintainer nor stops the review dispatch.
   assert.deepEqual(flagged.addLabels, []);
-  assert.deepEqual(flagged.removeLabels, ["maintainer-required"]);
+  assert.deepEqual(desiredLabels(flagged, "needs-review"), []);
   assert.equal(flagged.dispatchReview, true);
   assert.deepEqual(flagged.labelSets.find((set) => set.owned.includes(OVERLAP_LABEL)).desired,
     [OVERLAP_LABEL]);
@@ -1847,9 +2670,11 @@ test("legitimacy flags leave SHA-bound audit records for maintainer triage", () 
   assert.deepEqual(stopped.comments, []);
   assert.equal(stopped.auditComments[0].kind, "legitimacy");
   assert.equal(stopped.auditComments[0].marker, `${LEGITIMACY_MARKER_PREFIX}${SHA} -->`);
-  assert.deepEqual(stopped.addLabels, ["maintainer-required", LEGITIMACY_LABEL]);
+  assert.deepEqual(stopped.addLabels, [LEGITIMACY_LABEL]);
+  assert.deepEqual(desiredLabels(stopped, "needs-review"), []);
   assert.match(markerBody(stopped.auditComments[0]), new RegExp(SHA));
   assert.match(markerBody(stopped.auditComments[0]), /remains as an audit record/);
+  assert.match(markerBody(stopped.auditComments[0]), /When CI succeeds for this exact head/);
 
   const laterStopped = resolveClassificationState({
     expectedSha: OTHER_SHA, labels: [LEGITIMACY_LABEL], deterministic,
@@ -1874,7 +2699,7 @@ test("legitimacy flags leave SHA-bound audit records for maintainer triage", () 
   assert.equal(cleared.labelSets.some((set) => set.owned.includes(LEGITIMACY_LABEL)), false);
 });
 
-test("global quota decisions stop classification and review with a bounded human handoff", () => {
+test("quota failures mark classification while an unattempted review stays blocked", () => {
   const deterministic = { ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/S", sizeLabels: ["size/S"],
     firstTime: false };
   const classification = resolveClassificationState({
@@ -1884,15 +2709,19 @@ test("global quota decisions stop classification and review with a bounded human
   });
   assert.equal(classification.failed, true);
   assert.equal(classification.comments[0].kind, "global-quota");
+  assert.deepEqual(desiredLabels(classification, FAILURE_LABEL), [FAILURE_LABEL]);
+  assert.match(markerBody(classification.comments[0], "Devolutions", "IronRDP"),
+    /Automation remains blocked until capacity is available/);
 
   const review = resolveReviewState({
     expectedSha: SHA, labels: ["risk/high"],
-    gate: { ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true },
+    gate: { ok: true, head_sha: SHA, classificationValid: true, classificationCheck: true, ciGreen: true,
+      risk: "high", protocolRelated: false, specialistReviewers: ["skeptical"] },
     contributor: { status: "eligible" },
     rateLimit: { status: "limited", scope: "global", quota: 50, count: 51 },
   });
-  assert.equal(review.failed, true);
-  assert.equal(review.comments[0].kind, "global-quota");
+  assert.equal(review.failed, undefined);
+  assert.deepEqual(desiredLabels(review, "needs-review"), []);
 });
 
 test("forced classification bypasses policy, quota, and cache but still validates output", () => {
@@ -1902,7 +2731,7 @@ test("forced classification bypasses policy, quota, and cache but still validate
   };
   const args = {
     expectedSha: SHA,
-    labels: [],
+    labels: ["needs-author-action", FAILURE_LABEL],
     deterministic,
     classifier: classifier(),
     classificationGate: { available: false, reason: "checks unavailable" },
@@ -1912,15 +2741,19 @@ test("forced classification bypasses policy, quota, and cache but still validate
   };
   const state = resolveClassificationState(args);
   assert.equal(state.failed, undefined);
+  assert.equal(state.forced, true);
   assert.equal(state.oversized, undefined);
   assert.equal(state.check.title, "Classification complete");
   assert.equal(state.dispatchReview, false);
   assert.equal(state.check.machineState.automaticReviewEligible, false);
+  assert.deepEqual(desiredLabels(state, "needs-author-action"), ["needs-author-action"]);
+  assert.deepEqual(desiredLabels(state, FAILURE_LABEL), [FAILURE_LABEL]);
   assert.equal(state.comments.some((comment) => comment.kind === "oversized"), false);
   assert.equal(state.removeCommentMarkers.includes(OVERSIZED_MARKER), true);
 
   const invalid = resolveClassificationState({ ...args, classifier: "" });
   assert.equal(invalid.failed, true);
+  assert.equal(invalid.forced, true);
   assert.equal(invalid.reason, "invalid classifier object");
   assert.deepEqual(invalid.comments, []);
   const wrongHead = resolveClassificationState({
@@ -1939,13 +2772,14 @@ test("forced review bypasses eligibility while retaining publication gates", () 
       ok: true, force: true, head_sha: SHA, classificationValid: true, protocolRelated: false,
       risk: "unknown", specialistReviewers: ["skeptical"],
     },
-    contributor: { status: "ineligible" },
+    contributor: { status: "bot" },
     rateLimit: { status: "limited", scope: "global", quota: 50, count: 51 },
     force: true,
     reviewMarkerId: "1234",
   };
   const state = resolveReviewState(args);
   assert.equal(state.failed, undefined);
+  assert.equal(state.forced, true);
   assert.deepEqual(state.labelSets[0].desired, ["ai-reviewed/2"]);
   const findingState = resolveReviewState({
     ...args, reviewer: review(),
@@ -1979,16 +2813,19 @@ test("review transition is terminal-safe and preserves human triage on no findin
     }, contributor: { status: "eligible" },
   });
   assert.deepEqual(state.labelSets[0].desired, ["ai-reviewed/1"]);
-  assert.deepEqual(state.addLabels, ["maintainer-required"]);
+  assert.deepEqual(desiredLabels(state, "needs-review"), ["needs-review"]);
+  assert.deepEqual(desiredLabels(state, FAILURE_LABEL), []);
   assert.equal(state.comments.length, 1);
   assert.deepEqual(state.comments[0].review, reviewer);
-  assert.equal(resolveReviewState({
+  const terminal = resolveReviewState({
     expectedSha: SHA, labels: ["ai-reviewed/2"], reviewer,
     gate: {
-      ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true,
+      ok: false, head_sha: SHA, classificationValid: true, classificationCheck: true, ciGreen: true,
       risk: "high", protocolRelated: false, specialistReviewers: ["skeptical"],
     }, contributor: { status: "eligible" },
-  }).failed, true);
+  });
+  assert.equal(terminal.comments.length, 0);
+  assert.deepEqual(desiredLabels(terminal, "needs-review"), ["needs-review"]);
 });
 
 test("a review with findings leaves the next step with the contributor", () => {
@@ -1998,14 +2835,14 @@ test("a review with findings leaves the next step with the contributor", () => {
     secondReviewEligible: true,
   };
   const second = resolveReviewState({
-    expectedSha: SHA, labels: ["ai-reviewed/1", "risk/high", "maintainer-required"],
+    expectedSha: SHA, labels: ["ai-reviewed/1", "risk/high", "needs-review"],
     reviewer: review(), gate, contributor: { status: "eligible" },
   });
   assert.deepEqual(second.labelSets[0].desired, ["ai-reviewed/2"]);
-  assert.deepEqual(second.addLabels, []);
-  assert.deepEqual(second.removeLabels, ["maintainer-required"]);
+  assert.deepEqual(desiredLabels(second, "needs-author-action"), ["needs-author-action"]);
+  assert.deepEqual(desiredLabels(second, FAILURE_LABEL), []);
 
-  // Automatic review is exhausted at `ai-reviewed/2`, so classification owns the later handoff.
+  // Classification clears stale actor labels before the lightweight review route resolves the handoff.
   const nextPush = resolveClassificationState({
     expectedSha: OTHER_SHA,
     labels: ["ai-reviewed/2", "risk/high"],
@@ -2016,8 +2853,7 @@ test("a review with findings leaves the next step with the contributor", () => {
     classifier: classifier({ head_sha: OTHER_SHA }),
     semver: { head_sha: OTHER_SHA, status: "not-suspected" },
   });
-  assert.deepEqual(nextPush.addLabels, ["maintainer-required"]);
-  assert.deepEqual(nextPush.removeLabels, []);
+  assert.deepEqual(desiredLabels(nextPush, "needs-review"), []);
 });
 
 test("review blockers distinguish gate and contributor history failures", () => {
@@ -2033,56 +2869,53 @@ test("review blockers distinguish gate and contributor history failures", () => 
     ...args, gate: { ...args.gate, ok: false, reason: "checks unavailable" },
   });
   assert.equal(invalidGate.ok, true);
-  assert.equal(invalidGate.failed, true);
+  assert.equal(invalidGate.failed, undefined);
   assert.equal(invalidGate.reason, "review gate unavailable: checks unavailable");
 
   const ineligible = resolveReviewState({
-    ...args, contributor: { status: "ineligible", merged: 0 },
+    ...args, contributor: { status: "bot" },
   });
   assert.equal(ineligible.ok, true);
-  assert.equal(ineligible.failed, true);
-  assert.equal(ineligible.reason, "contributor history ineligible (merged: 0, required: 1)");
+  assert.equal(ineligible.failed, undefined);
+  assert.equal(ineligible.reason, "author is a bot account");
+  assert.equal(ineligible.blocked, true);
   assert.deepEqual(ineligible.labelSets, []);
-  assert.deepEqual(ineligible.addLabels, ["maintainer-required"]);
-  assert.deepEqual(ineligible.comments, [{
-    kind: "contributor-ineligible", marker: CONTRIBUTOR_INELIGIBLE_MARKER,
-  }]);
-  assert.equal(ineligible.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), false);
+  assert.deepEqual(ineligible.comments, []);
 
   const unavailable = resolveReviewState({
     ...args, contributor: { status: "unavailable", reason: "GitHub API unavailable" },
   });
   assert.equal(unavailable.ok, true);
-  assert.equal(unavailable.failed, true);
-  assert.equal(unavailable.reason, "contributor history unavailable: GitHub API unavailable");
-  assert.equal(unavailable.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), false);
+  assert.equal(unavailable.failed, undefined);
+  assert.equal(unavailable.reason, "contributor eligibility unavailable: GitHub API unavailable");
 
   const ciPending = resolveReviewState({
     ...args, gate: { ...args.gate, ok: false, ciGreen: false },
   });
   assert.equal(ciPending.reason, "CI has not succeeded");
-  assert.deepEqual(ciPending.addLabels, []);
-  assert.deepEqual(ciPending.removeLabels, ["maintainer-required"]);
+  assert.deepEqual(desiredLabels(ciPending, "needs-review"), []);
 
   for (const labels of [
     ["ai-reviewed/1", "risk/high"],
-    ["ai-reviewed/1", "risk/high", "maintainer-required"],
+    ["ai-reviewed/1", "risk/high", "needs-review"],
   ]) {
     const secondReview = resolveReviewState({
       ...args, labels,
       gate: { ...args.gate, ok: false, ciGreen: false, secondReviewEligible: false },
     });
-    assert.equal(secondReview.reason, "second review is not eligible");
-    assert.deepEqual(secondReview.addLabels, []);
-    assert.deepEqual(secondReview.removeLabels, []);
+    assert.equal(secondReview.reason, "CI has not succeeded");
+    assert.deepEqual(desiredLabels(secondReview, "needs-review"), []);
   }
 
   const policy = resolveReviewState({
     ...args, labels: ["risk/low", LEGITIMACY_LABEL],
-    gate: { ...args.gate, policyEligible: false, protocolRelated: false },
+    gate: {
+      ...args.gate, ok: false, classificationValid: true, policyEligible: false,
+      protocolRelated: false, legitimacyStopped: true,
+    },
   });
-  assert.equal(policy.reason, "review is not eligible");
-  assert.deepEqual(policy.addLabels, ["maintainer-required"]);
+  assert.equal(policy.reason, "review is handed to a human");
+  assert.deepEqual(desiredLabels(policy, "needs-review"), ["needs-review"]);
 
   // Overlap is advisory at publication too, so the review this run spent its model call on is
   // published instead of being discarded.
@@ -2091,20 +2924,6 @@ test("review blockers distinguish gate and contributor history failures", () => 
   });
   assert.equal(advisory.failed, undefined);
   assert.deepEqual(advisory.labelSets[0].desired, ["ai-reviewed/1"]);
-});
-
-test("a later eligible review removes the contributor-ineligible comment", () => {
-  const state = resolveReviewState({
-    expectedSha: SHA, labels: ["risk/low"], reviewer: review({ findings: [] }),
-    gate: {
-      ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true,
-      risk: "low", protocolRelated: false, specialistReviewers: ["code-compressor"],
-    },
-    contributor: { status: "eligible", merged: 1 },
-  });
-
-  assert.equal(state.failed, undefined);
-  assert.equal(state.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), true);
 });
 
 test("an unavailable mandatory protocol specialist blocks the review count", () => {
@@ -2121,8 +2940,8 @@ test("an unavailable mandatory protocol specialist blocks the review count", () 
   });
   assert.equal(failed.failed, true);
   assert.equal(failed.reason, "protocol specialist unavailable");
-  assert.deepEqual(failed.addLabels, ["maintainer-required"]);
-  assert.deepEqual(failed.labelSets, []);
+  assert.deepEqual(desiredLabels(failed, "needs-review"), []);
+  assert.deepEqual(desiredLabels(failed, FAILURE_LABEL), [FAILURE_LABEL]);
   assert.equal(failed.check.conclusion, "neutral");
   assert.match(failed.check.summary, /protocol specialist unavailable/);
   assert.deepEqual(resolveReviewState(args).labelSets[0].desired, ["ai-reviewed/1"]);
@@ -2147,9 +2966,29 @@ test("evidence failures are reported only for an eligible review", () => {
   assert.equal(active.reason, "changed file retrieval unavailable");
   assert.equal(active.check.conclusion, "neutral");
 
-  const terminal = resolveReviewState({ ...args, labels: ["ai-reviewed/2", "risk/high"] });
-  assert.equal(terminal.reason, "terminal AI review count");
+  const terminal = resolveReviewState({
+    ...args,
+    labels: ["ai-reviewed/2", "risk/high"],
+    gate: { ...args.gate, ok: false, classificationValid: true },
+  });
+  assert.equal(terminal.reason, "review is handed to a human");
   assert.equal(terminal.check, undefined);
+  assert.deepEqual(desiredLabels(terminal, "needs-review"), ["needs-review"]);
+});
+
+test("a same-head duplicate review preserves current actor and failure labels", () => {
+  const duplicate = resolveReviewState({
+    expectedSha: SHA, labels: ["risk/high", "needs-author-action", FAILURE_LABEL],
+    gate: {
+      ok: false, head_sha: SHA, classificationCheck: true, ciGreen: true,
+      reviewAtHead: true, risk: "high", protocolRelated: false, specialistReviewers: ["skeptical"],
+    },
+    contributor: { status: "eligible" },
+    reviewAttempted: false,
+  });
+  assert.equal(duplicate.failed, undefined);
+  assert.equal(duplicate.blocked, true);
+  assert.deepEqual(duplicate.labelSets, []);
 });
 
 test("writer stops before mutations when the head is stale", async () => {
@@ -2160,7 +2999,7 @@ test("writer stops before mutations when the head is stale", async () => {
   } };
   await assert.rejects(writeState({
     github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
-    state: { ok: true, mode: "classification", expectedSha: SHA, labelSets: [], addLabels: ["maintainer-required"] },
+    state: { ok: true, mode: "classification", expectedSha: SHA, labelSets: [], addLabels: ["needs-review"] },
   }), StaleHeadError);
   assert.equal(writes, 0);
 });
@@ -2168,7 +3007,13 @@ test("writer stops before mutations when the head is stale", async () => {
 test("writer stops before mutations when review policy or count changes", async () => {
   let writes = 0;
   let labels = [{ name: LEGITIMACY_LABEL }];
-  const github = { rest: {
+  const listRuns = () => {};
+  const github = { paginate: { iterator: async function* (method) {
+    if (method === listRuns) yield { data: [{
+      id: 1, run_attempt: 1, name: "CI", head_sha: SHA, conclusion: "success",
+    }] };
+  } }, rest: {
+    actions: { listWorkflowRunsForRepo: listRuns },
     pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
     issues: {
       get: async () => ({ data: { labels } }),
@@ -2180,6 +3025,7 @@ test("writer stops before mutations when review policy or count changes", async 
     state: {
       ok: true, mode: "review", expectedSha: SHA,
       expectedReviewCount: null, forced: false, protocolRelated: false,
+      ciRunId: 1, ciRunAttempt: 1,
       labelSets: [], addLabels: ["ai-reviewed/1"], comments: [],
     },
   }), StalePolicyError);
@@ -2189,56 +3035,68 @@ test("writer stops before mutations when review policy or count changes", async 
     state: {
       ok: true, mode: "review", expectedSha: SHA,
       expectedReviewCount: null, forced: false, protocolRelated: true,
+      ciRunId: 1, ciRunAttempt: 1,
       labelSets: [], addLabels: ["ai-reviewed/1"], comments: [],
     },
   }), StalePolicyError);
   assert.equal(writes, 0);
 });
 
-test("writer keeps one contributor-ineligible comment and removes it after eligibility changes", async () => {
-  const issueComments = [];
-  let nextCommentId = 1;
-  const github = {
-    paginate: { iterator: async function* () { yield { data: issueComments }; } },
-    rest: {
-      pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
-      issues: {
-        get: async () => ({ data: { labels: ["maintainer-required", "risk/low"] } }),
-        listComments: () => {},
-        createComment: async ({ body }) => {
-          issueComments.push({ id: nextCommentId++, body, user: { login: "github-actions[bot]" } });
-        },
-        deleteComment: async ({ comment_id: commentId }) => {
-          issueComments.splice(issueComments.findIndex((comment) => comment.id === commentId), 1);
-        },
-      },
-    },
-  };
+test("bot-authored pull requests preserve the existing labels without a model route", () => {
   const gate = {
     ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true,
     risk: "low", protocolRelated: false, specialistReviewers: ["code-compressor"],
   };
   const state = resolveReviewState({
-    expectedSha: SHA, labels: ["risk/low"], gate,
-    contributor: { status: "ineligible", merged: 0 },
+    expectedSha: SHA, labels: ["risk/low", "needs-author-action", FAILURE_LABEL], gate,
+    contributor: { status: "bot" },
   });
-  const args = {
-    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+  assert.deepEqual(state.comments, []);
+  assert.equal(state.blocked, true);
+  assert.deepEqual(state.labelSets, []);
+});
+
+test("terminal handoff publishes only after its stopping policy still holds", async () => {
+  const added = [];
+  const listRuns = () => {};
+  const github = { paginate: { iterator: async function* (method) {
+    if (method === listRuns) {
+      yield { data: [{
+        id: 1, run_attempt: 1, name: "CI", head_sha: SHA, conclusion: "success",
+      }] };
+    } else {
+      yield { data: [] };
+    }
+  } }, rest: {
+    actions: { listWorkflowRunsForRepo: listRuns },
+    pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+    issues: {
+      get: async () => ({ data: { labels: ["ai-reviewed/2"] } }),
+      addLabels: async ({ labels }) => added.push(...labels),
+    },
+  } };
+  const state = resolveReviewState({
+    expectedSha: SHA, labels: ["ai-reviewed/2"],
+    gate: {
+      ok: false, head_sha: SHA, classificationValid: true, classificationCheck: true,
+      ciGreen: true, ciRunId: 1, ciRunAttempt: 1,
+      risk: "high", protocolRelated: false, specialistReviewers: [],
+    },
+    contributor: { status: "eligible" },
+  });
+  await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, state, botLogin: "github-actions[bot]",
+  });
+  assert.deepEqual(added, ["needs-review"]);
+
+  const stale = { ...github, rest: { ...github.rest, issues: {
+    ...github.rest.issues,
+    get: async () => ({ data: { labels: [] } }),
+  } } };
+  await assert.rejects(writeState({
+    github: stale, owner: "Devolutions", repo: "IronRDP", prNumber: 1, state,
     botLogin: "github-actions[bot]",
-  };
-
-  await writeState({ ...args, state });
-  await writeState({ ...args, state });
-  assert.equal(issueComments.length, 1);
-  assert.equal(issueComments[0].body.startsWith(CONTRIBUTOR_INELIGIBLE_MARKER), true);
-
-  const eligibleState = resolveReviewState({
-    expectedSha: SHA, labels: ["risk/low"],
-    gate: { ...gate, classificationCheck: false },
-    contributor: { status: "eligible", merged: 1 },
-  });
-  await writeState({ ...args, state: eligibleState });
-  assert.deepEqual(issueComments, []);
+  }), StalePolicyError);
 });
 
 test("writer publishes classification audit comments", async () => {
@@ -2284,13 +3142,70 @@ test("writer batches the label delta and tolerates an absent label removal", asy
   assert.equal(await applyLabels(github, "Devolutions", "IronRDP", 1, {
     expectedSha: SHA,
     labelSets: [{ owned: ["risk/low", "risk/high", "risk/unknown"], desired: ["risk/high"] }],
-    addLabels: ["maintainer-required"], removeLabels: ["obsolete"],
+    addLabels: ["needs-review"], removeLabels: ["obsolete"],
   }), true);
-  assert.deepEqual(added, ["risk/high", "maintainer-required"]);
+  assert.deepEqual(added, ["risk/high", "needs-review"]);
   assert.equal(reads, 1);
   assert.equal(await applyLabels(github, "Devolutions", "IronRDP", 1, {
     expectedSha: SHA, labelSets: [], addLabels: ["risk/low"],
   }), false);
+});
+
+test("actor replacements remove the stale actor before adding its successor", async () => {
+  const calls = [];
+  const labels = new Set(["needs-review", "obsolete"]);
+  const github = { rest: {
+    pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+    issues: {
+      removeLabel: async ({ name }) => {
+        calls.push(`remove:${name}`);
+        labels.delete(name);
+      },
+      addLabels: async ({ labels: additions }) => {
+        calls.push(`add:${additions.join(",")}`);
+        for (const label of additions) labels.add(label);
+      },
+    },
+  } };
+  await applyLabels(github, "Devolutions", "IronRDP", 1, {
+    expectedSha: SHA,
+    labelSets: [],
+    addLabels: ["needs-author-action", "risk/high"],
+    removeLabels: ["obsolete"],
+  }, labels);
+  assert.deepEqual(calls, [
+    "remove:needs-review",
+    "add:needs-author-action,risk/high",
+    "remove:obsolete",
+  ]);
+  assert.equal(labels.has("needs-review"), false);
+  assert.equal(labels.has("needs-author-action"), true);
+});
+
+test("a failed actor replacement add leaves no actor label", async () => {
+  const calls = [];
+  const labels = new Set(["needs-review"]);
+  const github = { rest: {
+    pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+    issues: {
+      removeLabel: async ({ name }) => {
+        calls.push(`remove:${name}`);
+        labels.delete(name);
+      },
+      addLabels: async () => {
+        calls.push("add");
+        throw new Error("add failed");
+      },
+    },
+  } };
+  await assert.rejects(applyLabels(github, "Devolutions", "IronRDP", 1, {
+    expectedSha: SHA,
+    labelSets: [],
+    addLabels: ["needs-author-action"],
+  }, labels), /add failed/);
+  assert.deepEqual(calls, ["remove:needs-review", "add"]);
+  assert.equal(labels.has("needs-review"), false);
+  assert.equal(labels.has("needs-author-action"), false);
 });
 
 test("writer reads normalized check-run pages and updates the newest matching run", async () => {
@@ -2362,7 +3277,7 @@ test("writer upgrades a neutral automated review check instead of creating a dup
     github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
     state: {
       ok: true, mode: "review", expectedSha: SHA, labelSets: [], addLabels: [], comments: [],
-      expectedReviewCount: null, forced: false, protocolRelated: true,
+      expectedReviewCount: null, forced: true, protocolRelated: true,
       check: { name: "AI automated review", externalId: SHA },
     },
   });
@@ -2374,7 +3289,7 @@ test("writer upgrades a neutral automated review check instead of creating a dup
 
 test("classification dispatch remains edge-triggered except for explicit retries", async () => {
   const writeClassification = async ({
-    dispatchReview = true, existing = "none", reviewRequested = false,
+    dispatchReview = true, existing = "none", reviewRequested = false, title = "Classification complete",
   }) => {
     let creates = 0;
     let updates = 0;
@@ -2390,7 +3305,7 @@ test("classification dispatch remains edge-triggered except for explicit retries
           external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
           conclusion: "success",
           output: {
-            title: "Classification complete",
+            title,
             summary: existing === "same"
               ? `Validated classification.\n\n${encodeCheckState(machineState)}`
               : "Previous classification state.",
@@ -2415,7 +3330,7 @@ test("classification dispatch remains edge-triggered except for explicit retries
         comments: [], removeCommentMarkers: [], dispatchReview,
         check: {
           name: "AI classification", externalId: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
-          title: "Classification complete", summary: "Validated classification.",
+          title, summary: "Validated classification.",
           machineState,
         },
       },
@@ -2438,6 +3353,180 @@ test("classification dispatch remains edge-triggered except for explicit retries
   assert.deepEqual(await writeClassification({ dispatchReview: false, reviewRequested: true }), {
     creates: 1, updates: 0, dispatches: 0,
   });
+  assert.deepEqual(await writeClassification({ title: "Automation stopped" }), {
+    creates: 1, updates: 0, dispatches: 1,
+  });
+});
+
+test("green CI completed before legitimacy classification dispatches its handoff", async () => {
+  const machineState = {
+    protocolRelated: false, risk: "low", specialistReviewers: [],
+    automaticReviewEligible: true,
+  };
+  const classificationRuns = [{
+    id: 1, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "success",
+    app: { slug: "github-actions" },
+    output: {
+      title: "Automation stopped",
+      summary: `Validated classification.\n\n${encodeCheckState(machineState)}`,
+    },
+  }];
+  const { gate } = await runReviewGateScript({
+    route: "classification-complete",
+    classificationRuns,
+    workflowRuns: [{ id: 7, run_attempt: 1, name: "CI", head_sha: SHA, conclusion: "success" }],
+  });
+  assert.equal(gate.ciGreen, true);
+  assert.deepEqual({ id: gate.ciRunId, attempt: gate.ciRunAttempt }, { id: 7, attempt: 1 });
+  const state = resolveReviewState({
+    expectedSha: SHA, labels: [LEGITIMACY_LABEL], gate, contributor: { status: "eligible" },
+  });
+  assert.equal(state.handoff, "legitimacy");
+  assert.deepEqual(desiredLabels(state, "needs-review"), ["needs-review"]);
+});
+
+function freshCiWriter(listings) {
+  let polls = 0;
+  let published = 0;
+  const listReviews = () => {};
+  const listChecks = () => {};
+  const listRuns = () => {};
+  const github = {
+    paginate: { iterator: async function* (method) {
+      if (method === listReviews || method === listChecks) yield { data: [] };
+      if (method === listRuns) {
+        yield { data: listings[Math.min(polls, listings.length - 1)] };
+        polls += 1;
+      }
+    } },
+    rest: {
+      actions: { listWorkflowRunsForRepo: listRuns },
+      checks: { listForRef: listChecks, create: async () => {} },
+      pulls: {
+        get: async () => ({ data: { state: "open", head: { sha: SHA } } }),
+        listReviews,
+        createReview: async () => { published += 1; },
+      },
+      issues: {
+        get: async () => ({ data: { labels: [{ name: "risk/low" }] } }),
+        addLabels: async () => {},
+      },
+    },
+  };
+  const state = resolveReviewState({
+    expectedSha: SHA, labels: ["risk/low"], reviewer: review({ findings: [] }),
+    gate: {
+      ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true,
+      ciRunId: 7, ciRunAttempt: 1, risk: "low", protocolRelated: false,
+      specialistReviewers: ["code-compressor"],
+    },
+    contributor: { status: "eligible" },
+  });
+  const write = () => writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, state, botLogin: "github-actions[bot]",
+    ciRetry: { delayMs: 0 },
+  });
+  return { write, polls: () => polls, published: () => published };
+}
+
+test("writer retries a CI listing that lags behind the authorized generation", async () => {
+  const authorized = ciRun({ id: 7 });
+  const writer = freshCiWriter([[{ ...authorized, status: "in_progress", conclusion: null }], [authorized]]);
+  await writer.write();
+  assert.equal(writer.published(), 1);
+  // One lagging poll, then one poll for each freshness check once the listing has caught up.
+  assert.equal(writer.polls(), 4);
+});
+
+test("writer rejects a newer CI generation without retry", async () => {
+  const writer = freshCiWriter([[ciRun({ id: 7 }), ciRun({ id: 7, run_attempt: 2 })]]);
+  await assert.rejects(writer.write(), StalePolicyError);
+  assert.deepEqual({ polls: writer.polls(), published: writer.published() }, { polls: 1, published: 0 });
+});
+
+test("writer blocks a review when a newer exact-head CI attempt starts", async () => {
+  let published = 0;
+  let checks = 0;
+  let labels = 0;
+  const listReviews = () => {};
+  const listChecks = () => {};
+  const listRuns = () => {};
+  const github = {
+    paginate: { iterator: async function* (method) {
+      if (method === listReviews || method === listChecks) yield { data: [] };
+      if (method === listRuns) yield { data: [{
+        id: 7, run_attempt: 2, name: "CI", head_sha: SHA, conclusion: null, status: "in_progress",
+      }] };
+    } },
+    rest: {
+      actions: { listWorkflowRunsForRepo: listRuns },
+      checks: { listForRef: listChecks, create: async () => { checks += 1; } },
+      pulls: {
+        get: async () => ({ data: { state: "open", head: { sha: SHA } } }),
+        listReviews,
+        createReview: async () => { published += 1; },
+      },
+      issues: {
+        get: async () => ({ data: { labels: [{ name: "risk/low" }] } }),
+        addLabels: async () => { labels += 1; },
+      },
+    },
+  };
+  const state = resolveReviewState({
+    expectedSha: SHA, labels: ["risk/low"], reviewer: review({ findings: [] }),
+    gate: {
+      ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true,
+      ciRunId: 7, ciRunAttempt: 1, risk: "low", protocolRelated: false,
+      specialistReviewers: ["code-compressor"],
+    },
+    contributor: { status: "eligible" },
+  });
+  await assert.rejects(writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, state, botLogin: "github-actions[bot]",
+  }), StalePolicyError);
+  assert.deepEqual({ published, checks, labels }, { published: 0, checks: 0, labels: 0 });
+});
+
+test("writer applies blocked reconciliation without review-policy assertions", async () => {
+  const baseGate = {
+    ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true,
+    ciRunId: 7, ciRunAttempt: 1, risk: "low", protocolRelated: false,
+    specialistReviewers: ["code-compressor"],
+  };
+  const states = [
+    resolveReviewState({
+      expectedSha: SHA, labels: ["risk/low", "needs-review", FAILURE_LABEL],
+      gate: { ...baseGate, ciGreen: false }, contributor: { status: "eligible" },
+    }),
+    resolveReviewState({
+      expectedSha: SHA, labels: ["risk/low", "needs-author-action", FAILURE_LABEL],
+      gate: baseGate, contributor: { status: "eligible" }, rateLimit: { status: "limited" },
+    }),
+    resolveReviewState({
+      expectedSha: SHA, labels: ["risk/low", "needs-author-action", FAILURE_LABEL],
+      gate: { ...baseGate, reviewAtHead: true }, contributor: { status: "eligible" },
+    }),
+  ];
+  for (const state of states) {
+    const removed = [];
+    const github = { paginate: { iterator: async function* () { yield { data: [] }; } }, rest: {
+      pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+      issues: {
+        get: async () => ({ data: { labels: ["risk/low", "needs-review", "needs-author-action", FAILURE_LABEL] } }),
+        listComments: () => {},
+        removeLabel: async ({ name }) => removed.push(name),
+      },
+    } };
+    assert.equal(state.blocked, true);
+    await writeState({
+      github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, state, botLogin: "github-actions[bot]",
+    });
+    if (state.reason === "an automated review already exists for this head") {
+      assert.deepEqual(removed, []);
+    } else {
+      assert.deepEqual(removed.sort(), ["needs-author-action", "needs-review"]);
+    }
+  }
 });
 
 test("writer retries a truncated current-head read before dispatching once", async () => {
@@ -2603,7 +3692,7 @@ test("writer deduplicates one forced review invocation but publishes a later one
       github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
       state: {
         ok: true, mode: "review", expectedSha: SHA, labelSets: [], addLabels: [],
-        expectedReviewCount: null, forced: false, protocolRelated: true,
+        expectedReviewCount: null, forced: true, protocolRelated: true,
         comments: [{ kind: "review", marker, review: review() }],
       },
     });
@@ -2625,7 +3714,7 @@ test("failed review publication does not consume review count or change triage",
         createReview: async () => { throw new Error("publication failed"); },
       },
       issues: {
-        get: async () => ({ data: { labels: [{ name: "risk/high" }, { name: "maintainer-required" }] } }),
+        get: async () => ({ data: { labels: [{ name: "risk/high" }, { name: "needs-review" }] } }),
         addLabels: async () => { labelWrites += 1; },
         removeLabel: async () => { labelWrites += 1; },
       },
@@ -2635,9 +3724,9 @@ test("failed review publication does not consume review count or change triage",
     github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
     state: {
       ok: true, mode: "review", expectedSha: SHA,
-      expectedReviewCount: null, forced: false, protocolRelated: false,
+      expectedReviewCount: null, forced: true, protocolRelated: false,
       labelSets: [{ owned: ["ai-reviewed/1", "ai-reviewed/2"], desired: ["ai-reviewed/1"] }],
-      addLabels: [], removeLabels: ["maintainer-required"],
+      addLabels: [], removeLabels: ["needs-review"],
       comments: [{
         kind: "review", marker: `<!-- ironrdp-pr-automation:review:${SHA} -->`,
         review: review(),
@@ -2660,7 +3749,7 @@ test("failed review check persistence does not consume review count", async () =
         get: async () => ({ data: { state: "open", head: { sha: SHA } } }),
       },
       issues: {
-        get: async () => ({ data: { labels: [{ name: "risk/high" }, { name: "maintainer-required" }] } }),
+        get: async () => ({ data: { labels: [{ name: "risk/high" }, { name: "needs-review" }] } }),
         addLabels: async () => { labelWrites += 1; },
         removeLabel: async () => { labelWrites += 1; },
       },
@@ -2670,7 +3759,7 @@ test("failed review check persistence does not consume review count", async () =
     github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
     state: {
       ok: true, mode: "review", expectedSha: SHA,
-      expectedReviewCount: null, forced: false, protocolRelated: false,
+      expectedReviewCount: null, forced: true, protocolRelated: false,
       labelSets: [{ owned: ["ai-reviewed/1", "ai-reviewed/2"], desired: ["ai-reviewed/1"] }],
       addLabels: [], comments: [],
       check: { name: "AI automated review", externalId: SHA },
@@ -2696,7 +3785,7 @@ test("writer publishes each finding either inline or in the review body", async 
     github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
     state: {
       ok: true, mode: "review", expectedSha: SHA, labelSets: [], addLabels: [],
-      expectedReviewCount: null, forced: false, protocolRelated: true,
+      expectedReviewCount: null, forced: true, protocolRelated: true,
       comments: [{
         kind: "review",
         marker: `<!-- ironrdp-pr-automation:review:${SHA} -->`,
@@ -2749,6 +3838,67 @@ test("writer publishes each finding either inline or in the review body", async 
   assert.doesNotMatch(published.body, /inline-only rationale/);
 });
 
+test("writer rejects tampered publication payloads before calling GitHub", async () => {
+  let published = false;
+  const github = {
+    paginate: { iterator: async function* () { yield { data: [] }; } },
+    rest: {
+      pulls: {
+        listReviews: () => {},
+        get: async () => ({ data: { state: "open", head: { sha: SHA } } }),
+        createReview: async () => { published = true; },
+      },
+    },
+  };
+  const oversized = maximumFinalReview();
+  oversized.summary = "'".repeat(1000);
+  oversized.findings = oversized.findings.map((entry, index) => ({
+    ...entry,
+    path: `src/${String(index).padStart(3, "0")}${"'".repeat(293)}`,
+    start_line: null,
+    end_line: null,
+    title: "'".repeat(200),
+    rationale: "'".repeat(1200),
+  }));
+  const state = {
+    ok: true, mode: "review", expectedSha: SHA, labelSets: [], addLabels: [],
+    expectedReviewCount: null, forced: true, protocolRelated: false,
+    comments: [{
+      kind: "review",
+      marker: `<!-- ironrdp-pr-automation:review:${SHA} -->`,
+      review: oversized,
+    }],
+  };
+  await assert.rejects(writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+    botLogin: "github-actions[bot]", state,
+  }), /review publication exceeds GitHub body limit/);
+  await assert.rejects(writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+    botLogin: "github-actions[bot]",
+    state: {
+      ...state,
+      comments: [{ ...state.comments[0], review: review(), reducedCoverage: ["invented"] }],
+    },
+  }), /invalid review coverage/);
+  const existingGithub = {
+    ...github,
+    paginate: {
+      iterator: async function* () {
+        yield { data: [{
+          user: { login: "github-actions[bot]" },
+          body: state.comments[0].marker,
+        }] };
+      },
+    },
+  };
+  await assert.rejects(writeState({
+    github: existingGithub, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+    botLogin: "github-actions[bot]", state,
+  }), /review publication exceeds GitHub body limit/);
+  assert.equal(published, false);
+});
+
 test("writer publishes a green main comment when no findings remain", async () => {
   let published;
   const github = {
@@ -2766,7 +3916,7 @@ test("writer publishes a green main comment when no findings remain", async () =
     github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
     state: {
       ok: true, mode: "review", expectedSha: SHA, labelSets: [], addLabels: [],
-      expectedReviewCount: null, forced: false, protocolRelated: false,
+      expectedReviewCount: null, forced: true, protocolRelated: false,
       comments: [{
         kind: "review",
         marker: `<!-- ironrdp-pr-automation:review:${SHA} -->`,
@@ -2796,7 +3946,7 @@ test("writer adds deterministic reduced-coverage notices without filtering findi
     github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
     state: {
       ok: true, mode: "review", expectedSha: SHA, labelSets: [], addLabels: [],
-      expectedReviewCount: null, forced: false, protocolRelated: false,
+      expectedReviewCount: null, forced: true, protocolRelated: false,
       comments: [{
         kind: "review", marker: `<!-- ironrdp-pr-automation:review:${SHA} -->`,
         reducedCoverage: ["protocol"],
@@ -2818,11 +3968,11 @@ test("review checks name reduced coverage without publishing failure reasons", (
     { id: "validate", status: "success", required: true },
   ]);
   const rendered = renderReviewReport({
-    report, outcome: "recovered-reduced-coverage", reducedCoverage: ["code-compressor"],
+    report, outcome: "reduced-coverage", reducedCoverage: ["code-compressor"],
     summaryUrl: "https://github.example/actions/runs/123",
   });
   assert.equal(rendered.checkSummary.split("\n\n")[0],
-    "Validated automated review was produced after stage recovery with reduced coverage: " +
+    "Validated automated review is bound to this commit with reduced coverage: " +
     "optional reviewer code-compressor was unavailable.");
   assert.match(rendered.checkSummary, /code-compressor/);
   assert.doesNotMatch(rendered.checkSummary, /provider timeout with internal details/);
@@ -2955,44 +4105,33 @@ test("owner and member authors are eligible without contributor history", async 
   }
 });
 
-test("other human authors need one same-author pull request merged into master", async () => {
+test("other human authors are eligible immediately without contributor history", async () => {
+  const unavailable = {
+    paginate: { iterator: () => { throw new Error("must not query history"); } },
+    rest: { pulls: { list: () => {} } },
+  };
   const author = { nodeId: "author", login: "author", type: "User", association: "CONTRIBUTOR" };
-  for (const candidate of [
-    pull(2, { merged_at: "2026-01-01T00:00:00Z", labels: ["trivial"] }),
-    pull(3, { merged_at: "2026-01-01T00:00:00Z", labels: ["reverted"] }),
-    pull(4, { merged_at: "2026-01-01T00:00:00Z", title: "Revert bad change" }),
-    pull(5, {
-      merged_at: "2026-01-01T00:00:00Z",
-      user: { node_id: "author", login: "renamed-author", type: "User" },
-    }),
-  ]) {
-    assert.deepEqual(await contributorEligibility({
-      github: paginated({ closed: [[candidate]] }), owner: "Devolutions", repo: "IronRDP",
-      author, currentPrNumber: 1,
-    }), { status: "eligible", merged: 1 });
-  }
-
   assert.deepEqual(await contributorEligibility({
-    github: paginated({ closed: [[
-      pull(6),
-      pull(7, { merged_at: "2026-01-01T00:00:00Z", base: { ref: "release" } }),
-      pull(8, {
-        merged_at: "2026-01-01T00:00:00Z",
-        user: { node_id: "different-author", login: "author", type: "User" },
-      }),
-    ]] }), owner: "Devolutions", repo: "IronRDP",
-    author, currentPrNumber: 1,
-  }), { status: "ineligible", merged: 0 });
+    github: unavailable, owner: "Devolutions", repo: "IronRDP", author, currentPrNumber: 1,
+  }), { status: "eligible", association: "CONTRIBUTOR" });
 });
 
 test("bot authors remain ineligible regardless of association", async () => {
   assert.deepEqual(await contributorEligibility({
     github: paginated({}), owner: "Devolutions", repo: "IronRDP",
     author: { association: "MEMBER", login: "service[bot]", type: "Bot" }, currentPrNumber: 1,
-  }), { status: "ineligible", reason: "bot author" });
+  }), { status: "bot" });
 });
 
-// ---- reviewer stage recovery, reporting, and metrics ----
+test("a missing or malformed author identity fails closed instead of eligible", async () => {
+  for (const author of [undefined, null, {}, { association: "CONTRIBUTOR" }]) {
+    assert.deepEqual(await contributorEligibility({
+      github: paginated({}), owner: "Devolutions", repo: "IronRDP", author, currentPrNumber: 1,
+    }), { status: "unavailable", reason: "missing author identity" });
+  }
+});
+
+// ---- reviewer stage reporting and metrics ----
 
 function trustedFile(root, name, value) {
   const file = path.join(root, name);
@@ -3061,7 +4200,7 @@ test("the review validator turns correctable model errors into targeted repair f
     }), /must cite a path changed by this pull request/],
     [candidateReview("skeptical", {
       findings: [candidateFinding({ start_line: 9, end_line: 4 })],
-    }), /must use integer lines with end_line at or after start_line/],
+    }), /must use lines between 1 and 2147483647 with end_line at or after start_line/],
     [candidateReview("skeptical", {
       findings: [candidateFinding({ references: [{
         protocol_id: "MS-RDPBCGR", section: "2.2.1", heading: "Heading",
@@ -3242,14 +4381,15 @@ test("repair may correct an identity the validators would never accept", () => {
   assert.deepEqual(validateGeneral(finalReview(), { metadata: general, previousCandidate: overlong }),
     { ok: true });
 
-  // The review validators cap a title at 200 UTF-8 bytes, which is stricter than the schema's 200
-  // characters, so a title only they reject is not protected either.
-  const overweight = finalReview({
+  // Schema-valid non-BMP text is accepted and therefore remains protected during repair.
+  const unicode = finalReview({
     findings: [{ ...finalReview().findings[0], title: "\u00e9".repeat(101) }],
   });
-  assert.deepEqual(validateGeneral(finalReview(), {
-    metadata: general, previousCandidate: overweight,
-  }), { ok: true });
+  const droppedUnicode = validateGeneral(finalReview(), {
+    metadata: general, previousCandidate: unicode,
+  });
+  assert.equal(droppedUnicode.ok, false);
+  assert.match(droppedUnicode.reason, /restore the one it dropped/);
 
   // A disposition for a candidate the specialists never produced is rejected by final validation,
   // so the repair has to drop it and that is not a withdrawal.
@@ -3415,7 +4555,7 @@ test("final review diagnostics report the whole disposition map in one rejection
   assert.match(mixed.reason, /3\/4 candidates lack a valid disposition/);
   assert.match(mixed.reason, /1 unknown/);
   assert.match(mixed.reason, /1 duplicate/);
-  assert.match(mixed.reason, /1 with a blank, forbidden-control, or over 800 UTF-8 byte rationale/);
+  assert.match(mixed.reason, /1 with a blank, forbidden-control, or over 800 character rationale/);
   assert.match(mixed.reason, /1 malformed/);
   assertReasonSurvivesRuntime(mixed.reason);
 
@@ -3430,7 +4570,7 @@ test("final review diagnostics report the whole disposition map in one rejection
   assert.match(saturated.reason, /3\/4 candidates lack a valid disposition/);
   assert.match(saturated.reason, /15 unknown/);
   assert.match(saturated.reason, /28 duplicate/);
-  assert.match(saturated.reason, /15 with a blank, forbidden-control, or over 800 UTF-8 byte rationale/);
+  assert.match(saturated.reason, /15 with a blank, forbidden-control, or over 800 character rationale/);
   assert.match(saturated.reason, /15 malformed/);
   assertReasonSurvivesRuntime(saturated.reason);
 
@@ -3442,7 +4582,7 @@ test("final review diagnostics report the whole disposition map in one rejection
 });
 
 test("final review diagnostics report duplicate and rationale failures independently", () => {
-  for (const rationale of [" ", "x\u0000y", "\u00e9".repeat(401)]) {
+  for (const rationale of [" ", "x\u0000y", "x".repeat(801)]) {
     for (const rationales of [
       [rationale, "supported"],
       ["supported", rationale],
@@ -3471,20 +4611,19 @@ test("final review diagnostics report duplicate and rationale failures independe
   assert.equal(validateFinalReview(finalOutput([disposition(1)]), finalContext(1)).ok, true);
 });
 
-// The schema bounds a rationale in characters while the validator bounds it in bytes and forbids
-// control characters, so these failures reach the validator and have to be explained accurately.
+// The validator adds non-blank and control-character requirements to the schema's character limits.
 test("final review diagnostics explain text normalization the schema does not enforce", () => {
   const context = finalContext(1);
-  const accented = "\u00e9".repeat(401);
-  assert.ok(accented.length <= 800 && Buffer.byteLength(accented, "utf8") > 800);
+  const overlong = "x".repeat(801);
+  assert.equal(overlong.length > 800, true);
 
-  for (const rationale of [" ", '""', accented, "supported\u0000claim"]) {
+  for (const rationale of [" ", '""', overlong, "supported\u0000claim"]) {
     const result = validateFinalReview(finalOutput([disposition(1, { rationale })]), context);
     assert.equal(result.ok, false, rationale);
     // The constraint and both counts are what a repair needs, so they survive even though the
     // second coordinate does not fit beside them.
     assert.match(result.reason, /1 of 1 candidate has no valid disposition/);
-    assert.match(result.reason, /1 entry with a rationale that must be non-blank and free of forbidden control characters, within 800 UTF-8 bytes/);
+    assert.match(result.reason, /1 entry with a rationale that must be non-blank and free of forbidden control characters, within 800 characters/);
     assertReasonSurvivesRuntime(result.reason);
   }
 
@@ -3500,7 +4639,7 @@ test("final review diagnostics explain text normalization the schema does not en
     { ...finalOutput([disposition(1)]), summary: "verified\u0000review" }, context,
   );
   assert.equal(summary.ok, false);
-  assert.match(summary.reason, /summary must be non-blank and free of forbidden control characters, within 1000 UTF-8 bytes/);
+  assert.match(summary.reason, /summary must be non-blank and free of forbidden control characters, within 1000 characters/);
 
   const finding = (changes = {}) => ({
     question: false, severity: "high", path: "src/lib.rs", start_line: 4, end_line: 4,
@@ -3508,7 +4647,7 @@ test("final review diagnostics explain text normalization the schema does not en
     sources: [{ reviewer: "skeptical", finding_id: "finding-1" }], ...changes,
   });
   const accepted = [disposition(1, { disposition: "accepted" })];
-  for (const changes of [{ title: " " }, { rationale: "\u00e9".repeat(601) }, { rationale: "a\u0000b" }]) {
+  for (const changes of [{ title: " " }, { rationale: "x".repeat(1201) }, { rationale: "a\u0000b" }]) {
     const result = validateFinalReview(finalOutput(accepted, [finding(changes)]), context);
     assert.equal(result.ok, false, JSON.stringify(changes));
     assert.match(result.reason, /invalid final review finding at index 0: title and rationale must be non-blank and free of forbidden control characters/);
@@ -3516,8 +4655,8 @@ test("final review diagnostics explain text normalization the schema does not en
   const bothInvalid = validateFinalReview(finalOutput(accepted, [
     finding({ title: " ", rationale: "a\u0000b" }),
   ]), context);
-  assert.match(bothInvalid.reason, /title 200 bytes/);
-  assert.match(bothInvalid.reason, /rationale 1200 bytes/);
+  assert.match(bothInvalid.reason, /title 200/);
+  assert.match(bothInvalid.reason, /rationale 1200/);
   assert.match(bothInvalid.reason, /forbidden control characters/);
   assertReasonSurvivesRuntime(bothInvalid.reason);
 
@@ -3538,14 +4677,14 @@ test("final review diagnostics explain text normalization the schema does not en
   assert.match(lines.reason, /end_line at or after start_line/);
 
   // A path the pull request changed can still be too long, so the condition names that bound too.
-  const long = `src/${"\u00e9".repeat(150)}.rs`;
-  assert.ok(long.length < 300 && Buffer.byteLength(long, "utf8") > 300);
+  const long = `src/${"a".repeat(297)}`;
+  assert.equal(long.length, 301);
   const oversized = validateFinalReview(finalOutput(accepted, [finding({ path: long })]), {
     ...context, changedPaths: ["src/lib.rs", long],
     changedLines: { "src/lib.rs": [4], [long]: [4] },
   });
   assert.equal(oversized.ok, false);
-  assert.match(oversized.reason, /path must be a repository path this pull request changed, within 300 UTF-8 bytes/);
+  assert.match(oversized.reason, /path must be a repository path this pull request changed, within 300 characters/);
   assertReasonSurvivesRuntime(oversized.reason);
 });
 
@@ -3680,266 +4819,6 @@ test("unmeasured provider usage is reported as unknown, never as zero", () => {
   assert.deepEqual(partial.tokens, { input: 5, output: null, total: null, complete: false });
 });
 
-test("a retried stage reports what both of its attempts spent", () => {
-  const attempt = (changes = {}) => parseDiagnostics(JSON.stringify({
-    durationMs: 1000, requestRetryCount: 4, outputRepairCount: 1,
-    providerAttempts: [{ activity: "review" }],
-    tokenUsage: { complete: true, inputTokens: 100, outputTokens: 20, totalTokens: 120 },
-    ...changes,
-  }));
-
-  assert.deepEqual(mergeDiagnostics(attempt(), attempt()), {
-    elapsed_ms: 2000, request_retries: 8, output_repairs: 2, provider_attempts: 2,
-    tokens: { input: 200, output: 40, total: 240, complete: true },
-  });
-
-  // One unmeasured attempt must not disappear into the other attempt's number.
-  const half = mergeDiagnostics(attempt(), parseDiagnostics(""));
-  assert.equal(half.elapsed_ms, null);
-  assert.equal(half.tokens.complete, false);
-  assert.equal(half.tokens.input, 100);
-
-  // A stage that only ever ran once keeps its single measurement.
-  assert.deepEqual(mergeDiagnostics(attempt(), null), attempt());
-  assert.deepEqual(mergeDiagnostics(null, attempt()), attempt());
-});
-
-const REVIEWABLE_REVIEWERS = ["protocol", "skeptical", "code-compressor"];
-const BASE_SHA = "c".repeat(40);
-
-function reviewableState(changes = {}) {
-  return {
-    state: "open", draft: false, headSha: SHA, baseSha: BASE_SHA, labels: [],
-    authorType: "User", association: "MEMBER",
-    classificationConclusion: "success", classificationHeadSha: SHA,
-    classificationTitle: "Classification complete",
-    automaticReviewEligible: true, classifiedReviewers: REVIEWABLE_REVIEWERS,
-    alreadyReviewed: false, ciConclusion: "success", ciRuns: null, classificationRuns: null,
-    diffBytes: 64 * 1024,
-    ...changes,
-  };
-}
-
-// A pull request the caller's gate would still admit, with one attribute at a time knocked out.
-function reviewablePullRequest(changes = {}, live = null) {
-  const initial = reviewableState(changes);
-  const now = () => (live ? reviewableState(live()) : initial);
-  const github = {
-    paginate: { iterator: () => ({ [Symbol.asyncIterator]: async function* () {} }) },
-    rest: {
-      pulls: {
-        list: async () => ({ data: [] }),
-        get: async () => {
-          const state = now();
-          return { data: {
-            number: 1,
-            state: state.state,
-            draft: state.draft,
-            head: { sha: state.headSha, repo: { full_name: "Devolutions/IronRDP" } },
-            base: { sha: state.baseSha },
-            labels: state.labels.map((name) => ({ name })),
-            author_association: state.association,
-            user: { login: "octocat", type: state.authorType, node_id: "U_kgDOAoctocat" },
-          } };
-        },
-      },
-      checks: {
-        listForRef: async ({ check_name: checkName }) => {
-          const state = now();
-          if (checkName === "AI automated review") {
-            return { data: { check_runs: state.alreadyReviewed
-              ? [{ conclusion: "success", app: { slug: "github-actions" } }]
-              : [] } };
-          }
-          const summaryFor = (run) => `Validated classification.\n\n${encodeCheckState({
-            protocolRelated: true, risk: "medium",
-            specialistReviewers: run.reviewers ?? state.classifiedReviewers,
-            automaticReviewEligible: run.eligible ?? state.automaticReviewEligible,
-          })}`;
-          const runs = state.classificationRuns ?? [{ id: 1, title: state.classificationTitle }];
-          return { data: { check_runs: runs.map((run) => ({
-            id: run.id,
-            external_id: `${CLASSIFIER_SCHEMA_VERSION}:${state.classificationHeadSha}`,
-            conclusion: run.conclusion ?? state.classificationConclusion,
-            app: { slug: "github-actions" },
-            output: { title: run.title, summary: summaryFor(run) },
-          })) } };
-        },
-      },
-      actions: {
-        listWorkflowRunsForRepo: async () => {
-          const state = now();
-          return { data: { workflow_runs: state.ciRuns ?? [
-            { name: "CI", conclusion: state.ciConclusion, run_started_at: "2026-01-01T00:00:00Z" },
-          ] } };
-        },
-      },
-    },
-  };
-  return {
-    github, owner: "Devolutions", repo: "IronRDP", pullNumber: 1,
-    expectedHeadSha: SHA, expectedBaseSha: BASE_SHA,
-    selectedReviewers: REVIEWABLE_REVIEWERS, requiredReviewers: ["protocol"],
-    diffBytes: initial.diffBytes,
-  };
-}
-
-test("a delayed retry is spent only on a failure the runtime itself called retryable", async () => {
-  const slept = [];
-  const gate = (changes = {}) => delayedRetryGate({
-    ...reviewablePullRequest(), retryable: "true", failureCategory: "provider-timeout",
-    delaySeconds: 120, sleep: async (ms) => { slept.push(ms); },
-    ...changes,
-  });
-
-  assert.deepEqual(await gate(), { retry: true, reason: "" });
-  assert.deepEqual(slept, [120000]);
-
-  // The runtime owns the taxonomy. Every category it marks retryable is retried, and the pipeline
-  // never second-guesses it with a category list of its own.
-  for (const category of [
-    "provider-timeout", "provider-conflict", "provider-rate-limit", "provider-service",
-    "provider-connection", "a-category-invented-after-this-test-was-written",
-  ]) {
-    assert.equal((await gate({ failureCategory: category })).retry, true, category);
-  }
-
-  // Terminal failures never reach a second request, whatever they are called.
-  for (const failure of [
-    { retryable: "false", failureCategory: "provider-quota" },
-    { retryable: "false", failureCategory: "output-invalid" },
-    { retryable: "false", failureCategory: "provider-credential" },
-    { retryable: "", failureCategory: "" },
-    { retryable: undefined, failureCategory: undefined },
-  ]) {
-    const result = await gate(failure);
-    assert.equal(result.retry, false);
-    assert.match(result.reason, /not retryable/);
-  }
-
-  // The delay is bounded no matter what the caller asks for.
-  slept.length = 0;
-  await gate({ delaySeconds: 60 * 60 });
-  await gate({ delaySeconds: -1 });
-  await gate({ delaySeconds: Number.NaN });
-  assert.deepEqual(slept, [MAXIMUM_DELAY_SECONDS * 1000, 0, 0]);
-});
-
-test("a retry re-decides review eligibility against the pull request as it is after the delay", async () => {
-  const gate = (state = {}, extra = {}) => delayedRetryGate({
-    ...reviewablePullRequest(state), retryable: "true", failureCategory: "provider-timeout",
-    delaySeconds: 0, sleep: async () => {},
-    ...extra,
-  });
-
-  assert.equal((await gate()).retry, true);
-
-  // Everything the caller checked before the pipeline started is checked again, because the delay
-  // is long enough for any of it to change.
-  const declined = {
-    "pull request is no longer open": { state: "closed" },
-    "pull request head is no longer current": { headSha: OTHER_SHA },
-    "pull request base moved away from the reviewed evidence": { baseSha: OTHER_SHA },
-    "pull request is a draft": { draft: true },
-    "review is no longer policy eligible": { labels: ["triage/legitimacy"] },
-    "pull request evidence exceeds the current evidence limit": { diffBytes: 2 * 1024 * 1024 },
-    // Evidence that cannot be measured cannot be shown to fit, so it fails closed.
-    "pull request evidence is unavailable": { diffBytes: null },
-    "classification is no longer valid for this head": { classificationConclusion: "failure" },
-    "classification no longer authorizes an automatic review": { automaticReviewEligible: false },
-    "classification now selects a different reviewer set": { classifiedReviewers: ["protocol", "skeptical"] },
-    "this head was already reviewed": { alreadyReviewed: true },
-    "CI is not green at the reviewed head": { ciConclusion: "failure" },
-    "pull request author is a bot": { authorType: "Bot" },
-  };
-  for (const [reason, state] of Object.entries(declined)) {
-    assert.deepEqual(await gate(state), { retry: false, reason }, reason);
-  }
-
-  // A suspected overlap is advisory, so a retry earned by a transient provider failure still runs.
-  assert.deepEqual(await gate({ labels: [OVERLAP_LABEL] }), { retry: true, reason: "" });
-
-  // A classification that stopped the automation still carries automaticReviewEligible, so only its
-  // title separates it from one that authorizes a review. Losing the legitimacy label while the
-  // stage sleeps must not buy a second provider request.
-  assert.deepEqual(await gate({ classificationTitle: "Automation stopped" }),
-    { retry: false, reason: "classification no longer authorizes an automatic review" });
-  assert.deepEqual(await gate({ classificationTitle: "Automation stopped" }, { force: true }),
-    { retry: true, reason: "" });
-  const reviewGate = workflowJob(readWorkflow(path.join(__dirname, "..")), "review-gate");
-  assert.match(reviewGate, /const classificationValid = classificationOwned && protocolState !== null;/);
-  assert.match(reviewGate, /const classificationCheck = classificationValid &&\s+classification\.output\?\.title === "Classification complete"/);
-
-  // A stale classification bound to an older head cannot authorize this one.
-  assert.equal((await gate({ classificationHeadSha: OTHER_SHA })).retry, false);
-
-  // A newer failing CI run is not excused by an older successful one.
-  assert.equal((await gate({ ciRuns: [
-    { name: "CI", conclusion: "success", run_started_at: "2026-01-01T00:00:00Z" },
-    { name: "CI", conclusion: "failure", run_started_at: "2026-01-02T00:00:00Z" },
-  ] })).retry, false);
-
-  // Two classification runs can share one external ID. The newest decides, whatever order the API
-  // lists them in, so a superseded "Classification complete" cannot authorize the retry.
-  assert.deepEqual(await gate({ classificationRuns: [
-    { id: 41, title: "Classification complete" },
-    { id: 42, title: "Automation stopped" },
-  ] }), { retry: false, reason: "classification no longer authorizes an automatic review" });
-  assert.equal((await gate({ classificationRuns: [
-    { id: 42, title: "Classification complete" },
-    { id: 41, title: "Automation stopped" },
-  ] })).retry, true);
-
-  // An unreachable API proves nothing, and proving nothing is not permission to spend a request.
-  const broken = { retry: false, reason: "review eligibility could not be confirmed" };
-  assert.deepEqual(await gate({}, { github: { rest: { pulls: {
-    get: async () => { throw new Error("secret-bearing rate limit detail"); },
-  } } } }), broken);
-});
-
-test("the caller's force bypasses review policy, and nothing that makes a review unsafe", async () => {
-  const gate = (state = {}) => delayedRetryGate({
-    ...reviewablePullRequest(state), retryable: "true", failureCategory: "provider-timeout",
-    delaySeconds: 0, sleep: async () => {}, force: true,
-  });
-
-  for (const state of [
-    { draft: true }, { labels: ["triage/legitimacy"] }, { ciConclusion: "failure" },
-    { alreadyReviewed: true }, { authorType: "Bot" },
-  ]) {
-    assert.equal((await gate(state)).retry, true, JSON.stringify(state));
-  }
-
-  // Safety is not policy: a moved head, a closed pull request, and evidence that does not fit the
-  // cap now in force stay fatal under force.
-  for (const state of [
-    { state: "closed" }, { headSha: OTHER_SHA }, { baseSha: OTHER_SHA },
-    { diffBytes: 2 * 1024 * 1024 }, { diffBytes: null },
-  ]) {
-    assert.equal((await gate(state)).retry, false, JSON.stringify(state));
-  }
-
-  // The oversized allowance raises the cap it was granted for, and only that far.
-  assert.equal((await gate({
-    diffBytes: 2 * 1024 * 1024, labels: ["ai-review/allow-oversized"],
-  })).retry, true);
-  assert.equal((await gate({
-    diffBytes: 5 * 1024 * 1024, labels: ["ai-review/allow-oversized"],
-  })).retry, false);
-});
-
-test("a retry decision is made after the delay, not before it", async () => {
-  let current = reviewableState();
-  const decision = await delayedRetryGate({
-    ...reviewablePullRequest(current, () => current),
-    retryable: "true", failureCategory: "provider-service", delaySeconds: 30,
-    // The pull request is closed while the pipeline waits, which is exactly the case a
-    // before-the-delay check would miss.
-    sleep: async () => { current = reviewableState({ state: "closed", draft: true }); },
-  });
-  assert.deepEqual(decision, { retry: false, reason: "pull request is no longer open" });
-});
-
 test("every failed stage is reported, not just the first", () => {
   const report = buildReport([
     { id: "evidence", status: "success", required: true },
@@ -3964,44 +4843,6 @@ test("every failed stage is reported, not just the first", () => {
   assert.equal(buildReport(report.stages.map((stage) => stage.id === "validate"
     ? { ...stage, status: "success" }
     : stage)).status, "failed");
-});
-
-test("recovery repeats only the failed work and keeps every earlier success", () => {
-  // Incident 1912: the compressor produced a valid review, the skeptical reviewer timed out, and
-  // the protocol reviewer exhausted output repair. Only the timeout is worth a second request.
-  const spent = { tokens: { complete: true, input: 100, output: 20, total: 120 }, elapsed_ms: 1000,
-    request_retries: 4, output_repairs: 0 };
-  const report = buildReport([
-    { id: "evidence", status: "success", required: true, metrics: { elapsed_ms: 500 } },
-    { id: "specialist:code-compressor", status: "success", required: true, provider: true,
-      attempts: 1, metrics: spent },
-    { id: "specialist:skeptical", status: "success", required: true, provider: true,
-      attempts: 2, previous_reason: "provider request timed out",
-      metrics: { ...spent, elapsed_ms: 2000, request_retries: 8 } },
-    { id: "specialist:protocol", status: "failed", required: true, provider: true,
-      attempts: 1, reason: "model output was not valid JSON",
-      category: "output-repair-exhausted", metrics: spent },
-    { id: "aggregate", status: "success", required: true },
-    { id: "general", status: "skipped", required: true, provider: true },
-    { id: "validate", status: "skipped", required: true },
-  ]);
-
-  const stage = (id) => report.stages.find((entry) => entry.id === id);
-  assert.equal(stage("specialist:code-compressor").attempts, 1);
-  assert.equal(stage("specialist:skeptical").status, "success");
-  // A recovered stage still explains the attempt it lost.
-  assert.equal(stage("specialist:skeptical").previous_reason, "provider request timed out");
-  assert.equal(stage("specialist:protocol").attempts, 1);
-  // A stage its dependency skipped was never attempted, so the report must not read as a call.
-  assert.equal(stage("general").attempts, 0);
-  assert.equal(stage("validate").attempts, 0);
-  assert.equal(stageOutcome({ id: "general", status: "skipped", attempts: 2 }).attempts, 0);
-  assert.equal(report.metrics.stage_retries, 1);
-  assert.equal(report.metrics.request_retries, 16);
-  // Both attempts of the recovered stage are charged.
-  assert.equal(report.metrics.tokens.input, 300);
-  assert.equal(report.metrics.tokens_complete, true);
-  assert.equal(report.status, "failed");
 });
 
 test("a provider stage that never reported usage keeps the totals honest", () => {
@@ -4029,14 +4870,13 @@ test("a provider stage that never reported usage keeps the totals honest", () =>
 
   // Diagnostics that never arrived prove nothing, so the stage still counts as spending.
   assert.equal(providerWasCalled(parseDiagnostics("")), true);
-  assert.equal(providerWasCalled(mergeDiagnostics(beforeAnyRequest, parseDiagnostics(""))), true);
   assert.equal(buildReport([
     { id: "general", status: "failed", required: true, reason: "provider unavailable",
       provider: providerWasCalled(parseDiagnostics("")), metrics: parseDiagnostics("") },
   ]).metrics.tokens_complete, false);
 
   const metrics = buildReport([
-    { id: "evidence", status: "success", required: true, attempts: 2, metrics: {
+    { id: "evidence", status: "success", required: true, metrics: {
       tokens: { input: 100, output: 20, total: 120, complete: true },
       elapsed_ms: 1000, request_retries: 3, output_repairs: 2,
     } },
@@ -4051,15 +4891,13 @@ test("a provider stage that never reported usage keeps the totals honest", () =>
     elapsed_ms: 100,
     request_retries: 1,
     output_repairs: 0,
-    stage_retries: 0,
   });
 });
 
 test("the caller reads exactly what the pipeline wrote, and never reads garbage as success", () => {
   const produced = buildReport([
     { id: "evidence", status: "success", required: true, metrics: { elapsed_ms: 500 } },
-    { id: "specialist:skeptical", status: "success", required: true, provider: true, attempts: 2,
-      previous_reason: "provider request timed out",
+    { id: "specialist:skeptical", status: "success", required: true, provider: true,
       metrics: { tokens: { complete: true, input: 10, output: 5 }, elapsed_ms: 20,
         request_retries: 4, output_repairs: 1 } },
     { id: "specialist:protocol", status: "failed", required: true, provider: true,
@@ -4075,8 +4913,6 @@ test("the caller reads exactly what the pipeline wrote, and never reads garbage 
   const parsed = parseReport(JSON.stringify(produced));
   assert.deepEqual(parsed, produced);
   assert.equal(parsed.v, REPORT_VERSION);
-  assert.equal(parsed.stages.find((stage) => stage.id === "specialist:skeptical").previous_reason,
-    "provider request timed out");
   // Which stages paid a provider crosses the wire too, so the consumer's totals are the producer's.
   assert.equal(parsed.metrics.tokens_complete, false);
   assert.equal(parsed.stages.find((stage) => stage.id === "specialist:protocol").provider, true);
@@ -4094,7 +4930,7 @@ test("the caller reads exactly what the pipeline wrote, and never reads garbage 
   assert.match(unusable(JSON.stringify({ v: 99 })).stages[0].reason, /unsupported report version/);
 
   // A producer cannot claim success it did not earn, and a producer that failed is believed.
-  assert.equal(parseReport(JSON.stringify({ v: 1, status: "success", stages: [
+  assert.equal(parseReport(JSON.stringify({ v: REPORT_VERSION, status: "success", stages: [
     { id: "validate", status: "success", required: true },
     { id: "general", status: "failed", required: true },
   ] })).status, "failed");
@@ -4105,6 +4941,10 @@ test("the caller reads exactly what the pipeline wrote, and never reads garbage 
     .map((id) => ({ id, status: "success", required: true })));
   assert.equal(clean.status, "success");
   assert.equal(parseReport(JSON.stringify(clean)).status, "success");
+  assert.equal(buildReport([
+    ...clean.stages,
+    { id: `specialist:${"x".repeat(70_000)}`, status: "failed", required: false },
+  ]).status, "failed");
   for (const status of [undefined, "", null, "succeeded", 1]) {
     assert.equal(parseReport(JSON.stringify({ ...clean, status })).status, "failed");
   }
@@ -4115,13 +4955,17 @@ test("the caller reads exactly what the pipeline wrote, and never reads garbage 
   const unmarked = ["evidence", "aggregate", "general", "validate"]
     .map((id) => ({ id, status: "success" }));
   assert.equal(buildReport(unmarked).status, "success");
-  assert.equal(parseReport(JSON.stringify({ v: 1, status: "success", stages: unmarked })).status,
+  assert.equal(parseReport(JSON.stringify({
+    v: REPORT_VERSION, status: "success", stages: unmarked,
+  })).status,
     "success");
   for (const failed of ["evidence", "aggregate", "general", "validate"]) {
     const stages = unmarked.map((stage) =>
       stage.id === failed ? { ...stage, status: "failed" } : stage);
     assert.equal(buildReport(stages).status, "failed", `${failed} must not be waved through`);
-    assert.equal(parseReport(JSON.stringify({ v: 1, status: "success", stages })).status, "failed");
+    assert.equal(parseReport(JSON.stringify({
+      v: REPORT_VERSION, status: "success", stages,
+    })).status, "failed");
   }
 });
 
@@ -4133,17 +4977,39 @@ test("the reusable pipeline stays caller-driven and reports every stage back", (
   assert.doesNotMatch(triggers, /\n {2}(pull_request|push|schedule|workflow_dispatch|issue_comment):/);
 
   for (const input of ["pr-number", "head-sha", "base-sha", "specialist-reviewers",
-    "evidence-max-bytes", "required-reviewers", "gate", "retry-delay-seconds"]) {
+    "evidence-max-bytes", "required-reviewers", "gate"]) {
     assert.match(workflow, new RegExp(`\\n {6}${input}:\\n`), `${input} input is missing`);
   }
-  // The caller owns publication and scheduling; recovery is settled inside one call.
   for (const removed of ["prior-results", "recovery-attempt", "provenance"]) {
     assert.doesNotMatch(workflow, new RegExp(removed), `${removed} should no longer exist`);
   }
 
   const outputs = workflow.slice(workflow.indexOf("    outputs:"), workflow.indexOf("\npermissions:"));
   assert.deepEqual(outputs.match(/\n {6}[a-z-]+:/g).map((name) => name.trim()),
-    ["output:", "failure-reason:", "report:"]);
+    ["failure-reason:"]);
+});
+
+test("maximum review payloads traverse workflow-controlled files and artifacts", () => {
+  const caller = readWorkflow();
+  const pipeline = readReviewWorkflow();
+  const action = fs.readFileSync(path.join(__dirname, "..", "actions", "openai-agent", "action.yml"), "utf8");
+  assert.equal((pipeline.match(/structured-output-file: \.openai-agent-output\//g) || []).length, 2);
+  assert.doesNotMatch(pipeline, /RAW_OUTPUT|structured-output \}\}/);
+  assert.match(pipeline, /name: review-final-\$\{\{ inputs\.head-sha \}\}/);
+  assert.match(pipeline, /name: review-report-\$\{\{ inputs\.head-sha \}\}/);
+  assert.match(caller,
+    /pattern: review-\{final,report,validation,aggregate\}-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
+  assert.match(caller, /name: review-state-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
+  const resolveReviewStateJob = workflowJob(caller, "resolve-review-state");
+  assert.doesNotMatch(resolveReviewStateJob, /RAW_OUTPUT|REVIEW_REPORT/);
+  assert.match(resolveReviewStateJob, /requireReviewerContext: true/);
+  assert.match(resolveReviewStateJob, /validateFinalReview\(persisted\.raw_output/);
+  assert.match(pipeline, /raw_output: rawOutput/);
+  assert.doesNotMatch(workflowJob(caller, "write-state"), /REVIEW_STATE/);
+  assert.match(workflowJob(caller, "write-state"), /CLASSIFICATION_STATE/);
+  assert.doesNotMatch(caller, /classification-state-\$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
+  assert.match(action, /structured-output-file:/);
+  assert.equal((action.match(/^  structured-output-file:/gm) || []).length, 1);
 });
 
 test("specialist concurrency is a provider allocation, not a reviewer cap", () => {
@@ -4163,92 +5029,27 @@ test("reviewer actions retry four provider requests and repair output in convers
     const config = JSON.parse(fs.readFileSync(path.join(__dirname, "agents", `${agent}.json`), "utf8"));
     assert.equal(config.max_request_retries, 4, `${agent} must retry four requests`);
     assert.equal(config.max_output_repair_attempts, 2, `${agent} must repair output in conversation`);
+    assert.equal(config.stage_timeout_ms, 7_200_000, `${agent} must use the reviewer stage budget`);
+    assert.equal(config.stream_idle_timeout_ms, 300_000, `${agent} must use the stream idle budget`);
   }
+  assert.match(workflowJob(workflow, "specialists"), /timeout-minutes: 130/);
+  assert.match(workflowJob(workflow, "general"), /timeout-minutes: 130/);
 });
 
-test("the shared retry gate carries the resolved plan into its decision", async () => {
-  const os = require("node:os");
-  const fixture = reviewablePullRequest();
-  const run = async (env) => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-gate-"));
-    fs.mkdirSync(path.join(directory, "pr-evidence"));
-    fs.writeFileSync(path.join(directory, "pr-evidence", "pull-request.diff"), "x".repeat(2048));
-    const previous = process.cwd();
-    const outputs = {};
-    const logged = [];
-    try {
-      process.chdir(directory);
-      await retryGateStep({
-        github: fixture.github,
-        context: { repo: { owner: "Devolutions", repo: "IronRDP" } },
-        core: {
-          setOutput: (key, value) => { outputs[key] = value; },
-          info: (line) => logged.push(JSON.parse(line)),
-        },
-        env: {
-          PULL_REQUEST_NUMBER: "1", HEAD_SHA: SHA, BASE_SHA: BASE_SHA,
-          RETRYABLE: "true", FAILURE_CATEGORY: "provider-timeout", RETRY_DELAY_SECONDS: "0",
-          SELECTED_REVIEWERS: JSON.stringify(REVIEWABLE_REVIEWERS),
-          ...env,
-        },
-        stage: "specialist",
-      });
-    } finally {
-      process.chdir(previous);
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
-    return { outputs, logged };
-  };
-
-  const allowed = await run({ REQUIRED_REVIEWERS: JSON.stringify(["protocol"]) });
-  assert.equal(allowed.outputs.retry, "true");
-  assert.deepEqual(allowed.logged, [{
-    event: "pr-automation.retry-gate", stage: "specialist", retry: true, reason: "",
-  }]);
-
-  // A reviewer the plan makes mandatory but the classification no longer selects cannot be
-  // recovered, and an unreadable plan must not quietly drop that check.
-  const dropped = await run({ REQUIRED_REVIEWERS: JSON.stringify(["security"]) });
-  assert.equal(dropped.outputs.retry, "false");
-  assert.match(dropped.outputs.reason, /required reviewer is no longer selected/);
-});
-
-test("stage recovery costs one extra invocation and re-proves the review first", () => {
-  const workflow = readReviewWorkflow();
-  const adapter = fs.readFileSync(
-    path.join(__dirname, "review-retry.js"), "utf8",
+test("every model stage uses its stage-specific trusted output normalizer", () => {
+  assert.match(
+    workflowJob(readWorkflow(), "classifier"),
+    /normalizer: \.github\/pr-automation\/output-normalizer\.js#normalizeClassifier/,
   );
-
-  // Both reviewer jobs share one gate adapter, and it re-decides eligibility on the real pull
-  // request rather than on the head alone.
-  assert.match(adapter, /retryable: env\.RETRYABLE/, "the gate must trust the runtime");
-  assert.doesNotMatch(adapter, /RETRYABLE_CATEGORIES/);
-  for (const input of ["expectedBaseSha", "force", "selectedReviewers", "requiredReviewers", "diffBytes"]) {
-    assert.match(adapter, new RegExp(`\\b${input}\\b`), `the gate must receive ${input}`);
-  }
-
-  for (const [name, stage] of [["specialists", "specialist"], ["general", "general"]]) {
-    const job = workflowJob(workflow, name);
-    assert.match(job, new RegExp(`retryGateStep\\([\\s\\S]*?stage: "${stage}"`),
-      `${name} must gate its retry`);
-    assert.match(job, /retry-delay-seconds/, `${name} must honour the caller delay`);
-    // Exactly one retry invocation: recovery is bounded, not a loop.
-    assert.equal((job.match(/id: agent-retry\n/g) || []).length, 1);
-    assert.match(job, /if: steps\.retry-gate\.outputs\.retry == 'true'/);
-    for (const variable of ["RETRYABLE", "GATE", "SELECTED_REVIEWERS", "REQUIRED_REVIEWERS"]) {
-      assert.match(job, new RegExp(`${variable}: `), `${name} must pass ${variable} to the gate`);
-    }
-    // Reading that pull request needs read-only scopes, and grants no write anywhere.
-    const permissions = job.slice(job.indexOf("permissions:"), job.indexOf("steps:"));
-    for (const scope of ["actions: read", "checks: read", "issues: read", "pull-requests: read"]) {
-      assert.match(permissions, new RegExp(scope), `${name} must be able to re-check eligibility`);
-    }
-    assert.doesNotMatch(permissions, /: write/);
-
-    // A declined retry is a review outcome the caller has to be able to read.
-    assert.match(job, /RETRY_DECLINE: \$\{\{ steps\.retry-gate\.outputs\.reason \}\}/);
-    assert.match(job, /no retry: \$\{decline\}/);
-  }
+  const workflow = readReviewWorkflow();
+  assert.match(
+    workflowJob(workflow, "specialists"),
+    /normalizer: \.github\/pr-automation\/output-normalizer\.js#normalizeSpecialist/,
+  );
+  assert.match(
+    workflowJob(workflow, "general"),
+    /normalizer: \.github\/pr-automation\/output-normalizer\.js#normalizeGeneral/,
+  );
 });
 
 test("the preparation job checks out the automation before any step requires it", async () => {
@@ -4515,6 +5316,8 @@ test("publication stays fail closed on required coverage and independent validat
   assert.match(report, /if: always\(\) && !cancelled\(\)/);
   assert.match(report, /buildReport/);
   // The published review is whatever independent validation accepted, and nothing else.
-  assert.match(workflow, /value: \$\{\{ jobs\.validate\.outputs\.output \}\}/);
+  assert.doesNotMatch(workflow, /jobs\.validate\.outputs\.output/);
+  assert.match(validate, /JSON\.stringify\(\{ output, raw_output: rawOutput, reason \}\)/);
+  assert.match(workflow, /name: review-final-\$\{\{ inputs\.head-sha \}\}/);
   assert.match(report, /\.filter\(\(stage\) => stage\.status === "failed"\)/);
 });

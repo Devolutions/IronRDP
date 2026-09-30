@@ -2600,6 +2600,7 @@ dependencies = [
  "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "rand 0.9.4",
  "tracing",
 ]
 
@@ -3179,6 +3180,7 @@ dependencies = [
  "ironrdp-core 0.2.1",
  "ironrdp-error 0.2.0",
  "subtle",
+ "tracing",
 ]
 
 [[package]]
@@ -3189,6 +3191,7 @@ dependencies = [
  "bitflags 2.13.1",
  "ironrdp-core 0.2.1",
  "ironrdp-error 0.2.0",
+ "tracing",
 ]
 
 [[package]]
@@ -3313,7 +3316,11 @@ dependencies = [
  "ironrdp-nscodec",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
+ "ironrdp-rdpeai",
  "ironrdp-rdpei",
+ "ironrdp-rdpemt",
+ "ironrdp-rdpeudp",
+ "ironrdp-rdpeudp-tokio",
  "ironrdp-rdpeusb",
  "ironrdp-rdpsnd",
  "ironrdp-svc",
@@ -3382,6 +3389,7 @@ dependencies = [
  "expect-test",
  "hex",
  "ironrdp-acceptor",
+ "ironrdp-async",
  "ironrdp-bulk",
  "ironrdp-cfg",
  "ironrdp-cliprdr",
@@ -3413,6 +3421,7 @@ dependencies = [
  "ironrdp-session",
  "ironrdp-str",
  "ironrdp-svc",
+ "ironrdp-tokio",
  "ironrdp-usb",
  "openh264",
  "paste",
@@ -3440,6 +3449,7 @@ dependencies = [
  "ironrdp-daemon",
  "ironrdp-dvc",
  "ironrdp-dvc-pipe-proxy",
+ "ironrdp-egfx",
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-pdu",
@@ -3453,6 +3463,7 @@ dependencies = [
  "ironrdp-rdpsnd",
  "ironrdp-rdpsnd-native",
  "ironrdp-rpc",
+ "ironrdp-server",
  "ironrdp-svc",
  "ironrdp-tls",
  "ironrdp-tokio",

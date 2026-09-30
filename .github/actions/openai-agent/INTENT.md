@@ -1,63 +1,121 @@
+# OpenAI filesystem agent intent
+
+This action runs a narrowly capable, bounded filesystem agent against an OpenAI-compatible chat-completions API.
+It exists to let trusted workflows use model reasoning and read-only evidence lookup without granting command execution, arbitrary network access, or general filesystem writes.
+Repository evidence, tool arguments, and provider responses remain untrusted throughout the invocation.
+
 ## Terms
 
-- **Request retry:** resend the same provider request after a transient failure, without changing the conversation.
-- **Output repair:** ask the model to correct an invalid response using validation feedback and the existing investigation context.
+- A **logical model call** sends one message history to the provider.
+- An **HTTP attempt** is one network request for a logical model call.
+- A **request retry** resends the unchanged logical call after a transient failure.
+- An **output repair** asks the model to correct a rejected value using validation feedback and the existing conversation.
 
-## Inputs
+## Trusted inputs and capabilities
+
+The workflow controls:
 
 - Provider connection details and credentials.
-- Model.
-- Instructions.
+- Model and instructions.
 - Output schema.
-- Read-only access rules.
-- Request timeout.
-- Maximum request retries.
-- Maximum model turns.
-- Maximum tool calls.
-- Maximum output size.
-- Maximum output-repair attempts.
-- Optional validator for task-specific checks.
+- Read-only filesystem capabilities.
+- Stage, stream-idle, request-retry, model-turn, tool-call, and output-repair limits.
+- An optional synchronous task-specific output normalizer.
+- An optional task-specific validator and its bounded metadata.
+- An optional structured-output file target.
 
-## Outputs
+Configuration, prompts, schemas, normalizer modules, and validator modules are trusted workflow inputs.
+Evidence and model-produced tool arguments never grant capabilities.
+The model can call only the declared `read_file`, `list_files`, and `search_text` tools within the configured paths and resource limits.
 
-- JSON accepted by the schema and any supplied validator, or an explicit failure reason.
+## Streaming and stage limits
 
-Expose these diagnostics:
+Every model call uses streaming so active reasoning and generation are not bounded by a short whole-request timeout.
+The action requests high reasoning effort and leaves the provider token cap unset.
 
-- Activity (such as investigation, final output, or repair).
-- Duration of each provider attempt.
-- Request-retry count.
-- Output-repair count.
-- Provider-reported stop reason (such as completion or token limit).
-- Token usage when available.
-- Accumulated turn and tool-call counts, including on failure.
-- Each rejected output attempt, naming which validation rejected it and why.
+The stage has one monotonic deadline covering provider attempts, retry waits, tool execution, validation, and output repair.
+Every HTTP attempt has independent raw-response-byte and idle-progress limits.
+The idle limit begins before the first response byte and resets only when the response body makes progress.
+The raw-stream limit includes framing bytes before the SDK parses server-sent events.
+
+The action accumulates reasoning, content, usage, finish reason, and indexed tool-call fragments independently.
+Truthy indexed tool identity snapshots (`id`, `type`, and `function.name`) replace earlier values, while `function.arguments` appends in arrival order.
+Reasoning remains separate from tool-call accumulation.
+An omitted choice index is accepted only for a single-choice chunk, and one complete index-less tool-call envelope is accepted only when the response contains no indexed fragments.
+Every accepted stream carries a terminal finish reason so cleanly truncated responses are retried rather than accepted.
+After that terminal reason, the conventional `choices: []` usage-only tail is preserved unchanged.
+The only accepted nonempty tail is one choice with an empty delta and an omitted, null, or matching finish reason, which maintains compatibility with providers that include usage metadata there.
+Every other nonempty post-finish tail remains a structural violation.
+Missing optional reasoning or usage metadata makes diagnostics incomplete but does not invalidate otherwise acceptable text.
+
+Tool calls execute only after the complete stream has arrived, the provider reports a tool-call finish, every envelope is structurally valid, and the whole batch fits the remaining tool budget.
+No tool from an incomplete or malformed batch executes.
 
 ## Request retries
 
-- Retry transient provider failures with backoff.
-- Do not automatically retry invalid configuration, rejected credentials, or exhausted quota.
-- Apply the configured retry limit per request after the initial attempt.
+One model turn is one logical model call regardless of its number of HTTP attempts.
+The action retries only transient provider failures and never retries invalid configuration, rejected credentials, exhausted quota, invalid model output, or exhausted local limits.
+The configured request-retry limit applies after the initial HTTP attempt.
+Retries reuse the unchanged message history and discard every fragment from the failed attempt.
+An interrupted streamed body is safe to retry because no partial assistant message or tool call has been committed.
 
-For retryable `429` responses:
+For retryable responses, the action honors a valid provider `Retry-After` value and otherwise uses bounded exponential backoff with jitter.
+Retry delays and repeated attempts consume the same stage deadline.
+A reviewer workflow does not restart the whole action after this per-call recovery is exhausted.
 
-- Read the provider's `Retry-After` header.
-- Wait that duration, or fall back to backoff if absent.
+## Output acceptance and repair
 
-Prefer the OpenAI SDK for `Retry-After` handling and request retries (`maxRetries`) where it satisfies the policy above.
+The action returns JSON accepted by the local schema and any supplied validator, or an explicit bounded failure reason.
+Raw model content is bounded before it enters local JSON parsing or message history.
+Accepted serialization is bounded independently of the configured schema.
+Checked-in schemas also bound their retained text and collections.
 
-## Output validation and repair
+The core output transformation follows this order: raw byte limit, JSON parse, Unicode sanitization with key-collision rejection, stage check, synchronous normalization, stage check, genuine-JSON-value validation, Unicode sanitization again, serialization and byte limit, JSON Schema validation, and the optional semantic validator.
+Deadline checks also surround candidate validation and the guarded semantic validator.
+Unpaired UTF-16 surrogates are replaced with the Unicode replacement character before validation, and sanitization rejects distinct object keys that would collide after replacement.
+The normalizer receives the parsed and sanitized value and returns the canonical value.
+It is trusted workflow code, may only run synchronously, and cannot be preempted while it runs, so the stage deadline is checked immediately before and after it.
+Normalizer loading, execution, and return-value failures are static non-retryable `normalizer-error` failures that expose neither exception nor model content and consume no repair attempt.
+Only the workflow-declared normalizer may project unknown properties or canonicalize non-authoritative prose.
+The repository normalizer may truncate only the classifier `summary`, `breaking_change_rationale`, and `breaking_change_surface`, specialist `summary`, general `summary`, and general `candidate_dispositions[*].rationale` tails.
+Identity, findings, evidence, locations, severity, provenance, and publication-safety fields remain strict.
 
-- Use provider-enforced schema output where supported, otherwise JSON mode where supported.
-- Accept validators only from trusted caller configuration, never from untrusted evidence or model output.
-- Validate JSON and schema locally, then run the supplied validator.
-- Repair JSON, schema, and validator-reported output errors within the same invocation.
-- Permit only necessary read-only evidence lookup during repair, and once it has happened ask for the corrected value without tools so it is produced under the configured output format.
-- Accept a corrected value only when the schema and the supplied validator accept it, whether or not the provider constrained how it was produced.
-- Report every rejected attempt with the validation that rejected it and a bounded, sanitized reason, and carry the last one in the failure reason.
-- Give the validator every candidate parsed so far, oldest first, so a value the model added while repairing can be protected like one it opened with.
-- Return failure if output remains invalid after the configured repair attempts.
+Provider JSON or JSON Schema constraints are generation aids selected only for model and schema combinations known to support them.
+They may be narrower than local acceptance when a trusted normalizer can preserve useful work without ambiguity.
+They never widen local acceptance.
+Local JSON parsing, schema validation, and the trusted semantic validator remain authoritative.
 
-Local schema and validator acceptance is always the authority.
-Provider-enforced schema output constrains what the model returns; it never widens what this action accepts.
-Support for it is per-model and per-schema, so a configuration selects it only where it is known to hold.
+The action repairs rejected JSON, schema, and semantic output within the configured repair budget and existing conversation.
+A semantic repair may use only necessary read-only evidence lookup.
+After evidence lookup, the corrected value is requested without tools so the configured provider output format applies where supported.
+Every schema-invalid canonical candidate is supplied to the validator in canonical order wherever parsed candidates are retained, so repair cannot silently discard usable findings.
+Normalizer failures create no repair-history entry.
+Every rejected attempt records the validation layer and a bounded, sanitized reason.
+The final rejection reason is retained when the repair budget is exhausted.
+
+## Structured output files
+
+Accepted JSON is returned as a step output unless the caller supplies a workflow-controlled output-file target.
+The target is input only; the action step outcome reports whether generation, validation, and the write succeeded.
+The target must name one new `.json` file below `.openai-agent-output` under the real workspace root.
+The action rejects symbolic-link directories, symbolic links, existing targets, and paths outside that directory.
+This exception transports accepted output without turning the action into a general write capability.
+
+## Diagnostics
+
+Expose these bounded diagnostics:
+
+- Activity such as investigation, finalization, or repair.
+- Deterministic logical-call and HTTP-attempt indices.
+- Message count, serialized request bytes, and accumulated tool-result bytes for each logical call.
+- Duration of each HTTP attempt and the full invocation.
+- Request-retry and output-repair counts.
+- Provider finish reason and bounded error code when available.
+- Token usage and whether it is complete.
+- Accumulated turn and tool-call counts, including on failure.
+- Every rejected output attempt with its validation layer and sanitized reason.
+- The first stream structural violation as a closed static value with no provider data.
+- Ignored empty post-finish choices, repeated terminal-choice subsets, and the first rejected post-finish shape as closed, content-free values.
+
+Diagnostics and logs never expose credentials, prompts, repository evidence, tool arguments, tool results, reasoning, model content, or raw provider errors.
+Stream structural diagnostics use only a closed static vocabulary.

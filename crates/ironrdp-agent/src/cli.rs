@@ -23,10 +23,10 @@ use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
 
 use ironrdp_rpc::ipc::{
-    AgentError, KeyFilter, MAX_CLIPBOARD_IMAGE_BYTES, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, NowExecutionRequest,
-    NowStream, OperationEvent, OperationEventKind, OperationInfo, OperationState, Payload, PenContactRequest,
-    PenFrameRequest, PropValue, RailEvent, RailEventKind, RailExecuteRequest, Request, Response, TouchContactRequest,
-    TouchFrameRequest,
+    AgentError, KeyFilter, MAX_CLIPBOARD_HTML_BYTES, MAX_CLIPBOARD_IMAGE_BYTES, MAX_UNICODE_TEXT_CHARS,
+    NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo,
+    OperationState, Payload, PenContactRequest, PenFrameRequest, PropValue, RailEvent, RailEventKind,
+    RailExecuteRequest, Request, Response, TouchContactRequest, TouchFrameRequest,
 };
 use ironrdp_rpc::transport::{self, Endpoint};
 
@@ -121,6 +121,21 @@ enum Command {
     /// Set the local clipboard image from a PNG file and advertise it to the remote
     /// (`CF_DIB`/`CF_DIBV5`).
     ClipboardSetImage(ClipboardSetImageArgs),
+    /// Print the last HTML fragment received from the remote clipboard, if any.
+    ClipboardGetHtml,
+    /// Set the local clipboard HTML fragment and advertise it to the remote (`HTML Format`).
+    ClipboardSetHtml {
+        #[arg(long, value_parser = parse_clipboard_html)]
+        html: String,
+    },
+    /// Offer local files to the remote via the clipboard file-list mechanism. Each path names a
+    /// single regular file; a directory is rejected.
+    ClipboardSetFiles(ClipboardSetFilesArgs),
+    /// List the remote's currently offered files, if any (metadata only; nothing is fetched).
+    ClipboardListFiles,
+    /// Fetch one file's full contents from the remote by its position in the last
+    /// `clipboard-list-files` listing.
+    ClipboardGetFile(ClipboardGetFileArgs),
     /// Send one MS-RDPEI touch contact sample (legal flag sets only).
     Touch {
         #[arg(long, default_value_t = 0)]
@@ -606,6 +621,24 @@ struct ClipboardSetImageArgs {
     path: PathBuf,
 }
 
+#[derive(Args, Debug)]
+struct ClipboardSetFilesArgs {
+    /// One or more local file paths to offer. A directory is rejected; folders are not supported.
+    #[arg(required = true)]
+    paths: Vec<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct ClipboardGetFileArgs {
+    /// Position in the last `clipboard-list-files` listing.
+    index: i32,
+    /// Destination path. Required rather than defaulted from the remote's own file name, which
+    /// is untrusted input (the same reasoning `ironrdp_cliprdr`'s own docs give for not writing
+    /// a remote-supplied name straight to disk).
+    #[arg(long = "out")]
+    out: PathBuf,
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum CliMouseButton {
     Left,
@@ -690,6 +723,16 @@ fn parse_unicode_text(input: &str) -> Result<String, String> {
     if char_count > MAX_UNICODE_TEXT_CHARS {
         return Err(format!(
             "text must contain at most {MAX_UNICODE_TEXT_CHARS} Unicode characters"
+        ));
+    }
+    Ok(input.to_owned())
+}
+
+fn parse_clipboard_html(input: &str) -> Result<String, String> {
+    if input.len() > MAX_CLIPBOARD_HTML_BYTES {
+        return Err(format!(
+            "html must be at most {MAX_CLIPBOARD_HTML_BYTES} bytes, got {}",
+            input.len()
         ));
     }
     Ok(input.to_owned())
@@ -974,6 +1017,28 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             Request::ClipboardSetImage { png }
         }
+        Command::ClipboardSetFiles(args) => {
+            let paths = args
+                .paths
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+            Request::ClipboardSetFiles { paths }
+        }
+        Command::ClipboardListFiles => Request::ClipboardListFiles,
+        Command::ClipboardGetFile(args) => {
+            let response = transport::send_request(&endpoint, &Request::ClipboardGetFile { index: args.index }).await?;
+            let payload = match response {
+                Response::Ok(payload) => payload,
+                Response::Err(message) => anyhow::bail!("{message}"),
+            };
+            let Payload::ClipboardFile(data) = payload else {
+                anyhow::bail!("unexpected response to clipboard-get-file request");
+            };
+            std::fs::write(&args.out, &data).with_context(|| format!("write {}", args.out.display()))?;
+            println!("wrote {} ({} bytes)", args.out.display(), data.len());
+            return Ok(());
+        }
         Command::MouseMove { x, y } => Request::MouseMove { x, y },
         Command::MouseButton { button, pressed } => Request::MouseButton {
             button: button.into_button(),
@@ -985,6 +1050,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::TypeUnicode { text } => Request::UnicodeText { text },
         Command::ClipboardGet => Request::ClipboardGet,
         Command::ClipboardSet { text } => Request::ClipboardSet { text },
+        Command::ClipboardGetHtml => Request::ClipboardGetHtml,
+        Command::ClipboardSetHtml { html } => Request::ClipboardSetHtml { html },
         Command::Touch {
             contact_id,
             x,
@@ -2155,12 +2222,41 @@ fn print_payload(payload: Payload) {
         Payload::RailLaunch(launch) => {
             println!("queued RAIL launch {}: {}", launch.launch_id, launch.executable);
         }
-        Payload::ClipboardText(text) => match text {
+        Payload::ClipboardText(text) | Payload::ClipboardHtml(text) => match text {
             Some(text) => println!("{text}"),
             None => println!("(empty)"),
         },
         // Handled out-of-band by the `ClipboardGetImage` command, never printed here.
         Payload::ClipboardImage(png) => println!("clipboard image ({} bytes)", png.as_ref().map_or(0, Vec::len)),
+        Payload::ClipboardFileList(files) => match files {
+            Some(files) if files.is_empty() => println!("(no files)"),
+            Some(files) => {
+                for (index, file) in files.iter().enumerate() {
+                    // `name`/`relative_path` come from the remote peer. `CLIPRDR` sanitization
+                    // removes path traversal and null bytes but not terminal control sequences;
+                    // `escape_debug` keeps printable Unicode readable while escaping the ANSI/OSC
+                    // control characters an unescaped print would otherwise pass straight to the
+                    // terminal.
+                    let path = match &file.relative_path {
+                        Some(relative_path) => {
+                            format!("{}\\{}", relative_path.escape_debug(), file.name.escape_debug())
+                        }
+                        None => file.name.escape_debug().to_string(),
+                    };
+                    let kind = if file.is_directory { "dir" } else { "file" };
+                    let size = file.size.map_or_else(|| "?".to_owned(), |size| size.to_string());
+                    // Unix seconds, not a formatted date: keeps this crate free of a date/time
+                    // dependency for what is otherwise a plain integer field.
+                    let mtime = file
+                        .last_write_time
+                        .map_or_else(|| "?".to_owned(), |time| time.to_string());
+                    println!("{index}: {kind} {size:>12} {mtime:>10} {path}");
+                }
+            }
+            None => println!("(no files on the remote clipboard)"),
+        },
+        // Handled out-of-band by the `ClipboardGetFile` command, never printed here.
+        Payload::ClipboardFile(data) => println!("clipboard file ({} bytes)", data.len()),
     }
 }
 

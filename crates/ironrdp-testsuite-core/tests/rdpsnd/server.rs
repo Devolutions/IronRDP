@@ -14,7 +14,9 @@ use ironrdp_rdpsnd::pdu::{
     AudioFormat, AudioFormatFlags, ClientAudioFormatPdu, ClientAudioOutputPdu, TrainingConfirmPdu, Version,
     WaveConfirmPdu, WaveFormat,
 };
-use ironrdp_rdpsnd::server::{NegotiatedFormat, RdpsndError, RdpsndServer, RdpsndServerHandler, negotiate_formats};
+use ironrdp_rdpsnd::server::{
+    ConfirmKind, NegotiatedFormat, RdpsndError, RdpsndServer, RdpsndServerHandler, SentBlocks, negotiate_formats,
+};
 use ironrdp_svc::{StaticVirtualChannel, SvcProcessor as _};
 
 fn fmt(format: WaveFormat, rate: u32) -> AudioFormat {
@@ -272,6 +274,36 @@ fn processor_declines_when_start_fails() {
 }
 
 #[test]
+fn is_ready_only_once_a_format_is_committed() {
+    let server_with = |start_ok| {
+        RdpsndServer::new(Box::new(FakeHandler {
+            formats: vec![fmt(WaveFormat::PCM, 44100)],
+            rec: Arc::new(Mutex::new(Recording::default())),
+            start_ok,
+        }))
+    };
+
+    let mut negotiated = server_with(true);
+    assert!(!negotiated.is_ready(), "not ready before the handshake");
+    // The failure the server's dispatch guard exists to avoid: before
+    // negotiation, both calls it protects error out.
+    assert!(negotiated.wave(vec![0; 16], 0).is_err());
+    assert!(negotiated.set_volume(0xFFFF, 0xFFFF).is_err());
+    drive_to_ready(&mut negotiated, vec![fmt(WaveFormat::PCM, 44100)]);
+    assert!(negotiated.is_ready());
+    // Once is_ready() holds, the call it guards goes through.
+    assert!(negotiated.wave(vec![0; 16], 0).is_ok());
+
+    let mut nothing_in_common = server_with(true);
+    drive_to_ready(&mut nothing_in_common, vec![fmt(WaveFormat::AAC_MS, 44100)]);
+    assert!(!nothing_in_common.is_ready());
+
+    let mut start_failed = server_with(false);
+    drive_to_ready(&mut start_failed, vec![fmt(WaveFormat::PCM, 44100)]);
+    assert!(!start_failed.is_ready());
+}
+
+#[test]
 fn wave_carries_the_capture_timestamp_the_client_echoes() {
     let rec = Arc::new(Mutex::new(Recording::default()));
     let mut server = RdpsndServer::new(Box::new(FakeHandler {
@@ -317,4 +349,116 @@ fn wave_confirm_reaches_the_handler() {
     // Without this the server cannot tell how long the client held the data:
     // the echo is the only latency signal MS-RDPEA gives it.
     assert_eq!(rec.lock().expect("poisoned").wave_confirms, vec![(7, 0x2345)]);
+}
+
+#[test]
+fn repeated_and_unmatched_wave_confirms_still_reach_the_handler() {
+    let rec = Arc::new(Mutex::new(Recording::default()));
+    let mut server = RdpsndServer::new(Box::new(FakeHandler {
+        formats: vec![fmt(WaveFormat::PCM, 44100)],
+        rec: Arc::clone(&rec),
+        start_ok: true,
+    }));
+
+    drive_to_ready(&mut server, vec![fmt(WaveFormat::PCM, 44100)]);
+    server.wave(vec![0; 8], 0x0100).expect("wave");
+    server.wave(vec![0; 8], 0x0200).expect("wave");
+
+    // Windows clients and xfreerdp3 confirm each block twice (on receipt, then
+    // later), a third confirm or one naming a block the server has no record
+    // of can still arrive, and a single-confirm client leaves block 1 with one
+    // confirm only. The server's own bookkeeping for these must not hide any
+    // of them from the handler.
+    for (block_no, timestamp) in [(0, 0x0100), (0, 0x0340), (0, 0x0350), (9, 0x0360), (1, 0x0200)] {
+        let confirm = ClientAudioOutputPdu::WaveConfirm(WaveConfirmPdu { timestamp, block_no });
+        server
+            .process(&encode_vec(&confirm).expect("encode wave confirm"))
+            .expect("process wave confirm");
+    }
+
+    assert_eq!(
+        rec.lock().expect("poisoned").wave_confirms,
+        vec![(0, 0x0100), (0, 0x0340), (0, 0x0350), (9, 0x0360), (1, 0x0200)]
+    );
+
+    // Block 0: first, second, then a third with nothing left to match. Block 9
+    // was never sent. Block 1: first only.
+    let stats = server.stats();
+    assert_eq!(stats.waves_sent, 2);
+    assert_eq!(stats.confirms, 5);
+    assert_eq!(stats.second_confirms, 1);
+    assert_eq!(stats.unmatched_confirms, 2);
+    assert_eq!(stats.stale_confirms, 0);
+    assert_eq!(stats.never_confirmed, 0);
+}
+
+#[test]
+fn block_number_wrap_counts_unconfirmed_waves_and_stale_confirms() {
+    let rec = Arc::new(Mutex::new(Recording::default()));
+    let mut server = RdpsndServer::new(Box::new(FakeHandler {
+        formats: vec![fmt(WaveFormat::PCM, 44100)],
+        rec: Arc::clone(&rec),
+        start_ok: true,
+    }));
+
+    drive_to_ready(&mut server, vec![fmt(WaveFormat::PCM, 44100)]);
+
+    // 258 waves 10 ms apart: blocks 0 and 1 come round again while their
+    // first waves are still unconfirmed.
+    for i in 0..258u32 {
+        server.wave(vec![0; 8], i * 10).expect("wave");
+    }
+
+    // A late confirm for the first wave under block 0 (sent at 0, held 500 ms)
+    // predates the second wave's send at 2560, then that wave's own confirm.
+    for (block_no, timestamp) in [(0, 500), (0, 2600)] {
+        let confirm = ClientAudioOutputPdu::WaveConfirm(WaveConfirmPdu { timestamp, block_no });
+        server
+            .process(&encode_vec(&confirm).expect("encode wave confirm"))
+            .expect("process wave confirm");
+    }
+
+    let stats = server.stats();
+    assert_eq!(stats.waves_sent, 258);
+    assert_eq!(stats.bytes_sent, 258 * 8);
+    assert_eq!(stats.never_confirmed, 2);
+    assert_eq!(stats.confirms, 2);
+    assert_eq!(stats.stale_confirms, 1);
+    assert_eq!(stats.second_confirms, 0);
+    assert_eq!(stats.unmatched_confirms, 0);
+    assert_eq!(rec.lock().expect("poisoned").wave_confirms, vec![(0, 500), (0, 2600)]);
+}
+
+#[test]
+fn late_confirm_for_a_reused_block_number_is_stale() {
+    let mut blocks = SentBlocks::default();
+
+    assert_eq!(blocks.record(5, 1000), None);
+    assert_eq!(blocks.confirm(5, 1000), ConfirmKind::First(1000));
+
+    // 256 waves later block 5 is reused before the old wave's second confirm
+    // arrives. That confirm carries the old wave's timestamp plus its hold
+    // time, which still precedes the new send.
+    assert_eq!(blocks.record(5, 2000), None);
+    assert_eq!(blocks.confirm(5, 1700), ConfirmKind::Stale);
+
+    // The stale confirm must not consume the new wave's slot.
+    assert_eq!(blocks.confirm(5, 2005), ConfirmKind::First(2000));
+    assert_eq!(blocks.confirm(5, 1999), ConfirmKind::Stale);
+    assert_eq!(blocks.confirm(5, 2400), ConfirmKind::Second(2000));
+    assert_eq!(blocks.confirm(5, 2400), ConfirmKind::Unmatched);
+}
+
+#[test]
+fn stale_check_follows_the_u16_timestamp_wrap() {
+    let mut blocks = SentBlocks::default();
+
+    blocks.record(7, 0x0010);
+    // 0xFFF0 is 32 ms before 0x0010 across the wrap, so it predates the send.
+    assert_eq!(blocks.confirm(7, 0xFFF0), ConfirmKind::Stale);
+    assert_eq!(blocks.confirm(7, 0x0030), ConfirmKind::First(0x0010));
+
+    blocks.record(8, 0xFFF0);
+    // 0x0010 is 32 ms after 0xFFF0 across the wrap.
+    assert_eq!(blocks.confirm(8, 0x0010), ConfirmKind::First(0xFFF0));
 }
