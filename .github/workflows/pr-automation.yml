@@ -69,6 +69,7 @@ jobs:
       labels: ${{ steps.resolve.outputs.labels }}
       author: ${{ steps.resolve.outputs.author }}
       force: ${{ steps.resolve.outputs.force }}
+      observed-ci-run: ${{ steps.resolve.outputs.observed-ci-run }}
       review-requested: ${{ steps.resolve.outputs.review-requested }}
       classification-requested: ${{ steps.resolve.outputs.classification-requested }}
       review-route: ${{ steps.resolve.outputs.review-route }}
@@ -105,6 +106,7 @@ jobs:
             core.setOutput("labels", JSON.stringify(result.labels ?? []));
             core.setOutput("author", JSON.stringify(result.author ?? null));
             core.setOutput("force", result.force === true);
+            core.setOutput("observed-ci-run", result.observedCiRun ? JSON.stringify(result.observedCiRun) : "");
             core.setOutput("review-requested", result.reviewRequested === true);
             core.setOutput("classification-requested", result.classificationRequested === true);
             core.setOutput("review-route", result.reviewRoute === true);
@@ -561,6 +563,7 @@ jobs:
           LABELS: ${{ needs.resolve-pr.outputs.labels }}
           AUTHOR: ${{ needs.resolve-pr.outputs.author }}
           FORCE: ${{ needs.resolve-pr.outputs.force }}
+          OBSERVED_CI_RUN: ${{ needs.resolve-pr.outputs.observed-ci-run }}
         with:
           script: |
             const { SCHEMA_VERSION, parseCheckState } = require("./.github/pr-automation/validate-classifier");
@@ -574,8 +577,10 @@ jobs:
             const manual = process.env.ROUTE === "dispatch";
             let resolvedLabels = [];
             let author = null;
+            let observedRun = null;
             try { resolvedLabels = JSON.parse(process.env.LABELS || "[]"); } catch {}
             try { author = JSON.parse(process.env.AUTHOR || "null"); } catch {}
+            try { observedRun = JSON.parse(process.env.OBSERVED_CI_RUN || "null"); } catch {}
             const publish = (gate, eligible = gate.ok) => {
               const requiredReviewers = (gate.specialistReviewers || []).filter((reviewer) =>
                 (reviewer === "protocol" && gate.protocolRelated === true) ||
@@ -651,8 +656,10 @@ jobs:
                 run.app?.slug === "github-actions");
               const latestCiRun = await readLatestExactHeadCiRun({
                 github, owner: context.repo.owner, repo: context.repo.repo, expectedSha: headSha,
+                observedRun,
               });
               const ciGeneration = generation(latestCiRun);
+              const ciSource = latestCiRun === null ? null : latestCiRun === observedRun ? "event" : "listing";
               const ciGreen = latestCiRun?.conclusion === "success" && ciGeneration !== null;
               const secondReviewEligible = !labels.includes("ai-reviewed/1") || !reviewAtHead;
               const policyEligible = reviewPolicyEligible({ labels, legitimacyStopped });
@@ -664,7 +671,7 @@ jobs:
                 ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible &&
                   contributor.status === "eligible",
                 force: false, head_sha: headSha, classificationValid, classificationCheck, legitimacyStopped,
-                ciGreen, ciRunId: ciGeneration?.id ?? null, ciRunAttempt: ciGeneration?.attempt ?? null,
+                ciGreen, ciRunId: ciGeneration?.id ?? null, ciRunAttempt: ciGeneration?.attempt ?? null, ciSource,
                 secondReviewEligible, reviewAtHead, policyEligible, labels, contributor,
                 protocolRelated, risk: protocolState?.risk || "unknown",
                 specialistReviewers: protocolState?.specialistReviewers || [],

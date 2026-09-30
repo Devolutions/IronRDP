@@ -14,7 +14,6 @@ mod loop_detector;
 mod path_sanitization;
 mod preferred_drop_effect;
 mod server_role;
-mod test_helpers;
 mod upload_and_cleanup;
 
 use expect_test::expect;
