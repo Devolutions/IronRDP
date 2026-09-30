@@ -1,22 +1,10 @@
-#![expect(
-    dead_code,
-    unreachable_pub,
-    unused_crate_dependencies,
-    reason = "tests import private protocol structures"
-)]
-
-#[path = "../src/proto.rs"]
-#[expect(
-    clippy::allow_attributes,
-    reason = "the imported protocol source contains an intentionally unfulfilled expectation"
-)]
-#[allow(unfulfilled_lint_expectations)]
-mod proto;
-
 use ironrdp_core::{Decode, Encode, ReadCursor, WriteCursor};
 use ironrdp_mstsgu::GwErrorKind;
+use ironrdp_mstsgu::test_support::proto::{
+    ExtendedAuthPkt, HandshakeRespPkt, extended_auth_packet, handshake_extended_auth_bits, no_extended_auth_bits,
+    tunnel_request,
+};
 use ironrdp_mstsgu::{ChannelClosePkt, ReauthMessagePkt, ServiceMessagePkt, gateway_code_label};
-use proto::{ExtendedAuthPkt, HandshakeRespPkt, HttpExtendedAuth, TunnelReqPkt};
 
 fn encode_to_vec(payload: &impl Encode) -> Vec<u8> {
     let mut buf = vec![0u8; payload.size()];
@@ -36,11 +24,7 @@ fn decode_body<'a, T: Decode<'a>>(bytes: &'a [u8]) -> T {
 
 #[test]
 fn tunnel_request_without_reauth_context_preserves_existing_wire_format() {
-    let bytes = encode_to_vec(&TunnelReqPkt {
-        caps: 0x04,
-        fields_present: 0,
-        ..TunnelReqPkt::default()
-    });
+    let bytes = encode_to_vec(&tunnel_request(0x04, 0, None));
 
     assert_eq!(
         bytes,
@@ -56,10 +40,7 @@ fn tunnel_request_without_reauth_context_preserves_existing_wire_format() {
 
 #[test]
 fn tunnel_request_without_reauth_context_clears_reauth_field_bit() {
-    let bytes = encode_to_vec(&TunnelReqPkt {
-        fields_present: 0x2,
-        ..TunnelReqPkt::default()
-    });
+    let bytes = encode_to_vec(&tunnel_request(0, 0x2, None));
 
     assert_eq!(bytes.len(), 16);
     assert_eq!(&bytes[12..14], &0u16.to_le_bytes());
@@ -68,11 +49,7 @@ fn tunnel_request_without_reauth_context_clears_reauth_field_bit() {
 #[test]
 fn tunnel_request_encodes_reauth_context() {
     let reauth_tunnel_context = 0x1122_3344_5566_7788;
-    let bytes = encode_to_vec(&TunnelReqPkt {
-        caps: 0x04,
-        reauth_tunnel_context: Some(reauth_tunnel_context),
-        ..TunnelReqPkt::default()
-    });
+    let bytes = encode_to_vec(&tunnel_request(0x04, 0, Some(reauth_tunnel_context)));
 
     assert_eq!(
         bytes.len(),
@@ -119,7 +96,7 @@ fn reauth_message_roundtrip() {
 
 #[test]
 fn handshake_response_preserves_advertised_extended_auth_capabilities() {
-    assert_eq!(HttpExtendedAuth::HTTP_EXTENDED_AUTH_NONE.bits(), 0);
+    assert_eq!(no_extended_auth_bits(), 0);
 
     for flags in [0x0000u16, 0x0003, 0x0004, 0x8000] {
         let mut bytes = [
@@ -135,16 +112,13 @@ fn handshake_response_preserves_advertised_extended_auth_capabilities() {
         bytes[16..].copy_from_slice(&flags.to_le_bytes());
         let response = decode_body::<HandshakeRespPkt>(&bytes);
 
-        assert_eq!(response.extended_auth.bits(), flags);
+        assert_eq!(handshake_extended_auth_bits(&response), flags);
     }
 }
 
 #[test]
 fn extended_auth_packet_roundtrip() {
-    let pkt = ExtendedAuthPkt {
-        error_code: 0x1122_3344,
-        auth_blob: vec![0xAA, 0xBB, 0xCC, 0xDD],
-    };
+    let pkt = extended_auth_packet(0x1122_3344, vec![0xAA, 0xBB, 0xCC, 0xDD]);
     let bytes = encode_to_vec(&pkt);
 
     assert_eq!(
@@ -176,18 +150,12 @@ fn extended_auth_packet_rejects_malformed_and_mismatched_blobs() {
 
 #[test]
 fn extended_auth_packet_accepts_maximum_blob_and_rejects_larger_blobs() {
-    let pkt = ExtendedAuthPkt {
-        error_code: 0,
-        auth_blob: vec![0x5A; usize::from(u16::MAX)],
-    };
+    let pkt = extended_auth_packet(0, vec![0x5A; usize::from(u16::MAX)]);
     let bytes = encode_to_vec(&pkt);
     assert_eq!(&bytes[12..14], &u16::MAX.to_le_bytes());
     assert_eq!(decode_body::<ExtendedAuthPkt>(&bytes), pkt);
 
-    let oversized = ExtendedAuthPkt {
-        error_code: 0,
-        auth_blob: vec![0; usize::from(u16::MAX) + 1],
-    };
+    let oversized = extended_auth_packet(0, vec![0; usize::from(u16::MAX) + 1]);
     let mut bytes = vec![0; oversized.size()];
     let mut cursor = WriteCursor::new(&mut bytes);
     assert!(oversized.encode(&mut cursor).is_err());
