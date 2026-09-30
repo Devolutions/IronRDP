@@ -230,6 +230,9 @@ pub fn install(sh: &Shell) -> anyhow::Result<()> {
     cargo_install(sh, &TYPOS_CLI)?;
     cargo_install(sh, &CARGO_HACK)?;
 
+    let no_std_target = crate::features::NO_STD_TARGET;
+    cmd!(sh, "rustup target add {no_std_target}").run()?;
+
     Ok(())
 }
 

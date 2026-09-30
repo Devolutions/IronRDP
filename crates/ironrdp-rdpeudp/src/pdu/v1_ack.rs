@@ -4,8 +4,6 @@
 //! `RDPUDP_ACK_OF_ACKVECTOR_HEADER` (MS-RDPEUDP Section 2.2.2.6).
 
 #[cfg(not(feature = "std"))]
-use alloc::vec;
-#[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
 
@@ -289,6 +287,9 @@ impl Decode<'_> for CorrelationIdPayload {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "std"))]
+    use alloc::vec;
+
     use ironrdp_core::{decode, encode_vec};
 
     use super::*;
