@@ -146,7 +146,7 @@ Both use LLVM 20.1.8 (`clang-cl` and `lld-link`), the repository's Rust toolchai
 Each host contributes four samples on fresh runners, with no build cache or incremental compilation.
 The stopwatch surrounds only the offline Cargo release build, including dependency compilation and linking; setup, downloads, metadata checks, artifact uploads, and Windows executable smoke tests are excluded.
 Each run saves timing JSON, build logs, Cargo timing reports, and executables for 30 days, plus individual samples and arithmetic means (with min/max) in the comparison summary, CSV, and JSON.
-The workflow's branch-scoped `push` trigger allows testing before merge; `workflow_dispatch` provides manual runs after registration on the default branch.
+The workflow's branch-scoped `push` trigger allows testing before merge; `workflow_dispatch` also accepts this feature branch.
 CPU models, images, and tool versions are recorded; Windows and Linux use separately provisioned MSVC/SDK libraries, so results compare the complete build environments rather than the OS alone.
 
 Select workflow mode `trace` for one diagnostic build per host, `benchmark` for the four-sample averages, or `all` for both.
@@ -156,6 +156,14 @@ Linux saves CPU stacks in `cpu.perf.data`, system-wide scheduler/block-I/O/files
 Both captures include compiler subprocesses; `build-interval.json` records the build PID and UTC/monotonic boundaries so setup and trace finalization can be excluded from analysis.
 Tracing adds overhead, unavailable counters and event losses are reported, and prebuilt compiler symbols may be incomplete; do not compare these diagnostic durations with uninstrumented averages.
 System-wide captures can contain runner paths and command lines, so review them before sharing.
+
+After downloading the Linux artifact, restore its build-ID cache before opening the CPU profile:
+
+```bash
+mkdir -p host-symbols
+tar -xjf cpu.perf.data.tar.bz2 -C host-symbols
+perf --buildid-dir host-symbols report -i cpu.perf.data
+```
 
 ## Wire format
 
