@@ -551,6 +551,7 @@ dependencies = [
  "bitflags",
  "ironrdp-core",
  "ironrdp-error",
+ "tracing",
 ]
 
 [[package]]

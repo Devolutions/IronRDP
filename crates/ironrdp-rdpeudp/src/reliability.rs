@@ -14,6 +14,8 @@ use alloc::collections::VecDeque;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
+use tracing::trace;
+
 /// Entry in the retransmit queue.
 #[derive(Debug, Clone)]
 pub(crate) struct RetransmitEntry {
@@ -48,9 +50,15 @@ impl ReliabilityController {
     pub(crate) fn enqueue(&mut self, channel_seq: u64, data: Vec<u8>) {
         // Avoid duplicate entries for the same channel_seq.
         if self.queue.iter().any(|e| e.channel_seq == channel_seq) {
+            trace!(channel_seq, "Retransmit already queued");
             return;
         }
         self.queue.push_back(RetransmitEntry { channel_seq, data });
+        trace!(
+            channel_seq,
+            retransmit_queue_len = self.queue.len(),
+            "Queued data for retransmission"
+        );
     }
 
     /// Dequeue the next entry for retransmission.
