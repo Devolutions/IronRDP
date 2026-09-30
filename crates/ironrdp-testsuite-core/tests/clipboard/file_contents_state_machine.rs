@@ -14,7 +14,7 @@ use ironrdp_cliprdr::{CliprdrClient, CliprdrState, FileTransferState};
 use ironrdp_core::Encode as _;
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 
-use super::test_helpers::{RecordingBackend, TestBackend};
+use ironrdp_testsuite_core::clipboard::{RecordingBackend, TestBackend};
 
 /// Introduce `let` bindings for the encoded bytes and the decoded
 /// [`ClipboardPdu`] in the caller's scope.  Two names are required so
@@ -373,7 +373,7 @@ fn unknown_stream_id_response_dropped_silently() {
     let backend = RecordingBackend {
         responses: Arc::clone(&responses),
     };
-    let mut cliprdr = super::test_helpers::init_ready_client_with_backend(Box::new(backend));
+    let mut cliprdr = ironrdp_testsuite_core::clipboard::init_ready_client_with_backend(Box::new(backend));
 
     // Send a FileContentsResponse for a stream_id that was never requested
     let response = FileContentsResponse::new_size_response(9999, 42);

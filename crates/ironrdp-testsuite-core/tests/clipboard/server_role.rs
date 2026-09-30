@@ -8,7 +8,7 @@ use ironrdp_cliprdr::pdu::{ClipboardFormat, ClipboardFormatId, ClipboardPdu, For
 use ironrdp_cliprdr::{CliprdrServer, CliprdrState};
 use ironrdp_svc::SvcProcessor as _;
 
-use super::test_helpers::TestBackend;
+use ironrdp_testsuite_core::clipboard::TestBackend;
 
 /// Helper: decode a SvcMessage back into a ClipboardPdu for assertion.
 macro_rules! decode_pdu {
