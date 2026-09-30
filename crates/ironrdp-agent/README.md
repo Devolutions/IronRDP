@@ -157,12 +157,12 @@ Both captures include compiler subprocesses; `build-interval.json` records the b
 Tracing adds overhead, unavailable counters and event losses are reported, and prebuilt compiler symbols may be incomplete; do not compare these diagnostic durations with uninstrumented averages.
 System-wide captures can contain runner paths and command lines, so review them before sharing.
 
-After downloading the Linux artifact, restore its build-ID cache before opening the CPU profile:
+Restore the Linux symbol archive before opening the CPU profile; it includes a build-ID cache and host modules without build IDs:
 
 ```bash
 mkdir -p host-symbols
 tar -xjf cpu.perf.data.tar.bz2 -C host-symbols
-perf --buildid-dir host-symbols report -i cpu.perf.data
+perf --buildid-dir host-symbols report --symfs host-symbols -i cpu.perf.data
 ```
 
 ## Wire format

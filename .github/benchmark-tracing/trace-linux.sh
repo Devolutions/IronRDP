@@ -14,6 +14,33 @@ findmnt -T "$(dirname "$CARGO_TARGET_DIR")" > "$output/filesystem.txt"
 cat /proc/sys/kernel/perf_event_paranoid > "$output/perf-event-paranoid.txt"
 sudo "$perf" list > "$output/perf-events.txt"
 
+python3 - "$symbol_cache" > "$output/host-modules.json" <<'PY'
+import hashlib
+import json
+import pathlib
+import shutil
+import subprocess
+import sys
+
+cache = pathlib.Path(sys.argv[1])
+modules = [
+    pathlib.Path(subprocess.check_output(["rustup", "which", tool], text=True).strip()).resolve()
+    for tool in ("rustc", "cargo")
+]
+drivers = list((modules[0].parent.parent / "lib").glob("librustc_driver*.so"))
+if not drivers:
+    raise ValueError("Rust compiler driver not found")
+manifest = []
+for path in modules + drivers:
+    destination = cache / path.relative_to(path.anchor)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(path, destination)
+    with path.open("rb") as module:
+        digest = hashlib.file_digest(module, "sha256").hexdigest()
+    manifest.append({"path": str(path), "sha256": digest, "symbolFile": str(destination.relative_to(cache))})
+print(json.dumps(manifest, indent=2))
+PY
+
 hardware_counters=false
 stat_events=task-clock,context-switches,cpu-migrations,page-faults
 if sudo "$perf" stat -e cycles,instructions -- sleep 0.1 2> "$output/hardware-counter-probe.txt" &&
@@ -59,6 +86,7 @@ print(json.dumps({
     "cpuScope": "build process tree",
     "schedulerIoScope": "system-wide, filter using build-interval.json",
     "recorderSyscallsExcluded": True,
+    "symbolAvailability": "build-ID cache plus exact Rust host modules in cpu.perf.data.tar.bz2; see host-modules.json",
     "missingTracepoints": sys.argv[2:],
 }, indent=2))
 PY
@@ -100,7 +128,7 @@ for record in json.load(open(sys.argv[1])):
     if record["lostEventsFromBuffers"] or record["lostSamples"]:
         print(f'::warning::Incomplete {record["file"]}: lost events/samples; see perf-records.json')
 PY
-"$perf" --buildid-dir "$symbol_cache" report --stdio -n --percent-limit 0.5 --sort comm,dso,symbol -i "$output/cpu.perf.data" > "$output/cpu-report.txt" 2> "$output/symbol-warnings.txt"
+"$perf" --buildid-dir "$symbol_cache" report --symfs "$symbol_cache" --stdio -n --percent-limit 0.5 --sort comm,dso,symbol -i "$output/cpu.perf.data" > "$output/cpu-report.txt" 2> "$output/symbol-warnings.txt"
 "$perf" report --stdio --header-only -i "$output/scheduler-io.perf.data" > "$output/scheduler-io-header.txt"
 "$perf" sched latency -i "$output/scheduler-io.perf.data" > "$output/scheduler-latency.txt" 2> "$output/scheduler-warnings.txt"
 "$perf" buildid-list -i "$output/cpu.perf.data" > "$output/build-ids.txt"
