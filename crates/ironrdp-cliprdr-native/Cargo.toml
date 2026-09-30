@@ -12,6 +12,11 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+# Internal (PRIVATE!) feature used to expose internals to the shared integration tests.
+# Don't rely on this whatsoever. It may disappear at any time.
+__test = ["dep:visibility"]
+
 [lib]
 doctest = false
 test = false
@@ -20,6 +25,13 @@ test = false
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.7" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
 tracing = { version = "0.1", features = ["log"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.31", features = ["poll"] }
+visibility = { version = "0.1", optional = true }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

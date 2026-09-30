@@ -66,6 +66,9 @@ tokio = { version = "1", features = ["sync", "time", "net", "rt", "rt-multi-thre
 tokio-rustls = { version = "0.26", default-features = false }
 uuid = { version = "1", features = ["v4"] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", features = ["__test"] }
+
 [target.'cfg(windows)'.dev-dependencies]
 ironrdp-rdpdr-native.path = "../ironrdp-rdpdr-native"
 

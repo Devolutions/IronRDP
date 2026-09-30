@@ -2816,7 +2816,12 @@ version = "0.7.0"
 dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-core 0.2.1",
+ "nix",
  "tracing",
+ "visibility",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
  "windows",
 ]
 
@@ -3450,6 +3455,7 @@ dependencies = [
  "ironrdp-bulk",
  "ironrdp-cfg",
  "ironrdp-client",
+ "ironrdp-cliprdr-native",
  "ironrdp-core 0.2.1",
  "ironrdp-daemon",
  "ironrdp-dvc",

@@ -5,6 +5,8 @@ mod agent;
 mod async_framed;
 mod capture_helpers;
 mod client;
+#[cfg(target_os = "linux")]
+mod cliprdr_native;
 mod dvc_pipe_proxy;
 mod e2e;
 mod gateway_detect;
