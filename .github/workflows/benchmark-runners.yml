@@ -154,8 +154,11 @@ jobs:
         shell: bash
         run: |
           sudo apt-get install -y linux-tools-common linux-tools-generic
-          perf_binary=$(find /usr/lib/linux-tools -type f -name perf | sort -V | tail -n 1)
-          test -x "$perf_binary"
+          perf_binary=$(find -L /usr/lib/linux-tools -type f -name perf | sort -V | tail -n 1)
+          if ! test -x "$perf_binary"; then
+            echo "::error::Installed Linux tools do not provide an executable perf"
+            exit 1
+          fi
           echo "PERF_BINARY=$perf_binary" >> "$GITHUB_ENV"
 
       - name: Measure clean Windows release build
