@@ -23,7 +23,7 @@ use ironrdp::cliprdr::pdu::{
 use ironrdp_cliprdr_format::bitmap::{dib_to_png, dibv5_to_png, png_to_cf_dibv5};
 use ironrdp_cliprdr_format::html::{cf_html_to_plain_html, plain_html_to_cf_html};
 use ironrdp_core::{IntoOwned as _, impl_as_any};
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use wasm_bindgen::prelude::*;
 
 use crate::session::RdpInputEvent;
@@ -230,8 +230,23 @@ pub(crate) struct WasmClipboard {
     /// layer can correctly correlate each FormatDataResponse with its FormatDataRequest.
     pending_file_list_paste: Option<ClipboardFormatId>,
 
+    /// The one FormatDataRequest awaiting its response. A response names no format, so a new
+    /// FormatList waits for this answer rather than being decoded with it.
+    in_flight: Option<InFlight>,
+
     proxy: WasmClipboardMessageProxy,
     js_callbacks: JsClipboardCallbacks,
+}
+
+/// What the outstanding FormatDataRequest asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InFlight {
+    /// A text or image format of the current remote FormatList.
+    Format(ClipboardFormatId),
+    /// A text or image format of a FormatList since replaced; its answer is discarded.
+    Superseded,
+    /// FileGroupDescriptorW; cliprdr hands only a failed answer to the backend as format data.
+    FileList,
 }
 
 /// Callbacks, required to interact with JS code from within the backend.
@@ -259,6 +274,42 @@ impl WasmClipboard {
             remote_mapping: HashMap::new(),
             remote_formats_to_read: Vec::new(),
             pending_file_list_paste: None,
+            in_flight: None,
+        }
+    }
+
+    fn request(&mut self, format: ClipboardFormatId, in_flight: InFlight) {
+        self.in_flight = Some(in_flight);
+        self.proxy
+            .send_cliprdr_message(ClipboardMessage::SendInitiatePaste(format));
+    }
+
+    /// Requests the next announced format once nothing is outstanding, or finishes the fetch.
+    fn fetch_next(&mut self) {
+        if self.in_flight.is_some() {
+            return;
+        }
+
+        if let Some(&format) = self.remote_formats_to_read.last() {
+            self.request(format, InFlight::Format(format));
+            return;
+        }
+
+        // All text/image formats were read, send clipboard data to JS.
+        let clipboard_data = core::mem::take(&mut self.remote_clipboard);
+
+        if !clipboard_data.is_empty() {
+            if let Err(e) = self.js_callbacks.on_remote_clipboard_changed.call1(
+                &JsValue::NULL,
+                &JsValue::from(crate::wasm_bridge::ClipboardData::from(clipboard_data)),
+            ) {
+                error!(error = ?e, "Failed to call remote clipboard changed callback");
+            }
+        }
+
+        // The file list goes last; cliprdr parses it and calls `on_remote_file_list()`.
+        if let Some(file_format) = self.pending_file_list_paste.take() {
+            self.request(file_format, InFlight::FileList);
         }
     }
 
@@ -389,15 +440,12 @@ impl WasmClipboard {
 
         // We accumulate all formats in the `remote_formats_to_read` attribute.
         // Later, we loop over and fetch all of these (see `process_remote_data_response`).
-        //
-        // SAFETY (stale response concern): clearing both `remote_mapping` and
-        // `remote_formats_to_read` here is safe because the WASM runtime is
-        // single-threaded. Any in-flight `FormatDataResponse` for the previous
-        // format list will be processed after this function returns. At that
-        // point `remote_formats_to_read` is either empty (response dropped by
-        // the guard in `process_remote_data_response`) or repopulated with the
-        // new format list, so stale data cannot be misattributed to a new format.
         self.remote_formats_to_read.clear();
+
+        // Its answer is still coming, and must not be decoded as a format of this list.
+        if let Some(InFlight::Format(_)) = self.in_flight {
+            self.in_flight = Some(InFlight::Superseded);
+        }
 
         // In this loop, we ignore some formats. There are two reasons for that:
         //
@@ -493,20 +541,48 @@ impl WasmClipboard {
     }
 
     fn process_remote_data_response(&mut self, response: FormatDataResponse<'_>) -> anyhow::Result<()> {
-        let pending_format = match self.remote_formats_to_read.pop() {
-            Some(format) => format,
+        let pending_format = match self.in_flight.take() {
+            Some(InFlight::Format(format)) => format,
+            Some(InFlight::Superseded) => {
+                debug!("Discarding format data requested for a superseded format list");
+                self.fetch_next();
+                return Ok(());
+            }
+            Some(InFlight::FileList) => {
+                debug!("Remote failed the file list request");
+                self.fetch_next();
+                return Ok(());
+            }
             None => {
                 warn!("Remote returned format data, but no formats were requested");
                 return Ok(());
             }
         };
 
-        if response.is_error() {
-            // Format is not available anymore.
-            return Ok(());
+        self.remote_formats_to_read.pop();
+
+        // An error means the format is no longer available; the remaining formats may still be.
+        let item = if response.is_error() {
+            None
+        } else {
+            self.decode_remote_format(pending_format, &response)
+        };
+
+        if let Some(item) = item {
+            self.remote_clipboard.add(item);
         }
 
-        let item = match pending_format {
+        self.fetch_next();
+
+        Ok(())
+    }
+
+    fn decode_remote_format(
+        &self,
+        pending_format: ClipboardFormatId,
+        response: &FormatDataResponse<'_>,
+    ) -> Option<ClipboardItem> {
+        match pending_format {
             ClipboardFormatId::CF_UNICODETEXT => match response.to_unicode_string() {
                 Ok(text) => Some(ClipboardItem::new_text(MIME_TEXT, text)),
                 Err(err) => {
@@ -555,39 +631,7 @@ impl WasmClipboard {
                     }
                 }
             }
-        };
-
-        if let Some(item) = item {
-            self.remote_clipboard.add(item);
         }
-
-        if let Some(format) = self.remote_formats_to_read.last() {
-            // Request next format.
-            self.proxy
-                .send_cliprdr_message(ClipboardMessage::SendInitiatePaste(*format));
-        } else {
-            // All text/image formats were read, send clipboard data to JS.
-            let clipboard_data = core::mem::take(&mut self.remote_clipboard);
-
-            if !clipboard_data.is_empty() {
-                if let Err(e) = self.js_callbacks.on_remote_clipboard_changed.call1(
-                    &JsValue::NULL,
-                    &JsValue::from(crate::wasm_bridge::ClipboardData::from(clipboard_data)),
-                ) {
-                    error!(error = ?e, "Failed to call remote clipboard changed callback");
-                }
-            }
-
-            // Now trigger the deferred file list fetch if the FormatList included
-            // FileGroupDescriptorW. The cliprdr layer handles parsing the file
-            // descriptors and calling `on_remote_file_list()` automatically.
-            if let Some(file_format) = self.pending_file_list_paste.take() {
-                self.proxy
-                    .send_cliprdr_message(ClipboardMessage::SendInitiatePaste(file_format));
-            }
-        }
-
-        Ok(())
     }
 
     /// Process backend event. This method should be called from the main event loop.
@@ -619,23 +663,8 @@ impl WasmClipboard {
             }
             WasmClipboardBackendMessage::RemoteClipboardChanged(formats) => {
                 match self.process_remote_clipboard_changed(formats) {
-                    Ok(Some(format)) => {
-                        // We start querying text/image formats right away. This is due to
-                        // absence of delay-rendering in web client.
-                        // If a file list format is also pending, it will be triggered after
-                        // all text/image formats are fetched (see process_remote_data_response).
-                        self.proxy
-                            .send_cliprdr_message(ClipboardMessage::SendInitiatePaste(format));
-                    }
-                    Ok(None) => {
-                        // No text/image formats to query. If a file list format was detected,
-                        // trigger it immediately since there's no text/image fetch chain to
-                        // wait for.
-                        if let Some(file_format) = self.pending_file_list_paste.take() {
-                            self.proxy
-                                .send_cliprdr_message(ClipboardMessage::SendInitiatePaste(file_format));
-                        }
-                    }
+                    // The web client has no delay-rendering, so announced formats are fetched now.
+                    Ok(_) => self.fetch_next(),
                     Err(e) => {
                         error!(error = format!("{e:#}"), "Failed to process remote clipboard change");
                     }
@@ -662,6 +691,10 @@ impl WasmClipboard {
                 }
             }
             WasmClipboardBackendMessage::FileListAdvertise { files, clip_data_id } => {
+                if self.in_flight == Some(InFlight::FileList) {
+                    self.in_flight = None;
+                    self.fetch_next();
+                }
                 if let Some(callback) = self.js_callbacks.on_files_available.as_ref() {
                     // Convert FileMetadata vector to JS array.
                     // Reflect::set on a fresh Object practically never fails, but we
@@ -1764,6 +1797,155 @@ mod tests {
             }
             other => panic!("Expected deferred SendInitiatePaste for file format, got: {other:?}"),
         }
+    }
+
+    fn html_format(id: u32) -> ClipboardFormat {
+        ClipboardFormat::new(ClipboardFormatId::new(id))
+            .with_name(ClipboardFormatName::new_static(FORMAT_WIN_HTML_NAME))
+    }
+
+    fn utf16_response(text: &str) -> FormatDataResponse<'static> {
+        FormatDataResponse::new_unicode_string(text).into_owned()
+    }
+
+    fn expect_paste(rx: &mut mpsc::UnboundedReceiver<RdpInputEvent>) -> ClipboardFormatId {
+        match rx.try_recv() {
+            Ok(RdpInputEvent::Cliprdr(ClipboardMessage::SendInitiatePaste(format))) => format,
+            other => panic!("Expected SendInitiatePaste, got: {other:?}"),
+        }
+    }
+
+    fn remote_text(clipboard: &WasmClipboard, mime: &str) -> Option<String> {
+        clipboard
+            .remote_clipboard
+            .items()
+            .iter()
+            .find_map(|item| match &item.value {
+                ClipboardItemValue::Text(text) if item.mime_type == mime => Some(text.clone()),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn process_event_when_second_format_list_arrives_before_first_is_answered_then_each_response_decodes_as_its_own_format()
+     {
+        // One copy announced as two FormatLists: text first, then text plus HTML.
+        let (proxy, mut rx) = create_test_proxy();
+        let mut clipboard = WasmClipboard::new(proxy, create_test_callbacks());
+        let html_id = 0xC0A0;
+
+        clipboard
+            .process_event(WasmClipboardBackendMessage::RemoteClipboardChanged(vec![
+                ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
+            ]))
+            .unwrap();
+        assert_eq!(expect_paste(&mut rx), ClipboardFormatId::CF_UNICODETEXT);
+
+        clipboard
+            .process_event(WasmClipboardBackendMessage::RemoteClipboardChanged(vec![
+                ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
+                html_format(html_id),
+            ]))
+            .unwrap();
+        assert!(
+            rx.try_recv().is_err(),
+            "the new list must wait for the outstanding answer"
+        );
+
+        // The first list's text answer is discarded, and only then is the new list fetched.
+        clipboard
+            .process_event(WasmClipboardBackendMessage::RemoteDataResponse(utf16_response("hello")))
+            .unwrap();
+        assert_eq!(remote_text(&clipboard, MIME_HTML), None);
+        assert_eq!(expect_paste(&mut rx), ClipboardFormatId::new(html_id));
+
+        let cf_html = plain_html_to_cf_html("<b>hello</b>");
+        clipboard
+            .process_event(WasmClipboardBackendMessage::RemoteDataResponse(
+                FormatDataResponse::new_data(cf_html.into_bytes()).into_owned(),
+            ))
+            .unwrap();
+        assert_eq!(remote_text(&clipboard, MIME_HTML).as_deref(), Some("<b>hello</b>"));
+        assert_eq!(remote_text(&clipboard, MIME_TEXT), None);
+        assert_eq!(expect_paste(&mut rx), ClipboardFormatId::CF_UNICODETEXT);
+
+        clipboard
+            .process_event(WasmClipboardBackendMessage::RemoteDataResponse(utf16_response("hello")))
+            .unwrap();
+        assert_eq!(clipboard.in_flight, None);
+        assert!(clipboard.remote_formats_to_read.is_empty());
+    }
+
+    #[test]
+    fn process_event_when_format_lists_keep_arriving_unanswered_then_only_one_request_is_ever_outstanding() {
+        // cliprdr rejects a paste locally past 64 unanswered, and that rejection names no request.
+        let (proxy, mut rx) = create_test_proxy();
+        let mut clipboard = WasmClipboard::new(proxy, create_test_callbacks());
+
+        for _ in 0..70 {
+            clipboard
+                .process_event(WasmClipboardBackendMessage::RemoteClipboardChanged(vec![
+                    ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
+                ]))
+                .unwrap();
+        }
+
+        assert_eq!(expect_paste(&mut rx), ClipboardFormatId::CF_UNICODETEXT);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(clipboard.in_flight, Some(InFlight::Superseded));
+    }
+
+    #[test]
+    fn process_event_when_a_format_is_answered_with_an_error_then_the_remaining_formats_are_still_requested() {
+        let (proxy, mut rx) = create_test_proxy();
+        let mut clipboard = WasmClipboard::new(proxy, create_test_callbacks());
+
+        clipboard
+            .process_event(WasmClipboardBackendMessage::RemoteClipboardChanged(vec![
+                ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
+                html_format(0xC0A0),
+            ]))
+            .unwrap();
+        assert_eq!(expect_paste(&mut rx), ClipboardFormatId::new(0xC0A0));
+
+        clipboard
+            .process_event(WasmClipboardBackendMessage::RemoteDataResponse(
+                FormatDataResponse::new_error().into_owned(),
+            ))
+            .unwrap();
+        assert_eq!(expect_paste(&mut rx), ClipboardFormatId::CF_UNICODETEXT);
+    }
+
+    #[test]
+    fn process_event_when_the_file_list_request_fails_during_a_new_format_list_then_the_new_list_is_fetched_after_it() {
+        let (proxy, mut rx) = create_test_proxy();
+        let mut clipboard = WasmClipboard::new(proxy, create_test_callbacks());
+
+        clipboard
+            .process_event(WasmClipboardBackendMessage::RemoteClipboardChanged(vec![
+                file_list_format(0xC080),
+            ]))
+            .unwrap();
+        assert_eq!(expect_paste(&mut rx), ClipboardFormatId::new(0xC080));
+
+        clipboard
+            .process_event(WasmClipboardBackendMessage::RemoteClipboardChanged(vec![
+                ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
+            ]))
+            .unwrap();
+        assert!(rx.try_recv().is_err());
+
+        // cliprdr hands a failed file list to the backend as format data.
+        clipboard
+            .process_event(WasmClipboardBackendMessage::RemoteDataResponse(
+                FormatDataResponse::new_error().into_owned(),
+            ))
+            .unwrap();
+        assert_eq!(expect_paste(&mut rx), ClipboardFormatId::CF_UNICODETEXT);
+        assert_eq!(
+            clipboard.in_flight,
+            Some(InFlight::Format(ClipboardFormatId::CF_UNICODETEXT))
+        );
     }
 
     #[test]
