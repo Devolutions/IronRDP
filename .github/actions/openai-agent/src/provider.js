@@ -1,7 +1,7 @@
 "use strict";
 
 const {
-  MAX_OUTPUT_REJECTION_REASON_BYTES, MAX_OUTPUT_REJECTIONS,
+  MAX_OUTPUT_REJECTION_REASON_BYTES, MAX_OUTPUT_REJECTIONS, MAX_VALIDATION_DETAIL_BYTES,
 } = require("./limits");
 
 const SAFE_DIAGNOSTIC_VALUE = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -169,14 +169,19 @@ class RuntimeMetrics {
   }
 
   // A rejected output attempt is the only evidence left of why a stage exhausted its repairs, so it
-  // is kept as bounded telemetry rather than being reduced to the exhaustion itself.
-  recordOutputRejection({ activity, layer, reason }) {
+  // is kept as bounded telemetry rather than being reduced to the exhaustion itself. The short reason
+  // alone can drop what the attempt got wrong, so a validator's full detail travels beside it.
+  recordOutputRejection({ activity, layer, reason, detail }) {
     if (this.outputRejections.length >= MAX_OUTPUT_REJECTIONS) return;
+    const sanitizedDetail = detail === undefined
+      ? ""
+      : sanitizeReason(detail, MAX_VALIDATION_DETAIL_BYTES);
     this.outputRejections.push({
       attempt: this.outputRejections.length + 1,
       activity,
       layer,
       reason: sanitizeReason(reason),
+      ...(sanitizedDetail === "" ? {} : { detail: sanitizedDetail }),
     });
   }
 
@@ -227,12 +232,12 @@ function saturatingIncrement(value) {
 
 // The alphabet is entirely ASCII, so what survives it measures the same in characters as in bytes and
 // the budget can be applied by slicing.
-function sanitizeReason(reason) {
+function sanitizeReason(reason, maximumBytes = MAX_OUTPUT_REJECTION_REASON_BYTES) {
   return String(reason ?? "")
     .replace(UNSAFE_REASON_CHARACTER, " ")
     .replace(/ +/g, " ")
     .trim()
-    .slice(0, MAX_OUTPUT_REJECTION_REASON_BYTES)
+    .slice(0, maximumBytes)
     .trimEnd();
 }
 

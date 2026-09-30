@@ -182,6 +182,8 @@ function parseDiagnostics(raw) {
     request_retries: count(source.requestRetryCount),
     output_repairs: count(source.outputRepairCount),
     provider_attempts: Array.isArray(source.providerAttempts) ? source.providerAttempts.length : null,
+    // Normalized with the stage outcome that carries them.
+    output_rejections: Array.isArray(source.outputRejections) ? source.outputRejections : [],
     tokens: normalizeStageMetrics({
       tokens: {
         input: usage.inputTokens,

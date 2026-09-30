@@ -1730,6 +1730,39 @@ test("a semantic rejection is reported as its own validation layer", async () =>
   );
 });
 
+test("validator detail and guidance reach repair while only detail reaches diagnostics", async () => {
+  const metrics = new RuntimeMetrics();
+  const requests = [];
+  await assert.rejects(
+    runAgent({
+      client: clientFrom([message('{"answer":"a"}'), message('{"answer":"b"}')], requests),
+      config: { ...baseConfig, max_tool_calls: 0, max_output_repair_attempts: 1 },
+      methodologies: [], prompt: "p", sandbox, schema, metrics,
+      validator: async () => ({
+        ok: false,
+        reason: "2 candidates lack a disposition",
+        detail: "2 of 2 candidates have no valid disposition, at aggregate findings skeptical 0, 1",
+        guidance: "candidates: (skeptical, first-id); (skeptical, second-id)",
+      }),
+    }),
+    (error) => error.reason ===
+      "output remained invalid after the repair limit: semantic: 2 candidates lack a disposition",
+  );
+  const repair = requests[1].messages.at(-1).content;
+  assert.match(repair, /at aggregate findings skeptical 0, 1/);
+  assert.match(repair, /\(skeptical, first-id\); \(skeptical, second-id\)/);
+  assert.doesNotMatch(repair, /2 candidates lack a disposition/);
+  const [first] = metrics.snapshot().outputRejections;
+  assert.deepEqual(first, {
+    attempt: 1,
+    activity: "finalizing",
+    layer: "semantic",
+    reason: "2 candidates lack a disposition",
+    detail: "2 of 2 candidates have no valid disposition, at aggregate findings skeptical 0, 1",
+  });
+  assert.doesNotMatch(JSON.stringify(metrics.snapshot()), /first-id/);
+});
+
 test("clean runs report no rejection diagnostics", async () => {
   const metrics = new RuntimeMetrics();
   await runAgent({

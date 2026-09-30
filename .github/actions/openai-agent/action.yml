@@ -11,6 +11,10 @@ inputs:
   config-file:
     description: Workflow-controlled action configuration relative to the workspace
     required: true
+  prompt-context:
+    description: Trusted workflow-generated text appended to the configured prompt
+    required: false
+    default: ""
   validator:
     description: Trusted workflow validator module selector in path#export form
     required: false
