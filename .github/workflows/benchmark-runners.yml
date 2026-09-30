@@ -56,17 +56,37 @@ jobs:
 
       - name: Set up MSVC and Windows SDK
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $before = @{}
+          Get-ChildItem Env: | ForEach-Object { $before[$_.Name] = $_.Value }
+          $installation = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+            -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $installation) { throw 'Visual Studio C++ tools not found' }
+          Import-Module "$installation\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $installation -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          Get-ChildItem Env: | Where-Object { $before[$_.Name] -ne $_.Value } |
+            ForEach-Object { "$($_.Name)=$($_.Value)" >> $env:GITHUB_ENV }
 
       - name: Install LLVM on Windows
         if: runner.os == 'Windows'
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: ${{ env.LLVM_VERSION }}
-          directory: ${{ runner.temp }}/llvm
-          env: 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $asset = "LLVM-$env:LLVM_VERSION-win64.exe"
+          $release = gh api "repos/llvm/llvm-project/releases/tags/llvmorg-$env:LLVM_VERSION" | ConvertFrom-Json
+          $digest = ($release.assets | Where-Object name -EQ $asset).digest
+          if ($digest -notmatch '^sha256:[0-9a-f]{64}$') { throw 'LLVM asset SHA256 is unavailable' }
+          gh release download "llvmorg-$env:LLVM_VERSION" --repo llvm/llvm-project --pattern $asset --dir $env:RUNNER_TEMP
+          $installer = Join-Path $env:RUNNER_TEMP $asset
+          if ((Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $digest.Substring(7)) {
+            throw 'LLVM installer checksum mismatch'
+          }
+          $process = Start-Process $installer -ArgumentList '/S', "/D=$env:RUNNER_TEMP\llvm" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "LLVM installer failed with exit $($process.ExitCode)" }
+          "$env:RUNNER_TEMP\llvm\bin" >> $env:GITHUB_PATH
 
       - name: Install Windows build tools
         if: runner.os == 'Windows'
