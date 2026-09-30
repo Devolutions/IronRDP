@@ -143,10 +143,11 @@ download and verification instructions.
 
 Run [Build runner benchmark][build-benchmark] to compare clean Windows x64 release builds on GitHub's 4-vCPU Windows and Linux runners.
 Both use LLVM 20.1.8 (`clang-cl` and `lld-link`), the repository's Rust toolchain, four Cargo jobs, and static CRT linkage; Linux cross-compiles with `cargo-xwin` 0.23.1.
-Core build time includes dependency compilation and linking but excludes tool installation, dependency downloads, and Windows executable smoke tests.
-Each run saves timing JSON, build logs, Cargo timing reports, and executables for 30 days, plus a comparison summary, CSV, and JSON.
+Each host contributes four samples on fresh runners, with no build cache or incremental compilation.
+The stopwatch surrounds only the offline Cargo release build, including dependency compilation and linking; setup, downloads, metadata checks, artifact uploads, and Windows executable smoke tests are excluded.
+Each run saves timing JSON, build logs, Cargo timing reports, and executables for 30 days, plus individual samples and arithmetic means (with min/max) in the comparison summary, CSV, and JSON.
 The workflow's branch-scoped `push` trigger allows testing before merge; `workflow_dispatch` provides manual runs after registration on the default branch.
-Each host contributes one sample, and its CPU model, image, and tool versions are recorded; Windows and Linux use separately provisioned MSVC/SDK libraries, so results compare the complete build environments rather than the OS alone.
+CPU models, images, and tool versions are recorded; Windows and Linux use separately provisioned MSVC/SDK libraries, so results compare the complete build environments rather than the OS alone.
 
 ## Wire format
 

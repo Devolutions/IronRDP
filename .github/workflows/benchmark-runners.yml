@@ -37,7 +37,7 @@ env:
 
 jobs:
   build:
-    name: Windows build on ${{ matrix.host }} (4 vCPU)
+    name: Windows build on ${{ matrix.host }} (4 vCPU, sample ${{ matrix.sample }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     defaults:
@@ -46,6 +46,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        host: [windows, linux]
+        sample: [1, 2, 3, 4]
         include:
           - host: windows
             runner: windows-2022
@@ -144,6 +146,7 @@ jobs:
         env:
           BENCHMARK_HOST: ${{ matrix.host }}
           BENCHMARK_RUNNER: ${{ matrix.runner }}
+          BENCHMARK_SAMPLE: ${{ matrix.sample }}
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
@@ -178,6 +181,7 @@ jobs:
 
           $timing = [ordered]@{
             host = $env:BENCHMARK_HOST
+            sample = [int]$env:BENCHMARK_SAMPLE
             runner = $env:BENCHMARK_RUNNER
             vcpus = $vcpus
             cpu = $cpu
@@ -198,7 +202,7 @@ jobs:
             succeeded = ($exitCode -eq 0)
           }
           $timing | ConvertTo-Json | Set-Content benchmark-results/build-time.json
-          "## $env:BENCHMARK_HOST core build: $($timing.coreBuildSeconds) s (exit $exitCode)" >> $env:GITHUB_STEP_SUMMARY
+          "## $env:BENCHMARK_HOST sample $env:BENCHMARK_SAMPLE core build: $($timing.coreBuildSeconds) s (exit $exitCode)" >> $env:GITHUB_STEP_SUMMARY
           if ($exitCode -ne 0) { exit $exitCode }
 
           $binary = Join-Path $env:CARGO_TARGET_DIR 'x86_64-pc-windows-msvc/release/ironrdp-agent.exe'
@@ -214,14 +218,14 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: build-benchmark-${{ matrix.host }}
+          name: build-benchmark-${{ matrix.host }}-${{ matrix.sample }}
           path: benchmark-results/
           if-no-files-found: error
           retention-days: 30
           overwrite: true
 
   compare:
-    name: Verify Windows executables and compare build times
+    name: Verify Windows executables and compare average build times
     needs: build
     if: ${{ !cancelled() }}
     runs-on: windows-2022
@@ -239,59 +243,89 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           $timings = @(
             foreach ($hostName in @('windows', 'linux')) {
-              $directory = Join-Path benchmark-results "build-benchmark-$hostName"
-              $timing = Get-Content (Join-Path $directory 'build-time.json') -Raw | ConvertFrom-Json
-              if (-not $timing.succeeded) { throw "$hostName build failed; see its timing and log artifact" }
-              if ($timing.commit -ne $env:GITHUB_SHA -or $timing.vcpus -ne 4 -or $timing.coreBuildSeconds -le 0) {
-                throw "invalid benchmark metadata for $hostName"
+              foreach ($sample in 1..4) {
+                $directory = Join-Path benchmark-results "build-benchmark-$hostName-$sample"
+                $timing = Get-Content (Join-Path $directory 'build-time.json') -Raw | ConvertFrom-Json
+                if (-not $timing.succeeded) { throw "$hostName sample $sample build failed; see its artifact" }
+                if ($timing.host -ne $hostName -or $timing.sample -ne $sample -or
+                    $timing.commit -ne $env:GITHUB_SHA -or $timing.runId -ne $env:GITHUB_RUN_ID -or
+                    $timing.vcpus -ne 4 -or $timing.coreBuildSeconds -le 0) {
+                  throw "invalid benchmark metadata for $hostName sample $sample"
+                }
+                $binary = Join-Path $directory 'ironrdp-agent.exe'
+                & $binary --version | Tee-Object -FilePath (Join-Path $directory 'version.txt') | Write-Host
+                & $binary --help | Set-Content (Join-Path $directory 'smoke-test.txt')
+                $timing
               }
-              $binary = Join-Path $directory 'ironrdp-agent.exe'
-              & $binary --version | Tee-Object -FilePath (Join-Path $directory 'version.txt') | Write-Host
-              & $binary --help | Set-Content (Join-Path $directory 'smoke-test.txt')
-              $timing
             }
           )
-          if ($timings[0].target -ne $timings[1].target -or $timings[0].profile -ne $timings[1].profile) {
+          $first = $timings[0]
+          if (@($timings | Where-Object { $_.target -ne $first.target -or $_.profile -ne $first.profile }).Count -ne 0) {
             throw 'benchmark targets or profiles differ'
           }
-          $fastest = ($timings | Measure-Object -Property coreBuildSeconds -Minimum).Minimum
-          $rows = foreach ($timing in $timings) {
-            [pscustomobject]@{
-              host = $timing.host
-              runner = $timing.runner
-              vcpus = $timing.vcpus
-              coreBuildSeconds = $timing.coreBuildSeconds
-              deltaSeconds = [math]::Round($timing.coreBuildSeconds - $fastest, 3)
-              relativeToFastest = [math]::Round($timing.coreBuildSeconds / $fastest, 3)
+          $averages = @(
+            foreach ($hostName in @('windows', 'linux')) {
+              $samples = @($timings | Where-Object host -EQ $hostName)
+              if ($samples.Count -ne 4) { throw "expected 4 samples for $hostName" }
+              $stats = $samples | Measure-Object -Property coreBuildSeconds -Average -Minimum -Maximum
+              [pscustomobject]@{
+                host = $hostName
+                runner = $samples[0].runner
+                vcpus = $samples[0].vcpus
+                samples = $samples.Count
+                averageCoreBuildSeconds = [math]::Round($stats.Average, 3)
+                minCoreBuildSeconds = $stats.Minimum
+                maxCoreBuildSeconds = $stats.Maximum
+              }
             }
-          }
-          New-Item -ItemType Directory comparison | Out-Null
-          $rows | Export-Csv comparison/build-times.csv -NoTypeInformation
-          $timings | ConvertTo-Json -Depth 5 | Set-Content comparison/build-times.json
-          $summary = @(
-            '## Windows x64 release build comparison',
-            '',
-            '| Build host | Runner | vCPU | Core build (s) | Delta (s) | Relative to fastest |',
-            '| --- | --- | ---: | ---: | ---: | ---: |'
           )
-          foreach ($row in $rows) {
-            $summary += "| $($row.host) | $($row.runner) | $($row.vcpus) | $($row.coreBuildSeconds) | $($row.deltaSeconds) | $($row.relativeToFastest)x |"
+          $fastest = ($averages | Measure-Object -Property averageCoreBuildSeconds -Minimum).Minimum
+          $averages = @($averages | Select-Object *, @{
+            Name = 'relativeToFastestAverage'
+            Expression = { [math]::Round($_.averageCoreBuildSeconds / $fastest, 3) }
+          })
+          New-Item -ItemType Directory comparison | Out-Null
+          $timings | Select-Object host, sample, runner, vcpus, cpu, coreBuildSeconds |
+            Export-Csv comparison/build-times.csv -NoTypeInformation
+          $timings | ConvertTo-Json -Depth 5 | Set-Content comparison/build-times.json
+          $averages | Export-Csv comparison/averages.csv -NoTypeInformation
+          $averages | ConvertTo-Json | Set-Content comparison/averages.json
+          $summary = @(
+            '## Windows x64 release build averages',
+            '',
+            '| Build host | Runner | vCPU | Samples | Average core build (s) | Min (s) | Max (s) | Relative to fastest average |',
+            '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |'
+          )
+          foreach ($average in $averages) {
+            $summary += "| $($average.host) | $($average.runner) | $($average.vcpus) | $($average.samples) | $($average.averageCoreBuildSeconds) | $($average.minCoreBuildSeconds) | $($average.maxCoreBuildSeconds) | $($average.relativeToFastestAverage)x |"
           }
           $summary += @(
             '',
-            'Both Windows executables passed --version and --help smoke tests.',
-            'Core build time includes clean compilation of dependencies and linking; setup, downloads, and smoke tests are excluded.',
-            'One sample per host, with no build cache or incremental compilation; CPU models and tool versions are recorded in JSON.',
+            '## Individual samples',
+            '',
+            '| Build host | Sample | Core build (s) |',
+            '| --- | ---: | ---: |'
+          )
+          foreach ($timing in $timings) {
+            $summary += "| $($timing.host) | $($timing.sample) | $($timing.coreBuildSeconds) |"
+          }
+          $summary += @(
+            '',
+            'All eight Windows executables passed --version and --help smoke tests.',
+            'The stopwatch surrounds only the offline cargo build command, including clean dependency compilation and linking.',
+            'Setup, downloads, metadata checks, artifact uploads, and smoke tests are outside the timed interval.',
+            'Each of the four samples per host uses a fresh 4-vCPU runner with no build cache or incremental compilation; CPU models and tool versions are recorded in JSON.',
             'Windows uses the installed MSVC/SDK; Linux uses the cargo-xwin MSVC/SDK, so this is a runner/toolchain comparison, not an OS-only experiment.',
             '',
             "Commit: $env:GITHUB_SHA"
           )
           $summary | Set-Content comparison/summary.md
           $summary >> $env:GITHUB_STEP_SUMMARY
-          $rows | Format-Table | Out-String | Write-Host
+          $averages | Format-Table | Out-String | Write-Host
           foreach ($timing in $timings) {
-            Copy-Item "benchmark-results/build-benchmark-$($timing.host)/smoke-test.txt" "comparison/smoke-test-$($timing.host).txt"
-            Copy-Item "benchmark-results/build-benchmark-$($timing.host)/version.txt" "comparison/version-$($timing.host).txt"
+            $id = "$($timing.host)-$($timing.sample)"
+            Copy-Item "benchmark-results/build-benchmark-$id/smoke-test.txt" "comparison/smoke-test-$id.txt"
+            Copy-Item "benchmark-results/build-benchmark-$id/version.txt" "comparison/version-$id.txt"
           }
 
       - name: Save comparison
