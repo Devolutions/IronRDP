@@ -199,12 +199,30 @@ fn a_failed_response_keeps_later_responses_aligned() {
 }
 
 /// A peer that stops answering cannot grow the queue without bound: past the
-/// cap, `initiate_paste` fails instead of queueing.
+/// cap, a paste isn't sent and the backend gets a failed response for it —
+/// not an error, which embedders commonly propagate out of the session loop.
+/// The requests already queued stay correlated.
 #[test]
-fn the_pending_request_queue_is_capped() {
+fn a_paste_past_the_cap_fails_locally_without_an_error() {
     let mut cliprdr = ready_client();
     for _ in 0..64 {
         paste(&mut cliprdr, ClipboardFormatId::CF_UNICODETEXT);
     }
-    assert!(cliprdr.initiate_paste(ClipboardFormatId::CF_UNICODETEXT).is_err());
+    let messages: Vec<_> = cliprdr
+        .initiate_paste(file_list_format())
+        .expect("past the cap is not an error")
+        .into();
+    assert!(messages.is_empty(), "nothing is sent past the cap");
+    assert_eq!(backend(&cliprdr).error_responses, 1, "the paste fails locally");
+
+    respond(&mut cliprdr, text_response());
+    assert_eq!(
+        backend(&cliprdr).data_responses,
+        vec![text_response().data().to_vec()],
+        "the first queued request still gets its response"
+    );
+    assert!(
+        backend(&cliprdr).file_lists.is_empty(),
+        "the unsent file list request was not queued"
+    );
 }

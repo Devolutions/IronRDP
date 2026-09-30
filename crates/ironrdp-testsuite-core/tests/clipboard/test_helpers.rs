@@ -200,7 +200,7 @@ impl AsAny for RecordingBackend {
 
 /// Backend that records FormatDataResponse and remote file list callbacks,
 /// with a mock clock. Used to verify which request each response is
-/// correlated with, and the expiry of unanswered requests.
+/// correlated with.
 #[derive(Debug, Default)]
 pub(super) struct FormatDataRecordingBackend {
     pub clock_ms: Cell<u64>,

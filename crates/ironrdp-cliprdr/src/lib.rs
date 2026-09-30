@@ -40,7 +40,6 @@ pub(crate) enum CliprdrState {
 /// A FormatDataRequest sent to the remote and not yet answered.
 #[derive(Debug, Clone, Copy)]
 struct PendingFormatDataRequest {
-    format: ClipboardFormatId,
     /// Whether this was a request for the remote's file list, decided when the
     /// request was sent. The response carries no format ID, and a FormatList
     /// arriving in between can change or drop the file list format, so the
@@ -382,9 +381,11 @@ const MAX_PENDING_FILE_REQUESTS: usize = 1000;
 
 /// Maximum number of unanswered format data requests.
 ///
-/// Every [`Cliprdr::initiate_paste`] queues the requested format until its
+/// Every [`Cliprdr::initiate_paste`] queues the request until its
 /// [`FormatDataResponse`] arrives. The remote must answer every request, so
-/// this only bounds a peer that stops answering.
+/// this only bounds a peer that stops answering. A paste past the cap isn't
+/// sent: the backend gets a failed response for it instead, and the session
+/// carries on.
 const MAX_PENDING_FORMAT_DATA_REQUESTS: usize = 64;
 
 /// Fails one file contents request without leaving its caller waiting.
@@ -917,32 +918,32 @@ impl<R: Role> Cliprdr<R> {
 
     /// Takes `&mut self` because it tracks `pending_format_data_requests` for response correlation.
     ///
-    /// Fails if too many requests are already unanswered (a peer that stopped answering).
+    /// If too many requests are already unanswered (a peer that stopped
+    /// answering), nothing is sent and the backend gets a failed
+    /// [`FormatDataResponse`] for this paste instead — not an error, which
+    /// embedders commonly propagate out of the session loop.
     pub fn initiate_paste(&mut self, requested_format: ClipboardFormatId) -> PduResult<CliprdrSvcMessages<R>> {
         self.require_ready("initiate_paste")?;
 
         if self.pending_format_data_requests.len() >= MAX_PENDING_FORMAT_DATA_REQUESTS {
             warn!(
                 pending = self.pending_format_data_requests.len(),
-                "Rejecting paste: too many unanswered format data requests"
+                format_id = ?requested_format,
+                "Not sending paste: too many unanswered format data requests; failing it locally"
             );
-            return Err(ironrdp_pdu::PduError::new(
-                "initiate_paste",
-                ironrdp_pdu::PduErrorKind::Other {
-                    description: "too many unanswered format data requests",
-                },
-            ));
+            self.backend
+                .on_format_data_response(OwnedFormatDataResponse::new_error());
+            return Ok(Vec::new().into());
         }
 
         // When user initiates paste, send format data request to server, and expect to
         // receive response with contents via `FormatDataResponse` PDU.
-        // Track the format so we can correlate the response correctly.
-        self.pending_format_data_requests.push_back(PendingFormatDataRequest {
-            format: requested_format,
-            is_file_list: Some(requested_format) == self.remote_file_list_format_id,
-        });
+        // Track the request so we can correlate the response correctly.
+        let is_file_list = Some(requested_format) == self.remote_file_list_format_id;
+        self.pending_format_data_requests
+            .push_back(PendingFormatDataRequest { is_file_list });
 
-        if Some(requested_format) == self.remote_file_list_format_id {
+        if is_file_list {
             trace!(format_id = ?requested_format, "User initiated paste for FileGroupDescriptorW");
         }
 
@@ -1750,13 +1751,14 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                 // Correlate this response with the oldest unanswered FormatDataRequest.
                 // Only intercept as a file list if the request was for the file list format;
                 // forward all other responses (text, images, etc.) to the backend.
-                let requested = self.pending_format_data_requests.pop_front();
-                let requested_format = requested.map(|request| request.format);
-                let is_file_list_response = requested.is_some_and(|request| request.is_file_list);
+                let is_file_list_response = self
+                    .pending_format_data_requests
+                    .pop_front()
+                    .is_some_and(|request| request.is_file_list);
 
                 if is_file_list_response {
                     if response.is_error() {
-                        warn!(?requested_format, "FileGroupDescriptorW request failed");
+                        warn!("FileGroupDescriptorW request failed");
                         self.backend.on_format_data_response(response);
                         Ok(Vec::new())
                     } else {
