@@ -14,7 +14,7 @@ use crossterm::event::{
 };
 use crossterm::{cursor, execute, queue, terminal};
 use ironrdp_input::MouseButton;
-use ironrdp_rpc::ipc::{MAX_UNICODE_TEXT_CHARS, Payload, Request, Response};
+use ironrdp_rpc::ipc::{KeyInput, MAX_UNICODE_TEXT_CHARS, Payload, Request, Response};
 use ironrdp_rpc::transport::{self, Endpoint};
 
 use crate::terminal_image::{self, Protocol};
@@ -244,7 +244,10 @@ pub(crate) async fn run(endpoint: &Endpoint, options: Options) -> anyhow::Result
                         action = menu_key_action(key, view.menu_mode == MenuMode::ConfirmDisconnect);
                         Vec::new()
                     }
-                    Event::Key(key) => key_requests(key),
+                    Event::Key(key) => {
+                        let events = key_requests(key);
+                        if events.is_empty() { Vec::new() } else { vec![Request::KeyBatch { events }] }
+                    }
                     Event::Mouse(mouse) => {
                         let (columns, rows) = terminal::size()?;
                         let footer = view.footer(auto_fit, columns);
@@ -814,7 +817,7 @@ fn route_mouse(
 /// Plain and shifted characters are sent as Unicode so any keyboard layout works. Keys without a
 /// character, and characters combined with Ctrl, Alt, or Win, are sent as US set-1 scancodes with
 /// the modifiers pressed around them, because shortcuts are layout-independent key positions.
-fn key_requests(key: KeyEvent) -> Vec<Request> {
+fn key_requests(key: KeyEvent) -> Vec<KeyInput> {
     if key.kind == KeyEventKind::Release {
         return Vec::new();
     }
@@ -833,8 +836,8 @@ fn key_requests(key: KeyEvent) -> Vec<Request> {
                 Some(scancode) if (ctrl || alt || win) && !altgr_symbol => scancode,
                 _ => {
                     return vec![
-                        Request::KeyUnicode { ch, pressed: true },
-                        Request::KeyUnicode { ch, pressed: false },
+                        KeyInput::Unicode { ch, pressed: true },
+                        KeyInput::Unicode { ch, pressed: false },
                     ];
                 }
             }
@@ -860,11 +863,11 @@ fn key_requests(key: KeyEvent) -> Vec<Request> {
     .filter_map(|(active, scancode)| active.then_some(scancode))
     .collect();
 
-    let press = |scancode| Request::KeyScancode {
+    let press = |scancode| KeyInput::Scancode {
         scancode,
         pressed: true,
     };
-    let release = |scancode| Request::KeyScancode {
+    let release = |scancode| KeyInput::Scancode {
         scancode,
         pressed: false,
     };
@@ -945,11 +948,11 @@ mod tests {
         KeyEvent::new(code, modifiers)
     }
 
-    fn scancodes(requests: &[Request]) -> Vec<(u16, bool)> {
+    fn scancodes(requests: &[KeyInput]) -> Vec<(u16, bool)> {
         requests
             .iter()
             .map(|request| match request {
-                Request::KeyScancode { scancode, pressed } => (*scancode, *pressed),
+                KeyInput::Scancode { scancode, pressed } => (*scancode, *pressed),
                 _ => panic!("expected only scancode requests"),
             })
             .collect()
@@ -996,18 +999,18 @@ mod tests {
         assert_eq!(
             requests,
             [
-                Request::KeyUnicode {
+                KeyInput::Unicode {
                     ch: '\u{e9}',
                     pressed: true
                 },
-                Request::KeyUnicode {
+                KeyInput::Unicode {
                     ch: '\u{e9}',
                     pressed: false
                 },
             ]
         );
         let shifted = key_requests(key(KeyCode::Char('A'), KeyModifiers::SHIFT));
-        assert_eq!(shifted[0], Request::KeyUnicode { ch: 'A', pressed: true });
+        assert_eq!(shifted[0], KeyInput::Unicode { ch: 'A', pressed: true });
     }
 
     #[test]
@@ -1024,12 +1027,20 @@ mod tests {
                 (0x1D, false)
             ]
         );
+        assert_eq!(
+            key_requests(key(
+                KeyCode::Char('x'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT | KeyModifiers::SUPER
+            ))
+            .len(),
+            ironrdp_rpc::ipc::MAX_KEY_BATCH_EVENTS
+        );
     }
 
     #[test]
     fn altgr_symbols_stay_unicode() {
         let requests = key_requests(key(KeyCode::Char('@'), KeyModifiers::CONTROL | KeyModifiers::ALT));
-        assert_eq!(requests[0], Request::KeyUnicode { ch: '@', pressed: true });
+        assert_eq!(requests[0], KeyInput::Unicode { ch: '@', pressed: true });
     }
 
     #[test]

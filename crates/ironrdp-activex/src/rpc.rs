@@ -467,6 +467,10 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             AgentErrorCategory::InvalidRequest,
             "guarded disconnect requires the daemon backend",
         ),
+        Request::KeyBatch { .. } => Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "key batch requires the daemon backend",
+        ),
         Request::DaemonStop => Response::typed_error(
             AgentErrorCategory::InvalidRequest,
             "daemon stop is not supported by ActiveX",

@@ -154,15 +154,15 @@ impl KnownCertificates {
                 continue;
             }
 
-            let entry = (|| {
+            (|| {
                 let mut fields = line.split_whitespace();
                 let (Some(endpoint), Some(fingerprint), None) = (fields.next(), fields.next(), fields.next()) else {
                     anyhow::bail!("expected `<host:port> <sha256>`");
                 };
-                Ok((normalize_endpoint(endpoint)?, fingerprint.parse()?))
+                store.trust(endpoint, fingerprint.parse()?)?;
+                Ok::<_, anyhow::Error>(())
             })()
             .with_context(|| format!("line {}", index + 1))?;
-            store.entries.push(entry);
         }
         Ok(store)
     }
@@ -323,6 +323,21 @@ mod tests {
         assert!(store.remove("host").unwrap());
         assert!(!store.remove("host").unwrap());
         assert_eq!(store.entries().count(), 0);
+    }
+
+    #[test]
+    fn parsing_duplicate_endpoint_keeps_only_latest_certificate() {
+        let old = b"old certificate";
+        let new = b"new certificate";
+        let text = format!(
+            "IT-HELP-RDM {} \nit-help-rdm:3389 {}\n",
+            Fingerprint::of_certificate(old),
+            Fingerprint::of_certificate(new)
+        );
+        let store = KnownCertificates::parse(&text).unwrap();
+        assert_eq!(store.entries().count(), 1);
+        assert!(!store.is_trusted("IT-HELP-RDM", old));
+        assert!(store.is_trusted("IT-HELP-RDM", new));
     }
 
     #[test]

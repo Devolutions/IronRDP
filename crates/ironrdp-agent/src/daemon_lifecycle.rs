@@ -21,7 +21,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(10);
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_STARTUP_BYTES: u64 = 1024 * 1024;
-const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_LOG_BYTES: u64 = ironrdp_daemon::daemon::MAX_DAEMON_LOG_BYTES;
 
 #[derive(Default)]
 pub(crate) struct Settings {
@@ -48,9 +48,9 @@ impl Settings {
     }
 
     pub(crate) async fn run_child(endpoint: Endpoint, bootstrap: String) -> anyhow::Result<()> {
-        use std::io::Write as _;
+        use std::io::{Seek as _, Write as _};
 
-        let log = open_log(&log_path()?)?;
+        let mut log = open_log(&log_path()?)?;
         let result = async {
             let settings = Settings::read_bootstrap(bootstrap).await?;
             let options = DaemonOptions::default()
@@ -67,6 +67,7 @@ impl Settings {
         }
         .await;
         if let Err(error) = &result {
+            let _ = log.seek(io::SeekFrom::End(0));
             let _ = writeln!(&log, "daemon failed: {error:#}");
         }
         result
@@ -409,16 +410,17 @@ fn spawn_detached(endpoint: &Endpoint, bootstrap: &Endpoint) -> anyhow::Result<B
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    // SAFETY: setsid has no userspace preconditions here; the child has not joined a process
-    // group of which it is leader, and the call is async-signal-safe after fork.
+    let detach = || {
+        // SAFETY: This async-signal-safe call runs in the child after fork, before exec.
+        if unsafe { libc::setsid() } == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    };
+    // SAFETY: `detach` performs only the async-signal-safe setsid syscall before exec.
     unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() == -1 {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        });
+        command.pre_exec(detach);
     }
     for name in ["RDP_PASSWORD", "RDG_PASSWORD", "RDP_USERNAME", "RDG_USERNAME"] {
         command.env_remove(name);
@@ -621,12 +623,7 @@ fn log_path() -> anyhow::Result<PathBuf> {
 fn open_log(path: &PathBuf) -> anyhow::Result<fs::File> {
     let truncate = fs::metadata(path).is_ok_and(|metadata| metadata.len() >= MAX_LOG_BYTES);
     let mut options = OpenOptions::new();
-    options.create(true).write(true);
-    if truncate {
-        options.truncate(true);
-    } else {
-        options.append(true);
-    }
+    options.create(true).write(true).truncate(truncate);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;

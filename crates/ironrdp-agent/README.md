@@ -46,6 +46,7 @@ An already-running daemon retains its startup settings: stop it before changing 
 Use `connect --no-auto-start` to require an existing daemon.
 An explicit `--endpoint NAME` requires `connect --auto-start` to start its own daemon; `--backend active-x` never starts one.
 Background daemon logs are written to `%LOCALAPPDATA%\ironrdp-agent\daemon.log` on Windows or `$XDG_STATE_HOME/ironrdp-agent/daemon.log` (default `~/.local/state`) on Unix.
+The operational log is truncated as it reaches 2 MiB, including while the daemon is running.
 Passwords supplied to `connect` travel through IPC rather than child process arguments; the background daemon does not inherit the standard RDP and RD Gateway password environment variables.
 
 ## ActiveX backend
@@ -170,6 +171,7 @@ The frame refreshes every 250 ms (`--interval-ms`) and redraws only when it chan
 Clicks land on the centre of the terminal cell under the pointer, so precision is one cell.
 Plain characters are typed as Unicode, so any keyboard layout works.
 Shortcuts with Ctrl, Alt, or Win, and keys such as arrows or F1–F12, are sent as US-layout scancodes.
+Each key press/release sequence is sent as one bounded IPC input transaction so a rejected request cannot leave a modifier pressed.
 Pasted text is typed as Unicode.
 
 Windows Terminal draws Sixel images on a 10×20-pixel cell grid, which `attach` assumes when the terminal does not report its cell size.

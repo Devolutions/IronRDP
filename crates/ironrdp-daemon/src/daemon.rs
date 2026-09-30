@@ -8,6 +8,7 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::collections::VecDeque;
+use std::io::{self, Seek as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -39,11 +40,11 @@ use std::collections::BTreeSet;
 use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackendFactory};
 
 use crate::ipc::{
-    ClipboardFileEntry, ConnState, KeyFilter, MAX_CLIPBOARD_FILE_BYTES, MAX_CLIPBOARD_FILE_LIST_ENTRIES,
-    MAX_RAIL_RETAINED_EVENTS, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload, PenFrameRequest, PropValue,
-    PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason, RailExecuteRequest,
-    RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo, TouchFrameRequest, pen_event_from_request,
-    touch_event_from_request,
+    ClipboardFileEntry, ConnState, KeyFilter, KeyInput, MAX_CLIPBOARD_FILE_BYTES, MAX_CLIPBOARD_FILE_LIST_ENTRIES,
+    MAX_KEY_BATCH_EVENTS, MAX_RAIL_RETAINED_EVENTS, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload, PenFrameRequest,
+    PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason,
+    RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo, TouchFrameRequest,
+    pen_event_from_request, touch_event_from_request,
 };
 use crate::known_certificates::{
     ACCEPT_CERTIFICATE_PROPERTY, CertificateRejection, Fingerprint, KnownCertificates, normalize_endpoint,
@@ -74,6 +75,38 @@ pub async fn run_with_log(
     init_daemon_logging(Some(log));
     let daemon = Arc::new(Daemon::with_options(overlay, options)?);
     serve(endpoint, daemon).await
+}
+
+/// Maximum size of the detached daemon's operational log.
+pub const MAX_DAEMON_LOG_BYTES: u64 = 2 * 1024 * 1024;
+
+struct BoundedLog {
+    file: std::fs::File,
+    limit: u64,
+}
+
+impl io::Write for BoundedLog {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let length = u64::try_from(buf.len()).unwrap_or(u64::MAX);
+        if self.file.metadata()?.len().saturating_add(length) > self.limit {
+            self.file.set_len(0)?;
+        }
+        self.file.seek(io::SeekFrom::End(0))?;
+        if length > self.limit {
+            let kept = usize::try_from(self.limit).unwrap_or(usize::MAX);
+            self.file.write_all(&buf[buf.len() - kept..])?;
+            Ok(buf.len())
+        } else {
+            self.file.write(buf)
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
 }
 
 /// Serves `daemon` on `endpoint` until its owner requests shutdown.
@@ -724,6 +757,32 @@ impl Daemon {
             } else {
                 Operation::UnicodeKeyReleased(ch)
             })),
+            Request::KeyBatch { events } => {
+                if events.is_empty() || events.len() > MAX_KEY_BATCH_EVENTS {
+                    DaemonResponse::Single(Response::typed_error(
+                        crate::ipc::AgentErrorCategory::InvalidRequest,
+                        "invalid key batch event count",
+                    ))
+                } else {
+                    DaemonResponse::Single(self.input_operations(events.into_iter().map(|event| match event {
+                        KeyInput::Scancode { scancode, pressed } => {
+                            let scancode = Scancode::from_u16(scancode);
+                            if pressed {
+                                Operation::KeyPressed(scancode)
+                            } else {
+                                Operation::KeyReleased(scancode)
+                            }
+                        }
+                        KeyInput::Unicode { ch, pressed } => {
+                            if pressed {
+                                Operation::UnicodeKeyPressed(ch)
+                            } else {
+                                Operation::UnicodeKeyReleased(ch)
+                            }
+                        }
+                    })))
+                }
+            }
             Request::UnicodeText { text } => DaemonResponse::Single(self.unicode_text(&text)),
             Request::Resize { width, height } => DaemonResponse::Single(self.resize(width, height)),
             Request::NowCapabilities => DaemonResponse::Single(self.now_capabilities().await),
@@ -2328,8 +2387,11 @@ fn init_daemon_logging(log: Option<std::fs::File>) {
         .from_env_lossy();
 
     let writer = match log {
-        Some(file) => BoxMakeWriter::new(file),
-        None => BoxMakeWriter::new(std::io::stderr),
+        Some(file) => BoxMakeWriter::new(Mutex::new(BoundedLog {
+            file,
+            limit: MAX_DAEMON_LOG_BYTES,
+        })),
+        None => BoxMakeWriter::new(io::stderr),
     };
     let fmt_layer = tracing_subscriber::fmt::layer().compact().with_writer(writer);
 
@@ -2482,9 +2544,10 @@ mod tests {
     use ironrdp_propertyset::PropertySet;
 
     use super::{
-        ConnState, Daemon, DaemonOptions, Live, MAX_PENDING_RAIL_LAUNCHES, MAX_RAIL_RETAINED_EVENTS,
-        MAX_UNICODE_TEXT_CHARS, NowEndpoint, OperationManager, RailLedger, RdpdrDriveConfig, ResizeError, Session,
-        consume_output, enqueue_unicode_text, filetime_to_unix_secs, notify, system_time_to_filetime,
+        BoundedLog, ConnState, Daemon, DaemonOptions, Live, MAX_PENDING_RAIL_LAUNCHES, MAX_RAIL_RETAINED_EVENTS,
+        MAX_UNICODE_TEXT_CHARS, NowEndpoint, OperationManager, RailLedger, RdpdrDriveConfig, Request, ResizeError,
+        Scancode, Session, consume_output, enqueue_unicode_text, filetime_to_unix_secs, notify,
+        system_time_to_filetime,
     };
     use crate::ipc::{AgentErrorCategory, Payload, Response};
     use ironrdp_rpc::ipc::{RailEventKind, RailExecuteRequest, RailLaunchInfo};
@@ -2726,6 +2789,52 @@ mod tests {
             live.lock().expect("session live state poisoned").state,
             ConnState::Disconnecting
         );
+    }
+
+    #[tokio::test]
+    async fn key_batch_is_atomic_under_input_queue_backpressure() {
+        use crate::ipc::KeyInput;
+
+        let (daemon, mut receiver, _live, _) = active_rail_session(false);
+        let key = Scancode::from_u16(0x1D);
+        let batch = || Request::KeyBatch {
+            events: vec![
+                KeyInput::Scancode {
+                    scancode: 0x1D,
+                    pressed: true,
+                },
+                KeyInput::Scancode {
+                    scancode: 0x1D,
+                    pressed: false,
+                },
+            ],
+        };
+        assert!(daemon.handle(batch()).await.response().is_ok());
+        assert!(
+            !daemon
+                .state
+                .lock()
+                .expect("daemon state poisoned")
+                .as_ref()
+                .expect("session")
+                .input_db
+                .is_key_pressed(key)
+        );
+        assert!(matches!(
+            daemon.handle(batch()).await.response(),
+            Response::Err(error) if error.message == "session input channel is unavailable"
+        ));
+        let RdpInputEvent::FastPath(events) = receiver.try_recv().expect("one atomic input message") else {
+            panic!("expected FastPath input");
+        };
+        assert_eq!(
+            events.as_slice(),
+            [
+                FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x1D),
+                FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x1D),
+            ]
+        );
+        assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
     }
 
     #[tokio::test]
@@ -3176,6 +3285,33 @@ mod tests {
             insecure.certificate_validation(),
             CertificateValidation::DangerouslyAcceptInvalidCertificate
         );
+    }
+
+    #[test]
+    fn daemon_log_truncates_while_running() {
+        use std::io::Write as _;
+
+        let path = std::env::temp_dir().join(format!(
+            "ironrdp-bounded-log-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos(),
+        ));
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .expect("create test log");
+        let mut log = BoundedLog { file, limit: 12 };
+        log.write_all(b"1234567890").expect("first write");
+        log.write_all(b"next").expect("rotate on next write");
+        log.write_all(b"xxxxxxxxxxxxxxxx").expect("oversized write");
+        log.write_all(b"ok").expect("rotate again");
+        assert_eq!(std::fs::read(&path).expect("read log"), b"ok");
+        drop(log);
+        std::fs::remove_file(path).expect("remove test log");
     }
 
     #[test]

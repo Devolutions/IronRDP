@@ -11,11 +11,11 @@ use ironrdp_daemon::now::{DVC_CHANNEL_NAME, INITIAL_ENDPOINT_TIMEOUT, NowEndpoin
 use ironrdp_input::MouseButton;
 use ironrdp_propertyset::PropertySet;
 use ironrdp_rpc::ipc::{
-    AgentError, AgentErrorCategory, ClipboardFileEntry, ConnState, KeyFilter, NowCapabilities, NowDiagnostics,
-    NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo,
-    OperationState, Payload, PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind,
-    RailExecuteFailureReason, RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo,
-    UntrustedCertificate,
+    AgentError, AgentErrorCategory, ClipboardFileEntry, ConnState, KeyFilter, KeyInput, NowCapabilities,
+    NowDiagnostics, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind,
+    OperationInfo, OperationState, Payload, PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump,
+    RailEventKind, RailExecuteFailureReason, RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response,
+    StatusInfo, UntrustedCertificate,
 };
 use ironrdp_rpc::wire;
 
@@ -85,6 +85,26 @@ fn request_variants_round_trip() {
         Request::KeyUnicode {
             ch: '\u{00e9}',
             pressed: true,
+        },
+        Request::KeyBatch {
+            events: vec![
+                KeyInput::Scancode {
+                    scancode: 0x1D,
+                    pressed: true,
+                },
+                KeyInput::Unicode {
+                    ch: '\u{00e9}',
+                    pressed: true,
+                },
+                KeyInput::Unicode {
+                    ch: '\u{00e9}',
+                    pressed: false,
+                },
+                KeyInput::Scancode {
+                    scancode: 0x1D,
+                    pressed: false,
+                },
+            ],
         },
         Request::UnicodeText {
             text: "Hello, \u{4e16}\u{754c}".to_owned(),
