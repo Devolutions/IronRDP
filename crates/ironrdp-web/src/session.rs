@@ -949,7 +949,14 @@ impl iron_remote_desktop::Session for Session {
 
             // `process()` may have resized `image` to follow ResetGraphics in the same
             // frame. The canvas has to match *before* the GraphicsUpdate from that frame
-            // is drawn.
+            // is drawn. `desktop_size` is updated from `image` first so
+            // `canvas_resized_callback` (and `desktop_size()`) see the size in effect;
+            // `GraphicsReset` is dequeued on a later iteration.
+            let width = image.width();
+            let height = image.height();
+            if width > 0 && height > 0 {
+                self.desktop_size.set(connector::DesktopSize { width, height });
+            }
             sync_canvas_to_image(
                 &mut gui,
                 &image,
