@@ -5,14 +5,17 @@ pub(crate) const AGENT_GUIDE: &str = r#"# ironrdp-agent
 
 A CLI-driven, daemon-backed RDP client. One binary plays three roles:
 
-- DAEMON: `ironrdp-agent daemon-start` runs a long-lived foreground process that owns the RDP
-  engine and one RDP session. Background it yourself (e.g. `ironrdp-agent daemon-start &`).
+- DAEMON: `ironrdp-agent daemon start` starts a background process that owns the RDP engine
+  and one RDP session. `connect` starts the default daemon automatically when it is absent.
 - GATEWAY: `ironrdp-agent gw-forward` runs in the foreground and relays TCP through an RD Gateway
   without an RDP session. It does not use the daemon or IPC.
 - CLI: every other subcommand opens the local IPC endpoint, sends one request, prints the
   response, and exits.
 
 The daemon stays alive across CLI invocations. One daemon serves one RDP session.
+
+For automation, always pass `connect --no-prompt`, even in SSH, tmux, or other TTY environments.
+It returns after the request is accepted; poll `status` for the outcome instead of waiting for a human prompt.
 
 ## Endpoint
 
@@ -22,17 +25,34 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
 ## Backends
 
-- `--backend daemon` (default) uses `ironrdp-agent daemon-start` and its per-user endpoint.
+- `--backend daemon` (default) uses the per-user daemon endpoint.
 - `--backend active-x` attaches to an already-hosted ActiveX control at its per-user
   `ironrdp-activex` endpoint. The host must set `IRONRDP_ACTIVEX_RPC=1` before creating the
   control; the agent never starts an ActiveX host. Use `--endpoint` when the host uses
   `IRONRDP_ACTIVEX_RPC_ENDPOINT`.
-  RAIL audit commands require the daemon backend.
+  RAIL audit commands and terminal `attach` require the daemon backend.
 
 ## Lifecycle
 
+- `daemon start [--foreground] [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--skip-certificate-check] [--rdpdr-drive NAME=VOLUME_ROOT]... [--smartcard]`
+                                 Start the default daemon in the background and wait for readiness.
+                                 `--foreground` runs it in this terminal instead; `daemon-start`
+                                 remains a legacy foreground alias.
+                                 An existing daemon is reused only when no startup options are specified.
+                                 A losing concurrent startup fails; inspect `daemon status` before retrying.
+                                 Background logs: `%LOCALAPPDATA%\ironrdp-agent\daemon.log` on Windows,
+                                 `$XDG_STATE_HOME/ironrdp-agent/daemon.log` on Unix (default `~/.local/state`).
+- `daemon status` / `daemon list` / `daemon stop`
+                                 Inspect or stop the default daemon independently of its RDP session.
+                                 `list` covers the selected per-user endpoint, not arbitrary custom endpoints.
+                                 `stop` closes the session and exits; `disconnect` only ends the RDP session.
+- `session list` / `session disconnect [--server HOST[:PORT]]`
+                                 List the one active session on the selected daemon, or disconnect it
+                                 and wait for termination. The daemon keeps running.
+                                 `--server` is a safety check against disconnecting a different
+                                 destination, not a way to select among multiple sessions.
 - `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--skip-certificate-check] [--rdpdr-drive NAME=VOLUME_ROOT]... [--smartcard]`
-                                 Start the daemon (foreground). Run this first. `--overlay`
+                                 Legacy foreground alias for `daemon start --foreground`. `--overlay`
                                  preloads a .rdp file as an overlay applied to every `connect`
                                  (overlay wins), letting an operator provision any setting out of
                                  band -- credentials in particular (e.g. the password). `--prop` is
@@ -53,9 +73,29 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  TLS certificate and hostname validation is strict by default.
                                  `--skip-certificate-check` disables both for this daemon only.
                                  Use it only for an explicitly authorized test endpoint because it accepts any certificate and is vulnerable to on-path attacks.
-- `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--vmconnect VM_ID] [--vmconnect-basic] [--vmconnect-current-user] [--sandbox-id ID] [--sandbox-pipe PATH] [--log-directive D]`
+                                 Prefer pinning one server's certificate with `cert trust`.
+- `cert trust ENDPOINT SHA256` / `cert list` / `cert remove ENDPOINT`
+                                 Manage the known-certificates store (no daemon required).
+                                 An interactive `connect` prompts to accept an untrusted
+                                 certificate once or always (`--no-prompt` disables it; it never
+                                 prompts without a terminal).
+                                 When strict validation fails, `status` reports the certificate's
+                                 SHA-256 fingerprint and the exact `cert trust` command. A pinned
+                                 certificate is accepted only for that HOST:PORT (default 3389);
+                                 a different certificate fails again. Takes effect on the next
+                                 `connect`. Verify the fingerprint out of band before trusting it.
+                                 Path: `%APPDATA%\ironrdp-agent\known_certificates` (Windows) or
+                                 `~/.config/ironrdp-agent/known_certificates`; override with
+                                 `IRONRDP_AGENT_KNOWN_CERTIFICATES`.
+- `connect [--no-prompt] [--no-auto-start|--auto-start] [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--vmconnect VM_ID] [--vmconnect-basic] [--vmconnect-current-user] [--sandbox-id ID] [--sandbox-pipe PATH] [--log-directive D]`
                                  Merge an optional .rdp file with CLI overrides into one config and
-                                 open a session. Precedence (low to high): .rdp file -> `--prop`
+                                 open a session. The default daemon starts automatically when absent;
+                                 `--no-auto-start` requires it to be running. An explicit
+                                 `--endpoint` needs `--auto-start` to launch a daemon there;
+                                 `--backend active-x` never auto-starts.
+                                 Always use `--no-prompt` for automation; it returns after the request is accepted.
+                                 Otherwise a daemon-backed TTY waits up to 120 seconds for the outcome and may prompt to trust a certificate.
+                                 Precedence (low to high): .rdp file -> `--prop`
                                  overrides -> named flags (`--server`/`-u`/`-p`/`-d`). When those
                                  flags are omitted, `RDP_HOSTNAME`, `RDP_USERNAME`, and
                                  `RDP_PASSWORD` supply their respective values; explicit flags
@@ -88,7 +128,8 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  `--username`/`--password` or `RDG_USERNAME`/`RDG_PASSWORD`,
                                  falling back to `RDP_USERNAME`/`RDP_PASSWORD`.
                                  The listener defaults to `127.0.0.1`; do not expose unauthenticated SOCKS5 to untrusted networks.
-- `disconnect`                   Tear down the current session (daemon keeps running).
+- `disconnect [--server HOST[:PORT]]`  Alias for `session disconnect`; the optional server
+                                 must match the active destination before any disconnect occurs.
 - `status`                       Report connection state, destination, last frame size, and whether
                                  credentials are preloaded (`credentials loaded: true|false`). Query
                                  this first to decide whether you must supply a password.
@@ -129,6 +170,24 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  as a PNG and write it to PATH (default `screenshot.png`). Prints
                                  `wrote PATH (WxH, N bytes)`. Errors with `no frame available yet`
                                  until the first frame arrives.
+- `screenshot --terminal [--protocol auto|sixel|kitty|iterm2] [--columns N]`
+                                 Render the frame inline in the terminal instead of writing a file.
+                                 `auto` detects the protocol from the environment; `--columns`
+                                 caps the width (default: terminal width).
+- `attach [--protocol P] [--interval-ms N] [--cell-size WxH] [--no-fit]`
+                                 Interactive, for humans: show the live session in the terminal
+                                 and forward mouse and keyboard input. The footer has clickable
+                                 [Menu], [Fit], and [Detach] controls. Menu options also accept
+                                 1-5 and Esc; input stays local while the menu is open.
+                                 Option 5 disconnects only after y or a confirmation click;
+                                 n/Esc cancels without ending the session.
+                                 Ctrl+] detaches; Ctrl+\ fits the desktop. Auto-fit is on by default;
+                                 `--no-fit` disables it, and the menu toggles it for this attachment.
+                                 Detaching keeps the RDP session running; confirmed Disconnect
+                                 ends the RDP session but leaves the daemon running.
+                                 Session termination exits the view even while the menu is open; resize reconnections do not.
+                                 Requires the daemon backend; ActiveX attachment is unsupported.
+                                 Requires a TTY; agents should use `screenshot` and input commands.
 
 ## Input (require an active session)
 
