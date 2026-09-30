@@ -64,6 +64,7 @@ async function resolvePr({ github, context, inputs = {} }) {
   const oversizedReviewRequested = route === "classification" &&
     context.payload.action === "labeled" && context.payload.label?.name === OVERSIZED_REVIEW_LABEL;
   let pr;
+  let observedCiRun = null;
   try {
     if (route === "classification") {
       // State writes also emit `labeled` events, so only the explicit maintainer opt-in may start
@@ -85,6 +86,11 @@ async function resolvePr({ github, context, inputs = {} }) {
       const matches = await workflowRunPullRequests(github, owner, repo, source);
       if (matches.length !== 1) return noResult("workflow run did not resolve exactly one current PR", route);
       pr = matches[0];
+      // The completed run is authoritative for its own generation while the run listing catches up.
+      observedCiRun = {
+        id: source.id, run_attempt: source.run_attempt, head_sha: source.head_sha,
+        name: source.name, status: source.status, conclusion: source.conclusion,
+      };
     } else if (route === "classification-complete") {
       if (context.payload.action !== "pr-automation-classified") {
         return noResult("unrelated repository dispatch", route);
@@ -122,6 +128,7 @@ async function resolvePr({ github, context, inputs = {} }) {
       association: pr.author_association || null,
     },
     force,
+    observedCiRun,
     reviewRequested,
     classificationRequested,
     reviewRoute: route === "ci" || route === "classification-complete" || dispatchReview,

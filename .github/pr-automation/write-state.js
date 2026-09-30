@@ -106,10 +106,13 @@ function requiresFreshCi(state) {
   return state.mode === "review" && state.forced !== true && state.failed !== true && state.blocked !== true;
 }
 
-async function assertFreshCi(github, owner, repo, state) {
+// A listing that has not caught up to the authorized generation is retried briefly rather than
+// treated as stale. A newer generation is returned without retry and still fails the check.
+async function assertFreshCi(github, owner, repo, state, ciRetry = {}) {
   if (!requiresFreshCi(state)) return;
   const latest = await readLatestExactHeadCiRun({
     github, owner, repo, expectedSha: state.expectedSha,
+    expectedGeneration: { id: state.ciRunId, attempt: state.ciRunAttempt }, ...ciRetry,
   });
   if (latest?.conclusion !== "success" ||
       !matchesGeneration(latest, state.ciRunId, state.ciRunAttempt)) {
@@ -117,7 +120,7 @@ async function assertFreshCi(github, owner, repo, state) {
   }
 }
 
-async function publishReview(github, owner, repo, prNumber, state, botLogin, comment) {
+async function publishReview(github, owner, repo, prNumber, state, botLogin, comment, ciRetry) {
   if (!botLogin || typeof botLogin !== "string") throw new Error("botLogin is required for review ownership");
   const review = comment.review;
   const reducedCoverage = comment.reducedCoverage ?? [];
@@ -145,7 +148,7 @@ async function publishReview(github, owner, repo, prNumber, state, botLogin, com
     published.user?.login === botLogin &&
     typeof published.body === "string" &&
     published.body.includes(comment.marker))) return false;
-  await assertFreshCi(github, owner, repo, state);
+  await assertFreshCi(github, owner, repo, state, ciRetry);
   await assertCurrentHead({
     github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha,
   });
@@ -188,7 +191,7 @@ async function ensureClassificationCheck(github, owner, repo, prNumber, expected
   return true;
 }
 
-async function ensureReviewCheck(github, owner, repo, prNumber, expectedSha, check, state) {
+async function ensureReviewCheck(github, owner, repo, prNumber, expectedSha, check, state, ciRetry) {
   const conclusion = check.conclusion ?? "success";
   const title = check.title ?? "Automated review complete";
   const summary = check.summary ?? "Validated automated review is bound to this commit.";
@@ -196,7 +199,7 @@ async function ensureReviewCheck(github, owner, repo, prNumber, expectedSha, che
   if (existing?.conclusion === conclusion && existing.output?.title === title &&
       existing.output?.summary === summary) return false;
   if (state.failed !== true && state.blocked !== true) {
-    await assertFreshCi(github, owner, repo, state);
+    await assertFreshCi(github, owner, repo, state, ciRetry);
     assertReviewPolicy(await issueLabels(github, owner, repo, prNumber), state);
   }
   await assertCurrentHead({
@@ -269,7 +272,9 @@ async function applyLabels(github, owner, repo, prNumber, state, currentLabels) 
   return true;
 }
 
-async function writeState({ github, owner, repo, prNumber, state, botLogin, reviewRequested = false }) {
+async function writeState({
+  github, owner, repo, prNumber, state, botLogin, reviewRequested = false, ciRetry = {},
+}) {
   if (!state?.ok || !["classification", "review"].includes(state.mode) ||
       typeof state.expectedSha !== "string" || !Number.isSafeInteger(prNumber) || prNumber <= 0) {
     throw new Error("invalid normalized state");
@@ -280,16 +285,17 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin, revi
   if (state.mode === "review") {
     const comments = state.comments || [];
     for (const comment of comments.filter((comment) => comment.kind === "review")) {
-      await publishReview(github, owner, repo, prNumber, state, botLogin, comment);
+      await publishReview(github, owner, repo, prNumber, state, botLogin, comment, ciRetry);
     }
     if (state.check) {
-      await ensureReviewCheck(github, owner, repo, prNumber, state.expectedSha, state.check, state);
+      await ensureReviewCheck(
+        github, owner, repo, prNumber, state.expectedSha, state.check, state, ciRetry);
     }
     const latestLabels = state.failed === true || state.blocked === true
       ? undefined
       : await issueLabels(github, owner, repo, prNumber);
     if (latestLabels) {
-      await assertFreshCi(github, owner, repo, state);
+      await assertFreshCi(github, owner, repo, state, ciRetry);
       assertReviewPolicy(latestLabels, state);
     }
     await applyLabels(github, owner, repo, prNumber, state, latestLabels);

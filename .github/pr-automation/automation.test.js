@@ -420,7 +420,9 @@ async function runReviewGateScript({
   classificationRunPages = [classificationRuns],
   reviewRuns = [],
   reviewRunPages = [reviewRuns],
+  observedRun = null,
 } = {}) {
+  let workflowRunPolls = 0;
   const outputs = new Map();
   const failures = [];
   const core = {
@@ -433,6 +435,7 @@ async function runReviewGateScript({
   const github = {
     paginate: { iterator: async function* (method, parameters) {
       if (method === github.rest.actions.listWorkflowRunsForRepo) {
+        workflowRunPolls += 1;
         for (const page of workflowRunPages) yield { data: page };
       }
       if (method === listCheckRuns) {
@@ -461,12 +464,19 @@ async function runReviewGateScript({
   const process = { env: {
     PULL_REQUEST_NUMBER: "1", HEAD_SHA: SHA, FORCE: String(force),
     LABELS: JSON.stringify(labels), AUTHOR: JSON.stringify(author), ROUTE: route,
+    OBSERVED_CI_RUN: observedRun ? JSON.stringify(observedRun) : "",
   } };
   const rootRequire = createRequire(path.join(__dirname, "..", "..", "labeler.js"));
+  const ciState = rootRequire("./.github/pr-automation/ci-state");
+  const requireWithFastCi = (name) => name === "./.github/pr-automation/ci-state"
+    ? { ...ciState, readLatestExactHeadCiRun: (options) => ciState.readLatestExactHeadCiRun({ delayMs: 0, ...options }) }
+    : rootRequire(name);
   await new AsyncFunction("core", "github", "context", "require", "process", reviewGateScript())(
-    core, github, context, rootRequire, process,
+    core, github, context, requireWithFastCi, process,
   );
-  return { gate: JSON.parse(outputs.get("gate")), eligible: outputs.get("eligible"), failures };
+  return {
+    gate: JSON.parse(outputs.get("gate")), eligible: outputs.get("eligible"), failures, workflowRunPolls,
+  };
 }
 
 async function runResolveReviewScript({ report, pipelineResult = "success" }) {
@@ -755,11 +765,136 @@ test("CI generation selection paginates and ignores late older attempts", async 
     rest: { actions: { listWorkflowRunsForRepo: () => {} } },
   };
   const latest = await readLatestExactHeadCiRun({
-    github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA,
+    github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA, delayMs: 0,
   });
   assert.deepEqual({ id: latest.id, attempt: latest.run_attempt, conclusion: latest.conclusion }, {
     id: 9, attempt: 2, conclusion: "in_progress",
   });
+});
+
+const ciRun = (changes = {}) => ({
+  id: 5, run_attempt: 1, name: "CI", head_sha: SHA, status: "completed", conclusion: "success", ...changes,
+});
+
+function ciListing(pages) {
+  let polls = 0;
+  const listRuns = () => {};
+  const github = {
+    paginate: { iterator: async function* (method) {
+      assert.equal(method, listRuns);
+      const page = pages[Math.min(polls, pages.length - 1)];
+      polls += 1;
+      yield { data: { workflow_runs: page } };
+    } },
+    rest: { actions: { listWorkflowRunsForRepo: listRuns } },
+  };
+  return { github, polls: () => polls };
+}
+
+test("the triggering CI run is authoritative for its own generation", async () => {
+  const observedRun = ciRun();
+  for (const listed of [[], [ciRun({ status: "in_progress", conclusion: null })]]) {
+    assert.equal(latestExactHeadCiRun(listed, SHA, observedRun), observedRun);
+    const { github, polls } = ciListing([listed]);
+    const latest = await readLatestExactHeadCiRun({
+      github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA, observedRun, delayMs: 0,
+    });
+    assert.equal(latest, observedRun);
+    assert.equal(polls(), 1);
+  }
+});
+
+test("a newer listed CI generation wins over the triggering run without retry", async () => {
+  const observedRun = ciRun();
+  for (const newer of [
+    ciRun({ run_attempt: 2, status: "in_progress", conclusion: null }),
+    ciRun({ id: 6, status: "queued", conclusion: null }),
+  ]) {
+    const { github, polls } = ciListing([[observedRun, newer]]);
+    let sleeps = 0;
+    const latest = await readLatestExactHeadCiRun({
+      github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA, observedRun,
+      sleep: async () => { sleeps += 1; },
+    });
+    assert.equal(latest, newer);
+    assert.deepEqual({ polls: polls(), sleeps }, { polls: 1, sleeps: 0 });
+  }
+});
+
+test("the triggering CI run is ignored for another head or workflow", () => {
+  const listed = ciRun({ status: "in_progress", conclusion: null });
+  for (const observedRun of [ciRun({ head_sha: OTHER_SHA }), ciRun({ name: "Fuzz" })]) {
+    assert.equal(latestExactHeadCiRun([listed], SHA, observedRun), listed);
+    assert.equal(latestExactHeadCiRun([], SHA, observedRun), null);
+  }
+});
+
+test("CI listing lag is retried up to its cap", async () => {
+  const lagging = ciRun({ status: "in_progress", conclusion: null });
+  const { github, polls } = ciListing([[], [lagging]]);
+  const delays = [];
+  const latest = await readLatestExactHeadCiRun({
+    github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA,
+    expectedGeneration: { id: 5, attempt: 1 }, retries: 2, delayMs: 7,
+    sleep: async (ms) => { delays.push(ms); },
+  });
+  assert.equal(latest, lagging);
+  assert.equal(polls(), 3);
+  assert.deepEqual(delays, [7, 7]);
+
+  const settled = ciListing([[ciRun({ id: 4 })], [ciRun()]]);
+  const caughtUp = await readLatestExactHeadCiRun({
+    github: settled.github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA,
+    expectedGeneration: { id: 5, attempt: 1 }, delayMs: 0,
+  });
+  assert.deepEqual({ id: caughtUp.id, polls: settled.polls() }, { id: 5, polls: 2 });
+
+  // Without a reference generation, an older failed run must not mask a newer run the listing lacks.
+  const masked = ciListing([[ciRun({ id: 4, conclusion: "failure" })], [ciRun({ id: 4, conclusion: "failure" }), ciRun()]]);
+  const unmasked = await readLatestExactHeadCiRun({
+    github: masked.github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA, delayMs: 0,
+  });
+  assert.deepEqual({ id: unmasked.id, polls: masked.polls() }, { id: 5, polls: 2 });
+  const failed = ciListing([[ciRun({ conclusion: "failure" })]]);
+  await readLatestExactHeadCiRun({
+    github: failed.github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA, delayMs: 0,
+  });
+  assert.equal(failed.polls(), 4);
+  const referenced = ciListing([[ciRun({ conclusion: "failure" })]]);
+  await readLatestExactHeadCiRun({
+    github: referenced.github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA,
+    expectedGeneration: { id: 5, attempt: 1 }, delayMs: 0,
+  });
+  assert.equal(referenced.polls(), 1);
+});
+
+test("review gate trusts the completed CI event over a lagging listing", async () => {
+  const machineState = {
+    protocolRelated: false, risk: "low", specialistReviewers: [], automaticReviewEligible: true,
+  };
+  const classificationRuns = [{
+    id: 1, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "success",
+    app: { slug: "github-actions" },
+    output: { title: "Classification complete", summary: `ok\n\n${encodeCheckState(machineState)}` },
+  }];
+  const observedRun = ciRun({ id: 36709031420 });
+  for (const workflowRuns of [[], [{ ...observedRun, status: "in_progress", conclusion: null }]]) {
+    const result = await runReviewGateScript({
+      route: "ci", classificationRuns, labels: ["risk/low"], workflowRuns, observedRun,
+    });
+    assert.deepEqual({
+      ciGreen: result.gate.ciGreen, ciSource: result.gate.ciSource, id: result.gate.ciRunId,
+      polls: result.workflowRunPolls,
+    }, { ciGreen: true, ciSource: "event", id: 36709031420, polls: 1 });
+  }
+  const newer = await runReviewGateScript({
+    route: "ci", classificationRuns, labels: ["risk/low"], observedRun,
+    workflowRuns: [{ ...observedRun, run_attempt: 2, status: "in_progress", conclusion: null }],
+  });
+  assert.deepEqual({
+    ciGreen: newer.gate.ciGreen, ciSource: newer.gate.ciSource, attempt: newer.gate.ciRunAttempt,
+    eligible: newer.eligible, polls: newer.workflowRunPolls,
+  }, { ciGreen: false, ciSource: "listing", attempt: 2, eligible: false, polls: 1 });
 });
 
 test("review gate reads paginated check runs and preserves exact ownership", async () => {
@@ -2093,6 +2228,31 @@ test("bot authors are excluded from automation", async () => {
   assert.equal(human.evidenceMaxBytes, 1024 * 1024);
 });
 
+test("only the CI route forwards its triggering run", async () => {
+  const pr = {
+    number: 7, draft: false, state: "open", labels: [],
+    user: { node_id: "U_1", login: "contributor", type: "User" },
+    head: { sha: SHA }, base: { sha: "b".repeat(40) },
+  };
+  const resolve = (eventName, payload) => resolvePr({
+    github: { rest: { pulls: { get: async () => ({ data: pr }) } } },
+    context: { eventName, repo: { owner: "Devolutions", repo: "IronRDP" }, payload },
+    inputs: {},
+  });
+  const ci = await resolve("workflow_run", { workflow_run: {
+    id: 36709031420, run_attempt: 1, name: "CI", head_sha: SHA, status: "completed",
+    conclusion: "success", pull_requests: [{ number: 7 }], head_branch: "topic",
+  } });
+  assert.deepEqual(ci.observedCiRun, {
+    id: 36709031420, run_attempt: 1, head_sha: SHA, name: "CI", status: "completed", conclusion: "success",
+  });
+  const classified = await resolve("repository_dispatch", {
+    action: "pr-automation-classified", client_payload: { pr_number: 7, head_sha: SHA },
+  });
+  assert.equal(classified.ok, true);
+  assert.equal(classified.observedCiRun, null);
+});
+
 test("force is dispatch-only and bypasses draft and bot eligibility", async () => {
   const pullRequest = (changes = {}) => ({
     number: 7, draft: false, state: "open", labels: [],
@@ -3223,6 +3383,65 @@ test("green CI completed before legitimacy classification dispatches its handoff
   });
   assert.equal(state.handoff, "legitimacy");
   assert.deepEqual(desiredLabels(state, "needs-review"), ["needs-review"]);
+});
+
+function freshCiWriter(listings) {
+  let polls = 0;
+  let published = 0;
+  const listReviews = () => {};
+  const listChecks = () => {};
+  const listRuns = () => {};
+  const github = {
+    paginate: { iterator: async function* (method) {
+      if (method === listReviews || method === listChecks) yield { data: [] };
+      if (method === listRuns) {
+        yield { data: listings[Math.min(polls, listings.length - 1)] };
+        polls += 1;
+      }
+    } },
+    rest: {
+      actions: { listWorkflowRunsForRepo: listRuns },
+      checks: { listForRef: listChecks, create: async () => {} },
+      pulls: {
+        get: async () => ({ data: { state: "open", head: { sha: SHA } } }),
+        listReviews,
+        createReview: async () => { published += 1; },
+      },
+      issues: {
+        get: async () => ({ data: { labels: [{ name: "risk/low" }] } }),
+        addLabels: async () => {},
+      },
+    },
+  };
+  const state = resolveReviewState({
+    expectedSha: SHA, labels: ["risk/low"], reviewer: review({ findings: [] }),
+    gate: {
+      ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true,
+      ciRunId: 7, ciRunAttempt: 1, risk: "low", protocolRelated: false,
+      specialistReviewers: ["code-compressor"],
+    },
+    contributor: { status: "eligible" },
+  });
+  const write = () => writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, state, botLogin: "github-actions[bot]",
+    ciRetry: { delayMs: 0 },
+  });
+  return { write, polls: () => polls, published: () => published };
+}
+
+test("writer retries a CI listing that lags behind the authorized generation", async () => {
+  const authorized = ciRun({ id: 7 });
+  const writer = freshCiWriter([[{ ...authorized, status: "in_progress", conclusion: null }], [authorized]]);
+  await writer.write();
+  assert.equal(writer.published(), 1);
+  // One lagging poll, then one poll for each freshness check once the listing has caught up.
+  assert.equal(writer.polls(), 4);
+});
+
+test("writer rejects a newer CI generation without retry", async () => {
+  const writer = freshCiWriter([[ciRun({ id: 7 }), ciRun({ id: 7, run_attempt: 2 })]]);
+  await assert.rejects(writer.write(), StalePolicyError);
+  assert.deepEqual({ polls: writer.polls(), published: writer.published() }, { polls: 1, published: 0 });
 });
 
 test("writer blocks a review when a newer exact-head CI attempt starts", async () => {

@@ -5,6 +5,8 @@ Automatic review stops at `ai-reviewed/2` unless a maintainer uses force mode; c
 Manual `workflow_dispatch` requests and forced reviews require a successful GitHub Actions-owned `AI classification` check for the current head with valid machine state.
 They fail visibly before any reviewer starts when that prerequisite is missing, stale, or invalid; automatic CI and classification-complete races instead skip normally.
 The review gate and final writer both read every page of current exact-head `CI` runs and authorize only the latest run ID and attempt.
+The triggering `workflow_run` event is authoritative for its own generation, so a run listing that still lags behind it cannot hide a green run.
+Both readers briefly re-list while the listing is behind instead of treating lag as staleness; a newer run ID or attempt still wins and is never retried.
 Model analysis fails closed when the reviewable pull request diff exceeds the applicable evidence limit.
 The trusted `evidence-diff-attributes` policy represents reproducibly verified generated artifacts with binary-change markers.
 The automation posts guidance on the pull request instead of invoking a model with partial evidence.
