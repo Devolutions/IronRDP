@@ -80,6 +80,7 @@ An automated review with findings applies `needs-author-action`, and one without
 Valid classification plus green CI hands legitimacy triage to `needs-review` without a model call.
 Blocked and duplicate review routes preserve or clear actor state through their resolved state without creating a failure label.
 The final writer accepts successful non-forced review and handoff state only when the stored CI generation is still the latest green exact-head CI generation.
+The CI completion that triggers review is authoritative for its own generation; a lagging run listing is not staleness and must not silently skip an eligible review, but a newer CI generation still wins.
 Prompt lifecycle clearing and convergence are deferred to the supersession and reconciliation follow-up.
 
 Every non-bot author is eligible immediately; there is no prior-merge requirement.
