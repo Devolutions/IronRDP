@@ -27,6 +27,9 @@ const { resolvePr } = require("./resolve-pr");
 const { resolveClassificationGate } = require("./classification-gate");
 const { latestExactHeadCiRun, readLatestExactHeadCiRun } = require("./ci-state");
 const {
+  claimAutomaticLease, leaseMarker, parseLeaseMarker, recheckAutomaticReview,
+} = require("./automation-lease");
+const {
   StalePolicyError, applyLabels, escapeMarkdown, markerBody, writeState,
 } = require("./write-state");
 const { forkRateLimit } = require("./fork-rate-limit");
@@ -3215,11 +3218,13 @@ test("writer reads normalized check-run pages and updates the newest matching ru
   const github = {
     paginate: { iterator: async function* () {
       yield { data: [
-        { id: 1, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "failure" },
+        { id: 1, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "failure",
+          app: { slug: "github-actions" } },
         { id: 4, external_id: "unrelated", conclusion: "failure" },
       ] };
       yield { data: [
-        { id: 3, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "failure" },
+        { id: 3, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "failure",
+          app: { slug: "github-actions" } },
       ] };
     } },
     rest: {
@@ -3254,13 +3259,14 @@ test("writer reads normalized check-run pages and updates the newest matching ru
   assert.equal(updatedConclusion, "neutral");
 });
 
-test("writer upgrades a neutral automated review check instead of creating a duplicate", async () => {
+test("writer records forced success separately from a neutral automatic check", async () => {
   let created = 0;
   let update = null;
   const github = {
     paginate: { iterator: async function* () {
       yield { data: [{
         id: 7, external_id: SHA, conclusion: "neutral",
+        app: { slug: "github-actions" },
         output: { title: "Automated review unavailable", summary: "Model timed out." },
       }] };
     } },
@@ -3282,10 +3288,8 @@ test("writer upgrades a neutral automated review check instead of creating a dup
       check: { name: "AI automated review", externalId: SHA },
     },
   });
-  assert.equal(created, 0);
-  assert.equal(update.check_run_id, 7);
-  assert.equal(update.conclusion, "success");
-  assert.equal(update.output.title, "Automated review complete");
+  assert.equal(created, 1);
+  assert.equal(update, null);
 });
 
 test("classification dispatch remains edge-triggered except for explicit retries", async () => {
@@ -3305,6 +3309,7 @@ test("classification dispatch remains edge-triggered except for explicit retries
           id: 7,
           external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
           conclusion: "success",
+          app: { slug: "github-actions" },
           output: {
             title,
             summary: existing === "same"
@@ -3343,10 +3348,10 @@ test("classification dispatch remains edge-triggered except for explicit retries
 
   assert.deepEqual(await writeClassification({}), { creates: 1, updates: 0, dispatches: 1 });
   assert.deepEqual(await writeClassification({ existing: "changed" }), {
-    creates: 0, updates: 1, dispatches: 1,
+    creates: 0, updates: 0, dispatches: 0,
   });
   assert.deepEqual(await writeClassification({ existing: "same", reviewRequested: true }), {
-    creates: 0, updates: 0, dispatches: 1,
+    creates: 0, updates: 0, dispatches: 0,
   });
   assert.deepEqual(await writeClassification({ existing: "same" }), {
     creates: 0, updates: 0, dispatches: 0,
@@ -3637,6 +3642,7 @@ test("writer does not dispatch a completed classification after the head changes
         id: 7,
         external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
         conclusion: "success",
+        app: { slug: "github-actions" },
         output: {
           title: "Classification complete",
           summary: `Validated classification.\n\n${encodeCheckState(machineState)}`,
@@ -3654,7 +3660,7 @@ test("writer does not dispatch a completed classification after the head changes
     },
   };
 
-  await assert.rejects(writeState({
+  await writeState({
     github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
     state: {
       ok: true, mode: "classification", expectedSha: SHA, labelSets: [], addLabels: [],
@@ -3665,7 +3671,7 @@ test("writer does not dispatch a completed classification after the head changes
       },
     },
     reviewRequested: true,
-  }), StaleHeadError);
+  });
   assert.equal(dispatches, 0);
 });
 
@@ -3737,7 +3743,7 @@ test("failed review publication does not consume review count or change triage",
   assert.equal(labelWrites, 0);
 });
 
-test("failed review check persistence does not consume review count", async () => {
+test("a final review check failure may require manual publication repair", async () => {
   let labelWrites = 0;
   const github = {
     paginate: { iterator: async function* () { yield { data: [] }; } },
@@ -3766,7 +3772,7 @@ test("failed review check persistence does not consume review count", async () =
       check: { name: "AI automated review", externalId: SHA },
     },
   }), /check failed/);
-  assert.equal(labelWrites, 0);
+  assert.equal(labelWrites, 1);
 });
 
 test("writer publishes each finding either inline or in the review body", async () => {
@@ -5159,7 +5165,7 @@ test("the reusable pipeline stays caller-driven and reports every stage back", (
   assert.doesNotMatch(triggers, /\n {2}(pull_request|push|schedule|workflow_dispatch|issue_comment):/);
 
   for (const input of ["pr-number", "head-sha", "base-sha", "specialist-reviewers",
-    "evidence-max-bytes", "required-reviewers", "gate"]) {
+    "evidence-max-bytes", "required-reviewers", "gate", "lease"]) {
     assert.match(workflow, new RegExp(`\\n {6}${input}:\\n`), `${input} input is missing`);
   }
   for (const removed of ["prior-results", "recovery-attempt", "provenance"]) {
@@ -5168,7 +5174,682 @@ test("the reusable pipeline stays caller-driven and reports every stage back", (
 
   const outputs = workflow.slice(workflow.indexOf("    outputs:"), workflow.indexOf("\npermissions:"));
   assert.deepEqual(outputs.match(/\n {6}[a-z-]+:/g).map((name) => name.trim()),
-    ["failure-reason:"]);
+    ["failure-reason:", "superseded:"]);
+});
+
+test("automatic leases claim once, read complete history, and block an active owner", async () => {
+  const runs = [];
+  const calls = { create: [], list: [] };
+  const github = {
+    paginate: { iterator: async function* (_method, parameters) {
+      calls.list.push(parameters);
+      yield { data: runs };
+    } },
+    rest: {
+      checks: {
+        listForRef: () => {},
+        create: async (payload) => {
+          calls.create.push(payload);
+          const claim = {
+            id: 19, ...payload, app: { slug: "github-actions" }, output: payload.output,
+          };
+          runs.push(claim);
+          return { data: claim };
+        },
+      },
+      actions: {
+        getWorkflowRun: async () => ({ data: { run_attempt: 1, status: "in_progress" } }),
+      },
+    },
+  };
+  const first = await claimAutomaticLease({
+    github, owner: "Devolutions", repo: "IronRDP", kind: "review", headSha: SHA,
+    runId: 7, attempt: 1,
+  });
+  const duplicate = await claimAutomaticLease({
+    github, owner: "Devolutions", repo: "IronRDP", kind: "review", headSha: SHA,
+    runId: 8, attempt: 1,
+  });
+  assert.equal(first.owner, true);
+  assert.equal(duplicate.owner, false);
+  assert.equal(calls.create.length, 1);
+  assert.deepEqual(calls.list[0].filter, "all");
+  assert.deepEqual(calls.create[0], {
+    owner: "Devolutions", repo: "IronRDP", name: "AI automated review",
+    head_sha: SHA, external_id: SHA, status: "in_progress",
+    output: { title: "Automation in progress", summary: leaseMarker(first.lease) },
+  });
+});
+
+test("automatic leases rerun after terminal or missing owners and fail closed on malformed claims", async () => {
+  const marker = leaseMarker({ kind: "classification", headSha: SHA, runId: 7, attempt: 1 });
+  const admit = async ({ status = "completed", missing = false, summary = marker, app = "github-actions" } = {}) => {
+    const creates = [];
+    const github = {
+      paginate: { iterator: async function* () {
+        yield { data: [{
+          id: 5, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, status: "in_progress",
+          head_sha: SHA, app: { slug: app }, output: { summary },
+        }] };
+      } },
+      rest: {
+        checks: { listForRef: () => {}, create: async (payload) => {
+          creates.push(payload);
+          return { data: { id: 6 } };
+        } },
+        actions: { getWorkflowRun: async () => {
+          if (missing) {
+            const error = new Error("missing");
+            error.status = 404;
+            throw error;
+          }
+          return { data: { run_attempt: 1, status } };
+        } },
+      },
+    };
+    const result = await claimAutomaticLease({
+      github, owner: "Devolutions", repo: "IronRDP", kind: "classification", headSha: SHA,
+      runId: 8, attempt: 1,
+    });
+    return { result, creates };
+  };
+  assert.equal((await admit({ status: "in_progress" })).result.owner, false);
+  assert.equal((await admit()).result.owner, true);
+  assert.equal((await admit({ missing: true })).result.owner, true);
+  assert.equal((await admit({ summary: "not a lease" })).result.available, false);
+  assert.equal((await admit({
+    summary: leaseMarker({ kind: "classification", headSha: OTHER_SHA, runId: 7, attempt: 1 }),
+  })).result.available, false);
+  assert.equal((await admit({ app: "other-app" })).result.available, false);
+  assert.equal(parseLeaseMarker(leaseMarker({
+    kind: "review", headSha: OTHER_SHA, runId: 3, attempt: 2,
+  })).headSha, OTHER_SHA);
+});
+
+test("explicit success retries can claim while lease API failures stay visible", async () => {
+  const success = {
+    id: 5, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "success",
+    head_sha: SHA, app: { slug: "github-actions" },
+  };
+  let creates = 0;
+  const github = {
+    paginate: { iterator: async function* () { yield { data: [success] }; } },
+    rest: {
+      checks: {
+        listForRef: () => {},
+        create: async () => ({ data: { id: ++creates + 5 } }),
+      },
+    },
+  };
+  assert.equal((await claimAutomaticLease({
+    github, owner: "Devolutions", repo: "IronRDP", kind: "classification",
+    headSha: SHA, runId: 7, attempt: 1,
+  })).owner, false);
+  assert.equal((await claimAutomaticLease({
+    github, owner: "Devolutions", repo: "IronRDP", kind: "classification",
+    headSha: SHA, runId: 7, attempt: 1, allowSuccess: true,
+  })).owner, true);
+  assert.equal(creates, 1);
+
+  await assert.rejects(claimAutomaticLease({
+    github: {
+      paginate: { iterator: async function* () { throw new Error("API unavailable"); } },
+      rest: { checks: { listForRef: () => {} } },
+    },
+    owner: "Devolutions", repo: "IronRDP", kind: "classification",
+    headSha: SHA, runId: 7, attempt: 1,
+  }), /API unavailable/);
+});
+
+test("automatic review recheck supersedes changed trusted inputs before general work", async () => {
+  const lease = {
+    kind: "review", headSha: SHA, runId: 7, attempt: 1, checkRunId: 10,
+    marker: leaseMarker({ kind: "review", headSha: SHA, runId: 7, attempt: 1 }),
+  };
+  const recheck = async (changes = {}) => {
+    const listWorkflowRunsForRepo = () => {};
+    const github = {
+      paginate: { iterator: async function* (method, parameters) {
+        if (method === listWorkflowRunsForRepo) {
+          yield { data: [{
+            id: 1, run_attempt: changes.ciAttempt || 1, name: "CI", head_sha: SHA,
+            conclusion: changes.ciConclusion || "success",
+          }] };
+          return;
+        }
+        const review = {
+          id: 10, external_id: SHA, status: "in_progress", conclusion: changes.reviewConclusion,
+          head_sha: SHA, app: { slug: "github-actions" }, output: { summary: lease.marker },
+        };
+        const classification = {
+          id: 9, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`, conclusion: "success",
+          head_sha: SHA, app: { slug: "github-actions" },
+        };
+        yield { data: parameters.check_name === "AI automated review" ? [review] : [classification] };
+      } },
+      rest: {
+        pulls: { get: async () => {
+          if (changes.readError) throw new Error("API unavailable");
+          return { data: {
+            state: "open", draft: changes.draft === true, head: { sha: changes.head || SHA },
+          } };
+        } },
+        actions: {
+          getWorkflowRun: async () => ({ data: { run_attempt: 1, status: "in_progress" } }),
+          listWorkflowRunsForRepo,
+        },
+        checks: { listForRef: () => {} },
+        issues: { get: async () => ({ data: { labels: (changes.labels || ["risk/low"]).map((name) => ({ name })) } }) },
+      },
+    };
+    return recheckAutomaticReview({
+      github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, headSha: SHA, lease,
+      gate: {
+        classificationId: changes.classificationId ?? 9, ciRunId: 1, ciRunAttempt: 1,
+        labels: ["risk/low"], policyEligible: true, legitimacyStopped: false,
+      },
+    });
+  };
+  assert.equal(await recheck(), true);
+  assert.equal(await recheck({ head: OTHER_SHA }), false);
+  assert.equal(await recheck({ draft: true }), false);
+  assert.equal(await recheck({ ciAttempt: 2 }), false);
+  assert.equal(await recheck({ ciConclusion: "failure" }), false);
+  assert.equal(await recheck({ labels: ["ai-reviewed/1", "risk/low"] }), false);
+  assert.equal(await recheck({ labels: ["triage/legitimacy", "risk/low"] }), false);
+  assert.equal(await recheck({ reviewConclusion: "success" }), false);
+  assert.equal(await recheck({ classificationId: 8 }), false);
+  await assert.rejects(recheck({ readError: true }), /API unavailable/);
+});
+
+test("admission jobs own provider routing and recheck prevents a general call after supersession", () => {
+  const workflow = readWorkflow();
+  const classifier = workflowJob(workflow, "classifier");
+  const classificationAdmission = workflowJob(workflow, "classification-admission");
+  const reviewAdmission = workflowJob(workflow, "review-admission");
+  const pipeline = workflowJob(workflow, "review-pipeline");
+  const reusable = readReviewWorkflow();
+  assert.match(classificationAdmission, /needs: \[resolve-pr, classification-gate\]/);
+  assert.match(classificationAdmission, /actions: read/);
+  assert.match(classificationAdmission, /checks: write/);
+  assert.match(classificationAdmission,
+    /group: pr-automation-admission-classification-\$\{\{ needs\.resolve-pr\.outputs\.pr-number \}\}/);
+  assert.match(classificationAdmission, /cancel-in-progress: false/);
+  assert.match(classificationAdmission, /ALLOW_SUCCESS:/);
+  assert.match(classificationAdmission, /allowSuccess:/);
+  assert.match(classifier, /classification-admission/);
+  assert.match(classifier, /classification-admission\.outputs\.owner == 'true'/);
+  assert.match(reviewAdmission, /needs: \[resolve-pr, review-gate\]/);
+  assert.match(reviewAdmission, /actions: read/);
+  assert.match(reviewAdmission, /checks: write/);
+  assert.match(reviewAdmission,
+    /group: pr-automation-admission-review-\$\{\{ needs\.resolve-pr\.outputs\.pr-number \}\}/);
+  assert.match(reviewAdmission, /cancel-in-progress: false/);
+  assert.match(pipeline, /review-admission\.outputs\.owner == 'true'/);
+  assert.match(pipeline, /lease: \$\{\{ needs\.review-admission\.outputs\.lease \}\}/);
+  assert.match(workflowJob(reusable, "general"), /needs: \[evidence, aggregate, recheck\]/);
+  assert.match(workflowJob(reusable, "general"), /needs\.recheck\.outputs\.allowed == 'true'/);
+  assert.match(workflowJob(reusable, "recheck"), /actions: read/);
+  assert.match(workflowJob(reusable, "recheck"), /checks: read/);
+  assert.match(workflowJob(reusable, "recheck"), /superseded/);
+  assert.match(workflowJob(workflow, "resolve-classification-state"),
+    /classification-gate\.outputs\.available != 'true'/);
+  assert.match(workflowJob(workflow, "resolve-review-state"),
+    /review-gate\.outputs\.eligible != 'true'/);
+});
+
+test("PR #1981 keeps a same-head success when automatic or forced failure arrives", async () => {
+  const mutations = [];
+  const success = {
+    id: 9, external_id: SHA, conclusion: "success",
+    app: { slug: "github-actions" }, output: { title: "Automated review complete", summary: "done" },
+  };
+  const newerFailure = {
+    id: 10, external_id: SHA, conclusion: "neutral",
+    app: { slug: "github-actions" }, output: { title: "Automated review unavailable", summary: "failed" },
+  };
+  const github = {
+    paginate: { iterator: async function* () { yield { data: [success, newerFailure] }; } },
+    rest: {
+      checks: {
+        listForRef: () => {},
+        create: async (payload) => mutations.push(["create", payload]),
+        update: async (payload) => mutations.push(["update", payload]),
+      },
+      pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+      issues: {
+        get: async () => ({ data: { labels: [{ name: "ai-reviewed/1" }, { name: "needs-review" }] } }),
+        addLabels: async (payload) => mutations.push(["add", payload]),
+        removeLabel: async (payload) => mutations.push(["remove", payload]),
+      },
+    },
+  };
+  for (const forced of [false, true]) {
+    await writeState({
+      github, owner: "Devolutions", repo: "IronRDP", prNumber: 1981,
+      botLogin: "github-actions[bot]",
+      state: {
+        ok: true, mode: "review", expectedSha: SHA, forced, failed: true,
+        labelSets: [{ owned: ["automation-failed"], desired: ["automation-failed"] }],
+        comments: [], check: {
+          name: "AI automated review", externalId: SHA,
+          title: "Automated review unavailable", summary: "failed", conclusion: "neutral",
+        },
+      },
+    });
+  }
+  assert.deepEqual(mutations, []);
+});
+
+test("failed explicit retry neutralizes its lease without downgrading prior success", async () => {
+  const lease = {
+    kind: "classification", headSha: SHA, runId: 7, attempt: 1, checkRunId: 20,
+    marker: leaseMarker({ kind: "classification", headSha: SHA, runId: 7, attempt: 1 }),
+  };
+  const checks = [
+    {
+      id: 19, head_sha: SHA, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+      status: "completed", conclusion: "success", app: { slug: "github-actions" },
+    },
+    {
+      id: 20, head_sha: SHA, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+      status: "in_progress", app: { slug: "github-actions" },
+      output: { summary: lease.marker },
+    },
+  ];
+  const updates = [];
+  const github = {
+    paginate: { iterator: async function* () { yield { data: checks }; } },
+    rest: {
+      checks: {
+        listForRef: () => {},
+        update: async (payload) => updates.push(payload),
+      },
+      actions: {
+        getWorkflowRun: async () => ({ data: { run_attempt: 1, status: "in_progress" } }),
+      },
+      pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+    },
+  };
+  const result = await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+    state: {
+      ok: true, mode: "classification", expectedSha: SHA, lease, failed: true,
+      labelSets: [{ owned: [FAILURE_LABEL], desired: [FAILURE_LABEL] }],
+      comments: [],
+      check: {
+        name: "AI classification", externalId: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+        title: "Classification unavailable", summary: "failed", conclusion: "neutral",
+        machineState: {
+          protocolRelated: false, risk: "unknown", specialistReviewers: [],
+          automaticReviewEligible: false,
+        },
+      },
+    },
+  });
+  assert.equal(result.superseded, true);
+  assert.deepEqual(updates.map((update) => ({
+    id: update.check_run_id, conclusion: update.conclusion, title: update.output.title,
+  })), [{ id: 20, conclusion: "neutral", title: "Automation superseded" }]);
+});
+
+test("forced failure cannot terminate an active automatic lease", async () => {
+  const marker = leaseMarker({
+    kind: "review", headSha: SHA, runId: 7, attempt: 1,
+  });
+  const mutations = [];
+  const github = {
+    paginate: { iterator: async function* () {
+      yield { data: [{
+        id: 19, external_id: SHA, status: "in_progress",
+        app: { slug: "github-actions" }, output: { summary: marker },
+      }] };
+    } },
+    rest: {
+      checks: {
+        listForRef: () => {},
+        create: async (payload) => mutations.push(["create", payload]),
+        update: async (payload) => mutations.push(["update", payload]),
+      },
+      pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+      issues: {
+        get: async () => ({ data: { labels: [] } }),
+        addLabels: async (payload) => mutations.push(["add", payload]),
+      },
+    },
+  };
+  const result = await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+    state: {
+      ok: true, mode: "review", expectedSha: SHA, forced: true, failed: true,
+      labelSets: [{ owned: [FAILURE_LABEL], desired: [FAILURE_LABEL] }],
+      comments: [],
+      check: {
+        name: "AI automated review", externalId: SHA,
+        title: "Automated review unavailable", summary: "failed", conclusion: "neutral",
+      },
+    },
+  });
+  assert.equal(result.superseded, true);
+  assert.deepEqual(mutations, []);
+});
+
+test("a leased review failure mutates labels before completing its neutral check", async () => {
+  const lease = {
+    kind: "review", headSha: SHA, runId: 7, attempt: 1, checkRunId: 19,
+    marker: leaseMarker({ kind: "review", headSha: SHA, runId: 7, attempt: 1 }),
+  };
+  const claim = {
+    id: 19, head_sha: SHA, external_id: SHA, status: "in_progress",
+    app: { slug: "github-actions" }, output: { summary: lease.marker },
+  };
+  const calls = [];
+  const github = {
+    paginate: { iterator: async function* () { yield { data: [claim] }; } },
+    rest: {
+      checks: {
+        listForRef: () => {},
+        update: async (payload) => calls.push(["check", payload.conclusion]),
+      },
+      actions: {
+        getWorkflowRun: async () => ({ data: { run_attempt: 1, status: "in_progress" } }),
+      },
+      pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+      issues: {
+        get: async () => ({ data: { labels: [{ name: "needs-review" }] } }),
+        removeLabel: async ({ name }) => calls.push(["remove", name]),
+        addLabels: async ({ labels }) => calls.push(["add", labels.join(",")]),
+      },
+    },
+  };
+  await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+    state: {
+      ok: true, mode: "review", expectedSha: SHA, lease, failed: true,
+      labelSets: [
+        { owned: ["needs-review", "needs-author-action"], desired: [] },
+        { owned: [FAILURE_LABEL], desired: [FAILURE_LABEL] },
+      ],
+      comments: [],
+      check: {
+        name: "AI automated review", externalId: SHA,
+        title: "Automated review unavailable", summary: "failed", conclusion: "neutral",
+      },
+    },
+  });
+  assert.deepEqual(calls, [
+    ["remove", "needs-review"],
+    ["add", FAILURE_LABEL],
+    ["check", "neutral"],
+  ]);
+});
+
+test("a leased blocked review clears actors before completing its claim", async () => {
+  const lease = {
+    kind: "review", headSha: SHA, runId: 7, attempt: 1, checkRunId: 19,
+    marker: leaseMarker({ kind: "review", headSha: SHA, runId: 7, attempt: 1 }),
+  };
+  const claim = {
+    id: 19, head_sha: SHA, external_id: SHA, status: "in_progress",
+    app: { slug: "github-actions" }, output: { summary: lease.marker },
+  };
+  const calls = [];
+  const github = {
+    paginate: { iterator: async function* () { yield { data: [claim] }; } },
+    rest: {
+      checks: {
+        listForRef: () => {},
+        update: async (payload) => calls.push(["check", payload.output.title]),
+      },
+      actions: {
+        getWorkflowRun: async () => ({ data: { run_attempt: 1, status: "in_progress" } }),
+      },
+      pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+      issues: {
+        get: async () => ({ data: { labels: [{ name: "needs-review" }] } }),
+        removeLabel: async ({ name }) => calls.push(["remove", name]),
+      },
+    },
+  };
+  await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+    state: {
+      ok: true, mode: "review", expectedSha: SHA, lease, blocked: true,
+      labelSets: [{ owned: ["needs-review", "needs-author-action"], desired: [] }],
+      comments: [],
+    },
+  });
+  assert.deepEqual(calls, [
+    ["remove", "needs-review"],
+    ["check", "Automation blocked"],
+  ]);
+});
+
+test("an automatic writer completes only its current claim and upgrades it to success", async () => {
+  const lease = {
+    kind: "classification", headSha: SHA, runId: 7, attempt: 1, checkRunId: 19,
+    marker: leaseMarker({ kind: "classification", headSha: SHA, runId: 7, attempt: 1 }),
+  };
+  const claim = {
+    id: 19, head_sha: SHA, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+    status: "in_progress", app: { slug: "github-actions" },
+    output: { title: "Automation in progress", summary: lease.marker },
+  };
+  const priorSuccess = {
+    id: 18, head_sha: SHA, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+    status: "completed", conclusion: "success", app: { slug: "github-actions" },
+  };
+  let update = null;
+  let dispatches = 0;
+  const github = {
+    paginate: { iterator: async function* () { yield { data: [priorSuccess, claim] }; } },
+    rest: {
+      checks: { listForRef: () => {}, update: async (payload) => { update = payload; } },
+      pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+      issues: { get: async () => ({ data: { labels: [] } }) },
+      actions: { getWorkflowRun: async () => ({ data: { run_attempt: 1, status: "in_progress" } }) },
+      repos: { createDispatchEvent: async () => { dispatches += 1; } },
+    },
+  };
+  await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
+    state: {
+      ok: true, mode: "classification", expectedSha: SHA, lease, labelSets: [],
+      addLabels: [], comments: [], removeCommentMarkers: [], dispatchReview: true,
+      check: {
+        name: "AI classification", externalId: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+        title: "Classification complete", summary: "Validated classification.",
+        machineState: {
+          protocolRelated: false, risk: "low", specialistReviewers: [],
+          automaticReviewEligible: true,
+        },
+      },
+    },
+  });
+  assert.equal(update.check_run_id, 19);
+  assert.equal(update.status, "completed");
+  assert.equal(update.conclusion, "success");
+  assert.equal("head_sha" in update, false);
+  assert.equal(dispatches, 1);
+});
+
+test("classification dispatch waits for successful claim completion", async () => {
+  const lease = {
+    kind: "classification", headSha: SHA, runId: 7, attempt: 1, checkRunId: 19,
+    marker: leaseMarker({ kind: "classification", headSha: SHA, runId: 7, attempt: 1 }),
+  };
+  const claim = {
+    id: 19, head_sha: SHA, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+    status: "in_progress", app: { slug: "github-actions" },
+    output: { summary: lease.marker },
+  };
+  let livenessReads = 0;
+  let checkWrites = 0;
+  let dispatches = 0;
+  const github = {
+    paginate: { iterator: async function* () { yield { data: [claim] }; } },
+    rest: {
+      checks: {
+        listForRef: () => {},
+        update: async () => { checkWrites += 1; },
+      },
+      actions: {
+        getWorkflowRun: async () => ({
+          data: {
+            run_attempt: 1,
+            status: ++livenessReads >= 4 ? "completed" : "in_progress",
+          },
+        }),
+      },
+      pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+      issues: { get: async () => ({ data: { labels: [] } }) },
+      repos: { createDispatchEvent: async () => { dispatches += 1; } },
+    },
+  };
+  const result = await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+    state: {
+      ok: true, mode: "classification", expectedSha: SHA, lease,
+      labelSets: [], addLabels: [], comments: [], removeCommentMarkers: [],
+      dispatchReview: true,
+      check: {
+        name: "AI classification", externalId: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+        title: "Classification complete", summary: "Validated classification.",
+        machineState: {
+          protocolRelated: false, risk: "low", specialistReviewers: [],
+          automaticReviewEligible: true,
+        },
+      },
+    },
+  });
+  assert.equal(result.superseded, undefined);
+  assert.equal(checkWrites, 0);
+  assert.equal(dispatches, 0);
+});
+
+test("a forced same-head success still publishes beside an existing canonical success", async () => {
+  let published = null;
+  let checkCreated = false;
+  const github = {
+    paginate: { iterator: async function* (_method, parameters) {
+      if (parameters.check_name) {
+        yield { data: [{
+          id: 9, external_id: SHA, conclusion: "success",
+          app: { slug: "github-actions" }, output: { title: "Automated review complete", summary: "done" },
+        }] };
+      } else yield { data: [] };
+    } },
+    rest: {
+      checks: {
+        listForRef: () => {},
+        create: async () => { checkCreated = true; },
+      },
+      pulls: {
+        get: async () => ({ data: { state: "open", head: { sha: SHA } } }),
+        listReviews: () => {},
+        createReview: async (payload) => { published = payload; },
+      },
+      issues: { get: async () => ({ data: { labels: [] } }) },
+    },
+  };
+  await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1981, botLogin: "github-actions[bot]",
+    state: {
+      ok: true, mode: "review", expectedSha: SHA, forced: true, expectedReviewCount: null,
+      labelSets: [], comments: [{
+        kind: "review", marker: `<!-- ironrdp-pr-automation:review:${SHA}:force:2 -->`,
+        review: review(),
+      }],
+      check: { name: "AI automated review", externalId: SHA },
+    },
+  });
+  assert.match(published.body, /force:2/);
+  assert.equal(checkCreated, true);
+});
+
+test("forced success neutralizes an overlapping automatic lease before publishing", async () => {
+  const marker = leaseMarker({
+    kind: "review", headSha: SHA, runId: 7, attempt: 1,
+  });
+  const claim = {
+    id: 19, head_sha: SHA, external_id: SHA, status: "in_progress",
+    app: { slug: "github-actions" }, output: { summary: marker },
+  };
+  const olderClaim = {
+    id: 18, head_sha: SHA, external_id: SHA, status: "in_progress",
+    app: { slug: "github-actions" },
+    output: { summary: leaseMarker({
+      kind: "review", headSha: SHA, runId: 6, attempt: 1,
+    }) },
+  };
+  const calls = [];
+  const github = {
+    paginate: { iterator: async function* (_method, parameters) {
+      if (parameters.check_name) yield { data: [olderClaim, claim] };
+      else yield { data: [] };
+    } },
+    rest: {
+      checks: {
+        listForRef: () => {},
+        update: async ({ check_run_id, conclusion }) =>
+          calls.push(["update", check_run_id, conclusion]),
+        create: async ({ conclusion }) => calls.push(["create", conclusion]),
+      },
+      pulls: {
+        get: async () => ({ data: { state: "open", head: { sha: SHA } } }),
+        listReviews: () => {},
+        createReview: async () => calls.push(["review"]),
+      },
+      issues: { get: async () => ({ data: { labels: [] } }) },
+    },
+  };
+  await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+    botLogin: "github-actions[bot]",
+    state: {
+      ok: true, mode: "review", expectedSha: SHA, forced: true,
+      expectedReviewCount: null, labelSets: [], comments: [{
+        kind: "review", marker: `<!-- ironrdp-pr-automation:review:${SHA}:force:3 -->`,
+        review: review(),
+      }],
+      check: { name: "AI automated review", externalId: SHA },
+    },
+  });
+  assert.deepEqual(calls, [
+    ["update", 18, "neutral"],
+    ["update", 19, "neutral"],
+    ["review"],
+    ["create", "success"],
+  ]);
+});
+
+test("a superseded automatic lease completes neutral without PR publication", async () => {
+  const lease = {
+    kind: "review", headSha: SHA, runId: 7, attempt: 1, checkRunId: 19,
+    marker: leaseMarker({ kind: "review", headSha: SHA, runId: 7, attempt: 1 }),
+  };
+  const claim = {
+    id: 19, head_sha: SHA, external_id: SHA, status: "in_progress",
+    app: { slug: "github-actions" }, output: { summary: lease.marker },
+  };
+  let update = null;
+  const github = {
+    paginate: { iterator: async function* () { yield { data: [claim] }; } },
+    rest: {
+      checks: { listForRef: () => {}, update: async (payload) => { update = payload; } },
+      actions: { getWorkflowRun: async () => ({ data: { run_attempt: 1, status: "in_progress" } }) },
+      pulls: { get: async () => { throw new Error("PR must not be read"); } },
+    },
+  };
+  await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+    state: { ok: true, mode: "review", expectedSha: SHA, lease, superseded: true },
+  });
+  assert.deepEqual(update, {
+    owner: "Devolutions", repo: "IronRDP", check_run_id: 19, status: "completed",
+    conclusion: "neutral",
+    output: { title: "Automation superseded", summary: lease.marker },
+  });
 });
 
 test("maximum review payloads traverse workflow-controlled files and artifacts", () => {
