@@ -94,7 +94,7 @@ PY
 # Nested recorders stop with the workload; no background profiler can outlive it.
 set +e
 sudo -E "$perf" record -a --clockid mono -m 64M -o "$output/scheduler-io.perf.data" "${events[@]}" -- \
-  "$perf" --buildid-dir "$symbol_cache" record --clockid mono -e cpu-clock:u -F 49 --call-graph dwarf,8192 -m 64M -o "$output/cpu.perf.data" -- \
+  "$perf" --buildid-dir "$symbol_cache/.debug" record --clockid mono -e cpu-clock:u -F 49 --call-graph dwarf,8192 -m 64M -o "$output/cpu.perf.data" -- \
   "$perf" stat -x , -e "$stat_events" -o "$output/perf-stat.csv" -- \
   sudo -E -u "$(id -un)" env "HOME=$HOME" "PATH=$PATH" \
   python3 "$script_directory/measure-build.py" "$output/build-interval.json" "$@" \
@@ -128,7 +128,13 @@ for record in json.load(open(sys.argv[1])):
     if record["lostEventsFromBuffers"] or record["lostSamples"]:
         print(f'::warning::Incomplete {record["file"]}: lost events/samples; see perf-records.json')
 PY
-"$perf" --buildid-dir "$symbol_cache" report --symfs "$symbol_cache" --stdio -n --percent-limit 0.5 --sort comm,dso,symbol -i "$output/cpu.perf.data" > "$output/cpu-report.txt" 2> "$output/symbol-warnings.txt"
+"$perf" report --symfs "$symbol_cache" --stdio -n --percent-limit 0.5 --sort comm,dso,symbol -i "$output/cpu.perf.data" > "$output/cpu-report.txt" 2> "$output/symbol-warnings.txt"
+"$perf" report --symfs "$symbol_cache" --stdio --no-children --call-graph none --percent-limit 0 \
+  --comms clang-cl,lld-link --sort comm,dso,symbol -i "$output/cpu.perf.data" > "$output/native-cpu-report.txt" 2>> "$output/symbol-warnings.txt"
+if ! grep -Eq '\[\.\] (clang|llvm|lld)::' "$output/native-cpu-report.txt"; then
+  echo "::error::Linux native compiler symbols did not resolve"
+  exit 1
+fi
 "$perf" report --stdio --header-only -i "$output/scheduler-io.perf.data" > "$output/scheduler-io-header.txt"
 "$perf" sched latency -i "$output/scheduler-io.perf.data" > "$output/scheduler-latency.txt" 2> "$output/scheduler-warnings.txt"
 "$perf" buildid-list -i "$output/cpu.perf.data" > "$output/build-ids.txt"
@@ -139,6 +145,10 @@ if ! tar -cjf "$output/cpu.perf.data.tar.bz2" -C "$symbol_cache" . > "$output/sy
   exit 1
 fi
 tar -tjf "$output/cpu.perf.data.tar.bz2" > "$output/symbol-archive-contents.txt"
+if ! grep -Fq './.debug/.build-id/' "$output/symbol-archive-contents.txt"; then
+  echo "::error::Linux symbol archive has no portable build-ID cache"
+  exit 1
+fi
 if ! grep -q librustc_driver "$output/symbol-archive-contents.txt"; then
   cat "$output/symbol-archive.log"
   echo "::error::Linux host-symbol archive does not include rustc"

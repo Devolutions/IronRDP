@@ -162,7 +162,7 @@ Restore the Linux symbol archive before opening the CPU profile; it includes a b
 ```bash
 mkdir -p host-symbols
 tar -xjf cpu.perf.data.tar.bz2 -C host-symbols
-perf --buildid-dir host-symbols report --symfs host-symbols -i cpu.perf.data
+perf report --symfs host-symbols -i cpu.perf.data
 ```
 
 ## Wire format

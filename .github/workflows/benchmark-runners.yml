@@ -110,12 +110,13 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          curl --fail --silent --show-error https://apt.llvm.org/llvm-snapshot.gpg.key |
-            sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 3 \
+            https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.gpg.key"
+          sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg "$RUNNER_TEMP/llvm-snapshot.gpg.key"
           echo 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-20 main' |
             sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update -qq
-          sudo apt-get install -y clang-20 lld-20 llvm-20 nasm ninja-build
+          sudo apt-get -o Acquire::Retries=5 update -qq
+          sudo apt-get -o Acquire::Retries=5 install -y clang-20 lld-20 llvm-20 nasm ninja-build
           echo /usr/lib/llvm-20/bin >> "$GITHUB_PATH"
 
       - name: Install cargo-xwin
