@@ -20,7 +20,7 @@ test = false
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.10" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
-tracing = { version = "0.1", features = ["log"] }
+tracing = "0.1"
 bytes = "1" # public
 web-time = "1.1"
 

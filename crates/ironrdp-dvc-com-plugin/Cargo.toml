@@ -23,7 +23,7 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
 ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.8" }
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" }
-tracing = { version = "0.1", features = ["log"] }
+tracing = "0.1"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Com",

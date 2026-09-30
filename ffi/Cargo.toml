@@ -22,7 +22,7 @@ ironrdp-vmconnect = { path = "../crates/ironrdp-vmconnect" }
 ironrdp-rdcleanpath.path = "../crates/ironrdp-rdcleanpath"
 sspi = { version = "0.21", features = ["network_client"] }
 thiserror = "2"
-tracing = { version = "0.1", features = ["log"] }
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0"
 

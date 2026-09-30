@@ -17,7 +17,7 @@ doctest = false
 
 [target.'cfg(windows)'.dependencies]
 ironrdp-rdpewa = { path = "../ironrdp-rdpewa", version = "0.1" } # public
-tracing = { version = "0.1", features = ["log"] }
+tracing = "0.1"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Networking_WindowsWebServices",

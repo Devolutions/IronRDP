@@ -24,7 +24,7 @@ ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.8" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.9" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
 openh264 = { version = "0.9", optional = true, default-features = false }
-tracing = { version = "0.1", features = ["log"] }
+tracing = "0.1"
 yuv = { version = "0.8", default-features = false, optional = true }
 
 [features]

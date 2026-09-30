@@ -22,7 +22,7 @@ ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public (PduResult t
 ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.8" }
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public (SvcMessage type)
 
-tracing = { version = "0.1", features = ["log"] }
+tracing = "0.1"
 tokio = { version = "1", features = ["net", "rt", "sync", "macros", "io-util", "fs"]}
 async-trait = "0.1"
 
