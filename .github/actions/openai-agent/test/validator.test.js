@@ -32,6 +32,36 @@ test("trusted validator receives opaque metadata and prior candidates", async ()
   }
 });
 
+test("a rejection may add a content-free detail and repair guidance within their bounds", async () => {
+  const { MAX_VALIDATION_DETAIL_BYTES, MAX_VALIDATION_GUIDANCE_BYTES } = require("../src/limits");
+  const workspace = scratchWorkspace();
+  write(workspace.directory, "validator.js",
+    "exports.validate = (candidate) => ({ ok: false, reason: 'short', ...candidate });");
+  try {
+    const validate = loadValidator(workspace.directory, "validator.js#validate", {});
+    const context = { previousCandidate: null, repairAttempt: 0 };
+    const detail = `d${"x".repeat(MAX_VALIDATION_DETAIL_BYTES - 1)}`;
+    const guidance = `g${"y".repeat(MAX_VALIDATION_GUIDANCE_BYTES - 1)}`;
+    assert.deepEqual(await validate({ detail, guidance }, context),
+      { ok: false, reason: "short", detail, guidance });
+    assert.deepEqual(await validate({}, context), { ok: false, reason: "short" });
+    for (const [field, value, reason] of [
+      ["detail", `${detail}x`, "validator returned an unsafe rejection detail"],
+      ["detail", "quotes \"model text\"", "validator returned an unsafe rejection detail"],
+      ["detail", "", "validator returned an unsafe rejection detail"],
+      ["guidance", `${guidance}y`, "validator returned unsafe repair guidance"],
+      ["guidance", "line\nbreak", "validator returned unsafe repair guidance"],
+    ]) {
+      await assert.rejects(validate({ [field]: value }, context),
+        (error) => error instanceof ValidatorFailure &&
+          error.category === "validator-error" && error.reason === reason,
+        field);
+    }
+  } finally {
+    workspace.cleanup();
+  }
+});
+
 test("validator metadata and execution failures are bounded and classified", async () => {
   assert.throws(() => parseMetadata("[]"));
   assert.throws(() => parseMetadata("{"));

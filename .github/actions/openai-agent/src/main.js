@@ -27,6 +27,7 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
 
     const baseUrlInput = requiredInput(core, "base-url", "base URL input is missing");
     const configFile = requiredInput(core, "config-file", "config file input is missing");
+    const promptContext = core.getInput("prompt-context");
     const validatorSelector = core.getInput("validator");
     const normalizerSelector = core.getInput("normalizer");
     const validatorMetadata = parseMetadata(core.getInput("validator-metadata"));
@@ -40,7 +41,7 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
     if (typeof workspace !== "string" || workspace.length === 0) {
       throw new ActionError("workspace is unavailable");
     }
-    const loaded = loadConfiguration(workspace, configFile);
+    const loaded = loadConfiguration(workspace, configFile, promptContext);
     const config = loaded.config;
     const validator = loadValidator(workspace, validatorSelector, validatorMetadata);
     const normalizer = loadNormalizer(workspace, normalizerSelector);

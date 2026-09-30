@@ -41,6 +41,28 @@ function normalizeStageMetrics(metrics = {}) {
   };
 }
 
+// The runtime keeps at most eight rejected attempts, each with a short reason and, from a validator,
+// a content-free detail of up to 2048 bytes. The final reason says only what the last attempt got
+// wrong within a few hundred bytes, so the attempts are what show how a stage exhausted its repairs.
+const MAXIMUM_REJECTIONS = 8;
+const MAXIMUM_REJECTION_TEXT_LENGTH = 2048;
+
+function normalizeRejections(rejections) {
+  if (!Array.isArray(rejections)) return [];
+  return rejections.slice(0, MAXIMUM_REJECTIONS).flatMap((entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const reason = normalizeText(entry.detail, MAXIMUM_REJECTION_TEXT_LENGTH) ||
+      normalizeText(entry.reason, MAXIMUM_REJECTION_TEXT_LENGTH);
+    if (!reason) return [];
+    return [{
+      attempt: count(entry.attempt),
+      activity: normalizeText(entry.activity, 40) || "",
+      layer: normalizeText(entry.layer, 40) || "",
+      reason,
+    }];
+  });
+}
+
 const MANDATORY_STAGES = ["evidence", "aggregate", "general", "validate"];
 const REVIEW_STAGE_IDS = new Set([
   ...MANDATORY_STAGES,
@@ -50,9 +72,11 @@ const REVIEW_STAGE_IDS = new Set([
 function stageOutcome(raw) {
   const {
     id, status, required = false, reason = "", category = "", provider = false, metrics = {},
+    rejections,
   } = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   const outcome = STAGE_STATUS.has(status) ? status : "failed";
   const normalizedId = normalizeText(id, 80);
+  const normalizedRejections = normalizeRejections(rejections);
   return {
     id: normalizedId === id ? id : "",
     status: outcome,
@@ -61,6 +85,8 @@ function stageOutcome(raw) {
     reason: normalizeText(reason, 300) || "",
     category: normalizeText(category, 60) || "",
     metrics: normalizeStageMetrics(metrics),
+    // Only a stage that repaired output has attempts to show, and every other stays as it was.
+    ...(normalizedRejections.length === 0 ? {} : { rejections: normalizedRejections }),
   };
 }
 
@@ -171,6 +197,6 @@ function stageIds(report) {
 }
 
 module.exports = {
-  MANDATORY_STAGES, REPORT_VERSION,
+  MANDATORY_STAGES, MAXIMUM_REJECTION_TEXT_LENGTH, REPORT_VERSION,
   buildReport, normalizeStageMetrics, parseReport, stageIds, stageOutcome,
 };

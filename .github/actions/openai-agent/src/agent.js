@@ -38,7 +38,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "list_files",
-      description: "List bounded entries in an allowed directory.",
+      description: "List bounded entries in an allowed directory; the path . lists the allowed directories and files.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -566,7 +566,8 @@ async function runAgent({
         role: "user",
         content: [
           "Your previous final response was invalid.",
-          candidate.reason,
+          candidate.detail ?? candidate.reason,
+          ...(candidate.guidance === undefined ? [] : [candidate.guidance]),
           toolsPermitted
             ? "Use only necessary read-only tools to correct this validation error, not to begin a new investigation, then return the corrected JSON in your next message."
             : "Do not call tools or investigate further.",
@@ -642,9 +643,13 @@ async function runAgent({
     state.candidates.push(candidate.value);
     if (validation.ok) return candidate;
     metrics?.recordOutputRejection({
-      activity, layer: "semantic", reason: validation.reason,
+      activity, layer: "semantic", reason: validation.reason, detail: validation.detail,
     });
-    return { ok: false, kind: "validator", layer: "semantic", reason: validation.reason };
+    // The exhaustion failure keeps only the short reason; detail and guidance are repair feedback.
+    return {
+      ok: false, kind: "validator", layer: "semantic", reason: validation.reason,
+      detail: validation.detail, guidance: validation.guidance,
+    };
   }
 
   async function completion(messages, allowTools, activity) {

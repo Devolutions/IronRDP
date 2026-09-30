@@ -11,7 +11,8 @@ const { SIZE_LABELS, addedLinesByPath, analyzeFiles, parseLabelerRules } = requi
 const { SCHEMA_VERSION: CLASSIFIER_SCHEMA_VERSION, validateClassifier } = require("./validate-classifier");
 const { validateCandidateReview } = require("./validate-candidate-review");
 const {
-  provenancePrefix, validateFinalReview, validateNormalizedFinalReview,
+  MAXIMUM_DETAIL_BYTES, MAXIMUM_GUIDANCE_BYTES, candidateIndexPrompt, provenancePrefix,
+  validateFinalReview, validateNormalizedFinalReview,
 } = require("./validate-final-review");
 const { buildSpecialistAggregate, validateReviewGate, validateSpecialistRun } = require("./review-pipeline");
 const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
@@ -3767,6 +3768,57 @@ test("review checks name reduced coverage without publishing failure reasons", (
     "optional reviewers skeptical, code-compressor were unavailable.");
 });
 
+test("every rejected output attempt reaches the workflow summary with its full detail", () => {
+  const detail = "invalid specialist candidate dispositions: 9 of 9 candidates have no valid " +
+    "disposition, at aggregate findings skeptical 0, 1, 2, 3 and code-compressor 0, 1, 2, 3, 4";
+  const general = stageOutcome({
+    id: "general", status: "failed", required: true, provider: true,
+    reason: "output remained invalid after the repair limit", category: "output-invalid",
+    rejections: parseDiagnostics(JSON.stringify({
+      outputRejections: [
+        { attempt: 1, activity: "finalizing", layer: "semantic", reason: "short form", detail },
+        { attempt: 2, activity: "repairing", layer: "json", reason: "response was not valid JSON" },
+        { attempt: 3, activity: "repairing", layer: "semantic", reason: "x\u0000y" },
+        "not an attempt",
+      ],
+    })).output_rejections,
+  });
+  // The detail wins over the short reason, and an attempt with nothing usable is dropped.
+  assert.deepEqual(general.rejections, [
+    { attempt: 1, activity: "finalizing", layer: "semantic", reason: detail },
+    { attempt: 2, activity: "repairing", layer: "json", reason: "response was not valid JSON" },
+  ]);
+  // A stage without rejected attempts keeps its earlier shape.
+  assert.equal(Object.hasOwn(stageOutcome({ id: "validate", status: "success" }), "rejections"), false);
+  const bounded = stageOutcome({
+    id: "general", status: "failed",
+    rejections: Array.from({ length: 12 }, (_, index) => ({ attempt: index + 1, reason: "r" })),
+  });
+  assert.equal(bounded.rejections.length, 8);
+
+  const report = buildReport([
+    { id: "evidence", status: "success", required: true },
+    { id: "aggregate", status: "success", required: true },
+    general,
+    { id: "validate", status: "failed", required: true, reason: "general review unavailable" },
+  ]);
+  assert.deepEqual(parseReport(JSON.stringify(report)).stages[2].rejections, general.rejections);
+  const rendered = renderReviewReport({
+    report, outcome: "unavailable", summaryUrl: "https://github.example/actions/runs/123",
+  });
+  assert.match(rendered.workflowSummary, /### Rejected output attempts/);
+  assert.match(rendered.workflowSummary,
+    /\| general \| 1 \| finalizing \| semantic \| .*code-compressor 0, 1, 2, 3, 4 \|/);
+  assert.match(rendered.workflowSummary, /\| general \| 2 \| repairing \| json \| response was not valid JSON \|/);
+  assert.doesNotMatch(rendered.checkSummary, /Rejected output attempts/);
+
+  const clean = renderReviewReport({
+    report: buildReport([{ id: "validate", status: "success" }]), outcome: "complete",
+    summaryUrl: "https://github.example/actions/runs/123",
+  });
+  assert.doesNotMatch(clean.workflowSummary, /Rejected output attempts/);
+});
+
 function paginated(pages) {
   return {
     paginate: { iterator: async function* (_method, options) {
@@ -4362,6 +4414,117 @@ test("final review diagnostics report the whole disposition map in one rejection
   assert.match(crowded.reason, /skeptical 0, 1, 2, 3, 4, 5, 6, 7 and 12 more/);
 });
 
+// The runtime turns a rejection it cannot accept into a terminal validator failure, so a detail or
+// guidance it would refuse would cost the stage outright. Run each through the real loader.
+async function assertRuntimeAcceptsRejection(result) {
+  const { loadValidator } = require("../actions/openai-agent/src/validator");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-rejection-"));
+  try {
+    const rejection = {
+      ok: false,
+      reason: result.reason,
+      ...(result.detail === undefined ? {} : { detail: result.detail }),
+      ...(result.guidance === undefined ? {} : { guidance: result.guidance }),
+    };
+    fs.writeFileSync(path.join(directory, "validator.js"),
+      `exports.validate = () => (${JSON.stringify(rejection)});`);
+    const validate = loadValidator(directory, "validator.js#validate", {});
+    assert.deepEqual(await validate({}, { previousCandidate: null, candidates: [], repairAttempt: 0 }),
+      rejection);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test("final review rejections carry every coordinate and the identifiers still missing", async () => {
+  const limits = require("../actions/openai-agent/src/limits");
+  assert.equal(MAXIMUM_DETAIL_BYTES, limits.MAX_VALIDATION_DETAIL_BYTES);
+  assert.equal(MAXIMUM_GUIDANCE_BYTES, limits.MAX_VALIDATION_GUIDANCE_BYTES);
+
+  // Twenty candidates overflow the short reason's coordinates, never the detail's.
+  const crowded = validateFinalReview(finalOutput([]), finalContext(20));
+  assert.match(crowded.reason, /skeptical 0, 1, 2, 3, 4, 5, 6, 7 and 12 more/);
+  assert.match(crowded.detail, /20 of 20 candidates have no valid disposition, at aggregate findings skeptical 0, 1, 2, .*, 18, 19$/);
+  assert.doesNotMatch(crowded.detail, /more/);
+  assert.equal(crowded.guidance,
+    "Each of these candidates still needs exactly one candidate_dispositions entry, as " +
+    "(reviewer, finding_id), copied exactly: " +
+    Array.from({ length: 20 }, (_, index) => `(skeptical, finding-${index + 1})`).join("; "));
+  await assertRuntimeAcceptsRejection(crowded);
+
+  // Only what is still missing is listed, and a reason that already says everything has no detail.
+  const partial = validateFinalReview(finalOutput([disposition(1)]), finalContext());
+  assert.equal(Object.hasOwn(partial, "detail"), false);
+  assert.match(partial.guidance, /\(skeptical, finding-2\); \(skeptical, finding-3\); \(skeptical, finding-4\)$/);
+  assert.doesNotMatch(partial.guidance, /finding-1\)/);
+
+  // Entries that name nothing and no missing candidate leave nothing to quote.
+  const ghost = validateFinalReview(finalOutput([
+    ...[1, 2, 3, 4].map((index) => disposition(index)),
+    disposition(9, { finding_id: "ghost-candidate" }),
+  ]), finalContext());
+  assert.match(ghost.reason, /1 entry naming a candidate the specialists did not report/);
+  assert.equal(Object.hasOwn(ghost, "guidance"), false);
+
+  // An accepted candidate that no finding cites is quoted back the same way.
+  const uncited = validateFinalReview(finalOutput(
+    [1, 2, 3, 4].map((index) => disposition(index, { disposition: index === 3 ? "accepted" : "rejected" })),
+  ), finalContext());
+  assert.match(uncited.reason, /1 accepted or refined candidate is cited by no final finding/);
+  assert.match(uncited.guidance, /exactly one final finding, as \(reviewer, finding_id\), copied exactly: \(skeptical, finding-3\)$/);
+  await assertRuntimeAcceptsRejection(uncited);
+
+  // The saturated review of the other test keeps its full detail within the runtime's allowance.
+  const saturated = validateFinalReview(finalOutput([
+    ...Array.from({ length: 15 }, () => disposition(1, { reviewer: "protocol" })),
+    ...Array.from({ length: 15 }, () => disposition(1)),
+    ...Array.from({ length: 15 }, () => disposition(2, { rationale: " " })),
+    ...Array.from({ length: 15 }, () => disposition(3, { disposition: "ignored" })),
+  ]), finalContext());
+  assert.ok(Buffer.byteLength(saturated.detail, "utf8") <= MAXIMUM_DETAIL_BYTES);
+  assert.match(saturated.detail, /candidate_dispositions index 45, 46, .*, 59$/);
+  await assertRuntimeAcceptsRejection(saturated);
+});
+
+test("the general validator hands detail and guidance to the runtime", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-general-"));
+  try {
+    const context = path.join(directory, "context.json");
+    const aggregate = path.join(directory, "aggregate.json");
+    fs.writeFileSync(context, JSON.stringify({
+      changed_paths: ["src/lib.rs"], changed_lines: { "src/lib.rs": [4] },
+    }));
+    fs.writeFileSync(aggregate, JSON.stringify(specialistAggregate(20)));
+    const result = validateGeneral(finalOutput([]), {
+      metadata: {
+        stage: "general", expected_sha: SHA,
+        validation_context_file: context, aggregate_file: aggregate,
+      },
+    });
+    const expected = validateFinalReview(finalOutput([]), finalContext(20));
+    assert.deepEqual(result, {
+      ok: false, reason: expected.reason, detail: expected.detail, guidance: expected.guidance,
+    });
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("the general reviewer prompt lists every candidate identifier and nothing else", () => {
+  const index = candidateIndexPrompt(specialistAggregate(2), SHA);
+  assert.equal(index, [
+    "The validated specialist aggregate reports 2 candidates. Write exactly one " +
+      "`candidate_dispositions` entry for each, copying `reviewer` and `finding_id` exactly:",
+    "- reviewer `skeptical`, finding_id `finding-1`",
+    "- reviewer `skeptical`, finding_id `finding-2`",
+  ].join("\n"));
+  // Specialist prose stays in the file the reviewer reads as untrusted evidence.
+  assert.doesNotMatch(index, new RegExp(candidateFinding().title));
+  assert.match(candidateIndexPrompt({ head_sha: SHA, reviewers: [] }, SHA), /reports no candidates/);
+  assert.equal(candidateIndexPrompt(specialistAggregate(2), OTHER_SHA), "");
+  assert.equal(candidateIndexPrompt(null, SHA), "");
+});
+
 test("final review diagnostics report duplicate and rationale failures independently", () => {
   for (const rationale of [" ", "x\u0000y", "x".repeat(801)]) {
     for (const rationales of [
@@ -4582,6 +4745,7 @@ test("unmeasured provider usage is reported as unknown, never as zero", () => {
   }));
   assert.deepEqual(measured, {
     elapsed_ms: 1200, request_retries: 1, output_repairs: 0, provider_attempts: 2,
+    output_rejections: [],
     tokens: { input: 100, output: 20, total: 120, complete: true },
   });
 
@@ -4589,6 +4753,7 @@ test("unmeasured provider usage is reported as unknown, never as zero", () => {
   for (const raw of ["", "not json", JSON.stringify({}), null]) {
     assert.deepEqual(parseDiagnostics(raw), {
       elapsed_ms: null, request_retries: null, output_repairs: null, provider_attempts: null,
+      output_rejections: [],
       tokens: null,
     });
   }
@@ -4890,6 +5055,18 @@ test("a stage reports provider spending from its own diagnostics", () => {
   const report = workflowJob(scoped, "report");
   assert.match(report, /stageOutcome\(\{ provider: true, \.\.\.recorded \}\)/);
   assert.match(report, /stageOutcome\(\{ provider: true, \.\.\.generalStage \}\)/);
+});
+
+test("model stages report their rejected attempts and the general stage gets the candidate index", () => {
+  const scoped = readReviewWorkflow().slice(readReviewWorkflow().indexOf("\njobs:"));
+  for (const name of ["specialists", "general"]) {
+    assert.match(workflowJob(scoped, name), /rejections: diagnostics\.output_rejections,/, name);
+  }
+  const general = workflowJob(scoped, "general");
+  assert.match(general, /candidateIndexPrompt\(aggregate, process\.env\.HEAD_SHA\)/);
+  assert.match(general, /prompt-context: \$\{\{ steps\.plan\.outputs\.prompt-context \}\}/);
+  assert.ok(general.indexOf("Download specialist aggregate") < general.indexOf("id: plan"),
+    "the index is built from the aggregate this job downloaded");
 });
 
 test("the mandatory reviewer set is resolved once and read everywhere else", () => {

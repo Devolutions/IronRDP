@@ -36,6 +36,28 @@ function normalizeRepositoryPath(value) {
   return segments.join("/");
 }
 
+// Models routinely spell a tool path as `./file`, `dir/`, or `.`. Those segments name nothing, so
+// they are dropped before the strict check instead of costing the call. An absolute path passes
+// through untouched, so it, `..`, and `.git` stay rejected. An empty result names the workspace root.
+function normalizeToolPath(value) {
+  if (typeof value !== "string" || value.startsWith("/")) return value;
+  return value.split("/").filter((segment) => segment !== "" && segment !== ".").join("/");
+}
+
+// A line longer than the read limit is cut at a code point boundary rather than failing the whole
+// read, so one long line, such as a pull request body, no longer hides the rest of its file.
+function boundedLine(line, from = 0) {
+  let bytes = 0;
+  let end = from;
+  for (const character of line.slice(from)) {
+    const size = Buffer.byteLength(character, "utf8");
+    if (bytes + size > MAX_LINE_BYTES) break;
+    bytes += size;
+    end += character.length;
+  }
+  return line.slice(from, end);
+}
+
 function validateOutputFilePath(value) {
   if (value === "") return "";
   const relative = normalizeRepositoryPath(value);
@@ -203,14 +225,18 @@ class WorkspaceSandbox {
       positiveInteger(args.end_line, "invalid end line");
     if (requestedEnd < start || requestedEnd - start + 1 > MAX_READ_LINES) fail("invalid line range");
 
-    const target = this.resolve(args.path, "file");
+    const target = this.resolve(normalizeToolPath(args.path), "file");
     const lines = this.readText(target).split(/\r?\n/);
     if (start > lines.length) fail("start line exceeds file length");
     const end = Math.min(requestedEnd, lines.length);
     const selected = [];
+    const truncatedLines = [];
     for (let index = start; index <= end; index++) {
-      const line = lines[index - 1];
-      if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) fail("source line exceeds byte limit");
+      let line = lines[index - 1];
+      if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) {
+        line = boundedLine(line);
+        truncatedLines.push(index);
+      }
       selected.push(`${index}: ${line}`);
     }
     return boundJson({
@@ -219,6 +245,7 @@ class WorkspaceSandbox {
       start_line: start,
       end_line: end,
       truncated: end < lines.length,
+      ...(truncatedLines.length === 0 ? {} : { truncated_lines: truncatedLines }),
       content: selected.join("\n"),
     });
   }
@@ -229,7 +256,10 @@ class WorkspaceSandbox {
         (args.recursive !== undefined && typeof args.recursive !== "boolean")) {
       fail("invalid list_files arguments");
     }
-    const target = this.resolve(args.path, "directory");
+    const requested = normalizeToolPath(args.path);
+    // The workspace root is not itself a capability, so listing it names the ones that exist.
+    if (requested === "") return this.listCapabilities();
+    const target = this.resolve(requested, "directory");
     const entries = [];
     const traversal = this.walk(target, args.recursive === true, ({ relative, metadata }) => {
       if (entries.length >= MAX_LIST_ENTRIES) return false;
@@ -245,6 +275,20 @@ class WorkspaceSandbox {
     });
   }
 
+  listCapabilities() {
+    const entries = [
+      ...this.allowedRoots.map((root) => ({ path: root.relative, type: "directory" })),
+      ...this.allowedFiles.map((file) => ({ path: file.relative, type: "file" })),
+    ].sort((left, right) => left.path.localeCompare(right.path, "en"));
+    return boundJson({
+      ok: true,
+      path: ".",
+      recursive: false,
+      truncated: entries.length > MAX_LIST_ENTRIES,
+      entries: entries.slice(0, MAX_LIST_ENTRIES),
+    });
+  }
+
   searchText(args) {
     assertObject(args, ["path", "query"]);
     if (typeof args.path !== "string" || typeof args.query !== "string" ||
@@ -253,15 +297,16 @@ class WorkspaceSandbox {
       fail("invalid search_text arguments");
     }
 
+    const requested = normalizeToolPath(args.path);
     let target;
     try {
-      target = this.resolve(args.path, "file");
+      target = this.resolve(requested, "file");
     } catch (fileError) {
       if (!(fileError instanceof ActionError) ||
           !["path is not a regular file", "unsupported filesystem object"].includes(fileError.code)) {
         throw fileError;
       }
-      target = this.resolve(args.path, "directory");
+      target = this.resolve(requested, "directory");
     }
 
     const results = [];
@@ -282,11 +327,18 @@ class WorkspaceSandbox {
         throw error;
       }
       for (const [index, line] of text.split(/\r?\n/).entries()) {
-        if (line.includes(args.query)) {
-          if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) continue;
+        const column = line.indexOf(args.query);
+        if (column === -1) continue;
+        if (Buffer.byteLength(line, "utf8") <= MAX_LINE_BYTES) {
           results.push({ path: file.relative, line: index + 1, text: line });
-          if (results.length >= MAX_SEARCH_RESULTS) return false;
+        } else {
+          // An overlong line is shown from its first match, so the returned text contains it.
+          results.push({
+            path: file.relative, line: index + 1, column: column + 1,
+            text: boundedLine(line, column), text_truncated: true,
+          });
         }
+        if (results.length >= MAX_SEARCH_RESULTS) return false;
       }
       return true;
     };
@@ -393,6 +445,6 @@ function positiveInteger(value, code) {
 }
 
 module.exports = {
-  OUTPUT_DIRECTORY, WorkspaceSandbox, boundJson, normalizeRepositoryPath, validateOutputFilePath,
-  writeOutputFile,
+  OUTPUT_DIRECTORY, WorkspaceSandbox, boundJson, normalizeRepositoryPath, normalizeToolPath,
+  validateOutputFilePath, writeOutputFile,
 };

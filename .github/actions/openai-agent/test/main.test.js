@@ -13,8 +13,8 @@ test("action metadata exposes only configured inputs and required outputs on nod
   const action = fs.readFileSync(path.join(__dirname, "..", "action.yml"), "utf8");
   assert.match(action, /runs:\r?\n  using: node24\r?\n  main: dist\/index\.js/);
   for (const input of [
-    "api-key", "base-url", "config-file", "validator", "normalizer", "validator-metadata",
-    "structured-output-file",
+    "api-key", "base-url", "config-file", "prompt-context", "validator", "normalizer",
+    "validator-metadata", "structured-output-file",
   ]) {
     assert.match(action, new RegExp(`^  ${input}:\\r?$`, "m"));
   }
@@ -168,6 +168,35 @@ test("main masks the key immediately, rejects redirects, and emits only bounded 
       .find((event) => event.event === "openai-agent.complete");
     assert.equal(completion.ignoredPostFinishEmptyDeltaChoices, 1);
     assert.equal(completion.ignoredRepeatedTerminalChoices, 0);
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test("main appends the trusted prompt context to the configured prompt", async () => {
+  const workspace = actionFixture();
+  const core = mockCore({
+    "api-key": "key",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+    "prompt-context": "PROMPT_CONTEXT_SENTINEL",
+  });
+  const requests = [];
+  class ContextOpenAI {
+    constructor() {
+      this.chat = { completions: { create: async (request) => {
+        requests.push(request);
+        return completionStream({ choices: [{ message: { content: '{"answer":"done"}' } }] });
+      } } };
+    }
+  }
+  try {
+    await main(core, { GITHUB_WORKSPACE: workspace.directory }, ContextOpenAI);
+    assert.equal(core.outputs.get("failure-reason"), "");
+    const prompt = requests[0].messages.find((message) => message.role === "user").content;
+    assert.equal(prompt, "PROMPT_SECRET_SENTINEL\n\nPROMPT_CONTEXT_SENTINEL");
+    const emitted = JSON.stringify(core.events.filter(([kind]) => ["output", "info", "failed"].includes(kind)));
+    assert.ok(!emitted.includes("PROMPT_CONTEXT_SENTINEL"), emitted);
   } finally {
     workspace.cleanup();
   }
@@ -754,8 +783,15 @@ function reviewFixture(workspace, { candidates = 4 } = {}) {
       ],
       findings: [],
     }),
-    // The authoritative reason for a given output, so a test can require the runtime to carry
+    // The authoritative rejection for a given output, so a test can require the runtime to carry
     // exactly it rather than merely something that looks like it.
+    rejectionFor: (output) => require(path.join(automation, "validate-final-review"))
+      .validateFinalReview(output, {
+        expectedSha: sha,
+        changedPaths: context.changed_paths,
+        changedLines: context.changed_lines,
+        specialistAggregate: aggregate,
+      }),
     reasonFor: (output) => require(path.join(automation, "validate-final-review"))
       .validateFinalReview(output, {
         expectedSha: sha,
@@ -800,10 +836,14 @@ test("a final review missing four dispositions is repaired from one factual reje
       mockProvider([fixture.review(1), fixture.review(4)], requests));
 
     // The rejection the provider was asked to repair names every candidate left out, at positions
-    // in the trusted aggregate, and carries no instruction the reviewer prompt already states.
+    // in the trusted aggregate and by the identifiers to copy, and carries no instruction the
+    // reviewer prompt already states. Only the candidates still missing are quoted.
     const repairRequest = requests[1].messages.at(-1).content;
     assert.match(repairRequest, /3 of 4 candidates have no valid disposition/);
     assert.match(repairRequest, /aggregate findings skeptical 1, 2, 3/);
+    for (const index of [2, 3, 4]) {
+      assert.ok(repairRequest.includes(`(skeptical, ${fixture.secret}-${index})`), repairRequest);
+    }
     assert.doesNotMatch(repairRequest, /record exactly one disposition per specialist candidate/);
     assert.ok(!repairRequest.includes(`${fixture.secret}-1`), repairRequest);
 
@@ -911,15 +951,18 @@ test("one repair corrects duplicate and rationale failures in either entry order
       const invalid = fixture.review(1);
       invalid.candidate_dispositions.push({ ...invalid.candidate_dispositions[0] });
       for (const index of invalidIndexes) invalid.candidate_dispositions[index].rationale = " ";
-      const expected = fixture.reasonFor(invalid);
+      const rejection = fixture.rejectionFor(invalid);
+      const expected = rejection.reason;
       assert.match(expected, /1 duplicate|1 entry repeating/);
       assert.match(expected, new RegExp(`${invalidIndexes.length} (?:entr(?:y|ies) )?with a`));
 
       await main(core, { GITHUB_WORKSPACE: workspace.directory },
         mockProvider([invalid, fixture.review(1)], requests));
 
+      // Repair is asked with the full detail, which keeps every coordinate the short reason dropped.
       assert.equal(requests.length, 2);
-      assert.ok(requests[1].messages.at(-1).content.includes(expected), expected);
+      const feedback = rejection.detail ?? expected;
+      assert.ok(requests[1].messages.at(-1).content.includes(feedback), feedback);
       assert.equal(core.outputs.get("failure-reason"), "");
       assert.deepEqual(JSON.parse(core.outputs.get("structured-output")), fixture.review(1));
       const diagnostics = JSON.parse(core.outputs.get("diagnostics"));

@@ -392,6 +392,7 @@ jobs:
                 category: run.status === "valid" ? "" : process.env.FAILURE_CATEGORY || "invalid-output",
                 provider: providerWasCalled(diagnostics),
                 metrics: diagnostics,
+                rejections: diagnostics.output_rejections,
               }), null, 2),
             );
             core.info(JSON.stringify({
@@ -523,18 +524,28 @@ jobs:
           path: .
 
       - id: plan
-        name: Build the validator metadata
+        name: Build the validator metadata and candidate index
         uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ inputs.head-sha }}
         with:
           script: |
+            const fs = require("node:fs");
+            const { candidateIndexPrompt } = require("./.github/pr-automation/validate-final-review");
             core.setOutput("metadata", JSON.stringify({
               stage: "general",
               expected_sha: process.env.HEAD_SHA,
               validation_context_file: "pr-evidence/validation-context.json",
               aggregate_file: "validated-specialist-findings.json",
             }));
+            // An unreadable aggregate leaves the index empty; the validator fails the stage on it.
+            let aggregate = null;
+            try {
+              aggregate = JSON.parse(fs.readFileSync("validated-specialist-findings.json", "utf8"));
+            } catch {
+              core.warning("Validated specialist findings are unreadable; the candidate index is empty");
+            }
+            core.setOutput("prompt-context", candidateIndexPrompt(aggregate, process.env.HEAD_SHA));
 
       - id: agent
         name: Run general reviewer
@@ -544,6 +555,7 @@ jobs:
           api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
           base-url: https://api.helmcode.com/v1
           config-file: .github/pr-automation/agents/general-reviewer.json
+          prompt-context: ${{ steps.plan.outputs.prompt-context }}
           normalizer: .github/pr-automation/output-normalizer.js#normalizeGeneral
           validator: .github/pr-automation/agent-validator.js#validateGeneral
           validator-metadata: ${{ steps.plan.outputs.metadata }}
@@ -592,6 +604,7 @@ jobs:
                 : "",
               provider: providerWasCalled(diagnostics),
               metrics: diagnostics,
+              rejections: diagnostics.output_rejections,
             })));
 
       - name: Upload general review result

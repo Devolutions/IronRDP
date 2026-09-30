@@ -6,7 +6,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { loadConfiguration, validateBaseUrl } = require("../src/config");
-const { MAX_METHODOLOGY_TOTAL_BYTES } = require("../src/limits");
+const { MAX_METHODOLOGY_TOTAL_BYTES, MAX_PROMPT_CONTEXT_BYTES } = require("../src/limits");
 const { scratchWorkspace, write } = require("./helpers");
 
 function configurationFixture(changes = {}) {
@@ -44,6 +44,26 @@ test("configuration loads workflow artifacts and constructs capabilities", () =>
     assert.deepEqual(loaded.methodologies, ["configured method"]);
     assert.equal(loaded.schema.type, "object");
     assert.doesNotThrow(() => loaded.sandbox.listFiles({ path: "root" }));
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test("a trusted prompt context follows the configured prompt within its own bound", () => {
+  const workspace = configurationFixture();
+  try {
+    write(workspace.directory, "prompt.md", "configured prompt\n\n");
+    assert.equal(loadConfiguration(workspace.directory, "config.json", "").prompt, "configured prompt\n\n");
+    assert.equal(
+      loadConfiguration(workspace.directory, "config.json", "candidate index").prompt,
+      "configured prompt\n\ncandidate index",
+    );
+    assert.doesNotThrow(() => loadConfiguration(
+      workspace.directory, "config.json", "x".repeat(MAX_PROMPT_CONTEXT_BYTES)));
+    assert.throws(
+      () => loadConfiguration(workspace.directory, "config.json", "x".repeat(MAX_PROMPT_CONTEXT_BYTES + 1)),
+      /prompt context exceeds byte limit/,
+    );
   } finally {
     workspace.cleanup();
   }

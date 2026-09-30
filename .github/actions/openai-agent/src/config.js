@@ -7,6 +7,7 @@ const {
   DEFAULT_OUTPUT_REPAIRS, DEFAULT_REQUEST_RETRIES, DEFAULT_STAGE_TIMEOUT_MS,
   DEFAULT_STREAM_IDLE_TIMEOUT_MS,
   MAX_CONFIG_BYTES, MAX_METHODOLOGY_BYTES, MAX_METHODOLOGY_TOTAL_BYTES, MAX_PROMPT_BYTES,
+  MAX_PROMPT_CONTEXT_BYTES,
   MAX_OUTPUT_REPAIRS, MAX_REQUEST_RETRIES, MAX_STAGE_TIMEOUT_MS, MAX_STREAM_IDLE_TIMEOUT_MS,
   MAX_SCHEMA_BYTES, MAX_TOOL_CALLS, MAX_TURNS,
 } = require("./limits");
@@ -64,7 +65,13 @@ function parseJson(text, code) {
   }
 }
 
-function loadConfiguration(workspace, configFile) {
+// The prompt context is trusted workflow text computed for this invocation, such as the identifiers a
+// stage must echo back, so the model has them before it spends any turn looking for them.
+function loadConfiguration(workspace, configFile, promptContext = "") {
+  if (typeof promptContext !== "string" ||
+      Buffer.byteLength(promptContext, "utf8") > MAX_PROMPT_CONTEXT_BYTES) {
+    fail("prompt context exceeds byte limit");
+  }
   const workspaceReader = new WorkspaceSandbox(workspace);
   const rawConfig = workspaceReader.readWorkflowFile(configFile, MAX_CONFIG_BYTES);
   const parsed = parseJson(rawConfig, "configuration is not valid JSON");
@@ -86,7 +93,10 @@ function loadConfiguration(workspace, configFile) {
     allowedRoots: config.allowed_roots,
     allowedFiles: config.allowed_files,
   });
-  const prompt = workspaceReader.readWorkflowFile(config.prompt_file, MAX_PROMPT_BYTES);
+  const configuredPrompt = workspaceReader.readWorkflowFile(config.prompt_file, MAX_PROMPT_BYTES);
+  const prompt = promptContext === ""
+    ? configuredPrompt
+    : `${configuredPrompt.trimEnd()}\n\n${promptContext}`;
   const schemaText = workspaceReader.readWorkflowFile(config.schema_file, MAX_SCHEMA_BYTES);
   const schema = parseJson(schemaText, "output schema is not valid JSON");
   if (schema === null || typeof schema !== "object" || Array.isArray(schema)) {
