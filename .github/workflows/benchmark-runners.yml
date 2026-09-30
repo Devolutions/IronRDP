@@ -1,6 +1,6 @@
 name: Build runner benchmark
 
-run-name: Windows build benchmark (${{ github.ref_name }})
+run-name: Windows build ${{ inputs.mode || 'benchmark and trace' }} (${{ github.ref_name }})
 
 on:
   # Push discovers this workflow on a feature branch before it exists on master.
@@ -10,13 +10,20 @@ on:
     paths:
       - .github/workflows/benchmark-runners.yml
       - .github/benchmark-windows.cmake
+      - .github/benchmark-tracing/**
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Uninstrumented averages, diagnostic traces, or both
+        type: choice
+        default: benchmark
+        options: [benchmark, trace, all]
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-runner-benchmark-${{ github.ref }}
+  group: build-runner-benchmark-${{ github.ref }}-${{ inputs.mode || 'all' }}
   cancel-in-progress: true
 
 env:
@@ -37,7 +44,7 @@ env:
 
 jobs:
   build:
-    name: Windows build on ${{ matrix.host }} (4 vCPU, sample ${{ matrix.sample }})
+    name: Windows build on ${{ matrix.host }} (4 vCPU, ${{ matrix.sample == 0 && 'trace' || format('sample {0}', matrix.sample) }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     defaults:
@@ -47,7 +54,7 @@ jobs:
       fail-fast: false
       matrix:
         host: [windows, linux]
-        sample: [1, 2, 3, 4]
+        sample: ${{ fromJSON(inputs.mode == 'trace' && '[0]' || inputs.mode == 'benchmark' && '[1,2,3,4]' || '[0,1,2,3,4]') }}
         include:
           - host: windows
             runner: windows-2022
@@ -142,6 +149,15 @@ jobs:
             cargo xwin cache xwin
           }
 
+      - name: Install Linux trace tools
+        if: ${{ matrix.sample == 0 && runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          sudo apt-get install -y linux-tools-common linux-tools-generic
+          perf_binary=$(find /usr/lib/linux-tools -type f -name perf | sort -V | tail -n 1)
+          test -x "$perf_binary"
+          echo "PERF_BINARY=$perf_binary" >> "$GITHUB_ENV"
+
       - name: Measure clean Windows release build
         env:
           BENCHMARK_HOST: ${{ matrix.host }}
@@ -174,14 +190,24 @@ jobs:
             '--bin', 'ironrdp-agent', '--target', 'x86_64-pc-windows-msvc', '--timings')
           if ($env:RUNNER_OS -eq 'Linux') { $arguments = @('xwin') + $arguments }
 
-          $timer = [Diagnostics.Stopwatch]::StartNew()
-          & cargo @arguments 2>&1 | Tee-Object -FilePath benchmark-results/build.log
-          $exitCode = $LASTEXITCODE
-          $timer.Stop()
+          $instrumented = $env:BENCHMARK_SAMPLE -eq '0'
+          if ($instrumented) {
+            & ./.github/benchmark-tracing/Invoke-BuildTrace.ps1 -CargoArguments $arguments -OutputDirectory benchmark-results
+            $interval = Get-Content benchmark-results/build-interval.json -Raw | ConvertFrom-Json
+            $exitCode = $interval.exitCode
+            $seconds = $interval.coreBuildSeconds
+          } else {
+            $timer = [Diagnostics.Stopwatch]::StartNew()
+            & cargo @arguments 2>&1 | Tee-Object -FilePath benchmark-results/build.log
+            $exitCode = $LASTEXITCODE
+            $timer.Stop()
+            $seconds = [math]::Round($timer.Elapsed.TotalSeconds, 3)
+          }
 
           $timing = [ordered]@{
             host = $env:BENCHMARK_HOST
             sample = [int]$env:BENCHMARK_SAMPLE
+            instrumented = $instrumented
             runner = $env:BENCHMARK_RUNNER
             vcpus = $vcpus
             cpu = $cpu
@@ -197,7 +223,7 @@ jobs:
             linker = $linker
             linkerPath = (Get-Command lld-link).Source
             rust = $rust
-            coreBuildSeconds = [math]::Round($timer.Elapsed.TotalSeconds, 3)
+            coreBuildSeconds = $seconds
             exitCode = $exitCode
             succeeded = ($exitCode -eq 0)
           }
@@ -218,7 +244,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: build-benchmark-${{ matrix.host }}-${{ matrix.sample }}
+          name: ${{ matrix.sample == 0 && format('build-trace-{0}', matrix.host) || format('build-benchmark-{0}-{1}', matrix.host, matrix.sample) }}
           path: benchmark-results/
           if-no-files-found: error
           retention-days: 30
@@ -227,7 +253,7 @@ jobs:
   compare:
     name: Verify Windows executables and compare average build times
     needs: build
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && inputs.mode != 'trace' }}
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
@@ -248,6 +274,7 @@ jobs:
                 $timing = Get-Content (Join-Path $directory 'build-time.json') -Raw | ConvertFrom-Json
                 if (-not $timing.succeeded) { throw "$hostName sample $sample build failed; see its artifact" }
                 if ($timing.host -ne $hostName -or $timing.sample -ne $sample -or
+                    $timing.instrumented -or
                     $timing.commit -ne $env:GITHUB_SHA -or $timing.runId -ne $env:GITHUB_RUN_ID -or
                     $timing.vcpus -ne 4 -or $timing.coreBuildSeconds -le 0) {
                   throw "invalid benchmark metadata for $hostName sample $sample"
@@ -336,3 +363,41 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           overwrite: true
+
+  verify-traces:
+    name: Verify diagnostic builds
+    needs: build
+    if: ${{ !cancelled() && inputs.mode != 'benchmark' }}
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: build-trace-*
+          path: traces
+
+      - name: Verify trace metadata and Windows executables
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          foreach ($hostName in @('windows', 'linux')) {
+            $directory = Join-Path traces "build-trace-$hostName"
+            $timing = Get-Content (Join-Path $directory 'build-time.json') -Raw | ConvertFrom-Json
+            $interval = Get-Content (Join-Path $directory 'build-interval.json') -Raw | ConvertFrom-Json
+            if (-not $timing.succeeded -or -not $timing.instrumented -or $timing.sample -ne 0 -or
+                $timing.commit -ne $env:GITHUB_SHA -or $timing.vcpus -ne 4 -or
+                $interval.coreBuildSeconds -ne $timing.coreBuildSeconds) {
+              throw "invalid diagnostic metadata for $hostName"
+            }
+            $binary = Join-Path $directory 'ironrdp-agent.exe'
+            & $binary --version | Write-Host
+            & $binary --help | Out-Null
+            "## $hostName diagnostic build: $($timing.coreBuildSeconds) s (instrumented, excluded from averages)" >> $env:GITHUB_STEP_SUMMARY
+          }
+          if ((Get-Item traces/build-trace-windows/build.etl).Length -eq 0) { throw 'empty ETL capture' }
+          $records = Get-Content traces/build-trace-linux/perf-records.json -Raw | ConvertFrom-Json
+          if ($records.Count -ne 2 -or @($records | Where-Object samples -LE 0).Count -ne 0) {
+            throw 'empty perf captures'
+          }
+          if ($records[0].processNames -notcontains 'rustc') { throw 'CPU capture does not include rustc' }

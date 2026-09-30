@@ -149,6 +149,14 @@ Each run saves timing JSON, build logs, Cargo timing reports, and executables fo
 The workflow's branch-scoped `push` trigger allows testing before merge; `workflow_dispatch` provides manual runs after registration on the default branch.
 CPU models, images, and tool versions are recorded; Windows and Linux use separately provisioned MSVC/SDK libraries, so results compare the complete build environments rather than the OS alone.
 
+Select workflow mode `trace` for one diagnostic build per host, `benchmark` for the four-sample averages, or `all` for both.
+Branch pushes run both; instrumented builds use separate `build-trace-windows` and `build-trace-linux` artifacts and never enter the averages.
+Windows records WPR CPU/scheduling and file-I/O events in `build.etl`, with ETW reports, Defender status, and a host-module/PDB manifest; open the ETL in Windows Performance Analyzer.
+Linux saves CPU stacks in `cpu.perf.data`, system-wide scheduler/block-I/O/filesystem events in `scheduler-io.perf.data`, resource counters, readable CPU/scheduler reports, and a host-symbol archive for `perf report`.
+Both captures include compiler subprocesses; `build-interval.json` records the build PID and UTC/monotonic boundaries so setup and trace finalization can be excluded from analysis.
+Tracing adds overhead, unavailable counters and event losses are reported, and prebuilt compiler symbols may be incomplete; do not compare these diagnostic durations with uninstrumented averages.
+System-wide captures can contain runner paths and command lines, so review them before sharing.
+
 ## Wire format
 
 Messages are encoded with [`ironrdp-core`]'s `Encode`/`Decode` traits, length-delimited with a
