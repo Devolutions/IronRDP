@@ -6,6 +6,7 @@ mod file_contents_validation;
 mod file_list_format;
 mod file_transfer_capabilities;
 mod format;
+mod format_data_correlation;
 mod lock_lifecycle;
 mod lock_strategy;
 mod lock_timeout;
