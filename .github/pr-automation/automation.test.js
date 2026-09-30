@@ -765,7 +765,7 @@ test("CI generation selection paginates and ignores late older attempts", async 
     rest: { actions: { listWorkflowRunsForRepo: () => {} } },
   };
   const latest = await readLatestExactHeadCiRun({
-    github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA,
+    github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA, delayMs: 0,
   });
   assert.deepEqual({ id: latest.id, attempt: latest.run_attempt, conclusion: latest.conclusion }, {
     id: 9, attempt: 2, conclusion: "in_progress",
@@ -848,6 +848,24 @@ test("CI listing lag is retried up to its cap", async () => {
     expectedGeneration: { id: 5, attempt: 1 }, delayMs: 0,
   });
   assert.deepEqual({ id: caughtUp.id, polls: settled.polls() }, { id: 5, polls: 2 });
+
+  // Without a reference generation, an older failed run must not mask a newer run the listing lacks.
+  const masked = ciListing([[ciRun({ id: 4, conclusion: "failure" })], [ciRun({ id: 4, conclusion: "failure" }), ciRun()]]);
+  const unmasked = await readLatestExactHeadCiRun({
+    github: masked.github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA, delayMs: 0,
+  });
+  assert.deepEqual({ id: unmasked.id, polls: masked.polls() }, { id: 5, polls: 2 });
+  const failed = ciListing([[ciRun({ conclusion: "failure" })]]);
+  await readLatestExactHeadCiRun({
+    github: failed.github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA, delayMs: 0,
+  });
+  assert.equal(failed.polls(), 4);
+  const referenced = ciListing([[ciRun({ conclusion: "failure" })]]);
+  await readLatestExactHeadCiRun({
+    github: referenced.github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA,
+    expectedGeneration: { id: 5, attempt: 1 }, delayMs: 0,
+  });
+  assert.equal(referenced.polls(), 1);
 });
 
 test("review gate trusts the completed CI event over a lagging listing", async () => {

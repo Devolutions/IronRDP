@@ -29,7 +29,8 @@ function latestExactHeadCiRun(runs, expectedSha, observedRun = null) {
 }
 
 // Re-lists only while the listing is behind: no candidate, a candidate older than the expected
-// generation, or a candidate that has not completed. A newer generation is returned at once.
+// generation, a candidate that has not completed, or, without a reference generation, one that did
+// not succeed. A newer generation than the reference is returned at once.
 async function readLatestExactHeadCiRun({
   github, owner, repo, expectedSha, observedRun = null, expectedGeneration = null,
   retries = 3, delayMs = 3000, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -42,7 +43,10 @@ async function readLatestExactHeadCiRun({
     const order = reference ? compareGenerations(current, reference) : 0;
     if (order !== 0) return order < 0;
     // A conclusion exists only once a run completes; accept it for payloads without `status`.
-    return !(run.status === "completed" || (run.status === undefined && run.conclusion != null));
+    if (!(run.status === "completed" || (run.status === undefined && run.conclusion != null))) return true;
+    // Without a reference generation, an older unsuccessful run may still mask a newer one the
+    // listing has not caught up to.
+    return !reference && run.conclusion !== "success";
   };
   for (let attempt = 0; ; attempt += 1) {
     const runs = [];
