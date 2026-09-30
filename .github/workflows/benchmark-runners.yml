@@ -134,7 +134,8 @@ jobs:
           "XWIN_CACHE_DIR=$env:XWIN_CACHE_DIR" >> $env:GITHUB_ENV
           rustup show active-toolchain
           rustup target add x86_64-pc-windows-msvc
-          cargo fetch --locked --target x86_64-pc-windows-msvc
+          # Cross-builds also compile build scripts and proc macros for the host.
+          cargo fetch --locked
           if ($env:RUNNER_OS -eq 'Linux') {
             cargo xwin cache xwin
           }
