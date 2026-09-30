@@ -2273,9 +2273,12 @@ impl RdpServer {
             return Ok(());
         }
 
-        let channel_id = conn
-            .get_channel_id_by_type::<CliprdrServer>()
-            .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
+        // A configured channel the client never joined has no ID. Skip it like
+        // `client_accepted` does rather than end the session over it.
+        let Some(channel_id) = conn.get_channel_id_by_type::<CliprdrServer>() else {
+            warn!("Clipboard channel not joined, dropping timeout cleanup messages");
+            return Ok(());
+        };
         let data = server_encode_svc_messages(msgs, channel_id, user_channel_id).map_err(ServerError::encode)?;
         writer
             .write_all(&data)
@@ -6860,13 +6863,8 @@ mod tests {
     }
 }
 
-/// The server role must drive [`CliprdrServer::drive_timeouts`] on a timer.
-///
-/// Before [`CLIPRDR_DRIVE_TIMEOUTS_INTERVAL`] existed nothing in this crate ever
-/// called it, so on the server role clipboard-data locks were created and
-/// expired but never released: no `Unlock` PDU was ever sent, abandoned file
-/// contents requests were never answered, and `outgoing_locks` grew until
-/// `MAX_OUTGOING_LOCKS` silently disabled further locking for the session.
+/// The server role must drive [`CliprdrServer::drive_timeouts`] on a timer; see
+/// [`CLIPRDR_DRIVE_TIMEOUTS_INTERVAL`].
 #[cfg(test)]
 mod cliprdr_timeout_tests {
     use core::any::TypeId;
