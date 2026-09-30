@@ -1,9 +1,9 @@
 //! The long-lived daemon: owns the [`RdpClient`] engine and one RDP session, and serves IPC
 //! requests until shut down.
 //!
-//! One daemon serves one RDP session (multi-session is out of scope for V1). It is started
-//! explicitly with `daemon-start` and runs in the foreground; the caller is expected to background
-//! it. On a clean shutdown the Unix socket file is removed (see [`crate::transport`]).
+//! One daemon serves one RDP session (multi-session is out of scope for V1).
+//! The agent starts it in the background on demand or explicitly with `daemon start`.
+//! On a clean shutdown the Unix socket file is removed (see [`crate::transport`]).
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
@@ -65,16 +65,19 @@ pub async fn run(endpoint: Endpoint, overlay: PropertySet, options: DaemonOption
     serve(endpoint, daemon).await
 }
 
-/// Runs a detached daemon with operational logging written to `log` instead of its parent's console.
+/// Runs a detached daemon on a caller-bound listener with operational logging written to `log`.
+///
+/// Binding before calling lets the launcher acknowledge ownership of `endpoint` through its private bootstrap connection.
 pub async fn run_with_log(
     endpoint: Endpoint,
+    listener: Listener,
     overlay: PropertySet,
     options: DaemonOptions,
     log: std::fs::File,
 ) -> anyhow::Result<()> {
     init_daemon_logging(Some(log));
     let daemon = Arc::new(Daemon::with_options(overlay, options)?);
-    serve(endpoint, daemon).await
+    serve_listener(endpoint, listener, daemon).await
 }
 
 /// Maximum size of the detached daemon's operational log.
@@ -119,7 +122,11 @@ impl io::Write for BoundedLog {
 /// Panics if the daemon or session state mutex is poisoned while awaiting a graceful shutdown.
 pub async fn serve(endpoint: Endpoint, daemon: Arc<Daemon>) -> anyhow::Result<()> {
     crate::transport::prepare_endpoint(&endpoint).await?;
-    let mut listener = Listener::bind(&endpoint).with_context(|| format!("bind IPC endpoint {endpoint}"))?;
+    let listener = Listener::bind(&endpoint).with_context(|| format!("bind IPC endpoint {endpoint}"))?;
+    serve_listener(endpoint, listener, daemon).await
+}
+
+async fn serve_listener(endpoint: Endpoint, mut listener: Listener, daemon: Arc<Daemon>) -> anyhow::Result<()> {
     info!(%endpoint, "Daemon listening");
     let mut shutdown = daemon.shutdown_receiver();
     let mut requested_shutdown = false;
@@ -414,6 +421,26 @@ fn take_finished_fetch_result(clipboard: &mut crate::clipboard::ClipboardState, 
         (ChunkedFetchProgress::Complete, Some(fetch)) => Response::Ok(Payload::ClipboardFile(fetch.into_data())),
         _ => Response::typed_error(crate::ipc::AgentErrorCategory::Internal, "file fetch failed"),
     })
+}
+
+fn operation_from_key_input(input: KeyInput) -> Operation {
+    match input {
+        KeyInput::Scancode { scancode, pressed } => {
+            let scancode = Scancode::from_u16(scancode);
+            if pressed {
+                Operation::KeyPressed(scancode)
+            } else {
+                Operation::KeyReleased(scancode)
+            }
+        }
+        KeyInput::Unicode { ch, pressed } => {
+            if pressed {
+                Operation::UnicodeKeyPressed(ch)
+            } else {
+                Operation::UnicodeKeyReleased(ch)
+            }
+        }
+    }
 }
 
 fn enqueue_unicode_text(input_tx: &RdpInputSender, input_db: &mut Database, text: &str) -> Response {
@@ -745,18 +772,11 @@ impl Daemon {
                 })))
             }
             Request::KeyScancode { scancode, pressed } => {
-                let scancode = Scancode::from_u16(scancode);
-                DaemonResponse::Single(self.input(if pressed {
-                    Operation::KeyPressed(scancode)
-                } else {
-                    Operation::KeyReleased(scancode)
-                }))
+                DaemonResponse::Single(self.input(operation_from_key_input(KeyInput::Scancode { scancode, pressed })))
             }
-            Request::KeyUnicode { ch, pressed } => DaemonResponse::Single(self.input(if pressed {
-                Operation::UnicodeKeyPressed(ch)
-            } else {
-                Operation::UnicodeKeyReleased(ch)
-            })),
+            Request::KeyUnicode { ch, pressed } => {
+                DaemonResponse::Single(self.input(operation_from_key_input(KeyInput::Unicode { ch, pressed })))
+            }
             Request::KeyBatch { events } => {
                 if events.is_empty() || events.len() > MAX_KEY_BATCH_EVENTS {
                     DaemonResponse::Single(Response::typed_error(
@@ -764,23 +784,7 @@ impl Daemon {
                         "invalid key batch event count",
                     ))
                 } else {
-                    DaemonResponse::Single(self.input_operations(events.into_iter().map(|event| match event {
-                        KeyInput::Scancode { scancode, pressed } => {
-                            let scancode = Scancode::from_u16(scancode);
-                            if pressed {
-                                Operation::KeyPressed(scancode)
-                            } else {
-                                Operation::KeyReleased(scancode)
-                            }
-                        }
-                        KeyInput::Unicode { ch, pressed } => {
-                            if pressed {
-                                Operation::UnicodeKeyPressed(ch)
-                            } else {
-                                Operation::UnicodeKeyReleased(ch)
-                            }
-                        }
-                    })))
+                    DaemonResponse::Single(self.input_operations(events.into_iter().map(operation_from_key_input)))
                 }
             }
             Request::UnicodeText { text } => DaemonResponse::Single(self.unicode_text(&text)),
@@ -2789,6 +2793,31 @@ mod tests {
             live.lock().expect("session live state poisoned").state,
             ConnState::Disconnecting
         );
+    }
+
+    #[tokio::test]
+    async fn key_batch_count_is_checked_even_without_wire_decoding() {
+        use crate::ipc::{KeyInput, MAX_KEY_BATCH_EVENTS};
+
+        let (daemon, mut receiver, _live, _) = active_rail_session(false);
+        for count in [0, MAX_KEY_BATCH_EVENTS + 1] {
+            let response = daemon
+                .handle(Request::KeyBatch {
+                    events: vec![
+                        KeyInput::Scancode {
+                            scancode: 0x1D,
+                            pressed: true
+                        };
+                        count
+                    ],
+                })
+                .await;
+            assert!(matches!(
+                response.response(),
+                Response::Err(error) if error.category == AgentErrorCategory::InvalidRequest
+            ));
+            assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+        }
     }
 
     #[tokio::test]

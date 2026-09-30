@@ -32,12 +32,17 @@ pub(crate) struct Settings {
 }
 
 impl Settings {
-    pub(crate) async fn run(self, endpoint: Endpoint) -> anyhow::Result<()> {
+    fn into_parts(self) -> (PropertySet, DaemonOptions) {
         let options = DaemonOptions::default()
             .with_certificate_check_skipped(self.skip_certificate_check)
             .with_rdpdr_drives(self.rdpdr_drives)
             .with_smartcard(self.smartcard);
-        ironrdp_daemon::daemon::run(endpoint, self.overlay, options).await
+        (self.overlay, options)
+    }
+
+    pub(crate) async fn run(self, endpoint: Endpoint) -> anyhow::Result<()> {
+        let (overlay, options) = self.into_parts();
+        ironrdp_daemon::daemon::run(endpoint, overlay, options).await
     }
 
     fn is_default(&self) -> bool {
@@ -52,14 +57,21 @@ impl Settings {
 
         let mut log = open_log(&log_path()?)?;
         let result = async {
-            let settings = Settings::read_bootstrap(bootstrap).await?;
-            let options = DaemonOptions::default()
-                .with_certificate_check_skipped(settings.skip_certificate_check)
-                .with_rdpdr_drives(settings.rdpdr_drives)
-                .with_smartcard(settings.smartcard);
+            let (settings, mut stream) = Settings::read_bootstrap(bootstrap).await?;
+            let (overlay, options) = settings.into_parts();
+            transport::prepare_endpoint(&endpoint).await?;
+            let listener = Listener::bind(&endpoint).with_context(|| format!("bind IPC endpoint {endpoint}"))?;
+            // A status reply alone could come from a competing daemon with different settings.
+            stream
+                .write_u8(1)
+                .await
+                .context("acknowledge daemon endpoint ownership")?;
+            stream.flush().await.context("flush daemon startup acknowledgement")?;
+            drop(stream);
             ironrdp_daemon::daemon::run_with_log(
                 endpoint,
-                settings.overlay,
+                listener,
+                overlay,
                 options,
                 log.try_clone().context("clone daemon log handle")?,
             )
@@ -73,7 +85,7 @@ impl Settings {
         result
     }
 
-    pub(crate) async fn read_bootstrap(bootstrap: String) -> anyhow::Result<Self> {
+    async fn read_bootstrap(bootstrap: String) -> anyhow::Result<(Self, transport::ClientStream)> {
         let endpoint = transport::endpoint_from_string(bootstrap);
         let mut stream = transport::connect(&endpoint)
             .await
@@ -89,7 +101,7 @@ impl Settings {
             .await
             .context("read daemon startup settings")?;
         let config: StartupConfig = serde_json::from_slice(&bytes).context("decode daemon startup settings")?;
-        config.into_settings()
+        Ok((config.into_settings()?, stream))
     }
 }
 
@@ -347,19 +359,7 @@ pub(crate) async fn ensure_started(endpoint: &Endpoint, settings: Settings) -> a
     );
     let mut listener = Listener::bind(&bootstrap).with_context(|| format!("bind bootstrap endpoint {bootstrap}"))?;
     let mut child = spawn_detached(endpoint, &bootstrap)?;
-    let send_result: anyhow::Result<()> = async {
-        let mut stream = tokio::time::timeout(START_TIMEOUT, listener.accept())
-            .await
-            .context("daemon did not request startup settings")?
-            .context("accept daemon bootstrap connection")?;
-        stream.write_u32_le(u32::try_from(config.len())?).await?;
-        stream
-            .write_all(&config)
-            .await
-            .context("send daemon startup settings")?;
-        stream.flush().await.context("flush daemon startup settings")
-    }
-    .await;
+    let send_result = bootstrap_child(&mut listener, &config).await;
     drop(listener);
     if let Err(error) = send_result {
         let _ = child.kill();
@@ -371,15 +371,12 @@ pub(crate) async fn ensure_started(endpoint: &Endpoint, settings: Settings) -> a
     while tokio::time::Instant::now() < deadline {
         if probe(endpoint).await?.is_some() {
             tokio::time::sleep(POLL_INTERVAL).await;
-            return Ok(child.try_wait().context("check daemon startup")?.is_none());
+            if let Some(exit) = child.try_wait().context("check daemon startup")? {
+                anyhow::bail!("daemon exited during startup ({exit}); see {}", log_path.display());
+            }
+            return Ok(true);
         }
         if let Some(exit) = child.try_wait().context("check daemon startup")? {
-            // Another caller may have won the bind race. Only treat it as a failure if no
-            // daemon subsequently becomes available.
-            tokio::time::sleep(POLL_INTERVAL).await;
-            if probe(endpoint).await?.is_some() {
-                return Ok(false);
-            }
             anyhow::bail!("daemon exited during startup ({exit}); see {}", log_path.display());
         }
         tokio::time::sleep(POLL_INTERVAL).await;
@@ -391,6 +388,24 @@ pub(crate) async fn ensure_started(endpoint: &Endpoint, settings: Settings) -> a
         START_TIMEOUT.as_secs(),
         log_path.display()
     )
+}
+
+async fn bootstrap_child(listener: &mut Listener, config: &[u8]) -> anyhow::Result<()> {
+    tokio::time::timeout(START_TIMEOUT, async {
+        let mut stream = listener.accept().await.context("accept daemon bootstrap connection")?;
+        stream.write_u32_le(u32::try_from(config.len())?).await?;
+        stream.write_all(config).await.context("send daemon startup settings")?;
+        stream.flush().await.context("flush daemon startup settings")?;
+        anyhow::ensure!(
+            stream.read_u8().await.context(
+                "daemon did not acknowledge endpoint ownership; a competing daemon may have started; inspect `daemon status` and retry"
+            )? == 1,
+            "invalid daemon startup acknowledgement"
+        );
+        Ok(())
+    })
+    .await
+    .context("daemon startup handshake timed out")?
 }
 
 #[cfg(unix)]
@@ -651,6 +666,49 @@ mod tests {
         assert_eq!(decoded.overlay, settings.overlay);
         assert!(decoded.smartcard);
         assert!(!decoded.is_default());
+    }
+
+    #[tokio::test]
+    async fn bootstrap_requires_the_child_to_acknowledge_endpoint_ownership() {
+        let config = serde_json::to_vec(&StartupConfig::from(&Settings::default())).unwrap();
+        for acknowledgement in [None, Some(0), Some(1)] {
+            let endpoint = transport::default_endpoint_named(&format!(
+                "ir-bootstrap-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let mut listener = Listener::bind(&endpoint).unwrap();
+            let parent = bootstrap_child(&mut listener, &config);
+            let child = async {
+                let (settings, mut stream) = Settings::read_bootstrap(endpoint.to_string()).await.unwrap();
+                assert!(settings.is_default());
+                if let Some(byte) = acknowledgement {
+                    stream.write_u8(byte).await.unwrap();
+                    stream.flush().await.unwrap();
+                }
+            };
+            let (result, ()) = tokio::join!(parent, child);
+            match acknowledgement {
+                None => {
+                    assert!(format!("{:#}", result.unwrap_err()).contains("did not acknowledge endpoint ownership"))
+                }
+                Some(0) => assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "invalid daemon startup acknowledgement"
+                ),
+                Some(1) => result.unwrap(),
+                _ => unreachable!(),
+            }
+            drop(listener);
+            #[cfg(unix)]
+            assert!(
+                !endpoint.0.exists(),
+                "bootstrap socket must be removed on every outcome"
+            );
+        }
     }
 
     #[tokio::test]

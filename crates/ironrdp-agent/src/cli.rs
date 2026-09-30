@@ -1026,6 +1026,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         return Ok(());
     };
 
+    if matches!(&command, Command::Attach(_)) && cli.backend != Backend::Daemon {
+        anyhow::bail!("attach requires --backend daemon");
+    }
+
     if cli.backend == Backend::ActiveX
         && !matches!(
             &command,
@@ -1083,23 +1087,22 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             use ironrdp_daemon::known_certificates::KnownCertificates;
 
             let path = KnownCertificates::default_path()?;
-            let mut store = KnownCertificates::load(&path)?;
             match command {
                 CertCommand::Trust { endpoint, fingerprint } => {
-                    let endpoint = store.trust(&endpoint, fingerprint)?;
-                    store.save(&path)?;
+                    let endpoint = KnownCertificates::update(&path, |store| store.trust(&endpoint, fingerprint))?;
                     println!("trusted {endpoint} {fingerprint} in {}", path.display());
                 }
                 CertCommand::List => {
+                    let store = KnownCertificates::load(&path)?;
                     for (endpoint, fingerprint) in store.entries() {
                         println!("{endpoint} {fingerprint}");
                     }
                 }
                 CertCommand::Remove { endpoint } => {
-                    if !store.remove(&endpoint)? {
-                        anyhow::bail!("no certificate is trusted for {endpoint}");
-                    }
-                    store.save(&path)?;
+                    KnownCertificates::update(&path, |store| {
+                        anyhow::ensure!(store.remove(&endpoint)?, "no certificate is trusted for {endpoint}");
+                        Ok(())
+                    })?;
                     println!("removed {endpoint} from {}", path.display());
                 }
             }
@@ -1645,9 +1648,8 @@ async fn connect_interactively(endpoint: &Endpoint, request: Request) -> anyhow:
         match answer {
             Some(true) => {
                 let path = KnownCertificates::default_path()?;
-                let mut store = KnownCertificates::load(&path)?;
-                let endpoint = store.trust(&certificate.endpoint, fingerprint)?;
-                store.save(&path)?;
+                let endpoint =
+                    KnownCertificates::update(&path, |store| store.trust(&certificate.endpoint, fingerprint))?;
                 eprintln!("Trusted {endpoint} in {}", path.display());
             }
             Some(false) => {
@@ -2746,7 +2748,7 @@ mod tests {
     use super::build_connect_request;
     use super::{
         Backend, CertCommand, Cli, CommonExecutionArgs, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, SessionCommand,
-        build_now_execution, endpoint_from_arg, should_auto_start,
+        build_now_execution, endpoint_from_arg, run, should_auto_start,
     };
 
     #[test]
@@ -2773,6 +2775,14 @@ mod tests {
         assert!(!should_auto_start(Backend::Daemon, true, false, false));
         assert!(!should_auto_start(Backend::Daemon, false, true, false));
         assert!(!should_auto_start(Backend::ActiveX, false, false, true));
+    }
+
+    #[tokio::test]
+    async fn activex_attach_is_rejected_before_probing_the_host() {
+        let cli = Cli::try_parse_from(["ironrdp-agent", "--backend", "active-x", "attach"])
+            .expect("parse ActiveX attachment");
+        let error = run(cli).await.expect_err("ActiveX attachment is unsupported");
+        assert_eq!(error.to_string(), "attach requires --backend daemon");
     }
 
     #[test]

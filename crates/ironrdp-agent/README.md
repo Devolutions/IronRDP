@@ -16,6 +16,9 @@ The `ironrdp-agent` binary is the CLI for the persistent daemon support:
 
 Run `ironrdp-agent --help-agent` for a structured, machine-readable description of every operation.
 
+For automation, always use `connect --no-prompt`, including in SSH, tmux, or other terminal-backed environments.
+It returns after the daemon accepts the request; poll `status` for the connection outcome.
+
 ## Daemon lifecycle
 
 `connect` starts the default per-user daemon automatically if it is not running.
@@ -43,6 +46,7 @@ Use `daemon start` to launch it without connecting, or `daemon start --foregroun
 The old `daemon-start` command remains a foreground alias.
 `daemon list` reports the default daemon if running; custom `--endpoint` values are not discoverable and can be queried with `daemon status --endpoint NAME`.
 An already-running daemon retains its startup settings: stop it before changing `--overlay`, `--rdpdr-drive`, `--smartcard`, or `--skip-certificate-check`.
+If another daemon wins a concurrent startup, this launch fails rather than adopting unverified settings; inspect `daemon status` before retrying.
 Use `connect --no-auto-start` to require an existing daemon.
 An explicit `--endpoint NAME` requires `connect --auto-start` to start its own daemon; `--backend active-x` never starts one.
 Background daemon logs are written to `%LOCALAPPDATA%\ironrdp-agent\daemon.log` on Windows or `$XDG_STATE_HOME/ironrdp-agent/daemon.log` (default `~/.local/state`) on Unix.
@@ -55,7 +59,7 @@ On Windows, an ActiveX host can expose its session through the same local RPC pr
 host with `IRONRDP_ACTIVEX_RPC=1`, then use `--backend active-x` for agent operations. The agent
 uses the per-user `ironrdp-activex` endpoint by default and never attempts to start an ActiveX host.
 Use `--endpoint` when the host selected `IRONRDP_ACTIVEX_RPC_ENDPOINT`.
-The RAIL audit commands require the daemon backend.
+The RAIL audit commands and terminal `attach` require the daemon backend.
 
 `connect` accepts `RDP_HOSTNAME`, `RDP_USERNAME`, and `RDP_PASSWORD` as defaults for its named
 connection flags. Explicit flags override those process-local values. The native MSTSC bridge uses
@@ -106,6 +110,7 @@ If the server presents a different certificate, validation fails again.
 The daemon reads the store on each `connect`, so no restart is needed.
 Use `cert list` and `cert remove <ENDPOINT>` to review and revoke entries.
 The store is `%APPDATA%\ironrdp-agent\known_certificates` on Windows and `~/.config/ironrdp-agent/known_certificates` elsewhere; `IRONRDP_AGENT_KNOWN_CERTIFICATES` overrides it.
+Trust and removal operations lock the store through a retained companion `.lock` file and replace it atomically, preserving concurrent edits.
 
 ## Headless RemoteApp validation
 
@@ -117,7 +122,7 @@ An `alternate shell` value is only used as a compatibility fallback when `remote
 The target must publish and allow the requested RemoteApp.
 
 ```powershell
-ironrdp-agent connect --server rdp.example.test --prop remoteapplicationmode:i:1 --prop remoteapplicationprogram:s:notepad.exe
+ironrdp-agent connect --no-prompt --server rdp.example.test --prop remoteapplicationmode:i:1 --prop remoteapplicationprogram:s:notepad.exe
 ironrdp-agent rail status
 ironrdp-agent rail --format ndjson events
 ironrdp-agent rail execute notepad.exe --arguments C:\Temp\audit.txt
@@ -158,6 +163,9 @@ Sixel output uses a palette of up to 256 colors built from each frame, with dith
 ```powershell
 ironrdp-agent attach
 ```
+
+Attachment exits and restores the terminal when the session ends, including while the menu is open.
+Resize reconnections keep the attachment open; ActiveX attachment is unsupported.
 
 Click **[Menu]** in the footer for Fit, Auto-fit, Refresh, Detach, and Disconnect; click an option or press 1–5, and press Esc to return to the desktop.
 The menu pauses the terminal image and keeps its keystrokes and mouse clicks local; the RDP session continues running.

@@ -14,6 +14,9 @@ A CLI-driven, daemon-backed RDP client. One binary plays three roles:
 
 The daemon stays alive across CLI invocations. One daemon serves one RDP session.
 
+For automation, always pass `connect --no-prompt`, even in SSH, tmux, or other TTY environments.
+It returns after the request is accepted; poll `status` for the outcome instead of waiting for a human prompt.
+
 ## Endpoint
 
 Unix: `$XDG_RUNTIME_DIR/ironrdp-agent-<uid>.sock` (falls back to `/tmp/ironrdp-agent-<uid>.sock`).
@@ -27,7 +30,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
   `ironrdp-activex` endpoint. The host must set `IRONRDP_ACTIVEX_RPC=1` before creating the
   control; the agent never starts an ActiveX host. Use `--endpoint` when the host uses
   `IRONRDP_ACTIVEX_RPC_ENDPOINT`.
-  RAIL audit commands require the daemon backend.
+  RAIL audit commands and terminal `attach` require the daemon backend.
 
 ## Lifecycle
 
@@ -36,6 +39,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  `--foreground` runs it in this terminal instead; `daemon-start`
                                  remains a legacy foreground alias.
                                  An existing daemon is reused only when no startup options are specified.
+                                 A losing concurrent startup fails; inspect `daemon status` before retrying.
                                  Background logs: `%LOCALAPPDATA%\ironrdp-agent\daemon.log` on Windows,
                                  `$XDG_STATE_HOME/ironrdp-agent/daemon.log` on Unix (default `~/.local/state`).
 - `daemon status` / `daemon list` / `daemon stop`
@@ -83,12 +87,14 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  Path: `%APPDATA%\ironrdp-agent\known_certificates` (Windows) or
                                  `~/.config/ironrdp-agent/known_certificates`; override with
                                  `IRONRDP_AGENT_KNOWN_CERTIFICATES`.
-- `connect [--no-auto-start|--auto-start] [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--vmconnect VM_ID] [--vmconnect-basic] [--vmconnect-current-user] [--sandbox-id ID] [--sandbox-pipe PATH] [--log-directive D]`
+- `connect [--no-prompt] [--no-auto-start|--auto-start] [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--vmconnect VM_ID] [--vmconnect-basic] [--vmconnect-current-user] [--sandbox-id ID] [--sandbox-pipe PATH] [--log-directive D]`
                                  Merge an optional .rdp file with CLI overrides into one config and
                                  open a session. The default daemon starts automatically when absent;
                                  `--no-auto-start` requires it to be running. An explicit
                                  `--endpoint` needs `--auto-start` to launch a daemon there;
                                  `--backend active-x` never auto-starts.
+                                 Always use `--no-prompt` for automation; it returns after the request is accepted.
+                                 Otherwise a daemon-backed TTY waits up to 120 seconds for the outcome and may prompt to trust a certificate.
                                  Precedence (low to high): .rdp file -> `--prop`
                                  overrides -> named flags (`--server`/`-u`/`-p`/`-d`). When those
                                  flags are omitted, `RDP_HOSTNAME`, `RDP_USERNAME`, and
@@ -179,6 +185,8 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  `--no-fit` disables it, and the menu toggles it for this attachment.
                                  Detaching keeps the RDP session running; confirmed Disconnect
                                  ends the RDP session but leaves the daemon running.
+                                 Session termination exits the view even while the menu is open; resize reconnections do not.
+                                 Requires the daemon backend; ActiveX attachment is unsupported.
                                  Requires a TTY; agents should use `screenshot` and input commands.
 
 ## Input (require an active session)

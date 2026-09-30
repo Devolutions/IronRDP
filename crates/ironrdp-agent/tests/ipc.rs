@@ -180,6 +180,79 @@ fn background_daemon_receives_overlay() {
 }
 
 #[test]
+fn background_child_does_not_acknowledge_a_competing_daemon() {
+    use ironrdp_rpc::transport::{self, Listener};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let endpoint = test_endpoint("bind-winner");
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_ironrdp-agent"))
+        .args(["--endpoint", &endpoint, "daemon-start", "--skip-certificate-check"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start competing daemon");
+    let mut child = None;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_for_daemon(&endpoint);
+        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+        runtime.block_on(async {
+            let bootstrap = transport::endpoint_from_string(test_endpoint("bind-bootstrap"));
+            let mut listener = Listener::bind(&bootstrap).expect("bind private bootstrap");
+            child = Some(
+                Command::new(env!("CARGO_BIN_EXE_ironrdp-agent"))
+                    .args([
+                        "--endpoint",
+                        &endpoint,
+                        "daemon-child",
+                        "--bootstrap",
+                        &bootstrap.to_string(),
+                    ])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .expect("start losing child"),
+            );
+            let mut stream = tokio::time::timeout(Duration::from_secs(10), listener.accept())
+                .await
+                .expect("child bootstrap timeout")
+                .expect("accept child");
+            let config = br#"{"overlay":[],"skip_certificate_check":false,"rdpdr_drives":[],"smartcard":false}"#;
+            stream.write_u32_le(u32::try_from(config.len()).unwrap()).await.unwrap();
+            stream.write_all(config).await.unwrap();
+            stream.flush().await.unwrap();
+            let acknowledgement = tokio::time::timeout(Duration::from_secs(10), stream.read_u8())
+                .await
+                .expect("child must fail instead of adopting the competing daemon");
+            assert_eq!(acknowledgement.unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+        });
+        let child = child.as_mut().expect("spawned child");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(exit) = child.try_wait().expect("check child exit") {
+                assert!(!exit.success(), "losing startup must fail");
+                break;
+            }
+            assert!(Instant::now() < deadline, "losing child did not exit");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let status = agent(&endpoint, &["status"]);
+        assert!(status.status.success(), "the competing daemon must remain running");
+        assert!(String::from_utf8_lossy(&status.stdout).contains("state: NoSession"));
+    }));
+    if let Some(mut child) = child {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+}
+
+#[test]
 fn connect_with_explicit_endpoint_does_not_start_daemon() {
     let endpoint = test_endpoint("no-autostart");
     let output = agent(&endpoint, &["connect", "--no-prompt"]);

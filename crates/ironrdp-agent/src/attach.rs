@@ -8,13 +8,14 @@ use core::time::Duration;
 use std::collections::HashSet;
 use std::io::Write as _;
 
+use anyhow::Context as _;
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode,
     KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use crossterm::{cursor, execute, queue, terminal};
 use ironrdp_input::MouseButton;
-use ironrdp_rpc::ipc::{KeyInput, MAX_UNICODE_TEXT_CHARS, Payload, Request, Response};
+use ironrdp_rpc::ipc::{ConnState, KeyInput, MAX_UNICODE_TEXT_CHARS, Payload, Request, Response, StatusInfo};
 use ironrdp_rpc::transport::{self, Endpoint};
 
 use crate::terminal_image::{self, Protocol};
@@ -27,6 +28,8 @@ const FIT_DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// How long a status-line message stays visible.
 const MESSAGE_DURATION: Duration = Duration::from_secs(4);
+
+const SESSION_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Ctrl+] detaches, like telnet. Terminals report it as `]`, its control code, or `5`.
 const HOTKEY_DETACH: [char; 3] = [']', '\x1d', '5'];
@@ -191,6 +194,9 @@ pub(crate) async fn run(endpoint: &Endpoint, options: Options) -> anyhow::Result
         .unwrap_or(terminal_image::FALLBACK_CELL_SIZE);
 
     // Fail before taking over the terminal when there is nothing to show.
+    if let Some(status) = ended_session(endpoint).await? {
+        anyhow::bail!("no active session (state: {:?})", status.state);
+    }
     let mut frame = Some(
         fetch_frame(endpoint)
             .await?
@@ -225,9 +231,19 @@ pub(crate) async fn run(endpoint: &Endpoint, options: Options) -> anyhow::Result
     let mut local_click = None;
     let mut remote_pressed = HashSet::new();
     let mut disconnected = false;
+    let mut ended = None;
+    let mut session_poll = tokio::time::interval_at(Instant::now() + SESSION_POLL_INTERVAL, SESSION_POLL_INTERVAL);
+    session_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
+            _ = session_poll.tick() => {
+                // Screenshots may retain the last frame, even after the session ends.
+                if let Some(status) = ended_session(endpoint).await? {
+                    ended = Some(status);
+                    break;
+                }
+            }
             event = events.recv() => {
                 let Some(event) = event else { break };
                 let mut action = None;
@@ -388,10 +404,33 @@ pub(crate) async fn run(endpoint: &Endpoint, options: Options) -> anyhow::Result
     }
 
     drop(_guard);
-    if disconnected {
+    if let Some(status) = ended {
+        if status.state == ConnState::Failed {
+            anyhow::bail!(
+                "session failed: {}",
+                status.message.as_deref().unwrap_or("connection failed")
+            );
+        }
+        writeln!(
+            std::io::stdout(),
+            "session ended (state: {:?}); daemon remains running",
+            status.state
+        )?;
+    } else if disconnected {
         std::io::stdout().write_all(b"session disconnected; daemon remains running\n")?;
     }
     Ok(())
+}
+
+async fn ended_session(endpoint: &Endpoint) -> anyhow::Result<Option<StatusInfo>> {
+    let status = crate::daemon_lifecycle::probe(endpoint)
+        .await?
+        .context("daemon stopped while attached")?;
+    Ok(matches!(
+        status.state,
+        ConnState::NoSession | ConnState::Disconnected | ConnState::Failed
+    )
+    .then_some(status))
 }
 
 struct Frame {
@@ -943,6 +982,61 @@ fn paste_requests(text: &str) -> Vec<Request> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn session_poll_distinguishes_terminal_states_from_reconnection() {
+        let endpoint = transport::default_endpoint_named(&format!(
+            "ir-attach-states-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut listener = transport::Listener::bind(&endpoint).unwrap();
+        let states = [
+            ConnState::Connecting,
+            ConnState::Connected,
+            ConnState::Disconnecting,
+            ConnState::NoSession,
+            ConnState::Disconnected,
+            ConnState::Failed,
+        ];
+        let server = async {
+            for state in states {
+                let mut stream = listener.accept().await.unwrap();
+                let request: Request = transport::read_message(&mut stream).await.unwrap();
+                assert!(matches!(request, Request::Status));
+                transport::write_message(
+                    &mut stream,
+                    &Response::Ok(Payload::Status(StatusInfo {
+                        state,
+                        destination: Some("server.example:3389".to_owned()),
+                        width: Some(800),
+                        height: Some(600),
+                        message: Some("session outcome".to_owned()),
+                        credentials_loaded: false,
+                        untrusted_certificate: None,
+                    })),
+                )
+                .await
+                .unwrap();
+            }
+        };
+        let client = async {
+            for (index, state) in states.into_iter().enumerate() {
+                let ended = ended_session(&endpoint).await.unwrap();
+                if index < 3 {
+                    assert!(ended.is_none(), "{state:?} must not detach during reconnection");
+                } else {
+                    let ended = ended.unwrap();
+                    assert_eq!(ended.state, state);
+                    assert_eq!(ended.message.as_deref(), Some("session outcome"));
+                }
+            }
+        };
+        tokio::join!(server, client);
+    }
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)

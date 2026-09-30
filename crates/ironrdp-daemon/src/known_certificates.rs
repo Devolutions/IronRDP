@@ -13,6 +13,8 @@
 //! ```
 
 use core::fmt;
+use std::fs::{self, OpenOptions};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
@@ -138,7 +140,7 @@ impl KnownCertificates {
 
     /// Loads the store at `path`. A missing file is an empty store.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        match std::fs::read_to_string(path) {
+        match fs::read_to_string(path) {
             Ok(text) => Self::parse(&text).with_context(|| format!("parse {}", path.display())),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
@@ -167,12 +169,11 @@ impl KnownCertificates {
         Ok(store)
     }
 
-    /// Writes the store to `path`, creating its directory, and replacing the file atomically.
+    /// Writes this snapshot to `path`, replacing the file atomically.
+    ///
+    /// Use [`Self::update`] for read-modify-write operations so concurrent edits are preserved.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        let directory = path.parent().filter(|parent| !parent.as_os_str().is_empty());
-        if let Some(directory) = directory {
-            std::fs::create_dir_all(directory).with_context(|| format!("create {}", directory.display()))?;
-        }
+        create_directory(path)?;
 
         let mut text = String::from(HEADER);
         for (endpoint, fingerprint) in &self.entries {
@@ -180,10 +181,60 @@ impl KnownCertificates {
         }
 
         let mut temporary = path.as_os_str().to_owned();
-        temporary.push(".tmp");
+        temporary.push(format!(".{}.tmp", uuid::Uuid::new_v4()));
         let temporary = PathBuf::from(temporary);
-        write_private(&temporary, text.as_bytes()).with_context(|| format!("write {}", temporary.display()))?;
-        std::fs::rename(&temporary, path).with_context(|| format!("replace {}", path.display()))
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&temporary)
+            .with_context(|| format!("create {}", temporary.display()))?;
+        let result = (|| {
+            file.write_all(text.as_bytes())
+                .with_context(|| format!("write {}", temporary.display()))?;
+            file.sync_all()
+                .with_context(|| format!("sync {}", temporary.display()))?;
+            drop(file);
+            fs::rename(&temporary, path).with_context(|| format!("replace {}", path.display()))
+        })();
+        if let Err(error) = result {
+            fs::remove_file(&temporary).with_context(|| format!("clean up {} after {error:#}", temporary.display()))?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Locks, loads, edits, and saves the store without losing concurrent edits.
+    ///
+    /// The companion `.lock` file is retained so all writers lock the same file across atomic replacements.
+    pub fn update<T>(path: &Path, edit: impl FnOnce(&mut Self) -> anyhow::Result<T>) -> anyhow::Result<T> {
+        create_directory(path)?;
+        let mut lock_path = path.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let lock_path = PathBuf::from(lock_path);
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let lock = options
+            .open(&lock_path)
+            .with_context(|| format!("open {}", lock_path.display()))?;
+        #[expect(
+            clippy::incompatible_msrv,
+            reason = "file locking is available in the pinned Rust 1.94 toolchain"
+        )]
+        lock.lock().with_context(|| format!("lock {}", lock_path.display()))?;
+        let mut store = Self::load(path)?;
+        let result = edit(&mut store)?;
+        store.save(path)?;
+        Ok(result)
     }
 
     /// Returns whether `der` is the certificate trusted for `endpoint`.
@@ -247,24 +298,11 @@ impl fmt::Display for CertificateRejection {
     }
 }
 
-#[cfg(unix)]
-fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(contents)?;
-    file.sync_all()
-}
-
-#[cfg(not(unix))]
-fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, contents)
+fn create_directory(path: &Path) -> anyhow::Result<()> {
+    if let Some(directory) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        fs::create_dir_all(directory).with_context(|| format!("create {}", directory.display()))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -361,14 +399,87 @@ mod tests {
 
     #[test]
     fn save_and_load_use_the_file() {
-        let path = std::env::temp_dir().join(format!("ironrdp-known-certificates-{}", std::process::id()));
+        let directory = test_directory();
+        let path = directory.join("known_certificates");
         assert_eq!(KnownCertificates::load(&path).unwrap(), KnownCertificates::default());
 
         let mut store = KnownCertificates::default();
         store.trust("host", FINGERPRINT.parse().unwrap()).unwrap();
         store.save(&path).unwrap();
         assert_eq!(KnownCertificates::load(&path).unwrap(), store);
+        store.trust("second", Fingerprint::of_certificate(b"second")).unwrap();
+        store.save(&path).unwrap();
+        assert_eq!(KnownCertificates::load(&path).unwrap(), store);
 
-        std::fs::remove_file(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn concurrent_updates_preserve_every_edit() {
+        let directory = test_directory();
+        let path = directory.join("known_certificates");
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|threads| {
+            for index in 0..8 {
+                let path = &path;
+                let barrier = &barrier;
+                threads.spawn(move || {
+                    barrier.wait();
+                    KnownCertificates::update(path, |store| {
+                        store.trust(&format!("host-{index}"), Fingerprint::of_certificate(b"certificate"))
+                    })
+                    .unwrap();
+                });
+            }
+        });
+        let store = KnownCertificates::load(&path).unwrap();
+        assert_eq!(store.entries().count(), 8);
+        for index in 0..8 {
+            assert!(store.is_trusted(&format!("host-{index}"), b"certificate"));
+        }
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
+        fs::remove_file(&path).unwrap();
+        fs::remove_file(directory.join("known_certificates.lock")).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn failed_edit_preserves_the_store_and_releases_the_lock() {
+        let directory = test_directory();
+        let path = directory.join("known_certificates");
+        KnownCertificates::update(&path, |store| store.trust("host", Fingerprint::of_certificate(b"old"))).unwrap();
+        let error = KnownCertificates::update::<()>(&path, |store| {
+            store.remove("host")?;
+            anyhow::bail!("edit rejected")
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "edit rejected");
+        assert!(KnownCertificates::load(&path).unwrap().is_trusted("host", b"old"));
+        KnownCertificates::update(&path, |store| store.trust("host", Fingerprint::of_certificate(b"new"))).unwrap();
+        assert!(KnownCertificates::load(&path).unwrap().is_trusted("host", b"new"));
+        fs::remove_file(&path).unwrap();
+        fs::remove_file(directory.join("known_certificates.lock")).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn failed_replacement_removes_the_temporary_file() {
+        let directory = test_directory();
+        let path = directory.join("not-a-file");
+        fs::create_dir(&path).unwrap();
+        let mut store = KnownCertificates::default();
+        store.trust("host", FINGERPRINT.parse().unwrap()).unwrap();
+        let error = store.save(&path).unwrap_err();
+        assert!(format!("{error:#}").contains("replace"));
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        fs::remove_dir(&path).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    fn test_directory() -> PathBuf {
+        let directory = std::env::temp_dir().join(format!("ironrdp-certificates-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        directory
     }
 }
