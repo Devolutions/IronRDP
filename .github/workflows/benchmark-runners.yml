@@ -1,0 +1,283 @@
+name: Build runner benchmark
+
+run-name: Windows build benchmark (${{ github.ref_name }})
+
+on:
+  # Push discovers this workflow on a feature branch before it exists on master.
+  push:
+    branches:
+      - copilot/runner-build-benchmarks
+    paths:
+      - .github/workflows/benchmark-runners.yml
+      - .github/benchmark-windows.cmake
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-runner-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_BUILD_JOBS: 4
+  CARGO_NET_RETRY: 10
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: lld-link
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static -C linker-flavor=lld-link
+  CC_x86_64_pc_windows_msvc: clang-cl
+  CXX_x86_64_pc_windows_msvc: clang-cl
+  AR_x86_64_pc_windows_msvc: llvm-lib
+  CMAKE_GENERATOR: Ninja
+  CMAKE_BUILD_PARALLEL_LEVEL: 4
+  LLVM_VERSION: 20.1.8
+  XWIN_VERSION: 17
+  XWIN_ARCH: x86_64
+  XWIN_CROSS_COMPILER: clang-cl
+
+jobs:
+  build:
+    name: Windows build on ${{ matrix.host }} (4 vCPU)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: windows
+            runner: windows-2022
+          - host: linux
+            runner: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up MSVC and Windows SDK
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Install LLVM on Windows
+        if: runner.os == 'Windows'
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: ${{ env.LLVM_VERSION }}
+          directory: ${{ runner.temp }}/llvm
+          env: 'false'
+
+      - name: Install Windows build tools
+        if: runner.os == 'Windows'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install nasm ninja --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'build tool installation failed' }
+          "$env:ProgramFiles\NASM" >> $env:GITHUB_PATH
+          "CMAKE_TOOLCHAIN_FILE=$env:GITHUB_WORKSPACE\.github\benchmark-windows.cmake" >> $env:GITHUB_ENV
+
+      - name: Install LLVM and build tools on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          curl --fail --silent --show-error https://apt.llvm.org/llvm-snapshot.gpg.key |
+            sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-20 main' |
+            sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update -qq
+          sudo apt-get install -y clang-20 lld-20 llvm-20 nasm ninja-build
+          echo /usr/lib/llvm-20/bin >> "$GITHUB_PATH"
+
+      - name: Install cargo-xwin
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          asset=cargo-xwin-v0.23.1.x86_64-unknown-linux-musl.tar.gz
+          mkdir -p "$RUNNER_TEMP/cargo-xwin"
+          gh release download v0.23.1 --repo rust-cross/cargo-xwin \
+            --pattern "$asset" --pattern "$asset.sha256" --dir "$RUNNER_TEMP/cargo-xwin"
+          cd "$RUNNER_TEMP/cargo-xwin"
+          sha256sum --check "$asset.sha256"
+          tar -xzf "$asset"
+          echo "$RUNNER_TEMP/cargo-xwin" >> "$GITHUB_PATH"
+
+      - name: Prepare dependencies outside the benchmark
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 'benchmark-target'
+          $env:XWIN_CACHE_DIR = Join-Path $env:RUNNER_TEMP 'xwin'
+          "CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR" >> $env:GITHUB_ENV
+          "XWIN_CACHE_DIR=$env:XWIN_CACHE_DIR" >> $env:GITHUB_ENV
+          rustup show active-toolchain
+          rustup target add x86_64-pc-windows-msvc
+          cargo fetch --locked --target x86_64-pc-windows-msvc
+          if ($env:RUNNER_OS -eq 'Linux') {
+            cargo xwin cache xwin
+          }
+
+      - name: Measure clean Windows release build
+        env:
+          BENCHMARK_HOST: ${{ matrix.host }}
+          BENCHMARK_RUNNER: ${{ matrix.runner }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          New-Item -ItemType Directory -Path benchmark-results | Out-Null
+          $vcpus = [Environment]::ProcessorCount
+          if ($vcpus -ne 4) { throw "expected 4 vCPUs, found $vcpus" }
+          if (Test-Path $env:CARGO_TARGET_DIR) { throw 'benchmark target directory is not clean' }
+
+          $compiler = (& clang-cl --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $compiler -notmatch "clang version $([regex]::Escape($env:LLVM_VERSION))") {
+            throw 'unexpected clang-cl version'
+          }
+          $linker = (& lld-link --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $linker -notmatch [regex]::Escape($env:LLVM_VERSION)) {
+            throw 'unexpected lld-link version'
+          }
+          $rust = (& rustc --version --verbose | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'rustc version check failed' }
+          $cpu = if ($env:RUNNER_OS -eq 'Windows') {
+            (Get-CimInstance Win32_Processor).Name -join ', '
+          } else {
+            (Get-Content /proc/cpuinfo | Select-String '^model name' | Select-Object -First 1).Line
+          }
+          $arguments = @('build', '--frozen', '--release', '--package', 'ironrdp-agent',
+            '--bin', 'ironrdp-agent', '--target', 'x86_64-pc-windows-msvc', '--timings')
+          if ($env:RUNNER_OS -eq 'Linux') { $arguments = @('xwin') + $arguments }
+
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          & cargo @arguments 2>&1 | Tee-Object -FilePath benchmark-results/build.log
+          $exitCode = $LASTEXITCODE
+          $timer.Stop()
+
+          $timing = [ordered]@{
+            host = $env:BENCHMARK_HOST
+            runner = $env:BENCHMARK_RUNNER
+            vcpus = $vcpus
+            cpu = $cpu
+            imageVersion = $env:ImageVersion
+            commit = $env:GITHUB_SHA
+            runId = $env:GITHUB_RUN_ID
+            runAttempt = $env:GITHUB_RUN_ATTEMPT
+            target = 'x86_64-pc-windows-msvc'
+            profile = 'release'
+            command = 'cargo ' + ($arguments -join ' ')
+            compiler = $compiler
+            compilerPath = (Get-Command clang-cl).Source
+            linker = $linker
+            linkerPath = (Get-Command lld-link).Source
+            rust = $rust
+            coreBuildSeconds = [math]::Round($timer.Elapsed.TotalSeconds, 3)
+            exitCode = $exitCode
+            succeeded = ($exitCode -eq 0)
+          }
+          $timing | ConvertTo-Json | Set-Content benchmark-results/build-time.json
+          "## $env:BENCHMARK_HOST core build: $($timing.coreBuildSeconds) s (exit $exitCode)" >> $env:GITHUB_STEP_SUMMARY
+          if ($exitCode -ne 0) { exit $exitCode }
+
+          $binary = Join-Path $env:CARGO_TARGET_DIR 'x86_64-pc-windows-msvc/release/ironrdp-agent.exe'
+          & llvm-readobj --file-headers $binary | Tee-Object -FilePath benchmark-results/pe-headers.txt
+          if ($LASTEXITCODE -ne 0) { throw 'PE header inspection failed' }
+          if ((Get-Content benchmark-results/pe-headers.txt -Raw) -notmatch 'IMAGE_FILE_MACHINE_AMD64') {
+            throw 'build did not produce a Windows x64 executable'
+          }
+          Copy-Item $binary benchmark-results/ironrdp-agent.exe
+          Copy-Item (Join-Path $env:CARGO_TARGET_DIR 'cargo-timings/*.html') benchmark-results
+
+      - name: Save timing, logs, Cargo timings, and executable
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-benchmark-${{ matrix.host }}
+          path: benchmark-results/
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+  compare:
+    name: Verify Windows executables and compare build times
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: build-benchmark-*
+          path: benchmark-results
+
+      - name: Verify executables and summarize timings
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $timings = @(
+            foreach ($hostName in @('windows', 'linux')) {
+              $directory = Join-Path benchmark-results "build-benchmark-$hostName"
+              $timing = Get-Content (Join-Path $directory 'build-time.json') -Raw | ConvertFrom-Json
+              if (-not $timing.succeeded) { throw "$hostName build failed; see its timing and log artifact" }
+              if ($timing.commit -ne $env:GITHUB_SHA -or $timing.vcpus -ne 4 -or $timing.coreBuildSeconds -le 0) {
+                throw "invalid benchmark metadata for $hostName"
+              }
+              $binary = Join-Path $directory 'ironrdp-agent.exe'
+              & $binary --version | Tee-Object -FilePath (Join-Path $directory 'version.txt') | Write-Host
+              & $binary --help | Set-Content (Join-Path $directory 'smoke-test.txt')
+              $timing
+            }
+          )
+          if ($timings[0].target -ne $timings[1].target -or $timings[0].profile -ne $timings[1].profile) {
+            throw 'benchmark targets or profiles differ'
+          }
+          $fastest = ($timings | Measure-Object -Property coreBuildSeconds -Minimum).Minimum
+          $rows = foreach ($timing in $timings) {
+            [pscustomobject]@{
+              host = $timing.host
+              runner = $timing.runner
+              vcpus = $timing.vcpus
+              coreBuildSeconds = $timing.coreBuildSeconds
+              deltaSeconds = [math]::Round($timing.coreBuildSeconds - $fastest, 3)
+              relativeToFastest = [math]::Round($timing.coreBuildSeconds / $fastest, 3)
+            }
+          }
+          New-Item -ItemType Directory comparison | Out-Null
+          $rows | Export-Csv comparison/build-times.csv -NoTypeInformation
+          $timings | ConvertTo-Json -Depth 5 | Set-Content comparison/build-times.json
+          $summary = @(
+            '## Windows x64 release build comparison',
+            '',
+            '| Build host | Runner | vCPU | Core build (s) | Delta (s) | Relative to fastest |',
+            '| --- | --- | ---: | ---: | ---: | ---: |'
+          )
+          foreach ($row in $rows) {
+            $summary += "| $($row.host) | $($row.runner) | $($row.vcpus) | $($row.coreBuildSeconds) | $($row.deltaSeconds) | $($row.relativeToFastest)x |"
+          }
+          $summary += @(
+            '',
+            'Both Windows executables passed --version and --help smoke tests.',
+            'Core build time includes clean compilation of dependencies and linking; setup, downloads, and smoke tests are excluded.',
+            'One sample per host, with no build cache or incremental compilation; CPU models and tool versions are recorded in JSON.',
+            'Windows uses the installed MSVC/SDK; Linux uses the cargo-xwin MSVC/SDK, so this is a runner/toolchain comparison, not an OS-only experiment.',
+            '',
+            "Commit: $env:GITHUB_SHA"
+          )
+          $summary | Set-Content comparison/summary.md
+          $summary >> $env:GITHUB_STEP_SUMMARY
+          $rows | Format-Table | Out-String | Write-Host
+          foreach ($timing in $timings) {
+            Copy-Item "benchmark-results/build-benchmark-$($timing.host)/smoke-test.txt" "comparison/smoke-test-$($timing.host).txt"
+            Copy-Item "benchmark-results/build-benchmark-$($timing.host)/version.txt" "comparison/version-$($timing.host).txt"
+          }
+
+      - name: Save comparison
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-benchmark-comparison
+          path: comparison/
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true

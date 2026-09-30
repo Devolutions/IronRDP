@@ -139,6 +139,15 @@ Prebuilt, checksummed archives are attached to each GitHub Release under the `ir
 tags. See the [Releases page](https://github.com/Devolutions/IronRDP/releases) for per-platform
 download and verification instructions.
 
+## Build runner benchmark
+
+Run [Build runner benchmark][build-benchmark] to compare clean Windows x64 release builds on GitHub's 4-vCPU Windows and Linux runners.
+Both use LLVM 20.1.8 (`clang-cl` and `lld-link`), the repository's Rust toolchain, four Cargo jobs, and static CRT linkage; Linux cross-compiles with `cargo-xwin` 0.23.1.
+Core build time includes dependency compilation and linking but excludes tool installation, dependency downloads, and Windows executable smoke tests.
+Each run saves timing JSON, build logs, Cargo timing reports, and executables for 30 days, plus a comparison summary, CSV, and JSON.
+The workflow's branch-scoped `push` trigger allows testing before merge; `workflow_dispatch` provides manual runs after registration on the default branch.
+Each host contributes one sample, and its CPU model, image, and tool versions are recorded; Windows and Linux use separately provisioned MSVC/SDK libraries, so results compare the complete build environments rather than the OS alone.
+
 ## Wire format
 
 Messages are encoded with [`ironrdp-core`]'s `Encode`/`Decode` traits, length-delimited with a
@@ -269,3 +278,4 @@ It starts an isolated daemon with `--skip-certificate-check`, so run it only aga
 [`ironrdp-daemon`]: ../ironrdp-daemon
 [`ironrdp-propertyset`]: ../ironrdp-propertyset
 [`ironrdp-viewer`]: ../ironrdp-viewer
+[build-benchmark]: ../../.github/workflows/benchmark-runners.yml
