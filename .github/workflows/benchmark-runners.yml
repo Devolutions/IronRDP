@@ -389,7 +389,9 @@ jobs:
             $timing = Get-Content (Join-Path $directory 'build-time.json') -Raw | ConvertFrom-Json
             $interval = Get-Content (Join-Path $directory 'build-interval.json') -Raw | ConvertFrom-Json
             if (-not $timing.succeeded -or -not $timing.instrumented -or $timing.sample -ne 0 -or
-                $timing.commit -ne $env:GITHUB_SHA -or $timing.vcpus -ne 4 -or
+                $timing.host -ne $hostName -or $timing.commit -ne $env:GITHUB_SHA -or
+                $timing.runId -ne $env:GITHUB_RUN_ID -or $timing.vcpus -ne 4 -or
+                $interval.exitCode -ne 0 -or $interval.coreBuildSeconds -le 0 -or
                 $interval.coreBuildSeconds -ne $timing.coreBuildSeconds) {
               throw "invalid diagnostic metadata for $hostName"
             }
@@ -399,8 +401,23 @@ jobs:
             "## $hostName diagnostic build: $($timing.coreBuildSeconds) s (instrumented, excluded from averages)" >> $env:GITHUB_STEP_SUMMARY
           }
           if ((Get-Item traces/build-trace-windows/build.etl).Length -eq 0) { throw 'empty ETL capture' }
+          [xml]$report = Get-Content traces/build-trace-windows/trace-report.xml -Raw
+          foreach ($opcode in @('SampleProf', 'CSwitch')) {
+            $count = $report.SelectSingleNode("//Item[Data[@name='opcode']='$opcode']/Data[@name='count']")
+            if (-not $count -or [long]$count.InnerText -le 0) { throw "ETL capture has no $opcode events" }
+          }
+          $fileIo = $report.SelectNodes("//Item[Data[@name='event']='FileIo']/Data[@name='count']")
+          if (($fileIo | ForEach-Object { [long]$_.InnerText } | Measure-Object -Sum).Sum -le 0) {
+            throw 'ETL capture has no file-I/O events'
+          }
+          $lost = $report.SelectSingleNode("//Table[@name='collection']/Item/Data[@name='lostEvents']")
+          if (-not $lost) { throw 'ETL capture has no loss accounting' }
+          if ([long]$lost.InnerText -ne 0) { Write-Warning "ETL capture lost $($lost.InnerText) events" }
           $records = Get-Content traces/build-trace-linux/perf-records.json -Raw | ConvertFrom-Json
           if ($records.Count -ne 2 -or @($records | Where-Object samples -LE 0).Count -ne 0) {
             throw 'empty perf captures'
           }
           if ($records[0].processNames -notcontains 'rustc') { throw 'CPU capture does not include rustc' }
+          if ((Get-Item traces/build-trace-linux/cpu.perf.data.tar.bz2).Length -eq 0) {
+            throw 'empty Linux host-symbol archive'
+          }
