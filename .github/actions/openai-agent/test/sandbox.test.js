@@ -327,6 +327,17 @@ test("listing, searching, and encoded tool results enforce hard result bounds", 
     assert.equal(searched.matches.length, MAX_SEARCH_RESULTS);
     assert.equal(searched.truncated, true);
 
+    // Long matching lines stop the search at the serialized budget rather than failing it.
+    const longLines = Math.ceil(MAX_TOOL_RESULT_BYTES / MAX_LINE_BYTES) + 4;
+    write(current.directory, "root/long-matches/a.txt",
+      Array.from({ length: longLines }, () => `match ${"x".repeat(MAX_LINE_BYTES)}`).join("\n"));
+    const long = current.sandbox.searchText({ path: "root/long-matches", query: "match" });
+    assert.ok(Buffer.byteLength(long, "utf8") <= MAX_TOOL_RESULT_BYTES);
+    const parsed = JSON.parse(long);
+    assert.equal(parsed.truncated, true);
+    assert.ok(parsed.matches.length > 0 && parsed.matches.length < longLines, parsed.matches.length);
+    assert.ok(parsed.matches.every((match) => match.text_truncated === true));
+
     assert.throws(
       () => boundJson({ content: "x".repeat(MAX_TOOL_RESULT_BYTES) }),
       /tool result exceeds byte limit/,

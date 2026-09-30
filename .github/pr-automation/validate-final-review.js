@@ -299,11 +299,24 @@ function diagnoseDispositions(entries, candidates) {
     });
   }
   if (parts.length === 0) return { ok: true, value: byCandidate };
+  // A missing candidate that an entry already names only lacks a usable rationale. Asking for an
+  // entry there would make the repair add a duplicate, so it is asked to correct the one it has.
+  const guidance = [
+    candidateGuidance(
+      "Each of these candidates has no candidate_dispositions entry, so add exactly one",
+      missing.filter((candidate) => !seenCandidates.has(referenceKey(candidate))),
+    ),
+    candidateGuidance(
+      "Each of these candidates already has an entry with an unusable rationale, so correct that entry instead of adding another",
+      missing.filter((candidate) => seenCandidates.has(referenceKey(candidate))),
+    ),
+  ].filter((sentence) => sentence !== undefined).join(". ");
   return {
     ok: false,
-    ...diagnosis("invalid specialist candidate dispositions", parts, candidateGuidance(
-      "Each of these candidates still needs exactly one candidate_dispositions entry", missing,
-    )),
+    ...diagnosis("invalid specialist candidate dispositions", parts,
+      guidance === "" || Buffer.byteLength(guidance, "utf8") > MAXIMUM_GUIDANCE_BYTES
+        ? undefined
+        : guidance),
   };
 }
 

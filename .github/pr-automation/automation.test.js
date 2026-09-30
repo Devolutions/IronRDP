@@ -4666,7 +4666,7 @@ test("final review rejections carry every coordinate and the identifiers still m
   assert.match(crowded.detail, /20 of 20 candidates have no valid disposition, at aggregate findings skeptical 0, 1, 2, .*, 18, 19$/);
   assert.doesNotMatch(crowded.detail, /more/);
   assert.equal(crowded.guidance,
-    "Each of these candidates still needs exactly one candidate_dispositions entry, as " +
+    "Each of these candidates has no candidate_dispositions entry, so add exactly one, as " +
     "(reviewer, finding_id), copied exactly: " +
     Array.from({ length: 20 }, (_, index) => `(skeptical, finding-${index + 1})`).join("; "));
   await assertRuntimeAcceptsRejection(crowded);
@@ -4676,6 +4676,23 @@ test("final review rejections carry every coordinate and the identifiers still m
   assert.equal(Object.hasOwn(partial, "detail"), false);
   assert.match(partial.guidance, /\(skeptical, finding-2\); \(skeptical, finding-3\); \(skeptical, finding-4\)$/);
   assert.doesNotMatch(partial.guidance, /finding-1\)/);
+
+  // A candidate whose only entry has an unusable rationale is corrected, never added again, since
+  // a second entry would be rejected as a duplicate.
+  const unusable = validateFinalReview(finalOutput([
+    disposition(1), disposition(2, { rationale: " " }), disposition(3),
+  ]), finalContext());
+  assert.equal(unusable.guidance,
+    "Each of these candidates has no candidate_dispositions entry, so add exactly one, as " +
+    "(reviewer, finding_id), copied exactly: (skeptical, finding-4). " +
+    "Each of these candidates already has an entry with an unusable rationale, so correct that " +
+    "entry instead of adding another, as (reviewer, finding_id), copied exactly: (skeptical, finding-2)");
+  await assertRuntimeAcceptsRejection(unusable);
+  const onlyUnusable = validateFinalReview(finalOutput([
+    disposition(1), disposition(2, { rationale: " " }), disposition(3), disposition(4),
+  ]), finalContext());
+  assert.match(onlyUnusable.guidance, /^Each of these candidates already has an entry with an unusable rationale/);
+  assert.doesNotMatch(onlyUnusable.guidance, /add exactly one/);
 
   // Entries that name nothing and no missing candidate leave nothing to quote.
   const ghost = validateFinalReview(finalOutput([

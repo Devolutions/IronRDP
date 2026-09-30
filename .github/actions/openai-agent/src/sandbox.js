@@ -312,8 +312,25 @@ class WorkspaceSandbox {
     const results = [];
     let filesSearched = 0;
     let traversal = { truncated: false };
+    // Matches are collected against the serialized budget, so enough long lines end the search with
+    // what fits instead of failing the whole call. The envelope is reserved at its largest shape.
+    let remainingBytes = MAX_TOOL_RESULT_BYTES - Buffer.byteLength(JSON.stringify({
+      ok: true, path: target.relative, files_searched: MAX_SEARCH_FILES, truncated: false, matches: [],
+    }), "utf8");
+    let budgetExhausted = false;
+    const collect = (match) => {
+      const size = Buffer.byteLength(JSON.stringify(match), "utf8") + (results.length === 0 ? 0 : 1);
+      if (size > remainingBytes) {
+        budgetExhausted = true;
+        return false;
+      }
+      remainingBytes -= size;
+      results.push(match);
+      return results.length < MAX_SEARCH_RESULTS;
+    };
     const searchFile = (file) => {
-      if (filesSearched >= MAX_SEARCH_FILES || results.length >= MAX_SEARCH_RESULTS) return false;
+      if (filesSearched >= MAX_SEARCH_FILES || results.length >= MAX_SEARCH_RESULTS ||
+          budgetExhausted) return false;
       filesSearched++;
       let text;
       try {
@@ -329,16 +346,14 @@ class WorkspaceSandbox {
       for (const [index, line] of text.split(/\r?\n/).entries()) {
         const column = line.indexOf(args.query);
         if (column === -1) continue;
-        if (Buffer.byteLength(line, "utf8") <= MAX_LINE_BYTES) {
-          results.push({ path: file.relative, line: index + 1, text: line });
-        } else {
-          // An overlong line is shown from its first match, so the returned text contains it.
-          results.push({
+        // An overlong line is shown from its first match, so the returned text contains it.
+        const match = Buffer.byteLength(line, "utf8") <= MAX_LINE_BYTES
+          ? { path: file.relative, line: index + 1, text: line }
+          : {
             path: file.relative, line: index + 1, column: column + 1,
             text: boundedLine(line, column), text_truncated: true,
-          });
-        }
-        if (results.length >= MAX_SEARCH_RESULTS) return false;
+          };
+        if (!collect(match)) return false;
       }
       return true;
     };
@@ -355,7 +370,7 @@ class WorkspaceSandbox {
       ok: true,
       path: target.relative,
       files_searched: filesSearched,
-      truncated: traversal.truncated ||
+      truncated: traversal.truncated || budgetExhausted ||
         filesSearched >= MAX_SEARCH_FILES || results.length >= MAX_SEARCH_RESULTS,
       matches: results,
     });
