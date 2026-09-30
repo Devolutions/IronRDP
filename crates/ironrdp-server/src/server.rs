@@ -131,6 +131,9 @@ pub struct ConnectionInfo {
     pub keyboard_type: ironrdp_pdu::gcc::KeyboardType,
     /// See [`ironrdp_acceptor::AcceptorResult::ime_file_name`].
     pub ime_file_name: String,
+    /// The client came back with an auto-reconnect cookie the server
+    /// verified, in place of its credentials.
+    pub auto_reconnect: bool,
 }
 
 impl ConnectionInfo {
@@ -143,6 +146,7 @@ impl ConnectionInfo {
             keyboard_layout,
             keyboard_type,
             ime_file_name,
+            auto_reconnect: false,
         }
     }
 }
@@ -792,6 +796,13 @@ pub struct RdpServer {
     /// Tracks whether the current cookie has reached a client. Subsequent
     /// connections and hourly updates replace it with a new random.
     auto_reconnect_sent: bool,
+    /// Issue cookies only when asked (`SetAutoReconnectCookie`), or to a
+    /// client that came back with a verified one; see
+    /// [`Self::set_auto_reconnect_on_request`].
+    auto_reconnect_on_request: bool,
+    /// Whether the current connection has been sent a cookie, which is what
+    /// makes it eligible for the hourly update when cookies are on request.
+    auto_reconnect_issued: bool,
 }
 
 /// Cloneable handle for updating the Server Auto-Reconnect Cookie while
@@ -1477,6 +1488,8 @@ impl RdpServer {
             auto_reconnect_cookie: None,
             previous_auto_reconnect_cookie: None,
             auto_reconnect_sent: false,
+            auto_reconnect_on_request: false,
+            auto_reconnect_issued: false,
         }
     }
 
@@ -1533,6 +1546,29 @@ impl RdpServer {
         self.auto_reconnect_sent = false;
     }
 
+    /// Send a cookie only to a connection the embedder vouches for, by
+    /// sending [`ServerEvent::SetAutoReconnectCookie`] (through
+    /// [`Self::auto_reconnect_cookie_handle`]) once it has authenticated the
+    /// user itself, or to a client that returned with a verified cookie.
+    ///
+    /// For embedders that accept a connection before the user has proved
+    /// anything, for instance to draw their own logon screen after a
+    /// credential validator hands off: by default the cookie goes to every
+    /// connection at activation, and such a connection could present it on
+    /// reconnecting and skip that screen.
+    ///
+    /// The regeneration on connect that MS-RDPBCGR 5.5 describes then happens
+    /// when the embedder vouches for a connection: the cookie it sends replaces
+    /// the current one and the previous one stops working at once, and a client
+    /// that returns with a verified cookie is given a new one. A connection that
+    /// is never vouched for changes nothing, so it can neither receive a cookie
+    /// nor invalidate the one a legitimate user holds. An embedder that
+    /// authenticates a different user must therefore vouch for that connection,
+    /// or the previous user's cookie stays valid.
+    pub fn set_auto_reconnect_on_request(&mut self, on_request: bool) {
+        self.auto_reconnect_on_request = on_request;
+    }
+
     /// Returns a handle for replacing the cookie while [`Self::run`] owns this
     /// server.
     pub fn auto_reconnect_cookie_handle(&self) -> AutoReconnectCookieHandle {
@@ -1586,6 +1622,18 @@ impl RdpServer {
         } else {
             Some(cookie.clone())
         }
+    }
+
+    /// Whether a connection gets a cookie at activation: always by default;
+    /// on request, only when it came back with a verified one.
+    fn issues_auto_reconnect_at_activation(&self, is_auto_reconnect: bool) -> bool {
+        !self.auto_reconnect_on_request || is_auto_reconnect
+    }
+
+    /// Whether the hourly update may go to the current connection: on
+    /// request, only to one that was issued a cookie.
+    fn may_rotate_auto_reconnect_cookie(&self) -> bool {
+        !self.auto_reconnect_on_request || self.auto_reconnect_issued
     }
 
     fn commit_auto_reconnect_rotation(&mut self, cookie: rdp::session_info::ServerAutoReconnect) {
@@ -1672,6 +1720,7 @@ impl RdpServer {
 
         Self::send_auto_reconnect_cookie(cookie.clone(), writer, io_channel_id, user_channel_id).await?;
         self.commit_auto_reconnect_rotation(cookie);
+        self.auto_reconnect_issued = true;
 
         Ok(())
     }
@@ -1682,7 +1731,7 @@ impl RdpServer {
         io_channel_id: u16,
         user_channel_id: u16,
     ) -> ServerResult<()> {
-        if !self.supports_auto_reconnect() {
+        if !self.supports_auto_reconnect() || !self.may_rotate_auto_reconnect_cookie() {
             return Ok(());
         }
 
@@ -1717,6 +1766,7 @@ impl RdpServer {
         Self::send_auto_reconnect_cookie(cookie.clone(), writer, io_channel_id, user_channel_id).await?;
         self.auto_reconnect_cookie = Some(cookie);
         self.previous_auto_reconnect_cookie = None;
+        self.auto_reconnect_issued = true;
         self.auto_reconnect_sent = true;
 
         Ok(())
@@ -3638,6 +3688,7 @@ impl RdpServer {
                 keyboard_layout: result.keyboard_layout,
                 keyboard_type: result.keyboard_type,
                 ime_file_name: result.ime_file_name.clone(),
+                auto_reconnect: is_auto_reconnect,
             });
         }
 
@@ -3792,8 +3843,15 @@ impl RdpServer {
             large_pointer_flags,
         )?;
 
-        self.send_next_auto_reconnect_cookie(writer, result.io_channel_id, result.user_channel_id)
-            .await?;
+        // Per connection, not per activation: a Deactivation-Reactivation pass
+        // keeps the cookie the connection already holds.
+        if !result.reactivation {
+            self.auto_reconnect_issued = false;
+        }
+        if self.issues_auto_reconnect_at_activation(is_auto_reconnect) {
+            self.send_next_auto_reconnect_cookie(writer, result.io_channel_id, result.user_channel_id)
+                .await?;
+        }
 
         let state = self
             .client_loop(
