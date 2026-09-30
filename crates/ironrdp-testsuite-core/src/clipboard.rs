@@ -84,9 +84,8 @@ pub struct LockingBackend {
 
 impl LockingBackend {
     pub fn new() -> Self {
-        Self { clock_ms: Cell::new(0) }
-    pub fn new() -> Self {
         Self::default()
+    }
 
     /// Advance the mock clock by `ms` milliseconds.
     pub fn advance_ms(&self, ms: u64) {
