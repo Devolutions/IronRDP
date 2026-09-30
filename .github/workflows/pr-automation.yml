@@ -565,6 +565,8 @@ jobs:
           script: |
             const { SCHEMA_VERSION, parseCheckState } = require("./.github/pr-automation/validate-classifier");
             const { contributorEligibility, reviewPolicyEligible } = require("./.github/pr-automation/resolve-state");
+            const { readCheckRuns } = require("./.github/pr-automation/check-runs");
+            const { generation, readLatestExactHeadCiRun } = require("./.github/pr-automation/ci-state");
             const { resolveReviewerRoute } = require("./.github/pr-automation/routing");
             const prNumber = Number(process.env.PULL_REQUEST_NUMBER);
             const headSha = process.env.HEAD_SHA;
@@ -588,11 +590,11 @@ jobs:
               }));
             };
             try {
-              const classificationRuns = await github.rest.checks.listForRef({
-                owner: context.repo.owner, repo: context.repo.repo, ref: headSha,
-                check_name: "AI classification", per_page: 100,
+              const classificationRuns = await readCheckRuns({
+                github, owner: context.repo.owner, repo: context.repo.repo, ref: headSha,
+                checkName: "AI classification",
               });
-              const completed = (runs, externalId) => runs.data.check_runs
+              const completed = (runs, externalId) => runs
                 .filter((run) => run.external_id === externalId)
                 .sort((left, right) => right.id - left.id)[0];
               const classification = completed(classificationRuns, `${SCHEMA_VERSION}:${headSha}`);
@@ -612,7 +614,7 @@ jobs:
                 publish({
                   ok: false, force, head_sha: headSha, classificationValid: false,
                   classificationCheck: false, legitimacyStopped, ciGreen: false,
-                  secondReviewEligible: false, policyEligible: false, labels: resolvedLabels,
+                  secondReviewEligible: false, reviewAtHead: false, policyEligible: false, labels: resolvedLabels,
                   protocolRelated: false, risk: "unknown", specialistReviewers: [],
                   contributor: { status: force ? "forced" : "unavailable" },
                   reason: "valid classification unavailable",
@@ -629,7 +631,7 @@ jobs:
                 publish({
                   ok: route.ok, force: true, head_sha: headSha, classificationValid, classificationCheck,
                   legitimacyStopped, ciGreen: false, secondReviewEligible: true,
-                  policyEligible: true, labels: resolvedLabels, protocolRelated,
+                  reviewAtHead: false, policyEligible: true, labels: resolvedLabels, protocolRelated,
                   risk: protocolState.risk,
                   specialistReviewers: route.ok ? route.reviewers : [],
                   contributor: { status: "forced" },
@@ -640,17 +642,18 @@ jobs:
                 owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber,
               });
               const labels = issue.labels.map((label) => typeof label === "string" ? label : label.name);
-              const reviewRuns = await github.rest.checks.listForRef({
-                owner: context.repo.owner, repo: context.repo.repo, ref: headSha,
-                check_name: "AI automated review", per_page: 100,
+              const reviewRuns = await readCheckRuns({
+                github, owner: context.repo.owner, repo: context.repo.repo, ref: headSha,
+                checkName: "AI automated review",
               });
-              const reviewAtHead = reviewRuns.data.check_runs.some((run) =>
-                run.conclusion === "success" && run.app?.slug === "github-actions");
-              const workflowRuns = process.env.ROUTE === "ci" ? [context.payload.workflow_run] :
-                (await github.rest.actions.listWorkflowRunsForRepo({
-                  owner: context.repo.owner, repo: context.repo.repo, head_sha: headSha, per_page: 100,
-                })).data.workflow_runs;
-              const ciGreen = workflowRuns.some((run) => run?.name === "CI" && run?.conclusion === "success");
+              const reviewAtHead = reviewRuns.some((run) =>
+                run.external_id === headSha && run.conclusion === "success" &&
+                run.app?.slug === "github-actions");
+              const latestCiRun = await readLatestExactHeadCiRun({
+                github, owner: context.repo.owner, repo: context.repo.repo, expectedSha: headSha,
+              });
+              const ciGeneration = generation(latestCiRun);
+              const ciGreen = latestCiRun?.conclusion === "success" && ciGeneration !== null;
               const secondReviewEligible = !labels.includes("ai-reviewed/1") || !reviewAtHead;
               const policyEligible = reviewPolicyEligible({ labels, legitimacyStopped });
               const contributor = await contributorEligibility({
@@ -661,7 +664,8 @@ jobs:
                 ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible &&
                   contributor.status === "eligible",
                 force: false, head_sha: headSha, classificationValid, classificationCheck, legitimacyStopped,
-                ciGreen, secondReviewEligible, policyEligible, labels, contributor,
+                ciGreen, ciRunId: ciGeneration?.id ?? null, ciRunAttempt: ciGeneration?.attempt ?? null,
+                secondReviewEligible, reviewAtHead, policyEligible, labels, contributor,
                 protocolRelated, risk: protocolState?.risk || "unknown",
                 specialistReviewers: protocolState?.specialistReviewers || [],
               });
@@ -670,7 +674,7 @@ jobs:
               publish({
                 ok: false, force, head_sha: headSha, classificationValid: false, classificationCheck: false,
                 legitimacyStopped: false, ciGreen: false, secondReviewEligible: force,
-                policyEligible: false, labels: force ? resolvedLabels : [], protocolRelated: false,
+                reviewAtHead: false, policyEligible: false, labels: force ? resolvedLabels : [], protocolRelated: false,
                 risk: "unknown", specialistReviewers: [],
                 contributor: force ? { status: "forced" } : { status: "unavailable" },
                 reason: error.message,
@@ -827,6 +831,7 @@ jobs:
                reviewerValidationContext: validationContext,
                specialistAggregate,
                requireReviewerContext: true,
+               reviewAttempted: ["success", "failure"].includes(process.env.REVIEW_PIPELINE_RESULT),
              });
              core.info(JSON.stringify({
                event: "pr-automation.review-state",
@@ -886,6 +891,7 @@ jobs:
       group: pr-automation-write-${{ needs.resolve-pr.outputs.pr-number }}
       cancel-in-progress: false
     permissions:
+      actions: read
       contents: write
       pull-requests: write
       issues: write

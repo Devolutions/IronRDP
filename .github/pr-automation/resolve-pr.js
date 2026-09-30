@@ -23,6 +23,10 @@ function positiveNumber(value) {
   return Number.isSafeInteger(number) && number > 0 ? number : null;
 }
 
+function inputFlag(value) {
+  return ["true", true].includes(value);
+}
+
 async function getOpenAtHead(github, owner, repo, number, requiredSha) {
   const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number });
   return pr.state === "open" && SHA.test(pr.head?.sha || "") && (!requiredSha || pr.head.sha === requiredSha) ? pr : null;
@@ -54,8 +58,9 @@ async function workflowRunPullRequests(github, owner, repo, workflowRun) {
 async function resolvePr({ github, context, inputs = {} }) {
   const route = routeFor(context);
   const { owner, repo } = context.repo;
-  const force = route === "dispatch" && ["true", true].includes(
-    inputs.force ?? context.payload.inputs?.force);
+  const force = route === "dispatch" && inputFlag(inputs.force ?? context.payload.inputs?.force);
+  const dispatchReview = route === "dispatch" &&
+    inputFlag(inputs.review ?? context.payload.inputs?.review);
   const oversizedReviewRequested = route === "classification" &&
     context.payload.action === "labeled" && context.payload.label?.name === OVERSIZED_REVIEW_LABEL;
   let pr;
@@ -105,6 +110,9 @@ async function resolvePr({ github, context, inputs = {} }) {
   const labels = (pr.labels || [])
     .map((label) => typeof label === "string" ? label : label.name)
     .filter(Boolean);
+  const reviewRequested = oversizedReviewRequested || dispatchReview;
+  const classificationRequested = route === "classification" ||
+    (route === "dispatch" && !dispatchReview);
   return {
     ok: true, route, prNumber: pr.number, headSha: pr.head.sha, baseSha: pr.base.sha,
     labels,
@@ -114,12 +122,9 @@ async function resolvePr({ github, context, inputs = {} }) {
       association: pr.author_association || null,
     },
     force,
-    reviewRequested: oversizedReviewRequested ||
-      (route === "dispatch" && ["true", true].includes(inputs.review ?? context.payload.inputs?.review)),
-    classificationRequested: route === "classification" ||
-      (route === "dispatch" && !["true", true].includes(inputs.review ?? context.payload.inputs?.review)),
-    reviewRoute: route === "ci" || route === "classification-complete" ||
-      (route === "dispatch" && ["true", true].includes(inputs.review ?? context.payload.inputs?.review)),
+    reviewRequested,
+    classificationRequested,
+    reviewRoute: route === "ci" || route === "classification-complete" || dispatchReview,
   };
 }
 

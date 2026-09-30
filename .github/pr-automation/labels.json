@@ -100,9 +100,19 @@
     "description": "First contribution to this repository"
   },
   {
-    "name": "maintainer-required",
+    "name": "needs-review",
     "color": "c2e0c6",
-    "description": "Maintainer review or intervention is required"
+    "description": "A human reviewer is the current next actor"
+  },
+  {
+    "name": "needs-author-action",
+    "color": "d93f0b",
+    "description": "The pull request author is the current next actor"
+  },
+  {
+    "name": "automation-failed",
+    "color": "b60205",
+    "description": "Exact-head automated classification or review failed or was unavailable"
   },
   {
     "name": "triage/legitimacy",
