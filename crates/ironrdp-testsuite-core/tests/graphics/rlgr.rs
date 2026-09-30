@@ -738,3 +738,45 @@ fn round_trip_preserves_a_run_that_reaches_the_end_of_the_input() {
         }
     }
 }
+
+/// RLGR1 adapts `k` identically in the encoder and the decoder.
+///
+/// Adaptation is implicit, so both sides must update `k` from the coded
+/// symbols alone. A zero coded in Golomb-Rice mode must raise `kp` by `UQ_GR`,
+/// as in the decoder; raising it by `UP_GR` makes the two sides diverge and
+/// the rest of the bitstream is misinterpreted. Before that fix, 1877 of these
+/// 2000 inputs failed to round-trip.
+#[test]
+fn rlgr1_round_trip_randomized() {
+    // Deterministic LCG so failures are reproducible.
+    let mut seed: u64 = 0x1234_5678;
+    let mut next = move || {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        u32::try_from(seed >> 33).expect("33-bit shift fits in u32")
+    };
+
+    for _ in 0..2000 {
+        let len = 16 + usize::try_from(next() % 49).expect("small length");
+        let mut input = vec![0i16; len];
+        for value in input.iter_mut() {
+            // Mostly zeros with occasional small magnitudes: exercises both
+            // run-length mode and Golomb-Rice mode, including its zero branch.
+            if next() % 10 < 7 {
+                *value = 0;
+            } else {
+                let magnitude = i16::try_from(next() % 8).expect("small magnitude");
+                *value = if next() % 2 == 0 { magnitude } else { -magnitude };
+            }
+        }
+
+        let mut encoded = vec![0; 4096];
+        let len = encode(EntropyAlgorithm::Rlgr1, &input, encoded.as_mut_slice()).expect("encode");
+
+        let mut decoded = vec![0i16; input.len()];
+        decode(EntropyAlgorithm::Rlgr1, &encoded[..len], decoded.as_mut_slice()).expect("decode");
+
+        assert_eq!(decoded, input, "RLGR1 round trip of {input:?}");
+    }
+}
