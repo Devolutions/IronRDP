@@ -978,9 +978,7 @@ async fn client_server_with_connector<F, Fut, C>(
             });
 
             let client = tokio::task::spawn_local(async move {
-                let (tx, rx) = oneshot::channel();
-                ev.send(ServerEvent::GetLocalAddr(tx)).unwrap();
-                let server_addr = rx.await.unwrap().unwrap();
+                let server_addr = local_addr_of(&ev).await;
                 let (upgraded_framed, connection_result) = connect_client(server_addr, |client_addr| {
                     connector_factory(connector::ClientConnector::new(client_config, client_addr))
                 })
