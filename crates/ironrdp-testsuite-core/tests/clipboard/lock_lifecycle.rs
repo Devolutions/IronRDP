@@ -17,7 +17,9 @@ use ironrdp_cliprdr::{Cliprdr, CliprdrClient, CliprdrState};
 use ironrdp_core::Encode as _;
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 
-use ironrdp_testsuite_core::clipboard::{CallbackTrackingBackend, LockingBackend, TestBackend};
+use ironrdp_testsuite_core::clipboard::{
+    CallbackTrackingBackend, LockingBackend, TestBackend, init_ready_locking_client, set_remote_file_list,
+};
 
 /// Introduce `let` bindings for the encoded bytes and the decoded
 /// [`ClipboardPdu`] in the caller's scope.  Two names are required so
@@ -651,10 +653,10 @@ fn initiate_file_copy_without_locks_sends_only_format_list() {
 /// had the file.
 #[test]
 fn a_locked_request_validates_against_the_list_its_lock_covers() {
-    let mut cliprdr = super::test_helpers::init_ready_locking_client();
+    let mut cliprdr = init_ready_locking_client();
 
     // Selection A: two files, locked.
-    super::test_helpers::set_remote_file_list(
+    set_remote_file_list(
         &mut cliprdr,
         vec![FileDescriptor::new("a.txt"), FileDescriptor::new("b.txt")],
     );
@@ -664,7 +666,7 @@ fn a_locked_request_validates_against_the_list_its_lock_covers() {
 
     // Selection B replaces it: one file, under a new lock. A's lock expires but
     // is deliberately kept, because transfers from A may still be in flight.
-    super::test_helpers::set_remote_file_list(&mut cliprdr, vec![FileDescriptor::new("c.txt")]);
+    set_remote_file_list(&mut cliprdr, vec![FileDescriptor::new("c.txt")]);
     assert_ne!(
         cliprdr.__test_current_lock_id(),
         Some(lock_for_a),
@@ -704,16 +706,16 @@ fn a_locked_request_validates_against_the_list_its_lock_covers() {
 /// A snapshot lives and dies with its lock.
 #[test]
 fn a_snapshot_is_released_with_the_lock_it_belongs_to() {
-    let mut cliprdr = super::test_helpers::init_ready_locking_client();
+    let mut cliprdr = init_ready_locking_client();
 
-    super::test_helpers::set_remote_file_list(
+    set_remote_file_list(
         &mut cliprdr,
         vec![FileDescriptor::new("a.txt"), FileDescriptor::new("b.txt")],
     );
     let lock_for_a = cliprdr.__test_current_lock_id().unwrap();
 
     // Replace the selection, then let the sweep release the expired lock.
-    super::test_helpers::set_remote_file_list(&mut cliprdr, vec![FileDescriptor::new("c.txt")]);
+    set_remote_file_list(&mut cliprdr, vec![FileDescriptor::new("c.txt")]);
     cliprdr
         .downcast_backend::<LockingBackend>()
         .unwrap()
