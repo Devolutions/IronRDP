@@ -734,7 +734,12 @@ pub struct RdpServer {
     connection_local_addr: Option<SocketAddr>,
     autodetect: Option<AutoDetectManager>,
     heartbeat: Option<HeartbeatConfig>,
-    connection_handler: Option<Box<dyn ConnectionHandler>>,
+    /// Shared, not owned outright: under [`ConnectionPolicy::Preempt`] the live
+    /// connection (which borrows `self` for the whole race) and a candidate's
+    /// `on_accept` must both reach the handler. Reach it only through
+    /// [`with_connection_handler`]. The server is `!Send`, so `Rc` costs
+    /// embedders nothing.
+    connection_handler: Option<SharedConnectionHandler>,
     /// Anti-storm net for [`ConnectionPolicy::Preempt`]: the
     /// peer most recently EVICTED by a takeover, and when it last tried to
     /// come back.
@@ -1534,7 +1539,7 @@ impl RdpServer {
             connection_local_addr: None,
             autodetect: None,
             heartbeat: None,
-            connection_handler,
+            connection_handler: connection_handler.map(|h| Rc::new(RefCell::new(h))),
             recently_evicted: None,
             display_suppressed: display_suppressed.unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
             autodetect_rtt: {
@@ -2486,7 +2491,7 @@ impl RdpServer {
             // started otherwise. Re-running it here would double-count for a
             // stateful handler (a rate limiter's window, an audit record).
             let accepted = matches!(entry, Entry::Negotiated(..))
-                || self.connection_handler.as_mut().is_none_or(|h| h.on_accept(peer));
+                || with_connection_handler(self.connection_handler.as_ref(), |h| h.on_accept(peer)).unwrap_or(true);
 
             if !accepted {
                 debug!(?peer, "Connection rejected by handler");
@@ -2508,7 +2513,9 @@ impl RdpServer {
                     //
                     // `conn` borrows `self` for the whole race, so the candidate's
                     // `on_accept` and its negotiation work from clones taken here.
-                    let handler = self.connection_handler.take();
+                    // The handler is shared, not taken: the live connection's own
+                    // hooks (`on_connection_info`) must still reach it (#1969).
+                    let handler = self.connection_handler.clone();
                     let ctx = self.negotiation_context();
                     let ev_sender = self.ev_sender.clone();
                     let mut recently_evicted = self.recently_evicted.take();
@@ -2529,7 +2536,6 @@ impl RdpServer {
                             Entry::Negotiated(candidate, _) => Box::pin(self.serve_negotiated(candidate)),
                         };
                         let mut probe: PreemptProbe<'_> = Box::pin(core::future::pending());
-                        let mut handler = handler;
                         let mut probing = false;
 
                         loop {
@@ -2565,7 +2571,7 @@ impl RdpServer {
                                             }
                                         };
                                     }
-                                    break (res, None, handler, recently_evicted);
+                                    break (res, None, recently_evicted);
                                 }
                                 PreemptRace::Accepted(Ok((next_stream, next_peer))) => {
                                     // Same reason as the primary accept above: RDP
@@ -2598,8 +2604,9 @@ impl RdpServer {
                                     // rate limiter would reject could still evict
                                     // the live session and only be rejected
                                     // afterwards, once the damage was done.
-                                    let candidate_accepted =
-                                        !bounced_back && handler.as_mut().is_none_or(|h| h.on_accept(next_peer));
+                                    let candidate_accepted = !bounced_back
+                                        && with_connection_handler(handler.as_ref(), |h| h.on_accept(next_peer))
+                                            .unwrap_or(true);
 
                                     if candidate_accepted {
                                         probing = true;
@@ -2647,11 +2654,11 @@ impl RdpServer {
                                         // stall the takeover.
                                         match tokio::time::timeout(EVICTION_GRACE, &mut conn).await {
                                             Ok(res) => {
-                                                break (res, Some((candidate, new_peer)), handler, recently_evicted);
+                                                break (res, Some((candidate, new_peer)), recently_evicted);
                                             }
                                             Err(_) => {
                                                 debug!(old_peer = ?peer, "evicted session did not wind down in time");
-                                                break (Ok(()), Some((candidate, new_peer)), handler, recently_evicted);
+                                                break (Ok(()), Some((candidate, new_peer)), recently_evicted);
                                             }
                                         }
                                     }
@@ -2660,8 +2667,7 @@ impl RdpServer {
                         }
                     };
 
-                    let (result, preempted_by, handler, evicted) = outcome;
-                    self.connection_handler = handler;
+                    let (result, preempted_by, evicted) = outcome;
                     // Only remember an eviction that actually replaced this
                     // session; a session that ended on its own terms leaves nobody
                     // barred from connecting.
@@ -2741,8 +2747,9 @@ impl RdpServer {
             self.static_channels = StaticChannelSet::new();
             self.connection_local_addr = None;
 
-            if let Some(ref mut handler) = self.connection_handler {
-                let action = handler.on_disconnected(peer, duration, result.as_ref().err());
+            if let Some(action) = with_connection_handler(self.connection_handler.as_ref(), |h| {
+                h.on_disconnected(peer, duration, result.as_ref().err())
+            }) {
                 if action == PostConnectionAction::Stop {
                     debug!(?peer, "Handler requested stop after disconnect");
                     break;
@@ -4097,13 +4104,13 @@ impl RdpServer {
             }
         }
 
-        if !result.reactivation
-            && let Some(ref mut handler) = self.connection_handler
-        {
-            handler.on_connection_info(&ConnectionInfo {
-                keyboard_layout: result.keyboard_layout,
-                keyboard_type: result.keyboard_type,
-                ime_file_name: result.ime_file_name.clone(),
+        if !result.reactivation {
+            with_connection_handler(self.connection_handler.as_ref(), |h| {
+                h.on_connection_info(&ConnectionInfo {
+                    keyboard_layout: result.keyboard_layout,
+                    keyboard_type: result.keyboard_type,
+                    ime_file_name: result.ime_file_name.clone(),
+                });
             });
         }
 
@@ -4880,6 +4887,24 @@ async fn deactivate_all(io_channel_id: u16, user_channel_id: u16, writer: &mut i
         .await
         .map_err(|e| ServerError::io("write deactivate_all", e))?;
     Ok(())
+}
+
+/// The [`ConnectionHandler`] shared between `run`'s live connection and a
+/// [`ConnectionPolicy::Preempt`] candidate.
+type SharedConnectionHandler = Rc<RefCell<Box<dyn ConnectionHandler>>>;
+
+/// Call into the shared handler, if one is installed.
+///
+/// The only way the server reaches the handler. The borrow lives exactly as
+/// long as `f`, and `f` is a synchronous closure, so it cannot be held across
+/// an `.await` -- the compiler, not a convention, rules out the live
+/// connection and a candidate holding it at the same time on this
+/// single-threaded server.
+fn with_connection_handler<R>(
+    handler: Option<&SharedConnectionHandler>,
+    f: impl FnOnce(&mut dyn ConnectionHandler) -> R,
+) -> Option<R> {
+    handler.map(|h| f(h.borrow_mut().as_mut()))
 }
 
 /// Send a `ServerSetErrorInfoPdu(ServerDeniedConnection)` to the client, then return.
