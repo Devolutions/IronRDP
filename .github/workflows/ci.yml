@@ -149,6 +149,9 @@ jobs:
       - name: Dependencies
         run: cargo xtask check dependencies -v
 
+      - name: Packet captures
+        run: cargo xtask check captures -v
+
       - name: WASM (prepare)
         run: cargo xtask wasm install -v
 
