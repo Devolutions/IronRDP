@@ -12,7 +12,7 @@ use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::PduResult;
 use pdu::gcc::ChannelName;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::pdu::{
     CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
@@ -474,7 +474,9 @@ impl DrdynvcClient {
             // A server can send data on a channel before it sees the client decline it in the
             // Create Response (GNOME Remote Desktop does this for AUDIO_PLAYBACK_DVC). The data has
             // nowhere to go; dropping it is enough, ending the session over it is not warranted.
-            warn!(
+            // Logged at debug, as `DrdynvcServer` logs a declined channel: it is not a fault, and a
+            // server may keep sending such data for as long as the session lasts.
+            debug!(
                 channel_id,
                 "Dropping data for a dynamic virtual channel that is not open"
             );
