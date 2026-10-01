@@ -11,10 +11,11 @@ use ironrdp_daemon::now::{DVC_CHANNEL_NAME, INITIAL_ENDPOINT_TIMEOUT, NowEndpoin
 use ironrdp_input::MouseButton;
 use ironrdp_propertyset::PropertySet;
 use ironrdp_rpc::ipc::{
-    AgentError, AgentErrorCategory, ClipboardFileEntry, ConnState, KeyFilter, NowCapabilities, NowDiagnostics,
-    NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo,
-    OperationState, Payload, PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind,
-    RailExecuteFailureReason, RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo,
+    AgentError, AgentErrorCategory, ClipboardFileEntry, ConnState, KeyFilter, KeyInput, NowCapabilities,
+    NowDiagnostics, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind,
+    OperationInfo, OperationState, Payload, PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump,
+    RailEventKind, RailExecuteFailureReason, RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response,
+    StatusInfo, UntrustedCertificate,
 };
 use ironrdp_rpc::wire;
 
@@ -84,6 +85,26 @@ fn request_variants_round_trip() {
         Request::KeyUnicode {
             ch: '\u{00e9}',
             pressed: true,
+        },
+        Request::KeyBatch {
+            events: vec![
+                KeyInput::Scancode {
+                    scancode: 0x1D,
+                    pressed: true,
+                },
+                KeyInput::Unicode {
+                    ch: '\u{00e9}',
+                    pressed: true,
+                },
+                KeyInput::Unicode {
+                    ch: '\u{00e9}',
+                    pressed: false,
+                },
+                KeyInput::Scancode {
+                    scancode: 0x1D,
+                    pressed: false,
+                },
+            ],
         },
         Request::UnicodeText {
             text: "Hello, \u{4e16}\u{754c}".to_owned(),
@@ -199,6 +220,7 @@ fn response_variants_round_trip() {
             height: None,
             message: None,
             credentials_loaded: true,
+            untrusted_certificate: None,
         })),
         Response::Ok(Payload::Status(StatusInfo {
             state: ConnState::Connected,
@@ -207,6 +229,20 @@ fn response_variants_round_trip() {
             height: Some(1080),
             message: Some("ok".to_owned()),
             credentials_loaded: false,
+            untrusted_certificate: None,
+        })),
+        Response::Ok(Payload::Status(StatusInfo {
+            state: ConnState::Failed,
+            destination: Some("host.example:3389".to_owned()),
+            width: None,
+            height: None,
+            message: Some("untrusted certificate".to_owned()),
+            credentials_loaded: false,
+            untrusted_certificate: Some(Box::new(UntrustedCertificate {
+                endpoint: "host.example:3389".to_owned(),
+                sha256: "ab".repeat(32),
+                reason: "name mismatch".to_owned(),
+            })),
         })),
         Response::Ok(Payload::Properties(PropertyDump {
             entries: vec![

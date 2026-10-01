@@ -33,10 +33,18 @@ on:
         required: false
         type: string
         default: ""
+      lease:
+        description: Automatic review ownership marker
+        required: false
+        type: string
+        default: ""
     outputs:
       failure-reason:
         description: Bounded failure reason when no valid review was produced
         value: ${{ jobs.validate.outputs.reason }}
+      superseded:
+        description: Whether a trusted automatic-review recheck superseded this run
+        value: ${{ jobs.recheck.outputs.superseded }}
 
 permissions: {}
 
@@ -392,6 +400,7 @@ jobs:
                 category: run.status === "valid" ? "" : process.env.FAILURE_CATEGORY || "invalid-output",
                 provider: providerWasCalled(diagnostics),
                 metrics: diagnostics,
+                rejections: diagnostics.output_rejections,
               }), null, 2),
             );
             core.info(JSON.stringify({
@@ -493,10 +502,57 @@ jobs:
           retention-days: 1
           overwrite: true
 
+  recheck:
+    name: Recheck automatic review admission
+    needs: [aggregate]
+    if: always() && !cancelled() && needs.aggregate.result == 'success' &&
+      needs.aggregate.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      allowed: ${{ steps.recheck.outputs.allowed }}
+      superseded: ${{ steps.recheck.outputs.superseded }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - id: recheck
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ inputs.pr-number }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+          GATE: ${{ inputs.gate }}
+          LEASE: ${{ inputs.lease }}
+        with:
+          script: |
+            if (!process.env.LEASE) {
+              core.setOutput("allowed", true);
+              core.setOutput("superseded", false);
+              return;
+            }
+            const parse = (value) => { try { return JSON.parse(value); } catch { return null; } };
+            const { recheckAutomaticReview } = require("./.github/pr-automation/automation-lease");
+            const allowed = await recheckAutomaticReview({
+              github, owner: context.repo.owner, repo: context.repo.repo,
+              prNumber: Number(process.env.PULL_REQUEST_NUMBER), headSha: process.env.HEAD_SHA,
+              gate: parse(process.env.GATE), lease: parse(process.env.LEASE),
+            });
+            core.setOutput("allowed", allowed);
+            core.setOutput("superseded", !allowed);
+            core.info(JSON.stringify({ event: "pr-automation.review-recheck", allowed }));
+
   general:
     name: Run independent general reviewer
-    needs: [evidence, aggregate]
-    if: needs.aggregate.result == 'success' && needs.aggregate.outputs.ready == 'true'
+    needs: [evidence, aggregate, recheck]
+    if: needs.aggregate.result == 'success' && needs.aggregate.outputs.ready == 'true' &&
+      needs.recheck.outputs.allowed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 130
     permissions:
@@ -523,18 +579,28 @@ jobs:
           path: .
 
       - id: plan
-        name: Build the validator metadata
+        name: Build the validator metadata and candidate index
         uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ inputs.head-sha }}
         with:
           script: |
+            const fs = require("node:fs");
+            const { candidateIndexPrompt } = require("./.github/pr-automation/validate-final-review");
             core.setOutput("metadata", JSON.stringify({
               stage: "general",
               expected_sha: process.env.HEAD_SHA,
               validation_context_file: "pr-evidence/validation-context.json",
               aggregate_file: "validated-specialist-findings.json",
             }));
+            // An unreadable aggregate leaves the index empty; the validator fails the stage on it.
+            let aggregate = null;
+            try {
+              aggregate = JSON.parse(fs.readFileSync("validated-specialist-findings.json", "utf8"));
+            } catch {
+              core.warning("Validated specialist findings are unreadable; the candidate index is empty");
+            }
+            core.setOutput("prompt-context", candidateIndexPrompt(aggregate, process.env.HEAD_SHA));
 
       - id: agent
         name: Run general reviewer
@@ -544,6 +610,7 @@ jobs:
           api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
           base-url: https://api.helmcode.com/v1
           config-file: .github/pr-automation/agents/general-reviewer.json
+          prompt-context: ${{ steps.plan.outputs.prompt-context }}
           normalizer: .github/pr-automation/output-normalizer.js#normalizeGeneral
           validator: .github/pr-automation/agent-validator.js#validateGeneral
           validator-metadata: ${{ steps.plan.outputs.metadata }}
@@ -592,6 +659,7 @@ jobs:
                 : "",
               provider: providerWasCalled(diagnostics),
               metrics: diagnostics,
+              rejections: diagnostics.output_rejections,
             })));
 
       - name: Upload general review result
@@ -740,7 +808,7 @@ jobs:
 
   report:
     name: Report stage outcomes
-    needs: [evidence, specialists, aggregate, general, validate]
+    needs: [evidence, specialists, aggregate, recheck, general, validate]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     permissions:

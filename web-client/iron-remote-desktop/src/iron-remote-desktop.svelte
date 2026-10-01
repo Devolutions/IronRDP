@@ -305,7 +305,11 @@
         remoteDesktopService.setOnCanvasResized(canvasResized);
 
         initListeners();
+    }
 
+    // Tells the host the component can connect. Only after the clipboard is set up too: connect() only opens the
+    // clipboard channel when the clipboard callbacks are registered by then.
+    function dispatchReady() {
         let result = { irgUserInteraction: publicAPI.getExposedFunctions() };
 
         loggingService.info('Component ready');
@@ -344,7 +348,12 @@
         loggingService.verbose = verbose === 'true';
         loggingService.info('Dom ready');
         await initcanvas();
-        await clipboardService.initClipboard();
+        try {
+            await clipboardService.initClipboard();
+        } catch (err) {
+            loggingService.error('Clipboard initialization failed: ' + err);
+        }
+        dispatchReady();
     });
 
     onDestroy(() => {

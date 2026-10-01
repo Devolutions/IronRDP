@@ -1,5 +1,6 @@
 "use strict";
 
+const { MAXIMUM_REJECTION_TEXT_LENGTH } = require("./review-report");
 const { REVIEWER_ORDER } = require("./routing");
 const { escapeMarkdown, reducedCoverageText } = require("./write-state");
 
@@ -73,6 +74,18 @@ function diagnostics(report, outcome, maxStages, maxTextLength, includeReasons) 
       ? "No stage failure was reported."
       : table(["Stage", "Reason"], failures, maxTextLength);
   })();
+  // A failure reason names only the last rejection, so every rejected attempt is listed with the
+  // full diagnostic its validator produced.
+  const rejectionRows = includeReasons
+    ? stages.flatMap((stage) => (stage.rejections ?? []).map((rejection) => [
+      stage.id, metric(rejection.attempt), rejection.activity, rejection.layer, rejection.reason,
+    ]))
+    : [];
+  const rejections = rejectionRows.length === 0
+    ? []
+    : ["", "### Rejected output attempts",
+      table(["Stage", "Attempt", "Activity", "Layer", "Reason"], rejectionRows,
+        MAXIMUM_REJECTION_TEXT_LENGTH)];
   return [
     `Review outcome: **${outcome}**.`,
     "",
@@ -87,6 +100,7 @@ function diagnostics(report, outcome, maxStages, maxTextLength, includeReasons) 
     "### LLM stage metrics",
     stageMetrics,
     ...(includeReasons ? ["", "### Failed stages", reasons] : []),
+    ...rejections,
   ].join("\n");
 }
 

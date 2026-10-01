@@ -32,6 +32,11 @@ const MAXIMUM_REVIEW_MARKER =
 const RUNTIME_REASON_BYTES = 240;
 const MAXIMUM_REASON_BYTES = RUNTIME_REASON_BYTES - "semantic: ".length;
 const MAXIMUM_COORDINATES = 8;
+// The reason is what survives exhaustion, so it stays that small. The runtime also accepts a longer
+// detail, which it sends as repair feedback and keeps per attempt, and repair-only guidance, which
+// it never logs. These mirror its `MAX_VALIDATION_DETAIL_BYTES` and `MAX_VALIDATION_GUIDANCE_BYTES`.
+const MAXIMUM_DETAIL_BYTES = 2048;
+const MAXIMUM_GUIDANCE_BYTES = 16 * 1024;
 
 const count = (value, noun) => `${value} ${noun}${value === 1 ? "" : "s"}`;
 
@@ -74,16 +79,19 @@ function publicationFits(review) {
 // A repair has to find the candidate a diagnostic is about without the diagnostic quoting anything
 // the model wrote, so a candidate is named by its reviewer and its position in that reviewer's
 // findings inside the trusted aggregate. Reviewer names come from the pipeline's own enum.
-function boundedCoordinates(items, format) {
-  const shown = items.slice(0, MAXIMUM_COORDINATES);
+function boundedCoordinates(items, format, limit) {
+  const shown = items.slice(0, limit);
   const omitted = items.length - shown.length;
   return omitted === 0 ? format(shown) : `${format(shown)} and ${omitted} more`;
 }
 
-function aggregateCoordinates(candidates) {
-  const ordered = [...candidates].sort((left, right) =>
+function aggregateOrder(candidates) {
+  return [...candidates].sort((left, right) =>
     REVIEWER_ORDER.get(left.reviewer) - REVIEWER_ORDER.get(right.reviewer) || left.index - right.index);
-  return boundedCoordinates(ordered, (shown) => {
+}
+
+function aggregateCoordinates(candidates, limit = MAXIMUM_COORDINATES) {
+  return boundedCoordinates(aggregateOrder(candidates), (shown) => {
     const byReviewer = new Map();
     for (const candidate of shown) {
       byReviewer.set(candidate.reviewer, [...(byReviewer.get(candidate.reviewer) ?? []), candidate.index]);
@@ -91,11 +99,24 @@ function aggregateCoordinates(candidates) {
     return [...byReviewer]
       .map(([reviewer, indexes]) => `${reviewer} ${indexes.join(", ")}`)
       .join(" and ");
-  });
+  }, limit);
 }
 
-function indexCoordinates(indexes) {
-  return boundedCoordinates(indexes, (shown) => shown.join(", "));
+function indexCoordinates(indexes, limit = MAXIMUM_COORDINATES) {
+  return boundedCoordinates(indexes, (shown) => shown.join(", "), limit);
+}
+
+// A repair cannot copy an identifier it was never shown, and a reviewer that spent its turns before
+// reading the aggregate has none, so positions alone let it invent plausible ones. The identifiers
+// quoted here are the trusted aggregate's, which admitted only `FINDING_ID` spellings, and guidance
+// only ever reaches the repair conversation.
+function candidateGuidance(lead, candidates) {
+  if (candidates.length === 0) return undefined;
+  const listed = aggregateOrder(candidates)
+    .map((candidate) => `(${candidate.reviewer}, ${candidate.finding_id})`)
+    .join("; ");
+  const guidance = `${lead}, as (reviewer, finding_id), copied exactly: ${listed}`;
+  return Buffer.byteLength(guidance, "utf8") <= MAXIMUM_GUIDANCE_BYTES ? guidance : undefined;
 }
 
 // The counts and categories say how much of what is wrong, so they are what a repair cannot do
@@ -107,7 +128,9 @@ function boundedReason(prefix, parts) {
   const fits = (reason) => Buffer.byteLength(reason, "utf8") <= MAXIMUM_REASON_BYTES;
   const assemble = (render) => `${prefix}: ${parts.map(render).join(". ")}`;
   for (let detailed = parts.length; detailed > 0; detailed -= 1) {
-    const reason = assemble((part, index) => (index < detailed ? `${part.summary}, at ${part.detail}` : part.summary));
+    const reason = assemble((part, index) => (index < detailed
+      ? `${part.summary}, at ${part.detail(MAXIMUM_COORDINATES)}`
+      : part.summary));
     if (fits(reason)) return reason;
   }
   const counted = assemble((part) => part.summary);
@@ -116,6 +139,29 @@ function boundedReason(prefix, parts) {
   // explain them, so what survives is the count and constraint of each one.
   const terse = assemble((part) => part.short ?? part.summary);
   return fits(terse) ? terse : prefix;
+}
+
+// What the reason had to drop still reaches repair and the per-attempt diagnostics as the detail:
+// every coordinate when that fits the runtime's allowance, and the bounded coordinates otherwise.
+// A detail that adds nothing to the reason is left out.
+function diagnosis(prefix, parts, guidance) {
+  const reason = boundedReason(prefix, parts);
+  const detail = [Number.POSITIVE_INFINITY, MAXIMUM_COORDINATES]
+    .map((limit) => `${prefix}: ${parts.map((part) => `${part.summary}, at ${part.detail(limit)}`).join(". ")}`)
+    .find((candidate) => Buffer.byteLength(candidate, "utf8") <= MAXIMUM_DETAIL_BYTES);
+  return {
+    reason,
+    ...(detail === undefined || detail === reason ? {} : { detail }),
+    ...(guidance === undefined ? {} : { guidance }),
+  };
+}
+
+function rejected({ reason, detail, guidance }) {
+  return {
+    ...invalid(reason),
+    ...(detail === undefined ? {} : { detail }),
+    ...(guidance === undefined ? {} : { guidance }),
+  };
 }
 
 function aggregateCandidates(specialistAggregate, expectedSha) {
@@ -159,6 +205,25 @@ function aggregateCandidates(specialistAggregate, expectedSha) {
     }
   }
   return candidates;
+}
+
+// The general reviewer is handed the candidate identifiers up front, so accounting for every
+// candidate never depends on it reading the aggregate before its investigation budget runs out.
+// Only the identifiers the aggregate admitted are listed; what the specialists wrote stays in the
+// file, which the reviewer still reads as untrusted evidence. An unusable aggregate yields nothing
+// here, since the validator fails the stage on it anyway.
+function candidateIndexPrompt(specialistAggregate, expectedSha) {
+  const candidates = aggregateCandidates(specialistAggregate, expectedSha);
+  if (candidates === null) return "";
+  if (candidates.size === 0) {
+    return "The validated specialist aggregate reports no candidates, so `candidate_dispositions` must be empty.";
+  }
+  return [
+    `The validated specialist aggregate reports ${count(candidates.size, "candidate")}. ` +
+      "Write exactly one `candidate_dispositions` entry for each, copying `reviewer` and `finding_id` exactly:",
+    ...aggregateOrder(candidates.values()).map((candidate) =>
+      `- reviewer \`${candidate.reviewer}\`, finding_id \`${candidate.finding_id}\``),
+  ].join("\n");
 }
 
 // Every disposition problem is reported together. The stage affords two repairs and a review can
@@ -214,7 +279,7 @@ function diagnoseDispositions(entries, candidates) {
     parts.push({
       summary: `${missing.length} of ${count(candidates.size, "candidate")} ${missing.length === 1 ? "has" : "have"} no valid disposition`,
       short: `${missing.length}/${candidates.size} candidates lack a valid disposition`,
-      detail: `aggregate findings ${aggregateCoordinates(missing)}`,
+      detail: (limit) => `aggregate findings ${aggregateCoordinates(missing, limit)}`,
     });
   }
   for (const [indexes, summary, short] of [
@@ -230,11 +295,29 @@ function diagnoseDispositions(entries, candidates) {
     parts.push({
       summary: `${entries} ${summary}`,
       short: `${indexes.length} ${short}`,
-      detail: `candidate_dispositions index ${indexCoordinates(indexes)}`,
+      detail: (limit) => `candidate_dispositions index ${indexCoordinates(indexes, limit)}`,
     });
   }
   if (parts.length === 0) return { ok: true, value: byCandidate };
-  return { ok: false, reason: boundedReason("invalid specialist candidate dispositions", parts) };
+  // A missing candidate that an entry already names only lacks a usable rationale. Asking for an
+  // entry there would make the repair add a duplicate, so it is asked to correct the one it has.
+  const guidance = [
+    candidateGuidance(
+      "Each of these candidates has no candidate_dispositions entry, so add exactly one",
+      missing.filter((candidate) => !seenCandidates.has(referenceKey(candidate))),
+    ),
+    candidateGuidance(
+      "Each of these candidates already has an entry with an unusable rationale, so correct that entry instead of adding another",
+      missing.filter((candidate) => seenCandidates.has(referenceKey(candidate))),
+    ),
+  ].filter((sentence) => sentence !== undefined).join(". ");
+  return {
+    ok: false,
+    ...diagnosis("invalid specialist candidate dispositions", parts,
+      guidance === "" || Buffer.byteLength(guidance, "utf8") > MAXIMUM_GUIDANCE_BYTES
+        ? undefined
+        : guidance),
+  };
 }
 
 function normalizeFinding(finding, changedPaths, changedLines, dispositions, referencedCandidates) {
@@ -336,7 +419,7 @@ function validateFinalReview(raw, {
   }
 
   const dispositions = diagnoseDispositions(value.candidate_dispositions, candidates);
-  if (!dispositions.ok) return invalid(dispositions.reason);
+  if (!dispositions.ok) return rejected(dispositions);
   const normalizedDispositions = dispositions.value;
 
   const findings = [];
@@ -364,11 +447,14 @@ function validateFinalReview(raw, {
     }
   }
   if (uncited.length !== 0) {
-    return invalid(boundedReason("specialist disposition contradicts final findings", [{
+    return rejected(diagnosis("specialist disposition contradicts final findings", [{
       summary: `${count(uncited.length, "accepted or refined candidate")} ${uncited.length === 1 ? "is" : "are"} cited by no final finding`,
       short: `${uncited.length} accepted or refined candidates are uncited`,
-      detail: `aggregate findings ${aggregateCoordinates(uncited)}`,
-    }]));
+      detail: (limit) => `aggregate findings ${aggregateCoordinates(uncited, limit)}`,
+    }], candidateGuidance(
+      "Cite each of these accepted or refined candidates in the sources of exactly one final finding",
+      uncited,
+    )));
   }
 
   const normalized = {
@@ -449,6 +535,7 @@ function validateNormalizedFinalReview(value, expectedShaOrContext) {
 }
 
 module.exports = {
-  MAXIMUM_CANDIDATES, MAXIMUM_FINDINGS, REVIEWERS, provenancePrefix, sourceCategories, validateFinalReview,
+  MAXIMUM_CANDIDATES, MAXIMUM_DETAIL_BYTES, MAXIMUM_FINDINGS, MAXIMUM_GUIDANCE_BYTES, REVIEWERS,
+  candidateIndexPrompt, provenancePrefix, sourceCategories, validateFinalReview,
   validateNormalizedFinalReview,
 };

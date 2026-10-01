@@ -1,0 +1,126 @@
+"use strict";
+
+const { SCHEMA_VERSION } = require("./validate-classifier");
+const { readCheckRuns } = require("./check-runs");
+const { matchesGeneration, readLatestExactHeadCiRun } = require("./ci-state");
+const { reviewCount } = require("./resolve-state");
+const { reviewPolicyEligible } = require("./routing");
+
+const APP = "github-actions";
+const LEASE_PREFIX = "<!-- ironrdp-pr-automation:lease:";
+const CHECKS = {
+  classification: { name: "AI classification", externalId: (sha) => `${SCHEMA_VERSION}:${sha}` },
+  review: { name: "AI automated review", externalId: (sha) => sha },
+};
+function leaseMarker({ kind, headSha, runId, attempt }) {
+  return `${LEASE_PREFIX}v1:${kind}:${headSha}:${runId}:${attempt} -->`;
+}
+
+function parseLeaseMarker(summary) {
+  const match = new RegExp(`^${LEASE_PREFIX}v1:(classification|review):([0-9a-f]{40}):(\\d+):(\\d+) -->$`).exec(summary || "");
+  if (!match || !Number.isSafeInteger(Number(match[3])) || Number(match[3]) <= 0 ||
+      !Number.isSafeInteger(Number(match[4])) || Number(match[4]) <= 0) {
+    return null;
+  }
+  return { kind: match[1], headSha: match[2], runId: Number(match[3]), attempt: Number(match[4]) };
+}
+function canonicalRuns(runs, { kind, headSha }) {
+  const spec = CHECKS[kind];
+  const externalId = spec.externalId(headSha);
+  const matching = runs.filter((run) => run.external_id === externalId);
+  if (matching.some((run) => run.app?.slug !== APP || run.head_sha !== headSha)) return null;
+  return matching.sort((left, right) => Number(right.id) - Number(left.id));
+}
+async function readCanonicalRuns({ github, owner, repo, kind, headSha }) {
+  const spec = CHECKS[kind];
+  return canonicalRuns(await readCheckRuns({
+    github, owner, repo, ref: headSha, checkName: spec.name,
+  }), { kind, headSha });
+}
+async function ownerIsActive(github, lease) {
+  try {
+    const { data: run } = await github.rest.actions.getWorkflowRun({
+      owner: lease.owner, repo: lease.repo, run_id: lease.runId,
+    });
+    return run.run_attempt === lease.attempt && run.status !== "completed";
+  } catch (error) {
+    if (error?.status === 404) return false;
+    throw error;
+  }
+}
+async function claimAutomaticLease({
+  github, owner, repo, kind, headSha, runId, attempt, allowSuccess = false,
+}) {
+  const runs = await readCanonicalRuns({ github, owner, repo, kind, headSha });
+  if (!runs) return { owner: false, available: false, reason: "canonical check is ambiguous" };
+  if (!allowSuccess && runs.some((run) => run.conclusion === "success")) {
+    return { owner: false, available: true, reason: "canonical success exists" };
+  }
+  const latest = runs[0];
+  if (latest?.status === "in_progress") {
+    const lease = parseLeaseMarker(latest.output?.summary);
+    if (!lease || lease.kind !== kind || lease.headSha !== headSha) {
+      return { owner: false, available: false, reason: "canonical lease is ambiguous" };
+    }
+    if (await ownerIsActive(github, { ...lease, owner, repo })) {
+      return { owner: false, available: true, reason: "canonical lease is active" };
+    }
+  }
+  const marker = leaseMarker({ kind, headSha, runId, attempt });
+  const spec = CHECKS[kind];
+  const { data: claim } = await github.rest.checks.create({
+    owner, repo, name: spec.name, head_sha: headSha, external_id: spec.externalId(headSha),
+    status: "in_progress", output: { title: "Automation in progress", summary: marker },
+  });
+  return {
+    owner: true, available: true,
+    lease: { kind, headSha, runId, attempt, checkRunId: claim.id, marker },
+  };
+}
+
+async function ownsLatestLease({ github, owner, repo, lease }) {
+  if (!lease || lease.marker !== leaseMarker(lease)) return false;
+  const runs = await readCanonicalRuns({
+    github, owner, repo, kind: lease.kind, headSha: lease.headSha,
+  });
+  return Array.isArray(runs) && runs[0]?.id === lease.checkRunId &&
+    runs[0].status === "in_progress" &&
+    runs[0].output?.summary === lease.marker;
+}
+
+async function ownsActiveLease({ github, owner, repo, lease }) {
+  return await ownsLatestLease({ github, owner, repo, lease }) && await ownerIsActive(github, { ...lease, owner, repo });
+}
+
+async function recheckAutomaticReview({
+  github, owner, repo, prNumber, headSha, gate, lease,
+}) {
+  const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+  if (pull.state !== "open" || pull.draft || pull.head?.sha !== headSha) return false;
+  if (!await ownsLatestLease({ github, owner, repo, lease })) return false;
+  const reviews = await readCanonicalRuns({ github, owner, repo, kind: "review", headSha });
+  if (!reviews || reviews.some((run) => run.conclusion === "success")) return false;
+  const classifications = await readCanonicalRuns({
+    github, owner, repo, kind: "classification", headSha,
+  });
+  const classification = classifications?.find((run) => run.id === gate.classificationId);
+  if (!classification || classification.conclusion !== "success") return false;
+  const currentCi = await readLatestExactHeadCiRun({
+    github, owner, repo, expectedSha: headSha,
+    expectedGeneration: { id: gate.ciRunId, attempt: gate.ciRunAttempt },
+  });
+  if (currentCi?.conclusion !== "success" ||
+      !matchesGeneration(currentCi, gate.ciRunId, gate.ciRunAttempt)) return false;
+  const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number: prNumber });
+  const labels = issue.labels.map((label) => typeof label === "string" ? label : label.name);
+  return reviewCount(labels) === reviewCount(gate.labels || []) &&
+    reviewPolicyEligible({ labels, legitimacyStopped: labels.includes("triage/legitimacy") }) ===
+      gate.policyEligible &&
+    labels.includes("triage/legitimacy") === gate.legitimacyStopped;
+}
+
+module.exports = {
+  CHECKS, canonicalRuns, claimAutomaticLease, leaseMarker, ownerIsActive,
+  ownsActiveLease, ownsLatestLease,
+  parseLeaseMarker, recheckAutomaticReview,
+};

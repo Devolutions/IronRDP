@@ -35,6 +35,16 @@ use crate::wire::{
 /// The agent reserves one bounded input-queue entry for each character before submitting any text.
 pub const MAX_UNICODE_TEXT_CHARS: usize = 96;
 
+/// Maximum key press/release operations delivered in one atomic input request.
+pub const MAX_KEY_BATCH_EVENTS: usize = 10;
+
+/// One key operation in a bounded [`Request::KeyBatch`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyInput {
+    Scancode { scancode: u16, pressed: bool },
+    Unicode { ch: char, pressed: bool },
+}
+
 /// Maximum size in bytes of a PNG accepted by [`Request::ClipboardSetImage`].
 ///
 /// This is an RPC payload bound, derived from [`crate::transport::MAX_MESSAGE_LEN`] (the hard cap
@@ -437,6 +447,10 @@ pub enum Request {
     },
     /// Tear down the current RDP session (the daemon keeps running).
     Disconnect,
+    /// Disconnect only if the active session belongs to `server` (`host[:port]`).
+    DisconnectMatching { server: String },
+    /// Shut down the daemon after its reply has been written.
+    DaemonStop,
     /// Query the current session status.
     Status,
     /// Query the live session property bag, optionally filtered.
@@ -461,6 +475,8 @@ pub enum Request {
     KeyScancode { scancode: u16, pressed: bool },
     /// Press or release a key identified by a Unicode character.
     KeyUnicode { ch: char, pressed: bool },
+    /// Deliver one complete key sequence in order through a single input transaction.
+    KeyBatch { events: Vec<KeyInput> },
     /// Type bounded Unicode text in ordered FastPath input messages.
     UnicodeText { text: String },
     /// Resize the remote desktop.
@@ -568,6 +584,10 @@ impl fmt::Debug for Request {
                 .field("log_directive", log_directive)
                 .finish(),
             Self::Disconnect => f.write_str("Disconnect"),
+            Self::DisconnectMatching { server } => {
+                f.debug_struct("DisconnectMatching").field("server", server).finish()
+            }
+            Self::DaemonStop => f.write_str("DaemonStop"),
             Self::Status => f.write_str("Status"),
             Self::QueryProps { filter } => f.debug_struct("QueryProps").field("filter", filter).finish(),
             Self::QueryLogs { substring, last } => f
@@ -597,6 +617,7 @@ impl fmt::Debug for Request {
                 .field("ch", ch)
                 .field("pressed", pressed)
                 .finish(),
+            Self::KeyBatch { events } => f.debug_struct("KeyBatch").field("count", &events.len()).finish(),
             Self::UnicodeText { text } => f
                 .debug_struct("UnicodeText")
                 .field("char_count", &text.chars().count())
@@ -1282,6 +1303,20 @@ pub struct StatusInfo {
     /// When set, a caller driving `connect` does not need to supply a password (or other secrets):
     /// the daemon layers the overlay on top of the request before building the configuration.
     pub credentials_loaded: bool,
+    /// The server certificate that failed strict validation and is not trusted, when that is why the
+    /// session failed. Interactive callers can offer to trust it and reconnect.
+    pub untrusted_certificate: Option<Box<UntrustedCertificate>>,
+}
+
+/// A server certificate rejected by strict validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UntrustedCertificate {
+    /// TLS endpoint (`host:port`) that presented the certificate.
+    pub endpoint: String,
+    /// Lowercase hex SHA-256 fingerprint of the DER certificate.
+    pub sha256: String,
+    /// Why validation failed.
+    pub reason: String,
 }
 
 /// A bulk dump of live properties.
@@ -1595,7 +1630,14 @@ impl Encode for StatusInfo {
         write_opt_u16(dst, self.width)?;
         write_opt_u16(dst, self.height)?;
         write_opt_string(dst, self.message.as_deref())?;
-        write_bool(dst, self.credentials_loaded)
+        write_bool(dst, self.credentials_loaded)?;
+        write_bool(dst, self.untrusted_certificate.is_some())?;
+        if let Some(certificate) = &self.untrusted_certificate {
+            write_string(dst, &certificate.endpoint)?;
+            write_string(dst, &certificate.sha256)?;
+            write_string(dst, &certificate.reason)?;
+        }
+        Ok(())
     }
 
     fn name(&self) -> &'static str {
@@ -1609,6 +1651,10 @@ impl Encode for StatusInfo {
             + opt_u16_size(self.height)
             + opt_string_size(self.message.as_deref())
             + 1 /* credentials_loaded */
+            + 1 /* untrusted_certificate presence */
+            + self.untrusted_certificate.as_ref().map_or(0, |certificate| {
+                string_size(&certificate.endpoint) + string_size(&certificate.sha256) + string_size(&certificate.reason)
+            })
     }
 }
 
@@ -1621,6 +1667,17 @@ impl Decode<'_> for StatusInfo {
         let height = read_opt_u16(src)?;
         let message = read_opt_string(src)?;
         let credentials_loaded = read_bool(src)?;
+        let untrusted_certificate = if src.is_empty() {
+            None
+        } else if read_bool(src)? {
+            Some(Box::new(UntrustedCertificate {
+                endpoint: read_string(src)?,
+                sha256: read_string(src)?,
+                reason: read_string(src)?,
+            }))
+        } else {
+            None
+        };
         Ok(Self {
             state,
             destination,
@@ -1628,6 +1685,7 @@ impl Decode<'_> for StatusInfo {
             height,
             message,
             credentials_loaded,
+            untrusted_certificate,
         })
     }
 }
@@ -2346,6 +2404,11 @@ impl Encode for Request {
                 write_opt_string(dst, log_directive.as_deref())?;
             }
             Self::Disconnect => dst.write_u8(1),
+            Self::DisconnectMatching { server } => {
+                dst.write_u8(39);
+                write_string(dst, server)?;
+            }
+            Self::DaemonStop => dst.write_u8(38),
             Self::Status => dst.write_u8(2),
             Self::QueryProps { filter } => {
                 dst.write_u8(3);
@@ -2393,6 +2456,27 @@ impl Encode for Request {
                 dst.write_u8(10);
                 write_char(dst, *ch)?;
                 write_bool(dst, *pressed)?;
+            }
+            Self::KeyBatch { events } => {
+                if events.is_empty() || events.len() > MAX_KEY_BATCH_EVENTS {
+                    return Err(ironrdp_core::invalid_field_err!("key batch", "invalid event count", in: dst));
+                }
+                dst.write_u8(40);
+                dst.write_u8(cast_length!("key batch count", events.len())?);
+                for event in events {
+                    match event {
+                        KeyInput::Scancode { scancode, pressed } => {
+                            dst.write_u8(0);
+                            dst.write_u16(*scancode);
+                            write_bool(dst, *pressed)?;
+                        }
+                        KeyInput::Unicode { ch, pressed } => {
+                            dst.write_u8(1);
+                            write_char(dst, *ch)?;
+                            write_bool(dst, *pressed)?;
+                        }
+                    }
+                }
             }
             Self::UnicodeText { text } => {
                 dst.write_u8(21);
@@ -2540,6 +2624,7 @@ impl Encode for Request {
                     propertyset::size(properties) + opt_string_size(log_directive.as_deref())
                 }
                 Self::Disconnect
+                | Self::DaemonStop
                 | Self::Status
                 | Self::Screenshot
                 | Self::NowCapabilities
@@ -2549,6 +2634,7 @@ impl Encode for Request {
                 | Self::ClipboardGet
                 | Self::ClipboardGetImage
                 | Self::ClipboardGetHtml => 0,
+                Self::DisconnectMatching { server } => string_size(server),
                 Self::QueryProps { filter } => 1 /* presence */ + filter.as_ref().map_or(0, Encode::size),
                 Self::QueryLogs { substring, last } => {
                     opt_string_size(substring.as_deref()) + 1 /* presence */ + last.map_or(0, |_| 4)
@@ -2558,6 +2644,13 @@ impl Encode for Request {
                 Self::Wheel { .. } => 2 /* delta */ + 1 /* horizontal */,
                 Self::KeyScancode { .. } => 2 /* scancode */ + 1 /* pressed */,
                 Self::KeyUnicode { .. } => 4 /* ch */ + 1 /* pressed */,
+                Self::KeyBatch { events } => {
+                    1 /* event_count */
+                        + events.iter().map(|event| match event {
+                            KeyInput::Scancode { .. } => 1 /* kind */ + 2 /* scancode */ + 1 /* pressed */,
+                            KeyInput::Unicode { .. } => 1 /* kind */ + 4 /* ch */ + 1 /* pressed */,
+                        }).sum::<usize>()
+                }
                 Self::Touch { frames, .. } => {
                     4 /* encode_time */ + 2 /* frame_count */
                         + frames.iter().map(|frame| {
@@ -2613,6 +2706,10 @@ impl Decode<'_> for Request {
                 })
             }
             1 => Ok(Self::Disconnect),
+            39 => Ok(Self::DisconnectMatching {
+                server: read_string(src)?,
+            }),
+            38 => Ok(Self::DaemonStop),
             2 => Ok(Self::Status),
             3 => {
                 ensure_size!(in: src, size: 1);
@@ -2664,6 +2761,33 @@ impl Decode<'_> for Request {
                 let ch = read_char(src)?;
                 let pressed = read_bool(src)?;
                 Ok(Self::KeyUnicode { ch, pressed })
+            }
+            40 => {
+                ensure_size!(in: src, size: 1);
+                let count = usize::from(src.read_u8());
+                if count == 0 || count > MAX_KEY_BATCH_EVENTS {
+                    return Err(ironrdp_core::invalid_field_err!("key batch", "invalid event count", in: src));
+                }
+                let mut events = Vec::with_capacity(count);
+                for _ in 0..count {
+                    ensure_size!(in: src, size: 1);
+                    let event = match src.read_u8() {
+                        0 => {
+                            ensure_size!(in: src, size: 2);
+                            let scancode = src.read_u16();
+                            let pressed = read_bool(src)?;
+                            KeyInput::Scancode { scancode, pressed }
+                        }
+                        1 => {
+                            let ch = read_char(src)?;
+                            let pressed = read_bool(src)?;
+                            KeyInput::Unicode { ch, pressed }
+                        }
+                        _ => return Err(ironrdp_core::invalid_field_err!("key batch", "invalid event kind", in: src)),
+                    };
+                    events.push(event);
+                }
+                Ok(Self::KeyBatch { events })
             }
             21 => Ok(Self::UnicodeText {
                 text: read_string(src)?,
@@ -3199,7 +3323,88 @@ impl_pdu_pod!(OperationEvent);
 mod tests {
     use ironrdp_core::{decode, encode_vec};
 
-    use super::{MAX_RAIL_EVENT_DUMP_EVENTS, RailEvent, RailEventDump, RailEventKind, RailExecuteRequest};
+    use super::{
+        KeyInput, MAX_KEY_BATCH_EVENTS, MAX_RAIL_EVENT_DUMP_EVENTS, RailEvent, RailEventDump, RailEventKind,
+        RailExecuteRequest, Request,
+    };
+
+    #[test]
+    fn daemon_stop_has_a_distinct_request_tag() {
+        let encoded = encode_vec(&Request::DaemonStop).expect("encode");
+        assert_eq!(encoded, [38]);
+        assert_eq!(decode::<Request>(&encoded).expect("decode"), Request::DaemonStop);
+    }
+
+    #[test]
+    fn guarded_disconnect_round_trips_with_a_new_request_tag() {
+        let request = Request::DisconnectMatching {
+            server: "IT-HELP-RDM:3389".to_owned(),
+        };
+        let encoded = encode_vec(&request).expect("encode");
+        assert_eq!(encoded[0], 39);
+        assert_eq!(decode::<Request>(&encoded).expect("decode"), request);
+    }
+
+    #[test]
+    fn key_batch_round_trips_and_rejects_invalid_counts() {
+        let request = Request::KeyBatch {
+            events: vec![
+                KeyInput::Scancode {
+                    scancode: 0x1D,
+                    pressed: true,
+                },
+                KeyInput::Unicode { ch: 'x', pressed: true },
+                KeyInput::Unicode {
+                    ch: 'x',
+                    pressed: false,
+                },
+                KeyInput::Scancode {
+                    scancode: 0x1D,
+                    pressed: false,
+                },
+            ],
+        };
+        let encoded = encode_vec(&request).expect("encode key sequence");
+        assert_eq!(encoded[0], 40);
+        assert_eq!(decode::<Request>(&encoded).expect("decode key sequence"), request);
+        assert!(encode_vec(&Request::KeyBatch { events: Vec::new() }).is_err());
+        assert!(
+            encode_vec(&Request::KeyBatch {
+                events: vec![KeyInput::Unicode { ch: 'a', pressed: true }; MAX_KEY_BATCH_EVENTS + 1],
+            })
+            .is_err()
+        );
+        assert!(decode::<Request>(&[40, 0]).is_err());
+        assert!(decode::<Request>(&[40, u8::try_from(MAX_KEY_BATCH_EVENTS + 1).unwrap()]).is_err());
+        assert!(decode::<Request>(&[40, 1, 2]).is_err());
+        assert!(decode::<Request>(&[40, 1, 0, 0x1D]).is_err());
+    }
+
+    #[test]
+    fn status_decodes_legacy_reply_without_certificate_presence() {
+        let status = super::StatusInfo {
+            state: super::ConnState::NoSession,
+            destination: None,
+            width: None,
+            height: None,
+            message: None,
+            credentials_loaded: false,
+            untrusted_certificate: None,
+        };
+        let mut legacy = encode_vec(&status).expect("encode status");
+        assert_eq!(legacy.pop(), Some(0));
+        assert_eq!(
+            decode::<super::StatusInfo>(&legacy).expect("decode legacy status"),
+            status
+        );
+        assert_eq!(
+            ironrdp_core::decode_owned::<super::StatusInfo>(&legacy).expect("decode owned"),
+            status
+        );
+
+        legacy.push(1);
+        assert!(decode::<super::StatusInfo>(&legacy).is_err());
+    }
 
     #[test]
     fn rail_execute_debug_redacts_command_fields() {

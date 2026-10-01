@@ -3,11 +3,14 @@
 const path = require("node:path");
 
 const { fail } = require("./errors");
-const { MAX_VALIDATION_REASON_BYTES, MAX_VALIDATOR_METADATA_BYTES } = require("./limits");
+const {
+  MAX_VALIDATION_DETAIL_BYTES, MAX_VALIDATION_GUIDANCE_BYTES, MAX_VALIDATION_REASON_BYTES,
+  MAX_VALIDATOR_METADATA_BYTES,
+} = require("./limits");
 const { WorkspaceSandbox } = require("./sandbox");
 
 const SAFE_EXPORT = /^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/;
-const SAFE_REASON = /^[A-Za-z0-9][A-Za-z0-9 .,:;()/_-]{0,511}$/;
+const SAFE_TEXT = /^[A-Za-z0-9][A-Za-z0-9 .,:;()/_-]*$/;
 
 class ValidatorFailure extends Error {
   constructor(reason, category) {
@@ -87,7 +90,23 @@ function loadValidator(workspace, selector, metadata) {
       if (!safeReason(result.reason)) {
         throw new ValidatorFailure("validator returned an unsafe rejection reason", "validator-error");
       }
-      return { ok: false, reason: result.reason };
+      // The reason is the short record kept when repairs run out. A detail is the full content-free
+      // diagnostic for repair and per-attempt diagnostics; guidance is repair-only and may quote
+      // trusted evidence, so it never leaves the conversation.
+      const rejection = { ok: false, reason: result.reason };
+      if (result.detail !== undefined) {
+        if (!safeText(result.detail, MAX_VALIDATION_DETAIL_BYTES)) {
+          throw new ValidatorFailure("validator returned an unsafe rejection detail", "validator-error");
+        }
+        rejection.detail = result.detail;
+      }
+      if (result.guidance !== undefined) {
+        if (!safeText(result.guidance, MAX_VALIDATION_GUIDANCE_BYTES)) {
+          throw new ValidatorFailure("validator returned unsafe repair guidance", "validator-error");
+        }
+        rejection.guidance = result.guidance;
+      }
+      return rejection;
     } catch (error) {
       if (error instanceof ValidatorFailure) throw error;
       throw terminalValidatorFailure(error);
@@ -107,10 +126,14 @@ function loadNormalizer(workspace, selector) {
   };
 }
 
+function safeText(value, maximumBytes) {
+  return typeof value === "string" &&
+    Buffer.byteLength(value, "utf8") <= maximumBytes &&
+    SAFE_TEXT.test(value);
+}
+
 function safeReason(reason) {
-  return typeof reason === "string" &&
-    Buffer.byteLength(reason, "utf8") <= MAX_VALIDATION_REASON_BYTES &&
-    SAFE_REASON.test(reason);
+  return safeText(reason, MAX_VALIDATION_REASON_BYTES);
 }
 
 function terminalValidatorFailure(error) {

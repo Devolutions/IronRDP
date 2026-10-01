@@ -17,6 +17,7 @@ The workflow controls:
 
 - Provider connection details and credentials.
 - Model and instructions.
+- An optional bounded prompt context appended to the configured prompt.
 - Output schema.
 - Read-only filesystem capabilities.
 - Stage, stream-idle, request-retry, model-turn, tool-call, and output-repair limits.
@@ -24,7 +25,8 @@ The workflow controls:
 - An optional task-specific validator and its bounded metadata.
 - An optional structured-output file target.
 
-Configuration, prompts, schemas, normalizer modules, and validator modules are trusted workflow inputs.
+Configuration, prompts, prompt contexts, schemas, normalizer modules, and validator modules are trusted workflow inputs.
+A prompt context reaches the model as instructions rather than as a tool result, so it may carry only text whose shape the workflow has constrained, never raw evidence or model output.
 Evidence and model-produced tool arguments never grant capabilities.
 The model can call only the declared `read_file`, `list_files`, and `search_text` tools within the configured paths and resource limits.
 
@@ -90,7 +92,10 @@ A semantic repair may use only necessary read-only evidence lookup.
 After evidence lookup, the corrected value is requested without tools so the configured provider output format applies where supported.
 Every schema-invalid canonical candidate is supplied to the validator in canonical order wherever parsed candidates are retained, so repair cannot silently discard usable findings.
 Normalizer failures create no repair-history entry.
-Every rejected attempt records the validation layer and a bounded, sanitized reason.
+A semantic rejection carries a short content-free reason and may add a longer content-free detail and repair-only guidance.
+Repair feedback carries the detail in place of the reason, so a repair sees everything the short reason had to drop.
+Guidance may quote trusted identifiers the model must copy; it is sent only as repair feedback and never appears in diagnostics, logs, or failure reasons.
+Every rejected attempt records the validation layer, a bounded, sanitized reason, and any validator detail.
 The final rejection reason is retained when the repair budget is exhausted.
 
 ## Structured output files
@@ -113,7 +118,7 @@ Expose these bounded diagnostics:
 - Provider finish reason and bounded error code when available.
 - Token usage and whether it is complete.
 - Accumulated turn and tool-call counts, including on failure.
-- Every rejected output attempt with its validation layer and sanitized reason.
+- Every rejected output attempt with its validation layer, sanitized reason, and sanitized validator detail.
 - The first stream structural violation as a closed static value with no provider data.
 - Ignored empty post-finish choices, repeated terminal-choice subsets, and the first rejected post-finish shape as closed, content-free values.
 

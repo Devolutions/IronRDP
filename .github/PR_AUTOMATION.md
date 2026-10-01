@@ -218,6 +218,19 @@ Bot-authored pull requests do not run automatic routes or label reconciliation.
 Force mode can override policy gates for an open pull request at its current head after a trusted, valid classification for that exact head selects its reviewers.
 Force mode never bypasses classification validity, evidence retrieval, output validation, filesystem restrictions, protocol citation validation, or stale-head checks.
 
+## Supersession lease
+
+Automatic classification and review claim their existing canonical check run before provider work.
+The in-progress check contains only a versioned ownership marker with the kind, exact head SHA, workflow run ID, and run attempt.
+Admission reads all matching check history, accepts only the GitHub Actions app, and blocks while the marked owner is active.
+Canonical success is absorbing for an exact head, so later automatic or forced neutral and failure states do not change its check, labels, comments, or review count.
+An automatic writer must still own its latest claim before it mutates the pull request, and completes that claim to success or neutral.
+
+This is deliberately at-least-once execution.
+If a run crashes after provider work, a later run may repeat the model call after the owner is terminal, canceled, or missing.
+A failed final check or dispatch after earlier publication can require manual repair.
+The automation does not recover artifacts, store receipts or a transaction ledger, or reconcile partial publication and lifecycle state.
+
 ## Size and fork limits
 
 Size uses the larger bucket from counted changed lines or touched files:
