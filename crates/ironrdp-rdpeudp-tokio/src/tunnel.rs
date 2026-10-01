@@ -15,6 +15,7 @@ use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tracing::{debug, trace};
 
 use crate::error::{UdpTransportError, UdpTransportErrorExt as _};
+use crate::transport::TunnelMessage;
 
 /// Read a complete RDPEMT PDU from the stream using self-framing.
 ///
@@ -128,7 +129,7 @@ where
 pub(crate) async fn tunnel_data_loop<S>(
     stream: &mut S,
     tunnel: &mut RdpemtTunnel,
-    data_tx: &tokio::sync::mpsc::Sender<Vec<u8>>,
+    data_tx: &tokio::sync::mpsc::Sender<TunnelMessage>,
 ) -> Result<(), UdpTransportError>
 where
     S: AsyncRead + Unpin,
@@ -154,13 +155,16 @@ where
 
         while let Some(event) = tunnel.poll_event() {
             match event {
-                // `sub_headers` (e.g. auto-detect bandwidth measurement, MS-RDPBCGR
-                // 2.2.14) are not consumed here; this driver only wires the DVC
-                // payload through. A future auto-detect integration would need to
-                // dispatch them instead of discarding them.
-                TunnelEvent::Data { data, .. } => {
-                    trace!(len = data.len(), "Forwarding tunnel data");
-                    if data_tx.send(data).await.is_err() {
+                // Sub-headers go through with the data: they carry the
+                // auto-detect messages ([MS-RDPBCGR] 1.3.9) of a sideband
+                // channel in use, which the application answers.
+                TunnelEvent::Data { sub_headers, data } => {
+                    trace!(
+                        len = data.len(),
+                        sub_headers = sub_headers.len(),
+                        "Forwarding tunnel data"
+                    );
+                    if data_tx.send(TunnelMessage { sub_headers, data }).await.is_err() {
                         debug!("Tunnel data receiver dropped, stopping read pump");
                         // Application dropped the receiver
                         return Ok(());
@@ -262,5 +266,44 @@ mod tests {
         // Complete header (PayloadLen=5) but only 2 payload bytes arrive.
         let mut cursor = io::Cursor::new(vec![0x02, 0x05, 0x00, 0x04, 0x48, 0x65]);
         assert!(read_tunnel_pdu(&mut cursor).await.is_err());
+    }
+
+    /// Sub-headers reach the application with the data they came with. They
+    /// carry the auto-detect messages of a sideband channel in use
+    /// ([MS-RDPBCGR] 1.3.9), which used to be dropped here.
+    #[tokio::test]
+    async fn the_data_loop_forwards_sub_headers() {
+        use ironrdp_rdpemt::{SubHeaderType, TunnelConfig, TunnelCreateResponse, TunnelData, TunnelSubHeader};
+
+        let mut tunnel = RdpemtTunnel::client(TunnelConfig {
+            request_id: 1,
+            security_cookie: [0; 16],
+        });
+        let response = ironrdp_core::encode_vec(&TunnelCreateResponse {
+            hr_response: TunnelCreateResponse::S_OK,
+        })
+        .expect("encode response");
+        tunnel.handle_pdu(&response).expect("tunnel established");
+        while tunnel.poll_event().is_some() {}
+
+        let sub_header = TunnelSubHeader {
+            sub_header_type: SubHeaderType::AutoDetectResponse,
+            data: vec![0x0e, 0x00, 0x05, 0x00],
+        };
+        let wire = ironrdp_core::encode_vec(&TunnelData {
+            sub_headers: vec![sub_header.clone()],
+            higher_layer_data: Vec::new(),
+        })
+        .expect("encode data");
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let mut stream = io::Cursor::new(wire);
+        tunnel_data_loop(&mut stream, &mut tunnel, &tx)
+            .await
+            .expect("clean EOF");
+
+        let message = rx.recv().await.expect("one message");
+        assert_eq!(message.sub_headers, vec![sub_header]);
+        assert!(message.data.is_empty());
     }
 }
