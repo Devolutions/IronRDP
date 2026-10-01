@@ -366,12 +366,48 @@ impl Avc420Region {
     }
 }
 
+/// Whether `data` is H.264 AVC format (4-byte big-endian length prefixes)
+/// rather than an Annex B byte stream
+///
+/// MS-RDPEGFX specifies Annex B, so a buffer that starts with a start code
+/// (`00 00 01` or `00 00 00 01`) is Annex B. Any other buffer is AVC format
+/// if its length prefixes chain exactly to the end of the buffer.
+///
+/// Checking the chain first would misread valid Annex B: `00 00 01 67`
+/// followed by 359 bytes is also a well-formed one-unit AVC buffer. Checking
+/// the start code first moves the ambiguity to AVC senders whose first NAL
+/// unit is 1 or 256..=511 bytes long, which don't follow the specification.
+pub fn is_avc_format(data: &[u8]) -> bool {
+    if data.starts_with(&[0x00, 0x00, 0x01]) || data.starts_with(&[0x00, 0x00, 0x00, 0x01]) {
+        return false;
+    }
+    let mut offset = 0usize;
+    loop {
+        if offset == data.len() {
+            return !data.is_empty();
+        }
+        let Some(len_bytes) = data.get(offset..offset + 4).and_then(|b| <[u8; 4]>::try_from(b).ok()) else {
+            return false;
+        };
+        let next = usize::try_from(u32::from_be_bytes(len_bytes))
+            .ok()
+            .filter(|&len| len > 0)
+            .and_then(|len| (offset + 4).checked_add(len));
+        match next {
+            Some(next) if next <= data.len() => offset = next,
+            _ => return false,
+        }
+    }
+}
+
 /// Convert H.264 AVC format to Annex B format
 ///
-/// OpenH264 and similar decoders consume Annex B format (start code prefixed),
-/// but MS-RDPEGFX delivers AVC format (length-prefixed NAL units). This helper
-/// converts between the two by replacing each 4-byte big-endian length prefix
-/// with the 4-byte Annex B start code `[0x00, 0x00, 0x00, 0x01]`.
+/// OpenH264 and similar decoders consume Annex B format (start code prefixed).
+/// MS-RDPEGFX specifies Annex B on the wire, but earlier versions of this
+/// crate documented AVC format (length-prefixed NAL units), so senders may
+/// still use it. This helper converts AVC input by
+/// replacing each 4-byte big-endian length prefix with the 4-byte Annex B
+/// start code `[0x00, 0x00, 0x00, 0x01]`.
 ///
 /// ```text
 /// AVC:     <4-byte BE length> <NAL> <4-byte BE length> <NAL> ...
@@ -448,8 +484,9 @@ pub fn avc_to_annex_b_into(data: &[u8], out: &mut Vec<u8>) {
 
 /// Convert H.264 Annex B format to AVC format
 ///
-/// MS-RDPEGFX requires AVC format (length-prefixed NAL units),
-/// but most encoders output Annex B format (start code prefixed).
+/// MS-RDPEGFX specifies Annex B (start code prefixed) on the wire, so this is
+/// only needed to produce AVC format (length-prefixed NAL units) for
+/// consumers that require it.
 ///
 /// ```text
 /// Annex B: 00 00 00 01 <NAL> 00 00 00 01 <NAL> ...
@@ -557,7 +594,8 @@ pub const fn align_to_16(dimension: u32) -> u32 {
 /// # Arguments
 ///
 /// * `regions` - List of regions with their encoding parameters
-/// * `h264_data` - H.264 encoded data (should be in AVC format, not Annex B)
+/// * `h264_data` - H.264 encoded data as an Annex B byte stream, which is the
+///   format MS-RDPEGFX specifies for `RFX_AVC420_BITMAP_STREAM`
 ///
 /// # Returns
 ///
