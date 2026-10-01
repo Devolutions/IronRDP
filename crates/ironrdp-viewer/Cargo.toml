@@ -45,7 +45,7 @@ inquire = "0.9"
 proc-exit = "2"
 
 # Logging
-tracing = { version = "0.1", features = ["log"] }
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Async, futures

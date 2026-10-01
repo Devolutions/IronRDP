@@ -28,7 +28,7 @@ tracing-web = "0.1"
 console_error_panic_hook = { version = "0.1", optional = true }
 
 # Logging
-tracing = { version = "0.1", features = ["log"] }
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["time"] }
 
 [lints]

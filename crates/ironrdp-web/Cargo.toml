@@ -81,7 +81,7 @@ futures-util = { version = "0.3", features = ["sink", "io"] }
 futures-channel = "0.3"
 
 # Logging
-tracing = { version = "0.1", features = ["log"] }
+tracing = "0.1"
 
 # Utils
 anyhow = "1"
