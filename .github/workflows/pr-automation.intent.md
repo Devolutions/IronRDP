@@ -77,18 +77,19 @@ Keep detailed failure reasons in the workflow summary only.
 Classify every non-draft, human-authored pull request that passes the integrity and capacity gates.
 Run automated review after the latest CI generation succeeds for the exact classified head.
 Run the second review after a later push reaches green exact-head CI.
-At `ai-reviewed/2`, the review pipeline stops and the review route hands a green pull request to `needs-review`.
+At `ai-reviewed/2`, the review pipeline stops and lifecycle reconciliation hands a green pull request to `needs-review`.
 
 `needs-review` means a human reviewer is the next actor, and `needs-author-action` means the author is the next actor.
-They are automation-owned and mutually exclusive.
+Lifecycle reconciliation exclusively owns these mutually exclusive actor labels.
 An attempted exact-head classification or eligible review failure applies only `automation-failed`.
-Successful normal classification can clear stale actor and failure labels before it dispatches review.
-An automated review with findings applies `needs-author-action`, and one without findings applies `needs-review`.
-Valid classification plus green CI hands legitimacy triage to `needs-review` without a model call.
-Blocked and duplicate review routes preserve or clear actor state through their resolved state without creating a failure label.
+Every successful app-owned exact-head review check persists a bounded versioned `findings` or `no-findings` receipt.
+Reconciliation trusts only a newest canonical successful check with the expected app, SHA, external ID, conclusion, schema, and exact receipt keys.
+Existing successful checks without that receipt fail closed before lifecycle clearing.
+Successful review outcomes, clean terminal handoffs, and legitimacy stops become actor labels only through a fresh reconciliation snapshot.
+Closed and draft pull requests, active leases, and missing, pending, or nonstandard terminal CI conclusions select neither actor.
+Exact-head CI failure selects `needs-author-action` independently of `automation-failed`.
 The final writer accepts successful non-forced review and handoff state only when the stored CI generation is still the latest green exact-head CI generation.
-The CI completion that triggers review is authoritative for its own generation; a lagging run listing is not staleness and must not silently skip an eligible review, but a newer CI generation still wins.
-Prompt lifecycle clearing and convergence are deferred to the supersession and reconciliation follow-up.
+The CI event is authoritative for its exact-head generation while listings catch up, and a newer listed exact-head generation always wins.
 
 Every non-bot author is eligible immediately; there is no prior-merge requirement.
 
@@ -110,6 +111,15 @@ Adding `ai-review/allow-oversized` forces reclassification and may dispatch on t
 Unrelated label events and repeated non-explicit unchanged classifications must not dispatch.
 
 Force mode bypasses policy gates but not classification prerequisites, evidence, validation, filesystem, citation, publication, or stale-head safeguards.
+
+Lifecycle events include ready and draft transitions, closure, relevant labels, and requested, in-progress, and completed CI states.
+Automation-written label events may reconcile lifecycle but never start automatic classification on their own.
+Classification admission, review admission, result publication, and reconciliation use one per-pull-request mutation boundary.
+The workflow and mutation boundary retain queued wake-ups with non-canceling `queue: max` concurrency, so stale work revalidates and no-ops without interrupting active publication.
+An admitted classifier that reaches draft publishes nothing.
+An admitted review may publish its validated exact-head review, successful outcome check, and single count label while draft or closed-unmerged when all authority, CI, policy, and lease guards still pass.
+Closed and merged pull requests never admit new automatic work, and merged pull requests publish no in-flight result.
+If review creation is rejected after closed-unmerged validation, complete the lease neutral without a partial publication.
 
 ## Run summary
 

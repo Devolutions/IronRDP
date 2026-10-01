@@ -28,24 +28,18 @@ function labelsOf(labels) {
 
 function reviewCount(labels) {
   const present = labels instanceof Set ? labels : labelsOf(labels);
-  return present.has("ai-reviewed/2") ? "ai-reviewed/2"
-    : present.has("ai-reviewed/1") ? "ai-reviewed/1"
-    : null;
+  const first = present.has("ai-reviewed/1");
+  const second = present.has("ai-reviewed/2");
+  if (first && second) return undefined;
+  return second ? "ai-reviewed/2" : first ? "ai-reviewed/1" : null;
 }
 
-function actorFailureLabelSets(actor = [], failure = []) {
-  return [
-    { owned: ACTOR_LABELS, desired: actor },
-    { owned: [FAILURE_LABEL], desired: failure },
-  ];
+function failureLabelSets(failure = []) {
+  return [{ owned: [FAILURE_LABEL], desired: failure }];
 }
 
-function preservedActorFailureLabelSets(labels) {
-  const actors = ACTOR_LABELS.filter((label) => labels.has(label));
-  return actorFailureLabelSets(
-    actors.length === 1 ? actors : [],
-    labels.has(FAILURE_LABEL) ? [FAILURE_LABEL] : [],
-  );
+function preservedFailureLabelSets(labels) {
+  return failureLabelSets(labels.has(FAILURE_LABEL) ? [FAILURE_LABEL] : []);
 }
 
 function boundStatus(value, expectedSha, allowed) {
@@ -97,7 +91,7 @@ function failedClassification(expectedSha, deterministic, reason, rateLimit, sem
     labelSets: [
       ...deterministicLabelSets(deterministic),
       { owned: RISK, desired: [semverStatus === "suspected" ? "risk/high" : "risk/unknown"] },
-      ...actorFailureLabelSets([], [FAILURE_LABEL]),
+      ...failureLabelSets([FAILURE_LABEL]),
       ...(semverStatus === "suspected"
         ? [{ owned: ["breaking-change"], desired: ["breaking-change"] }]
         : []),
@@ -185,7 +179,7 @@ function resolveClassificationState({
     { owned: ["scope/cross-cutting"], desired: model.cross_cutting ? ["scope/cross-cutting"] : [] },
     ...optional.map(([label, enabled]) => ({ owned: [label], desired: enabled ? [label] : [] })),
     { owned: ["breaking-change"], desired: breaking ? ["breaking-change"] : [] },
-    ...(forced ? preservedActorFailureLabelSets(existing) : actorFailureLabelSets()),
+    ...(forced ? preservedFailureLabelSets(existing) : failureLabelSets()),
   ];
   const legitimacyStopped = model.likely_non_legitimate;
   const addLabels = [
@@ -258,8 +252,8 @@ function resolveReviewState({
     ? { ciRunId: ciGeneration.id, ciRunAttempt: ciGeneration.attempt }
     : {};
   const state = (reason, {
-    failed = false, report = false, actor = [], failure = [],
-    blocked = false, labelSets = actorFailureLabelSets(actor, failure),
+    failed = false, report = false, failure = [],
+    blocked = false, labelSets = failureLabelSets(failure),
   } = {}) => {
     const comments = [
       forced ? null : quotaComment(rateLimit),
@@ -284,38 +278,36 @@ function resolveReviewState({
       } } : {}),
     };
   };
-  const blocked = (reason, { clearActors = false } = {}) => state(reason, {
-    blocked: true,
-    labelSets: clearActors ? [{ owned: ACTOR_LABELS, desired: [] }] : [],
-  });
+  const blocked = (reason) => state(reason, { blocked: true, labelSets: [] });
   const fail = (reason) => state(reason, {
-    failed: true, report: true, actor: [], failure: [FAILURE_LABEL],
+    failed: true, report: true, failure: [FAILURE_LABEL],
   });
   if (typeof expectedSha !== "string") return { ok: false, reason: "missing expected SHA" };
+  const currentReviewCount = reviewCount(existing);
+  if (currentReviewCount === undefined) return blocked("review count is ambiguous");
   if (forced) {
     if (gate?.force !== true || gate.head_sha !== expectedSha) return fail("forced review gate unavailable");
     const classification = validateReviewGate(gate, expectedSha);
     if (!classification.ok) return fail(classification.reason);
+    if (!Number.isSafeInteger(gate.classificationId) || gate.classificationId <= 0) {
+      return fail("forced classification identity unavailable");
+    }
     if (typeof reviewMarkerId !== "string" || !/^[1-9]\d{0,19}$/.test(reviewMarkerId)) {
       return fail("forced review marker unavailable");
     }
   } else {
     if (!gate || gate.head_sha !== expectedSha) return blocked("review gate unavailable");
-    if (gate.ciGreen !== true) return blocked("CI has not succeeded", { clearActors: true });
+    if (gate.ciGreen !== true) return blocked("CI has not succeeded");
     if (gate.classificationValid === true &&
         (existing.has("ai-reviewed/2") || gate.legitimacyStopped === true ||
          existing.has(LEGITIMACY_LABEL))) {
       return {
-        ...state("review is handed to a human", {
-          actor: ["needs-review"], failure: [],
-        }),
+        ...state("review is handed to a human"),
         handoff: existing.has("ai-reviewed/2") ? "terminal" : "legitimacy",
         ...ciState,
       };
     }
-    if (rateLimit && rateLimit.status !== "allowed") return blocked("fork LLM quota unavailable", {
-      clearActors: true,
-    });
+    if (rateLimit && rateLimit.status !== "allowed") return blocked("fork LLM quota unavailable");
     if (typeof gate.ok !== "boolean" || gate.reason) {
       const reason = gate?.reason ? `review gate unavailable: ${gate.reason}` : "review gate unavailable";
       return blocked(reason);
@@ -353,7 +345,6 @@ function resolveReviewState({
   if (!reviewerResult?.ok || reviewerResult.value?.head_sha !== expectedSha) {
     return fail(reviewerReason || reviewerResult?.reason || "reviewer unavailable");
   }
-  const currentReviewCount = reviewCount(existing);
   const nextCount = currentReviewCount === "ai-reviewed/2" ? "ai-reviewed/2"
     : currentReviewCount === "ai-reviewed/1" ? "ai-reviewed/2"
     : "ai-reviewed/1";
@@ -365,19 +356,30 @@ function resolveReviewState({
     ok: true, mode: "review", expectedSha,
     labelSets: [
       { owned: AI_COUNTS, desired: [nextCount] },
-      ...actorFailureLabelSets(
-        hasFindings ? ["needs-author-action"] : ["needs-review"],
-        [],
-      ),
+      ...failureLabelSets(),
     ],
     comments: [{
       kind: "review", marker: reviewMarker, review: reviewerResult.value,
       reducedCoverage: Array.isArray(reducedCoverage) ? reducedCoverage : [],
     }],
     removeCommentMarkers: [EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER],
-    check: { name: "AI automated review", externalId: expectedSha },
+    check: {
+      name: "AI automated review",
+      externalId: expectedSha,
+      outcome: hasFindings ? "findings" : "no-findings",
+    },
+    outcome: hasFindings ? "findings" : "no-findings",
     expectedReviewCount,
+    nextReviewCount: nextCount,
     forced,
+    admittedGate: {
+      classificationId: gate.classificationId,
+      ciRunId: ciGeneration?.id ?? null,
+      ciRunAttempt: ciGeneration?.attempt ?? null,
+      labels: gate.labels || [],
+      policyEligible: gate.policyEligible,
+      legitimacyStopped: gate.legitimacyStopped,
+    },
     ...(!forced ? ciState : {}),
     protocolRelated: gate.protocolRelated === true,
   };

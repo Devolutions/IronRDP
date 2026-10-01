@@ -16,10 +16,10 @@ run-name: >-
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review, edited, labeled, unlabeled]
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed, edited, labeled, unlabeled]
   workflow_run:
     workflows: [CI]
-    types: [completed]
+    types: [requested, in_progress, completed]
   repository_dispatch:
     types: [pr-automation-classified]
   workflow_dispatch:
@@ -40,16 +40,16 @@ on:
         type: boolean
 
 concurrency:
-  # Keep event routes separate so a stale CI completion cannot cancel newer PR-head automation.
-  # Group CI completions by source commit because their associated PR may already have moved ahead.
-  # Non-request labels get their own group, so their no-op runs cannot cancel active automation.
+  # Keep event routes separate while retaining every bounded pending wake-up.
+  # Admission revalidates current state, so stale queued work safely becomes a no-op.
   group: >-
     pr-automation-${{ github.event_name }}-${{ github.event.workflow_run.head_sha ||
     github.event.pull_request.number || inputs.pr-number ||
     github.event.client_payload.pr_number ||
     github.run_id }}-${{ github.event.label.name == 'ai-review/allow-oversized' && 'pr' ||
     github.event.label.name && format('label-{0}', github.event.label.name) || 'pr' }}
-  cancel-in-progress: true
+  cancel-in-progress: false
+  queue: max
 
 permissions: {}
 
@@ -229,12 +229,14 @@ jobs:
       needs.classification-gate.outputs.required == 'true'))
     runs-on: ubuntu-latest
     concurrency:
-      group: pr-automation-admission-classification-${{ needs.resolve-pr.outputs.pr-number }}
+      group: pr-automation-mutation-${{ needs.resolve-pr.outputs.pr-number }}
       cancel-in-progress: false
+      queue: max
     permissions:
       actions: read
       checks: write
       contents: read
+      pull-requests: read
     outputs:
       owner: ${{ steps.claim.outputs.owner }}
       lease: ${{ steps.claim.outputs.lease }}
@@ -248,6 +250,7 @@ jobs:
         uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
           FORCE: ${{ needs.resolve-pr.outputs.force }}
           ALLOW_SUCCESS: ${{ needs.resolve-pr.outputs.review-requested }}
           RUN_ID: ${{ github.run_id }}
@@ -263,6 +266,7 @@ jobs:
             const decision = await claimAutomaticLease({
               github, owner: context.repo.owner, repo: context.repo.repo,
               kind: "classification", headSha: process.env.HEAD_SHA,
+              prNumber: Number(process.env.PULL_REQUEST_NUMBER),
               runId: Number(process.env.RUN_ID), attempt: Number(process.env.RUN_ATTEMPT),
               allowSuccess: process.env.ALLOW_SUCCESS === "true",
             });
@@ -673,7 +677,7 @@ jobs:
               const classificationCheck = classificationValid &&
                 classification.output?.title === "Classification complete" &&
                 protocolState.automaticReviewEligible === true;
-              const classificationId = classificationCheck ? classification.id : null;
+              const classificationId = classificationValid ? classification.id : null;
               const legitimacyStopped = classificationOwned &&
                 classification.output?.title === "Automation stopped";
               const protocolRelated = protocolState?.protocolRelated === true;
@@ -764,12 +768,15 @@ jobs:
       needs.review-gate.outputs.eligible == 'true'
     runs-on: ubuntu-latest
     concurrency:
-      group: pr-automation-admission-review-${{ needs.resolve-pr.outputs.pr-number }}
+      group: pr-automation-mutation-${{ needs.resolve-pr.outputs.pr-number }}
       cancel-in-progress: false
+      queue: max
     permissions:
       actions: read
       checks: write
       contents: read
+      issues: read
+      pull-requests: read
     outputs:
       owner: ${{ steps.claim.outputs.owner }}
       lease: ${{ steps.claim.outputs.lease }}
@@ -783,6 +790,8 @@ jobs:
         uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+          GATE: ${{ needs.review-gate.outputs.gate }}
           FORCE: ${{ needs.resolve-pr.outputs.force }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -794,9 +803,11 @@ jobs:
               return;
             }
             const { claimAutomaticLease } = require("./.github/pr-automation/automation-lease");
+            const gate = JSON.parse(process.env.GATE || "{}");
             const decision = await claimAutomaticLease({
               github, owner: context.repo.owner, repo: context.repo.repo,
               kind: "review", headSha: process.env.HEAD_SHA,
+              prNumber: Number(process.env.PULL_REQUEST_NUMBER), gate,
               runId: Number(process.env.RUN_ID), attempt: Number(process.env.RUN_ATTEMPT),
             });
             core.setOutput("owner", decision.owner);
@@ -1022,11 +1033,12 @@ jobs:
     name: Write pull request state
     needs: [resolve-pr, classification-gate, classification-admission, deterministic-analysis, fork-rate-limit, semver,
       classifier, resolve-classification-state, review-gate, review-admission, review-pipeline, resolve-review-state]
-    if: always() && !cancelled() && needs.resolve-pr.outputs.ok == 'true'
+    if: always() && !cancelled() && needs.resolve-pr.outputs.pr-number != ''
     runs-on: ubuntu-latest
     concurrency:
-      group: pr-automation-write-${{ needs.resolve-pr.outputs.pr-number }}
+      group: pr-automation-mutation-${{ needs.resolve-pr.outputs.pr-number }}
       cancel-in-progress: false
+      queue: max
     permissions:
       actions: read
       contents: write
@@ -1051,6 +1063,7 @@ jobs:
         env:
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
           REVIEW_REQUESTED: ${{ needs.resolve-pr.outputs.review-requested }}
+          OBSERVED_CI_RUN: ${{ needs.resolve-pr.outputs.observed-ci-run }}
           CLASSIFICATION_STATE: ${{ needs.resolve-classification-state.outputs.state }}
           UPSTREAM_RESULTS: >-
             {"classification-gate":"${{ needs.classification-gate.result }}","deterministic-analysis":"${{ needs.deterministic-analysis.result }}","fork-rate-limit":"${{ needs.fork-rate-limit.result }}","semver":"${{ needs.semver.result }}","classifier":"${{ needs.classifier.result }}","resolve-classification-state":"${{ needs.resolve-classification-state.result }}","review-gate":"${{ needs.review-gate.result }}","review-pipeline":"${{ needs.review-pipeline.result }}","resolve-review-state":"${{ needs.resolve-review-state.result }}"}
@@ -1058,6 +1071,8 @@ jobs:
           script: |
             const fs = require("node:fs");
             const { writeState } = require("./.github/pr-automation/write-state");
+            const { StaleHeadError } = require("./.github/pr-automation/current-head");
+            const { reconcileLifecycle } = require("./.github/pr-automation/lifecycle");
             const parse = (value) => { try { return JSON.parse(value || ""); } catch { return null; } };
             const readState = (file) => {
               try { return parse(fs.readFileSync(file, "utf8")); } catch { return null; }
@@ -1073,17 +1088,29 @@ jobs:
                 expectedSha: state.expectedSha,
               } : null,
             }));
-            if (!state) {
-              core.warning("No normalized state was available; no PR mutation was attempted");
-              return;
+            try {
+              if (!state) {
+                core.info("No normalized result state was available; reconciling lifecycle only");
+              } else {
+                await writeState({
+                  github, owner: context.repo.owner, repo: context.repo.repo,
+                  prNumber: Number(process.env.PULL_REQUEST_NUMBER), state,
+                  botLogin: "github-actions[bot]",
+                  reviewRequested: process.env.REVIEW_REQUESTED === "true",
+                });
+              }
+            } catch (error) {
+              if (!(error instanceof StaleHeadError)) throw error;
+              core.info("Result publication became stale; reconciling lifecycle only");
+            } finally {
+              const lifecycle = await reconcileLifecycle({
+                github, owner: context.repo.owner, repo: context.repo.repo,
+                prNumber: Number(process.env.PULL_REQUEST_NUMBER),
+                observedRun: parse(process.env.OBSERVED_CI_RUN),
+              });
+              core.info(JSON.stringify({ event: "pr-automation.lifecycle", lifecycle }));
             }
-            await writeState({
-              github, owner: context.repo.owner, repo: context.repo.repo,
-              prNumber: Number(process.env.PULL_REQUEST_NUMBER), state,
-              botLogin: "github-actions[bot]",
-              reviewRequested: process.env.REVIEW_REQUESTED === "true",
-            });
             core.info(JSON.stringify({
               event: "pr-automation.write-state-complete",
-              decision: { expectedSha: state.expectedSha, mode: state.mode },
+              decision: state ? { expectedSha: state.expectedSha, mode: state.mode } : null,
             }));

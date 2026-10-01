@@ -21,11 +21,27 @@ async function readPullRequest({ github, owner, repo, pullNumber }) {
   }
 }
 
-async function assertCurrentHead({ github, owner, repo, pullNumber, expectedHeadSha }) {
+async function assertCurrentHead({
+  github, owner, repo, pullNumber, expectedHeadSha, allowClosedUnmerged = false,
+}) {
   const data = await readPullRequest({ github, owner, repo, pullNumber });
-  if (data.state !== "open" || data.head?.sha !== expectedHeadSha) {
+  const closedUnmerged = data.state === "closed" && !data.merged && !data.merged_at;
+  if ((data.state !== "open" && !(allowClosedUnmerged && closedUnmerged)) ||
+      data.head?.sha !== expectedHeadSha) {
     throw new StaleHeadError();
   }
+  return data;
 }
 
-module.exports = { StaleHeadError, assertCurrentHead };
+function isOpenNonDraftAtHead(pull, expectedHeadSha) {
+  return pull?.state === "open" && pull.draft !== true && pull.head?.sha === expectedHeadSha;
+}
+
+async function isOpenNonDraftAtHeadNow({ github, owner, repo, pullNumber, expectedHeadSha }) {
+  const data = await readPullRequest({ github, owner, repo, pullNumber });
+  return isOpenNonDraftAtHead(data, expectedHeadSha);
+}
+
+module.exports = {
+  StaleHeadError, assertCurrentHead, isOpenNonDraftAtHead, isOpenNonDraftAtHeadNow,
+};

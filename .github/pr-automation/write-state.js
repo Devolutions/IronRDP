@@ -8,13 +8,27 @@ const {
   reducedCoverageText, reviewBody,
 } = require("./review-render");
 const { reviewPolicyEligible } = require("./routing");
-const { ownsActiveLease, parseLeaseMarker } = require("./automation-lease");
-const { assertCurrentHead } = require("./current-head");
+const {
+  hasCurrentValidClassification, ownsActiveLease, parseLeaseMarker, recheckAutomaticReview,
+} = require("./automation-lease");
+const {
+  assertCurrentHead, isOpenNonDraftAtHead, isOpenNonDraftAtHeadNow,
+} = require("./current-head");
 const { matchesGeneration, readLatestExactHeadCiRun } = require("./ci-state");
-const { ACTOR_LABELS, reviewCount } = require("./resolve-state");
+const { ACTOR_LABELS, AI_COUNTS, reviewCount } = require("./resolve-state");
+const { encodeReviewOutcome } = require("./review-outcome");
 
 class StalePolicyError extends Error {
   constructor() { super("pull request review policy changed"); this.name = "StalePolicyError"; }
+}
+
+class ClosedReviewRejectedError extends Error {
+  constructor() { super("GitHub rejected review publication for a closed pull request"); }
+}
+
+async function isClosedUnmergedAtHead(github, owner, repo, prNumber, expectedSha) {
+  const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+  return pull.state === "closed" && !pull.merged && !pull.merged_at && pull.head?.sha === expectedSha;
 }
 
 async function issueLabels(github, owner, repo, prNumber) {
@@ -50,7 +64,7 @@ function markerBody(comment, owner, repo) {
 }
 
 async function upsertMarkedComment(
-  github, owner, repo, prNumber, expectedSha, botLogin, comment, canMutate,
+  github, owner, repo, prNumber, expectedSha, botLogin, comment, canMutate, allowClosedUnmerged = false,
 ) {
   if (!botLogin || typeof botLogin !== "string") throw new Error("botLogin is required for comment ownership");
   const body = markerBody(comment, owner, repo);
@@ -58,7 +72,9 @@ async function upsertMarkedComment(
     item.user?.login === botLogin && typeof item.body === "string" && item.body.includes(comment.marker));
   if (existing?.body === body) return false;
   await issueLabels(github, owner, repo, prNumber);
-  await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha });
+  await assertCurrentHead({
+    github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha, allowClosedUnmerged,
+  });
   if (canMutate && !await canMutate()) return false;
   if (existing) {
     await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
@@ -69,13 +85,15 @@ async function upsertMarkedComment(
 }
 
 async function deleteMarkedComment(
-  github, owner, repo, prNumber, expectedSha, botLogin, marker, canMutate,
+  github, owner, repo, prNumber, expectedSha, botLogin, marker, canMutate, allowClosedUnmerged = false,
 ) {
   if (!botLogin || typeof botLogin !== "string") throw new Error("botLogin is required for comment ownership");
   const existing = (await comments(github, owner, repo, prNumber)).find((item) =>
     item.user?.login === botLogin && typeof item.body === "string" && item.body.includes(marker));
   if (!existing) return false;
-  await assertCurrentHead({ github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha });
+  await assertCurrentHead({
+    github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha, allowClosedUnmerged,
+  });
   if (canMutate && !await canMutate()) return false;
   await github.rest.issues.deleteComment({ owner, repo, comment_id: existing.id });
   return true;
@@ -158,13 +176,23 @@ async function publishReview(
   await assertFreshCi(github, owner, repo, state, ciRetry);
   await assertCurrentHead({
     github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha,
+    allowClosedUnmerged: state.allowClosedUnmerged === true,
   });
   assertReviewPolicy(await issueLabels(github, owner, repo, prNumber), state);
   if (canMutate && !await canMutate()) return false;
-  await github.rest.pulls.createReview({
-    owner, repo, pull_number: prNumber, commit_id: state.expectedSha, event: "COMMENT",
-    body, comments: inline,
-  });
+  try {
+    await github.rest.pulls.createReview({
+      owner, repo, pull_number: prNumber, commit_id: state.expectedSha, event: "COMMENT",
+      body, comments: inline,
+    });
+  } catch (error) {
+    if (state.allowClosedUnmerged === true && [404, 409, 422].includes(error?.status) &&
+        await isClosedUnmergedAtHead(github, owner, repo, prNumber, state.expectedSha) &&
+        (!canMutate || await canMutate())) {
+      throw new ClosedReviewRejectedError();
+    }
+    throw error;
+  }
   return true;
 }
 
@@ -204,6 +232,7 @@ async function ensureCanonicalCheck({
   if (beforeWrite) await beforeWrite();
   await assertCurrentHead({
     github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha,
+    allowClosedUnmerged: state.allowClosedUnmerged === true,
   });
   if (canMutate && !await canMutate()) return false;
   const payload = {
@@ -236,35 +265,44 @@ async function ensureReviewCheck(
   github, owner, repo, prNumber, expectedSha, check, state, canMutate, ciRetry,
 ) {
   const title = check.title ?? "Automated review complete";
-  const summary = check.summary ?? "Validated automated review is bound to this commit.";
+  const summary = check.outcome
+    ? `${check.summary ?? "Validated automated review is bound to this commit."}\n\n${encodeReviewOutcome({
+      headSha: expectedSha, outcome: check.outcome,
+    })}`
+    : check.summary ?? "Validated automated review is bound to this commit.";
   return ensureCanonicalCheck({
     github, owner, repo, prNumber, expectedSha, check, state, title, summary, canMutate,
     beforeWrite: state.failed === true || state.blocked === true ? null : async () => {
       await assertFreshCi(github, owner, repo, state, ciRetry);
-      assertReviewPolicy(await issueLabels(github, owner, repo, prNumber), state);
     },
   });
 }
 
-async function dispatchClassificationComplete(github, owner, repo, prNumber, expectedSha) {
+async function dispatchClassificationComplete(github, owner, repo, prNumber, expectedSha, canMutate) {
   await assertCurrentHead({
     github, owner, repo, pullNumber: prNumber, expectedHeadSha: expectedSha,
   });
+  if (canMutate && !await canMutate()) return false;
   await github.rest.repos.createDispatchEvent({
     owner, repo, event_type: "pr-automation-classified",
     client_payload: { pr_number: prNumber, head_sha: expectedSha },
   });
+  return true;
 }
 
 // Computes the whole label delta from a single read, so a state with two label sets plus additions
 // and removals costs one issue read instead of one per candidate label.
-async function applyLabels(github, owner, repo, prNumber, state, currentLabels, canMutate) {
+async function applyLabels(
+  github, owner, repo, prNumber, state, currentLabels, canMutate, skipReviewCount = false,
+) {
   const current = currentLabels ?? await issueLabels(github, owner, repo, prNumber);
   const add = new Set();
   const remove = new Set();
   for (const { owned, desired } of state.labelSets || []) {
     const wanted = new Set(desired || []);
-    for (const label of new Set(owned || [])) (wanted.has(label) ? add : remove).add(label);
+    for (const label of new Set(owned || [])) {
+      if (!skipReviewCount || !AI_COUNTS.includes(label)) (wanted.has(label) ? add : remove).add(label);
+    }
   }
   for (const label of state.addLabels || []) add.add(label);
   for (const label of state.removeLabels || []) { add.delete(label); remove.add(label); }
@@ -273,6 +311,7 @@ async function applyLabels(github, owner, repo, prNumber, state, currentLabels, 
   if (additions.length === 0 && removals.length === 0) return false;
   await assertCurrentHead({
     github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha,
+    allowClosedUnmerged: state.allowClosedUnmerged === true,
   });
   // The actor labels are mutually exclusive. Remove a stale actor before adding its replacement so
   // a failed add leaves no actor selected rather than two conflicting actors. Other labels retain
@@ -303,6 +342,28 @@ async function applyLabels(github, owner, repo, prNumber, state, currentLabels, 
   return true;
 }
 
+async function transitionReviewCount({
+  github, owner, repo, prNumber, state, canTransition,
+}) {
+  if (![null, ...AI_COUNTS].includes(state.expectedReviewCount) ||
+      !AI_COUNTS.includes(state.nextReviewCount)) throw new StalePolicyError();
+  if (!await canTransition("transition-old")) return false;
+  if (state.expectedReviewCount !== state.nextReviewCount) {
+    if (state.expectedReviewCount) {
+      await github.rest.issues.removeLabel({
+        owner, repo, issue_number: prNumber, name: state.expectedReviewCount,
+      });
+    }
+    // Removal first makes an interrupted /1 -> /2 transition undercount rather than overcount.
+    // The rare partial publication is intentionally left for manual repair.
+    if (!await canTransition("transition-empty")) return false;
+    await github.rest.issues.addLabels({
+      owner, repo, issue_number: prNumber, labels: [state.nextReviewCount],
+    });
+  }
+  return await canTransition("transition-next");
+}
+
 async function completeNeutralCheck(github, owner, repo, checkRunId, marker, title) {
   await github.rest.checks.update({
     owner, repo, check_run_id: checkRunId, status: "completed", conclusion: "neutral",
@@ -324,15 +385,79 @@ async function writeState({
       typeof state.expectedSha !== "string" || !Number.isSafeInteger(prNumber) || prNumber <= 0) {
     throw new Error("invalid normalized state");
   }
-  const canMutate = async () => !state.lease || state.forced === true || await ownsActiveLease({ github, owner, repo, lease: state.lease });
+  const canMutate = async () => !state.lease || state.forced === true ||
+    await ownsActiveLease({ github, owner, repo, lease: state.lease });
+  const automaticReviewContinuation = state.mode === "review" && state.forced !== true &&
+    state.failed !== true && state.blocked !== true && state.lease !== undefined && state.lease !== null;
+  state.allowClosedUnmerged = automaticReviewContinuation;
+  const canPublishClassification = async () => {
+    if (!await canMutate()) return false;
+    if (state.forced === true) return true;
+    return await isOpenNonDraftAtHeadNow({
+      github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha,
+    });
+  };
+  const canPublishReview = async () => {
+    if (!await canMutate()) return false;
+    if (state.failed === true || state.blocked === true) return true;
+    if (state.forced === true) {
+      return await hasCurrentValidClassification({
+        github, owner, repo, headSha: state.expectedSha,
+        classificationId: state.admittedGate?.classificationId,
+      });
+    }
+    // A normal automatic lease must carry the admission facts it is continuing from.
+    // Lease-less legacy/explicit paths remain open-only because they cannot enable closed continuation.
+    if (!state.admittedGate?.classificationId) return !state.lease;
+    return await recheckAutomaticReview({
+      github, owner, repo, prNumber, headSha: state.expectedSha,
+      gate: state.admittedGate, lease: state.lease, allowDraft: true,
+      allowClosedUnmerged: state.allowClosedUnmerged === true,
+    });
+  };
+  const canPublishReviewPublication = async () => {
+    if (state.forced !== true) return await canPublishReview();
+    if (!await canMutate()) return false;
+    return await hasCurrentValidClassification({
+      github, owner, repo, headSha: state.expectedSha, classificationId: state.admittedGate?.classificationId,
+    });
+  };
+  const canPublishReviewReceipt = async () => {
+    if (!await canMutate()) return false;
+    if (state.failed === true || state.blocked === true) return true;
+    if (state.forced === true) return await canPublishReviewPublication();
+    if (!state.admittedGate?.classificationId || !state.nextReviewCount) return !state.lease;
+    return await recheckAutomaticReview({
+      github, owner, repo, prNumber, headSha: state.expectedSha,
+      gate: { ...state.admittedGate, nextCount: state.nextReviewCount }, lease: state.lease,
+      phase: "receipt", allowDraft: true, allowClosedUnmerged: state.allowClosedUnmerged === true,
+    });
+  };
+  const canCleanupReview = async () => {
+    if (state.failed === true || state.blocked === true) return true;
+    if (state.forced === true) return await canPublishReviewPublication();
+    if (!state.admittedGate?.classificationId || !state.nextReviewCount) return !state.lease;
+    return await recheckAutomaticReview({
+      github, owner, repo, prNumber, headSha: state.expectedSha,
+      gate: { ...state.admittedGate, nextCount: state.nextReviewCount }, lease: state.lease,
+      phase: "cleanup", allowDraft: true, allowClosedUnmerged: state.allowClosedUnmerged === true,
+    });
+  };
+  const canPublish = state.mode === "classification" ? canPublishClassification : canPublishReview;
   if (state.superseded === true) {
     await completeLeaseNeutral(
       github, owner, repo, state, canMutate, "Automation superseded");
     return { ok: true, superseded: true };
   }
-  await assertCurrentHead({
+  const pull = await assertCurrentHead({
     github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha,
+    allowClosedUnmerged: automaticReviewContinuation,
   });
+  if (state.forced !== true && pull.draft &&
+      !(state.mode === "review" && state.failed !== true && state.blocked !== true)) {
+    await completeLeaseNeutral(github, owner, repo, state, canMutate, "Automation superseded");
+    return { ok: true, superseded: true };
+  }
   const check = state.check;
   let existingCheck = null;
   let successfulCheck = null;
@@ -366,13 +491,24 @@ async function writeState({
       }
     }
   }
-  if (!await canMutate()) return { ok: true, superseded: true };
+  if (!await canPublish()) return { ok: true, superseded: true };
   if (state.mode === "review") {
     const comments = state.comments || [];
     for (const comment of comments.filter((comment) => comment.kind === "review")) {
-      if (!await canMutate()) return { ok: true, superseded: true };
-      await publishReview(
-        github, owner, repo, prNumber, state, botLogin, comment, canMutate, ciRetry);
+      if (!await canPublishReviewPublication()) return { ok: true, superseded: true };
+      try {
+        const published = await publishReview(
+          github, owner, repo, prNumber, state, botLogin, comment, canPublishReviewPublication, ciRetry);
+        if (!published && automaticReviewContinuation) {
+          await completeLeaseNeutral(
+            github, owner, repo, state, canMutate, "Review publication requires manual repair");
+          return { ok: true, superseded: true };
+        }
+      } catch (error) {
+        if (!(error instanceof ClosedReviewRejectedError)) throw error;
+        await completeLeaseNeutral(github, owner, repo, state, canMutate, "Review publication unavailable");
+        return { ok: true, superseded: true };
+      }
     }
     const latestLabels = state.failed === true || state.blocked === true
       ? undefined
@@ -381,42 +517,75 @@ async function writeState({
       await assertFreshCi(github, owner, repo, state, ciRetry);
       assertReviewPolicy(latestLabels, state);
     }
-    if (!await canMutate()) return { ok: true, superseded: true };
-    await applyLabels(github, owner, repo, prNumber, state, latestLabels, canMutate);
-    for (const comment of comments.filter((comment) => comment.kind !== "review")) {
-      if (!await canMutate()) return { ok: true, superseded: true };
-      await upsertMarkedComment(
-        github, owner, repo, prNumber, state.expectedSha, botLogin, comment, canMutate);
+    if (!await canPublishReview()) return { ok: true, superseded: true };
+    if (state.failed !== true && state.blocked !== true && state.nextReviewCount &&
+        (state.forced === true || automaticReviewContinuation)) {
+      const canTransition = async (phase) => {
+        if (state.forced === true) {
+          await assertCurrentHead({
+            github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha,
+          });
+          if (!await canPublishReviewPublication()) return false;
+          const count = reviewCount(await issueLabels(github, owner, repo, prNumber));
+          const expected = phase === "transition-old" ? state.expectedReviewCount
+            : phase === "transition-empty" ? null
+            : state.nextReviewCount;
+          return count !== undefined && count === expected;
+        }
+        return await recheckAutomaticReview({
+          github, owner, repo, prNumber, headSha: state.expectedSha,
+          gate: { ...state.admittedGate, nextCount: state.nextReviewCount },
+          lease: state.lease, phase, allowDraft: true,
+          allowClosedUnmerged: state.allowClosedUnmerged === true,
+        });
+      };
+      if (!await transitionReviewCount({
+        github, owner, repo, prNumber, state, canTransition,
+      })) return { ok: true, superseded: true };
     }
-    for (const marker of new Set(state.removeCommentMarkers || [])) {
-      if (!await canMutate()) return { ok: true, superseded: true };
-      await deleteMarkedComment(
-        github, owner, repo, prNumber, state.expectedSha, botLogin, marker, canMutate);
-    }
+    await applyLabels(
+      github, owner, repo, prNumber, state, latestLabels, canPublishReview,
+      state.nextReviewCount !== undefined && (state.forced === true || automaticReviewContinuation),
+    );
     if (state.check) {
-      if (!await canMutate()) return { ok: true, superseded: true };
+      if (!await canPublishReviewReceipt()) return { ok: true, superseded: true };
       await ensureReviewCheck(
-        github, owner, repo, prNumber, state.expectedSha, state.check, state, canMutate, ciRetry);
+        github, owner, repo, prNumber, state.expectedSha, state.check, state, canPublishReviewReceipt, ciRetry);
     } else if (state.lease && !await completeLeaseNeutral(
       github, owner, repo, state, canMutate, "Automation blocked",
     )) {
       return { ok: true, superseded: true };
     }
+    // Marker cleanup is nonessential and therefore follows the review/count/receipt sequence.
+    for (const comment of comments.filter((comment) => comment.kind !== "review")) {
+      if (!await canCleanupReview()) return { ok: true, superseded: true };
+      await upsertMarkedComment(
+        github, owner, repo, prNumber, state.expectedSha, botLogin, comment, canCleanupReview,
+        state.allowClosedUnmerged,
+      );
+    }
+    for (const marker of new Set(state.removeCommentMarkers || [])) {
+      if (!await canCleanupReview()) return { ok: true, superseded: true };
+      await deleteMarkedComment(
+        github, owner, repo, prNumber, state.expectedSha, botLogin, marker, canCleanupReview,
+        state.allowClosedUnmerged,
+      );
+    }
   } else {
-    if (!await canMutate()) return { ok: true, superseded: true };
-    await applyLabels(github, owner, repo, prNumber, state, undefined, canMutate);
+    if (!await canPublishClassification()) return { ok: true, superseded: true };
+    await applyLabels(github, owner, repo, prNumber, state, undefined, canPublishClassification);
     for (const comment of state.comments || []) await upsertMarkedComment(
-      github, owner, repo, prNumber, state.expectedSha, botLogin, comment, canMutate);
+      github, owner, repo, prNumber, state.expectedSha, botLogin, comment, canPublishClassification);
     for (const comment of state.auditComments || []) await upsertMarkedComment(
-      github, owner, repo, prNumber, state.expectedSha, botLogin, comment, canMutate);
+      github, owner, repo, prNumber, state.expectedSha, botLogin, comment, canPublishClassification);
     for (const marker of new Set(state.removeCommentMarkers || [])) {
       await deleteMarkedComment(
-        github, owner, repo, prNumber, state.expectedSha, botLogin, marker, canMutate);
+        github, owner, repo, prNumber, state.expectedSha, botLogin, marker, canPublishClassification);
     }
     if (state.check) {
-      if (!await canMutate()) return { ok: true, superseded: true };
+      if (!await canPublishClassification()) return { ok: true, superseded: true };
       const changed = await ensureClassificationCheck(
-        github, owner, repo, prNumber, state.expectedSha, state.check, state, canMutate);
+        github, owner, repo, prNumber, state.expectedSha, state.check, state, canPublishClassification);
       const shouldDispatch = ["Classification complete", "Automation stopped"].includes(
         state.check.title,
       ) && state.dispatchReview !== false && (state.lease
@@ -426,7 +595,7 @@ async function writeState({
           (changed || reviewRequested || state.check.title === "Automation stopped"));
       if (shouldDispatch) {
         await dispatchClassificationComplete(
-          github, owner, repo, prNumber, state.expectedSha,
+          github, owner, repo, prNumber, state.expectedSha, canPublishClassification,
         );
       }
     }
