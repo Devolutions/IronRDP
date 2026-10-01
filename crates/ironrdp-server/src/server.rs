@@ -6498,7 +6498,7 @@ mod cliprdr_error_tests {
     }
 
     #[derive(Default)]
-    struct CapturingWriter(Vec<u8>);
+    pub(super) struct CapturingWriter(pub(super) Vec<u8>);
 
     impl FramedWrite for CapturingWriter {
         type WriteAllFut<'write>
@@ -6879,6 +6879,7 @@ mod cliprdr_timeout_tests {
     };
     use ironrdp_core::{Encode as _, WriteCursor, impl_as_any};
 
+    use super::cliprdr_error_tests::CapturingWriter;
     use super::*;
 
     /// The clipboard channel dates locks from [`CliprdrBackend::now_ms`], so the
@@ -6912,21 +6913,6 @@ mod cliprdr_timeout_tests {
 
         fn now_ms(&self) -> u64 {
             self.0.load(Ordering::SeqCst)
-        }
-    }
-
-    #[derive(Default)]
-    struct CapturingWriter(Vec<u8>);
-
-    impl FramedWrite for CapturingWriter {
-        type WriteAllFut<'write>
-            = core::future::Ready<std::io::Result<()>>
-        where
-            Self: 'write;
-
-        fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
-            self.0.extend_from_slice(buf);
-            core::future::ready(Ok(()))
         }
     }
 
