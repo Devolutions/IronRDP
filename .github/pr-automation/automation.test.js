@@ -62,6 +62,7 @@ const {
 
 const SHA = "a".repeat(40);
 const OTHER_SHA = "b".repeat(40);
+const BASE_SHA = "c".repeat(40);
 
 function desiredLabels(state, owned) {
   return state.labelSets.find((set) => set.owned.includes(owned)).desired;
@@ -1382,6 +1383,18 @@ test("evidence caps are trusted, bounded, and fail closed with guidance", () => 
   assert.match(markerBody(reviewFailure.comments[0]), /runtime maximum/);
 });
 
+test("semver skips only a nonempty immutable GitHub-only diff", () => {
+  const semver = workflowJob(readWorkflow(), "semver");
+  assert.match(semver, /git diff --name-only --no-renames -z --no-ext-diff --no-textconv/);
+  assert.match(semver, /while IFS= read -r -d '' changed_path/);
+  assert.match(semver, /"\$changed_path" != \.github\/\*/);
+  assert.match(semver, /test "\$count" -gt 0 && test "\$github_only" = true/);
+  assert.match(semver, /status\\":\\"not-applicable/);
+  assert.match(semver, /base_sha\\":\\"\$BASE_SHA/);
+  assert.match(semver, /if: steps\.fetch\.outputs\.not-applicable != 'true'/);
+  assert.match(semver, /compatibility: \$\{\{ steps\.fetch\.outputs\.compatibility \|\| steps\.semver\.outputs\.compatibility \}\}/);
+});
+
 test("every deterministic label is declared and the repository rules classify tooling changes", () => {
   const githubDirectory = path.join(__dirname, "..");
   const rules = parseLabelerRules(fs.readFileSync(path.join(githubDirectory, "labeler.yml"), "utf8"));
@@ -2375,6 +2388,24 @@ test("deterministic semver outranks the model and a model-only break cannot stay
   assert.deepEqual(risk({ risk: "low", breaking_change_suspected: true }, "not-suspected"), ["risk/medium"]);
   assert.deepEqual(risk({ risk: "high", breaking_change_suspected: true }, "not-suspected"), ["risk/high"]);
   assert.deepEqual(risk({ risk: "low" }, "not-suspected"), ["risk/low"]);
+  const notApplicable = resolveClassificationState({
+    expectedSha: SHA, expectedBaseSha: BASE_SHA, labels: [], deterministic, classifier: classifier(),
+    semver: { head_sha: SHA, base_sha: BASE_SHA, status: "not-applicable" },
+  });
+  assert.equal(notApplicable.failed, undefined);
+  assert.equal(notApplicable.expectedBaseSha, BASE_SHA);
+  for (const semver of [
+    { head_sha: SHA, status: "not-applicable" },
+    { head_sha: SHA, base_sha: OTHER_SHA, status: "not-applicable" },
+    { head_sha: OTHER_SHA, base_sha: BASE_SHA, status: "not-applicable" },
+  ]) {
+    const invalid = resolveClassificationState({
+      expectedSha: SHA, expectedBaseSha: BASE_SHA, labels: [], deterministic,
+      classifier: classifier(), semver,
+    });
+    assert.equal(invalid.failed, true);
+    assert.match(invalid.check.summary, /public API compatibility unavailable/);
+  }
   const unavailable = resolveClassificationState({
     expectedSha: SHA, labels: ["breaking-change"], deterministic, classifier: classifier(),
     semver: { head_sha: SHA, status: "unavailable" },
@@ -3673,6 +3704,30 @@ test("writer does not dispatch a completed classification after the head changes
     reviewRequested: true,
   });
   assert.equal(dispatches, 0);
+});
+
+test("writer rejects a GitHub-only classification after the PR base changes", async () => {
+  let mutations = 0;
+  const github = { rest: {
+    pulls: { get: async () => ({
+      data: { state: "open", head: { sha: SHA }, base: { sha: OTHER_SHA } },
+    }) },
+    issues: {
+      addLabels: async () => { mutations += 1; },
+      removeLabel: async () => { mutations += 1; },
+    },
+    checks: { create: async () => { mutations += 1; } },
+  } };
+
+  await assert.rejects(writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+    botLogin: "github-actions[bot]",
+    state: {
+      ok: true, mode: "classification", expectedSha: SHA, expectedBaseSha: BASE_SHA,
+      labelSets: [], addLabels: [], comments: [], removeCommentMarkers: [],
+    },
+  }), StaleHeadError);
+  assert.equal(mutations, 0);
 });
 
 test("writer deduplicates one forced review invocation but publishes a later one", async () => {

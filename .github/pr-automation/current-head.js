@@ -21,9 +21,12 @@ async function readPullRequest({ github, owner, repo, pullNumber }) {
   }
 }
 
-async function assertCurrentHead({ github, owner, repo, pullNumber, expectedHeadSha }) {
+async function assertCurrentHead({
+  github, owner, repo, pullNumber, expectedHeadSha, expectedBaseSha,
+}) {
   const data = await readPullRequest({ github, owner, repo, pullNumber });
-  if (data.state !== "open" || data.head?.sha !== expectedHeadSha) {
+  if (data.state !== "open" || data.head?.sha !== expectedHeadSha ||
+      (expectedBaseSha !== undefined && data.base?.sha !== expectedBaseSha)) {
     throw new StaleHeadError();
   }
 }
