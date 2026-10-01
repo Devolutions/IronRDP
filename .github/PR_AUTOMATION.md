@@ -192,6 +192,7 @@ Risk labels express required maintainer scrutiny:
 | `risk/unknown` | No valid classification was available. |
 
 `cargo-semver-checks` incompatibility forces `risk/high`.
+An exact base/head diff containing only nonempty `.github/**` paths records Cargo API compatibility as `not-applicable` without installing or running `cargo-semver-checks`.
 A model-suspected breaking change promotes `risk/low` to `risk/medium`.
 Path rules can add `scope/core`, `scope/web`, `scope/ffi`, and `scope/tooling`.
 The classifier controls `scope/cross-cutting`, `kind/technical-debt`, and documentation-only classification.

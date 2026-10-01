@@ -331,7 +331,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions: {}
     outputs:
-      compatibility: ${{ steps.semver.outputs.compatibility }}
+      compatibility: ${{ steps.fetch.outputs.compatibility || steps.semver.outputs.compatibility }}
     env:
       CARGO_SEMVER_CHECKS_VERSION: "0.49.0"
       CARGO_SEMVER_CHECKS_SHA256: "72f6834d75d28a66e02c9fd6a230ce901bb30eee6067b85867a97445df040e4a"
@@ -358,8 +358,28 @@ jobs:
           git fetch --no-tags origin "+$HEAD_SHA:refs/remotes/origin/pull-request-head"
           git fetch --no-tags origin "+$BASE_SHA:refs/remotes/origin/pull-request-base"
           git checkout --detach origin/pull-request-head
+          paths="$SEMVER_STATE_DIR/changed-paths"
+          install -d -m 700 "$SEMVER_STATE_DIR"
+          git diff --name-only --no-renames -z --no-ext-diff --no-textconv \
+            origin/pull-request-base...origin/pull-request-head > "$paths"
+          count=0
+          github_only=true
+          while IFS= read -r -d '' changed_path; do
+            count=$((count + 1))
+            if [[ "$changed_path" != .github/* ]]; then
+              github_only=false
+            fi
+          done < "$paths"
+          if test "$count" -gt 0 && test "$github_only" = true; then
+            echo "compatibility={\"head_sha\":\"$HEAD_SHA\",\"base_sha\":\"$BASE_SHA\",\"status\":\"not-applicable\"}" >> "$GITHUB_OUTPUT"
+            echo "not-applicable=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=PR automation semver decision::head_sha=$HEAD_SHA base_sha=$BASE_SHA status=not-applicable"
+          else
+            echo "not-applicable=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - id: install
+        if: steps.fetch.outputs.not-applicable != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -375,6 +395,7 @@ jobs:
           sudo chmod 700 "$CARGO_SEMVER_CHECKS_DIR/cargo-semver-checks"
 
       - id: semver
+        if: steps.fetch.outputs.not-applicable != 'true'
         shell: bash
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
@@ -415,8 +436,8 @@ jobs:
             100) status=suspected ;;
             *) exit "$status" ;;
           esac
-          echo "compatibility={\"head_sha\":\"$HEAD_SHA\",\"status\":\"$status\"}" >> "$GITHUB_OUTPUT"
-          echo "::notice title=PR automation semver decision::head_sha=$HEAD_SHA status=$status"
+          echo "compatibility={\"head_sha\":\"$HEAD_SHA\",\"base_sha\":\"$BASE_SHA\",\"status\":\"$status\"}" >> "$GITHUB_OUTPUT"
+          echo "::notice title=PR automation semver decision::head_sha=$HEAD_SHA base_sha=$BASE_SHA status=$status"
 
   classifier:
     name: Classify pull request
@@ -547,6 +568,7 @@ jobs:
         uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
           LABELS: ${{ needs.resolve-pr.outputs.labels }}
           PR_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
           DETERMINISTIC: ${{ needs.deterministic-analysis.outputs.analysis }}
@@ -566,6 +588,7 @@ jobs:
             const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
             const state = resolveClassificationState({
               expectedSha: process.env.HEAD_SHA,
+              expectedBaseSha: process.env.BASE_SHA,
               labels: parse(process.env.LABELS, []),
               prNumber: Number(process.env.PR_NUMBER),
               deterministic: parse(process.env.DETERMINISTIC, {}),

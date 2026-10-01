@@ -96,6 +96,7 @@ Block model review for likely non-legitimate changes and hand the green exact he
 Label a suspected overlap with another pull request at confidence 0.85 or greater as `triage/overlap`, and keep it advisory: it never blocks review and never asks for maintainer handoff on its own.
 Unavailable or invalid exact-head classification applies only `automation-failed`.
 Risk and protocol relevance select reviewers but do not suppress review.
+Treat Cargo API compatibility as `not-applicable` only when the semver job's immutable exact base/head diff contains a nonempty `.github/**`-only path set.
 
 Fork pull requests share a quota of 50 per UTC day.
 Exclude `OWNER` and `MEMBER` pull requests from enforcement and counting, and preserve the same-repository exemption.

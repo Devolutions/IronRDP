@@ -122,14 +122,19 @@ function failedClassification(expectedSha, deterministic, reason, rateLimit, sem
 }
 
 function resolveClassificationState({
-  expectedSha, labels, deterministic, classifier, classificationGate,
+  expectedSha, expectedBaseSha, labels, deterministic, classifier, classificationGate,
   classifierReason, changedPaths, overlapCandidates, prNumber, semver, rateLimit, force,
 } = {}) {
   const existing = labelsOf(labels);
   const forced = force === true;
   const failureRateLimit = forced ? undefined : rateLimit;
   if (typeof expectedSha !== "string") return { ok: false, reason: "missing expected SHA" };
-  const semverStatus = boundStatus(semver, expectedSha, ["suspected", "not-suspected"]);
+  const boundSemverStatus = boundStatus(
+    semver, expectedSha, ["suspected", "not-suspected", "not-applicable"]);
+  const semverStatus = boundSemverStatus === "not-applicable" &&
+    typeof expectedBaseSha === "string" && semver?.base_sha === expectedBaseSha
+    ? boundSemverStatus
+    : boundSemverStatus === "not-applicable" ? "unavailable" : boundSemverStatus;
   if (!forced && rateLimit && rateLimit.status !== "allowed") {
     return failedClassification(
       expectedSha, deterministic, "fork LLM quota unavailable", failureRateLimit, semverStatus, forced);
@@ -205,6 +210,7 @@ function resolveClassificationState({
   ];
   return {
     ok: true, mode: "classification", expectedSha, forced, labelSets, addLabels, comments, auditComments,
+    ...(semverStatus === "not-applicable" ? { expectedBaseSha } : {}),
     dispatchReview: !forced,
     removeCommentMarkers: [
       // Remove notices that contradict the current classification.
