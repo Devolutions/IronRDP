@@ -1792,3 +1792,74 @@ async fn connection_handler_sees_every_hook_across_a_preemption() {
     }))
     .await;
 }
+
+/// Under `Hybrid` the out-of-the-box policy is `Preempt`: with no
+/// `with_connection_policy` call, a second client that completes CredSSP takes
+/// the session over, and the first client's connection is closed.
+#[tokio::test]
+async fn the_default_under_hybrid_lets_an_authenticated_newcomer_take_over() {
+    const HYBRID_USER: &str = "user";
+    const HYBRID_PASSWORD: &str = "password";
+
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    // Keep the display sender alive: once it drops, the server closes the session.
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_hybrid(acceptor, identity.pub_key.clone())
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: HYBRID_USER.into(),
+        password: HYBRID_PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let client_config = || connector::Config {
+        credentials: connector::Credentials::UsernamePassword {
+            username: HYBRID_USER.into(),
+            password: HYBRID_PASSWORD.into(),
+        },
+        ..default_client_config()
+    };
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server.run().await;
+        });
+        let server_addr = local_addr_of(&ev).await;
+        let connect = || {
+            connect_client(server_addr, |client_addr| {
+                connector::ClientConnector::new(client_config(), client_addr)
+            })
+        };
+
+        let (mut first, _) = connect().await;
+
+        // The newcomer can only finish its handshake if the server serves it,
+        // which under `Queue` it would not do while `first` is live.
+        let (second, _) = tokio::time::timeout(Duration::from_secs(10), connect())
+            .await
+            .expect("the authenticated newcomer must be served (Preempt), not queued");
+
+        // The incumbent is evicted: its transport ends rather than staying open.
+        let evicted = tokio::time::timeout(Duration::from_secs(5), async {
+            while first.read_pdu().await.is_ok() {}
+        })
+        .await;
+        assert!(evicted.is_ok(), "the incumbent's connection must be closed");
+
+        drop(second);
+        server_task.abort();
+    }))
+    .await;
+}

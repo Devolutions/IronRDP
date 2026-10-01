@@ -360,9 +360,8 @@ impl RdpServerBuilder<BuilderDone> {
     /// ([`ConnectionPolicy::Reject`]), or let a fully-authenticated newcomer
     /// take the session over ([`ConnectionPolicy::Preempt`]).
     ///
-    /// The default follows the security mode already chosen on this builder --
-    /// `Preempt` under [`RdpServerSecurity::Hybrid`], `Queue` otherwise; see
-    /// [`ConnectionPolicy::default_for`] for why.
+    /// The default follows the security mode already chosen on this builder;
+    /// see [`ConnectionPolicy::default_for`].
     ///
     /// `Preempt`'s takeover is only authentication-gated under
     /// [`RdpServerSecurity::Hybrid`]; see [`ConnectionPolicy::Preempt`] for the

@@ -446,9 +446,7 @@ pub struct RdpServerOptions {
     pub honor_client_desktop_size: Option<DesktopSize>,
     /// What to do with a second connection while a session is being served.
     /// Defaults to [`ConnectionPolicy::default_for`] the selected security
-    /// mode: [`Preempt`](ConnectionPolicy::Preempt) under
-    /// [`Hybrid`](RdpServerSecurity::Hybrid), [`Queue`](ConnectionPolicy::Queue)
-    /// otherwise. Set via
+    /// mode. Set via
     /// [`RdpServerBuilder::with_connection_policy`](crate::RdpServerBuilder::with_connection_policy).
     pub connection_policy: ConnectionPolicy,
     /// Quantization values the RemoteFX encoder uses once selected. Defaults
@@ -4159,10 +4157,16 @@ impl RdpServer {
     {
         debug!("Client accepted");
 
+        // MS-RDPBCGR 3.3.5.7.1: a Set Error Info PDU MUST NOT be sent to a client that did not
+        // set `SUPPORT_ERR_INFO_PDU`; such a client is just disconnected.
+        let supports_err_info = result
+            .client_early_capability_flags
+            .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU);
+
         let is_auto_reconnect = if let Some(reconnect) = result.auto_reconnect.as_ref() {
             if !self.verify_auto_reconnect_cookie(reconnect) {
                 warn!("Auto-reconnect cookie validation rejected");
-                send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
+                send_access_denied(result.io_channel_id, result.user_channel_id, supports_err_info, writer).await?;
                 return Err(ServerError::reason("auto-reconnect validation", "cookie rejected"));
             }
 
@@ -4184,12 +4188,14 @@ impl RdpServer {
                     }
                     Ok(CredentialDecision::Reject) => {
                         warn!("Credential validation rejected");
-                        send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
+                        send_access_denied(result.io_channel_id, result.user_channel_id, supports_err_info, writer)
+                            .await?;
                         return Err(ServerError::reason("credential validation", "rejected by validator"));
                     }
                     Err(e) => {
                         error!(error = %e, "Credential validator backend error");
-                        send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
+                        send_access_denied(result.io_channel_id, result.user_channel_id, supports_err_info, writer)
+                            .await?;
                         return Err(ServerError::custom("credential validation", e));
                     }
                 }
@@ -5008,11 +5014,18 @@ fn with_connection_handler<R>(
 ///
 /// Used to deny a connection after credential validation rejects it, mirroring the
 /// acceptor's exact-match denial so both paths refuse the same spec-defined way.
+///
+/// Sends nothing when the client did not opt in via `SUPPORT_ERR_INFO_PDU`
+/// (MS-RDPBCGR 3.3.5.7.1); the caller still closes the connection.
 async fn send_access_denied(
     io_channel_id: u16,
     user_channel_id: u16,
+    supports_err_info: bool,
     writer: &mut impl FramedWrite,
 ) -> ServerResult<()> {
+    if !supports_err_info {
+        return Ok(());
+    }
     let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
         ProtocolIndependentCode::ServerDeniedConnection,
     ));
