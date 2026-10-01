@@ -61,10 +61,8 @@ impl PartialReplayWorkload {
     ///
     /// This intentionally runs outside focused Criterion timing.
     pub fn prepare(id: PartialReplayId) -> ReplayWorkloadResult<Self> {
-        let cache_root = project_root().join(CACHE_ROOT);
         let capture = expected_capture(id)?;
-        let path = cache_root.join(&capture.revision).join("captures").join(&capture.file);
-        verify_file(&path, &capture.sha256)?;
+        let path = verified_capture_path(&capture)?;
 
         let capture_data = read_capture(&path)
             .map_err(|error| ReplayWorkloadError::new(format!("read capture {}: {error}", path.display())))?;
@@ -76,6 +74,15 @@ impl PartialReplayWorkload {
             expected: capture.expected,
             prepared,
         })
+    }
+
+    /// Return the verified local path for one manifest-qualified partial replay.
+    ///
+    /// This is shared by offline benchmark workloads that need the original capture
+    /// in addition to the prepared passive replay.
+    pub(crate) fn cached_capture_path(id: PartialReplayId) -> ReplayWorkloadResult<PathBuf> {
+        let capture = expected_capture(id)?;
+        verified_capture_path(&capture)
     }
 
     /// Execute one strict replay and enforce its complete partial-replay contract.
@@ -155,6 +162,16 @@ struct ExpectedCapture {
 
 fn expected_capture(id: PartialReplayId) -> ReplayWorkloadResult<ExpectedCapture> {
     expected_capture_from_manifest(MANIFEST, id)
+}
+
+fn verified_capture_path(capture: &ExpectedCapture) -> ReplayWorkloadResult<PathBuf> {
+    let path = project_root()
+        .join(CACHE_ROOT)
+        .join(&capture.revision)
+        .join("captures")
+        .join(&capture.file);
+    verify_file(&path, &capture.sha256)?;
+    Ok(path)
 }
 
 fn expected_capture_from_manifest(manifest: &str, id: PartialReplayId) -> ReplayWorkloadResult<ExpectedCapture> {
