@@ -183,7 +183,7 @@
     }
 
     function fullResize() {
-        const windowSize = getWindowSize();
+        const windowSize = windowCorner();
 
         const containerWidth = windowSize.x;
         const containerHeight = windowSize.y;
@@ -283,10 +283,6 @@
 
         // Propagate further
         return true;
-    }
-
-    function getWindowSize() {
-        return windowCorner();
     }
 
     // The fit and real scalings stay within the host element, which can be smaller than the window.
