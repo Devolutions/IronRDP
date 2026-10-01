@@ -166,15 +166,9 @@ impl Rdpsnd {
     }
 
     pub fn training_confirm(&mut self, pdu: &TrainingPdu) -> PduResult<RdpsndSvcMessages> {
-        // MS-RDPEA 2.2.3.2: wPackSize echoes the Training PDU's wPackSize, which counts the whole PDU
-        // (header included), or is 0 when it carries no data. Servers may check it (GNOME Remote Desktop
-        // ignores a mismatching confirm and never starts playback).
-        let pack_size = if pdu.data.is_empty() {
-            0
-        } else {
-            pdu::ServerAudioOutputPdu::Training(pdu.clone()).size()
-        };
-        let pack_size: EncodeResult<_> = cast_length!("wPackSize", pack_size);
+        // MS-RDPEA 2.2.3.2: wPackSize echoes the Training PDU's wPackSize. Servers may check it (GNOME Remote
+        // Desktop ignores a mismatching confirm and never starts playback).
+        let pack_size: EncodeResult<_> = cast_length!("wPackSize", pdu.pack_size());
         let pack_size = pack_size.map_err(|e| encode_err!(e))?;
         let pdu = pdu::TrainingConfirmPdu {
             timestamp: pdu.timestamp,
