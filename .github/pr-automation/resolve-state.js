@@ -26,6 +26,13 @@ function labelsOf(labels) {
   return new Set((labels || []).map((label) => typeof label === "string" ? label : label?.name).filter(Boolean));
 }
 
+function reviewCount(labels) {
+  const present = labels instanceof Set ? labels : labelsOf(labels);
+  return present.has("ai-reviewed/2") ? "ai-reviewed/2"
+    : present.has("ai-reviewed/1") ? "ai-reviewed/1"
+    : null;
+}
+
 function actorFailureLabelSets(actor = [], failure = []) {
   return [
     { owned: ACTOR_LABELS, desired: actor },
@@ -346,12 +353,11 @@ function resolveReviewState({
   if (!reviewerResult?.ok || reviewerResult.value?.head_sha !== expectedSha) {
     return fail(reviewerReason || reviewerResult?.reason || "reviewer unavailable");
   }
-  const nextCount = existing.has("ai-reviewed/2") ? "ai-reviewed/2"
-    : existing.has("ai-reviewed/1") ? "ai-reviewed/2"
+  const currentReviewCount = reviewCount(existing);
+  const nextCount = currentReviewCount === "ai-reviewed/2" ? "ai-reviewed/2"
+    : currentReviewCount === "ai-reviewed/1" ? "ai-reviewed/2"
     : "ai-reviewed/1";
-  const expectedReviewCount = existing.has("ai-reviewed/2") ? "ai-reviewed/2"
-    : existing.has("ai-reviewed/1") ? "ai-reviewed/1"
-    : null;
+  const expectedReviewCount = currentReviewCount;
   const hasFindings = reviewerResult.value.findings.length > 0;
   const reviewMarker = `<!-- ironrdp-pr-automation:review:${expectedSha}` +
     `${forced ? `:force:${reviewMarkerId}` : ""} -->`;
@@ -391,5 +397,5 @@ module.exports = {
   LEGITIMACY_MARKER_PREFIX, OVERLAP_LABEL, OVERLAP_MARKER, OVERSIZED_REVIEW_LABEL, RISK,
   OVERSIZED_MARKER,
   contributorEligibility, resolveClassificationState,
-  resolveReviewState, reviewOutcome, reviewPolicyEligible,
+  resolveReviewState, reviewCount, reviewOutcome, reviewPolicyEligible,
 };
