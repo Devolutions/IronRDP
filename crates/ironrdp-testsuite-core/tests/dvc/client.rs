@@ -365,3 +365,53 @@ fn tunnel_refuses_a_create_request_before_the_capabilities_exchange() {
         .expect("Create Request on the tunnel should be processed after the capabilities exchange");
     assert_eq!(client.tunnel_for_channel(16), Some(SoftSyncTunnelType::RELIABLE_UDP));
 }
+
+fn create_status(client: &mut DrdynvcClient, channel_id: u32, name: &str) -> CreationStatus {
+    let create = encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+        channel_id,
+        name.to_owned(),
+    )))
+    .expect("Create Request should encode");
+    let messages = client.process(&create).expect("Create Request should be processed");
+    let DrdynvcClientPdu::Create(response) = decode_client_pdu(&messages[0]) else {
+        panic!("expected a Create Response PDU");
+    };
+    response.creation_status()
+}
+
+#[test]
+fn one_shot_dynamic_channel_rejects_a_second_create_request() {
+    let mut client = DrdynvcClient::new().with_dynamic_channel(RecordedDvc::default());
+    exchange_capabilities(&mut client);
+
+    assert_eq!(create_status(&mut client, 3, "recorded"), CreationStatus::OK);
+    assert_eq!(create_status(&mut client, 9, "recorded"), CreationStatus::NO_LISTENER);
+}
+
+#[test]
+fn factory_dynamic_channel_is_recreated_and_typed_lookup_follows_the_latest_instance() {
+    let mut client = DrdynvcClient::new().with_dynamic_channel_factory(RecordedDvc::default);
+    exchange_capabilities(&mut client);
+
+    assert_eq!(create_status(&mut client, 3, "recorded"), CreationStatus::OK);
+    assert_eq!(
+        client
+            .get_dvc::<RecordedDvc>()
+            .expect("first instance")
+            .processor()
+            .started_with,
+        Some(3)
+    );
+
+    // Servers re-create some channels mid-session (e.g. the graphics pipeline after a
+    // Deactivation-Reactivation Sequence): the factory builds a fresh processor.
+    assert_eq!(create_status(&mut client, 9, "recorded"), CreationStatus::OK);
+    assert_eq!(
+        client
+            .get_dvc::<RecordedDvc>()
+            .expect("second instance")
+            .processor()
+            .started_with,
+        Some(9)
+    );
+}
