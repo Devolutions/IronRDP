@@ -10,7 +10,10 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use std::sync::Arc;
 
-use ironrdp_server::{ConnectionHandler, ConnectionPolicy, RdpServer, RdpServerSecurity, ServerEvent};
+use ironrdp_server::{
+    ConnectionHandler, ConnectionPolicy, DesktopSize, DisplayUpdate, RdpServer, RdpServerDisplay,
+    RdpServerDisplayUpdates, RdpServerSecurity, ServerEvent, ServerResult,
+};
 use tokio::io::AsyncReadExt as _;
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
@@ -122,6 +125,41 @@ async fn the_default_under_no_security_leaves_a_second_connection_waiting() {
         .with_no_security()
         .with_no_input()
         .with_no_display()
+        .build();
+    assert_second_connection_is_left_waiting(server).await;
+}
+
+struct StubUpdates;
+
+#[async_trait::async_trait]
+impl RdpServerDisplayUpdates for StubUpdates {
+    async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>> {
+        core::future::pending().await
+    }
+}
+
+struct StubDisplay;
+
+#[async_trait::async_trait]
+impl RdpServerDisplay for StubDisplay {
+    async fn size(&mut self) -> DesktopSize {
+        DesktopSize { width: 64, height: 64 }
+    }
+
+    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+        Ok(Box::new(StubUpdates))
+    }
+}
+
+/// The `with_display_handler` initializer resolves the default separately from
+/// `with_no_display`; pin it too, so the two copies cannot drift apart.
+#[tokio::test]
+async fn the_default_under_no_security_with_a_display_handler_leaves_a_second_connection_waiting() {
+    let server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_no_security()
+        .with_no_input()
+        .with_display_handler(StubDisplay)
         .build();
     assert_second_connection_is_left_waiting(server).await;
 }

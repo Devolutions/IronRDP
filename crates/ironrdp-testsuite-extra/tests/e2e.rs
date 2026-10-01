@@ -1096,3 +1096,118 @@ pub(super) fn default_client_config() -> connector::Config {
         rail_support_level: pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED,
     }
 }
+
+/// Drive one client through the full handshake (CredSSP included) and return
+/// its active, still-open transport.
+async fn connect_hybrid_client(
+    server_addr: core::net::SocketAddr,
+    client_config: connector::Config,
+) -> Framed<TokioStream<TlsStream<TcpStream>>> {
+    let tcp_stream = TcpStream::connect(server_addr).await.expect("TCP connect");
+    let client_addr = tcp_stream.local_addr().expect("local_addr");
+    let mut framed = ironrdp_tokio::TokioFramed::new(tcp_stream);
+    let mut connector = connector::ClientConnector::new(client_config, client_addr);
+    let should_upgrade = ironrdp_async::connect_begin(&mut framed, &mut connector)
+        .await
+        .expect("begin connection");
+    let initial_stream = framed.into_inner_no_leftover();
+    let (upgraded_stream, tls_cert) = ironrdp_tls::upgrade_with_certificate_validation(
+        initial_stream,
+        "localhost",
+        ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate,
+    )
+    .await
+    .expect("TLS upgrade");
+    let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
+    let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
+    let server_public_key = ironrdp_tls::extract_tls_server_public_key(&tls_cert).expect("extract server public key");
+    ironrdp_async::connect_finalize(
+        upgraded,
+        connector,
+        &mut upgraded_framed,
+        &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
+        "localhost".into(),
+        server_public_key.to_owned(),
+        None,
+    )
+    .await
+    .expect("finalize connection");
+    upgraded_framed
+}
+
+/// Under `Hybrid` the out-of-the-box policy is `Preempt`: with no
+/// `with_connection_policy` call, a second client that completes CredSSP takes
+/// the session over, and the first client's connection is closed.
+#[tokio::test]
+async fn the_default_under_hybrid_lets_an_authenticated_newcomer_take_over() {
+    const HYBRID_USER: &str = "user";
+    const HYBRID_PASSWORD: &str = "password";
+
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_hybrid(acceptor, identity.pub_key.clone())
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: HYBRID_USER.into(),
+        password: HYBRID_PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let client_config = || connector::Config {
+        credentials: connector::Credentials::UsernamePassword {
+            username: HYBRID_USER.into(),
+            password: HYBRID_PASSWORD.into(),
+        },
+        ..default_client_config()
+    };
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = Box::pin(server.run()).await;
+        });
+
+        let (tx, rx) = oneshot::channel();
+        ev.send(ServerEvent::GetLocalAddr(tx)).unwrap();
+        let server_addr = rx.await.unwrap().unwrap();
+
+        let mut first = Box::pin(connect_hybrid_client(server_addr, client_config())).await;
+
+        // The newcomer can only finish its handshake if the server serves it,
+        // which under `Queue` it would not do while `first` is live.
+        let second = tokio::time::timeout(
+            Duration::from_secs(10),
+            Box::pin(connect_hybrid_client(server_addr, client_config())),
+        )
+        .await
+        .expect("the authenticated newcomer must be served (Preempt), not queued");
+
+        // The incumbent is evicted: its transport ends (possibly after a Set
+        // Error Info PDU and other trailing traffic) rather than staying open.
+        let evicted = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if first.read_pdu().await.is_err() {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(evicted.is_ok(), "the incumbent's connection must be closed");
+
+        drop(second);
+        ev.send(ServerEvent::Quit("done".into())).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(5), server_task).await;
+    }))
+    .await;
+}
