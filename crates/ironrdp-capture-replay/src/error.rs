@@ -62,3 +62,29 @@ pub enum ReplayError {
     #[error("capture gateway tunnel framing is invalid: {0}")]
     GatewayFraming(String),
 }
+
+impl ReplayError {
+    /// Stable stage and reason identifiers suitable for payload-free summaries.
+    pub fn summary_code(&self) -> (&'static str, &'static str) {
+        match self {
+            Self::Io(_) => ("read", "io"),
+            Self::Pcap(_) => ("read", "pcap"),
+            Self::UnsupportedTransport => ("read", "unsupported-transport"),
+            Self::MissingTcpFlow => ("read", "missing-tcp-flow"),
+            Self::StandardSecurity => ("decrypt", "standard-security"),
+            Self::UnsupportedTls => ("decrypt", "unsupported-tls"),
+            Self::MissingTlsSecret => ("decrypt", "missing-tls-secret"),
+            Self::MissingTunneledTlsSecret => ("gateway", "missing-tunneled-tls-secret"),
+            Self::TlsAuthentication => ("decrypt", "tls-authentication"),
+            Self::TlsKeyUpdate => ("decrypt", "tls-key-update"),
+            Self::MissingRdpState => ("negotiate", "missing-rdp-state"),
+            Self::MissingChannelMap => ("negotiate", "missing-channel-map"),
+            Self::MissingUserChannel => ("negotiate", "missing-user-channel"),
+            Self::MissingShareId => ("negotiate", "missing-share-id"),
+            Self::ContradictoryRoutingState => ("negotiate", "contradictory-routing-state"),
+            Self::MissingDrdynvcChannel => ("route", "missing-drdynvc-channel"),
+            Self::DynamicChannelAttachment => ("route", "dynamic-channel-attachment"),
+            Self::GatewayFraming(_) => ("gateway", "framing"),
+        }
+    }
+}
