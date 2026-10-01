@@ -12,15 +12,13 @@ const ACTOR_LABELS = ["needs-review", "needs-author-action"];
 const FAILURE_LABEL = "automation-failed";
 const LEGITIMACY_LABEL = "triage/legitimacy";
 const OVERLAP_LABEL = "triage/overlap";
-const OVERSIZED_REVIEW_LABEL = "ai-review/allow-oversized";
 const LEGITIMACY_MARKER_PREFIX = "<!-- ironrdp-pr-automation:legitimacy:v2:";
 const OVERLAP_MARKER = "<!-- ironrdp-pr-automation:overlap -->";
-const OVERSIZED_MARKER = "<!-- ironrdp-pr-automation:oversized -->";
 const LEGACY_XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
 const FORK_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-quota -->";
 const GLOBAL_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-global-budget -->";
 const EVIDENCE_LIMIT_MARKER = "<!-- ironrdp-pr-automation:evidence-limit -->";
-const EVIDENCE_LIMIT_REASON = /^pull request diff exceeds the (1|4) MiB evidence limit$/;
+const EVIDENCE_LIMIT_REASON = /^pull request diff exceeds the 1 MiB evidence limit$/;
 
 function labelsOf(labels) {
   return new Set((labels || []).map((label) => typeof label === "string" ? label : label?.name).filter(Boolean));
@@ -53,9 +51,8 @@ function quotaComment(rateLimit) {
 }
 
 function evidenceLimitComment(reason) {
-  const match = typeof reason === "string" ? EVIDENCE_LIMIT_REASON.exec(reason) : null;
-  return match
-    ? { kind: "evidence-limit", marker: EVIDENCE_LIMIT_MARKER, limitMiB: Number(match[1]) }
+  return typeof reason === "string" && EVIDENCE_LIMIT_REASON.test(reason)
+    ? { kind: "evidence-limit", marker: EVIDENCE_LIMIT_MARKER }
     : null;
 }
 
@@ -206,7 +203,6 @@ function resolveClassificationState({
       EVIDENCE_LIMIT_MARKER,
       FORK_QUOTA_MARKER,
       GLOBAL_QUOTA_MARKER,
-      OVERSIZED_MARKER,
       LEGACY_XL_MARKER,
     ],
     check: {
@@ -396,8 +392,7 @@ function reviewOutcome({ reportStatus, state, reducedCoverage = [] } = {}) {
 module.exports = {
   ACTOR_LABELS, AI_COUNTS, EVIDENCE_LIMIT_MARKER, FAILURE_LABEL, FORK_QUOTA_MARKER,
   GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
-  LEGITIMACY_MARKER_PREFIX, OVERLAP_LABEL, OVERLAP_MARKER, OVERSIZED_REVIEW_LABEL, RISK,
-  OVERSIZED_MARKER,
+  LEGITIMACY_MARKER_PREFIX, OVERLAP_LABEL, OVERLAP_MARKER, RISK,
   contributorEligibility, resolveClassificationState,
   resolveReviewState, reviewCount, reviewOutcome, reviewPolicyEligible,
 };

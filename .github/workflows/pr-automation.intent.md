@@ -102,12 +102,10 @@ Fork pull requests share a quota of 50 per UTC day.
 Exclude `OWNER` and `MEMBER` pull requests from enforcement and counting, and preserve the same-repository exemption.
 
 Keep `size/XXL` informational.
-Use a 1 MiB evidence diff limit by default and a 4 MiB limit when `ai-review/allow-oversized` is present.
-Adding that label must retry classification.
-Evidence above the applicable limit fails closed without partial model input.
+Use a 1 MiB evidence diff limit.
+Evidence above that limit fails closed without partial model input.
 
 Normal classification-to-review dispatch is edge-triggered and occurs only when the persisted SHA-bound classification check changes.
-Adding `ai-review/allow-oversized` forces reclassification and may dispatch on the same SHA when the resulting classification state is unchanged.
 Unrelated label events and repeated non-explicit unchanged classifications must not dispatch.
 
 Force mode bypasses policy gates but not classification prerequisites, evidence, validation, filesystem, citation, publication, or stale-head safeguards.

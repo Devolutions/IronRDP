@@ -4,7 +4,7 @@ const { SCHEMA_VERSION, parseCheckState } = require("./validate-classifier");
 const { readCheckRuns } = require("./check-runs");
 
 async function resolveClassificationGate({
-  github, owner, repo, expectedSha, force = false, retryWithLargerEvidence = false,
+  github, owner, repo, expectedSha, force = false,
 }) {
   if (force) {
     return { available: true, required: true, reason: "", force: true };
@@ -22,7 +22,7 @@ async function resolveClassificationGate({
     });
     return {
       available: true,
-      required: retryWithLargerEvidence || !completed,
+      required: !completed,
       reason: "",
       externalId,
       completed,

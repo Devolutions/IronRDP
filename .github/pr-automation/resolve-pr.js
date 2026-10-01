@@ -1,7 +1,5 @@
 "use strict";
 
-const { OVERSIZED_REVIEW_LABEL } = require("./resolve-state");
-
 const SHA = /^[0-9a-f]{40}$/;
 
 function noResult(reason, route = "unknown", pr = null, observedCiRun = null) {
@@ -70,8 +68,6 @@ async function resolvePr({ github, context, inputs = {} }) {
   const force = route === "dispatch" && inputFlag(inputs.force ?? context.payload.inputs?.force);
   const dispatchReview = route === "dispatch" &&
     inputFlag(inputs.review ?? context.payload.inputs?.review);
-  const oversizedReviewRequested = route === "classification" &&
-    context.payload.action === "labeled" && context.payload.label?.name === OVERSIZED_REVIEW_LABEL;
   let pr;
   let observedCiRun = null;
   try {
@@ -133,16 +129,14 @@ async function resolvePr({ github, context, inputs = {} }) {
   const labels = (pr.labels || [])
     .map((label) => typeof label === "string" ? label : label.name)
     .filter(Boolean);
-  const unrelatedLabel = route === "classification" && ["labeled", "unlabeled"].includes(context.payload.action) &&
-    context.payload.label?.name !== OVERSIZED_REVIEW_LABEL;
+  const unrelatedLabel = route === "classification" && ["labeled", "unlabeled"].includes(context.payload.action);
   if (unrelatedLabel) return noResult("unrelated pull request label", route, pr);
-  const reviewRequested = oversizedReviewRequested || dispatchReview;
+  const reviewRequested = dispatchReview;
   const classificationRequested = route === "classification" ||
     (route === "dispatch" && !dispatchReview);
   return {
     ok: true, route, prNumber: pr.number, headSha: pr.head.sha, baseSha: pr.base.sha,
     labels,
-    evidenceMaxBytes: labels.includes(OVERSIZED_REVIEW_LABEL) ? 4 * 1024 * 1024 : 1024 * 1024,
     author: {
       nodeId: pr.user?.node_id || null, login: pr.user?.login || null, type: pr.user?.type || null,
       association: pr.author_association || null,

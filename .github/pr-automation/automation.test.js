@@ -21,7 +21,7 @@ const {
   reviewCount, reviewOutcome, reviewPolicyEligible, OVERLAP_MARKER,
   OVERLAP_LABEL,
   EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
-  LEGITIMACY_MARKER_PREFIX, OVERSIZED_MARKER, OVERSIZED_REVIEW_LABEL, contributorEligibility,
+  LEGITIMACY_MARKER_PREFIX, contributorEligibility,
 } = require("./resolve-state");
 const { resolvePr } = require("./resolve-pr");
 const { resolveClassificationGate } = require("./classification-gate");
@@ -1379,7 +1379,7 @@ test("review skip summary explains gate and quota failures", () => {
   }), ["The workflow's automated review conditions were not satisfied."]);
 });
 
-test("classification gate reuses paginated completed state but forces oversized retries", async () => {
+test("classification gate reuses paginated completed state", async () => {
   let reads = 0;
   const machineState = {
     protocolRelated: false, risk: "low", specialistReviewers: [],
@@ -1411,14 +1411,6 @@ test("classification gate reuses paginated completed state but forces oversized 
   assert.equal(cached.available, true);
   assert.equal(cached.required, false);
   assert.equal(reads, 1);
-
-  const retry = await resolveClassificationGate({ ...args, retryWithLargerEvidence: true });
-  assert.deepEqual(retry, {
-    available: true, required: true, reason: "",
-    externalId: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
-    completed: true,
-  });
-  assert.equal(reads, 2);
 
   const unavailable = await resolveClassificationGate({
     ...args,
@@ -1576,12 +1568,10 @@ test("LLM evidence is bound to the resolved pull request base", () => {
   const evidenceScript = fs.readFileSync(path.join(__dirname, "fetch-pr-evidence.sh"), "utf8");
   const classifier = workflowJob(workflow, "classifier");
   assert.match(classifier, /BASE_SHA: \$\{\{ needs\.resolve-pr\.outputs\.base-sha \}\}/);
-  assert.match(classifier,
-    /fetch-pr-evidence\.sh \\\n\s+"\$HEAD_SHA" "\$BASE_SHA" "\$EVIDENCE_MAX_BYTES"/);
+  assert.match(classifier, /fetch-pr-evidence\.sh \\\n\s+"\$HEAD_SHA" "\$BASE_SHA"/);
   const evidence = workflowJob(reviewWorkflow, "evidence");
   assert.match(evidence, /BASE_SHA: \$\{\{ inputs\.base-sha \}\}/);
-  assert.match(evidence,
-    /fetch-pr-evidence\.sh \\\n\s+"\$HEAD_SHA" "\$BASE_SHA" "\$EVIDENCE_MAX_BYTES"/);
+  assert.match(evidence, /fetch-pr-evidence\.sh \\\n\s+"\$HEAD_SHA" "\$BASE_SHA"/);
   assert.match(evidenceScript, /\+\$base_sha:refs\/remotes\/origin\/pull-request-base/);
   assert.match(
     evidenceScript,
@@ -1603,20 +1593,17 @@ test("evidence caps are trusted, bounded, and fail closed with guidance", () => 
   assert.match(evidenceAttributes, /^\* !diff$/m);
   assert.match(evidenceAttributes, /^\.github\/actions\/openai-agent\/dist\/\*\* -diff$/m);
   assert.match(evidenceScript, /failure-reason\.txt/);
-  assert.match(evidenceScript, /1048576\) limit_mib=1/);
-  assert.match(evidenceScript, /4194304\) limit_mib=4/);
-  assert.match(evidenceScript, /invalid evidence diff limit/);
+  assert.match(evidenceScript, /max_bytes=1048576/);
+  assert.match(evidenceScript, /max_bytes=1048576/);
+  assert.doesNotMatch(evidenceScript, /4194304/);
   assert.match(evidenceScript, /-gt "\$max_bytes"/);
   assert.match(evidenceScript, /exit 1/);
   assert.doesNotMatch(evidenceScript, /pull-request\.diff\.truncated/);
   const classifier = workflowJob(workflow, "classifier");
   assert.match(classifier, /id: evidence/);
-  assert.match(classifier,
-    /EVIDENCE_MAX_BYTES: \$\{\{ needs\.resolve-pr\.outputs\.evidence-max-bytes \}\}/);
   assert.match(classifier, /steps\.evidence\.outputs\.failure-reason \|\|/);
   const evidence = workflowJob(reviewWorkflow, "evidence");
   assert.match(evidence, /id: evidence/);
-  assert.match(evidence, /EVIDENCE_MAX_BYTES: \$\{\{ inputs\.evidence-max-bytes \}\}/);
   assert.match(evidence, /failure-reason: \$\{\{ steps\.record\.outputs\.failure-reason \}\}/);
   assert.match(evidence, /EVIDENCE_REASON: \$\{\{ steps\.evidence\.outputs\.failure-reason \}\}/);
   assert.match(workflowJob(reviewWorkflow, "validate"),
@@ -1627,30 +1614,15 @@ test("evidence caps are trusted, bounded, and fail closed with guidance", () => 
     sizeLabels: ["size/XL", "size/XXL"], firstTime: false,
   };
   const classification = resolveClassificationState({
-    expectedSha: SHA, labels: [OVERSIZED_REVIEW_LABEL], deterministic,
+    expectedSha: SHA, labels: [], deterministic,
     classifierReason: reason, semver: { head_sha: SHA, status: "not-suspected" },
   });
   assert.equal(classification.failed, true);
   assert.deepEqual(classification.comments, [{
-    kind: "evidence-limit", marker: EVIDENCE_LIMIT_MARKER, limitMiB: 1,
+    kind: "evidence-limit", marker: EVIDENCE_LIMIT_MARKER,
   }]);
   assert.match(markerBody(classification.comments[0]), /No model was invoked with partial evidence/);
-  assert.match(markerBody(classification.comments[0]), /ai-review\/allow-oversized/);
-
-  const reviewFailure = resolveReviewState({
-    expectedSha: SHA, labels: [], gate: {
-      ok: true, force: true, head_sha: SHA, classificationValid: true,
-      classificationId: FORCED_CLASSIFICATION_ID,
-      protocolRelated: false, risk: "unknown", specialistReviewers: ["skeptical"],
-    },
-    reviewerReason: "pull request diff exceeds the 4 MiB evidence limit",
-    force: true, reviewMarkerId: "1",
-  });
-  assert.equal(reviewFailure.failed, true);
-  assert.deepEqual(reviewFailure.comments, [{
-    kind: "evidence-limit", marker: EVIDENCE_LIMIT_MARKER, limitMiB: 4,
-  }]);
-  assert.match(markerBody(reviewFailure.comments[0]), /runtime maximum/);
+  assert.match(markerBody(classification.comments[0]), /split the change/);
 });
 
 test("every deterministic label is declared and the repository rules classify tooling changes", () => {
@@ -2504,7 +2476,6 @@ test("bot authors are excluded from automation", async () => {
   const human = await resolve({ node_id: "U_3", login: "contributor", type: "User" });
   assert.equal(human.ok, true);
   assert.equal(human.reviewRoute, true);
-  assert.equal(human.evidenceMaxBytes, 1024 * 1024);
 
   const labels = new Set(["needs-review"]);
   const listChecks = () => {};
@@ -2699,16 +2670,16 @@ test("pull request events request classification without lifecycle metadata", as
   }
 });
 
-test("only oversized-review label changes start automation from label events", async () => {
+test("label changes do not start automation", async () => {
   const pullRequest = (labels = []) => ({
     number: 7, draft: false, state: "open", labels,
     user: { node_id: "U_1", login: "contributor", type: "User" },
     head: { sha: SHA, repo: { full_name: "Devolutions/IronRDP" } }, base: { sha: "b".repeat(40) },
   });
-  const resolve = async (label, action = "labeled", labels = [OVERSIZED_REVIEW_LABEL]) => resolvePr({
+  const resolve = async (label, action = "labeled") => resolvePr({
     github: { rest: { pulls: {
-      get: async () => ({ data: pullRequest(labels) }),
-      list: async () => ({ data: [pullRequest(labels)] }),
+      get: async () => ({ data: pullRequest() }),
+      list: async () => ({ data: [pullRequest()] }),
     } } },
     context: {
       eventName: "pull_request_target", repo: { owner: "Devolutions", repo: "IronRDP" },
@@ -2716,22 +2687,10 @@ test("only oversized-review label changes start automation from label events", a
     },
   });
 
-  const requested = await resolve(OVERSIZED_REVIEW_LABEL);
-  assert.equal(requested.ok, true);
-  assert.equal(requested.classificationRequested, true);
-  assert.equal(requested.reviewRequested, true);
-  assert.equal(requested.force, false);
-  assert.equal(requested.evidenceMaxBytes, 4 * 1024 * 1024);
-  const revoked = await resolve(OVERSIZED_REVIEW_LABEL, "unlabeled", []);
-  assert.equal(revoked.ok, true);
-  assert.equal(revoked.classificationRequested, true);
-  assert.equal(revoked.reviewRequested, false);
-  assert.equal(revoked.evidenceMaxBytes, 1024 * 1024);
-  assert.equal((await resolve("breaking-change")).reason, "unrelated pull request label");
-  assert.equal((await resolve("needs-review")).reason, "unrelated pull request label");
-  assert.equal((await resolve(FAILURE_LABEL)).reason, "unrelated pull request label");
-  assert.equal((await resolve("size/XXL")).reason, "unrelated pull request label");
-  assert.equal((await resolve("size/XXL", "unlabeled", [])).reason, "unrelated pull request label");
+  for (const label of ["breaking-change", "needs-review", FAILURE_LABEL, "size/XXL"]) {
+    assert.equal((await resolve(label)).reason, "unrelated pull request label");
+    assert.equal((await resolve(label, "unlabeled")).reason, "unrelated pull request label");
+  }
 });
 
 test("deterministic semver outranks the model and a model-only break cannot stay low", () => {
@@ -2945,26 +2904,6 @@ test("review publication applies the same policy the workflow spent its call on"
   assert.equal(resolveReviewState({
     ...args, labels: ["risk/low", "size/XXL"], gate: gate({ protocolRelated: true, risk: "low" }),
   }).failed, undefined);
-  assert.equal(resolveReviewState({
-    ...args, labels: ["risk/low", "size/XXL", OVERSIZED_REVIEW_LABEL],
-    gate: gate({ protocolRelated: true, risk: "low" }),
-  }).failed, undefined);
-});
-
-test("persistent oversized-review label does not alter normal classification", () => {
-  const deterministic = { ok: true, pathLabels: [], ownedPathLabels: [],
-    sizeLabel: "size/XXL", sizeLabels: ["size/XL", "size/XXL"], firstTime: false };
-  const state = resolveClassificationState({
-    expectedSha: SHA, labels: [OVERSIZED_REVIEW_LABEL], deterministic, classifier: classifier({
-      protocol_related: true,
-    }), semver: { head_sha: SHA, status: "not-suspected" },
-  });
-
-  assert.equal(state.oversized, undefined);
-  assert.equal(state.check.title, "Classification complete");
-  assert.equal(state.dispatchReview, true);
-  assert.deepEqual(state.comments, []);
-  assert.equal(state.removeCommentMarkers.includes(OVERSIZED_MARKER), true);
 });
 
 test("size/XXL remains informational and does not suppress classification", () => {
@@ -2986,7 +2925,6 @@ test("size/XXL remains informational and does not suppress classification", () =
   assert.equal(state.check.machineState.automaticReviewEligible, true);
   assert.equal(parseCheckState(`${state.check.summary}\n\n${encodeCheckState(state.check.machineState)}`)
     .automaticReviewEligible, true);
-  assert.equal(state.removeCommentMarkers.includes(OVERSIZED_MARKER), true);
 });
 
 test("suspected overlap is advisory and is withdrawn once it no longer holds", () => {
@@ -3121,14 +3059,11 @@ test("forced classification bypasses policy, quota, and cache but still validate
   const state = resolveClassificationState(args);
   assert.equal(state.failed, undefined);
   assert.equal(state.forced, true);
-  assert.equal(state.oversized, undefined);
   assert.equal(state.check.title, "Classification complete");
   assert.equal(state.dispatchReview, false);
   assert.equal(state.check.machineState.automaticReviewEligible, false);
   assert.deepEqual(desiredLabels(state, "needs-author-action"), []);
   assert.deepEqual(desiredLabels(state, FAILURE_LABEL), [FAILURE_LABEL]);
-  assert.equal(state.comments.some((comment) => comment.kind === "oversized"), false);
-  assert.equal(state.removeCommentMarkers.includes(OVERSIZED_MARKER), true);
 
   const invalid = resolveClassificationState({ ...args, classifier: "" });
   assert.equal(invalid.failed, true);
@@ -5766,7 +5701,7 @@ test("the reusable pipeline stays caller-driven and reports every stage back", (
   assert.doesNotMatch(triggers, /\n {2}(pull_request|push|schedule|workflow_dispatch|issue_comment):/);
 
   for (const input of ["pr-number", "head-sha", "base-sha", "specialist-reviewers",
-    "evidence-max-bytes", "required-reviewers", "gate", "lease"]) {
+    "required-reviewers", "gate", "lease"]) {
     assert.match(workflow, new RegExp(`\\n {6}${input}:\\n`), `${input} input is missing`);
   }
   for (const removed of ["prior-results", "recovery-attempt", "provenance"]) {

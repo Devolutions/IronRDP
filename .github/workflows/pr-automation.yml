@@ -46,8 +46,8 @@ concurrency:
     pr-automation-${{ github.event_name }}-${{ github.event.workflow_run.head_sha ||
     github.event.pull_request.number || inputs.pr-number ||
     github.event.client_payload.pr_number ||
-    github.run_id }}-${{ github.event.label.name == 'ai-review/allow-oversized' && 'pr' ||
-    github.event.label.name && format('label-{0}', github.event.label.name) || 'pr' }}
+    github.run_id }}-${{ github.event.label.name &&
+    format('label-{0}', github.event.label.name) || 'pr' }}
   cancel-in-progress: false
   queue: max
 
@@ -75,7 +75,6 @@ jobs:
       review-route: ${{ steps.resolve.outputs.review-route }}
       classifier-lane: ${{ steps.resolve.outputs.classifier-lane }}
       reviewer-pipeline-lane: ${{ steps.resolve.outputs.reviewer-pipeline-lane }}
-      evidence-max-bytes: ${{ steps.resolve.outputs.evidence-max-bytes }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -112,7 +111,6 @@ jobs:
             core.setOutput("review-route", result.reviewRoute === true);
             core.setOutput("classifier-lane", result.prNumber ? (Number(result.prNumber) % 4) + 1 : "");
             core.setOutput("reviewer-pipeline-lane", result.prNumber ? (Number(result.prNumber) % 7) + 1 : "");
-            core.setOutput("evidence-max-bytes", result.evidenceMaxBytes ?? "");
             core.info(JSON.stringify({ event: "pr-automation.resolve-pr", decision: result }));
             if (result.prNumber) {
               const prUrl = `${process.env.PULL_REQUEST_URL_BASE}/${result.prNumber}`;
@@ -148,7 +146,6 @@ jobs:
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           FORCE: ${{ needs.resolve-pr.outputs.force }}
-          RETRY_WITH_LARGER_EVIDENCE: ${{ needs.resolve-pr.outputs.review-requested }}
         with:
           script: |
             const { resolveClassificationGate } = require("./.github/pr-automation/classification-gate");
@@ -158,7 +155,6 @@ jobs:
               repo: context.repo.repo,
               expectedSha: process.env.HEAD_SHA,
               force: process.env.FORCE === "true",
-              retryWithLargerEvidence: process.env.RETRY_WITH_LARGER_EVIDENCE === "true",
             });
             core.setOutput("required", decision.required);
             core.setOutput("available", decision.available);
@@ -457,7 +453,6 @@ jobs:
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
-          EVIDENCE_MAX_BYTES: ${{ needs.resolve-pr.outputs.evidence-max-bytes }}
         run: |
           set -euo pipefail
           export GIT_CONFIG_NOSYSTEM=1
@@ -468,7 +463,7 @@ jobs:
           git fetch --no-tags origin +master:refs/remotes/origin/master
           git checkout --detach origin/master
           if ! bash ./.github/pr-automation/fetch-pr-evidence.sh \
-            "$HEAD_SHA" "$BASE_SHA" "$EVIDENCE_MAX_BYTES"; then
+            "$HEAD_SHA" "$BASE_SHA"; then
             reason="pull request evidence unavailable"
             if test -f pr-evidence/failure-reason.txt; then
               reason="$(cat pr-evidence/failure-reason.txt)"
@@ -591,7 +586,7 @@ jobs:
               event: "pr-automation.classification-state",
               decision: {
                 ok: state.ok, mode: state.mode, failed: state.failed === true,
-                oversized: state.oversized === true, expectedSha: state.expectedSha,
+                expectedSha: state.expectedSha,
               },
             }));
 
@@ -846,7 +841,6 @@ jobs:
       lease: ${{ needs.review-admission.outputs.lease }}
       specialist-reviewers: ${{ needs.review-gate.outputs.specialist-reviewers }}
       required-reviewers: ${{ needs.review-gate.outputs.required-reviewers }}
-      evidence-max-bytes: ${{ needs.resolve-pr.outputs.evidence-max-bytes }}
     # Work around actions/runner#4453: environment secrets otherwise resolve empty in reusable jobs.
     # This exposes caller-accessible secrets, so the called workflow must remain trusted and not execute PR code.
     secrets: inherit

@@ -55,10 +55,7 @@ function markerBody(comment, owner, repo) {
     return `${comment.marker}\n\nAutomated classification and review capacity for fork pull requests has reached its daily UTC limit.\n\nSee the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md). Automation remains blocked until capacity is available and it is retried.`;
   }
   if (comment.kind === "evidence-limit") {
-    const guidance = comment.limitMiB === 1
-      ? "A maintainer can add `ai-review/allow-oversized` to retry with the runtime maximum of 4 MiB. Otherwise, split the change into focused pull requests or reduce generated content."
-      : "The 4 MiB limit is the model runtime maximum. Please split the change into focused pull requests or reduce generated content.";
-    return `${comment.marker}\n\nAutomated model analysis stopped because this pull request's diff exceeds the ${comment.limitMiB} MiB evidence limit. No model was invoked with partial evidence.\n\n${guidance} Automation remains blocked until retry or repair.`;
+    return `${comment.marker}\n\nAutomated model analysis stopped because this pull request's diff exceeds the 1 MiB evidence limit. No model was invoked with partial evidence.\n\nPlease split the change into focused pull requests or reduce generated content. Automation remains blocked until retry or repair.`;
   }
   throw new Error("unsupported issue comment");
 }
