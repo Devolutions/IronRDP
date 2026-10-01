@@ -133,10 +133,5 @@
     "name": "ai-reviewed/2",
     "color": "000000",
     "description": "Final automated review completed"
-  },
-  {
-    "name": "ai-review/allow-oversized",
-    "color": "fbca04",
-    "description": "Raises the automated-review evidence diff limit from 1 MiB to 4 MiB"
   }
 ]
