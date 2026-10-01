@@ -86,6 +86,13 @@ const DEFAULT_MAX_FRAMES_IN_FLIGHT: u32 = 3;
 /// Special queue depth value indicating client has disabled acknowledgments
 const SUSPEND_FRAME_ACK_QUEUE_DEPTH: u32 = 0xFFFFFFFF;
 
+/// Highest QP in the H.264 range that MS-RDPEGFX 2.2.4.4.2 requires for the `qp`
+/// field of an AVC420 region.
+const MAX_AVC_QP: u8 = 51;
+
+/// Highest `qualityVal` of an AVC420 region (MS-RDPEGFX 2.2.4.4.2).
+const MAX_AVC_QUALITY: u8 = 100;
+
 /// Pre-encoded ZGFX-wrapped bytes for DVC transmission.
 ///
 /// `Encode::encode()` takes `&self`, but ZGFX wrapping is done in `drain_output()`
@@ -1146,6 +1153,26 @@ impl GraphicsPipelineServer {
         self.codec_caps.avc420
     }
 
+    /// Whether the negotiated capability set promises AVC420 in the same frame
+    /// as other codecs.
+    ///
+    /// MS-RDPEGFX 2.2.3.7 requires that of a client that did not set
+    /// `AVC_DISABLED` at capability version 10.4, and 2.2.3.8 to 2.2.3.10 carry
+    /// it to 10.5, 10.6 and 10.7. Earlier versions make no such promise.
+    fn avc420_may_share_a_frame(&self) -> bool {
+        self.supports_avc420()
+            && matches!(
+                self.negotiated_caps,
+                Some(
+                    CapabilitySet::V10_4 { .. }
+                        | CapabilitySet::V10_5 { .. }
+                        | CapabilitySet::V10_6 { .. }
+                        | CapabilitySet::V10_6Err { .. }
+                        | CapabilitySet::V10_7 { .. }
+                )
+            )
+    }
+
     /// Check if AVC444 (H.264 4:4:4) is available
     #[must_use]
     pub fn supports_avc444(&self) -> bool {
@@ -1430,6 +1457,11 @@ impl GraphicsPipelineServer {
                 bottom: default_height,
             }
         }
+    }
+
+    /// Whether an exclusive rectangle is non-empty and lies inside the surface.
+    fn rect_fits_surface(rect: &ExclusiveRectangle, surface: &Surface) -> bool {
+        rect.left < rect.right && rect.top < rect.bottom && rect.right <= surface.width && rect.bottom <= surface.height
     }
 
     /// Queue an H.264 AVC420 frame for transmission
@@ -1789,6 +1821,7 @@ impl GraphicsPipelineServer {
             return None;
         }
         if self.should_backpressure() {
+            self.qoe.record_backpressure();
             return None;
         }
 
@@ -1869,10 +1902,28 @@ impl GraphicsPipelineServer {
     /// ClearCodec tiles (lossless text), Progressive tiles (photos), and H.264
     /// tiles (video), all sent between one `StartFrame`/`EndFrame` pair.
     ///
-    /// This matches how Azure VDI achieves its visual quality — each tile uses
-    /// the codec best suited to its content type.
+    /// The client copies each decoded tile to the surface as it processes the
+    /// PDU (MS-RDPEGFX 3.3.5.1), so where two tiles overlap the one sent later
+    /// is what remains. MS-RDPEGFX 2.2.3.7 requires a client that did not set
+    /// `AVC_DISABLED` at capability version 10.4 or later to process AVC420 in
+    /// the same frame as other codecs; earlier capability versions make no
+    /// such promise.
     ///
-    /// Returns `Some(frame_id)` if queued, `None` if not ready or backpressured.
+    /// Every tile is checked before the frame is queued. AVC420 tiles need
+    /// AVC420 support in the negotiated capabilities, and a frame that mixes an
+    /// AVC420 tile with another codec needs capability version 10.4 or later,
+    /// the versions that make that promise. A frame of AVC420 tiles alone is
+    /// not covered by it. Each AVC420 tile needs at least one region, unlike
+    /// [`Self::send_avc420_frame()`], which reads an empty list as the whole
+    /// surface: a whole-surface tile would cover the tiles sent before it. Each
+    /// AVC420 region and ClearCodec destination must be non-empty and inside
+    /// the surface.
+    /// AVC420 regions also need a QP of at most 51 and a quality of at most
+    /// 100 (MS-RDPEGFX 2.2.4.4.2). If any check fails nothing is queued and
+    /// no frame is tracked.
+    ///
+    /// Returns `Some(frame_id)` if queued, `None` if not ready, backpressured,
+    /// or a tile failed its checks.
     pub fn send_mixed_frame(
         &mut self,
         surface_id: u16,
@@ -1883,14 +1934,41 @@ impl GraphicsPipelineServer {
             return None;
         }
         if self.should_backpressure() {
+            self.qoe.record_backpressure();
             return None;
         }
         if tiles.is_empty() {
             return None;
         }
 
+        let has_avc420 = tiles.iter().any(|tile| matches!(tile, MixedTilePayload::Avc420 { .. }));
+        let has_other_codec = tiles
+            .iter()
+            .any(|tile| !matches!(tile, MixedTilePayload::Avc420 { .. }));
+        if has_avc420 && has_other_codec && !self.avc420_may_share_a_frame() {
+            return None;
+        }
+
+        let supports_avc420 = self.supports_avc420();
         let surface = self.surfaces.get(surface_id)?;
         let pixel_format = surface.pixel_format;
+
+        let tiles_valid = tiles.iter().all(|tile| match tile {
+            MixedTilePayload::ClearCodec { destination, .. } => Self::rect_fits_surface(destination, surface),
+            MixedTilePayload::RemoteFxProgressive { .. } => true,
+            MixedTilePayload::Avc420 { regions, .. } => {
+                supports_avc420
+                    && !regions.is_empty()
+                    && regions.iter().all(|region| {
+                        Self::rect_fits_surface(&region.to_rectangle(), surface)
+                            && region.quantization_parameter <= MAX_AVC_QP
+                            && region.quality <= MAX_AVC_QUALITY
+                    })
+            }
+        });
+        if !tiles_valid {
+            return None;
+        }
 
         let timestamp = Self::make_timestamp(timestamp_ms);
         let frame_id = self.frames.begin_frame(timestamp);
