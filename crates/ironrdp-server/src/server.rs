@@ -4065,7 +4065,8 @@ impl RdpServer {
                     // (MS-RDPEMT 1.3.3). A client whose channels moved has
                     // nowhere left to read them, so end the connection and let
                     // it reconnect rather than keep a session it cannot draw.
-                    if this.lock().await.1.egfx_on_udp {
+                    let (_, conn) = &mut *this.lock().await;
+                    if conn.egfx_on_udp {
                         warn!("UDP transport lost with EGFX on it, ending the connection");
                         return Err(ServerError::reason(
                             "UDP transport",
