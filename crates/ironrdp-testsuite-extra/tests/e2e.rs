@@ -1493,3 +1493,126 @@ pub(super) fn default_client_config() -> connector::Config {
         rail_support_level: pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED,
     }
 }
+
+/// Records which `ConnectionHandler` hooks reached the handler. `on_accept` fires
+/// before a connection is served; `on_connection_info` fires mid-connection.
+struct HookRecorder {
+    accept: Arc<AtomicBool>,
+    info: Arc<AtomicBool>,
+}
+
+impl server::ConnectionHandler for HookRecorder {
+    fn on_accept(&mut self, _peer: SocketAddr) -> bool {
+        self.accept.store(true, Ordering::SeqCst);
+        true
+    }
+
+    fn on_connection_info(&mut self, _info: &server::ConnectionInfo) {
+        self.info.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Serve one real client through the full handshake under `policy` and report
+/// `(on_accept reached the handler, on_connection_info reached the handler)`.
+async fn hooks_reaching_handler_under(policy: server::ConnectionPolicy) -> (bool, bool) {
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    let accept = Arc::new(AtomicBool::new(false));
+    let fired = Arc::new(AtomicBool::new(false));
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+        })
+        .with_connection_handler(Some(Box::new(HookRecorder {
+            accept: Arc::clone(&accept),
+            info: Arc::clone(&fired),
+        })))
+        .with_connection_policy(policy)
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = Box::pin(server.run()).await;
+        });
+
+        let (tx, rx) = oneshot::channel();
+        ev.send(ServerEvent::GetLocalAddr(tx)).unwrap();
+        let server_addr = rx.await.unwrap().unwrap();
+        let tcp_stream = TcpStream::connect(server_addr).await.expect("TCP connect");
+        let client_addr = tcp_stream.local_addr().expect("local_addr");
+        let mut framed = ironrdp_tokio::TokioFramed::new(tcp_stream);
+        let mut connector = connector::ClientConnector::new(default_client_config(), client_addr);
+        let should_upgrade = ironrdp_async::connect_begin(&mut framed, &mut connector)
+            .await
+            .expect("begin connection");
+        let initial_stream = framed.into_inner_no_leftover();
+        let (upgraded_stream, tls_cert) = ironrdp_tls::upgrade_with_certificate_validation(
+            initial_stream,
+            "localhost",
+            ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate,
+        )
+        .await
+        .expect("TLS upgrade");
+        let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
+        let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
+        let server_public_key =
+            ironrdp_tls::extract_tls_server_public_key(&tls_cert).expect("extract server public key");
+        let _connection_result = ironrdp_async::connect_finalize(
+            upgraded,
+            connector,
+            &mut upgraded_framed,
+            &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
+            "localhost".into(),
+            server_public_key.to_owned(),
+            None,
+        )
+        .await
+        .expect("finalize connection");
+
+        // The client is now active, so the server has finished its side of
+        // the handshake. Keep the connection open and give the hook a
+        // generous window to land.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !fired.load(Ordering::SeqCst) && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let result = (accept.load(Ordering::SeqCst), fired.load(Ordering::SeqCst));
+
+        drop(upgraded_framed);
+        server_task.abort();
+        result
+    }))
+    .await
+}
+
+#[tokio::test]
+async fn connection_handler_hooks_reach_handler_under_queue() {
+    let (accept, info) = Box::pin(hooks_reaching_handler_under(server::ConnectionPolicy::Queue)).await;
+    assert!(accept && info, "Queue: on_accept={accept}, on_connection_info={info}");
+}
+
+#[tokio::test]
+async fn connection_handler_hooks_reach_handler_under_preempt() {
+    let (accept, info) = Box::pin(hooks_reaching_handler_under(server::ConnectionPolicy::Preempt)).await;
+    assert!(accept && info, "Preempt: on_accept={accept}, on_connection_info={info}");
+}
+
+#[tokio::test]
+async fn connection_handler_hooks_reach_handler_under_reject() {
+    let (accept, info) = Box::pin(hooks_reaching_handler_under(server::ConnectionPolicy::Reject)).await;
+    assert!(accept && info, "Reject: on_accept={accept}, on_connection_info={info}");
+}
