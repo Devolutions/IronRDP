@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
-use ironrdp_core::{ReadCursor, WriteBuf};
+use ironrdp_core::{MonotonicInstant, ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_dvc::pdu::SoftSyncTunnelType;
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessageBatch, DynamicChannelMut, DynamicChannelRef};
@@ -10,7 +10,7 @@ use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
-use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
+use ironrdp_pdu::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse};
 use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
@@ -27,6 +27,7 @@ use ironrdp_rdpei::RdpeiClient;
 use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
 use tracing::{debug, warn};
 
+use crate::autodetect::AutoDetectResponder;
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
 use crate::{SessionError, SessionErrorExt as _, SessionResult, fast_path, x224};
@@ -49,6 +50,8 @@ pub struct ActiveStage {
     window_support_level: Option<WindowSupportLevel>,
     graphics_output_needs_full_refresh: bool,
     damage_regions: Vec<InclusiveRectangle>,
+    /// Answers the auto-detect requests carried on the reliable UDP tunnel.
+    tunnel_auto_detect: AutoDetectResponder,
 }
 
 /// Builder for [`ActiveStage`].
@@ -107,6 +110,7 @@ impl ActiveStageBuilder {
             window_support_level: None,
             graphics_output_needs_full_refresh: false,
             damage_regions: Vec::new(),
+            tunnel_auto_detect: AutoDetectResponder::default(),
         }
     }
 }
@@ -183,15 +187,37 @@ impl ActiveStage {
     }
 
     /// Process a frame received from the server.
+    ///
+    /// Without an arrival time, bandwidth measurements are answered with an untimed,
+    /// zero-byte result; see [`Self::process_with_timestamp`].
     pub fn process(
         &mut self,
         image: &mut DecodedImage,
         action: Action,
         frame: &[u8],
     ) -> SessionResult<Vec<ActiveStageOutput>> {
+        self.process_with_timestamp(image, action, frame, None)
+    }
+
+    /// Process a frame received from the server, together with its arrival time.
+    ///
+    /// The clock stays outside this state machine: `received_at` is the time the transport
+    /// read the frame, from the same monotonic clock for every frame. Frames that were
+    /// buffered must keep their read time so a bandwidth measurement reflects network arrival
+    /// rather than the time spent decoding earlier frames.
+    pub fn process_with_timestamp(
+        &mut self,
+        image: &mut DecodedImage,
+        action: Action,
+        frame: &[u8],
+        received_at: Option<MonotonicInstant>,
+    ) -> SessionResult<Vec<ActiveStageOutput>> {
         self.damage_regions.clear();
         let (mut stage_outputs, processor_updates) = match action {
             Action::FastPath => {
+                // TLS-protected fast-path frames have no RDP Security Header, so the
+                // continuous bandwidth count includes the entire frame.
+                self.x224_processor.record_bandwidth_bytes(frame.len());
                 let mut output = WriteBuf::new();
                 let processor_updates =
                     self.fast_path_processor
@@ -202,7 +228,9 @@ impl ActiveStage {
                 )
             }
             Action::X224 => {
-                let x224_outputs = self.x224_processor.process(frame, &mut self.bulk_decompressor)?;
+                let x224_outputs =
+                    self.x224_processor
+                        .process_with_timestamp(frame, &mut self.bulk_decompressor, received_at)?;
                 let mut stage_outputs = Vec::new();
                 let mut processor_updates = Vec::new();
 
@@ -560,6 +588,33 @@ impl ActiveStage {
         self.x224_processor
             .get_svc_processor::<DrdynvcClient>()
             .is_some_and(|drdynvc| drdynvc.switched_to_tunnel(SoftSyncTunnelType::RELIABLE_UDP))
+    }
+
+    /// Answers the auto-detect requests the server sends in the sub-headers of one Tunnel Data
+    /// PDU ([MS-RDPEMT] 2.2.1.1.1), and counts the `data_len` bytes of higher-layer data the PDU
+    /// carries for an open bandwidth measurement. Returns the responses to send back on the
+    /// tunnel.
+    ///
+    /// The tunnel keeps its own measurement, apart from the message channel's, because a
+    /// measurement on the tunnel counts only the data that follows the tunnel PDU header
+    /// ([MS-RDPBCGR] 3.2.5.14). As on the message channel, received bytes are counted before
+    /// handling control messages: a Start resets the count, and a Stop includes the carrying
+    /// PDU's data in the result. Sub-header bytes themselves never count on the tunnel.
+    /// `received_at` is the time the PDU arrived, from one monotonic clock for the whole tunnel.
+    ///
+    /// [MS-RDPEMT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/4f538fd7-3aca-4e7d-a213-13eb5f95c1ad
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/16ffa852-8aa7-481c-99a0-36c1a9a198f6
+    pub fn process_tunnel_auto_detect(
+        &mut self,
+        requests: Vec<AutoDetectRequest>,
+        data_len: usize,
+        received_at: MonotonicInstant,
+    ) -> Vec<AutoDetectResponse> {
+        self.tunnel_auto_detect.record_bytes(data_len);
+        requests
+            .into_iter()
+            .filter_map(|request| self.tunnel_auto_detect.respond(request, Some(received_at)))
+            .collect()
     }
 
     /// Returns the Soft-Sync tunnel selected for client messages on `channel_id`.
