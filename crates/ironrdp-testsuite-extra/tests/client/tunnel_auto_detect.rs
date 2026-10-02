@@ -74,7 +74,7 @@ fn tunnel_failure_before_migration_withdraws_soft_sync_without_ending_the_sessio
     ironrdp_client::udp::disable_failed_tunnel(
         &mut stage,
         &mut transport,
-        ironrdp_session::general_err!("auto-detect reply send failed"),
+        ironrdp::session::general_err!("auto-detect reply send failed"),
     )
     .expect("unused tunnel must fall back to TCP");
     assert!(transport.is_none());
@@ -93,14 +93,14 @@ fn tunnel_failure_after_migration_requires_reconnection() {
     let error = ironrdp_client::udp::disable_failed_tunnel(
         &mut stage,
         &mut transport,
-        ironrdp_session::general_err!("auto-detect reply send failed"),
+        ironrdp::session::general_err!("auto-detect reply send failed"),
     )
     .expect_err("migrated channels cannot silently resume on TCP");
     assert!(error.to_string().contains("auto-detect reply send failed"));
     assert!(stage.reliable_udp_dvc_tunnel_in_use());
 }
 
-fn make_stage(migrated: bool) -> ironrdp_session::ActiveStage {
+fn make_stage(migrated: bool) -> ironrdp::session::ActiveStage {
     use ironrdp_dvc::pdu::SoftSyncTunnelType;
     use ironrdp_svc::SvcProcessor as _;
 
@@ -112,7 +112,7 @@ fn make_stage(migrated: bool) -> ironrdp_session::ActiveStage {
     }
     let mut static_channels = ironrdp_svc::StaticChannelSet::new();
     static_channels.insert(drdynvc);
-    ironrdp_session::ActiveStageBuilder {
+    ironrdp::session::ActiveStageBuilder {
         static_channels,
         user_channel_id: 1001,
         io_channel_id: 1003,
