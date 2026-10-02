@@ -804,7 +804,7 @@ impl RdpClient {
             clippy::collection_is_never_read,
             reason = "binding owns the Linux clipboard so it stays alive for the connection's lifetime"
         )]
-        let _linux_clipboard;
+        let mut _linux_clipboard = None;
 
         #[cfg(feature = "clipboard")]
         let cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>;
@@ -819,20 +819,12 @@ impl RdpClient {
                     {
                         _win_clipboard = None;
                     }
-                    #[cfg(target_os = "linux")]
-                    {
-                        _linux_clipboard = None;
-                    }
                 }
                 (ClipboardType::Disable, _) => {
                     cliprdr_factory = None;
                     #[cfg(windows)]
                     {
                         _win_clipboard = None;
-                    }
-                    #[cfg(target_os = "linux")]
-                    {
-                        _linux_clipboard = None;
                     }
                 }
                 (ClipboardType::Stub, _) => {
@@ -842,10 +834,6 @@ impl RdpClient {
                     #[cfg(windows)]
                     {
                         _win_clipboard = None;
-                    }
-                    #[cfg(target_os = "linux")]
-                    {
-                        _linux_clipboard = None;
                     }
                 }
                 (ClipboardType::Enable, None) => {
@@ -885,7 +873,6 @@ impl RdpClient {
                                 // session is still useful, so this is not a connection failure.
                                 warn!(%error, "OS clipboard unavailable; clipboard redirection is off for this session");
                                 cliprdr_factory = Some(StubClipboard::new().backend_factory());
-                                _linux_clipboard = None;
                             }
                         }
                     }

@@ -2823,6 +2823,7 @@ name = "ironrdp-cliprdr-native"
 version = "0.7.0"
 dependencies = [
  "ironrdp-cliprdr",
+ "ironrdp-cliprdr-format",
  "ironrdp-core 0.2.1",
  "nix",
  "tracing",
@@ -2831,6 +2832,7 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-wlr",
  "windows",
+ "x11rb",
 ]
 
 [[package]]
