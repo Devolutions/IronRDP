@@ -17,13 +17,14 @@ doctest = false
 test = false
 
 [features]
-default = ["rustcrypto"]
+default = ["rustcrypto", "legacy-crypto"]
+legacy-crypto = ["ironrdp-async/legacy-crypto", "ironrdp-connector/legacy-crypto", "ironrdp-pdu/legacy-crypto"]
 rustcrypto = ["ironrdp-async/rustcrypto", "ironrdp-connector/rustcrypto"]
 fips-aws-lc = ["ironrdp-async/fips-aws-lc", "ironrdp-connector/fips-aws-lc"]
 
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", default-features = false } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.10", default-features = false } # public
 ironrdp-async = { path = "../ironrdp-async", version = "0.10", default-features = false } # public

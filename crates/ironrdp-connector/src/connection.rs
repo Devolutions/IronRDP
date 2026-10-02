@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use ironrdp_core::{Encode, WriteBuf, decode, encode_vec};
 use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
-#[cfg(feature = "legacy-crypto")]
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{PduHint, gcc, mcs, nego, rdp};
@@ -1320,12 +1319,12 @@ impl Sequence for ClientConnector {
             } => {
                 debug!("Secure Settings Exchange");
 
-                let client_info = create_client_info_pdu(
-                    &self.config,
-                    &self.client_addr,
-                    #[cfg(feature = "legacy-crypto")]
-                    self.auto_reconnect_cookie.as_ref(),
-                );
+                #[cfg(feature = "legacy-crypto")]
+                let auto_reconnect_cookie = self.auto_reconnect_cookie.as_ref();
+                #[cfg(not(feature = "legacy-crypto"))]
+                let auto_reconnect_cookie = None;
+
+                let client_info = create_client_info_pdu(&self.config, &self.client_addr, auto_reconnect_cookie);
 
                 debug!(message = ?client_info, "Send");
 
@@ -1800,7 +1799,7 @@ fn create_gcc_blocks<'a>(
 fn create_client_info_pdu(
     config: &Config,
     client_addr: &SocketAddr,
-    #[cfg(feature = "legacy-crypto")] auto_reconnect_cookie: Option<&ServerAutoReconnect>,
+    auto_reconnect_cookie: Option<&ServerAutoReconnect>,
 ) -> rdp::ClientInfoPdu {
     use ironrdp_pdu::rdp::ClientInfoPdu;
     #[cfg(feature = "legacy-crypto")]
@@ -1900,6 +1899,7 @@ fn create_client_info_pdu(
                 }
                 #[cfg(not(feature = "legacy-crypto"))]
                 {
+                    let _ = auto_reconnect_cookie;
                     builder.build()
                 }
             },
