@@ -22,7 +22,7 @@ const MAX_WAITERS: usize = 16;
 #[derive(Debug)]
 pub enum Command {
     AdvertiseLocal,
-    LocalChanged(Vec<String>),
+    LocalChanged,
     RemoteCopy(Vec<ClipboardFormat>),
     RemoteData(Option<Vec<u8>>),
     RenderLocal(ClipboardFormatId),
@@ -97,7 +97,7 @@ impl<O: OsClipboard, P: ClipboardMessageProxy> Worker<O, P> {
                     self.advertise_local();
                 }
             }
-            Command::LocalChanged(_) => {
+            Command::LocalChanged => {
                 // An OS event queued before offer() acknowledged our ownership
                 // must not invalidate the selection that was just installed.
                 if self.os.is_owner() {

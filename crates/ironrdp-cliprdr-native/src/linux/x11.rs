@@ -530,7 +530,7 @@ impl State {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .clear();
-                    let _ = self.events.send(Command::LocalChanged(Vec::new()));
+                    let _ = self.events.send(Command::LocalChanged);
                 }
             }
             Event::SelectionNotify(event)
@@ -673,8 +673,8 @@ impl State {
                 *self
                     .mime_types
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = mimes.clone();
-                let _ = self.events.send(Command::LocalChanged(mimes));
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = mimes;
+                let _ = self.events.send(Command::LocalChanged);
             }
         }
         Ok(())

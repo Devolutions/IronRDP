@@ -80,8 +80,8 @@ impl NativeClipboard {
         match DataControl::connect() {
             Ok(clipboard) => {
                 let changes = events.clone();
-                clipboard.on_change(move |mimes| {
-                    let _ = changes.send(Command::LocalChanged(mimes));
+                clipboard.on_change(move |_| {
+                    let _ = changes.send(Command::LocalChanged);
                 });
                 Ok(Self::Wayland { clipboard, events })
             }
