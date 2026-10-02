@@ -17,22 +17,24 @@ doctest = false
 test = false
 
 [features]
-default = []
+default = ["rustcrypto"]
 qoi = ["ironrdp-pdu/qoi"]
 qoiz = ["ironrdp-pdu/qoiz"]
+rustcrypto = ["picky/rustcrypto", "sspi/scard"]
+fips-aws-lc = ["picky/fips-aws-lc"]
 
 [dependencies]
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.2" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", features = ["std"] } # public
-sspi = { version = "0.21", features = ["scard"] }
+sspi = { version = "0.21" }
 url = "2.5" # public
 rand = { version = "0.9", features = ["std"] } # TODO: dependency injection?
 tracing = { version = "0.1", features = ["log"] }
 picky-asn1-der = "0.5"
 picky-asn1-x509 = "0.15"
-picky = "=7.0.0-rc.25" # FIXME: We are pinning with = because the candidate version number counts as the minor number by Cargo, and will be automatically bumped in the Cargo.lock.
+picky = { version = "=7.0.0-rc.25", default-features = false }
 
 [lints]
 workspace = true

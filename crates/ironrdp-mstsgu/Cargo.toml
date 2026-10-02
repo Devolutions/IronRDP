@@ -74,9 +74,11 @@ path = "tests/consent.rs"
 required-features = ["native-tls", "test-support"]
 
 [features]
-default = []
+default = ["rustcrypto"]
 rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots"]
 native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls"]
+rustcrypto = ["picky/rustcrypto"]
+fips-aws-lc = ["picky/fips-aws-lc"]
 test-support = ["tokio/io-util"]
 smartcard = [
     "sspi/scard",
@@ -103,7 +105,7 @@ tokio-util = { version = "0.7" }
 tokio = { version = "1.52", features = ["macros", "rt", "io-util"] }
 tokio-socks = "0.5.3"
 uuid = { version = "1", features = ["v4"] } # public, exposed by RpcSyntaxIdentifier
-picky = { version = "=7.0.0-rc.25", optional = true }
+picky = { version = "=7.0.0-rc.25", default-features = false, optional = true }
 picky-asn1-der = { version = "0.5", optional = true }
 picky-asn1-x509 = { version = "0.15", optional = true }
 

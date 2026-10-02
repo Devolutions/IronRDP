@@ -1,6 +1,15 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
+#[cfg(all(feature = "rustcrypto", feature = "fips-aws-lc"))]
+compile_error!("picky `rustcrypto` and `fips-aws-lc` are mutually exclusive; enable only one provider");
+
+#[cfg(all(feature = "smartcard", feature = "fips-aws-lc"))]
+compile_error!("smart card support is unavailable with `fips-aws-lc`");
+
+#[cfg(any(feature = "rustcrypto", feature = "fips-aws-lc"))]
+use picky as _;
+
 #[cfg(test)]
 use tokio_native_tls as _;
 

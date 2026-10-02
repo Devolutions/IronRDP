@@ -1,6 +1,9 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
+#[cfg(all(feature = "rustcrypto", feature = "fips-aws-lc"))]
+compile_error!("picky `rustcrypto` and `fips-aws-lc` are mutually exclusive; enable only one provider");
+
 mod macros;
 
 mod channel_connection;

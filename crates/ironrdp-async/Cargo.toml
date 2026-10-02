@@ -16,8 +16,13 @@ categories.workspace = true
 doctest = false
 test = false
 
+[features]
+default = ["rustcrypto"]
+rustcrypto = ["ironrdp-connector/rustcrypto"]
+fips-aws-lc = ["ironrdp-connector/fips-aws-lc"]
+
 [dependencies]
-ironrdp-connector = { path = "../ironrdp-connector", version = "0.10" } # public
+ironrdp-connector = { path = "../ironrdp-connector", version = "0.10", default-features = false } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
 tracing = { version = "0.1", features = ["log"] }
