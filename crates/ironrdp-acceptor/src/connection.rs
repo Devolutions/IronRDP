@@ -538,6 +538,7 @@ impl Acceptor {
         debug_assert!(self.reached_security_upgrade().is_none());
     }
 
+    #[cfg(feature = "rustcrypto")]
     pub fn should_perform_credssp(&self) -> bool {
         matches!(self.state, AcceptorState::Credssp { .. })
     }
@@ -545,6 +546,7 @@ impl Acceptor {
     /// # Panics
     ///
     /// Panics if state is not [AcceptorState::Credssp].
+    #[cfg(feature = "rustcrypto")]
     pub fn mark_credssp_as_done(&mut self) {
         assert!(self.should_perform_credssp());
         let res = self
@@ -601,6 +603,7 @@ pub enum AcceptorState {
         requested_protocol: SecurityProtocol,
         protocol: SecurityProtocol,
     },
+    #[cfg(feature = "rustcrypto")]
     Credssp {
         requested_protocol: SecurityProtocol,
         protocol: SecurityProtocol,
@@ -698,6 +701,7 @@ impl State for AcceptorState {
             Self::InitiationWaitRequest => "InitiationWaitRequest",
             Self::InitiationSendConfirm { .. } => "InitiationSendConfirm",
             Self::SecurityUpgrade { .. } => "SecurityUpgrade",
+            #[cfg(feature = "rustcrypto")]
             Self::Credssp { .. } => "Credssp",
             Self::BasicSettingsWaitInitial { .. } => "BasicSettingsWaitInitial",
             Self::BasicSettingsSendResponse { .. } => "BasicSettingsSendResponse",
@@ -730,6 +734,7 @@ impl Sequence for Acceptor {
             AcceptorState::InitiationWaitRequest => Some(&pdu::X224_HINT),
             AcceptorState::InitiationSendConfirm { .. } => None,
             AcceptorState::SecurityUpgrade { .. } => None,
+            #[cfg(feature = "rustcrypto")]
             AcceptorState::Credssp { .. } => None,
             AcceptorState::BasicSettingsWaitInitial { .. } => Some(&pdu::X224_HINT),
             AcceptorState::BasicSettingsSendResponse { .. } => None,
@@ -838,9 +843,19 @@ impl Sequence for Acceptor {
             } => {
                 debug!(?requested_protocol);
                 let next_state = if protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
-                    AcceptorState::Credssp {
-                        requested_protocol,
-                        protocol,
+                    #[cfg(feature = "rustcrypto")]
+                    {
+                        AcceptorState::Credssp {
+                            requested_protocol,
+                            protocol,
+                        }
+                    }
+                    #[cfg(feature = "fips-aws-lc")]
+                    {
+                        return Err(reason_err!(
+                            "Security negotiation",
+                            "CredSSP is unavailable with the FIPS provider"
+                        ));
                     }
                 } else {
                     AcceptorState::BasicSettingsWaitInitial {
@@ -851,6 +866,7 @@ impl Sequence for Acceptor {
                 (Written::Nothing, next_state)
             }
 
+            #[cfg(feature = "rustcrypto")]
             AcceptorState::Credssp {
                 requested_protocol,
                 protocol,

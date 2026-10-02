@@ -4,7 +4,10 @@
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_async::*;
 
-#[cfg(feature = "reqwest")]
+#[cfg(all(feature = "reqwest", not(feature = "rustcrypto")))]
+compile_error!("the reqwest network client requires `rustcrypto`");
+
+#[cfg(all(feature = "reqwest", feature = "rustcrypto"))]
 pub mod reqwest;
 
 use core::pin::Pin;

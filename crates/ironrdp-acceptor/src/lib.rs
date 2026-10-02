@@ -1,25 +1,35 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
-use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper, single_sequence_step};
+#[cfg(feature = "rustcrypto")]
+use ironrdp_async::NetworkClient;
+use ironrdp_async::{Framed, FramedRead, FramedWrite, StreamWrapper, single_sequence_step};
+use ironrdp_connector::ConnectorResult;
+#[cfg(feature = "rustcrypto")]
 use ironrdp_connector::sspi::credssp::EarlyUserAuthResult;
+#[cfg(feature = "rustcrypto")]
 use ironrdp_connector::sspi::{AuthIdentity, KerberosServerConfig, Username};
-use ironrdp_connector::{ConnectorResult, ServerName, custom_err, general_err};
+#[cfg(feature = "rustcrypto")]
+use ironrdp_connector::{ServerName, custom_err, general_err};
 use ironrdp_core::WriteBuf;
+#[cfg(feature = "rustcrypto")]
 use tracing::{debug, instrument, trace};
 
 mod channel_connection;
 mod connection;
+#[cfg(feature = "rustcrypto")]
 pub mod credssp;
 mod finalization;
 mod util;
 
 pub use ironrdp_connector::DesktopSize;
+#[cfg(feature = "rustcrypto")]
 use ironrdp_pdu::nego;
 
 pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 pub use self::connection::{Acceptor, AcceptorResult, AcceptorState, MultitransportSecurityRng};
 pub use self::finalization::{FinalizationSequence, FinalizationState};
+#[cfg(feature = "rustcrypto")]
 use crate::credssp::resolve_generator;
 
 pub enum BeginResult<S>
@@ -51,6 +61,7 @@ where
     }
 }
 
+#[cfg(feature = "rustcrypto")]
 pub async fn accept_credssp<S, N>(
     framed: &mut Framed<S>,
     acceptor: &mut Acceptor,
@@ -154,6 +165,7 @@ where
     }
 }
 
+#[cfg(feature = "rustcrypto")]
 #[instrument(level = "trace", skip_all, ret)]
 async fn perform_credssp_step<S, N>(
     framed: &mut Framed<S>,
