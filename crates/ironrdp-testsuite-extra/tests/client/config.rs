@@ -733,11 +733,26 @@ fn udp_offer_without_udp_is_rejected() {
 
     let error = parse_config_from_rdp_result(rdp, &["--udp-offer", "2"])
         .expect_err("--udp-offer is only used with --udp, so it must not be accepted alone");
-    assert!(error.to_string().contains("requires --udp"), "{error:?}");
+    assert!(error.to_string().contains("required arguments"), "{error:?}");
+    assert!(error.to_string().contains("--udp"), "{error:?}");
 
     // Turning UDP off explicitly leaves nothing to be surprised by.
     let config = parse_config_from_rdp(rdp, &["--udp=false", "--udp-offer", "2"]);
     assert!(!config.udp_transport_enabled());
+}
+
+#[test]
+fn udp_offer_requires_udp_in_rpc_mode() {
+    let error = ironrdp_viewer::cli::ViewerConfig::parse_from(["ironrdp-viewer", "--rpc", "--udp-offer", "2"])
+        .err()
+        .expect("clap must validate UDP arguments before entering RPC mode");
+    assert!(error.to_string().contains("required arguments"), "{error:?}");
+    assert!(error.to_string().contains("--udp"), "{error:?}");
+
+    assert!(
+        ironrdp_viewer::cli::ViewerConfig::parse_from(["ironrdp-viewer", "--rpc", "--udp=false", "--udp-offer", "2",])
+            .is_ok()
+    );
 }
 
 #[test]

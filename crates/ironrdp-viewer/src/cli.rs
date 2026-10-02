@@ -133,7 +133,7 @@ struct Args {
     udp: Option<bool>,
 
     /// Highest RDP-UDP protocol version to offer (1, 2 or 3). Requires --udp
-    #[clap(long, env = "IRONRDP_UDP_OFFER", value_parser = clap::value_parser!(u16).range(1..=3))]
+    #[clap(long, env = "IRONRDP_UDP_OFFER", requires = "udp", value_parser = clap::value_parser!(u16).range(1..=3))]
     udp_offer: Option<u16>,
 
     /// Advertise the graphics pipeline (MS-RDPEGFX)
@@ -294,16 +294,19 @@ pub struct ViewerConfig {
 
 impl ViewerConfig {
     pub fn parse_args() -> anyhow::Result<Self> {
-        Self::parse_from(std::env::args_os())
+        Self::from_args(Args::parse())
     }
 
+    /// Parses arguments without exiting the process on a command-line error.
     pub fn parse_from<I, T>(args: I) -> anyhow::Result<Self>
     where
         I: IntoIterator<Item = T>,
         T: Into<std::ffi::OsString> + Clone,
     {
-        let args = Args::parse_from(args);
+        Self::from_args(Args::try_parse_from(args)?)
+    }
 
+    fn from_args(args: Args) -> anyhow::Result<Self> {
         let mut properties = ironrdp_propertyset::PropertySet::new();
 
         if let Some(rdp_file) = &args.rdp_file {
@@ -331,11 +334,6 @@ impl ViewerConfig {
                 rpc: true,
                 rpc_endpoint: args.rpc_endpoint,
             });
-        }
-
-        // Only the UDP handshake reads the offered version, so without `--udp` it would do nothing.
-        if args.udp_offer.is_some() && args.udp.is_none() {
-            anyhow::bail!("--udp-offer (IRONRDP_UDP_OFFER) requires --udp (IRONRDP_UDP)");
         }
 
         // The library overlays everything expressible as a `.rdp` property: destination, credentials,
