@@ -165,7 +165,8 @@ fn decode_first_pass_to_dwtq(
 ///
 /// # Errors
 ///
-/// Returns [`SrlError`] for a malformed or truncated SRL stream.
+/// Returns [`SrlError`] when an SRL magnitude requires an invalid number of bits.
+/// Missing trailing SRL entries read as zero bits, so truncation is not detected.
 /// See MS-RDPEGFX section 3.3.8.2.1.2.
 pub fn decode_upgrade_pass(
     srl_data: &[u8],
@@ -187,7 +188,7 @@ pub fn decode_upgrade_pass(
             .saturating_sub(curr_prog_quant.for_band(band_idx));
         band_idx != NUM_BANDS - 1 && num_bits != 0 && zero_counts[band_idx] != 0
     });
-    let mut srl_decoder = has_srl_values.then(|| srl::SrlDecoder::new(srl_data)).transpose()?;
+    let mut srl_decoder = has_srl_values.then(|| srl::SrlDecoder::new(srl_data));
     let mut srl_values = Vec::with_capacity(NUM_BANDS);
 
     for (band_idx, _) in bands.iter().enumerate() {
