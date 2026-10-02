@@ -208,6 +208,7 @@ pub enum ClientConnectorState {
     EnhancedSecurityUpgrade {
         selected_protocol: nego::SecurityProtocol,
     },
+    #[cfg(feature = "rustcrypto")]
     Credssp {
         selected_protocol: nego::SecurityProtocol,
     },
@@ -307,6 +308,7 @@ impl State for ClientConnectorState {
             Self::ConnectionInitiationSendRequest => "ConnectionInitiationSendRequest",
             Self::ConnectionInitiationWaitConfirm { .. } => "ConnectionInitiationWaitResponse",
             Self::EnhancedSecurityUpgrade { .. } => "EnhancedSecurityUpgrade",
+            #[cfg(feature = "rustcrypto")]
             Self::Credssp { .. } => "Credssp",
             Self::BasicSettingsExchangeSendInitial { .. } => "BasicSettingsExchangeSendInitial",
             Self::BasicSettingsExchangeWaitResponse { .. } => "BasicSettingsExchangeWaitResponse",
@@ -626,6 +628,7 @@ impl ClientConnector {
         debug_assert!(!self.should_perform_security_upgrade());
     }
 
+    #[cfg(feature = "rustcrypto")]
     pub fn should_perform_credssp(&self) -> bool {
         matches!(self.state, ClientConnectorState::Credssp { .. })
     }
@@ -635,6 +638,7 @@ impl ClientConnector {
     /// # Panics
     ///
     /// Panics if state is not [ClientConnectorState::Credssp].
+    #[cfg(feature = "rustcrypto")]
     pub fn mark_credssp_as_done(&mut self) {
         assert!(self.should_perform_credssp());
         let res = self
@@ -1042,6 +1046,7 @@ impl Sequence for ClientConnector {
             ClientConnectorState::ConnectionInitiationSendRequest => None,
             ClientConnectorState::ConnectionInitiationWaitConfirm { .. } => Some(&ironrdp_pdu::X224_HINT),
             ClientConnectorState::EnhancedSecurityUpgrade { .. } => None,
+            #[cfg(feature = "rustcrypto")]
             ClientConnectorState::Credssp { .. } => None,
             ClientConnectorState::BasicSettingsExchangeSendInitial { .. } => None,
             ClientConnectorState::BasicSettingsExchangeWaitResponse { .. } => Some(&ironrdp_pdu::X224_HINT),
@@ -1151,8 +1156,18 @@ impl Sequence for ClientConnector {
                 } else if selected_protocol
                     .intersects(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX)
                 {
-                    debug!("Begin NLA using CredSSP");
-                    ClientConnectorState::Credssp { selected_protocol }
+                    #[cfg(feature = "rustcrypto")]
+                    {
+                        debug!("Begin NLA using CredSSP");
+                        ClientConnectorState::Credssp { selected_protocol }
+                    }
+                    #[cfg(feature = "fips-aws-lc")]
+                    {
+                        return Err(reason_err!(
+                            "Security negotiation",
+                            "CredSSP is unavailable with the FIPS provider"
+                        ));
+                    }
                 } else {
                     debug!("CredSSP is disabled, skipping NLA");
                     ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
@@ -1162,6 +1177,7 @@ impl Sequence for ClientConnector {
             }
 
             //== CredSSP ==//
+            #[cfg(feature = "rustcrypto")]
             ClientConnectorState::Credssp { selected_protocol } => (
                 Written::Nothing,
                 ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },

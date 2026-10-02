@@ -4,12 +4,22 @@
 #[cfg(all(feature = "rustcrypto", feature = "fips-aws-lc"))]
 compile_error!("picky `rustcrypto` and `fips-aws-lc` are mutually exclusive; enable only one provider");
 
+#[cfg(feature = "fips-aws-lc")]
+use picky as _;
+#[cfg(feature = "fips-aws-lc")]
+use picky_asn1_der as _;
+#[cfg(feature = "fips-aws-lc")]
+use picky_asn1_x509 as _;
+#[cfg(feature = "fips-aws-lc")]
+use url as _;
+
 mod macros;
 
 mod channel_connection;
 mod connection;
 pub mod connection_activation;
 mod connection_finalization;
+#[cfg(feature = "rustcrypto")]
 pub mod credssp;
 mod license_exchange;
 mod server_name;
@@ -438,6 +448,7 @@ pub type ConnectorResult<T> = Result<T, ConnectorError>;
 pub enum ConnectorErrorKind {
     Encode(ironrdp_core::EncodeError),
     Decode(ironrdp_core::DecodeError),
+    #[cfg(feature = "rustcrypto")]
     Credssp(sspi::Error),
     Reason(String),
     AccessDenied,
@@ -451,6 +462,7 @@ impl fmt::Display for ConnectorErrorKind {
         match &self {
             ConnectorErrorKind::Encode(_) => write!(f, "encode error"),
             ConnectorErrorKind::Decode(_) => write!(f, "decode error"),
+            #[cfg(feature = "rustcrypto")]
             ConnectorErrorKind::Credssp(_) => write!(f, "CredSSP"),
             ConnectorErrorKind::Reason(description) => write!(f, "reason: {description}"),
             ConnectorErrorKind::AccessDenied => write!(f, "access denied"),
@@ -466,6 +478,7 @@ impl core::error::Error for ConnectorErrorKind {
         match &self {
             ConnectorErrorKind::Encode(e) => Some(e),
             ConnectorErrorKind::Decode(e) => Some(e),
+            #[cfg(feature = "rustcrypto")]
             ConnectorErrorKind::Credssp(e) => Some(e),
             ConnectorErrorKind::Reason(_) => None,
             ConnectorErrorKind::AccessDenied => None,
