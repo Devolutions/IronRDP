@@ -1,9 +1,9 @@
 use ironrdp_bulk::BulkCompressor;
-use ironrdp_core::{Decode as _, ReadCursor, WriteBuf, decode};
+use ironrdp_core::{Decode as _, MonotonicInstant, ReadCursor, WriteBuf, decode};
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelMut, DynamicChannelRef};
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndicationCtx};
-use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
+use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectRspPdu};
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, IoChannelPdu, ShareDataCtx, ShareDataPdu,
@@ -18,6 +18,7 @@ use ironrdp_svc::{
 };
 use tracing::debug;
 
+use crate::autodetect::AutoDetectResponder;
 use crate::{SessionError, SessionErrorExt as _, SessionResult, reason_err};
 
 /// X224 Processor output
@@ -72,7 +73,7 @@ pub enum ProcessorOutput {
     /// Auto-detect network characteristics from server ([\[MS-RDPBCGR\] 2.2.14]).
     ///
     /// Currently only surfaces [`AutoDetectRequest::NetworkCharacteristicsResult`].
-    /// RTT requests are handled internally with automatic responses.
+    /// RTT and bandwidth measurement requests are answered internally.
     ///
     /// [\[MS-RDPBCGR\] 2.2.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dc672839-4f4e-40b1-a71c-cd6a959baa38
     AutoDetect(AutoDetectRequest),
@@ -107,6 +108,7 @@ pub struct Processor {
     io_channel_id: u16,
     message_channel_id: Option<u16>,
     share_id: u32,
+    auto_detect: AutoDetectResponder,
 }
 
 impl Processor {
@@ -123,6 +125,7 @@ impl Processor {
             io_channel_id,
             message_channel_id,
             share_id,
+            auto_detect: AutoDetectResponder::default(),
         }
     }
 
@@ -213,6 +216,19 @@ impl Processor {
         frame: &[u8],
         bulk_decompressor: &mut Option<BulkCompressor>,
     ) -> SessionResult<Vec<ProcessorOutput>> {
+        self.process_with_timestamp(frame, bulk_decompressor, None)
+    }
+
+    /// Processes a frame with its driver-observed arrival time.
+    ///
+    /// Supply the same monotonic clock for every frame. Without a timestamp,
+    /// bandwidth replies use a conservative zero-byte measurement.
+    pub fn process_with_timestamp(
+        &mut self,
+        frame: &[u8],
+        bulk_decompressor: &mut Option<BulkCompressor>,
+        received_at: Option<MonotonicInstant>,
+    ) -> SessionResult<Vec<ProcessorOutput>> {
         let data_ctx: SendDataIndicationCtx<'_> = match ironrdp_pdu::mcs::decode_send_data_indication(frame) {
             Ok(data_ctx) => data_ctx,
             Err(error) => {
@@ -233,10 +249,12 @@ impl Processor {
         let channel_id = data_ctx.channel_id;
 
         if channel_id == self.io_channel_id {
-            self.process_io_channel_data_indication(data_ctx, bulk_decompressor)
+            self.process_io_channel_data_indication(data_ctx, frame.len(), bulk_decompressor)
         } else if self.message_channel_id == Some(channel_id) {
-            self.process_message_channel(data_ctx)
+            self.process_message_channel(data_ctx, received_at)
         } else {
+            // TLS-protected SVC data has no RDP Security Header: include TPKT/X224/MCS.
+            self.record_bandwidth_bytes(frame.len());
             let maximum_chunk_size = self.static_channels.maximum_chunk_size();
             if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
                 let response_pdus = svc.process(data_ctx.user_data).map_err(SessionError::pdu)?;
@@ -251,6 +269,7 @@ impl Processor {
     fn process_io_channel_data_indication(
         &mut self,
         data_ctx: SendDataIndicationCtx<'_>,
+        frame_len: usize,
         bulk_decompressor: &mut Option<BulkCompressor>,
     ) -> SessionResult<Vec<ProcessorOutput>> {
         debug_assert_eq!(data_ctx.channel_id, self.io_channel_id);
@@ -261,9 +280,13 @@ impl Processor {
             ironrdp_pdu::rdp::headers::decode_io_channel(data_ctx),
             Ok(IoChannelPdu::MultitransportRequest(_))
         ) {
+            self.record_bandwidth_bytes(data_ctx.user_data.len() - BasicSecurityHeader::FIXED_PART_SIZE);
             return self.process_io_channel(data_ctx, bulk_decompressor);
         }
 
+        // Ordinary TLS-protected IO data has no RDP Security Header. Count the
+        // entire frame once, including framing and any concatenated Share Control PDUs.
+        self.record_bandwidth_bytes(frame_len);
         let mut outputs = Vec::new();
         let mut offset = 0usize;
         let data = data_ctx.user_data;
@@ -445,6 +468,13 @@ impl Processor {
         Ok(decompressed)
     }
 
+    /// Counts received session bytes while a continuous bandwidth window is open.
+    /// Exclude framing only when an RDP Security Header is present, counting just
+    /// the bytes after that header ([MS-RDPBCGR] 3.2.5.14).
+    pub(crate) fn record_bandwidth_bytes(&mut self, bytes: usize) {
+        self.auto_detect.record_bytes(bytes);
+    }
+
     /// Process a PDU received on the MCS message channel: auto-detect
     /// ([MS-RDPBCGR] 2.2.14), multitransport ([MS-RDPBCGR] 2.2.15), or
     /// Heartbeat ([MS-RDPBCGR] 2.2.16.1).
@@ -457,13 +487,18 @@ impl Processor {
     /// session-fatal decode error: this channel is forward-safe for future
     /// message-channel PDU types the same way the connect-time demux
     /// (`ironrdp-connector`) already is.
-    fn process_message_channel(&self, data_ctx: SendDataIndicationCtx<'_>) -> SessionResult<Vec<ProcessorOutput>> {
+    fn process_message_channel(
+        &mut self,
+        data_ctx: SendDataIndicationCtx<'_>,
+        received_at: Option<MonotonicInstant>,
+    ) -> SessionResult<Vec<ProcessorOutput>> {
         let Some(message_channel_id) = self.message_channel_id else {
             return Err(reason_err!("message channel", "no message channel negotiated"));
         };
 
         let mut peek = ReadCursor::new(data_ctx.user_data);
         let security_header = BasicSecurityHeader::decode(&mut peek).map_err(SessionError::decode)?;
+        self.record_bandwidth_bytes(peek.len());
         let flags = security_header
             .flags
             .difference(BasicSecurityHeaderFlags::RESET_SEQNO | BasicSecurityHeaderFlags::IGNORE_SEQNO);
@@ -495,29 +530,23 @@ impl Processor {
 
         let req = decode::<AutoDetectReqPdu>(data_ctx.user_data).map_err(SessionError::decode)?;
 
-        match req.request {
-            AutoDetectRequest::RttRequest { sequence_number, .. } => {
-                let response = AutoDetectRspPdu::new(AutoDetectResponse::RttResponse { sequence_number });
-                let mut frame = WriteBuf::new();
-                ironrdp_pdu::mcs::encode_send_data_request(
-                    self.user_channel_id,
-                    message_channel_id,
-                    &response,
-                    &mut frame,
-                )
-                .map_err(SessionError::encode)?;
-                debug!(sequence_number, "Responded to auto-detect RTT request");
-                Ok(vec![ProcessorOutput::ResponseFrame(frame.into_inner())])
-            }
-            req @ AutoDetectRequest::NetworkCharacteristicsResult { .. } => {
-                debug!(?req, "Received network characteristics from server");
-                Ok(vec![ProcessorOutput::AutoDetect(req)])
-            }
-            req => {
-                debug!(?req, "Auto-detect request not yet implemented");
-                Ok(Vec::new())
-            }
+        if let request @ AutoDetectRequest::NetworkCharacteristicsResult { .. } = req.request {
+            debug!(?request, "Received network characteristics from server");
+            return Ok(vec![ProcessorOutput::AutoDetect(request)]);
         }
+        let Some(response) = self.auto_detect.respond(req.request, received_at) else {
+            return Ok(Vec::new());
+        };
+        debug!(?response, "Responding to an auto-detect request");
+        let mut frame = WriteBuf::new();
+        ironrdp_pdu::mcs::encode_send_data_request(
+            self.user_channel_id,
+            message_channel_id,
+            &AutoDetectRspPdu::new(response),
+            &mut frame,
+        )
+        .map_err(SessionError::encode)?;
+        Ok(vec![ProcessorOutput::ResponseFrame(frame.into_inner())])
     }
 
     /// Encodes an Initiate Multitransport Response on the MCS message channel.
@@ -638,14 +667,17 @@ mod tests {
     fn processor_surfaces_multitransport_request_on_message_channel() {
         let request = multitransport_request();
         let encoded = encode_vec(&request).expect("encode multitransport request");
-        let processor = Processor::new(StaticChannelSet::new(), 1002, 1003, Some(1004), 0);
+        let mut processor = Processor::new(StaticChannelSet::new(), 1002, 1003, Some(1004), 0);
 
         let outputs = processor
-            .process_message_channel(SendDataIndicationCtx {
-                initiator_id: 1002,
-                channel_id: 1004,
-                user_data: &encoded,
-            })
+            .process_message_channel(
+                SendDataIndicationCtx {
+                    initiator_id: 1002,
+                    channel_id: 1004,
+                    user_data: &encoded,
+                },
+                None,
+            )
             .expect("surface multitransport request");
 
         assert!(matches!(
@@ -667,6 +699,7 @@ mod tests {
                     channel_id: 1003,
                     user_data: &encoded,
                 },
+                encoded.len(),
                 &mut None,
             )
             .expect("ignore a misrouted optional multitransport request");
@@ -884,6 +917,7 @@ mod tests {
                     channel_id: 1003,
                     user_data: &user_data,
                 },
+                user_data.len(),
                 &mut None,
             )
             .expect("concatenated Share Control PDUs should be split");
@@ -905,6 +939,7 @@ mod tests {
                     channel_id: 1003,
                     user_data: &[0x06],
                 },
+                1,
                 &mut None,
             )
             .expect_err("a truncated totalLength field is invalid");
@@ -925,6 +960,7 @@ mod tests {
                     channel_id: 1003,
                     user_data: &user_data,
                 },
+                user_data.len(),
                 &mut None,
             )
             .expect_err("an overrunning concatenated totalLength is invalid");
@@ -950,6 +986,7 @@ mod tests {
                     channel_id: 1003,
                     user_data: &user_data,
                 },
+                user_data.len(),
                 &mut None,
             )
             .expect("invalid first totalLength should fall back to whole-buffer decode");
