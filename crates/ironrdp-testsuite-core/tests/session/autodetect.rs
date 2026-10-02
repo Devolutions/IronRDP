@@ -531,6 +531,7 @@ fn tunnel_and_main_connection_measure_separately() {
     let [ActiveStageOutput::ResponseFrame(response)] = outputs.as_slice() else {
         panic!("expected exactly one bandwidth response, got {outputs:?}");
     };
-    // The fast-path data and the Stop's own six bytes, but none of the tunnel's 500.
-    assert_eq!(bandwidth_result_frame(response), (2, 0x000b, 20, 3 + 100 + 6));
+    // The complete fast-path frame and the Stop's own six bytes, but none of the tunnel's 500.
+    let tcp_bytes = u32::try_from(fast_path_frame(100).len()).unwrap();
+    assert_eq!(bandwidth_result_frame(response), (2, 0x000b, 20, tcp_bytes + 6));
 }
