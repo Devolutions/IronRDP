@@ -603,8 +603,9 @@ impl ActiveStage {
     ///
     /// The tunnel keeps its own measurement, apart from the message channel's, because a
     /// measurement on the tunnel counts only the data that follows the tunnel PDU header
-    /// ([MS-RDPBCGR] 3.2.5.14). That data follows the sub-headers on the wire, so the data of the
-    /// PDU that carries a Start is counted and the data of the one that carries a Stop is not.
+    /// ([MS-RDPBCGR] 3.2.5.14). As on the message channel, received bytes are counted before
+    /// handling control messages: a Start resets the count, and a Stop includes the carrying
+    /// PDU's data in the result. Sub-header bytes themselves never count on the tunnel.
     /// `received_at` is the time the PDU arrived, from one monotonic clock for the whole tunnel.
     ///
     /// [MS-RDPEMT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/4f538fd7-3aca-4e7d-a213-13eb5f95c1ad
@@ -613,14 +614,13 @@ impl ActiveStage {
         &mut self,
         requests: Vec<AutoDetectRequest>,
         data_len: usize,
-        received_at: Option<MonotonicInstant>,
+        received_at: MonotonicInstant,
     ) -> Vec<AutoDetectResponse> {
-        let responses = requests
-            .into_iter()
-            .filter_map(|request| self.tunnel_auto_detect.respond(request, received_at))
-            .collect();
         self.tunnel_auto_detect.record_bytes(data_len);
-        responses
+        requests
+            .into_iter()
+            .filter_map(|request| self.tunnel_auto_detect.respond(request, Some(received_at)))
+            .collect()
     }
 
     /// Returns the Soft-Sync tunnel selected for client messages on `channel_id`.

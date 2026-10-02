@@ -346,8 +346,8 @@ fn continuous_measurement_counts_fast_path_data_only_inside_the_window() {
     assert_eq!(bandwidth_result_frame(response), (2, 0x000b, 30, 3 + 100 + 6));
 }
 
-fn at(millis: u64) -> Option<ironrdp_core::MonotonicInstant> {
-    Some(ironrdp_core::MonotonicInstant::from_millis(millis))
+fn at(millis: u64) -> ironrdp_core::MonotonicInstant {
+    ironrdp_core::MonotonicInstant::from_millis(millis)
 }
 
 #[test]
@@ -357,8 +357,8 @@ fn tunnel_auto_detect_answers_an_rtt_request() {
     assert_eq!(responses, [AutoDetectResponse::RttResponse { sequence_number: 7 }]);
 }
 
-/// The data of the PDU that carries the Start follows it on the wire and is counted; the data
-/// of the one that carries the Stop is not.
+/// Count received payload before processing control messages, as on the main connection:
+/// the Start resets its carrying PDU's count, while the Stop includes its carrying PDU.
 #[test]
 fn tunnel_auto_detect_counts_the_data_between_start_and_stop() {
     let mut stage = make_active_stage();
@@ -382,7 +382,7 @@ fn tunnel_auto_detect_counts_the_data_between_start_and_stop() {
     else {
         panic!("expected one bandwidth result, got {responses:?}");
     };
-    assert_eq!((*sequence_number, *time_delta_ms, *byte_count), (3, 40, 7 + 100));
+    assert_eq!((*sequence_number, *time_delta_ms, *byte_count), (3, 40, 100 + 50));
 }
 
 /// The tunnel and the main connection each keep their own measurement, so data received on one

@@ -84,6 +84,8 @@ use ironrdp_rdpsnd_native::{RdpeaiCaptureBackend, cpal};
 
 use crate::config::{Config, RDCleanPathConfig, Transport};
 use crate::rail::{RailClient, RailControlEvent, RailEvent, RailInputEvent};
+#[cfg(feature = "udp")]
+use crate::udp::{disable_failed_tunnel, tunnel_auto_detect_requests, tunnel_auto_detect_sub_header};
 use ironrdp_rail::pdu::{ExecutePdu, ExecuteResultPdu};
 
 // ── Public event types ────────────────────────────────────────────────────────
@@ -2856,58 +2858,6 @@ fn build_ordinary_rdcleanpath_request(
 
 // ── Active session ────────────────────────────────────────────────────────────
 
-/// Decodes the auto-detect requests among the sub-headers of a Tunnel Data PDU.
-///
-/// Such a sub-header is the request structure itself: its SubHeaderLength and SubHeaderType
-/// are the request's headerLength and headerTypeId ([MS-RDPEMT] 2.2.1.1.1), so the request is
-/// decoded from the whole sub-header. Windows also sends request types the decoder does not
-/// model; those are skipped.
-///
-/// [MS-RDPEMT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/4f538fd7-3aca-4e7d-a213-13eb5f95c1ad
-#[cfg(feature = "udp")]
-#[doc(hidden)]
-pub fn tunnel_auto_detect_requests(sub_headers: &[ironrdp_rdpemt::TunnelSubHeader]) -> Vec<AutoDetectRequest> {
-    sub_headers
-        .iter()
-        .filter(|sub_header| sub_header.sub_header_type == ironrdp_rdpemt::SubHeaderType::AutoDetectRequest)
-        .filter_map(|sub_header| {
-            let decoded = ironrdp_core::encode_vec(sub_header)
-                .map_err(|error| error.to_string())
-                .and_then(|structure| {
-                    ironrdp_core::decode::<AutoDetectRequest>(&structure).map_err(|error| error.to_string())
-                });
-            match decoded {
-                Ok(request) => Some(request),
-                Err(error) => {
-                    debug!(%error, data = ?sub_header.data, "Ignoring an undecodable auto-detect request on the tunnel");
-                    None
-                }
-            }
-        })
-        .collect()
-}
-
-/// Encodes an auto-detect response as the tunnel sub-header it is on the wire (see
-/// [`tunnel_auto_detect_requests`]).
-#[cfg(feature = "udp")]
-#[doc(hidden)]
-pub fn tunnel_auto_detect_sub_header(
-    response: &ironrdp_pdu::rdp::autodetect::AutoDetectResponse,
-) -> Option<ironrdp_rdpemt::TunnelSubHeader> {
-    let encoded = ironrdp_core::encode_vec(response)
-        .map_err(|error| error.to_string())
-        .and_then(|structure| {
-            ironrdp_core::decode::<ironrdp_rdpemt::TunnelSubHeader>(&structure).map_err(|error| error.to_string())
-        });
-    match encoded {
-        Ok(sub_header) => Some(sub_header),
-        Err(error) => {
-            debug!(%error, ?response, "Could not encode an auto-detect response for the tunnel");
-            None
-        }
-    }
-}
-
 enum RdpControlFlow {
     ReconnectWithNewSize {
         width: u16,
@@ -3323,17 +3273,16 @@ async fn active_session(
                 } => {
                     match udp_message {
                     None => {
-                        if active_stage.reliable_udp_dvc_tunnel_in_use() {
-                            return Ok(RdpControlFlow::TransportFailure(
-                                ironrdp_session::general_err!("reliable UDP tunnel closed"),
-                            ));
-                        }
                         #[cfg(feature = "udp")]
                         {
-                            udp_tunnel.transport = None;
+                            if let Err(error) = disable_failed_tunnel(
+                                &mut active_stage,
+                                &mut udp_tunnel.transport,
+                                ironrdp_session::general_err!("reliable UDP tunnel closed"),
+                            ) {
+                                return Ok(RdpControlFlow::TransportFailure(error));
+                            }
                         }
-                        active_stage.disable_reliable_udp_dvc_tunnel()?;
-                        warn!("Reliable UDP tunnel closed before Soft-Sync; continuing with TCP");
                         ActiveSessionIteration::outputs(Vec::new())
                     }
                     Some((auto_detect_requests, payload)) => {
@@ -3345,10 +3294,10 @@ async fn active_session(
                             let responses = active_stage.process_tunnel_auto_detect(
                                 auto_detect_requests,
                                 payload.len(),
-                                Some(received_at),
+                                received_at,
                             );
                             let sub_headers: Vec<_> = responses.iter().filter_map(tunnel_auto_detect_sub_header).collect();
-                            if let (false, Some(transport)) = (sub_headers.is_empty(), udp_tunnel.transport.as_ref()) {
+                            if !sub_headers.is_empty() && let Some(transport) = udp_tunnel.transport.as_ref() {
                                 let reply = ironrdp_rdpeudp_tokio::TunnelMessage {
                                     sub_headers,
                                     data: Vec::new(),
@@ -3361,10 +3310,17 @@ async fn active_session(
                                     ));
                                 };
                                 if let Err(error) = result {
-                                    return Ok(RdpControlFlow::TransportFailure(ironrdp_session::custom_err!(
-                                        "answer reliable UDP tunnel auto-detect",
-                                        error
-                                    )));
+                                    if let Err(error) = disable_failed_tunnel(
+                                        &mut active_stage,
+                                        &mut udp_tunnel.transport,
+                                        ironrdp_session::custom_err!("answer reliable UDP tunnel auto-detect", error),
+                                    ) {
+                                        return Ok(RdpControlFlow::TransportFailure(error));
+                                    }
+                                    // This PDU arrived before any channel migrated. Once the
+                                    // tunnel fails, it cannot retain data for a future Soft-Sync.
+                                    pending_udp_payload = None;
+                                    continue;
                                 }
                             }
                         }
