@@ -14,6 +14,8 @@
 
 mod cfg;
 mod clipboard;
+#[cfg(target_os = "linux")]
+mod cliprdr_native;
 mod connector;
 mod displaycontrol;
 mod dvc;
