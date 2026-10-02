@@ -11,6 +11,7 @@ use std::{
     },
     sync::{Arc, Mutex, MutexGuard, mpsc},
     thread::JoinHandle,
+    time::Instant,
 };
 
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
@@ -23,8 +24,8 @@ use super::{
     worker,
 };
 
-/// How long a read waits for the source to deliver more data.
-const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Maximum total time for a clipboard read, including a slowly streaming source.
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What to offer as the clipboard selection.
 ///
@@ -93,7 +94,7 @@ impl Link {
 ///
 /// Answer it with [`complete`](Self::complete), or [`fail`](Self::fail) if the
 /// data cannot be produced. Dropping it without answering leaves the paste
-/// waiting until the selection is replaced.
+/// waiting until the selection is replaced or its five-second deadline expires.
 #[derive(Debug)]
 #[must_use = "a paste stays open until the request is answered"]
 pub struct TransferRequest {
@@ -237,6 +238,21 @@ impl DataControl {
         })
     }
 
+    /// Wait for the compositor to process earlier commands and selection events
+    /// before inspecting ownership in the native bridge.
+    pub(crate) fn synchronize(&self) -> Result<()> {
+        let (sender, receiver) = mpsc::channel();
+        self.link.send(Command::Synchronize(sender))?;
+        receiver.recv_timeout(READ_TIMEOUT).map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => Error::Timeout,
+            mpsc::RecvTimeoutError::Disconnected => Error::Stopped,
+        })
+    }
+
+    pub(crate) fn owns_selection(&self) -> bool {
+        self.shared().own_source_live
+    }
+
     /// The protocol the compositor is speaking.
     #[must_use]
     pub fn protocol(&self) -> Protocol {
@@ -329,7 +345,7 @@ impl DataControl {
     /// # Errors
     ///
     /// [`Error::TooLarge`] past the size limit, [`Error::Timeout`] if the
-    /// source stalls for five seconds, [`Error::Stopped`] if the worker has
+    /// source does not complete within five seconds, [`Error::Stopped`] if the worker has
     /// shut down, [`Error::Io`] for pipe failures.
     pub fn read(&self, mime_type: &str) -> Result<Option<Vec<u8>>> {
         let available = self.selection_mime_types();
@@ -343,33 +359,7 @@ impl DataControl {
             fd: OwnedFd::from(writer),
         })?;
 
-        let mut data = Vec::new();
-        let mut chunk = vec![0u8; 64 * 1024];
-        loop {
-            let mut fds = [PollFd::new(reader.as_fd(), PollFlags::POLLIN)];
-            let timeout = PollTimeout::try_from(READ_IDLE_TIMEOUT).unwrap_or(PollTimeout::NONE);
-            match poll(&mut fds, timeout) {
-                Ok(0) => return Err(Error::Timeout),
-                Ok(_) => {}
-                Err(nix::errno::Errno::EINTR) => continue,
-                Err(errno) => return Err(std::io::Error::from(errno).into()),
-            }
-            match reader.read(&mut chunk) {
-                // The writer closed: the source has sent everything.
-                Ok(0) => return Ok(Some(data)),
-                Ok(n) => {
-                    if data.len() + n > self.max_read_bytes {
-                        return Err(Error::TooLarge {
-                            size: data.len() + n,
-                            limit: self.max_read_bytes,
-                        });
-                    }
-                    data.extend_from_slice(&chunk[..n]);
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
+        read_pipe(&mut reader, self.max_read_bytes, READ_TIMEOUT).map(Some)
     }
 }
 
@@ -379,6 +369,43 @@ impl Drop for DataControl {
         self.link.notify();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
+        }
+    }
+}
+
+/// Read a pipe with both a total deadline and an allocation limit.
+#[cfg_attr(feature = "__test", visibility::make(pub))]
+pub(crate) fn read_pipe(reader: &mut std::io::PipeReader, max_read_bytes: usize, timeout: Duration) -> Result<Vec<u8>> {
+    let deadline = Instant::now() + timeout;
+    let mut data = Vec::new();
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let mut fds = [PollFd::new(reader.as_fd(), PollFlags::POLLIN)];
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Error::Timeout);
+        }
+        let timeout = PollTimeout::try_from(remaining).unwrap_or(PollTimeout::MAX);
+        match poll(&mut fds, timeout) {
+            Ok(0) => return Err(Error::Timeout),
+            Ok(_) => {}
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(errno) => return Err(std::io::Error::from(errno).into()),
+        }
+        match reader.read(&mut chunk) {
+            // The writer closed: the source has sent everything.
+            Ok(0) => return Ok(data),
+            Ok(n) => {
+                if data.len() + n > max_read_bytes {
+                    return Err(Error::TooLarge {
+                        size: data.len() + n,
+                        limit: max_read_bytes,
+                    });
+                }
+                data.extend_from_slice(&chunk[..n]);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.into()),
         }
     }
 }

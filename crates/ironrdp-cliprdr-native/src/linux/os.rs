@@ -1,86 +1,163 @@
-//! The OS clipboard as seen by the worker: a trait so the state machine can be
-//! tested without a display, and its `arboard` implementation.
+//! The clipboard interface used by the protocol worker.
 
-use std::borrow::Cow;
+use std::sync::mpsc::Sender;
 
-use tracing::trace;
+use super::worker::Command;
+use super::x11::X11Clipboard;
+use crate::data_control::{Content, DataControl};
 
-use super::image::Rgba;
+pub const TEXT: &str = "text/plain;charset=utf-8";
+pub const PNG: &str = "image/png";
 
-/// One logical clipboard item. Text wins over an image when both are offered,
-/// which is what a paste into a terminal or an editor expects.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Content {
-    Text(String),
-    Image(Rgba),
+type CompletePaste = Box<dyn FnOnce(Option<Vec<u8>>) + Send>;
+
+/// A delayed OS paste. Every completion, including failure, closes its waiter.
+pub struct Transfer {
+    mime: String,
+    generation: u64,
+    complete: Option<CompletePaste>,
 }
 
-pub(super) trait OsClipboard {
-    /// The current clipboard content, or `None` when it is empty or holds
-    /// nothing this backend can carry.
-    fn read(&mut self) -> Option<Content>;
-
-    /// Replaces the clipboard content.
-    fn write(&mut self, content: &Content) -> Result<(), String>;
-}
-
-/// The real clipboard through `arboard`: Wayland data-control when the
-/// compositor offers it, the X11 clipboard (through XWayland on Wayland
-/// desktops) otherwise.
-pub(super) struct ArboardClipboard {
-    inner: arboard::Clipboard,
-}
-
-impl ArboardClipboard {
-    pub(super) fn open() -> Result<Self, arboard::Error> {
-        Ok(Self {
-            inner: arboard::Clipboard::new()?,
-        })
+impl core::fmt::Debug for Transfer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Transfer")
+            .field("mime", &self.mime)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
     }
 }
 
-impl OsClipboard for ArboardClipboard {
-    fn read(&mut self) -> Option<Content> {
-        match self.inner.get_text() {
-            Ok(text) if !text.is_empty() => return Some(Content::Text(text)),
-            Ok(_) | Err(arboard::Error::ContentNotAvailable) => {}
-            Err(error) => {
-                trace!(%error, "Could not read text from the OS clipboard");
-                return None;
-            }
-        }
-
-        match self.inner.get_image() {
-            Ok(image) => {
-                let width = u32::try_from(image.width).ok()?;
-                let height = u32::try_from(image.height).ok()?;
-                Some(Content::Image(Rgba {
-                    width,
-                    height,
-                    bytes: image.bytes.into_owned(),
-                }))
-            }
-            Err(arboard::Error::ContentNotAvailable) => None,
-            Err(error) => {
-                trace!(%error, "Could not read an image from the OS clipboard");
-                None
-            }
+impl Transfer {
+    pub fn new(mime: String, generation: u64, complete: impl FnOnce(Option<Vec<u8>>) + Send + 'static) -> Self {
+        Self {
+            mime,
+            generation,
+            complete: Some(Box::new(complete)),
         }
     }
 
-    fn write(&mut self, content: &Content) -> Result<(), String> {
-        let result = match content {
-            Content::Text(text) => self.inner.set_text(text.as_str()),
-            Content::Image(image) => {
-                let width = usize::try_from(image.width).map_err(|error| error.to_string())?;
-                let height = usize::try_from(image.height).map_err(|error| error.to_string())?;
-                self.inner.set_image(arboard::ImageData {
-                    width,
-                    height,
-                    bytes: Cow::Borrowed(&image.bytes),
-                })
+    pub fn mime_type(&self) -> &str {
+        &self.mime
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn finish(mut self, data: Option<Vec<u8>>) {
+        if let Some(complete) = self.complete.take() {
+            complete(data);
+        }
+    }
+}
+
+impl Drop for Transfer {
+    fn drop(&mut self) {
+        if let Some(complete) = self.complete.take() {
+            complete(None);
+        }
+    }
+}
+
+pub trait OsClipboard {
+    fn is_owner(&self) -> bool;
+    fn mime_types(&self) -> Vec<String>;
+    fn read(&mut self, mime: &str) -> Result<Option<Vec<u8>>, String>;
+    fn offer(&mut self, mimes: &[String], generation: u64) -> Result<(), String>;
+    fn clear(&mut self) -> Result<(), String>;
+}
+
+pub enum NativeClipboard {
+    Wayland {
+        clipboard: DataControl,
+        events: Sender<Command>,
+    },
+    X11(X11Clipboard),
+}
+
+impl NativeClipboard {
+    pub fn open(events: Sender<Command>) -> Result<Self, String> {
+        match DataControl::connect() {
+            Ok(clipboard) => {
+                let changes = events.clone();
+                clipboard.on_change(move |mimes| {
+                    let _ = changes.send(Command::LocalChanged(mimes));
+                });
+                Ok(Self::Wayland { clipboard, events })
             }
-        };
-        result.map_err(|error| error.to_string())
+            Err(wayland_error) => {
+                tracing::debug!(%wayland_error, "Wayland data-control unavailable; trying X11");
+                X11Clipboard::open(events)
+                    .map(Self::X11)
+                    .map_err(|x11_error| format!("Wayland: {wayland_error}; X11: {x11_error}"))
+            }
+        }
+    }
+}
+
+impl OsClipboard for NativeClipboard {
+    fn is_owner(&self) -> bool {
+        match self {
+            Self::Wayland { clipboard, .. } => clipboard.owns_selection(),
+            Self::X11(clipboard) => clipboard.is_owner(),
+        }
+    }
+
+    fn mime_types(&self) -> Vec<String> {
+        match self {
+            Self::Wayland { clipboard, .. } => clipboard.selection_mime_types(),
+            Self::X11(clipboard) => clipboard.mime_types(),
+        }
+    }
+
+    fn read(&mut self, mime: &str) -> Result<Option<Vec<u8>>, String> {
+        match self {
+            Self::Wayland { clipboard, .. } => {
+                let serial = clipboard.serial();
+                let data = clipboard.read(mime).map_err(|error| error.to_string())?;
+                if serial != clipboard.serial() {
+                    return Err("clipboard selection changed while reading".into());
+                }
+                Ok(data)
+            }
+            Self::X11(clipboard) => clipboard.read(mime),
+        }
+    }
+
+    fn offer(&mut self, mimes: &[String], generation: u64) -> Result<(), String> {
+        match self {
+            Self::Wayland { clipboard, events } => {
+                let events = events.clone();
+                clipboard.on_transfer(move |request| {
+                    let transfer = Transfer::new(request.mime_type().to_owned(), generation, move |data| {
+                        let result = match data {
+                            Some(data) => request.complete(data),
+                            None => request.fail(),
+                        };
+                        if let Err(error) = result {
+                            tracing::debug!(%error, "Could not finish a Wayland paste");
+                        }
+                    });
+                    let _ = events.send(Command::Paste(transfer));
+                });
+                let content = mimes
+                    .iter()
+                    .fold(Content::new(), |content, mime| content.advertise(mime));
+                clipboard.set_selection(content).map_err(|error| error.to_string())?;
+                clipboard.synchronize().map_err(|error| error.to_string())?;
+                if !clipboard.owns_selection() {
+                    return Err("clipboard ownership was not acquired".into());
+                }
+                Ok(())
+            }
+            Self::X11(clipboard) => clipboard.offer(mimes, generation),
+        }
+    }
+
+    fn clear(&mut self) -> Result<(), String> {
+        match self {
+            Self::Wayland { clipboard, .. } => clipboard.clear_selection().map_err(|error| error.to_string()),
+            Self::X11(clipboard) => clipboard.clear(),
+        }
     }
 }

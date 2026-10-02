@@ -259,3 +259,192 @@ fn the_change_callback_may_lock_the_shared_state() {
 
     assert!(*relocked.lock().unwrap());
 }
+
+#[test]
+fn held_paste_descriptors_are_bounded_and_released_on_cancellation() {
+    let (mut state, requests) = state_with_transfer_callback();
+    let mut readers = Vec::new();
+    for _ in 0..16 {
+        let (reader, writer) = pipe();
+        state.on_source_send("image/png", writer);
+        readers.push(reader);
+    }
+    assert_eq!(state.paste_count(), 16);
+    let (rejected, writer) = pipe();
+    state.on_source_send("image/png", writer);
+    assert!(read_all(rejected).is_empty());
+    assert_eq!(requests.lock().unwrap().len(), 1);
+
+    state.on_source_cancelled();
+    assert_eq!(state.paste_count(), 0);
+    for reader in readers {
+        assert!(read_all(reader).is_empty());
+    }
+    state.set_advertised(mimes(&["image/png"]));
+    let (reader, writer) = pipe();
+    state.on_source_send("image/png", writer);
+    // The previous response cannot answer the next selection's paste.
+    state.complete_transfer(1, Some(b"stale".to_vec()));
+    assert_eq!(state.paste_count(), 1);
+    state.complete_transfer(2, Some(b"current".to_vec()));
+    assert_eq!(read_all(reader), b"current");
+}
+
+#[test]
+fn unanswered_pastes_expire_without_replacing_the_selection() {
+    use core::time::Duration;
+    use std::time::Instant;
+
+    let (mut state, requests) = state_with_transfer_callback();
+    let (reader, writer) = pipe();
+    state.on_source_send("image/png", writer);
+    state.expire_transfers(Instant::now() + Duration::from_secs(6));
+    assert!(read_all(reader).is_empty());
+    assert_eq!(state.paste_count(), 0);
+    state.complete_transfer(1, Some(b"late".to_vec()));
+    assert!(!state.has_source_data());
+
+    let (reader, writer) = pipe();
+    state.on_source_send("image/png", writer);
+    assert_eq!(requests.lock().unwrap().len(), 2);
+    state.complete_transfer(2, Some(b"new".to_vec()));
+    assert_eq!(read_all(reader), b"new");
+}
+
+#[test]
+fn cached_pastes_share_the_descriptor_and_writer_limit() {
+    let mut state = State::default();
+    state.insert_source_data("image/png", vec![0x55; 1024 * 1024]);
+    let mut readers = Vec::new();
+    for _ in 0..16 {
+        let (reader, writer) = pipe();
+        state.on_source_send("image/png", writer);
+        readers.push(reader);
+    }
+    assert_eq!(state.paste_count(), 16);
+    let (rejected, writer) = pipe();
+    state.on_source_send("image/png", writer);
+    assert!(read_all(rejected).is_empty());
+    // Breaking each blocked pipe releases its thread and its permit.
+    drop(readers);
+    wait_for_pastes_to_finish(&state);
+    let (reader, writer) = pipe();
+    state.insert_source_data("image/png", b"available again".to_vec());
+    state.on_source_send("image/png", writer);
+    assert_eq!(read_all(reader), b"available again");
+}
+
+#[test]
+fn a_blocked_paste_writer_times_out_and_closes_its_descriptor() {
+    use core::time::Duration;
+
+    let mut state = State::default();
+    state.set_transfer_timeout(Duration::from_millis(30));
+    state.insert_source_data("image/png", vec![0x55; 1024 * 1024]);
+    let (reader, writer) = pipe();
+    state.on_source_send("image/png", writer);
+    // Keep the reader open without draining its pipe: write_all used to block forever.
+    wait_for_pastes_to_finish(&state);
+    assert!(read_all(reader).len() < 1024 * 1024);
+}
+
+fn wait_for_pastes_to_finish(state: &State) {
+    use core::time::Duration;
+    use std::time::Instant;
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while state.paste_count() != 0 {
+        assert!(Instant::now() < deadline, "clipboard writer did not release its permit");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn a_read_deadline_is_not_extended_by_slow_progress() {
+    use core::time::Duration;
+    use std::io::Write as _;
+    use std::sync::mpsc;
+
+    use ironrdp_cliprdr_native::data_control::{Error, read_pipe};
+
+    let (mut reader, mut writer) = std::io::pipe().unwrap();
+    let (started, ready) = mpsc::sync_channel(0);
+    let thread = std::thread::spawn(move || {
+        writer.write_all(b"a").unwrap();
+        started.send(()).unwrap();
+        for _ in 0..1000 {
+            std::thread::sleep(Duration::from_millis(1));
+            if writer.write_all(b"a").is_err() {
+                break;
+            }
+        }
+    });
+    ready.recv().unwrap();
+    let result = read_pipe(&mut reader, 1024 * 1024, Duration::from_millis(30));
+    drop(reader);
+    thread.join().unwrap();
+    assert!(matches!(result, Err(Error::Timeout)));
+}
+
+#[test]
+fn same_format_selection_before_cancellation_still_notifies_ownership_loss() {
+    let mut state = State::default();
+    let formats = mimes(&["text/plain"]);
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&observed);
+    let shared = Arc::clone(state.shared());
+    state.shared().lock().unwrap().set_on_change(Arc::new(move |mimes| {
+        assert!(
+            shared.try_lock().is_ok(),
+            "callback must run after releasing shared state"
+        );
+        seen.lock().unwrap().push(mimes);
+    }));
+    state.set_advertised(formats.clone());
+    state.publish_selection(formats.clone(), true);
+    // Without the cancellation yet, the existing ownership heuristic cannot
+    // distinguish this external selection from our own same-format echo.
+    let assumed_own = is_own_selection(true, &formats, &formats);
+    state.publish_selection(formats.clone(), assumed_own);
+    assert!(observed.lock().unwrap().is_empty());
+
+    state.on_source_cancelled();
+    assert_eq!(*observed.lock().unwrap(), vec![formats]);
+    assert_eq!(state.shared().lock().unwrap().serial(), 3);
+}
+
+#[test]
+fn cancellation_before_external_selection_converges_on_the_new_formats() {
+    let mut state = State::default();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&observed);
+    state
+        .shared()
+        .lock()
+        .unwrap()
+        .set_on_change(Arc::new(move |mimes| seen.lock().unwrap().push(mimes)));
+    state.publish_selection(mimes(&["text/plain"]), true);
+    state.on_source_cancelled();
+    state.publish_selection(mimes(&["image/png"]), false);
+    assert_eq!(
+        *observed.lock().unwrap(),
+        vec![mimes(&["text/plain"]), mimes(&["image/png"])]
+    );
+    assert_eq!(state.shared().lock().unwrap().mime_types(), mimes(&["image/png"]));
+}
+
+#[test]
+fn cancellation_after_a_foreign_selection_does_not_repeat_its_notification() {
+    let mut state = State::default();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&observed);
+    state
+        .shared()
+        .lock()
+        .unwrap()
+        .set_on_change(Arc::new(move |mimes| seen.lock().unwrap().push(mimes)));
+    state.publish_selection(mimes(&["text/plain"]), true);
+    state.publish_selection(mimes(&["image/png"]), false);
+    state.on_source_cancelled();
+    assert_eq!(*observed.lock().unwrap(), vec![mimes(&["image/png"])]);
+}

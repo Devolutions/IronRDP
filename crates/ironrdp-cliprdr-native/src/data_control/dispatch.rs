@@ -5,7 +5,7 @@
 //! twice and forwards to the shared [`State`].
 
 use wayland_client::{
-    Connection, Dispatch, QueueHandle,
+    Connection, Dispatch, Proxy as _, QueueHandle,
     globals::GlobalListContents,
     protocol::{wl_registry::WlRegistry, wl_seat::WlSeat},
 };
@@ -111,12 +111,15 @@ impl Dispatch<ExtDataControlDeviceV1, ()> for Client {
 impl Dispatch<ExtDataControlSourceV1, ()> for Client {
     fn event(
         state: &mut Self,
-        _proxy: &ExtDataControlSourceV1,
+        proxy: &ExtDataControlSourceV1,
         event: <ExtDataControlSourceV1 as wayland_client::Proxy>::Event,
         _data: &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        if !state.data_control.is_current_source(&proxy.id()) {
+            return;
+        }
         match event {
             ext_data_control_source_v1::Event::Send { mime_type, fd } => {
                 state.data_control.on_source_send(&mime_type, fd);
@@ -197,12 +200,15 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for Client {
 impl Dispatch<ZwlrDataControlSourceV1, ()> for Client {
     fn event(
         state: &mut Self,
-        _proxy: &ZwlrDataControlSourceV1,
+        proxy: &ZwlrDataControlSourceV1,
         event: <ZwlrDataControlSourceV1 as wayland_client::Proxy>::Event,
         _data: &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        if !state.data_control.is_current_source(&proxy.id()) {
+            return;
+        }
         match event {
             zwlr_data_control_source_v1::Event::Send { mime_type, fd } => {
                 state.data_control.on_source_send(&mime_type, fd);

@@ -9,6 +9,7 @@ use std::{
     io::Read as _,
     os::unix::{io::AsFd as _, net::UnixStream},
     sync::{Arc, Mutex, mpsc},
+    time::Instant,
 };
 
 use nix::{
@@ -16,10 +17,10 @@ use nix::{
     poll::{PollFd, PollFlags, PollTimeout, poll},
 };
 use wayland_client::{
-    Connection, EventQueue,
+    Connection, Dispatch, EventQueue, QueueHandle,
     backend::WaylandError,
     globals::{GlobalList, registry_queue_init},
-    protocol::wl_seat::WlSeat,
+    protocol::{wl_callback::WlCallback, wl_seat::WlSeat},
 };
 use wayland_protocols::ext::data_control::v1::client::ext_data_control_manager_v1::ExtDataControlManagerV1;
 use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
@@ -103,7 +104,7 @@ pub(crate) fn connect(
 /// compositor offers.
 fn bind_manager(
     globals: &GlobalList,
-    queue_handle: &wayland_client::QueueHandle<Client>,
+    queue_handle: &QueueHandle<Client>,
     options: &Options,
 ) -> Result<(DataControlManager, Protocol)> {
     let candidates = options.candidates();
@@ -149,6 +150,7 @@ impl Worker {
             }
 
             self.process_commands();
+            self.client.data_control.expire_transfers(Instant::now());
 
             let flush_blocked = match self.connection.flush() {
                 Ok(()) => false,
@@ -174,7 +176,7 @@ impl Worker {
                 PollFd::new(guard.connection_fd(), wayland_events),
                 PollFd::new(self.wake.as_fd(), PollFlags::POLLIN),
             ];
-            match poll(&mut fds, PollTimeout::NONE) {
+            match poll(&mut fds, PollTimeout::from(100u16)) {
                 Ok(_) => {}
                 Err(Errno::EINTR) => continue,
                 Err(error) => {
@@ -211,6 +213,12 @@ impl Worker {
         let queue_handle = self.queue.handle();
         while let Ok(command) = self.commands.try_recv() {
             match command {
+                Command::Synchronize(sender) => {
+                    // The callback is dispatched after the compositor has
+                    // processed prior selection requests and sent their events.
+                    // Keep servicing the event loop while waiting for it.
+                    self.connection.display().sync(&queue_handle, sender);
+                }
                 Command::SetSelection { mime_types, data } => {
                     self.client.data_control.set_selection(&mime_types, data, &queue_handle);
                 }
@@ -241,6 +249,19 @@ impl Worker {
                 Err(_) => break,
             }
         }
+    }
+}
+
+impl Dispatch<WlCallback, mpsc::Sender<()>> for Client {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WlCallback,
+        _event: <WlCallback as wayland_client::Proxy>::Event,
+        data: &mpsc::Sender<()>,
+        _connection: &Connection,
+        _queue_handle: &QueueHandle<Self>,
+    ) {
+        let _ = data.send(());
     }
 }
 

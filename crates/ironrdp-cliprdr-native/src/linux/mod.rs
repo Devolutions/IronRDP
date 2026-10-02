@@ -1,19 +1,14 @@
-//! `CLIPRDR` backend for Linux desktops, over the X11 and Wayland clipboards.
+//! Linux CLIPRDR backend with clipboard change events and delayed rendering.
 //!
-//! Built on [`arboard`]. On Wayland it uses the data-control protocol when the
-//! compositor offers it (Sway, KDE Plasma, GNOME 48 and later) and otherwise
-//! the X11 clipboard through XWayland, which GNOME and KDE keep in sync with
-//! the Wayland selection. Plain text (`CF_UNICODETEXT`) and images
-//! (`CF_DIB`/`CF_DIBV5`) travel in both directions; files and HTML do not.
-//!
-//! Remote content is fetched as soon as the remote announces a copy and written
-//! to the OS clipboard, because neither clipboard protocol used here lets a
-//! client offer content it will only produce on demand. Local changes are
-//! found by polling; see [`worker::POLL_INTERVAL`].
+//! Wayland uses the shared [`crate::data_control`] client. X11/XWayland uses
+//! XFixes selection notifications and selection ownership. Both advertise
+//! remote formats immediately and request data only when an application pastes.
+//! Plain text (`CF_UNICODETEXT`) and PNG images (`CF_DIB`/`CF_DIBV5`) travel in
+//! both directions; file clipboard transfer and HTML are not supported.
 
-mod image;
-mod os;
-mod worker;
+pub mod os;
+pub mod worker;
+pub mod x11;
 
 use core::fmt;
 use std::sync::mpsc::{self, Sender};
@@ -33,7 +28,7 @@ use self::worker::{Command, Worker};
 pub enum LinuxCliprdrError {
     /// No usable clipboard: neither a Wayland data-control clipboard nor an X11
     /// display could be opened.
-    Clipboard(arboard::Error),
+    Clipboard(String),
     Spawn(std::io::Error),
     /// The clipboard thread stopped before reporting whether it could start.
     WorkerStopped,
@@ -52,7 +47,7 @@ impl fmt::Display for LinuxCliprdrError {
 impl core::error::Error for LinuxCliprdrError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
-            Self::Clipboard(error) => Some(error),
+            Self::Clipboard(_) => None,
             Self::Spawn(error) => Some(error),
             Self::WorkerStopped => None,
         }
@@ -83,10 +78,11 @@ impl LinuxClipboard {
         let (commands, receiver) = mpsc::channel();
         let (ready_sender, ready) = mpsc::channel();
 
+        let events = commands.clone();
         let thread = std::thread::Builder::new()
             .name("cliprdr-linux".to_owned())
             .spawn(move || {
-                let os = match os::ArboardClipboard::open() {
+                let os = match os::NativeClipboard::open(events) {
                     Ok(os) => os,
                     Err(error) => {
                         let _ = ready_sender.send(Err(error));
@@ -131,6 +127,7 @@ struct LinuxCliprdrBackendFactory {
 
 impl CliprdrBackendFactory for LinuxCliprdrBackendFactory {
     fn build_cliprdr_backend(&self) -> Box<dyn CliprdrBackend> {
+        let _ = self.commands.send(Command::Reset);
         Box::new(LinuxCliprdrBackend {
             commands: self.commands.clone(),
         })
@@ -182,7 +179,8 @@ impl CliprdrBackend for LinuxCliprdrBackend {
     }
 
     fn on_format_data_response(&mut self, response: FormatDataResponse<'_>) {
-        let data = (!response.is_error()).then(|| response.data().to_vec());
+        let data = (!response.is_error() && response.data().len() <= worker::MAX_TRANSFER_BYTES)
+            .then(|| response.data().to_vec());
         self.send(Command::RemoteData(data));
     }
 

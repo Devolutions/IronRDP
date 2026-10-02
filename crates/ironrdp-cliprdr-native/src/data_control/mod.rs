@@ -58,6 +58,8 @@ pub mod state;
 pub(crate) mod state;
 mod worker;
 
+#[cfg(feature = "__test")]
+pub use self::client::read_pipe;
 pub use self::client::{Content, DataControl, TransferRequest};
 pub use self::error::{Error, Result};
 pub use self::mime::find_mime_match;

@@ -26,13 +26,19 @@
 //! [`Command::ReceiveFromOffer`] calls `offer.receive(mime, fd)`; the caller
 //! reads the other end of the pipe.
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+use core::time::Duration;
 use std::{
     collections::HashMap,
-    os::unix::io::OwnedFd,
+    os::unix::io::{AsFd as _, OwnedFd},
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
-use wayland_client::{Dispatch, QueueHandle, protocol::wl_seat::WlSeat};
+use nix::fcntl::{FcntlArg, OFlag, fcntl};
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+
+use wayland_client::{Dispatch, Proxy as _, QueueHandle, backend::ObjectId, protocol::wl_seat::WlSeat};
 use wayland_protocols::ext::data_control::v1::client::{
     ext_data_control_device_v1::ExtDataControlDeviceV1, ext_data_control_manager_v1::ExtDataControlManagerV1,
     ext_data_control_offer_v1::ExtDataControlOfferV1, ext_data_control_source_v1::ExtDataControlSourceV1,
@@ -41,6 +47,9 @@ use wayland_protocols_wlr::data_control::v1::client::{
     zwlr_data_control_device_v1::ZwlrDataControlDeviceV1, zwlr_data_control_manager_v1::ZwlrDataControlManagerV1,
     zwlr_data_control_offer_v1::ZwlrDataControlOfferV1, zwlr_data_control_source_v1::ZwlrDataControlSourceV1,
 };
+
+const MAX_PASTES: usize = 16;
+const TRANSFER_TIMEOUT: Duration = Duration::from_secs(5);
 
 // === Protocol object enums ===
 // These wrap both ext and wlr variants so State can work
@@ -122,6 +131,8 @@ impl DataControlSource {
 /// Commands sent from clipboard backends to the Wayland event loop thread.
 #[derive(Debug)]
 pub(crate) enum Command {
+    /// Acknowledge earlier commands and selection events after a compositor sync.
+    Synchronize(std::sync::mpsc::Sender<()>),
     /// Set the clipboard selection on the compositor.
     ///
     /// Creates a data control source with the offered MIME types and
@@ -228,7 +239,22 @@ impl Shared {
 /// MIME type that arrived meanwhile.
 struct PendingTransfer {
     serial: u32,
-    waiters: Vec<OwnedFd>,
+    waiters: Vec<PasteWriter>,
+}
+
+/// A slot covers both a held descriptor and the thread writing its response.
+struct PastePermit(Arc<AtomicUsize>);
+
+impl Drop for PastePermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+struct PasteWriter {
+    fd: OwnedFd,
+    deadline: Instant,
+    _permit: PastePermit,
 }
 
 /// Accumulated MIME types for a pending data offer.
@@ -258,13 +284,15 @@ pub(crate) struct State {
     /// MIME types advertised on `current_source`.
     pub(crate) current_source_mime_types: Vec<String>,
     /// Data cached for our source's `send` events.
-    pub(crate) source_data: HashMap<String, Vec<u8>>,
+    pub(crate) source_data: HashMap<String, Arc<[u8]>>,
     /// Pending offer being built up (between `data_offer` and `selection` events).
     pending_offer: Option<(DataControlOffer, PendingOffer)>,
     /// Pastes waiting on `on_transfer`, by requested MIME type.
     pending_transfers: HashMap<String, PendingTransfer>,
     /// Next serial handed to `on_transfer`.
     next_transfer_serial: u32,
+    paste_count: Arc<AtomicUsize>,
+    transfer_timeout: Duration,
     /// Shared clipboard state for cross-thread access.
     #[expect(clippy::struct_field_names)]
     pub(crate) shared_state: Arc<Mutex<Shared>>,
@@ -282,6 +310,8 @@ impl Default for State {
             pending_offer: None,
             pending_transfers: HashMap::new(),
             next_transfer_serial: 1,
+            paste_count: Arc::default(),
+            transfer_timeout: TRANSFER_TIMEOUT,
             shared_state: Arc::new(Mutex::new(Shared::default())),
         }
     }
@@ -291,7 +321,7 @@ impl State {
     /// Test-only: cache data for a MIME type as if it had been set.
     #[cfg(feature = "__test")]
     pub fn insert_source_data(&mut self, mime_type: &str, data: Vec<u8>) {
-        self.source_data.insert(mime_type.to_owned(), data);
+        self.source_data.insert(mime_type.to_owned(), data.into());
     }
 
     /// Test-only: whether any source data is cached.
@@ -310,6 +340,36 @@ impl State {
     #[cfg(feature = "__test")]
     pub fn shared(&self) -> &Arc<Mutex<Shared>> {
         &self.shared_state
+    }
+
+    /// Test-only: number of held descriptors and active writer threads.
+    #[cfg(feature = "__test")]
+    pub fn paste_count(&self) -> usize {
+        self.paste_count.load(Ordering::Relaxed)
+    }
+
+    /// Test-only: shorten transfer deadlines without sleeping for five seconds.
+    #[cfg(feature = "__test")]
+    pub fn set_transfer_timeout(&mut self, timeout: Duration) {
+        self.transfer_timeout = timeout;
+    }
+
+    /// Ignore queued events from a source that a newer copy already replaced.
+    pub(crate) fn is_current_source(&self, id: &ObjectId) -> bool {
+        match &self.current_source {
+            Some(DataControlSource::Ext(source)) => source.id() == *id,
+            Some(DataControlSource::Wlr(source)) => source.id() == *id,
+            None => false,
+        }
+    }
+
+    /// Release abandoned delayed pastes even when the callback never replies.
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
+    pub(crate) fn expire_transfers(&mut self, now: Instant) {
+        self.pending_transfers.retain(|_, pending| {
+            pending.waiters.retain(|waiter| now < waiter.deadline);
+            !pending.waiters.is_empty()
+        });
     }
 
     /// Create a data control device from the manager and seat.
@@ -401,10 +461,17 @@ impl State {
             "Compositor selection changed"
         );
 
+        self.publish_selection(mime_types, own);
+    }
+
+    /// Publish a selection after its ownership and offered formats are known.
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
+    pub(crate) fn publish_selection(&self, mime_types: Vec<String>, own: bool) {
         // The callback runs after the lock is released: it may call back into
         // the handle (`serial`, `selection_mime_types`), which locks the same state.
         let callback = self.shared_state.lock().ok().and_then(|mut shared| {
-            shared.serial += 1;
+            shared.serial = shared.serial.wrapping_add(1);
+            shared.own_source_live = own;
             shared.mime_types.clone_from(&mime_types);
             if own { None } else { shared.on_change.clone() }
         });
@@ -427,7 +494,8 @@ impl State {
         tracing::debug!("Compositor selection cleared");
 
         let callback = self.shared_state.lock().ok().and_then(|mut shared| {
-            shared.serial += 1;
+            shared.serial = shared.serial.wrapping_add(1);
+            shared.own_source_live = false;
             shared.mime_types.clear();
             shared.on_change.clone()
         });
@@ -448,7 +516,7 @@ impl State {
             bytes = data.len(),
             "Source data updated (post-announcement)"
         );
-        self.source_data.insert(mime_type, data);
+        self.source_data.insert(mime_type, data.into());
     }
 
     /// Handle a `send` event on our data source.
@@ -459,13 +527,29 @@ impl State {
     /// arrives through `CompleteTransfer`.
     #[cfg_attr(feature = "__test", visibility::make(pub))]
     pub(crate) fn on_source_send(&mut self, mime_type: &str, fd: OwnedFd) {
+        self.expire_transfers(Instant::now());
+        if self
+            .paste_count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                (count < MAX_PASTES).then_some(count + 1)
+            })
+            .is_err()
+        {
+            tracing::debug!("Too many clipboard pastes; closing the new request");
+            return;
+        }
+        let writer = PasteWriter {
+            fd,
+            deadline: Instant::now() + self.transfer_timeout,
+            _permit: PastePermit(Arc::clone(&self.paste_count)),
+        };
         if let Some(data) = self.cached_data(mime_type) {
-            write_in_background(fd, data);
+            write_in_background(writer, data);
             return;
         }
 
         if let Some(pending) = self.pending_transfers.get_mut(mime_type) {
-            pending.waiters.push(fd);
+            pending.waiters.push(writer);
             return;
         }
 
@@ -487,7 +571,7 @@ impl State {
             mime_type.to_owned(),
             PendingTransfer {
                 serial,
-                waiters: vec![fd],
+                waiters: vec![writer],
             },
         );
         tracing::debug!(mime_type, serial, "Paste held until its data arrives");
@@ -504,12 +588,13 @@ impl State {
                 let base = mime_type.split(';').next()?.trim();
                 self.source_data.get(base)
             })
-            .map(|data| Arc::from(data.as_slice()))
+            .cloned()
     }
 
     /// Process a `CompleteTransfer` command.
     #[cfg_attr(feature = "__test", visibility::make(pub))]
     pub(crate) fn complete_transfer(&mut self, serial: u32, data: Option<Vec<u8>>) {
+        self.expire_transfers(Instant::now());
         let Some(mime_type) = self
             .pending_transfers
             .iter()
@@ -526,11 +611,11 @@ impl State {
             tracing::debug!(mime_type, waiters = pending.waiters.len(), "Transfer returned no data");
             return;
         };
-        let shared: Arc<[u8]> = Arc::from(data.as_slice());
-        for fd in pending.waiters {
-            write_in_background(fd, Arc::clone(&shared));
+        let shared: Arc<[u8]> = data.into();
+        for writer in pending.waiters {
+            write_in_background(writer, Arc::clone(&shared));
         }
-        self.source_data.insert(mime_type, data);
+        self.source_data.insert(mime_type, shared);
     }
 
     /// Process a `ClearSelection` command: give up our selection if the
@@ -565,7 +650,25 @@ impl State {
         self.source_data.clear();
         // Waiting pastes see end-of-file.
         self.pending_transfers.clear();
-        self.set_own_source_live(false);
+        // A same-format foreign selection can arrive before this cancellation
+        // and be mistaken for our own echo. In that ordering its callback was
+        // suppressed, so ownership loss must publish the current MIME snapshot.
+        let changed = self.shared_state.lock().ok().and_then(|mut shared| {
+            let was_own = shared.own_source_live;
+            shared.own_source_live = false;
+            if was_own {
+                shared.serial = shared.serial.wrapping_add(1);
+                shared
+                    .on_change
+                    .clone()
+                    .map(|callback| (callback, shared.mime_types.clone()))
+            } else {
+                None
+            }
+        });
+        if let Some((callback, mime_types)) = changed {
+            callback(mime_types);
+        }
     }
 
     /// Handle the `finished` event on the device.
@@ -645,7 +748,7 @@ impl State {
             old.destroy();
         }
         self.pending_transfers.clear();
-        self.source_data = data;
+        self.source_data = data.into_iter().map(|(mime, bytes)| (mime, bytes.into())).collect();
         self.current_source = Some(new_source);
         self.current_source_mime_types = mime_types.to_vec();
         self.set_own_source_live(true);
@@ -689,18 +792,43 @@ pub(crate) fn is_own_selection(source_live: bool, advertised: &[String], offered
 
 /// Answer a paste on a worker thread: a large image written into a slow
 /// reader would otherwise block every other Wayland event.
-fn write_in_background(fd: OwnedFd, data: Arc<[u8]>) {
-    use std::io::Write as _;
-
+fn write_in_background(writer: PasteWriter, data: Arc<[u8]>) {
     let spawned = std::thread::Builder::new()
         .name("data-control-send".into())
         .spawn(move || {
-            let mut file = std::fs::File::from(fd);
-            if let Err(e) = file.write_all(&data) {
-                tracing::debug!(error = %e, "Paste reader went away");
+            // Keep the permit until the descriptor closes, including failed writes.
+            let _permit = writer._permit;
+            if let Err(error) = write_with_deadline(&writer.fd, &data, writer.deadline) {
+                tracing::debug!(%error, "Could not finish a clipboard paste");
             }
+            drop(writer.fd);
         });
-    if let Err(e) = spawned {
-        tracing::error!(error = %e, "Failed to start a paste writer");
+    if let Err(error) = spawned {
+        tracing::error!(%error, "Failed to start a paste writer");
     }
+}
+
+fn write_with_deadline(fd: &OwnedFd, mut data: &[u8], deadline: Instant) -> std::io::Result<()> {
+    let flags = OFlag::from_bits_truncate(fcntl(fd, FcntlArg::F_GETFL)?);
+    fcntl(fd, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
+    while !data.is_empty() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        let mut fds = [PollFd::new(fd.as_fd(), PollFlags::POLLOUT)];
+        let timeout = PollTimeout::try_from(remaining).unwrap_or(PollTimeout::MAX);
+        match poll(&mut fds, timeout) {
+            Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
+            Ok(_) => {}
+            Err(error) => return Err(error.into()),
+        }
+        match nix::unistd::write(fd, data) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(count) => data = &data[count..],
+            Err(nix::errno::Errno::EINTR | nix::errno::Errno::EAGAIN) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
