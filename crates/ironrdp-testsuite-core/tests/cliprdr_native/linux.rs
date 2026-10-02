@@ -111,7 +111,7 @@ fn png() -> Vec<u8> {
 fn selection_events_wait_for_monitor_ready_and_do_not_read_content() {
     let (mut worker, os, recorder) = worker();
     os.lock().unwrap().data.insert(TEXT.into(), b"hello".to_vec());
-    worker.handle(Command::LocalChanged(vec![TEXT.into()]));
+    worker.handle(Command::LocalChanged);
     assert!(recorder.take().is_empty());
     worker.handle(Command::AdvertiseLocal);
     assert!(
@@ -125,8 +125,8 @@ fn a_new_local_copy_with_the_same_formats_is_announced() {
     let (mut worker, _, recorder) = worker();
     worker.handle(Command::AdvertiseLocal);
     recorder.take();
-    worker.handle(Command::LocalChanged(vec![TEXT.into()]));
-    worker.handle(Command::LocalChanged(vec![TEXT.into()]));
+    worker.handle(Command::LocalChanged);
+    worker.handle(Command::LocalChanged);
     assert_eq!(recorder.take().len(), 2);
 }
 
@@ -240,7 +240,7 @@ fn local_selection_change_cancels_waiters_and_discards_remote_data() {
     let (mut worker, os, recorder) = worker();
     remote(&mut worker, &[ClipboardFormatId::CF_UNICODETEXT]);
     let response = paste(&mut worker, &os, TEXT);
-    worker.handle(Command::LocalChanged(vec![TEXT.into()]));
+    worker.handle(Command::LocalChanged);
     assert_eq!(response.recv().unwrap(), None);
     recorder.take();
     text_response(&mut worker, "stale");
@@ -335,7 +335,7 @@ fn shared_loop_detector_rejects_a_clipboard_manager_echo() {
     text_response(&mut worker, "echoed");
     response.recv().unwrap();
     os.lock().unwrap().data.insert(TEXT.into(), b"echoed".to_vec());
-    worker.handle(Command::LocalChanged(vec![TEXT.into()]));
+    worker.handle(Command::LocalChanged);
     recorder.take();
     worker.handle(Command::RenderLocal(ClipboardFormatId::CF_UNICODETEXT));
     assert!(matches!(recorder.take().as_slice(), [ClipboardMessage::SendFormatData(response)] if response.is_error()));
@@ -353,7 +353,7 @@ fn channel_reset_cancels_pending_pastes_and_releases_ownership() {
     assert_eq!(response.recv().unwrap(), None);
     assert_eq!(os.lock().unwrap().clears, 1);
     recorder.take();
-    worker.handle(Command::LocalChanged(vec![TEXT.into()]));
+    worker.handle(Command::LocalChanged);
     assert!(recorder.take().is_empty());
 }
 
@@ -372,7 +372,8 @@ fn x11_delayed_pastes_use_notifications_and_incremental_transfers() {
     let reader = X11Clipboard::open(reader_events).unwrap();
     owner.offer(&[TEXT.into(), PNG.into()], 42).unwrap();
     loop {
-        if let Command::LocalChanged(mimes) = reader_receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
+        if let Command::LocalChanged = reader_receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
+            let mimes = reader.mime_types();
             if mimes.contains(&TEXT.to_owned()) && mimes.contains(&PNG.to_owned()) {
                 break;
             }
@@ -404,12 +405,12 @@ fn x11_delayed_pastes_use_notifications_and_incremental_transfers() {
     assert!(
         !owner_receiver
             .try_iter()
-            .any(|event| matches!(event, Command::LocalChanged(_)))
+            .any(|event| matches!(event, Command::LocalChanged))
     );
     reader.offer(&[TEXT.into()], 43).unwrap();
     loop {
-        if let Command::LocalChanged(mimes) = owner_receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
-            if mimes.contains(&TEXT.to_owned()) {
+        if let Command::LocalChanged = owner_receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
+            if owner.mime_types().contains(&TEXT.to_owned()) {
                 break;
             }
         }
@@ -462,8 +463,8 @@ fn x11_clipboard_interoperates_with_xclip_in_both_directions() {
     stdin.write_all(&data).unwrap();
     drop(stdin);
     loop {
-        if let Command::LocalChanged(mimes) = receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
-            if mimes.contains(&TEXT.to_owned()) {
+        if let Command::LocalChanged = receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
+            if clipboard.mime_types().contains(&TEXT.to_owned()) {
                 break;
             }
         }
@@ -479,7 +480,7 @@ fn queued_local_event_does_not_cancel_an_acknowledged_remote_selection() {
     let (mut worker, os, recorder) = worker();
     remote(&mut worker, &[ClipboardFormatId::CF_UNICODETEXT]);
     os.lock().unwrap().owns = true;
-    worker.handle(Command::LocalChanged(vec![PNG.into()]));
+    worker.handle(Command::LocalChanged);
     let response = paste(&mut worker, &os, TEXT);
     assert!(matches!(
         recorder.take().as_slice(),
@@ -490,7 +491,7 @@ fn queued_local_event_does_not_cancel_an_acknowledged_remote_selection() {
 }
 
 #[test]
-fn local_notifications_refresh_the_current_selection_instead_of_stale_event_formats() {
+fn local_notifications_refresh_the_current_selection_formats() {
     let (mut worker, os, recorder) = worker();
     worker.handle(Command::AdvertiseLocal);
     recorder.take();
@@ -498,7 +499,7 @@ fn local_notifications_refresh_the_current_selection_instead_of_stale_event_form
         .unwrap()
         .data
         .insert(TEXT.into(), b"newest selection".to_vec());
-    worker.handle(Command::LocalChanged(vec![PNG.into()]));
+    worker.handle(Command::LocalChanged);
     assert!(
         matches!(recorder.take().as_slice(), [ClipboardMessage::SendInitiateCopy(formats)] if formats.len() == 1 && formats[0].id() == ClipboardFormatId::CF_UNICODETEXT)
     );
@@ -520,8 +521,8 @@ fn x11_bounds_requests_before_queuing_clipboard_data() {
             let (events, notifications) = mpsc::channel();
             let mut reader = X11Clipboard::open(events).unwrap();
             loop {
-                if let Command::LocalChanged(mimes) = notifications.recv_timeout(Duration::from_secs(5)).unwrap() {
-                    if mimes.contains(&TEXT.to_owned()) {
+                if let Command::LocalChanged = notifications.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    if reader.mime_types().contains(&TEXT.to_owned()) {
                         break;
                     }
                 }

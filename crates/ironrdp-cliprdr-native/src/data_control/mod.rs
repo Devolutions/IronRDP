@@ -51,10 +51,6 @@ mod options;
 #[cfg(feature = "__test")]
 pub mod state;
 #[cfg(not(feature = "__test"))]
-#[expect(
-    unreachable_pub,
-    reason = "the __test feature exposes this module to the shared integration tests"
-)]
 pub(crate) mod state;
 mod worker;
 
