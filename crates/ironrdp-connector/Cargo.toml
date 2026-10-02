@@ -21,7 +21,7 @@ default = ["rustcrypto", "legacy-crypto"]
 qoi = ["ironrdp-pdu/qoi"]
 qoiz = ["ironrdp-pdu/qoiz"]
 legacy-crypto = ["dep:rand", "ironrdp-pdu/legacy-crypto"]
-rustcrypto = ["picky/rustcrypto", "sspi/aws-lc-rs", "sspi/legacy-protocols", "sspi/scard"]
+rustcrypto = ["picky/rustcrypto", "sspi/aws-lc-rs", "sspi/full-protocols", "sspi/scard"]
 fips-aws-lc = ["picky/fips-aws-lc", "sspi/fips"]
 
 [dependencies]

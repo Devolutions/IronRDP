@@ -213,4 +213,4 @@ picky = { git = "https://github.com/Devolutions/picky-rs.git", rev = "48ee92e837
 picky-asn1 = { git = "https://github.com/Devolutions/picky-rs.git", rev = "48ee92e8371c074ee4c02b622199ce8cbd522ecd" }
 picky-asn1-der = { git = "https://github.com/Devolutions/picky-rs.git", rev = "48ee92e8371c074ee4c02b622199ce8cbd522ecd" }
 picky-asn1-x509 = { git = "https://github.com/Devolutions/picky-rs.git", rev = "48ee92e8371c074ee4c02b622199ce8cbd522ecd" }
-sspi = { git = "https://github.com/Devolutions/sspi-rs.git", rev = "7252396beab5394ee6ad552c13ad9bb920a6d71c", version = "0.21.3" }
+sspi = { git = "https://github.com/Devolutions/sspi-rs.git", rev = "b8a542f3847e26c8c0c5e5f4a850ccd6583a1859", version = "0.21.3" }
