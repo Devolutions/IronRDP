@@ -1970,7 +1970,7 @@ impl RdpServer {
         self.gfx_handle.as_ref()
     }
 
-    fn attach_channels(&mut self, acceptor: &mut Acceptor, monitor_count: u32) {
+    async fn attach_channels(&mut self, acceptor: &mut Acceptor) {
         if let Some(cliprdr_factory) = self.cliprdr_factory.as_deref() {
             let backend = cliprdr_factory.build_cliprdr_backend();
 
@@ -1991,12 +1991,27 @@ impl RdpServer {
             acceptor.attach_static_channel(RdpdrServer::new(backend));
         }
 
-        let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display), monitor_count);
-        let dvc = dvc::DrdynvcServer::new()
-            .with_dynamic_channel(AInputHandler {
-                handler: Arc::clone(&self.handler),
-            })
-            .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
+        let dvc = dvc::DrdynvcServer::new().with_dynamic_channel(AInputHandler {
+            handler: Arc::clone(&self.handler),
+        });
+
+        // `monitor_count` is only asked when the channel is offered, since its
+        // contract is tied to the channel opening. Both queries share one guard,
+        // so no other task can interleave between them.
+        let display_control_monitors = {
+            let mut display = self.display.lock().await;
+            if display.offers_display_control().await {
+                Some(display.monitor_count().await)
+            } else {
+                None
+            }
+        };
+        let dvc = if let Some(monitor_count) = display_control_monitors {
+            let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display), monitor_count);
+            dvc.with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)))
+        } else {
+            dvc
+        };
 
         let dvc = {
             let echo_handle = self.echo_handle.clone();
@@ -2133,8 +2148,7 @@ impl RdpServer {
         // `accept_finalize`, which is where the acceptor first consumes the
         // static channel set (the MCS Connect Initial); `accept_begin`, already
         // done, stops at the security-upgrade gate before that.
-        let monitor_count = self.display.lock().await.monitor_count().await;
-        self.attach_channels(&mut candidate.acceptor, monitor_count);
+        self.attach_channels(&mut candidate.acceptor).await;
 
         self.finalize_negotiated(*candidate).await
     }
@@ -2263,7 +2277,6 @@ impl RdpServer {
         self.display_suppressed.store(false, Ordering::Relaxed);
 
         let size = self.display.lock().await.size().await;
-        let monitor_count = self.display.lock().await.monitor_count().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
         let mut pending = PendingConnection::new(
             self.opts.security.clone(),
@@ -2274,7 +2287,7 @@ impl RdpServer {
             self.opts.udp_bind_addr,
         );
 
-        self.attach_channels(pending.acceptor_mut(), monitor_count);
+        self.attach_channels(pending.acceptor_mut()).await;
 
         let Some(negotiated) = pending.negotiate_and_authenticate(stream, tls).await? else {
             return Ok(());
