@@ -18,6 +18,9 @@ test = false
 [features]
 default = []
 
+# Internal integration-test access; not part of the supported public API.
+__test = []
+
 rustls = [
     "ironrdp-tls/rustls",
     "tokio-tungstenite/rustls-tls-native-roots",
