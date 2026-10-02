@@ -347,6 +347,7 @@ impl ClientAutoReconnect {
     ///
     /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/e729948a-3f4e-4568-9aef-d355e30b5389
     /// [RFC 2104]: https://www.rfc-editor.org/rfc/rfc2104
+    #[cfg(feature = "legacy-crypto")]
     pub fn from_server_cookie(cookie: &crate::rdp::session_info::ServerAutoReconnect) -> Self {
         use hmac::Mac as _;
 
@@ -371,12 +372,14 @@ impl ClientAutoReconnect {
     /// # Panics
     ///
     /// Never in practice, for the reason given on [`Self::from_server_cookie`].
+    #[cfg(feature = "legacy-crypto")]
     pub fn verify(&self, cookie: &crate::rdp::session_info::ServerAutoReconnect) -> bool {
         use hmac::Mac as _;
 
         self.logon_id == cookie.logon_id && Self::keyed_hmac(cookie).verify_slice(&self.security_verifier).is_ok()
     }
 
+    #[cfg(feature = "legacy-crypto")]
     fn keyed_hmac(cookie: &crate::rdp::session_info::ServerAutoReconnect) -> hmac::Hmac<md5::Md5> {
         use hmac::Mac as _;
 

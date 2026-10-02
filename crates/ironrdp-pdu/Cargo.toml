@@ -17,9 +17,12 @@ doctest = false
 # test = false
 
 [features]
-default = []
+default = ["legacy-crypto"]
 std = ["alloc", "ironrdp-error/std", "ironrdp-core/std"]
 alloc = ["ironrdp-core/alloc", "ironrdp-error/alloc"]
+# Legacy RDP licensing and auto-reconnect use non-FIPS MD5/SHA-1 based crypto.
+# Keep this enabled by default for existing consumers; reduced profiles must opt in explicitly.
+legacy-crypto = ["dep:hmac", "dep:md5", "dep:sha1"]
 qoi = []
 qoiz = ["qoi"]
 arbitrary = ["alloc", "dep:arbitrary", "bitflags/arbitrary"]
@@ -35,13 +38,13 @@ tap = "1"
 bit_field = "0.10"
 byteorder = "1.5" # TODO: remove
 der-parser = "10.0"
-hmac = { version = "0.12", default-features = false }
-md5 = { package = "md-5", version = "0.10" }
+hmac = { version = "0.12", default-features = false, optional = true }
+md5 = { package = "md-5", version = "0.10", optional = true }
 num-bigint = "0.4"
 num-derive.workspace = true # TODO: remove
 num-integer = "0.1"
 num-traits.workspace = true # TODO: remove
-sha1 = "0.11"
+sha1 = { version = "0.11", optional = true }
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 pkcs1 = { version = "0.7", features = ["std"] }
 

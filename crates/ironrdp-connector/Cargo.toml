@@ -17,9 +17,10 @@ doctest = false
 test = false
 
 [features]
-default = ["rustcrypto"]
+default = ["rustcrypto", "legacy-crypto"]
 qoi = ["ironrdp-pdu/qoi"]
 qoiz = ["ironrdp-pdu/qoiz"]
+legacy-crypto = ["ironrdp-pdu/legacy-crypto"]
 rustcrypto = ["picky/rustcrypto", "sspi/aws-lc-rs", "sspi/legacy-protocols", "sspi/scard"]
 fips-aws-lc = ["picky/fips-aws-lc", "sspi/fips"]
 
