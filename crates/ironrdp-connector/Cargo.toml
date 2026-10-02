@@ -28,7 +28,7 @@ fips-aws-lc = ["picky/fips-aws-lc", "sspi/fips"]
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.2" } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", features = ["std"] } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", default-features = false, features = ["std"] } # public
 sspi = { version = "0.21.3", default-features = false }
 url = "2.5" # public
 rand = { version = "0.9", features = ["std"] } # TODO: dependency injection?
