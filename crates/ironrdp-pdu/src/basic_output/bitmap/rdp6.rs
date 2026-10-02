@@ -186,7 +186,11 @@ mod tests {
 
     fn assert_parsing_failure(buffer: &[u8], expected: Expect) {
         let error = ironrdp_core::decode::<BitmapStream<'_>>(buffer).err().unwrap();
-        expected.assert_debug_eq(&error);
+        let debug = format!("{error:#?}\n").replace(
+            "BitmapStream as ironrdp_core::decode::Decode>",
+            "BitmapStream<'_> as ironrdp_core::decode::Decode<'_>>",
+        );
+        expected.assert_eq(&debug);
     }
 
     #[test]
