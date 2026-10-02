@@ -1,11 +1,18 @@
 use std::borrow::Cow;
 
 use ironrdp_core::encode_vec;
+use ironrdp_dvc::DrdynvcClient;
+use ironrdp_dvc::pdu::{CapabilitiesRequestPdu, CapsVersion, DrdynvcServerPdu};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_pdu::Action;
 use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
 use ironrdp_pdu::mcs::{McsMessage, SendDataIndication};
 use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
+use ironrdp_pdu::rdp::headers::{
+    BasicSecurityHeader, BasicSecurityHeaderFlags, ServerDeactivateAll, ShareControlHeader, ShareControlPdu,
+};
+use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, RequestedProtocol};
+use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
 use ironrdp_pdu::x224::X224;
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::x224::Processor;
@@ -38,10 +45,13 @@ fn process_frame(processor: &mut Processor, frame: &[u8]) -> Vec<ironrdp_session
 fn encode_server_autodetect(request: AutoDetectRequest) -> Vec<u8> {
     let pdu = AutoDetectReqPdu::new(request);
     let user_data = encode_vec(&pdu).unwrap();
+    encode_server_data(MESSAGE_CHANNEL_ID, user_data)
+}
 
+fn encode_server_data(channel_id: u16, user_data: Vec<u8>) -> Vec<u8> {
     let indication = McsMessage::SendDataIndication(SendDataIndication {
         initiator_id: USER_CHANNEL_ID,
-        channel_id: MESSAGE_CHANNEL_ID,
+        channel_id,
         user_data: Cow::Owned(user_data),
     });
 
@@ -189,7 +199,7 @@ fn bandwidth_result_frame(frame: &[u8]) -> (u16, u16, u32, u32) {
 }
 
 #[test]
-fn continuous_measurement_counts_data_without_security_headers() {
+fn continuous_measurement_excludes_message_channel_security_headers() {
     let mut processor = make_processor();
     assert!(timed_request(&mut processor, AutoDetectRequest::bw_start_continuous(1), 10).is_empty());
     timed_request(&mut processor, AutoDetectRequest::rtt_continuous(2), 20);
@@ -197,6 +207,82 @@ fn continuous_measurement_counts_data_without_security_headers() {
     // RTT and Stop have six-byte auto-detect headers. Neither four-byte
     // security header, nor TPKT/X224/MCS framing, belongs to the count.
     assert_eq!(bandwidth_result(&result), (3, 0x000b, 25, 12));
+}
+
+#[test]
+fn continuous_measurement_counts_io_framing_once_for_concatenated_pdus() {
+    let mut processor = make_processor();
+    let pdu = encode_vec(&ShareControlHeader {
+        share_control_pdu: ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll),
+        pdu_source: USER_CHANNEL_ID,
+        share_id: SHARE_ID,
+    })
+    .unwrap();
+    let frame = encode_server_data(IO_CHANNEL_ID, [pdu.as_slice(), pdu.as_slice()].concat());
+
+    timed_request(&mut processor, AutoDetectRequest::bw_start_continuous(1), 10);
+    assert_eq!(process_frame(&mut processor, &frame).len(), 2);
+    let result = timed_request(&mut processor, AutoDetectRequest::bw_stop_continuous(2), 35);
+    // There is no RDP Security Header: include TPKT, X224, MCS and both PDUs.
+    assert_eq!(
+        bandwidth_result(&result),
+        (2, 0x000b, 25, u32::try_from(frame.len()).unwrap() + 6)
+    );
+}
+
+#[test]
+fn continuous_measurement_counts_svc_framing() {
+    let mut channels = StaticChannelSet::new();
+    channels.insert(DrdynvcClient::new());
+    channels.attach_channel_id(core::any::TypeId::of::<DrdynvcClient>(), 1005);
+    let mut processor = Processor::new(
+        channels,
+        USER_CHANNEL_ID,
+        IO_CHANNEL_ID,
+        Some(MESSAGE_CHANNEL_ID),
+        SHARE_ID,
+    );
+    let capabilities = encode_vec(&DrdynvcServerPdu::Capabilities(CapabilitiesRequestPdu::new(
+        CapsVersion::V1,
+        None,
+    )))
+    .unwrap();
+    let mut chunk = encode_vec(&ChannelPduHeader {
+        length: u32::try_from(capabilities.len()).unwrap(),
+        flags: ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
+    })
+    .unwrap();
+    chunk.extend_from_slice(&capabilities);
+    let frame = encode_server_data(1005, chunk);
+
+    timed_request(&mut processor, AutoDetectRequest::bw_start_continuous(1), 10);
+    process_frame(&mut processor, &frame);
+    let result = timed_request(&mut processor, AutoDetectRequest::bw_stop_continuous(2), 35);
+    assert_eq!(
+        bandwidth_result(&result),
+        (2, 0x000b, 25, u32::try_from(frame.len()).unwrap() + 6)
+    );
+}
+
+#[test]
+fn continuous_measurement_excludes_io_multitransport_security_header() {
+    let mut processor = make_processor();
+    let data = encode_vec(&MultitransportRequestPdu {
+        security_header: BasicSecurityHeader {
+            flags: BasicSecurityHeaderFlags::TRANSPORT_REQ,
+        },
+        request_id: 42,
+        requested_protocol: RequestedProtocol::UdpFecR,
+        security_cookie: [0xab; 16],
+    })
+    .unwrap();
+    let counted = u32::try_from(data.len() - BasicSecurityHeader::FIXED_PART_SIZE).unwrap();
+    let frame = encode_server_data(IO_CHANNEL_ID, data);
+
+    timed_request(&mut processor, AutoDetectRequest::bw_start_continuous(1), 10);
+    assert!(process_frame(&mut processor, &frame).is_empty());
+    let result = timed_request(&mut processor, AutoDetectRequest::bw_stop_continuous(2), 35);
+    assert_eq!(bandwidth_result(&result), (2, 0x000b, 25, counted + 6));
 }
 
 #[test]
@@ -276,6 +362,36 @@ fn untimed_driver_does_not_report_accumulated_bytes_as_a_real_measurement() {
     assert_eq!(bandwidth_result(&outputs), (3, 0x000b, 1, 0));
 }
 
+#[test]
+fn untimed_connect_time_stop_does_not_report_stop_payload_bytes() {
+    let mut processor = make_processor();
+    timed_request(&mut processor, AutoDetectRequest::bw_start_connect_time(1), 10);
+    timed_request(&mut processor, AutoDetectRequest::bw_payload(2, vec![0xaa; 64]), 20);
+    let outputs = process_frame(
+        &mut processor,
+        &encode_server_autodetect(AutoDetectRequest::bw_stop_connect_time(3, vec![0xbb; 16])),
+    );
+    assert_eq!(bandwidth_result(&outputs), (3, 0x0003, 1, 0));
+}
+
+#[test]
+fn connect_time_stop_without_a_timed_start_reports_zero_bytes() {
+    for send_untimed_start in [false, true] {
+        for stop_time in [None, Some(ironrdp_core::MonotonicInstant::from_millis(20))] {
+            let mut processor = make_processor();
+            if send_untimed_start {
+                process_frame(
+                    &mut processor,
+                    &encode_server_autodetect(AutoDetectRequest::bw_start_connect_time(1)),
+                );
+            }
+            let frame = encode_server_autodetect(AutoDetectRequest::bw_stop_connect_time(2, vec![0xbb; 16]));
+            let outputs = processor.process_with_timestamp(&frame, &mut None, stop_time).unwrap();
+            assert_eq!(bandwidth_result(&outputs), (2, 0x0003, 1, 0));
+        }
+    }
+}
+
 fn make_active_stage() -> ActiveStage {
     ActiveStageBuilder {
         static_channels: StaticChannelSet::new(),
@@ -340,10 +456,12 @@ fn continuous_measurement_counts_fast_path_data_only_inside_the_window() {
     let [ActiveStageOutput::ResponseFrame(response)] = outputs.as_slice() else {
         panic!("expected exactly one bandwidth response, got {outputs:?}");
     };
-    // The frame between Start and Stop counts without its fast-path header: a
-    // three-byte update header and 100 bytes of update data. The Stop adds its
-    // six-byte auto-detect header, as in the message-channel tests above.
-    assert_eq!(bandwidth_result_frame(response), (2, 0x000b, 30, 3 + 100 + 6));
+    // The whole fast-path frame counts because it has no RDP Security Header.
+    // The Stop adds only its six-byte auto-detect header, after its Security Header.
+    assert_eq!(
+        bandwidth_result_frame(response),
+        (2, 0x000b, 30, u32::try_from(frame.len()).unwrap() + 6)
+    );
 }
 
 fn at(millis: u64) -> ironrdp_core::MonotonicInstant {

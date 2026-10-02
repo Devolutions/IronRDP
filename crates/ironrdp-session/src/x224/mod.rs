@@ -248,16 +248,13 @@ impl Processor {
         };
         let channel_id = data_ctx.channel_id;
 
-        // Message-channel PDUs carry a Basic Security Header, excluded below.
-        // Ordinary session data on TLS-protected IO/SVC channels does not.
-        if self.message_channel_id != Some(channel_id) {
-            self.record_bandwidth_bytes(data_ctx.user_data.len());
-        }
         if channel_id == self.io_channel_id {
-            self.process_io_channel_data_indication(data_ctx, bulk_decompressor)
+            self.process_io_channel_data_indication(data_ctx, frame.len(), bulk_decompressor)
         } else if self.message_channel_id == Some(channel_id) {
             self.process_message_channel(data_ctx, received_at)
         } else {
+            // TLS-protected SVC data has no RDP Security Header: include TPKT/X224/MCS.
+            self.record_bandwidth_bytes(frame.len());
             let maximum_chunk_size = self.static_channels.maximum_chunk_size();
             if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
                 let response_pdus = svc.process(data_ctx.user_data).map_err(SessionError::pdu)?;
@@ -272,6 +269,7 @@ impl Processor {
     fn process_io_channel_data_indication(
         &mut self,
         data_ctx: SendDataIndicationCtx<'_>,
+        frame_len: usize,
         bulk_decompressor: &mut Option<BulkCompressor>,
     ) -> SessionResult<Vec<ProcessorOutput>> {
         debug_assert_eq!(data_ctx.channel_id, self.io_channel_id);
@@ -282,9 +280,13 @@ impl Processor {
             ironrdp_pdu::rdp::headers::decode_io_channel(data_ctx),
             Ok(IoChannelPdu::MultitransportRequest(_))
         ) {
+            self.record_bandwidth_bytes(data_ctx.user_data.len() - BasicSecurityHeader::FIXED_PART_SIZE);
             return self.process_io_channel(data_ctx, bulk_decompressor);
         }
 
+        // Ordinary TLS-protected IO data has no RDP Security Header. Count the
+        // entire frame once, including framing and any concatenated Share Control PDUs.
+        self.record_bandwidth_bytes(frame_len);
         let mut outputs = Vec::new();
         let mut offset = 0usize;
         let data = data_ctx.user_data;
@@ -466,15 +468,11 @@ impl Processor {
         Ok(decompressed)
     }
 
-    /// Counts session bytes after transport/security headers while a continuous
-    /// bandwidth window is open ([MS-RDPBCGR] 3.2.5.14).
+    /// Counts received session bytes while a continuous bandwidth window is open.
+    /// Exclude framing only when an RDP Security Header is present, counting just
+    /// the bytes after that header ([MS-RDPBCGR] 3.2.5.14).
     pub(crate) fn record_bandwidth_bytes(&mut self, bytes: usize) {
         self.auto_detect.record_bytes(bytes);
-    }
-
-    /// Whether a continuous bandwidth window is open, so session bytes are being counted.
-    pub(crate) fn is_counting_bandwidth(&self) -> bool {
-        self.auto_detect.is_counting()
     }
 
     /// Process a PDU received on the MCS message channel: auto-detect
@@ -701,6 +699,7 @@ mod tests {
                     channel_id: 1003,
                     user_data: &encoded,
                 },
+                encoded.len(),
                 &mut None,
             )
             .expect("ignore a misrouted optional multitransport request");
@@ -918,6 +917,7 @@ mod tests {
                     channel_id: 1003,
                     user_data: &user_data,
                 },
+                user_data.len(),
                 &mut None,
             )
             .expect("concatenated Share Control PDUs should be split");
@@ -939,6 +939,7 @@ mod tests {
                     channel_id: 1003,
                     user_data: &[0x06],
                 },
+                1,
                 &mut None,
             )
             .expect_err("a truncated totalLength field is invalid");
@@ -959,6 +960,7 @@ mod tests {
                     channel_id: 1003,
                     user_data: &user_data,
                 },
+                user_data.len(),
                 &mut None,
             )
             .expect_err("an overrunning concatenated totalLength is invalid");
@@ -984,6 +986,7 @@ mod tests {
                     channel_id: 1003,
                     user_data: &user_data,
                 },
+                user_data.len(),
                 &mut None,
             )
             .expect("invalid first totalLength should fall back to whole-buffer decode");
