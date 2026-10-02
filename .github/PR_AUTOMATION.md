@@ -192,6 +192,8 @@ Risk labels express required maintainer scrutiny:
 | `risk/unknown` | No valid classification was available. |
 
 `cargo-semver-checks` incompatibility forces `risk/high`.
+The API check builds baseline and head rustdoc JSON with `cargo rustdoc --locked`,
+so both builds use their committed dependency versions before comparison.
 A model-suspected breaking change promotes `risk/low` to `risk/medium`.
 Path rules can add `scope/core`, `scope/web`, `scope/ffi`, and `scope/tooling`.
 The classifier controls `scope/cross-cutting`, `kind/technical-debt`, and documentation-only classification.
