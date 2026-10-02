@@ -47,13 +47,6 @@ struct BandwidthMeasurement {
 }
 
 impl AutoDetectResponder {
-    /// Whether a continuous bandwidth window is open, so received bytes are being counted.
-    pub(crate) fn is_counting(&self) -> bool {
-        self.bandwidth
-            .as_ref()
-            .is_some_and(|measurement| measurement.continuous)
-    }
-
     /// Counts received bytes while a continuous bandwidth window is open.
     pub(crate) fn record_bytes(&mut self, bytes: usize) {
         if let Some(measurement) = self.bandwidth.as_mut().filter(|measurement| measurement.continuous) {
@@ -123,9 +116,9 @@ impl AutoDetectResponder {
                             "Bandwidth Measure Stop arrived with no arrival time although its window was open; \
                              dropping the accumulated count"
                         );
-                        (UNMEASURABLE_INTERVAL_MS, stop_bytes)
+                        (UNMEASURABLE_INTERVAL_MS, 0)
                     }
-                    (None, _) => (UNMEASURABLE_INTERVAL_MS, stop_bytes),
+                    (None, _) => (UNMEASURABLE_INTERVAL_MS, 0),
                 };
                 Some(AutoDetectResponse::BandwidthMeasureResults {
                     sequence_number,
@@ -139,6 +132,9 @@ impl AutoDetectResponder {
                 })
             }
             request @ AutoDetectRequest::NetworkCharacteristicsResult { .. } => {
+                // The TCP message-channel processor surfaces this request itself. Keep this
+                // arm for the UDP tunnel responder introduced in PR #2009, which handles
+                // auto-detect requests without passing through that processor.
                 debug!(?request, "Received network characteristics from server");
                 None
             }

@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
-use ironrdp_core::{Decode as _, MonotonicInstant, ReadCursor, WriteBuf};
+use ironrdp_core::{MonotonicInstant, ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_dvc::pdu::SoftSyncTunnelType;
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessageBatch, DynamicChannelMut, DynamicChannelRef};
 use ironrdp_egfx::client::GraphicsPipelineClient;
 use ironrdp_graphics::pointer::DecodedPointer;
-use ironrdp_pdu::fast_path::FastPathHeader;
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
@@ -212,14 +211,9 @@ impl ActiveStage {
         self.damage_regions.clear();
         let (mut stage_outputs, processor_updates) = match action {
             Action::FastPath => {
-                // A continuous bandwidth measurement counts what follows the fast-path header.
-                // The header is decoded again by `process`, so only pay for it here while a
-                // measurement is running.
-                if self.x224_processor.is_counting_bandwidth() {
-                    let mut header = ReadCursor::new(frame);
-                    FastPathHeader::decode(&mut header).map_err(SessionError::decode)?;
-                    self.x224_processor.record_bandwidth_bytes(header.len());
-                }
+                // TLS-protected fast-path frames have no RDP Security Header, so the
+                // continuous bandwidth count includes the entire frame.
+                self.x224_processor.record_bandwidth_bytes(frame.len());
                 let mut output = WriteBuf::new();
                 let processor_updates =
                     self.fast_path_processor
@@ -1096,7 +1090,7 @@ mod tests {
     use core::any::TypeId;
 
     use super::*;
-    use ironrdp_core::encode_vec;
+    use ironrdp_core::{Decode as _, encode_vec};
     use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlPdu};
     use ironrdp_dvc::pdu::{
         ClosePdu, CreateRequestPdu, DataPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu,
