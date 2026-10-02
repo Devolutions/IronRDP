@@ -3,9 +3,11 @@ use std::sync::LazyLock;
 use ironrdp_core::{decode, encode_vec};
 
 use super::*;
+#[cfg(feature = "legacy-crypto")]
+use crate::rdp::server_license::PREAMBLE_SIZE;
 use crate::rdp::server_license::{
-    BASIC_SECURITY_HEADER_SIZE, BasicSecurityHeader, BasicSecurityHeaderFlags, LicensePdu, PREAMBLE_SIZE,
-    PreambleFlags, PreambleVersion,
+    BASIC_SECURITY_HEADER_SIZE, BasicSecurityHeader, BasicSecurityHeaderFlags, LicensePdu, PreambleFlags,
+    PreambleVersion,
 };
 
 const SERVER_UPGRADE_LICENSE_BUFFER: [u8; 2059] = [
@@ -319,6 +321,7 @@ fn buffer_length_is_correct_for_server_upgrade_license() {
 }
 
 #[test]
+#[cfg(feature = "legacy-crypto")]
 fn upgrade_license_verifies_correctly() {
     let encrypted_license_info = vec![
         0xa5, 0x62, 0xcc, 0xe8, 0x5f, 0x22, 0x79, 0x2b, 0xf3, 0xe7, 0x3c, 0x3, 0xde, 0xfe, 0x54, 0x8c, 0xe1, 0xa4,

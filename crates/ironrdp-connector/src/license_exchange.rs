@@ -1,19 +1,24 @@
+#[cfg(feature = "legacy-crypto")]
+use core::fmt;
 use core::fmt::Debug;
+use core::mem;
 use core::panic::RefUnwindSafe;
-use core::{fmt, mem};
 use std::str;
 use std::sync::Arc;
 
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::PduHint;
 use ironrdp_pdu::rdp::server_license::{self, LicenseInformation, LicensePdu, ServerLicenseError};
+#[cfg(feature = "legacy-crypto")]
 use rand::RngCore as _;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, info};
+#[cfg(feature = "legacy-crypto")]
+use tracing::{error, trace};
 
 use super::{ConnectorError, ConnectorErrorExt as _, custom_err, general_err};
-use crate::{
-    ConnectorResult, ConnectorResultExt as _, MonotonicInstant, Sequence, State, Written, encode_send_data_request,
-};
+#[cfg(feature = "legacy-crypto")]
+use crate::encode_send_data_request;
+use crate::{ConnectorResult, ConnectorResultExt as _, MonotonicInstant, Sequence, State, Written};
 
 #[derive(Default, Debug)]
 #[non_exhaustive]
@@ -125,6 +130,9 @@ impl Sequence for LicenseExchangeSequence {
         _received_at: Option<MonotonicInstant>,
         output: &mut WriteBuf,
     ) -> ConnectorResult<Written> {
+        #[cfg(not(feature = "legacy-crypto"))]
+        let _ = &output;
+
         let (written, next_state) = match mem::take(&mut self.state) {
             LicenseExchangeState::Consumed => {
                 return Err(general_err!(
@@ -141,6 +149,7 @@ impl Sequence for LicenseExchangeSequence {
                     .with_context("decode during LicenseExchangeState::NewLicenseRequest")?;
 
                 match license_pdu {
+                    #[cfg(feature = "legacy-crypto")]
                     LicensePdu::ServerLicenseRequest(license_request) => {
                         let mut rng = rand::rng();
                         let mut client_random = [0u8; server_license::RANDOM_NUMBER_SIZE];
@@ -235,7 +244,6 @@ impl Sequence for LicenseExchangeSequence {
                                                 self.0.iter().try_for_each(|byte| write!(f, "{byte:02X}"))
                                             }
                                         }
-
                                         error!(
                                             %error,
                                             cert_der = %BytesHexFormatter(cert_der),
@@ -247,6 +255,12 @@ impl Sequence for LicenseExchangeSequence {
                                 }
                             }
                         }
+                    }
+                    #[cfg(not(feature = "legacy-crypto"))]
+                    LicensePdu::ServerLicenseRequest(_) => {
+                        return Err(general_err!(
+                            "server initiated legacy license exchange but legacy crypto support is disabled"
+                        ));
                     }
                     LicensePdu::LicensingErrorMessage(error_message) => {
                         if error_message.error_code != server_license::LicenseErrorCode::StatusValidClient {
@@ -267,6 +281,9 @@ impl Sequence for LicenseExchangeSequence {
             }
 
             LicenseExchangeState::PlatformChallenge { encryption_data } => {
+                #[cfg(not(feature = "legacy-crypto"))]
+                let _ = &encryption_data;
+
                 let send_data_indication_ctx =
                     ironrdp_pdu::mcs::decode_send_data_indication(input).map_err(ConnectorError::decode)?;
 
@@ -276,6 +293,7 @@ impl Sequence for LicenseExchangeSequence {
                     .with_context("decode during LicenseExchangeState::PlatformChallenge")?;
 
                 match license_pdu {
+                    #[cfg(feature = "legacy-crypto")]
                     LicensePdu::ServerPlatformChallenge(challenge) => {
                         debug!(message = ?challenge, "Received");
 
@@ -301,6 +319,12 @@ impl Sequence for LicenseExchangeSequence {
                             LicenseExchangeState::UpgradeLicense { encryption_data },
                         )
                     }
+                    #[cfg(not(feature = "legacy-crypto"))]
+                    LicensePdu::ServerPlatformChallenge(_) => {
+                        return Err(general_err!(
+                            "server continued legacy license exchange but legacy crypto support is disabled"
+                        ));
+                    }
                     LicensePdu::LicensingErrorMessage(error_message) => {
                         if error_message.error_code != server_license::LicenseErrorCode::StatusValidClient {
                             return Err(custom_err!(
@@ -321,6 +345,9 @@ impl Sequence for LicenseExchangeSequence {
             }
 
             LicenseExchangeState::UpgradeLicense { encryption_data } => {
+                #[cfg(not(feature = "legacy-crypto"))]
+                let _ = &encryption_data;
+
                 let send_data_indication_ctx =
                     ironrdp_pdu::mcs::decode_send_data_indication(input).map_err(ConnectorError::decode)?;
 
@@ -330,6 +357,7 @@ impl Sequence for LicenseExchangeSequence {
                     .with_context("decode during SERVER_NEW_LICENSE/LicenseExchangeState::UpgradeLicense")?;
 
                 match license_pdu {
+                    #[cfg(feature = "legacy-crypto")]
                     LicensePdu::ServerUpgradeLicense(upgrade_license) => {
                         debug!(message = ?upgrade_license, "Received");
 
@@ -344,6 +372,12 @@ impl Sequence for LicenseExchangeSequence {
                             .map_err(ConnectorError::decode)?;
 
                         self.license_cache.store_license(license_info)?
+                    }
+                    #[cfg(not(feature = "legacy-crypto"))]
+                    LicensePdu::ServerUpgradeLicense(_) => {
+                        return Err(general_err!(
+                            "server completed legacy license exchange but legacy crypto support is disabled"
+                        ));
                     }
                     LicensePdu::LicensingErrorMessage(error_message) => {
                         if error_message.error_code != server_license::LicenseErrorCode::StatusValidClient {

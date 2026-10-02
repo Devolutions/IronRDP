@@ -23,6 +23,7 @@ const RECONNECT_COOKIE_CB_LEN: u32 = 0x0000_001C;
 /// [MS-RDPBCGR] 5.5 specifies that in that case the client random is taken to be
 /// 32 zero bytes for this derivation. IronRDP implements no Standard RDP Security
 /// path (there is no Security Exchange PDU), so this is the only case that arises.
+#[cfg(feature = "legacy-crypto")]
 const ENHANCED_SECURITY_CLIENT_RANDOM: [u8; 32] = [0; 32];
 const TIMEZONE_INFO_NAME_LEN: usize = 64;
 const COMPRESSION_TYPE_MASK: u32 = 0x0000_1E00;

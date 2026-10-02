@@ -1,20 +1,32 @@
+#[cfg(feature = "legacy-crypto")]
 use std::io;
 
+#[cfg(feature = "legacy-crypto")]
 use byteorder::{LittleEndian, WriteBytesExt as _};
 use ironrdp_core::{
     Decode as _, DecodeResult, Encode as _, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err,
 };
+#[cfg(feature = "legacy-crypto")]
 use md5::Digest as _;
 
+#[cfg(feature = "legacy-crypto")]
 use crate::crypto::rc4::Rc4;
+#[cfg(feature = "legacy-crypto")]
 use crate::crypto::rsa::encrypt_with_public_key;
+#[cfg(feature = "legacy-crypto")]
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
+#[cfg(feature = "legacy-crypto")]
 use crate::rdp::server_license::client_new_license_request::{compute_master_secret, compute_session_key_blob};
+#[cfg(feature = "legacy-crypto")]
 use crate::rdp::server_license::client_platform_challenge_response::CLIENT_HARDWARE_IDENTIFICATION_SIZE;
 use crate::rdp::server_license::{
-    BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA, LicenseEncryptionData, LicenseHeader, MAC_SIZE, PLATFORM_ID,
-    PREAMBLE_SIZE, PreambleFlags, PreambleType, PreambleVersion, RANDOM_NUMBER_SIZE, ServerLicenseError,
-    ServerLicenseRequest, compute_mac_data,
+    BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA, LicenseHeader, MAC_SIZE, PLATFORM_ID, PreambleType,
+    RANDOM_NUMBER_SIZE,
+};
+#[cfg(feature = "legacy-crypto")]
+use crate::rdp::server_license::{
+    LicenseEncryptionData, PREAMBLE_SIZE, PreambleFlags, PreambleVersion, ServerLicenseError, ServerLicenseRequest,
+    compute_mac_data,
 };
 
 const LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
@@ -36,6 +48,7 @@ pub struct ClientLicenseInfo {
 impl ClientLicenseInfo {
     const NAME: &'static str = "ClientLicenseInfo";
 
+    #[cfg(feature = "legacy-crypto")]
     pub fn from_server_license_request(
         license_request: &ServerLicenseRequest,
         client_random: &[u8],

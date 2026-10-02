@@ -1,8 +1,10 @@
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-crypto"))]
 mod test;
 
+#[cfg(feature = "legacy-crypto")]
 use std::io::Write as _;
 
+#[cfg(feature = "legacy-crypto")]
 use byteorder::{LittleEndian, WriteBytesExt as _};
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
@@ -11,11 +13,13 @@ use ironrdp_core::{
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 
+use super::{BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, BlobHeader, BlobType, LicenseHeader, MAC_SIZE, PreambleType};
+#[cfg(feature = "legacy-crypto")]
 use super::{
-    BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType,
-    LicenseEncryptionData, LicenseHeader, MAC_SIZE, PLATFORM_ID, PREAMBLE_SIZE, PreambleFlags, PreambleType,
+    BasicSecurityHeader, BasicSecurityHeaderFlags, LicenseEncryptionData, PLATFORM_ID, PREAMBLE_SIZE, PreambleFlags,
     PreambleVersion, ServerLicenseError, ServerPlatformChallenge,
 };
+#[cfg(feature = "legacy-crypto")]
 use crate::crypto::rc4::Rc4;
 
 const RESPONSE_DATA_VERSION: u16 = 0x100;
@@ -38,6 +42,7 @@ pub struct ClientPlatformChallengeResponse {
 impl ClientPlatformChallengeResponse {
     const NAME: &'static str = "ClientPlatformChallengeResponse";
 
+    #[cfg(feature = "legacy-crypto")]
     pub fn from_server_platform_challenge(
         platform_challenge: &ServerPlatformChallenge,
         hardware_data: [u32; 4],

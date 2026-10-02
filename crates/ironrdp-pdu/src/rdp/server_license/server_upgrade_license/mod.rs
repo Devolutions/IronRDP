@@ -7,9 +7,12 @@ use ironrdp_core::{
 };
 
 use super::{
-    BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader, MAC_SIZE,
-    PreambleType, ServerLicenseError, UTF8_NULL_TERMINATOR_SIZE, UTF16_NULL_TERMINATOR_SIZE,
+    BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, BlobHeader, BlobType, LicenseHeader, MAC_SIZE, PreambleType,
+    UTF8_NULL_TERMINATOR_SIZE, UTF16_NULL_TERMINATOR_SIZE,
 };
+#[cfg(feature = "legacy-crypto")]
+use super::{LicenseEncryptionData, ServerLicenseError};
+#[cfg(feature = "legacy-crypto")]
 use crate::crypto::rc4::Rc4;
 use crate::utils;
 use crate::utils::CharacterSet;
@@ -65,6 +68,7 @@ impl ServerUpgradeLicense {
         })
     }
 
+    #[cfg(feature = "legacy-crypto")]
     pub fn verify_server_license(&self, encryption_data: &LicenseEncryptionData) -> Result<(), ServerLicenseError> {
         let decrypted_license_info = self.decrypted_license_info(encryption_data);
         let mac_data =
@@ -77,11 +81,13 @@ impl ServerUpgradeLicense {
         Ok(())
     }
 
+    #[cfg(feature = "legacy-crypto")]
     pub fn new_license_info(&self, encryption_data: &LicenseEncryptionData) -> DecodeResult<LicenseInformation> {
         let data = self.decrypted_license_info(encryption_data);
         LicenseInformation::decode(&mut ReadCursor::new(&data))
     }
 
+    #[cfg(feature = "legacy-crypto")]
     fn decrypted_license_info(&self, encryption_data: &LicenseEncryptionData) -> Vec<u8> {
         let mut rc4 = Rc4::new(encryption_data.license_key.as_slice());
         rc4.process(self.encrypted_license_info.as_slice())

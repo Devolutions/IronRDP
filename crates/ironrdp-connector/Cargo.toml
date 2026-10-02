@@ -20,7 +20,7 @@ test = false
 default = ["rustcrypto", "legacy-crypto"]
 qoi = ["ironrdp-pdu/qoi"]
 qoiz = ["ironrdp-pdu/qoiz"]
-legacy-crypto = ["ironrdp-pdu/legacy-crypto"]
+legacy-crypto = ["dep:rand", "ironrdp-pdu/legacy-crypto"]
 rustcrypto = ["picky/rustcrypto", "sspi/aws-lc-rs", "sspi/legacy-protocols", "sspi/scard"]
 fips-aws-lc = ["picky/fips-aws-lc", "sspi/fips"]
 
@@ -31,7 +31,7 @@ ironrdp-error = { path = "../ironrdp-error", version = "0.2" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", default-features = false, features = ["std"] } # public
 sspi = { version = "0.21.3", default-features = false }
 url = "2.5" # public
-rand = { version = "0.9", features = ["std"] } # TODO: dependency injection?
+rand = { version = "0.9", features = ["std"], optional = true } # TODO: dependency injection?
 tracing = { version = "0.1", features = ["log"] }
 picky-asn1-der = "0.5"
 picky-asn1-x509 = "0.15"

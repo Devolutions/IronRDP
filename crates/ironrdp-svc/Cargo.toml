@@ -22,7 +22,7 @@ std = []
 
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", features = ["alloc", "std"] } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", default-features = false, features = ["alloc", "std"] } # public
 bitflags = "2.11"
 
 [lints]

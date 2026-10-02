@@ -1,20 +1,28 @@
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-crypto"))]
 mod tests;
 
+#[cfg(feature = "legacy-crypto")]
 use std::io;
 
 use bitflags::bitflags;
 use ironrdp_core::{
     Decode as _, DecodeResult, Encode as _, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err,
 };
+#[cfg(feature = "legacy-crypto")]
 use md5::Digest as _;
+#[cfg(feature = "legacy-crypto")]
 use sha1::Digest as _;
 
+#[cfg(feature = "legacy-crypto")]
 use super::{
-    BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA,
-    LicenseEncryptionData, LicenseHeader, PREAMBLE_SIZE, PreambleFlags, PreambleType, PreambleVersion,
-    RANDOM_NUMBER_SIZE, ServerLicenseError, ServerLicenseRequest, UTF8_NULL_TERMINATOR_SIZE,
+    BasicSecurityHeader, BasicSecurityHeaderFlags, LicenseEncryptionData, PREAMBLE_SIZE, PreambleFlags,
+    PreambleVersion, ServerLicenseError, ServerLicenseRequest,
 };
+use super::{
+    BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA, LicenseHeader, PreambleType, RANDOM_NUMBER_SIZE,
+    UTF8_NULL_TERMINATOR_SIZE,
+};
+#[cfg(feature = "legacy-crypto")]
 use crate::crypto::rsa::encrypt_with_public_key;
 use crate::utils::{self, CharacterSet};
 
@@ -58,6 +66,7 @@ pub struct ClientNewLicenseRequest {
 impl ClientNewLicenseRequest {
     const NAME: &'static str = "ClientNewLicenseRequest";
 
+    #[cfg(feature = "legacy-crypto")]
     pub fn from_server_license_request(
         license_request: &ServerLicenseRequest,
         client_random: &[u8],
@@ -222,6 +231,7 @@ impl ClientNewLicenseRequest {
     }
 }
 
+#[cfg(feature = "legacy-crypto")]
 fn salted_hash(salt: &[u8], salt_first: &[u8], salt_second: &[u8], input: &[u8]) -> Vec<u8> {
     let mut hasher = sha1::Sha1::new();
     hasher.update([input, salt, salt_first, salt_second].concat().as_slice());
@@ -234,6 +244,7 @@ fn salted_hash(salt: &[u8], salt_first: &[u8], salt_second: &[u8], input: &[u8])
 }
 
 // According to https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/88061224-4a2f-4a28-a52e-e896b75ed2d3
+#[cfg(feature = "legacy-crypto")]
 pub(crate) fn compute_master_secret(premaster_secret: &[u8], client_random: &[u8], server_random: &[u8]) -> Vec<u8> {
     [
         salted_hash(premaster_secret, client_random, server_random, b"A"),
@@ -244,6 +255,7 @@ pub(crate) fn compute_master_secret(premaster_secret: &[u8], client_random: &[u8
 }
 
 // According to https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/88061224-4a2f-4a28-a52e-e896b75ed2d3
+#[cfg(feature = "legacy-crypto")]
 pub(crate) fn compute_session_key_blob(master_secret: &[u8], client_random: &[u8], server_random: &[u8]) -> Vec<u8> {
     [
         salted_hash(master_secret, server_random, client_random, b"A"),

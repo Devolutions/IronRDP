@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use ironrdp_core::{Encode, WriteBuf, decode, encode_vec};
 use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
+#[cfg(feature = "legacy-crypto")]
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{PduHint, gcc, mcs, nego, rdp};
@@ -363,6 +364,7 @@ pub struct ClientConnector {
     /// Auto-reconnect cookie from a previous session, when reconnecting.
     ///
     /// Set via [`ClientConnector::with_auto_reconnect_cookie`].
+    #[cfg(feature = "legacy-crypto")]
     pub auto_reconnect_cookie: Option<ServerAutoReconnect>,
     /// Start of the in-flight connect-time bandwidth measurement window.
     ///
@@ -390,6 +392,7 @@ impl ClientConnector {
             load_balance_info: None,
             response_flags: nego::ResponseFlags::empty(),
             server_multitransport_flags: None,
+            #[cfg(feature = "legacy-crypto")]
             auto_reconnect_cookie: None,
             connect_time_bw_started_at: None,
             connect_time_bw_bytes: 0,
@@ -409,6 +412,7 @@ impl ClientConnector {
     /// hourly intervals ([MS-RDPBCGR] 3.3.6.2), so pass the most recent one
     /// received. A stale or absent cookie is not an error: the server falls back
     /// to a normal logon.
+    #[cfg(feature = "legacy-crypto")]
     #[must_use]
     pub fn with_auto_reconnect_cookie(mut self, cookie: ServerAutoReconnect) -> Self {
         self.auto_reconnect_cookie = Some(cookie);
@@ -1316,8 +1320,12 @@ impl Sequence for ClientConnector {
             } => {
                 debug!("Secure Settings Exchange");
 
-                let client_info =
-                    create_client_info_pdu(&self.config, &self.client_addr, self.auto_reconnect_cookie.as_ref());
+                let client_info = create_client_info_pdu(
+                    &self.config,
+                    &self.client_addr,
+                    #[cfg(feature = "legacy-crypto")]
+                    self.auto_reconnect_cookie.as_ref(),
+                );
 
                 debug!(message = ?client_info, "Send");
 
@@ -1792,12 +1800,14 @@ fn create_gcc_blocks<'a>(
 fn create_client_info_pdu(
     config: &Config,
     client_addr: &SocketAddr,
-    auto_reconnect_cookie: Option<&ServerAutoReconnect>,
+    #[cfg(feature = "legacy-crypto")] auto_reconnect_cookie: Option<&ServerAutoReconnect>,
 ) -> rdp::ClientInfoPdu {
     use ironrdp_pdu::rdp::ClientInfoPdu;
+    #[cfg(feature = "legacy-crypto")]
+    use ironrdp_pdu::rdp::client_info::ClientAutoReconnect;
     use ironrdp_pdu::rdp::client_info::{
-        AddressFamily, ClientAutoReconnect, ClientInfo, ClientInfoFlags, CompressionType, Credentials,
-        ExtendedClientInfo, ExtendedClientOptionalInfo,
+        AddressFamily, ClientInfo, ClientInfoFlags, CompressionType, Credentials, ExtendedClientInfo,
+        ExtendedClientOptionalInfo,
     };
     use ironrdp_pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
 
@@ -1879,11 +1889,18 @@ fn create_client_info_pdu(
                 // Resuming a session: prove we held the cookie the server issued
                 // for it ([MS-RDPBCGR] 2.2.4.3, derived per 5.5). Absent on a
                 // fresh connection, which is an ordinary logon.
-                match auto_reconnect_cookie {
-                    Some(cookie) => builder
-                        .reconnect_cookie(ClientAutoReconnect::from_server_cookie(cookie).to_bytes())
-                        .build(),
-                    None => builder.build(),
+                #[cfg(feature = "legacy-crypto")]
+                {
+                    match auto_reconnect_cookie {
+                        Some(cookie) => builder
+                            .reconnect_cookie(ClientAutoReconnect::from_server_cookie(cookie).to_bytes())
+                            .build(),
+                        None => builder.build(),
+                    }
+                }
+                #[cfg(not(feature = "legacy-crypto"))]
+                {
+                    builder.build()
                 }
             },
         },

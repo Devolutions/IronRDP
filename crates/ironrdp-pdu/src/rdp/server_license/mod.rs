@@ -6,9 +6,11 @@ use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
     invalid_field_err, unsupported_value_err,
 };
+#[cfg(feature = "legacy-crypto")]
 use md5::Digest as _;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
+#[cfg(feature = "legacy-crypto")]
 use sha1::Digest as _;
 
 use crate::PduError;
@@ -432,6 +434,7 @@ impl<'de> Decode<'de> for BlobHeader {
     }
 }
 
+#[cfg(feature = "legacy-crypto")]
 fn compute_mac_data(mac_salt_key: &[u8], data: &[u8]) -> Result<Vec<u8>, ServerLicenseError> {
     let data_len_buffer = u32::try_from(data.len())
         .map_err(|_| ServerLicenseError::InvalidField("MAC data length"))?
