@@ -1672,7 +1672,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4086,7 +4086,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4778,7 +4778,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "picky"
 version = "7.0.0-rc.25"
-source = "git+https://github.com/Devolutions/picky-rs.git?rev=48ee92e8371c074ee4c02b622199ce8cbd522ecd#48ee92e8371c074ee4c02b622199ce8cbd522ecd"
+source = "git+https://github.com/Devolutions/picky-rs.git?rev=4de0135c528b60500d21451111b5f35d72671395#4de0135c528b60500d21451111b5f35d72671395"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -4817,7 +4817,7 @@ dependencies = [
 [[package]]
 name = "picky-asn1"
 version = "0.10.1"
-source = "git+https://github.com/Devolutions/picky-rs.git?rev=48ee92e8371c074ee4c02b622199ce8cbd522ecd#48ee92e8371c074ee4c02b622199ce8cbd522ecd"
+source = "git+https://github.com/Devolutions/picky-rs.git?rev=4de0135c528b60500d21451111b5f35d72671395#4de0135c528b60500d21451111b5f35d72671395"
 dependencies = [
  "oid",
  "serde",
@@ -4829,7 +4829,7 @@ dependencies = [
 [[package]]
 name = "picky-asn1-der"
 version = "0.5.7"
-source = "git+https://github.com/Devolutions/picky-rs.git?rev=48ee92e8371c074ee4c02b622199ce8cbd522ecd#48ee92e8371c074ee4c02b622199ce8cbd522ecd"
+source = "git+https://github.com/Devolutions/picky-rs.git?rev=4de0135c528b60500d21451111b5f35d72671395#4de0135c528b60500d21451111b5f35d72671395"
 dependencies = [
  "picky-asn1",
  "serde",
@@ -4839,7 +4839,7 @@ dependencies = [
 [[package]]
 name = "picky-asn1-x509"
 version = "0.15.5"
-source = "git+https://github.com/Devolutions/picky-rs.git?rev=48ee92e8371c074ee4c02b622199ce8cbd522ecd#48ee92e8371c074ee4c02b622199ce8cbd522ecd"
+source = "git+https://github.com/Devolutions/picky-rs.git?rev=4de0135c528b60500d21451111b5f35d72671395#4de0135c528b60500d21451111b5f35d72671395"
 dependencies = [
  "base64 0.23.1",
  "crypto-bigint",
@@ -5257,7 +5257,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5727,7 +5727,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6275,7 +6275,7 @@ checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 [[package]]
 name = "sspi"
 version = "0.21.3"
-source = "git+https://github.com/Devolutions/sspi-rs.git?rev=b8a542f3847e26c8c0c5e5f4a850ccd6583a1859#b8a542f3847e26c8c0c5e5f4a850ccd6583a1859"
+source = "git+https://github.com/Devolutions/sspi-rs.git?rev=cc4afe6dc3a7a16453ec8f056aa6c7a961f2edfa#cc4afe6dc3a7a16453ec8f056aa6c7a961f2edfa"
 dependencies = [
  "async-dnssd",
  "async-recursion",
@@ -6469,7 +6469,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7393,7 +7393,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7754,7 +7754,7 @@ dependencies = [
 [[package]]
 name = "winscard"
 version = "0.3.3"
-source = "git+https://github.com/Devolutions/sspi-rs.git?rev=b8a542f3847e26c8c0c5e5f4a850ccd6583a1859#b8a542f3847e26c8c0c5e5f4a850ccd6583a1859"
+source = "git+https://github.com/Devolutions/sspi-rs.git?rev=cc4afe6dc3a7a16453ec8f056aa6c7a961f2edfa#cc4afe6dc3a7a16453ec8f056aa6c7a961f2edfa"
 dependencies = [
  "bitflags 2.13.1",
  "crypto-bigint",
