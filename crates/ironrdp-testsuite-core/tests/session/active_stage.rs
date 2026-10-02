@@ -214,7 +214,10 @@ fn output_reset_is_reported_even_when_the_framebuffer_size_is_unchanged() {
 
     use ironrdp_core::encode_vec;
     use ironrdp_dvc::DrdynvcClient;
-    use ironrdp_dvc::pdu::{CreateRequestPdu, DataPdu, DrdynvcDataPdu, DrdynvcServerPdu};
+    use ironrdp_dvc::pdu::{
+        CreateRequestPdu, DataPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu,
+        SoftSyncTunnelType,
+    };
     use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
     use ironrdp_egfx::pdu::{GfxPdu, ResetGraphicsPdu};
     use ironrdp_graphics::zgfx::wrap_uncompressed;
@@ -259,33 +262,54 @@ fn output_reset_is_reported_even_when_the_framebuffer_size_is_unchanged() {
     let mut image = DecodedImage::new(PixelFormat::RgbA32, 800, 600);
     assert_eq!(stage.take_graphics_output_reset(), None);
 
-    for (width, height) in [(800, 600), (1024, 768), (1024, 768)] {
-        let reset = encode_vec(&GfxPdu::ResetGraphics(ResetGraphicsPdu {
-            width: u32::from(width),
-            height: u32::from(height),
-            monitors: Vec::new(),
-        }))
-        .unwrap();
-        let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
-            1,
-            wrap_uncompressed(&reset),
-        ))))
-        .unwrap();
-        let mut user_data = encode_vec(&ChannelPduHeader {
-            length: u32::try_from(data.len()).unwrap(),
-            flags: ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
-        })
-        .unwrap();
-        user_data.extend(data);
-        let frame = encode_vec(&X224(McsMessage::SendDataIndication(SendDataIndication {
-            initiator_id: 1001,
-            channel_id: 1004,
-            user_data: Cow::Owned(user_data),
-        })))
-        .unwrap();
-        stage.process(&mut image, Action::X224, &frame).unwrap();
-        assert_eq!((image.width(), image.height()), (width, height));
-        assert_eq!(stage.take_graphics_output_reset(), Some((width, height)));
-        assert_eq!(stage.take_graphics_output_reset(), None);
+    for tunneled in [false, true] {
+        if tunneled {
+            stage.enable_reliable_udp_dvc_tunnel().unwrap();
+            let soft_sync = encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
+                SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, vec![1]),
+            ])))
+            .unwrap();
+            stage
+                .get_svc_processor_mut::<DrdynvcClient>()
+                .unwrap()
+                .process(&soft_sync)
+                .unwrap();
+        }
+
+        for (width, height) in [(800, 600), (1024, 768), (1024, 768)] {
+            let reset = encode_vec(&GfxPdu::ResetGraphics(ResetGraphicsPdu {
+                width: u32::from(width),
+                height: u32::from(height),
+                monitors: Vec::new(),
+            }))
+            .unwrap();
+            let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+                1,
+                wrap_uncompressed(&reset),
+            ))))
+            .unwrap();
+            if tunneled {
+                stage
+                    .process_dvc_tunnel(&mut image, SoftSyncTunnelType::RELIABLE_UDP, &data)
+                    .unwrap();
+            } else {
+                let mut user_data = encode_vec(&ChannelPduHeader {
+                    length: u32::try_from(data.len()).unwrap(),
+                    flags: ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
+                })
+                .unwrap();
+                user_data.extend(data);
+                let frame = encode_vec(&X224(McsMessage::SendDataIndication(SendDataIndication {
+                    initiator_id: 1001,
+                    channel_id: 1004,
+                    user_data: Cow::Owned(user_data),
+                })))
+                .unwrap();
+                stage.process(&mut image, Action::X224, &frame).unwrap();
+            }
+            assert_eq!((image.width(), image.height()), (width, height));
+            assert_eq!(stage.take_graphics_output_reset(), Some((width, height)));
+            assert_eq!(stage.take_graphics_output_reset(), None);
+        }
     }
 }
