@@ -1,4 +1,4 @@
-//! Standalone RDP resize-stability stress harness.
+//! Live RDP graphics-pipeline resize grading harness.
 //!
 //! Connects straight to an RDP server over TCP + TLS/CredSSP, negotiates EGFX and
 //! Display Control, then drives resolution changes and key injection while grading
@@ -18,13 +18,13 @@
 //! # Usage example
 //!
 //! ```shell
-//! cargo run --example=rdp_stress --features "session,connector,graphics,dvc,displaycontrol" -- \
+//! cargo run -p ironrdp-stress -- \
 //!     --host rdp.example.com -u Administrator --rounds 10 --out-dir /tmp/rdp-stress
 //! ```
 //!
 //! The password is read from `--password` or, preferably, the `RDP_PASSWORD` env var.
 
-#![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
+#![allow(unused_crate_dependencies)] // bin-only crate; deps are used from main
 #![allow(clippy::print_stdout)]
 // The grading code is percentage arithmetic over tile and pixel counts: every value is a
 // small count or a 0..=100 ratio, so f32 has room to spare and a lost fraction of a
@@ -62,7 +62,7 @@ use tracing::{debug, info};
 
 const HELP: &str = "\
 USAGE:
-  cargo run --example=rdp_stress --features \"session,connector,graphics,dvc,displaycontrol\" -- \\
+  cargo run -p ironrdp-stress -- \\
       --host <HOSTNAME> [--port <PORT>] -u <USERNAME> [-p <PASSWORD>] [-d <DOMAIN>]
       [--sizes <WxH,WxH,...>] [--rounds <N>] [--settle-ms <MS>] [--threshold <PCT>]
       [--no-credssp] [--autologon]
@@ -309,7 +309,7 @@ fn run(config: Config) -> anyhow::Result<u32> {
     );
 
     let mut image = DecodedImage::new(
-        ironrdp_graphics::image_processing::PixelFormat::RgbA32,
+        ironrdp::graphics::image_processing::PixelFormat::RgbA32,
         connection_result.desktop_size.width,
         connection_result.desktop_size.height,
     );
@@ -764,7 +764,7 @@ fn reactivate(
             // Start the new desktop empty rather than carrying the old frame across:
             // the harness must not invent content it then measures.
             *image = DecodedImage::new(
-                ironrdp_graphics::image_processing::PixelFormat::RgbA32,
+                ironrdp::graphics::image_processing::PixelFormat::RgbA32,
                 desktop_size.width,
                 desktop_size.height,
             );
