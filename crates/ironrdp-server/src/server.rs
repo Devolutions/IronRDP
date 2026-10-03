@@ -1,7 +1,7 @@
 use core::cell::RefCell;
 use core::fmt;
 use core::net::{IpAddr, SocketAddr};
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 #[cfg(feature = "usb")]
 use std::collections::HashMap;
@@ -52,9 +52,9 @@ use tokio::task;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::autodetect::{AutoDetectManager, AutoDetectOutcome};
+use crate::autodetect::{AutoDetectHandles, AutoDetectManager, AutoDetectOutcome};
 use crate::clipboard::CliprdrServerFactory;
-use crate::display::{DisplayUpdate, RdpServerDisplay};
+use crate::display::{DisplayContext, DisplayUpdate, RdpServerDisplay};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult};
@@ -646,7 +646,7 @@ pub enum TransportTls {
 /// ```
 /// use ironrdp_server::{RdpServer, RdpServerInputHandler, RdpServerDisplay, RdpServerDisplayUpdates};
 ///
-///# use ironrdp_server::{DisplayUpdate, DesktopSize, KeyboardEvent, MouseEvent, ServerResult};
+///# use ironrdp_server::{DisplayContext, DisplayUpdate, DesktopSize, KeyboardEvent, MouseEvent, ServerResult};
 ///# use tokio_rustls::TlsAcceptor;
 ///# struct NoopInputHandler;
 ///# impl RdpServerInputHandler for NoopInputHandler {
@@ -659,7 +659,7 @@ pub enum TransportTls {
 ///#     async fn size(&mut self) -> DesktopSize {
 ///#         todo!()
 ///#     }
-///#     async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+///#     async fn updates(&mut self, _: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
 ///#         todo!()
 ///#     }
 ///# }
@@ -738,58 +738,6 @@ pub struct RdpServer {
     /// IP, since the source port changes on every reconnect. Cleared once a
     /// session ends on its own terms rather than being replaced.
     recently_evicted: Option<EvictedPeer>,
-    /// True while the client has sent `SuppressOutput { desktop_rect: None }`
-    /// — the standard RDP "I don't need display updates right now" signal
-    /// (mstsc raises it on window minimize). Cleared on
-    /// `SuppressOutput { Some(rect) }` or `RefreshRectangle` (sent on
-    /// refocus). Exposed via [`Self::display_suppressed_handle`] so display
-    /// backends can hold a clone and skip frame emission while it's set —
-    /// without this, a server keeps streaming high-bitrate
-    /// EGFX/H.264 frames into a minimized client, which accumulates them
-    /// and locks up its input dispatch for seconds on refocus while it
-    /// chews through the backlog.
-    display_suppressed: Arc<AtomicBool>,
-
-    /// Latest NetworkAutoDetect round-trip time in milliseconds, or `u32::MAX`
-    /// until the first measurement (and while auto-detect is disabled). Updated
-    /// on each RTT Measure Response when auto-detect is enabled (see
-    /// [`Self::enable_autodetect`]). Exposed via [`Self::autodetect_rtt_handle`]
-    /// so display backends can read a fresh, frame-traffic-independent network
-    /// RTT for flow control.
-    autodetect_rtt: Arc<AtomicU32>,
-
-    /// Session-lifetime lowest RTT in milliseconds (`baseRTT` per MS-RDPBCGR
-    /// 2.2.14.1.5), or `u32::MAX` until the first measurement. Unlike
-    /// [`Self::autodetect_rtt`], this never rises: it is the floor over the
-    /// whole session, not a sliding-window figure, which is what makes
-    /// `averageRTT - baseRTT` a queueing-delay signal rather than two
-    /// unrelated latency numbers. Updated at the same point as
-    /// [`Self::autodetect_rtt`]. Exposed via
-    /// [`Self::autodetect_baseline_rtt_handle`].
-    autodetect_baseline_rtt: Arc<AtomicU32>,
-
-    /// Latest NetworkAutoDetect measured bandwidth in kilobits per second, or
-    /// `u32::MAX` until the first measurement completes (and while auto-detect
-    /// is disabled). Updated whenever a Bandwidth Measure Results response is
-    /// processed, same trigger point as [`Self::autodetect_rtt`]. Exposed via
-    /// [`Self::autodetect_bandwidth_handle`]: without it, the server can tell
-    /// the *client* its measured bandwidth over the wire but has no way to
-    /// tell the embedder, which the connect-time figure carried to the client
-    /// alone does not fix.
-    autodetect_bandwidth: Arc<AtomicU32>,
-
-    /// Increments every time [`Self::autodetect_bandwidth`] is republished:
-    /// when a Bandwidth Measure transaction completes, whether or not it
-    /// produced a usable figure (see that field's doc comment on the None
-    /// case), and when a new connection resets it to `u32::MAX`.
-    /// [`Self::autodetect_bandwidth`] alone cannot tell an embedder "a new
-    /// window just closed" apart from "the value happens to repeat": that
-    /// value repeats often (a quiet link reads the same low figure for
-    /// several consecutive windows), so diffing it is not a valid freshness
-    /// signal. Incremented with `Release` after the bandwidth value is
-    /// stored, so an `Acquire` load of it makes that value visible.
-    /// Exposed via [`Self::autodetect_bandwidth_generation_handle`].
-    autodetect_bandwidth_generation: Arc<AtomicU32>,
 
     /// Optional Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.2
     /// `ARC_SC_PRIVATE_PACKET`). When `Some`, the server validates a returning
@@ -1165,6 +1113,16 @@ struct ConnectionState {
     /// describe this connection's network path, so they start over with each
     /// connection.
     autodetect: Option<AutoDetectManager>,
+    /// The latest auto-detect measurements, published to the display backend
+    /// through [`DisplayContext::autodetect`].
+    autodetect_handles: AutoDetectHandles,
+    /// Whether the client asked the server to stop sending display updates
+    /// (`SuppressOutput { desktop_rect: None }`), published to the display
+    /// backend through [`DisplayContext::display_suppressed`]. Without it, a
+    /// server keeps streaming high-bitrate EGFX/H.264 frames into a minimized
+    /// client, which accumulates them and locks up its input dispatch for
+    /// seconds on refocus while it chews through the backlog.
+    display_suppressed: Arc<AtomicBool>,
     #[cfg(feature = "usb")]
     usb_man: ServerUsbManager,
     /// Abort handle of this connection's pending UDP multitransport accept,
@@ -1197,6 +1155,16 @@ struct ConnectionState {
 }
 
 impl ConnectionState {
+    /// The handles this connection hands to the display backend, cloned at
+    /// each activation so every call to [`RdpServerDisplay::updates`] on the
+    /// same connection gets the same ones.
+    fn display_context(&self) -> DisplayContext {
+        DisplayContext {
+            display_suppressed: Arc::clone(&self.display_suppressed),
+            autodetect: self.autodetect_handles.clone(),
+        }
+    }
+
     fn get_svc_processor<T: SvcProcessor + 'static>(&mut self) -> Option<&mut T> {
         self.static_channels
             .get_by_type_mut::<T>()
@@ -1526,12 +1494,7 @@ impl RdpServer {
         mut rdpeai_factory: Option<Box<dyn RdpeaiServerFactory>>,
         connection_handler: Option<Box<dyn ConnectionHandler>>,
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
-        display_suppressed: Option<Arc<AtomicBool>>,
         #[cfg(feature = "usb")] usb_factory: Option<Box<dyn DeviceFactory>>,
-        autodetect_rtt: Option<Arc<AtomicU32>>,
-        autodetect_baseline_rtt: Option<Arc<AtomicU32>>,
-        autodetect_bandwidth: Option<Arc<AtomicU32>>,
-        autodetect_bandwidth_generation: Option<Arc<AtomicU32>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
@@ -1581,25 +1544,6 @@ impl RdpServer {
             heartbeat: None,
             connection_handler,
             recently_evicted: None,
-            display_suppressed: display_suppressed.unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
-            autodetect_rtt: {
-                // Reset to the sentinel: an injected handle must not expose a stale value before the first measurement.
-                let handle = autodetect_rtt.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX)));
-                handle.store(u32::MAX, Ordering::Relaxed);
-                handle
-            },
-            autodetect_baseline_rtt: {
-                let handle = autodetect_baseline_rtt.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX)));
-                handle.store(u32::MAX, Ordering::Relaxed);
-                handle
-            },
-            autodetect_bandwidth: {
-                let handle = autodetect_bandwidth.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX)));
-                handle.store(u32::MAX, Ordering::Relaxed);
-                handle
-            },
-            autodetect_bandwidth_generation: autodetect_bandwidth_generation
-                .unwrap_or_else(|| Arc::new(AtomicU32::new(0))),
             auto_reconnect_cookie: None,
             previous_auto_reconnect_cookie: None,
             auto_reconnect_sent: false,
@@ -1852,87 +1796,6 @@ impl RdpServer {
         &self.ev_sender
     }
 
-    /// Returns the shared "display suppressed" flag — `true` while the
-    /// connected client has sent `SuppressOutput { desktop_rect: None }`
-    /// (e.g., mstsc minimized).
-    ///
-    /// Display backends should hold a clone of this `Arc` and skip frame
-    /// emission while it's set, so the client doesn't accumulate a backlog
-    /// of frames it can't present until refocus. Cleared by the per-
-    /// connection PDU handler on `SuppressOutput { Some(rect) }` or
-    /// `RefreshRectangle`.
-    ///
-    /// **Caveat:** some clients (notably mstsc) send
-    /// `SuppressOutput { desktop_rect: None }` during their connect
-    /// handshake *before* their display surface is fully initialized; a
-    /// backend that honors the flag blindly will block that first frame
-    /// and leave the client with a half-initialized surface that doesn't
-    /// recover on un-suppress (visible as a frozen desktop on first
-    /// connect). Backends are advised to defer acting on the flag until
-    /// after the first frame has been delivered to the client, and to
-    /// debounce transient flaps (some clients pulse this PDU under wire
-    /// pressure on heavy CPU/IO loads) — e.g., only engage the gate once
-    /// the flag has been steady-`true` for ~1 s.
-    ///
-    /// The display backend typically needs to share this flag with the
-    /// server before any client connects (so the same `Arc` is read by
-    /// the backend's polling thread and written by the per-connection
-    /// PDU handler). To inject the shared instance at construction time,
-    /// use [`RdpServerBuilder::with_display_suppressed_handle`](crate::RdpServerBuilder::with_display_suppressed_handle).
-    ///
-    /// [crate::RdpServerBuilder]: crate::RdpServerBuilder
-    pub fn display_suppressed_handle(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.display_suppressed)
-    }
-
-    /// Returns a handle to the latest NetworkAutoDetect RTT in milliseconds
-    /// (`u32::MAX` until the first measurement, and while auto-detect is
-    /// disabled). The server updates it on each RTT Measure Response; backends
-    /// clone the handle to read a fresh network RTT for flow control. Inject a
-    /// shared instance at construction with
-    /// [`RdpServerBuilder::with_autodetect_rtt_handle`](crate::RdpServerBuilder::with_autodetect_rtt_handle).
-    pub fn autodetect_rtt_handle(&self) -> Arc<AtomicU32> {
-        Arc::clone(&self.autodetect_rtt)
-    }
-
-    /// Returns a handle to the session-lifetime lowest RTT in milliseconds
-    /// (`baseRTT` per MS-RDPBCGR 2.2.14.1.5; `u32::MAX` until the first
-    /// measurement, and while auto-detect is disabled). Unlike
-    /// [`Self::autodetect_rtt_handle`], this figure never rises: pair it with
-    /// that handle's average to derive queueing delay
-    /// (`averageRTT - baseRTT`), which `autodetect_rtt_handle` alone cannot
-    /// give since its figure is a sliding-window value that rises as low
-    /// samples age out. Inject a shared instance at construction with
-    /// [`RdpServerBuilder::with_autodetect_baseline_rtt_handle`](crate::RdpServerBuilder::with_autodetect_baseline_rtt_handle).
-    pub fn autodetect_baseline_rtt_handle(&self) -> Arc<AtomicU32> {
-        Arc::clone(&self.autodetect_baseline_rtt)
-    }
-
-    /// Returns a handle to the latest NetworkAutoDetect measured bandwidth in
-    /// kilobits per second (`u32::MAX` until the first measurement completes,
-    /// and while auto-detect is disabled). The server updates it whenever a
-    /// Bandwidth Measure Results response completes a measurement; backends
-    /// clone the handle to read the figure the server also reports to the
-    /// client on the wire. Inject a shared instance at construction with
-    /// [`RdpServerBuilder::with_autodetect_bandwidth_handle`](crate::RdpServerBuilder::with_autodetect_bandwidth_handle).
-    pub fn autodetect_bandwidth_handle(&self) -> Arc<AtomicU32> {
-        Arc::clone(&self.autodetect_bandwidth)
-    }
-
-    /// Pairs with [`Self::autodetect_bandwidth_handle`]: load this with
-    /// `Ordering::Acquire` to detect a fresh measurement window (the
-    /// bandwidth figure itself repeats too often to be its own freshness
-    /// signal), then read the bandwidth handle for the value. The server
-    /// increments this with `Ordering::Release` after storing the value, so
-    /// the bandwidth read is at least as new as the generation observed. It
-    /// is not an exact pair: If the next window closes between the two reads,
-    /// the value can already belong to that later window. Inject a shared
-    /// instance at construction with
-    /// [`RdpServerBuilder::with_autodetect_bandwidth_generation_handle`](crate::RdpServerBuilder::with_autodetect_bandwidth_generation_handle).
-    pub fn autodetect_bandwidth_generation_handle(&self) -> Arc<AtomicU32> {
-        Arc::clone(&self.autodetect_bandwidth_generation)
-    }
-
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
     pub fn echo_handle(&self) -> &EchoServerHandle {
         &self.echo_handle
@@ -1944,11 +1807,9 @@ impl RdpServer {
     /// separate from the ECHO DVC. It supports bandwidth measurement
     /// in addition to RTT and works even when DVC is unavailable.
     ///
-    /// Send probes via [`ServerEvent::AutoDetectRttRequest`] and read the
-    /// results through [`Self::autodetect_rtt_handle`],
-    /// [`Self::autodetect_baseline_rtt_handle`] and
-    /// [`Self::autodetect_bandwidth_handle`]. Each connection measures its own
-    /// network path, starting from scratch.
+    /// Send probes via [`ServerEvent::AutoDetectRttRequest`]. The display
+    /// backend reads the results through [`DisplayContext::autodetect`]. Each connection measures its own network
+    /// path, starting from scratch.
     pub fn enable_autodetect(&mut self) {
         self.autodetect_enabled = true;
     }
@@ -2129,8 +1990,6 @@ impl RdpServer {
     /// on, a preemption winner is indistinguishable from a normally-accepted
     /// connection.
     async fn serve_negotiated(&mut self, candidate: Box<NegotiatedCandidate>) -> ServerResult<()> {
-        self.display_suppressed.store(false, Ordering::Relaxed);
-
         let mut candidate = candidate;
         // Only NOW build the channel backends: this connection has
         // authenticated and is about to be served, so the factories run
@@ -2248,17 +2107,6 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
-        // Per-connection state must start fresh: if the previous client
-        // disconnected while it had sent `SuppressOutput { None }` (e.g.,
-        // closed the mstsc window while minimized so the matching resume
-        // PDU never arrived), the flag would still read `true` here and the
-        // display backend would silently drop frames for the entire new
-        // session until/unless the new client happens to send a
-        // `RefreshRectangle` or `SuppressOutput { Some(rect) }`. Resetting
-        // here also covers backends that share an externally-created Arc via
-        // `set_display_suppressed_handle()`.
-        self.display_suppressed.store(false, Ordering::Relaxed);
-
         let size = self.display.lock().await.size().await;
         let monitor_count = self.display.lock().await.monitor_count().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
@@ -2311,17 +2159,6 @@ impl RdpServer {
             autodetect: self.autodetect_enabled.then(AutoDetectManager::new),
             ..ConnectionState::default()
         };
-        // The handles that publish auto-detect measurements to the embedder
-        // are still owned by the server, so they are reset by hand. Otherwise
-        // the previous connection's figures, its session-lifetime lowest RTT
-        // included, would read as this connection's until its first sample.
-        self.autodetect_rtt.store(u32::MAX, Ordering::Relaxed);
-        self.autodetect_baseline_rtt.store(u32::MAX, Ordering::Relaxed);
-        self.autodetect_bandwidth.store(u32::MAX, Ordering::Relaxed);
-        // An embedder rereads the bandwidth only when the generation moves, so
-        // the reset has to advance it too, or the previous connection's figure
-        // would stay cached. Advanced after the store, as for a measurement.
-        self.autodetect_bandwidth_generation.fetch_add(1, Ordering::Release);
         match transport {
             // No security upgrade happened, so there is no TLS session to shut
             // down — matches the pre-existing `BeginResult::Continue` arm.
@@ -3755,7 +3592,7 @@ impl RdpServer {
         } else {
             None
         };
-        let mut display_updates = self.display.lock().await.updates().await?;
+        let mut display_updates = self.display.lock().await.updates(conn.display_context()).await?;
         let mut writer = SharedWriter::new(writer);
         let mut display_writer = writer.clone();
         let mut event_writer = writer.clone();
@@ -4433,7 +4270,11 @@ impl RdpServer {
         }
     }
 
-    async fn handle_io_channel_data(&mut self, data: SendDataRequest<'_>) -> ServerResult<bool> {
+    async fn handle_io_channel_data(
+        &mut self,
+        conn: &mut ConnectionState,
+        data: SendDataRequest<'_>,
+    ) -> ServerResult<bool> {
         let control: rdp::headers::ShareControlHeader = decode(data.user_data.as_ref()).map_err(ServerError::decode)?;
 
         match control.share_control_pdu {
@@ -4458,7 +4299,7 @@ impl RdpServer {
                 // set.
                 rdp::headers::ShareDataPdu::SuppressOutput(pdu) => {
                     let suppress = pdu.desktop_rect.is_none();
-                    self.display_suppressed.store(suppress, Ordering::Relaxed);
+                    conn.display_suppressed.store(suppress, Ordering::Relaxed);
                     debug!(suppress, "client suppress-output state changed");
                 }
 
@@ -4470,7 +4311,7 @@ impl RdpServer {
                 // this; clearing here is belt-and-braces against clients
                 // that send only one of the two.)
                 rdp::headers::ShareDataPdu::RefreshRectangle(_) => {
-                    if self.display_suppressed.swap(false, Ordering::Relaxed) {
+                    if conn.display_suppressed.swap(false, Ordering::Relaxed) {
                         debug!("client RefreshRectangle cleared suppress-output state");
                     }
                 }
@@ -4488,20 +4329,22 @@ impl RdpServer {
         Ok(false)
     }
 
-    fn handle_message_channel_data(&mut self, conn: &mut ConnectionState, data: SendDataRequest<'_>) {
+    fn handle_message_channel_data(conn: &mut ConnectionState, data: SendDataRequest<'_>) {
         match decode::<rdp::message_channel::ClientMessageChannelPdu>(data.user_data.as_ref()) {
             Ok(rdp::message_channel::ClientMessageChannelPdu::AutoDetectResponse(pdu)) => {
                 if let Some(ref mut ad) = conn.autodetect {
                     match ad.handle_response(&pdu.response, monotonic_now_ms()) {
                         AutoDetectOutcome::Rtt(rtt_ms) => {
-                            self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
+                            conn.autodetect_handles.rtt.store(rtt_ms, Ordering::Relaxed);
                             // A matched RTT sample always updates the session-lifetime low in the
                             // same call (see `handle_response`'s RttResponse arm), so it is available
                             // unconditionally here, not just on a new low.
                             let baseline_rtt_ms = ad
                                 .baseline_rtt_ms()
                                 .expect("handle_response just recorded a sample above");
-                            self.autodetect_baseline_rtt.store(baseline_rtt_ms, Ordering::Relaxed);
+                            conn.autodetect_handles
+                                .baseline_rtt
+                                .store(baseline_rtt_ms, Ordering::Relaxed);
                             debug!(
                                 rtt_ms,
                                 baseline_rtt_ms,
@@ -4510,8 +4353,12 @@ impl RdpServer {
                             );
                         }
                         AutoDetectOutcome::Bandwidth(Some(bandwidth_kbps)) => {
-                            self.autodetect_bandwidth.store(bandwidth_kbps, Ordering::Relaxed);
-                            self.autodetect_bandwidth_generation.fetch_add(1, Ordering::Release);
+                            conn.autodetect_handles
+                                .bandwidth
+                                .store(bandwidth_kbps, Ordering::Relaxed);
+                            conn.autodetect_handles
+                                .bandwidth_generation
+                                .fetch_add(1, Ordering::Release);
                             // Logging the whole response, not just the computed figure: a
                             // damage-driven video source makes any single measurement
                             // window's byte count wildly bimodal (near-idle vs. a real
@@ -4524,8 +4371,10 @@ impl RdpServer {
                             // The manager just cleared its own figure rather than keep
                             // reporting a stale one (see `handle_response`'s doc comment);
                             // mirror that here so the exposed handle does not disagree.
-                            self.autodetect_bandwidth.store(u32::MAX, Ordering::Relaxed);
-                            self.autodetect_bandwidth_generation.fetch_add(1, Ordering::Release);
+                            conn.autodetect_handles.bandwidth.store(u32::MAX, Ordering::Relaxed);
+                            conn.autodetect_handles
+                                .bandwidth_generation
+                                .fetch_add(1, Ordering::Release);
                             trace!(
                                 seq = pdu.response.sequence_number(),
                                 "Bandwidth measurement completed without a usable figure"
@@ -4593,11 +4442,11 @@ impl RdpServer {
                     "McsMessage::SendDataRequest"
                 );
                 if data.channel_id == io_channel_id {
-                    return self.handle_io_channel_data(data).await;
+                    return self.handle_io_channel_data(conn, data).await;
                 }
 
                 if message_channel_id == Some(data.channel_id) {
-                    self.handle_message_channel_data(conn, data);
+                    Self::handle_message_channel_data(conn, data);
                     return Ok(false);
                 }
 
@@ -5052,7 +4901,7 @@ mod preempt_tests {
                     height: 768,
                 }
             }
-            async fn updates(&mut self) -> ServerResult<Box<dyn crate::RdpServerDisplayUpdates>> {
+            async fn updates(&mut self, _: DisplayContext) -> ServerResult<Box<dyn crate::RdpServerDisplayUpdates>> {
                 unreachable!("negotiation never asks for updates")
             }
         }
@@ -5297,12 +5146,6 @@ mod preempt_tests {
     fn a_late_multitransport_success_enables_migration_only_with_soft_sync() {
         use ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu;
 
-        let mut server = RdpServer::builder()
-            .with_addr((Ipv4Addr::LOCALHOST, 0))
-            .with_no_security()
-            .with_no_input()
-            .with_no_display()
-            .build();
         let mut conn = ConnectionState::default();
         let response = |pdu: &MultitransportResponsePdu| SendDataRequest {
             initiator_id: 1007,
@@ -5311,16 +5154,16 @@ mod preempt_tests {
         };
 
         // Soft-Sync not negotiated: MS-RDPEDYC forbids migration whatever the response.
-        server.handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::success(1)));
+        RdpServer::handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::success(1)));
         assert!(!conn.udp_migration_allowed);
 
         // Negotiated, but the client could not bring UDP up.
         conn.soft_sync_negotiated = true;
-        server.handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::abort(1)));
+        RdpServer::handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::abort(1)));
         assert!(!conn.udp_migration_allowed);
 
         // Negotiated, and the success arrives after finalization.
-        server.handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::success(1)));
+        RdpServer::handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::success(1)));
         assert!(conn.udp_migration_allowed);
     }
 
@@ -5331,12 +5174,6 @@ mod preempt_tests {
         let local = task::LocalSet::new();
         local
             .run_until(async {
-                let mut server = RdpServer::builder()
-                    .with_addr((Ipv4Addr::LOCALHOST, 0))
-                    .with_no_security()
-                    .with_no_input()
-                    .with_no_display()
-                    .build();
                 let mut conn = ConnectionState::default();
                 let response = |pdu: &MultitransportResponsePdu| SendDataRequest {
                     initiator_id: 1007,
@@ -5345,17 +5182,17 @@ mod preempt_tests {
                 };
 
                 // No accept pending: a failure response is only logged.
-                server.handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::abort(1)));
+                RdpServer::handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::abort(1)));
 
                 let accept = task::spawn_local(core::future::pending::<()>());
                 conn.pending_udp_accept_abort = Some(accept.abort_handle());
 
                 // Success leaves the accept running.
-                server.handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::success(1)));
+                RdpServer::handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::success(1)));
                 task::yield_now().await;
                 assert!(!accept.is_finished());
 
-                server.handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::abort(1)));
+                RdpServer::handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::abort(1)));
                 task::yield_now().await;
                 assert!(accept.is_finished());
                 assert!(accept.await.expect_err("accept was aborted").is_cancelled());
