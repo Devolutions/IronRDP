@@ -1,7 +1,7 @@
 use core::cell::RefCell;
 use core::fmt;
 use core::net::{IpAddr, SocketAddr};
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 #[cfg(feature = "usb")]
 use std::collections::HashMap;
@@ -52,9 +52,9 @@ use tokio::task;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::autodetect::{AutoDetectManager, AutoDetectOutcome, RttSnapshot};
+use crate::autodetect::{AutoDetectHandles, AutoDetectManager, AutoDetectOutcome};
 use crate::clipboard::CliprdrServerFactory;
-use crate::display::{DisplayUpdate, RdpServerDisplay};
+use crate::display::{DisplayContext, DisplayUpdate, RdpServerDisplay};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult};
@@ -614,21 +614,10 @@ impl DisplayControlHandler for DisplayControlBackend {
 }
 
 #[cfg(feature = "usb")]
+#[derive(Default)]
 struct ServerUsbManager {
-    factory: Box<dyn DeviceFactory>,
     comp_iface_alloc: InterfaceAlloc,
     router: HashMap<DynamicChannelId, Arc<ServerUsbDevice>>,
-}
-
-#[cfg(feature = "usb")]
-impl ServerUsbManager {
-    fn new(inner: Box<dyn DeviceFactory>) -> Self {
-        Self {
-            factory: inner,
-            comp_iface_alloc: InterfaceAlloc::default(),
-            router: HashMap::new(),
-        }
-    }
 }
 
 /// Selects who performs the TLS handshake for a connection accepted via
@@ -657,7 +646,7 @@ pub enum TransportTls {
 /// ```
 /// use ironrdp_server::{RdpServer, RdpServerInputHandler, RdpServerDisplay, RdpServerDisplayUpdates};
 ///
-///# use ironrdp_server::{DisplayUpdate, DesktopSize, KeyboardEvent, MouseEvent, ServerResult};
+///# use ironrdp_server::{DisplayContext, DisplayUpdate, DesktopSize, KeyboardEvent, MouseEvent, ServerResult};
 ///# use tokio_rustls::TlsAcceptor;
 ///# struct NoopInputHandler;
 ///# impl RdpServerInputHandler for NoopInputHandler {
@@ -670,7 +659,7 @@ pub enum TransportTls {
 ///#     async fn size(&mut self) -> DesktopSize {
 ///#         todo!()
 ///#     }
-///#     async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+///#     async fn updates(&mut self, _: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
 ///#         todo!()
 ///#     }
 ///# }
@@ -710,7 +699,6 @@ pub struct RdpServer {
     // FIXME: replace with a channel and poll/process the handler?
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
-    static_channels: StaticChannelSet,
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
@@ -723,7 +711,7 @@ pub struct RdpServer {
     #[cfg(feature = "egfx")]
     gfx_handle: Option<crate::gfx::GfxServerHandle>,
     #[cfg(feature = "usb")]
-    usb_man: Option<ServerUsbManager>,
+    usb_factory: Option<Box<dyn DeviceFactory>>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
@@ -732,7 +720,8 @@ pub struct RdpServer {
     /// The local address the current client reached. See
     /// [`Self::set_connection_local_addr`].
     connection_local_addr: Option<SocketAddr>,
-    autodetect: Option<AutoDetectManager>,
+    /// Whether each connection runs auto-detect; see [`Self::enable_autodetect`].
+    autodetect_enabled: bool,
     heartbeat: Option<HeartbeatConfig>,
     /// Shared, not owned outright: under [`ConnectionPolicy::Preempt`] the live
     /// connection (which borrows `self` for the whole race) and a candidate's
@@ -754,57 +743,6 @@ pub struct RdpServer {
     /// IP, since the source port changes on every reconnect. Cleared once a
     /// session ends on its own terms rather than being replaced.
     recently_evicted: Option<EvictedPeer>,
-    /// True while the client has sent `SuppressOutput { desktop_rect: None }`
-    /// — the standard RDP "I don't need display updates right now" signal
-    /// (mstsc raises it on window minimize). Cleared on
-    /// `SuppressOutput { Some(rect) }` or `RefreshRectangle` (sent on
-    /// refocus). Exposed via [`Self::display_suppressed_handle`] so display
-    /// backends can hold a clone and skip frame emission while it's set —
-    /// without this, a server keeps streaming high-bitrate
-    /// EGFX/H.264 frames into a minimized client, which accumulates them
-    /// and locks up its input dispatch for seconds on refocus while it
-    /// chews through the backlog.
-    display_suppressed: Arc<AtomicBool>,
-
-    /// Latest NetworkAutoDetect round-trip time in milliseconds, or `u32::MAX`
-    /// until the first measurement (and while auto-detect is disabled). Updated
-    /// on each RTT Measure Response when auto-detect is enabled (see
-    /// [`Self::enable_autodetect`]). Exposed via [`Self::autodetect_rtt_handle`]
-    /// so display backends can read a fresh, frame-traffic-independent network
-    /// RTT for flow control.
-    autodetect_rtt: Arc<AtomicU32>,
-
-    /// Session-lifetime lowest RTT in milliseconds (`baseRTT` per MS-RDPBCGR
-    /// 2.2.14.1.5), or `u32::MAX` until the first measurement. Unlike
-    /// [`Self::autodetect_rtt`], this never rises: it is the floor over the
-    /// whole session, not a sliding-window figure, which is what makes
-    /// `averageRTT - baseRTT` a queueing-delay signal rather than two
-    /// unrelated latency numbers. Updated at the same point as
-    /// [`Self::autodetect_rtt`]. Exposed via
-    /// [`Self::autodetect_baseline_rtt_handle`].
-    autodetect_baseline_rtt: Arc<AtomicU32>,
-
-    /// Latest NetworkAutoDetect measured bandwidth in kilobits per second, or
-    /// `u32::MAX` until the first measurement completes (and while auto-detect
-    /// is disabled). Updated whenever a Bandwidth Measure Results response is
-    /// processed, same trigger point as [`Self::autodetect_rtt`]. Exposed via
-    /// [`Self::autodetect_bandwidth_handle`]: without it, the server can tell
-    /// the *client* its measured bandwidth over the wire but has no way to
-    /// tell the embedder, which the connect-time figure carried to the client
-    /// alone does not fix.
-    autodetect_bandwidth: Arc<AtomicU32>,
-
-    /// Increments every time a Bandwidth Measure transaction completes,
-    /// whether or not it produced a usable figure (see
-    /// [`Self::autodetect_bandwidth`]'s doc comment on the None case).
-    /// [`Self::autodetect_bandwidth`] alone cannot tell an embedder "a new
-    /// window just closed" apart from "the value happens to repeat": that
-    /// value repeats often (a quiet link reads the same low figure for
-    /// several consecutive windows), so diffing it is not a valid freshness
-    /// signal. Incremented with `Release` after the bandwidth value is
-    /// stored, so an `Acquire` load of it makes that value visible.
-    /// Exposed via [`Self::autodetect_bandwidth_generation_handle`].
-    autodetect_bandwidth_generation: Arc<AtomicU32>,
 
     /// Optional Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.2
     /// `ARC_SC_PRIVATE_PACKET`). When `Some`, the server validates a returning
@@ -825,34 +763,6 @@ pub struct RdpServer {
     /// Tracks whether the current cookie has reached a client. Subsequent
     /// connections and hourly updates replace it with a new random.
     auto_reconnect_sent: bool,
-
-    /// Abort handle of the current connection's pending UDP multitransport
-    /// accept, if one is running. A client that could not establish the
-    /// sideband transport answers with a failure Initiate Multitransport
-    /// Response, often after finalization has completed; the message-channel
-    /// handler uses this to stop the accept instead of letting it hold its
-    /// socket until `multitransport::UDP_ACCEPT_TIMEOUT`.
-    pending_udp_accept_abort: Option<task::AbortHandle>,
-    /// Whether the current connection negotiated SOFT_SYNC_TCP_TO_UDP, one of
-    /// the two conditions for migrating a channel onto the sideband
-    /// transport (see [`Self::udp_migration_allowed`]).
-    soft_sync_negotiated: bool,
-    /// Whether the current connection may migrate EGFX onto the sideband
-    /// transport. MS-RDPEDYC 3.1.5.3/3.3.5.3.1: Soft-Sync MUST NOT be used
-    /// unless both peers negotiated SOFT_SYNC_TCP_TO_UDP and a successful
-    /// Initiate Multitransport Response was received. Finalization sets it
-    /// when the response came during finalization; the message-channel
-    /// handler sets it when the response comes later, which is the usual
-    /// case with mstsc, whose UDP bootstrap outlasts the TCP finalization.
-    udp_migration_allowed: bool,
-    /// Whether the current connection's EGFX data has started going over the
-    /// sideband transport, so the switch is logged once.
-    egfx_on_udp: bool,
-    /// Tunnel payloads that arrived while a Soft-Sync request was waiting for
-    /// its response. The client writes on the tunnel right after sending the
-    /// response over TCP, so its first tunnel data can overtake it; this holds
-    /// that data until the response is in instead of dropping it.
-    early_tunnel_payloads: VecDeque<Vec<u8>>,
 }
 
 /// Cloneable handle for updating the Server Auto-Reconnect Cookie while
@@ -1185,6 +1095,110 @@ struct NegotiatedConnection<S> {
     local_addr: Option<SocketAddr>,
 }
 
+/// State that belongs to a single client connection.
+///
+/// Created when a [`NegotiatedConnection`] enters finalization and dropped
+/// when that connection ends, on every path out of it. Nothing stored here can
+/// outlive its connection or be observed by the next one, so it needs no
+/// manual reset between connections.
+#[derive(Default)]
+struct ConnectionState {
+    /// The static channels this connection negotiated.
+    ///
+    /// Empty until the acceptor hands them back after finalization. Handed to
+    /// the acceptor again for each deactivation-reactivation, and returned
+    /// once that finalization completes.
+    static_channels: StaticChannelSet,
+    /// Whether the client advertised `SUPPORT_HEART_BEAT_PDU` in its GCC
+    /// Client Core Data.
+    client_supports_heartbeat: bool,
+    /// Auto-detect state, present when the server has auto-detect enabled.
+    ///
+    /// Probes in flight, RTT samples and the session-lifetime lowest RTT all
+    /// describe this connection's network path, so they start over with each
+    /// connection.
+    autodetect: Option<AutoDetectManager>,
+    /// The latest auto-detect measurements, published to the display backend
+    /// through [`DisplayContext::autodetect`].
+    autodetect_handles: AutoDetectHandles,
+    /// Whether the client asked the server to stop sending display updates
+    /// (`SuppressOutput { desktop_rect: None }`), published to the display
+    /// backend through [`DisplayContext::display_suppressed`]. Without it, a
+    /// server keeps streaming high-bitrate EGFX/H.264 frames into a minimized
+    /// client, which accumulates them and locks up its input dispatch for
+    /// seconds on refocus while it chews through the backlog.
+    display_suppressed: Arc<AtomicBool>,
+    #[cfg(feature = "usb")]
+    usb_man: ServerUsbManager,
+    /// Abort handle of this connection's pending UDP multitransport accept,
+    /// if one is running. A client that could not establish the sideband
+    /// transport answers with a failure Initiate Multitransport Response,
+    /// often after finalization has completed; the message-channel handler
+    /// uses this to stop the accept instead of letting it hold its socket
+    /// until `multitransport::UDP_ACCEPT_TIMEOUT`.
+    pending_udp_accept_abort: Option<task::AbortHandle>,
+    /// Whether this connection negotiated SOFT_SYNC_TCP_TO_UDP, one of the two
+    /// conditions for migrating a channel onto the sideband transport (see
+    /// [`Self::udp_migration_allowed`]).
+    soft_sync_negotiated: bool,
+    /// Whether this connection may migrate EGFX onto the sideband transport.
+    /// MS-RDPEDYC 3.1.5.3/3.3.5.3.1: Soft-Sync MUST NOT be used unless both
+    /// peers negotiated SOFT_SYNC_TCP_TO_UDP and a successful Initiate
+    /// Multitransport Response was received. Finalization sets it when the
+    /// response came during finalization; the message-channel handler sets it
+    /// when the response comes later, which is the usual case with mstsc,
+    /// whose UDP bootstrap outlasts the TCP finalization.
+    udp_migration_allowed: bool,
+    /// Whether this connection's EGFX data has started going over the
+    /// sideband transport, so the switch is logged once.
+    egfx_on_udp: bool,
+    /// Tunnel payloads that arrived while a Soft-Sync request was waiting for
+    /// its response. The client writes on the tunnel right after sending the
+    /// response over TCP, so its first tunnel data can overtake it; this holds
+    /// that data until the response is in instead of dropping it.
+    early_tunnel_payloads: VecDeque<Vec<u8>>,
+}
+
+impl ConnectionState {
+    /// The handles this connection hands to the display backend, cloned at
+    /// each activation so every call to [`RdpServerDisplay::updates`] on the
+    /// same connection gets the same ones.
+    fn display_context(&self) -> DisplayContext {
+        DisplayContext {
+            display_suppressed: Arc::clone(&self.display_suppressed),
+            autodetect: self.autodetect_handles.clone(),
+        }
+    }
+
+    fn get_svc_processor<T: SvcProcessor + 'static>(&mut self) -> Option<&mut T> {
+        self.static_channels
+            .get_by_type_mut::<T>()
+            .and_then(|svc| svc.channel_processor_downcast_mut())
+    }
+
+    fn get_channel_id_by_type<T: SvcProcessor + 'static>(&self) -> Option<StaticChannelId> {
+        self.static_channels.get_channel_id_by_type::<T>()
+    }
+
+    #[cfg(feature = "usb")]
+    fn remove_usb_device(&mut self, dvc_id: DynamicChannelId) {
+        let Some(device) = self.usb_man.router.remove(&dvc_id) else {
+            trace!(dvc_id, "Closed USB device is absent from request router");
+            return;
+        };
+
+        // Set the terminal state before failing waiters: a woken PendingRequest
+        // must not enqueue CANCEL_REQUEST for a removed DVC. The pending map is
+        // shared, so dropping the router entry no longer drops it.
+        device.mark_closed();
+        let pending_requests = device.drain_pending();
+        debug!(
+            dvc_id,
+            pending_requests, "Removed closed USB device from request router"
+        );
+    }
+}
+
 /// Advance a stream that is now past the security upgrade: mark the acceptor
 /// accordingly and, under [`RdpServerSecurity::Hybrid`], run the CredSSP
 /// exchange.
@@ -1485,12 +1499,7 @@ impl RdpServer {
         mut rdpeai_factory: Option<Box<dyn RdpeaiServerFactory>>,
         connection_handler: Option<Box<dyn ConnectionHandler>>,
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
-        display_suppressed: Option<Arc<AtomicBool>>,
         #[cfg(feature = "usb")] usb_factory: Option<Box<dyn DeviceFactory>>,
-        autodetect_rtt: Option<Arc<AtomicU32>>,
-        autodetect_baseline_rtt: Option<Arc<AtomicU32>>,
-        autodetect_bandwidth: Option<Arc<AtomicU32>>,
-        autodetect_bandwidth_generation: Option<Arc<AtomicU32>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
@@ -1517,7 +1526,6 @@ impl RdpServer {
             opts,
             handler: Arc::new(Mutex::new(handler)),
             display: Arc::new(Mutex::new(display)),
-            static_channels: StaticChannelSet::new(),
             static_channel_factories,
             sound_factory,
             cliprdr_factory,
@@ -1530,44 +1538,20 @@ impl RdpServer {
             #[cfg(feature = "egfx")]
             gfx_handle: None,
             #[cfg(feature = "usb")]
-            usb_man: usb_factory.map(ServerUsbManager::new),
+            usb_factory,
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
             credential_validator: None,
             local_addr: None,
             connection_local_addr: None,
-            autodetect: None,
+            autodetect_enabled: false,
             heartbeat: None,
             connection_handler: connection_handler.map(|h| Rc::new(RefCell::new(h))),
             recently_evicted: None,
-            display_suppressed: display_suppressed.unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
-            autodetect_rtt: {
-                // Reset to the sentinel: an injected handle must not expose a stale value before the first measurement.
-                let handle = autodetect_rtt.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX)));
-                handle.store(u32::MAX, Ordering::Relaxed);
-                handle
-            },
-            autodetect_baseline_rtt: {
-                let handle = autodetect_baseline_rtt.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX)));
-                handle.store(u32::MAX, Ordering::Relaxed);
-                handle
-            },
-            autodetect_bandwidth: {
-                let handle = autodetect_bandwidth.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX)));
-                handle.store(u32::MAX, Ordering::Relaxed);
-                handle
-            },
-            autodetect_bandwidth_generation: autodetect_bandwidth_generation
-                .unwrap_or_else(|| Arc::new(AtomicU32::new(0))),
             auto_reconnect_cookie: None,
             previous_auto_reconnect_cookie: None,
             auto_reconnect_sent: false,
-            pending_udp_accept_abort: None,
-            soft_sync_negotiated: false,
-            udp_migration_allowed: false,
-            egfx_on_udp: false,
-            early_tunnel_payloads: VecDeque::new(),
         }
     }
 
@@ -1817,112 +1801,6 @@ impl RdpServer {
         &self.ev_sender
     }
 
-    #[cfg(feature = "usb")]
-    fn remove_usb_device(&mut self, dvc_id: DynamicChannelId) {
-        let Some(usb_man) = self.usb_man.as_mut() else {
-            warn!("Missing USB device factory");
-            return;
-        };
-
-        let Some(device) = usb_man.router.remove(&dvc_id) else {
-            trace!(dvc_id, "Closed USB device is absent from request router");
-            return;
-        };
-
-        // Set the terminal state before failing waiters: a woken PendingRequest
-        // must not enqueue CANCEL_REQUEST for a removed DVC. The pending map is
-        // shared, so dropping the router entry no longer drops it.
-        device.mark_closed();
-        let pending_requests = device.drain_pending();
-        debug!(
-            dvc_id,
-            pending_requests, "Removed closed USB device from request router"
-        );
-    }
-
-    /// Returns the shared "display suppressed" flag — `true` while the
-    /// connected client has sent `SuppressOutput { desktop_rect: None }`
-    /// (e.g., mstsc minimized).
-    ///
-    /// Display backends should hold a clone of this `Arc` and skip frame
-    /// emission while it's set, so the client doesn't accumulate a backlog
-    /// of frames it can't present until refocus. Cleared by the per-
-    /// connection PDU handler on `SuppressOutput { Some(rect) }` or
-    /// `RefreshRectangle`.
-    ///
-    /// **Caveat:** some clients (notably mstsc) send
-    /// `SuppressOutput { desktop_rect: None }` during their connect
-    /// handshake *before* their display surface is fully initialized; a
-    /// backend that honors the flag blindly will block that first frame
-    /// and leave the client with a half-initialized surface that doesn't
-    /// recover on un-suppress (visible as a frozen desktop on first
-    /// connect). Backends are advised to defer acting on the flag until
-    /// after the first frame has been delivered to the client, and to
-    /// debounce transient flaps (some clients pulse this PDU under wire
-    /// pressure on heavy CPU/IO loads) — e.g., only engage the gate once
-    /// the flag has been steady-`true` for ~1 s.
-    ///
-    /// The display backend typically needs to share this flag with the
-    /// server before any client connects (so the same `Arc` is read by
-    /// the backend's polling thread and written by the per-connection
-    /// PDU handler). To inject the shared instance at construction time,
-    /// use [`RdpServerBuilder::with_display_suppressed_handle`](crate::RdpServerBuilder::with_display_suppressed_handle).
-    ///
-    /// [crate::RdpServerBuilder]: crate::RdpServerBuilder
-    pub fn display_suppressed_handle(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.display_suppressed)
-    }
-
-    /// Returns a handle to the latest NetworkAutoDetect RTT in milliseconds
-    /// (`u32::MAX` until the first measurement, and while auto-detect is
-    /// disabled). The server updates it on each RTT Measure Response; backends
-    /// clone the handle to read a fresh network RTT for flow control. Inject a
-    /// shared instance at construction with
-    /// [`RdpServerBuilder::with_autodetect_rtt_handle`](crate::RdpServerBuilder::with_autodetect_rtt_handle).
-    pub fn autodetect_rtt_handle(&self) -> Arc<AtomicU32> {
-        Arc::clone(&self.autodetect_rtt)
-    }
-
-    /// Returns a handle to the session-lifetime lowest RTT in milliseconds
-    /// (`baseRTT` per MS-RDPBCGR 2.2.14.1.5; `u32::MAX` until the first
-    /// measurement, and while auto-detect is disabled). Unlike
-    /// [`Self::autodetect_rtt_handle`], this figure never rises: pair it with
-    /// that handle's average to derive queueing delay
-    /// (`averageRTT - baseRTT`), which `autodetect_rtt_handle` alone cannot
-    /// give since its figure is a sliding-window value that rises as low
-    /// samples age out. Inject a shared instance at construction with
-    /// [`RdpServerBuilder::with_autodetect_baseline_rtt_handle`](crate::RdpServerBuilder::with_autodetect_baseline_rtt_handle).
-    pub fn autodetect_baseline_rtt_handle(&self) -> Arc<AtomicU32> {
-        Arc::clone(&self.autodetect_baseline_rtt)
-    }
-
-    /// Returns a handle to the latest NetworkAutoDetect measured bandwidth in
-    /// kilobits per second (`u32::MAX` until the first measurement completes,
-    /// and while auto-detect is disabled). The server updates it whenever a
-    /// Bandwidth Measure Results response completes a measurement; backends
-    /// clone the handle to read the figure the server also reports to the
-    /// client on the wire. Inject a shared instance at construction with
-    /// [`RdpServerBuilder::with_autodetect_bandwidth_handle`](crate::RdpServerBuilder::with_autodetect_bandwidth_handle).
-    pub fn autodetect_bandwidth_handle(&self) -> Arc<AtomicU32> {
-        Arc::clone(&self.autodetect_bandwidth)
-    }
-
-    /// Returns a handle that increments every time a Bandwidth Measure
-    /// transaction completes, whether or not it produced a usable figure.
-    /// Pairs with [`Self::autodetect_bandwidth_handle`]: load this with
-    /// `Ordering::Acquire` to detect a fresh measurement window (the
-    /// bandwidth figure itself repeats too often to be its own freshness
-    /// signal), then read the bandwidth handle for the value. The server
-    /// increments this with `Ordering::Release` after storing the value, so
-    /// the bandwidth read is at least as new as the generation observed. It
-    /// is not an exact pair: If the next window closes between the two reads,
-    /// the value can already belong to that later window. Inject a shared
-    /// instance at construction with
-    /// [`RdpServerBuilder::with_autodetect_bandwidth_generation_handle`](crate::RdpServerBuilder::with_autodetect_bandwidth_generation_handle).
-    pub fn autodetect_bandwidth_generation_handle(&self) -> Arc<AtomicU32> {
-        Arc::clone(&self.autodetect_bandwidth_generation)
-    }
-
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
     pub fn echo_handle(&self) -> &EchoServerHandle {
         &self.echo_handle
@@ -1934,10 +1812,11 @@ impl RdpServer {
     /// separate from the ECHO DVC. It supports bandwidth measurement
     /// in addition to RTT and works even when DVC is unavailable.
     ///
-    /// Send probes via [`ServerEvent::AutoDetectRttRequest`] and
-    /// query results with [`rtt_snapshot()`](Self::rtt_snapshot).
+    /// Send probes via [`ServerEvent::AutoDetectRttRequest`]. The display
+    /// backend reads the results through [`DisplayContext::autodetect`]. Each connection measures its own network
+    /// path, starting from scratch.
     pub fn enable_autodetect(&mut self) {
-        self.autodetect = Some(AutoDetectManager::new());
+        self.autodetect_enabled = true;
     }
 
     /// Enable periodic Server Heartbeat PDUs (MS-RDPBCGR 2.2.16.1).
@@ -1949,14 +1828,6 @@ impl RdpServer {
     /// during the previous heartbeat interval.
     pub fn enable_heartbeat(&mut self, config: HeartbeatConfig) {
         self.heartbeat = Some(config);
-    }
-
-    /// Get the latest auto-detect RTT snapshot.
-    ///
-    /// Returns `None` if auto-detect is not enabled or no measurements
-    /// have been received yet.
-    pub fn rtt_snapshot(&self) -> Option<RttSnapshot> {
-        self.autodetect.as_ref().and_then(|ad| ad.snapshot())
     }
 
     /// Returns the shared EGFX server handle for proactive frame submission.
@@ -2035,7 +1906,7 @@ impl RdpServer {
         #[cfg(feature = "usb")]
         let dvc = {
             let mut dvc = dvc;
-            if self.usb_man.is_some() {
+            if self.usb_factory.is_some() {
                 dvc = dvc.with_dynamic_channel(UrbdrcControlServer::new(Box::new(UsbControlHandle::new(
                     self.ev_sender.clone(),
                 ))));
@@ -2124,8 +1995,6 @@ impl RdpServer {
     /// on, a preemption winner is indistinguishable from a normally-accepted
     /// connection.
     async fn serve_negotiated(&mut self, candidate: Box<NegotiatedCandidate>) -> ServerResult<()> {
-        self.display_suppressed.store(false, Ordering::Relaxed);
-
         let mut candidate = candidate;
         // Only NOW build the channel backends: this connection has
         // authenticated and is about to be served, so the factories run
@@ -2234,16 +2103,8 @@ impl RdpServer {
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
         let result = self.run_connection_inner(stream, tls).await;
-
-        // The static channels belong to the connection that negotiated them,
-        // and their backends own real resources: an rdpsnd handler is stopped
-        // through `Drop`, so an audio backend keeps capturing until the set is
-        // replaced. `run` cleared the set itself, which left embedders driving
-        // connections through this method with the previous session's backends
-        // still live until the next client attached new ones.
-        self.static_channels = StaticChannelSet::new();
+        // Given for this connection only; see `set_connection_local_addr`.
         self.connection_local_addr = None;
-
         result
     }
 
@@ -2251,17 +2112,6 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
-        // Per-connection state must start fresh: if the previous client
-        // disconnected while it had sent `SuppressOutput { None }` (e.g.,
-        // closed the mstsc window while minimized so the matching resume
-        // PDU never arrived), the flag would still read `true` here and the
-        // display backend would silently drop frames for the entire new
-        // session until/unless the new client happens to send a
-        // `RefreshRectangle` or `SuppressOutput { Some(rect) }`. Resetting
-        // here also covers backends that share an externally-created Arc via
-        // `set_display_suppressed_handle()`.
-        self.display_suppressed.store(false, Ordering::Relaxed);
-
         let size = self.display.lock().await.size().await;
         let monitor_count = self.display.lock().await.monitor_count().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
@@ -2304,17 +2154,28 @@ impl RdpServer {
         if local_addr.is_some() {
             self.connection_local_addr = local_addr;
         }
+        // Both entry paths, `run_connection_inner` and the preemption winner's
+        // `serve_negotiated`, reach this point, so dropping the state when this
+        // function returns releases it on every way out of a connection. In
+        // particular the static channel backends own real resources (an rdpsnd
+        // handler is stopped through `Drop`), which must not stay live until
+        // the next client attaches new ones.
+        let mut conn = ConnectionState {
+            autodetect: self.autodetect_enabled.then(AutoDetectManager::new),
+            ..ConnectionState::default()
+        };
         match transport {
             // No security upgrade happened, so there is no TLS session to shut
             // down — matches the pre-existing `BeginResult::Continue` arm.
             NegotiatedTransport::Continued(framed) => {
-                self.accept_finalize(framed, acceptor).await?;
+                self.accept_finalize(&mut conn, framed, acceptor).await?;
             }
             NegotiatedTransport::Tls(framed) => {
-                self.finalize_and_shutdown(*framed, acceptor, "TLS connection").await?;
+                self.finalize_and_shutdown(&mut conn, *framed, acceptor, "TLS connection")
+                    .await?;
             }
             NegotiatedTransport::Offloaded(framed) => {
-                self.finalize_and_shutdown(framed, acceptor, "TLS-offloaded stream")
+                self.finalize_and_shutdown(&mut conn, framed, acceptor, "TLS-offloaded stream")
                     .await?;
             }
         }
@@ -2328,6 +2189,7 @@ impl RdpServer {
     /// shares.
     async fn finalize_and_shutdown<S>(
         &mut self,
+        conn: &mut ConnectionState,
         framed: TokioFramed<S>,
         acceptor: Acceptor,
         shutdown_label: &str,
@@ -2340,7 +2202,7 @@ impl RdpServer {
         // `PendingConnection::negotiate_and_authenticate` before this function
         // ever runs -- upstream's un-refactored equivalent still does that
         // work at this point, since it has no separate negotiation step.
-        let framed = self.accept_finalize(framed, acceptor).await?;
+        let framed = self.accept_finalize(conn, framed, acceptor).await?;
         debug!("Shutting down {}", shutdown_label);
         let (mut inner, _) = framed.into_inner();
         if let Err(e) = inner.shutdown().await {
@@ -2735,16 +2597,8 @@ impl RdpServer {
                 error!(?error, "Connection error");
             }
 
-            // NOT redundant with `run_connection_with`'s own reset (added
-            // upstream, #1721) despite resetting the same field: a preemption
-            // winner reaches this point via `serve_negotiated`, which never
-            // calls `run_connection`/`run_connection_with` at all -- so this
-            // is the only reset that path gets. Removing this because
-            // `run_connection_with` "already handles it" would silently
-            // reintroduce #1721's leak (channel backends, e.g. rdpsnd's audio
-            // capture, held open until the next client) for every preemption
-            // takeover.
-            self.static_channels = StaticChannelSet::new();
+            // Neither path above goes through `run_connection_with`, which
+            // clears this for embedders.
             self.connection_local_addr = None;
 
             if let Some(action) = with_connection_handler(self.connection_handler.as_ref(), |h| {
@@ -2760,22 +2614,13 @@ impl RdpServer {
         Ok(())
     }
 
-    pub fn get_svc_processor<T: SvcProcessor + 'static>(&mut self) -> Option<&mut T> {
-        self.static_channels
-            .get_by_type_mut::<T>()
-            .and_then(|svc| svc.channel_processor_downcast_mut())
-    }
-
-    pub fn get_channel_id_by_type<T: SvcProcessor + 'static>(&self) -> Option<StaticChannelId> {
-        self.static_channels.get_channel_id_by_type::<T>()
-    }
-
     #[expect(
         clippy::too_many_arguments,
         reason = "private per-connection dispatch; the parameters are the connection's negotiated identifiers and transports"
     )]
     async fn dispatch_pdu(
         &mut self,
+        conn: &mut ConnectionState,
         action: Action,
         bytes: bytes::BytesMut,
         writer: &mut impl FramedWrite,
@@ -2793,6 +2638,7 @@ impl RdpServer {
             Action::X224 => {
                 if self
                     .handle_x224(
+                        conn,
                         writer,
                         io_channel_id,
                         user_channel_id,
@@ -2848,8 +2694,13 @@ impl RdpServer {
         Ok((RunState::Continue, encoder))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "private per-connection dispatch; the parameters are the connection's negotiated identifiers and transports"
+    )]
     async fn dispatch_server_events(
         &mut self,
+        conn: &mut ConnectionState,
         events: &mut Vec<ServerEvent>,
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
@@ -2946,7 +2797,7 @@ impl RdpServer {
                         .await?;
                 }
                 ServerEvent::Rdpsnd(s) => {
-                    let Some(rdpsnd) = self.get_svc_processor::<RdpsndServer>() else {
+                    let Some(rdpsnd) = conn.get_svc_processor::<RdpsndServer>() else {
                         warn!("No rdpsnd channel, dropping event");
                         continue;
                     };
@@ -2987,7 +2838,7 @@ impl RdpServer {
                         }
                     }
                     .map_err_kind("failed to send rdpsnd event", ServerErrorKind::Pdu)?;
-                    let channel_id = self
+                    let channel_id = conn
                         .get_channel_id_by_type::<RdpsndServer>()
                         .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
                     let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)
@@ -2998,7 +2849,7 @@ impl RdpServer {
                         .map_err(|e| ServerError::io("write_all", e))?;
                 }
                 ServerEvent::Rdpdr(msg) => {
-                    let Some(rdpdr) = self.get_svc_processor::<RdpdrServer>() else {
+                    let Some(rdpdr) = conn.get_svc_processor::<RdpdrServer>() else {
                         warn!("No rdpdr channel, dropping event");
                         continue;
                     };
@@ -3087,7 +2938,7 @@ impl RdpServer {
                         ),
                     }
                     .map_err_kind("failed to send rdpdr event", ServerErrorKind::Pdu)?;
-                    let channel_id = self
+                    let channel_id = conn
                         .get_channel_id_by_type::<RdpdrServer>()
                         .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
                     let data =
@@ -3098,7 +2949,7 @@ impl RdpServer {
                         .map_err(|e| ServerError::io("write_all", e))?;
                 }
                 ServerEvent::Rdpeai(msg) => {
-                    let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>() else {
+                    let Some(drdynvc) = conn.get_svc_processor::<dvc::DrdynvcServer>() else {
                         warn!("No drdynvc channel, dropping AUDIO_INPUT event");
                         continue;
                     };
@@ -3143,7 +2994,7 @@ impl RdpServer {
                     };
                     let dvc_messages = dvc::encode_dvc_messages(channel_id, msgs, ChannelFlags::SHOW_PROTOCOL)
                         .map_err(ServerError::encode)?;
-                    let drdynvc_channel_id = self
+                    let drdynvc_channel_id = conn
                         .get_channel_id_by_type::<dvc::DrdynvcServer>()
                         .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
                     let data = server_encode_svc_messages(dvc_messages, drdynvc_channel_id, user_channel_id)
@@ -3154,7 +3005,7 @@ impl RdpServer {
                         .map_err(|e| ServerError::io("write_all", e))?;
                 }
                 ServerEvent::Clipboard(c) => {
-                    let Some(cliprdr) = self.get_svc_processor::<CliprdrServer>() else {
+                    let Some(cliprdr) = conn.get_svc_processor::<CliprdrServer>() else {
                         warn!("No clipboard channel, dropping event");
                         continue;
                     };
@@ -3186,7 +3037,7 @@ impl RdpServer {
                         }
                     };
 
-                    let channel_id = self
+                    let channel_id = conn
                         .get_channel_id_by_type::<CliprdrServer>()
                         .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
                     let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)
@@ -3198,7 +3049,7 @@ impl RdpServer {
                 }
                 ServerEvent::Echo(msg) => match msg {
                     EchoServerMessage::SendRequest { payload } => {
-                        let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>() else {
+                        let Some(drdynvc) = conn.get_svc_processor::<dvc::DrdynvcServer>() else {
                             warn!("No drdynvc channel, dropping ECHO request");
                             continue;
                         };
@@ -3220,7 +3071,7 @@ impl RdpServer {
                             dvc::encode_dvc_messages(echo_channel_id, vec![request], ChannelFlags::SHOW_PROTOCOL)
                                 .map_err(ServerError::encode)?;
 
-                        let drdynvc_channel_id = self
+                        let drdynvc_channel_id = conn
                             .get_channel_id_by_type::<dvc::DrdynvcServer>()
                             .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
 
@@ -3238,11 +3089,11 @@ impl RdpServer {
                         let create_dvc_msg = {
                             use crate::urbdrc::UsbRedirServer;
 
-                            let Some(usb_man) = self.usb_man.as_mut() else {
+                            let Some(usb_factory) = self.usb_factory.as_mut() else {
                                 warn!("Missing USB device factory");
                                 continue;
                             };
-                            let Some(drdynvc) = self
+                            let Some(drdynvc) = conn
                                 .static_channels
                                 .get_by_type_mut::<dvc::DrdynvcServer>()
                                 .and_then(|svc| svc.channel_processor_downcast_mut::<dvc::DrdynvcServer>())
@@ -3251,12 +3102,12 @@ impl RdpServer {
                                 continue;
                             };
 
-                            let Some(comp_iface) = usb_man.comp_iface_alloc.alloc() else {
+                            let Some(comp_iface) = conn.usb_man.comp_iface_alloc.alloc() else {
                                 warn!("Run out of URBDRC interface IDs");
                                 continue;
                             };
 
-                            let Some(device_backend) = usb_man.factory.create_device() else {
+                            let Some(device_backend) = usb_factory.create_device() else {
                                 warn!("Failed to create USB device backend");
                                 continue;
                             };
@@ -3264,7 +3115,7 @@ impl RdpServer {
                             drdynvc
                                 .create_channel_with(|dvc_id| {
                                     let handle = UsbDeviceHandle::new(self.ev_sender.clone(), dvc_id);
-                                    if usb_man.router.insert(dvc_id, handle.device()).is_some() {
+                                    if conn.usb_man.router.insert(dvc_id, handle.device()).is_some() {
                                         warn!(dvc_id = dvc_id, "Replacing USB device pending-request map");
                                     }
                                     Ok::<_, PduError>(
@@ -3278,7 +3129,7 @@ impl RdpServer {
                                 .map_err_kind("create URBDRC device channel", ServerErrorKind::Pdu)?
                         };
 
-                        let drdynvc_channel_id = self
+                        let drdynvc_channel_id = conn
                             .get_channel_id_by_type::<dvc::DrdynvcServer>()
                             .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
                         let data =
@@ -3291,12 +3142,7 @@ impl RdpServer {
                             .map_err(|e| ServerError::io("write_all", e))?;
                     }
                     UrbdrcServerMessage::Device { dvc_id, dev_msg } => {
-                        let Some(device) = self
-                            .usb_man
-                            .as_ref()
-                            .and_then(|usb_man| usb_man.router.get(&dvc_id))
-                            .map(Arc::clone)
-                        else {
+                        let Some(device) = conn.usb_man.router.get(&dvc_id).map(Arc::clone) else {
                             warn!(dvc_id, "Missing USB device state");
                             continue;
                         };
@@ -3309,7 +3155,7 @@ impl RdpServer {
                             continue;
                         }
 
-                        let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>() else {
+                        let Some(drdynvc) = conn.get_svc_processor::<dvc::DrdynvcServer>() else {
                             warn!("No drdynvc channel, dropping URBDRC request");
                             continue;
                         };
@@ -3383,17 +3229,17 @@ impl RdpServer {
                             .map_err(ServerError::encode)?;
 
                         if close_dev {
-                            let close_message = self
+                            let close_message = conn
                                 .get_svc_processor::<dvc::DrdynvcServer>()
                                 .and_then(|drdynvc| drdynvc.close_channel(dvc_id))
                                 .ok_or_else(|| {
                                     ServerError::channel("URBDRC dynamic channel disappeared before close")
                                 })?;
-                            self.remove_usb_device(dvc_id);
+                            conn.remove_usb_device(dvc_id);
                             messages.push(close_message);
                         }
 
-                        let drdynvc_channel_id = self
+                        let drdynvc_channel_id = conn
                             .get_channel_id_by_type::<dvc::DrdynvcServer>()
                             .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
 
@@ -3405,13 +3251,13 @@ impl RdpServer {
                             .map_err(|e| ServerError::io("write_all", e))?;
                     }
                     UrbdrcServerMessage::DeviceClosed { dvc_id } => {
-                        self.remove_usb_device(dvc_id);
+                        conn.remove_usb_device(dvc_id);
                     }
                 },
                 #[cfg(feature = "egfx")]
                 ServerEvent::Egfx(msg) => match msg {
                     EgfxServerMessage::SendMessages { messages } => {
-                        self.dispatch_egfx_messages(messages, writer, user_channel_id, udp_transport)
+                        self.dispatch_egfx_messages(conn, messages, writer, user_channel_id, udp_transport)
                             .await?;
                     }
                 },
@@ -3419,7 +3265,7 @@ impl RdpServer {
                     // Auto-detect requests ride the MCS message channel
                     // ([MS-RDPBCGR] 2.2.14.3). With none negotiated (the client
                     // did not request it), there is nowhere to send them.
-                    if let (Some(ad), Some(message_channel_id)) = (self.autodetect.as_mut(), message_channel_id) {
+                    if let (Some(ad), Some(message_channel_id)) = (conn.autodetect.as_mut(), message_channel_id) {
                         let now_ms = monotonic_now_ms();
                         ad.expire_stale_probes(now_ms, crate::autodetect::RTT_PROBE_MAX_AGE_MS);
                         let request = ad.send_rtt_request(now_ms);
@@ -3479,27 +3325,28 @@ impl RdpServer {
     #[cfg(feature = "egfx")]
     async fn dispatch_egfx_messages(
         &mut self,
+        conn: &mut ConnectionState,
         messages: Vec<ironrdp_svc::SvcMessage>,
         writer: &mut impl FramedWrite,
         user_channel_id: u16,
         udp_transport: Option<&multitransport::UdpTransportHandle>,
     ) -> ServerResult<()> {
-        let drdynvc_channel_id = self
+        let drdynvc_channel_id = conn
             .get_channel_id_by_type::<dvc::DrdynvcServer>()
             .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
 
         let mut route_over_udp = false;
 
-        // `self.udp_migration_allowed` gates the Soft-Sync Request itself
+        // `conn.udp_migration_allowed` gates the Soft-Sync Request itself
         // (`request_reliable_udp` below): MS-RDPEDYC 3.1.5.3/3.3.5.3.1 forbid
         // it unless both peers negotiated SOFT_SYNC_TCP_TO_UDP and a
         // successful Initiate Multitransport Response was actually received,
         // neither of which the sideband transport's own handshake succeeding
         // (`udp_transport.is_some()`) establishes on its own.
         let mut newly_on_udp = None;
-        if self.udp_migration_allowed
+        if conn.udp_migration_allowed
             && let Some(udp_transport) = udp_transport
-            && let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>()
+            && let Some(drdynvc) = conn.get_svc_processor::<dvc::DrdynvcServer>()
         {
             let Some(egfx_dvc_id) = crate::gfx::egfx_channel_id(drdynvc) else {
                 trace!("EGFX channel not open yet, staying on TCP");
@@ -3538,7 +3385,7 @@ impl RdpServer {
                 drdynvc.tunnel_for_outgoing_channel(egfx_dvc_id) == Some(dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP);
 
             if route_over_udp {
-                if !self.egfx_on_udp {
+                if !conn.egfx_on_udp {
                     newly_on_udp = Some(egfx_dvc_id);
                 }
                 for message in &messages {
@@ -3548,7 +3395,7 @@ impl RdpServer {
             }
         }
         if let Some(egfx_dvc_id) = newly_on_udp {
-            self.egfx_on_udp = true;
+            conn.egfx_on_udp = true;
             debug!(egfx_dvc_id, "EGFX is now sent over the UDP transport");
         }
 
@@ -3584,6 +3431,7 @@ impl RdpServer {
     /// Without a live tunnel everything goes over TCP.
     async fn write_drdynvc_output(
         &mut self,
+        conn: &mut ConnectionState,
         messages: Vec<ironrdp_svc::SvcMessage>,
         writer: &mut impl FramedWrite,
         drdynvc_channel_id: u16,
@@ -3591,7 +3439,7 @@ impl RdpServer {
         udp_transport: Option<&multitransport::UdpTransportHandle>,
     ) -> ServerResult<()> {
         let mut over_tcp = Vec::with_capacity(messages.len());
-        match (udp_transport, self.get_svc_processor::<dvc::DrdynvcServer>()) {
+        match (udp_transport, conn.get_svc_processor::<dvc::DrdynvcServer>()) {
             (Some(udp_transport), Some(drdynvc)) => {
                 for message in messages {
                     let payload = message.encode_unframed_pdu().map_err(ServerError::encode)?;
@@ -3629,23 +3477,24 @@ impl RdpServer {
     /// waiting on has been processed.
     async fn replay_early_tunnel_payloads(
         &mut self,
+        conn: &mut ConnectionState,
         writer: &mut impl FramedWrite,
         user_channel_id: u16,
         udp_transport: Option<&multitransport::UdpTransportHandle>,
     ) -> ServerResult<()> {
-        if self.early_tunnel_payloads.is_empty()
-            || !self
+        if conn.early_tunnel_payloads.is_empty()
+            || !conn
                 .get_svc_processor::<dvc::DrdynvcServer>()
                 .is_some_and(|drdynvc| drdynvc.soft_sync_response_received())
         {
             return Ok(());
         }
         debug!(
-            count = self.early_tunnel_payloads.len(),
+            count = conn.early_tunnel_payloads.len(),
             "Soft-Sync response received, processing the tunnel payloads held for it"
         );
-        while let Some(payload) = self.early_tunnel_payloads.pop_front() {
-            self.dispatch_udp_tunnel_payload(&payload, writer, user_channel_id, udp_transport)
+        while let Some(payload) = conn.early_tunnel_payloads.pop_front() {
+            self.dispatch_udp_tunnel_payload(conn, &payload, writer, user_channel_id, udp_transport)
                 .await?;
         }
         Ok(())
@@ -3663,6 +3512,7 @@ impl RdpServer {
     /// session depends on the sideband transport's correctness.
     async fn dispatch_udp_tunnel_payload(
         &mut self,
+        conn: &mut ConnectionState,
         payload: &[u8],
         writer: &mut impl FramedWrite,
         user_channel_id: u16,
@@ -3674,8 +3524,8 @@ impl RdpServer {
         // is inconsistent, not a case this function can meaningfully
         // distinguish from "no drdynvc channel".
         let (Some(drdynvc_channel_id), Some(drdynvc)) = (
-            self.get_channel_id_by_type::<dvc::DrdynvcServer>(),
-            self.get_svc_processor::<dvc::DrdynvcServer>(),
+            conn.get_channel_id_by_type::<dvc::DrdynvcServer>(),
+            conn.get_svc_processor::<dvc::DrdynvcServer>(),
         ) else {
             warn!("No drdynvc channel, dropping UDP tunnel payload");
             return Ok(RunState::Continue);
@@ -3686,12 +3536,12 @@ impl RdpServer {
         // it; `replay_early_tunnel_payloads` feeds it through once the
         // response is in.
         if drdynvc.soft_sync_awaiting_response() {
-            if self.early_tunnel_payloads.len() < MAX_EARLY_TUNNEL_PAYLOADS {
+            if conn.early_tunnel_payloads.len() < MAX_EARLY_TUNNEL_PAYLOADS {
                 trace!(
                     len = payload.len(),
                     "Holding a tunnel payload until the Soft-Sync response arrives"
                 );
-                self.early_tunnel_payloads.push_back(payload.to_vec());
+                conn.early_tunnel_payloads.push_back(payload.to_vec());
             } else {
                 warn!("Too many tunnel payloads ahead of the Soft-Sync response, dropping one");
             }
@@ -3710,8 +3560,15 @@ impl RdpServer {
             return Ok(RunState::Continue);
         }
 
-        self.write_drdynvc_output(messages, writer, drdynvc_channel_id, user_channel_id, udp_transport)
-            .await?;
+        self.write_drdynvc_output(
+            conn,
+            messages,
+            writer,
+            drdynvc_channel_id,
+            user_channel_id,
+            udp_transport,
+        )
+        .await?;
 
         Ok(RunState::Continue)
     }
@@ -3722,12 +3579,12 @@ impl RdpServer {
     )]
     async fn client_loop<R, W>(
         &mut self,
+        conn: &mut ConnectionState,
         reader: &mut Framed<R>,
         writer: &mut Framed<W>,
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
-        client_supports_heartbeat: bool,
         mut encoder: UpdateEncoder,
         udp_transport: Rc<RefCell<Option<multitransport::UdpTransportHandle>>>,
         pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>>,
@@ -3737,12 +3594,12 @@ impl RdpServer {
         W: FramedWrite,
     {
         debug!("Starting client loop");
-        let heartbeat = if client_supports_heartbeat {
+        let heartbeat = if conn.client_supports_heartbeat {
             self.heartbeat
         } else {
             None
         };
-        let mut display_updates = self.display.lock().await.updates().await?;
+        let mut display_updates = self.display.lock().await.updates(conn.display_context()).await?;
         let mut writer = SharedWriter::new(writer);
         let mut display_writer = writer.clone();
         let mut event_writer = writer.clone();
@@ -3753,7 +3610,7 @@ impl RdpServer {
         let udp_transport_for_pdus = Rc::clone(&udp_transport);
         let write_counter = writer.write_counter();
         let ev_receiver = Arc::clone(&self.ev_receiver);
-        let s = Rc::new(Mutex::new(self));
+        let s = Rc::new(Mutex::new((self, conn)));
 
         let this = Rc::clone(&s);
         let dispatch_pdu = async move {
@@ -3772,8 +3629,10 @@ impl RdpServer {
 
                 let dispatch_start = Instant::now();
                 let current_udp_transport = udp_transport_for_pdus.borrow().clone();
-                let result = this
+                let (server, conn) = &mut *this;
+                let result = server
                     .dispatch_pdu(
+                        conn,
                         action,
                         bytes,
                         &mut writer,
@@ -3875,8 +3734,10 @@ impl RdpServer {
                 // an await point. `UdpTransportHandle` is cheap to clone (see
                 // its own doc comment).
                 let current_udp_transport = udp_transport_for_events.borrow().clone();
-                let result = this
+                let (server, conn) = &mut *this;
+                let result = server
                     .dispatch_server_events(
+                        conn,
                         &mut events,
                         &mut event_writer,
                         io_channel_id,
@@ -3913,7 +3774,9 @@ impl RdpServer {
             loop {
                 interval.tick().await;
                 let mut this = this.lock().await;
-                this.rotate_auto_reconnect_cookie(&mut auto_reconnect_writer, io_channel_id, user_channel_id)
+                let (server, _) = &mut *this;
+                server
+                    .rotate_auto_reconnect_cookie(&mut auto_reconnect_writer, io_channel_id, user_channel_id)
                     .await?;
             }
         };
@@ -4012,7 +3875,8 @@ impl RdpServer {
                     // (MS-RDPEMT 1.3.3). A client whose channels moved has
                     // nowhere left to read them, so end the connection and let
                     // it reconnect rather than keep a session it cannot draw.
-                    if this.lock().await.egfx_on_udp {
+                    let (_, conn) = &mut *this.lock().await;
+                    if conn.egfx_on_udp {
                         warn!("UDP transport lost with EGFX on it, ending the connection");
                         return Err(ServerError::reason(
                             "UDP transport",
@@ -4028,8 +3892,15 @@ impl RdpServer {
                     return core::future::pending::<ServerResult<RunState>>().await;
                 };
                 let mut this = this.lock().await;
-                let result = this
-                    .dispatch_udp_tunnel_payload(&payload, &mut udp_tunnel_writer, user_channel_id, Some(&transport))
+                let (server, conn) = &mut *this;
+                let result = server
+                    .dispatch_udp_tunnel_payload(
+                        conn,
+                        &payload,
+                        &mut udp_tunnel_writer,
+                        user_channel_id,
+                        Some(&transport),
+                    )
                     .await?;
                 match result {
                     RunState::Continue => continue,
@@ -4053,6 +3924,7 @@ impl RdpServer {
 
     async fn client_accepted<R, W>(
         &mut self,
+        conn: &mut ConnectionState,
         reader: &mut Framed<R>,
         writer: &mut Framed<W>,
         result: AcceptorResult,
@@ -4119,6 +3991,7 @@ impl RdpServer {
             // Set on a reactivation pass, where EGFX may already be on the tunnel.
             let current_udp_transport = udp_transport.borrow().clone();
             self.handle_input_backlog(
+                conn,
                 writer,
                 result.io_channel_id,
                 result.user_channel_id,
@@ -4129,9 +4002,12 @@ impl RdpServer {
             .await?;
         }
 
-        self.static_channels = result.static_channels;
+        conn.static_channels = result.static_channels;
+        conn.client_supports_heartbeat = result
+            .client_early_capability_flags
+            .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_HEART_BEAT_PDU);
         if !result.reactivation {
-            for (_channel_key, channel, channel_id) in self.static_channels.iter_by_key_mut() {
+            for (_channel_key, channel, channel_id) in conn.static_channels.iter_by_key_mut() {
                 debug!(?channel, ?channel_id, "Start");
                 let Some(channel_id) = channel_id else {
                     continue;
@@ -4273,28 +4149,26 @@ impl RdpServer {
 
         let pending_udp_accept =
             Self::drop_declined_udp_accept(pending_udp_accept, result.multitransport_response_success);
-        self.pending_udp_accept_abort = pending_udp_accept.as_ref().map(task::JoinHandle::abort_handle);
+        conn.pending_udp_accept_abort = pending_udp_accept.as_ref().map(task::JoinHandle::abort_handle);
 
         // See `udp_migration_allowed`: a successful response that arrives
         // after this point enables migration from the message-channel handler.
         // Only ever raised here, never lowered: a deactivation-reactivation
         // pass lands here again without repeating the multitransport exchange,
         // and must not take back a migration the session may already be using.
-        self.soft_sync_negotiated |= result
+        conn.soft_sync_negotiated |= result
             .multitransport_flags
             .contains(ironrdp_pdu::gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP);
-        self.udp_migration_allowed |= self.soft_sync_negotiated && result.multitransport_response_success == Some(true);
+        conn.udp_migration_allowed |= conn.soft_sync_negotiated && result.multitransport_response_success == Some(true);
 
         let state = self
             .client_loop(
+                conn,
                 reader,
                 writer,
                 result.io_channel_id,
                 result.user_channel_id,
                 result.message_channel_id,
-                result
-                    .client_early_capability_flags
-                    .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_HEART_BEAT_PDU),
                 encoder,
                 udp_transport,
                 pending_udp_accept,
@@ -4324,8 +4198,13 @@ impl RdpServer {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "private per-connection dispatch; the parameters are the connection's negotiated identifiers and transports"
+    )]
     async fn handle_input_backlog(
         &mut self,
+        conn: &mut ConnectionState,
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
@@ -4343,6 +4222,7 @@ impl RdpServer {
                 Ok(Action::X224) => {
                     let _ = self
                         .handle_x224(
+                            conn,
                             writer,
                             io_channel_id,
                             user_channel_id,
@@ -4397,7 +4277,11 @@ impl RdpServer {
         }
     }
 
-    async fn handle_io_channel_data(&mut self, data: SendDataRequest<'_>) -> ServerResult<bool> {
+    async fn handle_io_channel_data(
+        &mut self,
+        conn: &mut ConnectionState,
+        data: SendDataRequest<'_>,
+    ) -> ServerResult<bool> {
         let control: rdp::headers::ShareControlHeader = decode(data.user_data.as_ref()).map_err(ServerError::decode)?;
 
         match control.share_control_pdu {
@@ -4422,7 +4306,7 @@ impl RdpServer {
                 // set.
                 rdp::headers::ShareDataPdu::SuppressOutput(pdu) => {
                     let suppress = pdu.desktop_rect.is_none();
-                    self.display_suppressed.store(suppress, Ordering::Relaxed);
+                    conn.display_suppressed.store(suppress, Ordering::Relaxed);
                     debug!(suppress, "client suppress-output state changed");
                 }
 
@@ -4434,7 +4318,7 @@ impl RdpServer {
                 // this; clearing here is belt-and-braces against clients
                 // that send only one of the two.)
                 rdp::headers::ShareDataPdu::RefreshRectangle(_) => {
-                    if self.display_suppressed.swap(false, Ordering::Relaxed) {
+                    if conn.display_suppressed.swap(false, Ordering::Relaxed) {
                         debug!("client RefreshRectangle cleared suppress-output state");
                     }
                 }
@@ -4452,20 +4336,22 @@ impl RdpServer {
         Ok(false)
     }
 
-    fn handle_message_channel_data(&mut self, data: SendDataRequest<'_>) {
+    fn handle_message_channel_data(conn: &mut ConnectionState, data: SendDataRequest<'_>) {
         match decode::<rdp::message_channel::ClientMessageChannelPdu>(data.user_data.as_ref()) {
             Ok(rdp::message_channel::ClientMessageChannelPdu::AutoDetectResponse(pdu)) => {
-                if let Some(ref mut ad) = self.autodetect {
+                if let Some(ref mut ad) = conn.autodetect {
                     match ad.handle_response(&pdu.response, monotonic_now_ms()) {
                         AutoDetectOutcome::Rtt(rtt_ms) => {
-                            self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
+                            conn.autodetect_handles.rtt.store(rtt_ms, Ordering::Relaxed);
                             // A matched RTT sample always updates the session-lifetime low in the
                             // same call (see `handle_response`'s RttResponse arm), so it is available
                             // unconditionally here, not just on a new low.
                             let baseline_rtt_ms = ad
                                 .baseline_rtt_ms()
                                 .expect("handle_response just recorded a sample above");
-                            self.autodetect_baseline_rtt.store(baseline_rtt_ms, Ordering::Relaxed);
+                            conn.autodetect_handles
+                                .baseline_rtt
+                                .store(baseline_rtt_ms, Ordering::Relaxed);
                             debug!(
                                 rtt_ms,
                                 baseline_rtt_ms,
@@ -4474,8 +4360,12 @@ impl RdpServer {
                             );
                         }
                         AutoDetectOutcome::Bandwidth(Some(bandwidth_kbps)) => {
-                            self.autodetect_bandwidth.store(bandwidth_kbps, Ordering::Relaxed);
-                            self.autodetect_bandwidth_generation.fetch_add(1, Ordering::Release);
+                            conn.autodetect_handles
+                                .bandwidth
+                                .store(bandwidth_kbps, Ordering::Relaxed);
+                            conn.autodetect_handles
+                                .bandwidth_generation
+                                .fetch_add(1, Ordering::Release);
                             // Logging the whole response, not just the computed figure: a
                             // damage-driven video source makes any single measurement
                             // window's byte count wildly bimodal (near-idle vs. a real
@@ -4488,8 +4378,10 @@ impl RdpServer {
                             // The manager just cleared its own figure rather than keep
                             // reporting a stale one (see `handle_response`'s doc comment);
                             // mirror that here so the exposed handle does not disagree.
-                            self.autodetect_bandwidth.store(u32::MAX, Ordering::Relaxed);
-                            self.autodetect_bandwidth_generation.fetch_add(1, Ordering::Release);
+                            conn.autodetect_handles.bandwidth.store(u32::MAX, Ordering::Relaxed);
+                            conn.autodetect_handles
+                                .bandwidth_generation
+                                .fetch_add(1, Ordering::Release);
                             trace!(
                                 seq = pdu.response.sequence_number(),
                                 "Bandwidth measurement completed without a usable figure"
@@ -4514,7 +4406,7 @@ impl RdpServer {
                 // E_ABORT: the client could not establish the multitransport
                 // connection (MS-RDPBCGR 2.2.15.2), so no UDP handshake is coming.
                 if !pdu.is_success()
-                    && let Some(abort) = self.pending_udp_accept_abort.take()
+                    && let Some(abort) = conn.pending_udp_accept_abort.take()
                 {
                     abort.abort();
                     debug!("Client could not establish the UDP multitransport connection, continuing TCP-only");
@@ -4522,8 +4414,8 @@ impl RdpServer {
                 // A success after finalization, the usual order with mstsc,
                 // completes the condition finalization could not see (see
                 // `udp_migration_allowed`), so EGFX can migrate from here on.
-                if pdu.is_success() && self.soft_sync_negotiated && !self.udp_migration_allowed {
-                    self.udp_migration_allowed = true;
+                if pdu.is_success() && conn.soft_sync_negotiated && !conn.udp_migration_allowed {
+                    conn.udp_migration_allowed = true;
                     debug!("Multitransport confirmed after finalization, EGFX may migrate to UDP");
                 }
             }
@@ -4533,8 +4425,13 @@ impl RdpServer {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "private per-connection dispatch; the parameters are the connection's negotiated identifiers and transports"
+    )]
     async fn handle_x224(
         &mut self,
+        conn: &mut ConnectionState,
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
@@ -4552,20 +4449,21 @@ impl RdpServer {
                     "McsMessage::SendDataRequest"
                 );
                 if data.channel_id == io_channel_id {
-                    return self.handle_io_channel_data(data).await;
+                    return self.handle_io_channel_data(conn, data).await;
                 }
 
                 if message_channel_id == Some(data.channel_id) {
-                    self.handle_message_channel_data(data);
+                    Self::handle_message_channel_data(conn, data);
                     return Ok(false);
                 }
 
-                if let Some(svc) = self.static_channels.get_by_channel_id_mut(data.channel_id) {
+                if let Some(svc) = conn.static_channels.get_by_channel_id_mut(data.channel_id) {
                     let response_pdus = svc
                         .process(&data.user_data)
                         .map_err_kind("svc process", ServerErrorKind::Pdu)?;
-                    if self.get_channel_id_by_type::<dvc::DrdynvcServer>() == Some(data.channel_id) {
+                    if conn.get_channel_id_by_type::<dvc::DrdynvcServer>() == Some(data.channel_id) {
                         self.write_drdynvc_output(
+                            conn,
                             response_pdus,
                             writer,
                             data.channel_id,
@@ -4573,7 +4471,7 @@ impl RdpServer {
                             udp_transport,
                         )
                         .await?;
-                        self.replay_early_tunnel_payloads(writer, user_channel_id, udp_transport)
+                        self.replay_early_tunnel_payloads(conn, writer, user_channel_id, udp_transport)
                             .await?;
                     } else {
                         let response = server_encode_svc_messages(response_pdus, data.channel_id, user_channel_id)
@@ -4637,19 +4535,13 @@ impl RdpServer {
 
     async fn accept_finalize<S>(
         &mut self,
+        conn: &mut ConnectionState,
         mut framed: TokioFramed<S>,
         mut acceptor: Acceptor,
     ) -> ServerResult<TokioFramed<S>>
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
-        // Per-connection: set again once this connection's finalization knows
-        // its own negotiated flags and response.
-        self.soft_sync_negotiated = false;
-        self.udp_migration_allowed = false;
-        self.egfx_on_udp = false;
-        self.early_tunnel_payloads.clear();
-
         let udp_bind_addr = self
             .opts
             .udp_bind_addr
@@ -4725,6 +4617,7 @@ impl RdpServer {
 
             match self
                 .client_accepted(
+                    conn,
                     &mut reader,
                     &mut writer,
                     result,
@@ -4743,7 +4636,7 @@ impl RdpServer {
                     // various state issues during client resize.
                     acceptor = Acceptor::new_deactivation_reactivation(
                         acceptor,
-                        core::mem::take(&mut self.static_channels),
+                        core::mem::take(&mut conn.static_channels),
                         desktop_size,
                     )
                     .map_err_kind("deactivation-reactivation acceptor", ServerErrorKind::Connector)?;
@@ -5033,7 +4926,7 @@ mod preempt_tests {
                     height: 768,
                 }
             }
-            async fn updates(&mut self) -> ServerResult<Box<dyn crate::RdpServerDisplayUpdates>> {
+            async fn updates(&mut self, _: DisplayContext) -> ServerResult<Box<dyn crate::RdpServerDisplayUpdates>> {
                 unreachable!("negotiation never asks for updates")
             }
         }
@@ -5278,12 +5171,7 @@ mod preempt_tests {
     fn a_late_multitransport_success_enables_migration_only_with_soft_sync() {
         use ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu;
 
-        let mut server = RdpServer::builder()
-            .with_addr((Ipv4Addr::LOCALHOST, 0))
-            .with_no_security()
-            .with_no_input()
-            .with_no_display()
-            .build();
+        let mut conn = ConnectionState::default();
         let response = |pdu: &MultitransportResponsePdu| SendDataRequest {
             initiator_id: 1007,
             channel_id: 1008,
@@ -5291,17 +5179,17 @@ mod preempt_tests {
         };
 
         // Soft-Sync not negotiated: MS-RDPEDYC forbids migration whatever the response.
-        server.handle_message_channel_data(response(&MultitransportResponsePdu::success(1)));
-        assert!(!server.udp_migration_allowed);
+        RdpServer::handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::success(1)));
+        assert!(!conn.udp_migration_allowed);
 
         // Negotiated, but the client could not bring UDP up.
-        server.soft_sync_negotiated = true;
-        server.handle_message_channel_data(response(&MultitransportResponsePdu::abort(1)));
-        assert!(!server.udp_migration_allowed);
+        conn.soft_sync_negotiated = true;
+        RdpServer::handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::abort(1)));
+        assert!(!conn.udp_migration_allowed);
 
         // Negotiated, and the success arrives after finalization.
-        server.handle_message_channel_data(response(&MultitransportResponsePdu::success(1)));
-        assert!(server.udp_migration_allowed);
+        RdpServer::handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::success(1)));
+        assert!(conn.udp_migration_allowed);
     }
 
     #[tokio::test]
@@ -5311,12 +5199,7 @@ mod preempt_tests {
         let local = task::LocalSet::new();
         local
             .run_until(async {
-                let mut server = RdpServer::builder()
-                    .with_addr((Ipv4Addr::LOCALHOST, 0))
-                    .with_no_security()
-                    .with_no_input()
-                    .with_no_display()
-                    .build();
+                let mut conn = ConnectionState::default();
                 let response = |pdu: &MultitransportResponsePdu| SendDataRequest {
                     initiator_id: 1007,
                     channel_id: 1008,
@@ -5324,21 +5207,21 @@ mod preempt_tests {
                 };
 
                 // No accept pending: a failure response is only logged.
-                server.handle_message_channel_data(response(&MultitransportResponsePdu::abort(1)));
+                RdpServer::handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::abort(1)));
 
                 let accept = task::spawn_local(core::future::pending::<()>());
-                server.pending_udp_accept_abort = Some(accept.abort_handle());
+                conn.pending_udp_accept_abort = Some(accept.abort_handle());
 
                 // Success leaves the accept running.
-                server.handle_message_channel_data(response(&MultitransportResponsePdu::success(1)));
+                RdpServer::handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::success(1)));
                 task::yield_now().await;
                 assert!(!accept.is_finished());
 
-                server.handle_message_channel_data(response(&MultitransportResponsePdu::abort(1)));
+                RdpServer::handle_message_channel_data(&mut conn, response(&MultitransportResponsePdu::abort(1)));
                 task::yield_now().await;
                 assert!(accept.is_finished());
                 assert!(accept.await.expect_err("accept was aborted").is_cancelled());
-                assert!(server.pending_udp_accept_abort.is_none());
+                assert!(conn.pending_udp_accept_abort.is_none());
             })
             .await;
     }
@@ -5708,64 +5591,6 @@ mod preempt_tests {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use ironrdp_core::impl_as_any;
-    use ironrdp_pdu::gcc::ChannelName;
-    use ironrdp_svc::{SvcMessage, SvcServerProcessor};
-
-    use super::*;
-
-    /// A channel backend that owns a resource, released on drop the way
-    /// `RdpsndServer` stops its handler.
-    #[derive(Debug)]
-    struct ResourceChannel(Arc<AtomicBool>);
-
-    impl Drop for ResourceChannel {
-        fn drop(&mut self) {
-            self.0.store(true, Ordering::Relaxed);
-        }
-    }
-
-    impl_as_any!(ResourceChannel);
-
-    impl SvcProcessor for ResourceChannel {
-        fn channel_name(&self) -> ChannelName {
-            ChannelName::from_static(b"testchan")
-        }
-
-        fn process(&mut self, _payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-            Ok(Vec::new())
-        }
-    }
-
-    impl SvcServerProcessor for ResourceChannel {}
-
-    #[tokio::test]
-    async fn run_connection_releases_the_static_channels() {
-        let mut server = RdpServer::builder()
-            .with_addr(([127, 0, 0, 1], 0))
-            .with_no_security()
-            .with_no_input()
-            .with_no_display()
-            .build();
-
-        let released = Arc::new(AtomicBool::new(false));
-        server.static_channels.insert(ResourceChannel(Arc::clone(&released)));
-
-        // A stream that is already at EOF: the connection ends early, which
-        // is the path an embedder's accept loop sees when a client vanishes.
-        let (client, server_side) = tokio::io::duplex(64);
-        drop(client);
-        let _ = server.run_connection(server_side).await;
-
-        assert!(
-            released.load(Ordering::Relaxed),
-            "the channel backends of a finished connection must be released, not held until the next client"
-        );
-    }
-}
-
 /// A failing clipboard event must not disconnect the session.
 ///
 /// `dispatch_server_events` used to `?` the result of every `CliprdrServer`
@@ -5842,9 +5667,9 @@ mod cliprdr_error_tests {
         // Left in its initial state, so `require_ready` refuses the request
         // below -- the cheapest reproduction of "the channel said no".
         let cliprdr: CliprdrServer = Cliprdr::new(Box::new(SilentBackend));
-        server.static_channels.insert(cliprdr);
-        server
-            .static_channels
+        let mut conn = ConnectionState::default();
+        conn.static_channels.insert(cliprdr);
+        conn.static_channels
             .attach_channel_id(TypeId::of::<CliprdrServer>(), 1004);
 
         let mut events = vec![ServerEvent::Clipboard(ClipboardMessage::SendFileContentsRequest(
@@ -5860,7 +5685,7 @@ mod cliprdr_error_tests {
 
         let mut writer = CapturingWriter::default();
         let state = server
-            .dispatch_server_events(&mut events, &mut writer, 1003, 1002, None, None)
+            .dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None)
             .await
             .expect("a refused clipboard message must not surface as a session error");
 
