@@ -20,6 +20,7 @@ use ironrdp::server::{
     SoundServerFactory, TlsIdentityCtx,
 };
 use ironrdp_cliprdr_native::StubCliprdrBackend;
+use ironrdp_server::DisplayContext;
 use rand::prelude::*;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{self, Duration, sleep};
@@ -210,7 +211,10 @@ impl RdpServerDisplay for Handler {
         }
     }
 
-    async fn updates(&mut self) -> ironrdp::server::ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(
+        &mut self,
+        _ctx: DisplayContext,
+    ) -> ironrdp::server::ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(DisplayUpdates {}))
     }
 }
