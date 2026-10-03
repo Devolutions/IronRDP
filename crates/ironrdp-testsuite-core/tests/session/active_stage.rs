@@ -6,7 +6,6 @@
 //! modules there never run under `cargo test --workspace --locked`. These tests
 //! live here instead so they actually execute in CI.
 
-use core::any::TypeId;
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -650,7 +649,7 @@ fn active_stage_with_active_egfx() -> ActiveStage {
     assert!(static_channels.insert(drdynvc).is_none());
     assert!(
         static_channels
-            .attach_channel_id(TypeId::of::<DrdynvcClient>(), DRDYNVC_CHANNEL_ID)
+            .attach_channel_id(core::any::TypeId::of::<DrdynvcClient>(), DRDYNVC_CHANNEL_ID)
             .is_none()
     );
 

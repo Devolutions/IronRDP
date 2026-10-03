@@ -2614,7 +2614,6 @@ dependencies = [
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-echo",
- "ironrdp-egfx",
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-mstsgu",
@@ -3504,6 +3503,27 @@ version = "0.2.0"
 dependencies = [
  "bytemuck",
  "ironrdp-core 0.3.0",
+]
+
+[[package]]
+name = "ironrdp-stress"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "image",
+ "ironrdp",
+ "ironrdp-blocking",
+ "ironrdp-displaycontrol",
+ "ironrdp-dvc",
+ "ironrdp-egfx",
+ "ironrdp-pdu",
+ "pico-args",
+ "rand 0.9.5",
+ "sspi",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+ "x509-cert",
 ]
 
 [[package]]
