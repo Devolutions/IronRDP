@@ -19,8 +19,9 @@ use ironrdp::pdu::rdp::client_info::CompressionType as PduCompressionType;
 use ironrdp::pdu::rdp::headers::CompressionFlags;
 use ironrdp::pdu::{self, gcc};
 use ironrdp::server::{
-    self, Acceptor, DesktopSize, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer, RdpServerDisplay,
-    RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerResult, StaticChannelFactory, TlsIdentityCtx,
+    self, Acceptor, DesktopSize, DisplayContext, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer,
+    RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerResult, StaticChannelFactory,
+    TlsIdentityCtx,
 };
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{self, ActiveStage, ActiveStageBuilder, ActiveStageOutput};
@@ -496,7 +497,7 @@ impl RdpServerDisplay for TestDisplay {
         }
     }
 
-    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(&mut self, _: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(TestDisplayUpdates {
             rx: Arc::clone(&self.rx),
         }))
