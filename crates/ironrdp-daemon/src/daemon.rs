@@ -1,13 +1,14 @@
 //! The long-lived daemon: owns the [`RdpClient`] engine and one RDP session, and serves IPC
 //! requests until shut down.
 //!
-//! One daemon serves one RDP session (multi-session is out of scope for V1). It is started
-//! explicitly with `daemon-start` and runs in the foreground; the caller is expected to background
-//! it. On a clean shutdown the Unix socket file is removed (see [`crate::transport`]).
+//! One daemon serves one RDP session (multi-session is out of scope for V1).
+//! The agent starts it in the background on demand or explicitly with `daemon start`.
+//! On a clean shutdown the Unix socket file is removed (see [`crate::transport`]).
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::collections::VecDeque;
+use std::io::{self, Seek as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -21,6 +22,8 @@ use ironrdp_client::rdp::{
     RdpOutputEvent,
 };
 use ironrdp_cliprdr::backend::ClipboardMessage;
+use ironrdp_cliprdr::chunked_fetch::{ChunkedFetch, ChunkedFetchProgress};
+use ironrdp_cliprdr::pdu::{ClipboardFileAttributes, ClipboardGeneralCapabilityFlags, FileDescriptor};
 use ironrdp_input::{Database, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_propertyset::{PropertySet, Value};
@@ -37,10 +40,14 @@ use std::collections::BTreeSet;
 use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackendFactory};
 
 use crate::ipc::{
-    ConnState, KeyFilter, MAX_RAIL_RETAINED_EVENTS, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload, PenFrameRequest,
+    ClipboardFileEntry, ConnState, KeyFilter, KeyInput, MAX_CLIPBOARD_FILE_BYTES, MAX_CLIPBOARD_FILE_LIST_ENTRIES,
+    MAX_KEY_BATCH_EVENTS, MAX_RAIL_RETAINED_EVENTS, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload, PenFrameRequest,
     PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason,
     RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo, TouchFrameRequest,
     pen_event_from_request, touch_event_from_request,
+};
+use crate::known_certificates::{
+    ACCEPT_CERTIFICATE_PROPERTY, CertificateRejection, Fingerprint, KnownCertificates, normalize_endpoint,
 };
 use crate::logbuf::{self, LogBuffer};
 use crate::now::NowEndpoint;
@@ -53,20 +60,76 @@ use crate::transport::{Endpoint, Listener, read_message, write_message};
 /// (overlay wins), so any setting — credentials in particular — can be preconfigured without the
 /// caller ever supplying it.
 pub async fn run(endpoint: Endpoint, overlay: PropertySet, options: DaemonOptions) -> anyhow::Result<()> {
-    init_daemon_logging();
+    init_daemon_logging(None);
     let daemon = Arc::new(Daemon::with_options(overlay, options)?);
     serve(endpoint, daemon).await
+}
+
+/// Runs a detached daemon on a caller-bound listener with operational logging written to `log`.
+///
+/// Binding before calling lets the launcher acknowledge ownership of `endpoint` through its private bootstrap connection.
+pub async fn run_with_log(
+    endpoint: Endpoint,
+    listener: Listener,
+    overlay: PropertySet,
+    options: DaemonOptions,
+    log: std::fs::File,
+) -> anyhow::Result<()> {
+    init_daemon_logging(Some(log));
+    let daemon = Arc::new(Daemon::with_options(overlay, options)?);
+    serve_listener(endpoint, listener, daemon).await
+}
+
+/// Maximum size of the detached daemon's operational log.
+pub const MAX_DAEMON_LOG_BYTES: u64 = 2 * 1024 * 1024;
+
+struct BoundedLog {
+    file: std::fs::File,
+    limit: u64,
+}
+
+impl io::Write for BoundedLog {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let length = u64::try_from(buf.len()).unwrap_or(u64::MAX);
+        if self.file.metadata()?.len().saturating_add(length) > self.limit {
+            self.file.set_len(0)?;
+        }
+        self.file.seek(io::SeekFrom::End(0))?;
+        if length > self.limit {
+            let kept = usize::try_from(self.limit).unwrap_or(usize::MAX);
+            self.file.write_all(&buf[buf.len() - kept..])?;
+            Ok(buf.len())
+        } else {
+            self.file.write(buf)
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
 }
 
 /// Serves `daemon` on `endpoint` until its owner requests shutdown.
 ///
 /// The caller owns the daemon so it can share the same session state with another frontend, such
 /// as the viewer window.
+///
+/// # Panics
+///
+/// Panics if the daemon or session state mutex is poisoned while awaiting a graceful shutdown.
 pub async fn serve(endpoint: Endpoint, daemon: Arc<Daemon>) -> anyhow::Result<()> {
     crate::transport::prepare_endpoint(&endpoint).await?;
-    let mut listener = Listener::bind(&endpoint).with_context(|| format!("bind IPC endpoint {endpoint}"))?;
+    let listener = Listener::bind(&endpoint).with_context(|| format!("bind IPC endpoint {endpoint}"))?;
+    serve_listener(endpoint, listener, daemon).await
+}
+
+async fn serve_listener(endpoint: Endpoint, mut listener: Listener, daemon: Arc<Daemon>) -> anyhow::Result<()> {
     info!(%endpoint, "Daemon listening");
     let mut shutdown = daemon.shutdown_receiver();
+    let mut requested_shutdown = false;
     loop {
         tokio::select! {
             result = listener.accept() => {
@@ -81,6 +144,7 @@ pub async fn serve(endpoint: Endpoint, daemon: Arc<Daemon>) -> anyhow::Result<()
             result = shutdown.changed() => {
                 result.context("wait for shutdown signal")?;
                 info!("Received shutdown request, stopping");
+                requested_shutdown = true;
                 break;
             }
             _ = tokio::signal::ctrl_c() => {
@@ -88,6 +152,27 @@ pub async fn serve(endpoint: Endpoint, daemon: Arc<Daemon>) -> anyhow::Result<()
                 break;
             }
         }
+    }
+
+    if requested_shutdown {
+        let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let finished = {
+                    let guard = daemon.state.lock().expect("daemon state poisoned");
+                    guard.as_ref().is_none_or(|session| {
+                        matches!(
+                            session.live.lock().expect("session live state poisoned").state,
+                            ConnState::Disconnected | ConnState::Failed
+                        )
+                    })
+                };
+                if finished {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
     }
 
     Ok(())
@@ -98,6 +183,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let request: Request = read_message(&mut stream).await?;
+    let stopping = matches!(request, Request::DaemonStop);
     trace!(?request, "Handling IPC request");
     let response = daemon.handle(request).await;
     trace!(ok = response.response().is_ok(), "Replying to IPC request");
@@ -112,6 +198,10 @@ where
                 write_message(&mut stream, &Response::Ok(Payload::NowEvent(event))).await?;
             }
         }
+    }
+    if stopping {
+        let _ = daemon.disconnect();
+        daemon.shutdown();
     }
     Ok(())
 }
@@ -272,8 +362,85 @@ struct Session {
     rail_enabled: bool,
     live: Arc<Mutex<Live>>,
     rail_notify: Arc<tokio::sync::Notify>,
+    /// Woken by the `CLIPRDR` backend whenever an in-progress `clipboard_get_file` fetch
+    /// advances or finishes; see `crate::clipboard::AgentCliprdrBackend`.
+    clipboard_file_notify: Arc<tokio::sync::Notify>,
     now_endpoint: Arc<NowEndpoint>,
     operations: OperationManager,
+}
+
+/// Converts a [`std::time::SystemTime`] to a Windows FILETIME (100-nanosecond intervals since
+/// 1601-01-01), for [`FileDescriptor::with_last_write_time`].
+///
+/// Saturates rather than panics on a time far enough in the future to overflow; a wrong-but-huge
+/// last-write-time is a display nit; a panic on a legitimate file is not.
+fn system_time_to_filetime(time: std::time::SystemTime) -> u64 {
+    /// Seconds between the FILETIME epoch (1601-01-01) and the Unix epoch (1970-01-01).
+    const EPOCH_DIFFERENCE_SECS: u64 = 11_644_473_600;
+    match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => {
+            let secs = duration.as_secs().saturating_add(EPOCH_DIFFERENCE_SECS);
+            secs.saturating_mul(10_000_000)
+                .saturating_add(u64::from(duration.subsec_nanos()) / 100)
+        }
+        // Before the Unix epoch: not expected for a real file; encode as "unknown" via 0 rather
+        // than guess.
+        Err(_) => 0,
+    }
+}
+
+/// Converts a Windows FILETIME back to Unix seconds, for display in `Payload::ClipboardFileList`.
+///
+/// `None` if the value predates the Unix epoch (a remote-controlled field; treat as absent rather
+/// than let the subtraction wrap).
+fn filetime_to_unix_secs(filetime: u64) -> Option<u64> {
+    const EPOCH_DIFFERENCE_SECS: u64 = 11_644_473_600;
+    (filetime / 10_000_000).checked_sub(EPOCH_DIFFERENCE_SECS)
+}
+
+/// Takes `active_fetch_result` if `clipboard_get_file`'s fetch has finished, materializing the
+/// response and clearing the (now-finished) fetch's slot. `None` means the fetch has not yet
+/// resolved (or resolved for a different `stream_id` than the caller's own) and the caller should
+/// keep waiting. Shared by the wait loop's per-iteration check and its post-timeout recheck in
+/// `Daemon::clipboard_get_file`, which must resolve a same-instant race identically rather than
+/// risk the two copies drifting apart.
+///
+/// Guarded by `stream_id` rather than taking whatever `active_fetch_result` holds: an aborted
+/// fetch clears `active_fetch` in the same step it sets `active_fetch_result`, so a later,
+/// unrelated fetch can start and finish in the same slot before the first call's own waiter gets
+/// scheduled. Without this guard that waiter would consume the later fetch's bytes.
+fn take_finished_fetch_result(clipboard: &mut crate::clipboard::ClipboardState, stream_id: u32) -> Option<Response> {
+    if clipboard.active_fetch_result_stream_id != Some(stream_id) {
+        return None;
+    }
+    let result = clipboard.active_fetch_result.take()?;
+    clipboard.active_fetch_result_stream_id = None;
+    let fetch = clipboard.active_fetch.take();
+    clipboard.active_fetch_lock_id = None;
+    Some(match (result, fetch) {
+        (ChunkedFetchProgress::Complete, Some(fetch)) => Response::Ok(Payload::ClipboardFile(fetch.into_data())),
+        _ => Response::typed_error(crate::ipc::AgentErrorCategory::Internal, "file fetch failed"),
+    })
+}
+
+fn operation_from_key_input(input: KeyInput) -> Operation {
+    match input {
+        KeyInput::Scancode { scancode, pressed } => {
+            let scancode = Scancode::from_u16(scancode);
+            if pressed {
+                Operation::KeyPressed(scancode)
+            } else {
+                Operation::KeyReleased(scancode)
+            }
+        }
+        KeyInput::Unicode { ch, pressed } => {
+            if pressed {
+                Operation::UnicodeKeyPressed(ch)
+            } else {
+                Operation::UnicodeKeyReleased(ch)
+            }
+        }
+    }
 }
 
 fn enqueue_unicode_text(input_tx: &RdpInputSender, input_db: &mut Database, text: &str) -> Response {
@@ -314,6 +481,9 @@ struct Live {
     frame: Option<Frame>,
     rail_initial_execute: Option<(u16, String)>,
     rail: RailLedger,
+    /// Set by the certificate callback when strict validation rejects an untrusted certificate, so
+    /// the connection failure can tell the caller which fingerprint to trust.
+    certificate_rejection: Arc<Mutex<Option<CertificateRejection>>>,
 }
 
 const MAX_PENDING_RAIL_LAUNCHES: usize = 64;
@@ -570,6 +740,8 @@ impl Daemon {
                 log_directive,
             } => DaemonResponse::Single(self.connect(properties, log_directive)),
             Request::Disconnect => DaemonResponse::Single(self.disconnect()),
+            Request::DisconnectMatching { server } => DaemonResponse::Single(self.disconnect_matching(Some(&server))),
+            Request::DaemonStop => DaemonResponse::Single(Response::ok()),
             Request::Status => DaemonResponse::Single(self.status()),
             Request::QueryProps { filter } => DaemonResponse::Single(self.query_props(filter.as_ref())),
             Request::QueryLogs { substring, last } => {
@@ -580,6 +752,11 @@ impl Daemon {
             Request::ClipboardSet { text } => DaemonResponse::Single(self.clipboard_set(text)),
             Request::ClipboardGetImage => DaemonResponse::Single(self.clipboard_get_image()),
             Request::ClipboardSetImage { png } => DaemonResponse::Single(self.clipboard_set_image(png)),
+            Request::ClipboardGetHtml => DaemonResponse::Single(self.clipboard_get_html()),
+            Request::ClipboardSetHtml { html } => DaemonResponse::Single(self.clipboard_set_html(html)),
+            Request::ClipboardSetFiles { paths } => DaemonResponse::Single(self.clipboard_set_files(paths)),
+            Request::ClipboardListFiles => DaemonResponse::Single(self.clipboard_list_files()),
+            Request::ClipboardGetFile { index } => DaemonResponse::Single(self.clipboard_get_file(index).await),
             Request::MouseMove { x, y } => {
                 DaemonResponse::Single(self.input(Operation::MouseMove(MousePosition { x, y })))
             }
@@ -595,18 +772,21 @@ impl Daemon {
                 })))
             }
             Request::KeyScancode { scancode, pressed } => {
-                let scancode = Scancode::from_u16(scancode);
-                DaemonResponse::Single(self.input(if pressed {
-                    Operation::KeyPressed(scancode)
-                } else {
-                    Operation::KeyReleased(scancode)
-                }))
+                DaemonResponse::Single(self.input(operation_from_key_input(KeyInput::Scancode { scancode, pressed })))
             }
-            Request::KeyUnicode { ch, pressed } => DaemonResponse::Single(self.input(if pressed {
-                Operation::UnicodeKeyPressed(ch)
-            } else {
-                Operation::UnicodeKeyReleased(ch)
-            })),
+            Request::KeyUnicode { ch, pressed } => {
+                DaemonResponse::Single(self.input(operation_from_key_input(KeyInput::Unicode { ch, pressed })))
+            }
+            Request::KeyBatch { events } => {
+                if events.is_empty() || events.len() > MAX_KEY_BATCH_EVENTS {
+                    DaemonResponse::Single(Response::typed_error(
+                        crate::ipc::AgentErrorCategory::InvalidRequest,
+                        "invalid key batch event count",
+                    ))
+                } else {
+                    DaemonResponse::Single(self.input_operations(events.into_iter().map(operation_from_key_input)))
+                }
+            }
             Request::UnicodeText { text } => DaemonResponse::Single(self.unicode_text(&text)),
             Request::Resize { width, height } => DaemonResponse::Single(self.resize(width, height)),
             Request::NowCapabilities => DaemonResponse::Single(self.now_capabilities().await),
@@ -656,7 +836,10 @@ impl Daemon {
                     debug!("Refusing connect: a session is already active");
                     return Response::typed_error(
                         crate::ipc::AgentErrorCategory::Conflict,
-                        "a session is already active; disconnect first",
+                        format!(
+                            "a session is already active at {}; run `ironrdp-agent session list` or `ironrdp-agent session disconnect`",
+                            session.destination
+                        ),
                     );
                 }
             }
@@ -712,6 +895,55 @@ impl Daemon {
             // Headless: composite the remote cursor into the framebuffer so it appears in
             // screenshots (there is no separate overlay to draw it).
             .with_pointer_software_rendering(true);
+        // Under strict validation, a certificate that fails is still accepted when the user has
+        // pinned its exact fingerprint for this endpoint in the known-certificates store.
+        let certificate_rejection = Arc::new(Mutex::new(None));
+        let builder = if certificate_validation == CertificateValidation::Strict {
+            let mut store = match KnownCertificates::default_path().and_then(|path| KnownCertificates::load(&path)) {
+                Ok(store) => store,
+                Err(error) => {
+                    return Response::typed_error(
+                        crate::ipc::AgentErrorCategory::InvalidRequest,
+                        format!("invalid known-certificates store: {error:#}"),
+                    );
+                }
+            };
+            // A caller may accept one pinned certificate for this connection only (like mstsc's
+            // "Yes" without "Don't ask me again"). It is no broader than an entry in the store.
+            if let Some(entry) = properties.get::<&str>(ACCEPT_CERTIFICATE_PROPERTY) {
+                match KnownCertificates::parse(entry) {
+                    Ok(accepted) => {
+                        for (endpoint, fingerprint) in accepted.entries() {
+                            let _ = store.trust(endpoint, fingerprint);
+                        }
+                    }
+                    Err(error) => {
+                        return Response::typed_error(
+                            crate::ipc::AgentErrorCategory::InvalidRequest,
+                            format!("invalid {ACCEPT_CERTIFICATE_PROPERTY} property: {error:#}"),
+                        );
+                    }
+                }
+            }
+            let rejection = Arc::clone(&certificate_rejection);
+            let callback: ironrdp_tls::CertificateValidationCallback = Arc::new(move |der, endpoint, reason| {
+                if store.is_trusted(endpoint, der) {
+                    info!(%endpoint, "Accepted a server certificate pinned in the known-certificates store");
+                    return true;
+                }
+                let fingerprint = Fingerprint::of_certificate(der);
+                warn!(%endpoint, %fingerprint, %reason, "Rejected an untrusted server certificate");
+                *rejection.lock().expect("certificate rejection poisoned") = Some(CertificateRejection {
+                    endpoint: endpoint.to_owned(),
+                    fingerprint,
+                    reason: reason.to_owned(),
+                });
+                false
+            });
+            builder.with_certificate_validation_callback(callback)
+        } else {
+            builder
+        };
         // Prefer an explicit connect/overlay property; otherwise use the daemon startup default.
         // Always set smartcard explicitly so the client feature default (`true`) cannot announce a
         // smartcard device without a matching WinSCard backend.
@@ -787,9 +1019,37 @@ impl Daemon {
             None => client,
         };
         let input_tx = client.input_sender();
+        let clipboard_file_notify = Arc::new(tokio::sync::Notify::new());
+        // State left over from an abruptly-ended previous session is meaningless against this
+        // new one, and the remote file list plus its lock id are actively dangerous to keep: a
+        // `clipboard_get_file` call between sessions could otherwise fetch against a
+        // `remote_file_lock_id` that names a lock on a `CLIPRDR` channel that no longer exists.
+        // `local`/`local_file_paths` are deliberately left alone: an offer made before or between
+        // sessions is meant to survive and be advertised on the next connection.
+        {
+            let mut clipboard = self.clipboard.lock().expect("clipboard state poisoned");
+            clipboard.remote = None;
+            clipboard.remote_file_lock_id = None;
+            clipboard.negotiated_capabilities = ClipboardGeneralCapabilityFlags::empty();
+            // Marks the outgoing fetch Failed (keyed by its own stream_id) rather than silently
+            // clearing it: a waiter woken just below must actually resolve promptly through
+            // `take_finished_fetch_result`, not find nothing and fall through to its own 60s
+            // FETCH_TIMEOUT despite being woken here specifically to avoid that.
+            clipboard.abort_active_fetch();
+        }
+        // Wake a `clipboard_get_file` waiter left over from the outgoing session (if any) so it
+        // re-checks promptly instead of running out its own FETCH_TIMEOUT: its fetch was just
+        // cleared above, and without this it would otherwise only find out at its own deadline
+        // (see the stream_id-guarded clear in `clipboard_get_file`'s timeout path, which this
+        // pairs with: this is what lets that waiter wake up and leave promptly rather than
+        // silently sitting on a slot the next session has already reused).
+        if let Some(outgoing_session) = self.state.lock().expect("daemon state poisoned").as_ref() {
+            outgoing_session.clipboard_file_notify.notify_waiters();
+        }
         let client = client.with_cliprdr_backend_factory(Box::new(crate::clipboard::AgentCliprdrBackendFactory::new(
             Arc::clone(&self.clipboard),
             input_tx.clone(),
+            Arc::clone(&clipboard_file_notify),
         )));
 
         let rail_notify = Arc::new(tokio::sync::Notify::new());
@@ -804,6 +1064,7 @@ impl Daemon {
                 1,
                 initial_rail_execute,
             ),
+            certificate_rejection,
         }));
 
         // Capture this session's logs into the ring buffer (queryable via `Request::QueryLogs`)
@@ -847,6 +1108,7 @@ impl Daemon {
             rail_enabled,
             live,
             rail_notify,
+            clipboard_file_notify,
             operations: OperationManager::new(Arc::clone(&now_endpoint)),
             now_endpoint,
         });
@@ -858,8 +1120,22 @@ impl Daemon {
     ///
     /// # Panics
     ///
-    /// Panics if the daemon state mutex is poisoned.
+    /// Panics if the connect lock, daemon state, or session state mutex is poisoned.
     pub fn disconnect(&self) -> Response {
+        self.disconnect_matching(None)
+    }
+
+    fn disconnect_matching(&self, server: Option<&str>) -> Response {
+        let expected = match server.map(normalize_endpoint).transpose() {
+            Ok(expected) => expected,
+            Err(error) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::InvalidRequest,
+                    format!("invalid server: {error}"),
+                );
+            }
+        };
+        let _connect_guard = self.connect_lock.lock().expect("connect state poisoned");
         let mut guard = self.state.lock().expect("daemon state poisoned");
         match guard.as_mut() {
             None => {
@@ -867,6 +1143,26 @@ impl Daemon {
                 Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session")
             }
             Some(session) => {
+                if let Some(expected) = &expected {
+                    let actual = match normalize_endpoint(&session.destination) {
+                        Ok(actual) => actual,
+                        Err(error) => {
+                            return Response::typed_error(
+                                crate::ipc::AgentErrorCategory::Internal,
+                                format!("invalid active destination: {error}"),
+                            );
+                        }
+                    };
+                    if actual != *expected {
+                        return Response::typed_error(
+                            crate::ipc::AgentErrorCategory::Conflict,
+                            format!(
+                                "active session is {}, not {expected}; run `ironrdp-agent session list`",
+                                session.destination
+                            ),
+                        );
+                    }
+                }
                 let mut live = session.live.lock().expect("session live state poisoned");
                 match live.state {
                     ConnState::Connecting => {
@@ -898,12 +1194,28 @@ impl Daemon {
                 height: None,
                 message: None,
                 credentials_loaded: self.credentials_loaded,
+                untrusted_certificate: None,
             },
             Some(session) => {
                 let live = session.live.lock().expect("session live state poisoned");
                 let (width, height) = match &live.frame {
                     Some(frame) => (Some(frame.width), Some(frame.height)),
                     None => (None, None),
+                };
+                let untrusted_certificate = if live.state == ConnState::Failed {
+                    live.certificate_rejection
+                        .lock()
+                        .expect("certificate rejection poisoned")
+                        .as_ref()
+                        .map(|rejection| {
+                            Box::new(crate::ipc::UntrustedCertificate {
+                                endpoint: rejection.endpoint.clone(),
+                                sha256: rejection.fingerprint.to_string(),
+                                reason: rejection.reason.clone(),
+                            })
+                        })
+                } else {
+                    None
                 };
                 StatusInfo {
                     state: live.state,
@@ -912,6 +1224,7 @@ impl Daemon {
                     height,
                     message: live.error.clone(),
                     credentials_loaded: self.credentials_loaded,
+                    untrusted_certificate,
                 }
             }
         };
@@ -1106,9 +1419,9 @@ impl Daemon {
 
     /// Returns the last text received from the remote clipboard, if any.
     ///
-    /// `None` both when nothing has been received yet and when the last remote copy was an image,
-    /// not text; the two are indistinguishable from this call alone. Use `clipboard_get_image` for
-    /// the image case.
+    /// `None` when nothing has been received yet, or when the last remote copy was an image, HTML,
+    /// or files, not text; the cases are indistinguishable from this call alone. Use
+    /// `clipboard_get_image`, `clipboard_get_html`, or `clipboard_list_files` for those cases.
     ///
     /// # Panics
     ///
@@ -1116,7 +1429,12 @@ impl Daemon {
     fn clipboard_get(&self) -> Response {
         let text = match self.clipboard.lock().expect("clipboard state poisoned").remote.clone() {
             Some(crate::clipboard::ClipboardContent::Text(text)) => Some(text),
-            Some(crate::clipboard::ClipboardContent::Image(_)) | None => None,
+            Some(
+                crate::clipboard::ClipboardContent::Image(_)
+                | crate::clipboard::ClipboardContent::Html(_)
+                | crate::clipboard::ClipboardContent::Files(_),
+            )
+            | None => None,
         };
         Response::Ok(Payload::ClipboardText(text))
     }
@@ -1136,8 +1454,9 @@ impl Daemon {
 
     /// Returns the last image received from the remote clipboard as PNG bytes, if any.
     ///
-    /// `None` both when nothing has been received yet and when the last remote copy was text, not
-    /// an image. Use `clipboard_get` for the text case.
+    /// `None` when nothing has been received yet, or when the last remote copy was text, HTML, or
+    /// files, not an image. Use `clipboard_get`, `clipboard_get_html`, or `clipboard_list_files`
+    /// for those cases.
     ///
     /// # Panics
     ///
@@ -1145,7 +1464,12 @@ impl Daemon {
     fn clipboard_get_image(&self) -> Response {
         let png = match self.clipboard.lock().expect("clipboard state poisoned").remote.clone() {
             Some(crate::clipboard::ClipboardContent::Image(png)) => Some(png),
-            Some(crate::clipboard::ClipboardContent::Text(_)) | None => None,
+            Some(
+                crate::clipboard::ClipboardContent::Text(_)
+                | crate::clipboard::ClipboardContent::Html(_)
+                | crate::clipboard::ClipboardContent::Files(_),
+            )
+            | None => None,
         };
         Response::Ok(Payload::ClipboardImage(png))
     }
@@ -1171,6 +1495,41 @@ impl Daemon {
         Response::ok()
     }
 
+    /// Returns the last HTML fragment received from the remote clipboard, if any.
+    ///
+    /// `None` when nothing has been received yet, or when the last remote copy was text, an image,
+    /// or files, not HTML.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard state mutex is poisoned.
+    fn clipboard_get_html(&self) -> Response {
+        let html = match self.clipboard.lock().expect("clipboard state poisoned").remote.clone() {
+            Some(crate::clipboard::ClipboardContent::Html(html)) => Some(html),
+            Some(
+                crate::clipboard::ClipboardContent::Text(_)
+                | crate::clipboard::ClipboardContent::Image(_)
+                | crate::clipboard::ClipboardContent::Files(_),
+            )
+            | None => None,
+        };
+        Response::Ok(Payload::ClipboardHtml(html))
+    }
+
+    /// Sets the local clipboard HTML fragment and, if a session is connected, advertises it to
+    /// the remote as the registered `HTML Format`.
+    ///
+    /// Replaces any text or image previously set with `clipboard_set`/`clipboard_set_image`:
+    /// local content is a single logical item, not a per-format set.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard state mutex is poisoned.
+    fn clipboard_set_html(&self, html: String) -> Response {
+        self.set_local_and_advertise(crate::clipboard::ClipboardContent::Html(html));
+        Response::ok()
+    }
+
     /// Sets `local` to `content` and, if a session is connected, advertises it to the remote, as
     /// one atomic step under the clipboard mutex.
     ///
@@ -1193,6 +1552,278 @@ impl Daemon {
             let _ = session.input_tx.send_clipboard(ClipboardMessage::SendInitiateCopy(
                 crate::clipboard::advertised_formats(&content),
             ));
+        }
+    }
+
+    /// Offers local files to the remote via the `CLIPRDR` file-list mechanism, replacing any
+    /// other local clipboard content.
+    ///
+    /// Each path must name a single regular file: a directory is rejected outright rather than
+    /// silently skipped or partially handled, since this daemon does not (yet) support recursive
+    /// folder copy. Unlike `clipboard_set`/`clipboard_set_image`, a connected session that has not
+    /// negotiated file transfer support fails the whole call instead of storing the offer anyway:
+    /// `Cliprdr::initiate_file_copy` itself hard-errors without `STREAM_FILECLIP_ENABLED`, and
+    /// that error is session-fatal by the time it reaches `ironrdp-client`'s dispatcher, so this
+    /// must be caught here rather than risk sending the message at all.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard or daemon state mutex is poisoned.
+    fn clipboard_set_files(&self, paths: Vec<String>) -> Response {
+        if paths.is_empty() {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::InvalidRequest, "no files given");
+        }
+        if paths.len() > MAX_CLIPBOARD_FILE_LIST_ENTRIES {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::InvalidRequest, "too many files");
+        }
+
+        let mut descriptors = Vec::with_capacity(paths.len());
+        let mut local_paths = Vec::with_capacity(paths.len());
+        for path in paths {
+            let path = PathBuf::from(path);
+            let metadata = match std::fs::metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    return Response::typed_error(
+                        crate::ipc::AgentErrorCategory::InvalidRequest,
+                        format!("{}: {error}", path.display()),
+                    );
+                }
+            };
+            if !metadata.is_file() {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::InvalidRequest,
+                    format!(
+                        "{}: not a regular file (directories are not supported, name individual files)",
+                        path.display()
+                    ),
+                );
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::InvalidRequest,
+                    format!("{}: not a valid file name", path.display()),
+                );
+            };
+            let mut descriptor = FileDescriptor::new(name)
+                .with_attributes(ClipboardFileAttributes::NORMAL)
+                .with_file_size(metadata.len());
+            if let Ok(modified) = metadata.modified() {
+                descriptor = descriptor.with_last_write_time(system_time_to_filetime(modified));
+            }
+            descriptors.push(descriptor);
+            local_paths.push(path);
+        }
+
+        let mut clipboard = self.clipboard.lock().expect("clipboard state poisoned");
+        if let Some(session) = self.state.lock().expect("daemon state poisoned").as_ref() {
+            if !clipboard
+                .negotiated_capabilities
+                .contains(ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED)
+            {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "the connected session's server does not support file transfer",
+                );
+            }
+            clipboard.local = Some(crate::clipboard::ClipboardContent::Files(descriptors.clone()));
+            clipboard.local_file_paths = local_paths;
+            let _ = session
+                .input_tx
+                .send_clipboard(ClipboardMessage::SendInitiateFileCopy(descriptors));
+        } else {
+            clipboard.local = Some(crate::clipboard::ClipboardContent::Files(descriptors));
+            clipboard.local_file_paths = local_paths;
+        }
+        Response::ok()
+    }
+
+    /// Lists the remote's currently offered files, if any. Metadata only: nothing is fetched.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard state mutex is poisoned.
+    fn clipboard_list_files(&self) -> Response {
+        let clipboard = self.clipboard.lock().expect("clipboard state poisoned");
+        let files = match clipboard.remote.as_ref() {
+            Some(crate::clipboard::ClipboardContent::Files(files)) => Some(
+                files
+                    .iter()
+                    .map(|descriptor| ClipboardFileEntry {
+                        name: descriptor.name.clone(),
+                        relative_path: descriptor.relative_path.clone(),
+                        is_directory: descriptor
+                            .attributes
+                            .is_some_and(|attributes| attributes.contains(ClipboardFileAttributes::DIRECTORY)),
+                        size: descriptor.file_size,
+                        last_write_time: descriptor.last_write_time.and_then(filetime_to_unix_secs),
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        };
+        Response::Ok(Payload::ClipboardFileList(files))
+    }
+
+    /// Fetches one file's full contents from the remote by its position in the last file list
+    /// `clipboard_list_files` returned, bounded at `MAX_CLIPBOARD_FILE_BYTES`.
+    ///
+    /// Drives `ChunkedFetch` to completion, issuing successive `FileContentsRequest`s and waiting
+    /// on `Session::clipboard_file_notify` for `AgentCliprdrBackend::on_file_contents_response` to
+    /// advance it, the same wait-and-recheck shape `rail_wait` uses for RAIL evidence.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard or daemon state mutex is poisoned.
+    async fn clipboard_get_file(&self, index: i32) -> Response {
+        // Idle timeout, not a total-transfer budget: recomputed on every loop iteration below so
+        // it resets on each chunk's progress, matching `Cliprdr`'s own per-request
+        // `transfer_timeout`. A fixed total-transfer deadline would time out a large file over a
+        // slow-but-healthy link even though each individual chunk arrives well within its own
+        // allowance.
+        const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
+
+        // `clipboard_set_files` and `set_local_and_advertise` lock `clipboard` before `state`;
+        // taking the two in the opposite order here would deadlock against either racing on
+        // another IPC connection. Clone what this function needs from the session while `state`
+        // is held, then release it before `clipboard` is ever locked.
+        let (input_tx, clipboard_file_notify) = {
+            let guard = self.state.lock().expect("daemon state poisoned");
+            let Some(session) = guard.as_ref() else {
+                return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+            };
+            (session.input_tx.clone(), Arc::clone(&session.clipboard_file_notify))
+        };
+
+        let (notify, stream_id) = {
+            let mut clipboard = self.clipboard.lock().expect("clipboard state poisoned");
+            if !clipboard
+                .negotiated_capabilities
+                .contains(ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED)
+            {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "the connected session's server does not support file transfer",
+                );
+            }
+            if clipboard.active_fetch.is_some() {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Conflict,
+                    "another clipboard file fetch is already in progress",
+                );
+            }
+            let Some(crate::clipboard::ClipboardContent::Files(files)) = clipboard.remote.as_ref() else {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "the remote clipboard has no files",
+                );
+            };
+            let Ok(list_index) = usize::try_from(index) else {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::InvalidRequest,
+                    "index must not be negative",
+                );
+            };
+            let Some(descriptor) = files.get(list_index) else {
+                return Response::typed_error(crate::ipc::AgentErrorCategory::InvalidRequest, "index out of range");
+            };
+            if descriptor
+                .attributes
+                .is_some_and(|attributes| attributes.contains(ClipboardFileAttributes::DIRECTORY))
+            {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::InvalidRequest,
+                    "index names a directory, not a file",
+                );
+            }
+
+            // A declared zero-size file is legitimately already complete: ChunkedFetch::new
+            // starts it in the Complete state with an empty buffer, so its next_request() is
+            // None immediately, indistinguishable from the oversized-Failed case below by that
+            // signal alone. Short-circuit here instead of letting it fall into the "exceeds the
+            // transport limit" branch, which would misreport an empty file as too large.
+            let file_size = descriptor.file_size;
+            if file_size == Some(0) {
+                return Response::Ok(Payload::ClipboardFile(Vec::new()));
+            }
+
+            let clip_data_id = clipboard.remote_file_lock_id;
+            let max_total_size = u64::try_from(MAX_CLIPBOARD_FILE_BYTES).unwrap_or(u64::MAX);
+            let stream_id = clipboard.next_file_stream_id();
+            let mut fetch = match file_size {
+                Some(size) => ChunkedFetch::new(
+                    stream_id,
+                    index,
+                    size,
+                    crate::clipboard::FILE_FETCH_CHUNK_SIZE,
+                    clip_data_id,
+                    max_total_size,
+                ),
+                None => ChunkedFetch::new_with_size_query(
+                    stream_id,
+                    index,
+                    crate::clipboard::FILE_FETCH_CHUNK_SIZE,
+                    clip_data_id,
+                    max_total_size,
+                ),
+            };
+            // Past the zero-size short-circuit above, a None here can only be the oversized-Failed
+            // case (a same-call SIZE query completing synchronously is not a real path: `Fetching`
+            // and `AwaitingSize` both always have a request to issue next).
+            let Some(first_request) = fetch.next_request() else {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::InvalidRequest,
+                    "file exceeds the clipboard RPC transport limit",
+                );
+            };
+
+            clipboard.active_fetch = Some(fetch);
+            clipboard.active_fetch_lock_id = clip_data_id;
+            clipboard.active_fetch_result = None;
+            clipboard.active_fetch_result_stream_id = None;
+            let _ = input_tx.send_clipboard(ClipboardMessage::SendFileContentsRequest(first_request));
+            (clipboard_file_notify, stream_id)
+        };
+
+        loop {
+            // Recomputed each iteration: an idle timeout since the last progress notification,
+            // not a fixed budget for the whole (possibly multi-chunk) transfer.
+            let deadline = tokio::time::Instant::now() + FETCH_TIMEOUT;
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            let _ = notified.as_mut().enable();
+
+            {
+                let mut clipboard = self.clipboard.lock().expect("clipboard state poisoned");
+                if let Some(response) = take_finished_fetch_result(&mut clipboard, stream_id) {
+                    return response;
+                }
+            }
+
+            if tokio::time::timeout_at(deadline, &mut notified).await.is_err() {
+                // The wait itself timed out, but the result could have landed in the same
+                // instant the deadline elapsed (`on_file_contents_response` and this timeout race
+                // on the same clock); re-check once more under the lock before concluding the
+                // fetch is genuinely stuck, the same way `rail_wait` re-checks live state after
+                // its own timeout rather than assuming nothing arrived.
+                let mut clipboard = self.clipboard.lock().expect("clipboard state poisoned");
+                if let Some(response) = take_finished_fetch_result(&mut clipboard, stream_id) {
+                    return response;
+                }
+                // Only clear the shared fetch slot if it is still this call's own fetch: a
+                // session transition (`connect`) may have already cleared it, or a later call
+                // may have started a new fetch in the interim after finding the slot empty, and
+                // this stale timeout must not clobber that unrelated, still-in-progress fetch.
+                if clipboard
+                    .active_fetch
+                    .as_ref()
+                    .is_some_and(|fetch| fetch.stream_id() == stream_id)
+                {
+                    clipboard.active_fetch = None;
+                    clipboard.active_fetch_lock_id = None;
+                }
+                return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "file fetch timed out");
+            }
         }
     }
 
@@ -1657,7 +2288,15 @@ async fn consume_output(
             RdpOutputEvent::ConnectionFailure(error) => {
                 guard.state = ConnState::Failed;
                 let error = error.report();
-                guard.error = Some(error.to_string());
+                let rejection = guard
+                    .certificate_rejection
+                    .lock()
+                    .expect("certificate rejection poisoned")
+                    .clone();
+                guard.error = Some(match rejection {
+                    Some(rejection) => format!("{error}; {rejection}"),
+                    None => error.to_string(),
+                });
                 let rail_changed = guard.rail.fail_pending_launches();
                 error!(%error, "Session connection failed");
                 rail_changed
@@ -1740,9 +2379,10 @@ fn encode_png(width: u16, height: u16, pixels: &[u32]) -> anyhow::Result<Vec<u8>
 /// `ironrdp-viewer` but quieter by default. The RDP session's logs are captured separately into a
 /// ring buffer (see [`logbuf::session_dispatch`]). Best-effort: a no-op if a global subscriber is
 /// already set.
-fn init_daemon_logging() {
+fn init_daemon_logging(log: Option<std::fs::File>) {
     use tracing::level_filters::LevelFilter;
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::fmt::writer::BoxMakeWriter;
     use tracing_subscriber::prelude::*;
 
     let env_filter = EnvFilter::builder()
@@ -1750,7 +2390,14 @@ fn init_daemon_logging() {
         .with_env_var("IRONRDP_LOG")
         .from_env_lossy();
 
-    let fmt_layer = tracing_subscriber::fmt::layer().compact().with_writer(std::io::stderr);
+    let writer = match log {
+        Some(file) => BoxMakeWriter::new(Mutex::new(BoundedLog {
+            file,
+            limit: MAX_DAEMON_LOG_BYTES,
+        })),
+        None => BoxMakeWriter::new(io::stderr),
+    };
+    let fmt_layer = tracing_subscriber::fmt::layer().compact().with_writer(writer);
 
     let _ = tracing_subscriber::registry()
         .with(env_filter)
@@ -1887,21 +2534,26 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
+    use crate::known_certificates::{CertificateRejection, Fingerprint};
+
     use ironrdp_cfg::{GatewayUsageMethod, PropertySetExt as _};
     use tokio::sync::mpsc;
 
     use ironrdp_client::output_channel::output_channel;
     use ironrdp_client::rdp::{RdpInputEvent, RdpInputSender};
+    use ironrdp_cliprdr::chunked_fetch::{ChunkedFetch, ChunkedFetchProgress};
+    use ironrdp_cliprdr::pdu::{ClipboardGeneralCapabilityFlags, FileDescriptor};
     use ironrdp_input::{Database, Operation};
     use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
     use ironrdp_propertyset::PropertySet;
 
     use super::{
-        ConnState, Daemon, DaemonOptions, Live, MAX_PENDING_RAIL_LAUNCHES, MAX_RAIL_RETAINED_EVENTS,
-        MAX_UNICODE_TEXT_CHARS, NowEndpoint, OperationManager, RailLedger, RdpdrDriveConfig, ResizeError, Session,
-        consume_output, enqueue_unicode_text, notify,
+        BoundedLog, ConnState, Daemon, DaemonOptions, Live, MAX_PENDING_RAIL_LAUNCHES, MAX_RAIL_RETAINED_EVENTS,
+        MAX_UNICODE_TEXT_CHARS, NowEndpoint, OperationManager, RailLedger, RdpdrDriveConfig, Request, ResizeError,
+        Scancode, Session, consume_output, enqueue_unicode_text, filetime_to_unix_secs, notify,
+        system_time_to_filetime,
     };
-    use crate::ipc::{Payload, Response};
+    use crate::ipc::{AgentErrorCategory, Payload, Response};
     use ironrdp_rpc::ipc::{RailEventKind, RailExecuteRequest, RailLaunchInfo};
     use ironrdp_tls::CertificateValidation;
 
@@ -1915,6 +2567,32 @@ mod tests {
 
         assert_eq!(receiver.try_recv(), Ok(()));
         assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn filetime_round_trips_through_unix_seconds() {
+        // 2026-01-15T00:00:00Z, an arbitrary post-epoch instant with no special significance
+        // beyond being easy to eyeball.
+        let unix_secs = 1_768_435_200u64;
+        let time = std::time::UNIX_EPOCH + Duration::from_secs(unix_secs);
+
+        let filetime = system_time_to_filetime(time);
+        assert_eq!(filetime_to_unix_secs(filetime), Some(unix_secs));
+    }
+
+    #[test]
+    fn filetime_before_unix_epoch_is_none() {
+        // FILETIME epoch (1601-01-01) itself: representable on the wire, but converts to a
+        // negative Unix time, which `filetime_to_unix_secs` reports as absent rather than wrap.
+        assert_eq!(filetime_to_unix_secs(0), None);
+    }
+
+    #[test]
+    fn system_time_before_unix_epoch_encodes_as_zero() {
+        // `SystemTime` can represent times before the Unix epoch on this platform; not a real
+        // file's mtime, but must not panic.
+        let time = std::time::UNIX_EPOCH - Duration::from_secs(1);
+        assert_eq!(system_time_to_filetime(time), 0);
     }
 
     #[test]
@@ -2013,6 +2691,7 @@ mod tests {
             frame: None,
             rail_initial_execute: Some((0, "notepad.exe".to_owned())),
             rail: RailLedger::new(1, 1, Some((0, "notepad.exe".to_owned()))),
+            certificate_rejection: Arc::default(),
         }));
         {
             let mut guard = live.lock().expect("session live state poisoned");
@@ -2073,6 +2752,7 @@ mod tests {
             frame: None,
             rail_initial_execute: None,
             rail: RailLedger::new(1, 1, None),
+            certificate_rejection: Arc::default(),
         }));
         let rail_notify = Arc::new(tokio::sync::Notify::new());
         *daemon.state.lock().expect("daemon state poisoned") = Some(Session {
@@ -2082,10 +2762,108 @@ mod tests {
             rail_enabled,
             live: Arc::clone(&live),
             rail_notify: Arc::clone(&rail_notify),
+            clipboard_file_notify: Arc::new(tokio::sync::Notify::new()),
             operations: OperationManager::new(Arc::clone(&now_endpoint)),
             now_endpoint,
         });
         (daemon, input_rx, live, rail_notify)
+    }
+
+    #[test]
+    fn guarded_disconnect_only_closes_the_matching_session() {
+        let (daemon, _input_rx, live, _) = active_rail_session(false);
+        assert!(matches!(
+            daemon.disconnect_matching(Some("other.example")),
+            Response::Err(error) if error.category == AgentErrorCategory::Conflict
+        ));
+        assert_eq!(
+            live.lock().expect("session live state poisoned").state,
+            ConnState::Connected
+        );
+        assert!(matches!(
+            daemon.disconnect_matching(Some("server.example:notaport")),
+            Response::Err(error) if error.category == AgentErrorCategory::InvalidRequest
+        ));
+        assert_eq!(
+            live.lock().expect("session live state poisoned").state,
+            ConnState::Connected
+        );
+        assert!(daemon.disconnect_matching(Some("SERVER.EXAMPLE:3389")).is_ok());
+        assert_eq!(
+            live.lock().expect("session live state poisoned").state,
+            ConnState::Disconnecting
+        );
+    }
+
+    #[tokio::test]
+    async fn key_batch_count_is_checked_even_without_wire_decoding() {
+        use crate::ipc::{KeyInput, MAX_KEY_BATCH_EVENTS};
+
+        let (daemon, mut receiver, _live, _) = active_rail_session(false);
+        for count in [0, MAX_KEY_BATCH_EVENTS + 1] {
+            let response = daemon
+                .handle(Request::KeyBatch {
+                    events: vec![
+                        KeyInput::Scancode {
+                            scancode: 0x1D,
+                            pressed: true
+                        };
+                        count
+                    ],
+                })
+                .await;
+            assert!(matches!(
+                response.response(),
+                Response::Err(error) if error.category == AgentErrorCategory::InvalidRequest
+            ));
+            assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+        }
+    }
+
+    #[tokio::test]
+    async fn key_batch_is_atomic_under_input_queue_backpressure() {
+        use crate::ipc::KeyInput;
+
+        let (daemon, mut receiver, _live, _) = active_rail_session(false);
+        let key = Scancode::from_u16(0x1D);
+        let batch = || Request::KeyBatch {
+            events: vec![
+                KeyInput::Scancode {
+                    scancode: 0x1D,
+                    pressed: true,
+                },
+                KeyInput::Scancode {
+                    scancode: 0x1D,
+                    pressed: false,
+                },
+            ],
+        };
+        assert!(daemon.handle(batch()).await.response().is_ok());
+        assert!(
+            !daemon
+                .state
+                .lock()
+                .expect("daemon state poisoned")
+                .as_ref()
+                .expect("session")
+                .input_db
+                .is_key_pressed(key)
+        );
+        assert!(matches!(
+            daemon.handle(batch()).await.response(),
+            Response::Err(error) if error.message == "session input channel is unavailable"
+        ));
+        let RdpInputEvent::FastPath(events) = receiver.try_recv().expect("one atomic input message") else {
+            panic!("expected FastPath input");
+        };
+        assert_eq!(
+            events.as_slice(),
+            [
+                FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x1D),
+                FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x1D),
+            ]
+        );
+        assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
     }
 
     #[tokio::test]
@@ -2376,6 +3154,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn certificate_rejection_explains_how_to_trust_the_certificate() {
+        let (daemon, _, live, rail_notify) = active_rail_session(false);
+        let fingerprint = Fingerprint::of_certificate(b"certificate");
+        *live
+            .lock()
+            .expect("session live state poisoned")
+            .certificate_rejection
+            .lock()
+            .expect("certificate rejection poisoned") = Some(CertificateRejection {
+            endpoint: "it-help-rdm:3389".to_owned(),
+            fingerprint,
+            reason: "name mismatch".to_owned(),
+        });
+        let (output_tx, output_rx) = output_channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            live,
+            None,
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::ConnectionFailure(
+                ironrdp_connector::custom_err!("TLS upgrade", std::io::Error::other("invalid peer certificate")),
+            ))
+            .await
+            .expect("send connection failure");
+        drop(output_tx);
+        consumer.await.expect("consume output");
+
+        let Response::Ok(Payload::Status(status)) = daemon.status() else {
+            panic!("expected status response");
+        };
+        let message = status.message.expect("connection failure message");
+
+        assert!(message.starts_with("[TLS upgrade] custom error, caused by: invalid peer certificate; "));
+        assert!(message.contains(&format!("ironrdp-agent cert trust it-help-rdm:3389 {fingerprint}")));
+        assert_eq!(
+            status.untrusted_certificate,
+            Some(Box::new(crate::ipc::UntrustedCertificate {
+                endpoint: "it-help-rdm:3389".to_owned(),
+                sha256: fingerprint.to_string(),
+                reason: "name mismatch".to_owned(),
+            }))
+        );
+    }
+
+    #[tokio::test]
     async fn terminated_error_status_preserves_session_error_sources() {
         let (daemon, _, live, rail_notify) = active_rail_session(false);
         let (output_tx, output_rx) = output_channel(1);
@@ -2488,6 +3314,33 @@ mod tests {
             insecure.certificate_validation(),
             CertificateValidation::DangerouslyAcceptInvalidCertificate
         );
+    }
+
+    #[test]
+    fn daemon_log_truncates_while_running() {
+        use std::io::Write as _;
+
+        let path = std::env::temp_dir().join(format!(
+            "ironrdp-bounded-log-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos(),
+        ));
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .expect("create test log");
+        let mut log = BoundedLog { file, limit: 12 };
+        log.write_all(b"1234567890").expect("first write");
+        log.write_all(b"next").expect("rotate on next write");
+        log.write_all(b"xxxxxxxxxxxxxxxx").expect("oversized write");
+        log.write_all(b"ok").expect("rotate again");
+        assert_eq!(std::fs::read(&path).expect("read log"), b"ok");
+        drop(log);
+        std::fs::remove_file(path).expect("remove test log");
     }
 
     #[test]
@@ -2699,5 +3552,199 @@ mod tests {
                 Err(error) if error.to_string() == "rdpdr volume root must use the X:\\ form"
             ));
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_fetch_does_not_clobber_a_fetch_started_after_it() {
+        // Regression test for the race the stream_id guard in `clipboard_get_file`'s timeout
+        // path closes: a session transition (`connect`) can clear a stuck fetch's slot out from
+        // under a still-sleeping waiter, a new call can then start a fresh fetch in that slot,
+        // and the original waiter's own deadline must not clobber that unrelated fetch when it
+        // finally elapses.
+        let (daemon, _input_rx, _live, _rail_notify) = active_rail_session(true);
+        {
+            let mut clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+            clipboard.negotiated_capabilities = ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED;
+            clipboard.remote = Some(crate::clipboard::ClipboardContent::Files(vec![
+                FileDescriptor::new("a.bin").with_file_size(10),
+            ]));
+        }
+
+        let daemon = Arc::new(daemon);
+        let fetch_a = tokio::spawn({
+            let daemon = Arc::clone(&daemon);
+            async move { daemon.clipboard_get_file(0).await }
+        });
+
+        // Let fetch_a register itself (stream_id 1, the first one `ClipboardState::default`
+        // hands out) before simulating the session transition.
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        {
+            let clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+            assert_eq!(
+                clipboard.active_fetch.as_ref().map(ChunkedFetch::stream_id),
+                Some(1),
+                "fetch_a should have registered its fetch by now"
+            );
+        }
+
+        // Simulate `connect`'s reset (clearing fetch_a's slot without resolving it) immediately
+        // followed by a second, unrelated call starting a fresh fetch in the same slot: what
+        // matters for this test is that a *different* stream_id now occupies the slot.
+        {
+            let mut clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+            clipboard.active_fetch = Some(ChunkedFetch::new_with_size_query(99, 0, 4096, None, u64::MAX));
+            clipboard.active_fetch_lock_id = None;
+            clipboard.active_fetch_result = None;
+            clipboard.active_fetch_result_stream_id = None;
+        }
+
+        // Push past fetch_a's 60s deadline; nothing ever answers its FileContentsRequest, so it
+        // times out.
+        tokio::time::advance(Duration::from_secs(61)).await;
+        let response = fetch_a.await.expect("fetch_a task did not panic");
+        assert!(matches!(
+            response,
+            Response::Err(err) if err.message.contains("timed out")
+        ));
+
+        // The unrelated fetch (stream_id 99) must still be there: fetch_a's stale timeout must
+        // not have cleared it.
+        let clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+        assert_eq!(
+            clipboard.active_fetch.as_ref().map(ChunkedFetch::stream_id),
+            Some(99),
+            "fetch_a's timeout must not clobber a fetch it does not own"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stale_waiter_does_not_consume_a_later_fetch_result() {
+        // Regression test for the `active_fetch_result_stream_id` guard: an aborted fetch clears
+        // `active_fetch` in the same step it sets `active_fetch_result`, so a later, unrelated
+        // fetch can start and finish in the same slot before the first call's own waiter is
+        // scheduled to consume it. Without the guard, `take_finished_fetch_result` would hand
+        // fetch_a a completion meant for fetch_b, and fetch_b would then block out its own
+        // timeout for a result that was already taken out from under it.
+        let (daemon, _input_rx, _live, _rail_notify) = active_rail_session(true);
+        {
+            let mut clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+            clipboard.negotiated_capabilities = ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED;
+            clipboard.remote = Some(crate::clipboard::ClipboardContent::Files(vec![
+                FileDescriptor::new("a.bin").with_file_size(10),
+            ]));
+        }
+
+        let daemon = Arc::new(daemon);
+        let fetch_a = tokio::spawn({
+            let daemon = Arc::clone(&daemon);
+            async move { daemon.clipboard_get_file(0).await }
+        });
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        {
+            let clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+            assert_eq!(
+                clipboard.active_fetch.as_ref().map(ChunkedFetch::stream_id),
+                Some(1),
+                "fetch_a should have registered its fetch by now"
+            );
+        }
+
+        let notify = {
+            let guard = daemon.state.lock().expect("daemon state poisoned");
+            Arc::clone(&guard.as_ref().expect("session installed").clipboard_file_notify)
+        };
+
+        // Simulate fetch_a's fetch being aborted and, before fetch_a's task ever gets scheduled
+        // to react, a second, unrelated fetch (stream_id 99) starting and completing in the same
+        // slot. A zero-size fetch starts already `Complete`, matching what a real completed fetch
+        // looks like from `take_finished_fetch_result`'s perspective.
+        {
+            let mut clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+            clipboard.active_fetch = Some(ChunkedFetch::new(99, 1, 0, 4096, None, u64::MAX));
+            clipboard.active_fetch_lock_id = None;
+            clipboard.active_fetch_result = Some(ChunkedFetchProgress::Complete);
+            clipboard.active_fetch_result_stream_id = Some(99);
+        }
+        notify.notify_waiters();
+        tokio::task::yield_now().await;
+
+        assert!(
+            !fetch_a.is_finished(),
+            "fetch_a must not have consumed fetch_b's result"
+        );
+        {
+            let clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+            assert_eq!(
+                clipboard.active_fetch.as_ref().map(ChunkedFetch::stream_id),
+                Some(99),
+                "fetch_b's still-unconsumed result must remain in the slot"
+            );
+            assert!(matches!(
+                clipboard.active_fetch_result,
+                Some(ChunkedFetchProgress::Complete)
+            ));
+        }
+
+        // fetch_a eventually times out on its own; fetch_b's result is untouched by that timeout
+        // (already covered by `timed_out_fetch_does_not_clobber_a_fetch_started_after_it`), and a
+        // real caller for stream_id 99 would still find its own result intact.
+        tokio::time::advance(Duration::from_secs(61)).await;
+        let response = fetch_a.await.expect("fetch_a task did not panic");
+        assert!(matches!(
+            response,
+            Response::Err(err) if err.message.contains("timed out")
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn steady_progress_beyond_the_total_timeout_does_not_time_out() {
+        // Regression test for the idle-vs-total-transfer timeout fix: a fetch that keeps making
+        // progress at intervals under FETCH_TIMEOUT must not time out just because the *total*
+        // elapsed time exceeds FETCH_TIMEOUT, since each individual chunk is arriving well within
+        // its own allowance (matching `Cliprdr`'s per-request `transfer_timeout` semantics).
+        let (daemon, _input_rx, _live, _rail_notify) = active_rail_session(true);
+        {
+            let mut clipboard = daemon.clipboard.lock().expect("clipboard state poisoned");
+            clipboard.negotiated_capabilities = ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED;
+            clipboard.remote = Some(crate::clipboard::ClipboardContent::Files(vec![
+                FileDescriptor::new("a.bin").with_file_size(10),
+            ]));
+        }
+
+        let notify = {
+            let guard = daemon.state.lock().expect("daemon state poisoned");
+            Arc::clone(&guard.as_ref().expect("session installed").clipboard_file_notify)
+        };
+
+        let daemon = Arc::new(daemon);
+        let fetch = tokio::spawn({
+            let daemon = Arc::clone(&daemon);
+            async move { daemon.clipboard_get_file(0).await }
+        });
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+
+        // Two progress notifications 50s apart (100s cumulative, well past the old fixed 60s
+        // deadline), neither leaving a 60s idle gap.
+        for _ in 0..2 {
+            tokio::time::advance(Duration::from_secs(50)).await;
+            notify.notify_waiters();
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !fetch.is_finished(),
+            "steady sub-60s progress must not have timed out the fetch"
+        );
+
+        // A genuine 60s idle gap (no further notify) still times it out.
+        tokio::time::advance(Duration::from_secs(61)).await;
+        let response = fetch.await.expect("fetch task did not panic");
+        assert!(matches!(
+            response,
+            Response::Err(err) if err.message.contains("timed out")
+        ));
     }
 }

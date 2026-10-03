@@ -463,6 +463,18 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             .await
         }
         Request::Disconnect => queue_command(shared, dispatcher, |response| Command::Disconnect { response }).await,
+        Request::DisconnectMatching { .. } => Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "guarded disconnect requires the daemon backend",
+        ),
+        Request::KeyBatch { .. } => Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "key batch requires the daemon backend",
+        ),
+        Request::DaemonStop => Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "daemon stop is not supported by ActiveX",
+        ),
         Request::Status => status(shared),
         Request::QueryProps { filter } => query_props(shared, filter.as_ref()),
         Request::QueryLogs { substring, last } => query_logs(shared, substring.as_deref(), last),
@@ -559,7 +571,12 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
         Request::ClipboardGet
         | Request::ClipboardSet { .. }
         | Request::ClipboardGetImage
-        | Request::ClipboardSetImage { .. } => Response::typed_error(
+        | Request::ClipboardSetImage { .. }
+        | Request::ClipboardGetHtml
+        | Request::ClipboardSetHtml { .. }
+        | Request::ClipboardSetFiles { .. }
+        | Request::ClipboardListFiles
+        | Request::ClipboardGetFile { .. } => Response::typed_error(
             AgentErrorCategory::Unavailable,
             "clipboard access is unavailable through ActiveX",
         ),
@@ -644,6 +661,7 @@ fn status(shared: &Shared) -> Response {
         height,
         message: live.error.clone(),
         credentials_loaded: false,
+        untrusted_certificate: None,
     }))
 }
 

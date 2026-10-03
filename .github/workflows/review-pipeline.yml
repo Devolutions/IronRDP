@@ -33,21 +33,18 @@ on:
         required: false
         type: string
         default: ""
-      retry-delay-seconds:
-        description: Delay before the single retry of a transiently failed reviewer stage
+      lease:
+        description: Automatic review ownership marker
         required: false
         type: string
-        default: "120"
+        default: ""
     outputs:
-      output:
-        description: Validated final review JSON
-        value: ${{ jobs.validate.outputs.output }}
       failure-reason:
         description: Bounded failure reason when no valid review was produced
         value: ${{ jobs.validate.outputs.reason }}
-      report:
-        description: Canonical per-stage outcome and metric report
-        value: ${{ jobs.report.outputs.report }}
+      superseded:
+        description: Whether a trusted automatic-review recheck superseded this run
+        value: ${{ jobs.recheck.outputs.superseded }}
 
 permissions: {}
 
@@ -144,7 +141,7 @@ jobs:
             const fs = require("node:fs");
             const { addedLinesByPath, listPrFiles } = require("./.github/pr-automation/deterministic-analysis");
             const { fetchReviewContext } = require("./.github/pr-automation/fetch-review-context");
-            const { assertCurrentHead } = require("./.github/pr-automation/review-retry");
+            const { assertCurrentHead } = require("./.github/pr-automation/current-head");
             const pullNumber = Number(process.env.PULL_REQUEST_NUMBER);
             const expectedSha = process.env.HEAD_SHA;
             const assertHead = () => assertCurrentHead({
@@ -167,6 +164,7 @@ jobs:
             fs.writeFileSync(
               "pr-evidence/validation-context.json",
               JSON.stringify({
+                head_sha: expectedSha,
                 changed_paths: files.map((file) => file.filename),
                 changed_lines: addedLinesByPath(files),
               }),
@@ -199,7 +197,7 @@ jobs:
         shell: bash
         run: rm -rf pr-head/.git
 
-      # Evidence is prepared once. Every stage, including a delayed retry, reads these exact bytes.
+      # Evidence is prepared once and every stage reads these exact bytes.
       - name: Upload review evidence
         uses: actions/upload-artifact@v7
         with:
@@ -264,14 +262,9 @@ jobs:
     needs: evidence
     if: needs.evidence.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 130
     permissions:
       contents: read
-      # Read-only, and used for one thing: re-deciding review eligibility before a delayed retry
-      # spends a second provider request.
-      actions: read
-      checks: read
-      issues: read
-      pull-requests: read
     environment: llm-providers
     strategy:
       fail-fast: false
@@ -327,41 +320,10 @@ jobs:
           api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
           base-url: https://api.helmcode.com/v1
           config-file: .github/pr-automation/agents/${{ matrix.reviewer }}.json
+          normalizer: .github/pr-automation/output-normalizer.js#normalizeSpecialist
           validator: .github/pr-automation/agent-validator.js#validateSpecialist
           validator-metadata: ${{ steps.plan.outputs.metadata }}
-
-      - id: retry-gate
-        name: Decide on a delayed retry
-        if: steps.agent.outputs.retryable == 'true'
-        uses: actions/github-script@v8
-        env:
-          HEAD_SHA: ${{ inputs.head-sha }}
-          BASE_SHA: ${{ inputs.base-sha }}
-          PULL_REQUEST_NUMBER: ${{ inputs.pr-number }}
-          RETRYABLE: ${{ steps.agent.outputs.retryable }}
-          FAILURE_CATEGORY: ${{ steps.agent.outputs.failure-category }}
-          RETRY_DELAY_SECONDS: ${{ inputs.retry-delay-seconds }}
-          SELECTED_REVIEWERS: ${{ inputs.specialist-reviewers }}
-          REQUIRED_REVIEWERS: ${{ needs.evidence.outputs.required-reviewers }}
-          GATE: ${{ inputs.gate }}
-        with:
-          script: |
-            const { retryGateStep } = require("./.github/pr-automation/review-retry");
-            await retryGateStep({
-              github, context, core, env: process.env, stage: "specialist",
-            });
-
-      - id: agent-retry
-        name: Retry ${{ matrix.reviewer }} specialist
-        if: steps.retry-gate.outputs.retry == 'true'
-        continue-on-error: true
-        uses: ./.github/actions/openai-agent
-        with:
-          api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
-          base-url: https://api.helmcode.com/v1
-          config-file: .github/pr-automation/agents/${{ matrix.reviewer }}.json
-          validator: .github/pr-automation/agent-validator.js#validateSpecialist
-          validator-metadata: ${{ steps.plan.outputs.metadata }}
+          structured-output-file: .openai-agent-output/${{ matrix.reviewer }}.json
 
       - id: validate
         name: Validate specialist result
@@ -373,30 +335,24 @@ jobs:
           OPENSPECS_SHA: ${{ needs.evidence.outputs.openspecs-sha }}
           REQUIRED_REVIEWERS: ${{ needs.evidence.outputs.required-reviewers }}
           SELECTED_REVIEWERS: ${{ inputs.specialist-reviewers }}
-          RAW_OUTPUT: ${{ steps.agent-retry.outputs.structured-output || steps.agent.outputs.structured-output }}
-          MODEL_REASON: ${{ steps.agent-retry.outputs.failure-reason || steps.agent.outputs.failure-reason }}
-          FAILURE_CATEGORY: ${{ steps.agent-retry.outputs.failure-category || steps.agent.outputs.failure-category }}
+          OUTPUT_FILE: >-
+            ${{ steps.agent.outcome == 'success' &&
+            format('.openai-agent-output/{0}.json', matrix.reviewer) || '' }}
+          MODEL_REASON: ${{ steps.agent.outputs.failure-reason }}
+          FAILURE_CATEGORY: ${{ steps.agent.outputs.failure-category }}
           DIAGNOSTICS: ${{ steps.agent.outputs.diagnostics }}
-          RETRY_DIAGNOSTICS: ${{ steps.agent-retry.outputs.diagnostics }}
-          RETRIED: ${{ steps.retry-gate.outputs.retry }}
-          RETRYABLE: ${{ steps.agent.outputs.retryable }}
-          RETRY_DECLINE: ${{ steps.retry-gate.outputs.reason }}
-          PREVIOUS_REASON: ${{ steps.agent.outputs.failure-reason }}
         with:
           script: |
             const fs = require("node:fs");
             const path = require("node:path");
             const {
-              mergeDiagnostics, parseDiagnostics, plannedRequiredReviewers, providerWasCalled,
-              validateSpecialistRun,
+              parseDiagnostics, plannedRequiredReviewers, providerWasCalled, validateSpecialistRun,
             } = require("./.github/pr-automation/review-pipeline");
             const { stageOutcome } = require("./.github/pr-automation/review-report");
             const {
               corpusFromDirectory,
             } = require("./.github/pr-automation/validate-protocol-review");
             const reviewer = process.env.REVIEWER;
-            const retried = process.env.RETRIED === "true";
-            const retryable = process.env.RETRYABLE === "true";
             const failed = (reason) => ({ reviewer, status: "failed", reason });
             let run = failed("specialist validation unavailable");
             try {
@@ -408,7 +364,9 @@ jobs:
                   expectedCorpusSha: process.env.OPENSPECS_SHA,
                 })
                 : undefined;
-              const result = validateSpecialistRun(process.env.RAW_OUTPUT || "", {
+              const outputFile = process.env.OUTPUT_FILE || "";
+              const output = outputFile === "" ? "" : fs.readFileSync(outputFile, "utf8");
+              const result = validateSpecialistRun(output, {
                 reviewer,
                 expectedSha: process.env.HEAD_SHA,
                 changedPaths: validation.changed_paths,
@@ -431,33 +389,24 @@ jobs:
               process.env.REQUIRED_REVIEWERS,
               plannedRequiredReviewers(process.env.SELECTED_REVIEWERS),
             );
-            // A declined retry is a review outcome, so its reason belongs in the report.
-            const decline = retryable && !retried ? process.env.RETRY_DECLINE : "";
-            const diagnostics = mergeDiagnostics(
-              parseDiagnostics(process.env.DIAGNOSTICS),
-              retried ? parseDiagnostics(process.env.RETRY_DIAGNOSTICS) : null,
-            );
+            const diagnostics = parseDiagnostics(process.env.DIAGNOSTICS);
             fs.writeFileSync(
               path.join(directory, "stage.json"),
               JSON.stringify(stageOutcome({
                 id: `specialist:${reviewer}`,
                 status: run.status === "valid" ? "success" : "failed",
                 required: required.includes(reviewer),
-                reason: run.status === "valid"
-                  ? ""
-                  : decline ? `${run.reason} (no retry: ${decline})` : run.reason,
+                reason: run.status === "valid" ? "" : run.reason,
                 category: run.status === "valid" ? "" : process.env.FAILURE_CATEGORY || "invalid-output",
-                attempts: retried ? 2 : 1,
-                previous_reason: retried ? process.env.PREVIOUS_REASON : "",
                 provider: providerWasCalled(diagnostics),
                 metrics: diagnostics,
+                rejections: diagnostics.output_rejections,
               }), null, 2),
             );
             core.info(JSON.stringify({
               event: "pr-automation.specialist",
               reviewer,
               status: run.status,
-              attempts: retried ? 2 : 1,
             }));
 
       # Matrix legs cannot share job outputs, so the result and its stage report travel together
@@ -553,19 +502,61 @@ jobs:
           retention-days: 1
           overwrite: true
 
-  general:
-    name: Run independent general reviewer
-    needs: [evidence, aggregate]
-    if: needs.aggregate.result == 'success' && needs.aggregate.outputs.ready == 'true'
+  recheck:
+    name: Recheck automatic review admission
+    needs: [aggregate]
+    if: always() && !cancelled() && needs.aggregate.result == 'success' &&
+      needs.aggregate.outputs.ready == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      # Read-only, and used for one thing: re-deciding review eligibility before a delayed retry
-      # spends a second provider request.
       actions: read
       checks: read
+      contents: read
       issues: read
       pull-requests: read
+    outputs:
+      allowed: ${{ steps.recheck.outputs.allowed }}
+      superseded: ${{ steps.recheck.outputs.superseded }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - id: recheck
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ inputs.pr-number }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+          GATE: ${{ inputs.gate }}
+          LEASE: ${{ inputs.lease }}
+        with:
+          script: |
+            if (!process.env.LEASE) {
+              core.setOutput("allowed", true);
+              core.setOutput("superseded", false);
+              return;
+            }
+            const parse = (value) => { try { return JSON.parse(value); } catch { return null; } };
+            const { recheckAutomaticReview } = require("./.github/pr-automation/automation-lease");
+            const allowed = await recheckAutomaticReview({
+              github, owner: context.repo.owner, repo: context.repo.repo,
+              prNumber: Number(process.env.PULL_REQUEST_NUMBER), headSha: process.env.HEAD_SHA,
+              gate: parse(process.env.GATE), lease: parse(process.env.LEASE),
+            });
+            core.setOutput("allowed", allowed);
+            core.setOutput("superseded", !allowed);
+            core.info(JSON.stringify({ event: "pr-automation.review-recheck", allowed }));
+
+  general:
+    name: Run independent general reviewer
+    needs: [evidence, aggregate, recheck]
+    if: needs.aggregate.result == 'success' && needs.aggregate.outputs.ready == 'true' &&
+      needs.recheck.outputs.allowed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 130
+    permissions:
+      contents: read
     environment: llm-providers
     outputs:
       stage: ${{ steps.persist.outputs.stage }}
@@ -588,18 +579,28 @@ jobs:
           path: .
 
       - id: plan
-        name: Build the validator metadata
+        name: Build the validator metadata and candidate index
         uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ inputs.head-sha }}
         with:
           script: |
+            const fs = require("node:fs");
+            const { candidateIndexPrompt } = require("./.github/pr-automation/validate-final-review");
             core.setOutput("metadata", JSON.stringify({
               stage: "general",
               expected_sha: process.env.HEAD_SHA,
               validation_context_file: "pr-evidence/validation-context.json",
               aggregate_file: "validated-specialist-findings.json",
             }));
+            // An unreadable aggregate leaves the index empty; the validator fails the stage on it.
+            let aggregate = null;
+            try {
+              aggregate = JSON.parse(fs.readFileSync("validated-specialist-findings.json", "utf8"));
+            } catch {
+              core.warning("Validated specialist findings are unreadable; the candidate index is empty");
+            }
+            core.setOutput("prompt-context", candidateIndexPrompt(aggregate, process.env.HEAD_SHA));
 
       - id: agent
         name: Run general reviewer
@@ -609,81 +610,45 @@ jobs:
           api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
           base-url: https://api.helmcode.com/v1
           config-file: .github/pr-automation/agents/general-reviewer.json
+          prompt-context: ${{ steps.plan.outputs.prompt-context }}
+          normalizer: .github/pr-automation/output-normalizer.js#normalizeGeneral
           validator: .github/pr-automation/agent-validator.js#validateGeneral
           validator-metadata: ${{ steps.plan.outputs.metadata }}
-
-      - id: retry-gate
-        name: Decide on a delayed retry
-        if: steps.agent.outputs.retryable == 'true'
-        uses: actions/github-script@v8
-        env:
-          HEAD_SHA: ${{ inputs.head-sha }}
-          BASE_SHA: ${{ inputs.base-sha }}
-          PULL_REQUEST_NUMBER: ${{ inputs.pr-number }}
-          RETRYABLE: ${{ steps.agent.outputs.retryable }}
-          FAILURE_CATEGORY: ${{ steps.agent.outputs.failure-category }}
-          RETRY_DELAY_SECONDS: ${{ inputs.retry-delay-seconds }}
-          SELECTED_REVIEWERS: ${{ inputs.specialist-reviewers }}
-          REQUIRED_REVIEWERS: ${{ needs.evidence.outputs.required-reviewers }}
-          GATE: ${{ inputs.gate }}
-        with:
-          script: |
-            const { retryGateStep } = require("./.github/pr-automation/review-retry");
-            await retryGateStep({
-              github, context, core, env: process.env, stage: "general",
-            });
-
-      - id: agent-retry
-        name: Retry general reviewer
-        if: steps.retry-gate.outputs.retry == 'true'
-        continue-on-error: true
-        uses: ./.github/actions/openai-agent
-        with:
-          api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
-          base-url: https://api.helmcode.com/v1
-          config-file: .github/pr-automation/agents/general-reviewer.json
-          validator: .github/pr-automation/agent-validator.js#validateGeneral
-          validator-metadata: ${{ steps.plan.outputs.metadata }}
+          structured-output-file: .openai-agent-output/general.json
 
       - id: persist
         name: Persist general review result
         if: always()
         uses: actions/github-script@v8
         env:
-          RAW_OUTPUT: ${{ steps.agent-retry.outputs.structured-output || steps.agent.outputs.structured-output }}
-          MODEL_REASON: ${{ steps.agent-retry.outputs.failure-reason || steps.agent.outputs.failure-reason }}
-          FAILURE_CATEGORY: ${{ steps.agent-retry.outputs.failure-category || steps.agent.outputs.failure-category }}
+          OUTPUT_FILE: >-
+            ${{ steps.agent.outcome == 'success' &&
+            '.openai-agent-output/general.json' || '' }}
+          MODEL_REASON: ${{ steps.agent.outputs.failure-reason }}
+          FAILURE_CATEGORY: ${{ steps.agent.outputs.failure-category }}
           DIAGNOSTICS: ${{ steps.agent.outputs.diagnostics }}
-          RETRY_DIAGNOSTICS: ${{ steps.agent-retry.outputs.diagnostics }}
-          RETRIED: ${{ steps.retry-gate.outputs.retry }}
-          RETRYABLE: ${{ steps.agent.outputs.retryable }}
-          RETRY_DECLINE: ${{ steps.retry-gate.outputs.reason }}
-          PREVIOUS_REASON: ${{ steps.agent.outputs.failure-reason }}
         with:
           script: |
             const fs = require("node:fs");
-            const {
-              mergeDiagnostics, parseDiagnostics, providerWasCalled,
-            } = require("./.github/pr-automation/review-pipeline");
+            const { parseDiagnostics, providerWasCalled } =
+              require("./.github/pr-automation/review-pipeline");
             const { stageOutcome } = require("./.github/pr-automation/review-report");
-            const retried = process.env.RETRIED === "true";
-            const output = process.env.RAW_OUTPUT || "";
-            const decline = process.env.RETRYABLE === "true" && !retried
-              ? process.env.RETRY_DECLINE
-              : "";
+            let output = "";
+            try {
+              if (process.env.OUTPUT_FILE) {
+                output = fs.readFileSync(process.env.OUTPUT_FILE, "utf8");
+              }
+            } catch (error) {
+              core.warning(`General review output unavailable: ${error.message}`);
+            }
             const failure = process.env.MODEL_REASON || "general reviewer unavailable";
-            const reason = output === ""
-              ? decline ? `${failure} (no retry: ${decline})` : failure
-              : "";
+            const reason = output === "" ? failure : "";
             fs.mkdirSync("general-review", { recursive: true });
             fs.writeFileSync(
               "general-review/result.json",
               JSON.stringify({ output, reason }),
             );
-            const diagnostics = mergeDiagnostics(
-              parseDiagnostics(process.env.DIAGNOSTICS),
-              retried ? parseDiagnostics(process.env.RETRY_DIAGNOSTICS) : null,
-            );
+            const diagnostics = parseDiagnostics(process.env.DIAGNOSTICS);
             core.setOutput("stage", JSON.stringify(stageOutcome({
               id: "general",
               status: output === "" ? "failed" : "success",
@@ -692,10 +657,9 @@ jobs:
               category: output === ""
                 ? process.env.FAILURE_CATEGORY || "invalid-output"
                 : "",
-              attempts: retried ? 2 : 1,
-              previous_reason: retried ? process.env.PREVIOUS_REASON : "",
               provider: providerWasCalled(diagnostics),
               metrics: diagnostics,
+              rejections: diagnostics.output_rejections,
             })));
 
       - name: Upload general review result
@@ -716,7 +680,6 @@ jobs:
     permissions:
       contents: read
     outputs:
-      output: ${{ steps.final.outputs.output }}
       reason: ${{ steps.final.outputs.reason }}
       stage: ${{ steps.final.outputs.stage }}
     steps:
@@ -762,8 +725,12 @@ jobs:
             const fs = require("node:fs");
             const { validateFinalReview } = require("./.github/pr-automation/validate-final-review");
             const { stageOutcome } = require("./.github/pr-automation/review-report");
-            const finish = (output, reason, category) => {
-              core.setOutput("output", output);
+            const finish = (output, reason, category, rawOutput = "") => {
+              fs.mkdirSync("final-review", { recursive: true });
+              fs.writeFileSync(
+                "final-review/result.json",
+                JSON.stringify({ output, raw_output: rawOutput, reason }),
+              );
               core.setOutput("reason", reason);
               core.setOutput("stage", JSON.stringify(stageOutcome({
                 id: "validate",
@@ -827,17 +794,25 @@ jobs:
               specialistAggregate: aggregate,
             });
             if (!result.ok) return finish("", result.reason, "invalid-final-review");
-            return finish(JSON.stringify(result.value), "", "");
+            return finish(JSON.stringify(result.value), "", "", persisted.output);
+
+      - name: Upload final review result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: review-final-${{ inputs.head-sha }}
+          path: final-review/result.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
 
   report:
     name: Report stage outcomes
-    needs: [evidence, specialists, aggregate, general, validate]
+    needs: [evidence, specialists, aggregate, recheck, general, validate]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    outputs:
-      report: ${{ steps.report.outputs.report }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -954,12 +929,21 @@ jobs:
               category: "validation-unavailable",
             }));
             const report = buildReport(stages);
-            core.setOutput("report", JSON.stringify(report));
+            fs.writeFileSync("review-report.json", JSON.stringify(report));
             core.info(JSON.stringify({
               event: "pr-automation.review-report",
               status: report.status,
               failed: report.stages
                 .filter((stage) => stage.status === "failed")
                 .map((stage) => stage.id),
-              stage_retries: report.metrics.stage_retries,
             }));
+
+      - name: Upload canonical report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: review-report-${{ inputs.head-sha }}
+          path: review-report.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true

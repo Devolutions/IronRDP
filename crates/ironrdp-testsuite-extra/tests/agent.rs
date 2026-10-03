@@ -11,10 +11,11 @@ use ironrdp_daemon::now::{DVC_CHANNEL_NAME, INITIAL_ENDPOINT_TIMEOUT, NowEndpoin
 use ironrdp_input::MouseButton;
 use ironrdp_propertyset::PropertySet;
 use ironrdp_rpc::ipc::{
-    AgentError, AgentErrorCategory, ConnState, KeyFilter, NowCapabilities, NowDiagnostics, NowExecutionKind,
-    NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo, OperationState, Payload,
-    PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason,
-    RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo,
+    AgentError, AgentErrorCategory, ClipboardFileEntry, ConnState, KeyFilter, KeyInput, NowCapabilities,
+    NowDiagnostics, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind,
+    OperationInfo, OperationState, Payload, PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump,
+    RailEventKind, RailExecuteFailureReason, RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response,
+    StatusInfo, UntrustedCertificate,
 };
 use ironrdp_rpc::wire;
 
@@ -84,6 +85,26 @@ fn request_variants_round_trip() {
         Request::KeyUnicode {
             ch: '\u{00e9}',
             pressed: true,
+        },
+        Request::KeyBatch {
+            events: vec![
+                KeyInput::Scancode {
+                    scancode: 0x1D,
+                    pressed: true,
+                },
+                KeyInput::Unicode {
+                    ch: '\u{00e9}',
+                    pressed: true,
+                },
+                KeyInput::Unicode {
+                    ch: '\u{00e9}',
+                    pressed: false,
+                },
+                KeyInput::Scancode {
+                    scancode: 0x1D,
+                    pressed: false,
+                },
+            ],
         },
         Request::UnicodeText {
             text: "Hello, \u{4e16}\u{754c}".to_owned(),
@@ -169,6 +190,17 @@ fn request_variants_round_trip() {
         Request::ClipboardSetImage {
             png: vec![0x89, b'P', b'N', b'G', 0, 0xFF],
         },
+        Request::ClipboardGetHtml,
+        Request::ClipboardSetHtml {
+            html: "<b>clipboard html</b>".to_owned(),
+        },
+        Request::ClipboardSetFiles {
+            paths: vec!["/home/user/report.pdf".to_owned(), "/home/user/photo.jpg".to_owned()],
+        },
+        Request::ClipboardSetFiles { paths: vec![] },
+        Request::ClipboardListFiles,
+        Request::ClipboardGetFile { index: 0 },
+        Request::ClipboardGetFile { index: -1 },
     ];
 
     for request in &requests {
@@ -188,6 +220,7 @@ fn response_variants_round_trip() {
             height: None,
             message: None,
             credentials_loaded: true,
+            untrusted_certificate: None,
         })),
         Response::Ok(Payload::Status(StatusInfo {
             state: ConnState::Connected,
@@ -196,6 +229,20 @@ fn response_variants_round_trip() {
             height: Some(1080),
             message: Some("ok".to_owned()),
             credentials_loaded: false,
+            untrusted_certificate: None,
+        })),
+        Response::Ok(Payload::Status(StatusInfo {
+            state: ConnState::Failed,
+            destination: Some("host.example:3389".to_owned()),
+            width: None,
+            height: None,
+            message: Some("untrusted certificate".to_owned()),
+            credentials_loaded: false,
+            untrusted_certificate: Some(Box::new(UntrustedCertificate {
+                endpoint: "host.example:3389".to_owned(),
+                sha256: "ab".repeat(32),
+                reason: "name mismatch".to_owned(),
+            })),
         })),
         Response::Ok(Payload::Properties(PropertyDump {
             entries: vec![
@@ -317,6 +364,28 @@ fn response_variants_round_trip() {
         Response::Ok(Payload::ClipboardText(Some("clipboard text".to_owned()))),
         Response::Ok(Payload::ClipboardImage(None)),
         Response::Ok(Payload::ClipboardImage(Some(vec![0x89, b'P', b'N', b'G', 0, 0xFF]))),
+        Response::Ok(Payload::ClipboardHtml(None)),
+        Response::Ok(Payload::ClipboardHtml(Some("<b>clipboard html</b>".to_owned()))),
+        Response::Ok(Payload::ClipboardFileList(None)),
+        Response::Ok(Payload::ClipboardFileList(Some(vec![]))),
+        Response::Ok(Payload::ClipboardFileList(Some(vec![
+            ClipboardFileEntry {
+                name: "report.pdf".to_owned(),
+                relative_path: None,
+                is_directory: false,
+                size: Some(4096),
+                last_write_time: Some(133_500_000_000_000_000),
+            },
+            ClipboardFileEntry {
+                name: "subdir".to_owned(),
+                relative_path: Some("folder".to_owned()),
+                is_directory: true,
+                size: None,
+                last_write_time: None,
+            },
+        ]))),
+        Response::Ok(Payload::ClipboardFile(vec![])),
+        Response::Ok(Payload::ClipboardFile(vec![1, 2, 3, 4, 5])),
     ];
 
     for response in &responses {
@@ -400,6 +469,36 @@ fn clipboard_debug_redacts_content() {
     let payload = Payload::ClipboardImage(Some(b"secret-pixels".to_vec()));
     let debug = format!("{payload:?}");
     assert!(!debug.contains("secret-pixels"));
+
+    let request = Request::ClipboardSetHtml {
+        html: "<b>secret-markup</b>".to_owned(),
+    };
+    let debug = format!("{request:?}");
+    assert!(!debug.contains("secret-markup"));
+
+    let payload = Payload::ClipboardHtml(Some("<b>secret-markup</b>".to_owned()));
+    let debug = format!("{payload:?}");
+    assert!(!debug.contains("secret-markup"));
+
+    let request = Request::ClipboardSetFiles {
+        paths: vec!["/home/user/secret-plans.pdf".to_owned()],
+    };
+    let debug = format!("{request:?}");
+    assert!(!debug.contains("secret-plans"));
+
+    let payload = Payload::ClipboardFileList(Some(vec![ClipboardFileEntry {
+        name: "secret-plans.pdf".to_owned(),
+        relative_path: None,
+        is_directory: false,
+        size: Some(1),
+        last_write_time: None,
+    }]));
+    let debug = format!("{payload:?}");
+    assert!(!debug.contains("secret-plans"));
+
+    let payload = Payload::ClipboardFile(b"secret-file-bytes".to_vec());
+    let debug = format!("{payload:?}");
+    assert!(!debug.contains("secret-file-bytes"));
 }
 
 #[test]

@@ -13,8 +13,9 @@
     "pr-evidence/overlap-candidates.json",
     "pr-evidence/pull-request.diff"
   ],
-  "max_output_bytes": 4096,
   "max_turns": 20,
   "max_tool_calls": 64,
+  "stream_idle_timeout_ms": 300000,
+  "stage_timeout_ms": 1800000,
   "max_request_retries": 4
 }

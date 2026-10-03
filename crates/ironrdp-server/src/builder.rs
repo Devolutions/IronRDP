@@ -19,7 +19,10 @@ use super::server::{
 use crate::error::ServerResult;
 #[cfg(feature = "usb")]
 use crate::urbdrc::DeviceFactory;
-use crate::{DisplayUpdate, RdpServerDisplayUpdates, RdpdrServerFactory, RdpeiServerFactory, SoundServerFactory};
+use crate::{
+    DisplayUpdate, RdpServerDisplayUpdates, RdpdrServerFactory, RdpeaiServerFactory, RdpeiServerFactory,
+    SoundServerFactory,
+};
 
 pub struct WantsAddr {}
 pub struct WantsSecurity {
@@ -46,6 +49,7 @@ pub struct BuilderDone {
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
     rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
+    rdpeai_factory: Option<Box<dyn RdpeaiServerFactory>>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     #[cfg(feature = "egfx")]
@@ -56,11 +60,13 @@ pub struct BuilderDone {
     autodetect_rtt: Option<Arc<AtomicU32>>,
     autodetect_baseline_rtt: Option<Arc<AtomicU32>>,
     autodetect_bandwidth: Option<Arc<AtomicU32>>,
+    autodetect_bandwidth_generation: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
     connection_policy: ConnectionPolicy,
     remotefx_quant: Quant,
     remotefx_entropy_coder: Option<EntropyBits>,
+    udp_bind_addr: Option<SocketAddr>,
 }
 
 pub struct RdpServerBuilder<State> {
@@ -157,6 +163,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 cliprdr_factory: None,
                 rdpei_factory: None,
                 rdpdr_factory: None,
+                rdpeai_factory: None,
                 connection_handler: None,
                 credential_validator: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
@@ -169,11 +176,13 @@ impl RdpServerBuilder<WantsDisplay> {
                 autodetect_rtt: None,
                 autodetect_baseline_rtt: None,
                 autodetect_bandwidth: None,
+                autodetect_bandwidth_generation: None,
                 honor_client_desktop_size: None,
                 connection_policy,
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
+                udp_bind_addr: None,
             },
         }
     }
@@ -191,6 +200,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 cliprdr_factory: None,
                 rdpei_factory: None,
                 rdpdr_factory: None,
+                rdpeai_factory: None,
                 connection_handler: None,
                 credential_validator: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
@@ -203,11 +213,13 @@ impl RdpServerBuilder<WantsDisplay> {
                 autodetect_rtt: None,
                 autodetect_baseline_rtt: None,
                 autodetect_bandwidth: None,
+                autodetect_bandwidth_generation: None,
                 honor_client_desktop_size: None,
                 connection_policy,
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
+                udp_bind_addr: None,
             },
         }
     }
@@ -238,6 +250,12 @@ impl RdpServerBuilder<BuilderDone> {
 
     pub fn with_rdpdr_factory(mut self, rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>) -> Self {
         self.state.rdpdr_factory = rdpdr_factory;
+        self
+    }
+
+    /// Configure MS-RDPEAI (audio input / microphone redirection over a dynamic channel).
+    pub fn with_rdpeai_factory(mut self, rdpeai_factory: Option<Box<dyn RdpeaiServerFactory>>) -> Self {
+        self.state.rdpeai_factory = rdpeai_factory;
         self
     }
 
@@ -411,6 +429,18 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Inject a shared handle that increments every time a Bandwidth Measure
+    /// transaction completes, whether or not it produced a usable figure.
+    /// Pairs with [`Self::with_autodetect_bandwidth_handle`]: the bandwidth
+    /// figure alone repeats too often to tell a fresh measurement window
+    /// apart from a stale one. When not called, the server allocates its own
+    /// (still readable via
+    /// [`RdpServer::autodetect_bandwidth_generation_handle`]).
+    pub fn with_autodetect_bandwidth_generation_handle(mut self, handle: Arc<AtomicU32>) -> Self {
+        self.state.autodetect_bandwidth_generation = Some(handle);
+        self
+    }
+
     /// Provision the Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.2
     /// `ARC_SC_PRIVATE_PACKET`) handed to the client during logon.
     ///
@@ -457,6 +487,38 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Offer UDP multitransport (MS-RDPBCGR 2.2.1.4.6/2.2.15.1) to clients
+    /// that support it, binding a fresh UDP socket to `udp_bind_addr` per
+    /// connection to accept the sideband RDPEUDP2 + TLS + RDPEMT transport.
+    ///
+    /// Requires [`RdpServerSecurity::Tls`] or [`RdpServerSecurity::Hybrid`]
+    /// (multitransport is Enhanced-Security-only, matching the reference
+    /// client); ignored under [`RdpServerSecurity::None`].
+    ///
+    /// `udp_bind_addr` is a separate, explicit address rather than reusing
+    /// [`Self`]'s own TCP `addr`: a caller driving [`RdpServer::run_connection`]
+    /// with its own accept loop (rather than [`RdpServer::run`]) may not have
+    /// `addr` bound to anything real, so it cannot be inferred. Typically the
+    /// same host and port as the TCP listener (UDP and TCP occupy independent
+    /// port spaces at the same number). When its IP is unspecified, each
+    /// connection's socket binds to the local address that client reached
+    /// instead, so replies leave from the address the client sent to; see
+    /// [`RdpServer::set_connection_local_addr`].
+    ///
+    /// Once established, the transport is used to migrate EGFX graphics
+    /// traffic off TCP; a failure to establish it at any stage falls back to
+    /// TCP-only rather than failing the connection. This includes
+    /// [`Self::with_preempt_existing_session`] overlapping a candidate
+    /// session's own UDP bind with a still-live session's: When
+    /// `udp_bind_addr` is the same for both, the second bind fails and that
+    /// connection degrades to TCP-only.
+    ///
+    /// `None` (the default): no UDP socket is ever bound, no behavior change.
+    pub fn with_udp_transport(mut self, udp_bind_addr: SocketAddr) -> Self {
+        self.state.udp_bind_addr = Some(udp_bind_addr);
+        self
+    }
+
     pub fn build(self) -> RdpServer {
         let mut server = RdpServer::new(
             RdpServerOptions {
@@ -468,6 +530,7 @@ impl RdpServerBuilder<BuilderDone> {
                 connection_policy: self.state.connection_policy,
                 remotefx_quant: self.state.remotefx_quant,
                 remotefx_entropy_coder: self.state.remotefx_entropy_coder,
+                udp_bind_addr: self.state.udp_bind_addr,
             },
             self.state.handler,
             self.state.display,
@@ -476,6 +539,7 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.cliprdr_factory,
             self.state.rdpei_factory,
             self.state.rdpdr_factory,
+            self.state.rdpeai_factory,
             self.state.connection_handler,
             #[cfg(feature = "egfx")]
             self.state.gfx_factory,
@@ -485,6 +549,7 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.autodetect_rtt,
             self.state.autodetect_baseline_rtt,
             self.state.autodetect_bandwidth,
+            self.state.autodetect_bandwidth_generation,
         );
         server.set_credential_validator(self.state.credential_validator);
         server.set_auto_reconnect_cookie(self.state.auto_reconnect_cookie);

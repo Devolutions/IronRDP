@@ -15,6 +15,8 @@
 
 use core::time::Duration;
 
+use tracing::trace;
+
 /// Minimum RTO for RDPEUDP2 connections.
 ///
 /// [MS-RDPEUDP] Section 3.1.6.1's VERSION_2 minimum retransmit timeout
@@ -127,6 +129,14 @@ impl RttEstimator {
         }
 
         self.recompute_rto();
+
+        trace!(
+            rtt_us = rtt.as_micros(),
+            srtt_us = self.srtt.map(|srtt| srtt.as_micros()),
+            rttvar_us = self.rttvar.as_micros(),
+            rto_ms = self.rto.as_millis(),
+            "Updated RTT estimate"
+        );
     }
 
     /// Current retransmission timeout.
@@ -152,7 +162,13 @@ impl RttEstimator {
     /// RFC 6298 Section 5.5: double the RTO on each successive timeout
     /// for the same segment, capped at MAX_RTO.
     pub(crate) fn on_timeout(&mut self) {
+        let previous_rto = self.rto;
         self.rto = (self.rto * 2).min(MAX_RTO);
+        trace!(
+            previous_rto_ms = previous_rto.as_millis(),
+            rto_ms = self.rto.as_millis(),
+            "Backed off RTO after retransmission timeout"
+        );
     }
 
     /// Recompute RTO from SRTT and RTTVAR, applying floor and ceiling.

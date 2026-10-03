@@ -22,7 +22,7 @@ function reviewSkipReasons({ gate, gateResult, rateLimit, rateLimitResult } = {}
       const policyReasonStart = reasons.length;
       if (labels.has("ai-reviewed/2")) reasons.push("The pull request has reached the two-review limit.");
       if (labels.has("triage/legitimacy") || gate.legitimacyStopped === true) {
-        reasons.push("The pull request requires a maintainer legitimacy decision.");
+        reasons.push("The pull request is awaiting its green exact-head CI handoff for legitimacy triage.");
       }
       if (reasons.length === policyReasonStart) {
         reasons.push("The pull request is not eligible under the automated review policy.");
@@ -30,12 +30,8 @@ function reviewSkipReasons({ gate, gateResult, rateLimit, rateLimitResult } = {}
     }
 
     const contributor = gate.contributor;
-    if (contributor?.status === "ineligible") {
-      if (Number.isSafeInteger(contributor.merged)) {
-        reasons.push(`The contributor has ${contributor.merged} qualifying merged pull requests; at least one is required.`);
-      } else {
-        reasons.push(`The contributor is not eligible for automated review${contributor.reason ? `: ${contributor.reason}` : ""}.`);
-      }
+    if (contributor?.status === "bot") {
+      reasons.push("The pull request was opened by a bot account.");
     } else if (contributor?.status !== "eligible" && contributor?.status !== "forced") {
       reasons.push(`Contributor eligibility is unavailable${contributor?.reason ? `: ${contributor.reason}` : ""}.`);
     }

@@ -1,12 +1,15 @@
 "use strict";
 
 const { SCHEMA_VERSION: CLASSIFIER_SCHEMA_VERSION, validateClassifier } = require("./validate-classifier");
+const { generation } = require("./ci-state");
 const { validateNormalizedFinalReview } = require("./validate-final-review");
 const { resolveReviewerRoute, reviewPolicyEligible } = require("./routing");
 const { validateReviewGate } = require("./review-pipeline");
 
 const RISK = ["risk/low", "risk/medium", "risk/high", "risk/unknown"];
 const AI_COUNTS = ["ai-reviewed/1", "ai-reviewed/2"];
+const ACTOR_LABELS = ["needs-review", "needs-author-action"];
+const FAILURE_LABEL = "automation-failed";
 const LEGITIMACY_LABEL = "triage/legitimacy";
 const OVERLAP_LABEL = "triage/overlap";
 const OVERSIZED_REVIEW_LABEL = "ai-review/allow-oversized";
@@ -17,13 +20,32 @@ const LEGACY_XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
 const FORK_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-quota -->";
 const GLOBAL_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-global-budget -->";
 const EVIDENCE_LIMIT_MARKER = "<!-- ironrdp-pr-automation:evidence-limit -->";
-const CONTRIBUTOR_INELIGIBLE_MARKER = "<!-- ironrdp-pr-automation:contributor-ineligible -->";
 const EVIDENCE_LIMIT_REASON = /^pull request diff exceeds the (1|4) MiB evidence limit$/;
-const ELIGIBLE_MERGED_PRS = 1;
-const ELIGIBLE_ASSOCIATIONS = new Set(["OWNER", "MEMBER"]);
 
 function labelsOf(labels) {
   return new Set((labels || []).map((label) => typeof label === "string" ? label : label?.name).filter(Boolean));
+}
+
+function reviewCount(labels) {
+  const present = labels instanceof Set ? labels : labelsOf(labels);
+  return present.has("ai-reviewed/2") ? "ai-reviewed/2"
+    : present.has("ai-reviewed/1") ? "ai-reviewed/1"
+    : null;
+}
+
+function actorFailureLabelSets(actor = [], failure = []) {
+  return [
+    { owned: ACTOR_LABELS, desired: actor },
+    { owned: [FAILURE_LABEL], desired: failure },
+  ];
+}
+
+function preservedActorFailureLabelSets(labels) {
+  const actors = ACTOR_LABELS.filter((label) => labels.has(label));
+  return actorFailureLabelSets(
+    actors.length === 1 ? actors : [],
+    labels.has(FAILURE_LABEL) ? [FAILURE_LABEL] : [],
+  );
 }
 
 function boundStatus(value, expectedSha, allowed) {
@@ -68,18 +90,19 @@ function classificationMachineState({
   };
 }
 
-function failedClassification(expectedSha, deterministic, reason, rateLimit, semverStatus) {
+function failedClassification(expectedSha, deterministic, reason, rateLimit, semverStatus, forced) {
   const comments = [quotaComment(rateLimit), evidenceLimitComment(reason)].filter(Boolean);
   return {
-    ok: true, mode: "classification", expectedSha, failed: true, reason,
+    ok: true, mode: "classification", expectedSha, forced, failed: true, reason,
     labelSets: [
       ...deterministicLabelSets(deterministic),
       { owned: RISK, desired: [semverStatus === "suspected" ? "risk/high" : "risk/unknown"] },
+      ...actorFailureLabelSets([], [FAILURE_LABEL]),
       ...(semverStatus === "suspected"
         ? [{ owned: ["breaking-change"], desired: ["breaking-change"] }]
         : []),
     ],
-    addLabels: ["maintainer-required"], comments,
+    comments,
     removeCommentMarkers: [
       ...(comments.some((comment) => comment.kind === "evidence-limit") ? [] : [EVIDENCE_LIMIT_MARKER]),
       FORK_QUOTA_MARKER,
@@ -89,7 +112,7 @@ function failedClassification(expectedSha, deterministic, reason, rateLimit, sem
       name: "AI classification",
       externalId: `${CLASSIFIER_SCHEMA_VERSION}:${expectedSha}`,
       title: "Classification unavailable",
-      summary: `Automated classification was unavailable: ${reason}. Maintainer review is required.`,
+      summary: `Automated classification was unavailable: ${reason}. Automation remains blocked until retry or repair.`,
       machineState: classificationMachineState({
         risk: semverStatus === "suspected" ? "high" : "unknown",
       }),
@@ -108,15 +131,16 @@ function resolveClassificationState({
   if (typeof expectedSha !== "string") return { ok: false, reason: "missing expected SHA" };
   const semverStatus = boundStatus(semver, expectedSha, ["suspected", "not-suspected"]);
   if (!forced && rateLimit && rateLimit.status !== "allowed") {
-    return failedClassification(expectedSha, deterministic, "fork LLM quota unavailable", failureRateLimit, semverStatus);
+    return failedClassification(
+      expectedSha, deterministic, "fork LLM quota unavailable", failureRateLimit, semverStatus, forced);
   }
   if (!deterministic?.ok) {
     const reason = deterministic?.reason || "deterministic analysis unavailable";
-    return failedClassification(expectedSha, deterministic, reason, failureRateLimit, semverStatus);
+    return failedClassification(expectedSha, deterministic, reason, failureRateLimit, semverStatus, forced);
   }
   if (!forced && classificationGate?.available === false) {
     const reason = classificationGate.reason || "classification gate unavailable";
-    return failedClassification(expectedSha, deterministic, reason, failureRateLimit, semverStatus);
+    return failedClassification(expectedSha, deterministic, reason, failureRateLimit, semverStatus, forced);
   }
   const classifierResult = validateClassifier(classifier, {
     expectedSha, changedPaths, documentationOnlyPaths: deterministic.documentationOnlyPaths,
@@ -124,11 +148,11 @@ function resolveClassificationState({
   });
   if (!classifierResult?.ok || classifierResult.value?.head_sha !== expectedSha) {
     const reason = classifierReason || classifierResult?.reason || "classifier output unavailable";
-    return failedClassification(expectedSha, deterministic, reason, failureRateLimit, semverStatus);
+    return failedClassification(expectedSha, deterministic, reason, failureRateLimit, semverStatus, forced);
   }
   if (semverStatus === "unavailable") {
     return failedClassification(
-      expectedSha, deterministic, "public API compatibility unavailable", failureRateLimit, semverStatus);
+      expectedSha, deterministic, "public API compatibility unavailable", failureRateLimit, semverStatus, forced);
   }
   const model = classifierResult.value;
   const breaking = semverStatus === "suspected" || model.breaking_change_suspected;
@@ -145,7 +169,7 @@ function resolveClassificationState({
   });
   if (!machineState) {
     return failedClassification(
-      expectedSha, deterministic, "reviewer routing unavailable", failureRateLimit, semverStatus);
+      expectedSha, deterministic, "reviewer routing unavailable", failureRateLimit, semverStatus, forced);
   }
   // Overlap is advisory: it only adds a label and comment.
   const overlap = model.overlap.detected && model.overlap.confidence >= 0.85;
@@ -161,15 +185,12 @@ function resolveClassificationState({
     { owned: ["scope/cross-cutting"], desired: model.cross_cutting ? ["scope/cross-cutting"] : [] },
     ...optional.map(([label, enabled]) => ({ owned: [label], desired: enabled ? [label] : [] })),
     { owned: ["breaking-change"], desired: breaking ? ["breaking-change"] : [] },
+    ...(forced ? preservedActorFailureLabelSets(existing) : actorFailureLabelSets()),
   ];
   const legitimacyStopped = model.likely_non_legitimate;
-  const maintainerRequired = legitimacyStopped || existing.has("ai-reviewed/2") ||
-    (existing.has("maintainer-required") && classificationGate?.completed === true);
   const addLabels = [
-    ...(maintainerRequired ? ["maintainer-required"] : []),
     ...(legitimacyStopped ? [LEGITIMACY_LABEL] : []),
   ];
-  const removeLabels = maintainerRequired ? [] : ["maintainer-required"];
   const comments = [
     ...(overlap ? [{
       kind: "overlap", marker: OVERLAP_MARKER,
@@ -183,8 +204,8 @@ function resolveClassificationState({
     }] : []),
   ];
   return {
-    ok: true, mode: "classification", expectedSha, labelSets, addLabels, removeLabels, comments, auditComments,
-    dispatchReview: !forced && !existing.has("ai-reviewed/2"),
+    ok: true, mode: "classification", expectedSha, forced, labelSets, addLabels, comments, auditComments,
+    dispatchReview: !forced,
     removeCommentMarkers: [
       // Remove notices that contradict the current classification.
       ...(overlap ? [] : [OVERLAP_MARKER]),
@@ -206,85 +227,70 @@ function resolveClassificationState({
   };
 }
 
-function isBot(user) {
-  return user?.type === "Bot" || /\[bot\]$/i.test(user?.login || "");
-}
-
-// Counts an author's merged pull requests, stopping at stopAt so a prolific contributor does not
-// force a walk of the whole closed-PR history. Callers only ever compare against a threshold.
-async function qualifyingMergedPrs({ github, owner, repo, authorNodeId, currentPrNumber, stopAt }) {
-  let merged = 0;
-  for await (const response of github.paginate.iterator(github.rest.pulls.list, {
-    owner, repo, state: "closed", sort: "updated", direction: "desc", per_page: 100,
-  })) {
-    if (!Array.isArray(response?.data)) throw new Error("invalid pull request data");
-    for (const pr of response.data) {
-      if (!pr || typeof pr !== "object") throw new Error("invalid pull request data");
-      if (pr.merged_at !== null && pr.merged_at !== undefined &&
-          (typeof pr.merged_at !== "string" || Number.isNaN(Date.parse(pr.merged_at)))) {
-        throw new Error("invalid pull request timestamp");
-      }
-      if (pr.number === currentPrNumber || !pr.merged_at || pr.base?.ref !== "master" ||
-          pr.user?.node_id !== authorNodeId || isBot(pr.user)) continue;
-      merged += 1;
-      if (merged >= stopAt) return merged;
-    }
+// Every non-bot author is eligible for automatic review immediately; there is no merged-PR
+// history requirement. `github`/`owner`/`repo`/`currentPrNumber` are accepted for call-site
+// compatibility but no history lookup is performed. Author identity is required to distinguish a
+// bot from a human at all: a missing/null `user` (both `login` and `type` absent) cannot be
+// classified, so it reports unavailable rather than eligible.
+async function contributorEligibility({ author } = {}) {
+  if (typeof author?.login !== "string" && typeof author?.type !== "string") {
+    return { status: "unavailable", reason: "missing author identity" };
   }
-  return merged;
-}
-
-async function contributorEligibility({ github, owner, repo, author, currentPrNumber }) {
-  if (author?.type === "Bot" || /\[bot\]$/i.test(author?.login || "")) {
-    return { status: "ineligible", reason: "bot author" };
+  if (author.type === "Bot" || /\[bot\]$/i.test(author.login || "")) {
+    return { status: "bot" };
   }
-  if (ELIGIBLE_ASSOCIATIONS.has(author?.association)) {
-    return { status: "eligible", association: author.association };
-  }
-  if (!author?.nodeId) {
-    return { status: "ineligible", reason: "bot or missing immutable author" };
-  }
-  try {
-    const merged = await qualifyingMergedPrs({
-      github, owner, repo, authorNodeId: author.nodeId, currentPrNumber, stopAt: ELIGIBLE_MERGED_PRS,
-    });
-    return { status: merged >= ELIGIBLE_MERGED_PRS ? "eligible" : "ineligible", merged };
-  } catch {
-    return { status: "unavailable", reason: "GitHub API unavailable" };
-  }
+  return { status: "eligible", association: author.association ?? null };
 }
 
 function resolveReviewState({
   expectedSha, labels, reviewer, gate, contributor,
   rateLimit, reviewerReason, force, reviewMarkerId, reducedCoverage,
+  reviewerValidationContext, specialistAggregate, requireReviewerContext = false,
+  reviewAttempted = reviewer !== undefined,
 } = {}) {
   const existing = labelsOf(labels);
   const forced = force === true;
-  const fail = (reason, report = false, contributorComment = null, labelAction = "add") => {
+  const ciGeneration = generation({
+    id: gate?.ciRunId,
+    run_attempt: gate?.ciRunAttempt,
+  });
+  const ciState = ciGeneration
+    ? { ciRunId: ciGeneration.id, ciRunAttempt: ciGeneration.attempt }
+    : {};
+  const state = (reason, {
+    failed = false, report = false, actor = [], failure = [],
+    blocked = false, labelSets = actorFailureLabelSets(actor, failure),
+  } = {}) => {
     const comments = [
       forced ? null : quotaComment(rateLimit),
       evidenceLimitComment(reason),
-      contributorComment,
     ].filter(Boolean);
     return {
-      ok: true, mode: "review", expectedSha, failed: true, reason,
-      labelSets: [],
-      addLabels: labelAction === "add" ? ["maintainer-required"] : [],
-      removeLabels: labelAction === "remove" ? ["maintainer-required"] : [],
+      ok: true, mode: "review", expectedSha, forced,
+      ...(failed ? { failed: true } : {}),
+      ...(blocked ? { blocked: true } : {}),
+      reason, labelSets,
       comments,
       removeCommentMarkers: [
         ...(comments.some((comment) => comment.kind === "evidence-limit") ? [] : [EVIDENCE_LIMIT_MARKER]),
         FORK_QUOTA_MARKER,
         ...(comments.some((comment) => comment.kind === "global-quota") ? [] : [GLOBAL_QUOTA_MARKER]),
-        ...(forced || contributor?.status === "eligible" ? [CONTRIBUTOR_INELIGIBLE_MARKER] : []),
       ],
       ...(report ? { check: {
         name: "AI automated review", externalId: expectedSha,
         title: "Automated review unavailable",
-        summary: `Automated review was unavailable: ${reason}. Maintainer review is required.`,
+        summary: `Automated review was unavailable: ${reason}. Automation remains blocked until retry or repair.`,
         conclusion: "neutral",
       } } : {}),
     };
   };
+  const blocked = (reason, { clearActors = false } = {}) => state(reason, {
+    blocked: true,
+    labelSets: clearActors ? [{ owned: ACTOR_LABELS, desired: [] }] : [],
+  });
+  const fail = (reason) => state(reason, {
+    failed: true, report: true, actor: [], failure: [FAILURE_LABEL],
+  });
   if (typeof expectedSha !== "string") return { ok: false, reason: "missing expected SHA" };
   if (forced) {
     if (gate?.force !== true || gate.head_sha !== expectedSha) return fail("forced review gate unavailable");
@@ -294,86 +300,102 @@ function resolveReviewState({
       return fail("forced review marker unavailable");
     }
   } else {
-    if (existing.has("ai-reviewed/2")) return fail("terminal AI review count");
-    if (rateLimit && rateLimit.status !== "allowed") return fail("fork LLM quota unavailable");
-    if (!gate || gate.head_sha !== expectedSha || typeof gate.ok !== "boolean" || gate.reason) {
+    if (!gate || gate.head_sha !== expectedSha) return blocked("review gate unavailable");
+    if (gate.ciGreen !== true) return blocked("CI has not succeeded", { clearActors: true });
+    if (gate.classificationValid === true &&
+        (existing.has("ai-reviewed/2") || gate.legitimacyStopped === true ||
+         existing.has(LEGITIMACY_LABEL))) {
+      return {
+        ...state("review is handed to a human", {
+          actor: ["needs-review"], failure: [],
+        }),
+        handoff: existing.has("ai-reviewed/2") ? "terminal" : "legitimacy",
+        ...ciState,
+      };
+    }
+    if (rateLimit && rateLimit.status !== "allowed") return blocked("fork LLM quota unavailable", {
+      clearActors: true,
+    });
+    if (typeof gate.ok !== "boolean" || gate.reason) {
       const reason = gate?.reason ? `review gate unavailable: ${gate.reason}` : "review gate unavailable";
-      return fail(reason);
+      return blocked(reason);
     }
     const classification = validateReviewGate({ ...gate, ok: true }, expectedSha);
-    if (!classification.ok) return fail(classification.reason);
-    if (gate.classificationCheck !== true) return fail("review gate unavailable");
+    if (!classification.ok) return blocked(classification.reason);
+    if (gate.classificationCheck !== true) return blocked("review gate unavailable");
     if (!reviewPolicyEligible({
       labels, legitimacyStopped: gate.legitimacyStopped,
-    })) return fail("review is not eligible");
-    if (contributor?.status === "ineligible") {
-      const reason = Number.isSafeInteger(contributor.merged)
-        ? `contributor history ineligible (merged: ${contributor.merged}, required: ${ELIGIBLE_MERGED_PRS})`
-        : `contributor history ineligible${contributor.reason ? `: ${contributor.reason}` : ""}`;
-      const comment = Number.isSafeInteger(contributor.merged)
-        ? { kind: "contributor-ineligible", marker: CONTRIBUTOR_INELIGIBLE_MARKER }
-        : null;
-      return fail(reason, false, comment);
+    })) return blocked("review is not eligible");
+    if (contributor?.status === "bot") {
+      return blocked("author is a bot account");
     }
     if (contributor?.status !== "eligible") {
       const reason = contributor?.reason
-        ? `contributor history unavailable: ${contributor.reason}`
-        : "contributor history unavailable";
-      return fail(reason);
+        ? `contributor eligibility unavailable: ${contributor.reason}`
+        : "contributor eligibility unavailable";
+      return blocked(reason);
     }
-    if (existing.has("ai-reviewed/1") && gate.secondReviewEligible !== true) {
-      return fail("second review is not eligible", false, null, "preserve");
+    if (gate.reviewAtHead === true ||
+        (existing.has("ai-reviewed/1") && gate.secondReviewEligible !== true)) {
+      return blocked("an automated review already exists for this head");
     }
-    if (gate.ciGreen !== true) return fail("CI has not succeeded", false, null, "remove");
-    if (!gate.ok) return fail("review gate unavailable");
+    if (!gate.ok) return blocked("review gate unavailable");
+    if (!reviewAttempted) return blocked("review was not attempted");
   }
-  const reviewerResult = validateNormalizedFinalReview(reviewer, expectedSha);
+  const reviewerContextMatches = reviewerValidationContext?.head_sha === expectedSha;
+  const reviewerResult = validateNormalizedFinalReview(reviewer, {
+    expectedSha,
+    changedPaths: reviewerContextMatches ? reviewerValidationContext.changed_paths : undefined,
+    changedLines: reviewerContextMatches ? reviewerValidationContext.changed_lines : undefined,
+    specialistAggregate,
+    requireContext: requireReviewerContext,
+  });
   if (!reviewerResult?.ok || reviewerResult.value?.head_sha !== expectedSha) {
-    return fail(reviewerReason || reviewerResult?.reason || "reviewer unavailable", true);
+    return fail(reviewerReason || reviewerResult?.reason || "reviewer unavailable");
   }
-  const nextCount = existing.has("ai-reviewed/2") ? "ai-reviewed/2"
-    : existing.has("ai-reviewed/1") ? "ai-reviewed/2"
+  const currentReviewCount = reviewCount(existing);
+  const nextCount = currentReviewCount === "ai-reviewed/2" ? "ai-reviewed/2"
+    : currentReviewCount === "ai-reviewed/1" ? "ai-reviewed/2"
     : "ai-reviewed/1";
-  const expectedReviewCount = existing.has("ai-reviewed/2") ? "ai-reviewed/2"
-    : existing.has("ai-reviewed/1") ? "ai-reviewed/1"
-    : null;
+  const expectedReviewCount = currentReviewCount;
   const hasFindings = reviewerResult.value.findings.length > 0;
   const reviewMarker = `<!-- ironrdp-pr-automation:review:${expectedSha}` +
     `${forced ? `:force:${reviewMarkerId}` : ""} -->`;
   return {
-    ok: true, mode: "review", expectedSha, labelSets: [{ owned: AI_COUNTS, desired: [nextCount] }],
-    // Reported findings leave the next step with the contributor, even at `ai-reviewed/2`. Automatic
-    // review is exhausted there, so classification hands the pull request over on their next push.
-    addLabels: hasFindings ? [] : ["maintainer-required"],
-    removeLabels: hasFindings ? ["maintainer-required"] : [],
+    ok: true, mode: "review", expectedSha,
+    labelSets: [
+      { owned: AI_COUNTS, desired: [nextCount] },
+      ...actorFailureLabelSets(
+        hasFindings ? ["needs-author-action"] : ["needs-review"],
+        [],
+      ),
+    ],
     comments: [{
       kind: "review", marker: reviewMarker, review: reviewerResult.value,
       reducedCoverage: Array.isArray(reducedCoverage) ? reducedCoverage : [],
     }],
-    removeCommentMarkers: [
-      EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER,
-      CONTRIBUTOR_INELIGIBLE_MARKER,
-    ],
+    removeCommentMarkers: [EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER],
     check: { name: "AI automated review", externalId: expectedSha },
     expectedReviewCount,
     forced,
+    ...(!forced ? ciState : {}),
     protocolRelated: gate.protocolRelated === true,
   };
 }
 
-function reviewOutcome({ reportStatus, state, recovered = false, reducedCoverage = [] } = {}) {
+function reviewOutcome({ reportStatus, state, reducedCoverage = [] } = {}) {
   if (reportStatus !== "success" || state?.failed === true) return "unavailable";
   if (Array.isArray(reducedCoverage) && reducedCoverage.length > 0) {
-    return recovered ? "recovered-reduced-coverage" : "reduced-coverage";
+    return "reduced-coverage";
   }
-  return recovered ? "recovered" : "complete";
+  return "complete";
 }
 
 module.exports = {
-  AI_COUNTS, CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER,
+  ACTOR_LABELS, AI_COUNTS, EVIDENCE_LIMIT_MARKER, FAILURE_LABEL, FORK_QUOTA_MARKER,
   GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERLAP_LABEL, OVERLAP_MARKER, OVERSIZED_REVIEW_LABEL, RISK,
-  OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS,
-  contributorEligibility, qualifyingMergedPrs, resolveClassificationState,
-  resolveReviewState, reviewOutcome, reviewPolicyEligible,
+  OVERSIZED_MARKER,
+  contributorEligibility, resolveClassificationState,
+  resolveReviewState, reviewCount, reviewOutcome, reviewPolicyEligible,
 };

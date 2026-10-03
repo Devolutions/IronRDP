@@ -14,6 +14,8 @@
 //!
 //! At most one reaction per recovery epoch; see `on_loss`.
 
+use tracing::trace;
+
 /// Initial congestion window size in bytes.
 ///
 /// MS-RDPEUDP2 doesn't specify an initial window. Quinn uses 14720
@@ -101,6 +103,16 @@ impl CongestionControl {
             // Don't overshoot ssthresh
             if self.window >= self.ssthresh {
                 self.bytes_acked = 0;
+                trace!(
+                    cwnd = self.window,
+                    ssthresh = self.ssthresh,
+                    "Congestion window left slow start"
+                );
+            } else {
+                trace!(
+                    cwnd = self.window,
+                    newly_acked_bytes, "Congestion window grew in slow start"
+                );
             }
         } else {
             // Congestion avoidance: linear growth
@@ -110,6 +122,11 @@ impl CongestionControl {
             if self.bytes_acked >= self.window {
                 self.bytes_acked -= self.window;
                 self.window += 1232; // 1 MTU increase
+                trace!(
+                    cwnd = self.window,
+                    ssthresh = self.ssthresh,
+                    "Congestion window grew in congestion avoidance"
+                );
             }
         }
     }
@@ -131,12 +148,24 @@ impl CongestionControl {
         if let Some(recovery) = self.recovery_seq {
             if loss_seq <= recovery {
                 // Same congestion event: already reacted.
+                trace!(
+                    loss_seq,
+                    recovery_seq = recovery,
+                    "Loss within current recovery epoch, window kept"
+                );
                 return false;
             }
         }
 
         self.recovery_seq = Some(largest_sent);
         self.halve_window();
+        trace!(
+            loss_seq,
+            recovery_seq = largest_sent,
+            cwnd = self.window,
+            ssthresh = self.ssthresh,
+            "Congestion window reduced on loss"
+        );
         true
     }
 

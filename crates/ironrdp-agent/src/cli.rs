@@ -23,12 +23,14 @@ use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
 
 use ironrdp_rpc::ipc::{
-    AgentError, KeyFilter, MAX_CLIPBOARD_IMAGE_BYTES, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, NowExecutionRequest,
-    NowStream, OperationEvent, OperationEventKind, OperationInfo, OperationState, Payload, PenContactRequest,
-    PenFrameRequest, PropValue, RailEvent, RailEventKind, RailExecuteRequest, Request, Response, TouchContactRequest,
-    TouchFrameRequest,
+    AgentError, KeyFilter, MAX_CLIPBOARD_HTML_BYTES, MAX_CLIPBOARD_IMAGE_BYTES, MAX_UNICODE_TEXT_CHARS,
+    NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo,
+    OperationState, Payload, PenContactRequest, PenFrameRequest, PropValue, RailEvent, RailEventKind,
+    RailExecuteRequest, Request, Response, TouchContactRequest, TouchFrameRequest,
 };
 use ironrdp_rpc::transport::{self, Endpoint};
+
+use crate::terminal_image;
 
 /// IronRDP agent: a CLI-driven, daemon-backed RDP client.
 #[derive(Parser, Debug)]
@@ -52,23 +54,41 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Run the long-lived daemon in the foreground (owns the RDP session).
+    /// Manage the daemon that owns the RDP session.
+    #[command(subcommand)]
+    Daemon(DaemonCommand),
+    /// List or disconnect the RDP session (the daemon keeps running).
+    #[command(subcommand)]
+    Session(SessionCommand),
+    /// Legacy foreground alias for `daemon start --foreground`.
+    #[command(hide = true)]
     DaemonStart(DaemonArgs),
+    /// Internal child entry point; startup settings arrive over a private IPC endpoint.
+    #[command(hide = true)]
+    DaemonChild {
+        #[arg(long)]
+        bootstrap: String,
+    },
     /// Open an RDP session from a .rdp file and/or CLI overrides.
     Connect(ConnectArgs),
     /// Forward TCP through an RD Gateway tunnel without an RDP session: a fixed local
     /// port forward (SSH `-L`-style) or a SOCKS5 proxy a generic program can use.
     GwForward(GwForwardArgs),
-    /// Tear down the current RDP session (the daemon keeps running).
-    Disconnect,
+    /// Manage server certificates trusted despite failing validation (known-certificates store).
+    #[command(subcommand)]
+    Cert(CertCommand),
+    /// Disconnect the current RDP session, optionally checking the server first.
+    Disconnect(DisconnectArgs),
     /// Report the current session status.
     Status,
     /// Query the live session properties.
     QueryProps(QueryPropsArgs),
     /// Print the RDP session's captured log lines (from the daemon's in-memory ring buffer).
     QueryLogs(QueryLogsArgs),
-    /// Capture the current frame (cursor included) as a PNG written to disk.
+    /// Capture the current frame (cursor included) as a PNG written to disk or rendered inline in the terminal.
     Screenshot(ScreenshotArgs),
+    /// Show the live session in this terminal and forward mouse and keyboard input to it (Ctrl+] detaches).
+    Attach(AttachArgs),
     /// Move the mouse pointer to an absolute position.
     MouseMove {
         #[arg(long)]
@@ -121,6 +141,21 @@ enum Command {
     /// Set the local clipboard image from a PNG file and advertise it to the remote
     /// (`CF_DIB`/`CF_DIBV5`).
     ClipboardSetImage(ClipboardSetImageArgs),
+    /// Print the last HTML fragment received from the remote clipboard, if any.
+    ClipboardGetHtml,
+    /// Set the local clipboard HTML fragment and advertise it to the remote (`HTML Format`).
+    ClipboardSetHtml {
+        #[arg(long, value_parser = parse_clipboard_html)]
+        html: String,
+    },
+    /// Offer local files to the remote via the clipboard file-list mechanism. Each path names a
+    /// single regular file; a directory is rejected.
+    ClipboardSetFiles(ClipboardSetFilesArgs),
+    /// List the remote's currently offered files, if any (metadata only; nothing is fetched).
+    ClipboardListFiles,
+    /// Fetch one file's full contents from the remote by its position in the last
+    /// `clipboard-list-files` listing.
+    ClipboardGetFile(ClipboardGetFileArgs),
     /// Send one MS-RDPEI touch contact sample (legal flag sets only).
     Touch {
         #[arg(long, default_value_t = 0)]
@@ -214,6 +249,42 @@ enum Command {
     Sandbox(SandboxArgs),
 }
 
+#[derive(Subcommand, Debug)]
+enum DaemonCommand {
+    /// Launch the daemon in the background; use --foreground to keep it in this terminal.
+    Start(DaemonStartArgs),
+    /// Show whether the selected daemon is running and its session state.
+    Status,
+    /// List the selected daemon if it is running.
+    List,
+    /// Gracefully shut down the selected daemon.
+    Stop,
+}
+
+#[derive(Subcommand, Debug)]
+enum SessionCommand {
+    /// Show the active RDP session and how to disconnect it.
+    List,
+    /// Disconnect the current RDP session without stopping the daemon.
+    Disconnect(DisconnectArgs),
+}
+
+#[derive(Args, Debug)]
+struct DisconnectArgs {
+    /// Disconnect only if the current session belongs to this host[:port].
+    #[arg(long)]
+    server: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct DaemonStartArgs {
+    #[command(flatten)]
+    daemon: DaemonArgs,
+    /// Run in this terminal rather than launching a background process.
+    #[arg(long)]
+    foreground: bool,
+}
+
 #[cfg(windows)]
 #[derive(Args, Debug)]
 struct SandboxArgs {
@@ -242,6 +313,27 @@ enum SandboxCommand {
     },
     /// Shut down a running sandbox (`ShutdownSandbox`).
     Stop { id: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum CertCommand {
+    /// Trust one certificate for an endpoint, replacing any certificate trusted for it before.
+    ///
+    /// Copy both values from the `status` message of a connection that failed certificate
+    /// validation, after verifying the fingerprint out of band.
+    Trust {
+        /// Server endpoint as `HOST[:PORT]` (port defaults to 3389).
+        endpoint: String,
+        /// SHA-256 fingerprint of the certificate (64 hex digits, `:` separators allowed).
+        fingerprint: ironrdp_daemon::known_certificates::Fingerprint,
+    },
+    /// List trusted certificates.
+    List,
+    /// Stop trusting the certificate for an endpoint.
+    Remove {
+        /// Server endpoint as `HOST[:PORT]` (port defaults to 3389).
+        endpoint: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -534,6 +626,17 @@ struct ConnectArgs {
     #[cfg(windows)]
     #[arg(long, requires = "vmconnect")]
     vmconnect_current_user: bool,
+    /// Never prompt to accept an untrusted server certificate. Without it, an interactive terminal
+    /// waits for the connection outcome and, like mstsc, offers to accept a certificate that failed
+    /// validation once or permanently.
+    #[arg(long)]
+    no_prompt: bool,
+    /// Require a running daemon instead of starting the default one automatically.
+    #[arg(long, conflicts_with = "auto_start")]
+    no_auto_start: bool,
+    /// Start a daemon at an explicit --endpoint when none is running.
+    #[arg(long, conflicts_with = "no_auto_start")]
+    auto_start: bool,
 }
 
 #[derive(Args, Debug)]
@@ -591,7 +694,49 @@ struct QueryLogsArgs {
 #[derive(Args, Debug)]
 struct ScreenshotArgs {
     /// Destination PNG path (defaults to `screenshot.png` in the current directory).
+    #[arg(conflicts_with = "terminal")]
     path: Option<PathBuf>,
+    /// Render the frame inline in the terminal instead of writing a file.
+    #[arg(short, long)]
+    terminal: bool,
+    /// Terminal graphics protocol used with `--terminal`.
+    #[arg(long, value_enum, default_value_t = terminal_image::Protocol::Auto, requires = "terminal")]
+    protocol: terminal_image::Protocol,
+    /// Maximum image width in terminal columns with `--terminal` (defaults to the terminal width).
+    #[arg(long, requires = "terminal")]
+    columns: Option<u16>,
+}
+
+#[derive(Args, Debug)]
+struct AttachArgs {
+    /// Terminal graphics protocol.
+    #[arg(long, value_enum, default_value_t = terminal_image::Protocol::Auto)]
+    protocol: terminal_image::Protocol,
+    /// Frame refresh interval in milliseconds.
+    #[arg(long, default_value_t = 250, value_parser = clap::value_parser!(u64).range(50..=10_000))]
+    interval_ms: u64,
+    /// Terminal cell size in pixels as `WIDTHxHEIGHT`, for mapping clicks when the terminal does
+    /// not report it (defaults to 10x20, the cell Windows Terminal uses for Sixel).
+    #[arg(long, value_parser = parse_cell_size)]
+    cell_size: Option<(u32, u32)>,
+    /// Legacy flag; automatic fitting is now enabled by default.
+    #[arg(long, hide = true, conflicts_with = "no_fit")]
+    fit: bool,
+    /// Do not automatically resize the remote desktop on attach or terminal resize.
+    /// Use Ctrl+\ or the Fit button to resize once.
+    #[arg(long)]
+    no_fit: bool,
+}
+
+fn parse_cell_size(input: &str) -> Result<(u32, u32), String> {
+    let (width, height) = input
+        .split_once(['x', 'X'])
+        .ok_or_else(|| "expected WIDTHxHEIGHT, for example 10x20".to_owned())?;
+    let parse = |value: &str| match value.trim().parse::<u32>() {
+        Ok(value @ 1..=1000) => Ok(value),
+        _ => Err(format!("invalid cell dimension `{value}`")),
+    };
+    Ok((parse(width)?, parse(height)?))
 }
 
 #[derive(Args, Debug)]
@@ -604,6 +749,24 @@ struct ClipboardGetImageArgs {
 struct ClipboardSetImageArgs {
     /// Source PNG path.
     path: PathBuf,
+}
+
+#[derive(Args, Debug)]
+struct ClipboardSetFilesArgs {
+    /// One or more local file paths to offer. A directory is rejected; folders are not supported.
+    #[arg(required = true)]
+    paths: Vec<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct ClipboardGetFileArgs {
+    /// Position in the last `clipboard-list-files` listing.
+    index: i32,
+    /// Destination path. Required rather than defaulted from the remote's own file name, which
+    /// is untrusted input (the same reasoning `ironrdp_cliprdr`'s own docs give for not writing
+    /// a remote-supplied name straight to disk).
+    #[arg(long = "out")]
+    out: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -690,6 +853,16 @@ fn parse_unicode_text(input: &str) -> Result<String, String> {
     if char_count > MAX_UNICODE_TEXT_CHARS {
         return Err(format!(
             "text must contain at most {MAX_UNICODE_TEXT_CHARS} Unicode characters"
+        ));
+    }
+    Ok(input.to_owned())
+}
+
+fn parse_clipboard_html(input: &str) -> Result<String, String> {
+    if input.len() > MAX_CLIPBOARD_HTML_BYTES {
+        return Err(format!(
+            "html must be at most {MAX_CLIPBOARD_HTML_BYTES} bytes, got {}",
+            input.len()
         ));
     }
     Ok(input.to_owned())
@@ -844,6 +1017,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    let explicit_endpoint = cli.endpoint.is_some();
     let endpoint = endpoint_from_arg(cli.endpoint, cli.backend);
 
     let Some(command) = cli.command else {
@@ -852,29 +1026,93 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         return Ok(());
     };
 
-    if cli.backend == Backend::ActiveX && !matches!(&command, Command::DaemonStart(_) | Command::GwForward(_)) {
+    if matches!(&command, Command::Attach(_)) && cli.backend != Backend::Daemon {
+        anyhow::bail!("attach requires --backend daemon");
+    }
+
+    if cli.backend == Backend::ActiveX
+        && !matches!(
+            &command,
+            Command::Daemon(_)
+                | Command::DaemonStart(_)
+                | Command::Session(_)
+                | Command::DaemonChild { .. }
+                | Command::GwForward(_)
+                | Command::Cert(_)
+        )
+    {
         ensure_activex_backend(&endpoint).await?;
     }
 
     let request = match command {
+        Command::Daemon(command) => {
+            if cli.backend != Backend::Daemon {
+                anyhow::bail!("daemon commands require --backend daemon");
+            }
+            return match command {
+                DaemonCommand::Start(args) => {
+                    if args.foreground {
+                        run_daemon_foreground(endpoint, args.daemon).await
+                    } else {
+                        let settings = daemon_settings(args.daemon)?;
+                        let started = crate::daemon_lifecycle::ensure_started(&endpoint, settings).await?;
+                        println!(
+                            "daemon {} at {endpoint}",
+                            if started { "started" } else { "already running" }
+                        );
+                        Ok(())
+                    }
+                }
+                DaemonCommand::Status => crate::daemon_lifecycle::status(&endpoint).await,
+                DaemonCommand::List => crate::daemon_lifecycle::list(&endpoint).await,
+                DaemonCommand::Stop => crate::daemon_lifecycle::stop(&endpoint).await,
+            };
+        }
+        Command::Session(command) => {
+            if cli.backend != Backend::Daemon {
+                anyhow::bail!("session commands require --backend daemon");
+            }
+            return match command {
+                SessionCommand::List => list_sessions(&endpoint).await,
+                SessionCommand::Disconnect(args) => disconnect_session(&endpoint, args, cli.backend).await,
+            };
+        }
+        Command::DaemonChild { bootstrap } => {
+            if cli.backend != Backend::Daemon {
+                anyhow::bail!("daemon child requires --backend daemon");
+            }
+            return crate::daemon_lifecycle::Settings::run_child(endpoint, bootstrap).await;
+        }
+        Command::Cert(command) => {
+            use ironrdp_daemon::known_certificates::KnownCertificates;
+
+            let path = KnownCertificates::default_path()?;
+            match command {
+                CertCommand::Trust { endpoint, fingerprint } => {
+                    let endpoint = KnownCertificates::update(&path, |store| store.trust(&endpoint, fingerprint))?;
+                    println!("trusted {endpoint} {fingerprint} in {}", path.display());
+                }
+                CertCommand::List => {
+                    let store = KnownCertificates::load(&path)?;
+                    for (endpoint, fingerprint) in store.entries() {
+                        println!("{endpoint} {fingerprint}");
+                    }
+                }
+                CertCommand::Remove { endpoint } => {
+                    KnownCertificates::update(&path, |store| {
+                        anyhow::ensure!(store.remove(&endpoint)?, "no certificate is trusted for {endpoint}");
+                        Ok(())
+                    })?;
+                    println!("removed {endpoint} from {}", path.display());
+                }
+            }
+            return Ok(());
+        }
         Command::DaemonStart(args) => {
             if cli.backend != Backend::Daemon {
                 anyhow::bail!("daemon-start requires --backend daemon");
             }
-            let overlay = load_overlay(args.overlay.as_deref(), args.prop)?;
-            #[cfg(windows)]
-            let rdpdr_drives = args.rdpdr_drives;
-            #[cfg(not(windows))]
-            let rdpdr_drives = Vec::new();
-            #[cfg(windows)]
-            let smartcard = args.smartcard;
-            #[cfg(not(windows))]
-            let smartcard = false;
-            let options = ironrdp_daemon::daemon::DaemonOptions::default()
-                .with_certificate_check_skipped(args.skip_certificate_check)
-                .with_rdpdr_drives(rdpdr_drives)
-                .with_smartcard(smartcard);
-            return ironrdp_daemon::daemon::run(endpoint, overlay, options).await;
+            return run_daemon_foreground(endpoint, args).await;
         }
         Command::Now(args) => {
             let format = args.format;
@@ -906,7 +1144,31 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             return Ok(());
         }
-        Command::Connect(args) => build_connect_request(args)?,
+        Command::Connect(args) => {
+            use std::io::IsTerminal as _;
+
+            if args.auto_start && !explicit_endpoint {
+                anyhow::bail!("--auto-start requires --endpoint");
+            }
+            if args.auto_start && cli.backend != Backend::Daemon {
+                anyhow::bail!("--auto-start requires --backend daemon");
+            }
+            let should_start = should_auto_start(cli.backend, explicit_endpoint, args.no_auto_start, args.auto_start);
+            let interactive = !args.no_prompt
+                && cli.backend == Backend::Daemon
+                && std::io::stdin().is_terminal()
+                && std::io::stderr().is_terminal();
+            let request = build_connect_request(args)?;
+            if should_start {
+                crate::daemon_lifecycle::ensure_started(&endpoint, crate::daemon_lifecycle::Settings::default())
+                    .await?;
+            }
+            if interactive {
+                return connect_interactively(&endpoint, request).await;
+            }
+            request
+        }
+
         Command::GwForward(args) => {
             return run_gw_forward(args).await;
         }
@@ -914,7 +1176,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Sandbox(args) => {
             return run_sandbox_command(args);
         }
-        Command::Disconnect => Request::Disconnect,
+        Command::Disconnect(args) => return disconnect_session(&endpoint, args, cli.backend).await,
         Command::Status => Request::Status,
         Command::QueryProps(args) => Request::QueryProps {
             filter: args
@@ -935,8 +1197,20 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let Payload::Screenshot { width, height, png } = payload else {
                 anyhow::bail!("unexpected response to screenshot request");
             };
+            if args.terminal {
+                return terminal_image::render(&mut std::io::stdout().lock(), &png, args.protocol, args.columns);
+            }
             let path = args.path.unwrap_or_else(|| PathBuf::from("screenshot.png"));
             return write_screenshot(width, height, &png, &path);
+        }
+        Command::Attach(args) => {
+            let options = crate::attach::Options {
+                protocol: args.protocol,
+                interval: core::time::Duration::from_millis(args.interval_ms),
+                cell_size: args.cell_size,
+                fit: args.fit || !args.no_fit,
+            };
+            return crate::attach::run(&endpoint, options).await;
         }
         Command::ClipboardGetImage(args) => {
             let response = transport::send_request(&endpoint, &Request::ClipboardGetImage).await?;
@@ -974,6 +1248,28 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             Request::ClipboardSetImage { png }
         }
+        Command::ClipboardSetFiles(args) => {
+            let paths = args
+                .paths
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+            Request::ClipboardSetFiles { paths }
+        }
+        Command::ClipboardListFiles => Request::ClipboardListFiles,
+        Command::ClipboardGetFile(args) => {
+            let response = transport::send_request(&endpoint, &Request::ClipboardGetFile { index: args.index }).await?;
+            let payload = match response {
+                Response::Ok(payload) => payload,
+                Response::Err(message) => anyhow::bail!("{message}"),
+            };
+            let Payload::ClipboardFile(data) = payload else {
+                anyhow::bail!("unexpected response to clipboard-get-file request");
+            };
+            std::fs::write(&args.out, &data).with_context(|| format!("write {}", args.out.display()))?;
+            println!("wrote {} ({} bytes)", args.out.display(), data.len());
+            return Ok(());
+        }
         Command::MouseMove { x, y } => Request::MouseMove { x, y },
         Command::MouseButton { button, pressed } => Request::MouseButton {
             button: button.into_button(),
@@ -985,6 +1281,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::TypeUnicode { text } => Request::UnicodeText { text },
         Command::ClipboardGet => Request::ClipboardGet,
         Command::ClipboardSet { text } => Request::ClipboardSet { text },
+        Command::ClipboardGetHtml => Request::ClipboardGetHtml,
+        Command::ClipboardSetHtml { html } => Request::ClipboardSetHtml { html },
         Command::Touch {
             contact_id,
             x,
@@ -1110,6 +1408,63 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     print_response(response)
 }
 
+fn daemon_settings(args: DaemonArgs) -> anyhow::Result<crate::daemon_lifecycle::Settings> {
+    let overlay = load_overlay(args.overlay.as_deref(), args.prop)?;
+    #[cfg(windows)]
+    let drives = args.rdpdr_drives;
+    #[cfg(not(windows))]
+    let drives = Vec::new();
+    #[cfg(windows)]
+    let smartcard = args.smartcard;
+    #[cfg(not(windows))]
+    let smartcard = false;
+    Ok(crate::daemon_lifecycle::Settings {
+        overlay,
+        skip_certificate_check: args.skip_certificate_check,
+        rdpdr_drives: drives,
+        smartcard,
+    })
+}
+
+async fn run_daemon_foreground(endpoint: Endpoint, args: DaemonArgs) -> anyhow::Result<()> {
+    daemon_settings(args)?.run(endpoint).await
+}
+
+async fn list_sessions(endpoint: &Endpoint) -> anyhow::Result<()> {
+    use ironrdp_rpc::ipc::ConnState;
+
+    let Some(status) = crate::daemon_lifecycle::probe(endpoint).await? else {
+        println!("no active sessions (daemon not running at {endpoint})");
+        return Ok(());
+    };
+    if matches!(
+        status.state,
+        ConnState::Connecting | ConnState::Connected | ConnState::Disconnecting
+    ) {
+        let destination = status.destination.context("active session has no destination")?;
+        println!("session: {destination}");
+        println!("state: {:?}", status.state);
+        println!("daemon: {endpoint}");
+        println!("disconnect with: ironrdp-agent session disconnect");
+    } else {
+        println!("no active sessions (daemon state: {:?})", status.state);
+    }
+    Ok(())
+}
+
+async fn disconnect_session(endpoint: &Endpoint, args: DisconnectArgs, backend: Backend) -> anyhow::Result<()> {
+    if args.server.is_some() && backend != Backend::Daemon {
+        anyhow::bail!("--server requires --backend daemon");
+    }
+    crate::daemon_lifecycle::disconnect_session(endpoint, args.server).await?;
+    println!("session disconnected; daemon remains running");
+    Ok(())
+}
+
+fn should_auto_start(backend: Backend, explicit_endpoint: bool, no_auto_start: bool, auto_start: bool) -> bool {
+    backend == Backend::Daemon && !no_auto_start && (!explicit_endpoint || auto_start)
+}
+
 /// Loads an operator-provided overlay [`PropertySet`] from an optional `.rdp` file, then layers
 /// `--prop` overrides on top. Returns an empty set when neither is given.
 fn load_overlay(path: Option<&Path>, prop_overrides: Vec<PropOverride>) -> anyhow::Result<PropertySet> {
@@ -1214,6 +1569,96 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
         properties,
         log_directive: args.log_directive,
     })
+}
+
+/// Connects, waits for the outcome, and, like mstsc, offers to accept a server certificate that
+/// failed validation for this connection only or permanently (in the known-certificates store).
+async fn connect_interactively(endpoint: &Endpoint, request: Request) -> anyhow::Result<()> {
+    use ironrdp_daemon::known_certificates::{ACCEPT_CERTIFICATE_PROPERTY, KnownCertificates};
+    use ironrdp_rpc::ipc::ConnState;
+
+    const POLL_INTERVAL: core::time::Duration = core::time::Duration::from_millis(250);
+    const OUTCOME_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(120);
+
+    let Request::Connect {
+        mut properties,
+        log_directive,
+    } = request
+    else {
+        anyhow::bail!("expected a connect request");
+    };
+    // Certificates accepted for this connection only, one `host:port <sha256>` line each (a
+    // gateway and the target may both need one).
+    let mut accepted_once = String::new();
+
+    loop {
+        let request = Request::Connect {
+            properties: properties.clone(),
+            log_directive: log_directive.clone(),
+        };
+        if let Response::Err(error) = transport::send_request(endpoint, &request).await? {
+            anyhow::bail!("{error}");
+        }
+
+        let deadline = tokio::time::Instant::now() + OUTCOME_TIMEOUT;
+        let status = loop {
+            let status = match transport::send_request(endpoint, &Request::Status).await? {
+                Response::Ok(Payload::Status(status)) => status,
+                Response::Ok(_) => anyhow::bail!("unexpected status response"),
+                Response::Err(error) => anyhow::bail!("{error}"),
+            };
+            if status.state != ConnState::Connecting || tokio::time::Instant::now() >= deadline {
+                break status;
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        };
+
+        let certificate = match status.state {
+            ConnState::Failed => match status.untrusted_certificate {
+                Some(certificate) => certificate,
+                None => anyhow::bail!("{}", status.message.as_deref().unwrap_or("connection failed")),
+            },
+            ConnState::Connecting => {
+                println!("still connecting; check progress with `ironrdp-agent status`");
+                return Ok(());
+            }
+            state => {
+                println!("state: {state:?}");
+                return Ok(());
+            }
+        };
+
+        eprintln!("The identity of the remote computer cannot be verified.");
+        eprintln!("  endpoint: {}", certificate.endpoint);
+        eprintln!("  problem:  {}", certificate.reason);
+        eprintln!("  SHA-256:  {}", certificate.sha256);
+        let answer = loop {
+            eprint!("Connect anyway? [y]es once, [a]lways trust this certificate, [N]o: ");
+            std::io::stderr().flush()?;
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            match line.trim().to_ascii_lowercase().as_str() {
+                "y" | "yes" => break Some(false),
+                "a" | "always" => break Some(true),
+                "" | "n" | "no" => break None,
+                _ => {}
+            }
+        };
+        let fingerprint = certificate.sha256.parse()?;
+        match answer {
+            Some(true) => {
+                let path = KnownCertificates::default_path()?;
+                let endpoint =
+                    KnownCertificates::update(&path, |store| store.trust(&certificate.endpoint, fingerprint))?;
+                eprintln!("Trusted {endpoint} in {}", path.display());
+            }
+            Some(false) => {
+                accepted_once.push_str(&format!("{} {fingerprint}\n", certificate.endpoint));
+                properties.insert(ACCEPT_CERTIFICATE_PROPERTY, accepted_once.clone());
+            }
+            None => anyhow::bail!("server certificate for {} was not trusted", certificate.endpoint),
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -2155,12 +2600,41 @@ fn print_payload(payload: Payload) {
         Payload::RailLaunch(launch) => {
             println!("queued RAIL launch {}: {}", launch.launch_id, launch.executable);
         }
-        Payload::ClipboardText(text) => match text {
+        Payload::ClipboardText(text) | Payload::ClipboardHtml(text) => match text {
             Some(text) => println!("{text}"),
             None => println!("(empty)"),
         },
         // Handled out-of-band by the `ClipboardGetImage` command, never printed here.
         Payload::ClipboardImage(png) => println!("clipboard image ({} bytes)", png.as_ref().map_or(0, Vec::len)),
+        Payload::ClipboardFileList(files) => match files {
+            Some(files) if files.is_empty() => println!("(no files)"),
+            Some(files) => {
+                for (index, file) in files.iter().enumerate() {
+                    // `name`/`relative_path` come from the remote peer. `CLIPRDR` sanitization
+                    // removes path traversal and null bytes but not terminal control sequences;
+                    // `escape_debug` keeps printable Unicode readable while escaping the ANSI/OSC
+                    // control characters an unescaped print would otherwise pass straight to the
+                    // terminal.
+                    let path = match &file.relative_path {
+                        Some(relative_path) => {
+                            format!("{}\\{}", relative_path.escape_debug(), file.name.escape_debug())
+                        }
+                        None => file.name.escape_debug().to_string(),
+                    };
+                    let kind = if file.is_directory { "dir" } else { "file" };
+                    let size = file.size.map_or_else(|| "?".to_owned(), |size| size.to_string());
+                    // Unix seconds, not a formatted date: keeps this crate free of a date/time
+                    // dependency for what is otherwise a plain integer field.
+                    let mtime = file
+                        .last_write_time
+                        .map_or_else(|| "?".to_owned(), |time| time.to_string());
+                    println!("{index}: {kind} {size:>12} {mtime:>10} {path}");
+                }
+            }
+            None => println!("(no files on the remote clipboard)"),
+        },
+        // Handled out-of-band by the `ClipboardGetFile` command, never printed here.
+        Payload::ClipboardFile(data) => println!("clipboard file ({} bytes)", data.len()),
     }
 }
 
@@ -2244,6 +2718,9 @@ fn property_description(key: &str) -> Option<&'static str> {
         "ironrdp_smartcard" => "enable smart-card device redirection (0/1)",
         "ironrdp_tls" => "use plain TLS security instead of CredSSP/Hybrid (0/1)",
         "ironrdp_certificate_validation" => "agent daemon TLS certificate validation policy set at daemon startup",
+        "ironrdp_accept_certificate" => {
+            "server certificate accepted for this connection only, as `host:port <sha256>` lines"
+        }
         "ironrdp_fakeeventsinterval" => "interval in minutes between synthetic keep-alive input events",
         "ironrdp_rdcleanpathtoken" => "RDCleanPath authentication token (secret)",
         "ironrdp_rdcleanpathurl" => "RDCleanPath proxy URL",
@@ -2270,9 +2747,43 @@ mod tests {
     #[cfg(windows)]
     use super::build_connect_request;
     use super::{
-        Backend, Cli, CommonExecutionArgs, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, build_now_execution,
-        endpoint_from_arg,
+        Backend, CertCommand, Cli, CommonExecutionArgs, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, SessionCommand,
+        build_now_execution, endpoint_from_arg, run, should_auto_start,
     };
+
+    #[test]
+    fn disconnect_commands_accept_an_optional_server_guard() {
+        let cli = Cli::try_parse_from(["ironrdp-agent", "disconnect", "--server", "IT-HELP-RDM"])
+            .expect("guarded disconnect");
+        let Some(Command::Disconnect(args)) = cli.command else {
+            panic!("expected disconnect");
+        };
+        assert_eq!(args.server.as_deref(), Some("IT-HELP-RDM"));
+
+        let cli = Cli::try_parse_from(["ironrdp-agent", "session", "disconnect", "--server", "IT-HELP-RDM"])
+            .expect("session disconnect");
+        let Some(Command::Session(SessionCommand::Disconnect(args))) = cli.command else {
+            panic!("expected session disconnect");
+        };
+        assert_eq!(args.server.as_deref(), Some("IT-HELP-RDM"));
+    }
+
+    #[test]
+    fn only_default_daemon_connects_start_automatically() {
+        assert!(should_auto_start(Backend::Daemon, false, false, false));
+        assert!(should_auto_start(Backend::Daemon, true, false, true));
+        assert!(!should_auto_start(Backend::Daemon, true, false, false));
+        assert!(!should_auto_start(Backend::Daemon, false, true, false));
+        assert!(!should_auto_start(Backend::ActiveX, false, false, true));
+    }
+
+    #[tokio::test]
+    async fn activex_attach_is_rejected_before_probing_the_host() {
+        let cli = Cli::try_parse_from(["ironrdp-agent", "--backend", "active-x", "attach"])
+            .expect("parse ActiveX attachment");
+        let error = run(cli).await.expect_err("ActiveX attachment is unsupported");
+        assert_eq!(error.to_string(), "attach requires --backend daemon");
+    }
 
     #[test]
     fn backend_endpoint_selection_is_distinct_and_overridable() {
@@ -2414,6 +2925,23 @@ mod tests {
     }
 
     #[test]
+    fn attach_auto_fit_defaults_on_with_explicit_opt_out() {
+        for (flags, expected) in [
+            (Vec::<&str>::new(), true),
+            (vec!["--fit"], true),
+            (vec!["--no-fit"], false),
+        ] {
+            let cli =
+                Cli::try_parse_from(["ironrdp-agent", "attach"].into_iter().chain(flags)).expect("valid attach flags");
+            let Some(Command::Attach(args)) = cli.command else {
+                panic!("expected attach command");
+            };
+            assert_eq!(args.fit || !args.no_fit, expected);
+        }
+        assert!(Cli::try_parse_from(["ironrdp-agent", "attach", "--fit", "--no-fit"]).is_err());
+    }
+
+    #[test]
     fn connection_flags_use_process_local_environment_defaults() {
         let command = Cli::command();
         let connect = command
@@ -2437,6 +2965,25 @@ mod tests {
     #[test]
     fn shell_is_not_an_agent_command() {
         assert!(Cli::try_parse_from(["ironrdp-agent", "now", "shell"]).is_err());
+    }
+
+    #[test]
+    fn cert_trust_parses_fingerprint_and_rejects_malformed_values() {
+        let fingerprint = "ab".repeat(32);
+        let cli = Cli::try_parse_from(["ironrdp-agent", "cert", "trust", "IT-HELP-RDM", &fingerprint])
+            .expect("valid cert trust command");
+
+        let Some(Command::Cert(CertCommand::Trust {
+            endpoint,
+            fingerprint: parsed,
+        })) = cli.command
+        else {
+            panic!("expected cert trust command");
+        };
+        assert_eq!(endpoint, "IT-HELP-RDM");
+        assert_eq!(parsed.to_string(), fingerprint);
+        assert!(Cli::try_parse_from(["ironrdp-agent", "cert", "trust", "IT-HELP-RDM", "abcd"]).is_err());
+        assert!(Cli::try_parse_from(["ironrdp-agent", "cert", "remove"]).is_err());
     }
 
     #[test]

@@ -8,6 +8,9 @@ const {
 const { SHA, exactKeys, invalid, normalizeText } = require("./validation");
 const { normalizeStageMetrics } = require("./review-report");
 
+// Covers all schema-valid specialist results while bounding the artifact read by the general reviewer.
+const MAXIMUM_SPECIALIST_AGGREGATE_BYTES = 1024 * 1024;
+
 function validateSpecialistRun(raw, {
   reviewer, expectedSha, changedPaths, changedLines, corpus, expectedCorpusSha, failureReason,
 } = {}) {
@@ -135,7 +138,7 @@ function buildSpecialistAggregate({
   }
 
   const aggregate = { head_sha: expectedSha, reviewers };
-  if (Buffer.byteLength(JSON.stringify(aggregate), "utf8") > 128 * 1024) {
+  if (Buffer.byteLength(JSON.stringify(aggregate), "utf8") > MAXIMUM_SPECIALIST_AGGREGATE_BYTES) {
     return invalid("specialist aggregate too large");
   }
   const mandatory = resolveRequiredReviewers({
@@ -153,12 +156,6 @@ function buildSpecialistAggregate({
       .map(({ reviewer, reason }) => `${reviewer}: ${reason}`)
       .join("; "),
   };
-}
-
-// The runtime classifies its own failures and reports `retryable`. Re-deriving that here from
-// category names would silently diverge from it.
-function isRetryableFailure(retryable) {
-  return retryable === true || retryable === "true";
 }
 
 // The runtime reports measurements in one canonical diagnostics object, freshly built per
@@ -185,6 +182,8 @@ function parseDiagnostics(raw) {
     request_retries: count(source.requestRetryCount),
     output_repairs: count(source.outputRepairCount),
     provider_attempts: Array.isArray(source.providerAttempts) ? source.providerAttempts.length : null,
+    // Normalized with the stage outcome that carries them.
+    output_rejections: Array.isArray(source.outputRejections) ? source.outputRejections : [],
     tokens: normalizeStageMetrics({
       tokens: {
         input: usage.inputTokens,
@@ -193,31 +192,6 @@ function parseDiagnostics(raw) {
         complete: usage.complete === true,
       },
     }).tokens,
-  };
-}
-
-// Diagnostics are per invocation, so a retried stage spent both attempts. Summing keeps the cost
-// honest, and one unmeasured attempt must not silently disappear into the other's number.
-function mergeDiagnostics(first, second) {
-  if (!second) return first;
-  if (!first) return second;
-  const add = (left, right) => left === null || right === null ? null : left + right;
-  const tokens = (() => {
-    if (!first.tokens && !second.tokens) return null;
-    if (!first.tokens || !second.tokens) return { ...(first.tokens ?? second.tokens), complete: false };
-    return {
-      input: add(first.tokens.input, second.tokens.input),
-      output: add(first.tokens.output, second.tokens.output),
-      total: add(first.tokens.total, second.tokens.total),
-      complete: first.tokens.complete && second.tokens.complete,
-    };
-  })();
-  return {
-    elapsed_ms: add(first.elapsed_ms, second.elapsed_ms),
-    request_retries: add(first.request_retries, second.request_retries),
-    output_repairs: add(first.output_repairs, second.output_repairs),
-    provider_attempts: add(first.provider_attempts, second.provider_attempts),
-    tokens,
   };
 }
 
@@ -241,7 +215,6 @@ function plannedRequiredReviewers(raw, selectedReviewers = []) {
 
 module.exports = {
   SPECIALIST_ORDER,
-  buildSpecialistAggregate, failedRun, isRetryableFailure, mergeDiagnostics, parseDiagnostics,
-  plannedRequiredReviewers, providerWasCalled, resolveRequiredReviewers, validateSpecialistRun,
-  validateReviewGate,
+  buildSpecialistAggregate, failedRun, parseDiagnostics, plannedRequiredReviewers,
+  providerWasCalled, resolveRequiredReviewers, validateSpecialistRun, validateReviewGate,
 };

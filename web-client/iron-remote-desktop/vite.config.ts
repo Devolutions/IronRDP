@@ -13,13 +13,16 @@ export default defineConfig({
             formats: ['es'],
         },
     },
+    // Component tests mount Svelte components, which needs Svelte's browser build.
+    resolve: process.env.VITEST ? { conditions: ['browser'] } : undefined,
     server: {
         fs: {
             strict: false,
         },
     },
     plugins: [
-        svelte(),
+        // Under vitest (which runs its own Vite 5), vite-plugin-svelte 5 can't preprocess styles; they are plain CSS.
+        svelte(process.env.VITEST ? { preprocess: [] } : {}),
         wasm(),
         topLevelAwait(),
         dtsPlugin({

@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use bytes::BytesMut;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tracing::{debug, trace};
 
 /// How many undelivered bytes may pile up in `SharedIo::write_buf` before
 /// `AsyncWrite::poll_write` stops accepting more.
@@ -200,6 +201,10 @@ impl AsyncWrite for RdpeudpStream {
             // The driver isn't keeping up (or the peer isn't acking): stop
             // accepting more instead of letting write_buf grow without
             // bound. The driver wakes this once it drains write_buf.
+            trace!(
+                len = shared.write_buf.len(),
+                "Write buffer over its high-water mark, waiting for the driver"
+            );
             shared.write_room_waker = Some(cx.waker().clone());
             return Poll::Pending;
         }
@@ -241,6 +246,7 @@ impl AsyncWrite for RdpeudpStream {
             .lock()
             .map_err(|_| io::Error::other("shared lock poisoned"))?;
 
+        debug!("RDP-UDP stream shut down");
         shared.close();
 
         Poll::Ready(Ok(()))
