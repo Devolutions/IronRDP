@@ -9,7 +9,9 @@
 //!
 //! [MS-RDPBCGR 2.2.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dc672839-4f4e-40b1-a71c-cd6a959baa38
 
+use core::sync::atomic::AtomicU32;
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use ironrdp_pdu::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse};
 
@@ -387,4 +389,60 @@ pub struct RttSnapshot {
     pub avg_ms: u32,
     /// Number of samples in the current window.
     pub sample_count: usize,
+}
+
+/// The latest auto-detect measurements of one connection, written by the server
+/// as they arrive.
+///
+/// [`Default`] creates handles at their initial values: no measurement yet,
+/// generation 0. The server creates them that way for each connection, so a
+/// new connection never sees the figures of the one before it. They stay at
+/// those values while auto-detect is disabled (see
+/// [`RdpServer::enable_autodetect`](crate::RdpServer::enable_autodetect)).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct AutoDetectHandles {
+    /// Latest round-trip time in milliseconds, or `u32::MAX` until the first
+    /// measurement. Updated on each RTT Measure Response, so a reader gets a
+    /// fresh, frame-traffic-independent network RTT for flow control.
+    pub rtt: Arc<AtomicU32>,
+
+    /// Lowest RTT of the connection in milliseconds (`baseRTT` per
+    /// [MS-RDPBCGR] 2.2.14.1.5), or `u32::MAX` until the first measurement.
+    /// Updated at the same point as [`Self::rtt`], but unlike it this figure
+    /// never rises: pair it with that figure to derive queueing delay
+    /// (`averageRTT - baseRTT`), which `rtt` alone cannot give since it is a
+    /// sliding-window value that rises as low samples age out.
+    pub baseline_rtt: Arc<AtomicU32>,
+
+    /// Latest measured bandwidth in kilobits per second, or `u32::MAX` until
+    /// the first measurement completes. Updated whenever a Bandwidth Measure
+    /// Results response completes a measurement, with the figure the server
+    /// also reports to the client on the wire; a measurement without a usable
+    /// figure sets it back to `u32::MAX`.
+    pub bandwidth: Arc<AtomicU32>,
+
+    /// Pairs with [`Self::bandwidth`]: increments every time that figure is
+    /// republished, since the figure itself repeats too often to be its own
+    /// freshness signal. Load this with `Ordering::Acquire` to detect a fresh
+    /// measurement window, then read the bandwidth: the server increments this
+    /// with `Ordering::Release` after storing the value, so the bandwidth read
+    /// is at least as new as the generation observed. It is not an exact pair:
+    /// if the next window closes between the two reads, the value can already
+    /// belong to that later window.
+    ///
+    /// Starts at 0 with each connection, so compare it only with generations
+    /// read from this same handle.
+    pub bandwidth_generation: Arc<AtomicU32>,
+}
+
+impl Default for AutoDetectHandles {
+    fn default() -> Self {
+        Self {
+            rtt: Arc::new(AtomicU32::new(u32::MAX)),
+            baseline_rtt: Arc::new(AtomicU32::new(u32::MAX)),
+            bandwidth: Arc::new(AtomicU32::new(u32::MAX)),
+            bandwidth_generation: Arc::new(AtomicU32::new(0)),
+        }
+    }
 }

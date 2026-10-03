@@ -1,4 +1,6 @@
 use core::num::{NonZeroU16, NonZeroUsize};
+use core::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
@@ -6,6 +8,7 @@ use ironrdp_graphics::diff;
 use ironrdp_pdu::pointer::PointerPositionAttribute;
 use tracing::{debug, warn};
 
+use crate::autodetect::AutoDetectHandles;
 use crate::error::ServerResult;
 
 #[rustfmt::skip]
@@ -281,12 +284,50 @@ pub trait RdpServerDisplayUpdates {
     async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>>;
 }
 
+/// What a connection publishes to its display backend, handed to
+/// [`RdpServerDisplay::updates`].
+///
+/// The server writes these values while the connection runs; the backend keeps
+/// the handles it needs and reads them. Each connection has its own handles,
+/// starting from the initial values documented on each field, so nothing the
+/// previous connection set or measured carries over. A
+/// Deactivation-Reactivation Sequence keeps the connection, so `updates` is
+/// then called again with a context holding the same handles.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct DisplayContext {
+    /// `true` while the client has sent `SuppressOutput { desktop_rect: None }`
+    /// (e.g., mstsc minimized), `false` at the start of the connection. Cleared
+    /// on `SuppressOutput { Some(rect) }` or `RefreshRectangle`.
+    ///
+    /// A backend can skip frame emission while it's set, so the client doesn't
+    /// accumulate a backlog of frames it can't present until refocus.
+    ///
+    /// **Caveat:** some clients (notably mstsc) send
+    /// `SuppressOutput { desktop_rect: None }` during their connect
+    /// handshake *before* their display surface is fully initialized; a
+    /// backend that honors the flag blindly will block that first frame
+    /// and leave the client with a half-initialized surface that doesn't
+    /// recover on un-suppress (visible as a frozen desktop on first
+    /// connect). Backends are advised to defer acting on the flag until
+    /// after the first frame has been delivered to the client, and to
+    /// debounce transient flaps (some clients pulse this PDU under wire
+    /// pressure on heavy CPU/IO loads) — e.g., only engage the gate once
+    /// the flag has been steady-`true` for ~1 s.
+    pub display_suppressed: Arc<AtomicBool>,
+
+    /// The connection's auto-detect measurements, for flow control.
+    pub autodetect: AutoDetectHandles,
+}
+
 /// Display for an RDP server
 ///
 /// # Example
 ///
 /// ```
-/// use ironrdp_server::{DesktopSize, DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates, ServerResult};
+/// use ironrdp_server::{
+///     DesktopSize, DisplayContext, DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates, ServerResult,
+/// };
 ///
 /// pub struct DisplayUpdates {
 ///     receiver: tokio::sync::mpsc::Receiver<DisplayUpdate>,
@@ -310,7 +351,7 @@ pub trait RdpServerDisplayUpdates {
 ///         DesktopSize { width: self.width, height: self.height }
 ///     }
 ///
-///     async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+///     async fn updates(&mut self, _ctx: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
 ///         Ok(Box::new(DisplayUpdates { receiver: todo!() }))
 ///     }
 /// }
@@ -329,7 +370,11 @@ pub trait RdpServerDisplay: Send {
     }
 
     /// Return a display updates receiver
-    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>>;
+    ///
+    /// Called when a connection's session starts, and again after each
+    /// Deactivation-Reactivation Sequence of that connection. `ctx` carries
+    /// what the connection publishes to the display; see [`DisplayContext`].
+    async fn updates(&mut self, ctx: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>>;
 
     /// Request a new size for the display
     fn request_layout(&mut self, layout: DisplayControlMonitorLayout) {
