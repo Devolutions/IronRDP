@@ -11,7 +11,7 @@ use core::time::Duration;
 use std::sync::Arc;
 
 use ironrdp_server::{
-    ConnectionHandler, ConnectionPolicy, DesktopSize, DisplayUpdate, RdpServer, RdpServerDisplay,
+    ConnectionHandler, ConnectionPolicy, DesktopSize, DisplayContext, DisplayUpdate, RdpServer, RdpServerDisplay,
     RdpServerDisplayUpdates, RdpServerSecurity, ServerEvent, ServerResult,
 };
 use tokio::io::AsyncReadExt as _;
@@ -154,7 +154,7 @@ impl RdpServerDisplay for StubDisplay {
         DesktopSize { width: 64, height: 64 }
     }
 
-    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(&mut self, _ctx: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(StubUpdates))
     }
 }
