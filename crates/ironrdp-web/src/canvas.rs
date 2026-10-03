@@ -30,10 +30,17 @@ impl Canvas {
     }
 
     /// Resizes the backing store. Note: this also clears the canvas and resets 2D context state;
-    /// the cached `ctx` stays valid.
-    pub(crate) fn resize(&mut self, width: NonZeroU32, height: NonZeroU32) {
+    /// the cached `ctx` stays valid. Assigning the current size is not a no-op in the DOM, so
+    /// unchanged sizes are filtered out to avoid clearing the canvas for nothing.
+    ///
+    /// Returns `true` when the backing store actually changed (and was therefore cleared).
+    pub(crate) fn resize(&mut self, width: NonZeroU32, height: NonZeroU32) -> bool {
+        if self.canvas.width() == width.get() && self.canvas.height() == height.get() {
+            return false;
+        }
         self.canvas.set_width(width.get());
         self.canvas.set_height(height.get());
+        true
     }
 
     /// Blits a dirty region with `put_image_data`. Forces alpha opaque first: the framebuffer isn't

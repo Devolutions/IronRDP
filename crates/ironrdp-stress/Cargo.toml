@@ -1,0 +1,45 @@
+[package]
+name = "ironrdp-stress"
+version = "0.0.0"
+publish = false
+readme = "README.md"
+description = "Live RDP graphics-pipeline resize grading harness"
+edition.workspace = true
+rust-version = "1.94"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "ironrdp-stress"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+ironrdp = { path = "../ironrdp", version = "0.17.0", features = [
+    "session",
+    "connector",
+    "graphics",
+    "dvc",
+    "displaycontrol",
+    "pdu",
+] }
+ironrdp-blocking = { path = "../ironrdp-blocking", version = "0.10" }
+ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.8" }
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.8" }
+ironrdp-egfx = { path = "../ironrdp-egfx", version = "0.3" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
+pico-args = "0.5"
+rand = "0.9"
+sspi = { version = "0.21", features = ["network_client"] }
+tokio-rustls = "0.26"
+tracing = { version = "0.1", features = ["log"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+x509-cert = { version = "0.3", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true
