@@ -142,6 +142,22 @@ jobs:
           $env:XWIN_CACHE_DIR = Join-Path $env:RUNNER_TEMP 'xwin'
           "CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR" >> $env:GITHUB_ENV
           "XWIN_CACHE_DIR=$env:XWIN_CACHE_DIR" >> $env:GITHUB_ENV
+          if ($env:RUNNER_OS -eq 'Windows') {
+            $env:RUSTUP_HOME = 'D:\caches\rustup'
+            if (Test-Path $env:RUSTUP_HOME) { throw 'benchmark Rust installation is not clean' }
+            "RUSTUP_HOME=$env:RUSTUP_HOME" >> $env:GITHUB_ENV
+            $toolchain = python -c "import json,tomllib; print(json.dumps(tomllib.load(open('rust-toolchain.toml','rb'))['toolchain']))" |
+              ConvertFrom-Json
+            rustup toolchain install $toolchain.channel --profile minimal --component ($toolchain.components -join ',') `
+              --target x86_64-pc-windows-msvc
+            foreach ($tool in @('cargo', 'rustc')) {
+              $path = (& rustup which $tool | Out-String).Trim()
+              if (-not $path.StartsWith("$env:RUSTUP_HOME\", [StringComparison]::OrdinalIgnoreCase)) {
+                throw "$tool is not installed under the benchmark Rust home"
+              }
+              Write-Host "$tool`: $path"
+            }
+          }
           rustup show active-toolchain
           rustup target add x86_64-pc-windows-msvc
           if ($env:RUNNER_OS -eq 'Linux') {
@@ -182,6 +198,7 @@ jobs:
             command = 'cargo fetch --locked'
             cacheState = 'empty'
             cargoHome = $env:CARGO_HOME
+            rustupHome = $env:RUSTUP_HOME
             fetchSeconds = [math]::Round($timer.Elapsed.TotalSeconds, 3)
             exitCode = $exitCode
             succeeded = ($exitCode -eq 0)
@@ -226,6 +243,12 @@ jobs:
           }
           $rust = (& rustc --version --verbose | Out-String).Trim()
           if ($LASTEXITCODE -ne 0) { throw 'rustc version check failed' }
+          $rustcPath = (& rustup which rustc | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'rustc path check failed' }
+          $cargoPath = (& rustup which cargo | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'cargo path check failed' }
+          $rustSysroot = (& rustc --print sysroot | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Rust sysroot check failed' }
           $cpu = if ($env:RUNNER_OS -eq 'Windows') {
             (Get-CimInstance Win32_Processor).Name -join ', '
           } else {
@@ -269,6 +292,10 @@ jobs:
             linkerPath = (Get-Command lld-link).Source
             rust = $rust
             cargoHome = $env:CARGO_HOME
+            rustupHome = $env:RUSTUP_HOME
+            rustcPath = $rustcPath
+            cargoPath = $cargoPath
+            rustSysroot = $rustSysroot
             fetchSeconds = $fetch.fetchSeconds
             coreBuildSeconds = $seconds
             exitCode = $exitCode
@@ -326,9 +353,17 @@ jobs:
                     $fetch.runId -ne $env:GITHUB_RUN_ID -or $fetch.runAttempt -ne $timing.runAttempt -or
                     $fetch.vcpus -ne 4 -or $fetch.fetchSeconds -le 0 -or
                     $fetch.cargoHome -ne $timing.cargoHome -or
+                    $fetch.rustupHome -ne $timing.rustupHome -or
                     ($hostName -eq 'windows' -and $fetch.cargoHome -ne 'D:\caches\cargo') -or
                     $fetch.fetchSeconds -ne $timing.fetchSeconds) {
                   throw "invalid fetch metadata for $hostName sample $sample"
+                }
+                if ($hostName -eq 'windows' -and
+                    ($timing.rustupHome -ne 'D:\caches\rustup' -or
+                     -not $timing.rustcPath.StartsWith('D:\caches\rustup\', [StringComparison]::OrdinalIgnoreCase) -or
+                     -not $timing.cargoPath.StartsWith('D:\caches\rustup\', [StringComparison]::OrdinalIgnoreCase) -or
+                     -not $timing.rustSysroot.StartsWith('D:\caches\rustup\', [StringComparison]::OrdinalIgnoreCase))) {
+                  throw "invalid Rust installation paths for $hostName sample $sample"
                 }
                 if (-not $timing.succeeded) { throw "$hostName sample $sample build failed; see its artifact" }
                 if ($timing.host -ne $hostName -or $timing.sample -ne $sample -or
@@ -378,7 +413,7 @@ jobs:
             Expression = { [math]::Round($_.averageFetchSeconds / $fastestFetch, 3) }
           })
           New-Item -ItemType Directory comparison | Out-Null
-          $timings | Select-Object host, sample, runner, vcpus, cpu, cargoHome, fetchSeconds, coreBuildSeconds |
+          $timings | Select-Object host, sample, runner, vcpus, cpu, cargoHome, rustupHome, rustcPath, cargoPath, rustSysroot, fetchSeconds, coreBuildSeconds |
             Export-Csv comparison/build-times.csv -NoTypeInformation
           $timings | ConvertTo-Json -Depth 5 | Set-Content comparison/build-times.json
           $averages | Export-Csv comparison/averages.csv -NoTypeInformation
@@ -418,6 +453,7 @@ jobs:
             'Separate stopwatches surround cargo fetch --locked and the offline cargo build command, including clean dependency compilation and linking.',
             'Fetch covers all locked workspace dependencies in an empty Cargo cache, not only the agent dependency graph; network retries and extraction are included.',
             'Windows CARGO_HOME is D:\caches\cargo; Linux uses a dedicated cache under RUNNER_TEMP.',
+            'Windows RUSTUP_HOME is D:\caches\rustup; toolchain installation is outside both timers and compiler/sysroot paths are recorded.',
             'Toolchain/SDK downloads, setup, metadata checks, artifact uploads, and smoke tests are outside both timed intervals.',
             'Each of the four samples per host uses a fresh 4-vCPU runner with no build cache or incremental compilation; CPU models and tool versions are recorded in JSON.',
             'Windows uses the installed MSVC/SDK; Linux uses the cargo-xwin MSVC/SDK, so this is a runner/toolchain comparison, not an OS-only experiment.',
@@ -473,11 +509,19 @@ jobs:
                 $fetch.runId -ne $timing.runId -or $fetch.runAttempt -ne $timing.runAttempt -or
                 $fetch.vcpus -ne 4 -or $fetch.fetchSeconds -le 0 -or
                 $fetch.cargoHome -ne $timing.cargoHome -or
+                $fetch.rustupHome -ne $timing.rustupHome -or
                 ($hostName -eq 'windows' -and $fetch.cargoHome -ne 'D:\caches\cargo') -or
                 $fetch.fetchSeconds -ne $timing.fetchSeconds -or
                 $interval.exitCode -ne 0 -or $interval.coreBuildSeconds -le 0 -or
                 $interval.coreBuildSeconds -ne $timing.coreBuildSeconds) {
               throw "invalid diagnostic metadata for $hostName"
+            }
+            if ($hostName -eq 'windows' -and
+                ($timing.rustupHome -ne 'D:\caches\rustup' -or
+                 -not $timing.rustcPath.StartsWith('D:\caches\rustup\', [StringComparison]::OrdinalIgnoreCase) -or
+                 -not $timing.cargoPath.StartsWith('D:\caches\rustup\', [StringComparison]::OrdinalIgnoreCase) -or
+                 -not $timing.rustSysroot.StartsWith('D:\caches\rustup\', [StringComparison]::OrdinalIgnoreCase))) {
+              throw 'invalid Windows diagnostic Rust installation paths'
             }
             $binary = Join-Path $directory 'ironrdp-agent.exe'
             & $binary --version | Write-Host
