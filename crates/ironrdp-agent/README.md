@@ -145,6 +145,7 @@ Run [Build runner benchmark][build-benchmark] to compare clean Windows x64 relea
 Both use LLVM 20.1.8 (`clang-cl` and `lld-link`), the repository's Rust toolchain, four Cargo jobs, and static CRT linkage; Linux cross-compiles with `cargo-xwin` 0.23.1.
 Each host contributes four samples on fresh runners, with no build cache or incremental compilation.
 Separate stopwatches measure `cargo fetch --locked` with an empty Cargo cache and the offline Cargo release build, including dependency compilation and linking.
+Windows sets `CARGO_HOME` to `D:\caches\cargo`; Linux uses a dedicated cache under `RUNNER_TEMP`, and both record the path in timing metadata.
 Fetch covers all locked workspace dependencies, not just the agent dependency graph, and includes network retries and extraction; toolchain/SDK downloads, setup, metadata checks, artifact uploads, and smoke tests are outside both timers.
 Each run saves fetch/build timing JSON and logs, Cargo timing reports, and executables for 30 days, plus individual fetch/build samples and arithmetic means (with min/max) in the comparison summary, CSV, and JSON.
 The workflow's branch-scoped `push` trigger allows testing before merge; `workflow_dispatch` also accepts this feature branch.
