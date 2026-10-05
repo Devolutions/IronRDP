@@ -134,7 +134,7 @@ jobs:
           tar -xzf "$asset"
           echo "$RUNNER_TEMP/cargo-xwin" >> "$GITHUB_PATH"
 
-      - name: Prepare dependencies outside the benchmark
+      - name: Prepare toolchain and SDK outside the benchmarks
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
@@ -144,11 +144,46 @@ jobs:
           "XWIN_CACHE_DIR=$env:XWIN_CACHE_DIR" >> $env:GITHUB_ENV
           rustup show active-toolchain
           rustup target add x86_64-pc-windows-msvc
-          # Cross-builds also compile build scripts and proc macros for the host.
-          cargo fetch --locked
           if ($env:RUNNER_OS -eq 'Linux') {
             cargo xwin cache xwin
           }
+
+      - name: Measure dependency fetch with an empty Cargo cache
+        env:
+          BENCHMARK_HOST: ${{ matrix.host }}
+          BENCHMARK_SAMPLE: ${{ matrix.sample }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $env:CARGO_HOME = Join-Path $env:RUNNER_TEMP 'benchmark-cargo'
+          if (Test-Path $env:CARGO_HOME) { throw 'benchmark Cargo cache is not clean' }
+          New-Item -ItemType Directory -Path $env:CARGO_HOME | Out-Null
+          "CARGO_HOME=$env:CARGO_HOME" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Path benchmark-results | Out-Null
+          $vcpus = [Environment]::ProcessorCount
+          if ($vcpus -ne 4) { throw "expected 4 vCPUs, found $vcpus" }
+
+          # Fetch all locked workspace dependencies, including host build dependencies.
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          & cargo fetch --locked 2>&1 | Tee-Object -FilePath benchmark-results/fetch.log
+          $exitCode = $LASTEXITCODE
+          $timer.Stop()
+          $timing = [ordered]@{
+            host = $env:BENCHMARK_HOST
+            sample = [int]$env:BENCHMARK_SAMPLE
+            commit = $env:GITHUB_SHA
+            runId = $env:GITHUB_RUN_ID
+            runAttempt = $env:GITHUB_RUN_ATTEMPT
+            vcpus = $vcpus
+            command = 'cargo fetch --locked'
+            cacheState = 'empty'
+            fetchSeconds = [math]::Round($timer.Elapsed.TotalSeconds, 3)
+            exitCode = $exitCode
+            succeeded = ($exitCode -eq 0)
+          }
+          $timing | ConvertTo-Json | Set-Content benchmark-results/fetch-time.json
+          "## $env:BENCHMARK_HOST sample $env:BENCHMARK_SAMPLE dependency fetch: $($timing.fetchSeconds) s (exit $exitCode)" >> $env:GITHUB_STEP_SUMMARY
+          if ($exitCode -ne 0) { exit $exitCode }
 
       - name: Install Linux trace tools
         if: ${{ matrix.sample == 0 && runner.os == 'Linux' }}
@@ -170,7 +205,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
-          New-Item -ItemType Directory -Path benchmark-results | Out-Null
+          $fetch = Get-Content benchmark-results/fetch-time.json -Raw | ConvertFrom-Json
+          if (-not $fetch.succeeded) { throw 'dependency fetch failed' }
           $vcpus = [Environment]::ProcessorCount
           if ($vcpus -ne 4) { throw "expected 4 vCPUs, found $vcpus" }
           if (Test-Path $env:CARGO_TARGET_DIR) { throw 'benchmark target directory is not clean' }
@@ -227,6 +263,7 @@ jobs:
             linker = $linker
             linkerPath = (Get-Command lld-link).Source
             rust = $rust
+            fetchSeconds = $fetch.fetchSeconds
             coreBuildSeconds = $seconds
             exitCode = $exitCode
             succeeded = ($exitCode -eq 0)
@@ -255,7 +292,7 @@ jobs:
           overwrite: true
 
   compare:
-    name: Verify Windows executables and compare average build times
+    name: Verify Windows executables and compare fetch and build times
     needs: build
     if: ${{ !cancelled() && inputs.mode != 'trace' }}
     runs-on: windows-2022
@@ -276,6 +313,15 @@ jobs:
               foreach ($sample in 1..4) {
                 $directory = Join-Path benchmark-results "build-benchmark-$hostName-$sample"
                 $timing = Get-Content (Join-Path $directory 'build-time.json') -Raw | ConvertFrom-Json
+                $fetch = Get-Content (Join-Path $directory 'fetch-time.json') -Raw | ConvertFrom-Json
+                if (-not $fetch.succeeded -or $fetch.exitCode -ne 0 -or $fetch.cacheState -ne 'empty' -or
+                    $fetch.command -ne 'cargo fetch --locked' -or $fetch.host -ne $hostName -or
+                    $fetch.sample -ne $sample -or $fetch.commit -ne $env:GITHUB_SHA -or
+                    $fetch.runId -ne $env:GITHUB_RUN_ID -or $fetch.runAttempt -ne $timing.runAttempt -or
+                    $fetch.vcpus -ne 4 -or $fetch.fetchSeconds -le 0 -or
+                    $fetch.fetchSeconds -ne $timing.fetchSeconds) {
+                  throw "invalid fetch metadata for $hostName sample $sample"
+                }
                 if (-not $timing.succeeded) { throw "$hostName sample $sample build failed; see its artifact" }
                 if ($timing.host -ne $hostName -or $timing.sample -ne $sample -or
                     $timing.instrumented -or
@@ -299,11 +345,15 @@ jobs:
               $samples = @($timings | Where-Object host -EQ $hostName)
               if ($samples.Count -ne 4) { throw "expected 4 samples for $hostName" }
               $stats = $samples | Measure-Object -Property coreBuildSeconds -Average -Minimum -Maximum
+              $fetchStats = $samples | Measure-Object -Property fetchSeconds -Average -Minimum -Maximum
               [pscustomobject]@{
                 host = $hostName
                 runner = $samples[0].runner
                 vcpus = $samples[0].vcpus
                 samples = $samples.Count
+                averageFetchSeconds = [math]::Round($fetchStats.Average, 3)
+                minFetchSeconds = $fetchStats.Minimum
+                maxFetchSeconds = $fetchStats.Maximum
                 averageCoreBuildSeconds = [math]::Round($stats.Average, 3)
                 minCoreBuildSeconds = $stats.Minimum
                 maxCoreBuildSeconds = $stats.Maximum
@@ -311,12 +361,16 @@ jobs:
             }
           )
           $fastest = ($averages | Measure-Object -Property averageCoreBuildSeconds -Minimum).Minimum
+          $fastestFetch = ($averages | Measure-Object -Property averageFetchSeconds -Minimum).Minimum
           $averages = @($averages | Select-Object *, @{
             Name = 'relativeToFastestAverage'
             Expression = { [math]::Round($_.averageCoreBuildSeconds / $fastest, 3) }
+          }, @{
+            Name = 'relativeToFastestFetchAverage'
+            Expression = { [math]::Round($_.averageFetchSeconds / $fastestFetch, 3) }
           })
           New-Item -ItemType Directory comparison | Out-Null
-          $timings | Select-Object host, sample, runner, vcpus, cpu, coreBuildSeconds |
+          $timings | Select-Object host, sample, runner, vcpus, cpu, fetchSeconds, coreBuildSeconds |
             Export-Csv comparison/build-times.csv -NoTypeInformation
           $timings | ConvertTo-Json -Depth 5 | Set-Content comparison/build-times.json
           $averages | Export-Csv comparison/averages.csv -NoTypeInformation
@@ -332,19 +386,30 @@ jobs:
           }
           $summary += @(
             '',
+            '## Dependency fetch averages (empty Cargo cache)',
+            '',
+            '| Host | Samples | Average fetch (s) | Min (s) | Max (s) | Relative to fastest average |',
+            '| --- | ---: | ---: | ---: | ---: | ---: |'
+          )
+          foreach ($average in $averages) {
+            $summary += "| $($average.host) | $($average.samples) | $($average.averageFetchSeconds) | $($average.minFetchSeconds) | $($average.maxFetchSeconds) | $($average.relativeToFastestFetchAverage)x |"
+          }
+          $summary += @(
+            '',
             '## Individual samples',
             '',
-            '| Build host | Sample | Core build (s) |',
-            '| --- | ---: | ---: |'
+            '| Build host | Sample | Fetch (s) | Core build (s) |',
+            '| --- | ---: | ---: | ---: |'
           )
           foreach ($timing in $timings) {
-            $summary += "| $($timing.host) | $($timing.sample) | $($timing.coreBuildSeconds) |"
+            $summary += "| $($timing.host) | $($timing.sample) | $($timing.fetchSeconds) | $($timing.coreBuildSeconds) |"
           }
           $summary += @(
             '',
             'All eight Windows executables passed --version and --help smoke tests.',
-            'The stopwatch surrounds only the offline cargo build command, including clean dependency compilation and linking.',
-            'Setup, downloads, metadata checks, artifact uploads, and smoke tests are outside the timed interval.',
+            'Separate stopwatches surround cargo fetch --locked and the offline cargo build command, including clean dependency compilation and linking.',
+            'Fetch covers all locked workspace dependencies in an empty Cargo cache, not only the agent dependency graph; network retries and extraction are included.',
+            'Toolchain/SDK downloads, setup, metadata checks, artifact uploads, and smoke tests are outside both timed intervals.',
             'Each of the four samples per host uses a fresh 4-vCPU runner with no build cache or incremental compilation; CPU models and tool versions are recorded in JSON.',
             'Windows uses the installed MSVC/SDK; Linux uses the cargo-xwin MSVC/SDK, so this is a runner/toolchain comparison, not an OS-only experiment.',
             '',
@@ -388,10 +453,17 @@ jobs:
           foreach ($hostName in @('windows', 'linux')) {
             $directory = Join-Path traces "build-trace-$hostName"
             $timing = Get-Content (Join-Path $directory 'build-time.json') -Raw | ConvertFrom-Json
+            $fetch = Get-Content (Join-Path $directory 'fetch-time.json') -Raw | ConvertFrom-Json
             $interval = Get-Content (Join-Path $directory 'build-interval.json') -Raw | ConvertFrom-Json
             if (-not $timing.succeeded -or -not $timing.instrumented -or $timing.sample -ne 0 -or
                 $timing.host -ne $hostName -or $timing.commit -ne $env:GITHUB_SHA -or
                 $timing.runId -ne $env:GITHUB_RUN_ID -or $timing.vcpus -ne 4 -or
+                -not $fetch.succeeded -or $fetch.exitCode -ne 0 -or $fetch.cacheState -ne 'empty' -or
+                $fetch.command -ne 'cargo fetch --locked' -or $fetch.host -ne $hostName -or
+                $fetch.sample -ne 0 -or $fetch.commit -ne $timing.commit -or
+                $fetch.runId -ne $timing.runId -or $fetch.runAttempt -ne $timing.runAttempt -or
+                $fetch.vcpus -ne 4 -or $fetch.fetchSeconds -le 0 -or
+                $fetch.fetchSeconds -ne $timing.fetchSeconds -or
                 $interval.exitCode -ne 0 -or $interval.coreBuildSeconds -le 0 -or
                 $interval.coreBuildSeconds -ne $timing.coreBuildSeconds) {
               throw "invalid diagnostic metadata for $hostName"
@@ -399,7 +471,7 @@ jobs:
             $binary = Join-Path $directory 'ironrdp-agent.exe'
             & $binary --version | Write-Host
             & $binary --help | Out-Null
-            "## $hostName diagnostic build: $($timing.coreBuildSeconds) s (instrumented, excluded from averages)" >> $env:GITHUB_STEP_SUMMARY
+            "## $hostName diagnostic sample: fetch $($timing.fetchSeconds) s, build $($timing.coreBuildSeconds) s (instrumented build, excluded from averages)" >> $env:GITHUB_STEP_SUMMARY
           }
           if ((Get-Item traces/build-trace-windows/build.etl).Length -eq 0) { throw 'empty ETL capture' }
           [xml]$report = Get-Content traces/build-trace-windows/trace-report.xml -Raw
