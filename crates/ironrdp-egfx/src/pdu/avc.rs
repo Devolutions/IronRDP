@@ -187,6 +187,10 @@ impl<'a> arbitrary::Arbitrary<'a> for Encoding {
 pub struct Avc444BitmapStream<'a> {
     pub encoding: Encoding,
     pub stream1: Avc420BitmapStream<'a>,
+    /// INVARIANT: `Some` exactly when `encoding` is `LUMA_AND_CHROMA`.
+    ///
+    /// MS-RDPEGFX 2.2.4.5 and 2.2.4.6 carry a second sub-stream for LC 0 and none for LC 1 and 2, and `encode`
+    /// rejects a value that breaks this.
     pub stream2: Option<Avc420BitmapStream<'a>>,
 }
 
@@ -200,8 +204,35 @@ impl Encode for Avc444BitmapStream<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
+        // LC decides which sub-streams are on the wire (MS-RDPEGFX 2.2.4.5, 2.2.4.6), so the value has to
+        // agree with it. A second sub-stream under LC 1 or 2 would be taken for more data in the first one,
+        // and LC 0 without one would be cut short.
+        if self.stream2.is_some() != (self.encoding == Encoding::LUMA_AND_CHROMA) {
+            return Err(invalid_field_err!(
+                "stream2",
+                "must be present exactly when the encoding is LUMA_AND_CHROMA",
+                in: dst
+            ));
+        }
+
+        // cbAvc420EncodedBitstream1 is the size of the YUV420 frame in the first
+        // sub-stream and MUST be zero when there is none (MS-RDPEGFX 2.2.4.5, 2.2.4.6).
+        // With LC set to CHROMA the first sub-stream carries only the Chroma420 view.
+        //
+        // The zero is safe for clients that follow the spec. FreeRDP's client
+        // (rdpgfx_decode_AVC444 in channels/rdpgfx/client/rdpgfx_codec.c, checked in
+        // 3.32.0) uses this field only when LC is 0 and takes the rest of the command
+        // as stream 1 otherwise, and the decoder below accepts both forms, so nothing
+        // known depends on the non-zero value. Restoring the sub-stream length would
+        // need a client that does.
+        let stream1_size = if self.encoding == Encoding::CHROMA {
+            0
+        } else {
+            self.stream1.size()
+        };
+
         let mut stream_info = 0u32;
-        stream_info.set_bits(0..30, cast_length!("stream1size", self.stream1.size(), in: dst)?);
+        stream_info.set_bits(0..30, cast_length!("stream1size", stream1_size, in: dst)?);
         stream_info.set_bits(30..32, self.encoding.bits().into());
         dst.write_u32(stream_info);
         self.stream1.encode(dst)?;
