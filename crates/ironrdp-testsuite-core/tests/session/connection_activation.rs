@@ -122,6 +122,40 @@ fn demand_active_static_channel_chunk_size(chunk_size: Option<u32>) -> usize {
     }
 }
 
+fn step_demand_active_with_desktop_size(width: u16, height: u16) -> ironrdp_connector::ConnectorResult<Written> {
+    let mut demand_active = SERVER_DEMAND_ACTIVE.clone();
+    let bitmap = demand_active
+        .pdu
+        .capability_sets
+        .iter_mut()
+        .find_map(|capability_set| match capability_set {
+            CapabilitySet::Bitmap(bitmap) => Some(bitmap),
+            _ => None,
+        })
+        .expect("server demand active should include a bitmap capability");
+    bitmap.desktop_width = width;
+    bitmap.desktop_height = height;
+
+    let mut sequence = ConnectionActivationSequence::new(test_config(), IO_CHANNEL_ID, USER_CHANNEL_ID);
+    let mut output = WriteBuf::new();
+    let frame = encode_server_share_control(ShareControlPdu::ServerDemandActive(demand_active));
+    sequence.step(&frame, None, &mut output)
+}
+
+#[test]
+fn demand_active_accepts_server_desktop_size_within_range() {
+    for (width, height) in [(1, 1), (1920, 1080), (32766, 32766)] {
+        assert!(step_demand_active_with_desktop_size(width, height).is_ok());
+    }
+}
+
+#[test]
+fn demand_active_rejects_server_desktop_size_out_of_range() {
+    for (width, height) in [(0, 768), (1024, 0), (32767, 768), (1024, 32767), (u16::MAX, u16::MAX)] {
+        assert!(step_demand_active_with_desktop_size(width, height).is_err());
+    }
+}
+
 #[test]
 fn demand_active_uses_valid_server_static_channel_chunk_size() {
     for chunk_size in [
