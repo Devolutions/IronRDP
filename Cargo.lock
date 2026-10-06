@@ -46,6 +46,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aead"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1973cfbc1a2daf9cf550e74e1f088c28e7f7d8c1e1418fb6c9dc5184b7e84c99"
+dependencies = [
+ "crypto-common 0.2.2",
+ "inout 0.2.2",
+]
+
+[[package]]
 name = "aes"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -73,12 +83,36 @@ version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "831010a0f742e1209b3bcea8fab6a8e149051ba6099432c8cb2cc117dec3ead1"
 dependencies = [
- "aead",
+ "aead 0.5.2",
  "aes 0.8.4",
  "cipher 0.4.4",
- "ctr",
- "ghash",
+ "ctr 0.9.2",
+ "ghash 0.5.1",
  "subtle",
+]
+
+[[package]]
+name = "aes-gcm"
+version = "0.11.0-rc.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da8c919c118108f144adecad74b425b804ad075580d605d9b33c2d6d1c62a2f8"
+dependencies = [
+ "aead 0.6.1",
+ "aes 0.9.1",
+ "cipher 0.5.2",
+ "ctr 0.10.1",
+ "ghash 0.6.0",
+ "subtle",
+]
+
+[[package]]
+name = "aes-kw"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41ac571010bd60765c56085a4f1d412012a9be2663b1a2f2b19b49318653fd0d"
+dependencies = [
+ "aes 0.9.1",
+ "const-oid 0.10.2",
 ]
 
 [[package]]
@@ -428,6 +462,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "bcrypt-pbkdf"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "144e573728da132683b9488acd528274c790e07fc06ff81ee29f9d8f8b1041e0"
+dependencies = [
+ "blowfish",
+ "pbkdf2",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "benches"
 version = "0.0.0"
 dependencies = [
@@ -561,6 +606,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5"
 dependencies = [
  "objc2 0.6.4",
+]
+
+[[package]]
+name = "blowfish"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62ce3946557b35e71d1bbe07ec385073ce9eda05043f95de134eb578fcf1a298"
+dependencies = [
+ "byteorder",
+ "cipher 0.5.2",
 ]
 
 [[package]]
@@ -769,6 +824,7 @@ version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8cf2a2c93cd704877c0858356ed03480ff301ee950b43f1cbe4573b088bfa6c"
 dependencies = [
+ "block-buffer 0.12.1",
  "crypto-common 0.2.2",
  "inout 0.2.2",
 ]
@@ -1236,6 +1292,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctr"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baaca1c4b237092596f64d571e9db6ce4109c4ef9742e27590f1709594461f21"
+dependencies = [
+ "cipher 0.5.2",
+]
+
+[[package]]
 name = "ctutils"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1672,7 +1737,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1999,7 +2064,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0d8a4362ccb29cb0b265253fb0a2728f592895ee6854fd9bc13f2ffda266ff1"
 dependencies = [
  "opaque-debug",
- "polyval",
+ "polyval 0.6.2",
+]
+
+[[package]]
+name = "ghash"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2eecf2d5dc9b66b732b97707a0210906b1d30523eb773193ab777c0c84b3e8d5"
+dependencies = [
+ "polyval 0.7.3",
 ]
 
 [[package]]
@@ -2730,7 +2804,7 @@ dependencies = [
 name = "ironrdp-capture-replay"
 version = "0.0.0"
 dependencies = [
- "aes-gcm",
+ "aes-gcm 0.10.3",
  "hmac 0.12.1",
  "ironrdp-core 0.2.1",
  "ironrdp-dvc",
@@ -4086,7 +4160,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4778,22 +4852,31 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "picky"
 version = "7.0.0-rc.25"
-source = "git+https://github.com/Devolutions/picky-rs.git?rev=4de0135c528b60500d21451111b5f35d72671395#4de0135c528b60500d21451111b5f35d72671395"
+source = "git+https://github.com/Devolutions/picky-rs?branch=copilot%2Fpicky-fips-audit#f5b1ba9c60e8a6b3e6154fff3aaf4d38c42428f2"
 dependencies = [
+ "aes 0.9.1",
+ "aes-gcm 0.11.0-rc.4",
+ "aes-kw",
  "aws-lc-rs",
  "base64 0.22.1",
+ "bcrypt-pbkdf",
+ "cbc",
  "crypto-bigint",
  "crypto-common 0.2.2",
+ "ctr 0.10.1",
  "curve25519-dalek",
+ "des",
  "digest 0.11.3",
  "ecdsa",
  "ed25519-dalek",
  "hex",
+ "hmac 0.13.0",
  "inout 0.2.2",
  "md-5 0.11.0",
  "p256",
  "p384",
  "p521",
+ "pbkdf2",
  "picky-asn1",
  "picky-asn1-der",
  "picky-asn1-x509",
@@ -4801,6 +4884,7 @@ dependencies = [
  "primeorder",
  "rand 0.10.2",
  "rand_core 0.10.1",
+ "rc2",
  "rsa",
  "rustcrypto-ff",
  "rustcrypto-ff_derive",
@@ -4817,7 +4901,7 @@ dependencies = [
 [[package]]
 name = "picky-asn1"
 version = "0.10.1"
-source = "git+https://github.com/Devolutions/picky-rs.git?rev=4de0135c528b60500d21451111b5f35d72671395#4de0135c528b60500d21451111b5f35d72671395"
+source = "git+https://github.com/Devolutions/picky-rs?branch=copilot%2Fpicky-fips-audit#f5b1ba9c60e8a6b3e6154fff3aaf4d38c42428f2"
 dependencies = [
  "oid",
  "serde",
@@ -4829,7 +4913,7 @@ dependencies = [
 [[package]]
 name = "picky-asn1-der"
 version = "0.5.7"
-source = "git+https://github.com/Devolutions/picky-rs.git?rev=4de0135c528b60500d21451111b5f35d72671395#4de0135c528b60500d21451111b5f35d72671395"
+source = "git+https://github.com/Devolutions/picky-rs?branch=copilot%2Fpicky-fips-audit#f5b1ba9c60e8a6b3e6154fff3aaf4d38c42428f2"
 dependencies = [
  "picky-asn1",
  "serde",
@@ -4839,7 +4923,7 @@ dependencies = [
 [[package]]
 name = "picky-asn1-x509"
 version = "0.15.5"
-source = "git+https://github.com/Devolutions/picky-rs.git?rev=4de0135c528b60500d21451111b5f35d72671395#4de0135c528b60500d21451111b5f35d72671395"
+source = "git+https://github.com/Devolutions/picky-rs?branch=copilot%2Fpicky-fips-audit#f5b1ba9c60e8a6b3e6154fff3aaf4d38c42428f2"
 dependencies = [
  "base64 0.23.1",
  "crypto-bigint",
@@ -5034,7 +5118,18 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "opaque-debug",
- "universal-hash",
+ "universal-hash 0.5.1",
+]
+
+[[package]]
+name = "polyval"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0fa31d631f2b2cb2a544d0aa321ce847a94764d701ca2becc411138b93d49cd"
+dependencies = [
+ "cpubits",
+ "cpufeatures 0.3.0",
+ "universal-hash 0.6.1",
 ]
 
 [[package]]
@@ -5257,7 +5352,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5405,6 +5500,15 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "rc2"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ceda21af1ae61033b63175653a1af86cae399d79cd03ca80ba347eb3a6c4a7fe"
+dependencies = [
+ "cipher 0.5.2",
 ]
 
 [[package]]
@@ -5727,7 +5831,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6274,8 +6378,8 @@ checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 
 [[package]]
 name = "sspi"
-version = "0.21.3"
-source = "git+https://github.com/Devolutions/sspi-rs.git?rev=cc4afe6dc3a7a16453ec8f056aa6c7a961f2edfa#cc4afe6dc3a7a16453ec8f056aa6c7a961f2edfa"
+version = "0.23.0"
+source = "git+https://github.com/Devolutions/sspi-rs.git?rev=577bb831742f4f2f6af8e1d984a1c8bacfa73b0d#577bb831742f4f2f6af8e1d984a1c8bacfa73b0d"
 dependencies = [
  "async-dnssd",
  "async-recursion",
@@ -6466,10 +6570,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6988,6 +7092,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "universal-hash"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4987bdc12753382e0bec4a65c50738ffaabc998b9cdd1f952fb5f39b0048a96"
+dependencies = [
+ "crypto-common 0.2.2",
+ "ctutils",
+]
+
+[[package]]
 name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7393,7 +7507,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7753,8 +7867,8 @@ dependencies = [
 
 [[package]]
 name = "winscard"
-version = "0.3.3"
-source = "git+https://github.com/Devolutions/sspi-rs.git?rev=cc4afe6dc3a7a16453ec8f056aa6c7a961f2edfa#cc4afe6dc3a7a16453ec8f056aa6c7a961f2edfa"
+version = "0.4.0"
+source = "git+https://github.com/Devolutions/sspi-rs.git?rev=577bb831742f4f2f6af8e1d984a1c8bacfa73b0d#577bb831742f4f2f6af8e1d984a1c8bacfa73b0d"
 dependencies = [
  "bitflags 2.13.1",
  "crypto-bigint",

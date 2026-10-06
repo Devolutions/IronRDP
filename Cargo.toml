@@ -209,8 +209,8 @@ opt-level = 3
 # FIXME: We need to catch up with Diplomat upstream again, but this is a significant amount of work.
 # In the meantime, we use this forked version which fixes an undefined behavior in the code expanded by the bridge macro.
 diplomat = { git = "https://github.com/CBenoit/diplomat", rev = "6dc806e80162b6b39509a04a2835744236cd2396" }
-picky = { git = "https://github.com/Devolutions/picky-rs.git", rev = "4de0135c528b60500d21451111b5f35d72671395", version = "=7.0.0-rc.25" }
-picky-asn1 = { git = "https://github.com/Devolutions/picky-rs.git", rev = "4de0135c528b60500d21451111b5f35d72671395" }
-picky-asn1-der = { git = "https://github.com/Devolutions/picky-rs.git", rev = "4de0135c528b60500d21451111b5f35d72671395" }
-picky-asn1-x509 = { git = "https://github.com/Devolutions/picky-rs.git", rev = "4de0135c528b60500d21451111b5f35d72671395" }
-sspi = { git = "https://github.com/Devolutions/sspi-rs.git", rev = "cc4afe6dc3a7a16453ec8f056aa6c7a961f2edfa", version = "0.21.3" }
+picky = { git = "https://github.com/Devolutions/picky-rs", branch = "copilot/picky-fips-audit", version = "=7.0.0-rc.25" }
+picky-asn1 = { git = "https://github.com/Devolutions/picky-rs", branch = "copilot/picky-fips-audit" }
+picky-asn1-der = { git = "https://github.com/Devolutions/picky-rs", branch = "copilot/picky-fips-audit" }
+picky-asn1-x509 = { git = "https://github.com/Devolutions/picky-rs", branch = "copilot/picky-fips-audit" }
+sspi = { git = "https://github.com/Devolutions/sspi-rs.git", rev = "577bb831742f4f2f6af8e1d984a1c8bacfa73b0d", version = "0.23.0" }
