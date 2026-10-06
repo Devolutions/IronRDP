@@ -4,7 +4,7 @@
 //! raw BGR pixels, NSCodec, or RLEX. Each subcodec region specifies its
 //! position, dimensions, and the codec used to compress its bitmap data.
 
-use ironrdp_core::{cast_length, ensure_size, invalid_field_err, DecodeResult, ReadCursor};
+use ironrdp_core::{DecodeResult, ReadCursor, cast_length, ensure_size, invalid_field_err};
 
 /// Subcodec identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
