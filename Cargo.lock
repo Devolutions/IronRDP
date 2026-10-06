@@ -5818,7 +5818,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5831,7 +5831,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6379,7 +6379,7 @@ checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 [[package]]
 name = "sspi"
 version = "0.23.0"
-source = "git+https://github.com/Devolutions/sspi-rs.git?rev=577bb831742f4f2f6af8e1d984a1c8bacfa73b0d#577bb831742f4f2f6af8e1d984a1c8bacfa73b0d"
+source = "git+https://github.com/Devolutions/sspi-rs.git?rev=e3216fcbac5add1d4742a4bfb7866aaa899e4892#e3216fcbac5add1d4742a4bfb7866aaa899e4892"
 dependencies = [
  "async-dnssd",
  "async-recursion",
@@ -7868,7 +7868,7 @@ dependencies = [
 [[package]]
 name = "winscard"
 version = "0.4.0"
-source = "git+https://github.com/Devolutions/sspi-rs.git?rev=577bb831742f4f2f6af8e1d984a1c8bacfa73b0d#577bb831742f4f2f6af8e1d984a1c8bacfa73b0d"
+source = "git+https://github.com/Devolutions/sspi-rs.git?rev=e3216fcbac5add1d4742a4bfb7866aaa899e4892#e3216fcbac5add1d4742a4bfb7866aaa899e4892"
 dependencies = [
  "bitflags 2.13.1",
  "crypto-bigint",
