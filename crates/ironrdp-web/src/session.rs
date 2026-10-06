@@ -375,6 +375,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_driver_name,
             outbound_message_size_limit,
             legacy_graphics,
+            security,
         );
 
         {
@@ -418,12 +419,11 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_driver_name = inner.printer_driver_name.clone();
             outbound_message_size_limit = inner.outbound_message_size_limit;
             legacy_graphics = inner.legacy_graphics;
+            security = SecurityConfig {
+                enable_credssp: inner.enable_credssp,
+                enable_standard_rdp_security: inner.enable_standard_rdp_security,
+            };
         }
-
-        let security = SecurityConfig {
-            enable_credssp: self.0.borrow().enable_credssp,
-            enable_standard_rdp_security: self.0.borrow().enable_standard_rdp_security,
-        };
 
         if pcb.is_some() && vmconnect.is_some() {
             return Err(anyhow::Error::msg("generic preconnection blob and VMConnect are mutually exclusive").into());
@@ -1979,7 +1979,7 @@ mod tests {
         ironrdp_futures::LocalFuturesFramed::new_with_leftover(Cursor::new(Vec::new()), BytesMut::from(response))
     }
 
-    fn connector_config(enable_standard_rdp_security: bool) -> connector::Config {
+    fn connector_config(security: SecurityConfig) -> connector::Config {
         build_config(
             String::new(),
             String::new(),
@@ -1990,10 +1990,7 @@ mod tests {
                 height: DEFAULT_HEIGHT,
             },
             false,
-            SecurityConfig {
-                enable_credssp: false,
-                enable_standard_rdp_security,
-            },
+            security,
         )
     }
 
@@ -2074,28 +2071,13 @@ mod tests {
             ("credssp disabled", false, false, true, false),
             ("standard RDP security", true, true, false, false),
         ] {
-            let config = build_config(
-                String::new(),
-                String::new(),
-                None,
-                "ironrdp-web".to_owned(),
-                DesktopSize {
-                    width: DEFAULT_WIDTH,
-                    height: DEFAULT_HEIGHT,
-                },
-                false,
-                SecurityConfig {
-                    enable_credssp,
-                    enable_standard_rdp_security,
-                },
-            );
+            let config = connector_config(SecurityConfig {
+                enable_credssp,
+                enable_standard_rdp_security,
+            });
 
             assert_eq!(config.enable_tls, expected_tls, "{case}");
             assert_eq!(config.enable_credssp, expected_credssp, "{case}");
-            assert_eq!(
-                config.enable_standard_rdp_security, enable_standard_rdp_security,
-                "{case}"
-            );
         }
     }
 
@@ -2104,7 +2086,10 @@ mod tests {
         let response = rdcleanpath_response(ironrdp::pdu::nego::SecurityProtocol::empty());
         let mut framed = rdcleanpath_framed(&response);
         let mut connector = ClientConnector::new(
-            connector_config(true),
+            connector_config(SecurityConfig {
+                enable_credssp: false,
+                enable_standard_rdp_security: true,
+            }),
             core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
         );
         let mut network_client = WasmNetworkClient;
@@ -2154,7 +2139,10 @@ mod tests {
         let response = rdcleanpath_response(ironrdp::pdu::nego::SecurityProtocol::SSL);
         let mut framed = rdcleanpath_framed(&response);
         let mut connector = ClientConnector::new(
-            connector_config(false),
+            connector_config(SecurityConfig {
+                enable_credssp: false,
+                enable_standard_rdp_security: false,
+            }),
             core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
         );
         let mut network_client = WasmNetworkClient;
