@@ -870,6 +870,7 @@ mod tests {
         added_drives: Vec<u32>,
         removed_drives: Vec<u32>,
         deferred_messages: Vec<SvcMessage>,
+        user_logged_on_calls: usize,
     }
 
     impl_as_any!(TrackingBackend);
@@ -934,6 +935,11 @@ mod tests {
 
         fn poll_deferred_messages(&mut self) -> PduResult<Vec<SvcMessage>> {
             Ok(core::mem::take(&mut self.deferred_messages))
+        }
+
+        fn handle_user_logged_on(&mut self, _rdpdr: &mut Rdpdr) -> PduResult<Vec<SvcMessage>> {
+            self.user_logged_on_calls += 1;
+            Ok(Vec::new())
         }
     }
 
@@ -1032,6 +1038,13 @@ mod tests {
         );
         assert_eq!(
             rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .user_logged_on_calls,
+            0
+        );
+        assert_eq!(
+            rdpdr
                 .process(&encoded_server_client_id_confirm(0x1234))
                 .expect("process server client ID confirm")
                 .len(),
@@ -1049,6 +1062,42 @@ mod tests {
                 .expect("process drive close")
                 .len(),
             1
+        );
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .user_logged_on_calls,
+            1
+        );
+    }
+
+    #[test]
+    fn server_announce_discards_a_deferred_user_logged_on() {
+        let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned())
+            .with_drives(Some(vec![(42, "C:".to_owned())]));
+        rdpdr
+            .process(&encoded_server_announce(0x1234))
+            .expect("process server announce");
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+            .expect("defer early user logged on");
+
+        rdpdr
+            .process(&encoded_server_announce(0x5678))
+            .expect("process replacement server announce");
+        assert!(
+            rdpdr
+                .process(&encoded_server_client_id_confirm(0x5678))
+                .expect("process server client ID confirm")
+                .is_empty()
+        );
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .user_logged_on_calls,
+            0
         );
     }
 
