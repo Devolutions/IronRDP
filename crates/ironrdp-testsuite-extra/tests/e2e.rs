@@ -17,6 +17,7 @@ use ironrdp::pdu::geometry::InclusiveRectangle;
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::pdu::rdp::client_info::CompressionType as PduCompressionType;
 use ironrdp::pdu::rdp::headers::CompressionFlags;
+use ironrdp::pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode};
 use ironrdp::pdu::{self, gcc};
 use ironrdp::server::{
     self, Acceptor, DesktopSize, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer, RdpServerDisplay,
@@ -263,6 +264,46 @@ fn compressed_bitmap_fastpath_frame(compressor: &mut BulkCompressor) -> (Vec<u8>
     (frame, flags)
 }
 
+/// Sends echo requests and serves the client session until the server reports
+/// the round trip for `payload`, or five seconds pass.
+async fn drive_echo_round_trip(
+    stage: &mut ActiveStage,
+    framed: &mut Framed<TokioStream<TlsStream<TcpStream>>>,
+    echo_handle: &server::EchoServerHandle,
+    payload: &[u8],
+) -> Option<server::EchoRoundTripMeasurement> {
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+    let deadline = Instant::now() + Duration::from_secs(5);
+
+    while Instant::now() < deadline {
+        echo_handle.send_request(payload.to_vec()).expect("send echo request");
+
+        for _ in 0..20 {
+            if let Some(measurement) = echo_handle
+                .take_measurements()
+                .into_iter()
+                .find(|measurement| measurement.payload == payload)
+            {
+                return Some(measurement);
+            }
+
+            let read_result = tokio::time::timeout(Duration::from_millis(150), framed.read_pdu()).await;
+            let Ok(Ok((action, frame))) = read_result else {
+                continue;
+            };
+
+            let outputs = stage.process(&mut image, action, &frame).expect("stage process");
+            for output in outputs {
+                if let ActiveStageOutput::ResponseFrame(frame) = output {
+                    framed.write_all(&frame).await.expect("write response frame");
+                }
+            }
+        }
+    }
+
+    None
+}
+
 #[tokio::test]
 async fn test_echo_virtual_channel_end_to_end() {
     let payload = b"ironrdp echo e2e".to_vec();
@@ -275,43 +316,45 @@ async fn test_echo_virtual_channel_end_to_end() {
         |connector| connector.with_static_channel(DrdynvcClient::new().with_dynamic_channel(EchoClient::new())),
         move |mut stage, _activation_factory, mut framed, display_tx, echo_handle| async move {
             let _display_tx = display_tx;
-            let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
 
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let mut matched_measurement = None;
-
-            while Instant::now() < deadline {
-                echo_handle
-                    .send_request(echo_payload.clone())
-                    .expect("send echo request");
-
-                for _ in 0..20 {
-                    let measurements = echo_handle.take_measurements();
-                    if let Some(measurement) = measurements.into_iter().find(|m| m.payload == echo_payload) {
-                        matched_measurement = Some(measurement);
-                        break;
-                    }
-
-                    let read_result = tokio::time::timeout(Duration::from_millis(150), framed.read_pdu()).await;
-                    let Ok(Ok((action, frame))) = read_result else {
-                        continue;
-                    };
-
-                    let outputs = stage.process(&mut image, action, &frame).expect("stage process");
-                    for output in outputs {
-                        if let ActiveStageOutput::ResponseFrame(frame) = output {
-                            framed.write_all(&frame).await.expect("write response frame");
-                        }
-                    }
-                }
-
-                if matched_measurement.is_some() {
-                    break;
-                }
-            }
-
-            let measurement = matched_measurement.expect("echo RTT measurement was not produced");
+            let measurement = drive_echo_round_trip(&mut stage, &mut framed, &echo_handle, &echo_payload)
+                .await
+                .expect("echo RTT measurement was not produced");
             assert_eq!(measurement.payload, echo_payload);
+
+            (stage, framed)
+        },
+    )
+    .await
+}
+
+/// A previous session's queued events must not reach the next connection.
+///
+/// A `Disconnect` left over from the last session would otherwise end this one
+/// as soon as it activates, so the echo round trip never completes.
+#[tokio::test]
+async fn a_new_connection_starts_without_the_previous_sessions_events() {
+    let payload = b"ironrdp stale events e2e".to_vec();
+    let echo_payload = payload.clone();
+    let stale_disconnect = ServerEvent::Disconnect(ErrorInfo::ProtocolIndependentCode(
+        ProtocolIndependentCode::DisconnectedByOtherconnection,
+    ));
+
+    client_server_impl(
+        Some(vec![stale_disconnect]),
+        default_client_config(),
+        Vec::new(),
+        None,
+        |connector| connector.with_static_channel(DrdynvcClient::new().with_dynamic_channel(EchoClient::new())),
+        move |mut stage, _activation_factory, mut framed, display_tx, echo_handle| async move {
+            let _display_tx = display_tx;
+
+            assert!(
+                drive_echo_round_trip(&mut stage, &mut framed, &echo_handle, &echo_payload)
+                    .await
+                    .is_some(),
+                "the connection did not survive a Disconnect event queued before it started"
+            );
 
             (stage, framed)
         },
@@ -937,6 +980,39 @@ async fn client_server_with_connector<F, Fut, C>(
     Fut: Future<Output = (ActiveStage, Framed<TokioStream<TlsStream<TcpStream>>>)>,
     C: FnOnce(connector::ClientConnector) -> connector::ClientConnector + 'static,
 {
+    client_server_impl(
+        None,
+        client_config,
+        static_channel_factories,
+        server_udp_addr,
+        connector_factory,
+        clientfn,
+    )
+    .await;
+}
+
+/// With `stale_events` set, the server is driven the way an embedder drives
+/// it: the events are queued first, then one connection is served through
+/// `run_connection`, with no `run()` idle loop in between to discard them.
+async fn client_server_impl<F, Fut, C>(
+    stale_events: Option<Vec<ServerEvent>>,
+    client_config: connector::Config,
+    static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+    server_udp_addr: Option<SocketAddr>,
+    connector_factory: C,
+    clientfn: F,
+) where
+    F: FnOnce(
+            ActiveStage,
+            connector::connection_activation::ConnectionActivationFactory,
+            Framed<TokioStream<TlsStream<TcpStream>>>,
+            UnboundedSender<DisplayUpdate>,
+            server::EchoServerHandle,
+        ) -> Fut
+        + 'static,
+    Fut: Future<Output = (ActiveStage, Framed<TokioStream<TlsStream<TcpStream>>>)>,
+    C: FnOnce(connector::ClientConnector) -> connector::ClientConnector + 'static,
+{
     // FIXME(@CBenoit): If this is really necessary, we may consider a non-global way of registering the subscriber; otherwise it’s unnecessary to register that.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -970,15 +1046,37 @@ async fn client_server_with_connector<F, Fut, C>(
     let ev = server.event_sender().clone();
     let echo_handle = server.echo_handle().clone();
 
+    let direct_listener = match stale_events {
+        Some(events) => {
+            for event in events {
+                ev.send(event).unwrap();
+            }
+            Some(TcpListener::bind(("127.0.0.1", 0)).await.expect("bind listener"))
+        }
+        None => None,
+    };
+    let direct_addr = direct_listener
+        .as_ref()
+        .map(|listener| listener.local_addr().expect("listener address"));
+
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async move {
             let server = tokio::task::spawn_local(async move {
-                server.run().await.unwrap();
+                match direct_listener {
+                    Some(listener) => {
+                        let (stream, _) = listener.accept().await.expect("accept connection");
+                        server.run_connection(stream).await.unwrap();
+                    }
+                    None => server.run().await.unwrap(),
+                }
             });
 
             let client = tokio::task::spawn_local(async move {
-                let server_addr = local_addr_of(&ev).await;
+                let server_addr = match direct_addr {
+                    Some(addr) => addr,
+                    None => local_addr_of(&ev).await,
+                };
                 let (upgraded_framed, connection_result) = connect_client(server_addr, |client_addr| {
                     connector_factory(connector::ClientConnector::new(client_config, client_addr))
                 })
@@ -1020,7 +1118,8 @@ async fn client_server_with_connector<F, Fut, C>(
                 while let Ok(pdu) = upgraded_framed.read_pdu().await {
                     debug!(?pdu);
                 }
-                ev.send(ServerEvent::Quit("bye".into())).unwrap();
+                // Nothing is left to receive it when `run_connection` already returned.
+                let _ = ev.send(ServerEvent::Quit("bye".into()));
             });
 
             tokio::try_join!(server, client).expect("join");

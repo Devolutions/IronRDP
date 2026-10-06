@@ -2054,15 +2054,17 @@ impl RdpServer {
     /// belongs to the SESSION just replaced, keeping only the small set of
     /// lifecycle/control events meant to survive across connections.
     ///
-    /// Called immediately before serving a preemption winner. The channel is
-    /// shared across every connection the server ever serves and is read by
-    /// whichever connection drains it next -- so any event the outgoing
-    /// session produced but never got around to consuming (its OWN eviction
-    /// notice, a queued clipboard message, an RDPSND wave, an EGFX frame)
-    /// would otherwise be delivered to its replacement. That is at best stale
-    /// (an audio wave from a session that no longer exists) and at worst a
-    /// real leak (the previous peer's clipboard content, handed unprompted to
-    /// the client that just replaced it).
+    /// Called before every connection starts negotiating, and immediately
+    /// before serving a preemption winner. The channel is shared across every
+    /// connection the server ever serves and is read by whichever connection
+    /// drains it next -- so any event the outgoing session produced but never
+    /// got around to consuming (its OWN eviction notice, a queued clipboard
+    /// message, an RDPSND wave, an EGFX frame) would otherwise be delivered to
+    /// its replacement. That is at best stale (an audio wave from a session
+    /// that no longer exists), at worst a real leak (the previous peer's
+    /// clipboard content, handed unprompted to the client that just replaced
+    /// it) or a broken connection (an EGFX frame on a dynamic channel the new
+    /// client has not opened yet).
     ///
     /// An ALLOWLIST of what to KEEP, not a denylist of `EvictedByOtherConnection`
     /// alone, and deliberately so: this mirrors what `run()`'s own top-level
@@ -2148,7 +2150,8 @@ impl RdpServer {
     /// connections it accepts itself.
     ///
     /// Equivalent to [`run_connection_with`](Self::run_connection_with) with
-    /// [`TransportTls::Managed`].
+    /// [`TransportTls::Managed`], including the treatment of events queued
+    /// before the call (see `Queued events` there).
     pub async fn run_connection<S>(&mut self, stream: S) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
@@ -2172,6 +2175,25 @@ impl RdpServer {
     /// advances the state machine via [`Acceptor::mark_security_upgrade_as_done`].
     /// Everything past the handshake, including the optional Hybrid CredSSP
     /// exchange and finalization, is identical to the managed path.
+    ///
+    /// # Queued events
+    ///
+    /// Before negotiation starts, this method drops every event still waiting
+    /// on the server-global channel, except `Quit`, `GetLocalAddr`,
+    /// `SetCredentials` and `SetAutoReconnectCookie`. What a previous session
+    /// queued but never consumed (EGFX frames, RDPSND waves, clipboard
+    /// messages) would otherwise be written to this client before its
+    /// channels exist. The same applies to anything an embedder queued through
+    /// [`event_sender`](Self::event_sender) before calling this method:
+    /// queue events for a connection only after this method has started.
+    ///
+    /// This is a drain, not a barrier: an event that a producer of the previous
+    /// session sends after it has run still reaches this connection. The
+    /// backends the server built for that session are dropped before this
+    /// method returns, but a task the embedder runs with its own
+    /// [`event_sender`](Self::event_sender) clone or one of the server's
+    /// handles is not, so stop such producers before starting the next
+    /// connection.
     ///
     /// # Use case for [`TransportTls::AlreadyDone`]
     ///
@@ -2261,6 +2283,11 @@ impl RdpServer {
         // here also covers backends that share an externally-created Arc via
         // `set_display_suppressed_handle()`.
         self.display_suppressed.store(false, Ordering::Relaxed);
+
+        // Before negotiation, so nothing the previous session left queued can
+        // reach this client ahead of its own channels. See
+        // `discard_stale_session_events`.
+        self.discard_stale_session_events().await;
 
         let size = self.display.lock().await.size().await;
         let monitor_count = self.display.lock().await.monitor_count().await;
