@@ -27,7 +27,7 @@ const { resolvePr } = require("./resolve-pr");
 const { resolveClassificationGate } = require("./classification-gate");
 const { latestExactHeadCiRun, readLatestExactHeadCiRun } = require("./ci-state");
 const {
-  claimAutomaticLease, hasCurrentValidClassification, leaseMarker, parseLeaseMarker, recheckAutomaticReview,
+  claimAutomaticLease, hasCurrentClassification, leaseMarker, parseLeaseMarker, recheckAutomaticReview,
 } = require("./automation-lease");
 const {
   StalePolicyError, applyLabels, escapeMarkdown, markerBody, writeState,
@@ -55,7 +55,7 @@ const {
 const {
   REPORT_VERSION, buildReport, parseReport, stageIds, stageOutcome,
 } = require("./review-report");
-const { StaleHeadError, assertCurrentHead } = require("./current-head");
+const { StaleHeadError, assertCurrentHead, isClosedUnmerged } = require("./current-head");
 const { lifecycleActor, readLifecycleSnapshot, reconcileLifecycle } = require("./lifecycle");
 const { encodeReviewOutcome, parseReviewOutcome, trustedReviewOutcome } = require("./review-outcome");
 const {
@@ -124,10 +124,38 @@ test("current classification guard fails closed when no canonical check exists",
     paginate: { iterator: async function* () { yield { data: [] }; } },
     rest: { checks: { listForRef: listChecks } },
   };
-  assert.equal(await hasCurrentValidClassification({
+  assert.equal(await hasCurrentClassification({
+    github, owner: "Devolutions", repo: "IronRDP", headSha: SHA,
+    classificationId: FORCED_CLASSIFICATION_ID, requireValid: true,
+  }), false);
+});
+
+test("current classification validity requires one canonical read and a parseable receipt", async () => {
+  let reads = 0;
+  const check = validClassificationCheck();
+  check.output.summary = "invalid receipt";
+  const github = {
+    paginate: { iterator: async function* () { reads += 1; yield { data: [check] }; } },
+    rest: { checks: { listForRef: () => {} } },
+  };
+  const input = {
     github, owner: "Devolutions", repo: "IronRDP", headSha: SHA,
     classificationId: FORCED_CLASSIFICATION_ID,
-  }), false);
+  };
+  assert.equal(await hasCurrentClassification(input), true);
+  assert.equal(reads, 1);
+  assert.equal(await hasCurrentClassification({ ...input, requireValid: true }), false);
+  assert.equal(reads, 2);
+  check.output.summary = validClassificationCheck().output.summary;
+  assert.equal(await hasCurrentClassification({ ...input, requireValid: true }), true);
+  assert.equal(reads, 3);
+});
+
+test("closed-unmerged eligibility excludes merged and open pull requests", () => {
+  assert.equal(isClosedUnmerged({ state: "closed", merged: false, merged_at: null }), true);
+  assert.equal(isClosedUnmerged({ state: "closed", merged: true, merged_at: null }), false);
+  assert.equal(isClosedUnmerged({ state: "closed", merged: false, merged_at: "2026-01-01" }), false);
+  assert.equal(isClosedUnmerged({ state: "open", merged: false, merged_at: null }), false);
 });
 
 test("lifecycle reconciliation derives actor labels from the live state table", () => {

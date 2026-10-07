@@ -5,7 +5,7 @@ const { readCheckRuns } = require("./check-runs");
 const { matchesGeneration, readLatestExactHeadCiRun } = require("./ci-state");
 const { reviewCount } = require("./resolve-state");
 const { reviewPolicyEligible } = require("./routing");
-const { isOpenNonDraftAtHeadNow } = require("./current-head");
+const { isClosedUnmerged, isOpenNonDraftAtHeadNow } = require("./current-head");
 const { parseCheckState } = require("./validate-classifier");
 
 const APP = "github-actions";
@@ -125,21 +125,13 @@ async function ownsActiveLease({ github, owner, repo, lease }) {
   return await ownsLatestLease({ github, owner, repo, lease }) && await ownerIsActive(github, { ...lease, owner, repo });
 }
 
-async function hasCurrentClassification({ github, owner, repo, headSha, classificationId }) {
-  const classifications = await readCanonicalRuns({
-    github, owner, repo, kind: "classification", headSha,
-  });
-  const classification = classifications?.[0];
-  return classification?.id === classificationId && classification?.conclusion === "success";
-}
-
-async function hasCurrentValidClassification({ github, owner, repo, headSha, classificationId }) {
+async function hasCurrentClassification({ github, owner, repo, headSha, classificationId, requireValid = false }) {
   const classifications = await readCanonicalRuns({
     github, owner, repo, kind: "classification", headSha,
   });
   const classification = classifications?.[0];
   return classification?.id === classificationId && classification?.conclusion === "success" &&
-    parseCheckState(classification.output?.summary) !== null;
+    (!requireValid || parseCheckState(classification.output?.summary) !== null);
 }
 
 async function recheckAutomaticReview({
@@ -151,8 +143,7 @@ async function recheckAutomaticReview({
     "receipt", "cleanup",
   ].includes(phase)) throw new Error("invalid review recheck phase");
   const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
-  const closedUnmerged = pull.state === "closed" && !pull.merged && !pull.merged_at;
-  if ((pull.state !== "open" && !(allowClosedUnmerged && closedUnmerged)) ||
+  if ((pull.state !== "open" && !(allowClosedUnmerged && isClosedUnmerged(pull))) ||
       (!allowDraft && pull.draft) || pull.head?.sha !== headSha) return false;
   const reviews = await readCanonicalRuns({ github, owner, repo, kind: "review", headSha });
   if (!reviews || !await hasCurrentClassification({
@@ -193,5 +184,5 @@ async function recheckAutomaticReview({
 module.exports = {
   CHECKS, canonicalRuns, claimAutomaticLease, leaseMarker, ownerIsActive,
   ownsActiveLease, ownsLatestLease,
-  hasCurrentClassification, hasCurrentValidClassification, parseLeaseMarker, recheckAutomaticReview,
+  hasCurrentClassification, parseLeaseMarker, recheckAutomaticReview,
 };

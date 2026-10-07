@@ -392,7 +392,7 @@ function reviewOutcome({ reportStatus, state, reducedCoverage = [] } = {}) {
 module.exports = {
   ACTOR_LABELS, AI_COUNTS, EVIDENCE_LIMIT_MARKER, FAILURE_LABEL, FORK_QUOTA_MARKER,
   GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
-  LEGITIMACY_MARKER_PREFIX, OVERLAP_LABEL, OVERLAP_MARKER, RISK,
+  LEGITIMACY_MARKER_PREFIX, OVERLAP_LABEL, OVERLAP_MARKER, RISK, labelsOf,
   contributorEligibility, resolveClassificationState,
   resolveReviewState, reviewCount, reviewOutcome, reviewPolicyEligible,
 };

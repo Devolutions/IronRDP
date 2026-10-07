@@ -9,10 +9,10 @@ const {
 } = require("./review-render");
 const { reviewPolicyEligible } = require("./routing");
 const {
-  hasCurrentValidClassification, ownsActiveLease, parseLeaseMarker, recheckAutomaticReview,
+  hasCurrentClassification, ownsActiveLease, parseLeaseMarker, recheckAutomaticReview,
 } = require("./automation-lease");
 const {
-  assertCurrentHead, isOpenNonDraftAtHead, isOpenNonDraftAtHeadNow,
+  assertCurrentHead, isClosedUnmerged, isOpenNonDraftAtHead, isOpenNonDraftAtHeadNow,
 } = require("./current-head");
 const { matchesGeneration, readLatestExactHeadCiRun } = require("./ci-state");
 const { ACTOR_LABELS, AI_COUNTS, reviewCount } = require("./resolve-state");
@@ -28,7 +28,7 @@ class ClosedReviewRejectedError extends Error {
 
 async function isClosedUnmergedAtHead(github, owner, repo, prNumber, expectedSha) {
   const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
-  return pull.state === "closed" && !pull.merged && !pull.merged_at && pull.head?.sha === expectedSha;
+  return isClosedUnmerged(pull) && pull.head?.sha === expectedSha;
 }
 
 async function issueLabels(github, owner, repo, prNumber) {
@@ -398,9 +398,9 @@ async function writeState({
     if (!await canMutate()) return false;
     if (state.failed === true || state.blocked === true) return true;
     if (state.forced === true) {
-      return await hasCurrentValidClassification({
+      return await hasCurrentClassification({
         github, owner, repo, headSha: state.expectedSha,
-        classificationId: state.admittedGate?.classificationId,
+        classificationId: state.admittedGate?.classificationId, requireValid: true,
       });
     }
     // A normal automatic lease must carry the admission facts it is continuing from.
@@ -415,8 +415,9 @@ async function writeState({
   const canPublishReviewPublication = async () => {
     if (state.forced !== true) return await canPublishReview();
     if (!await canMutate()) return false;
-    return await hasCurrentValidClassification({
-      github, owner, repo, headSha: state.expectedSha, classificationId: state.admittedGate?.classificationId,
+    return await hasCurrentClassification({
+      github, owner, repo, headSha: state.expectedSha,
+      classificationId: state.admittedGate?.classificationId, requireValid: true,
     });
   };
   const canPublishReviewReceipt = async () => {

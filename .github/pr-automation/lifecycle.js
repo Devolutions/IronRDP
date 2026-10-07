@@ -5,16 +5,9 @@ const { readLatestExactHeadCiRun } = require("./ci-state");
 const { canonicalRuns, ownerIsActive, parseLeaseMarker } = require("./automation-lease");
 const { parseCheckState } = require("./validate-classifier");
 const { trustedReviewOutcome } = require("./review-outcome");
+const { labelsOf } = require("./resolve-state");
 
 const ACTOR_LABELS = ["needs-review", "needs-author-action"];
-
-function names(labels) {
-  return new Set((labels || []).map((label) => typeof label === "string" ? label : label?.name).filter(Boolean));
-}
-
-function canonical(runs, kind, headSha) {
-  return canonicalRuns(runs || [], { kind, headSha });
-}
 
 async function activeLease(github, owner, repo, run, headSha) {
   const lease = parseLeaseMarker(run?.output?.summary);
@@ -42,7 +35,7 @@ function lifecycleActor(snapshot) {
 
 async function readLifecycleSnapshot({ github, owner, repo, prNumber, observedRun = null, ciRetry = {} }) {
   const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
-  const labels = names((await github.rest.issues.get({ owner, repo, issue_number: prNumber })).data.labels);
+  const labels = labelsOf((await github.rest.issues.get({ owner, repo, issue_number: prNumber })).data.labels);
   const headSha = pull.head?.sha;
   if (!/^[0-9a-f]{40}$/.test(headSha || "") || pull.state !== "open" || pull.draft) {
     return { state: pull.state, draft: pull.draft === true, labels, headSha, activeLease: false };
@@ -52,8 +45,8 @@ async function readLifecycleSnapshot({ github, owner, repo, prNumber, observedRu
     readCheckRuns({ github, owner, repo, ref: headSha, checkName: "AI automated review" }),
     readLatestExactHeadCiRun({ github, owner, repo, expectedSha: headSha, observedRun, ...ciRetry }),
   ]);
-  const classifications = canonical(classificationRuns, "classification", headSha);
-  const reviews = canonical(reviewRuns, "review", headSha);
+  const classifications = canonicalRuns(classificationRuns || [], { kind: "classification", headSha });
+  const reviews = canonicalRuns(reviewRuns || [], { kind: "review", headSha });
   const latestClassification = classifications?.[0] ?? null;
   const latestReview = reviews?.[0] ?? null;
   const [classificationLease, reviewLease] = await Promise.all([
@@ -127,5 +120,5 @@ async function reconcileLifecycle({ github, owner, repo, prNumber, observedRun =
 }
 
 module.exports = {
-  ACTOR_LABELS, canonical, lifecycleActor, readLifecycleSnapshot, reconcileLifecycle,
+  ACTOR_LABELS, lifecycleActor, readLifecycleSnapshot, reconcileLifecycle,
 };
