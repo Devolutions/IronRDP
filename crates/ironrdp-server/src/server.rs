@@ -925,6 +925,14 @@ impl RdpServerOptions {
             .iter()
             .any(|codec| matches!(codec.property, CodecProperty::NsCodec(_)))
     }
+
+    #[cfg(feature = "nscodec")]
+    fn nscodec_color_loss_level(&self) -> Option<u8> {
+        self.codecs.0.iter().find_map(|codec| match &codec.property {
+            CodecProperty::NsCodec(ns) => Some(ns.color_loss_level),
+            _ => None,
+        })
+    }
 }
 
 /// Picks a RemoteFX entropy coder out of the client's advertised TS_RFX_ICAP
@@ -6124,10 +6132,20 @@ impl RdpServer {
                         match codec.property {
                             #[cfg(feature = "nscodec")]
                             CodecProperty::NsCodec(client_ns) if self.opts.has_nscodec() => {
-                                // Re-use the client's confirmed color-loss
-                                // level so the server encodes at the same
-                                // shift the client decodes against.
-                                update_codecs.set_nscodec(Some((codec.id, client_ns.color_loss_level)));
+                                // The client advertises the *maximum* color-loss
+                                // level it accepts (MS-RDPNSC 2.2.1); the level
+                                // actually used travels in every bitmap stream.
+                                // Encode at the lower of the server's and the
+                                // client's, so a server asking for level 1 gets
+                                // lossless output.
+                                let level = self
+                                    .opts
+                                    .nscodec_color_loss_level()
+                                    .map_or(client_ns.color_loss_level, |server| {
+                                        server.min(client_ns.color_loss_level)
+                                    })
+                                    .clamp(1, 7);
+                                update_codecs.set_nscodec(Some((codec.id, level)));
                             }
                             CodecProperty::NsCodec(_) => (),
                             #[cfg(feature = "qoi")]
