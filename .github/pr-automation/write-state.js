@@ -12,7 +12,7 @@ const {
   hasCurrentClassification, ownsActiveLease, parseLeaseMarker, recheckAutomaticReview,
 } = require("./automation-lease");
 const {
-  assertCurrentHead, isClosedUnmerged, isOpenNonDraftAtHead, isOpenNonDraftAtHeadNow,
+  assertCurrentHead, isClosedUnmerged, isOpenNonDraftAtHeadNow,
 } = require("./current-head");
 const { matchesGeneration, readLatestExactHeadCiRun } = require("./ci-state");
 const { ACTOR_LABELS, AI_COUNTS, reviewCount } = require("./resolve-state");
@@ -394,15 +394,14 @@ async function writeState({
       github, owner, repo, pullNumber: prNumber, expectedHeadSha: state.expectedSha,
     });
   };
+  const hasForcedClassification = async () => await hasCurrentClassification({
+    github, owner, repo, headSha: state.expectedSha,
+    classificationId: state.admittedGate?.classificationId, requireValid: true,
+  });
   const canPublishReview = async () => {
     if (!await canMutate()) return false;
     if (state.failed === true || state.blocked === true) return true;
-    if (state.forced === true) {
-      return await hasCurrentClassification({
-        github, owner, repo, headSha: state.expectedSha,
-        classificationId: state.admittedGate?.classificationId, requireValid: true,
-      });
-    }
+    if (state.forced === true) return await hasForcedClassification();
     // A normal automatic lease must carry the admission facts it is continuing from.
     // Lease-less legacy/explicit paths remain open-only because they cannot enable closed continuation.
     if (!state.admittedGate?.classificationId) return !state.lease;
@@ -415,10 +414,7 @@ async function writeState({
   const canPublishReviewPublication = async () => {
     if (state.forced !== true) return await canPublishReview();
     if (!await canMutate()) return false;
-    return await hasCurrentClassification({
-      github, owner, repo, headSha: state.expectedSha,
-      classificationId: state.admittedGate?.classificationId, requireValid: true,
-    });
+    return await hasForcedClassification();
   };
   const canPublishReviewReceipt = async () => {
     if (!await canMutate()) return false;

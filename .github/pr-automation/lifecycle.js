@@ -5,9 +5,7 @@ const { readLatestExactHeadCiRun } = require("./ci-state");
 const { canonicalRuns, ownerIsActive, parseLeaseMarker } = require("./automation-lease");
 const { parseCheckState } = require("./validate-classifier");
 const { trustedReviewOutcome } = require("./review-outcome");
-const { labelsOf } = require("./resolve-state");
-
-const ACTOR_LABELS = ["needs-review", "needs-author-action"];
+const { ACTOR_LABELS, labelsOf } = require("./resolve-state");
 
 async function activeLease(github, owner, repo, run, headSha) {
   const lease = parseLeaseMarker(run?.output?.summary);
@@ -120,5 +118,5 @@ async function reconcileLifecycle({ github, owner, repo, prNumber, observedRun =
 }
 
 module.exports = {
-  ACTOR_LABELS, lifecycleActor, readLifecycleSnapshot, reconcileLifecycle,
+  lifecycleActor, readLifecycleSnapshot, reconcileLifecycle,
 };

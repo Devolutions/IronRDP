@@ -46,5 +46,5 @@ async function isOpenNonDraftAtHeadNow({ github, owner, repo, pullNumber, expect
 }
 
 module.exports = {
-  StaleHeadError, assertCurrentHead, isClosedUnmerged, isOpenNonDraftAtHead, isOpenNonDraftAtHeadNow,
+  StaleHeadError, assertCurrentHead, isClosedUnmerged, isOpenNonDraftAtHeadNow,
 };
