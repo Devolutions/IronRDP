@@ -18,7 +18,7 @@ const LEGACY_XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
 const FORK_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-quota -->";
 const GLOBAL_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-global-budget -->";
 const EVIDENCE_LIMIT_MARKER = "<!-- ironrdp-pr-automation:evidence-limit -->";
-const EVIDENCE_LIMIT_REASON = /^pull request diff exceeds the 1 MiB evidence limit$/;
+const EVIDENCE_LIMIT_REASON = /^pull request diff exceeds the 4 MiB evidence limit$/;
 
 function labelsOf(labels) {
   return new Set((labels || []).map((label) => typeof label === "string" ? label : label?.name).filter(Boolean));

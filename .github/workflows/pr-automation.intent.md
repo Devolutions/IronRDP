@@ -102,7 +102,7 @@ Fork pull requests share a quota of 50 per UTC day.
 Exclude `OWNER` and `MEMBER` pull requests from enforcement and counting, and preserve the same-repository exemption.
 
 Keep `size/XXL` informational.
-Use a 1 MiB evidence diff limit.
+Use a 4 MiB evidence diff limit.
 Evidence above that limit fails closed without partial model input.
 
 Normal classification-to-review dispatch is edge-triggered and occurs only when the persisted SHA-bound classification check changes.

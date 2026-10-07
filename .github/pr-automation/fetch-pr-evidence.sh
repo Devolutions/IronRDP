@@ -15,7 +15,7 @@ fi
 
 head_sha="$1"
 base_sha="$2"
-max_bytes=1048576
+max_bytes=4194304
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_GLOBAL=/dev/null
@@ -51,7 +51,7 @@ git -C pr-head diff --no-color --find-renames --unified=3 \
 
 # Partial diffs cannot support complete classification or review.
 if [ "$(wc -c < pr-evidence/pull-request.diff)" -gt "$max_bytes" ]; then
-  reason="pull request diff exceeds the 1 MiB evidence limit"
+  reason="pull request diff exceeds the 4 MiB evidence limit"
   printf '%s\n' "$reason" > pr-evidence/failure-reason.txt
   printf 'error: %s\n' "$reason" >&2
   exit 1

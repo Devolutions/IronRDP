@@ -251,7 +251,7 @@ Size uses the larger bucket from counted changed lines or touched files:
 | `size/XXL` | 1300 or more | 50 or more |
 
 `size/XXL` is informational and does not block classification or review.
-The evidence diff limit is 1 MiB.
+The evidence diff limit is 4 MiB.
 Evidence above that limit fails closed without sending a partial diff to a model.
 
 Fork-origin pull requests share a repository-wide quota of 50 pull requests per UTC day.
