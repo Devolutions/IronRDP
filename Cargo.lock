@@ -2831,7 +2831,6 @@ dependencies = [
  "picky",
  "picky-asn1-der",
  "picky-asn1-x509",
- "picky-krb",
  "rand 0.9.4",
  "sspi",
  "tracing",
