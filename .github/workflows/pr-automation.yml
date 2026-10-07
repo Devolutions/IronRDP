@@ -333,8 +333,8 @@ jobs:
     outputs:
       compatibility: ${{ steps.semver.outputs.compatibility }}
     env:
-      CARGO_SEMVER_CHECKS_VERSION: "0.49.0"
-      CARGO_SEMVER_CHECKS_SHA256: "72f6834d75d28a66e02c9fd6a230ce901bb30eee6067b85867a97445df040e4a"
+      CARGO_SEMVER_CHECKS_VERSION: "0.51.0"
+      CARGO_SEMVER_CHECKS_SHA256: "cacadafaa5cd27ae6d05a74a103266917ebab4c5e43c898360e177d4fbf06a65"
       CARGO_SEMVER_CHECKS_FEATURES: "core,pdu,cliprdr,connector,acceptor,session,graphics,input,server,svc,dvc,rdpdr,rdpsnd,displaycontrol,echo,mstsgu,client,rustls,client-all,qoi,qoiz"
       CARGO_SEMVER_CHECKS_DIR: /tmp/ironrdp-cargo-semver-checks-${{ github.run_id }}-${{ github.run_attempt }}
       SEMVER_WORKSPACE: /tmp/ironrdp-semver-workspace-${{ github.run_id }}-${{ github.run_attempt }}
