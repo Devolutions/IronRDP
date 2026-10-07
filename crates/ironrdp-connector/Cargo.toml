@@ -36,7 +36,7 @@ picky = "=7.0.0-rc.25" # FIXME: We are pinning with = because the candidate vers
 # Version cap, not a real dependency (see `use picky_krb as _` in lib.rs): picky-krb 0.12.5 added a variant to the public
 # `GssApiMessageError` enum in a patch release, which breaks every published sspi (up to and including 0.23.0) with E0004.
 # Remove once an sspi release that handles it is out.
-picky-krb = ">=0.12.0, <0.12.5"
+picky-krb = ">=0.12.0, <0.12.6"
 
 [lints]
 workspace = true
