@@ -45,6 +45,14 @@ export function displayControl(enable: boolean): Extension {
     return new Extension('display_control', enable);
 }
 
+/**
+ * Plays the remote desktop's audio: `callback` receives `{ type: 'wave', sampleRate, channels, data }`
+ * (interleaved 16-bit little-endian PCM), `{ type: 'volume', left, right }` (0..1) and `{ type: 'close' }`.
+ */
+export function audioPlayback(callback: (message: unknown) => void): Extension {
+    return new Extension('audio_playback', callback);
+}
+
 export function kdcProxyUrl(url: string): Extension {
     return new Extension('kdc_proxy_url', url);
 }
