@@ -15,6 +15,9 @@ mod windows;
 #[cfg(windows)]
 pub use crate::windows::{HWND, WinClipboard, WinCliprdrError, WinCliprdrResult};
 
+#[cfg(target_os = "linux")]
+pub mod data_control;
+
 mod stub;
 use std::sync::OnceLock;
 use std::time::Instant;
