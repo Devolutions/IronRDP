@@ -6,6 +6,7 @@ const { validateNormalizedFinalReview } = require("./validate-final-review");
 const { resolveReviewerRoute, reviewPolicyEligible } = require("./routing");
 const { validateReviewGate } = require("./review-pipeline");
 const { AI_COUNTS, nextReviewCount, reviewCount } = require("./review-count");
+const { reviewMarkerPrefix } = require("./review-outcome");
 
 const RISK = ["risk/low", "risk/medium", "risk/high", "risk/unknown"];
 const ACTOR_LABELS = ["needs-review", "needs-author-action"];
@@ -336,7 +337,7 @@ function resolveReviewState({
   const nextCount = nextReviewCount(currentReviewCount);
   const expectedReviewCount = currentReviewCount;
   const hasFindings = reviewerResult.value.findings.length > 0;
-  const reviewMarker = `<!-- ironrdp-pr-automation:review:${expectedSha}` +
+  const reviewMarker = reviewMarkerPrefix(expectedSha) +
     `${forced ? `:force:${reviewMarkerId}` : ""} -->`;
   return {
     ok: true, mode: "review", expectedSha,

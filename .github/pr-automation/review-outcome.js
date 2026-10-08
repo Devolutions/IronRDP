@@ -8,6 +8,10 @@ const COUNTED_SCHEMA_VERSION = "review-outcome-v2";
 const MARKER = "ironrdp-pr-automation-review-outcome:";
 const { AI_COUNTS } = require("./review-count");
 
+function reviewMarkerPrefix(headSha) {
+  return `<!-- ironrdp-pr-automation:review:${headSha}`;
+}
+
 function encodeReviewOutcome({ headSha, outcome, nextReviewCount, reviewMarker } = {}) {
   if (!/^[0-9a-f]{40}$/.test(headSha || "") || !["findings", "no-findings"].includes(outcome)) {
     throw new Error("invalid review outcome");
@@ -24,9 +28,10 @@ function encodeReviewOutcome({ headSha, outcome, nextReviewCount, reviewMarker }
 }
 
 function validReviewMarker(marker, headSha) {
-  return typeof marker === "string" &&
-    (marker === `<!-- ironrdp-pr-automation:review:${headSha} -->` ||
-     new RegExp(`^<!-- ironrdp-pr-automation:review:${headSha}:force:[1-9]\\d{0,19} -->$`).test(marker));
+  if (typeof marker !== "string") return false;
+  const prefix = reviewMarkerPrefix(headSha);
+  return marker.startsWith(prefix) &&
+    /^(?: -->|:force:[1-9]\d{0,19} -->)(?![\s\S])/.test(marker.slice(prefix.length));
 }
 
 function parseReviewReceipt(text, expectedSha) {
@@ -62,5 +67,5 @@ function trustedReviewOutcome(run, expectedSha) {
 
 module.exports = {
   MARKER, SCHEMA_VERSION, COUNTED_SCHEMA_VERSION, encodeReviewOutcome, parseReviewOutcome,
-  trustedReviewOutcome, trustedReviewReceipt,
+  trustedReviewOutcome, trustedReviewReceipt, reviewMarkerPrefix,
 };

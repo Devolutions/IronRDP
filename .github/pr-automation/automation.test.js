@@ -129,6 +129,25 @@ test("review outcome receipts are bounded, exact, and trusted only on canonical 
   }, SHA).next_review_count, "ai-reviewed/3");
   assert.equal(parseReviewOutcome(counted.replace('"ai-reviewed/3"', '"ai-reviewed/4"'), SHA), null);
   assert.equal(parseReviewOutcome(counted.replace(`review:${SHA}`, `review:${OTHER_SHA}`), SHA), null);
+  const forcedMarker = `<!-- ironrdp-pr-automation:review:${SHA}:force:7 -->`;
+  const forced = encodeReviewOutcome({
+    headSha: SHA, outcome: "no-findings", nextReviewCount: "ai-reviewed/3", reviewMarker: forcedMarker,
+  });
+  assert.equal(parseReviewOutcome(forced, SHA), "no-findings");
+  assert.equal(parseReviewOutcome(forced, OTHER_SHA), null);
+  for (const malformed of [
+    `<!-- ironrdp-pr-automation:review:${SHA}:force:0 -->`,
+    `<!-- ironrdp-pr-automation:review:${SHA}:force:07 -->`,
+    `<!-- ironrdp-pr-automation:review:${SHA}:force:${"9".repeat(21)} -->`,
+    `<!-- ironrdp-pr-automation:review:${SHA}:force:7 -->extra`,
+    `<!-- ironrdp-pr-automation:review:${SHA}extra -->`,
+    `<!-- ironrdp-pr-automation:review:${SHA} -->\n`,
+  ]) {
+    assert.throws(() => encodeReviewOutcome({
+      headSha: SHA, outcome: "findings", nextReviewCount: "ai-reviewed/3", reviewMarker: malformed,
+    }), /invalid counted review outcome/);
+    assert.equal(parseReviewOutcome(forced.replace(forcedMarker, malformed), SHA), null);
+  }
   assert.equal(parseReviewOutcome(`${counted}\n${receipt}`, SHA), null);
   assert.equal(parseReviewOutcome(counted.replace('"next_review_count"', '"unknown"'), SHA), null);
   assert.equal(parseReviewOutcome(`${receipt}\n${"x".repeat(4097)}`, SHA), null);
@@ -371,6 +390,13 @@ test("terminal handoff requires the latest bot review's counted /3 receipt and g
   assert.equal(await actor(), null);
   reviews = [{ id: 13, commit_id: "c".repeat(40), user: { login: "github-actions[bot]" },
     body: `<!-- ironrdp-pr-automation:review:${"c".repeat(40)} -->` }, ...reviews];
+  assert.equal(await actor(), null);
+  reviews = [{ ...reviews[0], id: 14, body: `<!-- ironrdp-pr-automation:review:${"c".repeat(40)}:force:0 -->` }, reviews[1]];
+  assert.equal(await actor(), null);
+  reviews = [{ id: 10, commit_id: SHA, user: { login: "github-actions[bot]" }, body: marker }];
+  reviews = [{ ...reviews[0], id: 14, body: `<!-- ironrdp-pr-automation:review:${OTHER_SHA} -->` }, reviews[0]];
+  assert.equal(await actor(), null);
+  reviews = [{ ...reviews[0], id: 15, body: `<!-- malformed-review:${SHA} -->` }, reviews[1]];
   assert.equal(await actor(), null);
   reviews = [{ id: 10, commit_id: SHA, user: { login: "github-actions[bot]" }, body: marker }];
   priorRuns = [{ id: 12, head_sha: SHA, external_id: SHA, conclusion: "neutral",
