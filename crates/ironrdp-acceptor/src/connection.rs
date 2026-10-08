@@ -1518,6 +1518,42 @@ impl Sequence for Acceptor {
     }
 }
 
+fn create_gcc_blocks(
+    io_channel: u16,
+    channel_ids: Vec<u16>,
+    requested: SecurityProtocol,
+    skip_channel_join: bool,
+    message_channel_id: Option<u16>,
+    offer_multitransport: Option<gcc::MultiTransportFlags>,
+) -> gcc::ServerGccBlocks {
+    gcc::ServerGccBlocks {
+        core: gcc::ServerCoreData {
+            version: gcc::RdpVersion::V5_PLUS,
+            optional_data: gcc::ServerCoreOptionalData {
+                client_requested_protocols: Some(requested),
+                early_capability_flags: skip_channel_join
+                    .then_some(gcc::ServerEarlyCapabilityFlags::SKIP_CHANNELJOIN_SUPPORTED),
+            },
+        },
+        security: gcc::ServerSecurityData::no_security(),
+        network: gcc::ServerNetworkData {
+            channel_ids,
+            io_channel,
+        },
+        message_channel: message_channel_id.map(|id| gcc::ServerMessageChannelData {
+            mcs_message_channel_id: id,
+        }),
+        // Only meaningful alongside a message channel: the request and any
+        // response it draws both travel there (MS-RDPBCGR 2.2.15.1, 2.2.15.2).
+        // The caller has already filtered the offer to None when
+        // the client did not populate its own MultiTransportChannelData
+        // block, per 2.2.1.4's requirement that this block be omitted then.
+        multi_transport_channel: message_channel_id
+            .and(offer_multitransport)
+            .map(|flags| gcc::MultiTransportChannelData { flags }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1583,41 +1619,5 @@ mod tests {
 
         assert!(acceptor.is_auto_reconnect_attempt());
         assert!(!acceptor.credentials_need_handling());
-    }
-}
-
-fn create_gcc_blocks(
-    io_channel: u16,
-    channel_ids: Vec<u16>,
-    requested: SecurityProtocol,
-    skip_channel_join: bool,
-    message_channel_id: Option<u16>,
-    offer_multitransport: Option<gcc::MultiTransportFlags>,
-) -> gcc::ServerGccBlocks {
-    gcc::ServerGccBlocks {
-        core: gcc::ServerCoreData {
-            version: gcc::RdpVersion::V5_PLUS,
-            optional_data: gcc::ServerCoreOptionalData {
-                client_requested_protocols: Some(requested),
-                early_capability_flags: skip_channel_join
-                    .then_some(gcc::ServerEarlyCapabilityFlags::SKIP_CHANNELJOIN_SUPPORTED),
-            },
-        },
-        security: gcc::ServerSecurityData::no_security(),
-        network: gcc::ServerNetworkData {
-            channel_ids,
-            io_channel,
-        },
-        message_channel: message_channel_id.map(|id| gcc::ServerMessageChannelData {
-            mcs_message_channel_id: id,
-        }),
-        // Only meaningful alongside a message channel: the request and any
-        // response it draws both travel there (MS-RDPBCGR 2.2.15.1, 2.2.15.2).
-        // The caller has already filtered the offer to None when
-        // the client did not populate its own MultiTransportChannelData
-        // block, per 2.2.1.4's requirement that this block be omitted then.
-        multi_transport_channel: message_channel_id
-            .and(offer_multitransport)
-            .map(|flags| gcc::MultiTransportChannelData { flags }),
     }
 }

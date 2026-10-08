@@ -3135,7 +3135,7 @@ impl RdpServer {
                     // taken by the outer loop, not rejected here.
                     let result = match entry {
                         Entry::Fresh(stream, _) => {
-                            let mut conn = core::pin::pin!(self.run_connection_inner(stream, TransportTls::Managed));
+                            let mut conn = Box::pin(self.run_connection_inner(stream, TransportTls::Managed));
                             loop {
                                 tokio::select! {
                                     biased;
@@ -3151,7 +3151,7 @@ impl RdpServer {
                             }
                         }
                         // Unreachable: Reject never produces a Negotiated candidate.
-                        Entry::Negotiated(candidate, _) => self.serve_negotiated(candidate).await,
+                        Entry::Negotiated(candidate, _) => Box::pin(self.serve_negotiated(candidate)).await,
                     };
                     (result, None)
                 }
@@ -3159,10 +3159,12 @@ impl RdpServer {
                     let result = match entry {
                         // Same anyhow-vs-ServerResult reasoning as the preemption
                         // branch above.
-                        Entry::Fresh(stream, _) => self.run_connection_inner(stream, TransportTls::Managed).await,
+                        Entry::Fresh(stream, _) => {
+                            Box::pin(self.run_connection_inner(stream, TransportTls::Managed)).await
+                        }
                         // Unreachable in practice: `pending` is only ever populated
                         // by the preemption branch above.
-                        Entry::Negotiated(candidate, _) => self.serve_negotiated(candidate).await,
+                        Entry::Negotiated(candidate, _) => Box::pin(self.serve_negotiated(candidate)).await,
                     };
                     (result, None)
                 }
@@ -5612,7 +5614,7 @@ mod preempt_tests {
                     height: 768,
                 }
             }
-            async fn updates(&mut self) -> ServerResult<Box<dyn crate::RdpServerDisplayUpdates>> {
+            async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
                 unreachable!("negotiation never asks for updates")
             }
         }
