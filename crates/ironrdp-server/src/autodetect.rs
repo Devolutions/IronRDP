@@ -484,6 +484,14 @@ impl AutoDetectManager {
 /// The client's timer has millisecond resolution, so a burst that crosses a
 /// fast link within one millisecond reports a zero time. That is a real
 /// measurement, bounded below by one millisecond, not a failed one.
+///
+/// This differs from `AutoDetectResponse::computed_bandwidth_kbps` in
+/// `ironrdp-pdu` on purpose. That helper returns `None` for a zero time, which
+/// would make exactly those bursts failed measurements that clear the figure,
+/// and it returns `Some(0)` for zero bytes, where a measurement that counted
+/// nothing should clear the figure instead of reporting a dead link.
+/// MS-RDPBCGR 3.3.5.14 gives the formula, (byteCount * 8) / timeDelta, but
+/// doesn't say what a zero timeDelta means.
 fn measured_bandwidth_kbps(time_delta_ms: u32, byte_count: u32) -> Option<u32> {
     if byte_count == 0 {
         return None;
