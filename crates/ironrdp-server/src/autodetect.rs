@@ -492,6 +492,11 @@ impl AutoDetectManager {
 /// nothing should clear the figure instead of reporting a dead link.
 /// MS-RDPBCGR 3.3.5.14 gives the formula, (byteCount * 8) / timeDelta, but
 /// doesn't say what a zero timeDelta means.
+///
+/// A figure too large for a `u32` saturates at `u32::MAX`, where that helper
+/// wraps, because the client supplies both numbers.
+/// `RdpServer::autodetect_bandwidth_handle` also uses `u32::MAX` for not
+/// measured, so a figure that large reads as no measurement there.
 fn measured_bandwidth_kbps(time_delta_ms: u32, byte_count: u32) -> Option<u32> {
     if byte_count == 0 {
         return None;
