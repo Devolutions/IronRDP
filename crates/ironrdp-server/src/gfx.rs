@@ -41,6 +41,17 @@ pub trait GfxServerFactory: ServerEventSender + Send {
     }
 }
 
+/// Build an EGFX bridge while always retaining a shared server handle.
+pub(crate) fn build_server_and_handle(factory: &dyn GfxServerFactory) -> (GfxDvcBridge, GfxServerHandle) {
+    if let Some((bridge, handle)) = factory.build_server_with_handle() {
+        return (bridge, handle);
+    }
+
+    let handler = factory.build_gfx_handler();
+    let server = Arc::new(Mutex::new(GraphicsPipelineServer::new(handler)));
+    (GfxDvcBridge::new(Arc::clone(&server)), server)
+}
+
 /// DVC bridge wrapping a shared `GraphicsPipelineServer`.
 ///
 /// Delegates all `DvcProcessor` methods to the inner server through a mutex,
@@ -128,6 +139,29 @@ mod tests {
         fn capabilities_advertise(&mut self, _pdu: &CapabilitiesAdvertisePdu) {}
 
         fn on_ready(&mut self, _negotiated: &CapabilitySet) {}
+    }
+
+    struct LegacyFactory;
+
+    impl ServerEventSender for LegacyFactory {
+        fn set_sender(&mut self, _sender: tokio::sync::mpsc::UnboundedSender<crate::server::ServerEvent>) {}
+    }
+
+    impl GfxServerFactory for LegacyFactory {
+        fn build_gfx_handler(&self) -> Box<dyn GraphicsPipelineHandler> {
+            Box::new(Handler)
+        }
+    }
+
+    #[test]
+    fn legacy_factory_path_retains_clampable_handle() {
+        let (_bridge, handle) = build_server_and_handle(&LegacyFactory);
+        let mut server = handle.lock().expect("GfxServerHandle mutex poisoned");
+        server.set_max_frames_in_flight(3);
+        assert_eq!(
+            server.clamp_max_frames_in_flight(core::num::NonZeroU32::new(1).expect("one is non-zero")),
+            1
+        );
     }
 
     #[test]
