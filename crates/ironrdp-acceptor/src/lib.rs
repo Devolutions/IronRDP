@@ -34,8 +34,9 @@ where
 
 /// Async hooks that complete authenticated connection setup at protocol-safe points.
 ///
-/// Credential handling runs before HYBRID_EX reports success. Capability setup
-/// runs after the operational desktop size is known but before capability exchange.
+/// Credential handling runs before HYBRID_EX reports success.
+/// For TLS and plain HYBRID, it runs after channel joins and ClientInfo.
+/// Capability setup runs after the operational desktop size is known but before capability exchange.
 #[async_trait::async_trait(?Send)]
 pub trait ConnectionSetupHandler {
     async fn handle_credentials(&mut self, credentials: Option<ReceivedCredentials>) -> ConnectorResult<()>;
@@ -100,7 +101,9 @@ where
     .await
 }
 
-/// Runs CredSSP and invokes `connection_setup_handler` before HYBRID_EX reports success.
+/// Runs CredSSP and invokes `credentials_handler` before HYBRID_EX reports success.
+///
+/// Plain HYBRID defers credential handling to [`accept_finalize_with`] after channel joins.
 pub async fn accept_credssp_with<S, N, H>(
     framed: &mut Framed<S>,
     acceptor: &mut Acceptor,
@@ -141,7 +144,7 @@ where
     accept_finalize_with(framed, acceptor, &mut NoopConnectionSetupHandler).await
 }
 
-/// Finalizes the RDP handshake and invokes `connection_setup_handler` before capability exchange.
+/// Finalizes the RDP handshake and invokes `credentials_handler` before capability exchange.
 pub async fn accept_finalize_with<S, H>(
     framed: Framed<S>,
     acceptor: &mut Acceptor,
@@ -185,12 +188,22 @@ where
     S: FramedRead + FramedWrite,
     H: AsyncFnMut(ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu, bool),
 {
-    accept_finalize_with_handlers(framed, acceptor, &mut NoopCredentialsHandler, multitransport_handler).await
+    accept_finalize_with_handlers(
+        framed,
+        acceptor,
+        &mut NoopConnectionSetupHandler,
+        multitransport_handler,
+    )
+    .await
 }
 
 /// Finalizes the handshake with both connection-setup and multitransport handlers.
 ///
 /// The handlers follow the timing described by [`accept_finalize_with`] and [`accept_finalize_with_multitransport`].
+///
+/// # Panics
+///
+/// Panics if [`Acceptor::multitransport_soft_sync_negotiated`] returns `None` for an existing multitransport request.
 pub async fn accept_finalize_with_handlers<S, H, M>(
     mut framed: Framed<S>,
     acceptor: &mut Acceptor,
@@ -199,7 +212,7 @@ pub async fn accept_finalize_with_handlers<S, H, M>(
 ) -> ConnectorResult<(Framed<S>, AcceptorResult)>
 where
     S: FramedRead + FramedWrite,
-    H: CredentialsHandler,
+    H: ConnectionSetupHandler,
     M: AsyncFnMut(ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu, bool),
 {
     let mut buf = WriteBuf::new();
@@ -229,10 +242,12 @@ where
             {
                 buf.clear();
                 let written = acceptor.encode_access_denied(&mut buf)?;
-                framed
-                    .write_all(&buf[..written])
-                    .await
-                    .map_err(|e| ironrdp_connector::custom_err!("write access denied", e))?;
+                if written != 0 {
+                    framed
+                        .write_all(&buf[..written])
+                        .await
+                        .map_err(|e| ironrdp_connector::custom_err!("write access denied", e))?;
+                }
                 return Err(error);
             }
             acceptor.mark_credentials_handled();
@@ -246,10 +261,12 @@ where
         {
             buf.clear();
             let written = acceptor.encode_access_denied(&mut buf)?;
-            framed
-                .write_all(&buf[..written])
-                .await
-                .map_err(|e| ironrdp_connector::custom_err!("write access denied", e))?;
+            if written != 0 {
+                framed
+                    .write_all(&buf[..written])
+                    .await
+                    .map_err(|e| ironrdp_connector::custom_err!("write access denied", e))?;
+            }
             return Err(error);
         }
         if !notified && let Some(request) = acceptor.multitransport_request() {
@@ -296,7 +313,7 @@ where
     .await;
 
     let result = match result {
-        Ok(()) => match credentials_handler
+        Ok(()) if protocol.intersects(nego::SecurityProtocol::HYBRID_EX) => match credentials_handler
             .handle_credentials(acceptor.received_credentials().cloned())
             .await
         {
@@ -306,7 +323,7 @@ where
             }
             Err(error) => Err(error),
         },
-        Err(error) => Err(error),
+        result => result,
     };
 
     if protocol.intersects(nego::SecurityProtocol::HYBRID_EX) {

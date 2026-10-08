@@ -1,7 +1,7 @@
 use core::any::TypeId;
 use core::mem;
 
-use ironrdp_connector::sspi::AuthIdentity;
+use ironrdp_connector::sspi::{AuthIdentity, UsernameParts};
 use ironrdp_connector::{
     ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, MonotonicInstant, Sequence, State, Written,
     encode_x224_packet, general_err, reason_err,
@@ -168,6 +168,8 @@ pub enum CredentialOrigin {
 /// without the provenance required to interpret their authentication status.
 #[derive(Clone, Debug)]
 pub struct ReceivedCredentials {
+    /// CredSSP UPNs remain intact in `username`, with no `domain`.
+    /// Down-level names separate the account name and optional NetBIOS domain.
     pub credentials: Credentials,
     pub origin: CredentialOrigin,
 }
@@ -600,9 +602,12 @@ impl Acceptor {
         self.received_credentials.as_ref()
     }
 
-    /// Takes credentials received during the current handshake, if any.
+    /// Whether credentials need handling after channel joins and ClientInfo.
     pub(crate) fn credentials_need_handling(&self) -> bool {
-        !self.is_auto_reconnect_attempt() && self.received_credentials.is_some() && !self.credentials_handled
+        matches!(self.state, AcceptorState::LicensingExchange { .. })
+            && !self.is_auto_reconnect_attempt()
+            && self.received_credentials.is_some()
+            && !self.credentials_handled
     }
 
     pub(crate) fn mark_credentials_handled(&mut self) {
@@ -616,25 +621,44 @@ impl Acceptor {
             .map(|received| received.credentials)
     }
 
-    /// Encode the protocol-defined access-denied response for a rejected
-    /// credential or capability-exchange hook.
+    /// Encodes a Set Error Info PDU for a user authorization failure ([MS-RDPBCGR] section 2.2.5.1.1).
+    ///
+    /// Returns zero without writing if the client did not advertise error-info support.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
     pub fn encode_access_denied(&self, output: &mut WriteBuf) -> ConnectorResult<usize> {
-        let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
-            ProtocolIndependentCode::ServerDeniedConnection,
-        ));
+        if !self
+            .early_capability_flags
+            .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU)
+        {
+            debug!("Omitting access-denied PDU because the client did not advertise error-info support");
+            return Ok(0);
+        }
+
+        let info = wrap_share_data(
+            rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+                ProtocolIndependentCode::ServerInsufficientPrivileges,
+            ))),
+            0,
+        );
         debug!(message = ?info, "Send");
         util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &info, output)
     }
 
-    /// Store credentials delegated by CredSSP/NLA so server code can use the
-    /// same post-handshake validation and binding path as TLS ClientInfo
-    /// credentials.
+    /// Stores CredSSP/NLA credentials for the same validation and binding path as TLS ClientInfo credentials.
     pub(crate) fn set_received_credssp_credentials(&mut self, identity: AuthIdentity) {
+        let (username, domain) = match identity.username.parts() {
+            UsernameParts::UserPrincipalName(parts) => (parts.upn().to_owned(), None),
+            UsernameParts::DownLevelLogonName(parts) => (
+                parts.account_name().to_owned(),
+                parts.netbios_domain().map(str::to_owned),
+            ),
+        };
         self.received_credentials = Some(ReceivedCredentials {
             credentials: Credentials {
-                username: identity.username.account_name().to_owned(),
+                username,
                 password: identity.password.as_ref().clone(),
-                domain: identity.username.domain_name().map(str::to_owned),
+                domain,
             },
             origin: CredentialOrigin::CredSspDelegated,
         });
@@ -1187,8 +1211,6 @@ impl Sequence for Acceptor {
 
                     if let Some(expected) = &self.creds {
                         if expected != &creds {
-                            // FIXME: How authorization should be denied with standard RDP security?
-                            // Since standard RDP security is not a priority, we just send a ServerDeniedConnection ServerSetErrorInfo PDU.
                             self.encode_access_denied(output)?;
                             return Err(ConnectorError::general("invalid credentials"));
                         }
