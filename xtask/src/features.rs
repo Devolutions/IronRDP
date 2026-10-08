@@ -35,7 +35,16 @@ pub enum Invocation {
         depth: u8,
         extra_args: &'static [&'static str],
     },
+    /// `cargo check --no-default-features` for a package group against a target
+    /// that ships no `std` ([`NO_STD_TARGET`]). Checking on the host cannot catch a
+    /// dependency that silently enables `std` (for example `tracing`'s default
+    /// features), because the host always provides it; this target does not.
+    NoStdTarget { packages: &'static [&'static str] },
 }
+
+/// Bare-metal target used by [`Invocation::NoStdTarget`] cases. Installed by
+/// `cargo xtask check install`.
+pub const NO_STD_TARGET: &str = "x86_64-unknown-none";
 
 /// Features that the powerset should never enumerate.
 ///   `__bench` and `__test` are private features that pull `visibility` for the
@@ -114,6 +123,28 @@ const CASES: &[FeatureCheckCase] = &[
             features: &["arbitrary"],
         },
     },
+    // Crates that must build without `std` on a target that has none.
+    // FIXME: `ironrdp-pdu` and every crate on top of it (`ironrdp-svc`, `ironrdp-dvc`,
+    // `ironrdp-graphics`, `ironrdp-rdpecam`, `ironrdp-rdpel`, `ironrdp-rdpeusb`) do not
+    // pass yet: their dependency tree enables `std` (`der`, `num-traits`, `byteorder`,
+    // `thiserror`, ...). Add them here once fixed.
+    FeatureCheckCase {
+        name: "workspace/no-std-target",
+        invocation: Invocation::NoStdTarget {
+            packages: &[
+                "ironrdp-core",
+                "ironrdp-error",
+                "ironrdp-str",
+                "ironrdp-bulk",
+                "ironrdp-propertyset",
+                "ironrdp-rail",
+                "ironrdp-rdpfile",
+                "ironrdp-usb",
+                "ironrdp-rdpeudp",
+                "ironrdp-rdpemt",
+            ],
+        },
+    },
     // Workspace powerset, partitioned by layer so each fan-out worker stays bounded.
     // Adding a new crate to a group means the powerset picks it up on the next run.
     FeatureCheckCase {
@@ -147,6 +178,14 @@ const CASES: &[FeatureCheckCase] = &[
                 "ironrdp-displaycontrol",
                 "ironrdp-rdpeusb",
             ],
+            depth: 2,
+            extra_args: &[],
+        },
+    },
+    FeatureCheckCase {
+        name: "workspace/powerset-multitransport",
+        invocation: Invocation::CargoHack {
+            packages: &["ironrdp-rdpeudp", "ironrdp-rdpemt"],
             depth: 2,
             extra_args: &[],
         },
@@ -277,6 +316,20 @@ fn run_one(sh: &Shell, case: &FeatureCheckCase) -> anyhow::Result<()> {
             }
             for extra in *extra_args {
                 args.push((*extra).into());
+            }
+            cmd!(sh, "{CARGO}").args(&args).run()?;
+        }
+        Invocation::NoStdTarget { packages } => {
+            let mut args: Vec<String> = vec![
+                "check".into(),
+                "--locked".into(),
+                "--no-default-features".into(),
+                "--target".into(),
+                NO_STD_TARGET.into(),
+            ];
+            for pkg in *packages {
+                args.push("-p".into());
+                args.push((*pkg).into());
             }
             cmd!(sh, "{CARGO}").args(&args).run()?;
         }

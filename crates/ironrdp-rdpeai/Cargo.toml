@@ -24,7 +24,7 @@ ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.8" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", features = ["alloc"] } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9" } # public — shared AUDIO_FORMAT
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public
-tracing = { version = "0.1", features = ["log"] }
+tracing = "0.1"
 
 [lints]
 workspace = true

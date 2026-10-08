@@ -24,7 +24,7 @@ test = false
 [dependencies]
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.7" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
-tracing = { version = "0.1", features = ["log"] }
+tracing = "0.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { version = "0.31", features = ["poll"] }

@@ -20,7 +20,7 @@ test = false
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" } # public
 ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.8" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
-tracing = { version = "0.1", features = ["log"] }
+tracing = "0.1"
 
 [lints]
 workspace = true

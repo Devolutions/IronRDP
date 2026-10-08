@@ -106,7 +106,7 @@ ironrdp-mstsgu = { path = "../ironrdp-mstsgu", version = "0.0.1", optional = tru
 ironrdp-dvc-pipe-proxy = { path = "../ironrdp-dvc-pipe-proxy", version = "0.5", optional = true }
 
 # Logging
-tracing = { version = "0.1", features = ["log"] }
+tracing = "0.1"
 
 # Async, futures
 tokio = { version = "1", features = ["macros", "net", "io-util", "sync", "rt", "time"] }
