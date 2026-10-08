@@ -156,6 +156,10 @@ impl DecodingContext {
         for (update_rectangle, tile_data) in tiles_to_rectangles(tile_set.tiles.as_slice(), destination)
             .zip(map_tiles_data(tile_set.tiles.as_slice(), tile_set.quants.as_slice()))
         {
+            let Some(update_rectangle) = update_rectangle else {
+                continue;
+            };
+
             decode_tile(
                 &tile_data,
                 entropy_algorithm,
@@ -241,28 +245,50 @@ fn clipping_rectangles(
 ) -> Region {
     let mut clipping_rectangles = Region::new();
 
+    // Exclusive bounds in u32, so that no server-supplied position or size can wrap.
+    let right_limit = min(u32::from(destination.left) + u32::from(width), u32::from(u16::MAX) + 1);
+    let bottom_limit = min(u32::from(destination.top) + u32::from(height), u32::from(u16::MAX) + 1);
+
     rectangles
         .iter()
-        .map(|r| InclusiveRectangle {
-            left: min(destination.left + r.x, destination.left + width - 1),
-            top: min(destination.top + r.y, destination.top + height - 1),
-            right: min(destination.left + r.x + r.width - 1, destination.left + width - 1),
-            bottom: min(destination.top + r.y + r.height - 1, destination.top + height - 1),
+        .filter_map(|r| {
+            let left = min(u32::from(destination.left) + u32::from(r.x), right_limit);
+            let top = min(u32::from(destination.top) + u32::from(r.y), bottom_limit);
+            let right = min(left + u32::from(r.width), right_limit);
+            let bottom = min(top + u32::from(r.height), bottom_limit);
+
+            // An empty rectangle covers nothing.
+            if left == right || top == bottom {
+                return None;
+            }
+
+            Some(InclusiveRectangle {
+                left: u16::try_from(left).ok()?,
+                top: u16::try_from(top).ok()?,
+                right: u16::try_from(right - 1).ok()?,
+                bottom: u16::try_from(bottom - 1).ok()?,
+            })
         })
         .for_each(|r| clipping_rectangles.union_rectangle(r));
 
     clipping_rectangles
 }
 
+/// Returns `None` for a tile whose rectangle does not fit in u16, since no clipping rectangle can reach it.
 fn tiles_to_rectangles<'a>(
     tiles: &'a [Tile<'_>],
     destination: &'a InclusiveRectangle,
-) -> impl Iterator<Item = InclusiveRectangle> + 'a {
-    tiles.iter().map(|t| InclusiveRectangle {
-        left: destination.left + t.x * TILE_SIZE,
-        top: destination.top + t.y * TILE_SIZE,
-        right: destination.left + t.x * TILE_SIZE + TILE_SIZE - 1,
-        bottom: destination.top + t.y * TILE_SIZE + TILE_SIZE - 1,
+) -> impl Iterator<Item = Option<InclusiveRectangle>> + 'a {
+    tiles.iter().map(|t| {
+        let left = u16::try_from(u32::from(destination.left) + u32::from(t.x) * u32::from(TILE_SIZE)).ok()?;
+        let top = u16::try_from(u32::from(destination.top) + u32::from(t.y) * u32::from(TILE_SIZE)).ok()?;
+
+        Some(InclusiveRectangle {
+            left,
+            top,
+            right: left.checked_add(TILE_SIZE - 1)?,
+            bottom: top.checked_add(TILE_SIZE - 1)?,
+        })
     })
 }
 
