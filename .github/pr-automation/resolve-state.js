@@ -5,9 +5,9 @@ const { generation } = require("./ci-state");
 const { validateNormalizedFinalReview } = require("./validate-final-review");
 const { resolveReviewerRoute, reviewPolicyEligible } = require("./routing");
 const { validateReviewGate } = require("./review-pipeline");
+const { AI_COUNTS, reviewCount } = require("./review-count");
 
 const RISK = ["risk/low", "risk/medium", "risk/high", "risk/unknown"];
-const AI_COUNTS = ["ai-reviewed/1", "ai-reviewed/2"];
 const ACTOR_LABELS = ["needs-review", "needs-author-action"];
 const FAILURE_LABEL = "automation-failed";
 const LEGITIMACY_LABEL = "triage/legitimacy";
@@ -22,14 +22,6 @@ const EVIDENCE_LIMIT_REASON = /^pull request diff exceeds the 4 MiB evidence lim
 
 function labelsOf(labels) {
   return new Set((labels || []).map((label) => typeof label === "string" ? label : label?.name).filter(Boolean));
-}
-
-function reviewCount(labels) {
-  const present = labels instanceof Set ? labels : labelsOf(labels);
-  const first = present.has("ai-reviewed/1");
-  const second = present.has("ai-reviewed/2");
-  if (first && second) return undefined;
-  return second ? "ai-reviewed/2" : first ? "ai-reviewed/1" : null;
 }
 
 function failureLabelSets(failure = []) {
@@ -295,11 +287,11 @@ function resolveReviewState({
     if (!gate || gate.head_sha !== expectedSha) return blocked("review gate unavailable");
     if (gate.ciGreen !== true) return blocked("CI has not succeeded");
     if (gate.classificationValid === true &&
-        (existing.has("ai-reviewed/2") || gate.legitimacyStopped === true ||
+        (currentReviewCount === AI_COUNTS.at(-1) || gate.legitimacyStopped === true ||
          existing.has(LEGITIMACY_LABEL))) {
       return {
         ...state("review is handed to a human"),
-        handoff: existing.has("ai-reviewed/2") ? "terminal" : "legitimacy",
+        handoff: currentReviewCount === AI_COUNTS.at(-1) ? "terminal" : "legitimacy",
         ...ciState,
       };
     }
@@ -324,7 +316,7 @@ function resolveReviewState({
       return blocked(reason);
     }
     if (gate.reviewAtHead === true ||
-        (existing.has("ai-reviewed/1") && gate.secondReviewEligible !== true)) {
+        (currentReviewCount !== null && gate.nextReviewEligible !== true)) {
       return blocked("an automated review already exists for this head");
     }
     if (!gate.ok) return blocked("review gate unavailable");
@@ -341,9 +333,7 @@ function resolveReviewState({
   if (!reviewerResult?.ok || reviewerResult.value?.head_sha !== expectedSha) {
     return fail(reviewerReason || reviewerResult?.reason || "reviewer unavailable");
   }
-  const nextCount = currentReviewCount === "ai-reviewed/2" ? "ai-reviewed/2"
-    : currentReviewCount === "ai-reviewed/1" ? "ai-reviewed/2"
-    : "ai-reviewed/1";
+  const nextCount = AI_COUNTS[Math.min(AI_COUNTS.indexOf(currentReviewCount) + 1, AI_COUNTS.length - 1)];
   const expectedReviewCount = currentReviewCount;
   const hasFindings = reviewerResult.value.findings.length > 0;
   const reviewMarker = `<!-- ironrdp-pr-automation:review:${expectedSha}` +

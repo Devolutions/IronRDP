@@ -138,6 +138,7 @@ async function recheckAutomaticReview({
   github, owner, repo, prNumber, headSha, gate, lease, phase = "admission",
   allowDraft = false, allowClosedUnmerged = false,
 }) {
+  if (gate?.policyEligible !== true) return false;
   if (![
     "preclaim", "admission", "transition-old", "transition-empty", "transition-next",
     "receipt", "cleanup",

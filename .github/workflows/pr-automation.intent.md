@@ -68,7 +68,7 @@ Keep detailed failure reasons in the workflow summary only.
 - Never restart a reviewer stage or rerun a completed stage.
 - Set the 130-minute reviewer job timeout to cover one stage and cleanup.
 - Keep all eligibility checks, resource limits, and stale-head protections in effect.
-- Never publish the same review twice, and count only published reviews toward the two-review limit.
+- Never publish the same review twice, and count only published reviews toward the three-review limit.
 - Show the pipeline-reported outcome and LLM-stage metrics including unavailable usage in the review check and workflow summary.
 - Link to the summary from the `AI automated review` check; keep metrics out of review comments.
 
@@ -76,13 +76,14 @@ Keep detailed failure reasons in the workflow summary only.
 
 Classify every non-draft, human-authored pull request that passes the integrity and capacity gates.
 Run automated review after the latest CI generation succeeds for the exact classified head.
-Run the second review after a later push reaches green exact-head CI.
-At `ai-reviewed/2`, the review pipeline stops and lifecycle reconciliation hands a green pull request to `needs-review`.
+Run each subsequent review only after a distinct classified head reaches green exact-head CI.
+At `ai-reviewed/3`, the review pipeline stops; same-head findings keep `needs-author-action`, while no findings hand off immediately.
+After a third review, a later classified head with green exact-head CI hands off to `needs-review` only when the latest published bot review matches a trusted `/3` receipt.
 
 `needs-review` means a human reviewer is the next actor, and `needs-author-action` means the author is the next actor.
 Lifecycle reconciliation exclusively owns these mutually exclusive actor labels.
 An attempted exact-head classification or eligible review failure applies only `automation-failed`.
-Every successful app-owned exact-head review check persists a bounded versioned `findings` or `no-findings` receipt.
+After a successful count transition, its app-owned exact-head check persists a bounded versioned `findings` or `no-findings` receipt bound to the count and review marker.
 Reconciliation trusts only a newest canonical successful check with the expected app, SHA, external ID, conclusion, schema, and exact receipt keys.
 Existing successful checks without that receipt fail closed before lifecycle clearing.
 Successful review outcomes, clean terminal handoffs, and legitimacy stops become actor labels only through a fresh reconciliation snapshot.

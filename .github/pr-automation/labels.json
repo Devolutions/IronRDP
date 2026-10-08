@@ -132,6 +132,11 @@
   {
     "name": "ai-reviewed/2",
     "color": "000000",
+    "description": "Two automated reviews completed"
+  },
+  {
+    "name": "ai-reviewed/3",
+    "color": "000000",
     "description": "Final automated review completed"
   }
 ]
