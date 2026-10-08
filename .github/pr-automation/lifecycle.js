@@ -7,6 +7,7 @@ const { parseCheckState } = require("./validate-classifier");
 const { trustedReviewOutcome, trustedReviewReceipt, reviewMarkerPrefix } = require("./review-outcome");
 const { ACTOR_LABELS, labelsOf } = require("./resolve-state");
 const { AI_COUNTS, reviewCount } = require("./review-count");
+const { authoritativeFindings, readyRuns, trustedReady } = require("./review-ready");
 
 async function activeLease(github, owner, repo, run, headSha) {
   const lease = parseLeaseMarker(run?.output?.summary);
@@ -24,6 +25,8 @@ function lifecycleActor(snapshot) {
   if (ci.conclusion !== "success") return [];
   if (snapshot.untrustedReviewSuccess) return null;
   if (snapshot.labels.has("automation-failed")) return [];
+  if (snapshot.reviewReady && snapshot.reviewOutcome === "findings" &&
+      snapshot.classificationValid === true) return ["needs-review"];
   if (snapshot.reviewOutcome === "findings") return ["needs-author-action"];
   if (snapshot.reviewOutcome === "no-findings") return ["needs-review"];
   if (snapshot.classificationValid && reviewCount(snapshot.labels) === AI_COUNTS.at(-1) &&
@@ -59,6 +62,18 @@ async function readLifecycleSnapshot({ github, owner, repo, prNumber, observedRu
   const successfulReviews = reviews?.filter((run) => run.conclusion === "success") ?? [];
   const newestSuccessfulReview = successfulReviews[0] ?? null;
   const reviewOutcome = trustedReviewOutcome(newestSuccessfulReview, headSha);
+  let reviewReady = false;
+  if (reviewOutcome === "findings") {
+    const ready = await readyRuns(github, owner, repo, headSha);
+    const receipt = ready?.[0] && trustedReady(ready[0], headSha);
+    if (receipt) {
+      const authority = await authoritativeFindings({
+        github, owner, repo, prNumber, headSha, reviewRuns: reviews, labels,
+      });
+      reviewReady = authority?.checkId === receipt.review_check_id &&
+        authority?.reviewId === receipt.review_id;
+    }
+  }
   const classificationValid = latestClassification?.conclusion === "success" &&
     ["Classification complete", "Automation stopped"].includes(latestClassification.output?.title) &&
     parseCheckState(latestClassification.output?.summary) !== null;
@@ -98,6 +113,7 @@ async function readLifecycleSnapshot({ github, owner, repo, prNumber, observedRu
     canonicalAmbiguous: classifications === null || reviews === null,
     classificationValid,
     reviewOutcome,
+    reviewReady,
     priorReviewTrusted,
     untrustedReviewSuccess: newestSuccessfulReview !== null && reviewOutcome === null,
   };

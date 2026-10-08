@@ -1,0 +1,47 @@
+# Trusted issue-comment handoff. Never checkout the contributor head with this write token.
+name: PR automation review-ready
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: read
+  checks: write
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  acknowledge:
+    if: github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pr-automation-mutation-${{ github.event.issue.number }}
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/github-script@v8
+        env:
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        with:
+          script: |
+            const { acceptReviewReady, commandBody } = require("./.github/pr-automation/review-ready");
+            const { reconcileLifecycle } = require("./.github/pr-automation/lifecycle");
+            if (!context.payload.issue?.pull_request ||
+                context.payload.comment?.user?.type !== "User" ||
+                !commandBody(context.payload.comment?.body)) return;
+            const prNumber = Number(process.env.PR_NUMBER);
+            if (await acceptReviewReady({
+              github, owner: context.repo.owner, repo: context.repo.repo,
+              prNumber, commentId: Number(process.env.COMMENT_ID),
+            })) {
+              await reconcileLifecycle({
+                github, owner: context.repo.owner, repo: context.repo.repo, prNumber,
+              });
+            }
