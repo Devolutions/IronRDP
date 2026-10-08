@@ -383,12 +383,10 @@ fn zero_time_delta_counts_as_one_millisecond() {
     );
 }
 
-/// Completes the bracketed measurement `start` opened, with a usable figure.
-fn complete_bracket(mgr: &mut AutoDetectManager, start: &AutoDetectRequest, now_ms: u64) {
-    let stop = mgr.end_bandwidth_measure().expect("Stop after a bracketed Start");
-    assert_eq!(stop.sequence_number(), start.sequence_number());
+/// Answers the measurement with `sequence_number` with a usable figure.
+fn answer_bracket(mgr: &mut AutoDetectManager, sequence_number: u16, now_ms: u64) {
     let results = AutoDetectResponse::BandwidthMeasureResults {
-        sequence_number: stop.sequence_number(),
+        sequence_number,
         response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
         time_delta_ms: 2,
         byte_count: 20_000,
@@ -397,6 +395,13 @@ fn complete_bracket(mgr: &mut AutoDetectManager, start: &AutoDetectRequest, now_
         mgr.handle_response(&results, now_ms),
         AutoDetectOutcome::Bandwidth(Some(80_000))
     );
+}
+
+/// Completes the bracketed measurement `start` opened, with a usable figure.
+fn complete_bracket(mgr: &mut AutoDetectManager, start: &AutoDetectRequest, now_ms: u64) {
+    let stop = mgr.end_bandwidth_measure().expect("Stop after a bracketed Start");
+    assert_eq!(stop.sequence_number(), start.sequence_number());
+    answer_bracket(mgr, stop.sequence_number(), now_ms);
 }
 
 #[test]
@@ -428,13 +433,7 @@ fn bracketed_measurements_are_paced_and_never_overlap() {
         mgr.begin_bandwidth_measure(64 * 1024, 5_000).is_none(),
         "no new measurement while the client's results are outstanding"
     );
-    let results = AutoDetectResponse::BandwidthMeasureResults {
-        sequence_number: start.sequence_number(),
-        response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
-        time_delta_ms: 2,
-        byte_count: 20_000,
-    };
-    let _ = mgr.handle_response(&results, 10);
+    answer_bracket(&mut mgr, start.sequence_number(), 10);
     assert!(
         mgr.begin_bandwidth_measure(64 * 1024, 999).is_none(),
         "within a second of the previous Start"

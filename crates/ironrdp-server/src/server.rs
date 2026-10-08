@@ -3637,11 +3637,7 @@ impl RdpServer {
         // go out back to back on the same stream, so the client times a
         // burst rather than whatever idle stretch a fixed window happens
         // to span.
-        //
-        // The Stop goes out only for the Start this write sent, which
-        // `bracket_channel_id` records.
-        let bracket_channel_id = if let (Some(ad), Some(message_channel_id)) =
-            (conn.autodetect.as_mut(), message_channel_id)
+        if let (Some(ad), Some(message_channel_id)) = (conn.autodetect.as_mut(), message_channel_id)
             && let Some(start) = ad.begin_bandwidth_measure(data.len(), monotonic_now_ms())
         {
             let start = encode_autodetect_request(start, message_channel_id, user_channel_id)?;
@@ -3649,15 +3645,14 @@ impl RdpServer {
                 .write_all(&start)
                 .await
                 .map_err(|e| ServerError::io("write_all", e))?;
-            Some(message_channel_id)
-        } else {
-            None
-        };
+        }
         writer
             .write_all(&data)
             .await
             .map_err(|e| ServerError::io("write_all", e))?;
-        if let Some(message_channel_id) = bracket_channel_id
+        // Only a bracket this write opened is still pending here, so the manager
+        // returns a Stop for exactly that one, and `None` when no Start was sent.
+        if let Some(message_channel_id) = message_channel_id
             && let Some(stop) = conn
                 .autodetect
                 .as_mut()
