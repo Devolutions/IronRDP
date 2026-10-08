@@ -166,7 +166,7 @@ impl<'a> CredsspSequence<'a> {
         self.state = next_state;
         if let Some(ts_request) = ts_request {
             debug!(?ts_request, "Send");
-            let length = usize::from(ts_request.buffer_len());
+            let length = usize::from(ts_request.buffer_len().map_err(|e| custom_err!("TsRequest", e))?);
             let unfilled_buffer = output.unfilled_to(length);
 
             ts_request

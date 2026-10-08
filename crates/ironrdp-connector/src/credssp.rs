@@ -11,29 +11,54 @@ use crate::{
     ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ServerName, Written, custom_err, general_err,
 };
 
+/// Strategy for resolving the KDC to use for Kerberos authentication.
+#[derive(Debug, Clone)]
+pub enum KdcResolution {
+    /// Use IAKerb extension to proxy KDC communication through the server to the LocalKDC.
+    IAKerb,
+    /// External KDC URL.
+    KdcUrl(Option<url::Url>),
+}
+
+impl From<KdcResolution> for sspi::KdcResolution {
+    fn from(val: KdcResolution) -> Self {
+        match val {
+            KdcResolution::IAKerb => sspi::KdcResolution::IAKerb,
+            KdcResolution::KdcUrl(url) => sspi::KdcResolution::KdcUrl(url),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct KerberosConfig {
-    pub kdc_proxy_url: Option<url::Url>,
+    pub kdc_resolution: KdcResolution,
     pub hostname: String,
 }
 
 impl KerberosConfig {
-    pub fn new(kdc_proxy_url: Option<String>, hostname: String) -> ConnectorResult<Self> {
+    pub fn new_with_kdc_url(kdc_proxy_url: Option<String>, hostname: String) -> ConnectorResult<Self> {
         let kdc_proxy_url = kdc_proxy_url
             .map(|url| url::Url::parse(&url))
             .transpose()
             .map_err(|e| custom_err!("invalid KDC URL", e))?;
         Ok(Self {
-            kdc_proxy_url,
+            kdc_resolution: KdcResolution::KdcUrl(kdc_proxy_url),
             hostname,
         })
+    }
+
+    pub fn new_with_iakerb(hostname: String) -> Self {
+        Self {
+            kdc_resolution: KdcResolution::IAKerb,
+            hostname,
+        }
     }
 }
 
 impl From<KerberosConfig> for sspi::KerberosConfig {
     fn from(val: KerberosConfig) -> Self {
         sspi::KerberosConfig {
-            kdc_url: val.kdc_proxy_url,
+            kdc_resolution: val.kdc_resolution.into(),
             client_computer_name: val.hostname,
         }
     }
@@ -262,7 +287,7 @@ fn extract_user_principal_name(cert: &Certificate) -> Option<String> {
 }
 
 fn write_credssp_request(ts_request: credssp::TsRequest, output: &mut WriteBuf) -> ConnectorResult<usize> {
-    let length = usize::from(ts_request.buffer_len());
+    let length = usize::from(ts_request.buffer_len().map_err(|e| custom_err!("TsRequest", e))?);
 
     let unfilled_buffer = output.unfilled_to(length);
 
