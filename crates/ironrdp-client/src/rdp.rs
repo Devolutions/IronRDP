@@ -2014,6 +2014,7 @@ struct UdpTunnel {
 struct UdpBootstrapConfig {
     peer: SocketAddr,
     server_name: String,
+    offer_version: ironrdp_rdpeudp::pdu::UdpVersion,
     tls: ironrdp_rdpeudp_tokio::UdpTlsConfig,
 }
 
@@ -2034,7 +2035,10 @@ async fn bootstrap_udp_transport(
         .connect(
             config.peer,
             config.server_name,
-            ironrdp_rdpeudp::ConnectionConfig::default(),
+            ironrdp_rdpeudp::ConnectionConfig {
+                offer_version: config.offer_version,
+                ..ironrdp_rdpeudp::ConnectionConfig::default()
+            },
             config.tls,
         )
         .await
@@ -2450,6 +2454,7 @@ where
         let udp_config = UdpBootstrapConfig {
             peer: udp_peer,
             server_name: config.destination.name().to_owned(),
+            offer_version: config.udp_offer_version,
             tls: ironrdp_rdpeudp_tokio::UdpTlsConfig {
                 certificate_validation: config.certificate_validation,
                 certificate_validation_callback: config.certificate_validation_callback.clone(),
