@@ -383,6 +383,24 @@ fn zero_time_delta_counts_as_one_millisecond() {
     );
 }
 
+/// The client supplies both numbers, so a figure that doesn't fit in 32 bits
+/// saturates at `u32::MAX` instead of wrapping to a small value.
+#[test]
+fn an_oversized_bandwidth_figure_saturates() {
+    let mut mgr = AutoDetectManager::new();
+    let bw_seq = drive_bandwidth_start_and_stop(&mut mgr);
+    let results = AutoDetectResponse::BandwidthMeasureResults {
+        sequence_number: bw_seq,
+        response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
+        time_delta_ms: 1,
+        byte_count: u32::MAX,
+    };
+    assert_eq!(
+        mgr.handle_response(&results, 20),
+        AutoDetectOutcome::Bandwidth(Some(u32::MAX))
+    );
+}
+
 /// Answers the measurement with `sequence_number` with a usable figure.
 fn answer_bracket(mgr: &mut AutoDetectManager, sequence_number: u16, now_ms: u64) {
     let results = AutoDetectResponse::BandwidthMeasureResults {
