@@ -20,9 +20,10 @@ function reviewSkipReasons({ gate, gateResult, rateLimit, rateLimitResult } = {}
     }
     if (gate.policyEligible !== true) {
       const labels = new Set(Array.isArray(gate.labels) ? gate.labels : []);
+      const count = reviewCount(labels);
       const policyReasonStart = reasons.length;
-      if (reviewCount(labels) === AI_COUNTS.at(-1)) reasons.push("The pull request has reached the three-review limit.");
-      if (reviewCount(labels) === undefined) reasons.push("The review count labels are ambiguous.");
+      if (count === AI_COUNTS.at(-1)) reasons.push("The pull request has reached the three-review limit.");
+      if (count === undefined) reasons.push("The review count labels are ambiguous.");
       if (labels.has("triage/legitimacy") || gate.legitimacyStopped === true) {
         reasons.push("The pull request is awaiting its green exact-head CI handoff for legitimacy triage.");
       }

@@ -8,4 +8,8 @@ function reviewCount(labels) {
   return counts.length > 1 ? undefined : counts[0] ?? null;
 }
 
-module.exports = { AI_COUNTS, reviewCount };
+function nextReviewCount(count) {
+  return AI_COUNTS[Math.min(AI_COUNTS.indexOf(count) + 1, AI_COUNTS.length - 1)];
+}
+
+module.exports = { AI_COUNTS, nextReviewCount, reviewCount };

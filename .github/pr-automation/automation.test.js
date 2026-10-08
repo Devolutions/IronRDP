@@ -23,6 +23,7 @@ const {
   EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, contributorEligibility,
 } = require("./resolve-state");
+const { nextReviewCount } = require("./review-count");
 const { resolvePr } = require("./resolve-pr");
 const { resolveClassificationGate } = require("./classification-gate");
 const { latestExactHeadCiRun, readLatestExactHeadCiRun } = require("./ci-state");
@@ -106,6 +107,14 @@ function withCurrentValidClassification(github, classificationId = FORCED_CLASSI
 function desiredLabels(state, owned) {
   return state.labelSets.find((set) => set.owned.includes(owned))?.desired ?? [];
 }
+
+test("next review count advances and clamps the three review labels", () => {
+  assert.equal(nextReviewCount(null), "ai-reviewed/1");
+  assert.equal(nextReviewCount("ai-reviewed/1"), "ai-reviewed/2");
+  assert.equal(nextReviewCount("ai-reviewed/2"), "ai-reviewed/3");
+  assert.equal(nextReviewCount("ai-reviewed/3"), "ai-reviewed/3");
+  assert.equal(nextReviewCount(undefined), "ai-reviewed/1");
+});
 
 test("review outcome receipts are bounded, exact, and trusted only on canonical successful checks", () => {
   const receipt = encodeReviewOutcome({ headSha: SHA, outcome: "findings" });

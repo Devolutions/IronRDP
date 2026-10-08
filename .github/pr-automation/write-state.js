@@ -15,7 +15,8 @@ const {
   assertCurrentHead, isClosedUnmerged, isOpenNonDraftAtHeadNow,
 } = require("./current-head");
 const { matchesGeneration, readLatestExactHeadCiRun } = require("./ci-state");
-const { ACTOR_LABELS, AI_COUNTS, reviewCount } = require("./resolve-state");
+const { ACTOR_LABELS } = require("./resolve-state");
+const { AI_COUNTS, nextReviewCount, reviewCount } = require("./review-count");
 const { encodeReviewOutcome } = require("./review-outcome");
 
 class StalePolicyError extends Error {
@@ -345,9 +346,7 @@ async function transitionReviewCount({
   github, owner, repo, prNumber, state, canTransition,
 }) {
   if (![null, ...AI_COUNTS].includes(state.expectedReviewCount) ||
-      state.nextReviewCount !== AI_COUNTS[Math.min(
-        AI_COUNTS.indexOf(state.expectedReviewCount) + 1, AI_COUNTS.length - 1,
-      )]) throw new StalePolicyError();
+      state.nextReviewCount !== nextReviewCount(state.expectedReviewCount)) throw new StalePolicyError();
   if (!await canTransition("transition-old")) return false;
   if (state.expectedReviewCount !== state.nextReviewCount) {
     if (state.expectedReviewCount) {

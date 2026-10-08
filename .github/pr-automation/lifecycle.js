@@ -5,7 +5,8 @@ const { readLatestExactHeadCiRun } = require("./ci-state");
 const { canonicalRuns, ownerIsActive, parseLeaseMarker } = require("./automation-lease");
 const { parseCheckState } = require("./validate-classifier");
 const { trustedReviewOutcome, trustedReviewReceipt } = require("./review-outcome");
-const { ACTOR_LABELS, labelsOf, reviewCount, AI_COUNTS } = require("./resolve-state");
+const { ACTOR_LABELS, labelsOf } = require("./resolve-state");
+const { AI_COUNTS, reviewCount } = require("./review-count");
 
 async function activeLease(github, owner, repo, run, headSha) {
   const lease = parseLeaseMarker(run?.output?.summary);
@@ -76,7 +77,7 @@ async function readLifecycleSnapshot({ github, owner, repo, prNumber, observedRu
       /^[0-9a-f]{40}$/.test(review.commit_id || "") &&
       review.body?.startsWith(`<!-- ironrdp-pr-automation:review:${review.commit_id}`))
       .sort((left, right) => right.id - left.id)[0];
-    if (latest && /^[0-9a-f]{40}$/.test(latest.commit_id) && latest.commit_id !== headSha) {
+    if (latest && latest.commit_id !== headSha) {
       const priorRuns = canonicalRuns(await readCheckRuns({
         github, owner, repo, ref: latest.commit_id, checkName: "AI automated review",
       }) || [], { kind: "review", headSha: latest.commit_id });
