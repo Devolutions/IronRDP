@@ -1,5 +1,7 @@
 "use strict";
 
+const { AI_COUNTS, reviewCount } = require("./review-count");
+
 // Persisted routes and aggregates use this canonical reviewer order.
 const REVIEWER_ORDER = Object.freeze(["protocol", "skeptical", "code-compressor"]);
 const REVIEWER_IDS = new Set(REVIEWER_ORDER);
@@ -51,7 +53,8 @@ function labelsOf(labels) {
 // Suspected overlap is approximate and must not suppress code review.
 function reviewPolicyEligible({ labels, legitimacyStopped } = {}) {
   const present = labelsOf(labels);
-  if (present.has("ai-reviewed/2") ||
+  const count = reviewCount(present);
+  if (count === undefined || count === AI_COUNTS.at(-1) ||
       present.has("triage/legitimacy") || legitimacyStopped === true) return false;
   return true;
 }

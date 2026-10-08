@@ -4,8 +4,9 @@ const { readCheckRuns } = require("./check-runs");
 const { readLatestExactHeadCiRun } = require("./ci-state");
 const { canonicalRuns, ownerIsActive, parseLeaseMarker } = require("./automation-lease");
 const { parseCheckState } = require("./validate-classifier");
-const { trustedReviewOutcome } = require("./review-outcome");
+const { trustedReviewOutcome, trustedReviewReceipt, reviewMarkerPrefix } = require("./review-outcome");
 const { ACTOR_LABELS, labelsOf } = require("./resolve-state");
+const { AI_COUNTS, reviewCount } = require("./review-count");
 
 async function activeLease(github, owner, repo, run, headSha) {
   const lease = parseLeaseMarker(run?.output?.summary);
@@ -19,13 +20,17 @@ function lifecycleActor(snapshot) {
   if (!ci || ci.status !== "completed") return [];
   if (snapshot.canonicalAmbiguous) return [];
   if (ci.conclusion === "failure") return ["needs-author-action"];
+  if (reviewCount(snapshot.labels) === undefined) return [];
   if (ci.conclusion !== "success") return [];
   if (snapshot.untrustedReviewSuccess) return null;
   if (snapshot.labels.has("automation-failed")) return [];
   if (snapshot.reviewOutcome === "findings") return ["needs-author-action"];
   if (snapshot.reviewOutcome === "no-findings") return ["needs-review"];
+  if (snapshot.classificationValid && reviewCount(snapshot.labels) === AI_COUNTS.at(-1) &&
+      !snapshot.priorReviewTrusted && !snapshot.labels.has("triage/legitimacy")) return null;
   if (snapshot.classificationValid &&
-      (snapshot.labels.has("triage/legitimacy") || snapshot.labels.has("ai-reviewed/2"))) {
+      (snapshot.labels.has("triage/legitimacy") ||
+       (reviewCount(snapshot.labels) === AI_COUNTS.at(-1) && snapshot.priorReviewTrusted))) {
     return ["needs-review"];
   }
   return [];
@@ -54,6 +59,35 @@ async function readLifecycleSnapshot({ github, owner, repo, prNumber, observedRu
   const successfulReviews = reviews?.filter((run) => run.conclusion === "success") ?? [];
   const newestSuccessfulReview = successfulReviews[0] ?? null;
   const reviewOutcome = trustedReviewOutcome(newestSuccessfulReview, headSha);
+  const classificationValid = latestClassification?.conclusion === "success" &&
+    ["Classification complete", "Automation stopped"].includes(latestClassification.output?.title) &&
+    parseCheckState(latestClassification.output?.summary) !== null;
+  let priorReviewTrusted = false;
+  if (reviewCount(labels) === AI_COUNTS.at(-1) && !newestSuccessfulReview &&
+      ci?.conclusion === "success" && classificationValid &&
+      !classificationLease && !reviewLease) {
+    // The latest published bot review identifies the head that spent the terminal count.
+    // A label alone (or a legacy successful check without a receipt) is not evidence.
+    const published = [];
+    for await (const page of github.paginate.iterator(github.rest.pulls.listReviews, {
+      owner, repo, pull_number: prNumber, per_page: 100,
+    })) published.push(...page.data);
+    const latest = published.filter((review) =>
+      review.user?.login === "github-actions[bot]")
+      .sort((left, right) => right.id - left.id)[0];
+    if (latest && /^[0-9a-f]{40}$/.test(latest.commit_id || "") &&
+        latest.body?.startsWith(reviewMarkerPrefix(latest.commit_id)) &&
+        latest.commit_id !== headSha) {
+      const priorRuns = canonicalRuns(await readCheckRuns({
+        github, owner, repo, ref: latest.commit_id, checkName: "AI automated review",
+      }) || [], { kind: "review", headSha: latest.commit_id });
+      const prior = priorRuns?.[0];
+      const receipt = trustedReviewReceipt(prior, latest.commit_id);
+      priorReviewTrusted = receipt?.next_review_count === AI_COUNTS.at(-1) &&
+        (latest.body === receipt.review_marker ||
+         latest.body.startsWith(`${receipt.review_marker}\n`));
+    }
+  }
   return {
     state: pull.state,
     draft: pull.draft === true,
@@ -62,10 +96,9 @@ async function readLifecycleSnapshot({ github, owner, repo, prNumber, observedRu
     ci,
     activeLease: classificationLease || reviewLease,
     canonicalAmbiguous: classifications === null || reviews === null,
-    classificationValid: latestClassification?.conclusion === "success" &&
-      ["Classification complete", "Automation stopped"].includes(latestClassification.output?.title) &&
-      parseCheckState(latestClassification.output?.summary) !== null,
+    classificationValid,
     reviewOutcome,
+    priorReviewTrusted,
     untrustedReviewSuccess: newestSuccessfulReview !== null && reviewOutcome === null,
   };
 }

@@ -15,7 +15,8 @@ const {
   assertCurrentHead, isClosedUnmerged, isOpenNonDraftAtHeadNow,
 } = require("./current-head");
 const { matchesGeneration, readLatestExactHeadCiRun } = require("./ci-state");
-const { ACTOR_LABELS, AI_COUNTS, reviewCount } = require("./resolve-state");
+const { ACTOR_LABELS } = require("./resolve-state");
+const { AI_COUNTS, nextReviewCount, reviewCount } = require("./review-count");
 const { encodeReviewOutcome } = require("./review-outcome");
 
 class StalePolicyError extends Error {
@@ -107,7 +108,7 @@ async function reviews(github, owner, repo, prNumber) {
 function assertReviewPolicy(labels, state) {
   const currentReviewCount = reviewCount(labels);
   if (state.handoff === "terminal") {
-    if (!labels.has("ai-reviewed/2")) throw new StalePolicyError();
+    if (currentReviewCount !== AI_COUNTS.at(-1)) throw new StalePolicyError();
     return;
   }
   if (state.handoff === "legitimacy") {
@@ -259,12 +260,14 @@ async function ensureClassificationCheck(
 }
 
 async function ensureReviewCheck(
-  github, owner, repo, prNumber, expectedSha, check, state, canMutate, ciRetry,
+  github, owner, repo, prNumber, expectedSha, check, state, canMutate, ciRetry, countTransitioned,
 ) {
   const title = check.title ?? "Automated review complete";
-  const summary = check.outcome
+  const summary = check.outcome && countTransitioned
     ? `${check.summary ?? "Validated automated review is bound to this commit."}\n\n${encodeReviewOutcome({
       headSha: expectedSha, outcome: check.outcome,
+      nextReviewCount: state.nextReviewCount,
+      reviewMarker: state.comments?.find((comment) => comment.kind === "review")?.marker,
     })}`
     : check.summary ?? "Validated automated review is bound to this commit.";
   return ensureCanonicalCheck({
@@ -343,7 +346,7 @@ async function transitionReviewCount({
   github, owner, repo, prNumber, state, canTransition,
 }) {
   if (![null, ...AI_COUNTS].includes(state.expectedReviewCount) ||
-      !AI_COUNTS.includes(state.nextReviewCount)) throw new StalePolicyError();
+      state.nextReviewCount !== nextReviewCount(state.expectedReviewCount)) throw new StalePolicyError();
   if (!await canTransition("transition-old")) return false;
   if (state.expectedReviewCount !== state.nextReviewCount) {
     if (state.expectedReviewCount) {
@@ -487,6 +490,7 @@ async function writeState({
   }
   if (!await canPublish()) return { ok: true, superseded: true };
   if (state.mode === "review") {
+    let countTransitioned = false;
     const comments = state.comments || [];
     for (const comment of comments.filter((comment) => comment.kind === "review")) {
       if (!await canPublishReviewPublication()) return { ok: true, superseded: true };
@@ -536,6 +540,7 @@ async function writeState({
       if (!await transitionReviewCount({
         github, owner, repo, prNumber, state, canTransition,
       })) return { ok: true, superseded: true };
+      countTransitioned = true;
     }
     await applyLabels(
       github, owner, repo, prNumber, state, latestLabels, canPublishReview,
@@ -544,7 +549,8 @@ async function writeState({
     if (state.check) {
       if (!await canPublishReviewReceipt()) return { ok: true, superseded: true };
       await ensureReviewCheck(
-        github, owner, repo, prNumber, state.expectedSha, state.check, state, canPublishReviewReceipt, ciRetry);
+        github, owner, repo, prNumber, state.expectedSha, state.check, state, canPublishReviewReceipt,
+        ciRetry, countTransitioned);
     } else if (state.lease && !await completeLeaseNeutral(
       github, owner, repo, state, canMutate, "Automation blocked",
     )) {

@@ -627,7 +627,7 @@ jobs:
         with:
           script: |
             const { SCHEMA_VERSION, parseCheckState } = require("./.github/pr-automation/validate-classifier");
-            const { contributorEligibility, reviewPolicyEligible } = require("./.github/pr-automation/resolve-state");
+            const { contributorEligibility, reviewPolicyEligible, reviewCount } = require("./.github/pr-automation/resolve-state");
             const { readCheckRuns } = require("./.github/pr-automation/check-runs");
             const { generation, readLatestExactHeadCiRun } = require("./.github/pr-automation/ci-state");
             const { resolveReviewerRoute } = require("./.github/pr-automation/routing");
@@ -680,7 +680,7 @@ jobs:
                 publish({
                   ok: false, force, head_sha: headSha, classificationValid: false,
                   classificationCheck: false, legitimacyStopped, ciGreen: false,
-                  secondReviewEligible: false, reviewAtHead: false, policyEligible: false, labels: resolvedLabels,
+                  nextReviewEligible: false, reviewAtHead: false, policyEligible: false, labels: resolvedLabels,
                   protocolRelated: false, risk: "unknown", specialistReviewers: [],
                   contributor: { status: force ? "forced" : "unavailable" },
                   reason: "valid classification unavailable",
@@ -697,7 +697,7 @@ jobs:
                 publish({
                   ok: route.ok, force: true, head_sha: headSha, classificationValid, classificationCheck,
                   classificationId,
-                  legitimacyStopped, ciGreen: false, secondReviewEligible: true,
+                  legitimacyStopped, ciGreen: false, nextReviewEligible: true,
                   reviewAtHead: false, policyEligible: true, labels: resolvedLabels, protocolRelated,
                   risk: protocolState.risk,
                   specialistReviewers: route.ok ? route.reviewers : [],
@@ -723,20 +723,20 @@ jobs:
               const ciGeneration = generation(latestCiRun);
               const ciSource = latestCiRun === null ? null : latestCiRun === observedRun ? "event" : "listing";
               const ciGreen = latestCiRun?.conclusion === "success" && ciGeneration !== null;
-              const secondReviewEligible = !labels.includes("ai-reviewed/1") || !reviewAtHead;
+              const nextReviewEligible = reviewCount(labels) !== undefined && !reviewAtHead;
               const policyEligible = reviewPolicyEligible({ labels, legitimacyStopped });
               const contributor = await contributorEligibility({
                 github, owner: context.repo.owner, repo: context.repo.repo, author,
                 currentPrNumber: prNumber,
               });
               publish({
-                ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible &&
+                ok: classificationCheck && ciGreen && nextReviewEligible && policyEligible &&
                   contributor.status === "eligible",
                 force: false, head_sha: headSha, classificationValid, classificationCheck, legitimacyStopped,
                 classificationId,
                 ciGreen, ciRunId: ciGeneration?.id ?? null,
                 ciRunAttempt: ciGeneration?.attempt ?? null, ciSource,
-                secondReviewEligible, reviewAtHead, policyEligible, labels, contributor,
+                nextReviewEligible, reviewAtHead, policyEligible, labels, contributor,
                 protocolRelated, risk: protocolState?.risk || "unknown",
                 specialistReviewers: protocolState?.specialistReviewers || [],
               });
@@ -745,7 +745,7 @@ jobs:
               publish({
                 ok: false, force, head_sha: headSha, classificationValid: false, classificationCheck: false,
                 classificationId: null,
-                legitimacyStopped: false, ciGreen: false, secondReviewEligible: force,
+                legitimacyStopped: false, ciGreen: false, nextReviewEligible: force,
                 reviewAtHead: false, policyEligible: false, labels: force ? resolvedLabels : [], protocolRelated: false,
                 risk: "unknown", specialistReviewers: [],
                 contributor: force ? { status: "forced" } : { status: "unavailable" },

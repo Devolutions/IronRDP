@@ -1,7 +1,7 @@
 # Pull request automation
 
-`.github/workflows/pr-automation.yml` classifies ready, open pull requests and calls `.github/workflows/review-pipeline.yml` for at most two automated reviews.
-Automatic review stops at `ai-reviewed/2` unless a maintainer uses force mode; classification keeps running.
+`.github/workflows/pr-automation.yml` classifies ready, open pull requests and calls `.github/workflows/review-pipeline.yml` for at most three automated reviews.
+Automatic review stops at `ai-reviewed/3` unless a maintainer uses force mode; classification keeps running.
 Manual `workflow_dispatch` requests and forced reviews require a successful GitHub Actions-owned `AI classification` check for the current head with valid machine state.
 They fail visibly before any reviewer starts when that prerequisite is missing, stale, or invalid; automatic CI and classification-complete races instead skip normally.
 The review gate and final writer both read every page of current exact-head `CI` runs and authorize only the latest run ID and attempt.
@@ -201,8 +201,8 @@ The classifier controls `scope/cross-cutting`, `kind/technical-debt`, and docume
 Automatic review runs for every open, non-draft pull request that passes the remaining gates.
 Every non-bot author is eligible immediately, including first-time contributors; there is no prior-merge requirement.
 Automatic review requires successful CI for the exact classified head.
-After the first review, a later push starts the second review when CI succeeds for that new head.
-Legitimacy triage and `ai-reviewed/2` block automatic review.
+Each distinct eligible green head advances one canonical count label from `ai-reviewed/1` through `ai-reviewed/3`.
+Mixed count labels block automatic review until repaired; legitimacy triage and `ai-reviewed/3` also block it.
 A suspected overlap with another pull request is advisory: at confidence 0.85 or greater it adds `triage/overlap` and a non-blocking comment, and review proceeds under the usual gates.
 The classifier reports possible shared scope in `overlap`, using candidate titles and truncated bodies.
 An unavailable or invalid exact-head classification or an attempted eligible review adds only `automation-failed`.
@@ -210,11 +210,13 @@ An unavailable or invalid exact-head classification or an attempted eligible rev
 `needs-author-action` means the pull request author is the current next actor.
 Lifecycle reconciliation is the only writer of these mutually exclusive actor labels.
 `automation-failed` is orthogonal and may coexist with `needs-author-action` only when independent exact-head CI failure requires author action.
-Every successful app-owned exact-head review check stores a bounded, versioned machine-readable `findings` or `no-findings` receipt.
+After a successful review-count transition, its app-owned exact-head check stores a bounded, versioned `findings` or `no-findings` receipt bound to the count and published review marker.
 Reconciliation validates the check app, SHA, external ID, conclusion, receipt schema, and exact receipt keys before using that outcome.
 The newest trusted successful exact-head check is canonical, including explicit forced reviews.
 An existing successful check without a receipt fails closed and preserves actor labels until a compatible outcome is available.
-With green exact-head CI, findings select `needs-author-action`, no findings select `needs-review`, and clean legitimacy or terminal handoff selects `needs-review`.
+With green exact-head CI, findings select `needs-author-action` even at `ai-reviewed/3`, while no findings select `needs-review`.
+After a third review, a newly classified head with green exact-head CI hands off to `needs-review` without a fourth review only when the latest published bot review matches a trusted `/3` receipt; legacy receipts never authorize this handoff.
+Contributor changes acknowledge findings; automation does not verify their resolution.
 Missing, pending, or nonstandard terminal CI conclusions select neither actor.
 Draft pull requests and active automation leases select neither actor.
 Closed pull requests select neither actor, and reopening derives the actor again from current exact-head state.
@@ -222,6 +224,7 @@ Closed pull requests select neither actor, and reopening derives the actor again
 Bot-authored pull requests do not run automatic routes, but lifecycle reconciliation still clears invalid actor labels.
 Force mode can override policy gates for an open pull request at its current head after a trusted, valid classification for that exact head selects its reviewers.
 Force mode never bypasses classification validity, evidence retrieval, output validation, filesystem restrictions, protocol citation validation, or stale-head checks.
+Forced reviews consume the next count when one is available and retain `ai-reviewed/3` after the terminal count.
 
 ## Supersession lease
 
