@@ -429,8 +429,6 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
-    /// Inject a shared handle that increments every time a Bandwidth Measure
-    /// transaction completes, whether or not it produced a usable figure.
     /// Pairs with [`Self::with_autodetect_bandwidth_handle`]: the bandwidth
     /// figure alone repeats too often to tell a fresh measurement window
     /// apart from a stale one. When not called, the server allocates its own
