@@ -3588,10 +3588,7 @@ impl RdpServer {
             // MUST keep using the tunnel it named immediately after sending it
             // (3.3.5.3.1). The client does not read the tunnel until the
             // request has arrived (3.2.5.3.1), so data that overtakes it waits.
-            let route_over_udp =
-                drdynvc.tunnel_for_outgoing_channel(egfx_dvc_id) == Some(dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP);
-
-            if route_over_udp {
+            if drdynvc.tunnel_for_outgoing_channel(egfx_dvc_id) == Some(dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP) {
                 udp_route = Some(udp_transport);
                 if !conn.egfx_on_udp {
                     newly_on_udp = Some(egfx_dvc_id);
