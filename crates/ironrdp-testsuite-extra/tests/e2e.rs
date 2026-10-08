@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use ironrdp::connector;
 use ironrdp::core::{Encode as _, encode_vec, impl_as_any};
-use ironrdp::dvc::{DrdynvcClient, DvcClientProcessor, DvcMessage, DvcProcessor};
+use ironrdp::dvc::DrdynvcClient;
 use ironrdp::echo::client::EchoClient;
 use ironrdp::pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
 use ironrdp::pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
@@ -411,8 +411,10 @@ async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool)
             rx,
             offers_display_control,
         },
+        None,
         default_client_config(),
         Vec::new(),
+        None,
         move |connector| {
             connector.with_static_channel(
                 DrdynvcClient::new()
@@ -1147,8 +1149,10 @@ async fn client_server_impl<F, Fut, C>(
             rx,
             offers_display_control: true,
         },
+        stale_events,
         client_config,
         static_channel_factories,
+        server_udp_addr,
         connector_factory,
         clientfn,
     )
@@ -1157,8 +1161,10 @@ async fn client_server_impl<F, Fut, C>(
 
 async fn client_server_with_display<D, DF, F, Fut, C>(
     display_factory: DF,
+    stale_events: Option<Vec<ServerEvent>>,
     client_config: connector::Config,
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+    server_udp_addr: Option<SocketAddr>,
     connector_factory: C,
     clientfn: F,
 ) where
@@ -1329,6 +1335,7 @@ async fn egfx_moves_onto_the_udp_tunnel_with_soft_sync() {
         .with_input_handler(TestInputHandler)
         .with_display_handler(TestDisplay {
             rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
         })
         .with_gfx_factory(Some(Box::new(TestGfxFactory { caps_tx })))
         .with_udp_transport(udp_addr)
@@ -2257,6 +2264,7 @@ fn hook_recording_server(
         .with_input_handler(TestInputHandler)
         .with_display_handler(TestDisplay {
             rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
         })
         .with_connection_handler(Some(Box::new(HookRecorder(Arc::clone(&counts)))))
         .with_connection_policy(policy)
