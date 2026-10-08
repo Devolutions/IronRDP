@@ -7,15 +7,17 @@ use core::time::Duration;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::Instant;
 
-use ironrdp_acceptor::{Acceptor, AcceptorResult, BeginResult, DesktopSize};
+use ironrdp_acceptor::{
+    Acceptor, AcceptorResult, BeginResult, ConnectionSetupHandler, ConnectorError, ConnectorErrorExt as _,
+    CredentialOrigin, DesktopSize, ReceivedCredentials,
+};
 use ironrdp_async::Framed;
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_cliprdr::backend::ClipboardMessage;
-use ironrdp_core::{decode, encode_vec, impl_as_any};
+use ironrdp_core::{WriteBuf, decode, encode_vec, impl_as_any};
 use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout};
 use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
 use ironrdp_dvc as dvc;
@@ -54,13 +56,13 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::autodetect::{AutoDetectManager, AutoDetectOutcome};
 use crate::clipboard::CliprdrServerFactory;
-use crate::display::{DisplayUpdate, RdpServerDisplay};
+use crate::display::{DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
-use crate::handler::RdpServerInputHandler;
+use crate::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use crate::heartbeat::HeartbeatConfig;
 use crate::multitransport;
 use crate::rdpeai::RdpeaiServerFactory;
@@ -245,14 +247,17 @@ impl core::error::Error for CredentialValidationError {
     }
 }
 
-/// Server-side credential validator for TLS-mode connections.
+/// Server-side credential validator for accepted client credentials.
 ///
-/// Called during connection setup when the server receives client credentials
-/// via `ClientInfoPdu`. Not used for CredSSP/Hybrid connections (those use
-/// pre-loaded credentials for NTLM challenge-response).
+/// Called during connection setup when the acceptor surfaces credentials from
+/// either `ClientInfoPdu` or CredSSP delegated TSPasswordCreds. Use the
+/// [`CredentialValidator::validate_received`] hook to distinguish unauthenticated
+/// ClientInfo credentials from CredSSP-delegated credentials authenticated by the exchange.
 ///
-/// Implement this trait to validate credentials against external systems
-/// (PAM, LDAP, database, etc.). For blocking backends, wrap the call in
+/// Implement this trait to validate or authorize credentials against external systems
+/// (PAM, LDAP, database, etc.). ClientInfo credentials require authentication;
+/// CredSSP-delegated credentials may still require server-specific authorization.
+/// For blocking backends, wrap the call in
 /// `tokio::task::spawn_blocking` to avoid stalling the async runtime.
 ///
 /// # Example
@@ -281,7 +286,7 @@ impl core::error::Error for CredentialValidationError {
 /// ```
 #[async_trait::async_trait]
 pub trait CredentialValidator: Send + Sync {
-    /// Validate credentials received from the client.
+    /// Validate or authorize credentials received from the client.
     ///
     /// Return `Ok(CredentialDecision::Accept)` to permit the connection,
     /// `Ok(CredentialDecision::Reject)` to refuse it. Return
@@ -293,6 +298,196 @@ pub trait CredentialValidator: Send + Sync {
     /// `tokio::task::spawn_blocking`, so the returned future does not stall the
     /// caller's executor. Native-async backends can simply `.await`.
     async fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError>;
+
+    /// Validate credentials with their transport/authentication provenance.
+    ///
+    /// Existing validators remain source-compatible through the default
+    /// implementation. Validators that need different ClientInfo and CredSSP
+    /// policies can override this method.
+    async fn validate_received(
+        &self,
+        credentials: &Credentials,
+        origin: CredentialOrigin,
+    ) -> Result<CredentialDecision, CredentialValidationError> {
+        let _ = origin;
+        self.validate(credentials).await
+    }
+}
+
+/// Display/input objects bound after the server authenticates a client.
+///
+/// Servers with per-user desktop/session isolation can start with placeholder
+/// display and input handlers, authenticate the client's credentials, and then
+/// replace those placeholders with handlers attached to the authenticated
+/// user's session before the RDP client loop starts.
+pub struct BoundConnection {
+    pub display: Box<dyn RdpServerDisplay>,
+    pub input: Box<dyn RdpServerInputHandler>,
+}
+
+/// Async post-auth connection binder for identity-bound display and input resources.
+///
+/// A multi-user server can keep protocol ownership inside IronRDP while keeping
+/// account authorization and session lifecycle outside the RDP state machine.
+/// It may start with placeholder handlers, authenticate or authorize the received
+/// credentials, then use this hook to start or locate the user's session and
+/// install the returned handlers before static channels, display updates, or
+/// input dispatch begin.
+///
+/// The binder runs once for the initial acceptance of a TCP connection, after
+/// the operational desktop size has been negotiated. `desktop_size` is the
+/// exact size the returned display must expose. During Deactivation-Reactivation
+/// (for example, a later client resize), the existing bound handlers remain
+/// installed and the binder is not called again.
+#[async_trait::async_trait]
+pub trait ConnectionBinder: Send + Sync {
+    async fn bind_connection(
+        &self,
+        credentials: &Credentials,
+        desktop_size: DesktopSize,
+    ) -> ServerResult<BoundConnection>;
+}
+
+struct BoundDisplaySlot {
+    default: Box<dyn RdpServerDisplay>,
+    // Async display methods lease the bound display from this slot. The lease
+    // restores it on cancellation unless a newer connection binding replaced it.
+    bound: Arc<StdMutex<BoundDisplayState>>,
+}
+
+#[derive(Default)]
+struct BoundDisplayState {
+    display: Option<Box<dyn RdpServerDisplay>>,
+    generation: Arc<()>,
+}
+
+impl BoundDisplayState {
+    fn clear(&mut self) {
+        self.display.take();
+        self.generation = Arc::new(());
+    }
+}
+
+struct BoundDisplayLease {
+    slot: Arc<StdMutex<BoundDisplayState>>,
+    display: Option<Box<dyn RdpServerDisplay>>,
+    generation: Arc<()>,
+}
+
+impl BoundDisplayLease {
+    fn take(slot: &Arc<StdMutex<BoundDisplayState>>) -> Option<Self> {
+        let mut state = slot.lock().expect("bound display lock poisoned");
+        let display = state.display.take()?;
+        Some(Self {
+            slot: Arc::clone(slot),
+            display: Some(display),
+            generation: Arc::clone(&state.generation),
+        })
+    }
+
+    fn display_mut(&mut self) -> &mut dyn RdpServerDisplay {
+        self.display
+            .as_deref_mut()
+            .expect("bound display lease always owns a display")
+    }
+}
+
+impl Drop for BoundDisplayLease {
+    fn drop(&mut self) {
+        let mut slot = self.slot.lock().expect("bound display lock poisoned");
+        if Arc::ptr_eq(&slot.generation, &self.generation) && slot.display.is_none() {
+            slot.display = self.display.take();
+        }
+    }
+}
+
+impl BoundDisplaySlot {
+    fn new(default: Box<dyn RdpServerDisplay>, bound: Arc<StdMutex<BoundDisplayState>>) -> Self {
+        Self { default, bound }
+    }
+}
+
+#[async_trait::async_trait]
+impl RdpServerDisplay for BoundDisplaySlot {
+    async fn size(&mut self) -> DesktopSize {
+        if let Some(mut lease) = BoundDisplayLease::take(&self.bound) {
+            lease.display_mut().size().await
+        } else {
+            self.default.size().await
+        }
+    }
+
+    async fn request_initial_size(&mut self, client_size: DesktopSize) -> DesktopSize {
+        if let Some(mut lease) = BoundDisplayLease::take(&self.bound) {
+            lease.display_mut().request_initial_size(client_size).await
+        } else {
+            self.default.request_initial_size(client_size).await
+        }
+    }
+
+    async fn monitor_count(&mut self) -> u32 {
+        if let Some(mut lease) = BoundDisplayLease::take(&self.bound) {
+            lease.display_mut().monitor_count().await
+        } else {
+            self.default.monitor_count().await
+        }
+    }
+
+    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+        if let Some(mut lease) = BoundDisplayLease::take(&self.bound) {
+            lease.display_mut().updates().await
+        } else {
+            self.default.updates().await
+        }
+    }
+
+    fn request_layout(&mut self, layout: DisplayControlMonitorLayout) {
+        let mut bound = self.bound.lock().expect("bound display lock poisoned");
+        if let Some(display) = bound.display.as_mut() {
+            display.request_layout(layout);
+        } else {
+            drop(bound);
+            self.default.request_layout(layout);
+        }
+    }
+}
+
+struct BoundInputSlot {
+    default: Box<dyn RdpServerInputHandler>,
+    // Kept parallel to BoundDisplaySlot. The outer tokio::Mutex around
+    // RdpServer::handler serializes access before input dispatch reaches this slot.
+    bound: Arc<StdMutex<Option<Box<dyn RdpServerInputHandler>>>>,
+}
+
+impl BoundInputSlot {
+    fn new(
+        default: Box<dyn RdpServerInputHandler>,
+        bound: Arc<StdMutex<Option<Box<dyn RdpServerInputHandler>>>>,
+    ) -> Self {
+        Self { default, bound }
+    }
+}
+
+impl RdpServerInputHandler for BoundInputSlot {
+    fn keyboard(&mut self, event: KeyboardEvent) {
+        let mut bound = self.bound.lock().expect("bound input lock poisoned");
+        if let Some(handler) = bound.as_mut() {
+            handler.keyboard(event);
+        } else {
+            drop(bound);
+            self.default.keyboard(event);
+        }
+    }
+
+    fn mouse(&mut self, event: MouseEvent) {
+        let mut bound = self.bound.lock().expect("bound input lock poisoned");
+        if let Some(handler) = bound.as_mut() {
+            handler.mouse(event);
+        } else {
+            drop(bound);
+            self.default.mouse(event);
+        }
+    }
 }
 
 /// A built-in [`CredentialValidator`] that accepts exactly one fixed set of credentials.
@@ -577,6 +772,7 @@ impl RdpServerSecurity {
 
 struct AInputHandler {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
+    active: Arc<AtomicBool>,
 }
 
 impl_as_any!(AInputHandler);
@@ -594,13 +790,16 @@ impl dvc::DvcProcessor for AInputHandler {
         Ok(vec![Box::new(pdu)])
     }
 
-    fn close(&mut self, _channel_id: u32) {}
+    fn close(&mut self, _channel_id: u32) {
+        self.active.store(false, Ordering::Release);
+    }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<dvc::DvcMessage>> {
         use ironrdp_ainput::ClientPdu;
 
         match decode(payload).map_err(|e| decode_err!(e))? {
             ClientPdu::Mouse(pdu) => {
+                self.active.store(true, Ordering::Release);
                 let handler = Arc::clone(&self.handler);
                 task::spawn_blocking(move || {
                     handler.blocking_lock().mouse(pdu.into());
@@ -736,6 +935,15 @@ pub struct RdpServer {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+    /// Advanced Input owns mouse delivery while its DVC is active. Core mouse
+    /// events from the overlapping FastPath path are then suppressed.
+    advanced_input_active: Arc<AtomicBool>,
+    // ConnectionBinder installs per-user handlers into these slots. The
+    // default handler/display above stay stable for the server lifetime, while
+    // the slots are cleared at connection entry and after each connection to
+    // avoid cross-user reuse.
+    bound_handler: Arc<StdMutex<Option<Box<dyn RdpServerInputHandler>>>>,
+    bound_display: Arc<StdMutex<BoundDisplayState>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
@@ -752,6 +960,8 @@ pub struct RdpServer {
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
+    connection_binder: Option<Arc<dyn ConnectionBinder>>,
+    pending_authenticated_credentials: Arc<StdMutex<Option<Credentials>>>,
     local_addr: Option<SocketAddr>,
     /// The local address the current client reached. See
     /// [`Self::set_connection_local_addr`].
@@ -1064,6 +1274,53 @@ enum NegotiatedTransport<S> {
 struct PendingConnection {
     security: RdpServerSecurity,
     acceptor: Acceptor,
+    credentials_handler: ServerCredentialsHandler,
+}
+
+#[derive(Default)]
+struct ServerCredentialsHandler {
+    validator: Option<Arc<dyn CredentialValidator>>,
+    require_authenticated: bool,
+    authenticated_credentials: Option<Credentials>,
+}
+
+#[async_trait::async_trait(?Send)]
+impl ConnectionSetupHandler for ServerCredentialsHandler {
+    async fn handle_credentials(&mut self, credentials: Option<ReceivedCredentials>) -> Result<(), ConnectorError> {
+        let authenticated = resolve_authenticated_credentials(self.validator.clone(), credentials.as_ref())
+            .await
+            .map_err(|error| ConnectorError::custom("credential validation failed", error))?;
+        if self.validator.is_some() && authenticated.is_none() {
+            return Err(ConnectorError::general("no credentials available for validation"));
+        }
+        if self.require_authenticated
+            && self.validator.is_none()
+            && credentials.as_ref().map(|received| received.origin) != Some(CredentialOrigin::CredSspDelegated)
+        {
+            return Err(ConnectorError::general(
+                "connection binder requires authenticated credentials from a validator or CredSSP",
+            ));
+        }
+        self.authenticated_credentials = authenticated.cloned();
+        Ok(())
+    }
+}
+
+struct BoundConnectionGuard {
+    display: Arc<StdMutex<BoundDisplayState>>,
+    input: Arc<StdMutex<Option<Box<dyn RdpServerInputHandler>>>>,
+    credentials: Arc<StdMutex<Option<Credentials>>>,
+}
+
+impl Drop for BoundConnectionGuard {
+    fn drop(&mut self) {
+        self.display.lock().expect("bound display lock poisoned").clear();
+        self.input.lock().expect("bound input lock poisoned").take();
+        self.credentials
+            .lock()
+            .expect("authenticated credentials lock poisoned")
+            .take();
+    }
 }
 
 impl PendingConnection {
@@ -1074,6 +1331,7 @@ impl PendingConnection {
         creds: Option<Credentials>,
         honor_client_desktop_size: Option<DesktopSize>,
         udp_bind_addr: Option<SocketAddr>,
+        credentials_handler: ServerCredentialsHandler,
     ) -> Self {
         let mut acceptor = Acceptor::new(security.flag(), desktop_size, capabilities, creds);
         acceptor.set_honor_client_desktop_size(honor_client_desktop_size);
@@ -1091,7 +1349,11 @@ impl PendingConnection {
                     | ironrdp_pdu::gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP,
             ));
         }
-        Self { security, acceptor }
+        Self {
+            security,
+            acceptor,
+            credentials_handler,
+        }
     }
 
     /// Mutable access to the acceptor for the one thing that must happen
@@ -1122,7 +1384,11 @@ impl PendingConnection {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
-        let PendingConnection { security, mut acceptor } = self;
+        let PendingConnection {
+            security,
+            mut acceptor,
+            mut credentials_handler,
+        } = self;
         let security = &security;
         let framed = TokioFramed::new(stream);
 
@@ -1153,11 +1419,12 @@ impl PendingConnection {
                         }
                     };
                     let mut framed = TokioFramed::new(accept);
-                    complete_security_upgrade(security, &mut framed, &mut acceptor).await?;
+                    complete_security_upgrade(security, &mut framed, &mut acceptor, &mut credentials_handler).await?;
                     Ok(Some(NegotiatedConnection {
                         transport: NegotiatedTransport::Tls(Box::new(framed)),
                         acceptor,
                         local_addr: None,
+                        authenticated_credentials: credentials_handler.authenticated_credentials,
                     }))
                 }
                 // The stream is already past TLS (terminated at a lower
@@ -1165,11 +1432,12 @@ impl PendingConnection {
                 // tls_acceptor.accept on it.
                 TransportTls::AlreadyDone => {
                     let mut framed = TokioFramed::new(stream);
-                    complete_security_upgrade(security, &mut framed, &mut acceptor).await?;
+                    complete_security_upgrade(security, &mut framed, &mut acceptor, &mut credentials_handler).await?;
                     Ok(Some(NegotiatedConnection {
                         transport: NegotiatedTransport::Offloaded(framed),
                         acceptor,
                         local_addr: None,
+                        authenticated_credentials: credentials_handler.authenticated_credentials,
                     }))
                 }
             },
@@ -1178,6 +1446,7 @@ impl PendingConnection {
                 transport: NegotiatedTransport::Continued(framed),
                 acceptor,
                 local_addr: None,
+                authenticated_credentials: credentials_handler.authenticated_credentials,
             })),
         }
     }
@@ -1193,6 +1462,7 @@ struct NegotiatedConnection<S> {
     /// The local address the client reached, when the stream is a socket
     /// the server accepted itself; see [`RdpServer::set_connection_local_addr`].
     local_addr: Option<SocketAddr>,
+    authenticated_credentials: Option<Credentials>,
 }
 
 /// State that belongs to a single client connection.
@@ -1300,6 +1570,7 @@ async fn complete_security_upgrade<S>(
     security: &RdpServerSecurity,
     framed: &mut TokioFramed<S>,
     acceptor: &mut Acceptor,
+    credentials_handler: &mut ServerCredentialsHandler,
 ) -> ServerResult<()>
 where
     S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
@@ -1312,13 +1583,14 @@ where
         // uses this value in practice.
         let client_name = "rdp-client".to_owned();
 
-        ironrdp_acceptor::accept_credssp(
+        ironrdp_acceptor::accept_credssp_with(
             framed,
             acceptor,
             &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
             client_name.into(),
             pub_key.clone(),
             None,
+            credentials_handler,
         )
         .await
         .map_err_kind("accept_credssp", ServerErrorKind::Connector)?;
@@ -1464,6 +1736,8 @@ struct NegotiationContext {
     opts: RdpServerOptions,
     creds: Option<Credentials>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
+    credential_validator: Option<Arc<dyn CredentialValidator>>,
+    requires_authenticated_credentials: bool,
 }
 
 /// A candidate that has negotiated AND authenticated, and so has earned the
@@ -1498,6 +1772,11 @@ async fn negotiate_candidate(
         ctx.creds.clone(),
         ctx.opts.honor_client_desktop_size,
         ctx.opts.udp_bind_addr,
+        ServerCredentialsHandler {
+            validator: ctx.credential_validator.clone(),
+            require_authenticated: ctx.requires_authenticated_credentials,
+            ..ServerCredentialsHandler::default()
+        },
     );
 
     // NOTE: deliberately NO channel attachment here. Building the cliprdr /
@@ -1610,11 +1889,22 @@ impl RdpServer {
         if let Some(gfx) = gfx_factory.as_mut() {
             gfx.set_sender(ev_sender.clone());
         }
+        let bound_handler = Arc::new(StdMutex::new(None));
+        let bound_display = Arc::new(StdMutex::new(BoundDisplayState::default()));
 
         Self {
             opts,
-            handler: Arc::new(Mutex::new(handler)),
-            display: Arc::new(Mutex::new(display)),
+            handler: Arc::new(Mutex::new(Box::new(BoundInputSlot::new(
+                handler,
+                Arc::clone(&bound_handler),
+            )))),
+            display: Arc::new(Mutex::new(Box::new(BoundDisplaySlot::new(
+                display,
+                Arc::clone(&bound_display),
+            )))),
+            advanced_input_active: Arc::new(AtomicBool::new(false)),
+            bound_handler,
+            bound_display,
             static_channel_factories,
             sound_factory,
             cliprdr_factory,
@@ -1632,6 +1922,8 @@ impl RdpServer {
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
             credential_validator: None,
+            connection_binder: None,
+            pending_authenticated_credentials: Arc::new(StdMutex::new(None)),
             local_addr: None,
             connection_local_addr: None,
             autodetect_enabled: false,
@@ -1667,11 +1959,12 @@ impl RdpServer {
         builder::RdpServerBuilder::new()
     }
 
-    /// Set or clear the credential validator for TLS-mode connections.
+    /// Set or clear the credential validator for accepted client credentials.
     ///
-    /// When set, credentials received from the client during
-    /// `SecureSettingsExchange` are validated through this callback before
-    /// the session is established. If the validator returns
+    /// When set, credentials surfaced by the acceptor are validated through
+    /// this callback before the session is established. This includes
+    /// `SecureSettingsExchange` (`ClientInfoPdu`) credentials and, when
+    /// available, CredSSP/Hybrid delegated credentials. If the validator returns
     /// [`CredentialDecision::Reject`] (or a [`CredentialValidationError`]),
     /// the connection is rejected. Passing `None` clears any previously
     /// configured validator.
@@ -1684,8 +1977,6 @@ impl RdpServer {
     /// the builder's `with_credential_validator` method
     /// ([`RdpServer::builder`]); this setter exists for dynamic
     /// post-construction reconfiguration.
-    ///
-    /// Not used for CredSSP/Hybrid connections (those use pre-loaded credentials).
     pub fn set_credential_validator(&mut self, validator: Option<Arc<dyn CredentialValidator>>) {
         self.credential_validator = validator;
     }
@@ -1905,6 +2196,32 @@ impl RdpServer {
         Ok(())
     }
 
+    /// Set or clear a post-auth connection binder.
+    ///
+    /// When set, the binder is called only when authenticated credentials are
+    /// available. The returned display/input handlers replace the server
+    /// defaults for the accepted connection.
+    pub fn set_connection_binder(&mut self, binder: Option<Arc<dyn ConnectionBinder>>) {
+        self.connection_binder = binder;
+    }
+
+    fn install_bound_connection(&mut self, bound: BoundConnection) {
+        let mut display = self.bound_display.lock().expect("bound display lock poisoned");
+        display.clear();
+        display.display = Some(bound.display);
+        *self.bound_handler.lock().expect("bound input lock poisoned") = Some(bound.input);
+    }
+
+    fn clear_bound_connection(&mut self) {
+        self.bound_display.lock().expect("bound display lock poisoned").clear();
+        self.bound_handler.lock().expect("bound input lock poisoned").take();
+        self.pending_authenticated_credentials
+            .lock()
+            .expect("authenticated credentials lock poisoned")
+            .take();
+        self.advanced_input_active.store(false, Ordering::Release);
+    }
+
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
         &self.ev_sender
     }
@@ -2057,6 +2374,7 @@ impl RdpServer {
         let dvc = dvc::DrdynvcServer::new()
             .with_dynamic_channel(AInputHandler {
                 handler: Arc::clone(&self.handler),
+                active: Arc::clone(&self.advanced_input_active),
             })
             .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
 
@@ -2178,6 +2496,8 @@ impl RdpServer {
             opts: self.opts.clone(),
             creds: self.creds.clone(),
             display: Arc::clone(&self.display),
+            credential_validator: self.credential_validator.clone(),
+            requires_authenticated_credentials: self.connection_binder.is_some(),
         }
     }
 
@@ -2327,6 +2647,7 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
+        self.clear_bound_connection();
         // Per-connection state must start fresh: if the previous client
         // disconnected while it had sent `SuppressOutput { None }` (e.g.,
         // closed the mstsc window while minimized so the matching resume
@@ -2353,6 +2674,11 @@ impl RdpServer {
             self.creds.clone(),
             self.opts.honor_client_desktop_size,
             self.opts.udp_bind_addr,
+            ServerCredentialsHandler {
+                validator: self.credential_validator.clone(),
+                require_authenticated: self.connection_binder.is_some(),
+                ..ServerCredentialsHandler::default()
+            },
         );
 
         self.attach_channels(pending.acceptor_mut(), monitor_count);
@@ -2381,7 +2707,18 @@ impl RdpServer {
             transport,
             acceptor,
             local_addr,
+            authenticated_credentials,
         } = negotiated;
+        self.clear_bound_connection();
+        let _binding = BoundConnectionGuard {
+            display: Arc::clone(&self.bound_display),
+            input: Arc::clone(&self.bound_handler),
+            credentials: Arc::clone(&self.pending_authenticated_credentials),
+        };
+        *self
+            .pending_authenticated_credentials
+            .lock()
+            .expect("authenticated credentials lock poisoned") = authenticated_credentials;
         if local_addr.is_some() {
             self.connection_local_addr = local_addr;
         }
@@ -2604,6 +2941,7 @@ impl RdpServer {
                 }
                 continue;
             }
+            self.clear_bound_connection();
 
             let started = tokio::time::Instant::now();
 
@@ -2797,7 +3135,7 @@ impl RdpServer {
                     // taken by the outer loop, not rejected here.
                     let result = match entry {
                         Entry::Fresh(stream, _) => {
-                            let mut conn = core::pin::pin!(self.run_connection_inner(stream, TransportTls::Managed));
+                            let mut conn = Box::pin(self.run_connection_inner(stream, TransportTls::Managed));
                             loop {
                                 tokio::select! {
                                     biased;
@@ -2813,7 +3151,7 @@ impl RdpServer {
                             }
                         }
                         // Unreachable: Reject never produces a Negotiated candidate.
-                        Entry::Negotiated(candidate, _) => self.serve_negotiated(candidate).await,
+                        Entry::Negotiated(candidate, _) => Box::pin(self.serve_negotiated(candidate)).await,
                     };
                     (result, None)
                 }
@@ -2821,10 +3159,12 @@ impl RdpServer {
                     let result = match entry {
                         // Same anyhow-vs-ServerResult reasoning as the preemption
                         // branch above.
-                        Entry::Fresh(stream, _) => self.run_connection_inner(stream, TransportTls::Managed).await,
+                        Entry::Fresh(stream, _) => {
+                            Box::pin(self.run_connection_inner(stream, TransportTls::Managed)).await
+                        }
                         // Unreachable in practice: `pending` is only ever populated
                         // by the preemption branch above.
-                        Entry::Negotiated(candidate, _) => self.serve_negotiated(candidate).await,
+                        Entry::Negotiated(candidate, _) => Box::pin(self.serve_negotiated(candidate)).await,
                     };
                     (result, None)
                 }
@@ -4174,12 +4514,29 @@ impl RdpServer {
         state
     }
 
+    async fn prepare_authenticated_connection(
+        &mut self,
+        received_credentials: Option<ReceivedCredentials>,
+    ) -> Result<(), ConnectorError> {
+        let mut handler = ServerCredentialsHandler {
+            validator: self.credential_validator.clone(),
+            require_authenticated: self.connection_binder.is_some(),
+            ..ServerCredentialsHandler::default()
+        };
+        handler.handle_credentials(received_credentials).await?;
+        *self
+            .pending_authenticated_credentials
+            .lock()
+            .expect("authenticated credentials lock poisoned") = handler.authenticated_credentials;
+        Ok(())
+    }
+
     async fn client_accepted<R, W>(
         &mut self,
         conn: &mut ConnectionState,
         reader: &mut Framed<R>,
         writer: &mut Framed<W>,
-        result: AcceptorResult,
+        (result, acceptor): (AcceptorResult, &Acceptor),
         udp_transport: Rc<RefCell<Option<multitransport::UdpTransportHandle>>>,
         pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>>,
     ) -> ServerResult<RunState>
@@ -4189,17 +4546,20 @@ impl RdpServer {
     {
         debug!("Client accepted");
 
-        // MS-RDPBCGR 3.3.5.7.1: a Set Error Info PDU MUST NOT be sent to a client that did not
-        // set `SUPPORT_ERR_INFO_PDU`; such a client is just disconnected.
-        let supports_err_info = result
-            .client_early_capability_flags
-            .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU);
-
         let is_auto_reconnect = if let Some(reconnect) = result.auto_reconnect.as_ref() {
             if !self.verify_auto_reconnect_cookie(reconnect) {
                 warn!("Auto-reconnect cookie validation rejected");
-                send_access_denied(result.io_channel_id, result.user_channel_id, supports_err_info, writer).await?;
+                send_access_denied(acceptor, writer).await?;
                 return Err(ServerError::reason("auto-reconnect validation", "cookie rejected"));
+            }
+
+            if self.connection_binder.is_some() {
+                warn!("Auto-reconnect cannot restore a credential-bound connection safely");
+                send_access_denied(acceptor, writer).await?;
+                return Err(ServerError::reason(
+                    "auto-reconnect validation",
+                    "unsupported with a connection binder",
+                ));
             }
 
             debug!("Auto-reconnect cookie validation accepted");
@@ -4208,32 +4568,22 @@ impl RdpServer {
             false
         };
 
-        // Validate credentials if a validator is configured. The validator runs here, in the
-        // async server layer, rather than in the sans-I/O acceptor, because real validators
-        // (PAM/LDAP/DB) are I/O-bound. On rejection, deny with a ServerSetErrorInfoPdu before
-        // closing, matching the acceptor's exact-match denial path.
-        if !is_auto_reconnect && let Some(validator) = self.credential_validator.clone() {
-            if let Some(creds) = &result.credentials {
-                match validator.validate(creds).await {
-                    Ok(CredentialDecision::Accept) => {
-                        debug!("Credential validation accepted");
-                    }
-                    Ok(CredentialDecision::Reject) => {
-                        warn!("Credential validation rejected");
-                        send_access_denied(result.io_channel_id, result.user_channel_id, supports_err_info, writer)
-                            .await?;
-                        return Err(ServerError::reason("credential validation", "rejected by validator"));
-                    }
-                    Err(e) => {
-                        error!(error = %e, "Credential validator backend error");
-                        send_access_denied(result.io_channel_id, result.user_channel_id, supports_err_info, writer)
-                            .await?;
-                        return Err(ServerError::custom("credential validation", e));
-                    }
-                }
-            } else {
-                debug!("Skipping credential validation (no credentials in AcceptorResult)");
-            }
+        if result.reactivation {
+            debug!("Reactivation reuses the authenticated connection binding");
+        } else if !is_auto_reconnect
+            && (self.credential_validator.is_some() || self.connection_binder.is_some())
+            && self
+                .pending_authenticated_credentials
+                .lock()
+                .expect("authenticated credentials lock poisoned")
+                .is_none()
+        {
+            warn!("Initial acceptance reached activation without prepared credentials");
+            send_access_denied(acceptor, writer).await?;
+            return Err(ServerError::reason(
+                "credential validation",
+                "credentials were not prepared before activation",
+            ));
         }
 
         if !result.reactivation {
@@ -4522,15 +4872,21 @@ impl RdpServer {
                 }
 
                 FastPathInputEvent::MouseEvent(mouse) => {
-                    handler.mouse(mouse.into());
+                    if !self.advanced_input_active.load(Ordering::Acquire) {
+                        handler.mouse(mouse.into());
+                    }
                 }
 
                 FastPathInputEvent::MouseEventEx(mouse) => {
-                    handler.mouse(mouse.into());
+                    if !self.advanced_input_active.load(Ordering::Acquire) {
+                        handler.mouse(mouse.into());
+                    }
                 }
 
                 FastPathInputEvent::MouseEventRel(mouse) => {
-                    handler.mouse(mouse.into());
+                    if !self.advanced_input_active.load(Ordering::Acquire) {
+                        handler.mouse(mouse.into());
+                    }
                 }
 
                 FastPathInputEvent::QoeEvent(quality) => {
@@ -4768,15 +5124,21 @@ impl RdpServer {
                 }
 
                 ironrdp_pdu::input::InputEvent::Mouse(mouse) => {
-                    handler.mouse(mouse.into());
+                    if !self.advanced_input_active.load(Ordering::Acquire) {
+                        handler.mouse(mouse.into());
+                    }
                 }
 
                 ironrdp_pdu::input::InputEvent::MouseX(mouse) => {
-                    handler.mouse(mouse.into());
+                    if !self.advanced_input_active.load(Ordering::Acquire) {
+                        handler.mouse(mouse.into());
+                    }
                 }
 
                 ironrdp_pdu::input::InputEvent::MouseRel(mouse) => {
-                    handler.mouse(mouse.into());
+                    if !self.advanced_input_active.load(Ordering::Acquire) {
+                        handler.mouse(mouse.into());
+                    }
                 }
 
                 ironrdp_pdu::input::InputEvent::Unused(_) => {}
@@ -4817,7 +5179,6 @@ impl RdpServer {
         // synchronously as part of finalize, so establishing it must never
         // block the RDP handshake finalize itself is driving.
         let mut pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>> = None;
-
         loop {
             // Bounded: see `FINALIZE_TIMEOUT`. The bound belongs on THIS call
             // and not on `accept_finalize` itself or its callers — the loop
@@ -4833,9 +5194,10 @@ impl RdpServer {
             // called, see `PendingConnection::new`), so the handler below
             // simply never runs and this is exactly `accept_finalize`'s own
             // behavior.
-            let finalize = ironrdp_acceptor::accept_finalize_with_multitransport(
+            let finalize = ironrdp_acceptor::accept_finalize_with_handlers(
                 framed,
                 &mut acceptor,
+                self,
                 async |request, _soft_sync| {
                     // Defensive only: reached only if the acceptor sent a
                     // request despite one of these being unset, which
@@ -4871,7 +5233,7 @@ impl RdpServer {
                     conn,
                     &mut reader,
                     &mut writer,
-                    result,
+                    (result, &acceptor),
                     Rc::clone(&udp_transport),
                     pending_udp_accept.take(),
                 )
@@ -4923,6 +5285,47 @@ impl RdpServer {
     /// Cleared when the connection ends.
     pub fn set_connection_local_addr(&mut self, addr: Option<SocketAddr>) {
         self.connection_local_addr = addr;
+    }
+}
+
+fn validate_bound_display_size(negotiated_size: DesktopSize, bound_size: DesktopSize) -> Result<(), ConnectorError> {
+    if bound_size == negotiated_size {
+        Ok(())
+    } else {
+        Err(ConnectorError::reason(
+            "bound display dimensions differ from negotiated dimensions",
+            format!("negotiated {negotiated_size:?}, bound {bound_size:?}"),
+        ))
+    }
+}
+
+async fn resolve_authenticated_credentials(
+    credential_validator: Option<Arc<dyn CredentialValidator>>,
+    received_credentials: Option<&ReceivedCredentials>,
+) -> ServerResult<Option<&Credentials>> {
+    if let Some(received) = received_credentials {
+        let creds = &received.credentials;
+        if let Some(validator) = credential_validator {
+            match validator.validate_received(creds, received.origin).await {
+                Ok(CredentialDecision::Accept) => {
+                    debug!("Credential validation accepted");
+                    Ok(Some(creds))
+                }
+                Ok(CredentialDecision::Reject) => {
+                    warn!("Credential validation rejected");
+                    Err(ServerError::reason("credential validation", "rejected by validator"))
+                }
+                Err(e) => {
+                    error!(error = %e, "Credential validator backend error");
+                    Err(ServerError::custom("credential validation", e))
+                }
+            }
+        } else {
+            Ok(Some(creds))
+        }
+    } else {
+        debug!("Skipping credential validation (no credentials in AcceptorResult)");
+        Ok(None)
     }
 }
 
@@ -5051,36 +5454,17 @@ fn with_connection_handler<R>(
     handler.map(|h| f(h.borrow_mut().as_mut()))
 }
 
-/// Send a `ServerSetErrorInfoPdu(ServerDeniedConnection)` to the client, then return.
-///
-/// Used to deny a connection after credential validation rejects it, mirroring the
-/// acceptor's exact-match denial so both paths refuse the same spec-defined way.
-///
-/// Sends nothing when the client did not opt in via `SUPPORT_ERR_INFO_PDU`
-/// (MS-RDPBCGR 3.3.5.7.1); the caller still closes the connection.
-async fn send_access_denied(
-    io_channel_id: u16,
-    user_channel_id: u16,
-    supports_err_info: bool,
-    writer: &mut impl FramedWrite,
-) -> ServerResult<()> {
-    if !supports_err_info {
-        return Ok(());
+async fn send_access_denied(acceptor: &Acceptor, writer: &mut impl FramedWrite) -> ServerResult<()> {
+    let mut buf = WriteBuf::new();
+    let written = acceptor
+        .encode_access_denied(&mut buf)
+        .map_err_kind("encode access denied", ServerErrorKind::Connector)?;
+    if written != 0 {
+        writer
+            .write_all(&buf[..written])
+            .await
+            .map_err(|e| ServerError::io("write access denied", e))?;
     }
-    let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
-        ProtocolIndependentCode::ServerDeniedConnection,
-    ));
-    let user_data = encode_vec(&info).map_err(ServerError::encode)?.into();
-    let pdu = SendDataIndication {
-        initiator_id: user_channel_id,
-        channel_id: io_channel_id,
-        user_data,
-    };
-    let msg = encode_vec(&X224(pdu)).map_err(ServerError::encode)?;
-    writer
-        .write_all(&msg)
-        .await
-        .map_err(|e| ServerError::io("write access_denied", e))?;
     Ok(())
 }
 
@@ -5165,6 +5549,52 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
+impl ConnectionSetupHandler for RdpServer {
+    async fn handle_credentials(&mut self, credentials: Option<ReceivedCredentials>) -> Result<(), ConnectorError> {
+        self.prepare_authenticated_connection(credentials).await
+    }
+
+    async fn prepare_capability_exchange(&mut self, desktop_size: DesktopSize) -> Result<(), ConnectorError> {
+        if (self.credential_validator.is_some() || self.connection_binder.is_some())
+            && self
+                .pending_authenticated_credentials
+                .lock()
+                .expect("authenticated credentials lock poisoned")
+                .is_none()
+        {
+            return Err(ConnectorError::general(
+                "credentials were not prepared before capability exchange",
+            ));
+        }
+
+        let Some(binder) = self.connection_binder.clone() else {
+            return Ok(());
+        };
+        let credentials = self
+            .pending_authenticated_credentials
+            .lock()
+            .expect("authenticated credentials lock poisoned")
+            .clone()
+            .ok_or_else(|| ConnectorError::general("no authenticated credentials for connection binding"))?;
+        let bound = binder
+            .bind_connection(&credentials, desktop_size)
+            .await
+            .map_err(|error| ConnectorError::custom("connection binder failed", error))?;
+
+        let mut bound_display = bound.display;
+        let bound_size = bound_display.size().await;
+        validate_bound_display_size(desktop_size, bound_size)?;
+
+        self.install_bound_connection(BoundConnection {
+            display: bound_display,
+            input: bound.input,
+        });
+        debug!(?bound_size, "Connection binder installed display/input handlers");
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod preempt_tests {
     use core::net::Ipv4Addr;
@@ -5184,7 +5614,7 @@ mod preempt_tests {
                     height: 768,
                 }
             }
-            async fn updates(&mut self) -> ServerResult<Box<dyn crate::RdpServerDisplayUpdates>> {
+            async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
                 unreachable!("negotiation never asks for updates")
             }
         }
@@ -5203,6 +5633,8 @@ mod preempt_tests {
             },
             creds: None,
             display: Arc::new(Mutex::new(Box::new(NoDisplay))),
+            credential_validator: None,
+            requires_authenticated_credentials: false,
         }
     }
 
@@ -5967,5 +6399,310 @@ mod cliprdr_error_tests {
             "the session must keep running after a refused clipboard message, got {state:?}"
         );
         assert!(writer.0.is_empty(), "a refused message has nothing to put on the wire");
+    }
+}
+
+#[cfg(test)]
+mod credential_binding_tests {
+    use super::*;
+
+    struct FailingValidator;
+
+    #[async_trait::async_trait]
+    impl CredentialValidator for FailingValidator {
+        async fn validate(&self, _credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError> {
+            Err(CredentialValidationError::new(std::io::Error::other(
+                "backend unavailable",
+            )))
+        }
+    }
+
+    fn creds(username: &str) -> Credentials {
+        Credentials {
+            username: username.to_owned(),
+            password: "secret".to_owned(),
+            domain: None,
+        }
+    }
+
+    #[test]
+    fn bound_display_size_must_match_negotiated_size() {
+        let negotiated = DesktopSize {
+            width: 1280,
+            height: 720,
+        };
+        assert!(validate_bound_display_size(negotiated, negotiated).is_ok());
+
+        let incompatible = DesktopSize {
+            width: 1920,
+            height: 1080,
+        };
+        assert!(validate_bound_display_size(negotiated, incompatible).is_err());
+    }
+
+    #[tokio::test]
+    async fn credential_validator_backend_error_is_preserved() {
+        let validator: Arc<dyn CredentialValidator> = Arc::new(FailingValidator);
+        let received_credentials = ReceivedCredentials {
+            credentials: creds("alice"),
+            origin: CredentialOrigin::ClientInfo,
+        };
+
+        let error = resolve_authenticated_credentials(Some(validator), Some(&received_credentials))
+            .await
+            .expect_err("backend failure should be returned");
+        let validation_error = core::error::Error::source(&error)
+            .expect("validator source should be preserved")
+            .downcast_ref::<CredentialValidationError>()
+            .expect("credential validation error should remain downcastable");
+        let source = core::error::Error::source(validation_error).expect("backend source should be preserved");
+        assert_eq!(source.to_string(), "backend unavailable");
+    }
+
+    #[tokio::test]
+    async fn candidate_credential_validation_does_not_change_the_active_identity() {
+        let mut server = RdpServer::builder()
+            .with_addr(([127, 0, 0, 1], 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+        server.set_credential_validator(Some(Arc::new(ExactMatchCredentialValidator::new(creds("alice")))));
+        *server.pending_authenticated_credentials.lock().unwrap() = Some(creds("bob"));
+        let context = server.negotiation_context();
+        let mut accepted = ServerCredentialsHandler {
+            validator: context.credential_validator.clone(),
+            ..ServerCredentialsHandler::default()
+        };
+        accepted
+            .handle_credentials(Some(ReceivedCredentials {
+                credentials: creds("alice"),
+                origin: CredentialOrigin::CredSspDelegated,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(accepted.authenticated_credentials, Some(creds("alice")));
+
+        let mut rejected = ServerCredentialsHandler {
+            validator: context.credential_validator,
+            ..ServerCredentialsHandler::default()
+        };
+        assert!(
+            rejected
+                .handle_credentials(Some(ReceivedCredentials {
+                    credentials: creds("mallory"),
+                    origin: CredentialOrigin::CredSspDelegated,
+                }))
+                .await
+                .is_err()
+        );
+        assert!(rejected.authenticated_credentials.is_none());
+        assert_eq!(
+            *server.pending_authenticated_credentials.lock().unwrap(),
+            Some(creds("bob"))
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::future::pending;
+
+    use ironrdp_core::{Encode as _, WriteCursor, impl_as_any};
+    use ironrdp_dvc::DvcProcessor as _;
+    use ironrdp_pdu::gcc::ChannelName;
+    use ironrdp_svc::{SvcMessage, SvcServerProcessor};
+
+    use super::*;
+
+    /// A channel backend that owns a resource, released on drop the way
+    /// `RdpsndServer` stops its handler.
+    #[derive(Debug)]
+    struct ResourceChannel(Arc<AtomicBool>);
+
+    impl Drop for ResourceChannel {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    impl_as_any!(ResourceChannel);
+
+    impl SvcProcessor for ResourceChannel {
+        fn channel_name(&self) -> ChannelName {
+            ChannelName::from_static(b"testchn\0")
+        }
+
+        fn process(&mut self, _payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl SvcServerProcessor for ResourceChannel {}
+
+    struct NoopInput;
+
+    impl RdpServerInputHandler for NoopInput {
+        fn keyboard(&mut self, _event: KeyboardEvent) {}
+        fn mouse(&mut self, _event: MouseEvent) {}
+    }
+
+    #[tokio::test]
+    async fn advanced_input_owns_mouse_only_after_first_pdu() {
+        use ironrdp_ainput::{ClientPdu, MouseEventFlags, MousePdu};
+
+        let active = Arc::new(AtomicBool::new(false));
+        let mut handler = AInputHandler {
+            handler: Arc::new(Mutex::new(Box::new(NoopInput))),
+            active: Arc::clone(&active),
+        };
+
+        handler.start(1).expect("AInput start failed");
+        assert!(!active.load(Ordering::Acquire));
+
+        let pdu = ClientPdu::Mouse(MousePdu {
+            time: 0,
+            flags: MouseEventFlags::MOVE,
+            x: 1,
+            y: 1,
+        });
+        let mut payload = vec![0; pdu.size()];
+        pdu.encode(&mut WriteCursor::new(&mut payload))
+            .expect("AInput encoding failed");
+        handler.process(1, &payload).expect("AInput processing failed");
+        assert!(active.load(Ordering::Acquire));
+
+        handler.close(1);
+        assert!(!active.load(Ordering::Acquire));
+    }
+
+    struct PendingDisplay;
+
+    #[async_trait::async_trait]
+    impl RdpServerDisplay for PendingDisplay {
+        async fn size(&mut self) -> DesktopSize {
+            pending().await
+        }
+
+        async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+            pending().await
+        }
+    }
+
+    struct FixedDisplay(DesktopSize);
+
+    #[async_trait::async_trait]
+    impl RdpServerDisplay for FixedDisplay {
+        async fn size(&mut self) -> DesktopSize {
+            self.0
+        }
+
+        async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+            pending().await
+        }
+
+        async fn monitor_count(&mut self) -> u32 {
+            2
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_bound_display_call_restores_authenticated_display() {
+        let expected = DesktopSize {
+            width: 1280,
+            height: 720,
+        };
+        let bound = Arc::new(StdMutex::new(BoundDisplayState {
+            display: Some(Box::new(PendingDisplay)),
+            ..BoundDisplayState::default()
+        }));
+        let mut slot = BoundDisplaySlot::new(Box::new(FixedDisplay(expected)), Arc::clone(&bound));
+
+        assert!(tokio::time::timeout(Duration::ZERO, slot.size()).await.is_err());
+        assert!(bound.lock().expect("bound display lock poisoned").display.is_some());
+    }
+
+    #[tokio::test]
+    async fn bound_display_forwards_monitor_count() {
+        let bound = Arc::new(StdMutex::new(BoundDisplayState {
+            display: Some(Box::new(FixedDisplay(DesktopSize {
+                width: 1280,
+                height: 720,
+            }))),
+            ..BoundDisplayState::default()
+        }));
+        let mut slot = BoundDisplaySlot::new(Box::new(PendingDisplay), Arc::clone(&bound));
+        assert_eq!(slot.monitor_count().await, 2);
+        bound.lock().unwrap().clear();
+        assert_eq!(slot.monitor_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn cancelling_connection_drops_bound_resources_and_credentials() {
+        let display = Arc::new(StdMutex::new(BoundDisplayState {
+            display: Some(Box::new(PendingDisplay)),
+            ..BoundDisplayState::default()
+        }));
+        let input: Arc<StdMutex<Option<Box<dyn RdpServerInputHandler>>>> =
+            Arc::new(StdMutex::new(Some(Box::new(NoopInput))));
+        let credentials = Arc::new(StdMutex::new(Some(Credentials {
+            username: "alice".to_owned(),
+            password: "secret".to_owned(),
+            domain: None,
+        })));
+        let connection = async {
+            let _binding = BoundConnectionGuard {
+                display: Arc::clone(&display),
+                input: Arc::clone(&input),
+                credentials: Arc::clone(&credentials),
+            };
+            pending::<()>().await;
+        };
+        assert!(tokio::time::timeout(Duration::ZERO, connection).await.is_err());
+        assert!(display.lock().unwrap().display.is_none());
+        assert!(input.lock().unwrap().is_none());
+        assert!(credentials.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_cleared_connection_cannot_restore_an_old_display_lease() {
+        let display = Arc::new(StdMutex::new(BoundDisplayState {
+            display: Some(Box::new(PendingDisplay)),
+            ..BoundDisplayState::default()
+        }));
+        let lease = BoundDisplayLease::take(&display).unwrap();
+        display.lock().unwrap().clear();
+        drop(lease);
+        assert!(display.lock().unwrap().display.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_connection_releases_the_static_channels() {
+        struct ResourceFactory(Arc<AtomicBool>);
+        impl StaticChannelFactory for ResourceFactory {
+            fn attach(&self, acceptor: &mut Acceptor) {
+                acceptor.attach_static_channel(ResourceChannel(Arc::clone(&self.0)));
+            }
+        }
+
+        let released = Arc::new(AtomicBool::new(false));
+        let mut server = RdpServer::builder()
+            .with_addr(([127, 0, 0, 1], 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .with_static_channel_factory(Box::new(ResourceFactory(Arc::clone(&released))))
+            .build();
+
+        // A stream that is already at EOF: the connection ends early, which
+        // is the path an embedder's accept loop sees when a client vanishes.
+        let (client, server_side) = tokio::io::duplex(64);
+        drop(client);
+        let _ = server.run_connection(server_side).await;
+
+        assert!(
+            released.load(Ordering::Relaxed),
+            "the channel backends of a finished connection must be released, not held until the next client"
+        );
     }
 }

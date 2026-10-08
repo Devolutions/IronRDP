@@ -39,7 +39,7 @@ pub use gfx::{EgfxServerMessage, GfxDvcBridge, GfxServerFactory, GfxServerHandle
 pub use handler::{KeyboardEvent, MouseButton, MouseEvent, RdpServerInputHandler};
 #[cfg(feature = "helper")]
 pub use helper::TlsIdentityCtx;
-pub use ironrdp_acceptor::Acceptor;
+pub use ironrdp_acceptor::{Acceptor, CredentialOrigin, ReceivedCredentials};
 pub use ironrdp_pdu::rdp::server_error_info::ErrorInfo;
 pub use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 #[cfg(feature = "usb")]
@@ -53,8 +53,8 @@ pub use rdpei::{
     TouchEventPdu, TouchFrame,
 };
 pub use server::{
-    AutoReconnectCookieHandle, ConnectionHandler, ConnectionInfo, ConnectionPolicy, CredentialDecision,
-    CredentialValidationError, CredentialValidator, Credentials, ErrorInfoDisconnectHandle,
+    AutoReconnectCookieHandle, BoundConnection, ConnectionBinder, ConnectionHandler, ConnectionInfo, ConnectionPolicy,
+    CredentialDecision, CredentialValidationError, CredentialValidator, Credentials, ErrorInfoDisconnectHandle,
     ExactMatchCredentialValidator, PostConnectionAction, RdpServer, RdpServerOptions, RdpServerSecurity, ServerEvent,
     ServerEventSender, StaticChannelFactory, TransportTls, pick_remotefx_entropy_coder,
 };
