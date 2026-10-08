@@ -1581,22 +1581,22 @@ async fn the_hourly_auto_reconnect_update_skips_a_connection_that_was_never_issu
 /// Connects a client to `server_addr` and completes the handshake, returning the state
 /// needed to drive the connection.
 ///
-/// `connector_factory` customises the connector before the handshake, for instance to
-/// present an auto-reconnect cookie.
-async fn connect_active_client<C>(
+/// `cookie`, if given, is presented as an auto-reconnect cookie in the handshake.
+async fn connect_active_client(
     server_addr: SocketAddr,
     client_config: connector::Config,
-    connector_factory: C,
+    cookie: Option<ServerAutoReconnect>,
 ) -> (
     ActiveStage,
     connector::connection_activation::ConnectionActivationFactory,
     Framed<TokioStream<TlsStream<TcpStream>>>,
-)
-where
-    C: FnOnce(connector::ClientConnector) -> connector::ClientConnector,
-{
+) {
     let (upgraded_framed, connection_result) = connect_client(server_addr, |client_addr| {
-        connector_factory(connector::ClientConnector::new(client_config, client_addr))
+        let connector = connector::ClientConnector::new(client_config, client_addr);
+        match cookie {
+            Some(cookie) => connector.with_auto_reconnect_cookie(cookie),
+            None => connector,
+        }
     })
     .await;
 
@@ -1698,11 +1698,7 @@ impl CookieProbe {
     /// Connects to `server_addr`, presenting `cookie` as an auto-reconnect cookie if given.
     async fn connect(server_addr: SocketAddr, cookie: Option<ServerAutoReconnect>) -> Self {
         let (stage, activation_factory, framed) =
-            connect_active_client(server_addr, default_client_config(), |connector| match cookie {
-                Some(cookie) => connector.with_auto_reconnect_cookie(cookie),
-                None => connector,
-            })
-            .await;
+            connect_active_client(server_addr, default_client_config(), cookie).await;
 
         Self {
             stage,
