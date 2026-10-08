@@ -121,8 +121,11 @@ test("command is exact, standalone, and single-line", () => {
   for (const body of [
     "> @github-actions review-ready", "`@github-actions review-ready`",
     "please @github-actions review-ready", "@github-actions review-ready thanks",
-    "@github-actions review-ready\n", "\n@github-actions review-ready",
-    "@github-actions review-ready\nanother command",
+    ...["\r", "\n", "\u2028", "\u2029", "\v", "\f", "\u00a0"].flatMap((terminator) => [
+      `${terminator}@github-actions review-ready`,
+      `@github-actions review-ready${terminator}`,
+      `@github-actions${terminator} review-ready`,
+    ]),
   ]) assert.equal(commandBody(body), false);
 });
 
@@ -202,24 +205,22 @@ test("newer same-head findings review supersedes old acknowledgement without ano
   assert.equal(await acceptReviewReady({ github, ...args }), false);
 });
 
-test("comment creation strictly follows authoritative server timestamps", async () => {
-  for (const field of ["submitted_at", "completed_at", "created_at"]) {
+test("comment creation strictly follows review publication, not check completion", async () => {
+  for (const field of ["submitted_at", "created_at"]) {
     const invalid = [undefined, "invalid", "2026-02-30T11:00:00Z"];
     const stale = field === "created_at" ?
       ["2026-05-01T11:00:02Z", "2026-05-01T11:00:02.999Z"] :
-      ["2026-05-01T11:00:03Z", "2026-05-01T11:00:03.999Z",
-        "2026-05-01T11:00:04Z"];
+      ["2026-05-01T11:00:03Z", "2026-05-01T11:00:03.999Z", "2026-05-01T11:00:04Z"];
     for (const value of [...invalid, ...stale]) {
       const { state, github, writes } = mock();
-      const subject = field === "submitted_at" ? state.reviews[0] :
-        field === "completed_at" ? state.reviewChecks[0] : state.comment;
+      const subject = field === "submitted_at" ? state.reviews[0] : state.comment;
       subject[field] = value;
       assert.equal(await acceptReviewReady({ github, ...args }), false, `${field}: ${value}`);
       assert.deepEqual(writes, []);
     }
   }
   const { state, github, writes } = mock();
-  state.comment.created_at = "2026-05-01T11:00:04Z";
+  state.reviewChecks[0].completed_at = "2026-05-01T11:00:04Z";
   state.comment.updated_at = "2026-05-01T11:00:00Z";
   assert.equal(await acceptReviewReady({ github, ...args }), true);
   assert.equal(writes.length, 1);
@@ -257,6 +258,9 @@ test("findings count, review identity, head, and check provenance are authoritat
   for (const change of [
     (s) => { s.reviewChecks = [check("ai-reviewed/1", "no-findings")]; },
     (s) => { s.reviewChecks = [{ ...check(), output: { summary: "legacy receipt" } }]; },
+    (s) => { s.reviewChecks = [{ ...check(), output: { summary: encodeReviewOutcome({
+      headSha: SHA, outcome: "findings",
+    }) } }]; },
     (s) => { s.reviewChecks = [{ ...check(), app: { slug: "other-app" } }]; },
     (s) => { s.reviewChecks = [{ ...check(), output: { summary: check().output.summary + "\n" + check().output.summary } }]; },
     (s) => { s.reviewChecks = [{ ...check(), head_sha: OTHER }]; },
@@ -265,6 +269,8 @@ test("findings count, review identity, head, and check provenance are authoritat
     (s) => { s.reviews = [{ ...s.reviews[0], body: "wrong marker" }]; },
     (s) => { s.reviews.push({ ...s.reviews[0], id: 12, body: "newer review" }); },
     (s) => { s.reviewChecks.unshift({ ...check(), id: 9, status: "in_progress", conclusion: null }); },
+    (s) => { s.reviewChecks = []; },
+    (s) => { s.reviewChecks = [{ ...check(), conclusion: "neutral" }]; },
     (s) => { s.readyChecks = [{ ...ready(), app: { slug: "other-app" } }]; },
     (s) => { s.readyChecks = [ready(), ready()]; },
   ]) {
@@ -299,13 +305,13 @@ test("second authority read prevents head or review changes before check creatio
   };
   assert.equal(await acceptReviewReady({ github, ...args }), false);
   assert.deepEqual(writes, []);
-  // IDs remain stable, but a newly completed server timestamp supersedes the command.
+  // A new canonical findings check before the second read supersedes the command.
   const { github: secondGithub, state: secondState, writes: secondWrites } = mock();
   const getComment = secondGithub.rest.issues.getComment;
   let reads = 0;
   secondGithub.rest.issues.getComment = async (...parameters) => {
     const result = await getComment(...parameters);
-    if (++reads === 2) secondState.reviewChecks[0].completed_at = "2026-05-01T11:00:04Z";
+    if (++reads === 2) secondState.reviewChecks[0].id = 9;
     return result;
   };
   assert.equal(await acceptReviewReady({ github: secondGithub, ...args }), false);
@@ -322,6 +328,7 @@ test("receipt rejects foreign, malformed, stale, and non-server-created checks",
     { ...ready(), conclusion: "neutral" },
     { ...ready(), created_at: undefined },
     { ...ready(), created_at: "not-a-date" },
+    { ...ready(), created_at: "2026-02-30T11:00:00Z" },
     { ...ready(), output: { summary: encodeReady({
       headSha: SHA, commentId: 19, reviewId: 11, checkId: 7,
     }).replace('"review_id":11', '"review_id":11,"extra":1') } },
@@ -377,6 +384,36 @@ test("lifecycle persists acknowledgement but preserves all existing gates", asyn
   state.readyChecks = [];
   snapshot = await readLifecycleSnapshot({ github, ...args, ciRetry: { retries: 0 } });
   assert.deepEqual(lifecycleActor(snapshot), ["needs-author-action"]);
+});
+
+test("prior terminal review trusts only the newest published bot review", async () => {
+  const priorMarker = `<!-- ironrdp-pr-automation:review:${OTHER} -->`;
+  const { state, github } = mock({
+    labels: ["ai-reviewed/3"],
+    reviewChecks: [{
+      ...check("ai-reviewed/3"), head_sha: OTHER, external_id: OTHER,
+      output: { summary: encodeReviewOutcome({
+        headSha: OTHER, outcome: "findings", nextReviewCount: "ai-reviewed/3",
+        reviewMarker: priorMarker,
+      }) },
+    }],
+    reviews: [{
+      id: 11, user: { login: "github-actions[bot]" }, commit_id: OTHER,
+      body: `${priorMarker}\n\nFindings`,
+    }],
+  });
+  const snapshot = () => readLifecycleSnapshot({ github, ...args, ciRetry: { retries: 0 } });
+  assert.equal((await snapshot()).priorReviewTrusted, true);
+  for (const latest of [
+    { body: "invalid marker", commit_id: OTHER },
+    { body: `${marker}\n\nFindings`, commit_id: SHA },
+    { body: `${priorMarker}\n\nFindings`, commit_id: "invalid-sha" },
+    { id: "malformed", body: `${priorMarker}\n\nFindings`, commit_id: OTHER },
+  ]) {
+    state.reviews.push({ id: 12, user: { login: "github-actions[bot]" }, ...latest });
+    assert.equal((await snapshot()).priorReviewTrusted, false);
+    state.reviews.pop();
+  }
 });
 
 test("workflow github-script accepts once, reconciles, and skips ineligible events", async () => {

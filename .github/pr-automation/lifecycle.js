@@ -7,7 +7,7 @@ const { parseCheckState } = require("./validate-classifier");
 const { trustedReviewOutcome, trustedReviewReceipt, reviewMarkerPrefix } = require("./review-outcome");
 const { ACTOR_LABELS, labelsOf } = require("./resolve-state");
 const { AI_COUNTS, reviewCount } = require("./review-count");
-const { authoritativeFindings, readyRuns, trustedReady } = require("./review-ready");
+const { authoritativeFindings, readyRuns, trustedReady, publishedReview } = require("./review-ready");
 
 async function activeLease(github, owner, repo, run, headSha) {
   const lease = parseLeaseMarker(run?.output?.summary);
@@ -83,13 +83,7 @@ async function readLifecycleSnapshot({ github, owner, repo, prNumber, observedRu
       !classificationLease && !reviewLease) {
     // The latest published bot review identifies the head that spent the terminal count.
     // A label alone (or a legacy successful check without a receipt) is not evidence.
-    const published = [];
-    for await (const page of github.paginate.iterator(github.rest.pulls.listReviews, {
-      owner, repo, pull_number: prNumber, per_page: 100,
-    })) published.push(...page.data);
-    const latest = published.filter((review) =>
-      review.user?.login === "github-actions[bot]")
-      .sort((left, right) => right.id - left.id)[0];
+    const latest = await publishedReview(github, owner, repo, prNumber);
     if (latest && /^[0-9a-f]{40}$/.test(latest.commit_id || "") &&
         latest.body?.startsWith(reviewMarkerPrefix(latest.commit_id)) &&
         latest.commit_id !== headSha) {

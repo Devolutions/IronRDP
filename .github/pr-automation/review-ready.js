@@ -13,7 +13,8 @@ const BOT = "github-actions[bot]";
 const COMMAND = "@github-actions review-ready";
 
 function commandBody(body) {
-  return typeof body === "string" && !/[\r\n]/.test(body) && body.trim() === COMMAND;
+  return typeof body === "string" &&
+    body.replace(/^[ \t]+|[ \t]+$/g, "") === COMMAND;
 }
 
 function positiveId(id) {
@@ -42,9 +43,7 @@ function trustedReady(run, headSha) {
   if (run?.app?.slug !== "github-actions" || run.name !== NAME ||
       run.head_sha !== headSha || run.external_id !== headSha ||
       run.status !== "completed" || run.conclusion !== "success" ||
-      typeof run.created_at !== "string" ||
-      !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(run.created_at) ||
-      !Number.isFinite(Date.parse(run.created_at)) ||
+      serverSecond(run.created_at) === null ||
       typeof run.output?.summary !== "string" ||
       Buffer.byteLength(run.output.summary, "utf8") > 4096) return null;
   const lines = run.output.summary.split(/\r?\n/).map((line) => line.trim())
@@ -63,8 +62,9 @@ async function publishedReview(github, owner, repo, prNumber) {
   for await (const page of github.paginate.iterator(github.rest.pulls.listReviews, {
     owner, repo, pull_number: prNumber, per_page: 100,
   })) reviews.push(...page.data);
-  return reviews.filter((review) => review.user?.login === BOT && positiveId(review.id))
-    .sort((left, right) => right.id - left.id)[0] ?? null;
+  const botReviews = reviews.filter((review) => review.user?.login === BOT);
+  if (botReviews.some((review) => !positiveId(review.id))) return null;
+  return botReviews.sort((left, right) => right.id - left.id)[0] ?? null;
 }
 
 async function authoritativeFindings({ github, owner, repo, prNumber, headSha, reviewRuns, labels }) {
@@ -75,7 +75,7 @@ async function authoritativeFindings({ github, owner, repo, prNumber, headSha, r
   const current = runs[0];
   const receipt = trustedReviewReceipt(current, headSha);
   if (receipt?.outcome !== "findings" || !positiveId(current.id) ||
-      !receipt.next_review_count || (labels && reviewCount(labels) !== receipt.next_review_count)) return null;
+      (labels && reviewCount(labels) !== receipt.next_review_count)) return null;
   const review = await publishedReview(github, owner, repo, prNumber);
   if (!positiveId(review?.id) || review.commit_id !== headSha ||
       typeof review.body !== "string" ||
@@ -83,7 +83,7 @@ async function authoritativeFindings({ github, owner, repo, prNumber, headSha, r
       !(review.body === receipt.review_marker ||
         review.body.startsWith(`${receipt.review_marker}\n`))) return null;
   return { checkId: current.id, reviewId: review.id,
-    reviewSecond: serverSecond(review.submitted_at), checkSecond: serverSecond(current.completed_at) };
+    reviewSecond: serverSecond(review.submitted_at) };
 }
 
 async function readyRuns(github, owner, repo, headSha) {
@@ -121,9 +121,8 @@ async function acceptReviewReady({ github, owner, repo, prNumber, commentId }) {
     });
     const commentSecond = serverSecond(comment.created_at);
     if (!authoritative || commentSecond === null ||
-        authoritative.reviewSecond === null || authoritative.checkSecond === null ||
-        commentSecond <= authoritative.reviewSecond ||
-        commentSecond <= authoritative.checkSecond) return null;
+        authoritative.reviewSecond === null ||
+        commentSecond <= authoritative.reviewSecond) return null;
     const runs = await readyRuns(github, owner, repo, headSha);
     if (!runs) return null;
     return { headSha, authoritative, existing: runs[0] ?? null };
@@ -159,5 +158,6 @@ async function acceptReviewReady({ github, owner, repo, prNumber, commentId }) {
 }
 
 module.exports = {
-  commandBody, encodeReady, trustedReady, authoritativeFindings, readyRuns, acceptReviewReady,
+  commandBody, encodeReady, trustedReady, publishedReview,
+  authoritativeFindings, readyRuns, acceptReviewReady,
 };
