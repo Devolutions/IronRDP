@@ -85,7 +85,6 @@ Also, use proper abbreviation casing, e.g., IPv4 and IPv6 (not ipv4/ipv6).
 // GOOD
 "invalid X.509 certificate"
 "DIB decode error"
-"TLS handshake failed"
 
 // BAD
 "Invalid X.509 certificate."
