@@ -52,7 +52,11 @@ where
 
     loop {
         let outgoing = sequence.process(incoming.take())?;
-        let mut encoded = Vec::with_capacity(usize::from(outgoing.buffer_len()));
+        let mut encoded = Vec::with_capacity(usize::from(
+            outgoing
+                .buffer_len()
+                .map_err(|error| custom_err!("native CredSSP request length", error))?,
+        ));
         outgoing
             .encode_ts_request(&mut encoded)
             .map_err(|error| custom_err!("encode native CredSSP request", error))?;
