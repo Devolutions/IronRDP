@@ -1,0 +1,4 @@
+# Built wasm modules and the npm install for the harness.
+wasm/build/
+wasm/node_modules/
+wasm/package-lock.json

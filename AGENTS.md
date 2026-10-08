@@ -94,6 +94,7 @@ These crates exist on disk but are not documented in `ARCHITECTURE.md`. Be aware
 - `ironrdp-rdpdr-native` — native RDPDR backend
 - `ironrdp-rdpsnd-native` — native RDPSND backend
 - `ironrdp-bench` — benchmarking harness
+- `ironrdp-rfxbench` — RemoteFX decode benchmarks and fixtures (native + WASM)
 - `iron-remote-desktop` (under `crates/`) — remote desktop abstractions
 
 ### Workspace Exclusions
