@@ -65,10 +65,16 @@ pub fn decode_rlex(data: &[u8]) -> DecodeResult<RlexData> {
         palette.push([b, g, r]);
     }
 
-    // Compute bit widths
+    // Compute bit widths: floor(log2(paletteCount - 1)) + 1 (MS-RDPEGFX
+    // 2.2.4.6.2.2). A single palette entry is not a special case: FreeRDP's
+    // CLEAR_LOG2_FLOOR table yields 0 for paletteCount - 1 == 0, so stopIndex
+    // still occupies one bit and every segment keeps its packed byte. Windows
+    // Server encodes the solid corners of its taskbar (14x64, 64x46, 35 bytes)
+    // with a one-entry palette; reading them without the packed byte shifted
+    // every run length by one byte and failed with "suite exceeds region
+    // pixel count".
     let stop_index_bits = if palette_count <= 1 {
-        // Edge case: only 1 palette entry
-        0
+        1
     } else {
         bit_length(u32::from(palette_count - 1))
     };
@@ -78,34 +84,16 @@ pub fn decode_rlex(data: &[u8]) -> DecodeResult<RlexData> {
     let mut segments = Vec::new();
     let remaining = src.len();
 
-    if stop_index_bits == 0 {
-        // Single palette entry: no stop/suite bits, only run lengths
-        // Each byte is a run length factor for palette[0]
-        decode_single_palette_segments(&mut src, &mut segments)?;
-    } else {
-        decode_multi_palette_segments(
-            remaining,
-            &mut src,
-            stop_index_bits,
-            suite_depth_bits,
-            palette_count,
-            &mut segments,
-        )?;
-    }
+    decode_multi_palette_segments(
+        remaining,
+        &mut src,
+        stop_index_bits,
+        suite_depth_bits,
+        palette_count,
+        &mut segments,
+    )?;
 
     Ok(RlexData { palette, segments })
-}
-
-fn decode_single_palette_segments(src: &mut ReadCursor<'_>, segments: &mut Vec<RlexSegment>) -> DecodeResult<()> {
-    while !src.is_empty() {
-        let run_length = decode_run_length(src)?;
-        segments.push(RlexSegment {
-            start_index: 0,
-            stop_index: 0,
-            run_length,
-        });
-    }
-    Ok(())
 }
 
 fn decode_multi_palette_segments(
@@ -215,6 +203,24 @@ mod tests {
         assert_eq!(rlex.segments[0].run_length, 5);
         assert_eq!(rlex.segments[1].stop_index, 1);
         assert_eq!(rlex.segments[1].run_length, 3);
+    }
+
+    #[test]
+    fn decode_rlex_single_palette_keeps_the_packed_byte() {
+        // Seen from Windows Server: the solid corners of the taskbar arrive as
+        // one-colour RLEX regions (14x64, 64x46). stopIndex still takes one bit
+        // and suiteDepth the other seven, as in FreeRDP: one segment, run of
+        // 895 pixels on a 16-bit length, plus a suite of one, is 896 = 14 * 64.
+        let mut data = vec![1, 0xEE, 0xEE, 0xEE];
+        data.push(0x00); // packed: stop=0, depth=0
+        data.push(0xFF); // 16-bit run length follows
+        data.extend_from_slice(&895u16.to_le_bytes());
+        let rlex = decode_rlex(&data).unwrap();
+        assert_eq!(rlex.palette.len(), 1);
+        assert_eq!(rlex.segments.len(), 1);
+        assert_eq!(rlex.segments[0].run_length, 895);
+        assert_eq!(rlex.segments[0].start_index, 0);
+        assert_eq!(rlex.segments[0].stop_index, 0);
     }
 
     #[test]
