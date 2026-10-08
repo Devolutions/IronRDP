@@ -72,7 +72,7 @@ Exception: it’s not necessary when the type alias is clear enough (e.g.: `Conn
 
 A single sentence which:
 - is short and concise,
-- does not start by a capital letter, and
+- does not capitalize a word solely because it appears at the start of a sentence
 - does not contain trailing punctuation.
 
 This is the convention adopted by the Rust project:
@@ -84,9 +84,12 @@ Also, use proper abbreviation casing, e.g., IPv4 and IPv6 (not ipv4/ipv6).
 ```rust
 // GOOD
 "invalid X.509 certificate"
+"DIB decode error"
+"TLS handshake failed"
 
 // BAD
 "Invalid X.509 certificate."
+"dib decode error"
 ```
 
 **Rationale**: it’s easier to compose with other error messages. 
