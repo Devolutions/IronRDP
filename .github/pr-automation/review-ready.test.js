@@ -10,7 +10,7 @@ const { encodeReviewOutcome } = require("./review-outcome");
 const { lifecycleActor, readLifecycleSnapshot, reconcileLifecycle } = require("./lifecycle");
 const { reviewBody, inlineReviewCommentBody, REVIEW_READY_FOOTER } = require("./review-render");
 const {
-  acceptReviewReady, commandBody, encodeReady, trustedReady,
+  acceptReviewReady, commandBody, encodeReady, trustedReady, readyRuns,
 } = require("./review-ready");
 
 const SHA = "a".repeat(40);
@@ -336,6 +336,18 @@ test("receipt rejects foreign, malformed, stale, and non-server-created checks",
   ]) assert.equal(trustedReady(run, SHA), null);
 });
 
+test("ready check reads distinguish absence from invalid or duplicate receipts", async () => {
+  const { state, github } = mock();
+  const read = () => readyRuns(github, args.owner, args.repo, SHA);
+  assert.deepEqual(await read(), { existing: null, receipt: null });
+  state.readyChecks = [ready()];
+  assert.deepEqual(await read(), { existing: state.readyChecks[0], receipt: trustedReady(ready(), SHA) });
+  state.readyChecks[0] = { ...ready(), output: { summary: "invalid" } };
+  assert.equal(await read(), null);
+  state.readyChecks = [ready(), { ...ready(), id: 9 }];
+  assert.equal(await read(), null);
+});
+
 test("lifecycle persists acknowledgement but preserves all existing gates", async () => {
   const { state, github } = mock({ readyChecks: [ready()] });
   const actor = (changes = {}) => lifecycleActor({
@@ -440,7 +452,6 @@ test("workflow github-script accepts once, reconciles, and skips ineligible even
         "./.github/pr-automation/lifecycle"].includes(id), `unexpected model dispatch: ${id}`);
       return require(path.resolve(__dirname, "..", "..", id));
     },
-    process: { env: { PR_NUMBER: "42", COMMENT_ID: "19" } },
   });
   await execute();
   assert.equal(writes.filter((entry) => entry.name === "AI review-ready").length, 1);
@@ -458,6 +469,8 @@ test("workflow github-script accepts once, reconciles, and skips ineligible even
     { issue: { number: 42 }, comment: state.comment },
     { issue: context.payload.issue, comment: { ...state.comment, body: "not a command" } },
     { issue: context.payload.issue, comment: { ...state.comment, user: { type: "Bot" } } },
+    { issue: { ...context.payload.issue, number: "42" }, comment: state.comment },
+    { issue: context.payload.issue, comment: { ...state.comment, id: "19" } },
   ]) {
     context.payload = payload;
     const before = modules.length;

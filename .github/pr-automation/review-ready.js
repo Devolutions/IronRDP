@@ -89,8 +89,20 @@ async function authoritativeFindings({ github, owner, repo, prNumber, headSha, r
 async function readyRuns(github, owner, repo, headSha) {
   const runs = await readCheckRuns({ github, owner, repo, ref: headSha, checkName: NAME });
   const matching = runs.filter((run) => run.external_id === headSha);
-  if (matching.length > 1 || matching.some((run) => !trustedReady(run, headSha))) return null;
-  return matching;
+  if (matching.length > 1) return null;
+  const existing = matching[0] ?? null;
+  const receipt = existing && trustedReady(existing, headSha);
+  return existing && !receipt ? null : { existing, receipt };
+}
+
+async function reviewReadyAcknowledged({ github, owner, repo, prNumber, headSha, reviewRuns, labels }) {
+  const ready = await readyRuns(github, owner, repo, headSha);
+  if (!ready?.receipt) return false;
+  const authority = await authoritativeFindings({
+    github, owner, repo, prNumber, headSha, reviewRuns, labels,
+  });
+  return authority?.checkId === ready.receipt.review_check_id &&
+    authority?.reviewId === ready.receipt.review_id;
 }
 
 async function acceptReviewReady({ github, owner, repo, prNumber, commentId }) {
@@ -123,9 +135,9 @@ async function acceptReviewReady({ github, owner, repo, prNumber, commentId }) {
     if (!authoritative || commentSecond === null ||
         authoritative.reviewSecond === null ||
         commentSecond <= authoritative.reviewSecond) return null;
-    const runs = await readyRuns(github, owner, repo, headSha);
-    if (!runs) return null;
-    return { headSha, authoritative, existing: runs[0] ?? null };
+    const ready = await readyRuns(github, owner, repo, headSha);
+    if (!ready) return null;
+    return { headSha, authoritative, ...ready };
   };
   const initial = await read();
   if (!initial) return false;
@@ -135,23 +147,23 @@ async function acceptReviewReady({ github, owner, repo, prNumber, commentId }) {
       current.authoritative.reviewId !== initial.authoritative.reviewId ||
       current.authoritative.checkId !== initial.authoritative.checkId ||
       current.existing?.id !== initial.existing?.id) return false;
-  const previous = current.existing && trustedReady(current.existing, current.headSha);
-  if (previous?.review_id === current.authoritative.reviewId &&
-      previous.review_check_id === current.authoritative.checkId) return false;
+  if (current.receipt?.review_id === current.authoritative.reviewId &&
+      current.receipt?.review_check_id === current.authoritative.checkId) return false;
   const summary = encodeReady({
     headSha: current.headSha, commentId, reviewId: current.authoritative.reviewId,
     checkId: current.authoritative.checkId,
   });
+  const output = { title: "Review ready for human review", summary };
   if (current.existing) {
     await github.rest.checks.update({
       owner, repo, check_run_id: current.existing.id, status: "completed", conclusion: "success",
-      output: { title: "Review ready for human review", summary },
+      output,
     });
   } else {
     await github.rest.checks.create({
       owner, repo, name: NAME, head_sha: current.headSha, external_id: current.headSha,
       status: "completed", conclusion: "success",
-      output: { title: "Review ready for human review", summary },
+      output,
     });
   }
   return true;
@@ -159,5 +171,5 @@ async function acceptReviewReady({ github, owner, repo, prNumber, commentId }) {
 
 module.exports = {
   commandBody, encodeReady, trustedReady, publishedReview,
-  authoritativeFindings, readyRuns, acceptReviewReady,
+  readyRuns, reviewReadyAcknowledged, acceptReviewReady,
 };

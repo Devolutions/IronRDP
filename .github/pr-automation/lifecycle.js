@@ -7,7 +7,7 @@ const { parseCheckState } = require("./validate-classifier");
 const { trustedReviewOutcome, trustedReviewReceipt, reviewMarkerPrefix } = require("./review-outcome");
 const { ACTOR_LABELS, labelsOf } = require("./resolve-state");
 const { AI_COUNTS, reviewCount } = require("./review-count");
-const { authoritativeFindings, readyRuns, trustedReady, publishedReview } = require("./review-ready");
+const { reviewReadyAcknowledged, publishedReview } = require("./review-ready");
 
 async function activeLease(github, owner, repo, run, headSha) {
   const lease = parseLeaseMarker(run?.output?.summary);
@@ -64,15 +64,9 @@ async function readLifecycleSnapshot({ github, owner, repo, prNumber, observedRu
   const reviewOutcome = trustedReviewOutcome(newestSuccessfulReview, headSha);
   let reviewReady = false;
   if (reviewOutcome === "findings") {
-    const ready = await readyRuns(github, owner, repo, headSha);
-    const receipt = ready?.[0] && trustedReady(ready[0], headSha);
-    if (receipt) {
-      const authority = await authoritativeFindings({
-        github, owner, repo, prNumber, headSha, reviewRuns: reviews, labels,
-      });
-      reviewReady = authority?.checkId === receipt.review_check_id &&
-        authority?.reviewId === receipt.review_id;
-    }
+    reviewReady = await reviewReadyAcknowledged({
+      github, owner, repo, prNumber, headSha, reviewRuns: reviews, labels,
+    });
   }
   const classificationValid = latestClassification?.conclusion === "success" &&
     ["Classification complete", "Automation stopped"].includes(latestClassification.output?.title) &&

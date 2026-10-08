@@ -26,9 +26,6 @@ jobs:
           ref: master
           persist-credentials: false
       - uses: actions/github-script@v8
-        env:
-          PR_NUMBER: ${{ github.event.issue.number }}
-          COMMENT_ID: ${{ github.event.comment.id }}
         with:
           script: |
             const { acceptReviewReady, commandBody } = require("./.github/pr-automation/review-ready");
@@ -36,10 +33,10 @@ jobs:
             if (!context.payload.issue?.pull_request ||
                 context.payload.comment?.user?.type !== "User" ||
                 !commandBody(context.payload.comment?.body)) return;
-            const prNumber = Number(process.env.PR_NUMBER);
+            const prNumber = context.payload.issue.number;
             if (await acceptReviewReady({
               github, owner: context.repo.owner, repo: context.repo.repo,
-              prNumber, commentId: Number(process.env.COMMENT_ID),
+              prNumber, commentId: context.payload.comment.id,
             })) {
               await reconcileLifecycle({
                 github, owner: context.repo.owner, repo: context.repo.repo, prNumber,
