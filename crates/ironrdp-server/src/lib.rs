@@ -52,6 +52,10 @@ pub use rdpei::{
     RdpeiServerFactory, ScReadyFeatures, TouchContact, TouchContactDataFlags, TouchContactFields, TouchContactFlags,
     TouchEventPdu, TouchFrame,
 };
+#[cfg(feature = "__test")]
+pub use server::autodetect_response_from_sub_header;
+#[cfg(all(feature = "__test", feature = "egfx"))]
+pub use server::autodetect_sub_header;
 pub use server::{
     AutoReconnectCookieHandle, BoundConnection, ConnectionBinder, ConnectionHandler, ConnectionInfo, ConnectionPolicy,
     CredentialDecision, CredentialValidationError, CredentialValidator, Credentials, ErrorInfoDisconnectHandle,

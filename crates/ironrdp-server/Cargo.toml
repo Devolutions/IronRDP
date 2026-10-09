@@ -32,6 +32,7 @@ nscodec = ["dep:ironrdp-nscodec"]
 # Internal (PRIVATE!) features used to aid testing.
 # Don't rely on these whatsoever. They may disappear at any time.
 __bench = ["dep:visibility"]
+__test = ["dep:visibility"]
 
 [dependencies]
 rand = "0.9"
