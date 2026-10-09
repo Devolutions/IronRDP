@@ -437,6 +437,14 @@ impl RdpServerDisplay for BoundDisplaySlot {
         }
     }
 
+    async fn offers_display_control(&mut self) -> bool {
+        if let Some(mut lease) = BoundDisplayLease::take(&self.bound) {
+            lease.display_mut().offers_display_control().await
+        } else {
+            self.default.offers_display_control().await
+        }
+    }
+
     async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         if let Some(mut lease) = BoundDisplayLease::take(&self.bound) {
             lease.display_mut().updates().await

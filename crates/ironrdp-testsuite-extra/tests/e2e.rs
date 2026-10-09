@@ -2405,6 +2405,7 @@ async fn the_default_under_hybrid_lets_an_authenticated_newcomer_take_over() {
         .with_input_handler(TestInputHandler)
         .with_display_handler(TestDisplay {
             rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
         })
         .build();
     server.set_credentials(Some(server::Credentials {
