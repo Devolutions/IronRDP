@@ -3,6 +3,7 @@ use ironrdp_pdu::ReadCursor;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::rfx::DecodingContext;
+use rstest::rstest;
 
 const IMAGE_WIDTH: usize = 64;
 const IMAGE_HEIGHT: usize = 64;
@@ -1061,3 +1062,70 @@ const DECODED_IMAGE: [u8; IMAGE_WIDTH * IMAGE_HEIGHT * FORMAT_SIZE] = [
     0xFF, 0xF6, 0x9D, 0x13, 0xFF, 0xF6, 0x9C, 0x12, 0xFF, 0xF5, 0x9A, 0x11, 0xFF, 0xF5, 0x9A, 0x11, 0xFF, 0xF5, 0x9A,
     0x11, 0xFF, 0xF5, 0x9A, 0x11, 0xFF,
 ];
+
+/// Nothing reaches the image from a tile placed past the u16 range or from an empty rectangle.
+#[rstest]
+#[case::tile_x(Edit::TileX)]
+#[case::tile_y(Edit::TileY)]
+#[case::region_width(Edit::RegionWidth)]
+#[case::region_height(Edit::RegionHeight)]
+#[case::channel_width(Edit::ChannelWidth)]
+#[case::channel_height(Edit::ChannelHeight)]
+fn decode_draws_nothing_for_unreachable_geometry(#[case] edit: Edit) {
+    use ironrdp_pdu::codecs::rfx::{Block, CodecChannel};
+
+    let image = decode_edited_messages(|block| match (edit, block) {
+        // 1024 * 64 does not fit in u16.
+        (Edit::TileX, Block::CodecChannel(CodecChannel::TileSet(tile_set))) => tile_set.tiles[0].x = 1024,
+        (Edit::TileY, Block::CodecChannel(CodecChannel::TileSet(tile_set))) => tile_set.tiles[0].y = 1024,
+        (Edit::RegionWidth, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].width = 0,
+        (Edit::RegionHeight, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].height = 0,
+        (Edit::ChannelWidth, Block::Channels(channels)) => channels.0[0].width = 0,
+        (Edit::ChannelHeight, Block::Channels(channels)) => channels.0[0].height = 0,
+        _ => {}
+    });
+
+    assert!(image.data().iter().all(|&byte| byte == 0));
+}
+
+#[derive(Clone, Copy)]
+enum Edit {
+    TileX,
+    TileY,
+    RegionWidth,
+    RegionHeight,
+    ChannelWidth,
+    ChannelHeight,
+}
+
+/// Decodes [`ENCODED_MESSAGES`] after `edit` has changed its blocks, and returns the image.
+fn decode_edited_messages(edit: impl Fn(&mut ironrdp_pdu::codecs::rfx::Block<'_>)) -> DecodedImage {
+    use ironrdp_pdu::Decode as _;
+    use ironrdp_pdu::codecs::rfx::Block;
+
+    let destination = InclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: u16::try_from(IMAGE_WIDTH).unwrap() - 1,
+        bottom: u16::try_from(IMAGE_HEIGHT).unwrap() - 1,
+    };
+
+    let mut src = ReadCursor::new(ENCODED_MESSAGES.as_ref());
+    let mut encoded = Vec::new();
+    while !src.is_empty() {
+        let mut block = Block::decode(&mut src).unwrap();
+        edit(&mut block);
+        encoded.extend(ironrdp_core::encode_vec(&block).unwrap());
+    }
+
+    let mut image = DecodedImage::new(
+        PixelFormat::BgrX32,
+        IMAGE_WIDTH.try_into().unwrap(),
+        IMAGE_HEIGHT.try_into().unwrap(),
+    );
+    DecodingContext::default()
+        .decode(&mut image, &destination, &mut ReadCursor::new(&encoded))
+        .unwrap();
+
+    image
+}
