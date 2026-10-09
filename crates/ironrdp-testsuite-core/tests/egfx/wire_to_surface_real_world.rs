@@ -175,6 +175,74 @@ fn wts2_progressive_tile_first_mixed_25tiles() {
     assert_eq!(diff_count, 9, "expected exactly 9 difference-encoded tiles");
 }
 
+/// The DWT variant comes from each REGION's `RFX_DWT_REDUCE_EXTRAPOLATE` flag (MS-RDPEGFX
+/// 2.2.4.2.1.5). Bit 0 of the CONTEXT flags is `RFX_SUBBAND_DIFFING` (MS-RDPEGFX 2.2.4.2.1.4)
+/// and must not change how a non-difference tile decodes.
+#[test]
+fn progressive_dwt_variant_comes_from_region_flags() {
+    use ironrdp_graphics::progressive::ProgressiveDecoder;
+    use ironrdp_pdu::codecs::rfx::progressive::{
+        ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu, ProgressiveRegion, ProgressiveSyncPdu,
+        encode_progressive_stream,
+    };
+
+    let bytes = include_bytes!("../../test_data/egfx/haven/wts2_progressive_tile_first_mixed_25tiles.bin");
+    let GfxPdu::WireToSurface2(pdu) = decode(bytes) else {
+        panic!("expected WireToSurface2");
+    };
+    let region = decode_progressive_stream(&pdu.bitmap_data)
+        .expect("decode progressive stream")
+        .into_iter()
+        .find_map(|block| match block {
+            ProgressiveBlock::Region(region) => Some(region),
+            _ => None,
+        })
+        .expect("expected Region block");
+    assert!(region.uses_reduce_extrapolate());
+
+    // Difference tiles need a reference that is not part of the capture.
+    let base_tiles: Vec<_> = region
+        .tiles
+        .iter()
+        .filter(|tile| matches!(tile, ProgressiveTile::First(first) if first.flags & TILE_FLAG_DIFFERENCE == 0))
+        .cloned()
+        .collect();
+
+    let decode_with = |context_flags: u8, region_flags: u8| {
+        let stream = encode_progressive_stream(&[
+            ProgressiveBlock::Sync(ProgressiveSyncPdu),
+            ProgressiveBlock::Context(ProgressiveContextPdu {
+                context_id: 0,
+                tile_size: 0x40,
+                flags: context_flags,
+            }),
+            ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
+                frame_index: 0,
+                region_count: 1,
+            }),
+            ProgressiveBlock::Region(ProgressiveRegion {
+                flags: region_flags,
+                tiles: base_tiles.clone(),
+                ..region.clone()
+            }),
+            ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
+        ])
+        .expect("encode progressive stream");
+        let mut decoder = ProgressiveDecoder::new();
+        decoder.begin_frame();
+        let tiles = decoder
+            .decode_bitmap(pdu.surface_id, pdu.codec_context_id, 1280, 800, &stream)
+            .expect("decode base tiles");
+        decoder.end_frame();
+        tiles.into_iter().map(|tile| tile.pixels).collect::<Vec<_>>()
+    };
+
+    let captured = decode_with(0x01, region.flags);
+    assert_eq!(captured.len(), 16);
+    assert!(captured == decode_with(0x00, region.flags));
+    assert!(captured != decode_with(0x01, 0x00));
+}
+
 /// Verify that decoding a difference fixture without a prior retained tile reference
 /// returns `MissingTileReference` as required by MS-RDPRFX 3.1.8.1.7.1 and #1698.
 #[test]
