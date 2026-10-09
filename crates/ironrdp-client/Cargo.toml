@@ -110,7 +110,7 @@ tracing = { version = "0.1", features = ["log"] }
 
 # Async, futures
 tokio = { version = "1", features = ["macros", "net", "io-util", "sync", "rt", "time"] }
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 futures-util = { version = "0.3", features = ["sink"] }
 
 # Utils
