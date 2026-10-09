@@ -14,6 +14,7 @@ use ironrdp_svc::{
 struct RuntimeChannel {
     name: ChannelName,
     options: ChannelOptions,
+    received: Vec<Vec<u8>>,
 }
 
 impl RuntimeChannel {
@@ -21,6 +22,7 @@ impl RuntimeChannel {
         Self {
             name: ChannelName::from_utf8(name).expect("valid static channel name"),
             options,
+            received: Vec::new(),
         }
     }
 }
@@ -36,7 +38,8 @@ impl SvcProcessor for RuntimeChannel {
         self.options
     }
 
-    fn process(&mut self, _payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+    fn process(&mut self, payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+        self.received.push(payload.to_vec());
         Ok(Vec::new())
     }
 }
@@ -241,6 +244,36 @@ fn static_channel_rejects_malformed_chunk_sequences() {
             ))
             .is_ok()
     );
+}
+
+#[test]
+fn static_channel_bounds_compressed_chunk_sequences_by_declared_length() {
+    let mut channel = StaticVirtualChannel::new(RuntimeChannel::new("chunk", ChannelOptions::empty()));
+    let compressed = ChannelControlFlags::PACKET_COMPRESSED;
+
+    assert!(
+        channel
+            .process(&channel_chunk(b"abcd", 6, ChannelControlFlags::FLAG_FIRST | compressed))
+            .is_ok()
+    );
+    assert!(channel.process(&channel_chunk(b"efgh", 6, compressed)).is_err());
+
+    assert!(
+        channel
+            .process(&channel_chunk(b"abc", 6, ChannelControlFlags::FLAG_FIRST | compressed))
+            .is_ok()
+    );
+    assert!(
+        channel
+            .process(&channel_chunk(b"de", 6, ChannelControlFlags::FLAG_LAST | compressed))
+            .is_ok()
+    );
+
+    let received = &channel
+        .channel_processor_downcast_ref::<RuntimeChannel>()
+        .expect("runtime channel processor")
+        .received;
+    assert_eq!(received, &[b"abcde".to_vec()]);
 }
 
 #[test]
