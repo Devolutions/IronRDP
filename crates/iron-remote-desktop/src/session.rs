@@ -27,6 +27,8 @@ pub trait SessionBuilder {
     #[must_use]
     fn proxy_address(&self, address: String) -> Self;
 
+    /// Copies the offered WebSocket subprotocols. An empty array disables subprotocol negotiation.
+    /// Invalid entries cause `connect()` to return an error.
     #[must_use]
     fn websocket_protocols(&self, protocols: js_sys::Array) -> Self;
 

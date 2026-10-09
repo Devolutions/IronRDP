@@ -93,6 +93,10 @@ const config = ui
   .build();
 ```
 
+The offered protocols are copied when configuring the session, so later changes to the input array do not affect the connection.
+Omitting this option or passing an empty array preserves the default WebSocket handshake.
+If a JavaScript caller supplies a non-string entry, connection fails with an explicit error instead of using a previous protocol list.
+
 ## Supported Input
 
 Mouse: movement, click (4 buttons), scroll. Keyboard: standard layout, Windows key,

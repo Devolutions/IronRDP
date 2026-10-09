@@ -26,6 +26,8 @@ export interface SessionBuilder {
     proxyAddress(address: string): SessionBuilder;
     /**
      * Optional
+     * Copies the offered subprotocols. An empty array disables subprotocol negotiation.
+     * Non-string entries cause connect() to reject.
      */
     webSocketProtocols(protocols: string[]): SessionBuilder;
     /**
