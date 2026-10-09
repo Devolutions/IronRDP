@@ -3404,6 +3404,7 @@ dependencies = [
  "anyhow",
  "array-concat",
  "async-trait",
+ "bytes",
  "expect-test",
  "hex",
  "ironrdp-acceptor",
