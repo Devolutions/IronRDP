@@ -215,6 +215,14 @@ Reconciliation validates the check app, SHA, external ID, conclusion, receipt sc
 The newest trusted successful exact-head check is canonical, including explicit forced reviews.
 An existing successful check without a receipt fails closed and preserves actor labels until a compatible outcome is available.
 With green exact-head CI, findings select `needs-author-action` even at `ai-reviewed/3`, while no findings select `needs-review`.
+When no code change is needed after a findings-bearing review, the PR author or a collaborator with live `write`, `maintain`, or `admin` permission may comment `@github-actions review-ready` to request human review.
+The comment must stand alone apart from surrounding whitespace and cannot contain line breaks; resolving inline threads is optional guidance, not a gate.
+This handoff works after `/1`, `/2`, or `/3` without a model call or review-count increment, and never bypasses CI, draft, closure, lease, or automation-failure gates.
+The command can be accepted while CI is pending or failing, but only green current exact-head CI and clear lifecycle gates select `needs-review`; failed CI still selects `needs-author-action`.
+Editing or deleting the source comment after acknowledgement does not revoke it; a new head or newer same-head authoritative review supersedes it.
+The separate app-owned exact-head `AI review-ready` check stores a bounded, versioned receipt binding head SHA, source comment ID, latest published bot review ID, and authoritative review check ID.
+Reconciliation validates the check's server-created timestamp, app, exact SHA, name, external ID, success, and receipt before prioritizing acknowledgement over findings.
+Duplicate deliveries and further comments for the same review do not create competing checks; a newer findings review can replace the existing head-bound acknowledgement.
 After a third review, a newly classified head with green exact-head CI hands off to `needs-review` without a fourth review only when the latest published bot review matches a trusted `/3` receipt; legacy receipts never authorize this handoff.
 Contributor changes acknowledge findings; automation does not verify their resolution.
 Missing, pending, or nonstandard terminal CI conclusions select neither actor.

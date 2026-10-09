@@ -59,6 +59,7 @@ The review pipeline must therefore live in a reusable workflow, with lane concur
 The published comments include the name of the specialist that found the finding.
 Render severity as `critical :purple_circle:`, `high :red_circle:`, `medium :orange_circle:`, or `low :yellow_circle:`.
 Append `:question:` for questions, and show `:green_circle:` in the main comment when no findings are found.
+Append one fixed push-or-command footer to the main review body for every findings-bearing review, including reviews with only inline findings; do not repeat it in inline comments.
 Disclose reduced coverage from optional reviewer failures in the published review and review check, naming each failed reviewer.
 Keep detailed failure reasons in the workflow summary only.
 
@@ -78,6 +79,10 @@ Classify every non-draft, human-authored pull request that passes the integrity 
 Run automated review after the latest CI generation succeeds for the exact classified head.
 Run each subsequent review only after a distinct classified head reaches green exact-head CI.
 At `ai-reviewed/3`, the review pipeline stops; same-head findings keep `needs-author-action`, while no findings hand off immediately.
+The separate `issue_comment.created` workflow accepts only a standalone, single-line `@github-actions review-ready` command from the live PR author by stable ID or a human with live write-level repository permission.
+It checks the latest exact-head findings receipt and matching latest published bot review twice under the same non-canceling per-PR mutation group, then records a separate app-owned `AI review-ready` check without invoking a model or changing review count.
+The acknowledgement persists after comment edits or deletion, but a new head or newer same-head review supersedes it; duplicate comments for the same review create no competing checks.
+Lifecycle prioritizes this receipt over findings only after green exact-head CI and its existing draft, closure, lease, and failure gates pass.
 After a third review, a later classified head with green exact-head CI hands off to `needs-review` only when the latest published bot review matches a trusted `/3` receipt.
 
 `needs-review` means a human reviewer is the next actor, and `needs-author-action` means the author is the next actor.
