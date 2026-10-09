@@ -1586,10 +1586,13 @@ fn build_connector(
     impl GraphicsPipelineHandler for EgfxHandler {}
 
     let mut drdynvc = ironrdp_dvc::DrdynvcClient::new()
-        .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
+        // Factories: servers may create these channels again during the session (xrdp re-creates the
+        // graphics pipeline channel after each resize-triggered reactivation); a one-shot registration
+        // would refuse the new request and silently lose the channel.
+        .with_dynamic_channel_factory(|| DisplayControlClient::new(|_| Ok(Vec::new())))
         .with_dynamic_channel(EchoClient::new())
         .with_dynamic_channel(RdpeiClient::default())
-        .with_dynamic_channel(GraphicsPipelineClient::new(Box::new(EgfxHandler), None));
+        .with_dynamic_channel_factory(|| GraphicsPipelineClient::new(Box::new(EgfxHandler), None));
 
     #[cfg(feature = "location")]
     if config.channels.location {
