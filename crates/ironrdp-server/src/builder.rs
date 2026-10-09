@@ -64,6 +64,7 @@ pub struct BuilderDone {
     autodetect_bandwidth_generation: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
+    auto_reconnect_on_request: bool,
     connection_policy: ConnectionPolicy,
     remotefx_quant: Quant,
     remotefx_entropy_coder: Option<EntropyBits>,
@@ -182,6 +183,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 honor_client_desktop_size: None,
                 connection_policy,
                 auto_reconnect_cookie: None,
+                auto_reconnect_on_request: false,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
                 udp_bind_addr: None,
@@ -220,6 +222,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 honor_client_desktop_size: None,
                 connection_policy,
                 auto_reconnect_cookie: None,
+                auto_reconnect_on_request: false,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
                 udp_bind_addr: None,
@@ -456,11 +459,24 @@ impl RdpServerBuilder<BuilderDone> {
     /// security, which provides the all-zero client random required for Enhanced
     /// RDP Security. `None` (the default) sends no cookie.
     ///
+    /// With [`Self::with_auto_reconnect_on_request`] the cookie is sent only on
+    /// request, and the server regenerates it when the embedder vouches for a
+    /// connection instead of on every connect.
+    ///
     /// See [`RdpServer::set_auto_reconnect_cookie`] for post-construction
     /// configuration and [`RdpServer::auto_reconnect_cookie_handle`] for
     /// updates while the server is running.
     pub fn with_auto_reconnect_cookie(mut self, cookie: Option<ServerAutoReconnect>) -> Self {
         self.state.auto_reconnect_cookie = cookie;
+        self
+    }
+
+    /// Send the cookie only on request instead of at activation.
+    ///
+    /// A server with a connection binder refuses auto-reconnect, so this has no
+    /// useful effect there. See [`RdpServer::set_auto_reconnect_on_request`].
+    pub fn with_auto_reconnect_on_request(mut self, on_request: bool) -> Self {
+        self.state.auto_reconnect_on_request = on_request;
         self
     }
 
@@ -558,6 +574,7 @@ impl RdpServerBuilder<BuilderDone> {
         );
         server.set_credential_validator(self.state.credential_validator);
         server.set_auto_reconnect_cookie(self.state.auto_reconnect_cookie);
+        server.set_auto_reconnect_on_request(self.state.auto_reconnect_on_request);
         server.set_connection_binder(self.state.connection_binder);
         server
     }
