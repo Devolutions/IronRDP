@@ -9,7 +9,7 @@ mod wrapper;
 use std::io::{self, Write as _};
 use std::sync::LazyLock;
 
-pub use api::{CompressionMode, compress_and_wrap_egfx};
+pub use api::{CompressionMode, compress_and_wrap_egfx, wrap_uncompressed_recorded};
 use bitvec::bits;
 use bitvec::field::BitField as _;
 use bitvec::order::Msb0;
