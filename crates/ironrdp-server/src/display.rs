@@ -360,6 +360,11 @@ pub trait RdpServerDisplay: Send {
     /// section 1.3 defines no reject message, so a client that sent a layout
     /// the server cannot apply just waits for a reconfiguration that never
     /// comes. Defaults to `true`, matching every existing implementation.
+    ///
+    /// A connection binder installs its own display during the capability
+    /// exchange, after this is asked. The display given to
+    /// `with_display_handler` therefore decides for every connection, and a
+    /// display installed by a binder can't withdraw the offer.
     async fn offers_display_control(&mut self) -> bool {
         true
     }
