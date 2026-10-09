@@ -688,6 +688,11 @@ impl iron_remote_desktop::Session for Session {
         let desktop_height =
             NonZeroU32::new(u32::from(connection_result.desktop_size.height)).context("desktop height is zero")?;
 
+        ensure_framebuffer_allocatable(
+            connection_result.desktop_size.width,
+            connection_result.desktop_size.height,
+        )?;
+
         let mut gui =
             Canvas::new(self.render_canvas.clone(), desktop_width, desktop_height).context("canvas initialization")?;
 
@@ -1091,6 +1096,7 @@ impl iron_remote_desktop::Session for Session {
                             } = connection_activation.connection_activation_state()
                             {
                                 debug!("Deactivation-Reactivation Sequence completed");
+                                ensure_framebuffer_allocatable(desktop_size.width, desktop_size.height)?;
                                 image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
                                 if !active_stage.reactivate(
                                     connection_activation.io_channel_id(),
@@ -1952,6 +1958,19 @@ where
 
         Ok((upgraded, server_public_key))
     }
+}
+
+fn ensure_framebuffer_allocatable(width: u16, height: u16) -> anyhow::Result<()> {
+    let len = usize::from(width)
+        .checked_mul(usize::from(height))
+        .and_then(|pixels| pixels.checked_mul(usize::from(PixelFormat::RgbA32.bytes_per_pixel())))
+        .with_context(|| format!("framebuffer size overflows for a {width}x{height} desktop"))?;
+
+    Vec::<u8>::new()
+        .try_reserve_exact(len)
+        .with_context(|| format!("not enough memory for a {width}x{height} desktop framebuffer"))?;
+
+    Ok(())
 }
 
 #[expect(clippy::as_conversions, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
