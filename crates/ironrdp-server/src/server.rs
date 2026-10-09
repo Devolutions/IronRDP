@@ -3849,8 +3849,15 @@ impl RdpServer {
                 #[cfg(feature = "egfx")]
                 ServerEvent::Egfx(msg) => match msg {
                     EgfxServerMessage::SendMessages { messages } => {
-                        self.dispatch_egfx_messages(conn, messages, writer, user_channel_id, udp_transport)
-                            .await?;
+                        self.dispatch_egfx_messages(
+                            conn,
+                            messages,
+                            writer,
+                            user_channel_id,
+                            message_channel_id,
+                            udp_transport,
+                        )
+                        .await?;
                     }
                 },
                 ServerEvent::AutoDetectRttRequest => {
@@ -3880,10 +3887,11 @@ impl RdpServer {
                                 .map_err(|e| ServerError::io("write_all", e))?;
                         }
 
-                        // Periodically measure bandwidth: Start on one tick, Stop several
-                        // ticks later, with ordinary traffic in between counted by the
-                        // client, then a Bandwidth Measure Results PDU in reply. Until one
-                        // has completed there is no characteristics result to send at all.
+                        // While no large graphics write has been bracketed recently (see
+                        // `write_egfx_over_tcp`), measure bandwidth over a window of ticks: Start on
+                        // one, Stop several later, with ordinary traffic in between counted
+                        // by the client, then a Bandwidth Measure Results PDU in reply. Until
+                        // one has completed there is no characteristics result to send.
                         if let Some(pdu) = ad.build_bandwidth_measure() {
                             let data = encode_autodetect_request(pdu, message_channel_id, user_channel_id)?;
                             writer
@@ -3921,6 +3929,7 @@ impl RdpServer {
         messages: Vec<ironrdp_svc::SvcMessage>,
         writer: &mut impl FramedWrite,
         user_channel_id: u16,
+        message_channel_id: Option<u16>,
         udp_transport: Option<&multitransport::UdpTransportHandle>,
     ) -> ServerResult<()> {
         let drdynvc_channel_id = conn
@@ -3943,7 +3952,14 @@ impl RdpServer {
             let Some(egfx_dvc_id) = crate::gfx::egfx_channel_id(drdynvc) else {
                 trace!("EGFX channel not open yet, staying on TCP");
                 return self
-                    .write_egfx_over_tcp(messages, writer, drdynvc_channel_id, user_channel_id)
+                    .write_egfx_over_tcp(
+                        conn,
+                        messages,
+                        writer,
+                        drdynvc_channel_id,
+                        user_channel_id,
+                        message_channel_id,
+                    )
                     .await;
             };
 
@@ -3994,24 +4010,63 @@ impl RdpServer {
         if route_over_udp {
             return Ok(());
         }
-        self.write_egfx_over_tcp(messages, writer, drdynvc_channel_id, user_channel_id)
-            .await
+        self.write_egfx_over_tcp(
+            conn,
+            messages,
+            writer,
+            drdynvc_channel_id,
+            user_channel_id,
+            message_channel_id,
+        )
+        .await
     }
 
     #[cfg(feature = "egfx")]
     async fn write_egfx_over_tcp(
         &mut self,
+        conn: &mut ConnectionState,
         messages: Vec<ironrdp_svc::SvcMessage>,
         writer: &mut impl FramedWrite,
         drdynvc_channel_id: u16,
         user_channel_id: u16,
+        message_channel_id: Option<u16>,
     ) -> ServerResult<()> {
         let data =
             server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id).map_err(ServerError::encode)?;
+
+        // Measure bandwidth across this write when it is large enough to
+        // say something about the link: Start, the graphics data and Stop
+        // go out back to back on the same stream, so the client times a
+        // burst rather than whatever idle stretch a fixed window happens
+        // to span.
+        if let (Some(ad), Some(message_channel_id)) = (conn.autodetect.as_mut(), message_channel_id)
+            && let Some(start) = ad.begin_bandwidth_measure(data.len(), monotonic_now_ms())
+        {
+            let start = encode_autodetect_request(start, message_channel_id, user_channel_id)?;
+            writer
+                .write_all(&start)
+                .await
+                .map_err(|e| ServerError::io("write_all", e))?;
+        }
         writer
             .write_all(&data)
             .await
-            .map_err(|e| ServerError::io("write_all", e))
+            .map_err(|e| ServerError::io("write_all", e))?;
+        // Only a bracket this write opened is still pending here, so the manager
+        // returns a Stop for exactly that one, and `None` when no Start was sent.
+        if let Some(message_channel_id) = message_channel_id
+            && let Some(stop) = conn
+                .autodetect
+                .as_mut()
+                .and_then(AutoDetectManager::end_bandwidth_measure)
+        {
+            let stop = encode_autodetect_request(stop, message_channel_id, user_channel_id)?;
+            writer
+                .write_all(&stop)
+                .await
+                .map_err(|e| ServerError::io("write_all", e))?;
+        }
+        Ok(())
     }
 
     /// Writes DRDYNVC output, sending the data of any channel the Soft-Sync
