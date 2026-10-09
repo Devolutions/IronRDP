@@ -1169,6 +1169,9 @@ impl GraphicsPipelineServer {
     /// frames for back-reference efficiency. `WireToSurface1` PDUs carrying
     /// AVC420, AVC444 or AVC444v2 are sent uncompressed in both modes, since
     /// H.264 is already entropy coded; their bytes still enter the history.
+    /// The trade-off is that a byte-identical repeat of an earlier H.264 PDU,
+    /// such as a periodic keyframe of an unchanged screen, is sent in full where
+    /// ZGFX would have matched it against the history.
     pub fn with_compression(handler: Box<dyn GraphicsPipelineHandler>, compression_mode: CompressionMode) -> Self {
         let mut server = Self::new(handler);
         server.compression_mode = compression_mode;

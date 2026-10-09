@@ -16,8 +16,8 @@ pub enum CompressionMode {
     /// Send uncompressed (no CPU overhead).
     ///
     /// Nothing is recorded in the compressor history in this mode, so a [`Compressor`] used with
-    /// `Never` must not later be used with `Auto` or `Always`: the receiver records every
-    /// segment, and the histories would no longer agree.
+    /// `Never` must not later be used with `Auto`, `Always` or [`wrap_uncompressed_recorded()`]:
+    /// the receiver records every segment, and the histories would no longer agree.
     Never,
     /// Compress and use the smaller result (bandwidth vs CPU trade-off).
     Auto,
@@ -80,6 +80,10 @@ pub fn compress_and_wrap_egfx(
 /// other. Use it, in place of [`compress_and_wrap_egfx()`], for data that is
 /// already entropy coded such as H.264, where searching for matches costs CPU
 /// and almost never shrinks the PDU.
+///
+/// The `compressor` history must already hold every byte the receiver has seen
+/// on this stream, so don't use this after PDUs sent with
+/// [`CompressionMode::Never`] or [`wrap_uncompressed()`], which record nothing.
 pub fn wrap_uncompressed_recorded(data: &[u8], compressor: &mut Compressor) -> Vec<u8> {
     compressor.record_uncompressed(data);
     wrap_uncompressed(data)

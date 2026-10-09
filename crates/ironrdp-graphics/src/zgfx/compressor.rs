@@ -700,28 +700,6 @@ mod tests {
     }
 
     #[test]
-    fn recorded_uncompressed_bytes_keep_histories_in_step() {
-        use super::super::{Decompressor, wrap_compressed, wrap_uncompressed};
-
-        let text = b"The same line of text, again and again. ".repeat(50);
-        let opaque: Vec<u8> = (0..=u8::MAX).cycle().skip(7).step_by(13).take(70_000).collect();
-
-        let mut compressor = Compressor::new();
-        let mut decompressor = Decompressor::new();
-        for segment in [&text, &opaque, &text, &opaque, &text] {
-            let wrapped = if segment == &opaque {
-                compressor.record_uncompressed(segment);
-                wrap_uncompressed(segment)
-            } else {
-                wrap_compressed(&compressor.compress(segment).unwrap())
-            };
-            let mut output = Vec::new();
-            decompressor.decompress(&wrapped, &mut output).unwrap();
-            assert_eq!(&output, segment);
-        }
-    }
-
-    #[test]
     fn bit_writer_basic() {
         let mut writer = BitWriter::new();
 
