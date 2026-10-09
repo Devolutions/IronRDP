@@ -189,17 +189,21 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
     /// Optional
     fn websocket_protocols(&self, protocols: js_sys::Array) -> Self {
         // Copy validated values so later changes to the caller's array cannot change the configuration.
-        let protocols = protocols
-            .iter()
-            .try_fold(js_sys::Array::new(), |copy, protocol| {
-                if !protocol.is_string() {
-                    return Err("websocket protocols must be strings");
-                }
+        let protocols = if js_sys::Array::is_array(&protocols) {
+            protocols
+                .iter()
+                .try_fold(js_sys::Array::new(), |copy, protocol| {
+                    if !protocol.is_string() {
+                        return Err("websocket protocols must be strings");
+                    }
 
-                copy.push(&protocol);
-                Ok(copy)
-            })
-            .map(|protocols| (protocols.length() != 0).then_some(protocols));
+                    copy.push(&protocol);
+                    Ok(copy)
+                })
+                .map(|protocols| (protocols.length() != 0).then_some(protocols))
+        } else {
+            Err("websocket protocols must be an array")
+        };
 
         if let Err(error) = protocols {
             warn!(%error, "Invalid WebSocket protocols");
@@ -502,11 +506,11 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         let printer_driver_name = printer_driver_name.unwrap_or_else(default_printer_driver_name);
 
         let ws = if let Some(protocols) = websocket_protocols {
-            let socket = web_sys::WebSocket::new_with_str_sequence(&proxy_address, &protocols)
-                .map_err(|error| anyhow::anyhow!("couldn't open WebSocket: {error:?}"))?;
-            WebSocket::try_from(socket)
+            web_sys::WebSocket::new_with_str_sequence(&proxy_address, &protocols)
+                .map_err(|error| anyhow::anyhow!("{error:?}"))
+                .and_then(|socket| WebSocket::try_from(socket).map_err(anyhow::Error::from))
         } else {
-            WebSocket::open(&proxy_address)
+            WebSocket::open(&proxy_address).map_err(anyhow::Error::from)
         }
         .context("couldn't open WebSocket")?;
 

@@ -27,7 +27,7 @@ export interface SessionBuilder {
     /**
      * Optional
      * Copies the offered subprotocols. An empty array disables subprotocol negotiation.
-     * Non-string entries cause connect() to reject.
+     * Non-array inputs or non-string entries cause connect() to reject.
      */
     webSocketProtocols(protocols: string[]): SessionBuilder;
     /**

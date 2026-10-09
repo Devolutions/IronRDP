@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { RemoteDesktopService } from './remote-desktop.service';
 import { ClipboardService } from './clipboard.service';
 import { PublicAPI } from './PublicAPI';
+import { ConfigBuilder } from './ConfigBuilder';
 import type { Session } from '../interfaces/Session';
 import type { SessionBuilder } from '../interfaces/SessionBuilder';
 import type { RemoteDesktopModule } from '../interfaces/RemoteDesktopModule';
@@ -29,9 +30,7 @@ class MockSessionBuilder {
     proxyAddress(_address: string): this {
         return this;
     }
-    webSocketProtocols(_protocols: string[]): this {
-        return this;
-    }
+    webSocketProtocols = vi.fn().mockReturnThis();
     destination(_dest: string): this {
         return this;
     }
@@ -140,7 +139,6 @@ describe('enableFileTransfer integration', () => {
 
             await service.connect({
                 proxyAddress: 'wss://test',
-                webSocketProtocols: [],
                 destination: 'test:3389',
                 serverDomain: '',
                 password: 'pass',
@@ -161,7 +159,6 @@ describe('enableFileTransfer integration', () => {
 
             await service.connect({
                 proxyAddress: 'wss://test',
-                webSocketProtocols: [],
                 destination: 'test:3389',
                 serverDomain: '',
                 password: 'pass',
@@ -180,7 +177,6 @@ describe('enableFileTransfer integration', () => {
         it('should not register any file transfer extensions', async () => {
             await service.connect({
                 proxyAddress: 'wss://test',
-                webSocketProtocols: [],
                 destination: 'test:3389',
                 serverDomain: '',
                 password: 'pass',
@@ -192,7 +188,21 @@ describe('enableFileTransfer integration', () => {
 
             // No file transfer extensions
             expect(mockBuilderInstance.extensions).toHaveLength(0);
+            expect(mockBuilderInstance.webSocketProtocols).toHaveBeenCalledWith([]);
         });
+    });
+
+    it('should forward configured WebSocket protocols to SessionBuilder', async () => {
+        const config = new ConfigBuilder()
+            .withDestination('test:3389')
+            .withProxyAddress('wss://test')
+            .withAuthToken('token')
+            .withWebSocketProtocols(['binary', 'v2'])
+            .build();
+
+        await service.connect(config);
+
+        expect(mockBuilderInstance.webSocketProtocols).toHaveBeenCalledWith(['binary', 'v2']);
     });
 });
 

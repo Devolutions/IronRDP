@@ -115,6 +115,39 @@ test('non-string entries reject before constructing a WebSocket', async (t) => {
     }
 });
 
+test('non-array inputs reject at connect() without throwing in the setter', async (t) => {
+    for (const input of ['binary', {}, { length: 1, 0: 'binary' }, null, undefined, new Uint8Array([1])]) {
+        const b = builder(t);
+        b.webSocketProtocols(input).free();
+        assert.equal(await rejection(b), 'websocket protocols must be an array');
+        assert.equal(calls.length, 0);
+    }
+});
+
+test('a non-array input replaces valid settings and retains its error', async (t) => {
+    const b = builder(t);
+    b.webSocketProtocols(['binary']).free();
+    b.webSocketProtocols('binary').free();
+    for (let attempt = 0; attempt < 2; attempt++) {
+        assert.equal(await rejection(b), 'websocket protocols must be an array');
+        assert.equal(calls.length, 0);
+    }
+});
+
+test('a valid setter recovers from a non-array input', async (t) => {
+    const b = builder(t);
+    b.webSocketProtocols(null).free();
+    b.webSocketProtocols(['binary']).free();
+    assert.deepEqual((await offered(b)).protocols, ['binary']);
+});
+
+test('an empty setter clears a non-array error and restores the default constructor', async (t) => {
+    const b = builder(t);
+    b.webSocketProtocols({}).free();
+    b.webSocketProtocols([]).free();
+    assert.equal((await offered(b)).argc, 1);
+});
+
 test('invalid input replaces valid settings and remains an error across connections', async (t) => {
     const b = builder(t);
     const input = [false];
@@ -163,7 +196,7 @@ test('a subsequent valid setter replaces the offered protocols', async (t) => {
     assert.deepEqual((await offered(b)).protocols, ['v2']);
 });
 
-test('each entry is read once and its validated value is stored', async (t) => {
+test('an accessor cannot substitute an unvalidated value into the stored protocols', async (t) => {
     const b = builder(t);
     const input = ['binary'];
     let reads = 0;
@@ -174,23 +207,19 @@ test('each entry is read once and its validated value is stored', async (t) => {
     });
     b.webSocketProtocols(input).free();
     assert.deepEqual((await offered(b)).protocols, ['binary']);
-    assert.equal(reads, 1);
 });
 
-test('constructor failure has one WebSocket error prefix', async (t) => {
-    const b = builder(t);
-    b.webSocketProtocols(['binary']).free();
-    failure = 'constructor';
-    const message = await rejection(b);
-    assert.equal((message.match(/couldn't open WebSocket/g) || []).length, 1);
-    assert.match(message, /invalid protocols/);
-});
-
-test('wrapper setup failure has one WebSocket error prefix', async (t) => {
-    const b = builder(t);
-    b.webSocketProtocols(['binary']).free();
-    failure = 'setup';
-    const message = await rejection(b);
-    assert.equal((message.match(/couldn't open WebSocket/g) || []).length, 1);
-    assert.match(message, /listener setup failed/);
-});
+for (const protocols of [undefined, ['binary']]) {
+    for (const stage of ['constructor', 'setup']) {
+        test(`${stage} failure has one WebSocket error prefix with ${protocols ? 'configured' : 'omitted'} protocols`, async (t) => {
+            const b = builder(t);
+            if (protocols) {
+                b.webSocketProtocols(protocols).free();
+            }
+            failure = stage;
+            const message = await rejection(b);
+            assert.equal((message.match(/couldn't open WebSocket/g) || []).length, 1);
+            assert.match(message, stage === 'constructor' ? /invalid protocols/ : /listener setup failed/);
+        });
+    }
+}

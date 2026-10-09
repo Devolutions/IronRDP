@@ -95,7 +95,7 @@ const config = ui
 
 The offered protocols are copied when configuring the session, so later changes to the input array do not affect the connection.
 Omitting this option or passing an empty array preserves the default WebSocket handshake.
-If a JavaScript caller supplies a non-string entry, connection fails with an explicit error instead of using a previous protocol list.
+If a JavaScript caller supplies a non-array value or a non-string entry, connection fails with an explicit error instead of using a previous protocol list.
 
 ## Supported Input
 
