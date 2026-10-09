@@ -2273,8 +2273,9 @@ impl RdpServer {
             return Ok(());
         }
 
-        // A configured channel the client never joined has no ID. Skip it like
-        // `client_accepted` does rather than end the session over it.
+        // Unreachable today: locks and pending requests only accumulate through
+        // a joined channel, so an unjoined one yields no messages above. Kept as
+        // a non-fatal skip because a best-effort sweep must never end the session.
         let Some(channel_id) = conn.get_channel_id_by_type::<CliprdrServer>() else {
             warn!("Clipboard channel not joined, dropping timeout cleanup messages");
             return Ok(());
