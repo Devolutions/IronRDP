@@ -33,7 +33,8 @@ const review = (id = 8) => ({
 });
 
 function workflowScript() {
-  const yaml = fs.readFileSync(path.join(__dirname, "../workflows/pr-automation-retry.yml"), "utf8");
+  const yaml = fs.readFileSync(path.join(__dirname, "../workflows/pr-automation-retry.yml"), "utf8")
+    .replace(/\r\n/g, "\n");
   const script = yaml.split("          script: |\n")[1];
   return script.split("\n").map((line) => line.startsWith("            ") ? line.slice(12) : line)
     .join("\n");
