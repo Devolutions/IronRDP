@@ -80,6 +80,26 @@ use ironrdp_rdpeusb::{InterfaceAlloc, server::UrbdrcControlServer, server::Urbdr
 const LISTENER_BACKLOG: u32 = 1024;
 const AUTO_RECONNECT_COOKIE_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
+/// How often the server drives [`CliprdrServer::drive_timeouts`].
+///
+/// The clipboard channel tracks clipboard-data locks, in-flight file contents
+/// requests and locked file list snapshots against wall-clock deadlines, but it
+/// has no timer of its own: the docs on `drive_timeouts` require the embedder to
+/// call it periodically. `ironrdp-client` and `ironrdp-web` already do; without
+/// this the server role never sends `Unlock` PDUs, never expires locks and never
+/// answers abandoned file contents requests.
+///
+/// Two of those sweeps reach the backend with no PDU from the peer behind them:
+/// a file contents request left pending past the transfer timeout is answered
+/// with a synthetic error through [`on_file_contents_response`], and a locked
+/// file list snapshot left inactive for that same window is dropped with
+/// [`on_unlock`]. Both already run for the client and web roles; a server
+/// backend starts seeing them once this timer does.
+///
+/// [`on_file_contents_response`]: ironrdp_cliprdr::backend::CliprdrBackend::on_file_contents_response
+/// [`on_unlock`]: ironrdp_cliprdr::backend::CliprdrBackend::on_unlock
+const CLIPRDR_DRIVE_TIMEOUTS_INTERVAL: Duration = Duration::from_secs(5);
+
 /// How long a single [`ironrdp_acceptor::accept_finalize`] pass may take before
 /// the connection is dropped.
 ///
@@ -2226,6 +2246,49 @@ impl RdpServer {
         Ok(())
     }
 
+    /// Drives the clipboard channel's time-based cleanup.
+    ///
+    /// See [`CLIPRDR_DRIVE_TIMEOUTS_INTERVAL`]. A cleanup failure is logged and
+    /// swallowed: the sweep is best-effort maintenance, and failing it must not
+    /// disconnect an otherwise healthy session.
+    async fn drive_cliprdr_timeouts(
+        &mut self,
+        conn: &mut ConnectionState,
+        writer: &mut impl FramedWrite,
+        user_channel_id: u16,
+    ) -> ServerResult<()> {
+        let Some(cliprdr) = conn.get_svc_processor::<CliprdrServer>() else {
+            return Ok(());
+        };
+
+        let msgs = match cliprdr.drive_timeouts() {
+            Ok(msgs) => Vec::from(msgs),
+            Err(error) => {
+                warn!(%error, "Clipboard timeout cleanup failed");
+                return Ok(());
+            }
+        };
+
+        if msgs.is_empty() {
+            return Ok(());
+        }
+
+        // Unreachable today: locks and pending requests only accumulate through
+        // a joined channel, so an unjoined one yields no messages above. Kept as
+        // a non-fatal skip because a best-effort sweep must never end the session.
+        let Some(channel_id) = conn.get_channel_id_by_type::<CliprdrServer>() else {
+            warn!("Clipboard channel not joined, dropping timeout cleanup messages");
+            return Ok(());
+        };
+        let data = server_encode_svc_messages(msgs, channel_id, user_channel_id).map_err(ServerError::encode)?;
+        writer
+            .write_all(&data)
+            .await
+            .map_err(|e| ServerError::io("write_all", e))?;
+
+        Ok(())
+    }
+
     async fn update_auto_reconnect_cookie(
         &mut self,
         conn: &mut ConnectionState,
@@ -4268,6 +4331,7 @@ impl RdpServer {
         let mut udp_tunnel_writer = writer.clone();
         let udp_transport_for_events = Rc::clone(&udp_transport);
         let udp_transport_for_pdus = Rc::clone(&udp_transport);
+        let mut cliprdr_writer = writer.clone();
         let write_counter = writer.write_counter();
         let ev_receiver = Arc::clone(&self.ev_receiver);
         let s = Rc::new(Mutex::new((self, conn)));
@@ -4569,6 +4633,25 @@ impl RdpServer {
             }
         };
 
+        let this = Rc::clone(&s);
+        let drive_cliprdr_timeouts = async move {
+            let mut interval = tokio::time::interval(CLIPRDR_DRIVE_TIMEOUTS_INTERVAL);
+            // A stalled write can hold this future past several tick deadlines;
+            // Burst (the default) would then fire the missed ticks back-to-back
+            // for a sweep that is idempotent anyway.
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await; // first tick completes immediately
+
+            loop {
+                interval.tick().await;
+                let mut this = this.lock().await;
+                let (server, conn) = &mut *this;
+                server
+                    .drive_cliprdr_timeouts(conn, &mut cliprdr_writer, user_channel_id)
+                    .await?;
+            }
+        };
+
         let state = tokio::select!(
             state = dispatch_pdu => state,
             state = dispatch_display => state,
@@ -4576,6 +4659,7 @@ impl RdpServer {
             state = refresh_auto_reconnect_cookie => state,
             state = send_heartbeats => state,
             state = dispatch_udp_tunnel => state,
+            state = drive_cliprdr_timeouts => state,
         );
 
         debug!("End of client loop: {state:?}");
@@ -6415,7 +6499,7 @@ mod cliprdr_error_tests {
     }
 
     #[derive(Default)]
-    struct CapturingWriter(Vec<u8>);
+    pub(super) struct CapturingWriter(pub(super) Vec<u8>);
 
     impl FramedWrite for CapturingWriter {
         type WriteAllFut<'write>
@@ -6777,5 +6861,184 @@ mod tests {
             released.load(Ordering::Relaxed),
             "the channel backends of a finished connection must be released, not held until the next client"
         );
+    }
+}
+
+/// The server role must drive [`CliprdrServer::drive_timeouts`] on a timer; see
+/// [`CLIPRDR_DRIVE_TIMEOUTS_INTERVAL`].
+#[cfg(test)]
+mod cliprdr_timeout_tests {
+    use core::any::TypeId;
+    use core::net::Ipv4Addr;
+
+    use ironrdp_cliprdr::Cliprdr;
+    use ironrdp_cliprdr::backend::CliprdrBackend;
+    use ironrdp_cliprdr::pdu::{
+        Capabilities, ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags,
+        ClipboardPdu, ClipboardProtocolVersion, FileContentsRequest, FileContentsResponse, FormatDataRequest,
+        FormatDataResponse, FormatList, LockDataId,
+    };
+    use ironrdp_core::{Encode as _, WriteCursor, impl_as_any};
+
+    use super::cliprdr_error_tests::CapturingWriter;
+    use super::*;
+
+    /// The clipboard channel dates locks from [`CliprdrBackend::now_ms`], so the
+    /// test owns the clock rather than sleeping.
+    #[derive(Debug)]
+    struct ClockBackend(Arc<AtomicU64>);
+
+    impl_as_any!(ClockBackend);
+
+    impl CliprdrBackend for ClockBackend {
+        fn temporary_directory(&self) -> &str {
+            "."
+        }
+
+        fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags {
+            ClipboardGeneralCapabilityFlags::CAN_LOCK_CLIPDATA
+                | ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED
+                | ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES
+        }
+
+        fn on_ready(&mut self) {}
+        fn on_request_format_list(&mut self) {}
+        fn on_process_negotiated_capabilities(&mut self, _: ClipboardGeneralCapabilityFlags) {}
+        fn on_remote_copy(&mut self, _: &[ClipboardFormat]) {}
+        fn on_format_data_request(&mut self, _: FormatDataRequest) {}
+        fn on_format_data_response(&mut self, _: FormatDataResponse<'_>) {}
+        fn on_file_contents_request(&mut self, _: FileContentsRequest) {}
+        fn on_file_contents_response(&mut self, _: FileContentsResponse<'_>) {}
+        fn on_lock(&mut self, _: LockDataId) {}
+        fn on_unlock(&mut self, _: LockDataId) {}
+
+        fn now_ms(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    fn encode_pdu(pdu: &ClipboardPdu<'_>) -> Vec<u8> {
+        let mut buf = vec![0u8; pdu.size()];
+        pdu.encode(&mut WriteCursor::new(&mut buf)).unwrap();
+        buf
+    }
+
+    fn capabilities_buf() -> Vec<u8> {
+        encode_pdu(&ClipboardPdu::Capabilities(Capabilities::new(
+            ClipboardProtocolVersion::V2,
+            ClipboardGeneralCapabilityFlags::CAN_LOCK_CLIPDATA
+                | ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED
+                | ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES,
+        )))
+    }
+
+    fn format_list_buf(formats: &[ClipboardFormat]) -> Vec<u8> {
+        encode_pdu(&ClipboardPdu::FormatList(
+            FormatList::new_unicode(formats, true).unwrap(),
+        ))
+    }
+
+    fn file_format_list_buf() -> Vec<u8> {
+        format_list_buf(&[ClipboardFormat {
+            id: ClipboardFormatId(49171),
+            name: Some(ClipboardFormatName::new("FileGroupDescriptorW")),
+        }])
+    }
+
+    fn text_format_list_buf() -> Vec<u8> {
+        format_list_buf(&[ClipboardFormat {
+            id: ClipboardFormatId::CF_UNICODETEXT,
+            name: None,
+        }])
+    }
+
+    fn server_with_cliprdr(clock: &Arc<AtomicU64>) -> (RdpServer, ConnectionState) {
+        let cliprdr: CliprdrServer = Cliprdr::with_lock_timeouts(
+            Box::new(ClockBackend(Arc::clone(clock))),
+            Duration::from_millis(100),
+            Duration::from_secs(60 * 60),
+        );
+
+        let server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+
+        let mut conn = ConnectionState::default();
+        conn.static_channels.insert(cliprdr);
+        // Returns the *previous* id, so `None` is the expected first attach.
+        conn.static_channels
+            .attach_channel_id(TypeId::of::<CliprdrServer>(), 1004);
+
+        (server, conn)
+    }
+
+    /// An expired lock is released once its inactivity timeout elapses -- but
+    /// only because something drove the sweep.
+    #[tokio::test]
+    async fn an_expired_lock_is_released_when_the_sweep_is_driven() {
+        let clock = Arc::new(AtomicU64::new(0));
+        let (mut server, mut conn) = server_with_cliprdr(&clock);
+
+        let cliprdr = conn.get_svc_processor::<CliprdrServer>().unwrap();
+        cliprdr.process(&capabilities_buf()).unwrap();
+        // Files on the remote clipboard make the channel lock it (2.2.4.1).
+        let messages = cliprdr.process(&file_format_list_buf()).unwrap();
+        assert!(
+            messages.len() >= 2,
+            "a file FormatList must answer FormatListResponse AND send LockData, got {} message(s)",
+            messages.len()
+        );
+
+        // The remote clipboard changes: the lock expires but is deliberately
+        // NOT released yet, because downloads from it may still be in flight.
+        conn.get_svc_processor::<CliprdrServer>()
+            .unwrap()
+            .process(&text_format_list_buf())
+            .unwrap();
+
+        let mut writer = CapturingWriter::default();
+
+        server
+            .drive_cliprdr_timeouts(&mut conn, &mut writer, 1002)
+            .await
+            .unwrap();
+        assert!(
+            writer.0.is_empty(),
+            "a lock that expired 0ms ago is still inside its inactivity window"
+        );
+
+        clock.store(500, Ordering::SeqCst);
+        server
+            .drive_cliprdr_timeouts(&mut conn, &mut writer, 1002)
+            .await
+            .unwrap();
+        assert!(
+            !writer.0.is_empty(),
+            "past the inactivity timeout the sweep must emit an Unlock PDU; \
+             an empty write means the server leaks the lock for the rest of the session"
+        );
+    }
+
+    /// A session without a clipboard channel must not be an error path: the
+    /// timer fires for every connection.
+    #[tokio::test]
+    async fn a_session_without_a_clipboard_channel_sweeps_quietly() {
+        let mut server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+        let mut conn = ConnectionState::default();
+
+        let mut writer = CapturingWriter::default();
+        server
+            .drive_cliprdr_timeouts(&mut conn, &mut writer, 1002)
+            .await
+            .unwrap();
+        assert!(writer.0.is_empty());
     }
 }
