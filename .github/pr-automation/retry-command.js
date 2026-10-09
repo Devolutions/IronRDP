@@ -146,7 +146,7 @@ async function snapshot({ github, owner, repo, prNumber, commentId, eventHadFail
   if (stage === "review") {
     const labels = issue.labels.map((label) => label.name ?? label);
     if (!reviewPolicyEligible({ labels }) || reviewCount(labels) === undefined ||
-        currentClass.status !== "completed" || currentClass.conclusion !== "success")
+        !classValid)
       return null;
     // A published bot review on this head may have escaped a failed check.
     for await (const page of github.paginate.iterator(github.rest.pulls.listReviews, {
@@ -211,9 +211,46 @@ async function acceptRetry({ github, owner, repo, prNumber, commentId, eventHadF
   // Dispatch errors may follow server acceptance: retain the receipt and fail visibly.
   await github.rest.actions.createWorkflowDispatch({
     owner, repo, workflow_id: "pr-automation.yml", ref: "master",
-    inputs: { "pr-number": String(prNumber), review: String(current.stage === "review"), force: "false" },
+    inputs: {
+      "pr-number": String(prNumber), review: String(current.stage === "review"), force: "false",
+      "retry-head-sha": current.headSha,
+      "retry-failure-check-id": String(current.failureCheckId),
+      "retry-admission-check-id": String(admission.id),
+    },
   });
   return true;
 }
 
-module.exports = { acceptRetry, commandBody, marker, parseReceipt, admissionHistory };
+function retryBinding(inputs = {}) {
+  const keys = ["retry-head-sha", "retry-failure-check-id", "retry-admission-check-id"];
+  const values = keys.map((key) => inputs[key]);
+  if (values.every((value) => value === undefined || value === "")) return null;
+  if (!SHA.test(values[0] || "") ||
+      values.slice(1).some((value) => typeof value !== "string" ||
+        !/^[1-9]\d*$/.test(value) || !positiveId(Number(value)))) return false;
+  return { headSha: values[0], failureCheckId: Number(values[1]), admissionCheckId: Number(values[2]) };
+}
+
+async function validRetryBinding({ github, owner, repo, prNumber, stage, binding }) {
+  if (!binding || !positiveId(prNumber) || !["classification", "review"].includes(stage)) return false;
+  try {
+    const history = await admissionHistory(github, owner, repo, binding.headSha);
+    const admitted = history?.[stage].find(({ run }) => run.id === binding.admissionCheckId);
+    if (!admitted || admitted.run.conclusion !== "success" ||
+        admitted.receipt.failure_check_id !== binding.failureCheckId) return false;
+    const state = await snapshot({
+      github, owner, repo, prNumber, commentId: admitted.receipt.comment_id,
+      eventHadFailureLabel: true,
+    });
+    return state?.headSha === binding.headSha && state.stage === stage &&
+      state.failureCheckId === binding.failureCheckId &&
+      state.history[stage].some(({ run, receipt }) =>
+        run.id === binding.admissionCheckId && receipt.comment_id === admitted.receipt.comment_id);
+  } catch {
+    return false;
+  }
+}
+
+module.exports = {
+  acceptRetry, commandBody, marker, parseReceipt, admissionHistory, retryBinding, validRetryBinding,
+};

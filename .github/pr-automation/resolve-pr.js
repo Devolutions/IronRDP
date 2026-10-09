@@ -1,5 +1,7 @@
 "use strict";
 
+const { retryBinding, validRetryBinding } = require("./retry-command");
+
 const SHA = /^[0-9a-f]{40}$/;
 
 function noResult(reason, route = "unknown", pr = null, observedCiRun = null) {
@@ -68,6 +70,10 @@ async function resolvePr({ github, context, inputs = {} }) {
   const force = route === "dispatch" && inputFlag(inputs.force ?? context.payload.inputs?.force);
   const dispatchReview = route === "dispatch" &&
     inputFlag(inputs.review ?? context.payload.inputs?.review);
+  const binding = route === "dispatch" ?
+    retryBinding(context.payload.inputs) : null;
+  if (binding === false || (binding && force))
+    return noResult("invalid retry binding", route);
   let pr;
   let observedCiRun = null;
   try {
@@ -134,6 +140,10 @@ async function resolvePr({ github, context, inputs = {} }) {
   const reviewRequested = dispatchReview;
   const classificationRequested = route === "classification" ||
     (route === "dispatch" && !dispatchReview);
+  if (binding && !await validRetryBinding({
+    github, owner, repo, prNumber: pr.number,
+    stage: dispatchReview ? "review" : "classification", binding,
+  })) return noResult("retry binding is stale", route, pr);
   return {
     ok: true, route, prNumber: pr.number, headSha: pr.head.sha, baseSha: pr.base.sha,
     labels,
@@ -142,6 +152,7 @@ async function resolvePr({ github, context, inputs = {} }) {
       association: pr.author_association || null,
     },
     force,
+    retryBinding: binding,
     observedCiRun,
     reviewRequested,
     classificationRequested,

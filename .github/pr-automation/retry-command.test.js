@@ -6,7 +6,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const { encodeCheckState, SCHEMA_VERSION } = require("./validate-classifier");
-const { acceptRetry, commandBody, marker } = require("./retry-command");
+const { acceptRetry, commandBody, marker, retryBinding, validRetryBinding } = require("./retry-command");
+const { resolvePr } = require("./resolve-pr");
+const { claimAutomaticLease } = require("./automation-lease");
 
 const SHA = "a".repeat(40);
 const NEXT = "b".repeat(40);
@@ -42,6 +44,7 @@ function mock(options = {}) {
     pull: { number: 42, state: "open", draft: false, issue_url: ISSUE_URL,
       created_at: "2026-04-01T00:00:00Z", author_association: "MEMBER",
       head: { sha: SHA, repo: { full_name: "Devolutions/IronRDP" } },
+      base: { sha: NEXT },
       user: { id: 2, type: "User", login: "author" } },
     comment: { id: 19, issue_url: ISSUE_URL, body: "@github-actions retry",
       created_at: "2026-05-01T12:00:00Z",
@@ -96,13 +99,15 @@ function mock(options = {}) {
           state.writes.push(params);
           const data = { ...params, id: nextCheckId++, created_at: new Date(AT).toISOString(),
             app: { slug: "github-actions" } };
-          state.admissions.push(data);
+          if (params.name === "AI classification") state.classification.unshift(data);
+          else state.admissions.push(data);
           state.afterCreate?.(state);
           return { data };
         },
         update: async (params) => {
           state.writes.push(params);
-          Object.assign(state.admissions.find((run) => run.id === params.check_run_id), params);
+          Object.assign([...state.admissions, ...state.classification]
+            .find((run) => run.id === params.check_run_id), params);
           return { data: {} };
         },
       },
@@ -132,11 +137,15 @@ async function embedded(fixture, event = {}) {
     .runInThisContext()(fixture.github, context, rootRequire);
 }
 
-test("standalone command and trusted issue_comment script dispatch only ordinary workflow", async () => {
+test("standalone command dispatches a bound retry and CI runs every automation suite", async () => {
   const caller = fs.readFileSync(path.join(__dirname, "../workflows/pr-automation.yml"), "utf8");
+  const ciWorkflow = fs.readFileSync(path.join(__dirname, "../workflows/ci.yml"), "utf8");
+  assert.match(ciWorkflow, /node --test \.github\/pr-automation\/automation\.test\.js \.github\/pr-automation\/review-ready\.test\.js \.github\/pr-automation\/retry-command\.test\.js/);
   assert.match(caller, /workflow_dispatch:\s*\n\s*inputs:/);
   assert.match(caller, /review:\s*\n(?:[^\n]*\n)*?\s*type: boolean/);
   assert.match(caller, /force:\s*\n(?:[^\n]*\n)*?\s*type: boolean/);
+  assert.match(caller, /retry-binding: \$\{\{ steps\.resolve\.outputs\.retry-binding \}\}/);
+  assert.equal((caller.match(/retryBinding: process\.env\.RETRY_BINDING \? JSON\.parse/g) || []).length, 2);
   assert.match(caller, /\(github\.event_name == 'workflow_dispatch' && inputs\.review\)/);
   const resolver = fs.readFileSync(path.join(__dirname, "resolve-pr.js"), "utf8");
   assert.match(resolver, /const dispatchReview = route === "dispatch" &&\s*\n\s*inputFlag\(/);
@@ -150,7 +159,10 @@ test("standalone command and trusted issue_comment script dispatch only ordinary
   assert.equal(fixture.state.dispatches.length, 1);
   assert.deepEqual(fixture.state.dispatches[0], {
     owner: args.owner, repo: args.repo, workflow_id: "pr-automation.yml", ref: "master",
-    inputs: { "pr-number": "42", review: "false", force: "false" },
+    inputs: {
+      "pr-number": "42", review: "false", force: "false",
+      "retry-head-sha": SHA, "retry-failure-check-id": "5", "retry-admission-check-id": "100",
+    },
   });
   assert.equal(fixture.state.admissions[0].name, "AI retry admission");
   assert.equal(fixture.state.readNames.filter((name) => name === "classification").length, 3);
@@ -355,4 +367,94 @@ test("recheck head, permission, CI generation and stage before dispatch; retain 
     assert.equal(await failed.execute(), false);
     assert.equal(failed.state.dispatches.length, dispatchFailure.accepted ? 1 : 0);
   }
+});
+
+test("bound dispatch rejects stale state before routing and queued changes before lease claim", async () => {
+  const variants = [
+    ["head moved", (s) => { s.pull.head.sha = NEXT; }],
+    ["new same-stage failure", (s) => { s.classification.unshift(classification("neutral", 9)); }],
+    ["superseding success", (s) => { s.classification.unshift(classification("success", 9)); }],
+    ["foreign admission", (s) => { s.admissions[0].app.slug = "other"; }],
+    ["malformed admission", (s) => { s.admissions[0].output.summary = "not a receipt"; }],
+    ["receipt failure changed", (s) => { s.admissions[0].output.summary =
+      marker({ headSha: SHA, stage: "classification", commentId: 19, failureCheckId: 9 }); }],
+    ["missing failure label", (s) => { s.labels = []; }],
+  ];
+  const context = (inputs) => ({
+    eventName: "workflow_dispatch", repo: { owner: args.owner, repo: args.repo },
+    payload: { inputs },
+  });
+  for (const [name, change] of variants) {
+    const fixture = mock();
+    assert.equal(await fixture.execute(), true);
+    const inputs = fixture.state.dispatches[0].inputs;
+    change(fixture.state);
+    const decision = await resolvePr({ github: fixture.github, context: context(inputs) });
+    assert.equal(decision.ok, false, name);
+    assert.equal(fixture.state.writes.length, 1, name);
+  }
+  for (const inputsChange of [
+    (i) => { delete i["retry-head-sha"]; },
+    (i) => { delete i["retry-failure-check-id"]; },
+    (i) => { delete i["retry-admission-check-id"]; },
+    (i) => { i["retry-admission-check-id"] = "0"; },
+    (i) => { i.review = "true"; },
+  ]) {
+    const fixture = mock();
+    assert.equal(await fixture.execute(), true);
+    const inputs = { ...fixture.state.dispatches[0].inputs };
+    inputsChange(inputs);
+    assert.equal((await resolvePr({ github: fixture.github, context: context(inputs) })).ok, false);
+  }
+  const fixture = mock();
+  assert.equal(await fixture.execute(), true);
+  const inputs = fixture.state.dispatches[0].inputs;
+  const initial = await resolvePr({ github: fixture.github, context: context(inputs) });
+  assert.equal(initial.ok, true);
+  assert.equal(await validRetryBinding({
+    github: fixture.github, ...args, stage: "classification", binding: retryBinding(inputs),
+  }), true);
+  fixture.state.classification.unshift(classification("neutral", 9));
+  const claim = await claimAutomaticLease({
+    github: fixture.github, owner: args.owner, repo: args.repo,
+    kind: "classification", headSha: initial.headSha, prNumber: args.prNumber,
+    runId: 123, attempt: 1, retryBinding: initial.retryBinding,
+  });
+  assert.equal(claim.owner, false);
+  assert.equal(fixture.state.writes.length, 1, "no canonical lease claimed after queued change");
+
+  const manual = await resolvePr({ github: fixture.github, context: context({
+    "pr-number": "42", review: "false", force: "true",
+  }) });
+  assert.equal(manual.ok, true);
+  assert.equal(manual.retryBinding, null);
+
+  const valid = mock();
+  assert.equal(await valid.execute(), true);
+  const admitted = await resolvePr({
+    github: valid.github, context: context(valid.state.dispatches[0].inputs),
+  });
+  assert.equal(admitted.ok, true);
+  const owned = await claimAutomaticLease({
+    github: valid.github, owner: args.owner, repo: args.repo,
+    kind: "classification", headSha: admitted.headSha, prNumber: args.prNumber,
+    runId: 124, attempt: 1, retryBinding: admitted.retryBinding,
+  });
+  assert.equal(owned.owner, true, "a valid retry must be able to claim its lease");
+
+  const reviewRetry = mock({
+    classification: [classification("success")], review: [review()],
+    labels: ["automation-failed", "ai-reviewed/1"],
+  });
+  assert.equal(await reviewRetry.execute(), true);
+  const reviewInputs = reviewRetry.state.dispatches[0].inputs;
+  assert.equal(reviewInputs.review, "true");
+  assert.equal(reviewInputs["retry-failure-check-id"], "8");
+  assert.equal((await resolvePr({
+    github: reviewRetry.github, context: context(reviewInputs),
+  })).ok, true);
+  reviewRetry.state.review.unshift(review(9));
+  assert.equal((await resolvePr({
+    github: reviewRetry.github, context: context(reviewInputs),
+  })).ok, false);
 });
