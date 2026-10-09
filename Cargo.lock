@@ -2666,7 +2666,7 @@ dependencies = [
  "ironrdp-rdpfile",
  "ironrdp-rpc",
  "libc",
- "md-5 0.10.6",
+ "md-5 0.11.0",
  "png",
  "serde",
  "serde_json",
