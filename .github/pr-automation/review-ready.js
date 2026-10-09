@@ -4,7 +4,7 @@ const { canonicalRuns } = require("./automation-lease");
 const { readCheckRuns } = require("./check-runs");
 const { trustedReviewReceipt } = require("./review-outcome");
 const { reviewCount } = require("./review-count");
-const { exactKeys } = require("./validation");
+const { exactKeys, SHA } = require("./validation");
 
 const NAME = "AI review-ready";
 const PREFIX = "ironrdp-pr-automation-review-ready:";
@@ -31,7 +31,7 @@ function serverSecond(value) {
 }
 
 function encodeReady({ headSha, commentId, reviewId, checkId }) {
-  if (!/^[0-9a-f]{40}$/.test(headSha) ||
+  if (!SHA.test(headSha) ||
       ![commentId, reviewId, checkId].every(positiveId)) throw new Error("invalid review-ready receipt");
   return `${PREFIX} ${JSON.stringify({
     schema_version: VERSION, head_sha: headSha, comment_id: commentId,
@@ -77,7 +77,7 @@ async function authoritativeFindings({ github, owner, repo, prNumber, headSha, r
   if (receipt?.outcome !== "findings" || !positiveId(current.id) ||
       (labels && reviewCount(labels) !== receipt.next_review_count)) return null;
   const review = await publishedReview(github, owner, repo, prNumber);
-  if (!positiveId(review?.id) || review.commit_id !== headSha ||
+  if (!review || review.commit_id !== headSha ||
       typeof review.body !== "string" ||
       !receipt.review_marker ||
       !(review.body === receipt.review_marker ||
@@ -117,7 +117,7 @@ async function acceptReviewReady({ github, owner, repo, prNumber, commentId }) {
         comment.id !== commentId ||
         comment.issue_url !== pull.issue_url || !commandBody(comment.body) ||
         comment.user?.type !== "User" || !positiveId(comment.user?.id) ||
-        !/^[0-9a-f]{40}$/.test(pull.head?.sha)) return null;
+        !SHA.test(pull.head?.sha || "")) return null;
     if (comment.user.id !== pull.user?.id) {
       let permission;
       try {
