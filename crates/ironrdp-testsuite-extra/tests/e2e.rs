@@ -552,7 +552,8 @@ async fn each_connection_gets_its_own_display_context() {
             let client = tokio::task::spawn_local(async move {
                 let server_addr = local_addr_of(&ev).await;
 
-                let (mut stage, activation_factory, mut framed) = connect(server_addr).await;
+                let (mut stage, activation_factory, mut framed) =
+                    connect_active_client(server_addr, default_client_config(), None).await;
                 let first = ctx_rx.recv().await.expect("first connection's display context");
 
                 // The client answers an RTT probe on its own, and the server
@@ -592,38 +593,7 @@ async fn each_connection_gets_its_own_display_context() {
                         }
                     }
                 }
-                let mut connection_activation = activation_factory.create();
-                let mut buf = pdu::WriteBuf::new();
-                loop {
-                    let written =
-                        ironrdp_async::single_sequence_step_read(&mut framed, &mut connection_activation, &mut buf)
-                            .await
-                            .expect("read deactivation-reactivation sequence step");
-                    if written.size().is_some() {
-                        framed
-                            .write_all(buf.filled())
-                            .await
-                            .expect("write deactivation-reactivation sequence step");
-                    }
-                    if let connector::connection_activation::ConnectionActivationState::Finalized {
-                        share_id,
-                        enable_server_pointer,
-                        pointer_software_rendering,
-                        static_channel_chunk_size,
-                        ..
-                    } = connection_activation.connection_activation_state()
-                    {
-                        assert!(stage.reactivate(
-                            connection_activation.io_channel_id(),
-                            connection_activation.user_channel_id(),
-                            share_id,
-                            enable_server_pointer,
-                            pointer_software_rendering,
-                            static_channel_chunk_size,
-                        ));
-                        break;
-                    }
-                }
+                run_reactivation(&mut stage, &activation_factory, &mut framed).await;
                 let reactivated = ctx_rx.recv().await.expect("reactivated connection's display context");
                 assert!(Arc::ptr_eq(&first.display_suppressed, &reactivated.display_suppressed));
                 assert!(Arc::ptr_eq(&first.autodetect.rtt, &reactivated.autodetect.rtt));
@@ -647,7 +617,7 @@ async fn each_connection_gets_its_own_display_context() {
                 first.autodetect.bandwidth_generation.store(3, Ordering::Release);
                 disconnect(stage, framed).await;
 
-                let (stage, _, framed) = connect(server_addr).await;
+                let (stage, _, framed) = connect_active_client(server_addr, default_client_config(), None).await;
                 let second = ctx_rx.recv().await.expect("second connection's display context");
                 assert!(!Arc::ptr_eq(&first.display_suppressed, &second.display_suppressed));
                 assert!(!Arc::ptr_eq(&first.autodetect.rtt, &second.autodetect.rtt));
@@ -696,31 +666,6 @@ async fn each_connection_gets_its_own_display_context() {
                 rx: Arc::clone(&self.updates),
             }))
         }
-    }
-
-    async fn connect(
-        server_addr: SocketAddr,
-    ) -> (
-        ActiveStage,
-        connector::connection_activation::ConnectionActivationFactory,
-        Framed<TokioStream<TlsStream<TcpStream>>>,
-    ) {
-        let (framed, connection_result) = connect_client(server_addr, |client_addr| {
-            connector::ClientConnector::new(default_client_config(), client_addr)
-        })
-        .await;
-        let stage = ActiveStageBuilder {
-            static_channels: connection_result.static_channels,
-            user_channel_id: connection_result.user_channel_id,
-            io_channel_id: connection_result.io_channel_id,
-            message_channel_id: connection_result.message_channel_id,
-            share_id: connection_result.share_id,
-            compression_type: connection_result.compression_type,
-            enable_server_pointer: connection_result.enable_server_pointer,
-            pointer_software_rendering: connection_result.pointer_software_rendering,
-        }
-        .build();
-        (stage, connection_result.activation_factory, framed)
     }
 
     async fn disconnect(stage: ActiveStage, mut framed: Framed<TokioStream<TlsStream<TcpStream>>>) {
