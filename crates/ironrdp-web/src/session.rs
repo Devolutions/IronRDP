@@ -199,7 +199,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 copy.push(&protocol);
                 Ok(copy)
             })
-            .map(Some);
+            .map(|protocols| (protocols.length() != 0).then_some(protocols));
 
         if let Err(error) = protocols {
             warn!(%error, "Invalid WebSocket protocols");
@@ -501,7 +501,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         let printer_name = printer_name.unwrap_or_else(|| "IronRDP Virtual Printer".to_owned());
         let printer_driver_name = printer_driver_name.unwrap_or_else(default_printer_driver_name);
 
-        let ws = if let Some(protocols) = websocket_protocols.filter(|protocols| protocols.length() != 0) {
+        let ws = if let Some(protocols) = websocket_protocols {
             let socket = web_sys::WebSocket::new_with_str_sequence(&proxy_address, &protocols)
                 .map_err(|error| anyhow::anyhow!("couldn't open WebSocket: {error:?}"))?;
             WebSocket::try_from(socket)
