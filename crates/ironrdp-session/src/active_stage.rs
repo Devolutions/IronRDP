@@ -27,7 +27,6 @@ use ironrdp_rdpei::RdpeiClient;
 use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
 use tracing::{debug, warn};
 
-use crate::autodetect::AutoDetectResponder;
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
 use crate::{SessionError, SessionErrorExt as _, SessionResult, fast_path, x224};
@@ -50,8 +49,6 @@ pub struct ActiveStage {
     window_support_level: Option<WindowSupportLevel>,
     graphics_output_needs_full_refresh: bool,
     damage_regions: Vec<InclusiveRectangle>,
-    /// Answers the auto-detect requests carried on the reliable UDP tunnel.
-    tunnel_auto_detect: AutoDetectResponder,
 }
 
 /// Builder for [`ActiveStage`].
@@ -110,7 +107,6 @@ impl ActiveStageBuilder {
             window_support_level: None,
             graphics_output_needs_full_refresh: false,
             damage_regions: Vec::new(),
-            tunnel_auto_detect: AutoDetectResponder::default(),
         }
     }
 }
@@ -595,12 +591,16 @@ impl ActiveStage {
     /// carries for an open bandwidth measurement. Returns the responses to send back on the
     /// tunnel.
     ///
-    /// The tunnel keeps its own measurement, apart from the message channel's, because a
-    /// measurement on the tunnel counts only the data that follows the tunnel PDU header
-    /// ([MS-RDPBCGR] 3.2.5.14). As on the message channel, received bytes are counted before
-    /// handling control messages: a Start resets the count, and a Stop includes the carrying
-    /// PDU's data in the result. Sub-header bytes themselves never count on the tunnel.
-    /// `received_at` is the time the PDU arrived, from one monotonic clock for the whole tunnel.
+    /// The tunnel and the main connection share one measurement, as [MS-RDPBCGR] 3.2.5.14
+    /// defines one byte count and one timer: a window opened on either transport counts the
+    /// data received on both, and a Stop on either transport closes it. On the tunnel only the
+    /// data after the tunnel PDU header counts, so sub-header bytes never do. As on the message
+    /// channel, received bytes are counted before handling control messages: a Start resets the
+    /// count, and a Stop includes the carrying PDU's data in the result.
+    ///
+    /// `received_at` is the time the transport read the PDU, from the same monotonic clock as
+    /// the timestamps given to [`Self::process_with_timestamp`]. Without it, a bandwidth
+    /// measurement is answered with an untimed, zero-byte result.
     ///
     /// [MS-RDPEMT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/4f538fd7-3aca-4e7d-a213-13eb5f95c1ad
     /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/16ffa852-8aa7-481c-99a0-36c1a9a198f6
@@ -608,12 +608,12 @@ impl ActiveStage {
         &mut self,
         requests: Vec<AutoDetectRequest>,
         data_len: usize,
-        received_at: MonotonicInstant,
+        received_at: Option<MonotonicInstant>,
     ) -> Vec<AutoDetectResponse> {
-        self.tunnel_auto_detect.record_bytes(data_len);
+        self.x224_processor.record_bandwidth_bytes(data_len);
         requests
             .into_iter()
-            .filter_map(|request| self.tunnel_auto_detect.respond(request, Some(received_at)))
+            .filter_map(|request| self.x224_processor.respond_auto_detect(request, received_at))
             .collect()
     }
 

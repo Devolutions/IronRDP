@@ -3,7 +3,7 @@ use ironrdp_core::{Decode as _, MonotonicInstant, ReadCursor, WriteBuf, decode};
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelMut, DynamicChannelRef};
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndicationCtx};
-use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectRspPdu};
+use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, IoChannelPdu, ShareDataCtx, ShareDataPdu,
@@ -473,6 +473,16 @@ impl Processor {
     /// the bytes after that header ([MS-RDPBCGR] 3.2.5.14).
     pub(crate) fn record_bandwidth_bytes(&mut self, bytes: usize) {
         self.auto_detect.record_bytes(bytes);
+    }
+
+    /// Answers an auto-detect request that arrived on another transport, using the same
+    /// measurement state as the message channel.
+    pub(crate) fn respond_auto_detect(
+        &mut self,
+        request: AutoDetectRequest,
+        received_at: Option<MonotonicInstant>,
+    ) -> Option<AutoDetectResponse> {
+        self.auto_detect.respond(request, received_at)
     }
 
     /// Process a PDU received on the MCS message channel: auto-detect

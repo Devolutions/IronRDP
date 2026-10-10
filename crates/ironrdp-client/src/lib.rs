@@ -17,12 +17,5 @@ mod clipboard;
 
 mod ws;
 
-#[cfg(all(feature = "udp", feature = "__test"))]
-#[doc(hidden)]
-pub mod udp;
-#[cfg(all(feature = "udp", not(feature = "__test")))]
-#[expect(
-    unreachable_pub,
-    reason = "the __test feature exposes this module to the shared integration tests"
-)]
+#[cfg(feature = "udp")]
 mod udp;

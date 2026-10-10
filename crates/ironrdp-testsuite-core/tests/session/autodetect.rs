@@ -471,7 +471,7 @@ fn at(millis: u64) -> ironrdp_core::MonotonicInstant {
 #[test]
 fn tunnel_auto_detect_answers_an_rtt_request() {
     let mut stage = make_active_stage();
-    let responses = stage.process_tunnel_auto_detect(vec![AutoDetectRequest::rtt_continuous(7)], 10, at(1_000));
+    let responses = stage.process_tunnel_auto_detect(vec![AutoDetectRequest::rtt_continuous(7)], 10, Some(at(1_000)));
     assert_eq!(responses, [AutoDetectResponse::RttResponse { sequence_number: 7 }]);
 }
 
@@ -483,11 +483,16 @@ fn tunnel_auto_detect_counts_the_data_between_start_and_stop() {
 
     assert!(
         stage
-            .process_tunnel_auto_detect(vec![AutoDetectRequest::bw_start_continuous(1)], 7, at(1_000))
+            .process_tunnel_auto_detect(vec![AutoDetectRequest::bw_start_continuous(1)], 7, Some(at(1_000)))
             .is_empty()
     );
-    assert!(stage.process_tunnel_auto_detect(Vec::new(), 100, at(1_010)).is_empty());
-    let responses = stage.process_tunnel_auto_detect(vec![AutoDetectRequest::bw_stop_continuous(3)], 50, at(1_040));
+    assert!(
+        stage
+            .process_tunnel_auto_detect(Vec::new(), 100, Some(at(1_010)))
+            .is_empty()
+    );
+    let responses =
+        stage.process_tunnel_auto_detect(vec![AutoDetectRequest::bw_stop_continuous(3)], 50, Some(at(1_040)));
 
     let [
         AutoDetectResponse::BandwidthMeasureResults {
@@ -503,35 +508,79 @@ fn tunnel_auto_detect_counts_the_data_between_start_and_stop() {
     assert_eq!((*sequence_number, *time_delta_ms, *byte_count), (3, 40, 100 + 50));
 }
 
-/// The tunnel and the main connection each keep their own measurement, so data received on one
-/// is not counted in the other's, even while both windows are open.
+/// The tunnel and the main connection share one byte count and one timer ([MS-RDPBCGR]
+/// 3.2.5.14): a window opened on the main connection counts tunnel data too, a Stop on the
+/// tunnel closes it, and the result goes back on the tunnel.
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/16ffa852-8aa7-481c-99a0-36c1a9a198f6
 #[test]
-fn tunnel_and_main_connection_measure_separately() {
+fn tunnel_and_main_connection_share_one_measurement() {
     let mut stage = make_active_stage();
     let mut image = DecodedImage::new(PixelFormat::RgbA32, 64, 64);
 
     let start = encode_server_autodetect(AutoDetectRequest::bw_start_continuous(1));
     process_stage_frame(&mut stage, &mut image, Action::X224, &start, 1_000);
-    stage.process_tunnel_auto_detect(vec![AutoDetectRequest::bw_start_continuous(1)], 0, at(1_000));
-
     process_stage_frame(&mut stage, &mut image, Action::FastPath, &fast_path_frame(100), 1_010);
-    stage.process_tunnel_auto_detect(Vec::new(), 500, at(1_010));
-
-    let tunnel = stage.process_tunnel_auto_detect(vec![AutoDetectRequest::bw_stop_continuous(2)], 0, at(1_020));
     assert!(
-        matches!(
-            tunnel.as_slice(),
-            [AutoDetectResponse::BandwidthMeasureResults { byte_count: 500, .. }]
-        ),
-        "{tunnel:?}"
+        stage
+            .process_tunnel_auto_detect(Vec::new(), 500, Some(at(1_015)))
+            .is_empty()
     );
 
-    let stop = encode_server_autodetect(AutoDetectRequest::bw_stop_continuous(2));
-    let outputs = process_stage_frame(&mut stage, &mut image, Action::X224, &stop, 1_020);
+    let tunnel = stage.process_tunnel_auto_detect(vec![AutoDetectRequest::bw_stop_continuous(2)], 0, Some(at(1_020)));
+    let tcp_bytes = u32::try_from(fast_path_frame(100).len()).unwrap();
+    assert_eq!(
+        tunnel,
+        [AutoDetectResponse::BandwidthMeasureResults {
+            sequence_number: 2,
+            response_type: 0x000b,
+            time_delta_ms: 20,
+            byte_count: tcp_bytes + 500,
+        }]
+    );
+
+    // The tunnel's Stop closed the only window, so a later Stop on the main connection has
+    // nothing to report.
+    let stop = encode_server_autodetect(AutoDetectRequest::bw_stop_continuous(3));
+    let outputs = process_stage_frame(&mut stage, &mut image, Action::X224, &stop, 1_030);
     let [ActiveStageOutput::ResponseFrame(response)] = outputs.as_slice() else {
         panic!("expected exactly one bandwidth response, got {outputs:?}");
     };
-    // The complete fast-path frame and the Stop's own six bytes, but none of the tunnel's 500.
-    let tcp_bytes = u32::try_from(fast_path_frame(100).len()).unwrap();
-    assert_eq!(bandwidth_result_frame(response), (2, 0x000b, 20, tcp_bytes + 6));
+    assert_eq!(bandwidth_result_frame(response), (3, 0x000b, 1, 0));
+}
+
+/// A window opened on the tunnel is closed by a Stop on the main connection, and the result
+/// goes back there.
+#[test]
+fn tunnel_start_and_main_connection_stop_measure_one_window() {
+    let mut stage = make_active_stage();
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 64, 64);
+
+    stage.process_tunnel_auto_detect(vec![AutoDetectRequest::bw_start_continuous(1)], 0, Some(at(1_000)));
+    stage.process_tunnel_auto_detect(Vec::new(), 300, Some(at(1_010)));
+
+    let stop = encode_server_autodetect(AutoDetectRequest::bw_stop_continuous(2));
+    let outputs = process_stage_frame(&mut stage, &mut image, Action::X224, &stop, 1_025);
+    let [ActiveStageOutput::ResponseFrame(response)] = outputs.as_slice() else {
+        panic!("expected exactly one bandwidth response, got {outputs:?}");
+    };
+    // The tunnel's 300 bytes and the Stop's own six bytes after its Security Header.
+    assert_eq!(bandwidth_result_frame(response), (2, 0x000b, 25, 300 + 6));
+}
+
+/// Without an arrival time, a tunnel bandwidth measurement is answered as untimed.
+#[test]
+fn untimed_tunnel_stop_reports_no_measurement() {
+    let mut stage = make_active_stage();
+    stage.process_tunnel_auto_detect(vec![AutoDetectRequest::bw_start_continuous(1)], 0, Some(at(1_000)));
+    stage.process_tunnel_auto_detect(Vec::new(), 300, Some(at(1_010)));
+    let responses = stage.process_tunnel_auto_detect(vec![AutoDetectRequest::bw_stop_continuous(2)], 0, None);
+    assert!(matches!(
+        responses.as_slice(),
+        [AutoDetectResponse::BandwidthMeasureResults {
+            time_delta_ms: 1,
+            byte_count: 0,
+            ..
+        }]
+    ));
 }

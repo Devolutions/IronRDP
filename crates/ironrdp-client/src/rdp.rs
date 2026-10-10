@@ -9,7 +9,7 @@ use std::io;
 use std::sync::Arc;
 #[cfg(feature = "location")]
 use std::sync::mpsc as std_mpsc;
-#[cfg(any(feature = "location", feature = "udp"))]
+#[cfg(feature = "location")]
 use std::time::Instant;
 
 #[cfg(feature = "clipboard")]
@@ -85,8 +85,16 @@ use ironrdp_rdpsnd_native::{RdpeaiCaptureBackend, cpal};
 use crate::config::{Config, RDCleanPathConfig, Transport};
 use crate::rail::{RailClient, RailControlEvent, RailEvent, RailInputEvent};
 #[cfg(feature = "udp")]
-use crate::udp::{disable_failed_tunnel, tunnel_auto_detect_requests, tunnel_auto_detect_sub_header};
+use crate::udp::disable_failed_tunnel;
 use ironrdp_rail::pdu::{ExecutePdu, ExecuteResultPdu};
+
+/// A Tunnel Data PDU received on the reliable UDP tunnel, ready for the session.
+struct ReceivedTunnelMessage {
+    auto_detect_requests: Vec<AutoDetectRequest>,
+    payload: Vec<u8>,
+    /// When the transport read the PDU, on the clock of the TCP reader's `last_read_at`.
+    received_at: Option<ironrdp_core::MonotonicInstant>,
+}
 
 // ── Public event types ────────────────────────────────────────────────────────
 
@@ -3111,9 +3119,6 @@ async fn active_session(
     let mut graceful_shutdown_sent = false;
     let mut post_logon_redraw_requested = false;
     let mut pending_udp_payload: Option<Vec<u8>> = None;
-    // Auto-detect on the tunnel is timed against its own monotonic clock.
-    #[cfg(feature = "udp")]
-    let tunnel_clock = Instant::now();
     let mut initial_outputs = if *graceful_close_receiver.borrow_and_update() {
         graceful_shutdown_sent = true;
         Some(active_stage.graceful_shutdown()?)
@@ -3262,18 +3267,24 @@ async fn active_session(
                     #[cfg(feature = "udp")]
                     {
                         match (udp_tunnel.transport.as_mut(), pending_udp_payload.is_none()) {
-                            (Some(transport), true) => transport
-                                .recv_message()
-                                .await
-                                .map(|message| (tunnel_auto_detect_requests(&message.sub_headers), message.data)),
+                            (Some(transport), true) => match transport.recv_message().await {
+                                // The read time comes from the same clock as the TCP reader's
+                                // `last_read_at`, so a bandwidth window can span both transports.
+                                Some(message) => Some(ReceivedTunnelMessage {
+                                    auto_detect_requests: message.auto_detect_requests(),
+                                    payload: message.data,
+                                    received_at: transport.last_received_at(),
+                                }),
+                                None => None,
+                            },
                             (Some(_), false) | (None, _) => {
-                                core::future::pending::<Option<(Vec<AutoDetectRequest>, Vec<u8>)>>().await
+                                core::future::pending::<Option<ReceivedTunnelMessage>>().await
                             }
                         }
                     }
                     #[cfg(not(feature = "udp"))]
                     {
-                        core::future::pending::<Option<(Vec<AutoDetectRequest>, Vec<u8>)>>().await
+                        core::future::pending::<Option<ReceivedTunnelMessage>>().await
                     }
                 } => {
                     match udp_message {
@@ -3290,23 +3301,18 @@ async fn active_session(
                         }
                         ActiveSessionIteration::outputs(Vec::new())
                     }
-                    Some((auto_detect_requests, payload)) => {
+                    Some(ReceivedTunnelMessage { auto_detect_requests, payload, received_at }) => {
                         #[cfg(feature = "udp")]
                         {
-                            let received_at = ironrdp_core::MonotonicInstant::from_millis(
-                                u64::try_from(tunnel_clock.elapsed().as_millis()).unwrap_or(u64::MAX),
-                            );
                             let responses = active_stage.process_tunnel_auto_detect(
                                 auto_detect_requests,
                                 payload.len(),
                                 received_at,
                             );
-                            let sub_headers: Vec<_> = responses.iter().filter_map(tunnel_auto_detect_sub_header).collect();
-                            if !sub_headers.is_empty() && let Some(transport) = udp_tunnel.transport.as_ref() {
-                                let reply = ironrdp_rdpeudp_tokio::TunnelMessage {
-                                    sub_headers,
-                                    data: Vec::new(),
-                                };
+                            let reply = ironrdp_rdpeudp_tokio::TunnelMessage::from_auto_detect_responses(&responses);
+                            if let Some(reply) = reply
+                                && let Some(transport) = udp_tunnel.transport.as_ref()
+                            {
                                 let Some(result) =
                                     cancelable_operation(transport.send_message(reply), close_receiver).await
                                 else {
@@ -3322,15 +3328,14 @@ async fn active_session(
                                     ) {
                                         return Ok(RdpControlFlow::TransportFailure(error));
                                     }
-                                    // This PDU arrived before any channel migrated. Once the
-                                    // tunnel fails, it cannot retain data for a future Soft-Sync.
-                                    pending_udp_payload = None;
+                                    // No channel migrated, and the tunnel is now withdrawn, so
+                                    // nothing will read this PDU's data.
                                     continue;
                                 }
                             }
                         }
                         #[cfg(not(feature = "udp"))]
-                        let _ = auto_detect_requests;
+                        let _ = (auto_detect_requests, received_at);
 
                         if payload.is_empty() {
                             trace!("Reliable UDP tunnel PDU without higher-layer data");

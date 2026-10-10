@@ -9,11 +9,13 @@ use ironrdp_pdu::rdp::autodetect::{
 };
 use tracing::debug;
 
-/// Answers the RTT and bandwidth measurement requests that arrive on one transport.
+/// Answers the RTT and bandwidth measurement requests of a session.
 ///
-/// Each transport keeps its own, because a continuous measurement counts the data received on
-/// the transport it runs on ([MS-RDPBCGR] 3.2.5.14). Timestamps come from the caller, from the
-/// same monotonic clock for every request on that transport.
+/// A session has one Network Characteristics Byte Count store and one timer, whichever
+/// transport carries the Start and the Stop: a continuous measurement counts the data received
+/// from the server on every transport ([MS-RDPBCGR] 3.2.5.14). The caller sends each response
+/// back on the transport its request arrived on. Timestamps come from the caller, from one
+/// monotonic clock for every transport.
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/16ffa852-8aa7-481c-99a0-36c1a9a198f6
 #[derive(Debug, Default)]
@@ -132,9 +134,8 @@ impl AutoDetectResponder {
                 })
             }
             request @ AutoDetectRequest::NetworkCharacteristicsResult { .. } => {
-                // The TCP message-channel processor surfaces this request itself. Keep this
-                // arm for the UDP tunnel responder introduced in PR #2009, which handles
-                // auto-detect requests without passing through that processor.
+                // The message-channel processor surfaces this request itself; requests from
+                // the UDP tunnel reach this responder directly.
                 debug!(?request, "Received network characteristics from server");
                 None
             }
