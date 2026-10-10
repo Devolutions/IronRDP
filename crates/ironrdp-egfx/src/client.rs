@@ -419,7 +419,6 @@ pub struct GraphicsPipelineClient {
     surfaces: BTreeMap<u16, Surface>,
     compositor: Compositor,
     current_frame_id: Option<u32>,
-    frames_queued: u32,
     total_frames_decoded: u32,
     pending_output_reset: Option<(u16, u16)>,
 }
@@ -446,7 +445,6 @@ impl GraphicsPipelineClient {
             surfaces: BTreeMap::new(),
             compositor: Compositor::default(),
             current_frame_id: None,
-            frames_queued: 0,
             total_frames_decoded: 0,
             pending_output_reset: None,
         }
@@ -535,7 +533,6 @@ impl GraphicsPipelineClient {
             }
             GfxPdu::StartFrame(start) => {
                 self.current_frame_id = Some(start.frame_id);
-                self.frames_queued = self.frames_queued.saturating_add(1);
                 self.progressive_decoder.begin_frame();
                 trace!(frame_id = start.frame_id, "StartFrame");
                 Ok(vec![])
@@ -704,7 +701,6 @@ impl GraphicsPipelineClient {
         // per spec, capabilities are negotiated via CapabilitiesConfirm before
         // ResetGraphics, and a ResetGraphics does not re-negotiate capabilities.
         self.current_frame_id = None;
-        self.frames_queued = 0;
 
         // Reset decoder state for new stream
         if let Some(ref mut decoder) = self.h264_decoder {
@@ -1191,7 +1187,6 @@ impl GraphicsPipelineClient {
     fn handle_end_frame(&mut self, frame_id: u32) -> PduResult<Vec<DvcMessage>> {
         self.total_frames_decoded = self.total_frames_decoded.wrapping_add(1);
         self.current_frame_id = None;
-        self.frames_queued = self.frames_queued.saturating_sub(1);
 
         self.progressive_decoder.end_frame();
 
@@ -1201,10 +1196,10 @@ impl GraphicsPipelineClient {
         self.handler.on_frame_complete(frame_id);
 
         // Per [3.3.5.12]: client MUST send FrameAcknowledge after EndFrame.
-        // We send the actual queue depth (not Unavailable / 0xFFFFFFFF as FreeRDP does);
-        // the real value gives the server backpressure information for frame pacing.
+        // QueueDepth counts queued bytes, not decoded/queued frames. This client
+        // does not measure queued bytes, so report Unavailable (not Suspend).
         let ack = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
-            queue_depth: QueueDepth::from_u32(self.frames_queued),
+            queue_depth: QueueDepth::Unavailable,
             frame_id,
             total_frames_decoded: self.total_frames_decoded,
         });
@@ -1819,7 +1814,6 @@ mod tests {
             frame_id: 42,
         }));
         assert!(client.current_frame_id.is_some());
-        assert_eq!(client.frames_queued, 1);
 
         let _ = client.handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
             width: 1920,
@@ -1829,7 +1823,6 @@ mod tests {
 
         assert!(client.surfaces.is_empty(), "surfaces should be cleared");
         assert!(client.current_frame_id.is_none(), "frame_id should be reset");
-        assert_eq!(client.frames_queued, 0, "frame queue should be reset");
     }
 
     #[test]
@@ -2682,5 +2675,18 @@ mod tests {
             "region B must be drawn from its absolute origin (100, 104); \
              a destRect-relative reading would take (28, 32) instead (issue #2042)"
         );
+    }
+    #[test]
+    fn frame_ack_queue_depth_is_not_a_frame_count() {
+        let mut handler = GraphicsPipelineClient::new(Box::new(TestHandler), None);
+        handler.total_frames_decoded = 3;
+        let responses = handler.handle_end_frame(7).unwrap();
+        let bytes = ironrdp_core::encode_vec(responses[0].as_ref()).unwrap();
+        let GfxPdu::FrameAcknowledge(ack) = ironrdp_core::decode::<GfxPdu>(&bytes).unwrap() else {
+            panic!("expected frame ack")
+        };
+        assert_eq!(ack.frame_id, 7);
+        assert_eq!(ack.total_frames_decoded, 4);
+        assert_eq!(ack.queue_depth, QueueDepth::Unavailable);
     }
 }
