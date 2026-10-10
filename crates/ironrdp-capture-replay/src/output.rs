@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use crate::routing::{ReplayFrame, prepare_replay_capture};
-use crate::{Capture, ReplayDirection, ReplayError, ReplayEvent, ReplayGap, ReplayGapKind, ReplayReport, ReplayRoute};
+use crate::prepare_capture;
+use crate::routing::ReplayFrame;
+use crate::{Capture, ReplayError, ReplayEvent, ReplayGap, ReplayReport, ReplayRoute};
 
 /// Options that control replay artifact export.
 #[derive(Clone, Debug)]
@@ -68,16 +69,19 @@ pub enum ExportError {
 ///
 /// The destination receives nothing unless every PNG and tabular file was written successfully.
 pub fn export_capture(capture: &Capture, options: &ExportOptions) -> Result<ExportSummary, ExportError> {
-    let (mut router, plaintext) = prepare_replay_capture(capture).map_err(ExportError::Replay)?;
+    let prepared = prepare_capture(capture).map_err(ExportError::Replay)?;
     validate_output_directory(&options.directory, options.replace)?;
 
     let parent = output_parent(&options.directory);
     fs::create_dir_all(parent).map_err(ExportError::PrepareOutput)?;
     let staging = create_staging_directory(parent, &options.directory)?;
     let mut output = StagedOutput::new(staging);
-    let result = router
-        .route_plaintext_with_frame_sink(&plaintext, &mut |frame| output.write_frame(frame))
-        .and_then(|report| finalize_staged_output(&mut output, &report, options));
+    let result = {
+        let mut router = crate::ReplayRouter::new(prepared.activation.clone()).map_err(ExportError::Replay)?;
+        router
+            .route_plaintext_with_frame_sink(&prepared.plaintext, &mut |frame| output.write_frame(frame))
+            .and_then(|report| finalize_staged_output(&mut output, &report, options))
+    };
     match result {
         Ok(summary) => Ok(summary),
         Err(error) => {
@@ -128,7 +132,7 @@ impl StagedOutput {
         }
     }
 
-    fn write_frame(&mut self, frame: ReplayFrame) -> Result<(), ExportError> {
+    fn write_frame(&mut self, frame: ReplayFrame<'_>) -> Result<(), ExportError> {
         let name = format!("frame_{:06}.png", self.frame_count);
         encode_png(&self.directory.join(name), &frame)?;
         self.frame_metadata.push_str(&format!(
@@ -281,13 +285,13 @@ fn replace_output_directory(staging: &Path, directory: &Path, replace: bool) -> 
     fs::rename(staging, directory).map_err(ExportError::FinalizeOutput)
 }
 
-fn encode_png(path: &Path, frame: &ReplayFrame) -> Result<(), ExportError> {
+fn encode_png(path: &Path, frame: &ReplayFrame<'_>) -> Result<(), ExportError> {
     let file = fs::File::create(path).map_err(ExportError::WriteOutput)?;
     let mut encoder = png::Encoder::new(file, u32::from(frame.width), u32::from(frame.height));
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().map_err(ExportError::EncodePng)?;
-    writer.write_image_data(&frame.pixels).map_err(ExportError::EncodePng)?;
+    writer.write_image_data(frame.pixels).map_err(ExportError::EncodePng)?;
     writer.finish().map_err(ExportError::EncodePng)?;
     Ok(())
 }
@@ -299,7 +303,7 @@ fn events_tsv(events: &[ReplayEvent]) -> String {
             "{}\t{}\t{}\t{:?}\t{}\n",
             index + 1,
             event.packet,
-            direction_name(event.direction),
+            event.direction,
             event.action,
             route_name(event.route),
         ));
@@ -313,8 +317,8 @@ fn gaps_tsv(gaps: &[ReplayGap]) -> String {
         output.push_str(&format!(
             "{}\t{}\t{}\t{}\n",
             gap.packet,
-            direction_name(gap.direction),
-            gap_kind_name(gap.kind),
+            gap.direction,
+            gap.kind(),
             gap.skipped_bytes,
         ));
     }
@@ -329,13 +333,6 @@ fn dynamic_channels_tsv(report: &ReplayReport) -> String {
     output
 }
 
-fn direction_name(direction: ReplayDirection) -> &'static str {
-    match direction {
-        ReplayDirection::Client => "client",
-        ReplayDirection::Server => "server",
-    }
-}
-
 fn route_name(route: ReplayRoute) -> &'static str {
     match route {
         ReplayRoute::Connection => "connection",
@@ -348,18 +345,6 @@ fn route_name(route: ReplayRoute) -> &'static str {
     }
 }
 
-fn gap_kind_name(kind: ReplayGapKind) -> &'static str {
-    match kind {
-        ReplayGapKind::Framing => "framing",
-        ReplayGapKind::TruncatedPdu => "truncated-pdu",
-        ReplayGapKind::StaticChannel => "static-channel",
-        ReplayGapKind::DynamicChannel => "dynamic-channel",
-        ReplayGapKind::Session => "session",
-        ReplayGapKind::IncompleteActivation => "incomplete-activation",
-        ReplayGapKind::Unsupported => "unsupported",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
@@ -367,7 +352,7 @@ mod tests {
     use ironrdp_pdu::Action;
 
     use super::*;
-    use crate::CapturedDynamicChannel;
+    use crate::{CapturedDynamicChannel, ReplayDirection};
 
     static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
@@ -377,8 +362,8 @@ mod tests {
         let staging = create_staging_directory(directory.parent().unwrap(), &directory).unwrap();
         let mut output = StagedOutput::new(staging.clone());
         let report = report();
-        output.write_frame(frame(12, [0x11, 0x22, 0x33, 0xff])).unwrap();
-        output.write_frame(frame(47, [0x44, 0x55, 0x66, 0xff])).unwrap();
+        output.write_frame(frame(12, &[0x11, 0x22, 0x33, 0xff])).unwrap();
+        output.write_frame(frame(47, &[0x44, 0x55, 0x66, 0xff])).unwrap();
         output.write_diagnostics(&report).unwrap();
         replace_output_directory(&staging, &directory, false).unwrap();
 
@@ -445,7 +430,7 @@ mod tests {
         fs::write(directory.join("keep"), "old").unwrap();
         let staging = create_staging_directory(directory.parent().unwrap(), &directory).unwrap();
         let mut output = StagedOutput::new(staging);
-        output.write_frame(frame(12, [0x11, 0x22, 0x33, 0xff])).unwrap();
+        output.write_frame(frame(12, &[0x11, 0x22, 0x33, 0xff])).unwrap();
 
         let summary = finalize_staged_output(
             &mut output,
@@ -501,22 +486,23 @@ mod tests {
             gaps: vec![ReplayGap {
                 packet: 20,
                 direction: ReplayDirection::Server,
-                kind: ReplayGapKind::Framing,
+                reason: crate::ReplayGapReason::Framing,
                 skipped_bytes: 3,
             }],
             dynamic_channels: vec![CapturedDynamicChannel {
                 id: 7,
                 name: "CLIENT_RANDOM decrypted payload".to_owned(),
             }],
+            lifecycle: crate::ReplayLifecycle::Active,
         }
     }
 
-    fn frame(packet: usize, pixels: [u8; 4]) -> ReplayFrame {
+    fn frame<'a>(packet: usize, pixels: &'a [u8; 4]) -> ReplayFrame<'a> {
         ReplayFrame {
             packet,
             width: 1,
             height: 1,
-            pixels: pixels.to_vec(),
+            pixels,
         }
     }
 
