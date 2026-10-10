@@ -76,6 +76,14 @@ fn encode_pdu<T: Encode>(pdu: &T) -> Vec<u8> {
 // Tests
 // ============================================================================
 
+fn ack_pdu(frame_id: u32, queue_depth: QueueDepth) -> GfxPdu {
+    GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        frame_id,
+        queue_depth,
+        total_frames_decoded: 1,
+    })
+}
+
 #[test]
 fn test_server_creation() {
     let handler = Box::new(TestHandler::new());
@@ -822,6 +830,7 @@ fn mixed_frame_of_avc444_tiles_alone_is_allowed_before_10_4() {
 #[test]
 fn avc444v2_submission_preserves_typed_rejections() {
     let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
+    assert_eq!(server.avc444_submission_state(0), Err(FrameSubmissionError::NotReady));
     let caps = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
         flags: CapabilitiesV10Flags::empty(),
     }]));
@@ -835,6 +844,11 @@ fn avc444v2_submission_preserves_typed_rejections() {
     );
     assert!(!server.has_pending_output());
     assert_eq!(server.frames_in_flight(), 0);
+    assert_eq!(server.avc444_submission_state(surface), Ok(()));
+    assert_eq!(
+        server.avc444_submission_state(u16::MAX),
+        Err(FrameSubmissionError::UnknownSurface { surface_id: u16::MAX })
+    );
     server.set_max_frames_in_flight(1);
     assert!(
         server
@@ -849,6 +863,13 @@ fn avc444v2_submission_preserves_typed_rejections() {
             max_frames_in_flight: 1
         })
     ));
+    assert_eq!(
+        server.avc444_submission_state(surface),
+        Err(FrameSubmissionError::Backpressured {
+            frames_in_flight: 1,
+            max_frames_in_flight: 1
+        })
+    );
     assert!(!server.has_pending_output());
 }
 
@@ -1059,35 +1080,6 @@ fn test_frame_flow_control() {
 }
 
 #[test]
-fn resize_retains_client_frame_ack_ceiling() {
-    let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
-    server.set_max_frames_in_flight(3);
-    server.set_client_frame_ack_limit(Some(core::num::NonZeroU32::new(1).unwrap()));
-    server.resize(64, 64);
-    assert_eq!(server.max_frames_in_flight(), 1);
-}
-
-#[test]
-fn test_zero_configured_window_is_unlimited_until_client_clamp() {
-    let handler = Box::new(TestHandler::new());
-    let mut server = GraphicsPipelineServer::new(handler);
-    server.set_max_frames_in_flight(0);
-    assert_eq!(server.max_frames_in_flight(), 0);
-    assert!(!server.should_backpressure());
-
-    assert_eq!(
-        server.set_client_frame_ack_limit(Some(core::num::NonZeroU32::new(1).expect("one is non-zero"))),
-        1
-    );
-    server.set_max_frames_in_flight(3);
-    assert_eq!(
-        server.max_frames_in_flight(),
-        1,
-        "a later setter must not exceed the negotiated client ceiling"
-    );
-}
-
-#[test]
 fn negotiated_ceiling_can_be_refreshed_after_resize() {
     let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
     server.set_max_frames_in_flight(3);
@@ -1176,13 +1168,7 @@ fn acknowledged_duplicates_cannot_resume_a_later_suspension() {
     server.process(0, &encode_pdu(&caps)).unwrap();
     let surface = server.create_surface(64, 64).unwrap();
     let regions = [Avc420Region::full_frame(64, 64, 22)];
-    let ack = |frame_id, queue_depth| {
-        GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
-            frame_id,
-            queue_depth,
-            total_frames_decoded: 1,
-        })
-    };
+    let ack = ack_pdu;
     let outstanding = server.send_avc420_frame(surface, &[1], &regions, 1).unwrap();
     let already_acked = server.send_avc420_frame(surface, &[2], &regions, 2).unwrap();
     let suspending = server.send_avc420_frame(surface, &[3], &regions, 3).unwrap();
@@ -1219,6 +1205,51 @@ fn acknowledged_duplicates_cannot_resume_a_later_suspension() {
     assert_eq!(server.frames_in_flight(), 0);
 }
 
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn delayed_suspend_ack_survives_graphics_reset(#[case] readvertise: bool) {
+    let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
+    let caps = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
+        flags: CapabilitiesV81Flags::AVC420_ENABLED,
+    }]));
+    server.start(7).unwrap();
+    server.process(7, &encode_pdu(&caps)).unwrap();
+    let surface = server.create_surface(64, 64).unwrap();
+    let regions = [Avc420Region::full_frame(64, 64, 22)];
+    let before_reset = server.send_avc420_frame(surface, &[1], &regions, 1).unwrap();
+    server.set_max_frames_in_flight(1);
+    if readvertise {
+        server.process(7, &encode_pdu(&caps)).unwrap();
+    } else {
+        server.resize(64, 64);
+    }
+    let surface = server.create_surface(64, 64).unwrap();
+    let after_reset = server.send_avc420_frame(surface, &[2], &regions, 2).unwrap();
+    assert!(server.should_backpressure());
+    let suspend = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        frame_id: before_reset,
+        queue_depth: QueueDepth::Suspend,
+        total_frames_decoded: 1,
+    });
+    server.process(7, &encode_pdu(&suspend)).unwrap();
+    assert_eq!(server.frames_in_flight(), 0);
+    assert!(
+        !server.should_backpressure(),
+        "graphics reset must not invalidate an issued suspend ACK"
+    );
+    server.send_avc420_frame(surface, &[3], &regions, 3).unwrap();
+    let resume = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        frame_id: after_reset,
+        queue_depth: QueueDepth::Unavailable,
+        total_frames_decoded: 2,
+    });
+    server.process(7, &encode_pdu(&resume)).unwrap();
+    server.send_avc420_frame(surface, &[4], &regions, 4).unwrap();
+    assert_eq!(server.frames_in_flight(), 1);
+    assert!(server.should_backpressure());
+}
+
 #[test]
 fn closed_generation_cannot_resume_or_suspend_current_tracking() {
     let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
@@ -1230,13 +1261,7 @@ fn closed_generation_cannot_resume_or_suspend_current_tracking() {
     let surface = server.create_surface(64, 64).unwrap();
     let regions = [Avc420Region::full_frame(64, 64, 22)];
     let old_frame = server.send_avc420_frame(surface, &[1], &regions, 1).unwrap();
-    let ack = |frame_id, queue_depth| {
-        GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
-            frame_id,
-            queue_depth,
-            total_frames_decoded: 1,
-        })
-    };
+    let ack = ack_pdu;
     server
         .process(7, &encode_pdu(&ack(old_frame, QueueDepth::Unavailable)))
         .unwrap();

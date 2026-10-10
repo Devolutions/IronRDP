@@ -757,16 +757,22 @@ impl FrameTracker {
         true
     }
 
-    /// Clear per-channel tracking while preserving operator config and the connection ceiling.
-    pub fn clear(&mut self) {
+    /// Discard pending frames for a graphics reset without ending the DVC generation.
+    /// Previously issued frames can still be named by delayed suspend ACKs.
+    fn clear_pending_frames(&mut self) {
         self.unacknowledged.clear();
         self.client_queue_depth = 0;
         self.ack_suspended = false;
         self.suspension_outstanding.clear();
         self.suspension_first_frame_id = None;
-        self.generation_first_frame_id = self.next_frame_id;
         self.last_backpressure_state = false;
         self.last_ack_suspended_state = false;
+    }
+
+    /// Clear per-channel tracking while preserving operator config and the connection ceiling.
+    pub fn clear(&mut self) {
+        self.clear_pending_frames();
+        self.generation_first_frame_id = self.next_frame_id;
     }
 }
 
@@ -1490,7 +1496,7 @@ impl GraphicsPipelineServer {
             self.delete_surface(id);
         }
 
-        self.frames.clear();
+        self.frames.clear_pending_frames();
 
         self.output_queue.push_back(GfxPdu::ResetGraphics(ResetGraphicsPdu {
             width: u32::from(width),
@@ -2471,7 +2477,7 @@ impl GraphicsPipelineServer {
                  state for re-initialization (no DeleteSurface PDU emitted, surface ID counter reset)"
             );
             self.surfaces.reset_for_reinit();
-            self.frames.clear();
+            self.frames.clear_pending_frames();
             self.reset_graphics_sent = false;
         }
 
@@ -2844,12 +2850,7 @@ mod tests {
 
     #[test]
     fn valid_suspend_ack_is_honoured_without_a_tracked_sample_or_ready_state() {
-        struct Handler;
-        impl GraphicsPipelineHandler for Handler {
-            fn capabilities_advertise(&mut self, _: &CapabilitiesAdvertisePdu) {}
-            fn on_ready(&mut self, _: &CapabilitySet) {}
-        }
-        let mut server = GraphicsPipelineServer::new(Box::new(Handler));
+        let mut server = GraphicsPipelineServer::new(Box::new(DefaultsHandler));
         let frame_id = server.frames.begin_frame(GraphicsPipelineServer::make_timestamp(0));
         server.frames.acknowledge(frame_id, 0).unwrap();
         server.state = ServerState::Resizing;
