@@ -45,6 +45,14 @@ fn build(policy: ConnectionPolicy) -> RdpServer {
         .build()
 }
 
+#[test]
+fn accept_loop_future_stays_below_clippy_large_future_limit() {
+    let mut server = build(ConnectionPolicy::Queue);
+    let future = server.run();
+    let size = size_of_val(&future);
+    assert!(size < 16 * 1024, "accept-loop future is {size} bytes");
+}
+
 /// With `Reject`, a second connection arriving while a session runs is closed
 /// immediately: the read returns EOF rather than hanging.
 #[tokio::test]

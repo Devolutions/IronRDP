@@ -1,19 +1,39 @@
+use core::cell::RefCell;
+use core::future::{Ready, ready};
 use std::borrow::Cow;
+use std::collections::VecDeque;
+use std::io;
+use std::rc::Rc;
 
-use ironrdp_acceptor::{Acceptor, MultitransportSecurityRng};
+use ironrdp_acceptor::{
+    Acceptor, ConnectionSetupHandler, MultitransportSecurityRng, ReceivedCredentials, accept_credssp_with,
+    accept_finalize_with,
+};
+use ironrdp_async::bytes::BytesMut;
+use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper};
+use ironrdp_connector::credssp::CredsspSequence;
+use ironrdp_connector::sspi::credssp::TsRequest;
+use ironrdp_connector::sspi::generator::{GeneratorState, NetworkRequest};
+use ironrdp_connector::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
 use ironrdp_connector::{DesktopSize, Sequence as _, Written, encode_x224_packet};
 use ironrdp_core::{WriteBuf, decode, encode_vec};
-use ironrdp_pdu::gcc::{ClientMessageChannelData, MultiTransportChannelData, MultiTransportFlags};
+use ironrdp_pdu::gcc::{
+    ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientMessageChannelData, MultiTransportChannelData,
+    MultiTransportFlags,
+};
 use ironrdp_pdu::mcs::{self, ConnectInitial};
 use ironrdp_pdu::nego::{self, SecurityProtocol};
-use ironrdp_pdu::rdp::client_info::CompressionType;
+use ironrdp_pdu::rdp::ClientInfoPdu;
+use ironrdp_pdu::rdp::client_info::{CompressionType, Credentials};
 use ironrdp_pdu::rdp::finalization_messages::{ControlAction, ControlPdu, SynchronizePdu};
 use ironrdp_pdu::rdp::headers::{
-    BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu,
-    StreamPriority,
+    BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader, ShareControlPdu,
+    ShareDataHeader, ShareDataPdu, StreamPriority,
 };
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu, RequestedProtocol};
+use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::{X224, X224Data};
+use ironrdp_testsuite_core::client_info::CLIENT_INFO_UNICODE;
 use ironrdp_testsuite_core::gcc::CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS;
 use ironrdp_testsuite_core::rdp::{CLIENT_DEMAND_ACTIVE_PDU_BUFFER, CLIENT_INFO_PDU_BUFFER};
 
@@ -719,4 +739,366 @@ fn multitransport_not_offered_when_client_does_not_reciprocate() {
     let written = acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping
     assert!(matches!(written, Written::Nothing));
     assert!(acceptor.multitransport_request().is_none());
+}
+
+#[derive(Default)]
+struct HandshakeStream {
+    incoming: VecDeque<Vec<u8>>,
+    outgoing: Rc<RefCell<Vec<Vec<u8>>>>,
+    credssp_client: Option<CredsspSequence>,
+}
+
+impl StreamWrapper for HandshakeStream {
+    type InnerStream = Self;
+
+    fn from_inner(stream: Self) -> Self {
+        stream
+    }
+
+    fn into_inner(self) -> Self {
+        self
+    }
+
+    fn get_inner(&self) -> &Self {
+        self
+    }
+
+    fn get_inner_mut(&mut self) -> &mut Self {
+        self
+    }
+}
+
+impl FramedRead for HandshakeStream {
+    type ReadFut<'read> = Ready<io::Result<usize>>;
+
+    fn read<'a>(&'a mut self, buf: &'a mut BytesMut) -> Self::ReadFut<'a> {
+        let chunk = self.incoming.pop_front().unwrap_or_default();
+        buf.extend_from_slice(&chunk);
+        ready(Ok(chunk.len()))
+    }
+}
+
+impl FramedWrite for HandshakeStream {
+    type WriteAllFut<'write> = Ready<io::Result<()>>;
+
+    fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
+        self.outgoing.borrow_mut().push(buf.to_vec());
+        if let Some(client) = self.credssp_client.as_mut()
+            && buf.len() != 4
+        {
+            let request = client.decode_server_message(buf).unwrap().unwrap();
+            self.incoming.push_back(client_credssp_message(client, request));
+        }
+        ready(Ok(()))
+    }
+}
+
+fn client_credssp_message(client: &mut CredsspSequence, request: TsRequest) -> Vec<u8> {
+    let result = {
+        let mut generator = client.process_ts_request(request);
+        let GeneratorState::Completed(result) = generator.start() else {
+            panic!("NTLM should not make network requests");
+        };
+        result.unwrap()
+    };
+    let mut buf = WriteBuf::new();
+    client.handle_process_result(result, &mut buf).unwrap();
+    buf.filled().to_vec()
+}
+
+struct NoNetwork;
+
+impl NetworkClient for NoNetwork {
+    async fn send(&mut self, _: &NetworkRequest) -> ConnectorResult<Vec<u8>> {
+        Err(ConnectorError::general("unexpected network request during NTLM"))
+    }
+}
+
+#[derive(Default)]
+struct SetupHandler {
+    received: Vec<ReceivedCredentials>,
+    reject_credentials: bool,
+    reject_capabilities: bool,
+    capability_calls: usize,
+}
+
+#[async_trait::async_trait(?Send)]
+impl ConnectionSetupHandler for SetupHandler {
+    async fn handle_credentials(&mut self, credentials: Option<ReceivedCredentials>) -> ConnectorResult<()> {
+        self.received
+            .push(credentials.expect("handshake should supply credentials"));
+        if self.reject_credentials {
+            Err(ConnectorError::general("test credential rejection"))
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn prepare_capability_exchange(&mut self, _: DesktopSize) -> ConnectorResult<()> {
+        self.capability_calls += 1;
+        if self.reject_capabilities {
+            Err(ConnectorError::general("test capability rejection"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn negotiated_acceptor(protocol: SecurityProtocol) -> Acceptor {
+    let mut acceptor = Acceptor::new(
+        protocol,
+        DesktopSize {
+            width: 1024,
+            height: 768,
+        },
+        Vec::new(),
+        protocol
+            .intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX)
+            .then(|| Credentials {
+                username: "alice".to_owned(),
+                password: "secret".to_owned(),
+                domain: None,
+            }),
+    );
+    acceptor
+        .step(&encode_connection_request(protocol), None, &mut WriteBuf::new())
+        .unwrap();
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    acceptor.mark_security_upgrade_as_done();
+    acceptor
+}
+
+fn post_credssp_messages(error_info: Option<ClientEarlyCapabilityFlags>) -> VecDeque<Vec<u8>> {
+    let mut gcc = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    gcc.network = None;
+    gcc.core.optional_data = ClientCoreOptionalData {
+        post_beta2_color_depth: gcc.core.optional_data.post_beta2_color_depth,
+        client_product_id: gcc.core.optional_data.client_product_id,
+        serial_number: gcc.core.optional_data.serial_number,
+        high_color_depth: gcc.core.optional_data.high_color_depth,
+        supported_color_depths: gcc.core.optional_data.supported_color_depths,
+        early_capability_flags: error_info,
+        ..ClientCoreOptionalData::default()
+    };
+    let mut initial = WriteBuf::new();
+    encode_x224_packet(&ConnectInitial::with_gcc_blocks(gcc).unwrap(), &mut initial).unwrap();
+
+    let info = ClientInfoPdu {
+        security_header: BasicSecurityHeader {
+            flags: BasicSecurityHeaderFlags::INFO_PKT,
+        },
+        client_info: CLIENT_INFO_UNICODE.clone(),
+    };
+    [
+        initial.filled().to_vec(),
+        encode_vec(&X224(mcs::ErectDomainPdu {
+            sub_height: 0,
+            sub_interval: 0,
+        }))
+        .unwrap(),
+        encode_vec(&X224(mcs::AttachUserRequest)).unwrap(),
+        encode_vec(&X224(mcs::ChannelJoinRequest {
+            initiator_id: 1002,
+            channel_id: 1002,
+        }))
+        .unwrap(),
+        encode_vec(&X224(mcs::ChannelJoinRequest {
+            initiator_id: 1002,
+            channel_id: 1003,
+        }))
+        .unwrap(),
+        encode_vec(&X224(mcs::SendDataRequest {
+            initiator_id: 1002,
+            channel_id: 1003,
+            user_data: encode_vec(&info).unwrap().into(),
+        }))
+        .unwrap(),
+    ]
+    .into()
+}
+
+fn assert_access_denied(bytes: &[u8]) {
+    let data = decode::<X224<mcs::SendDataIndication<'_>>>(bytes).unwrap().0;
+    assert_eq!(data.initiator_id, 1002);
+    assert_eq!(data.channel_id, 1003);
+    assert_eq!(data.user_data.len(), 22);
+    let header = decode::<ShareControlHeader>(data.user_data.as_ref()).unwrap();
+    assert_eq!(header.pdu_source, 0);
+    let ShareControlPdu::Data(data) = header.share_control_pdu else {
+        panic!("expected a Share Data PDU");
+    };
+    assert!(data.compression_flags.is_empty());
+    assert_eq!(
+        data.share_data_pdu,
+        ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+            ProtocolIndependentCode::ServerInsufficientPrivileges,
+        )))
+    );
+}
+
+#[rstest::rstest]
+#[case(None)]
+#[case(Some(ClientEarlyCapabilityFlags::empty()))]
+#[case(Some(ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU))]
+#[tokio::test]
+async fn tls_hook_rejection_respects_error_info_support(
+    #[case] error_info: Option<ClientEarlyCapabilityFlags>,
+    #[values(false, true)] reject_credentials: bool,
+) {
+    let mut acceptor = negotiated_acceptor(SecurityProtocol::SSL);
+    let mut handler = SetupHandler {
+        reject_credentials,
+        reject_capabilities: !reject_credentials,
+        ..SetupHandler::default()
+    };
+    let framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: post_credssp_messages(error_info),
+        ..HandshakeStream::default()
+    });
+    let outgoing = Rc::clone(&framed.get_inner().0.outgoing);
+    let result = accept_finalize_with(framed, &mut acceptor, &mut handler).await;
+    let error = result.err().expect("hook rejection should fail the handshake");
+    assert!(error.to_string().contains(if reject_credentials {
+        "test credential rejection"
+    } else {
+        "test capability rejection"
+    }));
+    assert_eq!(handler.received.len(), 1);
+    assert_eq!(
+        handler.received[0].origin,
+        ironrdp_acceptor::CredentialOrigin::ClientInfo
+    );
+    assert_eq!(handler.capability_calls, usize::from(!reject_credentials));
+
+    let outgoing = outgoing.borrow();
+    let supports_error_info =
+        error_info.is_some_and(|flags| flags.contains(ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU));
+    assert_eq!(
+        outgoing.len(),
+        4 + usize::from(!reject_credentials) + usize::from(supports_error_info)
+    );
+    assert_eq!(
+        decode::<X224<mcs::ChannelJoinConfirm>>(&outgoing[3])
+            .unwrap()
+            .0
+            .channel_id,
+        1003
+    );
+    let mut denied = WriteBuf::new();
+    let written = acceptor.encode_access_denied(&mut denied).unwrap();
+    if supports_error_info {
+        assert_eq!(written, denied.filled_len());
+        assert_access_denied(denied.filled());
+        assert_eq!(outgoing.last().unwrap(), denied.filled());
+    } else {
+        assert_eq!(written, 0);
+        assert!(denied.filled().is_empty());
+    }
+}
+
+#[rstest::rstest]
+#[case(SecurityProtocol::HYBRID, None)]
+#[case(SecurityProtocol::HYBRID, Some(ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU))]
+#[case(SecurityProtocol::HYBRID_EX, None)]
+#[tokio::test]
+async fn credssp_authorization_uses_selected_protocol(
+    #[case] protocol: SecurityProtocol,
+    #[case] error_info: Option<ClientEarlyCapabilityFlags>,
+    #[values("alice@corp.example.com", "CORP\\alice", "alice")] username: &str,
+    #[values(false, true)] reject_credentials: bool,
+) {
+    let mut acceptor = negotiated_acceptor(protocol);
+    let public_key = vec![0x42; 32];
+    let (mut client, request) = CredsspSequence::init(
+        ironrdp_connector::Credentials::UsernamePassword {
+            username: username.to_owned(),
+            password: "secret".to_owned(),
+        },
+        None,
+        protocol,
+        "server.example.com".to_owned().into(),
+        public_key.clone(),
+        None,
+    )
+    .unwrap();
+    let first_message = client_credssp_message(&mut client, request);
+    let mut framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: [first_message].into(),
+        credssp_client: Some(client),
+        ..HandshakeStream::default()
+    });
+    let outgoing = Rc::clone(&framed.get_inner().0.outgoing);
+    let mut handler = SetupHandler {
+        reject_credentials,
+        reject_capabilities: !reject_credentials,
+        ..SetupHandler::default()
+    };
+    let result = accept_credssp_with(
+        &mut framed,
+        &mut acceptor,
+        &mut NoNetwork,
+        "client.example.com".to_owned().into(),
+        public_key,
+        None,
+        &mut handler,
+    )
+    .await;
+
+    if protocol == SecurityProtocol::HYBRID_EX && reject_credentials {
+        assert!(result.unwrap_err().to_string().contains("test credential rejection"));
+        assert_eq!(outgoing.borrow().last().unwrap(), &5u32.to_le_bytes());
+    } else {
+        result.unwrap();
+        if protocol == SecurityProtocol::HYBRID {
+            assert!(handler.received.is_empty(), "plain HYBRID must defer authorization");
+        } else {
+            assert_eq!(handler.received.len(), 1);
+            assert_eq!(outgoing.borrow().last().unwrap(), &0u32.to_le_bytes());
+        }
+        let credssp_write_count = outgoing.borrow().len();
+        let (stream, _) = framed.get_inner_mut();
+        stream.credssp_client = None;
+        stream.incoming = post_credssp_messages(error_info);
+        let error = accept_finalize_with(framed, &mut acceptor, &mut handler)
+            .await
+            .err()
+            .expect("hook rejection should fail the handshake");
+        assert!(error.to_string().contains(if reject_credentials {
+            "test credential rejection"
+        } else {
+            "test capability rejection"
+        }));
+        let outgoing = outgoing.borrow();
+        let handshake_writes = &outgoing[credssp_write_count..];
+        let supports_error_info =
+            error_info.is_some_and(|flags| flags.contains(ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU));
+        assert_eq!(
+            handshake_writes.len(),
+            4 + usize::from(!reject_credentials) + usize::from(supports_error_info)
+        );
+        assert_eq!(
+            decode::<X224<mcs::ChannelJoinConfirm>>(&handshake_writes[3])
+                .unwrap()
+                .0
+                .channel_id,
+            1003
+        );
+        if supports_error_info {
+            assert_access_denied(handshake_writes.last().unwrap());
+        }
+    }
+
+    assert_eq!(handler.received.len(), 1);
+    assert_eq!(
+        handler.received[0].origin,
+        ironrdp_acceptor::CredentialOrigin::CredSspDelegated
+    );
+    let (expected_username, expected_domain) = match username {
+        "CORP\\alice" => ("alice", Some("CORP")),
+        _ => (username, None),
+    };
+    assert_eq!(handler.received[0].credentials.username, expected_username);
+    assert_eq!(handler.received[0].credentials.domain.as_deref(), expected_domain);
+    assert_eq!(handler.received[0].credentials.password, "secret");
+    assert_eq!(handler.capability_calls, usize::from(!reject_credentials));
 }
