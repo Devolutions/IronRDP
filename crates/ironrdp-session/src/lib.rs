@@ -11,6 +11,7 @@ pub mod rfx; // FIXME: maybe this module should not be in this crate
 pub mod x224;
 
 mod active_stage;
+mod autodetect;
 mod palette;
 
 use core::fmt;
