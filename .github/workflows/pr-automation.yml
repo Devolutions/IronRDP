@@ -401,7 +401,6 @@ jobs:
           sudo -u nobody env -i \
             HOME="$semver_home" \
             CARGO_HOME="$semver_cargo" \
-            CARGO_TARGET_DIR="$semver_target" \
             PATH="$rust_bin_dir:$PATH" \
             RUSTC_BOOTSTRAP=1 \
             RUSTDOCFLAGS="-Z unstable-options --document-private-items --document-hidden-items --output-format=json --cap-lints=allow" \
@@ -409,24 +408,21 @@ jobs:
             BASE_SHA="$BASE_SHA" \
             SEMVER_BIN="$semver_bin" \
             SEMVER_FEATURES="$CARGO_SEMVER_CHECKS_FEATURES" \
+            SEMVER_ARTIFACT_ROOT="$semver_target" \
             bash -euo pipefail -c '
               # cargo-semver-checks normally resolves a new dependency graph in a
               # placeholder crate. Build rustdoc ourselves so both revisions use
               # their committed lockfiles, just like the ordinary CI build.
-              artifact_root="$CARGO_TARGET_DIR"
-              for revision in baseline current; do
-                if [[ "$revision" == baseline ]]; then
-                  git checkout --detach "$BASE_SHA"
-                else
-                  git checkout --detach "$HEAD_SHA"
-                fi
-                export CARGO_TARGET_DIR="$artifact_root/$revision"
-                cargo rustdoc --locked --package ironrdp --lib \
-                  --no-default-features --features "$SEMVER_FEATURES"
-              done
+              build_rustdoc() {
+                git checkout --detach "$2"
+                CARGO_TARGET_DIR="$SEMVER_ARTIFACT_ROOT/$1" cargo rustdoc --locked \
+                  --package ironrdp --lib --no-default-features --features "$SEMVER_FEATURES"
+              }
+              build_rustdoc baseline "$BASE_SHA"
+              build_rustdoc current "$HEAD_SHA"
               "$SEMVER_BIN" \
-                --current-rustdoc "$artifact_root/current/doc/ironrdp.json" \
-                --baseline-rustdoc "$artifact_root/baseline/doc/ironrdp.json"
+                --current-rustdoc "$SEMVER_ARTIFACT_ROOT/current/doc/ironrdp.json" \
+                --baseline-rustdoc "$SEMVER_ARTIFACT_ROOT/baseline/doc/ironrdp.json"
             '
           status=$?
           set -e
