@@ -27,7 +27,7 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
 tracing = { version = "0.1", features = ["log"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.31", features = ["fs", "poll"] }
+nix = { version = "0.31", features = ["poll"] }
 visibility = { version = "0.1", optional = true }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }

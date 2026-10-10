@@ -112,14 +112,8 @@ impl OsClipboard for NativeClipboard {
 
     fn read(&mut self, mime: &str) -> Result<Option<Vec<u8>>, String> {
         match self {
-            Self::Wayland { clipboard, .. } => {
-                let serial = clipboard.serial();
-                let data = clipboard.read(mime).map_err(|error| error.to_string())?;
-                if serial != clipboard.serial() {
-                    return Err("clipboard selection changed while reading".into());
-                }
-                Ok(data)
-            }
+            // Fails with `SelectionChanged` if another copy lands during the read.
+            Self::Wayland { clipboard, .. } => clipboard.read(mime).map_err(|error| error.to_string()),
             Self::X11(clipboard) => clipboard.read(mime),
         }
     }
