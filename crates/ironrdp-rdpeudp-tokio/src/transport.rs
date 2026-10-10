@@ -17,6 +17,7 @@ use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use core::time::Duration;
 use std::sync::{Arc, Mutex};
 
+use ironrdp_core::MonotonicInstant;
 use ironrdp_rdpemt::{RdpemtErrorExt as _, TunnelConfig};
 use ironrdp_rdpeudp::pdu::V1Datagram;
 use ironrdp_rdpeudp::{ConnectionConfig, RdpeudpConnection, RdpeudpErrorExt as _};
@@ -236,6 +237,23 @@ impl From<Vec<u8>> for TunnelMessage {
     }
 }
 
+/// A [`TunnelMessage`] with the time the read pump read its Tunnel Data PDU.
+#[derive(Debug)]
+pub(crate) struct ReceivedMessage {
+    pub(crate) message: TunnelMessage,
+    pub(crate) received_at: MonotonicInstant,
+}
+
+#[cfg(test)]
+impl<T: Into<TunnelMessage>> From<T> for ReceivedMessage {
+    fn from(message: T) -> Self {
+        Self {
+            message: message.into(),
+            received_at: ironrdp_async::monotonic_now(),
+        }
+    }
+}
+
 /// A cloneable handle for sending data over an established UDP transport,
 /// obtained from [`UdpTransport::sender`].
 ///
@@ -303,7 +321,10 @@ impl UdpTransportSender {
 /// Drop this handle to initiate shutdown of the background tasks.
 pub struct UdpTransport {
     /// Receives higher-layer data (DVC frames) from the tunnel.
-    data_rx: mpsc::Receiver<TunnelMessage>,
+    data_rx: mpsc::Receiver<ReceivedMessage>,
+
+    /// When the read pump read the PDU most recently returned by `recv_message`.
+    last_received_at: Option<MonotonicInstant>,
 
     /// Sends higher-layer data into the tunnel for encryption and transmission.
     data_tx: mpsc::Sender<TunnelMessage>,
@@ -336,7 +357,20 @@ impl UdpTransport {
     ///
     /// Returns `None` when the tunnel is closed.
     pub async fn recv_message(&mut self) -> Option<TunnelMessage> {
-        self.data_rx.recv().await
+        let received = self.data_rx.recv().await?;
+        self.last_received_at = Some(received.received_at);
+        Some(received.message)
+    }
+
+    /// When the read pump read the Tunnel Data PDU most recently returned by
+    /// [`Self::recv`] or [`Self::recv_message`], or `None` before the first one.
+    ///
+    /// This is the time the PDU came off the tunnel, not the time the caller
+    /// dequeued it. The reading comes from [`ironrdp_async::monotonic_now`], the
+    /// clock behind [`ironrdp_async::Framed::last_read_at`], so it can be compared
+    /// with the arrival times of frames read on the main connection.
+    pub fn last_received_at(&self) -> Option<MonotonicInstant> {
+        self.last_received_at
     }
 
     /// Send a higher-layer data frame through the tunnel.
@@ -449,9 +483,13 @@ impl UdpTransport {
     /// For unit tests that exercise the channel-based API (FramedRead,
     /// FramedWrite) without needing a real UDP socket or TLS stack.
     #[cfg(test)]
-    pub(crate) fn from_channels(data_rx: mpsc::Receiver<TunnelMessage>, data_tx: mpsc::Sender<TunnelMessage>) -> Self {
+    pub(crate) fn from_channels(
+        data_rx: mpsc::Receiver<ReceivedMessage>,
+        data_tx: mpsc::Sender<TunnelMessage>,
+    ) -> Self {
         Self {
             data_rx,
+            last_received_at: None,
             data_tx,
             shared: Arc::new(Mutex::new(SharedIo::new())),
             driver_handle: AbortOnDrop::new(tokio::spawn(async { Ok(()) })),
@@ -617,7 +655,7 @@ pub async fn connect_udp(config: UdpTransportConfig) -> Result<UdpTransport, Udp
     debug!("RDPEMT tunnel established, starting data pump");
 
     // Phase 5: Set up data channels and spawn the read pump
-    let (incoming_tx, incoming_rx) = mpsc::channel::<TunnelMessage>(64);
+    let (incoming_tx, incoming_rx) = mpsc::channel::<ReceivedMessage>(64);
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<TunnelMessage>(64);
 
     // Read pump: TLS → RDPEMT decode → channel
@@ -634,6 +672,7 @@ pub async fn connect_udp(config: UdpTransportConfig) -> Result<UdpTransport, Udp
 
     Ok(UdpTransport {
         data_rx: incoming_rx,
+        last_received_at: None,
         data_tx: outgoing_tx,
         shared,
         driver_handle,
@@ -809,7 +848,7 @@ async fn accept_udp_inner(socket: UdpSocket, config: UdpAcceptConfig) -> Result<
     debug!("RDPEMT server tunnel established, starting data pump");
 
     // Phase 6: Set up data channels and spawn pumps (identical to client side)
-    let (incoming_tx, incoming_rx) = mpsc::channel::<TunnelMessage>(64);
+    let (incoming_tx, incoming_rx) = mpsc::channel::<ReceivedMessage>(64);
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<TunnelMessage>(64);
 
     let pump_handle = AbortOnDrop::new(tokio::spawn(async move {
@@ -825,6 +864,7 @@ async fn accept_udp_inner(socket: UdpSocket, config: UdpAcceptConfig) -> Result<
 
     Ok(UdpTransport {
         data_rx: incoming_rx,
+        last_received_at: None,
         data_tx: outgoing_tx,
         shared,
         driver_handle,
@@ -990,11 +1030,12 @@ mod tests {
         static DRIVER_RUNNING: AtomicBool = AtomicBool::new(false);
         DRIVER_RUNNING.store(false, Ordering::SeqCst);
 
-        let (_incoming_tx, incoming_rx) = mpsc::channel::<TunnelMessage>(4);
+        let (_incoming_tx, incoming_rx) = mpsc::channel::<ReceivedMessage>(4);
         let (outgoing_tx, _outgoing_rx) = mpsc::channel::<TunnelMessage>(4);
 
         let transport = UdpTransport {
             data_rx: incoming_rx,
+            last_received_at: None,
             data_tx: outgoing_tx,
             shared: Arc::new(Mutex::new(SharedIo::new())),
             driver_handle: AbortOnDrop::new(tokio::spawn(async {
@@ -1157,11 +1198,35 @@ mod tests {
             data: vec![0x02],
         };
 
-        incoming_tx.send(message.clone()).await.expect("queue");
-        incoming_tx.send(message.clone()).await.expect("queue");
+        incoming_tx.send(message.clone().into()).await.expect("queue");
+        incoming_tx.send(message.clone().into()).await.expect("queue");
 
         assert_eq!(transport.recv().await, Some(vec![0x02]));
         assert_eq!(transport.recv_message().await, Some(message));
+    }
+
+    /// The arrival time is the one the read pump stamped, not the time of the dequeue.
+    #[tokio::test]
+    async fn last_received_at_reports_the_pump_read_time() {
+        let (incoming_tx, incoming_rx) = mpsc::channel(4);
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(4);
+        let mut transport = UdpTransport::from_channels(incoming_rx, outgoing_tx);
+        assert_eq!(transport.last_received_at(), None);
+
+        for millis in [10, 25] {
+            incoming_tx
+                .send(ReceivedMessage {
+                    message: TunnelMessage::from(vec![0x01]),
+                    received_at: MonotonicInstant::from_millis(millis),
+                })
+                .await
+                .expect("queue");
+        }
+
+        transport.recv_message().await.expect("first message");
+        assert_eq!(transport.last_received_at(), Some(MonotonicInstant::from_millis(10)));
+        transport.recv().await.expect("second message");
+        assert_eq!(transport.last_received_at(), Some(MonotonicInstant::from_millis(25)));
     }
 
     /// Sub-headers that would overflow `HeaderLength` are refused at the

@@ -317,16 +317,19 @@ where
     Ok(())
 }
 
-/// Reads the driver-owned monotonic clock.
+/// Reads the monotonic clock behind [`Framed::last_read_at`].
 ///
-/// The epoch is the first call; only differences are meaningful.
+/// The epoch is the first call; only differences are meaningful. Transports that
+/// carry part of the same session elsewhere, such as a UDP sideband, can stamp
+/// their reads with this clock so the session compares them with frames read
+/// through [`Framed`].
 ///
 /// `web_time::Instant` is `std::time::Instant` everywhere except
 /// `wasm32-unknown-unknown`, where `std`'s panics and this one reads
 /// `Performance.now()` instead. This crate is reached from `ironrdp-web` through
 /// `ironrdp-futures`, so without it the browser build has no clock and every
 /// measurement there is lost.
-fn monotonic_now() -> MonotonicInstant {
+pub fn monotonic_now() -> MonotonicInstant {
     static EPOCH: std::sync::LazyLock<web_time::Instant> = std::sync::LazyLock::new(web_time::Instant::now);
     MonotonicInstant::from_millis(u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX))
 }
