@@ -363,6 +363,101 @@ async fn a_new_connection_starts_without_the_previous_sessions_events() {
 }
 
 #[tokio::test]
+async fn display_control_channel_is_created_when_the_display_offers_it() {
+    let (echo_started, display_control_started) = run_display_control_probe(true).await;
+
+    assert!(
+        echo_started,
+        "the echo channel must open for the probe to mean anything"
+    );
+    assert!(
+        display_control_started,
+        "a display that offers Display Control must get the channel created on the client"
+    );
+}
+
+#[tokio::test]
+async fn display_control_channel_is_not_created_when_the_display_declines_it() {
+    let (echo_started, display_control_started) = run_display_control_probe(false).await;
+
+    assert!(
+        echo_started,
+        "the echo channel must open for the probe to mean anything"
+    );
+    assert!(
+        !display_control_started,
+        "a display that declines Display Control must not get the channel created on the client"
+    );
+}
+
+/// Connects a real client that registers a Display Control channel and an
+/// echo channel, and reports whether each was created by the server.
+///
+/// The server sends the Create request for every dynamic channel together, in
+/// its reply to the client's capabilities. Once the echo channel has opened and
+/// the connection then goes quiet, every one of them has been processed, so the
+/// answer for Display Control is final whatever order the channels were
+/// registered in.
+async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool) {
+    let echo_started = Arc::new(AtomicBool::new(false));
+    let display_control_started = Arc::new(AtomicBool::new(false));
+
+    let connector_echo = Arc::clone(&echo_started);
+    let connector_display_control = Arc::clone(&display_control_started);
+    let observed_echo = Arc::clone(&echo_started);
+
+    client_server_with_display(
+        move |rx| TestDisplay {
+            rx,
+            offers_display_control,
+        },
+        None,
+        default_client_config(),
+        Vec::new(),
+        None,
+        move |connector| {
+            connector.with_static_channel(
+                DrdynvcClient::new()
+                    .with_dynamic_channel(StartRecorder::new(
+                        ironrdp::displaycontrol::CHANNEL_NAME,
+                        connector_display_control,
+                    ))
+                    .with_dynamic_channel(StartRecorder::new(ironrdp::echo::CHANNEL_NAME, connector_echo)),
+            )
+        },
+        move |mut stage, _activation_factory, mut framed, display_tx, _echo_handle| async move {
+            let _display_tx = display_tx;
+            let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut settled = false;
+            while !settled && Instant::now() < deadline {
+                let read_result = tokio::time::timeout(Duration::from_millis(150), framed.read_pdu()).await;
+                let Ok(Ok((action, frame))) = read_result else {
+                    settled = observed_echo.load(Ordering::Relaxed);
+                    continue;
+                };
+
+                let outputs = stage.process(&mut image, action, &frame).expect("stage process");
+                for output in outputs {
+                    if let ActiveStageOutput::ResponseFrame(frame) = output {
+                        framed.write_all(&frame).await.expect("write response frame");
+                    }
+                }
+            }
+
+            (stage, framed)
+        },
+    )
+    .await;
+
+    (
+        echo_started.load(Ordering::Relaxed),
+        display_control_started.load(Ordering::Relaxed),
+    )
+}
+
+#[tokio::test]
 async fn rdpdr_static_channel_announces_a_drive_and_completes_an_unsupported_create() {
     let fixture = RdpdrFixtureFactory::new(RdpdrFixtureOperation::UnsupportedCreate);
     let fixture_state = fixture.state();
@@ -528,6 +623,7 @@ impl RdpServerDisplayUpdates for TestDisplayUpdates {
 
 struct TestDisplay {
     rx: DisplayUpdatesRx,
+    offers_display_control: bool,
 }
 
 #[async_trait::async_trait]
@@ -544,7 +640,42 @@ impl RdpServerDisplay for TestDisplay {
             rx: Arc::clone(&self.rx),
         }))
     }
+
+    async fn offers_display_control(&mut self) -> bool {
+        self.offers_display_control
+    }
 }
+
+/// Client-side dynamic channel that only records that the server created it.
+struct StartRecorder {
+    name: &'static str,
+    started: Arc<AtomicBool>,
+}
+
+impl StartRecorder {
+    fn new(name: &'static str, started: Arc<AtomicBool>) -> Self {
+        Self { name, started }
+    }
+}
+
+impl_as_any!(StartRecorder);
+
+impl DvcProcessor for StartRecorder {
+    fn channel_name(&self) -> &str {
+        self.name
+    }
+
+    fn start(&mut self, _channel_id: u32) -> pdu::PduResult<Vec<DvcMessage>> {
+        self.started.store(true, Ordering::Relaxed);
+        Ok(Vec::new())
+    }
+
+    fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> pdu::PduResult<Vec<DvcMessage>> {
+        Ok(Vec::new())
+    }
+}
+
+impl DvcClientProcessor for StartRecorder {}
 
 struct TestInputHandler;
 impl RdpServerInputHandler for TestInputHandler {
@@ -1013,6 +1144,43 @@ async fn client_server_impl<F, Fut, C>(
     Fut: Future<Output = (ActiveStage, Framed<TokioStream<TlsStream<TcpStream>>>)>,
     C: FnOnce(connector::ClientConnector) -> connector::ClientConnector + 'static,
 {
+    client_server_with_display(
+        |rx| TestDisplay {
+            rx,
+            offers_display_control: true,
+        },
+        stale_events,
+        client_config,
+        static_channel_factories,
+        server_udp_addr,
+        connector_factory,
+        clientfn,
+    )
+    .await;
+}
+
+async fn client_server_with_display<D, DF, F, Fut, C>(
+    display_factory: DF,
+    stale_events: Option<Vec<ServerEvent>>,
+    client_config: connector::Config,
+    static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+    server_udp_addr: Option<SocketAddr>,
+    connector_factory: C,
+    clientfn: F,
+) where
+    D: RdpServerDisplay + 'static,
+    DF: FnOnce(DisplayUpdatesRx) -> D,
+    F: FnOnce(
+            ActiveStage,
+            connector::connection_activation::ConnectionActivationFactory,
+            Framed<TokioStream<TlsStream<TcpStream>>>,
+            UnboundedSender<DisplayUpdate>,
+            server::EchoServerHandle,
+        ) -> Fut
+        + 'static,
+    Fut: Future<Output = (ActiveStage, Framed<TokioStream<TlsStream<TcpStream>>>)>,
+    C: FnOnce(connector::ClientConnector) -> connector::ClientConnector + 'static,
+{
     // FIXME(@CBenoit): If this is really necessary, we may consider a non-global way of registering the subscriber; otherwise it’s unnecessary to register that.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -1028,9 +1196,7 @@ async fn client_server_impl<F, Fut, C>(
         .with_addr(([127, 0, 0, 1], 0))
         .with_tls(acceptor)
         .with_input_handler(TestInputHandler)
-        .with_display_handler(TestDisplay {
-            rx: Arc::new(Mutex::new(display_rx)),
-        });
+        .with_display_handler(display_factory(Arc::new(Mutex::new(display_rx))));
     for factory in static_channel_factories {
         server_builder = server_builder.with_static_channel_factory(factory);
     }
@@ -1169,6 +1335,7 @@ async fn egfx_moves_onto_the_udp_tunnel_with_soft_sync() {
         .with_input_handler(TestInputHandler)
         .with_display_handler(TestDisplay {
             rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
         })
         .with_gfx_factory(Some(Box::new(TestGfxFactory { caps_tx })))
         .with_udp_transport(udp_addr)
@@ -1635,6 +1802,7 @@ fn auto_reconnect_server(on_request: bool) -> (RdpServer, UnboundedSender<Displa
         .with_input_handler(TestInputHandler)
         .with_display_handler(TestDisplay {
             rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
         })
         .with_auto_reconnect_cookie(Some(ServerAutoReconnect {
             logon_id: 1,
@@ -2097,6 +2265,7 @@ fn hook_recording_server(
         .with_input_handler(TestInputHandler)
         .with_display_handler(TestDisplay {
             rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
         })
         .with_connection_handler(Some(Box::new(HookRecorder(Arc::clone(&counts)))))
         .with_connection_policy(policy)
@@ -2237,6 +2406,7 @@ async fn the_default_under_hybrid_lets_an_authenticated_newcomer_take_over() {
         .with_input_handler(TestInputHandler)
         .with_display_handler(TestDisplay {
             rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
         })
         .build();
     server.set_credentials(Some(server::Credentials {
