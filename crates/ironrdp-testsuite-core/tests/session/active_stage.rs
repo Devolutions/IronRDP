@@ -204,3 +204,112 @@ fn reset_graphics_clips_a_hotspot_cursor_to_one_pixel() {
 
     assert_eq!(image.data(), &[0xFF, 0xFF, 0xFF, 0]);
 }
+
+/// Same-size resets must reach the client resize queue even without a completed
+/// graphics frame, otherwise scale-only Display Control requests time out.
+#[test]
+fn output_reset_is_reported_even_when_the_framebuffer_size_is_unchanged() {
+    use core::any::TypeId;
+    use std::borrow::Cow;
+
+    use ironrdp_core::encode_vec;
+    use ironrdp_dvc::DrdynvcClient;
+    use ironrdp_dvc::pdu::{
+        CreateRequestPdu, DataPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu,
+        SoftSyncTunnelType,
+    };
+    use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+    use ironrdp_egfx::pdu::{GfxPdu, ResetGraphicsPdu};
+    use ironrdp_graphics::zgfx::wrap_uncompressed;
+    use ironrdp_pdu::Action;
+    use ironrdp_pdu::mcs::{McsMessage, SendDataIndication};
+    use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
+    use ironrdp_pdu::x224::X224;
+    use ironrdp_session::ActiveStageBuilder;
+    use ironrdp_svc::{StaticChannelSet, SvcProcessor as _};
+
+    struct Handler;
+    impl GraphicsPipelineHandler for Handler {}
+
+    let mut drdynvc = DrdynvcClient::new().with_dynamic_channel(GraphicsPipelineClient::new(Box::new(Handler), None));
+    drdynvc
+        .process(
+            &encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+                1,
+                ironrdp_egfx::CHANNEL_NAME.to_owned(),
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+    let mut static_channels = StaticChannelSet::new();
+    assert!(static_channels.insert(drdynvc).is_none());
+    assert!(
+        static_channels
+            .attach_channel_id(TypeId::of::<DrdynvcClient>(), 1004)
+            .is_none()
+    );
+    let mut stage = ActiveStageBuilder {
+        static_channels,
+        user_channel_id: 1001,
+        io_channel_id: 1003,
+        message_channel_id: None,
+        share_id: 1,
+        compression_type: None,
+        enable_server_pointer: false,
+        pointer_software_rendering: false,
+    }
+    .build();
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 800, 600);
+    assert_eq!(stage.take_graphics_output_reset(), None);
+
+    for tunneled in [false, true] {
+        if tunneled {
+            stage.enable_reliable_udp_dvc_tunnel().unwrap();
+            let soft_sync = encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
+                SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, vec![1]),
+            ])))
+            .unwrap();
+            stage
+                .get_svc_processor_mut::<DrdynvcClient>()
+                .unwrap()
+                .process(&soft_sync)
+                .unwrap();
+        }
+
+        for (width, height) in [(800, 600), (1024, 768), (1024, 768)] {
+            let reset = encode_vec(&GfxPdu::ResetGraphics(ResetGraphicsPdu {
+                width: u32::from(width),
+                height: u32::from(height),
+                monitors: Vec::new(),
+            }))
+            .unwrap();
+            let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+                1,
+                wrap_uncompressed(&reset),
+            ))))
+            .unwrap();
+            if tunneled {
+                stage
+                    .process_dvc_tunnel(&mut image, SoftSyncTunnelType::RELIABLE_UDP, &data)
+                    .unwrap();
+            } else {
+                let mut user_data = encode_vec(&ChannelPduHeader {
+                    length: u32::try_from(data.len()).unwrap(),
+                    flags: ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
+                })
+                .unwrap();
+                user_data.extend(data);
+                let frame = encode_vec(&X224(McsMessage::SendDataIndication(SendDataIndication {
+                    initiator_id: 1001,
+                    channel_id: 1004,
+                    user_data: Cow::Owned(user_data),
+                })))
+                .unwrap();
+                stage.process(&mut image, Action::X224, &frame).unwrap();
+            }
+            assert_eq!((image.width(), image.height()), (width, height));
+            assert_eq!(stage.take_graphics_output_reset(), Some((width, height)));
+            assert_eq!(stage.take_graphics_output_reset(), None);
+        }
+    }
+}
