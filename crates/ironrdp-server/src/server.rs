@@ -61,7 +61,7 @@ use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult};
 #[cfg(feature = "egfx")]
-use crate::gfx::{EgfxServerMessage, GfxServerFactory};
+use crate::gfx::{EgfxServerMessage, GfxContext, GfxServerFactory, GfxServerHandle};
 use crate::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use crate::heartbeat::HeartbeatConfig;
 use crate::multitransport;
@@ -956,8 +956,6 @@ pub struct RdpServer {
     echo_handle: EchoServerHandle,
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
-    #[cfg(feature = "egfx")]
-    gfx_handle: Option<crate::gfx::GfxServerHandle>,
     #[cfg(feature = "usb")]
     usb_factory: Option<Box<dyn DeviceFactory>>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
@@ -1223,10 +1221,9 @@ enum NegotiatedTransport<S> {
 ///
 /// Owns a cloned `RdpServerSecurity` rather than borrowing `&self.opts.security`
 /// — `RdpServerSecurity` is a cheap `Clone` (its `TlsAcceptor` is an `Arc`
-/// underneath) — deliberately: a caller in `run_connection_with` needs `&mut
-/// self` (for `attach_channels`) while a live `PendingConnection` is still in
-/// scope, which a borrowed `security` would conflict with for as long as the
-/// pending connection exists.
+/// underneath) — deliberately: a preempting candidate negotiates through
+/// [`negotiate_candidate`] from a [`NegotiationContext`] snapshot, without
+/// holding the server at all.
 struct PendingConnection {
     security: RdpServerSecurity,
     acceptor: Acceptor,
@@ -1310,14 +1307,6 @@ impl PendingConnection {
             acceptor,
             credentials_handler,
         }
-    }
-
-    /// Mutable access to the acceptor for the one thing that must happen
-    /// before negotiation: attaching static/dynamic channels. Negotiation
-    /// itself (`negotiate_and_authenticate`) owns the acceptor from here on,
-    /// so this is only available pre-negotiation.
-    fn acceptor_mut(&mut self) -> &mut Acceptor {
-        &mut self.acceptor
     }
 
     /// Negotiate `stream` and, where the security mode provides it,
@@ -1458,6 +1447,8 @@ struct ConnectionState {
     /// client, which accumulates them and locks up its input dispatch for
     /// seconds on refocus while it chews through the backlog.
     display_suppressed: Arc<AtomicBool>,
+    #[cfg(feature = "egfx")]
+    gfx_handle: Option<GfxServerHandle>,
     #[cfg(feature = "usb")]
     usb_man: ServerUsbManager,
     /// Abort handle of this connection's pending UDP multitransport accept,
@@ -1501,6 +1492,8 @@ impl ConnectionState {
         DisplayContext {
             display_suppressed: Arc::clone(&self.display_suppressed),
             autodetect: self.autodetect_handles.clone(),
+            #[cfg(feature = "egfx")]
+            gfx_handle: self.gfx_handle.clone(),
         }
     }
 
@@ -1889,8 +1882,6 @@ impl RdpServer {
             echo_handle: EchoServerHandle::new(ev_sender.clone()),
             #[cfg(feature = "egfx")]
             gfx_factory,
-            #[cfg(feature = "egfx")]
-            gfx_handle: None,
             #[cfg(feature = "usb")]
             usb_factory,
             ev_sender,
@@ -2256,18 +2247,11 @@ impl RdpServer {
         self.heartbeat = Some(config);
     }
 
-    /// Returns the shared EGFX server handle for proactive frame submission.
-    ///
-    /// Available after `build_server_with_handle()` returns `Some` during
-    /// channel setup. Display handlers use this to call
-    /// `send_avc420_frame()` / `send_avc444_frame()` and then signal the
-    /// event loop via `ServerEvent::Egfx`.
-    #[cfg(feature = "egfx")]
-    pub fn gfx_handle(&self) -> Option<&crate::gfx::GfxServerHandle> {
-        self.gfx_handle.as_ref()
-    }
+    /// Builds this connection's channel backends into `acceptor` and returns the
+    /// connection's state, holding the handles those backends were given.
+    fn attach_channels(&self, acceptor: &mut Acceptor, monitor_count: u32) -> ConnectionState {
+        let autodetect_handles = AutoDetectHandles::default();
 
-    fn attach_channels(&mut self, acceptor: &mut Acceptor, monitor_count: u32) {
         if let Some(cliprdr_factory) = self.cliprdr_factory.as_deref() {
             let backend = cliprdr_factory.build_cliprdr_backend();
 
@@ -2315,19 +2299,23 @@ impl RdpServer {
         };
 
         #[cfg(feature = "egfx")]
-        let dvc = {
+        let (dvc, gfx_handle) = {
             let mut dvc = dvc;
+            let mut gfx_handle = None;
             if let Some(gfx_factory) = self.gfx_factory.as_deref() {
-                if let Some((bridge, handle)) = gfx_factory.build_server_with_handle() {
-                    self.gfx_handle = Some(handle);
+                let gfx_context = GfxContext {
+                    autodetect: autodetect_handles.clone(),
+                };
+                if let Some((bridge, handle)) = gfx_factory.build_server_with_handle(gfx_context.clone()) {
+                    gfx_handle = Some(handle);
                     dvc = dvc.with_dynamic_channel(bridge);
                 } else {
-                    let handler = gfx_factory.build_gfx_handler();
+                    let handler = gfx_factory.build_gfx_handler(gfx_context);
                     let gfx_server = ironrdp_egfx::server::GraphicsPipelineServer::new(handler);
                     dvc = dvc.with_dynamic_channel(gfx_server);
                 }
             }
-            dvc
+            (dvc, gfx_handle)
         };
 
         #[cfg(feature = "usb")]
@@ -2345,6 +2333,25 @@ impl RdpServer {
 
         for factory in &self.static_channel_factories {
             factory.attach(acceptor);
+        }
+
+        ConnectionState {
+            static_channels: StaticChannelSet::new(),
+            client_supports_heartbeat: false,
+            client_supports_errinfo: false,
+            autodetect: self.autodetect_enabled.then(AutoDetectManager::new),
+            autodetect_handles,
+            display_suppressed: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "egfx")]
+            gfx_handle,
+            #[cfg(feature = "usb")]
+            usb_man: ServerUsbManager::default(),
+            pending_udp_accept_abort: None,
+            soft_sync_negotiated: false,
+            udp_migration_allowed: false,
+            egfx_on_udp: false,
+            early_tunnel_payloads: VecDeque::new(),
+            auto_reconnect_issued: false,
         }
     }
 
@@ -2431,22 +2438,11 @@ impl RdpServer {
     }
 
     /// Serve a candidate that already won the preemption race: negotiation and
-    /// authentication are done, so this is where its channel backends are
-    /// finally built (see the body comment below for why only now) before
-    /// handing off to the same finalization the normal path uses. From here
-    /// on, a preemption winner is indistinguishable from a normally-accepted
+    /// authentication are done, so it hands off to the same finalization the
+    /// normal path uses, which builds its channel backends. From here on, a
+    /// preemption winner is indistinguishable from a normally-accepted
     /// connection.
     async fn serve_negotiated(&mut self, candidate: Box<NegotiatedCandidate>) -> ServerResult<()> {
-        let mut candidate = candidate;
-        // Only NOW build the channel backends: this connection has
-        // authenticated and is about to be served, so the factories run
-        // exactly once per served session, as they always have. Still ahead of
-        // `accept_finalize`, which is where the acceptor first consumes the
-        // static channel set (the MCS Connect Initial); `accept_begin`, already
-        // done, stops at the security-upgrade gate before that.
-        let monitor_count = self.display.lock().await.monitor_count().await;
-        self.attach_channels(&mut candidate.acceptor, monitor_count);
-
         self.finalize_negotiated(*candidate).await
     }
 
@@ -2582,9 +2578,8 @@ impl RdpServer {
         self.discard_stale_session_events().await;
 
         let size = self.display.lock().await.size().await;
-        let monitor_count = self.display.lock().await.monitor_count().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
-        let mut pending = PendingConnection::new(
+        let pending = PendingConnection::new(
             self.opts.security.clone(),
             size,
             capabilities,
@@ -2597,8 +2592,6 @@ impl RdpServer {
                 ..ServerCredentialsHandler::default()
             },
         );
-
-        self.attach_channels(pending.acceptor_mut(), monitor_count);
 
         let Some(negotiated) = pending.negotiate_and_authenticate(stream, tls).await? else {
             return Ok(());
@@ -2622,7 +2615,7 @@ impl RdpServer {
     {
         let NegotiatedConnection {
             transport,
-            acceptor,
+            mut acceptor,
             local_addr,
             authenticated_credentials,
         } = negotiated;
@@ -2645,10 +2638,8 @@ impl RdpServer {
         // particular the static channel backends own real resources (an rdpsnd
         // handler is stopped through `Drop`), which must not stay live until
         // the next client attaches new ones.
-        let mut conn = ConnectionState {
-            autodetect: self.autodetect_enabled.then(AutoDetectManager::new),
-            ..ConnectionState::default()
-        };
+        let monitor_count = self.display.lock().await.monitor_count().await;
+        let mut conn = self.attach_channels(&mut acceptor, monitor_count);
         match transport {
             // No security upgrade happened, so there is no TLS session to shut
             // down — matches the pre-existing `BeginResult::Continue` arm.
@@ -6092,12 +6083,13 @@ mod preempt_tests {
 
     /// Regression guard for the "no happy-path test" review finding, and the
     /// load-bearing claim it's actually worried about: that deferring
-    /// `attach_channels` to `serve_negotiated` does NOT silently drop a
+    /// `attach_channels` past negotiation (it runs in `finalize_negotiated`,
+    /// which `serve_negotiated` hands off to) does NOT silently drop a
     /// preemption winner's channels. That claim rests entirely on
     /// `accept_begin` stopping at `AcceptorState::SecurityUpgrade` -- before
     /// `BasicSettingsWaitInitial` consumes `static_channels` -- for
     /// [`RdpServerSecurity::None`]. If a future `ironrdp-acceptor` change
-    /// moved that stop point, a preemption winner would negotiate ZERO static
+    /// moved that stop point, a connection would negotiate ZERO static
     /// channels (no clipboard, no sound, no DVC) and every OTHER test in this
     /// module would still pass, since none of them drive a candidate all the
     /// way to `serve_negotiated`.
@@ -6280,10 +6272,17 @@ mod cliprdr_error_tests {
         // Left in its initial state, so `require_ready` refuses the request
         // below -- the cheapest reproduction of "the channel said no".
         let cliprdr: CliprdrServer = Cliprdr::new(Box::new(SilentBackend));
-        let mut conn = ConnectionState {
-            client_supports_errinfo: true,
-            ..ConnectionState::default()
-        };
+        let mut acceptor = Acceptor::new(
+            nego::SecurityProtocol::empty(),
+            DesktopSize {
+                width: 1024,
+                height: 768,
+            },
+            Vec::new(),
+            None,
+        );
+        let mut conn = server.attach_channels(&mut acceptor, 1);
+        conn.client_supports_errinfo = true;
         conn.static_channels.insert(cliprdr);
         conn.static_channels
             .attach_channel_id(TypeId::of::<CliprdrServer>(), 1004);
@@ -6589,6 +6588,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_connection_releases_the_static_channels() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
         struct ResourceFactory(Arc<AtomicBool>);
         impl StaticChannelFactory for ResourceFactory {
             fn attach(&self, acceptor: &mut Acceptor) {
@@ -6605,11 +6606,24 @@ mod tests {
             .with_static_channel_factory(Box::new(ResourceFactory(Arc::clone(&released))))
             .build();
 
-        // A stream that is already at EOF: the connection ends early, which
-        // is the path an embedder's accept loop sees when a client vanishes.
-        let (client, server_side) = tokio::io::duplex(64);
-        drop(client);
-        let _ = server.run_connection(server_side).await;
+        // The client negotiates and then vanishes, so the connection ends in
+        // finalization, after its channel backends were built: the path an
+        // embedder's accept loop sees when a client drops mid-handshake.
+        let (mut client, server_side) = tokio::io::duplex(4096);
+        let client = async move {
+            let request = nego::ConnectionRequest {
+                nego_data: None,
+                flags: nego::RequestFlags::empty(),
+                protocol: nego::SecurityProtocol::empty(),
+                correlation_info: None,
+            };
+            let request = encode_vec(&X224(request)).expect("encode connection request");
+            client.write_all(&request).await.expect("send connection request");
+            let mut confirm = [0u8; 128];
+            let read = client.read(&mut confirm).await.expect("read connection confirm");
+            let _ = decode::<X224<nego::ConnectionConfirm>>(&confirm[..read]).expect("server answered the negotiation");
+        };
+        let _ = tokio::join!(server.run_connection(server_side), client);
 
         assert!(
             released.load(Ordering::Relaxed),

@@ -40,7 +40,7 @@ use ironrdp_rdpdr::pdu::efs::{
 };
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
 use ironrdp_rdpdr::{Rdpdr, RdpdrBackend, RdpdrBackendFactory, RdpdrBackendProduct, RdpdrDrive};
-use ironrdp_server::{GfxServerFactory, ServerEventSender};
+use ironrdp_server::{GfxContext, GfxServerFactory, ServerEventSender};
 use ironrdp_testsuite_extra as _;
 use ironrdp_tls::TlsStream;
 use ironrdp_tokio::TokioStream;
@@ -1588,7 +1588,7 @@ impl ServerEventSender for TestGfxFactory {
 }
 
 impl GfxServerFactory for TestGfxFactory {
-    fn build_gfx_handler(&self) -> Box<dyn ironrdp_egfx::server::GraphicsPipelineHandler> {
+    fn build_gfx_handler(&self, _: GfxContext) -> Box<dyn ironrdp_egfx::server::GraphicsPipelineHandler> {
         Box::new(TestGfxHandler {
             caps_tx: self.caps_tx.clone(),
         })

@@ -10,6 +10,8 @@ use tracing::{debug, warn};
 
 use crate::autodetect::AutoDetectHandles;
 use crate::error::ServerResult;
+#[cfg(feature = "egfx")]
+use crate::gfx::GfxServerHandle;
 
 #[rustfmt::skip]
 pub use ironrdp_acceptor::DesktopSize;
@@ -293,7 +295,7 @@ pub trait RdpServerDisplayUpdates {
 /// previous connection set or measured carries over. A
 /// Deactivation-Reactivation Sequence keeps the connection, so `updates` is
 /// then called again with a context holding the same handles.
-#[derive(Debug)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct DisplayContext {
     /// `true` while the client has sent `SuppressOutput { desktop_rect: None }`
@@ -318,6 +320,23 @@ pub struct DisplayContext {
 
     /// The connection's auto-detect measurements, for flow control.
     pub autodetect: AutoDetectHandles,
+
+    /// The connection's EGFX server, when its
+    /// [`GfxServerFactory`](crate::GfxServerFactory) built one through
+    /// [`build_server_with_handle`](crate::GfxServerFactory::build_server_with_handle).
+    /// The display calls `send_avc420_frame()` / `send_avc444_frame()` on it
+    /// and then signals the event loop via `ServerEvent::Egfx`.
+    #[cfg(feature = "egfx")]
+    pub gfx_handle: Option<GfxServerHandle>,
+}
+
+impl core::fmt::Debug for DisplayContext {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DisplayContext")
+            .field("display_suppressed", &self.display_suppressed)
+            .field("autodetect", &self.autodetect)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Display for an RDP server

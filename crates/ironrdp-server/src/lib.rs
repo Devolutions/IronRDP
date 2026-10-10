@@ -35,7 +35,7 @@ pub use display::{
 pub use echo::{EchoDvcBridge, EchoRoundTripMeasurement, EchoServerHandle, EchoServerMessage};
 pub use error::{ServerError, ServerErrorExt, ServerErrorKind, ServerResult, ServerResultExt};
 #[cfg(feature = "egfx")]
-pub use gfx::{EgfxServerMessage, GfxDvcBridge, GfxServerFactory, GfxServerHandle};
+pub use gfx::{EgfxServerMessage, GfxContext, GfxDvcBridge, GfxServerFactory, GfxServerHandle};
 pub use handler::{KeyboardEvent, MouseButton, MouseEvent, RdpServerInputHandler};
 #[cfg(feature = "helper")]
 pub use helper::TlsIdentityCtx;
