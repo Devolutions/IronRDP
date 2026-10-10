@@ -1802,6 +1802,7 @@ fn auto_reconnect_server(on_request: bool) -> (RdpServer, UnboundedSender<Displa
         .with_input_handler(TestInputHandler)
         .with_display_handler(TestDisplay {
             rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
         })
         .with_auto_reconnect_cookie(Some(ServerAutoReconnect {
             logon_id: 1,
