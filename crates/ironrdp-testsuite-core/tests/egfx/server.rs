@@ -1088,6 +1088,19 @@ fn test_zero_configured_window_is_unlimited_until_client_clamp() {
 }
 
 #[test]
+fn new_connection_replaces_the_previous_client_ceiling() {
+    let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
+    server.set_max_frames_in_flight(3);
+    assert_eq!(server.set_client_frame_ack_limit(core::num::NonZeroU32::new(1)), 1);
+    server.close(7);
+    assert_eq!(server.set_client_frame_ack_limit(core::num::NonZeroU32::new(2)), 2);
+    assert_eq!(server.set_client_frame_ack_limit(None), 3);
+    server.set_max_frames_in_flight(0);
+    assert_eq!(server.set_client_frame_ack_limit(core::num::NonZeroU32::new(1)), 1);
+    assert_eq!(server.set_client_frame_ack_limit(None), 0);
+}
+
+#[test]
 fn test_close_reopen_clears_stale_frame_window_and_output() {
     let handler = Box::new(TestHandler::new());
     let mut server = GraphicsPipelineServer::new(handler);
@@ -1115,10 +1128,11 @@ fn test_close_reopen_clears_stale_frame_window_and_output() {
     server.close(7);
     assert_eq!(server.frames_in_flight(), 0);
     assert!(!server.has_pending_output());
-    assert_eq!(server.max_frames_in_flight(), 3);
+    assert_eq!(server.max_frames_in_flight(), 1);
 
     server.start(8).expect("reopened DVC start");
-    server.clamp_max_frames_in_flight(core::num::NonZeroU32::new(1).expect("one is non-zero"));
+    // No new core capability exchange occurs when only the DVC reopens.
+    assert_eq!(server.max_frames_in_flight(), 1);
     server
         .process(8, &encode_pdu(&client_caps_pdu))
         .expect("reopened capabilities");
@@ -1140,6 +1154,58 @@ fn test_close_reopen_clears_stale_frame_window_and_output() {
         server.should_backpressure(),
         "stale suspend ACK must not disable the current frame ceiling"
     );
+}
+
+#[test]
+fn acknowledged_duplicates_cannot_resume_a_later_suspension() {
+    let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
+    let caps = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
+        flags: CapabilitiesV81Flags::AVC420_ENABLED,
+    }]));
+    server.process(0, &encode_pdu(&caps)).unwrap();
+    let surface = server.create_surface(64, 64).unwrap();
+    let regions = [Avc420Region::full_frame(64, 64, 22)];
+    let ack = |frame_id, queue_depth| {
+        GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+            frame_id,
+            queue_depth,
+            total_frames_decoded: 1,
+        })
+    };
+    let outstanding = server.send_avc420_frame(surface, &[1], &regions, 1).unwrap();
+    let already_acked = server.send_avc420_frame(surface, &[2], &regions, 2).unwrap();
+    let suspending = server.send_avc420_frame(surface, &[3], &regions, 3).unwrap();
+    server
+        .process(0, &encode_pdu(&ack(already_acked, QueueDepth::AvailableBytes(12))))
+        .unwrap();
+    server
+        .process(0, &encode_pdu(&ack(suspending, QueueDepth::Suspend)))
+        .unwrap();
+    // This duplicate is newer than an outstanding frame, so a broad ID range is insufficient.
+    server
+        .process(0, &encode_pdu(&ack(already_acked, QueueDepth::AvailableBytes(99))))
+        .unwrap();
+    server
+        .process(0, &encode_pdu(&ack(suspending, QueueDepth::AvailableBytes(99))))
+        .unwrap();
+    assert_eq!(server.client_queue_depth(), 0);
+    server.send_avc420_frame(surface, &[4], &regions, 4).unwrap();
+    assert_eq!(server.frames_in_flight(), 0);
+    // A frame outstanding at suspension is still allowed to resume.
+    server
+        .process(0, &encode_pdu(&ack(outstanding, QueueDepth::AvailableBytes(8))))
+        .unwrap();
+    assert_eq!(server.client_queue_depth(), 8);
+    let next = server.send_avc420_frame(surface, &[5], &regions, 5).unwrap();
+    assert_eq!(server.frames_in_flight(), 1);
+    server.process(0, &encode_pdu(&ack(next, QueueDepth::Suspend))).unwrap();
+    // Eligibility was cleared on the previous resume; it must not carry into this pause.
+    server
+        .process(0, &encode_pdu(&ack(outstanding, QueueDepth::AvailableBytes(99))))
+        .unwrap();
+    assert_eq!(server.client_queue_depth(), 0);
+    server.send_avc420_frame(surface, &[6], &regions, 6).unwrap();
+    assert_eq!(server.frames_in_flight(), 0);
 }
 
 #[test]

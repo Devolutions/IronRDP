@@ -4687,13 +4687,13 @@ impl RdpServer {
         }
 
         #[cfg(feature = "egfx")]
-        if let Some(client_limit) = client_core_frame_ack_limit(&result.capabilities)
+        if !result.reactivation
             && let Some(gfx_handle) = self.gfx_handle.as_ref()
         {
             let mut server = gfx_handle
                 .lock()
                 .map_err(|_| ServerError::reason("graphics server", "GfxServerHandle mutex poisoned"))?;
-            server.clamp_max_frames_in_flight(client_limit);
+            server.set_client_frame_ack_limit(client_core_frame_ack_limit(&result.capabilities));
         }
         conn.static_channels = result.static_channels;
         conn.client_supports_heartbeat = result

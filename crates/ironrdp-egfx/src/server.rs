@@ -56,7 +56,7 @@
 //! ```
 
 use core::num::NonZeroU32;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
 use ironrdp_core::{Encode, EncodeResult, WriteCursor, decode, impl_as_any};
@@ -512,8 +512,12 @@ pub struct FrameTracker {
     ack_suspended: bool,
     /// Next frame ID to assign
     next_frame_id: u32,
-    /// First frame ID issued in the current channel generation.
+    /// First frame ID issued in this generation, used to validate suspend ACKs.
     generation_first_frame_id: u32,
+    /// Frames still outstanding when acknowledgements were suspended.
+    suspension_outstanding: HashSet<u32>,
+    /// First frame ID issued during the current suspension.
+    suspension_first_frame_id: Option<u32>,
     /// Operator-configured maximum frames in flight (zero means unlimited).
     configured_max_in_flight: u32,
     /// Optional non-zero ceiling advertised by the active client.
@@ -546,6 +550,8 @@ impl FrameTracker {
             ack_suspended: false,
             next_frame_id: 0,
             generation_first_frame_id: 0,
+            suspension_outstanding: HashSet::new(),
+            suspension_first_frame_id: None,
             configured_max_in_flight: DEFAULT_MAX_FRAMES_IN_FLIGHT,
             client_max_in_flight: None,
             total_sent: 0,
@@ -666,20 +672,13 @@ impl FrameTracker {
         let info = self.unacknowledged.remove(&frame_id)?;
         let suspending = queue_depth == SUSPEND_FRAME_ACK_QUEUE_DEPTH;
         if suspending {
-            self.ack_suspended = true;
-            self.client_queue_depth = 0;
+            self.suspend_acknowledgements();
         } else {
             self.ack_suspended = false;
             self.client_queue_depth = queue_depth;
         }
 
         self.total_acked += 1;
-        if suspending {
-            // [MS-RDPEGFX] 3.2.5.13: a client that suspends acknowledgements
-            // makes the remaining unacknowledged frame state unavailable.
-            self.unacknowledged.clear();
-        }
-
         // Edge-trigger after the remove/clear so an ack that releases
         // backpressure logs.
         self.emit_state_transitions();
@@ -722,25 +721,55 @@ impl FrameTracker {
         self.total_acked
     }
 
-    /// Resume tracking only for a non-suspend ACK naming a frame issued in this generation.
-    /// Frames sent during suspension are intentionally absent from the tracked map.
-    fn resume_from_untracked_ack(&mut self, frame_id: u32, queue_depth: u32) -> bool {
+    fn suspend_acknowledgements(&mut self) {
+        if !self.ack_suspended {
+            self.suspension_outstanding = self.unacknowledged.keys().copied().collect();
+            self.suspension_first_frame_id = Some(self.next_frame_id);
+        }
+        self.ack_suspended = true;
+        self.client_queue_depth = 0;
+        self.unacknowledged.clear();
+    }
+
+    /// A valid suspend request is independent of whether an RTT sample is tracked.
+    fn suspend_from_untracked_ack(&mut self, frame_id: u32) -> bool {
         let issued = frame_id.wrapping_sub(self.generation_first_frame_id)
             < self.next_frame_id.wrapping_sub(self.generation_first_frame_id);
-        if !self.ack_suspended || queue_depth == SUSPEND_FRAME_ACK_QUEUE_DEPTH || !issued {
+        if !issued {
             return false;
         }
+        self.suspend_acknowledgements();
+        self.emit_state_transitions();
+        true
+    }
+
+    /// Resume only for a frame outstanding at suspension or issued during it.
+    /// Already-acknowledged frames cannot change the current flow-control state.
+    fn resume_from_untracked_ack(&mut self, frame_id: u32, queue_depth: u32) -> bool {
+        if !self.ack_suspended || queue_depth == SUSPEND_FRAME_ACK_QUEUE_DEPTH {
+            return false;
+        }
+        let issued_during_suspension = self
+            .suspension_first_frame_id
+            .is_some_and(|first| frame_id.wrapping_sub(first) < self.next_frame_id.wrapping_sub(first));
+        if !self.suspension_outstanding.contains(&frame_id) && !issued_during_suspension {
+            return false;
+        }
+        self.suspension_outstanding.clear();
+        self.suspension_first_frame_id = None;
         self.ack_suspended = false;
         self.client_queue_depth = queue_depth;
         self.emit_state_transitions();
         true
     }
 
-    /// Clear all per-channel tracking state while preserving operator config.
+    /// Clear per-channel tracking while preserving operator config and the connection ceiling.
     pub fn clear(&mut self) {
         self.unacknowledged.clear();
         self.client_queue_depth = 0;
         self.ack_suspended = false;
+        self.suspension_outstanding.clear();
+        self.suspension_first_frame_id = None;
         self.generation_first_frame_id = self.next_frame_id;
         self.last_backpressure_state = false;
         self.last_ack_suspended_state = false;
@@ -1234,12 +1263,10 @@ impl GraphicsPipelineServer {
 
     /// Reset all state owned by one DVC channel generation.
     fn reset_channel_state(&mut self) {
-        self.state = ServerState::WaitingForCapabilities;
         self.negotiated_caps = None;
         self.codec_caps = CodecCapabilities::default();
         self.surfaces = Surfaces::new();
         self.frames.clear();
-        self.frames.client_max_in_flight = None;
         self.output_width = 0;
         self.output_height = 0;
         self.reset_graphics_sent = false;
@@ -1519,6 +1546,15 @@ impl GraphicsPipelineServer {
         self.frames.clamp_max_in_flight(client_max)
     }
 
+    /// Replace the current connection's core Frame Acknowledge ceiling.
+    ///
+    /// The ceiling survives DVC close/reopen and resize. Apply this for every
+    /// new connection; `None` clears a previous connection's constraint.
+    pub fn set_client_frame_ack_limit(&mut self, client_max: Option<NonZeroU32>) -> u32 {
+        self.frames.client_max_in_flight = client_max;
+        self.frames.max_in_flight()
+    }
+
     /// Effective maximum number of frames in flight.
     #[must_use]
     pub fn max_frames_in_flight(&self) -> u32 {
@@ -1639,12 +1675,8 @@ impl GraphicsPipelineServer {
         regions: &[Avc420Region],
         timestamp_ms: u32,
     ) -> Result<u32, FrameSubmissionError> {
-        if let Err(error) = self.avc420_submission_state(surface_id) {
-            if matches!(error, FrameSubmissionError::Backpressured { .. }) {
-                self.qoe.record_backpressure();
-            }
-            return Err(error);
-        }
+        let state = self.avc420_submission_state(surface_id);
+        self.record_submission_state(state)?;
 
         let surface = self
             .surfaces
@@ -1668,6 +1700,13 @@ impl GraphicsPipelineServer {
         self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
 
         Ok(frame_id)
+    }
+
+    fn record_submission_state(&mut self, state: Result<(), FrameSubmissionError>) -> Result<(), FrameSubmissionError> {
+        if matches!(state, Err(FrameSubmissionError::Backpressured { .. })) {
+            self.qoe.record_backpressure();
+        }
+        state
     }
 
     /// Compatibility wrapper returning `None` for any submission rejection.
@@ -1838,12 +1877,8 @@ impl GraphicsPipelineServer {
         if !Self::avc444_stream_shape_is_valid(encoding, stream2.is_some()) {
             return Err(FrameSubmissionError::InvalidFrame);
         }
-        if let Err(error) = self.avc444_submission_state(surface_id) {
-            if matches!(error, FrameSubmissionError::Backpressured { .. }) {
-                self.qoe.record_backpressure();
-            }
-            return Err(error);
-        }
+        let state = self.avc444_submission_state(surface_id);
+        self.record_submission_state(state)?;
 
         let surface = self
             .surfaces
@@ -2517,23 +2552,28 @@ impl GraphicsPipelineServer {
     }
 
     fn handle_frame_acknowledge(&mut self, pdu: FrameAcknowledgePdu) {
-        if !self.is_ready() {
-            warn!(
+        let queue_depth = pdu.queue_depth.to_u32();
+        let suspended = queue_depth == SUSPEND_FRAME_ACK_QUEUE_DEPTH;
+        if !self.is_ready() && !suspended {
+            debug!(
                 frame_id = pdu.frame_id,
                 "Ignoring frame acknowledgement outside active EGFX generation"
             );
             return;
         }
 
-        let queue_depth = pdu.queue_depth.to_u32();
-        let suspended = queue_depth == SUSPEND_FRAME_ACK_QUEUE_DEPTH;
         let Some(info) = self.frames.acknowledge(pdu.frame_id, queue_depth) else {
-            if self.frames.resume_from_untracked_ack(pdu.frame_id, queue_depth) {
+            let accepted = if suspended {
+                self.frames.suspend_from_untracked_ack(pdu.frame_id)
+            } else {
+                self.frames.resume_from_untracked_ack(pdu.frame_id, queue_depth)
+            };
+            if accepted {
                 self.handler
                     .on_frame_ack(pdu.frame_id, queue_depth, pdu.total_frames_decoded);
                 return;
             }
-            warn!(
+            debug!(
                 frame_id = pdu.frame_id,
                 queue_depth, "Ignoring unknown or stale frame acknowledgement"
             );
@@ -2832,6 +2872,51 @@ mod capability_negotiation_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn valid_suspend_ack_is_honoured_without_a_tracked_sample_or_ready_state() {
+        struct Handler;
+        impl GraphicsPipelineHandler for Handler {
+            fn capabilities_advertise(&mut self, _: &CapabilitiesAdvertisePdu) {}
+            fn on_ready(&mut self, _: &CapabilitySet) {}
+        }
+        let mut server = GraphicsPipelineServer::new(Box::new(Handler));
+        let frame_id = server.frames.begin_frame(GraphicsPipelineServer::make_timestamp(0));
+        server.frames.acknowledge(frame_id, 0).unwrap();
+        server.state = ServerState::Resizing;
+        server.handle_frame_acknowledge(FrameAcknowledgePdu {
+            frame_id,
+            queue_depth: crate::pdu::QueueDepth::Suspend,
+            total_frames_decoded: 1,
+        });
+        assert!(server.frames.is_ack_suspended());
+        assert_eq!(server.frames.in_flight(), 0);
+        assert!(!server.frames.should_backpressure());
+        assert_eq!(
+            server.frames.total_acked(),
+            1,
+            "suspension must not fabricate another RTT/ACK sample"
+        );
+    }
+
+    #[test]
+    fn suspension_resume_eligibility_handles_wrapping_ids_and_repeated_suspend() {
+        let mut tracker = FrameTracker::new();
+        tracker.next_frame_id = u32::MAX;
+        tracker.generation_first_frame_id = u32::MAX;
+        let suspended_frame = tracker.begin_frame(GraphicsPipelineServer::make_timestamp(0));
+        tracker
+            .acknowledge(suspended_frame, SUSPEND_FRAME_ACK_QUEUE_DEPTH)
+            .unwrap();
+        let during_pause = tracker.begin_frame(GraphicsPipelineServer::make_timestamp(0));
+        assert_eq!(during_pause, 0);
+        assert!(tracker.suspend_from_untracked_ack(suspended_frame));
+        assert!(tracker.resume_from_untracked_ack(during_pause, 0));
+        assert!(!tracker.is_ack_suspended());
+        assert!(!tracker.resume_from_untracked_ack(during_pause, 99));
+        tracker.clear();
+        assert!(!tracker.suspend_from_untracked_ack(suspended_frame));
+    }
 
     struct DefaultsHandler;
 
