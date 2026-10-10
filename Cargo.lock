@@ -2840,6 +2840,7 @@ dependencies = [
  "ironrdp-core 0.2.1",
  "ironrdp-error 0.2.0",
  "ironrdp-pdu",
+ "ironrdp-rdpsec",
  "ironrdp-svc",
  "picky",
  "picky-asn1-der",
@@ -3269,6 +3270,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpsec"
+version = "0.1.0"
+dependencies = [
+ "digest 0.10.7",
+ "md-5 0.10.6",
+ "num-bigint 0.4.8",
+ "sha1 0.10.7",
+]
+
+[[package]]
 name = "ironrdp-rdpsnd"
 version = "0.9.0"
 dependencies = [
@@ -3369,6 +3380,7 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-rdpei",
+ "ironrdp-rdpsec",
  "ironrdp-svc",
  "qoicoubeh",
  "tracing",
