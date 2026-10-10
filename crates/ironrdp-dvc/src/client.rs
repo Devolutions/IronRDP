@@ -36,6 +36,17 @@ pub trait DvcChannelListener: Send {
     fn is_available(&self) -> bool {
         true
     }
+
+    /// Hands back the processor of a channel that is being closed, so this
+    /// listener can serve a later CREATE again. Servers periodically close and
+    /// re-create the same channel (e.g. MS-RDPEDISP display control), and a
+    /// single-use listener would turn the re-create into NO_LISTENER.
+    ///
+    /// Returns whether the processor was re-armed into this listener. The
+    /// default implementation drops it and leaves the listener spent.
+    fn recycle(&mut self, _processor: Box<dyn DvcClientProcessor + Send>) -> bool {
+        false
+    }
 }
 
 pub type DynamicChannelListener = Box<dyn DvcChannelListener>;
@@ -68,10 +79,20 @@ impl DvcChannelListener for OnceListener {
     fn is_available(&self) -> bool {
         self.inner.is_some()
     }
+
+    fn recycle(&mut self, processor: Box<dyn DvcClientProcessor + Send>) -> bool {
+        if self.inner.is_none() {
+            self.inner = Some(processor as Box<dyn DvcClientProcessor>);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 struct DynamicVirtualChannel {
-    channel_processor: Box<dyn DvcClientProcessor + Send>,
+    /// `None` once the processor has been recycled back into its listener.
+    channel_processor: Option<Box<dyn DvcClientProcessor + Send>>,
     complete_data: CompleteData,
     /// The channel ID assigned by the server.
     ///
@@ -81,8 +102,10 @@ struct DynamicVirtualChannel {
 
 impl Drop for DynamicVirtualChannel {
     fn drop(&mut self) {
-        if let Some(id) = self.channel_id {
-            self.channel_processor.close(id);
+        // A recycled channel (processor taken back by its listener) notifies
+        // the processor itself before the hand-back; an empty shell is a no-op.
+        if let (Some(id), Some(processor)) = (self.channel_id, self.channel_processor.as_mut()) {
+            processor.close(id);
         }
     }
 }
@@ -90,18 +113,24 @@ impl Drop for DynamicVirtualChannel {
 impl DynamicVirtualChannel {
     fn from_boxed(processor: Box<dyn DvcClientProcessor + Send>) -> Self {
         Self {
-            channel_processor: processor,
+            channel_processor: Some(processor),
             complete_data: CompleteData::new(),
             channel_id: None,
         }
     }
 
-    fn processor_type_id(&self) -> TypeId {
-        self.channel_processor.as_any().type_id()
+    fn processor_type_id(&self) -> Option<TypeId> {
+        self.channel_processor
+            .as_ref()
+            .map(|processor| processor.as_any().type_id())
     }
 
     fn start(&mut self, channel_id: DynamicChannelId) -> PduResult<Vec<DvcMessage>> {
-        let messages = self.channel_processor.start(channel_id)?;
+        let processor = self
+            .channel_processor
+            .as_mut()
+            .ok_or_else(|| pdu_other_err!("channel processor was recycled"))?;
+        let messages = processor.start(channel_id)?;
         self.channel_id = Some(channel_id);
         Ok(messages)
     }
@@ -109,15 +138,21 @@ impl DynamicVirtualChannel {
     fn process(&mut self, pdu: DrdynvcDataPdu) -> PduResult<Vec<DvcMessage>> {
         let channel_id = pdu.channel_id();
         let complete_data = self.complete_data.process_data(pdu).map_err(|e| decode_err!(e))?;
-        if let Some(complete_data) = complete_data {
-            self.channel_processor.process(channel_id, &complete_data)
-        } else {
-            Ok(Vec::new())
-        }
+        let Some(complete_data) = complete_data else {
+            return Ok(Vec::new());
+        };
+        let processor = self
+            .channel_processor
+            .as_mut()
+            .ok_or_else(|| pdu_other_err!("channel processor was recycled"))?;
+        processor.process(channel_id, &complete_data)
     }
 
     fn channel_name(&self) -> &str {
-        self.channel_processor.channel_name()
+        self.channel_processor
+            .as_deref()
+            .map(|processor| processor.channel_name())
+            .unwrap_or_default()
     }
 }
 
@@ -246,8 +281,8 @@ impl DrdynvcClient {
         let channel_id = dvc_channel.channel_id?;
         dvc_channel
             .channel_processor
-            .as_any()
-            .downcast_ref()
+            .as_ref()
+            .and_then(|processor| processor.as_any().downcast_ref())
             .map(|p| DynamicChannelRef::new(channel_id, p))
     }
 
@@ -262,8 +297,8 @@ impl DrdynvcClient {
         let channel_id = dvc_channel.channel_id?;
         dvc_channel
             .channel_processor
-            .as_any_mut()
-            .downcast_mut()
+            .as_mut()
+            .and_then(|processor| processor.as_any_mut().downcast_mut())
             .map(|processor| DynamicChannelMut::new(channel_id, processor))
     }
 
@@ -284,7 +319,8 @@ impl DrdynvcClient {
     {
         self.dynamic_channels
             .get_by_channel_id(channel_id)
-            .and_then(|dvc| dvc.channel_processor.as_any().downcast_ref())
+            .and_then(|dvc| dvc.channel_processor.as_ref())
+            .and_then(|processor| processor.as_any().downcast_ref())
             .map(|p| DynamicChannelRef::new(channel_id, p))
     }
 
@@ -297,7 +333,8 @@ impl DrdynvcClient {
     {
         self.dynamic_channels
             .get_by_channel_id_mut(channel_id)
-            .and_then(|dvc| dvc.channel_processor.as_any_mut().downcast_mut())
+            .and_then(|dvc| dvc.channel_processor.as_mut())
+            .and_then(|processor| processor.as_any_mut().downcast_mut())
             .map(|p| DynamicChannelMut::new(channel_id, p))
     }
 
@@ -693,16 +730,46 @@ impl DynamicChannelSet {
     }
 
     fn remove_by_channel_id(&mut self, id: DynamicChannelId) -> Option<DynamicVirtualChannel> {
-        self.active_channels.remove(&id).inspect(|dvc| {
-            let type_id = dvc.processor_type_id();
+        let mut dvc = self.active_channels.remove(&id)?;
+        let type_id = dvc.processor_type_id();
 
-            // Only matters for pre-registered channels
-            if let alloc::collections::btree_map::Entry::Occupied(entry) = self.type_id_to_channel_id.entry(type_id)
-                && entry.get() == &id
-            {
-                entry.remove();
-            }
-        })
+        // Re-arm the listener that produced this channel (if it was created by
+        // one), so a server-driven close→re-create cycle for the same channel
+        // succeeds instead of failing with NO_LISTENER.
+        self.recycle_processor(&mut dvc);
+
+        // Only matters for pre-registered channels
+        if let Some(type_id) = type_id
+            && let alloc::collections::btree_map::Entry::Occupied(entry) = self.type_id_to_channel_id.entry(type_id)
+            && entry.get() == &id
+        {
+            entry.remove();
+        }
+
+        Some(dvc)
+    }
+
+    /// Moves the channel processor of `dvc` back into the listener that produced
+    /// it, if any. The processor is notified of the close first, mirroring what
+    /// [`DynamicVirtualChannel::drop`] would have done; channels that were never
+    /// started are re-armed without a close notification.
+    fn recycle_processor(&mut self, dvc: &mut DynamicVirtualChannel) {
+        let Some(type_id) = dvc.processor_type_id() else {
+            return;
+        };
+
+        let Some(entry) = self.listeners.values_mut().find(|entry| entry.type_id == Some(type_id)) else {
+            return; // not a pre-registered channel; Drop closes it as before
+        };
+
+        let Some(mut processor) = dvc.channel_processor.take() else {
+            return;
+        };
+        if let Some(channel_id) = dvc.channel_id {
+            processor.close(channel_id);
+        }
+
+        let _rearmed = entry.listener.recycle(processor);
     }
 
     #[inline]
