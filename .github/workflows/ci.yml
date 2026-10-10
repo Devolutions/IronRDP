@@ -85,7 +85,7 @@ jobs:
         run: npm ci
 
       - name: Test PR automation
-        run: node --test .github/pr-automation/automation.test.js
+        run: node --test .github/pr-automation/automation.test.js .github/pr-automation/review-ready.test.js .github/pr-automation/retry-command.test.js
 
       - name: Run tests
         working-directory: .github/actions/openai-agent

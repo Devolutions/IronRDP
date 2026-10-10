@@ -38,6 +38,7 @@ Run selected specialists in a multi-job matrix, with at most three running at on
 
 Reusing results across workflow runs is not required.
 A later run starts fresh.
+The separate trusted `pr-automation-retry.yml` comment workflow dispatches this caller's ordinary classification or review route after validating an exact-head failure; it never invokes a provider directly or sets `force`.
 
 ### Outputs
 
