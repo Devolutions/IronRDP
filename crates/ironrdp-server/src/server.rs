@@ -4687,9 +4687,7 @@ impl RdpServer {
         }
 
         #[cfg(feature = "egfx")]
-        if !result.reactivation
-            && let Some(gfx_handle) = self.gfx_handle.as_ref()
-        {
+        if let Some(gfx_handle) = self.gfx_handle.as_ref() {
             let mut server = gfx_handle
                 .lock()
                 .map_err(|_| ServerError::reason("graphics server", "GfxServerHandle mutex poisoned"))?;

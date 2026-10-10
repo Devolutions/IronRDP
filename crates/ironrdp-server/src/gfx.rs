@@ -159,7 +159,7 @@ mod tests {
         let mut server = handle.lock().expect("GfxServerHandle mutex poisoned");
         server.set_max_frames_in_flight(3);
         assert_eq!(
-            server.clamp_max_frames_in_flight(core::num::NonZeroU32::new(1).expect("one is non-zero")),
+            server.set_client_frame_ack_limit(Some(core::num::NonZeroU32::new(1).expect("one is non-zero"))),
             1
         );
     }

@@ -1007,7 +1007,7 @@ fn test_frame_flow_control() {
     server.set_max_frames_in_flight(3);
     assert_eq!(server.max_frames_in_flight(), 3);
     assert_eq!(
-        server.clamp_max_frames_in_flight(core::num::NonZeroU32::new(1).expect("one is non-zero")),
+        server.set_client_frame_ack_limit(Some(core::num::NonZeroU32::new(1).expect("one is non-zero"))),
         1
     );
 
@@ -1062,7 +1062,7 @@ fn test_frame_flow_control() {
 fn resize_retains_client_frame_ack_ceiling() {
     let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
     server.set_max_frames_in_flight(3);
-    server.clamp_max_frames_in_flight(core::num::NonZeroU32::new(1).unwrap());
+    server.set_client_frame_ack_limit(Some(core::num::NonZeroU32::new(1).unwrap()));
     server.resize(64, 64);
     assert_eq!(server.max_frames_in_flight(), 1);
 }
@@ -1076,7 +1076,7 @@ fn test_zero_configured_window_is_unlimited_until_client_clamp() {
     assert!(!server.should_backpressure());
 
     assert_eq!(
-        server.clamp_max_frames_in_flight(core::num::NonZeroU32::new(1).expect("one is non-zero")),
+        server.set_client_frame_ack_limit(Some(core::num::NonZeroU32::new(1).expect("one is non-zero"))),
         1
     );
     server.set_max_frames_in_flight(3);
@@ -1085,6 +1085,17 @@ fn test_zero_configured_window_is_unlimited_until_client_clamp() {
         1,
         "a later setter must not exceed the negotiated client ceiling"
     );
+}
+
+#[test]
+fn negotiated_ceiling_can_be_refreshed_after_resize() {
+    let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
+    server.set_max_frames_in_flight(3);
+    server.set_client_frame_ack_limit(core::num::NonZeroU32::new(1));
+    server.resize(64, 64);
+    assert_eq!(server.max_frames_in_flight(), 1);
+    assert_eq!(server.set_client_frame_ack_limit(core::num::NonZeroU32::new(2)), 2);
+    assert_eq!(server.set_client_frame_ack_limit(None), 3);
 }
 
 #[test]
@@ -1106,7 +1117,7 @@ fn test_close_reopen_clears_stale_frame_window_and_output() {
     let mut server = GraphicsPipelineServer::new(handler);
     server.set_max_frames_in_flight(3);
     server.start(7).expect("initial DVC start");
-    server.clamp_max_frames_in_flight(core::num::NonZeroU32::new(1).expect("one is non-zero"));
+    server.set_client_frame_ack_limit(Some(core::num::NonZeroU32::new(1).expect("one is non-zero")));
 
     let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
         flags: CapabilitiesV81Flags::AVC420_ENABLED,

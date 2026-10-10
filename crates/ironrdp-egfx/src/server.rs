@@ -613,12 +613,6 @@ impl FrameTracker {
         self.configured_max_in_flight = max;
     }
 
-    /// Store a non-zero client-advertised ceiling and return the effective limit.
-    fn clamp_max_in_flight(&mut self, client_max: NonZeroU32) -> u32 {
-        self.client_max_in_flight = Some(client_max);
-        self.max_in_flight()
-    }
-
     /// Effective maximum number of frames permitted in flight.
     ///
     /// Zero means unlimited only when no client ceiling is present.
@@ -1538,18 +1532,10 @@ impl GraphicsPipelineServer {
         self.frames.set_max_in_flight(max);
     }
 
-    /// Clamp the configured frame window to a non-zero client-advertised limit.
-    ///
-    /// A configured value of zero remains unlimited only until the client
-    /// advertises a non-zero ceiling. Returns the effective limit.
-    pub fn clamp_max_frames_in_flight(&mut self, client_max: NonZeroU32) -> u32 {
-        self.frames.clamp_max_in_flight(client_max)
-    }
-
     /// Replace the current connection's core Frame Acknowledge ceiling.
     ///
     /// The ceiling survives DVC close/reopen and resize. Apply this for every
-    /// new connection; `None` clears a previous connection's constraint.
+    /// capability exchange, including reactivation; `None` clears the constraint.
     pub fn set_client_frame_ack_limit(&mut self, client_max: Option<NonZeroU32>) -> u32 {
         self.frames.client_max_in_flight = client_max;
         self.frames.max_in_flight()
@@ -1647,24 +1633,41 @@ impl GraphicsPipelineServer {
         rect.left < rect.right && rect.top < rect.bottom && rect.right <= surface.width && rect.bottom <= surface.height
     }
 
-    /// Check whether an AVC420 frame can be submitted without encoding it.
-    pub fn avc420_submission_state(&self, surface_id: u16) -> Result<(), FrameSubmissionError> {
+    fn submission_state(&self, surface_id: u16, avc444: bool) -> Result<&Surface, FrameSubmissionError> {
         if !self.is_ready() {
             return Err(FrameSubmissionError::NotReady);
         }
-        if !self.supports_avc420() {
+        if avc444 && !self.supports_avc444() {
+            return Err(FrameSubmissionError::Avc444Unsupported);
+        }
+        if !avc444 && !self.supports_avc420() {
             return Err(FrameSubmissionError::Avc420Unsupported);
         }
         if self.should_backpressure() {
             return Err(FrameSubmissionError::Backpressured {
-                frames_in_flight: self.frames_in_flight(),
-                max_frames_in_flight: self.max_frames_in_flight(),
+                frames_in_flight: self.frames.in_flight(),
+                max_frames_in_flight: self.frames.max_in_flight(),
             });
         }
-        if self.surfaces.get(surface_id).is_none() {
-            return Err(FrameSubmissionError::UnknownSurface { surface_id });
+        self.surfaces
+            .get(surface_id)
+            .ok_or(FrameSubmissionError::UnknownSurface { surface_id })
+    }
+
+    /// Inspect AVC420 readiness without queueing a frame.
+    pub fn avc420_submission_state(&self, surface_id: u16) -> Result<(), FrameSubmissionError> {
+        self.submission_state(surface_id, false).map(|_| ())
+    }
+
+    fn prepare_submission(&mut self, surface_id: u16, avc444: bool) -> Result<Surface, FrameSubmissionError> {
+        // Copy the small descriptor so validation and QoE accounting use one lookup.
+        match self.submission_state(surface_id, avc444).cloned() {
+            Err(error @ FrameSubmissionError::Backpressured { .. }) => {
+                self.qoe.record_backpressure();
+                Err(error)
+            }
+            result => result,
         }
-        Ok(())
     }
 
     /// Queue an H.264 AVC420 frame for transmission with a typed rejection.
@@ -1675,13 +1678,7 @@ impl GraphicsPipelineServer {
         regions: &[Avc420Region],
         timestamp_ms: u32,
     ) -> Result<u32, FrameSubmissionError> {
-        let state = self.avc420_submission_state(surface_id);
-        self.record_submission_state(state)?;
-
-        let surface = self
-            .surfaces
-            .get(surface_id)
-            .ok_or(FrameSubmissionError::UnknownSurface { surface_id })?;
+        let surface = self.prepare_submission(surface_id, false)?;
         let timestamp = Self::make_timestamp(timestamp_ms);
         let frame_id = self.frames.begin_frame(timestamp);
         let encoded_stream = encode_avc420_bitmap_stream(regions, h264_data);
@@ -1702,13 +1699,6 @@ impl GraphicsPipelineServer {
         Ok(frame_id)
     }
 
-    fn record_submission_state(&mut self, state: Result<(), FrameSubmissionError>) -> Result<(), FrameSubmissionError> {
-        if matches!(state, Err(FrameSubmissionError::Backpressured { .. })) {
-            self.qoe.record_backpressure();
-        }
-        state
-    }
-
     /// Compatibility wrapper returning `None` for any submission rejection.
     pub fn send_avc420_frame(
         &mut self,
@@ -1721,24 +1711,9 @@ impl GraphicsPipelineServer {
             .ok()
     }
 
-    /// Check whether an AVC444 frame can be submitted without encoding it.
+    /// Inspect AVC444 readiness without queueing a frame.
     pub fn avc444_submission_state(&self, surface_id: u16) -> Result<(), FrameSubmissionError> {
-        if !self.is_ready() {
-            return Err(FrameSubmissionError::NotReady);
-        }
-        if !self.supports_avc444() {
-            return Err(FrameSubmissionError::Avc444Unsupported);
-        }
-        if self.should_backpressure() {
-            return Err(FrameSubmissionError::Backpressured {
-                frames_in_flight: self.frames_in_flight(),
-                max_frames_in_flight: self.max_frames_in_flight(),
-            });
-        }
-        if self.surfaces.get(surface_id).is_none() {
-            return Err(FrameSubmissionError::UnknownSurface { surface_id });
-        }
-        Ok(())
+        self.submission_state(surface_id, true).map(|_| ())
     }
 
     /// Queue an H.264 AVC444 frame for transmission with a typed rejection.
@@ -1877,16 +1852,10 @@ impl GraphicsPipelineServer {
         if !Self::avc444_stream_shape_is_valid(encoding, stream2.is_some()) {
             return Err(FrameSubmissionError::InvalidFrame);
         }
-        let state = self.avc444_submission_state(surface_id);
-        self.record_submission_state(state)?;
-
-        let surface = self
-            .surfaces
-            .get(surface_id)
-            .ok_or(FrameSubmissionError::UnknownSurface { surface_id })?;
+        let surface = self.prepare_submission(surface_id, true)?;
         let timestamp = Self::make_timestamp(timestamp_ms);
         let frame_id = self.frames.begin_frame(timestamp);
-        let wire_pdu = Self::avc444_wire_pdu(codec_id, surface, encoding, (stream1_regions, stream1_data), stream2);
+        let wire_pdu = Self::avc444_wire_pdu(codec_id, &surface, encoding, (stream1_regions, stream1_data), stream2);
 
         self.output_queue
             .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
