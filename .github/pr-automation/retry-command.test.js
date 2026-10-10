@@ -64,7 +64,6 @@ function mock(options = {}) {
   const listReviews = () => {};
   const listWorkflowRunsForRepo = () => {};
   let nextCheckId = 100;
-  let reads = 0;
   const github = {
     paginate: { iterator: async function* (method, params) {
       if (method === listForRef) {
@@ -75,8 +74,6 @@ function mock(options = {}) {
           "AI retry admission": "admissions",
         }[params.check_name];
         state.readNames.push(key);
-        reads += 1;
-        if (state.onRead) state.onRead(reads, state);
         yield { data: state[key].slice(0, 1) };
         yield { data: state[key].slice(1) };
       } else if (method === listReviews) yield { data: state.published };
@@ -247,7 +244,6 @@ test("review retry requires valid classification, current green CI, no published
   const quota = mock({ ...base, labels: ["automation-failed", "ai-reviewed/1"] });
   quota.state.pull.head.repo = { full_name: "outside/fork" };
   quota.state.pull.author_association = "CONTRIBUTOR";
-  quota.github.rest.pulls.list = () => {};
   // An unavailable quota is never interpreted as an exemption.
   assert.equal(await quota.execute(), false);
 });
