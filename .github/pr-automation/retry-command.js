@@ -145,8 +145,7 @@ async function snapshot({ github, owner, repo, prNumber, commentId, eventHadFail
   let gate = stage === "classification" ? null : { classificationId: currentClass.id };
   if (stage === "review") {
     const labels = issue.labels.map((label) => label.name ?? label);
-    if (!reviewPolicyEligible({ labels }) || reviewCount(labels) === undefined ||
-        !classValid)
+    if (!reviewPolicyEligible({ labels }) || reviewCount(labels) === undefined)
       return null;
     // A published bot review on this head may have escaped a failed check.
     for await (const page of github.paginate.iterator(github.rest.pulls.listReviews, {
