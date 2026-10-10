@@ -16,3 +16,6 @@ pub mod rdp;
 mod clipboard;
 
 mod ws;
+
+#[cfg(feature = "udp")]
+mod udp;

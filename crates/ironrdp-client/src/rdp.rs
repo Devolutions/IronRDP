@@ -39,6 +39,7 @@ use ironrdp_pdu::input::mouse::PointerFlags;
     all(windows, feature = "webauthn")
 ))]
 use ironrdp_pdu::pdu_other_err;
+use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
 use ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu;
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 #[cfg(feature = "rdpdr")]
@@ -83,7 +84,17 @@ use ironrdp_rdpsnd_native::{RdpeaiCaptureBackend, cpal};
 
 use crate::config::{Config, RDCleanPathConfig, Transport};
 use crate::rail::{RailClient, RailControlEvent, RailEvent, RailInputEvent};
+#[cfg(feature = "udp")]
+use crate::udp::disable_failed_tunnel;
 use ironrdp_rail::pdu::{ExecutePdu, ExecuteResultPdu};
+
+/// A Tunnel Data PDU received on the reliable UDP tunnel, ready for the session.
+struct ReceivedTunnelMessage {
+    auto_detect_requests: Vec<AutoDetectRequest>,
+    payload: Vec<u8>,
+    /// When the transport read the PDU, on the clock of the TCP reader's `last_read_at`.
+    received_at: Option<ironrdp_core::MonotonicInstant>,
+}
 
 // ── Public event types ────────────────────────────────────────────────────────
 
@@ -3189,7 +3200,8 @@ async fn active_session(
                         Err(error) => return Err(ironrdp_session::custom_err!("read frame", error)),
                     };
                     trace!(?action, frame_length = payload.len(), "Frame received");
-                    let mut outputs = active_stage.process(&mut image, action, &payload)?;
+                    let mut outputs =
+                        active_stage.process_with_timestamp(&mut image, action, &payload, reader.last_read_at())?;
                     #[cfg(feature = "rdpdr")]
                     if let Some(output) = poll_deferred_rdpdr_output(&mut active_stage)? {
                         outputs.push(output);
@@ -3251,42 +3263,84 @@ async fn active_session(
                     }
                     ActiveSessionIteration::outputs(outputs)
                 }
-                udp_payload = async {
+                udp_message = async {
                     #[cfg(feature = "udp")]
                     {
                         match (udp_tunnel.transport.as_mut(), pending_udp_payload.is_none()) {
-                            (Some(transport), true) => transport.recv().await,
+                            (Some(transport), true) => match transport.recv_message().await {
+                                // The read time comes from the same clock as the TCP reader's
+                                // `last_read_at`, so a bandwidth window can span both transports.
+                                Some(message) => Some(ReceivedTunnelMessage {
+                                    auto_detect_requests: message.auto_detect_requests(),
+                                    payload: message.data,
+                                    received_at: transport.last_received_at(),
+                                }),
+                                None => None,
+                            },
                             (Some(_), false) | (None, _) => {
-                                core::future::pending::<Option<Vec<u8>>>().await
+                                core::future::pending::<Option<ReceivedTunnelMessage>>().await
                             }
                         }
                     }
                     #[cfg(not(feature = "udp"))]
                     {
-                        core::future::pending::<Option<Vec<u8>>>().await
+                        core::future::pending::<Option<ReceivedTunnelMessage>>().await
                     }
                 } => {
-                    match udp_payload {
+                    match udp_message {
                     None => {
-                        if active_stage.reliable_udp_dvc_tunnel_in_use() {
-                            return Ok(RdpControlFlow::TransportFailure(
-                                ironrdp_session::general_err!("reliable UDP tunnel closed"),
-                            ));
-                        }
                         #[cfg(feature = "udp")]
                         {
-                            udp_tunnel.transport = None;
+                            if let Err(error) = disable_failed_tunnel(
+                                &mut active_stage,
+                                &mut udp_tunnel.transport,
+                                ironrdp_session::general_err!("reliable UDP tunnel closed"),
+                            ) {
+                                return Ok(RdpControlFlow::TransportFailure(error));
+                            }
                         }
-                        active_stage.disable_reliable_udp_dvc_tunnel()?;
-                        warn!("Reliable UDP tunnel closed before Soft-Sync; continuing with TCP");
                         ActiveSessionIteration::outputs(Vec::new())
                     }
-                    Some(payload) if payload.is_empty() => {
-                        trace!("Ignoring reliable UDP tunnel PDU without higher-layer data");
-                        ActiveSessionIteration::outputs(Vec::new())
-                    }
-                    Some(payload) => {
-                        if active_stage.reliable_udp_dvc_tunnel_in_use() {
+                    Some(ReceivedTunnelMessage { auto_detect_requests, payload, received_at }) => {
+                        #[cfg(feature = "udp")]
+                        {
+                            let responses = active_stage.process_tunnel_auto_detect(
+                                auto_detect_requests,
+                                payload.len(),
+                                received_at,
+                            );
+                            let reply = ironrdp_rdpeudp_tokio::TunnelMessage::from_auto_detect_responses(&responses);
+                            if let Some(reply) = reply
+                                && let Some(transport) = udp_tunnel.transport.as_ref()
+                            {
+                                let Some(result) =
+                                    cancelable_operation(transport.send_message(reply), close_receiver).await
+                                else {
+                                    return Ok(RdpControlFlow::TerminatedGracefully(
+                                        GracefulDisconnectReason::UserInitiated,
+                                    ));
+                                };
+                                if let Err(error) = result {
+                                    if let Err(error) = disable_failed_tunnel(
+                                        &mut active_stage,
+                                        &mut udp_tunnel.transport,
+                                        ironrdp_session::custom_err!("answer reliable UDP tunnel auto-detect", error),
+                                    ) {
+                                        return Ok(RdpControlFlow::TransportFailure(error));
+                                    }
+                                    // No channel migrated, and the tunnel is now withdrawn, so
+                                    // nothing will read this PDU's data.
+                                    continue;
+                                }
+                            }
+                        }
+                        #[cfg(not(feature = "udp"))]
+                        let _ = (auto_detect_requests, received_at);
+
+                        if payload.is_empty() {
+                            trace!("Reliable UDP tunnel PDU without higher-layer data");
+                            ActiveSessionIteration::outputs(Vec::new())
+                        } else if active_stage.reliable_udp_dvc_tunnel_in_use() {
                             ActiveSessionIteration::tunnel(
                                 SoftSyncTunnelType::RELIABLE_UDP,
                                 active_stage.process_dvc_tunnel(

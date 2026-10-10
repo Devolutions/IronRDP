@@ -6,6 +6,7 @@ pub mod framed;
 pub mod multitransport;
 pub mod transport;
 
+pub(crate) mod autodetect;
 pub(crate) mod clock;
 pub(crate) mod driver;
 pub(crate) mod stream;
