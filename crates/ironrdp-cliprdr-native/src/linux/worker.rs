@@ -104,12 +104,7 @@ impl<O: OsClipboard, P: ClipboardMessageProxy> Worker<O, P> {
                     return;
                 }
                 self.invalidate();
-                self.owns_remote = false;
-                self.remote.clear();
-                self.local_mimes = self.os.mime_types();
-                if self.ready {
-                    self.advertise_local();
-                }
+                self.revert_to_local();
             }
             Command::RemoteCopy(formats) => {
                 self.invalidate();
@@ -129,12 +124,10 @@ impl<O: OsClipboard, P: ClipboardMessageProxy> Worker<O, P> {
                 if let Err(error) = self.os.offer(&mimes, self.generation) {
                     warn!(%error, "Could not advertise the remote clipboard");
                     let _ = self.os.clear();
-                    self.owns_remote = false;
-                    self.remote.clear();
-                    self.local_mimes = self.os.mime_types();
-                    if self.ready {
-                        self.advertise_local();
-                    }
+                    // The peer's Format List was already acknowledged. Announcing the
+                    // local formats supersedes it, so the peer stops treating its own
+                    // content as available here.
+                    self.revert_to_local();
                 }
             }
             Command::Paste(transfer) => self.paste(transfer),
@@ -161,6 +154,16 @@ impl<O: OsClipboard, P: ClipboardMessageProxy> Worker<O, P> {
         self.cache.clear();
         if let Some(pending) = &mut self.pending {
             pending.waiters.clear();
+        }
+    }
+
+    /// Drop the remote formats and announce what the local clipboard holds.
+    fn revert_to_local(&mut self) {
+        self.owns_remote = false;
+        self.remote.clear();
+        self.local_mimes = self.os.mime_types();
+        if self.ready {
+            self.advertise_local();
         }
     }
 

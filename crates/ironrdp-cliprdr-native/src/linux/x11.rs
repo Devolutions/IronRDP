@@ -130,6 +130,16 @@ impl Drop for X11Clipboard {
     }
 }
 
+/// The property a selection request is answered in. ICCCM obsolete requestors
+/// pass `None` and expect the target atom to be used instead.
+fn effective_property(request: &SelectionRequestEvent) -> Atom {
+    if request.property == NONE {
+        request.target
+    } else {
+        request.property
+    }
+}
+
 enum ReadKind {
     Targets,
     Data(ReadReply),
@@ -356,11 +366,7 @@ impl State {
             }
             Request::Clear => self.clear()?,
             Request::Complete(request, generation, data) => {
-                let property = if request.property == NONE {
-                    request.target
-                } else {
-                    request.property
-                };
+                let property = effective_property(&request);
                 let Some(pending) = self.pending_pastes.remove(&(request.requestor, property)) else {
                     return Ok(());
                 };
@@ -370,11 +376,6 @@ impl State {
                 if generation != self.generation || !self.owns {
                     self.notify(request, NONE)?;
                 } else if let Some(data) = data.filter(|d| d.len() <= MAX_TRANSFER_BYTES) {
-                    let property = if request.property == NONE {
-                        request.target
-                    } else {
-                        request.property
-                    };
                     if data.len() <= CHUNK_BYTES {
                         self.connection
                             .change_property8(PropMode::REPLACE, request.requestor, property, request.target, &data)?
@@ -689,11 +690,7 @@ impl State {
         if request.time != CURRENT_TIME && 0x7fff_ffff < request.time.wrapping_sub(self.timestamp) {
             return self.notify(request, NONE);
         }
-        let property = if request.property == NONE {
-            request.target
-        } else {
-            request.property
-        };
+        let property = effective_property(&request);
         if request.target == self.atoms.TARGETS {
             let mut targets = self.targets.clone();
             targets.extend([self.atoms.TARGETS, self.atoms.TIMESTAMP]);
