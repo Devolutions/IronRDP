@@ -18,7 +18,7 @@
 #![allow(clippy::print_stdout)]
 
 use core::time::Duration;
-use std::io::Write as _;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 
@@ -33,7 +33,7 @@ use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_pdu::rdp::client_info::{CompressionType, PerformanceFlags, TimezoneInfo};
 use sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
 use tokio_rustls::rustls;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 const HELP: &str = "\
 USAGE:
@@ -178,15 +178,7 @@ fn setup_logging() -> anyhow::Result<()> {
 }
 
 fn run(config: RunConfig) -> anyhow::Result<()> {
-    let connector_config = build_config(
-        config.username,
-        config.password,
-        config.domain,
-        config.compression_enabled,
-        config.compression_level,
-    )?;
-
-    let (connection_result, framed) = connect(connector_config, config.host, config.port).context("connect")?;
+    let (connection_result, framed) = connect(&config).context("connect")?;
     info!(compression_type = ?connection_result.compression_type, "Negotiated compression");
 
     let mut image = DecodedImage::new(
@@ -223,8 +215,8 @@ fn build_config(
         credentials: Credentials::UsernamePassword { username, password },
         domain,
         enable_tls: false, // This example does not expose any frontend.
-        enable_credssp: true,
-        enable_standard_rdp_security: false,
+        enable_credssp: false,
+        enable_standard_rdp_security: true,
         keyboard_type: KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
         keyboard_layout: 0,
@@ -292,14 +284,94 @@ fn compression_type_from_level(level: u32) -> anyhow::Result<CompressionType> {
     }
 }
 
-type UpgradedFramed = ironrdp_blocking::Framed<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>;
+/// The transport stream: either plain TCP (Standard RDP Security) or TLS-upgraded.
+enum RdpStream {
+    Plain(TcpStream),
+    Tls(rustls::StreamOwned<rustls::ClientConnection, TcpStream>),
+}
 
-fn connect(
+impl RdpStream {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        match self {
+            RdpStream::Plain(stream) => stream.set_read_timeout(timeout),
+            RdpStream::Tls(stream) => stream.get_ref().set_read_timeout(timeout),
+        }
+    }
+}
+
+impl Read for RdpStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = match self {
+            RdpStream::Plain(stream) => stream.read(buf),
+            RdpStream::Tls(stream) => stream.read(buf),
+        }?;
+        if std::env::var_os("DUMP_WIRE").is_some() && n > 0 {
+            eprintln!("WIRE IN {} {:02x?}", n, &buf[..n]);
+        }
+        Ok(n)
+    }
+}
+
+impl Write for RdpStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if std::env::var_os("DUMP_WIRE").is_some() {
+            eprintln!("WIRE OUT {} {:02x?}", buf.len(), buf);
+        }
+        match self {
+            RdpStream::Plain(stream) => stream.write(buf),
+            RdpStream::Tls(stream) => stream.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            RdpStream::Plain(stream) => stream.flush(),
+            RdpStream::Tls(stream) => stream.flush(),
+        }
+    }
+}
+
+type AnyFramed = ironrdp_blocking::Framed<RdpStream>;
+
+/// Drives the connection sequence, retrying on failure: some servers
+/// intermittently reset new connections during the X.224 negotiation.
+fn connect(config: &RunConfig) -> anyhow::Result<(ConnectionResult, AnyFramed)> {
+    const MAX_ATTEMPTS: usize = 12;
+
+    let mut last_error = None;
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        let connector_config = build_config(
+            config.username.clone(),
+            config.password.clone(),
+            config.domain.clone(),
+            config.compression_enabled,
+            config.compression_level,
+        )?;
+
+        match connect_once(connector_config, &config.host, config.port) {
+            Ok(result) => return Ok(result),
+            Err(error) => {
+                warn!(attempt, MAX_ATTEMPTS, error = %error.root_cause(), "Connection attempt failed");
+                last_error = Some(error);
+                if attempt < MAX_ATTEMPTS {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            }
+        }
+    }
+
+    Err(last_error
+        .expect("at least one attempt")
+        .context("all connection attempts failed"))
+}
+
+fn connect_once(
     config: connector::Config,
-    server_name: String,
+    server_name: &str,
     port: u16,
-) -> anyhow::Result<(ConnectionResult, UpgradedFramed)> {
-    let server_addr = lookup_addr(&server_name, port).context("lookup addr")?;
+) -> anyhow::Result<(ConnectionResult, AnyFramed)> {
+    let server_addr = lookup_addr(server_name, port).context("lookup addr")?;
 
     info!(%server_addr, "Looked up server address");
 
@@ -315,42 +387,59 @@ fn connect(
 
     let mut framed = ironrdp_blocking::Framed::new(tcp_stream);
 
+    // Only the explicit standard-RDP-security opt-in skips the TLS upgrade;
+    // the connector refuses a server-selected protocol it did not offer.
+    let skip_tls = config.enable_standard_rdp_security && !config.enable_tls && !config.enable_credssp;
+
     let mut connector = connector::ClientConnector::new(config, client_addr);
 
     let should_upgrade = ironrdp_blocking::connect_begin(&mut framed, &mut connector).context("begin connection")?;
 
-    debug!("TLS upgrade");
-
-    // Ensure there is no leftover
     let initial_stream = framed.into_inner_no_leftover();
 
-    let (upgraded_stream, server_public_key) =
-        tls_upgrade(initial_stream, server_name.clone()).context("TLS upgrade")?;
+    let (stream, server_public_key) = if skip_tls {
+        debug!("Standard RDP security: skipping TLS upgrade");
+        (RdpStream::Plain(initial_stream), Vec::new())
+    } else {
+        debug!("TLS upgrade");
+        let (tls_stream, server_public_key) =
+            tls_upgrade(initial_stream, server_name.to_owned()).context("TLS upgrade")?;
+        (RdpStream::Tls(tls_stream), server_public_key)
+    };
 
     let upgraded = ironrdp_blocking::mark_as_upgraded(should_upgrade, &mut connector);
 
-    let mut upgraded_framed = ironrdp_blocking::Framed::new(upgraded_stream);
+    let mut framed = ironrdp_blocking::Framed::new(stream);
 
     let mut network_client = ReqwestNetworkClient;
     let connection_result = ironrdp_blocking::connect_finalize(
         upgraded,
         connector,
-        &mut upgraded_framed,
+        &mut framed,
         &mut network_client,
-        server_name.into(),
+        server_name.to_owned().into(),
         server_public_key,
         None,
     )
     .context("finalize connection")?;
 
-    Ok((connection_result, upgraded_framed))
+    Ok((connection_result, framed))
 }
 
 fn active_stage(
     connection_result: ConnectionResult,
-    mut framed: UpgradedFramed,
+    mut framed: AnyFramed,
     image: &mut DecodedImage,
 ) -> anyhow::Result<()> {
+    // The desktop settles after the initial update flood; once the server has
+    // gone quiet for this long, consider the image complete and save it.
+    const IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+    framed
+        .get_inner_mut()
+        .0
+        .set_read_timeout(Some(IDLE_TIMEOUT))
+        .context("set read timeout")?;
+
     let mut active_stage = ActiveStageBuilder {
         static_channels: connection_result.static_channels,
         user_channel_id: connection_result.user_channel_id,
@@ -360,6 +449,7 @@ fn active_stage(
         compression_type: connection_result.compression_type,
         enable_server_pointer: connection_result.enable_server_pointer,
         pointer_software_rendering: connection_result.pointer_software_rendering,
+        security: connection_result.security,
     }
     .build();
 
@@ -367,6 +457,7 @@ fn active_stage(
         let (action, payload) = match framed.read_pdu() {
             Ok((action, payload)) => (action, payload),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break 'outer,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break 'outer,
             Err(e) => return Err(anyhow::Error::new(e).context("read frame")),
         };
 

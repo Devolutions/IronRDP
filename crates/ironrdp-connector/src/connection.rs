@@ -2,14 +2,20 @@ use core::any::TypeId;
 use core::mem;
 use core::net::SocketAddr;
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ironrdp_core::{Encode, WriteBuf, decode, encode_vec};
 use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
+use ironrdp_pdu::rdp::headers::BASIC_SECURITY_HEADER_SIZE;
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{PduHint, gcc, mcs, nego, rdp};
+use ironrdp_rdpsec::{
+    RdpSecurity, SEC_AUTODETECT_RSP, SEC_CLIENT_RANDOM, SEC_ENCRYPT, SEC_INFO_PKT, SEC_LICENSE_ENCRYPT_SC,
+    SEC_LICENSE_PKT, SEC_SECURE_CHECKSUM, SEC_TRANSPORT_RSP, SharedSecurity, encrypt_client_random,
+};
 use ironrdp_svc::{MAX_STATIC_CHANNELS, StaticChannelKey, StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
+use rand::RngCore as _;
 use tracing::{debug, error, info, warn};
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
@@ -19,7 +25,7 @@ use crate::connection_activation::{
 use crate::license_exchange::{LicenseExchangeSequence, NoopLicenseCache};
 use crate::{
     Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize, MonotonicInstant,
-    NegotiationFailure, Sequence, State, Written, encode_x224_packet, general_err, reason_err,
+    NegotiationFailure, Sequence, State, Written, custom_err, encode_x224_packet, general_err, reason_err,
 };
 
 /// Maximum number of `Initiate Multitransport Request` PDUs the server is
@@ -186,6 +192,11 @@ pub struct ConnectionResult {
     pub activation_factory: ConnectionActivationFactory,
     /// The bulk compression type that was negotiated, if any.
     pub compression_type: Option<rdp::client_info::CompressionType>,
+    /// Standard RDP Security cryptor, when the PROTOCOL_RDP data path was
+    /// negotiated with an encryption method. The key streams inside are already
+    /// positioned past everything the connection sequence exchanged and remain
+    /// authoritative for the rest of the session (slow-path and fast-path).
+    pub security: Option<SharedSecurity>,
 }
 
 impl ConnectionResult {
@@ -374,6 +385,16 @@ pub struct ClientConnector {
     /// Only accumulated while a window is open, since a total with no interval to
     /// divide it by is not a measurement of anything.
     connect_time_bw_bytes: u32,
+    /// The server's GCC SC_SECURITY block, captured during the Basic Settings
+    /// Exchange and consumed by the Secure Settings Exchange: it decides
+    /// whether a Security Exchange PDU is sent and which encryption method
+    /// arms the cryptor.
+    server_security: Option<gcc::ServerSecurityData>,
+    /// Standard RDP Security cryptor, armed when the Security Exchange PDU is
+    /// sent. Every C2S PDU afterwards is wrapped in the security envelope and
+    /// every S2C PDU decrypted before the state machine sees it; the handle
+    /// also crosses into the [`ConnectionResult`].
+    security: Option<SharedSecurity>,
 }
 
 impl ClientConnector {
@@ -391,6 +412,8 @@ impl ClientConnector {
             auto_reconnect_cookie: None,
             connect_time_bw_started_at: None,
             connect_time_bw_bytes: 0,
+            server_security: None,
+            security: None,
         }
     }
 
@@ -824,7 +847,22 @@ impl ClientConnector {
                 .response_pdu(request_id, soft_sync)
                 .ok_or_else(|| general_err!("multitransport response channel selected without a required response"))?;
 
-            encode_send_data_request(user_channel_id, response_channel, &response, output)?
+            // When the cryptor is armed the PDU's embedded BASIC_SECURITY_HEADER
+            // dissolves into the envelope (type bits in SEC_TRANSPORT_RSP) and the
+            // counter MAC is unconditional, matching the legacy client's
+            // message-channel sender.
+            let encoded = encode_vec(&response).map_err(ConnectorError::encode)?;
+            let user_data = if self.security.is_none() {
+                encoded
+            } else {
+                let body = encoded
+                    .get(BASIC_SECURITY_HEADER_SIZE..)
+                    .ok_or_else(|| general_err!("multitransport response PDU too short for a BASIC_SECURITY_HEADER"))?;
+                self.apply_security_envelope(io_channel_id, response_channel, SEC_TRANSPORT_RSP, true, body)
+                    .expect("security checked above")
+            };
+
+            self.encode_raw_send_data_request(user_channel_id, response_channel, user_data, output)?
         } else {
             0
         };
@@ -851,6 +889,7 @@ impl ClientConnector {
         &mut self,
         request: rdp::autodetect::AutoDetectRequest,
         received_at: Option<MonotonicInstant>,
+        io_channel_id: u16,
         message_channel_id: u16,
         user_channel_id: u16,
         output: &mut WriteBuf,
@@ -863,7 +902,14 @@ impl ClientConnector {
         match request {
             AutoDetectRequest::RttRequest { sequence_number, .. } => {
                 let response = AutoDetectRspPdu::new(AutoDetectResponse::RttResponse { sequence_number });
-                let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
+                let written = self.secured_send_data_request_with_header(
+                    io_channel_id,
+                    user_channel_id,
+                    message_channel_id,
+                    SEC_AUTODETECT_RSP,
+                    &response,
+                    output,
+                )?;
                 Written::from_size(written)
             }
             // Start opens the measurement window ([MS-RDPBCGR] 2.2.14.1.2). No reply is
@@ -956,7 +1002,14 @@ impl ClientConnector {
                     time_delta_ms,
                     byte_count,
                 });
-                let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
+                let written = self.secured_send_data_request_with_header(
+                    io_channel_id,
+                    user_channel_id,
+                    message_channel_id,
+                    SEC_AUTODETECT_RSP,
+                    &response,
+                    output,
+                )?;
                 Written::from_size(written)
             }
             // A Stop reaching here with any other requestType means a nonconformant
@@ -1084,6 +1137,13 @@ impl Sequence for ClientConnector {
         received_at: Option<MonotonicInstant>,
         output: &mut WriteBuf,
     ) -> ConnectorResult<Written> {
+        // Standard RDP Security: recover the plaintext of an encrypted inbound
+        // PDU before the state machine sees it. The cryptor is armed during
+        // the Secure Settings Exchange, so every S2C PDU from licensing
+        // onwards is decrypted here.
+        let input = self.decrypt_s2c_input(input)?;
+        let input = input.as_ref();
+
         let (written, next_state) = match mem::take(&mut self.state) {
             // Invalid state
             ClientConnectorState::Consumed => {
@@ -1212,6 +1272,11 @@ impl Sequence for ClientConnector {
                     return Err(general_err!("can't satisfy server security settings"));
                 }
 
+                // Consumed by the Secure Settings Exchange: a non-empty
+                // encryptionMethod turns on the Security Exchange PDU and arms
+                // the cryptor; an empty one keeps the plaintext path.
+                self.server_security = Some(server_gcc_blocks.security);
+
                 self.message_channel_id = server_gcc_blocks
                     .message_channel
                     .as_ref()
@@ -1293,22 +1358,91 @@ impl Sequence for ClientConnector {
             //==============================//
 
             //== Secure Settings Exchange ==//
-            // Send Client Info PDU (information about supported types of compression, username, password, etc).
+            // With Standard RDP Security: send the Security Exchange PDU (the
+            // client random encrypted with the server's proprietary-certificate
+            // public key) and arm the cryptor, then send the encrypted Client
+            // Info PDU. Otherwise the Client Info PDU goes out in plaintext.
             ClientConnectorState::SecureSettingsExchange {
                 io_channel_id,
                 user_channel_id,
             } => {
                 debug!("Secure Settings Exchange");
 
+                let exchange_written = if let Some(server_security) = self
+                    .server_security
+                    .as_ref()
+                    .filter(|s| !s.encryption_method.is_empty())
+                {
+                    let method = server_security.encryption_method;
+                    let server_random = server_security.server_random.ok_or_else(|| {
+                        general_err!("server security data carries no server random although encryption is on")
+                    })?;
+
+                    let mut client_random = [0u8; 32];
+                    rand::rng().fill_bytes(&mut client_random);
+
+                    let enc_rand = encrypt_client_random(&server_security.server_cert, &client_random)
+                        .map_err(|e| custom_err!("Security Exchange", e))?;
+
+                    // Security Exchange PDU, sent plaintext on the I/O channel.
+                    // The `len + 8` field and the trailing 8 zero bytes reproduce
+                    // the mstsc shape field-validated on the wire; the layout
+                    // differs from the MS-RDPBCGR 2.2.6.1 description.
+                    let mut exchange = Vec::with_capacity(16 + enc_rand.len());
+                    exchange.extend_from_slice(&(SEC_CLIENT_RANDOM | SEC_LICENSE_ENCRYPT_SC).to_le_bytes());
+                    exchange.extend_from_slice(&0u16.to_le_bytes());
+                    exchange.extend_from_slice(&((enc_rand.len() as u32) + 8).to_le_bytes());
+                    exchange.extend_from_slice(&enc_rand);
+                    exchange.extend_from_slice(&[0u8; 8]);
+
+                    let exchange_written =
+                        self.encode_raw_send_data_request(user_channel_id, io_channel_id, exchange, output)?;
+
+                    self.security = Some(Arc::new(Mutex::new(RdpSecurity::new(
+                        &client_random,
+                        &server_random,
+                        method.bits(),
+                    ))));
+
+                    info!(
+                        ?method,
+                        written = exchange_written,
+                        "Security Exchange PDU sent; Standard RDP Security cryptor armed"
+                    );
+
+                    if std::env::var_os("DUMP_WIRE").is_some() {
+                        eprintln!(
+                            "DUMP CR={:02x?} SR={:02x?} CERT={:02x?}",
+                            client_random, server_random, server_security.server_cert
+                        );
+                    }
+
+                    Some(exchange_written)
+                } else {
+                    None
+                };
+
                 let client_info =
                     create_client_info_pdu(&self.config, &self.client_addr, self.auto_reconnect_cookie.as_ref());
 
                 debug!(message = ?client_info, "Send");
 
-                let written = encode_send_data_request(user_channel_id, io_channel_id, &client_info, output)?;
+                let info_written = self.secured_send_data_request_with_header(
+                    io_channel_id,
+                    user_channel_id,
+                    io_channel_id,
+                    SEC_INFO_PKT,
+                    &client_info,
+                    output,
+                )?;
+
+                // Both PDUs were encoded into the same output buffer; the
+                // returned count must cover everything written into it, or the
+                // driver truncates the Client Info mid-frame.
+                let total_written = exchange_written.unwrap_or(0) + info_written;
 
                 (
-                    Written::from_size(written)?,
+                    Written::from_size(total_written)?,
                     ClientConnectorState::ConnectTimeAutoDetection {
                         io_channel_id,
                         user_channel_id,
@@ -1349,6 +1483,7 @@ impl Sequence for ClientConnector {
                         let written = self.respond_to_connect_time_autodetect(
                             autodetect.request,
                             received_at,
+                            io_channel_id,
                             message_channel_id,
                             user_channel_id,
                             output,
@@ -1374,7 +1509,7 @@ impl Sequence for ClientConnector {
                         )
                     }
                 } else {
-                    let license_exchange = LicenseExchangeSequence::new(
+                    let mut license_exchange = LicenseExchangeSequence::new(
                         io_channel_id,
                         self.config.credentials.username().unwrap_or("").to_owned(),
                         self.config.domain.clone(),
@@ -1384,6 +1519,7 @@ impl Sequence for ClientConnector {
                             .clone()
                             .unwrap_or_else(|| Arc::new(NoopLicenseCache)),
                     );
+                    license_exchange.security = self.security.clone();
                     // If a PDU was read (message channel present) it is the first
                     // licensing PDU; advance the licensing sequence with it now,
                     // through the same helper the LicensingExchange state uses, so
@@ -1498,7 +1634,8 @@ impl Sequence for ClientConnector {
                     // exchange with the PDU intact.
                     let mut connection_activation =
                         ConnectionActivationSequence::new(self.config.clone(), io_channel_id, user_channel_id);
-                    let written = connection_activation.step(input, received_at, output)?;
+                    let written =
+                        self.drive_secured_activation(&mut connection_activation, input, received_at, output)?;
 
                     (
                         written,
@@ -1535,7 +1672,7 @@ impl Sequence for ClientConnector {
             ClientConnectorState::CapabilitiesExchange {
                 mut connection_activation,
             } => {
-                let written = connection_activation.step(input, received_at, output)?;
+                let written = self.drive_secured_activation(&mut connection_activation, input, received_at, output)?;
                 match connection_activation.connection_activation_state() {
                     ConnectionActivationState::ConnectionFinalization { .. } => (
                         written,
@@ -1559,7 +1696,7 @@ impl Sequence for ClientConnector {
             ClientConnectorState::ConnectionFinalization {
                 mut connection_activation,
             } => {
-                let written = connection_activation.step(input, received_at, output)?;
+                let written = self.drive_secured_activation(&mut connection_activation, input, received_at, output)?;
 
                 let next_state = if !connection_activation.connection_activation_state().is_terminal() {
                     ClientConnectorState::ConnectionFinalization { connection_activation }
@@ -1603,6 +1740,7 @@ impl Sequence for ClientConnector {
                                     )
                                     .with_multitransport_soft_sync(self.soft_sync_negotiated()),
                                     compression_type: self.config.compression_type,
+                                    security: self.security.take(),
                                 },
                             }
                         }
@@ -1641,6 +1779,215 @@ pub fn encode_send_data_request<T: Encode>(
     let written = ironrdp_core::encode_buf(&X224(pdu), buf).map_err(ConnectorError::encode)?;
 
     Ok(written)
+}
+
+impl ClientConnector {
+    /// Wrap raw `user_data` in an MCS Send Data Request / X.224 packet.
+    fn encode_raw_send_data_request(
+        &self,
+        initiator_id: u16,
+        channel_id: u16,
+        user_data: Vec<u8>,
+        buf: &mut WriteBuf,
+    ) -> ConnectorResult<usize> {
+        let pdu = mcs::SendDataRequest {
+            initiator_id,
+            channel_id,
+            user_data: Cow::Owned(user_data),
+        };
+
+        let written = ironrdp_core::encode_buf(&X224(pdu), buf).map_err(ConnectorError::encode)?;
+
+        Ok(written)
+    }
+
+    /// Encode a C2S Send Data PDU through the Standard RDP Security envelope
+    /// when the cryptor is armed.
+    ///
+    /// For PDUs that embed their own 4-byte BASIC_SECURITY_HEADER
+    /// (`AutoDetectRspPdu`, `MultitransportResponsePdu`, license PDUs), the
+    /// embedded header dissolves into the envelope on the encrypted wire —
+    /// its type bits travel in `flags` and the 4 bytes are struck from the
+    /// body — while the plaintext path keeps the full PDU shape.
+    fn secured_send_data_request_with_header<T: Encode>(
+        &mut self,
+        io_channel_id: u16,
+        initiator_id: u16,
+        channel_id: u16,
+        flags: u16,
+        msg: &T,
+        buf: &mut WriteBuf,
+    ) -> ConnectorResult<usize> {
+        let encoded = encode_vec(msg).map_err(ConnectorError::encode)?;
+
+        if self.security.is_none() {
+            return self.encode_raw_send_data_request(initiator_id, channel_id, encoded, buf);
+        }
+
+        let body = encoded
+            .get(BASIC_SECURITY_HEADER_SIZE..)
+            .ok_or_else(|| general_err!("slow-path PDU too short to carry a BASIC_SECURITY_HEADER"))?;
+        let envelope = self
+            .apply_security_envelope(io_channel_id, channel_id, flags, false, body)
+            .expect("security checked above");
+
+        self.encode_raw_send_data_request(initiator_id, channel_id, envelope, buf)
+    }
+
+    /// Apply the Standard RDP Security envelope (`[flags u16][pad u16]
+    /// [MAC 8B][RC4 cipher]`, mac-then-encrypt) to a slow-path PDU body; the
+    /// `SEC_ENCRYPT` bit is ORed into `flags` here. `None` when the cryptor
+    /// is unarmed.
+    ///
+    /// The MAC variant follows the channel rules observed on the wire with
+    /// Windows servers: I/O-channel uplinks always carry the plain MAC, the
+    /// message channel always uses the SECURE_CHECKSUM counter MAC, and the
+    /// remaining channels switch to the counter MAC once that variant is
+    /// armed (Demand Active extraFlags 0x10). `force_counter` pins the
+    /// counter MAC regardless of channel, matching the legacy client's
+    /// message-channel sender.
+    fn apply_security_envelope(
+        &self,
+        io_channel_id: u16,
+        channel_id: u16,
+        mut flags: u16,
+        force_counter: bool,
+        plaintext: &[u8],
+    ) -> Option<Vec<u8>> {
+        let security = self.security.as_ref()?;
+        let mut sec = security.lock().unwrap();
+
+        let use_counter = if force_counter {
+            true
+        } else if channel_id == io_channel_id {
+            false
+        } else if Some(channel_id) == self.message_channel_id {
+            true
+        } else {
+            sec.secure_checksum
+        };
+        if use_counter {
+            flags |= SEC_SECURE_CHECKSUM;
+        }
+
+        Some(sec.encrypt_envelope(flags, plaintext, use_counter))
+    }
+
+    /// Decrypt an inbound slow-path PDU when the Standard RDP Security cryptor
+    /// is armed (MS-RDPBCGR 5.3). Three inbound shapes exist on the wire:
+    ///
+    /// - `SEC_ENCRYPT`: RC4 ciphertext behind a MAC; verified and decrypted
+    ///   with keystream resynchronisation (`RdpSecurity::decrypt_checked`).
+    /// - `SEC_LICENSE_PKT` without `SEC_ENCRYPT`: an observed quirk — license
+    ///   PDUs travel plaintext with the legacy flag variant (0x8080) in their own
+    ///   embedded security header and no envelope at all; the frame passes
+    ///   through untouched (`LicensePdu` decoding consumes that header).
+    /// - anything else: plaintext, passes through untouched.
+    ///
+    /// The frame is re-encoded around the recovered payload, preserving the
+    /// Send Data Indication wrapper the state machine demuxes on.
+    fn decrypt_s2c_input<'a>(&mut self, input: &'a [u8]) -> ConnectorResult<Cow<'a, [u8]>> {
+        let Some(security) = self.security.clone() else {
+            return Ok(Cow::Borrowed(input));
+        };
+
+        let x224 = match decode::<X224<mcs::McsMessage<'_>>>(input) {
+            Ok(x224) => x224,
+            Err(_) => return Ok(Cow::Borrowed(input)),
+        };
+
+        let mcs::McsMessage::SendDataIndication(data) = x224.0 else {
+            return Ok(Cow::Borrowed(input));
+        };
+
+        let payload = if data.user_data.len() >= 4 {
+            let flags = u16::from_le_bytes([data.user_data[0], data.user_data[1]]);
+            if flags & SEC_ENCRYPT != 0 {
+                if data.user_data.len() < 12 {
+                    return Err(general_err!("encrypted slow-path PDU is too short for a MAC"));
+                }
+                let mac = data.user_data[4..12].to_vec();
+                let plain = security.lock().unwrap().decrypt_checked(&data.user_data[12..], &mac);
+                if flags & SEC_LICENSE_PKT != 0 {
+                    // Encrypted license PDUs carry the LICENSE_PKT type bit in
+                    // the envelope flags and start at the licensing preamble;
+                    // restore the embedded 4-byte security header so the
+                    // LicensePdu decoder sees the canonical plaintext shape.
+                    let mut framed = Vec::with_capacity(BASIC_SECURITY_HEADER_SIZE + plain.len());
+                    framed.extend_from_slice(&SEC_LICENSE_PKT.to_le_bytes());
+                    framed.extend_from_slice(&0u16.to_le_bytes());
+                    framed.extend_from_slice(&plain);
+                    framed
+                } else {
+                    plain
+                }
+            } else {
+                return Ok(Cow::Borrowed(input));
+            }
+        } else {
+            return Ok(Cow::Borrowed(input));
+        };
+
+        let pdu = mcs::McsMessage::SendDataIndication(mcs::SendDataIndication {
+            initiator_id: data.initiator_id,
+            channel_id: data.channel_id,
+            user_data: Cow::Owned(payload),
+        });
+        let frame = encode_vec(&X224(pdu)).map_err(ConnectorError::encode)?;
+
+        Ok(Cow::Owned(frame))
+    }
+
+    /// Drive one step of the activation/finalization sub-sequence, securing
+    /// the frame it produces when the cryptor is armed.
+    ///
+    /// The sub-sequences encode Share Control/Data PDUs as complete plaintext
+    /// frames (X.224 + MCS Send Data Request); the Standard RDP Security
+    /// envelope applies to the Share payload inside the MCS user data, so the
+    /// frame is decoded back out, secured, and re-encoded. Activation frames
+    /// travel on the I/O channel and therefore always carry the plain MAC.
+    fn drive_secured_activation(
+        &mut self,
+        activation: &mut ConnectionActivationSequence,
+        input: &[u8],
+        received_at: Option<MonotonicInstant>,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
+        if self.security.is_none() {
+            return activation.step(input, received_at, output);
+        }
+
+        let mut scratch = WriteBuf::new();
+        let written = activation.step(input, received_at, &mut scratch)?;
+        if scratch.filled_len() == 0 {
+            return Ok(written);
+        }
+
+        let frame = scratch.into_inner();
+        let pdu = decode::<X224<mcs::McsMessage<'_>>>(&frame).map_err(ConnectorError::decode)?;
+        let mcs::McsMessage::SendDataRequest(req) = pdu.0 else {
+            return Err(general_err!(
+                "activation sub-sequence produced a non-SendData frame (this is a bug)"
+            ));
+        };
+
+        let envelope = self
+            .security
+            .as_ref()
+            .expect("security checked above")
+            .lock()
+            .unwrap()
+            .encrypt_envelope(0, &req.user_data, false);
+
+        let secured = mcs::SendDataRequest {
+            initiator_id: req.initiator_id,
+            channel_id: req.channel_id,
+            user_data: Cow::Owned(envelope),
+        };
+        let secured_len = ironrdp_core::encode_buf(&X224(secured), output).map_err(ConnectorError::encode)?;
+
+        Written::from_size(secured_len)
+    }
 }
 
 #[expect(single_use_lifetimes)] // anonymous lifetimes in `impl Trait` are unstable
@@ -1746,7 +2093,13 @@ fn create_gcc_blocks<'a>(
             },
         },
         security: ClientSecurityData {
-            encryption_methods: EncryptionMethod::empty(),
+            // A Windows server picks 40-bit RC4 unless BIT_40 is offered
+            // alongside BIT_128; empty (CRYPTO_NONE) without the standard path.
+            encryption_methods: if selected_protocol.is_standard_rdp_security() {
+                EncryptionMethod::BIT_40 | EncryptionMethod::BIT_128 | EncryptionMethod::BIT_56
+            } else {
+                EncryptionMethod::empty()
+            },
             ext_encryption_methods: 0,
         },
         network: if channels.is_empty() {
