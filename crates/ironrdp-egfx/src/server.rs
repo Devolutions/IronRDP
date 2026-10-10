@@ -55,8 +55,8 @@
 //! let server = GraphicsPipelineServer::new(Box::new(MyHandler));
 //! ```
 
+use core::num::NonZeroU32;
 use std::collections::{HashMap, VecDeque};
-use std::num::NonZeroU32;
 use std::time::Instant;
 
 use ironrdp_core::{Encode, EncodeResult, WriteCursor, decode, impl_as_any};
@@ -1646,7 +1646,10 @@ impl GraphicsPipelineServer {
             return Err(error);
         }
 
-        let surface = self.surfaces.get(surface_id).expect("surface existence checked above");
+        let surface = self
+            .surfaces
+            .get(surface_id)
+            .ok_or(FrameSubmissionError::UnknownSurface { surface_id })?;
         let timestamp = Self::make_timestamp(timestamp_ms);
         let frame_id = self.frames.begin_frame(timestamp);
         let encoded_stream = encode_avc420_bitmap_stream(regions, h264_data);
@@ -1842,7 +1845,10 @@ impl GraphicsPipelineServer {
             return Err(error);
         }
 
-        let surface = self.surfaces.get(surface_id).expect("surface existence checked above");
+        let surface = self
+            .surfaces
+            .get(surface_id)
+            .ok_or(FrameSubmissionError::UnknownSurface { surface_id })?;
         let timestamp = Self::make_timestamp(timestamp_ms);
         let frame_id = self.frames.begin_frame(timestamp);
         let wire_pdu = Self::avc444_wire_pdu(codec_id, surface, encoding, (stream1_regions, stream1_data), stream2);
