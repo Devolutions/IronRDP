@@ -8,7 +8,10 @@ This crate is part of the [IronRDP] project.
 
 ## Linux
 
-`LinuxClipboard` uses the shared `data_control` client for Wayland compositors offering `ext-data-control-v1` or `wlr-data-control-unstable-v1`.
+The `data_control` module is a clipboard client for Wayland compositors that offer [`ext-data-control-v1`] or [`wlr-data-control-unstable-v1`].
+It reads and sets the clipboard without a window and supports delayed rendering, so the data for a paste can be produced when the paste happens.
+
+`LinuxClipboard` is a CLIPRDR backend built on that client.
 When data-control is unavailable, including on GNOME, it falls back to X11/XWayland through XFixes and selection ownership.
 A desktop without either clipboard service uses the client's stub backend.
 
@@ -33,3 +36,6 @@ DISPLAY=:N cargo test -p ironrdp-testsuite-extra cliprdr_native::linux::x11_ -- 
 ```
 
 Use a private display such as Xvfb for these tests, because they replace its clipboard selection.
+
+[`ext-data-control-v1`]: https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/staging/ext-data-control/ext-data-control-v1.xml
+[`wlr-data-control-unstable-v1`]: https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/blob/master/unstable/wlr-data-control-unstable-v1.xml
