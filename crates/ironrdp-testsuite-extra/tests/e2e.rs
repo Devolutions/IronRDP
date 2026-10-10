@@ -21,8 +21,9 @@ use ironrdp::pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode};
 use ironrdp::pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp::pdu::{self, gcc};
 use ironrdp::server::{
-    self, Acceptor, DesktopSize, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer, RdpServerDisplay,
-    RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerResult, StaticChannelFactory, TlsIdentityCtx,
+    self, Acceptor, DesktopSize, DisplayContext, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer,
+    RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerResult, StaticChannelFactory,
+    TlsIdentityCtx,
 };
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{self, ActiveStage, ActiveStageBuilder, ActiveStageOutput};
@@ -39,7 +40,7 @@ use ironrdp_rdpdr::pdu::efs::{
 };
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
 use ironrdp_rdpdr::{Rdpdr, RdpdrBackend, RdpdrBackendFactory, RdpdrBackendProduct, RdpdrDrive};
-use ironrdp_server::{GfxServerFactory, ServerEventSender};
+use ironrdp_server::{GfxContext, GfxServerFactory, ServerEventSender};
 use ironrdp_testsuite_extra as _;
 use ironrdp_tls::TlsStream;
 use ironrdp_tokio::TokioStream;
@@ -511,6 +512,172 @@ async fn tls_validation_preserves_the_default_and_strict_is_explicit() {
     server.await.expect("TLS test server task");
 }
 
+/// The display backend gets the handles the server writes, the same ones again
+/// after a Deactivation-Reactivation Sequence, and a new connection gets its
+/// own, back at their initial values whatever the previous connection left in
+/// its handles.
+#[tokio::test]
+async fn each_connection_gets_its_own_display_context() {
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    let (ctx_tx, mut ctx_rx) = mpsc::unbounded_channel();
+    let (display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(RecordingDisplay {
+            contexts: ctx_tx,
+            updates: Arc::new(Mutex::new(display_rx)),
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    server.enable_autodetect();
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server = tokio::task::spawn_local(async move {
+                server.run().await.unwrap();
+            });
+
+            let client = tokio::task::spawn_local(async move {
+                let server_addr = local_addr_of(&ev).await;
+
+                let (mut stage, activation_factory, mut framed) =
+                    connect_active_client(server_addr, default_client_config(), None).await;
+                let first = ctx_rx.recv().await.expect("first connection's display context");
+
+                // The client answers an RTT probe on its own, and the server
+                // records the result on the handles it gave the display.
+                ev.send(ServerEvent::AutoDetectRttRequest).unwrap();
+                let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+                'probe: loop {
+                    let (action, payload) = framed.read_pdu().await.expect("valid PDU");
+                    for out in stage.process(&mut image, action, &payload).expect("stage process") {
+                        if let ActiveStageOutput::ResponseFrame(frame) = out {
+                            framed.write_all(&frame).await.expect("write RTT response");
+                            break 'probe;
+                        }
+                    }
+                }
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while first.autodetect.rtt.load(Ordering::Relaxed) == u32::MAX {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("the RTT reaches the display's handle");
+
+                // A resize deactivates and reactivates the same connection,
+                // and the display is asked for its updates again.
+                display_tx
+                    .send(DisplayUpdate::Resize(DesktopSize {
+                        width: 2048,
+                        height: 2048,
+                    }))
+                    .unwrap();
+                'deactivate: loop {
+                    let (action, payload) = framed.read_pdu().await.expect("valid PDU");
+                    for out in stage.process(&mut image, action, &payload).expect("stage process") {
+                        if matches!(out, ActiveStageOutput::DeactivateAll) {
+                            break 'deactivate;
+                        }
+                    }
+                }
+                run_reactivation(&mut stage, &activation_factory, &mut framed).await;
+                let reactivated = ctx_rx.recv().await.expect("reactivated connection's display context");
+                assert!(Arc::ptr_eq(&first.display_suppressed, &reactivated.display_suppressed));
+                assert!(Arc::ptr_eq(&first.autodetect.rtt, &reactivated.autodetect.rtt));
+                assert!(Arc::ptr_eq(
+                    &first.autodetect.baseline_rtt,
+                    &reactivated.autodetect.baseline_rtt
+                ));
+                assert!(Arc::ptr_eq(
+                    &first.autodetect.bandwidth,
+                    &reactivated.autodetect.bandwidth
+                ));
+                assert!(Arc::ptr_eq(
+                    &first.autodetect.bandwidth_generation,
+                    &reactivated.autodetect.bandwidth_generation
+                ));
+
+                // Leave every handle away from its initial value, as a
+                // connection that ends minimized after a full measurement would.
+                first.display_suppressed.store(true, Ordering::Relaxed);
+                first.autodetect.bandwidth.store(50_000, Ordering::Relaxed);
+                first.autodetect.bandwidth_generation.store(3, Ordering::Release);
+                disconnect(stage, framed).await;
+
+                let (stage, _, framed) = connect_active_client(server_addr, default_client_config(), None).await;
+                let second = ctx_rx.recv().await.expect("second connection's display context");
+                assert!(!Arc::ptr_eq(&first.display_suppressed, &second.display_suppressed));
+                assert!(!Arc::ptr_eq(&first.autodetect.rtt, &second.autodetect.rtt));
+                assert!(!Arc::ptr_eq(
+                    &first.autodetect.baseline_rtt,
+                    &second.autodetect.baseline_rtt
+                ));
+                assert!(!Arc::ptr_eq(&first.autodetect.bandwidth, &second.autodetect.bandwidth));
+                assert!(!Arc::ptr_eq(
+                    &first.autodetect.bandwidth_generation,
+                    &second.autodetect.bandwidth_generation
+                ));
+                assert!(!second.display_suppressed.load(Ordering::Relaxed));
+                assert_eq!(second.autodetect.rtt.load(Ordering::Relaxed), u32::MAX);
+                assert_eq!(second.autodetect.baseline_rtt.load(Ordering::Relaxed), u32::MAX);
+                assert_eq!(second.autodetect.bandwidth.load(Ordering::Relaxed), u32::MAX);
+                assert_eq!(second.autodetect.bandwidth_generation.load(Ordering::Acquire), 0);
+                disconnect(stage, framed).await;
+
+                ev.send(ServerEvent::Quit("bye".into())).unwrap();
+            });
+
+            tokio::try_join!(server, client).expect("join");
+        })
+        .await;
+
+    /// Hands every context it receives to the test, and draws whatever the
+    /// test sends on `updates`.
+    struct RecordingDisplay {
+        contexts: UnboundedSender<DisplayContext>,
+        updates: DisplayUpdatesRx,
+    }
+
+    #[async_trait::async_trait]
+    impl RdpServerDisplay for RecordingDisplay {
+        async fn size(&mut self) -> DesktopSize {
+            DesktopSize {
+                width: DESKTOP_WIDTH,
+                height: DESKTOP_HEIGHT,
+            }
+        }
+
+        async fn updates(&mut self, ctx: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+            self.contexts.send(ctx).expect("the test is still receiving");
+            Ok(Box::new(TestDisplayUpdates {
+                rx: Arc::clone(&self.updates),
+            }))
+        }
+    }
+
+    async fn disconnect(stage: ActiveStage, mut framed: Framed<TokioStream<TlsStream<TcpStream>>>) {
+        for out in stage.graceful_shutdown().expect("shutdown") {
+            if let ActiveStageOutput::ResponseFrame(frame) = out {
+                framed.write_all(&frame).await.expect("write shutdown frame");
+            }
+        }
+        while framed.read_pdu().await.is_ok() {}
+    }
+}
+
 type DisplayUpdatesRx = Arc<Mutex<UnboundedReceiver<DisplayUpdate>>>;
 
 struct TestDisplayUpdates {
@@ -539,7 +706,7 @@ impl RdpServerDisplay for TestDisplay {
         }
     }
 
-    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(&mut self, _: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(TestDisplayUpdates {
             rx: Arc::clone(&self.rx),
         }))
@@ -1421,7 +1588,7 @@ impl ServerEventSender for TestGfxFactory {
 }
 
 impl GfxServerFactory for TestGfxFactory {
-    fn build_gfx_handler(&self) -> Box<dyn ironrdp_egfx::server::GraphicsPipelineHandler> {
+    fn build_gfx_handler(&self, _: GfxContext) -> Box<dyn ironrdp_egfx::server::GraphicsPipelineHandler> {
         Box::new(TestGfxHandler {
             caps_tx: self.caps_tx.clone(),
         })
