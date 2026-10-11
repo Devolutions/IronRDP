@@ -629,6 +629,12 @@ struct ResizeRequest {
     physical_size: Option<(u32, u32)>,
 }
 
+impl ResizeRequest {
+    fn matches_size(&self, desktop_size: (u16, u16)) -> bool {
+        (self.width, self.height) == desktop_size
+    }
+}
+
 struct TimedResizeRequest {
     request: ResizeRequest,
     deadline: tokio::time::Instant,
@@ -670,16 +676,17 @@ impl ResizeQueue {
     }
 
     fn completed(&mut self, desktop_size: (u16, u16)) -> bool {
-        if self
-            .in_flight
-            .as_ref()
-            .is_some_and(|in_flight| (in_flight.request.width, in_flight.request.height) == desktop_size)
+        // The server answered with a new layout, so the attempt is over either way.
+        let in_flight = self.in_flight.take();
+        if let Some(in_flight) = in_flight
+            && in_flight.request.matches_size(desktop_size)
         {
-            self.confirmed_layout = self.in_flight.take().map(|in_flight| in_flight.request);
+            self.confirmed_layout = Some(in_flight.request);
             return true;
         }
 
         // An unsolicited or adjusted layout does not confirm an outstanding request.
+        // Reconnecting to the requested size would not converge with an adjusted one.
         self.confirmed_layout = None;
         false
     }
@@ -687,9 +694,18 @@ impl ResizeQueue {
     /// Whether a request repeats the last completed layout, with nothing in flight
     /// that could change it. Servers can ignore such requests without sending a reset.
     fn asks_for_current_layout(&self, request: &ResizeRequest, desktop_size: (u16, u16)) -> bool {
-        self.in_flight.is_none()
-            && (request.width, request.height) == desktop_size
-            && self.confirmed_layout == Some(*request)
+        self.in_flight.is_none() && request.matches_size(desktop_size) && self.confirmed_layout == Some(*request)
+    }
+
+    /// Whether a request changes only scale or physical-size metadata, with nothing in
+    /// flight that could still change the pixel size. Reconnecting to the same pixel
+    /// size cannot apply such a request.
+    fn is_metadata_only(&self, request: &ResizeRequest, desktop_size: (u16, u16)) -> bool {
+        request.matches_size(desktop_size)
+            && self
+                .in_flight
+                .as_ref()
+                .is_none_or(|in_flight| in_flight.request.matches_size(desktop_size))
     }
 
     fn pending_request(&mut self, desktop_size: (u16, u16)) -> Option<ResizeRequest> {
@@ -724,12 +740,7 @@ impl ResizeQueue {
         };
 
         let (request, reason) = expired?;
-        if (request.width, request.height) == desktop_size
-            && self
-                .in_flight
-                .as_ref()
-                .is_none_or(|in_flight| (in_flight.request.width, in_flight.request.height) == desktop_size)
-        {
+        if self.is_metadata_only(&request, desktop_size) {
             // Display Control has no explicit acknowledgement. A server can ignore
             // scale/physical-size changes or a layout it already has (MS-RDPEDISP 1.3).
             // Reconnecting to the same pixel size cannot recover those changes. Leave
@@ -3426,7 +3437,7 @@ async fn active_session(
                                 }
                             }
                             ActiveSessionIteration::with_outputs(dvc_batch?, outputs)
-                        } else if (request.width, request.height) == framebuffer_size {
+                        } else if resize_queue.is_metadata_only(&request, framebuffer_size) {
                             debug!("Display Control is unavailable for a metadata-only update");
                             resize_queue.pending = None;
                             ActiveSessionIteration::outputs(Vec::new())
@@ -4420,7 +4431,7 @@ async fn active_session(
                         }
                     }
                 }
-                None if (request.width, request.height) == (image.width(), image.height()) => {
+                None if resize_queue.is_metadata_only(&request, (image.width(), image.height())) => {
                     debug!("Display Control is unavailable for a metadata-only update");
                     resize_queue.pending = None;
                 }
@@ -4868,10 +4879,29 @@ mod tests {
         queue.mark_in_flight(request);
         assert_eq!(queue.confirmed_layout, None);
         assert!(!queue.completed((1024, 768)));
-        assert_eq!(queue.in_flight.as_ref().map(|flight| flight.request), Some(request));
         assert_eq!(queue.confirmed_layout, None);
+        assert!(!queue.asks_for_current_layout(&request, (1280, 720)));
+        queue.mark_in_flight(request);
         assert!(queue.completed((1280, 720)));
         assert!(queue.asks_for_current_layout(&request, (1280, 720)));
+    }
+
+    #[test]
+    fn resize_queue_ends_the_attempt_when_the_server_adjusts_the_layout() {
+        let mut queue = ResizeQueue::default();
+        queue.mark_in_flight(resize_request(1281, 720));
+        let deadline = queue.deadline().unwrap();
+        // The server applied a different size, so a timeout must not reconnect to the request.
+        assert!(!queue.completed((1280, 720)));
+        assert_eq!(queue.deadline(), None);
+        assert_eq!(queue.timed_out_request(deadline, (1280, 720)), None);
+
+        // A deferred request is promoted once the attempt ends.
+        let next = resize_request(1600, 900);
+        queue.mark_in_flight(resize_request(1024, 768));
+        queue.defer(next);
+        assert!(!queue.completed((1280, 720)));
+        assert_eq!(queue.pending_request((1280, 720)), Some(next));
     }
 
     #[test]
