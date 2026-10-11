@@ -20,3 +20,5 @@ Write the requested documentation directly.
 Prefer no net word-count growth when restructuring existing documentation without adding requested information.
 New structure should replace or consolidate prose; allow small justified growth when it materially improves navigation without duplication.
 Before finishing, remove repetition and confirm that a reader can find the next action without reconstructing it from implementation details.
+Don't add documentation comments for code that can be easily understandable.
+Don't add implementation details in the public API documentation - keep such information private (e.g. inside the function directly).
