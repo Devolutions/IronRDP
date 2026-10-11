@@ -48,7 +48,6 @@ pub struct Worker<O, P> {
     os: O,
     proxy: P,
     ready: bool,
-    local_mimes: Vec<String>,
     remote: Vec<ClipboardFormat>,
     owns_remote: bool,
     generation: u64,
@@ -60,11 +59,9 @@ pub struct Worker<O, P> {
 
 impl<O: OsClipboard, P: ClipboardMessageProxy> Worker<O, P> {
     pub fn new(os: O, proxy: P) -> Self {
-        let local_mimes = os.mime_types();
         Self {
             os,
             proxy,
-            local_mimes,
             ready: false,
             remote: Vec::new(),
             owns_remote: false,
@@ -93,7 +90,6 @@ impl<O: OsClipboard, P: ClipboardMessageProxy> Worker<O, P> {
             Command::AdvertiseLocal => {
                 self.ready = true;
                 if !self.owns_remote {
-                    self.local_mimes = self.os.mime_types();
                     self.advertise_local();
                 }
             }
@@ -161,18 +157,18 @@ impl<O: OsClipboard, P: ClipboardMessageProxy> Worker<O, P> {
     fn revert_to_local(&mut self) {
         self.owns_remote = false;
         self.remote.clear();
-        self.local_mimes = self.os.mime_types();
         if self.ready {
             self.advertise_local();
         }
     }
 
     fn advertise_local(&self) {
+        let local_mimes = self.os.mime_types();
         let mut formats = Vec::new();
-        if find_mime_match(TEXT, &self.local_mimes).is_some() {
+        if find_mime_match(TEXT, &local_mimes).is_some() {
             formats.push(ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT));
         }
-        if find_mime_match(PNG, &self.local_mimes).is_some() {
+        if find_mime_match(PNG, &local_mimes).is_some() {
             formats.extend([
                 ClipboardFormat::new(ClipboardFormatId::CF_DIB),
                 ClipboardFormat::new(ClipboardFormatId::CF_DIBV5),
