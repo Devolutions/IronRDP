@@ -93,25 +93,29 @@ impl AutoDetectResponder {
                 payload,
             } if matches!(request_type, BW_STOP_CONNECT_TIME | BW_STOP_RELIABLE_UDP) => {
                 let continuous = request_type == BW_STOP_RELIABLE_UDP;
-                // A Stop ends whichever window is open and reports its store, even if the
-                // Start was of the other type ([MS-RDPBCGR] 3.2.5.14).
-                let measurement = self.bandwidth.take();
+                // A Stop of the other measurement type leaves the open window in place, so a
+                // later Stop of the matching type still reports it.
+                let measurement = if self
+                    .bandwidth
+                    .as_ref()
+                    .is_some_and(|measurement| measurement.continuous == continuous)
+                {
+                    self.bandwidth.take()
+                } else {
+                    None
+                };
+                let stop_bytes = if continuous {
+                    0
+                } else {
+                    counted_len(payload.as_ref().map_or(0, Vec::len))
+                };
                 let (time_delta_ms, byte_count) = match (measurement, received_at) {
-                    (Some(measurement), Some(stopped_at)) => {
-                        // Only a connect-time Stop adds to the count, and a continuous window
-                        // has already counted it as received data.
-                        let stop_bytes = if continuous || measurement.continuous {
-                            0
-                        } else {
-                            counted_len(payload.as_ref().map_or(0, Vec::len))
-                        };
-                        (
-                            u32::try_from(stopped_at.duration_since(measurement.started_at).as_millis())
-                                .unwrap_or(u32::MAX)
-                                .max(UNMEASURABLE_INTERVAL_MS),
-                            measurement.bytes.saturating_add(stop_bytes),
-                        )
-                    }
+                    (Some(measurement), Some(stopped_at)) => (
+                        u32::try_from(stopped_at.duration_since(measurement.started_at).as_millis())
+                            .unwrap_or(u32::MAX)
+                            .max(UNMEASURABLE_INTERVAL_MS),
+                        measurement.bytes.saturating_add(stop_bytes),
+                    ),
                     (Some(measurement), None) => {
                         // The window was timed but this Stop was not, so there is nothing to
                         // divide the count by. Log the drop so it does not look like the
@@ -123,7 +127,13 @@ impl AutoDetectResponder {
                         );
                         (UNMEASURABLE_INTERVAL_MS, 0)
                     }
-                    (None, _) => (UNMEASURABLE_INTERVAL_MS, 0),
+                    (None, _) => {
+                        debug!(
+                            continuous,
+                            "Bandwidth Measure Stop arrived with no matching open window; reporting no measurement"
+                        );
+                        (UNMEASURABLE_INTERVAL_MS, 0)
+                    }
                 };
                 Some(AutoDetectResponse::BandwidthMeasureResults {
                     sequence_number,

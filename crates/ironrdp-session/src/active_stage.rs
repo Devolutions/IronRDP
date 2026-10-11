@@ -211,8 +211,9 @@ impl ActiveStage {
         self.damage_regions.clear();
         let (mut stage_outputs, processor_updates) = match action {
             Action::FastPath => {
-                // TLS-protected fast-path frames have no RDP Security Header, so the
-                // continuous bandwidth count includes the entire frame.
+                // Fast-path frames carry no security flags or data signature: IronRDP supports
+                // Enhanced RDP Security, and Standard RDP Security only at ENCRYPTION_LEVEL_NONE.
+                // The continuous bandwidth count therefore includes the entire frame.
                 self.x224_processor.record_bandwidth_bytes(frame.len());
                 let mut output = WriteBuf::new();
                 let processor_updates =
