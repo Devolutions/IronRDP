@@ -57,7 +57,8 @@ impl core::fmt::Debug for RGBAPointer {
     }
 }
 
-/// Same shape as [`RGBAPointer`] (32bpp XOR mask, no AND mask), for a pointer image
+/// Same shape as [`RGBAPointer`] (32bpp XOR mask; the encoder derives the AND mask from
+/// its alpha channel), for a pointer image
 /// above the 96x96 ceiling `RGBAPointer` can carry, up to 384x384
 /// (MS-RDPBCGR 2.2.9.1.2.1.11, Fast-Path Large Pointer Update).
 #[derive(Clone)]
