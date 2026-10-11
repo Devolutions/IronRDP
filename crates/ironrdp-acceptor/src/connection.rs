@@ -41,6 +41,8 @@ pub struct Acceptor {
     keyboard_layout: u32,
     keyboard_type: gcc::KeyboardType,
     ime_file_name: String,
+    desktop_scale_factor: Option<u32>,
+    device_scale_factor: Option<u32>,
     /// The client's MultiTransportChannelData block flags (MS-RDPBCGR
     /// 2.2.1.3.8), when it sent one. `None` when the client did not send the
     /// block at all, distinct from `Some(empty())` (block present, no flags
@@ -209,6 +211,20 @@ pub struct AcceptorResult {
     ///
     /// Populated for East Asian IME-based input locales; empty otherwise.
     pub ime_file_name: String,
+    /// Desktop scale factor announced by the client in its GCC Client Core Data
+    /// (section 2.2.1.3.2, `desktopScaleFactor`): the scale, as a percentage,
+    /// the client wants applied to the session's UI, e.g. 200 for a client on a
+    /// 2x (Retina) display that is requesting a desktop in physical pixels.
+    ///
+    /// `None` when the client did not send the optional field, or sent a value
+    /// outside 100..=500, which the specification says MUST be ignored.
+    pub desktop_scale_factor: Option<u32>,
+    /// Device scale factor announced by the client in its GCC Client Core Data
+    /// (section 2.2.1.3.2, `deviceScaleFactor`): 100, 140 or 180 percent.
+    ///
+    /// `None` when the client did not send the optional field, or sent any other
+    /// value, which the specification says MUST be ignored.
+    pub device_scale_factor: Option<u32>,
     /// Early capability flags announced by the client in its GCC Client Core
     /// Data (section 2.2.1.3.2, `earlyCapabilityFlags`).
     ///
@@ -263,6 +279,8 @@ impl Acceptor {
             keyboard_layout: 0,
             keyboard_type: gcc::KeyboardType(0),
             ime_file_name: String::new(),
+            desktop_scale_factor: None,
+            device_scale_factor: None,
             multitransport_flags: None,
             early_capability_flags: gcc::ClientEarlyCapabilityFlags::empty(),
             server_capabilities: capabilities,
@@ -499,6 +517,8 @@ impl Acceptor {
             keyboard_layout: consumed.keyboard_layout,
             keyboard_type: consumed.keyboard_type,
             ime_file_name: consumed.ime_file_name,
+            desktop_scale_factor: consumed.desktop_scale_factor,
+            device_scale_factor: consumed.device_scale_factor,
             multitransport_flags: consumed.multitransport_flags,
             early_capability_flags: consumed.early_capability_flags,
             server_capabilities: consumed.server_capabilities,
@@ -693,6 +713,8 @@ impl Acceptor {
                 keyboard_layout: self.keyboard_layout,
                 keyboard_type: self.keyboard_type,
                 ime_file_name: self.ime_file_name.clone(),
+                desktop_scale_factor: self.desktop_scale_factor,
+                device_scale_factor: self.device_scale_factor,
                 multitransport_flags: self
                     .multitransport_flags
                     .unwrap_or_else(gcc::MultiTransportFlags::empty),
@@ -1004,6 +1026,17 @@ impl Sequence for Acceptor {
                 self.keyboard_layout = gcc_blocks.core.keyboard_layout;
                 self.keyboard_type = gcc_blocks.core.keyboard_type;
                 self.ime_file_name.clone_from(&gcc_blocks.core.ime_file_name);
+                // Out-of-range values MUST be ignored (MS-RDPBCGR 2.2.1.3.2).
+                self.desktop_scale_factor = gcc_blocks
+                    .core
+                    .optional_data
+                    .desktop_scale_factor
+                    .filter(|scale| (100..=500).contains(scale));
+                self.device_scale_factor = gcc_blocks
+                    .core
+                    .optional_data
+                    .device_scale_factor
+                    .filter(|scale| matches!(scale, 100 | 140 | 180));
                 self.multitransport_flags = gcc_blocks.multi_transport_channel.as_ref().map(|m| m.flags);
 
                 // Adopt the client's requested desktop size (from its Client

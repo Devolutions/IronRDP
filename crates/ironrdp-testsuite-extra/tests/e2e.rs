@@ -2145,6 +2145,88 @@ async fn hooks_reaching_handler_under(policy: server::ConnectionPolicy) -> (bool
         .await
 }
 
+/// `(desktop, device)` scale factors as `ConnectionInfo` reports them.
+type ScaleFactors = (Option<u32>, Option<u32>);
+
+/// Records the scale factors `on_connection_info` reports.
+struct ScaleRecorder(Arc<StdMutex<Option<ScaleFactors>>>);
+
+impl server::ConnectionHandler for ScaleRecorder {
+    fn on_connection_info(&mut self, info: &server::ConnectionInfo) {
+        *self.0.lock().unwrap() = Some((info.desktop_scale_factor, info.device_scale_factor));
+    }
+}
+
+/// Connect a real client announcing `desktop_scale_factor` and report the
+/// `(desktop, device)` scale factors `on_connection_info` received.
+async fn scale_factors_reported_for(desktop_scale_factor: u32) -> ScaleFactors {
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    let seen = Arc::new(StdMutex::new(None));
+    let (_display_tx, display_rx) = mpsc::unbounded_channel::<DisplayUpdate>();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+        })
+        .with_connection_handler(Some(Box::new(ScaleRecorder(Arc::clone(&seen)))))
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+
+            let server_addr = local_addr_of(&ev).await;
+            let (client, _) = connect_client(server_addr, |client_addr| {
+                let mut config = default_client_config();
+                config.desktop_scale_factor = desktop_scale_factor;
+                connector::ClientConnector::new(config, client_addr)
+            })
+            .await;
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let reported = loop {
+                if let Some(reported) = *seen.lock().unwrap() {
+                    break reported;
+                }
+                assert!(Instant::now() < deadline, "on_connection_info never fired");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            };
+
+            drop(client);
+            server_task.abort();
+            reported
+        })
+        .await
+}
+
+#[tokio::test]
+async fn connection_info_reports_the_client_scale_factors() {
+    // A 2x client. The connector always pairs it with a device scale of 100.
+    assert_eq!(Box::pin(scale_factors_reported_for(200)).await, (Some(200), Some(100)));
+}
+
+#[tokio::test]
+async fn connection_info_ignores_out_of_range_scale_factors() {
+    // The connector's default sends a desktop scale of 0 and a device scale of
+    // 0; both are outside the specified ranges, so both must read as unset.
+    assert_eq!(Box::pin(scale_factors_reported_for(0)).await, (None, None));
+}
+
 #[tokio::test]
 async fn connection_handler_hooks_reach_handler_under_queue() {
     let (accept, info) = Box::pin(hooks_reaching_handler_under(server::ConnectionPolicy::Queue)).await;
