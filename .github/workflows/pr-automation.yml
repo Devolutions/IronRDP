@@ -413,6 +413,8 @@ jobs:
               # placeholder crate. Build rustdoc ourselves so both revisions use
               # their committed lockfiles, just like the ordinary CI build.
               build_rustdoc() {
+                # Drop anything the previous build left in the source tree.
+                git clean -xdfq
                 git checkout --detach "$2"
                 CARGO_TARGET_DIR="$SEMVER_ARTIFACT_ROOT/$1" cargo rustdoc --locked \
                   --package ironrdp --lib --no-default-features --features "$CARGO_SEMVER_CHECKS_FEATURES"
