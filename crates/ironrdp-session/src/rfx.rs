@@ -237,6 +237,7 @@ fn decode_component(
     Ok(())
 }
 
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 fn clipping_rectangles(
     rectangles: &[RfxRectangle],
     destination: &InclusiveRectangle,
@@ -274,20 +275,22 @@ fn clipping_rectangles(
     clipping_rectangles
 }
 
-/// Returns `None` for a tile whose rectangle does not fit in u16, since no clipping rectangle can reach it.
+/// Returns `None` for a tile that starts past the u16 range, since no clipping rectangle can reach it.
+/// A tile crossing the end of the range is cut there, like the clipping rectangles.
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 fn tiles_to_rectangles<'a>(
     tiles: &'a [Tile<'_>],
     destination: &'a InclusiveRectangle,
 ) -> impl Iterator<Item = Option<InclusiveRectangle>> + 'a {
     tiles.iter().map(|t| {
-        let left = u16::try_from(u32::from(destination.left) + u32::from(t.x) * u32::from(TILE_SIZE)).ok()?;
-        let top = u16::try_from(u32::from(destination.top) + u32::from(t.y) * u32::from(TILE_SIZE)).ok()?;
+        let left = t.x.checked_mul(TILE_SIZE)?.checked_add(destination.left)?;
+        let top = t.y.checked_mul(TILE_SIZE)?.checked_add(destination.top)?;
 
         Some(InclusiveRectangle {
             left,
             top,
-            right: left.checked_add(TILE_SIZE - 1)?,
-            bottom: top.checked_add(TILE_SIZE - 1)?,
+            right: left.saturating_add(TILE_SIZE - 1),
+            bottom: top.saturating_add(TILE_SIZE - 1),
         })
     })
 }

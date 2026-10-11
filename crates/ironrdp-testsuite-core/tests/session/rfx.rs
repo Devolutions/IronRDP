@@ -1129,3 +1129,66 @@ fn decode_edited_messages(edit: impl Fn(&mut ironrdp_pdu::codecs::rfx::Block<'_>
 
     image
 }
+
+#[test]
+fn clipping_rectangles_reach_the_last_u16_column() {
+    use ironrdp_pdu::codecs::rfx::RfxRectangle;
+    use ironrdp_session::rfx::clipping_rectangles;
+
+    let destination = InclusiveRectangle {
+        left: u16::MAX - 63,
+        top: u16::MAX - 63,
+        right: u16::MAX,
+        bottom: u16::MAX,
+    };
+    // The rectangle and the channel both run 64 pixels past the end of the u16 range.
+    let rectangles = [RfxRectangle {
+        x: 0,
+        y: 0,
+        width: 128,
+        height: 128,
+    }];
+
+    let clip = clipping_rectangles(&rectangles, &destination, 128, 128);
+
+    assert_eq!(clip.extents, destination);
+}
+
+#[test]
+fn tile_rectangle_is_cut_at_the_u16_limit() {
+    use ironrdp_pdu::codecs::rfx::Tile;
+    use ironrdp_session::rfx::tiles_to_rectangles;
+
+    let tile = |x| Tile {
+        y_quant_index: 0,
+        cb_quant_index: 0,
+        cr_quant_index: 0,
+        x,
+        y: 0,
+        y_data: &[],
+        cb_data: &[],
+        cr_data: &[],
+    };
+    let destination = InclusiveRectangle {
+        left: 1,
+        top: 0,
+        right: u16::MAX,
+        bottom: 63,
+    };
+
+    let rectangles: Vec<_> = tiles_to_rectangles(&[tile(1023), tile(1024)], &destination).collect();
+
+    // The first tile starts at 1 + 1023 * 64 = 65473 and crosses the limit; the second cannot start in u16.
+    assert_eq!(
+        rectangles,
+        [
+            Some(InclusiveRectangle {
+                left: 65473,
+                top: 0,
+                right: u16::MAX,
+                bottom: 63,
+            }),
+            None,
+        ]
+    );
+}
