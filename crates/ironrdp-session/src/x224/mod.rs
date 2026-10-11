@@ -253,7 +253,8 @@ impl Processor {
         } else if self.message_channel_id == Some(channel_id) {
             self.process_message_channel(data_ctx, received_at)
         } else {
-            // TLS-protected SVC data has no RDP Security Header: include TPKT/X224/MCS.
+            // SVC data has no RDP Security Header (Enhanced RDP Security, or Standard RDP
+            // Security at ENCRYPTION_LEVEL_NONE): include TPKT/X224/MCS.
             self.record_bandwidth_bytes(frame.len());
             let maximum_chunk_size = self.static_channels.maximum_chunk_size();
             if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
@@ -284,8 +285,10 @@ impl Processor {
             return self.process_io_channel(data_ctx, bulk_decompressor);
         }
 
-        // Ordinary TLS-protected IO data has no RDP Security Header. Count the
-        // entire frame once, including framing and any concatenated Share Control PDUs.
+        // Ordinary IO data has no RDP Security Header (Enhanced RDP Security, or Standard RDP
+        // Security at ENCRYPTION_LEVEL_NONE), and the Share Control decode below relies on
+        // that. Count the entire frame once, including framing and any concatenated
+        // Share Control PDUs.
         self.record_bandwidth_bytes(frame_len);
         let mut outputs = Vec::new();
         let mut offset = 0usize;

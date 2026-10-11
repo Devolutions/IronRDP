@@ -91,10 +91,17 @@ impl AutoDetectResponder {
                 payload,
             } if matches!(request_type, BW_STOP_CONNECT_TIME | BW_STOP_RELIABLE_UDP) => {
                 let continuous = request_type == BW_STOP_RELIABLE_UDP;
-                let measurement = self
+                // A Stop of the other measurement type leaves the open window in place, so a
+                // later Stop of the matching type still reports it.
+                let measurement = if self
                     .bandwidth
-                    .take()
-                    .filter(|measurement| measurement.continuous == continuous);
+                    .as_ref()
+                    .is_some_and(|measurement| measurement.continuous == continuous)
+                {
+                    self.bandwidth.take()
+                } else {
+                    None
+                };
                 let stop_bytes = if continuous {
                     0
                 } else {
@@ -118,7 +125,13 @@ impl AutoDetectResponder {
                         );
                         (UNMEASURABLE_INTERVAL_MS, 0)
                     }
-                    (None, _) => (UNMEASURABLE_INTERVAL_MS, 0),
+                    (None, _) => {
+                        debug!(
+                            continuous,
+                            "Bandwidth Measure Stop arrived with no matching open window; reporting no measurement"
+                        );
+                        (UNMEASURABLE_INTERVAL_MS, 0)
+                    }
                 };
                 Some(AutoDetectResponse::BandwidthMeasureResults {
                     sequence_number,
@@ -131,16 +144,10 @@ impl AutoDetectResponder {
                     byte_count,
                 })
             }
-            request @ AutoDetectRequest::NetworkCharacteristicsResult { .. } => {
-                // The TCP message-channel processor surfaces this request itself. Keep this
-                // arm for the UDP tunnel responder introduced in PR #2009, which handles
-                // auto-detect requests without passing through that processor.
-                debug!(?request, "Received network characteristics from server");
-                None
-            }
             request => {
-                // Measurements for a lossy transport are not answered here.
-                debug!(?request, "Ignoring auto-detect request for another transport");
+                // Lossy-transport measurements are not answered here, and a Network
+                // Characteristics Result needs no answer.
+                debug!(?request, "Not answering auto-detect request");
                 None
             }
         }
