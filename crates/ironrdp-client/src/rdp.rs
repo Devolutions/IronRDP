@@ -640,11 +640,18 @@ struct TimedResizeRequest {
     deadline: tokio::time::Instant,
 }
 
+struct InFlightResize {
+    request: ResizeRequest,
+    deadline: tokio::time::Instant,
+    /// Desktop size when the request was sent.
+    from_size: (u16, u16),
+}
+
 const DISPLAY_CONTROL_READY_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Default)]
 struct ResizeQueue {
-    in_flight: Option<TimedResizeRequest>,
+    in_flight: Option<InFlightResize>,
     pending: Option<TimedResizeRequest>,
     /// The last request followed by a matching output reset or reactivation. Connection
     /// parameters alone do not establish which layout the server accepted.
@@ -668,26 +675,40 @@ impl ResizeQueue {
         });
     }
 
-    fn mark_in_flight(&mut self, request: ResizeRequest) {
-        self.in_flight = Some(TimedResizeRequest {
+    fn mark_in_flight(&mut self, request: ResizeRequest, desktop_size: (u16, u16)) {
+        self.in_flight = Some(InFlightResize {
             request,
             deadline: tokio::time::Instant::now() + DISPLAY_CONTROL_READY_TIMEOUT,
+            from_size: desktop_size,
         });
     }
 
     fn completed(&mut self, desktop_size: (u16, u16)) -> bool {
-        // The server answered with a new layout, so the attempt is over either way.
-        let in_flight = self.in_flight.take();
-        if let Some(in_flight) = in_flight
-            && in_flight.request.matches_size(desktop_size)
-        {
-            self.confirmed_layout = Some(in_flight.request);
-            return true;
+        if let Some(in_flight) = self.in_flight.take() {
+            if in_flight.request.matches_size(desktop_size) {
+                self.confirmed_layout = Some(in_flight.request);
+                return true;
+            }
+
+            if in_flight.from_size != desktop_size {
+                // The server applied an adjusted layout, so the attempt is over.
+                // Reconnecting to the requested size would not converge with it.
+                self.confirmed_layout = None;
+                return false;
+            }
+
+            // The size did not change, so the reset or reactivation may be unrelated to
+            // the request. Keep it in flight so its timeout fallback still applies.
+            self.in_flight = Some(in_flight);
         }
 
-        // An unsolicited or adjusted layout does not confirm an outstanding request.
-        // Reconnecting to the requested size would not converge with an adjusted one.
-        self.confirmed_layout = None;
+        // A reset that keeps the confirmed size leaves that layout in place.
+        if self
+            .confirmed_layout
+            .is_some_and(|confirmed| !confirmed.matches_size(desktop_size))
+        {
+            self.confirmed_layout = None;
+        }
         false
     }
 
@@ -706,6 +727,17 @@ impl ResizeQueue {
                 .in_flight
                 .as_ref()
                 .is_none_or(|in_flight| in_flight.request.matches_size(desktop_size))
+    }
+
+    /// Drops a metadata-only request that cannot be sent because Display Control is
+    /// unavailable, along with any deferred request it supersedes.
+    fn drop_metadata_only(&mut self, request: &ResizeRequest, desktop_size: (u16, u16)) -> bool {
+        if !self.is_metadata_only(request, desktop_size) {
+            return false;
+        }
+        debug!("Display Control is unavailable for a metadata-only update");
+        self.pending = None;
+        true
     }
 
     fn pending_request(&mut self, desktop_size: (u16, u16)) -> Option<ResizeRequest> {
@@ -3425,7 +3457,7 @@ async fn active_session(
                             Some(request.scale_factor),
                             request.physical_size,
                         ) {
-                            resize_queue.mark_in_flight(request);
+                            resize_queue.mark_in_flight(request, framebuffer_size);
                             let mut outputs = Vec::new();
                             if let Some(messages) = active_stage
                                 .get_svc_processor_mut::<RailClient>()
@@ -3437,9 +3469,7 @@ async fn active_session(
                                 }
                             }
                             ActiveSessionIteration::with_outputs(dvc_batch?, outputs)
-                        } else if resize_queue.is_metadata_only(&request, framebuffer_size) {
-                            debug!("Display Control is unavailable for a metadata-only update");
-                            resize_queue.pending = None;
+                        } else if resize_queue.drop_metadata_only(&request, framebuffer_size) {
                             ActiveSessionIteration::outputs(Vec::new())
                         } else {
                             // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
@@ -4377,7 +4407,7 @@ async fn active_session(
                         )
                         .ok_or_else(|| ironrdp_session::general_err!("Display Control became unavailable"))??;
                     resize_queue.pending = None;
-                    resize_queue.mark_in_flight(request);
+                    resize_queue.mark_in_flight(request, (image.width(), image.height()));
                     let channel_id = batch.channel_id();
                     let messages = batch.into_messages();
                     #[cfg(feature = "udp")]
@@ -4431,10 +4461,7 @@ async fn active_session(
                         }
                     }
                 }
-                None if resize_queue.is_metadata_only(&request, (image.width(), image.height())) => {
-                    debug!("Display Control is unavailable for a metadata-only update");
-                    resize_queue.pending = None;
-                }
+                None if resize_queue.drop_metadata_only(&request, (image.width(), image.height())) => {}
                 None => {
                     debug!("Reconnecting because Display Control is unavailable");
                     return Ok(RdpControlFlow::ReconnectWithNewSize {
@@ -4816,7 +4843,7 @@ mod tests {
         let first = resize_request(1024, 768);
         let latest = resize_request(1600, 900);
         let mut queue = ResizeQueue::default();
-        queue.mark_in_flight(first);
+        queue.mark_in_flight(first, (800, 600));
         let deadline = queue.deadline().expect("in-flight resize must have a deadline");
         queue.defer(latest);
 
@@ -4864,7 +4891,7 @@ mod tests {
         assert!(!queue.asks_for_current_layout(&rescaled, (1024, 768)));
 
         // A request in flight can still change the layout, so nothing is a no-op meanwhile.
-        queue.mark_in_flight(rescaled);
+        queue.mark_in_flight(rescaled, (1024, 768));
         assert!(!queue.asks_for_current_layout(&rescaled, (1024, 768)));
         assert!(queue.completed((1024, 768)));
         assert!(queue.asks_for_current_layout(&rescaled, (1024, 768)));
@@ -4876,12 +4903,12 @@ mod tests {
         let request = resize_request(1280, 720);
         let mut queue = ResizeQueue::default();
         assert!(!queue.asks_for_current_layout(&request, (1280, 720)));
-        queue.mark_in_flight(request);
+        queue.mark_in_flight(request, (800, 600));
         assert_eq!(queue.confirmed_layout, None);
         assert!(!queue.completed((1024, 768)));
         assert_eq!(queue.confirmed_layout, None);
         assert!(!queue.asks_for_current_layout(&request, (1280, 720)));
-        queue.mark_in_flight(request);
+        queue.mark_in_flight(request, (1024, 768));
         assert!(queue.completed((1280, 720)));
         assert!(queue.asks_for_current_layout(&request, (1280, 720)));
     }
@@ -4889,7 +4916,7 @@ mod tests {
     #[test]
     fn resize_queue_ends_the_attempt_when_the_server_adjusts_the_layout() {
         let mut queue = ResizeQueue::default();
-        queue.mark_in_flight(resize_request(1281, 720));
+        queue.mark_in_flight(resize_request(1281, 720), (1024, 768));
         let deadline = queue.deadline().unwrap();
         // The server applied a different size, so a timeout must not reconnect to the request.
         assert!(!queue.completed((1280, 720)));
@@ -4898,17 +4925,51 @@ mod tests {
 
         // A deferred request is promoted once the attempt ends.
         let next = resize_request(1600, 900);
-        queue.mark_in_flight(resize_request(1024, 768));
+        queue.mark_in_flight(resize_request(1024, 768), (1280, 720));
         queue.defer(next);
+        assert!(!queue.completed((1366, 768)));
+        assert_eq!(queue.pending_request((1366, 768)), Some(next));
+    }
+
+    #[test]
+    fn resize_queue_keeps_the_fallback_when_a_reset_leaves_the_size_unchanged() {
+        let request = resize_request(1600, 900);
+        let mut queue = ResizeQueue {
+            confirmed_layout: Some(resize_request(1024, 768)),
+            ..ResizeQueue::default()
+        };
+        queue.mark_in_flight(request, (1024, 768));
+        let deadline = queue.deadline().unwrap();
+        // A reset at the starting size may be unrelated to the request.
+        assert!(!queue.completed((1024, 768)));
+        assert_eq!(queue.deadline(), Some(deadline));
+        assert_eq!(queue.confirmed_layout, Some(resize_request(1024, 768)));
+        assert_eq!(
+            queue.timed_out_request(deadline, (1024, 768)),
+            Some((request, DisplayResizeFallbackReason::ReactivationTimedOut))
+        );
+    }
+
+    #[test]
+    fn resize_queue_keeps_the_confirmed_layout_across_unsolicited_resets() {
+        let current = resize_request(1024, 768);
+        let mut queue = ResizeQueue {
+            confirmed_layout: Some(current),
+            ..ResizeQueue::default()
+        };
+        assert!(!queue.completed((1024, 768)));
+        assert!(queue.asks_for_current_layout(&current, (1024, 768)));
+
+        // A reset to another size invalidates it.
         assert!(!queue.completed((1280, 720)));
-        assert_eq!(queue.pending_request((1280, 720)), Some(next));
+        assert_eq!(queue.confirmed_layout, None);
     }
 
     #[test]
     fn resize_queue_drops_a_deferred_duplicate_after_completion() {
         let request = resize_request(1280, 720);
         let mut queue = ResizeQueue::default();
-        queue.mark_in_flight(request);
+        queue.mark_in_flight(request, (1024, 768));
         queue.defer(request);
         assert!(queue.completed((1280, 720)));
         assert_eq!(queue.pending_request((1280, 720)), None);
@@ -4938,7 +4999,7 @@ mod tests {
                 ..ResizeQueue::default()
             };
             assert!(!queue.asks_for_current_layout(&request, (1024, 768)));
-            queue.mark_in_flight(request);
+            queue.mark_in_flight(request, (1024, 768));
             // An explicit ResetGraphics can complete a request without changing pixels.
             assert!(queue.completed((1024, 768)));
             assert_eq!(queue.deadline(), None);
@@ -4953,14 +5014,14 @@ mod tests {
             ..resize_request(1024, 768)
         };
         let mut queue = ResizeQueue::default();
-        queue.mark_in_flight(request);
+        queue.mark_in_flight(request, (1024, 768));
         let deadline = queue.deadline().unwrap();
         assert_eq!(queue.timed_out_request(deadline, (1024, 768)), None);
         assert_eq!(queue.deadline(), None);
         assert!(!queue.asks_for_current_layout(&request, (1024, 768)));
 
         // A later pixel resize still uses the reconnect fallback if it times out.
-        queue.mark_in_flight(request);
+        queue.mark_in_flight(request, (1024, 768));
         let next = resize_request(1600, 900);
         queue.defer(next);
         let deadline = queue.in_flight.as_ref().unwrap().deadline;
@@ -4981,7 +5042,7 @@ mod tests {
             ..first
         };
         let mut queue = ResizeQueue::default();
-        queue.mark_in_flight(first);
+        queue.mark_in_flight(first, (1024, 768));
         queue.defer(latest);
         let deadline = queue.in_flight.as_ref().unwrap().deadline;
         assert_eq!(queue.timed_out_request(deadline, (1024, 768)), None);
@@ -4992,7 +5053,7 @@ mod tests {
     #[test]
     fn resize_queue_preserves_fallback_for_a_return_to_the_original_size() {
         let mut queue = ResizeQueue::default();
-        queue.mark_in_flight(resize_request(1280, 720));
+        queue.mark_in_flight(resize_request(1280, 720), (1024, 768));
         let current = resize_request(1024, 768);
         queue.defer(current);
         let deadline = queue.in_flight.as_ref().unwrap().deadline;
