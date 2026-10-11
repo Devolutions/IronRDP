@@ -7,6 +7,7 @@
 //!
 //! [ICCCM section 2.7.2, INCR Properties]: https://www.x.org/releases/X11R7.7/doc/xorg-docs/icccm/icccm.html
 
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, mpsc};
@@ -46,7 +47,6 @@ x11rb::atom_manager! {
 enum Request {
     Read(String, ReadReply),
     Offer(Vec<String>, u64, mpsc::Sender<Result<(), String>>),
-    IsOwner(mpsc::Sender<bool>),
     Clear,
     Complete(SelectionRequestEvent, u64, Option<Vec<u8>>),
     Shutdown,
@@ -55,6 +55,7 @@ enum Request {
 pub struct X11Clipboard {
     commands: mpsc::Sender<Request>,
     mime_types: Arc<Mutex<Vec<String>>>,
+    owns: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -62,8 +63,9 @@ impl X11Clipboard {
     pub fn open(events: mpsc::Sender<Command>) -> Result<Self, String> {
         let (commands, receiver) = mpsc::channel();
         let mime_types = Arc::new(Mutex::new(Vec::new()));
-        let state =
-            State::connect(events, commands.clone(), Arc::clone(&mime_types)).map_err(|error| error.to_string())?;
+        let owns = Arc::new(AtomicBool::new(false));
+        let state = State::connect(events, commands.clone(), Arc::clone(&mime_types), Arc::clone(&owns))
+            .map_err(|error| error.to_string())?;
         let thread = std::thread::Builder::new()
             .name("cliprdr-x11".into())
             .spawn(move || {
@@ -75,6 +77,7 @@ impl X11Clipboard {
         Ok(Self {
             commands,
             mime_types,
+            owns,
             thread: Some(thread),
         })
     }
@@ -82,11 +85,8 @@ impl X11Clipboard {
 
 impl OsClipboard for X11Clipboard {
     fn is_owner(&self) -> bool {
-        let (sender, receiver) = mpsc::channel();
-        if self.commands.send(Request::IsOwner(sender)).is_err() {
-            return false;
-        }
-        receiver.recv_timeout(PASTE_TIMEOUT).unwrap_or(false)
+        // The X11 thread updates this before it reports any selection change.
+        self.owns.load(Ordering::Acquire)
     }
 
     fn mime_types(&self) -> Vec<String> {
@@ -176,7 +176,8 @@ struct State {
     mime_types: Arc<Mutex<Vec<String>>>,
     targets: Vec<Atom>,
     owner: Window,
-    owns: bool,
+    /// Shared with `X11Clipboard::is_owner`; written only through `set_owns`.
+    owns: Arc<AtomicBool>,
     generation: u64,
     timestamp: u32,
     incoming: HashMap<Window, Incoming>,
@@ -190,6 +191,7 @@ impl State {
         events: mpsc::Sender<Command>,
         commands: mpsc::Sender<Request>,
         mime_types: Arc<Mutex<Vec<String>>>,
+        owns: Arc<AtomicBool>,
     ) -> XResult<Self> {
         let (connection, screen) = x11rb::connect(None)?;
         connection.xfixes_query_version(5, 0)?.reply()?;
@@ -231,7 +233,7 @@ impl State {
             mime_types,
             targets: Vec::new(),
             owner,
-            owns: false,
+            owns,
             generation: 0,
             timestamp: CURRENT_TIME,
             incoming: HashMap::new(),
@@ -316,19 +318,11 @@ impl State {
                     .into_iter()
                     .find(|target| self.targets.contains(target))
                 };
-                if let Some(target) = target.filter(|_| !self.owns && self.owner != NONE) {
+                if let Some(target) = target.filter(|_| !self.owns() && self.owner != NONE) {
                     self.begin_read(target, ReadKind::Data(sender))?;
                 } else {
                     let _ = sender.send(Ok(None));
                 }
-            }
-            Request::IsOwner(sender) => {
-                let owner = self
-                    .connection
-                    .get_selection_owner(self.atoms.CLIPBOARD)?
-                    .reply()?
-                    .owner;
-                let _ = sender.send(owner == self.window);
             }
             Request::Offer(mimes, generation, sender) => {
                 let result = (|| -> XResult<()> {
@@ -352,12 +346,12 @@ impl State {
                         .get_selection_owner(self.atoms.CLIPBOARD)?
                         .reply()?
                         .owner;
-                    self.owns = self.owner == self.window;
+                    self.set_owns(self.owner == self.window);
                     let readers: Vec<_> = self.incoming.keys().copied().collect();
                     for window in readers {
                         self.finish_read(window, Err("clipboard selection changed while reading".into()))?;
                     }
-                    if !self.owns {
+                    if !self.owns() {
                         return Err("clipboard ownership was not acquired".into());
                     }
                     Ok(())
@@ -373,7 +367,7 @@ impl State {
                 if pending.expired {
                     return Ok(());
                 }
-                if generation != self.generation || !self.owns {
+                if generation != self.generation || !self.owns() {
                     self.notify(request, NONE)?;
                 } else if let Some(data) = data.filter(|d| d.len() <= MAX_TRANSFER_BYTES) {
                     if data.len() <= CHUNK_BYTES {
@@ -420,6 +414,14 @@ impl State {
         Ok(())
     }
 
+    fn owns(&self) -> bool {
+        self.owns.load(Ordering::Acquire)
+    }
+
+    fn set_owns(&self, owns: bool) {
+        self.owns.store(owns, Ordering::Release);
+    }
+
     // ICCCM uses the event timestamp that triggered ownership. RDP commands
     // have no X timestamp, so obtain one from PropertyNotify and retain all
     // other events for normal dispatch.
@@ -457,7 +459,7 @@ impl State {
                 .set_selection_owner(NONE, self.atoms.CLIPBOARD, self.timestamp)?
                 .check()?;
         }
-        self.owns = false;
+        self.set_owns(false);
         Ok(())
     }
 
@@ -514,11 +516,11 @@ impl State {
                 }
                 self.owner = event.owner;
                 if event.owner == self.window {
-                    self.owns = true;
+                    self.set_owns(true);
                     return Ok(());
                 }
                 self.timestamp = event.selection_timestamp;
-                self.owns = false;
+                self.set_owns(false);
                 self.targets.clear();
                 let readers: Vec<_> = self.incoming.keys().copied().collect();
                 for window in readers {
@@ -572,12 +574,12 @@ impl State {
                 // A clear from an earlier owner can be queued while Offer is
                 // obtaining its timestamp. Consult the server before applying
                 // it to a selection that has since been reacquired.
-                self.owns = self
+                let owner = self
                     .connection
                     .get_selection_owner(self.atoms.CLIPBOARD)?
                     .reply()?
-                    .owner
-                    == self.window;
+                    .owner;
+                self.set_owns(owner == self.window);
             }
             _ => {}
         }
@@ -648,7 +650,7 @@ impl State {
                 let _ = sender.send(result.map(Some));
             }
             ReadKind::Targets => {
-                if self.owns {
+                if self.owns() {
                     return Ok(());
                 }
                 self.targets = result
@@ -682,7 +684,7 @@ impl State {
     }
 
     fn selection_request(&mut self, request: SelectionRequestEvent) -> XResult<()> {
-        if request.selection != self.atoms.CLIPBOARD || !self.owns {
+        if request.selection != self.atoms.CLIPBOARD || !self.owns() {
             return self.notify(request, NONE);
         }
         // X timestamps wrap at 32 bits. We cannot render a selection from
