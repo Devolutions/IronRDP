@@ -93,22 +93,25 @@ impl AutoDetectResponder {
                 payload,
             } if matches!(request_type, BW_STOP_CONNECT_TIME | BW_STOP_RELIABLE_UDP) => {
                 let continuous = request_type == BW_STOP_RELIABLE_UDP;
-                let measurement = self
-                    .bandwidth
-                    .take()
-                    .filter(|measurement| measurement.continuous == continuous);
-                let stop_bytes = if continuous {
-                    0
-                } else {
-                    counted_len(payload.as_ref().map_or(0, Vec::len))
-                };
+                // A Stop ends whichever window is open and reports its store, even if the
+                // Start was of the other type ([MS-RDPBCGR] 3.2.5.14).
+                let measurement = self.bandwidth.take();
                 let (time_delta_ms, byte_count) = match (measurement, received_at) {
-                    (Some(measurement), Some(stopped_at)) => (
-                        u32::try_from(stopped_at.duration_since(measurement.started_at).as_millis())
-                            .unwrap_or(u32::MAX)
-                            .max(UNMEASURABLE_INTERVAL_MS),
-                        measurement.bytes.saturating_add(stop_bytes),
-                    ),
+                    (Some(measurement), Some(stopped_at)) => {
+                        // Only a connect-time Stop adds to the count, and a continuous window
+                        // has already counted it as received data.
+                        let stop_bytes = if continuous || measurement.continuous {
+                            0
+                        } else {
+                            counted_len(payload.as_ref().map_or(0, Vec::len))
+                        };
+                        (
+                            u32::try_from(stopped_at.duration_since(measurement.started_at).as_millis())
+                                .unwrap_or(u32::MAX)
+                                .max(UNMEASURABLE_INTERVAL_MS),
+                            measurement.bytes.saturating_add(stop_bytes),
+                        )
+                    }
                     (Some(measurement), None) => {
                         // The window was timed but this Stop was not, so there is nothing to
                         // divide the count by. Log the drop so it does not look like the

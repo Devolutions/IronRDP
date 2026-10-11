@@ -312,6 +312,28 @@ fn repeated_start_resets_count_and_timer_and_stop_ends_window() {
 }
 
 #[test]
+fn stop_of_the_other_type_reports_the_open_window() {
+    // Continuous window, connect-time Stop: the Stop's carrier (6-byte header, 2-byte
+    // payloadLength, 16-byte payload) is counted once, as data received in the window.
+    let mut processor = make_processor();
+    timed_request(&mut processor, AutoDetectRequest::bw_start_continuous(1), 10);
+    timed_request(&mut processor, AutoDetectRequest::rtt_continuous(2), 20);
+    let result = timed_request(
+        &mut processor,
+        AutoDetectRequest::bw_stop_connect_time(3, vec![0xbb; 16]),
+        35,
+    );
+    assert_eq!(bandwidth_result(&result), (3, 0x0003, 25, 6 + 24));
+
+    // Connect-time window, continuous Stop: the window's Payload count is reported.
+    let mut processor = make_processor();
+    timed_request(&mut processor, AutoDetectRequest::bw_start_connect_time(1), 100);
+    timed_request(&mut processor, AutoDetectRequest::bw_payload(2, vec![0xaa; 64]), 110);
+    let result = timed_request(&mut processor, AutoDetectRequest::bw_stop_continuous(3), 140);
+    assert_eq!(bandwidth_result(&result), (3, 0x000b, 40, 64 + 8));
+}
+
+#[test]
 fn measurement_timing_saturates_and_never_reports_zero_divisor() {
     for (start, stop, expected) in [(100, 100, 1), (100, 90, 1), (0, u64::MAX, u32::MAX)] {
         let mut processor = make_processor();
