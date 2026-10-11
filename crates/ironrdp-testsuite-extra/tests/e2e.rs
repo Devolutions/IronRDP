@@ -2047,12 +2047,22 @@ impl HookCounts {
 
     /// Poll until `done` holds for the counts, or a generous deadline passes.
     async fn wait_until(&self, done: impl Fn((usize, usize, usize)) -> bool) -> (usize, usize, usize) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !done(self.get()) && Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        poll_until(|| done(self.get())).await;
         self.get()
     }
+}
+
+/// Poll `done` every 20 ms until it holds or a generous 5 s deadline passes;
+/// returns whether it held.
+async fn poll_until(mut done: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !done() {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    true
 }
 
 struct HookRecorder(Arc<HookCounts>);
@@ -2084,12 +2094,23 @@ impl server::ConnectionHandler for HookRecorder {
 fn hook_recording_server(
     policy: server::ConnectionPolicy,
 ) -> (RdpServer, Arc<HookCounts>, UnboundedSender<DisplayUpdate>) {
+    let counts = Arc::new(HookCounts::default());
+    let (server, display_tx) = handler_server(Box::new(HookRecorder(Arc::clone(&counts))), policy);
+    (server, counts, display_tx)
+}
+
+/// A TLS server under `policy` with `handler` as its connection handler. Keep
+/// the returned display sender alive for the test: once it drops, the display
+/// stream ends and the server closes the session.
+fn handler_server(
+    handler: Box<dyn server::ConnectionHandler>,
+    policy: server::ConnectionPolicy,
+) -> (RdpServer, UnboundedSender<DisplayUpdate>) {
     let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
     let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
     let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
     let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
 
-    let counts = Arc::new(HookCounts::default());
     let (display_tx, display_rx) = mpsc::unbounded_channel();
     let mut server = RdpServer::builder()
         .with_addr(([127, 0, 0, 1], 0))
@@ -2098,7 +2119,7 @@ fn hook_recording_server(
         .with_display_handler(TestDisplay {
             rx: Arc::new(Mutex::new(display_rx)),
         })
-        .with_connection_handler(Some(Box::new(HookRecorder(Arc::clone(&counts)))))
+        .with_connection_handler(Some(handler))
         .with_connection_policy(policy)
         .build();
     server.set_credentials(Some(server::Credentials {
@@ -2106,7 +2127,7 @@ fn hook_recording_server(
         password: PASSWORD.into(),
         domain: None,
     }));
-    (server, counts, display_tx)
+    (server, display_tx)
 }
 
 async fn local_addr_of(ev: &UnboundedSender<ServerEvent>) -> SocketAddr {
@@ -2160,27 +2181,11 @@ impl server::ConnectionHandler for ScaleRecorder {
 /// Connect a real client announcing `desktop_scale_factor` and report the
 /// `(desktop, device)` scale factors `on_connection_info` received.
 async fn scale_factors_reported_for(desktop_scale_factor: u32) -> ScaleFactors {
-    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
-    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
-    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
-    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
-
     let seen = Arc::new(StdMutex::new(None));
-    let (_display_tx, display_rx) = mpsc::unbounded_channel::<DisplayUpdate>();
-    let mut server = RdpServer::builder()
-        .with_addr(([127, 0, 0, 1], 0))
-        .with_tls(acceptor)
-        .with_input_handler(TestInputHandler)
-        .with_display_handler(TestDisplay {
-            rx: Arc::new(Mutex::new(display_rx)),
-        })
-        .with_connection_handler(Some(Box::new(ScaleRecorder(Arc::clone(&seen)))))
-        .build();
-    server.set_credentials(Some(server::Credentials {
-        username: USERNAME.into(),
-        password: PASSWORD.into(),
-        domain: None,
-    }));
+    let (mut server, _display_tx) = handler_server(
+        Box::new(ScaleRecorder(Arc::clone(&seen))),
+        server::ConnectionPolicy::Queue,
+    );
     let ev = server.event_sender().clone();
 
     let local = tokio::task::LocalSet::new();
@@ -2198,18 +2203,13 @@ async fn scale_factors_reported_for(desktop_scale_factor: u32) -> ScaleFactors {
             })
             .await;
 
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let reported = loop {
-                if let Some(reported) = *seen.lock().unwrap() {
-                    break reported;
-                }
-                assert!(Instant::now() < deadline, "on_connection_info never fired");
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            };
-
+            assert!(
+                poll_until(|| seen.lock().unwrap().is_some()).await,
+                "on_connection_info never fired"
+            );
             drop(client);
             server_task.abort();
-            reported
+            seen.lock().unwrap().expect("checked above")
         })
         .await
 }
@@ -2218,6 +2218,17 @@ async fn scale_factors_reported_for(desktop_scale_factor: u32) -> ScaleFactors {
 async fn connection_info_reports_the_client_scale_factors() {
     // A 2x client. The connector always pairs it with a device scale of 100.
     assert_eq!(Box::pin(scale_factors_reported_for(200)).await, (Some(200), Some(100)));
+}
+
+#[test]
+fn connection_info_scale_factors_can_be_set_downstream() {
+    // ConnectionInfo is non_exhaustive, so this is how a downstream
+    // ConnectionHandler test builds the 2x-client case.
+    let mut info = server::ConnectionInfo::new(0, gcc::KeyboardType::IBM_ENHANCED, String::new());
+    assert_eq!((info.desktop_scale_factor, info.device_scale_factor), (None, None));
+    info.desktop_scale_factor = Some(200);
+    info.device_scale_factor = Some(100);
+    assert_eq!(info.desktop_scale_factor, Some(200));
 }
 
 #[tokio::test]
