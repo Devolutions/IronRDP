@@ -149,6 +149,24 @@ fn remote_formats_are_advertised_without_fetching_data() {
 }
 
 #[test]
+fn unsupported_remote_formats_keep_the_local_clipboard() {
+    let (mut worker, os, recorder) = worker();
+    os.lock().unwrap().data.insert(TEXT.into(), b"local".to_vec());
+    worker.handle(Command::AdvertiseLocal);
+    recorder.take();
+    remote(&mut worker, &[ClipboardFormatId::CF_HDROP]);
+    assert!(os.lock().unwrap().offers.is_empty());
+    assert!(recorder.take().is_empty());
+
+    // An earlier remote copy is withdrawn instead.
+    remote(&mut worker, &[ClipboardFormatId::CF_UNICODETEXT]);
+    remote(&mut worker, &[ClipboardFormatId::CF_HDROP]);
+    let os = os.lock().unwrap();
+    assert_eq!(os.offers.len(), 2);
+    assert!(os.offers[1].0.is_empty());
+}
+
+#[test]
 fn same_format_waiters_share_one_wire_request_and_cache() {
     let (mut worker, os, recorder) = worker();
     remote(&mut worker, &[ClipboardFormatId::CF_UNICODETEXT]);

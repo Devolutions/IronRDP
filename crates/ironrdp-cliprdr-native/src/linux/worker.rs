@@ -104,19 +104,26 @@ impl<O: OsClipboard, P: ClipboardMessageProxy> Worker<O, P> {
             }
             Command::RemoteCopy(formats) => {
                 self.invalidate();
-                self.remote = formats;
-                self.owns_remote = true;
                 let mut mimes = Vec::new();
-                if self.remote.iter().any(|f| f.id() == ClipboardFormatId::CF_UNICODETEXT) {
+                if formats.iter().any(|f| f.id() == ClipboardFormatId::CF_UNICODETEXT) {
                     mimes.extend([TEXT.to_owned(), "text/plain".to_owned()]);
                 }
-                if self
-                    .remote
+                if formats
                     .iter()
                     .any(|f| matches!(f.id(), ClipboardFormatId::CF_DIB | ClipboardFormatId::CF_DIBV5))
                 {
                     mimes.push(PNG.to_owned());
                 }
+                if mimes.is_empty() && !self.owns_remote {
+                    // Nothing here can be rendered locally. Keep the user's local
+                    // clipboard rather than replacing it with an owner that serves
+                    // nothing. When an earlier remote copy is still on offer, the
+                    // empty offer below withdraws its formats.
+                    debug!("No supported format in the remote clipboard");
+                    return;
+                }
+                self.remote = formats;
+                self.owns_remote = true;
                 if let Err(error) = self.os.offer(&mimes, self.generation) {
                     warn!(%error, "Could not advertise the remote clipboard");
                     let _ = self.os.clear();
