@@ -384,7 +384,6 @@ jobs:
           semver_home="$SEMVER_STATE_DIR/home"
           semver_cargo="$SEMVER_STATE_DIR/cargo"
           semver_target="$SEMVER_STATE_DIR/target"
-          semver_bin="$CARGO_SEMVER_CHECKS_DIR/cargo-semver-checks"
           workspace="$SEMVER_WORKSPACE"
           rustc_bin="$(rustup which rustc)"
           rust_toolchain_dir="$(dirname "$(dirname "$rustc_bin")")"
@@ -406,8 +405,8 @@ jobs:
             RUSTDOCFLAGS="-Z unstable-options --document-private-items --document-hidden-items --output-format=json --cap-lints=allow" \
             HEAD_SHA="$HEAD_SHA" \
             BASE_SHA="$BASE_SHA" \
-            SEMVER_BIN="$semver_bin" \
-            SEMVER_FEATURES="$CARGO_SEMVER_CHECKS_FEATURES" \
+            CARGO_SEMVER_CHECKS_DIR="$CARGO_SEMVER_CHECKS_DIR" \
+            CARGO_SEMVER_CHECKS_FEATURES="$CARGO_SEMVER_CHECKS_FEATURES" \
             SEMVER_ARTIFACT_ROOT="$semver_target" \
             bash -euo pipefail -c '
               # cargo-semver-checks normally resolves a new dependency graph in a
@@ -416,11 +415,11 @@ jobs:
               build_rustdoc() {
                 git checkout --detach "$2"
                 CARGO_TARGET_DIR="$SEMVER_ARTIFACT_ROOT/$1" cargo rustdoc --locked \
-                  --package ironrdp --lib --no-default-features --features "$SEMVER_FEATURES"
+                  --package ironrdp --lib --no-default-features --features "$CARGO_SEMVER_CHECKS_FEATURES"
               }
               build_rustdoc baseline "$BASE_SHA"
               build_rustdoc current "$HEAD_SHA"
-              "$SEMVER_BIN" \
+              "$CARGO_SEMVER_CHECKS_DIR/cargo-semver-checks" \
                 --current-rustdoc "$SEMVER_ARTIFACT_ROOT/current/doc/ironrdp.json" \
                 --baseline-rustdoc "$SEMVER_ARTIFACT_ROOT/baseline/doc/ironrdp.json"
             '
