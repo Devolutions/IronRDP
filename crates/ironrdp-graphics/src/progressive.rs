@@ -1063,7 +1063,7 @@ pub struct SurfaceTiles {
     pub tiles_wide: u16,
     /// Height of the surface in tiles.
     pub tiles_high: u16,
-    /// Whether the last REGION decoded into this grid uses reduce-extrapolate DWT.
+    /// DWT variant given to tiles that [`Self::get_or_create`] allocates; a first pass sets each tile's own.
     pub use_reduce_extrapolate: bool,
     /// Tile storage, indexed by `y_idx * tiles_wide + x_idx`.
     /// `None` entries haven't received any progressive data yet.
@@ -1393,7 +1393,6 @@ impl ProgressiveDecoder {
 
             // Each REGION names its own DWT variant (MS-RDPEGFX 2.2.4.2.1.5).
             let use_reduce_extrapolate = region.uses_reduce_extrapolate();
-            context.surface.use_reduce_extrapolate = use_reduce_extrapolate;
 
             let mut region_tiles = BTreeMap::new();
             for tile_block in &region.tiles {

@@ -1432,6 +1432,8 @@ fn copy_frame_region(frame_data: &[u8], frame_width: u32, region: &ExclusiveRect
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use ironrdp_pdu::codecs::rfx::progressive::TILE_FLAG_DIFFERENCE;
+
     use super::*;
 
     struct TestHandler;
@@ -2288,64 +2290,57 @@ mod tests {
         assert!(client.drain_output().is_empty());
     }
 
-    fn assert_progressive_context_is_deleted(clear: impl FnOnce(&mut GraphicsPipelineClient)) {
-        use ironrdp_pdu::codecs::rfx::progressive::TILE_FLAG_DIFFERENCE;
-
+    /// Sends a tile, runs `step`, then sends a difference tile, which needs the reference the first
+    /// tile left on its surface.
+    fn wire_difference_tile_after(step: impl FnOnce(&mut GraphicsPipelineClient)) -> PduResult<Vec<DvcMessage>> {
         let mut client = progressive_client();
         wire_progressive(&mut client, progressive_tile_stream(0, 0, 64, 64, 0)).unwrap();
-        clear(&mut client);
-        // A difference tile adds to the reference its surface retained, so it fails once that is gone.
-        assert!(wire_progressive(&mut client, progressive_tile_stream(0, 0, 64, 64, TILE_FLAG_DIFFERENCE)).is_err());
+        step(&mut client);
+        wire_progressive(&mut client, progressive_tile_stream(0, 0, 64, 64, TILE_FLAG_DIFFERENCE))
     }
 
     #[test]
     fn progressive_context_survives_graphics_reset() {
-        use ironrdp_pdu::codecs::rfx::progressive::TILE_FLAG_DIFFERENCE;
+        let result = wire_difference_tile_after(|client| {
+            client
+                .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
+                    width: 64,
+                    height: 64,
+                    monitors: vec![],
+                }))
+                .unwrap();
+            client
+                .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                    surface_id: 1,
+                    width: 64,
+                    height: 64,
+                    pixel_format: PixelFormat::XRgb,
+                }))
+                .unwrap();
+        });
 
-        let mut client = progressive_client();
-        wire_progressive(&mut client, progressive_tile_stream(0, 0, 64, 64, 0)).unwrap();
-
-        client
-            .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
-                width: 64,
-                height: 64,
-                monitors: vec![],
-            }))
-            .unwrap();
-        client
-            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-                surface_id: 1,
-                width: 64,
-                height: 64,
-                pixel_format: PixelFormat::XRgb,
-            }))
-            .unwrap();
-
-        // A difference tile still finds the reference retained before the reset.
-        assert!(wire_progressive(&mut client, progressive_tile_stream(0, 0, 64, 64, TILE_FLAG_DIFFERENCE)).is_ok());
+        assert!(result.is_ok());
     }
 
     #[test]
     fn progressive_context_is_deleted_with_encoding_context() {
-        use ironrdp_pdu::codecs::rfx::progressive::TILE_FLAG_DIFFERENCE;
-
-        let mut client = progressive_client();
-        wire_progressive(&mut client, progressive_tile_stream(0, 0, 64, 64, 0)).unwrap();
-        client
-            .handle_pdu(GfxPdu::DeleteEncodingContext(DeleteEncodingContextPdu {
-                surface_id: 1,
-                codec_context_id: 7,
-            }))
-            .unwrap();
-
         // The context's tiles are gone, but its surface keeps the sub-band reference. Windows
         // deletes a codec context as it opens the next one.
-        assert!(wire_progressive(&mut client, progressive_tile_stream(0, 0, 64, 64, TILE_FLAG_DIFFERENCE)).is_ok());
+        let result = wire_difference_tile_after(|client| {
+            client
+                .handle_pdu(GfxPdu::DeleteEncodingContext(DeleteEncodingContextPdu {
+                    surface_id: 1,
+                    codec_context_id: 7,
+                }))
+                .unwrap();
+        });
+
+        assert!(result.is_ok());
     }
 
     #[test]
     fn progressive_context_is_deleted_with_surface() {
-        assert_progressive_context_is_deleted(|client| {
+        let result = wire_difference_tile_after(|client| {
             client
                 .handle_pdu(GfxPdu::DeleteSurface(crate::pdu::DeleteSurfacePdu { surface_id: 1 }))
                 .unwrap();
@@ -2358,6 +2353,8 @@ mod tests {
                 }))
                 .unwrap();
         });
+
+        assert!(result.is_err());
     }
 
     // ========================================================================
