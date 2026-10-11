@@ -11,7 +11,8 @@ pub mod worker;
 pub mod x11;
 
 use core::fmt;
-use std::sync::mpsc::{self, Sender};
+use core::time::Duration;
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 
 use ironrdp_cliprdr::backend::{ClipboardMessageProxy, CliprdrBackend, CliprdrBackendFactory};
@@ -24,6 +25,10 @@ use tracing::{debug, warn};
 
 use self::worker::{Command, Worker};
 
+/// How long [`LinuxClipboard::new`] waits for the OS clipboard to open. A stale
+/// `DISPLAY` or an unresponsive compositor must not stall the session setup.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Debug)]
 pub enum LinuxCliprdrError {
     /// No usable clipboard: neither a Wayland data-control clipboard nor an X11
@@ -32,6 +37,8 @@ pub enum LinuxCliprdrError {
     Spawn(std::io::Error),
     /// The clipboard thread stopped before reporting whether it could start.
     WorkerStopped,
+    /// The OS clipboard did not open within the startup timeout.
+    TimedOut,
 }
 
 impl fmt::Display for LinuxCliprdrError {
@@ -40,6 +47,7 @@ impl fmt::Display for LinuxCliprdrError {
             Self::Clipboard(error) => write!(f, "cannot open the OS clipboard: {error}"),
             Self::Spawn(error) => write!(f, "cannot start the clipboard thread: {error}"),
             Self::WorkerStopped => f.write_str("the clipboard thread stopped unexpectedly"),
+            Self::TimedOut => f.write_str("the OS clipboard did not open in time"),
         }
     }
 }
@@ -49,7 +57,7 @@ impl core::error::Error for LinuxCliprdrError {
         match self {
             Self::Clipboard(_) => None,
             Self::Spawn(error) => Some(error),
-            Self::WorkerStopped => None,
+            Self::WorkerStopped | Self::TimedOut => None,
         }
     }
 }
@@ -74,6 +82,10 @@ impl LinuxClipboard {
     ///
     /// `message_proxy` delivers the resulting `CLIPRDR` messages to the RDP
     /// session; it is called from the clipboard thread.
+    ///
+    /// Gives up with [`LinuxCliprdrError::TimedOut`] if the OS clipboard does not
+    /// open within 10 seconds. A thread still blocked in the OS call is left
+    /// behind and exits without starting the bridge if the call later returns.
     pub fn new(message_proxy: impl ClipboardMessageProxy + 'static) -> Result<Self, LinuxCliprdrError> {
         let (commands, receiver) = mpsc::channel();
         let (ready_sender, ready) = mpsc::channel();
@@ -89,19 +101,23 @@ impl LinuxClipboard {
                         return;
                     }
                 };
-                let _ = ready_sender.send(Ok(()));
+                if ready_sender.send(Ok(())).is_err() {
+                    // `new` timed out and nobody holds the bridge.
+                    return;
+                }
                 Worker::new(os, message_proxy).run(&receiver);
                 debug!("Clipboard thread stopped");
             })
             .map_err(LinuxCliprdrError::Spawn)?;
 
-        match ready.recv() {
+        match ready.recv_timeout(STARTUP_TIMEOUT) {
             Ok(Ok(())) => Ok(Self {
                 commands,
                 thread: Some(thread),
             }),
             Ok(Err(error)) => Err(LinuxCliprdrError::Clipboard(error)),
-            Err(_) => Err(LinuxCliprdrError::WorkerStopped),
+            Err(RecvTimeoutError::Timeout) => Err(LinuxCliprdrError::TimedOut),
+            Err(RecvTimeoutError::Disconnected) => Err(LinuxCliprdrError::WorkerStopped),
         }
     }
 
