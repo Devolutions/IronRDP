@@ -12,7 +12,10 @@ const { scratchWorkspace, write } = require("./helpers");
 test("action metadata exposes only configured inputs and required outputs on node24", () => {
   const action = fs.readFileSync(path.join(__dirname, "..", "action.yml"), "utf8");
   assert.match(action, /runs:\r?\n  using: node24\r?\n  main: dist\/index\.js/);
-  for (const input of ["api-key", "base-url", "config-file", "validator", "validator-metadata"]) {
+  for (const input of [
+    "api-key", "base-url", "config-file", "prompt-context", "validator", "normalizer",
+    "validator-metadata", "structured-output-file",
+  ]) {
     assert.match(action, new RegExp(`^  ${input}:\\r?$`, "m"));
   }
   for (const output of [
@@ -44,9 +47,9 @@ function actionFixture() {
     methodology_files: [],
     allowed_roots: ["evidence"],
     allowed_files: [],
-    max_output_bytes: 32 * 1024,
     max_turns: 3,
     max_tool_calls: 2,
+    max_request_retries: 0,
   }));
   return workspace;
 }
@@ -77,6 +80,28 @@ function mockCore(inputs) {
   };
 }
 
+function completionStream(response) {
+  return {
+    controller: new AbortController(),
+    async *[Symbol.asyncIterator]() {
+      const source = response.choices[0].message;
+      const toolCalls = Array.isArray(source.tool_calls)
+        ? source.tool_calls.map((toolCall, index) => ({ index, ...toolCall }))
+        : undefined;
+      yield {
+        choices: [{
+          index: 0,
+          delta: {
+            ...(source.content === undefined ? {} : { content: source.content }),
+            ...(toolCalls === undefined ? {} : { tool_calls: toolCalls }),
+          },
+          finish_reason: toolCalls?.length ? "tool_calls" : "stop",
+        }],
+      };
+    },
+  };
+}
+
 test("main masks the key immediately, rejects redirects, and emits only bounded metadata", async () => {
   const workspace = actionFixture();
   const core = mockCore({
@@ -91,7 +116,19 @@ test("main masks the key immediately, rejects redirects, and emits only bounded 
       options = received;
       this.chat = { completions: { create: async (value) => {
         request = value;
-        return { choices: [{ message: { content: '{"answer":"MODEL_RESPONSE_SENTINEL"}' } }] };
+        return {
+          controller: new AbortController(),
+          async *[Symbol.asyncIterator]() {
+            yield {
+              choices: [{
+                index: 0,
+                delta: { content: '{"answer":"MODEL_RESPONSE_SENTINEL"}' },
+                finish_reason: "stop",
+              }],
+            };
+            yield { choices: [{ index: 0, delta: {} }] };
+          },
+        };
       } } };
     }
   }
@@ -106,10 +143,14 @@ test("main masks the key immediately, rejects redirects, and emits only bounded 
     assert.equal(secretIndex < secondInputIndex, true);
     assert.equal(options.apiKey, "API_KEY_SECRET_SENTINEL");
     assert.equal(options.baseURL, "https://provider.example/v1");
-    assert.equal(options.maxRetries, 2);
-    assert.equal(options.timeout, 120_000);
+    assert.equal(options.maxRetries, 0);
+    assert.equal(options.timeout, undefined);
     assert.deepEqual(options.fetchOptions, { redirect: "error" });
     assert.equal(request.model, "safe-model");
+    assert.equal(request.stream, true);
+    assert.equal(request.reasoning_effort, "high");
+    assert.deepEqual(request.stream_options, { include_usage: true });
+    assert.equal(request.max_tokens, undefined);
     assert.equal(core.outputs.get("structured-output"), '{"answer":"MODEL_RESPONSE_SENTINEL"}');
     assert.equal(core.outputs.get("failure-reason"), "");
     assert.equal(core.outputs.get("turn-count"), "1");
@@ -123,6 +164,69 @@ test("main masks the key immediately, rejects redirects, and emits only bounded 
     ]) {
       assert.doesNotMatch(logs, new RegExp(forbidden));
     }
+    const completion = core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
+      .find((event) => event.event === "openai-agent.complete");
+    assert.equal(completion.ignoredPostFinishEmptyDeltaChoices, 1);
+    assert.equal(completion.ignoredRepeatedTerminalChoices, 0);
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test("main appends the trusted prompt context to the configured prompt", async () => {
+  const workspace = actionFixture();
+  const core = mockCore({
+    "api-key": "key",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+    "prompt-context": "PROMPT_CONTEXT_SENTINEL",
+  });
+  const requests = [];
+  class ContextOpenAI {
+    constructor() {
+      this.chat = { completions: { create: async (request) => {
+        requests.push(request);
+        return completionStream({ choices: [{ message: { content: '{"answer":"done"}' } }] });
+      } } };
+    }
+  }
+  try {
+    await main(core, { GITHUB_WORKSPACE: workspace.directory }, ContextOpenAI);
+    assert.equal(core.outputs.get("failure-reason"), "");
+    const prompt = requests[0].messages.find((message) => message.role === "user").content;
+    assert.equal(prompt, "PROMPT_SECRET_SENTINEL\n\nPROMPT_CONTEXT_SENTINEL");
+    const emitted = JSON.stringify(core.events.filter(([kind]) => ["output", "info", "failed"].includes(kind)));
+    assert.ok(!emitted.includes("PROMPT_CONTEXT_SENTINEL"), emitted);
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test("main transports accepted output through a workflow-controlled file without an output value", async () => {
+  const workspace = actionFixture();
+  const answer = "😀".repeat(36_000);
+  assert.ok(Buffer.byteLength(JSON.stringify({ answer }), "utf8") > 128 * 1024);
+  const core = mockCore({
+    "api-key": "key",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+    "structured-output-file": ".openai-agent-output/review.json",
+  });
+  class MockOpenAI {
+    constructor() {
+      this.chat = { completions: { create: async () => completionStream({
+        choices: [{ message: { content: JSON.stringify({ answer }) } }],
+      }) } };
+    }
+  }
+  try {
+    await main(core, { GITHUB_WORKSPACE: workspace.directory }, MockOpenAI);
+    assert.equal(core.outputs.get("structured-output"), "");
+    assert.equal(core.outputs.has("structured-output-file"), false);
+    assert.equal(
+      fs.readFileSync(path.join(workspace.directory, ".openai-agent-output", "review.json"), "utf8"),
+      JSON.stringify({ answer }),
+    );
   } finally {
     workspace.cleanup();
   }
@@ -138,10 +242,10 @@ test("configuration supplies recovery limits and canonical diagnostics", async (
     methodology_files: [],
     allowed_roots: ["evidence"],
     allowed_files: [],
-    max_output_bytes: 2048,
     max_turns: 4,
     max_tool_calls: 1,
-    request_timeout_ms: 90_000,
+    stream_idle_timeout_ms: 90_000,
+    stage_timeout_ms: 900_000,
     max_request_retries: 4,
     max_output_repair_attempts: 2,
   }));
@@ -154,15 +258,15 @@ test("configuration supplies recovery limits and canonical diagnostics", async (
   class MockOpenAI {
     constructor(received) {
       options = received;
-      this.chat = { completions: { create: async () => ({
+      this.chat = { completions: { create: async () => completionStream({
         choices: [{ message: { content: '{"answer":"ok"}' } }],
       }) } };
     }
   }
   try {
     await main(core, { GITHUB_WORKSPACE: workspace.directory }, MockOpenAI);
-    assert.equal(options.timeout, 90_000);
-    assert.equal(options.maxRetries, 4);
+    assert.equal(options.timeout, undefined);
+    assert.equal(options.maxRetries, 0);
     assert.equal(core.outputs.get("turn-count"), "1");
     assert.equal(core.outputs.get("failure-category"), "");
     assert.equal(core.outputs.get("retryable"), "false");
@@ -181,6 +285,8 @@ test("configuration supplies recovery limits and canonical diagnostics", async (
       failureCategory: null,
       retryable: false,
       providerAttempts: [],
+      ignoredPostFinishEmptyDeltaChoices: 0,
+      ignoredRepeatedTerminalChoices: 0,
     });
   } finally {
     workspace.cleanup();
@@ -203,7 +309,7 @@ test("main repairs a final response with no text", async () => {
     constructor() {
       this.chat = { completions: { create: async (request) => {
         requests.push(structuredClone(request));
-        return responses.shift();
+        return completionStream(responses.shift());
       } } };
     }
   }
@@ -278,6 +384,7 @@ test("main emits a bounded provider request ID without raw errors", async () => 
         throw Object.assign(new Error("RAW_PROVIDER_SECRET_SENTINEL"), {
           status: 403,
           requestID: "req_safe-123",
+          code: "access_denied",
           headers: { get: () => "RAW_HEADER_SECRET_SENTINEL" },
         });
       } } };
@@ -297,8 +404,10 @@ test("main emits a bounded provider request ID without raw errors", async () => 
         retryable: false,
         status: 403,
         requestId: "req_safe-123",
+        providerCode: "access_denied",
       },
     );
+    assert.equal(JSON.parse(core.outputs.get("diagnostics")).providerErrorCode, "access_denied");
     assert.doesNotMatch(observable, /RAW_PROVIDER_SECRET_SENTINEL|RAW_HEADER_SECRET_SENTINEL/);
   } finally {
     workspace.cleanup();
@@ -385,6 +494,102 @@ test("main safely distinguishes provider transport failures", async () => {
   }
 });
 
+test("main logs only static post-finish diagnostics", async () => {
+  const workspace = actionFixture();
+  const core = mockCore({
+    "api-key": "key",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+  });
+  const sentinel = "MODEL_STREAM_SECRET_SENTINEL";
+  class MalformedStreamOpenAI {
+    constructor() {
+      this.chat = { completions: { create: async () => ({
+        controller: new AbortController(),
+        async *[Symbol.asyncIterator]() {
+          yield {
+            choices: [{
+              index: 0,
+              delta: { content: '{"answer":"done"}' },
+              finish_reason: "stop",
+            }],
+          };
+          yield {
+            choices: [{
+              index: 0,
+              delta: { content: sentinel },
+            }],
+          };
+        },
+      }) } };
+    }
+  }
+  try {
+    await main(core, { GITHUB_WORKSPACE: workspace.directory }, MalformedStreamOpenAI);
+    assert.equal(core.outputs.get("failure-reason"), "provider stream was malformed");
+    assert.equal(
+      JSON.parse(core.outputs.get("diagnostics")).streamStructuralViolation,
+      "post-finish",
+    );
+    assert.equal(JSON.parse(core.outputs.get("diagnostics")).postFinishShape, "delta-content");
+    assert.deepEqual(
+      core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
+        .find((event) => event.event === "openai-agent.failure"),
+      {
+        event: "openai-agent.failure",
+        phase: "runtime",
+        reason: "provider stream was malformed",
+        category: "provider-response",
+        retryable: false,
+        streamStructuralViolation: "post-finish",
+        postFinishShape: "delta-content",
+      },
+    );
+    assert.doesNotMatch(JSON.stringify(core.events), new RegExp(sentinel));
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test("main reduces malformed SSE parser errors to a static structural violation", async () => {
+  const workspace = actionFixture();
+  const core = mockCore({
+    "api-key": "key",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+  });
+  const sentinel = "RAW_SSE_SECRET_SENTINEL";
+  class MalformedSseOpenAI {
+    constructor() {
+      this.chat = { completions: { create: async () => {
+        throw new SyntaxError(sentinel);
+      } } };
+    }
+  }
+  try {
+    await main(core, { GITHUB_WORKSPACE: workspace.directory }, MalformedSseOpenAI);
+    assert.equal(core.outputs.get("failure-reason"), "provider stream was malformed");
+    assert.equal(
+      JSON.parse(core.outputs.get("diagnostics")).streamStructuralViolation,
+      "sse-json-invalid",
+    );
+    assert.deepEqual(
+      core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
+        .find((event) => event.event === "openai-agent.provider-failure"),
+      {
+        event: "openai-agent.provider-failure",
+        reason: "provider stream was malformed",
+        category: "provider-response",
+        retryable: false,
+        streamStructuralViolation: "sse-json-invalid",
+      },
+    );
+    assert.doesNotMatch(JSON.stringify(core.events), new RegExp(sentinel));
+  } finally {
+    workspace.cleanup();
+  }
+});
+
 test("main reports why repaired output remains invalid", async () => {
   const workspace = actionFixture();
   const core = mockCore({
@@ -398,7 +603,7 @@ test("main reports why repaired output remains invalid", async () => {
   ];
   class InvalidRepairOpenAI {
     constructor() {
-      this.chat = { completions: { create: async () => responses.shift() } };
+      this.chat = { completions: { create: async () => completionStream(responses.shift()) } };
     }
   }
   const reason =
@@ -415,7 +620,7 @@ test("main reports why repaired output remains invalid", async () => {
         attempt: 1,
         activity: "investigating",
         layer: "schema",
-        reason: "response did not match the schema: #/required: required answer; #/additionalProperties: additionalProperties",
+        reason: "response did not match the schema: #: required answer; #: has an unexpected property",
       },
       { attempt: 2, activity: "repairing", layer: "json", reason: "response was not valid JSON" },
     ]);
@@ -481,7 +686,7 @@ test("review rejection diagnostics and failure logs never echo finding text", as
     const responses = [candidate, scenario === "preservation" ? { ...candidate, findings: [] } : candidate];
     class InvalidReviewOpenAI {
       constructor() {
-        this.chat = { completions: { create: async () => ({
+        this.chat = { completions: { create: async () => completionStream({
           choices: [{ message: { content: JSON.stringify(responses.shift()) } }],
         }) } };
       }
@@ -566,8 +771,7 @@ function reviewFixture(workspace, { candidates = 4 } = {}) {
       }],
     }),
     // Schema-valid in every field, and wrong in four different ways at once: a duplicate, an
-    // unknown candidate, a rationale the schema counts in characters and the validator in bytes,
-    // and every remaining candidate left out.
+    // unknown candidate, a forbidden control character, and every remaining candidate left out.
     mixed: () => ({
       head_sha: sha,
       summary: "verified",
@@ -575,12 +779,19 @@ function reviewFixture(workspace, { candidates = 4 } = {}) {
         { reviewer: "skeptical", finding_id: `${secret}-1`, disposition: "rejected", rationale: "unsupported" },
         { reviewer: "skeptical", finding_id: `${secret}-1`, disposition: "rejected", rationale: "unsupported again" },
         { reviewer: "skeptical", finding_id: "ghost-candidate", disposition: "rejected", rationale: "unsupported" },
-        { reviewer: "skeptical", finding_id: `${secret}-2`, disposition: "rejected", rationale: "\u00e9".repeat(401) },
+        { reviewer: "skeptical", finding_id: `${secret}-2`, disposition: "rejected", rationale: "unsupported\u0000" },
       ],
       findings: [],
     }),
-    // The authoritative reason for a given output, so a test can require the runtime to carry
+    // The authoritative rejection for a given output, so a test can require the runtime to carry
     // exactly it rather than merely something that looks like it.
+    rejectionFor: (output) => require(path.join(automation, "validate-final-review"))
+      .validateFinalReview(output, {
+        expectedSha: sha,
+        changedPaths: context.changed_paths,
+        changedLines: context.changed_lines,
+        specialistAggregate: aggregate,
+      }),
     reasonFor: (output) => require(path.join(automation, "validate-final-review"))
       .validateFinalReview(output, {
         expectedSha: sha,
@@ -598,7 +809,9 @@ function mockProvider(responses, requests) {
         // The runtime appends to one conversation, so a request is only readable afterwards if the
         // messages it carried are copied as they were sent.
         requests.push({ ...request, messages: request.messages.map((message) => ({ ...message })) });
-        return { choices: [{ message: { content: JSON.stringify(responses.shift()) } }] };
+        return completionStream({
+          choices: [{ message: { content: JSON.stringify(responses.shift()) } }],
+        });
       } } };
     }
   };
@@ -623,10 +836,14 @@ test("a final review missing four dispositions is repaired from one factual reje
       mockProvider([fixture.review(1), fixture.review(4)], requests));
 
     // The rejection the provider was asked to repair names every candidate left out, at positions
-    // in the trusted aggregate, and carries no instruction the reviewer prompt already states.
+    // in the trusted aggregate and by the identifiers to copy, and carries no instruction the
+    // reviewer prompt already states. Only the candidates still missing are quoted.
     const repairRequest = requests[1].messages.at(-1).content;
     assert.match(repairRequest, /3 of 4 candidates have no valid disposition/);
     assert.match(repairRequest, /aggregate findings skeptical 1, 2, 3/);
+    for (const index of [2, 3, 4]) {
+      assert.ok(repairRequest.includes(`(skeptical, ${fixture.secret}-${index})`), repairRequest);
+    }
     assert.doesNotMatch(repairRequest, /record exactly one disposition per specialist candidate/);
     assert.ok(!repairRequest.includes(`${fixture.secret}-1`), repairRequest);
 
@@ -710,11 +927,10 @@ test("a review wrong in several ways at once keeps every category through the ru
     assert.match(expected, /candidates lack a valid disposition|candidates have no valid disposition/);
     assert.match(expected, /1 unknown|1 entry naming a candidate the specialists did not report/);
     assert.match(expected, /1 duplicate|1 entry repeating a candidate an earlier entry already covered/);
-    assert.match(expected, /over 800 UTF-8 byte rationale|within 800 UTF-8 bytes/);
+    assert.match(expected, /forbidden-control/);
 
-    // Both runtime paths carry that reason unchanged: the repair request, the telemetry entry, and
-    // the terminal failure. A slice at 240 bytes would truncate any of them.
-    assert.ok(requests[1].messages.at(-1).content.includes(expected), expected);
+    // The repair prompt carries bounded validation feedback without model text.
+    assert.match(requests[1].messages.at(-1).content, /Correct every reported validation error/);
     const diagnostics = JSON.parse(core.outputs.get("diagnostics"));
     assert.deepEqual(diagnostics.outputRejections.map((entry) => entry.reason), [expected, expected]);
     assert.equal(core.outputs.get("failure-reason"),
@@ -735,15 +951,18 @@ test("one repair corrects duplicate and rationale failures in either entry order
       const invalid = fixture.review(1);
       invalid.candidate_dispositions.push({ ...invalid.candidate_dispositions[0] });
       for (const index of invalidIndexes) invalid.candidate_dispositions[index].rationale = " ";
-      const expected = fixture.reasonFor(invalid);
+      const rejection = fixture.rejectionFor(invalid);
+      const expected = rejection.reason;
       assert.match(expected, /1 duplicate|1 entry repeating/);
       assert.match(expected, new RegExp(`${invalidIndexes.length} (?:entr(?:y|ies) )?with a`));
 
       await main(core, { GITHUB_WORKSPACE: workspace.directory },
         mockProvider([invalid, fixture.review(1)], requests));
 
+      // Repair is asked with the full detail, which keeps every coordinate the short reason dropped.
       assert.equal(requests.length, 2);
-      assert.ok(requests[1].messages.at(-1).content.includes(expected), expected);
+      const feedback = rejection.detail ?? expected;
+      assert.ok(requests[1].messages.at(-1).content.includes(feedback), feedback);
       assert.equal(core.outputs.get("failure-reason"), "");
       assert.deepEqual(JSON.parse(core.outputs.get("structured-output")), fixture.review(1));
       const diagnostics = JSON.parse(core.outputs.get("diagnostics"));

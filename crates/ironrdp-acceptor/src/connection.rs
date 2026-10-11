@@ -1,11 +1,12 @@
 use core::any::TypeId;
 use core::mem;
 
+use ironrdp_connector::sspi::{AuthIdentity, UsernameParts};
 use ironrdp_connector::{
     ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, MonotonicInstant, Sequence, State, Written,
     encode_x224_packet, general_err, reason_err,
 };
-use ironrdp_core::{WriteBuf, decode};
+use ironrdp_core::{ReadCursor, WriteBuf, decode, decode_cursor};
 use ironrdp_pdu as pdu;
 use ironrdp_pdu::nego::SecurityProtocol;
 use ironrdp_pdu::x224::X224;
@@ -16,6 +17,7 @@ use pdu::rdp::headers::ShareControlPdu;
 use pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use pdu::rdp::server_license::{LicensePdu, LicensingErrorMessage};
 use pdu::{gcc, mcs, nego, rdp};
+use rand::RngCore as _;
 use tracing::{debug, warn};
 
 use super::channel_connection::ChannelConnectionSequence;
@@ -23,6 +25,10 @@ use super::finalization::FinalizationSequence;
 use crate::util::{self, wrap_share_data};
 
 const IO_CHANNEL_ID: u16 = 1003;
+// Also the fixed MCS server channel ID (0x03EA) that MS-RDPBCGR 3.3.1.5 defines,
+// which is why it doubles as the `initiator` on every server-to-client Send Data
+// Indication in this file (License, Demand Active, Initiate Multitransport Request
+// per 3.3.5.15.1) rather than the user's own MCS channel ID.
 const USER_CHANNEL_ID: u16 = 1002;
 
 pub struct Acceptor {
@@ -35,16 +41,74 @@ pub struct Acceptor {
     keyboard_layout: u32,
     keyboard_type: gcc::KeyboardType,
     ime_file_name: String,
-    multitransport_flags: gcc::MultiTransportFlags,
+    /// The client's MultiTransportChannelData block flags (MS-RDPBCGR
+    /// 2.2.1.3.8), when it sent one. `None` when the client did not send the
+    /// block at all, distinct from `Some(empty())` (block present, no flags
+    /// set): the server's own block MUST be omitted in the former case but
+    /// not the latter (2.2.1.4).
+    multitransport_flags: Option<gcc::MultiTransportFlags>,
     early_capability_flags: gcc::ClientEarlyCapabilityFlags,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
     pub(crate) creds: Option<Credentials>,
-    received_credentials: Option<Credentials>,
+    received_credentials: Option<ReceivedCredentials>,
+    credentials_handled: bool,
     received_auto_reconnect: Option<ClientAutoReconnect>,
     reactivation: bool,
     honor_client_desktop_size: Option<DesktopSize>,
+    /// UDP multitransport flags to advertise to the client and, if it
+    /// reciprocates, to offer. `None` disables the feature entirely: no
+    /// Server MultiTransportChannelData block is sent, and no Initiate
+    /// Multitransport Request follows. See `set_multitransport_offer()`.
+    offer_multitransport: Option<gcc::MultiTransportFlags>,
+    /// The flags actually written into the Server MultiTransportChannelData
+    /// block during Basic Settings Exchange, or `None` if no block was sent.
+    /// Everything after that exchange decides from this snapshot rather than
+    /// from `offer_multitransport`, so a later `set_multitransport_offer()`
+    /// call cannot send a request, or report a Soft-Sync result, that the
+    /// client was never told about.
+    advertised_multitransport: Option<gcc::MultiTransportFlags>,
+    /// The Initiate Multitransport Request sent to the client, once
+    /// `MultitransportBootstrapping` has run. See `multitransport_request()`.
+    sent_multitransport_request: Option<rdp::multitransport::MultitransportRequestPdu>,
+    /// Source of randomness for the Initiate Multitransport Request's security
+    /// cookie and request ID. See `set_multitransport_security_rng()`.
+    multitransport_security_rng: Box<dyn MultitransportSecurityRng>,
+    /// Whether the Initiate Multitransport Response matching
+    /// `sent_multitransport_request` was received, and whether it reported
+    /// success. `None` until a matching response arrives. See
+    /// [`AcceptorResult::multitransport_response_success`].
+    received_multitransport_response: Option<bool>,
+}
+
+/// Source of randomness for the security cookie and request ID the acceptor
+/// sends in an Initiate Multitransport Request PDU (MS-RDPBCGR 2.2.15.1).
+///
+/// [`Acceptor::step`] is otherwise a pure function of its inputs and stored
+/// state, which is what makes the sans-I/O sequence deterministic and
+/// testable by feeding it bytes; reading a global RNG from inside `step`
+/// would be a hidden side channel breaking that. Injected instead via
+/// [`Acceptor::set_multitransport_security_rng`], defaulting to an OS-backed
+/// implementation.
+pub trait MultitransportSecurityRng: Send {
+    /// Fill `cookie` with random bytes for the security cookie field.
+    fn fill_security_cookie(&mut self, cookie: &mut [u8; 16]);
+    /// Produce the request ID.
+    fn next_request_id(&mut self) -> u32;
+}
+
+/// Default [`MultitransportSecurityRng`], backed by the OS RNG via `rand::rng()`.
+struct OsMultitransportSecurityRng;
+
+impl MultitransportSecurityRng for OsMultitransportSecurityRng {
+    fn fill_security_cookie(&mut self, cookie: &mut [u8; 16]) {
+        rand::rng().fill_bytes(cookie);
+    }
+
+    fn next_request_id(&mut self) -> u32 {
+        rand::rng().next_u32()
+    }
 }
 
 /// Minimum and maximum desktop dimension honored from a client.
@@ -77,6 +141,37 @@ fn set_bitmap_desktop_size(capabilities: &mut [CapabilitySet], size: DesktopSize
             cap.desktop_height = size.height;
         }
     }
+}
+
+/// Protocol source and handshake-authentication status of received credentials.
+///
+/// Servers must not infer this from their configured security mode: the origin
+/// records what the acceptor actually received during negotiation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialOrigin {
+    /// Received in the ClientInfoPdu (MS-RDPBCGR 2.2.1.11).
+    ///
+    /// These credentials are client-supplied and have not been authenticated by
+    /// the protocol handshake. A server should validate them before using them
+    /// to select identity-bound resources.
+    ClientInfo,
+    /// Delegated TSPasswordCreds decrypted by CredSSP (MS-CSSP).
+    ///
+    /// CredSSP authenticated the principal during the exchange. A server may
+    /// still run authorization policy before starting or selecting a session.
+    CredSspDelegated,
+}
+
+/// Credentials received by the acceptor together with their protocol origin.
+///
+/// Keeping both values in one type makes it impossible to expose credentials
+/// without the provenance required to interpret their authentication status.
+#[derive(Clone, Debug)]
+pub struct ReceivedCredentials {
+    /// CredSSP UPNs remain intact in `username`, with no `domain`.
+    /// Down-level names separate the account name and optional NetBIOS domain.
+    pub credentials: Credentials,
+    pub origin: CredentialOrigin,
 }
 
 #[derive(Debug)]
@@ -128,14 +223,19 @@ pub struct AcceptorResult {
     /// implement UDP multitransport can use it to decide whether to send a
     /// Server Initiate Multitransport Request.
     pub multitransport_flags: gcc::MultiTransportFlags,
+    /// Whether the Initiate Multitransport Response matching the sent
+    /// request was received during the connection sequence, and whether it
+    /// reported success. `None` when no request was sent, or a matching
+    /// response never arrived.
+    pub multitransport_response_success: Option<bool>,
     /// Credentials received from the client during SecureSettingsExchange.
     ///
     /// Present for TLS-mode connections where the client sends credentials
-    /// in the ClientInfoPdu. `None` for CredSSP/Hybrid connections (where
-    /// authentication happens during the CredSSP exchange instead).
+    /// in the ClientInfoPdu. For CredSSP/Hybrid connections, credentials are
+    /// handled before capability exchange and are not exposed here.
     ///
     /// Servers that need to validate credentials (e.g., via PAM or LDAP)
-    /// can use this field for post-handshake validation.
+    /// should use a [`ConnectionSetupHandler`](crate::ConnectionSetupHandler).
     pub credentials: Option<Credentials>,
     /// Client Auto-Reconnect Packet received in the Client Info PDU.
     ///
@@ -163,17 +263,30 @@ impl Acceptor {
             keyboard_layout: 0,
             keyboard_type: gcc::KeyboardType(0),
             ime_file_name: String::new(),
-            multitransport_flags: gcc::MultiTransportFlags::empty(),
+            multitransport_flags: None,
             early_capability_flags: gcc::ClientEarlyCapabilityFlags::empty(),
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation: Default::default(),
             creds,
             received_credentials: None,
+            credentials_handled: false,
             received_auto_reconnect: None,
             reactivation: false,
             honor_client_desktop_size: None,
+            offer_multitransport: None,
+            advertised_multitransport: None,
+            sent_multitransport_request: None,
+            multitransport_security_rng: Box::new(OsMultitransportSecurityRng),
+            received_multitransport_response: None,
         }
+    }
+
+    /// Overrides the source of randomness used for the security cookie and
+    /// request ID in an Initiate Multitransport Request PDU. Defaults to an
+    /// OS-backed RNG; intended for tests that need deterministic output.
+    pub fn set_multitransport_security_rng(&mut self, rng: Box<dyn MultitransportSecurityRng>) {
+        self.multitransport_security_rng = rng;
     }
 
     /// Adopt the desktop size requested by the client in its Client Core Data
@@ -220,6 +333,140 @@ impl Acceptor {
         self.honor_client_desktop_size = max;
     }
 
+    /// Advertise UDP multitransport support (MS-RDPBCGR 2.2.1.4.6) and offer
+    /// it to clients that reciprocate.
+    ///
+    /// Pass `Some(flags)` to send a Server MultiTransportChannelData block
+    /// with these flags during Basic Settings Exchange, and, once licensing
+    /// completes, an Initiate Multitransport Request for reliable UDP
+    /// (`TRANSPORT_TYPE_UDP_FECR`) if `flags` includes it and the client's
+    /// own Client MultiTransportChannelData reciprocated. Lossy UDP
+    /// (`TRANSPORT_TYPE_UDP_FECL`) is accepted in `flags` for advertisement
+    /// purposes but this acceptor never requests it; only the reliable
+    /// transport is implemented. Include `SOFT_SYNC_TCP_TO_UDP` to also
+    /// support switching dynamic virtual channels from TCP to UDP after the
+    /// sideband transport is up; see
+    /// [`multitransport_soft_sync_negotiated()`](Self::multitransport_soft_sync_negotiated).
+    ///
+    /// Offering requires the client to have requested an MCS message
+    /// channel (MS-RDPBCGR 2.2.1.3.7): both the request and, when owed, the
+    /// client's response travel on it. If the client never requests one, no
+    /// request is sent regardless of this setting.
+    ///
+    /// `None` is the default: no multitransport block is advertised and no
+    /// request is ever sent.
+    ///
+    /// Only a call made before Basic Settings Exchange takes effect. The
+    /// flags advertised there are what the later request and
+    /// `multitransport_soft_sync_negotiated()` are based on; changing the
+    /// offer afterwards does not alter a negotiation already under way.
+    ///
+    /// This acceptor only bootstraps and sends the request; it does not
+    /// itself establish the RDPEUDP2 sideband transport the request
+    /// promises. Enabling this without a caller that drives that
+    /// establishment (over `multitransport_request()`) makes every
+    /// reciprocating client attempt a UDP connection that cannot succeed.
+    pub fn set_multitransport_offer(&mut self, flags: Option<gcc::MultiTransportFlags>) {
+        self.offer_multitransport = flags;
+    }
+
+    /// Returns the Initiate Multitransport Request sent to the client, if
+    /// [`MultitransportBootstrapping`](AcceptorState::MultitransportBootstrapping)
+    /// has run and decided to offer UDP multitransport.
+    ///
+    /// The caller should treat a `Some` here as the signal to begin
+    /// establishing the sideband UDP transport (RDPEUDP2 + TLS + RDPEMT)
+    /// using `request_id` and `security_cookie`, in parallel with (not
+    /// blocking) the rest of the acceptor sequence: this acceptor does not
+    /// wait for the client's Initiate Multitransport Response before
+    /// continuing on to capability negotiation, since MS-RDPBCGR 3.2.5.15.1
+    /// only obliges the client to send one when Soft-Sync is negotiated or
+    /// the attempt failed, never on a plain successful bootstrap.
+    ///
+    /// `None` before `MultitransportBootstrapping` has run, or when
+    /// multitransport was not offered
+    /// ([`set_multitransport_offer()`](Self::set_multitransport_offer)
+    /// disabled or the client did not reciprocate). Bootstrapping does not
+    /// run again on reactivation, so no new request is sent then, but a
+    /// request from before reactivation carries forward and is still
+    /// returned here: `CapabilitiesWaitConfirm`'s late-response tolerance
+    /// needs it to remain visible across reactivation too.
+    pub fn multitransport_request(&self) -> Option<&rdp::multitransport::MultitransportRequestPdu> {
+        self.sent_multitransport_request.as_ref()
+    }
+
+    /// Whether both peers advertised Soft-Sync support for multitransport.
+    ///
+    /// `None` before [`multitransport_request()`](Self::multitransport_request)
+    /// returns `Some`: no request was sent, so nothing was actually
+    /// negotiated regardless of what the GCC flags alone would suggest.
+    pub fn multitransport_soft_sync_negotiated(&self) -> Option<bool> {
+        self.sent_multitransport_request.as_ref()?;
+        Some(
+            self.advertised_multitransport
+                .is_some_and(|offer| offer.contains(gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP))
+                && self
+                    .multitransport_flags
+                    .is_some_and(|flags| flags.contains(gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP)),
+        )
+    }
+
+    /// Returns `true` if `data` (an MCS SendDataRequest already decoded from
+    /// the wire) is on the message channel while a multitransport request is
+    /// outstanding AND its payload strictly decodes as an Initiate
+    /// Multitransport Response, after logging the response against the
+    /// outstanding request (matching request IDs); `false` otherwise, leaving
+    /// the caller to handle `data`. MS-RDPBCGR 3.2.5.15.1 gives this response
+    /// no fixed position relative to the rest of the handshake: it depends on
+    /// when the client resolves its own bootstrapping and whether the
+    /// sideband attempt failed, so both `CapabilitiesWaitConfirm` and
+    /// `ConnectionFinalization` tolerate it landing wherever it actually
+    /// shows up rather than only where `MultitransportBootstrapping`'s own
+    /// comment describes as typical.
+    ///
+    /// The message channel also carries Auto-Detect Response and Heartbeat
+    /// PDUs (2.2.1.4.5, 2.2.8.1.1.2.1), so a channel-and-outstanding-request
+    /// check alone would misclassify that traffic too; requiring the decode
+    /// to actually succeed here lets callers fall through to their own
+    /// handling for anything that isn't really a response, mirroring how
+    /// `ClientConnectorState::ConnectTimeAutoDetection` demuxes the same
+    /// channel client-side.
+    fn is_late_multitransport_response(&mut self, data: &mcs::SendDataRequest<'_>) -> bool {
+        let Some(sent) = self.sent_multitransport_request.as_ref() else {
+            return false;
+        };
+        if Some(data.channel_id) != self.message_channel_id {
+            return false;
+        }
+        // `decode` alone would accept a valid response followed by trailing
+        // bytes. This acceptor advertises ENCRYPTION_LEVEL_NONE, so the
+        // response carries the 4-byte Basic Security Header (MS-RDPBCGR
+        // 2.2.15.2) and is exactly 12 bytes: anything left over means the
+        // payload is something else.
+        let mut cursor = ReadCursor::new(data.user_data.as_ref());
+        let Ok(response) = decode_cursor::<rdp::multitransport::MultitransportResponsePdu>(&mut cursor) else {
+            return false;
+        };
+        if !cursor.is_empty() {
+            return false;
+        }
+        if response.request_id == sent.request_id {
+            debug!(
+                request_id = response.request_id,
+                success = response.is_success(),
+                "Received Initiate Multitransport Response"
+            );
+            self.received_multitransport_response = Some(response.is_success());
+        } else {
+            warn!(
+                response.request_id,
+                expected_request_id = sent.request_id,
+                "Initiate Multitransport Response request ID does not match the sent request"
+            );
+        }
+        true
+    }
+
     pub fn new_deactivation_reactivation(
         mut consumed: Acceptor,
         static_channels: StaticChannelSet,
@@ -259,9 +506,15 @@ impl Acceptor {
             saved_for_reactivation,
             creds: consumed.creds,
             received_credentials: consumed.received_credentials,
+            credentials_handled: consumed.credentials_handled,
             received_auto_reconnect: consumed.received_auto_reconnect,
             reactivation: true,
             honor_client_desktop_size: consumed.honor_client_desktop_size,
+            offer_multitransport: consumed.offer_multitransport,
+            advertised_multitransport: consumed.advertised_multitransport,
+            sent_multitransport_request: consumed.sent_multitransport_request,
+            multitransport_security_rng: consumed.multitransport_security_rng,
+            received_multitransport_response: consumed.received_multitransport_response,
         })
     }
 
@@ -324,6 +577,94 @@ impl Acceptor {
         matches!(self.state, AcceptorState::Credssp { .. })
     }
 
+    pub(crate) fn desktop_size(&self) -> DesktopSize {
+        self.desktop_size
+    }
+
+    pub(crate) fn is_reactivation(&self) -> bool {
+        self.reactivation
+    }
+
+    /// Whether the client supplied a well-formed Client Auto-Reconnect Packet.
+    ///
+    /// The server still has to verify its security verifier before accepting
+    /// the connection.
+    pub(crate) fn is_auto_reconnect_attempt(&self) -> bool {
+        self.received_auto_reconnect.is_some()
+    }
+
+    pub(crate) fn is_ready_for_capability_exchange(&self) -> bool {
+        matches!(self.state, AcceptorState::CapabilitiesSendServer { .. })
+    }
+
+    /// Returns credentials received during the current handshake, if any.
+    pub(crate) fn received_credentials(&self) -> Option<&ReceivedCredentials> {
+        self.received_credentials.as_ref()
+    }
+
+    /// Whether credentials need handling after channel joins and ClientInfo.
+    pub(crate) fn credentials_need_handling(&self) -> bool {
+        matches!(self.state, AcceptorState::LicensingExchange { .. })
+            && !self.is_auto_reconnect_attempt()
+            && self.received_credentials.is_some()
+            && !self.credentials_handled
+    }
+
+    pub(crate) fn mark_credentials_handled(&mut self) {
+        self.credentials_handled = true;
+    }
+
+    fn credentials_for_result(&mut self) -> Option<Credentials> {
+        self.received_credentials
+            .take()
+            .filter(|received| received.origin == CredentialOrigin::ClientInfo)
+            .map(|received| received.credentials)
+    }
+
+    /// Encodes a Set Error Info PDU for a user authorization failure ([MS-RDPBCGR] section 2.2.5.1.1).
+    ///
+    /// Returns zero without writing if the client did not advertise error-info support.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    pub fn encode_access_denied(&self, output: &mut WriteBuf) -> ConnectorResult<usize> {
+        if !self
+            .early_capability_flags
+            .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU)
+        {
+            debug!("Omitting access-denied PDU because the client did not advertise error-info support");
+            return Ok(0);
+        }
+
+        let info = wrap_share_data(
+            rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+                ProtocolIndependentCode::ServerInsufficientPrivileges,
+            ))),
+            0,
+        );
+        debug!(message = ?info, "Send");
+        util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &info, output)
+    }
+
+    /// Stores CredSSP/NLA credentials for the same validation and binding path as TLS ClientInfo credentials.
+    pub(crate) fn set_received_credssp_credentials(&mut self, identity: AuthIdentity) {
+        let (username, domain) = match identity.username.parts() {
+            UsernameParts::UserPrincipalName(parts) => (parts.upn().to_owned(), None),
+            UsernameParts::DownLevelLogonName(parts) => (
+                parts.account_name().to_owned(),
+                parts.netbios_domain().map(str::to_owned),
+            ),
+        };
+        self.received_credentials = Some(ReceivedCredentials {
+            credentials: Credentials {
+                username,
+                password: identity.password.as_ref().clone(),
+                domain,
+            },
+            origin: CredentialOrigin::CredSspDelegated,
+        });
+        self.credentials_handled = false;
+    }
+
     /// # Panics
     ///
     /// Panics if state is not [AcceptorState::Credssp].
@@ -352,10 +693,13 @@ impl Acceptor {
                 keyboard_layout: self.keyboard_layout,
                 keyboard_type: self.keyboard_type,
                 ime_file_name: self.ime_file_name.clone(),
-                multitransport_flags: self.multitransport_flags,
+                multitransport_flags: self
+                    .multitransport_flags
+                    .unwrap_or_else(gcc::MultiTransportFlags::empty),
+                multitransport_response_success: self.received_multitransport_response,
                 client_early_capability_flags: self.early_capability_flags,
                 reactivation: self.reactivation,
-                credentials: self.received_credentials.take(),
+                credentials: self.credentials_for_result(),
                 auto_reconnect: self.received_auto_reconnect.take(),
             }),
             previous_state => {
@@ -367,6 +711,7 @@ impl Acceptor {
 }
 
 #[derive(Default, Debug)]
+#[non_exhaustive]
 pub enum AcceptorState {
     #[default]
     Consumed,
@@ -413,6 +758,40 @@ pub enum AcceptorState {
         early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
         channels: Vec<(u16, gcc::ChannelDef)>,
     },
+    /// After licensing, decide whether to offer UDP multitransport
+    /// (MS-RDPBCGR 2.2.15.1) and, if so, send the Initiate Multitransport
+    /// Request.
+    ///
+    /// Unlike the client's `MultitransportBootstrapping`, which is purely
+    /// reactive (it waits to read whatever the server sends), this state is
+    /// where the server actively decides and writes: it is entered with
+    /// nothing to read, decides based on the client's advertised
+    /// `multitransport_flags` and the offer the server itself advertised
+    /// during Basic Settings Exchange, and either sends the request or skips
+    /// it, either way moving straight on to `CapabilitiesSendServer` in the
+    /// same step.
+    ///
+    /// There is deliberately no state mirroring the client's
+    /// `MultitransportPending`: MS-RDPBCGR 3.2.5.15.1 only obliges the client
+    /// to send an Initiate Multitransport Response when Soft-Sync is
+    /// negotiated or the sideband attempt failed, so on the common
+    /// successful, non-Soft-Sync path no response is ever sent. Blocking
+    /// here to read one would stall the handshake forever in exactly that
+    /// case. Establishing the actual UDP transport (RDPEUDP2 + TLS + RDPEMT)
+    /// is the caller's responsibility, driven out of band from this request:
+    /// see [`Acceptor::multitransport_request()`]. Because the client sends
+    /// its response, if any, before it ever reads the server's Demand
+    /// Active, IronRDP's own client always sends one (if at all) before the
+    /// Confirm Active on the wire. That is a client behavior, not a
+    /// protocol guarantee 3.2.5.15.1 makes: a conforming third-party client
+    /// could just as legitimately send it later, during finalization. Both
+    /// `CapabilitiesWaitConfirm` and `ConnectionFinalization` tolerate and
+    /// consume it wherever it actually lands, rather than this state
+    /// waiting for it.
+    MultitransportBootstrapping {
+        early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
+        channels: Vec<(u16, gcc::ChannelDef)>,
+    },
     CapabilitiesSendServer {
         early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
         channels: Vec<(u16, gcc::ChannelDef)>,
@@ -449,6 +828,7 @@ impl State for AcceptorState {
             Self::RdpSecurityCommencement { .. } => "RdpSecurityCommencement",
             Self::SecureSettingsExchange { .. } => "SecureSettingsExchange",
             Self::LicensingExchange { .. } => "LicensingExchange",
+            Self::MultitransportBootstrapping { .. } => "MultitransportBootstrapping",
             Self::CapabilitiesSendServer { .. } => "CapabilitiesSendServer",
             Self::MonitorLayoutSend { .. } => "MonitorLayoutSend",
             Self::CapabilitiesWaitConfirm { .. } => "CapabilitiesWaitConfirm",
@@ -480,6 +860,9 @@ impl Sequence for Acceptor {
             AcceptorState::RdpSecurityCommencement { .. } => None,
             AcceptorState::SecureSettingsExchange { .. } => Some(&pdu::X224_HINT),
             AcceptorState::LicensingExchange { .. } => None,
+            // Nothing to read: this state decides whether to send a request,
+            // then moves straight on to CapabilitiesSendServer.
+            AcceptorState::MultitransportBootstrapping { .. } => None,
             AcceptorState::CapabilitiesSendServer { .. } => None,
             AcceptorState::MonitorLayoutSend { .. } => None,
             AcceptorState::CapabilitiesWaitConfirm { .. } => Some(&pdu::X224_HINT),
@@ -621,11 +1004,7 @@ impl Sequence for Acceptor {
                 self.keyboard_layout = gcc_blocks.core.keyboard_layout;
                 self.keyboard_type = gcc_blocks.core.keyboard_type;
                 self.ime_file_name.clone_from(&gcc_blocks.core.ime_file_name);
-                self.multitransport_flags = gcc_blocks
-                    .multi_transport_channel
-                    .as_ref()
-                    .map(|m| m.flags)
-                    .unwrap_or_else(gcc::MultiTransportFlags::empty);
+                self.multitransport_flags = gcc_blocks.multi_transport_channel.as_ref().map(|m| m.flags);
 
                 // Adopt the client's requested desktop size (from its Client
                 // Core Data) before Demand Active is sent, so the session is
@@ -723,12 +1102,18 @@ impl Sequence for Acceptor {
                 let skip_channel_join = early_capability
                     .is_some_and(|client| client.contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_SKIP_CHANNELJOIN));
 
+                self.advertised_multitransport = self
+                    .message_channel_id
+                    .and(self.offer_multitransport)
+                    .filter(|_| self.multitransport_flags.is_some());
+
                 let server_blocks = create_gcc_blocks(
                     self.io_channel_id,
                     channel_ids.clone(),
                     requested_protocol,
                     skip_channel_join,
                     self.message_channel_id,
+                    self.advertised_multitransport,
                 );
 
                 let settings_response = mcs::ConnectResponse {
@@ -826,22 +1211,17 @@ impl Sequence for Acceptor {
 
                     if let Some(expected) = &self.creds {
                         if expected != &creds {
-                            // FIXME: How authorization should be denied with standard RDP security?
-                            // Since standard RDP security is not a priority, we just send a ServerDeniedConnection ServerSetErrorInfo PDU.
-                            let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
-                                ProtocolIndependentCode::ServerDeniedConnection,
-                            ));
-
-                            debug!(message = ?info, "Send");
-
-                            util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &info, output)?;
-
+                            self.encode_access_denied(output)?;
                             return Err(ConnectorError::general("invalid credentials"));
                         }
                     }
 
                     // Store credentials for later retrieval via AcceptorResult.
-                    self.received_credentials = Some(creds);
+                    self.received_credentials = Some(ReceivedCredentials {
+                        credentials: creds,
+                        origin: CredentialOrigin::ClientInfo,
+                    });
+                    self.credentials_handled = false;
                 }
 
                 (
@@ -866,6 +1246,10 @@ impl Sequence for Acceptor {
                 let written =
                     util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &license, output)?;
 
+                // Reactivation (Deactivation-Reactivation Sequence, e.g. a
+                // display resize) re-enters capability negotiation directly:
+                // the sideband UDP transport, if any, was already bootstrapped
+                // once for this connection and is not torn down or re-offered.
                 self.saved_for_reactivation = AcceptorState::CapabilitiesSendServer {
                     early_capability,
                     channels: channels.clone(),
@@ -873,11 +1257,68 @@ impl Sequence for Acceptor {
 
                 (
                     Written::from_size(written)?,
-                    AcceptorState::CapabilitiesSendServer {
+                    AcceptorState::MultitransportBootstrapping {
                         early_capability,
                         channels,
                     },
                 )
+            }
+
+            AcceptorState::MultitransportBootstrapping {
+                early_capability,
+                channels,
+            } => {
+                let next_state = AcceptorState::CapabilitiesSendServer {
+                    early_capability,
+                    channels,
+                };
+
+                let offer_udp_fecr = self
+                    .advertised_multitransport
+                    .is_some_and(|offer| offer.contains(gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+                let client_supports_udp_fecr = self
+                    .multitransport_flags
+                    .is_some_and(|flags| flags.contains(gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+                // 2.2.15.1 requires the request to travel on the MCS message
+                // channel. A client can in principle advertise UDP support
+                // without also requesting a message channel; rather than
+                // failing the whole connection over a mismatch in an optional
+                // feature's negotiation, that is treated the same as not
+                // offering.
+                let message_channel_id = self
+                    .message_channel_id
+                    .filter(|_| offer_udp_fecr && client_supports_udp_fecr);
+
+                if let Some(message_channel_id) = message_channel_id {
+                    let mut security_cookie = [0u8; 16];
+                    self.multitransport_security_rng
+                        .fill_security_cookie(&mut security_cookie);
+                    let request_id = self.multitransport_security_rng.next_request_id();
+
+                    let request = rdp::multitransport::MultitransportRequestPdu {
+                        security_header: rdp::headers::BasicSecurityHeader {
+                            flags: rdp::headers::BasicSecurityHeaderFlags::TRANSPORT_REQ,
+                        },
+                        request_id,
+                        requested_protocol: rdp::multitransport::RequestedProtocol::UdpFecR,
+                        security_cookie,
+                    };
+
+                    debug!(message = ?request, "Send");
+
+                    let written =
+                        util::encode_send_data_indication(self.user_channel_id, message_channel_id, &request, output)?;
+
+                    self.sent_multitransport_request = Some(request);
+
+                    (Written::from_size(written)?, next_state)
+                } else {
+                    debug!(
+                        offer_udp_fecr,
+                        client_supports_udp_fecr, "Not offering UDP multitransport"
+                    );
+                    (Written::Nothing, next_state)
+                }
             }
 
             AcceptorState::CapabilitiesSendServer {
@@ -957,6 +1398,25 @@ impl Sequence for Acceptor {
                 };
                 match message {
                     mcs::McsMessage::SendDataRequest(data) => {
+                        // An Initiate Multitransport Response can legitimately land
+                        // here: it travels on the message channel, and the client
+                        // sends it (when it sends one at all) while resolving its
+                        // own multitransport bootstrapping, strictly before it
+                        // ever reads the Demand Active that leads to Confirm
+                        // Active. So it is checked for by channel and a
+                        // successful strict decode before assuming the payload is
+                        // a Confirm Active, and simply logged and dropped: this
+                        // acceptor does not gate on it, per the note on
+                        // `AcceptorState::MultitransportBootstrapping`. A decode
+                        // failure here means the message-channel traffic isn't a
+                        // response at all (Auto-Detect Response, Heartbeat), so it
+                        // falls through to the Confirm Active handling below
+                        // instead.
+                        if self.is_late_multitransport_response(&data) {
+                            self.state = prev_state;
+                            return Ok(Written::Nothing);
+                        }
+
                         let capabilities_confirm = decode::<rdp::headers::ShareControlHeader>(data.user_data.as_ref())
                             .map_err(ConnectorError::decode);
                         let capabilities_confirm = match capabilities_confirm {
@@ -1006,23 +1466,48 @@ impl Sequence for Acceptor {
                 channels,
                 client_capabilities,
             } => {
-                let written = finalization.step(input, received_at, output)?;
-
-                let state = if finalization.is_done() {
-                    AcceptorState::Accepted {
-                        channels,
-                        client_capabilities,
-                        input_events: finalization.into_input_events(),
-                    }
-                } else {
-                    AcceptorState::ConnectionFinalization {
-                        finalization,
-                        channels,
-                        client_capabilities,
-                    }
+                // A late Initiate Multitransport Response can land in any
+                // finalization sub-state (see `is_late_multitransport_response`);
+                // none of FinalizationSequence's own PDU decoders expect it, and
+                // depending which sub-state is active it would otherwise be
+                // silently swallowed while advancing a state, propagated as a
+                // connection-ending decode error, or surfaced to the embedding
+                // application as a raw input event. Check for it here, before
+                // finalization ever sees the bytes, mirroring
+                // `CapabilitiesWaitConfirm`'s handling.
+                let is_late_multitransport_response = match decode::<X224<mcs::McsMessage<'_>>>(input) {
+                    Ok(X224(mcs::McsMessage::SendDataRequest(data))) => self.is_late_multitransport_response(&data),
+                    _ => false,
                 };
 
-                (written, state)
+                if is_late_multitransport_response {
+                    (
+                        Written::Nothing,
+                        AcceptorState::ConnectionFinalization {
+                            finalization,
+                            channels,
+                            client_capabilities,
+                        },
+                    )
+                } else {
+                    let written = finalization.step(input, received_at, output)?;
+
+                    let state = if finalization.is_done() {
+                        AcceptorState::Accepted {
+                            channels,
+                            client_capabilities,
+                            input_events: finalization.into_input_events(),
+                        }
+                    } else {
+                        AcceptorState::ConnectionFinalization {
+                            finalization,
+                            channels,
+                            client_capabilities,
+                        }
+                    };
+
+                    (written, state)
+                }
             }
 
             _ => unreachable!(),
@@ -1039,6 +1524,7 @@ fn create_gcc_blocks(
     requested: SecurityProtocol,
     skip_channel_join: bool,
     message_channel_id: Option<u16>,
+    offer_multitransport: Option<gcc::MultiTransportFlags>,
 ) -> gcc::ServerGccBlocks {
     gcc::ServerGccBlocks {
         core: gcc::ServerCoreData {
@@ -1057,6 +1543,81 @@ fn create_gcc_blocks(
         message_channel: message_channel_id.map(|id| gcc::ServerMessageChannelData {
             mcs_message_channel_id: id,
         }),
-        multi_transport_channel: None,
+        // Only meaningful alongside a message channel: the request and any
+        // response it draws both travel there (MS-RDPBCGR 2.2.15.1, 2.2.15.2).
+        // The caller has already filtered the offer to None when
+        // the client did not populate its own MultiTransportChannelData
+        // block, per 2.2.1.4's requirement that this block be omitted then.
+        multi_transport_channel: message_channel_id
+            .and(offer_multitransport)
+            .map(|flags| gcc::MultiTransportChannelData { flags }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn credentials(username: &str) -> Credentials {
+        Credentials {
+            username: username.to_owned(),
+            password: "secret".to_owned(),
+            domain: None,
+        }
+    }
+
+    #[test]
+    fn acceptor_result_exposes_only_client_info_credentials() {
+        let mut acceptor = Acceptor::new(
+            SecurityProtocol::SSL,
+            DesktopSize {
+                width: 1024,
+                height: 768,
+            },
+            Vec::new(),
+            None,
+        );
+
+        acceptor.received_credentials = Some(ReceivedCredentials {
+            credentials: credentials("nla-user"),
+            origin: CredentialOrigin::CredSspDelegated,
+        });
+        assert!(acceptor.credentials_for_result().is_none());
+
+        acceptor.received_credentials = Some(ReceivedCredentials {
+            credentials: credentials("tls-user"),
+            origin: CredentialOrigin::ClientInfo,
+        });
+        assert_eq!(
+            acceptor
+                .credentials_for_result()
+                .expect("ClientInfo credentials should remain available")
+                .username,
+            "tls-user"
+        );
+    }
+
+    #[test]
+    fn auto_reconnect_defers_client_info_credentials() {
+        let mut acceptor = Acceptor::new(
+            SecurityProtocol::SSL,
+            DesktopSize {
+                width: 1024,
+                height: 768,
+            },
+            Vec::new(),
+            None,
+        );
+        acceptor.received_credentials = Some(ReceivedCredentials {
+            credentials: credentials("reconnect-user"),
+            origin: CredentialOrigin::ClientInfo,
+        });
+        acceptor.received_auto_reconnect = Some(ClientAutoReconnect {
+            logon_id: 7,
+            security_verifier: [0x5A; 16],
+        });
+
+        assert!(acceptor.is_auto_reconnect_attempt());
+        assert!(!acceptor.credentials_need_handling());
     }
 }

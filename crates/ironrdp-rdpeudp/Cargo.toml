@@ -32,6 +32,7 @@ arbitrary = { version = "1", features = ["derive"], optional = true }
 ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.2", features = ["alloc"] } # public
 bitflags = "2.11" # public
+tracing = { version = "0.1", features = ["log"] }
 
 [lints]
 workspace = true

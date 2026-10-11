@@ -7,7 +7,7 @@ Inspect `pr-head` for surrounding code and assess the change independently, with
 
 Return only final-review JSON for the aggregate head SHA.
 Each finding in a specialist whose `status` is `valid` is a candidate requiring exactly one `candidate_dispositions` entry.
-Copy `reviewer` from the specialist's `reviewer` field and `finding_id` from the finding's `id`.
+Copy `reviewer` from the specialist's `reviewer` field and `finding_id` from the finding's `id`; the candidate index at the end of this prompt lists every pair to copy.
 Failed specialists and empty `findings` arrays require no entries.
 Use `accepted` to publish a candidate substantially unchanged, `refined` for a valid root cause needing a corrected final finding, and `rejected` for a candidate not to publish.
 Cite each accepted or refined candidate exactly once in final findings' `sources`; never cite rejected candidates.

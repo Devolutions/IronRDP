@@ -11,6 +11,7 @@ mod macros;
 
 pub mod capsets;
 pub mod client_info;
+pub mod clipboard;
 pub mod cluster_data;
 pub mod conference_create;
 pub mod core_data;

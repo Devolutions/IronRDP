@@ -15,9 +15,10 @@
     "pr-evidence/changed-files.txt",
     "pr-evidence/pull-request.diff"
   ],
-  "max_output_bytes": 32768,
   "max_turns": 50,
   "max_tool_calls": 120,
+  "stream_idle_timeout_ms": 300000,
+  "stage_timeout_ms": 7200000,
   "max_request_retries": 4,
   "max_output_repair_attempts": 2
 }

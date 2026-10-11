@@ -1,8 +1,8 @@
-use ironrdp_core::{encode_vec, impl_as_any};
+use ironrdp_core::{Decode as _, ReadCursor, encode_vec, impl_as_any};
 use ironrdp_dvc::ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_dvc::pdu::{
-    DataPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu,
-    SoftSyncTunnelType,
+    CapabilitiesRequestPdu, CapsVersion, ClosePdu, CreateRequestPdu, CreationStatus, DataPdu, DrdynvcClientPdu,
+    DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu, SoftSyncTunnelType,
 };
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessage, DvcMessageBatch, DvcProcessor};
 use ironrdp_svc::SvcMessage;
@@ -53,6 +53,40 @@ impl DvcProcessor for FailingDvc {
 }
 
 impl DvcClientProcessor for FailingDvc {}
+
+struct TunnelCreatedDvc;
+
+impl_as_any!(TunnelCreatedDvc);
+
+impl DvcProcessor for TunnelCreatedDvc {
+    fn channel_name(&self) -> &str {
+        "tunnel-created"
+    }
+
+    fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+        Ok(Vec::new())
+    }
+
+    fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+        Ok(Vec::new())
+    }
+}
+
+impl DvcClientProcessor for TunnelCreatedDvc {}
+
+fn decode_client_pdu(message: &SvcMessage) -> DrdynvcClientPdu {
+    let encoded = message.encode_unframed_pdu().expect("DVC response should encode");
+    DrdynvcClientPdu::decode(&mut ReadCursor::new(&encoded)).expect("DVC response should decode")
+}
+
+fn exchange_capabilities(client: &mut DrdynvcClient) {
+    let caps = encode_vec(&DrdynvcServerPdu::Capabilities(CapabilitiesRequestPdu::new(
+        CapsVersion::V3,
+        None,
+    )))
+    .expect("Capabilities Request should encode");
+    client.process(&caps).expect("Capabilities Request should be processed");
+}
 
 #[test]
 fn established_dynamic_channel_routes_recorded_data_without_negotiation() {
@@ -135,6 +169,41 @@ fn soft_sync_rejects_a_tunnel_that_became_unavailable_before_migration() {
 }
 
 #[test]
+fn soft_sync_skips_channels_the_client_did_not_open() {
+    let mut client = DrdynvcClient::new();
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("recorded channel should attach");
+    client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+
+    // Windows lists the channels this client answered with NO_LISTENER (2, 6, 8..=12) next to
+    // the graphics pipeline it accepted (7). The tunnel must still be switched for channel 7.
+    let request = encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
+        SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, vec![2, 6, 7, 8, 9, 10, 11, 12]),
+    ])))
+    .expect("Soft-Sync request should encode");
+
+    let responses = client.process(&request).expect("Soft-Sync request should be accepted");
+    let [response] = responses.as_slice() else {
+        panic!("expected exactly one Soft-Sync response");
+    };
+    let encoded = response
+        .encode_unframed_pdu()
+        .expect("Soft-Sync response should encode");
+    let DrdynvcClientPdu::SoftSyncResponse(response) =
+        DrdynvcClientPdu::decode(&mut ReadCursor::new(&encoded)).expect("Soft-Sync response should decode")
+    else {
+        panic!("expected a Soft-Sync response");
+    };
+    assert_eq!(response.tunnels_to_switch(), &[SoftSyncTunnelType::RELIABLE_UDP]);
+
+    assert!(client.soft_sync_complete());
+    assert_eq!(client.tunnel_for_channel(7), Some(SoftSyncTunnelType::RELIABLE_UDP));
+    assert_eq!(client.tunnel_for_channel(2), None);
+    assert!(client.has_channels_on_tunnel(SoftSyncTunnelType::RELIABLE_UDP));
+}
+
+#[test]
 fn message_batch_rejects_a_mismatched_channel_id() {
     let message = SvcMessage::from(DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
         7,
@@ -142,4 +211,157 @@ fn message_batch_rejects_a_mismatched_channel_id() {
     ))));
 
     assert!(DvcMessageBatch::try_new(8, vec![message]).is_err());
+}
+
+#[test]
+fn channels_created_on_a_tunnel_are_bound_to_it() {
+    let mut client = DrdynvcClient::new().with_dynamic_channel(TunnelCreatedDvc);
+    exchange_capabilities(&mut client);
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("recorded channel should attach");
+    client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+
+    let create = encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+        16,
+        "tunnel-created".to_owned(),
+    )))
+    .expect("Create Request should encode");
+    // Nothing may arrive on a tunnel before Soft-Sync completes.
+    assert!(
+        client
+            .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &create)
+            .is_err()
+    );
+
+    let soft_sync = encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
+        SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, vec![7]),
+    ])))
+    .expect("Soft-Sync request should encode");
+    client
+        .process(&soft_sync)
+        .expect("Soft-Sync request should be accepted");
+
+    // Windows opens channels such as AUDIO_PLAYBACK_DVC directly on the tunnel after Soft-Sync.
+    let batch = client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &create)
+        .expect("Create Request on the tunnel should be processed");
+    assert_eq!(batch.channel_id(), 16);
+    let [response] = batch.messages() else {
+        panic!("expected exactly one Create Response");
+    };
+    let DrdynvcClientPdu::Create(response) = decode_client_pdu(response) else {
+        panic!("expected a Create Response");
+    };
+    assert_eq!(response.creation_status(), CreationStatus::OK);
+    assert_eq!(client.tunnel_for_channel(16), Some(SoftSyncTunnelType::RELIABLE_UDP));
+
+    // Data for the new channel flows on the tunnel; the same data over TCP is rejected.
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        16,
+        Vec::new(),
+    ))))
+    .expect("DVC data should encode");
+    assert!(client.process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &data).is_ok());
+    assert!(client.process(&data).is_err());
+
+    // A channel without a listener is declined on the tunnel and not bound to it.
+    let unknown = encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+        17,
+        "unknown".to_owned(),
+    )))
+    .expect("Create Request should encode");
+    let batch = client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &unknown)
+        .expect("declined Create Request should still be answered");
+    assert_eq!(batch.channel_id(), 17);
+    let [response] = batch.messages() else {
+        panic!("expected exactly one Create Response");
+    };
+    let DrdynvcClientPdu::Create(response) = decode_client_pdu(response) else {
+        panic!("expected a Create Response");
+    };
+    assert_eq!(response.creation_status(), CreationStatus::NO_LISTENER);
+    assert_eq!(client.tunnel_for_channel(17), None);
+
+    // Closing the channel on the tunnel answers the Close and unbinds it.
+    let close = encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(16))).expect("Close should encode");
+    let batch = client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &close)
+        .expect("Close on the tunnel should be processed");
+    let [response] = batch.messages() else {
+        panic!("expected exactly one Close response");
+    };
+    assert!(matches!(decode_client_pdu(response), DrdynvcClientPdu::Close(_)));
+    assert_eq!(client.tunnel_for_channel(16), None);
+}
+
+#[test]
+fn tunnel_stays_in_use_after_its_channels_close() {
+    let mut client = DrdynvcClient::new().with_dynamic_channel(TunnelCreatedDvc);
+    exchange_capabilities(&mut client);
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("recorded channel should attach");
+    client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+
+    let soft_sync = encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
+        SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, vec![7]),
+    ])))
+    .expect("Soft-Sync request should encode");
+    client
+        .process(&soft_sync)
+        .expect("Soft-Sync request should be accepted");
+    assert!(client.switched_to_tunnel(SoftSyncTunnelType::RELIABLE_UDP));
+
+    let close = encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(7))).expect("Close should encode");
+    client.process(&close).expect("Close should be processed");
+    assert!(!client.has_channels_on_tunnel(SoftSyncTunnelType::RELIABLE_UDP));
+    assert!(client.switched_to_tunnel(SoftSyncTunnelType::RELIABLE_UDP));
+
+    // The server can still open a channel on the tunnel after the last one closed.
+    let create = encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+        16,
+        "tunnel-created".to_owned(),
+    )))
+    .expect("Create Request should encode");
+    client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &create)
+        .expect("Create Request on the tunnel should be processed");
+    assert_eq!(client.tunnel_for_channel(16), Some(SoftSyncTunnelType::RELIABLE_UDP));
+}
+
+#[test]
+fn tunnel_refuses_a_create_request_before_the_capabilities_exchange() {
+    let mut client = DrdynvcClient::new().with_dynamic_channel(TunnelCreatedDvc);
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("recorded channel should attach");
+    client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+
+    let soft_sync = encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
+        SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, vec![7]),
+    ])))
+    .expect("Soft-Sync request should encode");
+    client
+        .process(&soft_sync)
+        .expect("Soft-Sync request should be accepted");
+
+    let create = encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+        16,
+        "tunnel-created".to_owned(),
+    )))
+    .expect("Create Request should encode");
+    assert!(
+        client
+            .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &create)
+            .is_err()
+    );
+    assert_eq!(client.tunnel_for_channel(16), None);
+
+    exchange_capabilities(&mut client);
+    client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &create)
+        .expect("Create Request on the tunnel should be processed after the capabilities exchange");
+    assert_eq!(client.tunnel_for_channel(16), Some(SoftSyncTunnelType::RELIABLE_UDP));
 }

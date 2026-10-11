@@ -6,7 +6,8 @@ const { AgentFailure, providerFailureDiagnostic, runAgent } = require("./agent")
 const { loadConfiguration, validateBaseUrl } = require("./config");
 const { ActionError } = require("./errors");
 const { RuntimeMetrics, createProviderClient } = require("./provider");
-const { ValidatorFailure, loadValidator, parseMetadata } = require("./validator");
+const { validateOutputFilePath, writeOutputFile } = require("./sandbox");
+const { ValidatorFailure, loadNormalizer, loadValidator, parseMetadata } = require("./validator");
 
 async function main(core, environment = process.env, OpenAIClient = OpenAI) {
   let apiKey = "";
@@ -26,8 +27,11 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
 
     const baseUrlInput = requiredInput(core, "base-url", "base URL input is missing");
     const configFile = requiredInput(core, "config-file", "config file input is missing");
+    const promptContext = core.getInput("prompt-context");
     const validatorSelector = core.getInput("validator");
+    const normalizerSelector = core.getInput("normalizer");
     const validatorMetadata = parseMetadata(core.getInput("validator-metadata"));
+    const outputFile = validateOutputFilePath(core.getInput("structured-output-file"));
     if (validatorSelector === "" && Object.keys(validatorMetadata).length !== 0) {
       throw new ActionError("validator metadata requires a validator", "input");
     }
@@ -37,13 +41,16 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
     if (typeof workspace !== "string" || workspace.length === 0) {
       throw new ActionError("workspace is unavailable");
     }
-    const loaded = loadConfiguration(workspace, configFile);
+    const loaded = loadConfiguration(workspace, configFile, promptContext);
     const config = loaded.config;
     const validator = loadValidator(workspace, validatorSelector, validatorMetadata);
+    const normalizer = loadNormalizer(workspace, normalizerSelector);
     core.info(JSON.stringify({
       event: "openai-agent.start",
       id: config.id,
       model: config.model,
+      stageTimeoutMs: config.stage_timeout_ms,
+      streamIdleTimeoutMs: config.stream_idle_timeout_ms,
       maxTurns: config.max_turns,
       maxToolCalls: config.max_tool_calls,
     }));
@@ -54,25 +61,29 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       client = createProviderClient(OpenAIClient, {
         apiKey,
         baseURL,
-        maxRetries: config.max_request_retries,
-        timeout: config.request_timeout_ms,
+        maxRetries: 0,
         fetchOptions: { redirect: "error" },
       }, metrics);
     } catch {
       throw new ActionError("provider client initialization failed", "initialization");
     }
     phase = "runtime";
-    const result = await runAgent({ client, ...loaded, config, validator, metrics });
+    const result = await runAgent({ client, ...loaded, config, normalizer, validator, metrics });
     turnCount = result.turnCount;
     toolCallCount = result.toolCallCount;
     outputRepairCount = result.outputRepairCount;
+    writeOutputFile(workspace, outputFile, result.output);
     setOutputs(core, {
-      output: result.output,
+      output: outputFile === "" ? result.output : "",
       failureReason: "",
       failureCategory: "",
       retryable: false,
       turnCount, toolCallCount, outputRepairCount, metrics,
     });
+    const {
+      ignoredPostFinishEmptyDeltaChoices,
+      ignoredRepeatedTerminalChoices,
+    } = metrics.snapshot();
     core.info(JSON.stringify({
       event: "openai-agent.complete",
       id: config.id,
@@ -81,15 +92,20 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       toolCallCount,
       outputRepairCount,
       outputBytes: Buffer.byteLength(result.output, "utf8"),
+      ignoredPostFinishEmptyDeltaChoices,
+      ignoredRepeatedTerminalChoices,
     }));
   } catch (error) {
     const outcome = failure(error, phase);
     const failureReason = outcome.reason;
+    const streamDiagnostics = metrics.snapshot();
+    const { streamStructuralViolation, postFinishShape } = streamDiagnostics;
     if (error instanceof AgentFailure) {
       turnCount = error.turnCount;
       toolCallCount = error.toolCallCount;
       outputRepairCount = error.outputRepairCount;
       const diagnostic = providerFailureDiagnostic(error.cause);
+      metrics.recordProviderFailure(diagnostic);
       if (error.cause) {
         core.info(JSON.stringify({
           event: "openai-agent.provider-failure",
@@ -97,15 +113,24 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
           category: outcome.category,
           retryable: outcome.retryable,
           ...(diagnostic || {}),
+          ...(streamStructuralViolation === undefined ? {} : { streamStructuralViolation }),
+          ...(postFinishShape === undefined ? {} : { postFinishShape }),
         }));
       } else {
-        logActionFailure(core, "runtime", outcome);
+        logActionFailure(core, "runtime", outcome, streamStructuralViolation, postFinishShape);
       }
     } else {
-      logActionFailure(core, error instanceof ActionError ? error.phase : phase, outcome);
+      logActionFailure(
+        core,
+        error instanceof ActionError ? error.phase : phase,
+        outcome,
+        streamStructuralViolation,
+        postFinishShape,
+      );
     }
     setOutputs(core, {
-      output: "", failureReason, failureCategory: outcome.category, retryable: outcome.retryable,
+      output: "", failureReason, failureCategory: outcome.category,
+      retryable: outcome.retryable,
       turnCount, toolCallCount, outputRepairCount, metrics,
     });
     core.setFailed(failureReason);
@@ -142,18 +167,21 @@ function failure(error, phase) {
   }
 }
 
-function logActionFailure(core, phase, outcome) {
+function logActionFailure(core, phase, outcome, streamStructuralViolation, postFinishShape) {
   core.info(JSON.stringify({
     event: "openai-agent.failure",
     phase,
     reason: outcome.reason,
     category: outcome.category,
     retryable: outcome.retryable,
+    ...(streamStructuralViolation === undefined ? {} : { streamStructuralViolation }),
+    ...(postFinishShape === undefined ? {} : { postFinishShape }),
   }));
 }
 
 function setOutputs(core, {
-  output, failureReason, failureCategory, retryable, turnCount, toolCallCount, outputRepairCount, metrics,
+  output, failureReason, failureCategory, retryable, turnCount, toolCallCount, outputRepairCount,
+  metrics,
 }) {
   const diagnostics = metrics.snapshot({
     outputRepairCount,

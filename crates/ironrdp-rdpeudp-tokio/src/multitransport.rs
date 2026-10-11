@@ -15,6 +15,7 @@ use core::net::SocketAddr;
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu, RequestedProtocol};
 use ironrdp_rdpemt::{RdpemtError, RdpemtErrorExt as _, TunnelConfig};
 use ironrdp_rdpeudp::ConnectionConfig;
+use tracing::debug;
 
 use crate::error::{UdpTransportError, UdpTransportErrorExt as _};
 use crate::transport::{UdpTlsConfig, UdpTransport, UdpTransportConfig, connect_udp};
@@ -77,8 +78,10 @@ impl MultitransportBootstrap {
     /// decodes and validates that header itself, rejecting anything whose
     /// flags are not exactly `SEC_TRANSPORT_REQ`.
     pub fn from_pdu(pdu_bytes: &[u8]) -> Result<Self, UdpTransportError> {
-        let request: MultitransportRequestPdu = ironrdp_core::decode(pdu_bytes)
-            .map_err(|error| UdpTransportError::rdpemt("decode multitransport request", RdpemtError::decode(error)))?;
+        let request: MultitransportRequestPdu = ironrdp_core::decode(pdu_bytes).map_err(|error| {
+            debug!(%error, len = pdu_bytes.len(), "Failed to decode multitransport request");
+            UdpTransportError::rdpemt("decode multitransport request", RdpemtError::decode(error))
+        })?;
 
         Ok(Self::new(request))
     }
@@ -107,6 +110,11 @@ impl MultitransportBootstrap {
         // S_OK would tell the server a different transport succeeded than the
         // one it asked for, so reject it before attempting a connection.
         if self.request.requested_protocol != RequestedProtocol::UdpFecR {
+            debug!(
+                request_id = self.request.request_id,
+                requested_protocol = ?self.request.requested_protocol,
+                "Declined multitransport request for an unsupported protocol"
+            );
             self.response = Some(MultitransportResponsePdu::abort(self.request.request_id));
             return Err(UdpTransportError::unsupported_protocol(
                 "multitransport connect",
@@ -122,13 +130,28 @@ impl MultitransportBootstrap {
         config.connection_config = connection_config;
         config.tls = tls_config;
 
+        debug!(
+            request_id = self.request.request_id,
+            peer = %server_addr,
+            "Starting multitransport UDP connection"
+        );
+
         match connect_udp(config).await {
             Ok(transport) => {
+                debug!(
+                    request_id = self.request.request_id,
+                    "Multitransport UDP connection succeeded"
+                );
                 self.transport = Some(transport);
                 self.response = Some(MultitransportResponsePdu::success(self.request.request_id));
                 Ok(())
             }
             Err(e) => {
+                debug!(
+                    request_id = self.request.request_id,
+                    error = %e,
+                    "Multitransport UDP connection failed"
+                );
                 // A stale transport from an earlier successful call must not
                 // survive a failed reconnect: the response below tells the
                 // server the connection is down, so is_connected() and

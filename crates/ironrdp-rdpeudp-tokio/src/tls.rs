@@ -13,6 +13,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use tokio_rustls::rustls::pki_types::ServerName;
 
 use ironrdp_tls::{CertificateValidation, CertificateValidationCallback};
+use tracing::{debug, trace};
 
 pub(crate) type TlsStream<S> = tokio_rustls::client::TlsStream<S>;
 pub(crate) type ServerTlsStream<S> = tokio_rustls::server::TlsStream<S>;
@@ -45,6 +46,7 @@ where
         return tls_connect_with_config(stream, server_name, config).await;
     }
 
+    trace!("Running the TLS handshake on a blocking thread for the certificate validation callback");
     let server_name = server_name.to_owned();
     let certificate_validation_endpoint = certificate_validation_endpoint.to_owned();
     tokio::task::spawn_blocking(move || {
@@ -81,6 +83,8 @@ async fn tls_connect_with_config<S>(
 where
     S: Unpin + AsyncRead + AsyncWrite,
 {
+    debug!(server_name, "Starting TLS client handshake");
+
     let mut tls_stream = {
         let config = Arc::new(config);
 
@@ -90,6 +94,8 @@ where
     };
 
     tls_stream.flush().await?;
+
+    debug!(server_name, "TLS client handshake finished");
 
     Ok(tls_stream)
 }
@@ -105,9 +111,11 @@ pub(crate) async fn tls_accept<S>(
 where
     S: Unpin + AsyncRead + AsyncWrite,
 {
+    debug!("Starting TLS server handshake");
     let acceptor = tokio_rustls::TlsAcceptor::from(config);
     let mut tls_stream = acceptor.accept(stream).await?;
     tls_stream.flush().await?;
+    debug!("TLS server handshake finished");
     Ok(tls_stream)
 }
 

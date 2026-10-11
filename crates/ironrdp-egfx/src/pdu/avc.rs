@@ -17,9 +17,9 @@ pub struct QuantQuality {
 }
 
 // Manual `Arbitrary` impl: the encoder packs `quantization_parameter` into bits 0..6
-// via `set_bits`, which panics when the value exceeds 6 bits. Mask the field to its
-// wire-allowed range so fuzz inputs always round-trip through `Encode`. The other
-// fields use their full type range.
+// and fails when the value exceeds 6 bits. Mask the field to its wire-allowed range
+// so fuzz inputs always round-trip through `Encode`. The other fields use their full
+// type range.
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for QuantQuality {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
@@ -40,6 +40,10 @@ impl QuantQuality {
 impl Encode for QuantQuality {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
+
+        if 0x3F < self.quantization_parameter {
+            return Err(invalid_field_err!("quantization_parameter", "must fit in 6 bits", in: dst));
+        }
 
         let mut data = 0u8;
         data.set_bits(0..6, self.quantization_parameter);
@@ -187,6 +191,10 @@ impl<'a> arbitrary::Arbitrary<'a> for Encoding {
 pub struct Avc444BitmapStream<'a> {
     pub encoding: Encoding,
     pub stream1: Avc420BitmapStream<'a>,
+    /// INVARIANT: `Some` exactly when `encoding` is `LUMA_AND_CHROMA`.
+    ///
+    /// MS-RDPEGFX 2.2.4.5 and 2.2.4.6 carry a second sub-stream for LC 0 and none for LC 1 and 2, and `encode`
+    /// rejects a value that breaks this.
     pub stream2: Option<Avc420BitmapStream<'a>>,
 }
 
@@ -200,8 +208,35 @@ impl Encode for Avc444BitmapStream<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
+        // LC decides which sub-streams are on the wire (MS-RDPEGFX 2.2.4.5, 2.2.4.6), so the value has to
+        // agree with it. A second sub-stream under LC 1 or 2 would be taken for more data in the first one,
+        // and LC 0 without one would be cut short.
+        if self.stream2.is_some() != (self.encoding == Encoding::LUMA_AND_CHROMA) {
+            return Err(invalid_field_err!(
+                "stream2",
+                "must be present exactly when the encoding is LUMA_AND_CHROMA",
+                in: dst
+            ));
+        }
+
+        // cbAvc420EncodedBitstream1 is the size of the YUV420 frame in the first
+        // sub-stream and MUST be zero when there is none (MS-RDPEGFX 2.2.4.5, 2.2.4.6).
+        // With LC set to CHROMA the first sub-stream carries only the Chroma420 view.
+        //
+        // The zero is safe for clients that follow the spec. FreeRDP's client
+        // (rdpgfx_decode_AVC444 in channels/rdpgfx/client/rdpgfx_codec.c, checked in
+        // 3.32.0) uses this field only when LC is 0 and takes the rest of the command
+        // as stream 1 otherwise, and the decoder below accepts both forms, so nothing
+        // known depends on the non-zero value. Restoring the sub-stream length would
+        // need a client that does.
+        let stream1_size = if self.encoding == Encoding::CHROMA {
+            0
+        } else {
+            self.stream1.size()
+        };
+
         let mut stream_info = 0u32;
-        stream_info.set_bits(0..30, cast_length!("stream1size", self.stream1.size(), in: dst)?);
+        stream_info.set_bits(0..30, cast_length!("stream1size", stream1_size, in: dst)?);
         stream_info.set_bits(30..32, self.encoding.bits().into());
         dst.write_u32(stream_info);
         self.stream1.encode(dst)?;
@@ -366,12 +401,48 @@ impl Avc420Region {
     }
 }
 
+/// Whether `data` is H.264 AVC format (4-byte big-endian length prefixes)
+/// rather than an Annex B byte stream
+///
+/// MS-RDPEGFX specifies Annex B, so a buffer that starts with a start code
+/// (`00 00 01` or `00 00 00 01`) is Annex B. Any other buffer is AVC format
+/// if its length prefixes chain exactly to the end of the buffer.
+///
+/// Checking the chain first would misread valid Annex B: `00 00 01 67`
+/// followed by 359 bytes is also a well-formed one-unit AVC buffer. Checking
+/// the start code first moves the ambiguity to AVC senders whose first NAL
+/// unit is 1 or 256..=511 bytes long, which don't follow the specification.
+pub fn is_avc_format(data: &[u8]) -> bool {
+    if data.starts_with(&[0x00, 0x00, 0x01]) || data.starts_with(&[0x00, 0x00, 0x00, 0x01]) {
+        return false;
+    }
+    let mut offset = 0usize;
+    loop {
+        if offset == data.len() {
+            return !data.is_empty();
+        }
+        let Some(len_bytes) = data.get(offset..offset + 4).and_then(|b| <[u8; 4]>::try_from(b).ok()) else {
+            return false;
+        };
+        let next = usize::try_from(u32::from_be_bytes(len_bytes))
+            .ok()
+            .filter(|&len| len > 0)
+            .and_then(|len| (offset + 4).checked_add(len));
+        match next {
+            Some(next) if next <= data.len() => offset = next,
+            _ => return false,
+        }
+    }
+}
+
 /// Convert H.264 AVC format to Annex B format
 ///
-/// OpenH264 and similar decoders consume Annex B format (start code prefixed),
-/// but MS-RDPEGFX delivers AVC format (length-prefixed NAL units). This helper
-/// converts between the two by replacing each 4-byte big-endian length prefix
-/// with the 4-byte Annex B start code `[0x00, 0x00, 0x00, 0x01]`.
+/// OpenH264 and similar decoders consume Annex B format (start code prefixed).
+/// MS-RDPEGFX specifies Annex B on the wire, but earlier versions of this
+/// crate documented AVC format (length-prefixed NAL units), so senders may
+/// still use it. This helper converts AVC input by
+/// replacing each 4-byte big-endian length prefix with the 4-byte Annex B
+/// start code `[0x00, 0x00, 0x00, 0x01]`.
 ///
 /// ```text
 /// AVC:     <4-byte BE length> <NAL> <4-byte BE length> <NAL> ...
@@ -448,8 +519,9 @@ pub fn avc_to_annex_b_into(data: &[u8], out: &mut Vec<u8>) {
 
 /// Convert H.264 Annex B format to AVC format
 ///
-/// MS-RDPEGFX requires AVC format (length-prefixed NAL units),
-/// but most encoders output Annex B format (start code prefixed).
+/// MS-RDPEGFX specifies Annex B (start code prefixed) on the wire, so this is
+/// only needed to produce AVC format (length-prefixed NAL units) for
+/// consumers that require it.
 ///
 /// ```text
 /// Annex B: 00 00 00 01 <NAL> 00 00 00 01 <NAL> ...
@@ -557,7 +629,8 @@ pub const fn align_to_16(dimension: u32) -> u32 {
 /// # Arguments
 ///
 /// * `regions` - List of regions with their encoding parameters
-/// * `h264_data` - H.264 encoded data (should be in AVC format, not Annex B)
+/// * `h264_data` - H.264 encoded data as an Annex B byte stream, which is the
+///   format MS-RDPEGFX specifies for `RFX_AVC420_BITMAP_STREAM`
 ///
 /// # Returns
 ///
@@ -565,7 +638,8 @@ pub const fn align_to_16(dimension: u32) -> u32 {
 ///
 /// # Panics
 ///
-/// Panics if internal encoding fails (should not happen with valid inputs).
+/// Panics if a region's quantization parameter is above 63, the most the 6-bit
+/// `qp` field holds.
 #[must_use]
 pub fn encode_avc420_bitmap_stream(regions: &[Avc420Region], h264_data: &[u8]) -> Vec<u8> {
     let rectangles: Vec<ExclusiveRectangle> = regions.iter().map(Avc420Region::to_rectangle).collect();

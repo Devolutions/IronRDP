@@ -26,9 +26,13 @@ use tokio::io::AsyncWriteExt as _;
 use tokio::net::UdpSocket;
 use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
+use tracing::{debug, info, trace, warn};
 
 use crate::driver::Driver;
-use crate::error::{DriverError, DriverErrorExt as _, DriverErrorKind, UdpTransportError, UdpTransportErrorExt as _};
+use crate::error::{
+    DriverError, DriverErrorExt as _, DriverErrorKind, UdpTransportError, UdpTransportErrorExt as _,
+    UdpTransportErrorKind,
+};
 use crate::stream::{RdpeudpStream, SharedIo};
 use crate::tls::{tls_accept, tls_upgrade};
 use crate::tunnel::{read_tunnel_pdu, tunnel_data_loop, write_tunnel_pdu};
@@ -210,6 +214,86 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
+/// One RDPEMT Tunnel Data PDU's content: the higher-layer data and the
+/// sub-headers carried beside it ([MS-RDPEMT] 2.2.2.3).
+///
+/// The sub-headers carry the Continuous Auto-Detection messages that
+/// [MS-RDPBCGR] 1.3.9 sends over a sideband channel in use, such as a
+/// bandwidth measurement's Start and Stop and the client's results. `data`
+/// may be empty when a message carries only sub-headers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TunnelMessage {
+    pub sub_headers: Vec<ironrdp_rdpemt::TunnelSubHeader>,
+    pub data: Vec<u8>,
+}
+
+impl From<Vec<u8>> for TunnelMessage {
+    fn from(data: Vec<u8>) -> Self {
+        Self {
+            sub_headers: Vec::new(),
+            data,
+        }
+    }
+}
+
+/// A cloneable handle for sending data over an established UDP transport,
+/// obtained from [`UdpTransport::sender`].
+///
+/// Independent of [`UdpTransport::recv`]'s `&mut self` requirement: Sending
+/// and receiving already run over separate channels fed by separate
+/// background tasks, so this never contends with a concurrent `recv()`.
+#[derive(Clone)]
+pub struct UdpTransportSender(mpsc::Sender<TunnelMessage>);
+
+impl UdpTransportSender {
+    /// Send a higher-layer data frame through the tunnel.
+    ///
+    /// Identical validation and error semantics to [`UdpTransport::send`],
+    /// which delegates to this.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PayloadTooLarge` if `data` exceeds 65535 bytes, the wire
+    /// `PayloadLength` field's capacity ([MS-RDPEMT] 2.2.2.3).
+    pub async fn send(&self, data: Vec<u8>) -> Result<(), UdpTransportError> {
+        self.send_message(TunnelMessage::from(data)).await
+    }
+
+    /// Send higher-layer data through the tunnel with sub-headers beside it
+    /// in the same Tunnel Data PDU.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::send`], for `message.data`, and `SubHeadersTooLarge` if
+    /// the sub-headers do not fit the one-byte `HeaderLength` field
+    /// ([MS-RDPEMT] 2.2.1.1), checked here for the same reason.
+    pub async fn send_message(&self, message: TunnelMessage) -> Result<(), UdpTransportError> {
+        if message.data.len() > usize::from(u16::MAX) {
+            debug!(len = message.data.len(), "Rejected oversized tunnel payload");
+            return Err(UdpTransportError::payload_too_large("send", message.data.len()));
+        }
+        let sub_headers_len = message
+            .sub_headers
+            .iter()
+            .map(ironrdp_rdpemt::TunnelSubHeader::wire_size)
+            .sum::<usize>();
+        // HeaderLength is one byte and counts the 4 byte fixed part of the tunnel
+        // header plus the sub-headers ([MS-RDPEMT] 2.2.1.1). The write pump's
+        // TunnelData encoder enforces the same bound; a test pins the two together.
+        if 4 /* RDP_TUNNEL_HEADER */ + sub_headers_len > usize::from(u8::MAX) {
+            return Err(UdpTransportError::new(
+                "send",
+                UdpTransportErrorKind::SubHeadersTooLarge { len: sub_headers_len },
+            ));
+        }
+
+        self.0
+            .send(message)
+            .await
+            .map_err(|_| UdpTransportError::driver("send", DriverError::connection_closed("send")))
+    }
+}
+
 /// Handle to an established UDP transport.
 ///
 /// Provides bidirectional higher-layer data (DVC frames) over the
@@ -219,10 +303,10 @@ impl<T> Drop for AbortOnDrop<T> {
 /// Drop this handle to initiate shutdown of the background tasks.
 pub struct UdpTransport {
     /// Receives higher-layer data (DVC frames) from the tunnel.
-    data_rx: mpsc::Receiver<Vec<u8>>,
+    data_rx: mpsc::Receiver<TunnelMessage>,
 
     /// Sends higher-layer data into the tunnel for encryption and transmission.
-    data_tx: mpsc::Sender<Vec<u8>>,
+    data_tx: mpsc::Sender<TunnelMessage>,
 
     /// Shared I/O bridge between the driver and the TLS/RDPEMT layer.
     /// Held here so `shutdown()` can signal closure to both the
@@ -242,8 +326,16 @@ pub struct UdpTransport {
 impl UdpTransport {
     /// Receive the next higher-layer data frame from the tunnel.
     ///
-    /// Returns `None` when the tunnel is closed.
+    /// Returns `None` when the tunnel is closed. Any sub-headers that came
+    /// with the frame are dropped; use [`Self::recv_message`] to keep them.
     pub async fn recv(&mut self) -> Option<Vec<u8>> {
+        self.recv_message().await.map(|message| message.data)
+    }
+
+    /// Receive the next Tunnel Data PDU's content, sub-headers included.
+    ///
+    /// Returns `None` when the tunnel is closed.
+    pub async fn recv_message(&mut self) -> Option<TunnelMessage> {
         self.data_rx.recv().await
     }
 
@@ -260,14 +352,31 @@ impl UdpTransport {
     /// discover: that task has no way to report a per-payload failure back
     /// to a caller who already received `Ok(())` from a channel send.
     pub async fn send(&self, data: Vec<u8>) -> Result<(), UdpTransportError> {
-        if data.len() > usize::from(u16::MAX) {
-            return Err(UdpTransportError::payload_too_large("send", data.len()));
-        }
+        self.sender().send(data).await
+    }
 
-        self.data_tx
-            .send(data)
-            .await
-            .map_err(|_| UdpTransportError::driver("send", DriverError::connection_closed("send")))
+    /// Send higher-layer data through the tunnel with sub-headers beside it
+    /// in the same Tunnel Data PDU.
+    ///
+    /// # Errors
+    ///
+    /// As [`UdpTransportSender::send_message`].
+    pub async fn send_message(&self, message: TunnelMessage) -> Result<(), UdpTransportError> {
+        self.sender().send_message(message).await
+    }
+
+    /// Returns a cloneable handle for sending data, independent of this
+    /// object's `&mut self`-requiring [`Self::recv`].
+    ///
+    /// Sending and receiving are already independent internally (separate
+    /// channels fed by separate background tasks), so a caller that shares
+    /// one `UdpTransport` between a single dedicated receiver (behind a lock
+    /// reserved for `recv()` alone, since only one caller should ever call
+    /// it) and one or more senders can send through this handle without
+    /// contending on that lock, including for the full duration of an idle
+    /// `recv()` wait.
+    pub fn sender(&self) -> UdpTransportSender {
+        UdpTransportSender(self.data_tx.clone())
     }
 
     /// Shut down the transport, closing the RDPEUDP2 connection.
@@ -278,6 +387,8 @@ impl UdpTransport {
     /// once the send channel is dropped, below. Then waits for all
     /// three background tasks to complete.
     pub async fn shutdown(mut self) -> Result<(), UdpTransportError> {
+        debug!("Shutting down UDP transport");
+
         // Drop the send channel to signal the write pump to stop
         drop(self.data_tx);
         drop(self.data_rx);
@@ -316,11 +427,16 @@ impl UdpTransport {
         };
 
         driver.abort();
-        match driver.await {
+        let result = match driver.await {
             Ok(Ok(())) | Err(_) => Ok(()),
             Ok(Err(e)) if matches!(e.kind(), DriverErrorKind::ConnectionClosed) => Ok(()),
             Ok(Err(e)) => Err(UdpTransportError::driver("shutdown", e)),
+        };
+        match &result {
+            Ok(()) => debug!("UDP transport shut down"),
+            Err(error) => debug!(%error, "UDP transport shut down with a driver error"),
         }
+        result
     }
 
     /// Whether the driver task is still running.
@@ -333,7 +449,7 @@ impl UdpTransport {
     /// For unit tests that exercise the channel-based API (FramedRead,
     /// FramedWrite) without needing a real UDP socket or TLS stack.
     #[cfg(test)]
-    pub(crate) fn from_channels(data_rx: mpsc::Receiver<Vec<u8>>, data_tx: mpsc::Sender<Vec<u8>>) -> Self {
+    pub(crate) fn from_channels(data_rx: mpsc::Receiver<TunnelMessage>, data_tx: mpsc::Sender<TunnelMessage>) -> Self {
         Self {
             data_rx,
             data_tx,
@@ -362,11 +478,13 @@ fn driver_exit_during_handshake(
     context: &'static str,
     join_result: Result<Result<(), DriverError>, tokio::task::JoinError>,
 ) -> UdpTransportError {
-    match join_result {
+    let error = match join_result {
         Ok(Ok(())) => UdpTransportError::handshake(context, DriverError::connection_closed(context)),
         Ok(Err(error)) => UdpTransportError::handshake(context, error),
         Err(_) => UdpTransportError::driver_panic(context),
-    }
+    };
+    debug!(%error, "UDP driver exited during the RDP-UDP handshake");
+    error
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -396,16 +514,20 @@ pub async fn connect_udp(config: UdpTransportConfig) -> Result<UdpTransport, Udp
         SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
         SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
     };
-    let socket = UdpSocket::bind(bind_addr)
-        .await
-        .map_err(|error| UdpTransportError::socket("connect udp", error))?;
-    socket
-        .connect(config.server_addr)
-        .await
-        .map_err(|error| UdpTransportError::socket("connect udp", error))?;
+    debug!(peer = %config.server_addr, "Connecting UDP transport");
 
-    tracing::debug!(
-        server = %config.server_addr,
+    let socket = UdpSocket::bind(bind_addr).await.map_err(|error| {
+        debug!(%error, %bind_addr, "Failed to bind UDP socket");
+        UdpTransportError::socket("connect udp", error)
+    })?;
+    socket.connect(config.server_addr).await.map_err(|error| {
+        debug!(%error, peer = %config.server_addr, "Failed to connect UDP socket");
+        UdpTransportError::socket("connect udp", error)
+    })?;
+
+    debug!(
+        peer = %config.server_addr,
+        local_addr = ?socket.local_addr().ok(),
         "UDP socket bound, starting RDPEUDP2 handshake"
     );
 
@@ -438,6 +560,7 @@ pub async fn connect_udp(config: UdpTransportConfig) -> Result<UdpTransport, Udp
             return Err(driver_exit_during_handshake("connect udp", join_result));
         }
         () = tokio::time::sleep(config.handshake_timeout) => {
+            debug!(timeout = ?config.handshake_timeout, "RDP-UDP handshake timed out");
             return Err(UdpTransportError::handshake_timeout("connect udp"));
         }
     }
@@ -448,7 +571,7 @@ pub async fn connect_udp(config: UdpTransportConfig) -> Result<UdpTransport, Udp
         return Err(driver_exit_during_handshake("connect udp", driver.await));
     }
 
-    tracing::debug!("RDPEUDP2 handshake complete, starting TLS");
+    debug!("RDPEUDP2 handshake complete, starting TLS");
 
     // Phase 3: TLS handshake over the RDPEUDP2 stream
     let rdpeudp_stream = RdpeudpStream::new(Arc::clone(&shared));
@@ -463,10 +586,16 @@ pub async fn connect_udp(config: UdpTransportConfig) -> Result<UdpTransport, Udp
         ),
     )
     .await
-    .map_err(|_| UdpTransportError::tls_timeout("connect udp"))?
-    .map_err(|error| UdpTransportError::tls("connect udp", error))?;
+    .map_err(|_| {
+        debug!(timeout = ?config.tls_timeout, "TLS handshake timed out");
+        UdpTransportError::tls_timeout("connect udp")
+    })?
+    .map_err(|error| {
+        debug!(%error, "TLS handshake failed");
+        UdpTransportError::tls("connect udp", error)
+    })?;
 
-    tracing::debug!("TLS handshake complete, starting RDPEMT tunnel negotiation");
+    debug!("TLS handshake complete, starting RDPEMT tunnel negotiation");
 
     // Phase 4: RDPEMT tunnel handshake
     //
@@ -479,13 +608,17 @@ pub async fn connect_udp(config: UdpTransportConfig) -> Result<UdpTransport, Udp
         establish_tunnel_split(&mut tls_read, &mut tls_write, config.tunnel_config),
     )
     .await
-    .map_err(|_| UdpTransportError::tunnel_timeout("connect udp"))??;
+    .map_err(|_| {
+        debug!(timeout = ?config.tunnel_timeout, "RDPEMT tunnel negotiation timed out");
+        UdpTransportError::tunnel_timeout("connect udp")
+    })?
+    .inspect_err(|error| debug!(%error, "RDPEMT tunnel negotiation failed"))?;
 
-    tracing::debug!("RDPEMT tunnel established, starting data pump");
+    debug!("RDPEMT tunnel established, starting data pump");
 
     // Phase 5: Set up data channels and spawn the read pump
-    let (incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>(64);
-    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Vec<u8>>(64);
+    let (incoming_tx, incoming_rx) = mpsc::channel::<TunnelMessage>(64);
+    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<TunnelMessage>(64);
 
     // Read pump: TLS → RDPEMT decode → channel
     let pump_handle = AbortOnDrop::new(tokio::spawn(async move {
@@ -496,6 +629,8 @@ pub async fn connect_udp(config: UdpTransportConfig) -> Result<UdpTransport, Udp
     let write_pump_handle = AbortOnDrop::new(tokio::spawn(async move {
         write_pump(&mut tls_write, &mut outgoing_rx).await
     }));
+
+    info!(peer = %config.server_addr, "UDP transport established");
 
     Ok(UdpTransport {
         data_rx: incoming_rx,
@@ -522,6 +657,7 @@ where
     // Send CreateRequest
     if let Some(pdu_bytes) = tunnel.poll_pdu() {
         write_tunnel_pdu(writer, &pdu_bytes).await?;
+        debug!(len = pdu_bytes.len(), "Sent tunnel create request");
     }
 
     // Read CreateResponse. The peer closing before it arrives is a failed
@@ -576,29 +712,36 @@ where
 /// Returns `UdpTransportError` if any phase of the accept fails.
 pub async fn accept_udp(socket: UdpSocket, config: UdpAcceptConfig) -> Result<UdpTransport, UdpTransportError> {
     // Wrap the entire accept sequence in a timeout
+    let config_timeout = config.accept_timeout;
     tokio::time::timeout(config.accept_timeout, accept_udp_inner(socket, config))
         .await
-        .map_err(|_| UdpTransportError::handshake_timeout("accept udp"))?
+        .map_err(|_| {
+            debug!(timeout = ?config_timeout, "UDP accept timed out");
+            UdpTransportError::handshake_timeout("accept udp")
+        })?
 }
 
 async fn accept_udp_inner(socket: UdpSocket, config: UdpAcceptConfig) -> Result<UdpTransport, UdpTransportError> {
     // Phase 1: Receive the initial SYN datagram and learn the client address
     let mut recv_buf = vec![0u8; 9000];
-    let (n, client_addr) = socket
-        .recv_from(&mut recv_buf)
-        .await
-        .map_err(|error| UdpTransportError::socket("accept udp inner", error))?;
+    debug!(local_addr = ?socket.local_addr().ok(), "Waiting for the initial UDP datagram");
 
-    tracing::debug!(client = %client_addr, "Received initial datagram, decoding SYN");
+    let (n, client_addr) = socket.recv_from(&mut recv_buf).await.map_err(|error| {
+        debug!(%error, "Failed to receive the initial UDP datagram");
+        UdpTransportError::socket("accept udp inner", error)
+    })?;
+
+    debug!(peer = %client_addr, len = n, "Received initial datagram, decoding SYN");
 
     // Connect the socket to the client so the driver can use send/recv
-    socket
-        .connect(client_addr)
-        .await
-        .map_err(|error| UdpTransportError::socket("accept udp inner", error))?;
+    socket.connect(client_addr).await.map_err(|error| {
+        debug!(%error, peer = %client_addr, "Failed to connect UDP socket");
+        UdpTransportError::socket("accept udp inner", error)
+    })?;
 
     // Phase 2: Decode the V1 SYN datagram and create a server-side connection
-    let syn_datagram: V1Datagram = ironrdp_core::decode(&recv_buf[..n]).map_err(|_| {
+    let syn_datagram: V1Datagram = ironrdp_core::decode(&recv_buf[..n]).map_err(|error| {
+        warn!(%error, peer = %client_addr, len = n, "Failed to decode initial SYN datagram");
         UdpTransportError::handshake(
             "accept UDP",
             DriverError::rdpeudp(
@@ -612,6 +755,7 @@ async fn accept_udp_inner(socket: UdpSocket, config: UdpAcceptConfig) -> Result<
     connection_config.cookie_hash = Some(cookie_hash(&config.tunnel_config));
 
     let conn = RdpeudpConnection::accept(connection_config, &syn_datagram, Clock::new().now()).map_err(|error| {
+        warn!(%error, peer = %client_addr, "Rejected initial SYN datagram");
         UdpTransportError::handshake("accept UDP", DriverError::rdpeudp("accept RDP-UDP connection", error))
     })?;
 
@@ -644,26 +788,29 @@ async fn accept_udp_inner(socket: UdpSocket, config: UdpAcceptConfig) -> Result<
         return Err(driver_exit_during_handshake("accept udp inner", driver.await));
     }
 
-    tracing::debug!("RDPEUDP2 server handshake complete, starting TLS accept");
+    debug!("RDPEUDP2 server handshake complete, starting TLS accept");
 
     // Phase 4: TLS server-side handshake
     let rdpeudp_stream = RdpeudpStream::new(Arc::clone(&shared));
-    let tls_stream = tls_accept(rdpeudp_stream, config.tls_config)
-        .await
-        .map_err(|error| UdpTransportError::tls("accept udp inner", error))?;
+    let tls_stream = tls_accept(rdpeudp_stream, config.tls_config).await.map_err(|error| {
+        debug!(%error, "TLS accept failed");
+        UdpTransportError::tls("accept udp inner", error)
+    })?;
 
-    tracing::debug!("TLS accept complete, starting RDPEMT tunnel negotiation");
+    debug!("TLS accept complete, starting RDPEMT tunnel negotiation");
 
     // Phase 5: RDPEMT server-side tunnel handshake
     let (mut tls_read, mut tls_write) = tokio::io::split(tls_stream);
 
-    let mut tunnel = establish_tunnel_server_split(&mut tls_read, &mut tls_write, config.tunnel_config).await?;
+    let mut tunnel = establish_tunnel_server_split(&mut tls_read, &mut tls_write, config.tunnel_config)
+        .await
+        .inspect_err(|error| debug!(%error, "RDPEMT tunnel negotiation failed"))?;
 
-    tracing::debug!("RDPEMT server tunnel established, starting data pump");
+    debug!("RDPEMT server tunnel established, starting data pump");
 
     // Phase 6: Set up data channels and spawn pumps (identical to client side)
-    let (incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>(64);
-    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Vec<u8>>(64);
+    let (incoming_tx, incoming_rx) = mpsc::channel::<TunnelMessage>(64);
+    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<TunnelMessage>(64);
 
     let pump_handle = AbortOnDrop::new(tokio::spawn(async move {
         tunnel_data_loop(&mut tls_read, &mut tunnel, &incoming_tx).await
@@ -673,6 +820,8 @@ async fn accept_udp_inner(socket: UdpSocket, config: UdpAcceptConfig) -> Result<
     let write_pump_handle = AbortOnDrop::new(tokio::spawn(async move {
         write_pump(&mut tls_write, &mut outgoing_rx).await
     }));
+
+    info!(peer = %client_addr, "UDP transport accepted");
 
     Ok(UdpTransport {
         data_rx: incoming_rx,
@@ -717,6 +866,7 @@ where
     // Send CreateResponse
     if let Some(pdu_bytes) = tunnel.poll_pdu() {
         write_tunnel_pdu(writer, &pdu_bytes).await?;
+        debug!(len = pdu_bytes.len(), "Sent tunnel create response");
     }
 
     match tunnel.poll_event() {
@@ -737,26 +887,33 @@ where
 /// Shared by both `connect_udp` and `accept_udp`. Returns the first failure
 /// encountered rather than only logging it, so `shutdown()` can surface it
 /// to the caller instead of the pump silently going quiet.
-async fn write_pump<W>(tls_write: &mut W, outgoing_rx: &mut mpsc::Receiver<Vec<u8>>) -> Result<(), UdpTransportError>
+async fn write_pump<W>(
+    tls_write: &mut W,
+    outgoing_rx: &mut mpsc::Receiver<TunnelMessage>,
+) -> Result<(), UdpTransportError>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    while let Some(data) = outgoing_rx.recv().await {
+    while let Some(message) = outgoing_rx.recv().await {
+        let len = message.data.len();
+        let sub_headers = message.sub_headers.len();
         let pdu = ironrdp_rdpemt::TunnelData {
-            sub_headers: Vec::new(),
-            higher_layer_data: data,
+            sub_headers: message.sub_headers,
+            higher_layer_data: message.data,
         };
         let encoded = ironrdp_core::encode_vec(&pdu)
             .map_err(|error| UdpTransportError::rdpemt("write pump", ironrdp_rdpemt::RdpemtError::encode(error)))?;
-        tls_write
-            .write_all(&encoded)
-            .await
-            .map_err(|error| UdpTransportError::tls("write pump", error))?;
-        tls_write
-            .flush()
-            .await
-            .map_err(|error| UdpTransportError::tls("write pump", error))?;
+        tls_write.write_all(&encoded).await.map_err(|error| {
+            debug!(%error, "Write pump failed to write tunnel data");
+            UdpTransportError::tls("write pump", error)
+        })?;
+        tls_write.flush().await.map_err(|error| {
+            debug!(%error, "Write pump failed to flush tunnel data");
+            UdpTransportError::tls("write pump", error)
+        })?;
+        trace!(len, sub_headers, encoded_len = encoded.len(), "Sent tunnel data");
     }
+    debug!("Write pump stopped, send channel closed");
     Ok(())
 }
 
@@ -833,8 +990,8 @@ mod tests {
         static DRIVER_RUNNING: AtomicBool = AtomicBool::new(false);
         DRIVER_RUNNING.store(false, Ordering::SeqCst);
 
-        let (_incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>(4);
-        let (outgoing_tx, _outgoing_rx) = mpsc::channel::<Vec<u8>>(4);
+        let (_incoming_tx, incoming_rx) = mpsc::channel::<TunnelMessage>(4);
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel::<TunnelMessage>(4);
 
         let transport = UdpTransport {
             data_rx: incoming_rx,
@@ -876,7 +1033,7 @@ mod tests {
         let error = driver_exit_during_handshake("test", Ok(Err(driver_error)));
 
         assert!(
-            matches!(error.kind(), crate::error::UdpTransportErrorKind::Handshake(_)),
+            matches!(error.kind(), UdpTransportErrorKind::Handshake(_)),
             "got {error:?}, expected a Handshake error carrying the driver's own cause"
         );
     }
@@ -889,7 +1046,7 @@ mod tests {
         let error = driver_exit_during_handshake("test", Ok(Ok(())));
 
         assert!(
-            matches!(error.kind(), crate::error::UdpTransportErrorKind::Handshake(_)),
+            matches!(error.kind(), UdpTransportErrorKind::Handshake(_)),
             "got {error:?}, expected a Handshake error for an unexpectedly-clean driver exit"
         );
     }
@@ -904,7 +1061,7 @@ mod tests {
         let error = driver_exit_during_handshake("test", join_result);
 
         assert!(
-            matches!(error.kind(), crate::error::UdpTransportErrorKind::DriverPanic),
+            matches!(error.kind(), UdpTransportErrorKind::DriverPanic),
             "got {error:?}, expected DriverPanic"
         );
     }
@@ -947,8 +1104,109 @@ mod tests {
         .expect("the driver branch should resolve almost immediately, well inside 5 seconds");
 
         assert!(
-            matches!(outcome.kind(), crate::error::UdpTransportErrorKind::Handshake(_)),
+            matches!(outcome.kind(), UdpTransportErrorKind::Handshake(_)),
             "got {outcome:?}, expected the driver's real error to surface"
+        );
+    }
+
+    /// A message's sub-headers go into the Tunnel Data PDU beside its data.
+    #[tokio::test]
+    async fn the_write_pump_encodes_sub_headers() {
+        use ironrdp_rdpemt::{SubHeaderType, TunnelData, TunnelSubHeader};
+        use tokio::io::AsyncReadExt as _;
+
+        let sub_header = TunnelSubHeader {
+            sub_header_type: SubHeaderType::AutoDetectRequest,
+            // A Bandwidth Measure Start: sequenceNumber 7, requestType 0x0014. The
+            // sub-header's own two bytes are its headerLength and headerTypeId.
+            data: vec![0x07, 0x00, 0x14, 0x00],
+        };
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.send(TunnelMessage {
+            sub_headers: vec![sub_header.clone()],
+            data: vec![0xaa, 0xbb],
+        })
+        .await
+        .expect("queue message");
+        drop(tx);
+
+        let (mut writer, mut reader) = tokio::io::duplex(1024);
+        write_pump(&mut writer, &mut rx).await.expect("pump drains");
+        drop(writer);
+
+        let mut wire = Vec::new();
+        reader.read_to_end(&mut wire).await.expect("read back");
+        let pdu: TunnelData = ironrdp_core::decode(&wire).expect("decode");
+        assert_eq!(pdu.sub_headers, vec![sub_header]);
+        assert_eq!(pdu.higher_layer_data, vec![0xaa, 0xbb]);
+    }
+
+    /// `recv` keeps its old shape and drops sub-headers; `recv_message` keeps them.
+    #[tokio::test]
+    async fn recv_message_keeps_what_recv_drops() {
+        use ironrdp_rdpemt::{SubHeaderType, TunnelSubHeader};
+
+        let (incoming_tx, incoming_rx) = mpsc::channel(4);
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(4);
+        let mut transport = UdpTransport::from_channels(incoming_rx, outgoing_tx);
+        let message = TunnelMessage {
+            sub_headers: vec![TunnelSubHeader {
+                sub_header_type: SubHeaderType::AutoDetectResponse,
+                data: vec![0x01],
+            }],
+            data: vec![0x02],
+        };
+
+        incoming_tx.send(message.clone()).await.expect("queue");
+        incoming_tx.send(message.clone()).await.expect("queue");
+
+        assert_eq!(transport.recv().await, Some(vec![0x02]));
+        assert_eq!(transport.recv_message().await, Some(message));
+    }
+
+    /// Sub-headers that would overflow `HeaderLength` are refused at the
+    /// call, not left to fail the write pump; the largest that fit go out. The
+    /// boundary is also checked against the real `TunnelData` encoder, so the
+    /// precheck cannot drift from the bound the write pump enforces.
+    #[tokio::test]
+    async fn send_message_refuses_sub_headers_the_header_cannot_hold() {
+        use ironrdp_rdpemt::{SubHeaderType, TunnelData, TunnelSubHeader};
+
+        let (_incoming_tx, incoming_rx) = mpsc::channel(4);
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
+        let transport = UdpTransport::from_channels(incoming_rx, outgoing_tx);
+        let message = |data_len| TunnelMessage {
+            sub_headers: vec![TunnelSubHeader {
+                sub_header_type: SubHeaderType::AutoDetectRequest,
+                data: vec![0; data_len],
+            }],
+            data: Vec::new(),
+        };
+
+        // 4 (tunnel header) + 2 (sub-header header) + 249 = 255.
+        transport.send_message(message(249)).await.expect("fits");
+        let error = transport.send_message(message(250)).await.expect_err("one byte over");
+        assert!(matches!(
+            error.kind(),
+            UdpTransportErrorKind::SubHeadersTooLarge { len: 252 }
+        ));
+
+        assert_eq!(outgoing_rx.recv().await, Some(message(249)));
+        assert!(outgoing_rx.try_recv().is_err(), "the refused message was not queued");
+
+        let encode = |message: TunnelMessage| {
+            ironrdp_core::encode_vec(&TunnelData {
+                sub_headers: message.sub_headers,
+                higher_layer_data: message.data,
+            })
+        };
+        assert!(
+            encode(message(249)).is_ok(),
+            "the encoder accepts what the precheck accepts"
+        );
+        assert!(
+            encode(message(250)).is_err(),
+            "the encoder refuses what the precheck refuses"
         );
     }
 }

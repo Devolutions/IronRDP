@@ -41,6 +41,17 @@ pub trait GfxServerFactory: ServerEventSender + Send {
     }
 }
 
+/// Build an EGFX bridge while always retaining a shared server handle.
+pub(crate) fn build_server_and_handle(factory: &dyn GfxServerFactory) -> (GfxDvcBridge, GfxServerHandle) {
+    if let Some((bridge, handle)) = factory.build_server_with_handle() {
+        return (bridge, handle);
+    }
+
+    let handler = factory.build_gfx_handler();
+    let server = Arc::new(Mutex::new(GraphicsPipelineServer::new(handler)));
+    (GfxDvcBridge::new(Arc::clone(&server)), server)
+}
+
 /// DVC bridge wrapping a shared `GraphicsPipelineServer`.
 ///
 /// Delegates all `DvcProcessor` methods to the inner server through a mutex,
@@ -104,5 +115,64 @@ impl core::fmt::Display for EgfxServerMessage {
                 write!(f, "SendMessages(count={})", messages.len())
             }
         }
+    }
+}
+
+/// The dynamic channel id EGFX is registered under: the bridge when the
+/// factory handed out a frame handle, otherwise the server itself.
+pub(crate) fn egfx_channel_id(drdynvc: &ironrdp_dvc::DrdynvcServer) -> Option<u32> {
+    drdynvc
+        .get_channel_id_by_type::<GfxDvcBridge>()
+        .or_else(|| drdynvc.get_channel_id_by_type::<GraphicsPipelineServer>())
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_dvc::DrdynvcServer;
+    use ironrdp_egfx::pdu::{CapabilitiesAdvertisePdu, CapabilitySet};
+
+    use super::*;
+
+    struct Handler;
+
+    impl GraphicsPipelineHandler for Handler {
+        fn capabilities_advertise(&mut self, _pdu: &CapabilitiesAdvertisePdu) {}
+
+        fn on_ready(&mut self, _negotiated: &CapabilitySet) {}
+    }
+
+    struct LegacyFactory;
+
+    impl ServerEventSender for LegacyFactory {
+        fn set_sender(&mut self, _sender: tokio::sync::mpsc::UnboundedSender<crate::server::ServerEvent>) {}
+    }
+
+    impl GfxServerFactory for LegacyFactory {
+        fn build_gfx_handler(&self) -> Box<dyn GraphicsPipelineHandler> {
+            Box::new(Handler)
+        }
+    }
+
+    #[test]
+    fn legacy_factory_path_retains_clampable_handle() {
+        let (_bridge, handle) = build_server_and_handle(&LegacyFactory);
+        let mut server = handle.lock().expect("GfxServerHandle mutex poisoned");
+        server.set_max_frames_in_flight(3);
+        assert_eq!(
+            server.set_client_frame_ack_limit(Some(core::num::NonZeroU32::new(1).expect("one is non-zero"))),
+            1
+        );
+    }
+
+    #[test]
+    fn egfx_is_found_whichever_way_it_was_registered() {
+        let server = Arc::new(Mutex::new(GraphicsPipelineServer::new(Box::new(Handler))));
+        let bridged = DrdynvcServer::new().with_dynamic_channel(GfxDvcBridge::new(server));
+        assert!(egfx_channel_id(&bridged).is_some());
+
+        let direct = DrdynvcServer::new().with_dynamic_channel(GraphicsPipelineServer::new(Box::new(Handler)));
+        assert!(egfx_channel_id(&direct).is_some());
+
+        assert!(egfx_channel_id(&DrdynvcServer::new()).is_none());
     }
 }

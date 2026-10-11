@@ -9,11 +9,14 @@
 //! # Protocol Context
 //!
 //! H.264 data arrives inside [RFX_AVC420_BITMAP_STREAM][1] payloads
-//! within `RDPGFX_WIRE_TO_SURFACE_PDU_1` messages. The NAL units
-//! are in AVC format (4-byte big-endian length prefix per NAL unit),
-//! not Annex B (start code prefix).
+//! within `RDPGFX_WIRE_TO_SURFACE_PDU_1` messages. The specification
+//! defines it as an Annex B byte stream (start code prefix), which is what
+//! servers built on FreeRDP's server library, such as GNOME Remote Desktop,
+//! send. Earlier versions of this crate documented AVC format (4-byte
+//! big-endian length prefix per NAL unit) instead, so decoders should accept
+//! both.
 //!
-//! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/d65c3f9c-2088-4302-90c0-53adc0e11a78
+//! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/5f12c20e-2ea1-4ad1-a2a0-019ee3893731
 
 use core::fmt;
 
@@ -138,8 +141,10 @@ pub type DecoderResult<T> = Result<T, DecoderError>;
 /// Trait for H.264 (AVC) decoders
 ///
 /// Implement this trait to provide H.264 decode capability to the
-/// EGFX client. The decoder receives AVC-format NAL units (length-prefixed,
-/// not Annex B) from `RFX_AVC420_BITMAP_STREAM` payloads.
+/// EGFX client. The decoder receives the H.264 data from
+/// `RFX_AVC420_BITMAP_STREAM` payloads: an Annex B byte stream per the
+/// specification, or AVC-format NAL units (4-byte BE length prefix) from
+/// servers that followed this crate's earlier documentation.
 ///
 /// # Thread Safety
 ///
@@ -160,8 +165,8 @@ pub type DecoderResult<T> = Result<T, DecoderError>;
 /// }
 /// ```
 pub trait H264Decoder: Send {
-    /// Decode AVC-format H.264 NAL units (4-byte BE length prefix, not Annex B)
-    /// into an RGBA bitmap.
+    /// Decode H.264 NAL units, as an Annex B byte stream or in AVC format
+    /// (4-byte BE length prefix), into an RGBA bitmap.
     ///
     /// Frame dimensions may exceed the destination rectangle due to
     /// macroblock alignment (16x16). The caller crops to fit.
@@ -190,9 +195,9 @@ mod openh264_impl {
 
     /// H.264 decoder backed by Cisco's OpenH264 library
     ///
-    /// This decoder converts AVC-format NAL units to Annex B format
-    /// (as required by OpenH264), decodes to YUV420p, then converts
-    /// to RGBA for the client pipeline.
+    /// This decoder passes Annex B input to OpenH264 as-is and converts
+    /// AVC-format NAL units to Annex B first (OpenH264 only reads Annex B),
+    /// decodes to YUV420p, then converts to RGBA for the client pipeline.
     ///
     /// # Feature Gates
     ///
@@ -246,11 +251,16 @@ mod openh264_impl {
 
     impl H264Decoder for OpenH264Decoder {
         fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
-            crate::pdu::avc_to_annex_b_into(data, &mut self.annex_b_buffer);
+            let annex_b = if crate::pdu::is_avc_format(data) {
+                crate::pdu::avc_to_annex_b_into(data, &mut self.annex_b_buffer);
+                &self.annex_b_buffer
+            } else {
+                data
+            };
 
             let yuv = self
                 .decoder
-                .decode(&self.annex_b_buffer)
+                .decode(annex_b)
                 .map_err(|e| DecoderError::new("OpenH264 decode failed", e))?
                 .ok_or_else(|| DecoderError::msg("OpenH264 returned no picture"))?;
 

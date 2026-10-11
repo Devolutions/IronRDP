@@ -1,11 +1,41 @@
-use ironrdp_acceptor::Acceptor;
+use core::cell::RefCell;
+use core::future::{Ready, ready};
+use std::borrow::Cow;
+use std::collections::VecDeque;
+use std::io;
+use std::rc::Rc;
+
+use ironrdp_acceptor::{
+    Acceptor, ConnectionSetupHandler, MultitransportSecurityRng, ReceivedCredentials, accept_credssp_with,
+    accept_finalize_with,
+};
+use ironrdp_async::bytes::BytesMut;
+use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper};
+use ironrdp_connector::credssp::CredsspSequence;
+use ironrdp_connector::sspi::credssp::TsRequest;
+use ironrdp_connector::sspi::generator::{GeneratorState, NetworkRequest};
+use ironrdp_connector::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
 use ironrdp_connector::{DesktopSize, Sequence as _, Written, encode_x224_packet};
-use ironrdp_core::{WriteBuf, decode};
-use ironrdp_pdu::gcc::ClientMessageChannelData;
+use ironrdp_core::{WriteBuf, decode, encode_vec};
+use ironrdp_pdu::gcc::{
+    ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientMessageChannelData, MultiTransportChannelData,
+    MultiTransportFlags,
+};
 use ironrdp_pdu::mcs::{self, ConnectInitial};
 use ironrdp_pdu::nego::{self, SecurityProtocol};
+use ironrdp_pdu::rdp::ClientInfoPdu;
+use ironrdp_pdu::rdp::client_info::{CompressionType, Credentials};
+use ironrdp_pdu::rdp::finalization_messages::{ControlAction, ControlPdu, SynchronizePdu};
+use ironrdp_pdu::rdp::headers::{
+    BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader, ShareControlPdu,
+    ShareDataHeader, ShareDataPdu, StreamPriority,
+};
+use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu, RequestedProtocol};
+use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::{X224, X224Data};
+use ironrdp_testsuite_core::client_info::CLIENT_INFO_UNICODE;
 use ironrdp_testsuite_core::gcc::CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS;
+use ironrdp_testsuite_core::rdp::{CLIENT_DEMAND_ACTIVE_PDU_BUFFER, CLIENT_INFO_PDU_BUFFER};
 
 /// Build a minimal ConnectionRequest with the given protocols and encode it.
 fn encode_connection_request(protocol: SecurityProtocol) -> Vec<u8> {
@@ -187,4 +217,888 @@ fn neg_failure_hybrid_required() {
             panic!("expected Failure, got Response");
         }
     }
+}
+
+pub(super) fn encode_send_data_request(initiator_id: u16, channel_id: u16, user_data: &[u8]) -> Vec<u8> {
+    let mut buf = WriteBuf::new();
+    ironrdp_core::encode_buf(
+        &X224(mcs::SendDataRequest {
+            initiator_id,
+            channel_id,
+            user_data: Cow::Borrowed(user_data),
+        }),
+        &mut buf,
+    )
+    .unwrap();
+    buf.filled().to_vec()
+}
+
+/// Encode a client finalization ShareData PDU (Synchronize, Control, FontList),
+/// mirroring the shape `ironrdp_acceptor`'s own `wrap_share_data` uses for the
+/// server's confirmations of the same messages.
+fn encode_client_share_data(pdu: ShareDataPdu) -> Vec<u8> {
+    let header = ShareControlHeader {
+        share_id: 0,
+        pdu_source: 0,
+        share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
+            share_data_pdu: pdu,
+            stream_priority: StreamPriority::Undefined,
+            compression_flags: CompressionFlags::empty(),
+            compression_type: CompressionType::K8,
+        }),
+    };
+    encode_vec(&header).unwrap()
+}
+
+/// Drives `acceptor` from a fresh `InitiationWaitRequest` through
+/// `SecureSettingsExchange`, i.e. everything that precedes licensing and is
+/// identical regardless of what the multitransport tests below want to
+/// exercise: negotiation, TLS upgrade marker, GCC exchange (with the given
+/// client blocks) and the full MCS channel join sequence, then the Client
+/// Info PDU. Returns `(user_channel_id, io_channel_id, message_channel_id)`
+/// as actually assigned by the acceptor, so callers never have to hard-code
+/// them.
+fn drive_to_secure_settings_exchange(
+    acceptor: &mut Acceptor,
+    client_blocks: ironrdp_pdu::gcc::ClientGccBlocks,
+) -> (u16, u16, Option<u16>, Option<MultiTransportFlags>) {
+    let request_bytes = encode_connection_request(SecurityProtocol::SSL);
+    acceptor.step(&request_bytes, None, &mut WriteBuf::new()).unwrap();
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    acceptor.mark_security_upgrade_as_done();
+
+    let connect_initial = ConnectInitial::with_gcc_blocks(client_blocks).unwrap();
+    let mut initial_buf = WriteBuf::new();
+    encode_x224_packet(&connect_initial, &mut initial_buf).unwrap();
+    acceptor.step(initial_buf.filled(), None, &mut WriteBuf::new()).unwrap();
+
+    let mut output = WriteBuf::new();
+    acceptor.step(&[], None, &mut output).unwrap();
+    let payload = decode::<X224<X224Data<'_>>>(output.filled()).unwrap().0;
+    let response = decode::<mcs::ConnectResponse>(payload.data.as_ref()).unwrap();
+    let server_blocks = response.conference_create_response.gcc_blocks();
+    let io_channel_id = server_blocks.network.io_channel;
+    let message_channel_id = server_blocks.message_channel.as_ref().map(|m| m.mcs_message_channel_id);
+    let server_multitransport = server_blocks.multi_transport_channel.as_ref().map(|m| m.flags);
+
+    // Erect Domain Request, Attach User Request, then confirm.
+    let mut buf = WriteBuf::new();
+    ironrdp_core::encode_buf(
+        &X224(mcs::ErectDomainPdu {
+            sub_height: 0,
+            sub_interval: 0,
+        }),
+        &mut buf,
+    )
+    .unwrap();
+    acceptor.step(buf.filled(), None, &mut WriteBuf::new()).unwrap();
+
+    let mut buf = WriteBuf::new();
+    ironrdp_core::encode_buf(&X224(mcs::AttachUserRequest), &mut buf).unwrap();
+    acceptor.step(buf.filled(), None, &mut WriteBuf::new()).unwrap();
+
+    let mut output = WriteBuf::new();
+    acceptor.step(&[], None, &mut output).unwrap();
+    let attach_user_confirm = decode::<X224<mcs::AttachUserConfirm>>(output.filled()).unwrap().0;
+    let user_channel_id = attach_user_confirm.initiator_id;
+
+    // Join every channel the server expects: the user and I/O channels, plus
+    // the message channel when one was negotiated. No other static channels
+    // are requested by `client_blocks.network` in these tests.
+    let mut to_join = vec![user_channel_id, io_channel_id];
+    to_join.extend(message_channel_id);
+    for channel_id in to_join {
+        let mut buf = WriteBuf::new();
+        ironrdp_core::encode_buf(
+            &X224(mcs::ChannelJoinRequest {
+                initiator_id: user_channel_id,
+                channel_id,
+            }),
+            &mut buf,
+        )
+        .unwrap();
+        acceptor.step(buf.filled(), None, &mut WriteBuf::new()).unwrap();
+        acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    }
+
+    // RdpSecurityCommencement (no input) -> SecureSettingsExchange, then the
+    // Client Info PDU on the I/O channel.
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    let client_info = encode_send_data_request(user_channel_id, io_channel_id, &CLIENT_INFO_PDU_BUFFER);
+    acceptor.step(&client_info, None, &mut WriteBuf::new()).unwrap();
+
+    (
+        user_channel_id,
+        io_channel_id,
+        message_channel_id,
+        server_multitransport,
+    )
+}
+
+pub(super) fn client_gcc_with_message_channel_and_multitransport(
+    offer: Option<MultiTransportFlags>,
+) -> ironrdp_pdu::gcc::ClientGccBlocks {
+    let mut blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    blocks.network = None;
+    blocks.message_channel = Some(ClientMessageChannelData);
+    blocks.multi_transport_channel = offer.map(|flags| MultiTransportChannelData { flags });
+    blocks
+}
+
+/// Builds an `Acceptor` for the multitransport tests below, at a common
+/// 1920x1080 desktop size with no static channels or credentials. `offer` is
+/// passed straight through to `set_multitransport_offer`; pass `None` to
+/// exercise the default-disabled path.
+fn multitransport_acceptor(offer: Option<MultiTransportFlags>) -> Acceptor {
+    let mut acceptor = Acceptor::new(
+        SecurityProtocol::SSL,
+        DesktopSize {
+            width: 1920,
+            height: 1080,
+        },
+        Vec::new(),
+        None,
+    );
+    acceptor.set_multitransport_offer(offer);
+    acceptor
+}
+
+/// The full happy path: the acceptor offers reliable UDP multitransport, the
+/// client reciprocates, so the request goes out on the message channel and
+/// `multitransport_request()` surfaces it. A late Initiate Multitransport
+/// Response then arrives, interleaved before the mandatory Confirm Active
+/// exactly as a real client would send it (MS-RDPBCGR 3.2.5.15.1: sent while
+/// resolving its own bootstrapping, strictly before it ever reads Demand
+/// Active), and the acceptor must tolerate it rather than erroring out while
+/// still reaching capabilities confirmation.
+#[test]
+fn multitransport_offered_and_client_reciprocates() {
+    let mut acceptor = multitransport_acceptor(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+
+    let client_blocks =
+        client_gcc_with_message_channel_and_multitransport(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+    let (user_channel_id, _io_channel_id, message_channel_id, server_multitransport) =
+        drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
+    let message_channel_id = message_channel_id.expect("message channel negotiated");
+    assert_eq!(
+        server_multitransport,
+        Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR),
+        "server should advertise the offer once the client reciprocated"
+    );
+
+    // LicensingExchange (sends license) -> MultitransportBootstrapping.
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+
+    assert!(
+        acceptor.multitransport_request().is_none(),
+        "no request sent until MultitransportBootstrapping actually runs"
+    );
+
+    // MultitransportBootstrapping: decides to offer, sends the request.
+    let mut output = WriteBuf::new();
+    let written = acceptor.step(&[], None, &mut output).unwrap();
+    assert!(!matches!(written, Written::Nothing), "expected the request to be sent");
+
+    let sent_request = acceptor
+        .multitransport_request()
+        .expect("request recorded after MultitransportBootstrapping")
+        .clone();
+    assert_eq!(sent_request.requested_protocol, RequestedProtocol::UdpFecR);
+    assert_eq!(
+        sent_request.security_header.flags,
+        BasicSecurityHeaderFlags::TRANSPORT_REQ
+    );
+
+    let ctx = mcs::decode_send_data_indication(output.filled()).unwrap();
+    assert_eq!(
+        ctx.channel_id, message_channel_id,
+        "request must go out on the message channel"
+    );
+    let on_wire_request = decode::<MultitransportRequestPdu>(ctx.user_data).unwrap();
+    assert_eq!(on_wire_request, sent_request);
+
+    // CapabilitiesSendServer: sends Demand Active, moves on to CapabilitiesWaitConfirm
+    // (no monitor-layout support was advertised).
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    assert_eq!(acceptor.state().name(), "CapabilitiesWaitConfirm");
+
+    // The client's Initiate Multitransport Response, arriving before Confirm Active.
+    // MS-RDPBCGR 2.2.15.2: S_OK MUST only be sent to a server advertising
+    // SOFTSYNC_TCP_TO_UDP, which this test's offer does not include; the
+    // legitimate response here is a failure code.
+    let response = MultitransportResponsePdu::abort(sent_request.request_id);
+    let response_bytes = encode_send_data_request(user_channel_id, message_channel_id, &encode_vec(&response).unwrap());
+    let written = acceptor.step(&response_bytes, None, &mut WriteBuf::new()).unwrap();
+    assert!(matches!(written, Written::Nothing));
+    assert_eq!(
+        acceptor.state().name(),
+        "CapabilitiesWaitConfirm",
+        "the response must not advance past capabilities waiting"
+    );
+
+    // Now the actual Confirm Active.
+    let confirm_active = encode_send_data_request(user_channel_id, _io_channel_id, &CLIENT_DEMAND_ACTIVE_PDU_BUFFER);
+    acceptor.step(&confirm_active, None, &mut WriteBuf::new()).unwrap();
+    assert_eq!(acceptor.state().name(), "ConnectionFinalization");
+}
+
+/// A fixed `MultitransportSecurityRng` for deterministic assertions.
+struct FixedMultitransportSecurityRng {
+    cookie: [u8; 16],
+    request_id: u32,
+}
+
+impl MultitransportSecurityRng for FixedMultitransportSecurityRng {
+    fn fill_security_cookie(&mut self, cookie: &mut [u8; 16]) {
+        *cookie = self.cookie;
+    }
+
+    fn next_request_id(&mut self) -> u32 {
+        self.request_id
+    }
+}
+
+/// The security cookie and request ID in the Initiate Multitransport Request
+/// come from the injected `MultitransportSecurityRng`, not from a hidden
+/// global RNG read inside `step()`: the acceptor is deterministic when its
+/// randomness is supplied rather than sourced internally.
+#[test]
+fn multitransport_request_uses_the_injected_rng() {
+    let mut acceptor = multitransport_acceptor(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+    acceptor.set_multitransport_security_rng(Box::new(FixedMultitransportSecurityRng {
+        cookie: [0xAB; 16],
+        request_id: 0x1234_5678,
+    }));
+
+    let client_blocks =
+        client_gcc_with_message_channel_and_multitransport(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+    drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
+
+    // LicensingExchange (sends license) -> MultitransportBootstrapping.
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    // MultitransportBootstrapping: sends the request using the injected RNG.
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+
+    let sent_request = acceptor
+        .multitransport_request()
+        .expect("request recorded after MultitransportBootstrapping");
+    assert_eq!(sent_request.security_cookie, [0xAB; 16]);
+    assert_eq!(sent_request.request_id, 0x1234_5678);
+}
+
+/// The message channel also carries Auto-Detect Response and Heartbeat PDUs
+/// (MS-RDPBCGR 2.2.1.4.5, 2.2.8.1.1.2.1), not just the Initiate Multitransport
+/// Response. A guard keyed only on channel and outstanding-request, without
+/// verifying the payload actually decodes as a response, would misclassify
+/// that other traffic and drop it silently instead of letting the caller's
+/// own (pre-existing, unrelated to this fix) handling see it.
+#[test]
+fn non_response_traffic_on_the_message_channel_is_not_misclassified() {
+    let mut acceptor = multitransport_acceptor(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+
+    let client_blocks =
+        client_gcc_with_message_channel_and_multitransport(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+    let (user_channel_id, _io_channel_id, message_channel_id, _) =
+        drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
+    let message_channel_id = message_channel_id.expect("message channel negotiated");
+
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping: sends request
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // CapabilitiesSendServer: sends Demand Active
+    assert_eq!(acceptor.state().name(), "CapabilitiesWaitConfirm");
+
+    // Traffic on the message channel that is not a MultitransportResponsePdu
+    // (its wire format is just requestId/hrResponse, so arbitrary bytes of a
+    // different shape and length reliably fail that specific decode). Before
+    // the fix, the old channel-only guard treated this as a response and
+    // silently dropped it (`Ok(Written::Nothing)`, no change of state,
+    // forever). After the fix, it falls through to the same handling any
+    // other unexpected traffic already gets here (a decode error), rather
+    // than being silently and permanently swallowed.
+    let not_a_response = encode_send_data_request(user_channel_id, message_channel_id, &[0xAA; 3]);
+    let result = acceptor.step(&not_a_response, None, &mut WriteBuf::new());
+    assert!(
+        result.is_err(),
+        "non-response message-channel traffic must not be silently swallowed as a response"
+    );
+}
+
+/// With the Basic Security Header that the acceptor's ENCRYPTION_LEVEL_NONE
+/// implies, the Initiate Multitransport Response is exactly 12 bytes
+/// (MS-RDPBCGR 2.2.15.2). A message-channel payload that starts with a valid
+/// response but carries trailing bytes is not one, so it must not be consumed
+/// as a late response: it falls through to the same handling as any other
+/// unexpected traffic.
+#[test]
+fn multitransport_response_with_trailing_bytes_is_not_consumed() {
+    let mut acceptor = multitransport_acceptor(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+
+    let client_blocks =
+        client_gcc_with_message_channel_and_multitransport(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+    let (user_channel_id, _io_channel_id, message_channel_id, _) =
+        drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
+    let message_channel_id = message_channel_id.expect("message channel negotiated");
+
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping: sends request
+    let sent_request = acceptor.multitransport_request().expect("request sent").clone();
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // CapabilitiesSendServer: sends Demand Active
+    assert_eq!(acceptor.state().name(), "CapabilitiesWaitConfirm");
+
+    let mut payload = encode_vec(&MultitransportResponsePdu::abort(sent_request.request_id)).unwrap();
+    payload.push(0x00);
+    let response_with_trailing_byte = encode_send_data_request(user_channel_id, message_channel_id, &payload);
+    let result = acceptor.step(&response_with_trailing_byte, None, &mut WriteBuf::new());
+    assert!(
+        result.is_err(),
+        "a response followed by trailing bytes must not be swallowed as a late response"
+    );
+}
+
+/// MS-RDPBCGR 3.2.5.15.1 gives the Initiate Multitransport Response no fixed
+/// position relative to the rest of the handshake: it depends on when the
+/// client resolves its own bootstrapping and whether the sideband attempt
+/// failed, so a conforming client can send it after Confirm Active, during
+/// finalization, not only before it as `multitransport_offered_and_client_reciprocates`
+/// exercises. `WaitRequestControl` is the sharpest of FinalizationSequence's
+/// sub-states to hit: unlike `WaitSynchronize`/`WaitControlCooperate` (which
+/// discard a decode error and advance anyway) or `WaitFontList` (which retries
+/// on a decode error, tolerating one stray message), it propagates a decode
+/// failure with `?`, so without tolerance the response's raw bytes (a bare
+/// requestId/hrResponse pair, not a ShareControlHeader at all) fail to decode
+/// and the connection is dropped outright.
+#[test]
+fn multitransport_response_arriving_during_finalization_is_tolerated() {
+    let mut acceptor = multitransport_acceptor(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+
+    let client_blocks =
+        client_gcc_with_message_channel_and_multitransport(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+    let (user_channel_id, io_channel_id, message_channel_id, _) =
+        drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
+    let message_channel_id = message_channel_id.expect("message channel negotiated");
+
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping: sends request
+    let sent_request = acceptor.multitransport_request().expect("request sent").clone();
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // CapabilitiesSendServer: sends Demand Active
+
+    let confirm_active = encode_send_data_request(user_channel_id, io_channel_id, &CLIENT_DEMAND_ACTIVE_PDU_BUFFER);
+    acceptor.step(&confirm_active, None, &mut WriteBuf::new()).unwrap();
+    assert_eq!(acceptor.state().name(), "ConnectionFinalization");
+
+    // Drive the real Synchronize and ControlCooperate exchange first, reaching
+    // WaitRequestControl.
+    let synchronize = encode_send_data_request(
+        user_channel_id,
+        io_channel_id,
+        &encode_client_share_data(ShareDataPdu::Synchronize(SynchronizePdu { target_user_id: 0 })),
+    );
+    acceptor.step(&synchronize, None, &mut WriteBuf::new()).unwrap();
+
+    let cooperate = encode_send_data_request(
+        user_channel_id,
+        io_channel_id,
+        &encode_client_share_data(ShareDataPdu::Control(ControlPdu {
+            action: ControlAction::Cooperate,
+            grant_id: 0,
+            control_id: 0,
+        })),
+    );
+    acceptor.step(&cooperate, None, &mut WriteBuf::new()).unwrap();
+
+    // The late response, arriving while WaitRequestControl is active.
+    // MS-RDPBCGR 2.2.15.2: S_OK MUST only be sent to a server advertising
+    // SOFTSYNC_TCP_TO_UDP, which this test's offer does not include; the
+    // legitimate response here is a failure code.
+    let response = MultitransportResponsePdu::abort(sent_request.request_id);
+    let response_bytes = encode_send_data_request(user_channel_id, message_channel_id, &encode_vec(&response).unwrap());
+    let written = acceptor
+        .step(&response_bytes, None, &mut WriteBuf::new())
+        .expect("a late response must not drop the connection");
+    assert!(matches!(written, Written::Nothing));
+    assert_eq!(
+        acceptor.state().name(),
+        "ConnectionFinalization",
+        "a late response must not be treated as RequestControl"
+    );
+
+    // The real remainder of the sequence, undisturbed by the late response above.
+    let request_control = encode_send_data_request(
+        user_channel_id,
+        io_channel_id,
+        &encode_client_share_data(ShareDataPdu::Control(ControlPdu {
+            action: ControlAction::RequestControl,
+            grant_id: 0,
+            control_id: 0,
+        })),
+    );
+    acceptor.step(&request_control, None, &mut WriteBuf::new()).unwrap();
+
+    let font_list = encode_send_data_request(
+        user_channel_id,
+        io_channel_id,
+        &encode_client_share_data(ShareDataPdu::FontList(Default::default())),
+    );
+    acceptor.step(&font_list, None, &mut WriteBuf::new()).unwrap();
+
+    // The server's four confirmation sends, completing finalization.
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // SendSynchronizeConfirm
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // SendControlCooperateConfirm
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // SendGrantedControlConfirm
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // SendFontMap -> Accepted
+
+    assert_eq!(acceptor.state().name(), "Connected");
+}
+
+/// Multitransport disabled (the default): no Server MultiTransportChannelData
+/// block is advertised even though the client supports it, and no Initiate
+/// Multitransport Request is ever sent.
+#[test]
+fn multitransport_not_offered_by_default() {
+    let mut acceptor = multitransport_acceptor(None);
+
+    let client_blocks =
+        client_gcc_with_message_channel_and_multitransport(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+    let (.., server_multitransport) = drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
+    assert_eq!(
+        server_multitransport, None,
+        "server must not advertise MultiTransportChannelData when multitransport is disabled"
+    );
+
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
+    let written = acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping
+    assert!(matches!(written, Written::Nothing));
+    assert!(acceptor.multitransport_request().is_none());
+    assert_eq!(acceptor.multitransport_soft_sync_negotiated(), None);
+}
+
+/// The request decision follows what the server advertised during Basic
+/// Settings Exchange, not the live offer: enabling multitransport only after
+/// the GCC response went out without a MultiTransportChannelData block must
+/// not produce a request the client was never told about (MS-RDPBCGR 2.2.1.4).
+#[test]
+fn multitransport_offer_enabled_after_basic_settings_is_not_requested() {
+    let mut acceptor = multitransport_acceptor(None);
+
+    let client_blocks =
+        client_gcc_with_message_channel_and_multitransport(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+    let (.., server_multitransport) = drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
+    assert_eq!(server_multitransport, None);
+
+    acceptor.set_multitransport_offer(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
+    let written = acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping
+    assert!(matches!(written, Written::Nothing));
+    assert!(acceptor.multitransport_request().is_none());
+}
+
+/// Likewise for Soft-Sync: adding `SOFT_SYNC_TCP_TO_UDP` to the offer after
+/// the GCC response advertised reliable UDP without it must not make
+/// `multitransport_soft_sync_negotiated()` report a negotiation that never
+/// took place.
+#[test]
+fn soft_sync_added_after_basic_settings_is_not_negotiated() {
+    let mut acceptor = multitransport_acceptor(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+
+    let client_blocks = client_gcc_with_message_channel_and_multitransport(Some(
+        MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR | MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP,
+    ));
+    let (.., server_multitransport) = drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
+    assert_eq!(
+        server_multitransport,
+        Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR)
+    );
+
+    acceptor.set_multitransport_offer(Some(
+        MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR | MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP,
+    ));
+
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping: sends request
+    assert!(acceptor.multitransport_request().is_some());
+    assert_eq!(acceptor.multitransport_soft_sync_negotiated(), Some(false));
+}
+
+/// The acceptor offers multitransport, but the client's GCC blocks never
+/// advertised reliable UDP support: nothing is sent, and per MS-RDPBCGR
+/// 2.2.1.4 the server's own GCC response must omit the block entirely
+/// rather than echo the offer the client never reciprocated.
+#[test]
+fn multitransport_not_offered_when_client_does_not_reciprocate() {
+    let mut acceptor = multitransport_acceptor(Some(MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR));
+
+    let client_blocks = client_gcc_with_message_channel_and_multitransport(None);
+    let (.., server_multitransport) = drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
+    assert_eq!(
+        server_multitransport, None,
+        "server must not advertise MultiTransportChannelData when the client didn't send one"
+    );
+
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
+    let written = acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping
+    assert!(matches!(written, Written::Nothing));
+    assert!(acceptor.multitransport_request().is_none());
+}
+
+#[derive(Default)]
+struct HandshakeStream {
+    incoming: VecDeque<Vec<u8>>,
+    outgoing: Rc<RefCell<Vec<Vec<u8>>>>,
+    credssp_client: Option<CredsspSequence>,
+}
+
+impl StreamWrapper for HandshakeStream {
+    type InnerStream = Self;
+
+    fn from_inner(stream: Self) -> Self {
+        stream
+    }
+
+    fn into_inner(self) -> Self {
+        self
+    }
+
+    fn get_inner(&self) -> &Self {
+        self
+    }
+
+    fn get_inner_mut(&mut self) -> &mut Self {
+        self
+    }
+}
+
+impl FramedRead for HandshakeStream {
+    type ReadFut<'read> = Ready<io::Result<usize>>;
+
+    fn read<'a>(&'a mut self, buf: &'a mut BytesMut) -> Self::ReadFut<'a> {
+        let chunk = self.incoming.pop_front().unwrap_or_default();
+        buf.extend_from_slice(&chunk);
+        ready(Ok(chunk.len()))
+    }
+}
+
+impl FramedWrite for HandshakeStream {
+    type WriteAllFut<'write> = Ready<io::Result<()>>;
+
+    fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
+        self.outgoing.borrow_mut().push(buf.to_vec());
+        if let Some(client) = self.credssp_client.as_mut()
+            && buf.len() != 4
+        {
+            let request = client.decode_server_message(buf).unwrap().unwrap();
+            self.incoming.push_back(client_credssp_message(client, request));
+        }
+        ready(Ok(()))
+    }
+}
+
+fn client_credssp_message(client: &mut CredsspSequence, request: TsRequest) -> Vec<u8> {
+    let result = {
+        let mut generator = client.process_ts_request(request);
+        let GeneratorState::Completed(result) = generator.start() else {
+            panic!("NTLM should not make network requests");
+        };
+        result.unwrap()
+    };
+    let mut buf = WriteBuf::new();
+    client.handle_process_result(result, &mut buf).unwrap();
+    buf.filled().to_vec()
+}
+
+struct NoNetwork;
+
+impl NetworkClient for NoNetwork {
+    async fn send(&mut self, _: &NetworkRequest) -> ConnectorResult<Vec<u8>> {
+        Err(ConnectorError::general("unexpected network request during NTLM"))
+    }
+}
+
+#[derive(Default)]
+struct SetupHandler {
+    received: Vec<ReceivedCredentials>,
+    reject_credentials: bool,
+    reject_capabilities: bool,
+    capability_calls: usize,
+}
+
+#[async_trait::async_trait(?Send)]
+impl ConnectionSetupHandler for SetupHandler {
+    async fn handle_credentials(&mut self, credentials: Option<ReceivedCredentials>) -> ConnectorResult<()> {
+        self.received
+            .push(credentials.expect("handshake should supply credentials"));
+        if self.reject_credentials {
+            Err(ConnectorError::general("test credential rejection"))
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn prepare_capability_exchange(&mut self, _: DesktopSize) -> ConnectorResult<()> {
+        self.capability_calls += 1;
+        if self.reject_capabilities {
+            Err(ConnectorError::general("test capability rejection"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn negotiated_acceptor(protocol: SecurityProtocol) -> Acceptor {
+    let mut acceptor = Acceptor::new(
+        protocol,
+        DesktopSize {
+            width: 1024,
+            height: 768,
+        },
+        Vec::new(),
+        protocol
+            .intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX)
+            .then(|| Credentials {
+                username: "alice".to_owned(),
+                password: "secret".to_owned(),
+                domain: None,
+            }),
+    );
+    acceptor
+        .step(&encode_connection_request(protocol), None, &mut WriteBuf::new())
+        .unwrap();
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    acceptor.mark_security_upgrade_as_done();
+    acceptor
+}
+
+fn post_credssp_messages(error_info: Option<ClientEarlyCapabilityFlags>) -> VecDeque<Vec<u8>> {
+    let mut gcc = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    gcc.network = None;
+    gcc.core.optional_data = ClientCoreOptionalData {
+        post_beta2_color_depth: gcc.core.optional_data.post_beta2_color_depth,
+        client_product_id: gcc.core.optional_data.client_product_id,
+        serial_number: gcc.core.optional_data.serial_number,
+        high_color_depth: gcc.core.optional_data.high_color_depth,
+        supported_color_depths: gcc.core.optional_data.supported_color_depths,
+        early_capability_flags: error_info,
+        ..ClientCoreOptionalData::default()
+    };
+    let mut initial = WriteBuf::new();
+    encode_x224_packet(&ConnectInitial::with_gcc_blocks(gcc).unwrap(), &mut initial).unwrap();
+
+    let info = ClientInfoPdu {
+        security_header: BasicSecurityHeader {
+            flags: BasicSecurityHeaderFlags::INFO_PKT,
+        },
+        client_info: CLIENT_INFO_UNICODE.clone(),
+    };
+    [
+        initial.filled().to_vec(),
+        encode_vec(&X224(mcs::ErectDomainPdu {
+            sub_height: 0,
+            sub_interval: 0,
+        }))
+        .unwrap(),
+        encode_vec(&X224(mcs::AttachUserRequest)).unwrap(),
+        encode_vec(&X224(mcs::ChannelJoinRequest {
+            initiator_id: 1002,
+            channel_id: 1002,
+        }))
+        .unwrap(),
+        encode_vec(&X224(mcs::ChannelJoinRequest {
+            initiator_id: 1002,
+            channel_id: 1003,
+        }))
+        .unwrap(),
+        encode_vec(&X224(mcs::SendDataRequest {
+            initiator_id: 1002,
+            channel_id: 1003,
+            user_data: encode_vec(&info).unwrap().into(),
+        }))
+        .unwrap(),
+    ]
+    .into()
+}
+
+fn assert_access_denied(bytes: &[u8]) {
+    let data = decode::<X224<mcs::SendDataIndication<'_>>>(bytes).unwrap().0;
+    assert_eq!(data.initiator_id, 1002);
+    assert_eq!(data.channel_id, 1003);
+    assert_eq!(data.user_data.len(), 22);
+    let header = decode::<ShareControlHeader>(data.user_data.as_ref()).unwrap();
+    assert_eq!(header.pdu_source, 0);
+    let ShareControlPdu::Data(data) = header.share_control_pdu else {
+        panic!("expected a Share Data PDU");
+    };
+    assert!(data.compression_flags.is_empty());
+    assert_eq!(
+        data.share_data_pdu,
+        ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+            ProtocolIndependentCode::ServerInsufficientPrivileges,
+        )))
+    );
+}
+
+#[rstest::rstest]
+#[case(None)]
+#[case(Some(ClientEarlyCapabilityFlags::empty()))]
+#[case(Some(ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU))]
+#[tokio::test]
+async fn tls_hook_rejection_respects_error_info_support(
+    #[case] error_info: Option<ClientEarlyCapabilityFlags>,
+    #[values(false, true)] reject_credentials: bool,
+) {
+    let mut acceptor = negotiated_acceptor(SecurityProtocol::SSL);
+    let mut handler = SetupHandler {
+        reject_credentials,
+        reject_capabilities: !reject_credentials,
+        ..SetupHandler::default()
+    };
+    let framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: post_credssp_messages(error_info),
+        ..HandshakeStream::default()
+    });
+    let outgoing = Rc::clone(&framed.get_inner().0.outgoing);
+    let result = accept_finalize_with(framed, &mut acceptor, &mut handler).await;
+    let error = result.err().expect("hook rejection should fail the handshake");
+    assert!(error.to_string().contains(if reject_credentials {
+        "test credential rejection"
+    } else {
+        "test capability rejection"
+    }));
+    assert_eq!(handler.received.len(), 1);
+    assert_eq!(
+        handler.received[0].origin,
+        ironrdp_acceptor::CredentialOrigin::ClientInfo
+    );
+    assert_eq!(handler.capability_calls, usize::from(!reject_credentials));
+
+    let outgoing = outgoing.borrow();
+    let supports_error_info =
+        error_info.is_some_and(|flags| flags.contains(ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU));
+    assert_eq!(
+        outgoing.len(),
+        4 + usize::from(!reject_credentials) + usize::from(supports_error_info)
+    );
+    assert_eq!(
+        decode::<X224<mcs::ChannelJoinConfirm>>(&outgoing[3])
+            .unwrap()
+            .0
+            .channel_id,
+        1003
+    );
+    let mut denied = WriteBuf::new();
+    let written = acceptor.encode_access_denied(&mut denied).unwrap();
+    if supports_error_info {
+        assert_eq!(written, denied.filled_len());
+        assert_access_denied(denied.filled());
+        assert_eq!(outgoing.last().unwrap(), denied.filled());
+    } else {
+        assert_eq!(written, 0);
+        assert!(denied.filled().is_empty());
+    }
+}
+
+#[rstest::rstest]
+#[case(SecurityProtocol::HYBRID, None)]
+#[case(SecurityProtocol::HYBRID, Some(ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU))]
+#[case(SecurityProtocol::HYBRID_EX, None)]
+#[tokio::test]
+async fn credssp_authorization_uses_selected_protocol(
+    #[case] protocol: SecurityProtocol,
+    #[case] error_info: Option<ClientEarlyCapabilityFlags>,
+    #[values("alice@corp.example.com", "CORP\\alice", "alice")] username: &str,
+    #[values(false, true)] reject_credentials: bool,
+) {
+    let mut acceptor = negotiated_acceptor(protocol);
+    let public_key = vec![0x42; 32];
+    let (mut client, request) = CredsspSequence::init(
+        ironrdp_connector::Credentials::UsernamePassword {
+            username: username.to_owned(),
+            password: "secret".to_owned(),
+        },
+        None,
+        protocol,
+        "server.example.com".to_owned().into(),
+        public_key.clone(),
+        None,
+    )
+    .unwrap();
+    let first_message = client_credssp_message(&mut client, request);
+    let mut framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: [first_message].into(),
+        credssp_client: Some(client),
+        ..HandshakeStream::default()
+    });
+    let outgoing = Rc::clone(&framed.get_inner().0.outgoing);
+    let mut handler = SetupHandler {
+        reject_credentials,
+        reject_capabilities: !reject_credentials,
+        ..SetupHandler::default()
+    };
+    let result = accept_credssp_with(
+        &mut framed,
+        &mut acceptor,
+        &mut NoNetwork,
+        "client.example.com".to_owned().into(),
+        public_key,
+        None,
+        &mut handler,
+    )
+    .await;
+
+    if protocol == SecurityProtocol::HYBRID_EX && reject_credentials {
+        assert!(result.unwrap_err().to_string().contains("test credential rejection"));
+        assert_eq!(outgoing.borrow().last().unwrap(), &5u32.to_le_bytes());
+    } else {
+        result.unwrap();
+        if protocol == SecurityProtocol::HYBRID {
+            assert!(handler.received.is_empty(), "plain HYBRID must defer authorization");
+        } else {
+            assert_eq!(handler.received.len(), 1);
+            assert_eq!(outgoing.borrow().last().unwrap(), &0u32.to_le_bytes());
+        }
+        let credssp_write_count = outgoing.borrow().len();
+        let (stream, _) = framed.get_inner_mut();
+        stream.credssp_client = None;
+        stream.incoming = post_credssp_messages(error_info);
+        let error = accept_finalize_with(framed, &mut acceptor, &mut handler)
+            .await
+            .err()
+            .expect("hook rejection should fail the handshake");
+        assert!(error.to_string().contains(if reject_credentials {
+            "test credential rejection"
+        } else {
+            "test capability rejection"
+        }));
+        let outgoing = outgoing.borrow();
+        let handshake_writes = &outgoing[credssp_write_count..];
+        let supports_error_info =
+            error_info.is_some_and(|flags| flags.contains(ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU));
+        assert_eq!(
+            handshake_writes.len(),
+            4 + usize::from(!reject_credentials) + usize::from(supports_error_info)
+        );
+        assert_eq!(
+            decode::<X224<mcs::ChannelJoinConfirm>>(&handshake_writes[3])
+                .unwrap()
+                .0
+                .channel_id,
+            1003
+        );
+        if supports_error_info {
+            assert_access_denied(handshake_writes.last().unwrap());
+        }
+    }
+
+    assert_eq!(handler.received.len(), 1);
+    assert_eq!(
+        handler.received[0].origin,
+        ironrdp_acceptor::CredentialOrigin::CredSspDelegated
+    );
+    let (expected_username, expected_domain) = match username {
+        "CORP\\alice" => ("alice", Some("CORP")),
+        _ => (username, None),
+    };
+    assert_eq!(handler.received[0].credentials.username, expected_username);
+    assert_eq!(handler.received[0].credentials.domain.as_deref(), expected_domain);
+    assert_eq!(handler.received[0].credentials.password, "secret");
+    assert_eq!(handler.capability_calls, usize::from(!reject_credentials));
 }

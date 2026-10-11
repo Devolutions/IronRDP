@@ -16,7 +16,7 @@ use ironrdp_cliprdr::{Cliprdr, CliprdrClient, CliprdrState};
 use ironrdp_core::Encode as _;
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 
-use super::test_helpers::{CallbackTrackingBackend, LockingBackend};
+use ironrdp_testsuite_core::clipboard::{CallbackTrackingBackend, LockingBackend};
 
 /// Introduce `let` bindings for the encoded bytes and the decoded
 /// [`ClipboardPdu`] in the caller's scope.  Two names are required so

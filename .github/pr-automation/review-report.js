@@ -4,8 +4,9 @@
 // here so the producer and the consumer can never drift into two slightly different schemas.
 
 const { normalizeText } = require("./validation");
+const { REVIEWER_ORDER } = require("./routing");
 
-const REPORT_VERSION = 1;
+const REPORT_VERSION = 2;
 const STAGE_STATUS = new Set(["success", "failed", "skipped"]);
 
 function count(value) {
@@ -40,27 +41,52 @@ function normalizeStageMetrics(metrics = {}) {
   };
 }
 
-const MANDATORY_STAGES = ["evidence", "aggregate", "general", "validate"];
+// The runtime keeps at most eight rejected attempts, each with a short reason and, from a validator,
+// a content-free detail of up to 2048 bytes. The final reason says only what the last attempt got
+// wrong within a few hundred bytes, so the attempts are what show how a stage exhausted its repairs.
+const MAXIMUM_REJECTIONS = 8;
+const MAXIMUM_REJECTION_TEXT_LENGTH = 2048;
 
-// A stage that ran was attempted once, or twice when it took its single delayed retry, and a
-// skipped stage was never attempted at all. `previous_reason` keeps the first attempt's failure
-// visible even when the retry succeeded.
+function normalizeRejections(rejections) {
+  if (!Array.isArray(rejections)) return [];
+  return rejections.slice(0, MAXIMUM_REJECTIONS).flatMap((entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const reason = normalizeText(entry.detail, MAXIMUM_REJECTION_TEXT_LENGTH) ||
+      normalizeText(entry.reason, MAXIMUM_REJECTION_TEXT_LENGTH);
+    if (!reason) return [];
+    return [{
+      attempt: count(entry.attempt),
+      activity: normalizeText(entry.activity, 40) || "",
+      layer: normalizeText(entry.layer, 40) || "",
+      reason,
+    }];
+  });
+}
+
+const MANDATORY_STAGES = ["evidence", "aggregate", "general", "validate"];
+const REVIEW_STAGE_IDS = new Set([
+  ...MANDATORY_STAGES,
+  ...REVIEWER_ORDER.map((reviewer) => `specialist:${reviewer}`),
+]);
+
 function stageOutcome(raw) {
   const {
-    id, status, required = false, reason = "", category = "", attempts = 1,
-    previous_reason: previousReason = "", provider = false, metrics = {},
+    id, status, required = false, reason = "", category = "", provider = false, metrics = {},
+    rejections,
   } = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   const outcome = STAGE_STATUS.has(status) ? status : "failed";
+  const normalizedId = normalizeText(id, 80);
+  const normalizedRejections = normalizeRejections(rejections);
   return {
-    id: typeof id === "string" ? id : "",
+    id: normalizedId === id ? id : "",
     status: outcome,
     required: required === true,
     provider: provider === true,
     reason: normalizeText(reason, 300) || "",
     category: normalizeText(category, 60) || "",
-    attempts: outcome === "skipped" ? 0 : attempts === 2 ? 2 : 1,
-    previous_reason: normalizeText(previousReason, 300) || "",
     metrics: normalizeStageMetrics(metrics),
+    // Only a stage that repaired output has attempts to show, and every other stays as it was.
+    ...(normalizedRejections.length === 0 ? {} : { rejections: normalizedRejections }),
   };
 }
 
@@ -70,7 +96,6 @@ const UNKNOWN_METRICS = {
   elapsed_ms: null,
   request_retries: null,
   output_repairs: null,
-  stage_retries: null,
 };
 
 function aggregateMetrics(outcomes) {
@@ -80,12 +105,10 @@ function aggregateMetrics(outcomes) {
     elapsed_ms: 0,
     request_retries: 0,
     output_repairs: 0,
-    stage_retries: 0,
   };
   let anyTokens = false;
   for (const stage of outcomes) {
     if (!stage.provider) continue;
-    if (stage.attempts === 2) metrics.stage_retries += 1;
     const ran = stage.status !== "skipped";
     if (stage.metrics.tokens) {
       anyTokens = true;
@@ -119,7 +142,7 @@ function buildReport(stages = []) {
   const outcomes = (Array.isArray(stages) ? stages : []).map(stageOutcome);
   const ids = outcomes.map((stage) => stage.id);
   const byId = new Map(outcomes.map((stage) => [stage.id, stage]));
-  const wellFormed = ids.every((id) => id !== "") &&
+  const wellFormed = ids.every((id) => REVIEW_STAGE_IDS.has(id)) &&
     new Set(ids).size === ids.length &&
     MANDATORY_STAGES.every((id) => byId.get(id)?.status === "success");
   const published = outcomes.some((stage) =>
@@ -174,6 +197,6 @@ function stageIds(report) {
 }
 
 module.exports = {
-  MANDATORY_STAGES, REPORT_VERSION,
+  MANDATORY_STAGES, MAXIMUM_REJECTION_TEXT_LENGTH, REPORT_VERSION,
   buildReport, normalizeStageMetrics, parseReport, stageIds, stageOutcome,
 };

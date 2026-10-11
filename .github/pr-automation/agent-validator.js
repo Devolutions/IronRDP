@@ -9,17 +9,21 @@
 //
 // Two outcomes are deliberately different:
 //
-// - `{ ok: false, reason }` is repairable model output.
+// - `{ ok: false, reason }` is repairable model output. It may add a content-free `detail`, which
+//   repair and the per-attempt diagnostics see in place of the short reason, and repair-only
+//   `guidance` quoting trusted identifiers the model must copy.
 // - A thrown `VALIDATOR_TERMINAL` error means a trusted input is stale or unavailable. Repair cannot
 //   fix that, so the stage fails instead of burning repair attempts.
 
 const fs = require("node:fs");
 
 const { REVIEWER_ORDER } = require("./routing");
-const { normalizeText } = require("./validation");
+const { MAXIMUM_GITHUB_INTEGER, linesAreInRange, normalizeText } = require("./validation");
 const { corpusFromDirectory, validateProtocolReferences } = require("./validate-protocol-review");
 const { normalizeCandidateReview } = require("./validate-candidate-review");
-const { validateFinalReview } = require("./validate-final-review");
+const {
+  MAXIMUM_DETAIL_BYTES, MAXIMUM_GUIDANCE_BYTES, validateFinalReview,
+} = require("./validate-final-review");
 
 const TERMINAL_CODE = "VALIDATOR_TERMINAL";
 const SHA = /^[0-9a-f]{40}$/;
@@ -29,9 +33,7 @@ const MAXIMUM_TRUSTED_BYTES = 8 * 1024 * 1024;
 const CANDIDATE_LIMITS = require("./schemas/candidate-review.json").properties.findings;
 const FINAL_LIMITS = require("./schemas/final-review.json").properties.findings;
 const CANDIDATE_FINDING_ID = new RegExp(CANDIDATE_LIMITS.items.properties.id.pattern);
-// The review validators cap a title at 200 UTF-8 bytes, which is stricter than the schema's
-// character limit, so the byte limit is what a repair can actually reach.
-const MAX_TITLE_BYTES = 200;
+const MAX_TITLE_LENGTH = FINAL_LIMITS.items.properties.title.maxLength;
 const DISPOSITION_REVIEWERS = require("./schemas/final-review.json")
   .properties.candidate_dispositions.items.properties.reviewer.enum;
 
@@ -42,16 +44,26 @@ function terminal(reason) {
 }
 
 // The runtime accepts a bounded rejection alphabet and turns anything else into a terminal failure,
-// so model-controlled text is scrubbed here instead of costing the stage its repair attempts.
-function reject(reason) {
-  const text = String(reason ?? "")
-    .replace(/[^A-Za-z0-9 .,:;()\/_-]/g, " ")
-    .replace(/ +/g, " ")
-    .trim();
-  const start = text.search(/[A-Za-z0-9]/);
+// so model-controlled text is scrubbed here instead of costing the stage its repair attempts. The
+// optional detail and guidance get the same treatment within their own allowances.
+function reject(reason, { detail, guidance } = {}) {
+  const scrub = (value, maximumLength) => {
+    const text = String(value ?? "")
+      .replace(/[^A-Za-z0-9 .,:;()\/_-]/g, " ")
+      .replace(/ +/g, " ")
+      .trim();
+    const start = text.search(/[A-Za-z0-9]/);
+    return start === -1 ? "" : text.slice(start, start + maximumLength);
+  };
+  const optional = (key, value, maximumLength) => {
+    const text = value === undefined ? "" : scrub(value, maximumLength);
+    return text === "" ? {} : { [key]: text };
+  };
   return {
     ok: false,
-    reason: start === -1 ? "the review output was rejected" : text.slice(start, start + 512),
+    reason: scrub(reason, 512) || "the review output was rejected",
+    ...optional("detail", detail, MAXIMUM_DETAIL_BYTES),
+    ...optional("guidance", guidance, MAXIMUM_GUIDANCE_BYTES),
   };
 }
 
@@ -119,10 +131,9 @@ function diagnoseCandidate(candidate, { expectedSha, reviewer, changedPaths }) {
       return `finding at index ${index} must cite a path changed by this pull request`;
     }
     const linesAreNull = finding.start_line === null && finding.end_line === null;
-    const linesAreIntegers = Number.isSafeInteger(finding.start_line) && finding.start_line >= 1 &&
-      Number.isSafeInteger(finding.end_line) && finding.end_line >= finding.start_line;
+    const linesAreIntegers = linesAreInRange(finding.start_line, finding.end_line);
     if (!linesAreNull && !linesAreIntegers) {
-      return `finding at index ${index} must use integer lines with end_line at or after start_line, or null lines`;
+      return `finding at index ${index} must use lines between 1 and ${MAXIMUM_GITHUB_INTEGER} with end_line at or after start_line, or null lines`;
     }
     if (reviewer !== "protocol" && Array.isArray(finding.references) && finding.references.length > 0) {
       return `finding at index ${index} must not carry protocol references`;
@@ -207,7 +218,7 @@ const candidateIdentity = (finding) =>
 // line range, never the issue a finding reports. The title is normalized exactly as the review
 // validators do, so a title only they would reject is never protected.
 const finalIdentity = (finding) => {
-  const title = normalizeText(finding?.title, MAX_TITLE_BYTES);
+  const title = normalizeText(finding?.title, MAX_TITLE_LENGTH);
   return title ? title.toLowerCase() : null;
 };
 
@@ -330,7 +341,7 @@ function validateGeneral(review, { metadata, previousCandidate, candidates } = {
       return reject(`finding at index ${index} must cite a path changed by this pull request`);
     }
   }
-  return reject(result.reason);
+  return reject(result.reason, result);
 }
 
 module.exports = {

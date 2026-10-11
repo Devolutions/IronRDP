@@ -13,6 +13,7 @@ use std::io;
 
 use bytes::BytesMut;
 use ironrdp_async::{FramedRead, FramedWrite};
+use tracing::trace;
 
 use crate::transport::UdpTransport;
 
@@ -32,12 +33,15 @@ impl FramedRead for UdpTransport {
             // puts no minimum on HigherLayerData, and [MS-RDPBCGR] 1.3.9 sends
             // the four Continuous Auto-Detection messages "encapsulated in the
             // RDP_TUNNEL_SUBHEADER structure ... over the sideband channels
-            // that are in active use". The tunnel has already taken what it
-            // needs from those subheaders by the time we get here, leaving a
-            // payload of nothing to pass on.
+            // that are in active use". `recv` drops those subheaders (a caller
+            // that needs them uses `recv_message`), leaving a payload of
+            // nothing to pass on.
             loop {
                 match self.recv().await {
-                    Some(data) if data.is_empty() => continue,
+                    Some(data) if data.is_empty() => {
+                        trace!("Skipped empty tunnel message");
+                        continue;
+                    }
                     Some(data) => {
                         let n = data.len();
                         buf.extend_from_slice(&data);
@@ -70,11 +74,12 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
+    use crate::transport::TunnelMessage;
 
     /// Build a `UdpTransport` backed by test channels (no real network).
-    fn test_transport() -> (UdpTransport, mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>) {
-        let (incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>(16);
-        let (outgoing_tx, outgoing_rx) = mpsc::channel::<Vec<u8>>(16);
+    fn test_transport() -> (UdpTransport, mpsc::Sender<TunnelMessage>, mpsc::Receiver<TunnelMessage>) {
+        let (incoming_tx, incoming_rx) = mpsc::channel::<TunnelMessage>(16);
+        let (outgoing_tx, outgoing_rx) = mpsc::channel::<TunnelMessage>(16);
 
         let transport = UdpTransport::from_channels(incoming_rx, outgoing_tx);
 
@@ -84,7 +89,7 @@ mod tests {
     #[tokio::test]
     async fn framed_read_delivers_one_message() {
         let (mut transport, feeder, _) = test_transport();
-        feeder.send(vec![0xDE, 0xAD, 0xBE, 0xEF]).await.unwrap();
+        feeder.send(vec![0xDE, 0xAD, 0xBE, 0xEF].into()).await.unwrap();
 
         let mut buf = BytesMut::new();
         let n = FramedRead::read(&mut transport, &mut buf).await.unwrap();
@@ -116,8 +121,8 @@ mod tests {
     async fn framed_read_does_not_mistake_an_empty_message_for_eof() {
         let (mut transport, feeder, _) = test_transport();
 
-        feeder.send(Vec::new()).await.unwrap();
-        feeder.send(vec![0x11, 0x22]).await.unwrap();
+        feeder.send(Vec::new().into()).await.unwrap();
+        feeder.send(vec![0x11, 0x22].into()).await.unwrap();
 
         let mut buf = BytesMut::new();
         let n = FramedRead::read(&mut transport, &mut buf).await.unwrap();
@@ -131,7 +136,7 @@ mod tests {
     async fn framed_read_still_reports_eof_after_an_empty_message() {
         let (mut transport, feeder, _) = test_transport();
 
-        feeder.send(Vec::new()).await.unwrap();
+        feeder.send(Vec::new().into()).await.unwrap();
         drop(feeder);
 
         let mut buf = BytesMut::new();
@@ -150,7 +155,7 @@ mod tests {
             .unwrap();
 
         let data = receiver.recv().await.unwrap();
-        assert_eq!(data, vec![0x01, 0x02, 0x03]);
+        assert_eq!(data, TunnelMessage::from(vec![0x01, 0x02, 0x03]));
     }
 
     #[tokio::test]
@@ -167,8 +172,8 @@ mod tests {
     async fn framed_read_multiple_messages_accumulate() {
         let (mut transport, feeder, _) = test_transport();
 
-        feeder.send(vec![0xAA, 0xBB]).await.unwrap();
-        feeder.send(vec![0xCC, 0xDD]).await.unwrap();
+        feeder.send(vec![0xAA, 0xBB].into()).await.unwrap();
+        feeder.send(vec![0xCC, 0xDD].into()).await.unwrap();
 
         let mut buf = BytesMut::new();
 

@@ -4,6 +4,9 @@ Native backend building blocks for the IronRDP RDPDR static channel.
 
 - On macOS and Linux, the crate exports the existing `nix::backend` filesystem
   backend.
+  The `nix::printer` backend spools PostScript jobs in an exclusively created private directory (0700), using exclusive 0600 files.
+  A worker thread submits each closed job to CUPS through `lp`, which gets 60 seconds to accept it, or saves it in the configured folder without replacing existing files.
+  A job is limited to 128 MiB and at most 16 jobs are open at once; dropping the backend deletes unfinished spool files.
 - On Windows, the crate contains the native, handle-relative filesystem foundation used for drive redirection.
   It validates every protocol path before resolving it below an opened volume root, and it rejects DOS device aliases and reparse-point traversal.
   Its static filesystem support includes create/open, close, flush, bounded offset I/O, file and volume information, metadata changes, security descriptors, alternate data streams, directory enumeration, locks, notifications, and deny-by-default device controls.

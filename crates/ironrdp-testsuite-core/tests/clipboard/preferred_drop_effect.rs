@@ -11,7 +11,7 @@
 use ironrdp_cliprdr::pdu::{ClipboardFormatName, ClipboardPdu, FileDescriptor, FormatDataRequest};
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 
-use super::test_helpers::init_ready_client;
+use ironrdp_testsuite_core::clipboard::init_ready_client;
 
 /// Decode an SvcMessage back into a ClipboardPdu for assertion.
 /// Two `let` bindings are required so the byte buffer outlives the

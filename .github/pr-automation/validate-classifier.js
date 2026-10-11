@@ -1,6 +1,8 @@
 "use strict";
 
-const { SHA, exactKeys, invalid, normalizeText, parseJson } = require("./validation");
+const {
+  MAXIMUM_GITHUB_INTEGER, SHA, exactKeys, invalid, normalizeText, parseJson,
+} = require("./validation");
 const { validateReviewerRoute } = require("./routing");
 
 const SCHEMA_VERSION = "classifier-v3";
@@ -25,7 +27,7 @@ function validateClassifier(raw, {
   if (prNumber !== undefined && (!Number.isSafeInteger(prNumber) || prNumber < 1)) {
     return invalid("invalid classifier validation context");
   }
-  const value = parseJson(raw, 4096);
+  const value = parseJson(raw);
   const required = [
     "head_sha", "risk", "technical_debt", "documentation_only", "cross_cutting", "overlap",
     "likely_non_legitimate", "non_legitimate_confidence", "non_legitimate_reason",
@@ -47,9 +49,14 @@ function validateClassifier(raw, {
 
   const overlapKeys = ["detected", "similar_pr_number", "similar_pr_url", "confidence", "rationale"];
   const overlap = value.overlap;
+  if (exactKeys(overlap, overlapKeys) && Number.isSafeInteger(overlap.similar_pr_number) &&
+      overlap.similar_pr_number > MAXIMUM_GITHUB_INTEGER) {
+    return invalid(`similar_pr_number must be between 1 and ${MAXIMUM_GITHUB_INTEGER}`);
+  }
   if (!exactKeys(overlap, overlapKeys) || typeof overlap.detected !== "boolean" ||
       !Number.isFinite(overlap.confidence) || overlap.confidence < 0 || overlap.confidence > 1 ||
-      !((Number.isSafeInteger(overlap.similar_pr_number) && overlap.similar_pr_number > 0) ||
+      !((Number.isSafeInteger(overlap.similar_pr_number) && overlap.similar_pr_number > 0 &&
+        overlap.similar_pr_number <= MAXIMUM_GITHUB_INTEGER) ||
         overlap.similar_pr_number === null) ||
       !(typeof overlap.similar_pr_url === "string" || overlap.similar_pr_url === null)) {
     return invalid("invalid overlap result");
@@ -107,7 +114,6 @@ function validateClassifier(raw, {
     breaking_change_rationale: breakingRationale, breaking_change_surface: breakingSurface,
     protocol_related: value.protocol_related, summary,
   };
-  if (Buffer.byteLength(JSON.stringify(normalized), "utf8") > 4096) return invalid("classifier output too large");
   return { ok: true, status: "valid", value: normalized };
 }
 

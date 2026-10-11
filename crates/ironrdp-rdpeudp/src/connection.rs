@@ -27,6 +27,7 @@ use alloc::{vec, vec::Vec};
 use core::time::Duration;
 
 use ironrdp_core::{decode, encode_vec};
+use tracing::{debug, trace, warn};
 
 use crate::congestion::CongestionControl;
 use crate::error::{RdpeudpError, RdpeudpErrorExt as _, SendError};
@@ -252,6 +253,17 @@ enum WireFormat {
     V2,
 }
 
+impl WireFormat {
+    /// The framing a negotiated `UdpVersion` selects, per `uses_v2_wire_format()`.
+    fn for_version(version: UdpVersion) -> Self {
+        if version.uses_v2_wire_format() {
+            Self::V2
+        } else {
+            Self::V1 { version: version.0 }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct NegotiatedParams {
     /// Our ISN (from our SYN).
@@ -472,6 +484,16 @@ impl RdpeudpConnection {
             ));
         }
 
+        debug!(
+            side = ?Side::Client,
+            isn = config.initial_sequence_number,
+            version = config.offer_version.0,
+            upstream_mtu = config.upstream_mtu,
+            downstream_mtu = config.downstream_mtu,
+            log_window_size = config.log_window_size,
+            "Starting handshake"
+        );
+
         let mut conn = Self::new(Side::Client, config);
         conn.enqueue_syn(now);
         Ok(conn)
@@ -506,41 +528,56 @@ impl RdpeudpConnection {
             .as_ref()
             .ok_or_else(|| RdpeudpError::invalid_packet("accept", "SYN datagram missing SynDataEx payload"))?;
 
+        debug!(
+            side = ?Side::Server,
+            remote_isn = syn_data.initial_sequence_number,
+            version = syn_data_ex.udp_ver.0,
+            upstream_mtu = syn_data.upstream_mtu,
+            downstream_mtu = syn_data.downstream_mtu,
+            "Received SYN"
+        );
+
         let expected_hash = config.cookie_hash.ok_or_else(|| {
             RdpeudpError::invalid_state(
                 "accept without ConnectionConfig::cookie_hash, needed to check the client's SYN",
             )
         })?;
 
-        // Only version 3 selects the MS-RDPEUDP2 data transfer (1.3.2.2), and
-        // that is the only data transfer this crate implements, so a client
-        // offering version 1 or 2 (asking for the MS-RDPEUDP one) cannot be
-        // served. A client offering something above version 3 can: MS-RDPEUDP
-        // 1.7's negotiate-down MUST clause requires settling on our own
-        // highest supported version rather than refusing the connection, and
-        // `enqueue_syn_ack` below always answers with version 3 regardless of
-        // what was offered, which is exactly that settlement.
-        if syn_data_ex.udp_ver.0 < UdpVersion::V3.0 {
+        // MS-RDPEUDP 1.7's negotiate-down MUST clause: a remote offering
+        // anything at or above our own highest supported version (3,
+        // including a value this crate does not otherwise recognize) settles
+        // on that highest version rather than being refused. A remote
+        // offering exactly version 1 or 2 settles there too, now that this
+        // crate implements the MS-RDPEUDP data transfer alongside MS-RDPEUDP2.
+        // Anything else (an offer below 3 that is not exactly 1 or 2) is not
+        // a version this crate can serve.
+        let mut negotiated_version = if syn_data_ex.udp_ver.0 >= UdpVersion::V3.0 {
+            UdpVersion::V3
+        } else if syn_data_ex.udp_ver == UdpVersion::V1 || syn_data_ex.udp_ver == UdpVersion::V2 {
+            syn_data_ex.udp_ver
+        } else {
             return Err(RdpeudpError::invalid_packet(
                 "accept",
-                "remote offered a protocol version below 3, whose data transfer is MS-RDPEUDP rather than MS-RDPEUDP2",
+                "remote offered a protocol version this crate does not implement",
             ));
+        };
+
+        // 2.2.2.9: cookieHash accompanies a version 3 SYN and "MUST NOT be
+        // present in any other case", so a version 1 or 2 offer has none to
+        // check. 3.1.5.1.1 asks the server to confirm the hash on a version 3
+        // SYN and says an invalid one MUST drop the connection to version 2
+        // rather than refuse it.
+        if negotiated_version == UdpVersion::V3 {
+            let offered_hash = syn_data_ex
+                .cookie_hash
+                .ok_or_else(|| RdpeudpError::invalid_packet("accept", "version 3 SYN carries no cookieHash"))?;
+
+            if offered_hash != expected_hash {
+                negotiated_version = UdpVersion::V2;
+            }
         }
 
-        // 3.1.5.1.1 asks the server to confirm the hash, and says an invalid
-        // one MUST drop the connection back to version 2. That version means
-        // the MS-RDPEUDP data transfer, which this crate does not implement,
-        // so the only honest outcome is to refuse the connection.
-        let offered_hash = syn_data_ex
-            .cookie_hash
-            .ok_or_else(|| RdpeudpError::invalid_packet("accept", "version 3 SYN carries no cookieHash"))?;
-
-        if offered_hash != expected_hash {
-            return Err(RdpeudpError::invalid_packet(
-                "accept",
-                "cookieHash does not match the security cookie for this multitransport request",
-            ));
-        }
+        let wire = WireFormat::for_version(negotiated_version);
 
         let mut conn = Self::new(Side::Server, config);
         conn.state = State::SynReceived;
@@ -561,10 +598,19 @@ impl RdpeudpConnection {
             remote_isn,
             mtu,
             log_window_size: conn.config.log_window_size,
-            wire: WireFormat::V2,
+            wire,
         });
 
-        conn.enqueue_syn_ack(remote_isn, now);
+        debug!(
+            isn = local_isn,
+            remote_isn,
+            mtu,
+            version = ?negotiated_version,
+            log_window_size = conn.config.log_window_size,
+            "Accepted SYN"
+        );
+
+        conn.enqueue_syn_ack(remote_isn, negotiated_version, now);
         conn.timers.set(Timer::Idle, now + conn.config.idle_timeout);
 
         Ok(conn)
@@ -625,12 +671,14 @@ impl RdpeudpConnection {
         match self.state {
             State::Established => {}
             State::Closed => {
+                trace!(len = data.len(), "Send rejected, connection closed");
                 return Err(SendError {
                     error: RdpeudpError::connection_closed("send"),
                     data,
                 });
             }
             _ => {
+                trace!(len = data.len(), state = ?self.state, "Send rejected, connection not established");
                 return Err(SendError {
                     error: RdpeudpError::invalid_state("send"),
                     data,
@@ -650,6 +698,13 @@ impl RdpeudpConnection {
         let max_entries = SEND_BUFFER_WINDOW_MULTIPLE * (1usize << usize::from(self.config.log_window_size));
         let chunks_needed = data.len().div_ceil(max_payload).max(1);
         if self.send_buffer.len() + chunks_needed > max_entries {
+            trace!(
+                len = data.len(),
+                chunks_needed,
+                send_buffer_len = self.send_buffer.len(),
+                max_entries,
+                "Send rejected, send buffer full"
+            );
             return Err(SendError {
                 error: RdpeudpError::send_buffer_full("send"),
                 data,
@@ -665,6 +720,10 @@ impl RdpeudpConnection {
         // byte stream: it has no message boundaries to preserve and no notion
         // of what fits in a datagram, and the receiving end concatenates
         // whatever arrives before handing it back to TLS.
+        trace!(
+            len = data.len(),
+            chunks_needed, max_payload, "Split send data into chunks"
+        );
         for chunk in data.chunks(max_payload) {
             self.send_buffer.push_back(chunk.to_vec());
         }
@@ -705,19 +764,22 @@ impl RdpeudpConnection {
     /// performs an in-place byte swap.
     pub fn handle_datagram(&mut self, wire: &mut [u8], now: MonotonicInstant) -> Result<(), RdpeudpError> {
         if self.state == State::Closed {
+            trace!(len = wire.len(), "Datagram received on closed connection");
             return Err(RdpeudpError::connection_closed("handle datagram"));
         }
 
         // Reset idle timer on any received packet
         self.timers.set(Timer::Idle, now + self.config.idle_timeout);
 
-        match self.state {
+        let state = self.state;
+        let result = match self.state {
             State::SynSent => self.handle_syn_ack(wire, now),
             State::SynReceived => self.handle_final_ack(wire, now),
             State::Established => {
                 // A server that missed our final ACK repeats its SYN+ACK, in
                 // the v1 format, long after we have moved on to v2.
                 if self.is_repeated_syn_ack(wire) {
+                    debug!("Server repeated SYN+ACK, resending final ACK");
                     self.resend_handshake_datagram();
                     return Ok(());
                 }
@@ -729,7 +791,11 @@ impl RdpeudpConnection {
                 }
             }
             State::Closed => Err(RdpeudpError::connection_closed("handle datagram")),
+        };
+        if let Err(error) = &result {
+            debug!(?error, ?state, len = wire.len(), "Rejected datagram");
         }
+        result
     }
 
     /// Whether `wire` is the server repeating the SYN+ACK we already
@@ -789,6 +855,7 @@ impl RdpeudpConnection {
 
         // First, drain any pre-built transmits (handshake packets)
         if let Some(t) = self.pending_transmits.pop_front() {
+            trace!(len = t.contents.len(), "Sent handshake datagram");
             self.timers.set(Timer::KeepAlive, now + self.config.keep_alive_interval);
             return Some(t);
         }
@@ -875,6 +942,7 @@ impl RdpeudpConnection {
     /// Initiate a graceful close of the connection.
     pub fn close(&mut self) {
         if self.state != State::Closed {
+            debug!(side = ?self.side, previous_state = ?self.state, "Connection closed");
             self.state = State::Closed;
             self.timers.clear(Timer::Retransmit);
             self.timers.clear(Timer::AckDelay);
@@ -958,6 +1026,17 @@ impl RdpeudpConnection {
         })
     }
 
+    /// Arms the ACK delay timer unless it is already running, so a pending
+    /// acknowledgement goes out within the delay even if no data follows.
+    fn arm_ack_delay(&mut self, now: MonotonicInstant) {
+        if !self.timers.is_set(Timer::AckDelay) {
+            let ack_delay = self.ack_delay_timeout();
+            trace!(ack_delay_ms = ack_delay.as_millis(), "Armed ACK delay timer");
+            self.timers.set(Timer::AckDelay, now + ack_delay);
+            self.ack_delay_started_at = Some(now);
+        }
+    }
+
     /// The ACK delay timeout to use right now.
     ///
     /// [MS-RDPEUDP2] 3.1.5.2 gives the receiver's assumed default as "half
@@ -1037,13 +1116,18 @@ impl RdpeudpConnection {
             return;
         }
         self.handshake_sent_at = Some(now);
+        debug!(
+            isn = self.config.initial_sequence_number,
+            version = self.config.offer_version.0,
+            "Queued SYN"
+        );
 
         self.timers.set(Timer::Retransmit, now + self.effective_rto());
         self.timers.set(Timer::Idle, now + self.config.idle_timeout);
     }
 
     /// Build and enqueue the server SYN+ACK datagram.
-    fn enqueue_syn_ack(&mut self, remote_isn: u32, now: MonotonicInstant) {
+    fn enqueue_syn_ack(&mut self, remote_isn: u32, negotiated_version: UdpVersion, now: MonotonicInstant) {
         let datagram = V1Datagram {
             header: FecHeader {
                 sn_source_ack: remote_isn,
@@ -1062,7 +1146,10 @@ impl RdpeudpConnection {
             correlation_id: None,
             syn_data_ex: Some(SynDataExPayload {
                 syn_ex_flags: SynExFlags::VERSION_INFO_VALID,
-                udp_ver: UdpVersion::V3,
+                // 3.1.5.1.1: "the highest version supported by both
+                // endpoints", per the negotiate-down decision `accept` above
+                // already made; not unconditionally our own maximum.
+                udp_ver: negotiated_version,
                 // 2.2.2.9 puts the hash in the client's SYN and nowhere else:
                 // "It MUST NOT be present in any other case."
                 cookie_hash: None,
@@ -1074,6 +1161,12 @@ impl RdpeudpConnection {
             return;
         }
         self.handshake_sent_at = Some(now);
+        debug!(
+            isn = self.config.initial_sequence_number,
+            remote_isn,
+            version = ?negotiated_version,
+            "Queued SYN+ACK"
+        );
 
         self.timers.set(Timer::Retransmit, now + self.effective_rto());
     }
@@ -1091,9 +1184,13 @@ impl RdpeudpConnection {
     /// clearing.
     #[must_use]
     fn enqueue_handshake(&mut self, datagram: &V1Datagram) -> bool {
-        let Ok(bytes) = encode_vec(datagram) else {
-            self.close();
-            return false;
+        let bytes = match encode_vec(datagram) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(?error, "Failed to encode handshake datagram, closing");
+                self.close();
+                return false;
+            }
         };
 
         self.pending_transmits.push_back(Transmit {
@@ -1166,11 +1263,7 @@ impl RdpeudpConnection {
                 "SYN+ACK selected a protocol version above the one the SYN offered",
             ));
         }
-        let wire = if selected.uses_v2_wire_format() {
-            WireFormat::V2
-        } else {
-            WireFormat::V1 { version: selected.0 }
-        };
+        let wire = WireFormat::for_version(selected);
 
         let local_isn = self.config.initial_sequence_number;
         let remote_isn = syn_data.initial_sequence_number;
@@ -1181,6 +1274,14 @@ impl RdpeudpConnection {
             .min(self.config.downstream_mtu)
             .min(syn_data.upstream_mtu)
             .min(syn_data.downstream_mtu);
+
+        debug!(
+            remote_isn,
+            version = selected.0,
+            ?wire,
+            mtu,
+            "Received SYN+ACK, negotiated version"
+        );
 
         self.params = Some(NegotiatedParams {
             local_isn,
@@ -1213,6 +1314,7 @@ impl RdpeudpConnection {
         // The client repeats its SYN when our SYN+ACK goes missing. Answer it
         // again rather than reading it as a protocol violation.
         if datagram.header.flags.contains(V1Flags::SYN) {
+            debug!("Client repeated SYN, resending SYN+ACK");
             self.resend_handshake_datagram();
             return Ok(());
         }
@@ -1223,6 +1325,8 @@ impl RdpeudpConnection {
                 "expected ACK during handshake",
             ));
         }
+
+        debug!("Received final ACK");
 
         self.sample_handshake_rtt(now);
 
@@ -1253,7 +1357,9 @@ impl RdpeudpConnection {
             data: None,
         };
 
-        let _queued = self.enqueue_handshake(&datagram);
+        if self.enqueue_handshake(&datagram) {
+            debug!(remote_isn, "Queued final ACK");
+        }
     }
 
     /// Sample the handshake round trip as the connection's first RTT
@@ -1265,6 +1371,10 @@ impl RdpeudpConnection {
     /// since it is ambiguous which transmission this answer corresponds to.
     fn sample_handshake_rtt(&mut self, now: MonotonicInstant) {
         if self.handshake_retransmits != 0 {
+            debug!(
+                handshake_retransmits = self.handshake_retransmits,
+                "Skipped handshake RTT sample, datagram was retransmitted"
+            );
             return;
         }
         if let Some(sent_at) = self.handshake_sent_at {
@@ -1309,6 +1419,16 @@ impl RdpeudpConnection {
             self.v1_next_coded = params.local_isn.wrapping_add(1);
         }
 
+        debug!(
+            side = ?self.side,
+            wire = ?params.wire,
+            mtu = params.mtu,
+            isn = params.local_isn,
+            remote_isn = params.remote_isn,
+            log_window_size = params.log_window_size,
+            "Connection established"
+        );
+
         self.send_window = Some(SendWindow::new(
             local_initial_data_seq,
             local_initial_channel_seq,
@@ -1336,6 +1456,12 @@ impl RdpeudpConnection {
         let (prefix, packet_bytes) = decode_with_prefix(wire).map_err(RdpeudpError::prefix)?;
 
         let packet: V2Packet = decode(packet_bytes).map_err(RdpeudpError::decode)?;
+
+        trace!(
+            flags = ?packet.header.flags,
+            dummy = prefix.is_dummy(),
+            "Received v2 packet"
+        );
 
         // Process ACK payload (cumulative acknowledgment)
         if let Some(ref ack) = packet.ack {
@@ -1389,6 +1515,11 @@ impl RdpeudpConnection {
         // delivered, discarding real in-flight application data on a single
         // malformed or hostile ACK.
         if acked_seq >= send_window.next_data_seq() {
+            debug!(
+                acked_seq,
+                next_data_seq = send_window.next_data_seq(),
+                "Ignored ACK for a DataSeqNum never sent"
+            );
             return;
         }
 
@@ -1407,11 +1538,18 @@ impl RdpeudpConnection {
         // The ACK seq_num is the highest sequentially received DataSeqNum, so
         // everything at or below it is acknowledged.
         let newly_acked_bytes = send_window.mark_received_through(acked_seq);
+        trace!(acked_seq, newly_acked_bytes, "Processed cumulative ACK");
 
         if let Some(elapsed) = elapsed {
             let ack_gap = Duration::from_millis(u64::from(ack.send_ack_time_gap));
             if let Some(rtt_sample) = elapsed.checked_sub(ack_gap) {
                 self.rtt.update(rtt_sample);
+            } else {
+                trace!(
+                    elapsed_ms = elapsed.as_millis(),
+                    ack_gap_ms = ack_gap.as_millis(),
+                    "Discarded RTT sample, ACK delay exceeds elapsed time"
+                );
             }
         }
 
@@ -1505,11 +1643,24 @@ impl RdpeudpConnection {
             }
         }
 
+        trace!(
+            base_seq = base,
+            entries = ack_vector.entries.len(),
+            newly_acked_bytes,
+            "Processed ACK vector"
+        );
+
         // RTT estimation from ACKVEC timing
         if let (Some(elapsed), Some(gap_ms)) = (elapsed, ack_vector.send_ack_time_gap_ms) {
             let ack_gap = Duration::from_millis(u64::from(gap_ms));
             if let Some(rtt_sample) = elapsed.checked_sub(ack_gap) {
                 self.rtt.update(rtt_sample);
+            } else {
+                trace!(
+                    elapsed_ms = elapsed.as_millis(),
+                    ack_gap_ms = ack_gap.as_millis(),
+                    "Discarded RTT sample, ACK delay exceeds elapsed time"
+                );
             }
         }
 
@@ -1541,6 +1692,7 @@ impl RdpeudpConnection {
 
         let reference = recv_window.highest_seq();
         let new_base = seq::reconstruct_seq(aoa.ack_of_acks_seq_num, reference);
+        trace!(ack_of_acks_seq = new_base, "Received AckOfAcks");
         recv_window.advance_base(new_base);
     }
 
@@ -1558,16 +1710,14 @@ impl RdpeudpConnection {
 
         let reference = recv_window.highest_seq();
         let data_seq = seq::reconstruct_seq(dh.data_seq_num, reference);
+        trace!(data_seq, "Received dummy packet");
 
         if !recv_window.receive_without_payload(data_seq) {
             return;
         }
 
         self.ack_pending = true;
-        if !self.timers.is_set(Timer::AckDelay) {
-            self.timers.set(Timer::AckDelay, now + self.ack_delay_timeout());
-            self.ack_delay_started_at = Some(now);
-        }
+        self.arm_ack_delay(now);
     }
 
     fn process_data(&mut self, dh: &DataHeader, db: &DataBody, now: MonotonicInstant) {
@@ -1585,6 +1735,13 @@ impl RdpeudpConnection {
 
         // Record the packet in the receive window
         let is_new = recv_window.receive(data_seq, channel_seq, db.data.clone());
+        trace!(
+            data_seq,
+            channel_seq,
+            len = db.data.len(),
+            is_new,
+            "Received data packet"
+        );
 
         if is_new {
             // Drain ordered data for application delivery
@@ -1595,10 +1752,7 @@ impl RdpeudpConnection {
 
             // Schedule ACK (either piggybacked on next data or standalone)
             self.ack_pending = true;
-            if !self.timers.is_set(Timer::AckDelay) {
-                self.timers.set(Timer::AckDelay, now + self.ack_delay_timeout());
-                self.ack_delay_started_at = Some(now);
-            }
+            self.arm_ack_delay(now);
         }
     }
 
@@ -1643,6 +1797,13 @@ impl RdpeudpConnection {
         // receive window will sit on the hole forever (3.1.5.3).
         let lowest_unacknowledged = send_window.lowest_unacknowledged();
 
+        trace!(
+            data_seq,
+            channel_seq = info.channel_seq,
+            ack_of_acks_seq = lowest_unacknowledged,
+            "Declared packet lost"
+        );
+
         self.congestion.on_loss(data_seq, largest_sent);
         self.reliability.enqueue(info.channel_seq, info.data);
         self.pending_ack_of_acks = Some(lowest_unacknowledged);
@@ -1660,6 +1821,10 @@ impl RdpeudpConnection {
             .pending_ack_of_acks
             .is_some_and(|advertised| peer_reported_seq > advertised)
         {
+            trace!(
+                ack_of_acks_seq = self.pending_ack_of_acks,
+                peer_reported_seq, "Retired AckOfAcks"
+            );
             self.pending_ack_of_acks = None;
         }
     }
@@ -1681,9 +1846,11 @@ impl RdpeudpConnection {
         };
 
         let Some(oldest) = send_window.pending_entries().map(|entry| entry.data_seq).min() else {
+            trace!("Retransmit timer fired with no pending packets");
             return;
         };
 
+        trace!(data_seq = oldest, "Retransmit timer expired on oldest pending packet");
         self.declare_lost(oldest);
     }
 
@@ -1701,10 +1868,15 @@ impl RdpeudpConnection {
         if has_pending || self.reliability.has_pending() {
             // Keep the timer running
             if !self.timers.is_set(Timer::Retransmit) {
-                self.timers.set(Timer::Retransmit, now + self.effective_rto());
+                let rto = self.effective_rto();
+                trace!(rto_ms = rto.as_millis(), "Armed retransmit timer");
+                self.timers.set(Timer::Retransmit, now + rto);
             }
         } else {
             // Nothing outstanding: clear the timer
+            if self.timers.is_set(Timer::Retransmit) {
+                trace!("Cleared retransmit timer, nothing outstanding");
+            }
             self.timers.clear(Timer::Retransmit);
         }
     }
@@ -1723,10 +1895,16 @@ impl RdpeudpConnection {
 
         // Check congestion window allows sending
         if send_window.bytes_in_flight() >= self.congestion.window() {
+            trace!(
+                bytes_in_flight = send_window.bytes_in_flight(),
+                cwnd = self.congestion.window(),
+                "Retransmit held back by congestion window"
+            );
             return None;
         }
 
         if !send_window.has_capacity() {
+            trace!("Retransmit held back by full send window");
             return None;
         }
 
@@ -1735,6 +1913,13 @@ impl RdpeudpConnection {
 
         // Create a new DataSeqNum for the retransmit but preserve ChannelSeqNum
         let new_data_seq = send_window.push_retransmit(entry.channel_seq, entry.data.clone(), now)?;
+        trace!(
+            data_seq = new_data_seq,
+            channel_seq = entry.channel_seq,
+            len = entry.data.len(),
+            retransmits = self.v1_stats.retransmits,
+            "Retransmitting data"
+        );
 
         let transmit = self.build_data_packet(new_data_seq, entry.channel_seq, entry.data, now);
 
@@ -1756,10 +1941,20 @@ impl RdpeudpConnection {
 
         // Check congestion window
         if send_window.bytes_in_flight() >= self.congestion.window() {
+            trace!(
+                bytes_in_flight = send_window.bytes_in_flight(),
+                cwnd = self.congestion.window(),
+                send_buffer_len = self.send_buffer.len(),
+                "New data held back by congestion window"
+            );
             return None;
         }
 
         if !send_window.has_capacity() {
+            trace!(
+                send_buffer_len = self.send_buffer.len(),
+                "New data held back by full send window"
+            );
             return None;
         }
 
@@ -1838,6 +2033,15 @@ impl RdpeudpConnection {
 
         let transmit = self.encode_v2_packet(&packet)?;
 
+        trace!(
+            data_seq,
+            channel_seq,
+            len = transmit.contents.len(),
+            ack = acknowledged,
+            ack_of_acks_seq = self.pending_ack_of_acks,
+            "Sent data packet"
+        );
+
         // Retire what the packet carried only now that it exists. Clearing
         // any of this before the encode drops an acknowledgment that was
         // never sent, and the peer has no way to learn it was owed one.
@@ -1881,6 +2085,13 @@ impl RdpeudpConnection {
         };
 
         let transmit = self.encode_v2_packet(&packet)?;
+
+        trace!(
+            ack_vector = packet.ack_vector.is_some(),
+            ack_of_acks_seq = self.pending_ack_of_acks,
+            len = transmit.contents.len(),
+            "Sent standalone ACK"
+        );
 
         // Same ordering as the data path: the window only moves past packets
         // whose acknowledgment actually made it into a packet.
@@ -2007,14 +2218,23 @@ impl RdpeudpConnection {
 
     /// Encode a V2 packet with the PacketPrefixByte framing.
     fn encode_v2_packet(&mut self, packet: &V2Packet) -> Option<Transmit> {
-        let packet_bytes = encode_vec(packet).ok()?;
+        let packet_bytes = match encode_vec(packet) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(?error, "Failed to encode v2 packet");
+                return None;
+            }
+        };
         // We never originate dummy packets. They exist for a sender that wants
         // to probe or pad without giving the higher layer anything to read,
         // and this transport has no use for that.
         let is_dummy = false;
 
         self.wire_buf.clear();
-        encode_with_prefix(&packet_bytes, is_dummy, &mut self.wire_buf).ok()?;
+        if let Err(error) = encode_with_prefix(&packet_bytes, is_dummy, &mut self.wire_buf) {
+            warn!(?error, "Failed to apply v2 packet prefix");
+            return None;
+        }
 
         Some(Transmit {
             contents: self.wire_buf.clone(),
@@ -2027,6 +2247,7 @@ impl RdpeudpConnection {
 
     /// Handle retransmit timer expiry.
     fn handle_retransmit_timeout(&mut self, now: MonotonicInstant) {
+        trace!(state = ?self.state, "Retransmit timer fired");
         self.timers.clear(Timer::Retransmit);
 
         if self.state != State::Established {
@@ -2054,11 +2275,20 @@ impl RdpeudpConnection {
         }
 
         if self.handshake_retransmits >= HANDSHAKE_RETRANSMIT_LIMIT {
+            debug!(
+                handshake_retransmits = self.handshake_retransmits,
+                "Handshake retransmit limit reached, closing"
+            );
             self.close();
             return;
         }
 
         self.handshake_retransmits += 1;
+        debug!(
+            handshake_retransmits = self.handshake_retransmits,
+            rto_ms = self.effective_rto().as_millis(),
+            "Retransmitting handshake datagram"
+        );
         self.resend_handshake_datagram();
 
         // 3.1.6.1 wants the timer to keep firing at no less than the same
@@ -2068,6 +2298,7 @@ impl RdpeudpConnection {
 
     /// Handle ACK delay timer expiry: send a standalone ACK.
     fn handle_ack_delay_timeout(&mut self, _now: MonotonicInstant) {
+        trace!("ACK delay timer fired");
         self.timers.clear(Timer::AckDelay);
         self.ack_pending = true;
         self.v1_ack_delayed = true;
@@ -2075,6 +2306,10 @@ impl RdpeudpConnection {
 
     /// Handle idle timeout: close the connection.
     fn handle_idle_timeout(&mut self) {
+        debug!(
+            idle_timeout_ms = self.config.idle_timeout.as_millis(),
+            "Idle timeout expired, closing"
+        );
         self.close();
     }
 
@@ -2083,6 +2318,7 @@ impl RdpeudpConnection {
         self.timers.clear(Timer::KeepAlive);
 
         // Send a standalone ACK as a keep-alive probe
+        trace!("Keep-alive timer fired, queuing probe");
         self.ack_pending = true;
 
         self.timers.set(Timer::KeepAlive, now + self.config.keep_alive_interval);
@@ -2097,8 +2333,11 @@ impl RdpeudpConnection {
         let datagram: V1Datagram = decode(wire).map_err(RdpeudpError::decode)?;
         self.v1_stats.datagrams_in += 1;
 
+        trace!(flags = ?datagram.header.flags, "Received v1 datagram");
+
         // A late handshake retransmit; the peer is already answered elsewhere.
         if datagram.header.flags.contains(V1Flags::SYN) {
+            trace!("Ignored late handshake retransmit");
             return Ok(());
         }
 
@@ -2184,6 +2423,11 @@ impl RdpeudpConnection {
             }
         }
 
+        trace!(
+            source_seq = highest_seen,
+            newly_acked_bytes, delayed, "Processed v1 acknowledgement"
+        );
+
         if let Some(sample) = rtt_sample {
             self.rtt.update(sample);
         }
@@ -2208,12 +2452,14 @@ impl RdpeudpConnection {
             .v1_last_cn_reaction
             .is_some_and(|last| now.duration_since(last) < rtt);
         if recently {
+            trace!("Congestion notification ignored, already reacted within one RTT");
             return;
         }
         if let Some(send_window) = self.send_window.as_ref() {
             let largest_sent = send_window.next_data_seq().saturating_sub(1);
             self.congestion.on_loss(largest_sent, largest_sent);
         }
+        trace!(cwnd = self.congestion.window(), "Reacted to congestion notification");
         self.v1_last_cn_reaction = Some(now);
         self.v1_cwr_pending = true;
     }
@@ -2230,8 +2476,14 @@ impl RdpeudpConnection {
         // that does would push the window base into the future and leave every
         // later Source Packet below it; drop it instead.
         if reset > reference {
+            debug!(
+                reset_seq = reset,
+                highest_seq = reference,
+                "Ignored AckOfAcks ahead of received data"
+            );
             return;
         }
+        trace!(reset_seq = reset, "Received v1 AckOfAcks");
         recv_window.advance_base(reset.saturating_add(1));
     }
 
@@ -2244,6 +2496,7 @@ impl RdpeudpConnection {
 
         let reference = recv_window.highest_seq();
         let source_seq = seq::reconstruct_seq32(data.header.sn_source_start, reference);
+        trace!(source_seq, len = data.payload.len(), "Received v1 data packet");
 
         if !recv_window.receive(source_seq, source_seq, data.payload) {
             return;
@@ -2255,10 +2508,7 @@ impl RdpeudpConnection {
         }
 
         self.ack_pending = true;
-        if !self.timers.is_set(Timer::AckDelay) {
-            self.timers.set(Timer::AckDelay, now + self.ack_delay_timeout());
-            self.ack_delay_started_at = Some(now);
-        }
+        self.arm_ack_delay(now);
     }
 
     /// The `RDPUDP_FEC_HEADER` and ACK vector describing what we have received
@@ -2326,6 +2576,7 @@ impl RdpeudpConnection {
             .min()
             .unwrap_or_else(|| send_window.next_channel_seq())
             .saturating_sub(1);
+        trace!(reset_seq = cumulative, "Sending v1 AckOfAcks");
         Some(V1AckOfAcksHeader {
             reset_seq_num: seq::truncate_seq32(cumulative),
         })
@@ -2368,7 +2619,20 @@ impl RdpeudpConnection {
             }),
         };
 
-        let contents = encode_vec(&datagram).ok()?;
+        let contents = match encode_vec(&datagram) {
+            Ok(contents) => contents,
+            Err(error) => {
+                warn!(?error, "Failed to encode v1 data datagram");
+                return None;
+            }
+        };
+        trace!(
+            source_seq = channel_seq,
+            sn_coded,
+            len = contents.len(),
+            cwr = self.v1_cwr_pending,
+            "Sent v1 data packet"
+        );
         self.v1_cwr_pending = false;
         self.v1_stats.data_out += 1;
         self.finish_v1_acknowledgement();
@@ -2391,7 +2655,14 @@ impl RdpeudpConnection {
             data: None,
         };
 
-        let contents = encode_vec(&datagram).ok()?;
+        let contents = match encode_vec(&datagram) {
+            Ok(contents) => contents,
+            Err(error) => {
+                warn!(?error, "Failed to encode v1 acknowledgement datagram");
+                return None;
+            }
+        };
+        trace!(delayed = self.v1_ack_delayed, "Sent v1 standalone ACK");
         self.finish_v1_acknowledgement();
         Some(Transmit { contents })
     }

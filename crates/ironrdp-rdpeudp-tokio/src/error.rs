@@ -114,6 +114,11 @@ pub enum UdpTransportErrorKind {
     /// A `send()` payload exceeds the wire `PayloadLength` field's 65535-byte
     /// capacity ([MS-RDPEMT] 2.2.2.3, `RDP_TUNNEL_DATA`).
     PayloadTooLarge { len: usize },
+
+    /// A `send_message()` message's sub-headers, `len` bytes encoded, do not
+    /// fit beside the 4-byte tunnel header in the one-byte `HeaderLength`
+    /// field ([MS-RDPEMT] 2.2.1.1).
+    SubHeadersTooLarge { len: usize },
 }
 
 impl fmt::Display for UdpTransportErrorKind {
@@ -140,6 +145,9 @@ impl fmt::Display for UdpTransportErrorKind {
                     "send payload of {len} bytes exceeds the 65535-byte tunnel data limit"
                 )
             }
+            Self::SubHeadersTooLarge { len } => {
+                write!(f, "{len} bytes of sub-headers exceed the 251 a tunnel header holds")
+            }
         }
     }
 }
@@ -157,7 +165,7 @@ impl core::error::Error for UdpTransportErrorKind {
             | Self::TunnelTimeout
             | Self::TunnelRejected { .. }
             | Self::DriverPanic => None,
-            Self::UnsupportedProtocol { .. } | Self::PayloadTooLarge { .. } => None,
+            Self::UnsupportedProtocol { .. } | Self::PayloadTooLarge { .. } | Self::SubHeadersTooLarge { .. } => None,
         }
     }
 }

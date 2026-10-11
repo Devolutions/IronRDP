@@ -6,6 +6,7 @@ mod file_contents_validation;
 mod file_list_format;
 mod file_transfer_capabilities;
 mod format;
+mod format_data_correlation;
 mod lock_lifecycle;
 mod lock_strategy;
 mod lock_timeout;
@@ -13,7 +14,6 @@ mod loop_detector;
 mod path_sanitization;
 mod preferred_drop_effect;
 mod server_role;
-mod test_helpers;
 mod upload_and_cleanup;
 
 use expect_test::expect;

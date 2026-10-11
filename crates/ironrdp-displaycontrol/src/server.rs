@@ -13,9 +13,9 @@ pub trait DisplayControlHandler: Send {
 
     /// Capabilities advertised to the client when the channel starts.
     ///
-    /// Defaults to a single-monitor value (`max_num_monitors = 1`, factors
-    /// `3840`/`2400`, i.e. one 4K-area monitor), so any handler that doesn't
-    /// override this keeps that behavior.
+    /// Defaults to [`DisplayControlCapabilities::single_monitor()`] (one monitor,
+    /// factors `3840`/`2400`, i.e. one 4K-area monitor), so any handler that
+    /// doesn't override this keeps that behavior.
     /// A handler serving more than one monitor should override this, e.g.
     /// `DisplayControlCapabilities::new(monitor_count, 3840, 2400)`. Fallible
     /// because [`DisplayControlCapabilities::new`] validates its arguments
@@ -24,7 +24,7 @@ pub trait DisplayControlHandler: Send {
     /// that error rather than `expect` it, since this is called from
     /// [`DvcProcessor::start`] and a panic there aborts the connection.
     fn capabilities(&self) -> PduResult<DisplayControlCapabilities> {
-        DisplayControlCapabilities::new(1, 3840, 2400).map_err(|e| decode_err!(e))
+        Ok(DisplayControlCapabilities::single_monitor())
     }
 }
 

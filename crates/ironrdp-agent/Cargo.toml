@@ -40,6 +40,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ironrdp-mstsgu = { path = "../ironrdp-mstsgu", version = "0.0.1", features = ["rustls"] }
 
+# Inline terminal screenshots
+base64 = "0.22"
+crossterm = { version = "0.29", default-features = false, features = ["bracketed-paste", "events", "windows"] }
+png = "0.18"
+
 [target.'cfg(windows)'.dependencies]
 # Windows Sandbox control plane: gRPC/HTTP2 over a per-user named pipe.
 bytes = "1"
@@ -52,6 +57,9 @@ windows = { version = "0.62", features = [
     "Win32_Security_Authorization",
     "Win32_System_Threading",
 ] }
+
+[target."cfg(unix)".dependencies]
+libc = "0.2"
 
 [lints]
 workspace = true

@@ -13,6 +13,8 @@ use alloc::collections::BTreeMap;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
+use tracing::trace;
+
 /// State of a slot in the receive window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecvEntryState {
@@ -107,6 +109,13 @@ impl RecvWindow {
             && self.reorder_buf.len() >= self.max_entries
             && !self.reorder_buf.contains_key(&channel_seq)
         {
+            trace!(
+                data_seq,
+                channel_seq,
+                next_channel_seq = self.next_channel_seq,
+                reorder_buf_len = self.reorder_buf.len(),
+                "Reorder buffer full, packet refused"
+            );
             return false;
         }
 
@@ -115,7 +124,22 @@ impl RecvWindow {
         }
 
         // Buffer data for reassembly by ChannelSeqNum.
-        if !already_delivered {
+        if already_delivered {
+            trace!(
+                data_seq,
+                channel_seq,
+                next_channel_seq = self.next_channel_seq,
+                "Received retransmit of already delivered data"
+            );
+        } else {
+            if channel_seq != self.next_channel_seq {
+                trace!(
+                    data_seq,
+                    channel_seq,
+                    next_channel_seq = self.next_channel_seq,
+                    "Buffered out-of-order packet"
+                );
+            }
             self.reorder_buf.insert(channel_seq, data);
         }
 
@@ -139,6 +163,11 @@ impl RecvWindow {
     fn occupy_slot(&mut self, data_seq: u64, channel_seq: Option<u64>) -> bool {
         // Ignore packets below the window base (already processed).
         if data_seq < self.base_seq {
+            trace!(
+                data_seq,
+                base_seq = self.base_seq,
+                "Packet below receive window, ignored"
+            );
             return false;
         }
 
@@ -146,6 +175,12 @@ impl RecvWindow {
 
         // Ignore packets beyond the window limit.
         if index >= u64::try_from(self.max_entries).expect("max_entries fits in u64") {
+            trace!(
+                data_seq,
+                base_seq = self.base_seq,
+                max_entries = self.max_entries,
+                "Packet beyond receive window, ignored"
+            );
             return false;
         }
 
@@ -161,6 +196,7 @@ impl RecvWindow {
 
         // Check for duplicate.
         if self.entries[idx].state == RecvEntryState::Received {
+            trace!(data_seq, "Duplicate packet ignored");
             return false;
         }
 
@@ -169,6 +205,13 @@ impl RecvWindow {
         self.entries[idx].channel_seq = channel_seq;
 
         if data_seq > self.highest_seq {
+            if data_seq > self.highest_seq + 1 {
+                trace!(
+                    data_seq,
+                    highest_seq = self.highest_seq,
+                    "Gap in received data sequence"
+                );
+            }
             self.highest_seq = data_seq;
         }
 
@@ -186,6 +229,15 @@ impl RecvWindow {
         while let Some(data) = self.reorder_buf.remove(&self.next_channel_seq) {
             delivered.push(data);
             self.next_channel_seq += 1;
+        }
+
+        if !delivered.is_empty() {
+            trace!(
+                count = delivered.len(),
+                next_channel_seq = self.next_channel_seq,
+                reorder_buf_len = self.reorder_buf.len(),
+                "Delivered in-order data"
+            );
         }
 
         delivered
@@ -219,6 +271,11 @@ impl RecvWindow {
         if received > 0 {
             self.entries.drain(..received);
             self.base_seq += u64::try_from(received).expect("run length fits in u64");
+            trace!(
+                released = received,
+                base_seq = self.base_seq,
+                "Released acknowledged receive slots"
+            );
         }
 
         received
@@ -240,6 +297,11 @@ impl RecvWindow {
                 .expect("drain count fits in usize");
 
         self.entries.drain(..drain_count);
+        trace!(
+            previous_base_seq = self.base_seq,
+            base_seq = new_base,
+            "Advanced receive window base"
+        );
         self.base_seq = new_base;
     }
 

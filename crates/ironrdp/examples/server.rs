@@ -54,7 +54,11 @@ async fn main() -> Result<(), anyhow::Error> {
             pass,
             cert,
             key,
-        } => run(bind_addr, hybrid, user, pass, cert, key).await,
+        } => {
+            // The server's future is large enough to trip clippy::large_futures,
+            // so keep it on the heap rather than in main's stack frame.
+            Box::pin(run(bind_addr, hybrid, user, pass, cert, key)).await
+        }
     }
 }
 

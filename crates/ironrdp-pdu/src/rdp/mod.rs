@@ -11,6 +11,7 @@ pub mod client_info;
 pub mod finalization_messages;
 pub mod headers;
 pub mod heartbeat;
+pub mod message_channel;
 pub mod multitransport;
 pub mod refresh_rectangle;
 pub mod server_error_info;

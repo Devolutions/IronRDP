@@ -10,9 +10,10 @@
   "allowed_files": [
     "validated-specialist-findings.json"
   ],
-  "max_output_bytes": 65536,
   "max_turns": 32,
   "max_tool_calls": 120,
+  "stream_idle_timeout_ms": 300000,
+  "stage_timeout_ms": 7200000,
   "max_request_retries": 4,
   "max_output_repair_attempts": 2
 }

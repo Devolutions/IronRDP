@@ -1,19 +1,20 @@
 "use strict";
 
 const { SCHEMA_VERSION, parseCheckState } = require("./validate-classifier");
+const { readCheckRuns } = require("./check-runs");
 
 async function resolveClassificationGate({
-  github, owner, repo, expectedSha, force = false, retryWithLargerEvidence = false,
+  github, owner, repo, expectedSha, force = false,
 }) {
   if (force) {
     return { available: true, required: true, reason: "", force: true };
   }
   try {
-    const { data } = await github.rest.checks.listForRef({
-      owner, repo, ref: expectedSha, check_name: "AI classification", per_page: 100,
+    const runs = await readCheckRuns({
+      github, owner, repo, ref: expectedSha, checkName: "AI classification",
     });
     const externalId = `${SCHEMA_VERSION}:${expectedSha}`;
-    const completed = data.check_runs.some((run) => {
+    const completed = runs.some((run) => {
       const state = parseCheckState(run.output?.summary);
       return run.external_id === externalId && run.conclusion === "success" &&
         run.app?.slug === "github-actions" && state?.automaticReviewEligible === true &&
@@ -21,7 +22,7 @@ async function resolveClassificationGate({
     });
     return {
       available: true,
-      required: retryWithLargerEvidence || !completed,
+      required: !completed,
       reason: "",
       externalId,
       completed,

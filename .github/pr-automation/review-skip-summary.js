@@ -1,5 +1,6 @@
 "use strict";
 
+const { AI_COUNTS, reviewCount } = require("./review-count");
 function reviewSkipReasons({ gate, gateResult, rateLimit, rateLimitResult } = {}) {
   const reasons = [];
 
@@ -14,15 +15,17 @@ function reviewSkipReasons({ gate, gateResult, rateLimit, rateLimitResult } = {}
       reasons.push("A successful, review-eligible AI classification is not available for this head.");
     }
     if (gate.ciGreen !== true) reasons.push("CI has not succeeded for this head.");
-    if (gate.secondReviewEligible !== true) {
+    if (gate.nextReviewEligible !== true) {
       reasons.push("An automated review has already run for this head; push a new commit before the next review.");
     }
     if (gate.policyEligible !== true) {
       const labels = new Set(Array.isArray(gate.labels) ? gate.labels : []);
+      const count = reviewCount(labels);
       const policyReasonStart = reasons.length;
-      if (labels.has("ai-reviewed/2")) reasons.push("The pull request has reached the two-review limit.");
+      if (count === AI_COUNTS.at(-1)) reasons.push("The pull request has reached the three-review limit.");
+      if (count === undefined) reasons.push("The review count labels are ambiguous.");
       if (labels.has("triage/legitimacy") || gate.legitimacyStopped === true) {
-        reasons.push("The pull request requires a maintainer legitimacy decision.");
+        reasons.push("The pull request is awaiting its green exact-head CI handoff for legitimacy triage.");
       }
       if (reasons.length === policyReasonStart) {
         reasons.push("The pull request is not eligible under the automated review policy.");
@@ -30,12 +33,8 @@ function reviewSkipReasons({ gate, gateResult, rateLimit, rateLimitResult } = {}
     }
 
     const contributor = gate.contributor;
-    if (contributor?.status === "ineligible") {
-      if (Number.isSafeInteger(contributor.merged)) {
-        reasons.push(`The contributor has ${contributor.merged} qualifying merged pull requests; at least one is required.`);
-      } else {
-        reasons.push(`The contributor is not eligible for automated review${contributor.reason ? `: ${contributor.reason}` : ""}.`);
-      }
+    if (contributor?.status === "bot") {
+      reasons.push("The pull request was opened by a bot account.");
     } else if (contributor?.status !== "eligible" && contributor?.status !== "forced") {
       reasons.push(`Contributor eligibility is unavailable${contributor?.reason ? `: ${contributor.reason}` : ""}.`);
     }

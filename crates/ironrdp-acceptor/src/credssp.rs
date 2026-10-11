@@ -153,18 +153,19 @@ impl<'a> CredsspSequence<'a> {
         &mut self,
         result: Result<ServerState, ServerError>,
         output: &mut WriteBuf,
-    ) -> ConnectorResult<Written> {
-        let (ts_request, next_state) = match result {
-            Ok(ServerState::ReplyNeeded(ts_request)) => (Some(ts_request), CredsspState::Ongoing),
-            Ok(ServerState::Finished(_id)) => (None, CredsspState::Finished),
+    ) -> ConnectorResult<(Written, Option<AuthIdentity>)> {
+        let (ts_request, next_state, credentials) = match result {
+            Ok(ServerState::ReplyNeeded(ts_request)) => (Some(ts_request), CredsspState::Ongoing, None),
+            Ok(ServerState::Finished(id)) => (None, CredsspState::Finished, Some(id)),
             Err(err) => (
                 err.ts_request.map(|ts_request| *ts_request),
                 CredsspState::ServerError(err.error),
+                None,
             ),
         };
 
         self.state = next_state;
-        if let Some(ts_request) = ts_request {
+        let written = if let Some(ts_request) = ts_request {
             debug!(?ts_request, "Send");
             let length = usize::from(ts_request.buffer_len());
             let unfilled_buffer = output.unfilled_to(length);
@@ -175,9 +176,11 @@ impl<'a> CredsspSequence<'a> {
 
             output.advance(length);
 
-            Ok(Written::from_size(length)?)
+            Written::from_size(length)?
         } else {
-            Ok(Written::Nothing)
-        }
+            Written::Nothing
+        };
+
+        Ok((written, credentials))
     }
 }
