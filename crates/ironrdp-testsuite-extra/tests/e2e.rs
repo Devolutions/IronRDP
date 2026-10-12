@@ -93,6 +93,7 @@ async fn test_client_server_advertising_dyn_vc_gfx_protocol() {
     client_server(
         connector::Config {
             support_dyn_vc_gfx_protocol: true,
+            rdp_version: gcc::RdpVersion::V5_PLUS,
             ..default_client_config()
         },
         |stage, _activation_factory, framed, _display_tx| async { (stage, framed) },
@@ -1199,6 +1200,7 @@ async fn egfx_moves_onto_the_udp_tunnel_with_soft_sync() {
                 let egfx_received = Arc::clone(&egfx.received);
                 let client_config = connector::Config {
                     support_dyn_vc_gfx_protocol: true,
+                    rdp_version: gcc::RdpVersion::V5_PLUS,
                     multitransport_flags: Some(
                         gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR
                             | gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP,
@@ -1978,6 +1980,7 @@ pub(super) fn default_client_config() -> connector::Config {
         pointer_software_rendering: true,
         multitransport_flags: None,
         support_dyn_vc_gfx_protocol: false,
+        rdp_version: gcc::RdpVersion::V5_PLUS,
         performance_flags: Default::default(),
         timezone_info: Default::default(),
         alternate_shell: String::new(),
