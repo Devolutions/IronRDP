@@ -1071,6 +1071,18 @@ fn null_decoder() -> Option<H264DecoderFactory> {
     Some(H264DecoderFactory::new(|| None))
 }
 
+#[test]
+fn rdp_version_defaults_to_5_plus_and_can_be_raised() {
+    let config = complete_builder().build().expect("default config");
+    assert_eq!(config.connector().rdp_version, ironrdp_pdu::gcc::RdpVersion::V5_PLUS);
+
+    let config = complete_builder()
+        .with_rdp_version(ironrdp_pdu::gcc::RdpVersion::V10_12)
+        .build()
+        .expect("config with an RDP version");
+    assert_eq!(config.connector().rdp_version, ironrdp_pdu::gcc::RdpVersion::V10_12);
+}
+
 // oracle: mutant the graphics pipeline default ignoring the decoder or the opt-outs
 #[test]
 fn graphics_pipeline_follows_the_h264_decoder() {

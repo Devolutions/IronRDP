@@ -871,6 +871,7 @@ pub struct ConfigBuilder {
     keyboard_functional_keys_count: Option<u32>,
     keyboard_layout: Option<u32>,
     connection_type: Option<ironrdp_pdu::gcc::ConnectionType>,
+    rdp_version: Option<ironrdp_pdu::gcc::RdpVersion>,
     ime_file_name: Option<String>,
     dig_product_id: Option<String>,
     desktop_width: Option<u16>,
@@ -1049,6 +1050,16 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_connection_type(mut self, connection_type: ironrdp_pdu::gcc::ConnectionType) -> Self {
         self.connection_type = Some(connection_type);
+        self
+    }
+
+    /// Set the RDP version announced in the GCC Client Core Data block.
+    ///
+    /// The default is [`RdpVersion::V5_PLUS`](ironrdp_pdu::gcc::RdpVersion::V5_PLUS).
+    /// See [`ironrdp_connector::Config::rdp_version`].
+    #[must_use]
+    pub fn with_rdp_version(mut self, rdp_version: ironrdp_pdu::gcc::RdpVersion) -> Self {
+        self.rdp_version = Some(rdp_version);
         self
     }
 
@@ -2433,6 +2444,7 @@ impl ConfigBuilder {
             support_dyn_vc_gfx_protocol: self
                 .graphics_pipeline
                 .unwrap_or_else(|| self.channels.h264_decoder.is_some()),
+            rdp_version: self.rdp_version.unwrap_or(ironrdp_pdu::gcc::RdpVersion::V5_PLUS),
             compression_type,
             performance_flags: self.performance_flags.unwrap_or_default(),
             timezone_info: TimezoneInfo::default(),

@@ -350,6 +350,16 @@ pub struct Config {
     /// [`DrdynvcClient::with_dynamic_channel`]: https://docs.rs/ironrdp-dvc/latest/ironrdp_dvc/struct.DrdynvcClient.html#method.with_dynamic_channel
     /// [`GraphicsPipelineClient`]: https://docs.rs/ironrdp-egfx/latest/ironrdp_egfx/client/struct.GraphicsPipelineClient.html
     pub support_dyn_vc_gfx_protocol: bool,
+    /// The RDP version the client announces in the `version` field of [`TS_UD_CS_CORE`](gcc::ClientCoreData).
+    ///
+    /// Servers gate some features on it.
+    /// Per [\[MS-RDPBCGR\] 2.2.7.1.6], a server may only take relative mouse events
+    /// (`INPUT_FLAG_MOUSE_RELATIVE`) from a client announcing RDP 10.12 (0x00080011) or later.
+    ///
+    /// [`RdpVersion::V5_PLUS`](gcc::RdpVersion::V5_PLUS) keeps the previous behavior.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.7.1.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b3bc76ae-9ee5-454f-b197-ede845ca69cc
+    pub rdp_version: gcc::RdpVersion,
 }
 
 ironrdp_core::assert_impl!(Config: Send, Sync);

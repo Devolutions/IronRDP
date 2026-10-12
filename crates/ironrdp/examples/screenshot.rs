@@ -270,6 +270,7 @@ fn build_config(
         pointer_software_rendering: true,
         multitransport_flags: None,
         support_dyn_vc_gfx_protocol: false,
+        rdp_version: ironrdp::pdu::gcc::RdpVersion::V5_PLUS,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,
         desktop_physical_size: None,
