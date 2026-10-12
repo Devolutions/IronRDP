@@ -229,14 +229,42 @@ fn rejects_views_smaller_than_the_frame() {
 }
 
 #[test]
-fn rejects_sizes_the_layout_cannot_hold() {
-    // The auxiliary view packs chroma into quarters of each row, and 4:2:0
-    // needs whole row pairs.
-    assert!(Yuv444Frame::new(W + 2, H).is_err());
-    assert!(Yuv444Frame::new(W, H + 1).is_err());
+fn rejects_empty_frames() {
     assert!(Yuv444Frame::new(W, 0).is_err());
-    // Cropped heights are fine, for example 1080 decoded from a 1088 stream.
-    assert!(Yuv444Frame::new(1920, 1080).is_ok());
+    assert!(Yuv444Frame::new(0, H).is_err());
+}
+
+#[test]
+fn cropped_frame_reads_auxiliary_view_at_coded_width() {
+    // The views are encoded W wide and the decoder crops them. The auxiliary
+    // view's V half still starts at W / 2, not at half the cropped width.
+    let (y, u, v) = source_frame();
+    let (main, aux) = split_v2(&y, &u, &v);
+
+    for (width, height) in [(W - 6, H), (W - 7, H - 1)] {
+        let region = [ExclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: u16::try_from(width).expect("fits"),
+            bottom: u16::try_from(height).expect("fits"),
+        }];
+        let mut frame = Yuv444Frame::new(width, height).expect("frame");
+        frame.apply_main_view(&main.view(), &region).expect("main view");
+        frame
+            .apply_auxiliary_view_v2(&aux.view(), &region)
+            .expect("auxiliary view");
+
+        for row in 0..height {
+            for col in 0..width {
+                let (i, src) = (row * width + col, row * W + col);
+                assert_eq!(frame.y()[i], y[src], "{width}x{height}: Y at ({col},{row})");
+                if row % 2 == 1 || col % 2 == 1 {
+                    assert_eq!(frame.u()[i], u[src], "{width}x{height}: U at ({col},{row})");
+                    assert_eq!(frame.v()[i], v[src], "{width}x{height}: V at ({col},{row})");
+                }
+            }
+        }
+    }
 }
 
 /// Through `GraphicsPipelineClient` with OpenH264: the two views are encoded

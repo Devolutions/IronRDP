@@ -51,14 +51,10 @@ impl core::fmt::Debug for Yuv444Frame {
 }
 
 impl Yuv444Frame {
-    /// Create a frame the size of the decoded views. The width must be a
-    /// multiple of 4 and the height even, as the auxiliary view packs chroma
-    /// into halves and quarters of each row.
+    /// Create a frame the size of the decoded views, after any cropping.
     pub fn new(width: usize, height: usize) -> DecoderResult<Self> {
-        if width == 0 || height == 0 || !width.is_multiple_of(4) || !height.is_multiple_of(2) {
-            return Err(DecoderError::msg(
-                "AVC444 frame width must be a nonzero multiple of 4 and height a nonzero even number",
-            ));
+        if width == 0 || height == 0 {
+            return Err(DecoderError::msg("AVC444 frame is empty"));
         }
         let len = width
             .checked_mul(height)
@@ -101,7 +97,8 @@ impl Yuv444Frame {
     /// the region shows at YUV420 quality until an auxiliary view refines its
     /// chroma.
     pub fn apply_main_view(&mut self, main: &Yuv420Planes<'_>, regions: &[ExclusiveRectangle]) -> DecoderResult<()> {
-        check_planes(main, self.width, self.height)?;
+        let (chroma_width, chroma_height) = (self.width.div_ceil(2), self.height.div_ceil(2));
+        check_planes(main, (self.width, self.height), (chroma_width, chroma_height))?;
         for region in regions {
             let (left, top, right, bottom) = self.macroblock_bounds(region);
             for y in top..bottom {
@@ -129,13 +126,22 @@ impl Yuv444Frame {
     ///   quarter: V.
     /// - Auxiliary V, left quarter: U at columns 4x+2 of odd rows. Right
     ///   quarter: V.
+    ///
+    /// The halves and quarters are of the coded width, before cropping. It
+    /// is taken as the frame width rounded up to a whole macroblock, as an
+    /// encoder pads a frame for H.264 and crops the padding off.
     pub fn apply_auxiliary_view_v2(
         &mut self,
         aux: &Yuv420Planes<'_>,
         regions: &[ExclusiveRectangle],
     ) -> DecoderResult<()> {
-        check_planes(aux, self.width, self.height)?;
-        let (half, quarter) = (self.width / 2, self.width / 4);
+        let coded_width = self.width.next_multiple_of(16);
+        let (half, quarter) = (coded_width / 2, coded_width / 4);
+        check_planes(
+            aux,
+            (half + self.width / 2, self.height),
+            (quarter + self.width.div_ceil(4), self.height / 2),
+        )?;
         for region in regions {
             let (left, top, right, bottom) = self.macroblock_bounds(region);
 
@@ -153,11 +159,13 @@ impl Yuv444Frame {
             for y in (top / 2)..(bottom / 2) {
                 let (src_u, src_v) = (y * aux.u_stride, y * aux.v_stride);
                 let dst = (2 * y + 1) * self.width;
-                for x in (left / 4)..(right / 4) {
+                for x in (left / 4)..right.div_ceil(4) {
                     self.u[dst + 4 * x] = aux.u[src_u + x];
                     self.v[dst + 4 * x] = aux.u[src_u + quarter + x];
-                    self.u[dst + 4 * x + 2] = aux.v[src_v + x];
-                    self.v[dst + 4 * x + 2] = aux.v[src_v + quarter + x];
+                    if 4 * x + 2 < right {
+                        self.u[dst + 4 * x + 2] = aux.v[src_v + x];
+                        self.v[dst + 4 * x + 2] = aux.v[src_v + quarter + x];
+                    }
                 }
             }
         }
@@ -216,20 +224,20 @@ impl Yuv444Frame {
     }
 }
 
-/// Check that each plane is large enough for a `width` x `height` YUV420p
-/// frame at its stride.
-fn check_planes(planes: &Yuv420Planes<'_>, width: usize, height: usize) -> DecoderResult<()> {
-    let (half_width, half_height) = (width / 2, height / 2);
-    let fits = |plane: &[u8], stride: usize, row_len: usize, rows: usize| {
-        stride >= row_len
-            && stride
-                .checked_mul(rows - 1)
-                .and_then(|n| n.checked_add(row_len))
-                .is_some_and(|needed| plane.len() >= needed)
+/// Check that each plane holds the `(row length, rows)` read from it at its
+/// stride: `luma` from Y, `chroma` from U and V.
+fn check_planes(planes: &Yuv420Planes<'_>, luma: (usize, usize), chroma: (usize, usize)) -> DecoderResult<()> {
+    let fits = |plane: &[u8], stride: usize, (row_len, rows): (usize, usize)| {
+        rows == 0
+            || stride >= row_len
+                && stride
+                    .checked_mul(rows - 1)
+                    .and_then(|n| n.checked_add(row_len))
+                    .is_some_and(|needed| plane.len() >= needed)
     };
-    if fits(planes.y, planes.y_stride, width, height)
-        && fits(planes.u, planes.u_stride, half_width, half_height)
-        && fits(planes.v, planes.v_stride, half_width, half_height)
+    if fits(planes.y, planes.y_stride, luma)
+        && fits(planes.u, planes.u_stride, chroma)
+        && fits(planes.v, planes.v_stride, chroma)
     {
         Ok(())
     } else {
