@@ -152,6 +152,31 @@ fn main_view_alone_upsamples_chroma() {
 }
 
 #[test]
+fn region_past_the_right_edge_changes_nothing() {
+    // The region clamps to an empty one at the frame's right edge, which
+    // isn't a multiple of 4 here.
+    let (y, u, v) = source_frame();
+    let (main, aux) = split_v2(&y, &u, &v);
+    let mut frame = Yuv444Frame::new(W - 7, H).expect("frame");
+    let before = frame.clone();
+
+    let past = [ExclusiveRectangle {
+        left: u16::try_from(W).expect("fits"),
+        top: 0,
+        right: u16::try_from(W + 16).expect("fits"),
+        bottom: u16::try_from(H).expect("fits"),
+    }];
+    frame.apply_main_view(&main.view(), &past).expect("main view");
+    frame
+        .apply_auxiliary_view_v2(&aux.view(), &past)
+        .expect("auxiliary view");
+
+    assert_eq!(frame.y(), before.y());
+    assert_eq!(frame.u(), before.u());
+    assert_eq!(frame.v(), before.v());
+}
+
+#[test]
 fn updates_stay_inside_their_regions() {
     let (y, u, v) = source_frame();
     let (main, aux) = split_v2(&y, &u, &v);

@@ -155,11 +155,13 @@ impl Yuv444Frame {
                 }
             }
 
-            // B6-B9: even columns of odd rows.
+            // B6-B9: even columns of odd rows. `left` rounds up, so a region
+            // clamped to an empty one at a right edge that isn't a multiple of
+            // 4 covers no group.
             for y in (top / 2)..(bottom / 2) {
                 let (src_u, src_v) = (y * aux.u_stride, y * aux.v_stride);
                 let dst = (2 * y + 1) * self.width;
-                for x in (left / 4)..right.div_ceil(4) {
+                for x in left.div_ceil(4)..right.div_ceil(4) {
                     self.u[dst + 4 * x] = aux.u[src_u + x];
                     self.v[dst + 4 * x] = aux.u[src_u + quarter + x];
                     if 4 * x + 2 < right {
