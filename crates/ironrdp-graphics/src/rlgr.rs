@@ -347,21 +347,15 @@ struct BitReader<'a> {
     data: &'a [u8],
     /// Position in bits.
     pos: usize,
-    /// Length in bits.
-    len: usize,
 }
 
 impl<'a> BitReader<'a> {
     fn new(data: &'a [u8]) -> Self {
-        Self {
-            data,
-            pos: 0,
-            len: data.len() * 8,
-        }
+        Self { data, pos: 0 }
     }
 
     fn remaining(&self) -> usize {
-        self.len - self.pos
+        self.data.len() * 8 - self.pos
     }
 
     /// The next 64 bits, left-aligned, zero past the end.
@@ -407,7 +401,7 @@ impl<'a> BitReader<'a> {
         #![expect(clippy::as_conversions, reason = "u32-to-usize")]
 
         let start = self.pos;
-        while self.pos < self.len {
+        while self.remaining() > 0 {
             let window = self.peek64();
             let run = if value {
                 window.leading_ones()
