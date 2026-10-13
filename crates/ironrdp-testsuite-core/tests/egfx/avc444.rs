@@ -254,6 +254,34 @@ fn rejects_views_smaller_than_the_frame() {
 }
 
 #[test]
+fn converts_full_range_bt709() {
+    // MS-RDPEGFX's AVC is full-range BT.709: R = Y + 1.5748 (V - 128),
+    // G = Y - 0.1873 (U - 128) - 0.4681 (V - 128), B = Y + 1.8556 (U - 128).
+    // (Y, U, V) = (100, 180, 150) is (134.6, 79.9, 196.5).
+    let planes = Planes420 {
+        y: vec![100; W * H],
+        u: vec![180; W / 2 * H / 2],
+        v: vec![150; W / 2 * H / 2],
+    };
+    let mut frame = Yuv444Frame::new(W, H).expect("frame");
+    frame.apply_main_view(&planes.view(), &full_frame()).expect("main view");
+    let rgba = frame
+        .to_rgba(&ExclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 1,
+            bottom: 1,
+        })
+        .expect("rgba");
+    for (got, want) in rgba.iter().zip([135u8, 80, 197, 255]) {
+        assert!(
+            got.abs_diff(want) <= 1,
+            "RGBA {rgba:?}, expected about [135, 80, 197, 255]"
+        );
+    }
+}
+
+#[test]
 fn rejects_empty_frames() {
     assert!(Yuv444Frame::new(W, 0).is_err());
     assert!(Yuv444Frame::new(0, H).is_err());
@@ -416,6 +444,17 @@ mod end_to_end {
     fn send_stream(
         stream: &Avc444BitmapStream<'_>,
     ) -> (ironrdp_pdu::PduResult<()>, Vec<(ExclusiveRectangle, Vec<u8>)>) {
+        let (mut client, updates) = client_with_surface();
+        let result = send(&mut client, stream);
+        let updates = updates.lock().expect("lock").clone();
+        (result, updates)
+    }
+
+    type Updates = Arc<Mutex<Vec<(ExclusiveRectangle, Vec<u8>)>>>;
+
+    /// A client with V10.7 confirmed and surface 1 created, and the bitmap
+    /// updates it paints.
+    fn client_with_surface() -> (GraphicsPipelineClient, Updates) {
         let updates = Arc::new(Mutex::new(Vec::new()));
         let mut client = GraphicsPipelineClient::new(
             Box::new(Capture(Arc::clone(&updates))),
@@ -427,8 +466,13 @@ mod end_to_end {
                 flags: CapabilitiesV107Flags::empty(),
             })),
         );
+        create_surface_1(&mut client);
+        (client, updates)
+    }
+
+    fn create_surface_1(client: &mut GraphicsPipelineClient) {
         process(
-            &mut client,
+            client,
             &GfxPdu::CreateSurface(CreateSurfacePdu {
                 surface_id: 1,
                 width: u16::try_from(W).expect("fits"),
@@ -436,6 +480,10 @@ mod end_to_end {
                 pixel_format: PixelFormat::XRgb,
             }),
         );
+    }
+
+    /// Send `stream` to surface 1 as one AVC444v2 PDU.
+    fn send(client: &mut GraphicsPipelineClient, stream: &Avc444BitmapStream<'_>) -> ironrdp_pdu::PduResult<()> {
         let pdu = GfxPdu::WireToSurface1(WireToSurface1Pdu {
             surface_id: 1,
             codec_id: Codec1Type::Avc444v2,
@@ -444,10 +492,7 @@ mod end_to_end {
             bitmap_data: encode_vec(stream).expect("encode AVC444 stream"),
         });
         let bytes = encode_vec(&pdu).expect("encode PDU");
-        let result = client.process(0, &wrap_uncompressed(&bytes)).map(drop);
-
-        let updates = updates.lock().expect("lock").clone();
-        (result, updates)
+        client.process(0, &wrap_uncompressed(&bytes)).map(drop)
     }
 
     #[test]
@@ -570,5 +615,69 @@ mod end_to_end {
         });
         result.expect("a chroma-only update is not an error");
         assert!(updates.is_empty(), "painted chroma with no luma under it");
+    }
+
+    fn luma_only<'a>(main_h264: &'a [u8]) -> Avc444BitmapStream<'a> {
+        Avc444BitmapStream {
+            encoding: Encoding::LUMA,
+            stream1: avc420_stream(main_h264, &full_frame()),
+            stream2: None,
+        }
+    }
+
+    fn chroma_only<'a>(aux_h264: &'a [u8]) -> Avc444BitmapStream<'a> {
+        Avc444BitmapStream {
+            encoding: Encoding::CHROMA,
+            stream1: avc420_stream(aux_h264, &full_frame()),
+            stream2: None,
+        }
+    }
+
+    #[test]
+    fn avc444v2_luma_then_chroma_in_separate_updates_combine() {
+        // A server can send the main view alone (LC = 1) and refine it later
+        // with the auxiliary view alone (LC = 2); the second paints full chroma.
+        let (y, u, v) = striped_source();
+        let (main, aux) = split_v2(&y, &u, &v);
+        let (main_h264, aux_h264) = encode_views(&main, &aux);
+        let (mut client, updates) = client_with_surface();
+
+        send(&mut client, &luma_only(&main_h264)).expect("luma-only update");
+        send(&mut client, &chroma_only(&aux_h264)).expect("chroma-only update");
+
+        let updates = updates.lock().expect("lock").clone();
+        assert_eq!(updates.len(), 2, "one bitmap update per PDU");
+        let mut full = Yuv444Frame::new(W, H).expect("frame");
+        full.apply_main_view(&main.view(), &full_frame()).expect("main");
+        full.apply_auxiliary_view_v2(&aux.view(), &full_frame()).expect("aux");
+        let mut luma_only = Yuv444Frame::new(W, H).expect("frame");
+        luma_only.apply_main_view(&main.view(), &full_frame()).expect("main");
+        let got = &updates[1].1;
+        let to_444 = mean_abs_error(got, &full.to_rgba(&full_frame()[0]).expect("rgba"));
+        let to_420 = mean_abs_error(got, &luma_only.to_rgba(&full_frame()[0]).expect("rgba"));
+        assert!(
+            to_444 * 4.0 < to_420,
+            "expected the chroma-only update to complete YUV444: error {to_444:.2} vs {to_420:.2}"
+        );
+    }
+
+    #[test]
+    fn avc444v2_recreated_surface_drops_the_old_frame() {
+        // CreateSurface for an id in use starts a new surface; a chroma-only
+        // update must not refine the old surface's luma.
+        let (y, u, v) = striped_source();
+        let (main, aux) = split_v2(&y, &u, &v);
+        let (main_h264, aux_h264) = encode_views(&main, &aux);
+        let (mut client, updates) = client_with_surface();
+
+        send(&mut client, &luma_only(&main_h264)).expect("luma-only update");
+        create_surface_1(&mut client);
+        send(&mut client, &chroma_only(&aux_h264)).expect("chroma-only update");
+
+        assert_eq!(
+            updates.lock().expect("lock").len(),
+            1,
+            "painted chroma over the old surface's luma"
+        );
     }
 }
