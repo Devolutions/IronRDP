@@ -1141,11 +1141,20 @@ impl GraphicsPipelineClient {
             usize::try_from(height).map_err(|_| pdu_other_err!("AVC444 frame too tall"))?,
         );
 
-        if self
+        let has_frame = self
             .avc444_frames
             .get(&surface_id)
-            .is_none_or(|frame| frame.width() != width || frame.height() != height)
-        {
+            .is_some_and(|frame| frame.width() == width && frame.height() == height);
+        // A chroma-only update refines the luma already there; without luma of
+        // its size, it would paint chroma over black.
+        if luma.is_none() && !has_frame {
+            warn!(
+                surface_id,
+                width, height, "Ignoring AVC444 chroma without a luma frame of its size"
+            );
+            return Ok(());
+        }
+        if !has_frame {
             let frame = Yuv444Frame::new(width, height).map_err(|e| pdu_other_err!("AVC444 frame size", source: e))?;
             self.avc444_frames.insert(surface_id, frame);
         }

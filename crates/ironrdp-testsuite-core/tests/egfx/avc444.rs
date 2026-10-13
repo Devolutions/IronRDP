@@ -405,6 +405,17 @@ mod end_to_end {
         aux_h264: &[u8],
         regions: &[ExclusiveRectangle],
     ) -> (ironrdp_pdu::PduResult<()>, Vec<(ExclusiveRectangle, Vec<u8>)>) {
+        send_stream(&Avc444BitmapStream {
+            encoding: Encoding::LUMA_AND_CHROMA,
+            stream1: avc420_stream(main_h264, regions),
+            stream2: Some(avc420_stream(aux_h264, regions)),
+        })
+    }
+
+    /// Send `stream` as one AVC444v2 PDU to a new surface.
+    fn send_stream(
+        stream: &Avc444BitmapStream<'_>,
+    ) -> (ironrdp_pdu::PduResult<()>, Vec<(ExclusiveRectangle, Vec<u8>)>) {
         let updates = Arc::new(Mutex::new(Vec::new()));
         let mut client = GraphicsPipelineClient::new(
             Box::new(Capture(Arc::clone(&updates))),
@@ -425,17 +436,12 @@ mod end_to_end {
                 pixel_format: PixelFormat::XRgb,
             }),
         );
-        let stream = Avc444BitmapStream {
-            encoding: Encoding::LUMA_AND_CHROMA,
-            stream1: avc420_stream(main_h264, regions),
-            stream2: Some(avc420_stream(aux_h264, regions)),
-        };
         let pdu = GfxPdu::WireToSurface1(WireToSurface1Pdu {
             surface_id: 1,
             codec_id: Codec1Type::Avc444v2,
             pixel_format: PixelFormat::XRgb,
             destination_rectangle: full_frame()[0].clone(),
-            bitmap_data: encode_vec(&stream).expect("encode AVC444 stream"),
+            bitmap_data: encode_vec(stream).expect("encode AVC444 stream"),
         });
         let bytes = encode_vec(&pdu).expect("encode PDU");
         let result = client.process(0, &wrap_uncompressed(&bytes)).map(drop);
@@ -546,5 +552,23 @@ mod end_to_end {
             "accepted an auxiliary view {wide} wide for a {W}-wide main view"
         );
         assert!(updates.is_empty(), "painted a frame from mismatched views");
+    }
+
+    #[test]
+    fn avc444v2_chroma_without_its_luma_paints_nothing() {
+        // A chroma-only update refines the luma already on the surface. With
+        // no luma of its size there, painting it would show chroma over black.
+        let (y, u, v) = striped_source();
+        let (main, aux) = split_v2(&y, &u, &v);
+        // The first frame of its own stream, so it decodes on its own.
+        let (aux_h264, _) = encode_views(&aux, &main);
+
+        let (result, updates) = send_stream(&Avc444BitmapStream {
+            encoding: Encoding::CHROMA,
+            stream1: avc420_stream(&aux_h264, &full_frame()),
+            stream2: None,
+        });
+        result.expect("a chroma-only update is not an error");
+        assert!(updates.is_empty(), "painted chroma with no luma under it");
     }
 }
