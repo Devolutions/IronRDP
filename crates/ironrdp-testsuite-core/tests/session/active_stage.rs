@@ -204,3 +204,85 @@ fn reset_graphics_clips_a_hotspot_cursor_to_one_pixel() {
 
     assert_eq!(image.data(), &[0xFF, 0xFF, 0xFF, 0]);
 }
+
+/// A pipeline run outside `ActiveStage` (say, on a thread of its own) is
+/// composited by `composite_graphics_pipeline` the way `ActiveStage` composites
+/// its own: the reset resizes the image, and the frame's fill lands in it.
+#[test]
+fn composite_graphics_pipeline_follows_a_reset_then_paints_the_frame() {
+    use ironrdp_core::encode_vec;
+    use ironrdp_dvc::DvcProcessor as _;
+    use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+    use ironrdp_egfx::pdu::{
+        Color, CreateSurfacePdu, EndFramePdu, GfxPdu, MapSurfaceToOutputPdu, PixelFormat as GfxPixelFormat,
+        ResetGraphicsPdu, SolidFillPdu, StartFramePdu, Timestamp,
+    };
+    use ironrdp_graphics::zgfx::wrap_uncompressed;
+    use ironrdp_session::composite_graphics_pipeline;
+
+    struct Handler;
+    impl GraphicsPipelineHandler for Handler {}
+
+    let mut gfx = GraphicsPipelineClient::new(Box::new(Handler), None);
+    for pdu in [
+        GfxPdu::ResetGraphics(ResetGraphicsPdu {
+            width: 64,
+            height: 32,
+            monitors: Vec::new(),
+        }),
+        GfxPdu::CreateSurface(CreateSurfacePdu {
+            surface_id: 1,
+            width: 64,
+            height: 32,
+            pixel_format: GfxPixelFormat::XRgb,
+        }),
+        GfxPdu::MapSurfaceToOutput(MapSurfaceToOutputPdu {
+            surface_id: 1,
+            output_origin_x: 0,
+            output_origin_y: 0,
+        }),
+        GfxPdu::StartFrame(StartFramePdu {
+            timestamp: Timestamp {
+                milliseconds: 0,
+                seconds: 0,
+                minutes: 0,
+                hours: 0,
+            },
+            frame_id: 1,
+        }),
+        GfxPdu::SolidFill(SolidFillPdu {
+            surface_id: 1,
+            fill_pixel: Color {
+                b: 0x30,
+                g: 0x20,
+                r: 0x10,
+                xa: 0xFF,
+            },
+            rectangles: vec![ExclusiveRectangle {
+                left: 8,
+                top: 4,
+                right: 24,
+                bottom: 12,
+            }],
+        }),
+        GfxPdu::EndFrame(EndFramePdu { frame_id: 1 }),
+    ] {
+        gfx.process(0, &wrap_uncompressed(&encode_vec(&pdu).expect("encode PDU")))
+            .expect("process PDU");
+    }
+
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 2, 2);
+    let composited = composite_graphics_pipeline(&mut gfx, &mut image).expect("composite");
+    assert!(composited.reset);
+    assert_eq!((image.width(), image.height()), (64, 32));
+    let region = composited.region.expect("the fill changed a region");
+    assert!(
+        region.left <= 8 && region.top <= 4 && region.right >= 23 && region.bottom >= 11,
+        "{region:?} doesn't cover the fill"
+    );
+    let pixel = (5 * 64 + 10) * 4;
+    assert_eq!(&image.data()[pixel..pixel + 3], &[0x10, 0x20, 0x30]);
+
+    let again = composite_graphics_pipeline(&mut gfx, &mut image).expect("composite again");
+    assert!(!again.reset && again.region.is_none(), "drained output came back");
+}
