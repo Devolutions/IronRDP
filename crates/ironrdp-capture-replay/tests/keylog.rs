@@ -8,7 +8,7 @@ use std::process::Command;
 
 use aes_gcm::aead::{AeadInPlace as _, KeyInit as _};
 use aes_gcm::{Aes128Gcm, Nonce};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac as _};
 use ironrdp_capture_replay::{ReplayError, decrypt_tls, read_capture, replay_capture};
 use sha2::Sha256;
 
@@ -141,7 +141,7 @@ fn tls12_key_block(master: &[u8], client_random: &[u8], server_random: &[u8]) ->
     seed.extend(client_random);
     let mut label_seed = b"key expansion".to_vec();
     label_seed.extend(seed);
-    let mut a = <Hmac<Sha256> as Mac>::new_from_slice(master)
+    let mut a = <Hmac<Sha256> as KeyInit>::new_from_slice(master)
         .expect("valid HMAC key")
         .chain_update(&label_seed)
         .finalize()
@@ -149,11 +149,11 @@ fn tls12_key_block(master: &[u8], client_random: &[u8], server_random: &[u8]) ->
         .to_vec();
     let mut key_block = Vec::new();
     while key_block.len() < 40 {
-        let mut hmac = <Hmac<Sha256> as Mac>::new_from_slice(master).expect("valid HMAC key");
+        let mut hmac = <Hmac<Sha256> as KeyInit>::new_from_slice(master).expect("valid HMAC key");
         hmac.update(&a);
         hmac.update(&label_seed);
         key_block.extend(hmac.finalize().into_bytes());
-        a = <Hmac<Sha256> as Mac>::new_from_slice(master)
+        a = <Hmac<Sha256> as KeyInit>::new_from_slice(master)
             .expect("valid HMAC key")
             .chain_update(&a)
             .finalize()

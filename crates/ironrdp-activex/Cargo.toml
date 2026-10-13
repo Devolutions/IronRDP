@@ -41,7 +41,7 @@ ironrdp-session = { path = "../ironrdp-session", version = "0.11" }
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" }
 png = "0.18"
-sha2 = "0.10"
+sha2 = "0.11"
 tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "sync"] }
 tracing = { version = "0.1", features = ["log"] }
 url = "2.5"
