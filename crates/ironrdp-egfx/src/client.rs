@@ -2503,6 +2503,141 @@ mod tests {
         }
     }
 
+    /// A REGION may be covered by a tile sent earlier in the same RDPGFX frame under
+    /// another codec context. Skipping it left stale 64-pixel columns of an animation
+    /// on screen until the next full repaint.
+    #[test]
+    fn region_reuses_tile_sent_under_another_codec_context() {
+        use ironrdp_graphics::progressive::{COEFFICIENTS_PER_COMPONENT, encode_first_pass};
+        use ironrdp_pdu::codecs::rfx::progressive::{
+            ComponentCodecQuant, ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu,
+            ProgressiveFrameEndPdu, ProgressiveRegion, ProgressiveSyncPdu, ProgressiveTile, TileSimple,
+            encode_progressive_stream,
+        };
+
+        let base_quant = ComponentCodecQuant::LOSSLESS;
+        let mut component = [0i16; COEFFICIENTS_PER_COMPONENT];
+        let mut component_data = [0u8; 8192];
+        let component_len = encode_first_pass(
+            &mut component,
+            &mut component_data,
+            &base_quant,
+            &ComponentCodecQuant::LOSSLESS,
+            false,
+        )
+        .unwrap();
+        let component_data = &component_data[..component_len];
+        let first = encode_progressive_stream(&[
+            ProgressiveBlock::Sync(ProgressiveSyncPdu),
+            ProgressiveBlock::Context(ProgressiveContextPdu {
+                context_id: 0,
+                tile_size: 0x0040,
+                flags: 0,
+            }),
+            ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
+                frame_index: 0,
+                region_count: 1,
+            }),
+            ProgressiveBlock::Region(ProgressiveRegion {
+                tile_size: 0x40,
+                rects: vec![rect(8, 12, 16, 20)],
+                quant_vals: vec![base_quant],
+                quant_prog_vals: vec![],
+                flags: 0,
+                tiles: vec![ProgressiveTile::Simple(TileSimple {
+                    quant_idx_y: 0,
+                    quant_idx_cb: 0,
+                    quant_idx_cr: 0,
+                    x_idx: 0,
+                    y_idx: 0,
+                    flags: 0,
+                    y_data: component_data,
+                    cb_data: component_data,
+                    cr_data: component_data,
+                    tail_data: &[],
+                })],
+            }),
+            ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
+        ])
+        .unwrap();
+        let shared = encode_progressive_stream(&[
+            ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
+                frame_index: 1,
+                region_count: 1,
+            }),
+            ProgressiveBlock::Region(ProgressiveRegion {
+                tile_size: 0x40,
+                rects: vec![rect(32, 40, 8, 10)],
+                quant_vals: vec![],
+                quant_prog_vals: vec![],
+                flags: 0,
+                tiles: vec![],
+            }),
+            ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
+        ])
+        .unwrap();
+
+        let decode_frame = |second_codec_context_id: u32| {
+            let mut client = progressive_client();
+            start_frame(&mut client, 1);
+            client
+                .handle_pdu(GfxPdu::MapSurfaceToOutput(crate::pdu::MapSurfaceToOutputPdu {
+                    surface_id: 1,
+                    output_origin_x: 0,
+                    output_origin_y: 0,
+                }))
+                .unwrap();
+            end_frame(&mut client, 1);
+            let _ = client.drain_output();
+
+            start_frame(&mut client, 2);
+            wire_progressive(&mut client, first.clone()).unwrap();
+            client
+                .handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
+                    surface_id: 1,
+                    codec_id: crate::pdu::Codec2Type::RemoteFxProgressive,
+                    codec_context_id: second_codec_context_id,
+                    pixel_format: PixelFormat::XRgb,
+                    bitmap_data: shared.clone(),
+                }))
+                .unwrap();
+            end_frame(&mut client, 2);
+
+            client
+                .drain_output()
+                .into_iter()
+                .map(|update| (update.region, update.data))
+                .collect::<Vec<_>>()
+        };
+
+        let other_context = decode_frame(8);
+        let regions: Vec<_> = other_context.iter().map(|(region, _)| region.clone()).collect();
+        assert_eq!(
+            regions,
+            vec![
+                ExclusiveRectangle {
+                    left: 8,
+                    top: 12,
+                    right: 24,
+                    bottom: 32,
+                },
+                ExclusiveRectangle {
+                    left: 32,
+                    top: 40,
+                    right: 40,
+                    bottom: 50,
+                },
+            ],
+            "the second context's REGION must paint from the tile sent earlier in the frame"
+        );
+        assert!(other_context[1].1.iter().any(|&value| value != 0));
+        assert_eq!(
+            other_context,
+            decode_frame(7),
+            "a REGION must paint the same pixels whichever codec context carries it"
+        );
+    }
+
     fn assert_progressive_context_is_deleted(clear: impl FnOnce(&mut GraphicsPipelineClient)) {
         let mut client = progressive_client();
         wire_progressive(&mut client, progressive_context_stream(true)).unwrap();
@@ -2570,7 +2705,7 @@ mod tests {
     }
 
     #[test]
-    fn progressive_context_is_deleted_with_encoding_context() {
+    fn progressive_tiles_survive_encoding_context_deletion() {
         let mut client = progressive_client();
         wire_progressive(&mut client, progressive_context_stream(true)).unwrap();
         client
@@ -2580,9 +2715,9 @@ mod tests {
             }))
             .unwrap();
 
-        // The context's tiles are gone, but the surface survives and keeps the band layout it
-        // was given, so a payload reusing the id decodes from scratch. Windows deletes a codec
-        // context as it opens the next one and never repeats SYNC + CONTEXT.
+        // The surface keeps its tiles and the band layout it was given, so a payload reusing
+        // the id still decodes. Windows deletes a codec context as it opens the next one and
+        // never repeats SYNC + CONTEXT.
         assert!(wire_progressive(&mut client, progressive_context_stream(false)).is_ok());
     }
 
