@@ -62,7 +62,7 @@ use crate::autodetect::{AutoDetectHandles, AutoDetectManager, AutoDetectOutcome}
 use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayContext, DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
-use crate::encoder::{RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs};
+use crate::encoder::{MAX_FASTPATH_UPDATE_SIZE, RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs};
 use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxContext, GfxServerFactory, GfxServerHandle};
@@ -102,8 +102,13 @@ fn client_core_frame_ack_limit(capabilities: &[CapabilitySet]) -> Option<NonZero
 /// fragmented Fast-Path Update it can take. A client that sends no Multifragment Update
 /// Capability Set, or a zero size, leaves the server's in place.
 ///
+/// The client's value is not taken below one Fast-Path fragment: an update that size is
+/// sent unfragmented and never reaches the reassembly buffer, and a smaller value would
+/// only make the encoder cut every frame into tiny tiles.
+///
 /// [MaxRequestSize]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/01717954-716a-424d-af35-28fb2b86df89
 fn client_max_request_size(server_max_request_size: u32, capabilities: &[CapabilitySet]) -> u32 {
+    let one_fragment = u32::try_from(MAX_FASTPATH_UPDATE_SIZE).unwrap_or(u32::MAX);
     capabilities
         .iter()
         .find_map(|capability| match capability {
@@ -112,7 +117,9 @@ fn client_max_request_size(server_max_request_size: u32, capabilities: &[Capabil
             }
             _ => None,
         })
-        .map_or(server_max_request_size, |client| client.min(server_max_request_size))
+        .map_or(server_max_request_size, |client| {
+            client.max(one_fragment).min(server_max_request_size)
+        })
 }
 
 const AUTO_RECONNECT_COOKIE_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -7452,6 +7459,11 @@ mod tests {
         assert_eq!(client_max_request_size(65536, &[client(8 * 1024 * 1024)]), 65536);
         assert_eq!(client_max_request_size(65536, &[client(0)]), 65536);
         assert_eq!(client_max_request_size(65536, &[]), 65536);
+        assert_eq!(
+            client_max_request_size(65536, &[client(1)]),
+            16_374,
+            "one fragment at least"
+        );
     }
 }
 
