@@ -16,6 +16,7 @@ use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, Surfa
 use tracing::{debug, warn};
 
 use self::bitmap::BitmapEncoder;
+pub(crate) use self::fast_path::MAX_FASTPATH_UPDATE_SIZE;
 use self::rfx::RfxEncoder;
 use super::BitmapUpdate;
 use crate::error::{ServerError, ServerErrorExt as _, ServerResult, ServerResultExt as _};
@@ -367,7 +368,7 @@ impl UpdateEncoder {
         // MultifragmentUpdate reassembly buffer.
         let mut tiled = Vec::with_capacity(diffs.len());
         for rect in diffs {
-            if rect.width * rect.height * 4 <= self.max_request_size {
+            if rect.width * rect.height * 4 <= self.max_tile_bytes() {
                 tiled.push(rect);
             } else {
                 let rects = self.split_diff(rect);
@@ -377,19 +378,29 @@ impl UpdateEncoder {
         tiled
     }
 
-    /// Split a rect into tiles that fit within `max_request_size`.
+    /// Uncompressed size a tile may have so that its encoded update fits `max_request_size`.
+    ///
+    /// A quarter is held back for the update and bitmap headers and for codecs whose output
+    /// can outgrow the pixels (QOI: up to 5 bytes for a 4-byte pixel), since a tile is sized
+    /// before it is encoded and cannot be re-encoded smaller afterwards (RemoteFX and QOIZ
+    /// keep state across updates).
+    fn max_tile_bytes(&self) -> usize {
+        self.max_request_size - self.max_request_size / 4
+    }
+
+    /// Split a rect into tiles that fit within `max_tile_bytes`.
     /// Splits by height first, then by width within each horizontal strip.
     fn split_diff(&self, rect: Rect) -> Vec<Rect> {
         let mut rects = Vec::new();
 
-        let max_height = (self.max_request_size / (rect.width * 4)).max(1);
+        let max_height = (self.max_tile_bytes() / (rect.width * 4)).max(1);
         let mut y = rect.y;
         let y_end = rect.y + rect.height;
         while y < y_end {
             let h = (y_end - y).min(max_height);
             // Width splitting is unlikely in practice (would require
             // max_request_size < ~256 KB), but ensures correctness.
-            let max_width = (self.max_request_size / (h * 4)).max(1);
+            let max_width = (self.max_tile_bytes() / (h * 4)).max(1);
             let mut x = rect.x;
             let x_end = rect.x + rect.width;
             while x < x_end {
@@ -942,4 +953,53 @@ fn set_surface(bitmap: &BitmapUpdate, codec_id: u8, data: &[u8]) -> ServerResult
         UpdateCode::SurfaceCommands,
         encode_vec(&cmd).map_err(ServerError::encode)?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use core::num::NonZeroUsize;
+
+    use bytes::Bytes;
+
+    use super::*;
+    use crate::PixelFormat;
+
+    /// The largest update the encoder emits for one full frame of pixels that compress badly.
+    async fn largest_update(width: u16, height: u16, surface_flags: CmdFlags, max_request_size: u32) -> usize {
+        let mut encoder = UpdateEncoder::new(
+            DesktopSize { width, height },
+            surface_flags,
+            UpdateEncoderCodecs::new(),
+            max_request_size,
+            0,
+            LargePointerSupportFlags::empty(),
+        )
+        .expect("encoder");
+        let len = usize::from(width) * usize::from(height) * 4;
+        let data: Vec<u8> = (0..len).map(|i| (i * 31 + i / 7).to_le_bytes()[0]).collect();
+        let bitmap = BitmapUpdate {
+            x: 0,
+            y: 0,
+            width: NonZeroU16::new(width).expect("width"),
+            height: NonZeroU16::new(height).expect("height"),
+            format: PixelFormat::BgrA32,
+            data: Bytes::from(data),
+            stride: NonZeroUsize::new(usize::from(width) * 4).expect("stride"),
+        };
+
+        let mut updates = encoder.update(DisplayUpdate::Bitmap(bitmap));
+        let mut largest = 0;
+        while let Some(update) = updates.next().await {
+            largest = largest.max(update.expect("update").data.len());
+        }
+        largest
+    }
+
+    #[tokio::test]
+    async fn no_update_outgrows_the_negotiated_request_size() {
+        // 2048-pixel rows: a 2048x8 tile is exactly 65,536 pixel bytes, plus its headers.
+        assert!(largest_update(2048, 64, CmdFlags::SET_SURFACE_BITS, 65_536).await <= 65_536);
+        assert!(largest_update(1440, 900, CmdFlags::empty(), 65_536).await <= 65_536);
+        assert!(largest_update(1440, 900, CmdFlags::empty(), 16_374).await <= 16_374);
+    }
 }
