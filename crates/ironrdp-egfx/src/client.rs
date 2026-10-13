@@ -2047,9 +2047,12 @@ mod tests {
         encode_progressive_stream(&blocks).unwrap()
     }
 
-    fn progressive_tile_stream(tile_x: u16, tile_y: u16, rect_width: u16, rect_height: u16) -> Vec<u8> {
+    fn progressive_tile_stream(
+        tile_x: u16,
+        tile_y: u16,
+        region_rect: ironrdp_pdu::codecs::rfx::RfxRectangle,
+    ) -> Vec<u8> {
         use ironrdp_graphics::progressive::{COEFFICIENTS_PER_COMPONENT, encode_first_pass};
-        use ironrdp_pdu::codecs::rfx::RfxRectangle;
         use ironrdp_pdu::codecs::rfx::progressive::{
             ComponentCodecQuant, ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu,
             ProgressiveFrameEndPdu, ProgressiveRegion, ProgressiveSyncPdu, ProgressiveTile, TileSimple,
@@ -2082,12 +2085,7 @@ mod tests {
             }),
             ProgressiveBlock::Region(ProgressiveRegion {
                 tile_size: 0x40,
-                rects: vec![RfxRectangle {
-                    x: tile_x.saturating_mul(64),
-                    y: tile_y.saturating_mul(64),
-                    width: rect_width,
-                    height: rect_height,
-                }],
+                rects: vec![region_rect],
                 quant_vals: vec![base_quant],
                 quant_prog_vals: vec![],
                 flags: 0,
@@ -2168,7 +2166,7 @@ mod tests {
                 frame_id: 2,
             }))
             .unwrap();
-        wire_progressive(&mut client, progressive_tile_stream(1, 1, 36, 36)).unwrap();
+        wire_progressive(&mut client, progressive_tile_stream(1, 1, rect(64, 64, 36, 36))).unwrap();
         client
             .handle_pdu(GfxPdu::EndFrame(crate::pdu::EndFramePdu { frame_id: 2 }))
             .unwrap();
@@ -2406,7 +2404,11 @@ mod tests {
             }))
             .unwrap();
         for surface_id in [1, 2] {
-            send(&mut client, surface_id, progressive_tile_stream(0, 0, 64, 64));
+            send(
+                &mut client,
+                surface_id,
+                progressive_tile_stream(0, 0, rect(0, 0, 64, 64)),
+            );
         }
         assert_eq!(updates.lock().unwrap().len(), 2);
         updates.lock().unwrap().clear();
@@ -2508,58 +2510,12 @@ mod tests {
     /// on screen until the next full repaint.
     #[test]
     fn region_reuses_tile_sent_under_another_codec_context() {
-        use ironrdp_graphics::progressive::{COEFFICIENTS_PER_COMPONENT, encode_first_pass};
         use ironrdp_pdu::codecs::rfx::progressive::{
-            ComponentCodecQuant, ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu,
-            ProgressiveFrameEndPdu, ProgressiveRegion, ProgressiveSyncPdu, ProgressiveTile, TileSimple,
+            ProgressiveBlock, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu, ProgressiveRegion,
             encode_progressive_stream,
         };
 
-        let base_quant = ComponentCodecQuant::LOSSLESS;
-        let mut component = [0i16; COEFFICIENTS_PER_COMPONENT];
-        let mut component_data = [0u8; 8192];
-        let component_len = encode_first_pass(
-            &mut component,
-            &mut component_data,
-            &base_quant,
-            &ComponentCodecQuant::LOSSLESS,
-            false,
-        )
-        .unwrap();
-        let component_data = &component_data[..component_len];
-        let first = encode_progressive_stream(&[
-            ProgressiveBlock::Sync(ProgressiveSyncPdu),
-            ProgressiveBlock::Context(ProgressiveContextPdu {
-                context_id: 0,
-                tile_size: 0x0040,
-                flags: 0,
-            }),
-            ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
-                frame_index: 0,
-                region_count: 1,
-            }),
-            ProgressiveBlock::Region(ProgressiveRegion {
-                tile_size: 0x40,
-                rects: vec![rect(8, 12, 16, 20)],
-                quant_vals: vec![base_quant],
-                quant_prog_vals: vec![],
-                flags: 0,
-                tiles: vec![ProgressiveTile::Simple(TileSimple {
-                    quant_idx_y: 0,
-                    quant_idx_cb: 0,
-                    quant_idx_cr: 0,
-                    x_idx: 0,
-                    y_idx: 0,
-                    flags: 0,
-                    y_data: component_data,
-                    cb_data: component_data,
-                    cr_data: component_data,
-                    tail_data: &[],
-                })],
-            }),
-            ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
-        ])
-        .unwrap();
+        let first = progressive_tile_stream(0, 0, rect(8, 12, 16, 20));
         let shared = encode_progressive_stream(&[
             ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
                 frame_index: 1,
@@ -2675,7 +2631,7 @@ mod tests {
             updates: Arc::clone(&updates),
             unhandled: Arc::new(Mutex::new(0)),
         });
-        wire_progressive(&mut client, progressive_tile_stream(0, 0, 64, 64)).unwrap();
+        wire_progressive(&mut client, progressive_tile_stream(0, 0, rect(0, 0, 64, 64))).unwrap();
         assert_eq!(updates.lock().unwrap().len(), 1);
         updates.lock().unwrap().clear();
 
