@@ -307,21 +307,18 @@ impl ActiveStage {
         &mut self,
         image: &mut DecodedImage,
     ) -> SessionResult<(Option<InclusiveRectangle>, Vec<WindowUpdate>)> {
-        let (output_reset, graphics_updates, window_updates) = self
+        let Some(composited) = self
             .get_dvc_mut::<GraphicsPipelineClient>()
-            .map(|mut gfx| {
-                let gfx = gfx.processor_mut();
-                (gfx.take_output_reset(), gfx.drain_output(), gfx.drain_window_updates())
-            })
-            .unwrap_or_default();
-        if let Some((width, height)) = output_reset {
-            image.reset_preserving_pointer(width, height)?;
+            .map(|mut gfx| composite_graphics_pipeline(gfx.processor_mut(), image))
+            .transpose()?
+        else {
+            return Ok((None, Vec::new()));
+        };
+        if composited.reset {
             self.graphics_output_needs_full_refresh = true;
         }
-        let (region, damage_regions) =
-            composite_graphics_updates(image, graphics_updates.into_iter().map(|u| (u.region, u.data)))?;
-        self.damage_regions.extend(damage_regions);
-        Ok((region, window_updates))
+        self.damage_regions.extend(composited.regions);
+        Ok((composited.region, composited.window_updates))
     }
 
     /// Composites RGBA pixels rendered outside the session, such as client-side video, into
@@ -1124,6 +1121,46 @@ fn process_slow_path_pointer(
     let mut src = ReadCursor::new(data);
     let pointer = slow_path::decode_slow_path_pointer(&mut src).map_err(SessionError::decode)?;
     fast_path_processor.process_pointer_update(image, pointer)
+}
+
+/// What [`composite_graphics_pipeline`] did to the image.
+#[derive(Debug, Default)]
+pub struct CompositedGraphics {
+    /// The image was resized and cleared for a `ResetGraphics`.
+    pub reset: bool,
+    /// The union of the regions changed, or `None` when nothing changed.
+    pub region: Option<InclusiveRectangle>,
+    /// Each region changed.
+    pub regions: Vec<InclusiveRectangle>,
+    /// The RemoteApp window regions, which are not part of the image. The caller
+    /// paints each into the window it names, as for
+    /// [`ActiveStageOutput::WindowSurfaceUpdates`].
+    pub window_updates: Vec<WindowUpdate>,
+}
+
+/// Composite what `gfx` has decoded since the last call into `image`: follow a
+/// pending `ResetGraphics`, then apply each completed-frame output region.
+/// Also take the RemoteApp window regions, which are not part of `image`.
+///
+/// [`ActiveStage`] does this after each PDU for a [`GraphicsPipelineClient`]
+/// registered on its dynamic channels. Call it directly for one that runs
+/// elsewhere, such as on a thread of its own.
+pub fn composite_graphics_pipeline(
+    gfx: &mut GraphicsPipelineClient,
+    image: &mut DecodedImage,
+) -> SessionResult<CompositedGraphics> {
+    let output_reset = gfx.take_output_reset();
+    if let Some((width, height)) = output_reset {
+        image.reset_preserving_pointer(width, height)?;
+    }
+    let (region, regions) =
+        composite_graphics_updates(image, gfx.drain_output().into_iter().map(|u| (u.region, u.data)))?;
+    Ok(CompositedGraphics {
+        reset: output_reset.is_some(),
+        region,
+        regions,
+        window_updates: gfx.drain_window_updates(),
+    })
 }
 
 /// Apply every compositor delta to `image` and return their union and exact applied regions.
