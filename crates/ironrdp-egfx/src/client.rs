@@ -854,7 +854,8 @@ impl GraphicsPipelineClient {
                 self.decode_avc420(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)?;
             }
             Codec1Type::Avc444v2 => {
-                self.decode_avc444v2(pdu.surface_id, &pdu.bitmap_data)?;
+                let surface_size = (surface.width, surface.height);
+                self.decode_avc444v2(pdu.surface_id, surface_size, &pdu.bitmap_data)?;
             }
             Codec1Type::Avc444 => {
                 // A server that confirmed a V10.x set may send the v1 layout;
@@ -1102,7 +1103,12 @@ impl GraphicsPipelineClient {
     /// Both views go through the one H.264 decoder in order, as MS-RDPEGFX
     /// 2.2.4.5 requires ("decoded by a single MPEG-4 AVC/H.264 decoder as one
     /// stream"), and are combined into the surface's persistent YUV444 frame.
-    fn decode_avc444v2(&mut self, surface_id: u16, bitmap_data: &[u8]) -> PduResult<()> {
+    fn decode_avc444v2(
+        &mut self,
+        surface_id: u16,
+        (surface_width, surface_height): (u16, u16),
+        bitmap_data: &[u8],
+    ) -> PduResult<()> {
         let mut cursor = ReadCursor::new(bitmap_data);
         let stream = Avc444BitmapStream::decode(&mut cursor).map_err(|e| decode_err!(e))?;
 
@@ -1186,13 +1192,9 @@ impl GraphicsPipelineClient {
         // The frame is current only inside the regions this PDU updated, so
         // paint just those. Region rectangles are in surface coordinates, with
         // the picture's top-left at the surface origin, as FreeRDP reads them.
-        let surface = self
-            .surfaces
-            .get(&surface_id)
-            .ok_or_else(|| pdu_other_err!("unknown surface in WireToSurface1"))?;
         let (max_right, max_bottom) = (
-            surface.width.min(u16::try_from(width).unwrap_or(u16::MAX)),
-            surface.height.min(u16::try_from(height).unwrap_or(u16::MAX)),
+            surface_width.min(u16::try_from(width).unwrap_or(u16::MAX)),
+            surface_height.min(u16::try_from(height).unwrap_or(u16::MAX)),
         );
         let mut painted: Vec<ExclusiveRectangle> = Vec::new();
         let regions = luma.iter().chain(chroma.iter()).flat_map(|(_, regions)| regions.iter());
