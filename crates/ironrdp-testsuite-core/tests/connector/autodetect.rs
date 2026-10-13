@@ -6,24 +6,38 @@
 //! once a message channel has been negotiated: an Auto-Detect Request on the
 //! message channel is answered, any other message-channel PDU is ignored, and a
 //! PDU on the I/O channel is the first licensing PDU.
+//!
+//! The phases after it (licensing, multitransport bootstrapping, capabilities
+//! exchange, connection finalization) wait for their PDUs on the I/O channel,
+//! and a message-channel PDU that reaches one of them is demultiplexed the same
+//! way: an Auto-Detect Request is answered, anything else is ignored, and the
+//! phase goes on waiting. Windows Server with RDS licensing sends such requests
+//! in the middle of the licensing exchange.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
-use ironrdp_connector::MonotonicInstant;
-use ironrdp_connector::{ClientConnector, ClientConnectorState, Sequence as _, Written};
+use ironrdp_connector::connection_activation::ConnectionActivationSequence;
+use ironrdp_connector::{
+    ClientConnector, ClientConnectorState, ConnectorResult, LicenseCache, LicenseExchangeSequence,
+    LicenseExchangeState, MonotonicInstant, Sequence as _, Written,
+};
 use ironrdp_core::{WriteBuf, encode_vec};
 use ironrdp_pdu::mcs::{McsMessage, SendDataIndication};
 use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
-use ironrdp_pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
+use ironrdp_pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, ShareControlHeader, ShareControlPdu};
+use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, RequestedProtocol};
 use ironrdp_pdu::rdp::server_license::{
-    LicenseErrorCode, LicenseHeader, LicensePdu, LicensingErrorMessage, LicensingStateTransition, PreambleFlags,
-    PreambleType, PreambleVersion,
+    LicenseErrorCode, LicenseHeader, LicenseInformation, LicensePdu, LicensingErrorMessage, LicensingStateTransition,
+    PreambleFlags, PreambleType, PreambleVersion,
 };
 use ironrdp_pdu::x224::X224;
+use ironrdp_testsuite_core::capsets::SERVER_DEMAND_ACTIVE;
 
 const USER_CHANNEL_ID: u16 = 1002;
 const IO_CHANNEL_ID: u16 = 1003;
 const MESSAGE_CHANNEL_ID: u16 = 1004;
+const SHARE_ID: u32 = 0x0001_0000;
 
 /// A client connector parked in `ConnectTimeAutoDetection` with a negotiated
 /// message channel, ready to receive the first PDU of that phase.
@@ -100,25 +114,10 @@ fn first_licensing_pdu_leaves_autodetect_for_the_licensing_path() {
     // the I/O channel. A STATUS_VALID_CLIENT license error completes licensing in
     // a single step ([MS-RDPELE] 3.1.5.3.1), so the connector advances out of
     // auto-detection into multitransport bootstrapping.
-    let license = LicensePdu::LicensingErrorMessage(LicensingErrorMessage {
-        license_header: LicenseHeader {
-            security_header: BasicSecurityHeader {
-                flags: BasicSecurityHeaderFlags::LICENSE_PKT,
-            },
-            preamble_message_type: PreambleType::ErrorAlert,
-            preamble_flags: PreambleFlags::empty(),
-            preamble_version: PreambleVersion::V3,
-            preamble_message_size: 0x10,
-        },
-        error_code: LicenseErrorCode::StatusValidClient,
-        state_transition: LicensingStateTransition::NoTransition,
-        error_info: Vec::new(),
-    });
-    let user_data = encode_vec(&license).unwrap();
-    let frame = server_send_data_indication(IO_CHANNEL_ID, user_data);
-
     let mut output = WriteBuf::new();
-    connector.step(&frame, None, &mut output).unwrap();
+    connector
+        .step(&license_status_valid_client(), None, &mut output)
+        .unwrap();
 
     assert!(
         matches!(
@@ -486,5 +485,376 @@ fn connect_time_bandwidth_second_start_discards_the_first_window() {
     assert_eq!(
         results.1, 1552,
         "the 4096 bytes counted before the second Start are discarded; only the second window's Payload and Stop, each with an 8-byte header, remain"
+    );
+}
+
+/// A STATUS_VALID_CLIENT license error on the I/O channel, which completes
+/// licensing in a single step ([MS-RDPELE] 3.1.5.3.1).
+fn license_status_valid_client() -> Vec<u8> {
+    let license = LicensePdu::LicensingErrorMessage(LicensingErrorMessage {
+        license_header: LicenseHeader {
+            security_header: BasicSecurityHeader {
+                flags: BasicSecurityHeaderFlags::LICENSE_PKT,
+            },
+            preamble_message_type: PreambleType::ErrorAlert,
+            preamble_flags: PreambleFlags::empty(),
+            preamble_version: PreambleVersion::V3,
+            preamble_message_size: 0x10,
+        },
+        error_code: LicenseErrorCode::StatusValidClient,
+        state_transition: LicensingStateTransition::NoTransition,
+        error_info: Vec::new(),
+    });
+
+    server_send_data_indication(IO_CHANNEL_ID, encode_vec(&license).unwrap())
+}
+
+/// A connect-time RTT Measure Request on the message channel.
+fn rtt_request(sequence_number: u16) -> Vec<u8> {
+    let request = AutoDetectReqPdu::new(AutoDetectRequest::rtt_connect_time(sequence_number));
+
+    server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&request).unwrap())
+}
+
+/// The whole of `output` is the RTT Measure Response to `sequence_number`, on the
+/// message channel.
+fn assert_rtt_response(output: &WriteBuf, sequence_number: u16) {
+    let X224(McsMessage::SendDataRequest(send_data)) = ironrdp_core::decode(output.filled()).unwrap() else {
+        panic!("expected a SendDataRequest in the response frame");
+    };
+    assert_eq!(
+        send_data.channel_id, MESSAGE_CHANNEL_ID,
+        "the response goes out on the message channel"
+    );
+
+    let response = ironrdp_core::decode::<AutoDetectRspPdu>(&send_data.user_data).unwrap();
+    assert_eq!(response.response, AutoDetectResponse::RttResponse { sequence_number });
+}
+
+/// A license cache that holds nothing, for a licensing sequence under test.
+#[derive(Debug)]
+struct NoLicense;
+
+impl LicenseCache for NoLicense {
+    fn get_license(&self, _license_info: LicenseInformation) -> ConnectorResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
+    fn store_license(&self, _license_info: LicenseInformation) -> ConnectorResult<()> {
+        Ok(())
+    }
+}
+
+/// A client connector that has just entered the licensing exchange, with a
+/// negotiated message channel.
+fn licensing_exchange_connector() -> ClientConnector {
+    let mut connector = ClientConnector::new(super::test_config(), "127.0.0.1:12345".parse().unwrap());
+    connector.state = ClientConnectorState::LicensingExchange {
+        io_channel_id: IO_CHANNEL_ID,
+        user_channel_id: USER_CHANNEL_ID,
+        license_exchange: LicenseExchangeSequence::new(
+            IO_CHANNEL_ID,
+            "test".to_owned(),
+            None,
+            [0; 4],
+            Arc::new(NoLicense),
+        ),
+    };
+    connector.message_channel_id = Some(MESSAGE_CHANNEL_ID);
+    connector
+}
+
+/// A client connector that has completed licensing and is waiting for a
+/// multitransport request or the Demand Active.
+fn multitransport_bootstrapping_connector() -> ClientConnector {
+    let mut connector = ClientConnector::new(super::test_config(), "127.0.0.1:12345".parse().unwrap());
+    connector.state = ClientConnectorState::MultitransportBootstrapping {
+        io_channel_id: IO_CHANNEL_ID,
+        user_channel_id: USER_CHANNEL_ID,
+        message_channel_id: Some(MESSAGE_CHANNEL_ID),
+        requests_seen: 0,
+    };
+    connector.message_channel_id = Some(MESSAGE_CHANNEL_ID);
+    connector
+}
+
+/// A client connector waiting for the Demand Active.
+fn capabilities_exchange_connector() -> ClientConnector {
+    let mut connector = ClientConnector::new(super::test_config(), "127.0.0.1:12345".parse().unwrap());
+    connector.state = ClientConnectorState::CapabilitiesExchange {
+        connection_activation: ConnectionActivationSequence::new(super::test_config(), IO_CHANNEL_ID, USER_CHANNEL_ID),
+    };
+    connector.message_channel_id = Some(MESSAGE_CHANNEL_ID);
+    connector
+}
+
+/// The Demand Active, on the I/O channel, that ends the capabilities exchange.
+fn server_demand_active() -> Vec<u8> {
+    let header = ShareControlHeader {
+        share_control_pdu: ShareControlPdu::ServerDemandActive(SERVER_DEMAND_ACTIVE.clone()),
+        pdu_source: USER_CHANNEL_ID,
+        share_id: SHARE_ID,
+    };
+
+    server_send_data_indication(IO_CHANNEL_ID, encode_vec(&header).unwrap())
+}
+
+/// A client connector that has answered the Demand Active and is finalizing the
+/// connection.
+fn connection_finalization_connector() -> ClientConnector {
+    let mut connector = capabilities_exchange_connector();
+    let mut output = WriteBuf::new();
+    connector.step(&server_demand_active(), None, &mut output).unwrap();
+    assert!(
+        matches!(connector.state, ClientConnectorState::ConnectionFinalization { .. }),
+        "the Demand Active starts connection finalization"
+    );
+    connector
+}
+
+/// Windows Server with RDS licensing sends Auto-Detect Requests in the middle of
+/// the licensing exchange, which runs to its full length there (a new license
+/// requested, a platform challenge answered, the license upgraded), where a host
+/// without licensing ends it with one error message. The licensing sequence
+/// decodes licensing PDUs only, and the first such request used to end the
+/// connection with "invalid security header flags".
+#[test]
+fn licensing_exchange_answers_an_autodetect_request_and_keeps_waiting() {
+    let mut connector = licensing_exchange_connector();
+    let mut output = WriteBuf::new();
+
+    let written = connector.step(&rtt_request(0x0001), None, &mut output).unwrap();
+
+    assert!(written.size().is_some(), "the request is answered");
+    assert_rtt_response(&output, 0x0001);
+    assert!(
+        matches!(
+            &connector.state,
+            ClientConnectorState::LicensingExchange { license_exchange, .. }
+                if matches!(license_exchange.state, LicenseExchangeState::NewLicenseRequest)
+        ),
+        "licensing goes on waiting for its PDU, where it was"
+    );
+
+    // The licensing PDU that follows is handled as before.
+    output.clear();
+    connector
+        .step(&license_status_valid_client(), None, &mut output)
+        .unwrap();
+
+    assert!(
+        matches!(
+            connector.state,
+            ClientConnectorState::MultitransportBootstrapping { .. }
+        ),
+        "the licensing PDU completes the exchange"
+    );
+}
+
+/// The PDU an RDS host mixed into licensing, byte for byte (the trace in upstream
+/// IronRDP issue #1629): a Bandwidth Measure Start of the reliable UDP kind
+/// (0x0014), which the connect-time responder leaves alone. It is still no
+/// licensing PDU, so it must not end the connection.
+#[test]
+fn licensing_exchange_tolerates_the_autodetect_request_an_rds_host_mixes_in() {
+    const SERVER_PDU: [u8; 10] = [
+        0x00, 0x10, // flags: SEC_AUTODETECT_REQ
+        0x00, 0x00, // flagsHi
+        0x06, // headerLength
+        0x00, // headerTypeId: TYPE_ID_AUTODETECT_REQUEST
+        0x00, 0x00, // sequenceNumber
+        0x14, 0x00, // requestType: Bandwidth Measure Start (reliable UDP)
+    ];
+
+    let mut connector = licensing_exchange_connector();
+    let mut output = WriteBuf::new();
+
+    let written = connector
+        .step(
+            &server_send_data_indication(MESSAGE_CHANNEL_ID, SERVER_PDU.to_vec()),
+            Some(MonotonicInstant::from_millis(1_000)),
+            &mut output,
+        )
+        .unwrap();
+
+    assert_eq!(
+        written,
+        Written::Nothing,
+        "a reliable UDP Start opens no connect-time window"
+    );
+    assert!(
+        matches!(connector.state, ClientConnectorState::LicensingExchange { .. }),
+        "licensing goes on waiting for its PDU"
+    );
+}
+
+#[test]
+fn licensing_exchange_ignores_other_message_channel_pdus() {
+    let mut connector = licensing_exchange_connector();
+    let mut output = WriteBuf::new();
+
+    let user_data = encode_vec(&BasicSecurityHeader {
+        flags: BasicSecurityHeaderFlags::HEARTBEAT,
+    })
+    .unwrap();
+    let written = connector
+        .step(
+            &server_send_data_indication(MESSAGE_CHANNEL_ID, user_data),
+            None,
+            &mut output,
+        )
+        .unwrap();
+
+    assert_eq!(
+        written,
+        Written::Nothing,
+        "an unrelated message-channel PDU produces no response"
+    );
+    assert!(
+        matches!(connector.state, ClientConnectorState::LicensingExchange { .. }),
+        "licensing goes on waiting for its PDU"
+    );
+}
+
+#[test]
+fn multitransport_bootstrapping_answers_an_autodetect_request_and_keeps_waiting() {
+    let mut connector = multitransport_bootstrapping_connector();
+    let mut output = WriteBuf::new();
+
+    let written = connector.step(&rtt_request(0x0002), None, &mut output).unwrap();
+
+    assert!(written.size().is_some(), "the request is answered");
+    assert_rtt_response(&output, 0x0002);
+    assert!(
+        matches!(
+            connector.state,
+            ClientConnectorState::MultitransportBootstrapping { requests_seen: 0, .. }
+        ),
+        "the phase goes on waiting, and the request is not counted as a multitransport request"
+    );
+
+    // A multitransport request that follows is surfaced as before.
+    let request = MultitransportRequestPdu {
+        security_header: BasicSecurityHeader {
+            flags: BasicSecurityHeaderFlags::TRANSPORT_REQ,
+        },
+        request_id: 1,
+        requested_protocol: RequestedProtocol::UdpFecR,
+        security_cookie: [0u8; 16],
+    };
+    output.clear();
+    connector
+        .step(
+            &server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&request).unwrap()),
+            None,
+            &mut output,
+        )
+        .unwrap();
+
+    assert!(
+        matches!(
+            connector.state,
+            ClientConnectorState::MultitransportPending { requests_seen: 1, .. }
+        ),
+        "the multitransport request is surfaced and counted"
+    );
+}
+
+#[test]
+fn capabilities_exchange_answers_an_autodetect_request_and_keeps_waiting() {
+    let mut connector = capabilities_exchange_connector();
+    let mut output = WriteBuf::new();
+
+    let written = connector.step(&rtt_request(0x0003), None, &mut output).unwrap();
+
+    assert!(written.size().is_some(), "the request is answered");
+    assert_rtt_response(&output, 0x0003);
+    assert!(
+        matches!(connector.state, ClientConnectorState::CapabilitiesExchange { .. }),
+        "the phase goes on waiting for the Demand Active"
+    );
+
+    // The Demand Active that follows is handled as before.
+    output.clear();
+    connector.step(&server_demand_active(), None, &mut output).unwrap();
+
+    assert!(
+        matches!(connector.state, ClientConnectorState::ConnectionFinalization { .. }),
+        "the Demand Active starts connection finalization"
+    );
+}
+
+#[test]
+fn connection_finalization_answers_an_autodetect_request_and_keeps_waiting() {
+    let mut connector = connection_finalization_connector();
+    let mut output = WriteBuf::new();
+
+    let written = connector.step(&rtt_request(0x0004), None, &mut output).unwrap();
+
+    assert!(written.size().is_some(), "the request is answered");
+    assert_rtt_response(&output, 0x0004);
+    assert!(
+        matches!(connector.state, ClientConnectorState::ConnectionFinalization { .. }),
+        "the phase goes on waiting for its PDUs"
+    );
+}
+
+/// A connect-time bandwidth measurement that straddles phases is still one
+/// measurement: the window opened during licensing is the one the Stop closes
+/// after it.
+#[test]
+fn connect_time_bandwidth_measurement_spans_licensing_and_what_follows() {
+    let mut connector = licensing_exchange_connector();
+    let mut output = WriteBuf::new();
+
+    for (request, arrival) in [
+        (AutoDetectRequest::bw_start_connect_time(0x8888), 1_000),
+        (AutoDetectRequest::bw_payload(0x8888, vec![0u8; 1024]), 1_100),
+    ] {
+        output.clear();
+        connector
+            .step(
+                &server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&AutoDetectReqPdu::new(request)).unwrap()),
+                Some(MonotonicInstant::from_millis(arrival)),
+                &mut output,
+            )
+            .unwrap();
+    }
+
+    output.clear();
+    connector
+        .step(
+            &license_status_valid_client(),
+            Some(MonotonicInstant::from_millis(1_200)),
+            &mut output,
+        )
+        .unwrap();
+    assert!(matches!(
+        connector.state,
+        ClientConnectorState::MultitransportBootstrapping { .. }
+    ));
+
+    output.clear();
+    let stop = encode_vec(&AutoDetectReqPdu::new(AutoDetectRequest::bw_stop_connect_time(
+        0x8888,
+        vec![0u8; 512],
+    )))
+    .unwrap();
+    connector
+        .step(
+            &server_send_data_indication(MESSAGE_CHANNEL_ID, stop),
+            Some(MonotonicInstant::from_millis(1_500)),
+            &mut output,
+        )
+        .unwrap();
+
+    let results = decode_bandwidth_results(&output);
+    assert_eq!(
+        results.0, 500,
+        "the interval runs from the Start received during licensing"
+    );
+    assert_eq!(
+        results.1, 1552,
+        "the Payload received during licensing and the Stop are counted, each with its 8-byte header"
     );
 }
