@@ -194,6 +194,7 @@ fn test_reactivation_preserves_bulk_decompression_history() {
         compression_type: Some(PduCompressionType::K64),
         enable_server_pointer: false,
         pointer_software_rendering: false,
+        security: None,
     }
     .build();
 
@@ -1094,6 +1095,7 @@ async fn client_server_impl<F, Fut, C>(
                     compression_type: connection_result.compression_type,
                     enable_server_pointer: connection_result.enable_server_pointer,
                     pointer_software_rendering: connection_result.pointer_software_rendering,
+                    security: connection_result.security,
                 }
                 .build();
                 let (active_stage, mut upgraded_framed) = clientfn(
@@ -1262,6 +1264,7 @@ async fn egfx_moves_onto_the_udp_tunnel_with_soft_sync() {
                     compression_type: connection_result.compression_type,
                     enable_server_pointer: connection_result.enable_server_pointer,
                     pointer_software_rendering: connection_result.pointer_software_rendering,
+                    security: connection_result.security,
                 }
                 .build();
                 stage.enable_reliable_udp_dvc_tunnel().expect("DRDYNVC is present");
