@@ -28,7 +28,7 @@ use ironrdp_pdu::rdp::client_info::{CompressionType, Credentials};
 use ironrdp_pdu::rdp::finalization_messages::{ControlAction, ControlPdu, SynchronizePdu};
 use ironrdp_pdu::rdp::headers::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader, ShareControlPdu,
-    ShareDataHeader, ShareDataPdu, StreamPriority,
+    ShareDataHeader, ShareDataPdu, StreamPriority, decode_share_control,
 };
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu, RequestedProtocol};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
@@ -1101,4 +1101,23 @@ async fn credssp_authorization_uses_selected_protocol(
     assert_eq!(handler.received[0].credentials.domain.as_deref(), expected_domain);
     assert_eq!(handler.received[0].credentials.password, "secret");
     assert_eq!(handler.capability_calls, usize::from(!reject_credentials));
+}
+
+/// The server Demand Active carries `RDP` as its source descriptor, as the FreeRDP
+/// server does; some clients (Jump Desktop) refuse an empty one.
+#[test]
+fn demand_active_uses_rdp_source_descriptor() {
+    let mut acceptor = multitransport_acceptor(None);
+    drive_to_secure_settings_exchange(&mut acceptor, client_gcc_with_message_channel_and_multitransport(None));
+
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping
+    let mut output = WriteBuf::new();
+    acceptor.step(&[], None, &mut output).unwrap(); // CapabilitiesSendServer: sends Demand Active
+
+    let indication = mcs::decode_send_data_indication(output.filled()).unwrap();
+    let ShareControlPdu::ServerDemandActive(demand_active) = decode_share_control(indication).unwrap().pdu else {
+        panic!("expected a Server Demand Active PDU");
+    };
+    assert_eq!(demand_active.pdu.source_descriptor, "RDP");
 }
