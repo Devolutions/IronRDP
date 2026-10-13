@@ -54,6 +54,7 @@
 //! [3.3.5.12]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/e3c80bff-3e4e-4e65-b7c2-c2cd6b1fb4f5
 
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 
 use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
@@ -1141,27 +1142,31 @@ impl GraphicsPipelineClient {
             usize::try_from(height).map_err(|_| pdu_other_err!("AVC444 frame too tall"))?,
         );
 
-        let has_frame = self
-            .avc444_frames
-            .get(&surface_id)
-            .is_some_and(|frame| frame.width() == width && frame.height() == height);
-        // A chroma-only update refines the luma already there; without luma of
-        // its size, it would paint chroma over black.
-        if luma.is_none() && !has_frame {
-            warn!(
-                surface_id,
-                width, height, "Ignoring AVC444 chroma without a luma frame of its size"
-            );
-            return Ok(());
-        }
-        if !has_frame {
-            let frame = Yuv444Frame::new(width, height).map_err(|e| pdu_other_err!("AVC444 frame size", source: e))?;
-            self.avc444_frames.insert(surface_id, frame);
-        }
-        let frame = self
-            .avc444_frames
-            .get_mut(&surface_id)
-            .expect("AVC444 frame inserted above");
+        let frame = match self.avc444_frames.entry(surface_id) {
+            Entry::Occupied(entry) if entry.get().width() == width && entry.get().height() == height => {
+                entry.into_mut()
+            }
+            entry => {
+                // A chroma-only update refines the luma already there; without
+                // luma of its size, it would paint chroma over black.
+                if luma.is_none() {
+                    warn!(
+                        surface_id,
+                        width, height, "Ignoring AVC444 chroma without a luma frame of its size"
+                    );
+                    return Ok(());
+                }
+                let frame =
+                    Yuv444Frame::new(width, height).map_err(|e| pdu_other_err!("AVC444 frame size", source: e))?;
+                match entry {
+                    Entry::Occupied(mut entry) => {
+                        entry.insert(frame);
+                        entry.into_mut()
+                    }
+                    Entry::Vacant(entry) => entry.insert(frame),
+                }
+            }
+        };
         if let Some((view, regions)) = &luma {
             frame
                 .apply_main_view(&view.planes(), regions)
