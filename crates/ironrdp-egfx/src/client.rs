@@ -1122,6 +1122,13 @@ impl GraphicsPipelineClient {
             .transpose()
             .map_err(|e| pdu_other_err!("H.264 decode (AVC444 chroma)", source: e))?;
 
+        // Both views are one frame: an auxiliary view of another size would be
+        // read at the main view's half and quarter offsets.
+        if let (Some((luma, _)), Some((chroma, _))) = (&luma, &chroma)
+            && (luma.width(), luma.height()) != (chroma.width(), chroma.height())
+        {
+            return Err(pdu_other_err!("AVC444 views differ in size"));
+        }
         let Some((width, height)) = luma
             .as_ref()
             .or(chroma.as_ref())

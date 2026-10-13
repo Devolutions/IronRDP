@@ -393,6 +393,18 @@ mod end_to_end {
         aux_h264: &[u8],
         regions: &[ExclusiveRectangle],
     ) -> Vec<(ExclusiveRectangle, Vec<u8>)> {
+        let (result, updates) = send_avc444(main_h264, aux_h264, regions);
+        result.expect("process AVC444 PDU");
+        updates
+    }
+
+    /// Send one AVC444v2 PDU as `decode_through_client` does, returning
+    /// whether the client accepted it.
+    fn send_avc444(
+        main_h264: &[u8],
+        aux_h264: &[u8],
+        regions: &[ExclusiveRectangle],
+    ) -> (ironrdp_pdu::PduResult<()>, Vec<(ExclusiveRectangle, Vec<u8>)>) {
         let updates = Arc::new(Mutex::new(Vec::new()));
         let mut client = GraphicsPipelineClient::new(
             Box::new(Capture(Arc::clone(&updates))),
@@ -418,19 +430,18 @@ mod end_to_end {
             stream1: avc420_stream(main_h264, regions),
             stream2: Some(avc420_stream(aux_h264, regions)),
         };
-        process(
-            &mut client,
-            &GfxPdu::WireToSurface1(WireToSurface1Pdu {
-                surface_id: 1,
-                codec_id: Codec1Type::Avc444v2,
-                pixel_format: PixelFormat::XRgb,
-                destination_rectangle: full_frame()[0].clone(),
-                bitmap_data: encode_vec(&stream).expect("encode AVC444 stream"),
-            }),
-        );
+        let pdu = GfxPdu::WireToSurface1(WireToSurface1Pdu {
+            surface_id: 1,
+            codec_id: Codec1Type::Avc444v2,
+            pixel_format: PixelFormat::XRgb,
+            destination_rectangle: full_frame()[0].clone(),
+            bitmap_data: encode_vec(&stream).expect("encode AVC444 stream"),
+        });
+        let bytes = encode_vec(&pdu).expect("encode PDU");
+        let result = client.process(0, &wrap_uncompressed(&bytes)).map(drop);
 
         let updates = updates.lock().expect("lock").clone();
-        updates
+        (result, updates)
     }
 
     #[test]
@@ -506,5 +517,34 @@ mod end_to_end {
                 "update for {rect:?} doesn't match its region: error {to_region:.2} vs {to_origin:.2} at the origin"
             );
         }
+    }
+
+    #[test]
+    fn avc444v2_rejects_views_of_different_sizes() {
+        // Both views are one frame. An auxiliary view of another size would
+        // be read at the main view's half and quarter offsets.
+        let (y, u, v) = striped_source();
+        let (main, _) = split_v2(&y, &u, &v);
+        let (main_h264, _) = encode_views(&main, &main);
+        let wide = W + 16;
+        let (wide_y, wide_chroma) = (vec![128u8; wide * H], vec![128u8; wide / 2 * H / 2]);
+        let mut encoder = openh264::encoder::Encoder::with_api_config(
+            openh264::OpenH264API::from_source(),
+            openh264::encoder::EncoderConfig::new().skip_frames(false),
+        )
+        .expect("encoder");
+        let yuv = openh264::formats::YUVSlices::new(
+            (&wide_y, &wide_chroma, &wide_chroma),
+            (wide, H),
+            (wide, wide / 2, wide / 2),
+        );
+        let wide_h264 = encoder.encode(&yuv).expect("encode").to_vec();
+
+        let (result, updates) = send_avc444(&main_h264, &wide_h264, &full_frame());
+        assert!(
+            result.is_err(),
+            "accepted an auxiliary view {wide} wide for a {W}-wide main view"
+        );
+        assert!(updates.is_empty(), "painted a frame from mismatched views");
     }
 }
