@@ -1124,17 +1124,18 @@ fn process_slow_path_pointer(
 }
 
 /// What [`composite_graphics_pipeline`] did to the image.
-#[derive(Debug, Default)]
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct CompositedGraphics {
-    /// The image was resized and cleared for a `ResetGraphics`.
+    /// The image was resized and cleared for a `ResetGraphics`. `region` covers
+    /// only what was painted since, so the caller repaints the whole image, as
+    /// [`ActiveStage`] does with its next graphics update.
     pub reset: bool,
     /// The union of the regions changed, or `None` when nothing changed.
     pub region: Option<InclusiveRectangle>,
     /// Each region changed.
     pub regions: Vec<InclusiveRectangle>,
-    /// The RemoteApp window regions, which are not part of the image. The caller
-    /// paints each into the window it names, as for
-    /// [`ActiveStageOutput::WindowSurfaceUpdates`].
+    /// The RemoteApp window regions, which are not part of the image.
     pub window_updates: Vec<WindowUpdate>,
 }
 
@@ -1144,7 +1145,20 @@ pub struct CompositedGraphics {
 ///
 /// [`ActiveStage`] does this after each PDU for a [`GraphicsPipelineClient`]
 /// registered on its dynamic channels. Call it directly for one that runs
-/// elsewhere, such as on a thread of its own.
+/// elsewhere, such as on a thread of its own so that a slow H.264 decode
+/// doesn't hold up the session's other channels. The caller then also:
+///
+/// - registers in its place a dynamic channel processor named
+///   [`ironrdp_egfx::CHANNEL_NAME`] that forwards each message to the
+///   pipeline;
+/// - sends the pipeline's replies (capabilities, frame acknowledgements) with
+///   [`ActiveStage::encode_dvc_messages`];
+/// - shares `image` with the session under a lock, since other updates
+///   (bitmaps, the pointer) write to it too;
+/// - paints each of `window_updates` into the window it names, as
+///   [`ActiveStage`] returns them in [`ActiveStageOutput::WindowSurfaceUpdates`];
+/// - tracks the regions itself: they don't reach
+///   [`ActiveStage::take_damage_regions`].
 pub fn composite_graphics_pipeline(
     gfx: &mut GraphicsPipelineClient,
     image: &mut DecodedImage,
