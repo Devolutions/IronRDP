@@ -1196,6 +1196,11 @@ impl GraphicsPipelineClient {
             surface_width.min(u16::try_from(width).unwrap_or(u16::MAX)),
             surface_height.min(u16::try_from(height).unwrap_or(u16::MAX)),
         );
+        if luma.iter().chain(chroma.iter()).all(|(_, regions)| regions.is_empty()) {
+            // Unlike AVC420, there is no destination-rectangle fallback: the
+            // regions also bound what the views wrote into the frame.
+            warn!(surface_id, "AVC444v2 update with no regionRects -- nothing painted");
+        }
         let mut painted: Vec<ExclusiveRectangle> = Vec::new();
         let regions = luma.iter().chain(chroma.iter()).flat_map(|(_, regions)| regions.iter());
         for region in regions {
