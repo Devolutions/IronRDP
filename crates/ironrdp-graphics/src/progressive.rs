@@ -20,12 +20,12 @@
 //! - [`rgba_to_ycbcr`]: ITU-R BT.601 color space conversion
 //!
 //! ## State management
-//! - [`TileState`]: per-codec-context tile coefficient and DAS sign storage
-//!   (~37 KB per tile)
-//! - [`SurfaceTiles`]: lazily-allocated tile grid for a surface
-//! - [`ProgressiveDecoder`]: high-level decoder maintaining per-context
-//!   progressive state and surface-scoped sub-band references, wired into the
-//!   EGFX `WireToSurface2Pdu` path
+//! - [`TileState`]: per-tile coefficient and DAS sign storage (~37 KB per tile)
+//! - [`SurfaceTiles`]: lazily-allocated tile grid for a surface, shared by every
+//!   codec context on it and kept until the surface is deleted or its tile grid
+//!   is resized
+//! - [`ProgressiveDecoder`]: high-level decoder maintaining surface-scoped tile
+//!   grids and sub-band references, wired into the EGFX `WireToSurface2Pdu` path
 //!
 //! # Progressive quantization
 //!
@@ -1524,9 +1524,10 @@ impl ProgressiveDecoder {
 
     /// Handle RDPGFX_DELETE_ENCODING_CONTEXT for a codec context.
     ///
-    /// Tile state belongs to the surface and outlives any one codec context:
-    /// Windows deletes the previous context after it has opened the next one,
-    /// which keeps refining the same tiles, so nothing is released here.
+    /// A progressive tile context belongs to a surface tile and can be shared by
+    /// several codec contexts ([MS-RDPEGFX] 3.3.1.2). Windows deletes the previous
+    /// context after it has opened the next one, which keeps refining the same
+    /// tiles, so tile state stays with the surface.
     pub fn delete_context(&mut self, _surface_id: u16, _codec_context_id: u32) {}
 
     /// Delete the progressive state of a surface.
