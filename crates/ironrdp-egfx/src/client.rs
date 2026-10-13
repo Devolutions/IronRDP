@@ -53,8 +53,8 @@
 //! [3.3.5.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/90aba3e3-d4a8-4af1-b1bb-a94e2313bbf0
 //! [3.3.5.12]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/e3c80bff-3e4e-4e65-b7c2-c2cd6b1fb4f5
 
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, HashSet};
 
 use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
@@ -1201,7 +1201,7 @@ impl GraphicsPipelineClient {
             // regions also bound what the views wrote into the frame.
             warn!(surface_id, "AVC444v2 update with no regionRects -- nothing painted");
         }
-        let mut painted: Vec<ExclusiveRectangle> = Vec::new();
+        let mut painted = HashSet::new();
         let regions = luma.iter().chain(chroma.iter()).flat_map(|(_, regions)| regions.iter());
         for region in regions {
             let rect = ExclusiveRectangle {
@@ -1226,7 +1226,7 @@ impl GraphicsPipelineClient {
                 continue;
             }
             // Both views usually list the same regions; paint each once.
-            if painted.contains(&rect) {
+            if !painted.insert((rect.left, rect.top, rect.right, rect.bottom)) {
                 continue;
             }
             let data = frame
@@ -1242,7 +1242,6 @@ impl GraphicsPipelineClient {
             };
             self.compositor.apply_bitmap(surface_id, &rect, &update.data);
             self.handler.on_bitmap_updated(&update);
-            painted.push(rect);
         }
         Ok(())
     }
