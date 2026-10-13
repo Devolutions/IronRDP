@@ -2456,3 +2456,295 @@ async fn the_default_under_hybrid_lets_an_authenticated_newcomer_take_over() {
     }))
     .await;
 }
+
+/// A [`server::ConnectionSource`] over a TCP listener, standing in for an
+/// embedder's own accept loop. With `report_peer` false it gives no peer
+/// address, as a Unix socket or an AF_VSOCK listener would.
+struct ListenerSource {
+    listener: TcpListener,
+    report_peer: bool,
+    /// The tag given to the next connection; 1 for the first.
+    next_tag: u64,
+}
+
+#[async_trait::async_trait]
+impl server::ConnectionSource for ListenerSource {
+    type Stream = TcpStream;
+
+    async fn accept(&mut self) -> std::io::Result<Option<server::IncomingConnection<TcpStream>>> {
+        let (stream, peer) = self.listener.accept().await?;
+        let incoming =
+            server::IncomingConnection::new(stream, server::TransportTls::Managed, self.report_peer.then_some(peer))
+                .with_tag(self.next_tag);
+        self.next_tag += 1;
+        Ok(Some(incoming))
+    }
+}
+
+async fn listener_source(report_peer: bool) -> (ListenerSource, SocketAddr) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+    (
+        ListenerSource {
+            listener,
+            report_peer,
+            next_tag: 1,
+        },
+        addr,
+    )
+}
+
+/// Checks that a connection made now is closed without being served, which
+/// reads as end of stream, and that the live session `incumbent` carries on.
+async fn assert_refused_and_incumbent_alive(
+    server_addr: SocketAddr,
+    incumbent: &mut Framed<TokioStream<TlsStream<TcpStream>>>,
+) {
+    use tokio::io::AsyncReadExt as _;
+
+    let mut stream = TcpStream::connect(server_addr).await.expect("TCP connect");
+    let mut buf = [0u8; 16];
+    assert!(
+        matches!(
+            tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await,
+            Ok(Ok(0) | Err(_))
+        ),
+        "the second connection must be closed, not left waiting"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), incumbent.read_pdu())
+            .await
+            .is_err(),
+        "the live session must carry on"
+    );
+}
+
+/// The TLS identity the e2e servers present, from the certificate and key
+/// under `tests/certs`.
+fn test_tls_identity() -> TlsIdentityCtx {
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity")
+}
+
+const HYBRID_USER: &str = "user";
+const HYBRID_PASSWORD: &str = "password";
+
+/// A server that authenticates clients with CredSSP, whose default policy under
+/// that security is `Preempt`, and the display sender to keep alive for the
+/// test: once it drops, the display stream ends and the server closes the
+/// session.
+fn hybrid_server() -> (RdpServer, UnboundedSender<DisplayUpdate>) {
+    let identity = test_tls_identity();
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    let (display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_hybrid(acceptor, identity.pub_key)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: HYBRID_USER.into(),
+        password: HYBRID_PASSWORD.into(),
+        domain: None,
+    }));
+    (server, display_tx)
+}
+
+/// The client configuration that logs in to [`hybrid_server`].
+fn hybrid_client_config() -> connector::Config {
+    connector::Config {
+        credentials: connector::Credentials::UsernamePassword {
+            username: HYBRID_USER.into(),
+            password: HYBRID_PASSWORD.into(),
+        },
+        ..default_client_config()
+    }
+}
+
+/// Connects a client to a [`hybrid_server`] and then a second one, which takes
+/// the session over, and checks that the first client's connection is closed.
+/// Returns the second client, which keeps the session for as long as the caller
+/// holds it.
+async fn connect_hybrid_takeover(server_addr: SocketAddr) -> Framed<TokioStream<TlsStream<TcpStream>>> {
+    let connect = || {
+        connect_client(server_addr, |client_addr| {
+            connector::ClientConnector::new(hybrid_client_config(), client_addr)
+        })
+    };
+
+    let (mut first, _) = connect().await;
+    let (second, _) = tokio::time::timeout(Duration::from_secs(10), connect())
+        .await
+        .expect("the authenticated newcomer must be served (Preempt), not queued");
+
+    let evicted = tokio::time::timeout(Duration::from_secs(5), async {
+        while first.read_pdu().await.is_ok() {}
+    })
+    .await;
+    assert!(evicted.is_ok(), "the incumbent's connection must be closed");
+
+    second
+}
+
+/// The same takeover as `the_default_under_hybrid_lets_an_authenticated_newcomer_take_over`,
+/// for connections an embedder accepts itself and that have no peer address:
+/// `serve` runs the race, so the second client takes the session over once it
+/// has completed CredSSP, and the first client's connection is closed.
+#[tokio::test]
+async fn serve_lets_an_authenticated_newcomer_take_over_connections_without_a_peer_address() {
+    let (mut server, _display_tx) = hybrid_server();
+    let (mut source, server_addr) = listener_source(false).await;
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server.serve(&mut source).await;
+        });
+
+        let second = connect_hybrid_takeover(server_addr).await;
+
+        drop(second);
+        server_task.abort();
+    }))
+    .await;
+}
+
+/// The embedder owns the accept loop and calls `serve_connection` for each
+/// session: the connection that replaced a session comes back in the outcome and
+/// is served next, without negotiating again.
+#[tokio::test]
+async fn serve_connection_hands_the_replacement_to_the_embedders_loop() {
+    let (mut server, _display_tx) = hybrid_server();
+    let (mut source, server_addr) = listener_source(false).await;
+    let (served_tx, mut served_rx) = mpsc::unbounded_channel();
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            use server::ConnectionSource as _;
+
+            let mut next: server::NextConnection<TcpStream> = match source.accept().await {
+                Ok(Some(first)) => server::NextConnection::Incoming(first),
+                _ => return,
+            };
+            loop {
+                let server::SessionOutcome { result, successor, .. } = server.serve_connection(next, &mut source).await;
+                let _ = served_tx.send((
+                    result.is_ok(),
+                    successor.as_ref().map(server::AuthenticatedConnection::tag),
+                ));
+                next = match successor {
+                    Some(winner) => server::NextConnection::Authenticated(winner),
+                    None => match source.accept().await {
+                        Ok(Some(incoming)) => server::NextConnection::Incoming(incoming),
+                        _ => return,
+                    },
+                };
+            }
+        });
+        let second = connect_hybrid_takeover(server_addr).await;
+
+        let (_, successor_tag) = tokio::time::timeout(Duration::from_secs(5), served_rx.recv())
+            .await
+            .expect("the first session must report its outcome")
+            .expect("outcome channel");
+        assert_eq!(
+            successor_tag,
+            Some(2),
+            "the outcome of the evicted session carries the replacement, with the tag its source gave it"
+        );
+
+        drop(second);
+        server_task.abort();
+    }))
+    .await;
+}
+
+/// Under `Reject`, `serve` closes a connection that arrives mid-session at
+/// once and leaves the live session alone.
+#[tokio::test]
+async fn serve_rejects_a_second_connection_under_reject() {
+    let (mut server, counts, _display_tx) = hook_recording_server(server::ConnectionPolicy::Reject);
+    let (mut source, server_addr) = listener_source(true).await;
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server.serve(&mut source).await;
+        });
+        let (mut first, _) = connect_client(server_addr, |client_addr| {
+            connector::ClientConnector::new(default_client_config(), client_addr)
+        })
+        .await;
+
+        assert_refused_and_incumbent_alive(server_addr, &mut first).await;
+        assert_eq!(counts.get().0, 1, "only the first connection reached on_accept");
+
+        drop(first);
+        server_task.abort();
+    }))
+    .await;
+}
+
+/// Refuses the second connection it is asked about.
+struct RefuseSecond(Arc<AtomicUsize>);
+
+impl server::ConnectionHandler for RefuseSecond {
+    fn on_accept(&mut self, _peer: SocketAddr) -> bool {
+        self.0.fetch_add(1, Ordering::SeqCst) == 0
+    }
+}
+
+/// `on_accept` gates a newcomer before it can negotiate, so under `Preempt` a
+/// connection the handler refuses never takes the session over. The peer
+/// address comes from the source.
+#[tokio::test]
+async fn serve_gates_a_preempting_newcomer_with_on_accept() {
+    let acceptor = test_tls_identity()
+        .make_acceptor()
+        .expect("failed to build TLS acceptor");
+
+    let asked = Arc::new(AtomicUsize::new(0));
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .with_connection_handler(Some(Box::new(RefuseSecond(Arc::clone(&asked)))))
+        .with_connection_policy(server::ConnectionPolicy::Preempt)
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let (mut source, server_addr) = listener_source(true).await;
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server.serve(&mut source).await;
+        });
+        let (mut first, _) = connect_client(server_addr, |client_addr| {
+            connector::ClientConnector::new(default_client_config(), client_addr)
+        })
+        .await;
+
+        assert_refused_and_incumbent_alive(server_addr, &mut first).await;
+        assert_eq!(asked.load(Ordering::SeqCst), 2, "on_accept saw both connections");
+
+        drop(first);
+        server_task.abort();
+    }))
+    .await;
+}
