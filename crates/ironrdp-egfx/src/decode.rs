@@ -20,6 +20,8 @@
 
 use core::fmt;
 
+use crate::avc444::plane_fits;
+
 // ============================================================================
 // Decoded Frame
 // ============================================================================
@@ -247,17 +249,10 @@ impl DecodedYuv420Frame {
             usize::try_from(width).map_err(|_| DecoderError::msg("frame width out of range"))?,
             usize::try_from(height).map_err(|_| DecoderError::msg("frame height out of range"))?,
         );
-        let fits = |plane: &[u8], stride: usize, row: usize, rows: usize| {
-            rows == 0
-                || (stride >= row
-                    && stride
-                        .checked_mul(rows - 1)
-                        .and_then(|n| n.checked_add(row))
-                        .is_some_and(|needed| plane.len() >= needed))
-        };
-        if fits(&frame.y, y_stride, w, h)
-            && fits(&frame.u, u_stride, w.div_ceil(2), h.div_ceil(2))
-            && fits(&frame.v, v_stride, w.div_ceil(2), h.div_ceil(2))
+        let chroma = (w.div_ceil(2), h.div_ceil(2));
+        if plane_fits(&frame.y, y_stride, (w, h))
+            && plane_fits(&frame.u, u_stride, chroma)
+            && plane_fits(&frame.v, v_stride, chroma)
         {
             Ok(frame)
         } else {

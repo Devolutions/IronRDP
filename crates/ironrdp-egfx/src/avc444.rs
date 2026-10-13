@@ -229,20 +229,22 @@ impl Yuv444Frame {
 /// Check that each plane holds the `(row length, rows)` read from it at its
 /// stride: `luma` from Y, `chroma` from U and V.
 fn check_planes(planes: &Yuv420Planes<'_>, luma: (usize, usize), chroma: (usize, usize)) -> DecoderResult<()> {
-    let fits = |plane: &[u8], stride: usize, (row_len, rows): (usize, usize)| {
-        rows == 0
-            || stride >= row_len
-                && stride
-                    .checked_mul(rows - 1)
-                    .and_then(|n| n.checked_add(row_len))
-                    .is_some_and(|needed| plane.len() >= needed)
-    };
-    if fits(planes.y, planes.y_stride, luma)
-        && fits(planes.u, planes.u_stride, chroma)
-        && fits(planes.v, planes.v_stride, chroma)
+    if plane_fits(planes.y, planes.y_stride, luma)
+        && plane_fits(planes.u, planes.u_stride, chroma)
+        && plane_fits(planes.v, planes.v_stride, chroma)
     {
         Ok(())
     } else {
         Err(DecoderError::msg("decoded AVC444 view is smaller than the frame"))
     }
+}
+
+/// Whether `plane` holds `rows` rows of `row_len` samples at `stride`.
+pub(crate) fn plane_fits(plane: &[u8], stride: usize, (row_len, rows): (usize, usize)) -> bool {
+    rows == 0
+        || stride >= row_len
+            && stride
+                .checked_mul(rows - 1)
+                .and_then(|n| n.checked_add(row_len))
+                .is_some_and(|needed| plane.len() >= needed)
 }
