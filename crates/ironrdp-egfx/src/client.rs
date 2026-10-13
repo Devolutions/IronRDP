@@ -1193,7 +1193,23 @@ impl GraphicsPipelineClient {
                 right: region.right.min(max_right),
                 bottom: region.bottom.min(max_bottom),
             };
-            if rect.left >= rect.right || rect.top >= rect.bottom || painted.contains(&rect) {
+            if rect.left >= rect.right || rect.top >= rect.bottom {
+                // As for AVC420: a silent skip would leave a stale screen area
+                // with no trace.
+                warn!(
+                    surface_id,
+                    region_left = region.left,
+                    region_top = region.top,
+                    region_right = region.right,
+                    region_bottom = region.bottom,
+                    max_right,
+                    max_bottom,
+                    "AVC444v2 regionRect empty after clipping to surface/frame bounds -- skipped"
+                );
+                continue;
+            }
+            // Both views usually list the same regions; paint each once.
+            if painted.contains(&rect) {
                 continue;
             }
             let data = frame
