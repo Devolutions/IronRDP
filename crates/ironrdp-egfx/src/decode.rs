@@ -195,6 +195,13 @@ pub trait H264Decoder: Send {
     /// Decode like [`H264Decoder::decode`], but return the YUV420p planes
     /// instead of converting them to RGBA.
     ///
+    /// For a frame the encoder cropped, each plane must still hold the
+    /// decoded samples out to the coded width (the cropped width rounded up
+    /// to a macroblock, 16): the AVC444v2 auxiliary view is laid out at the
+    /// coded width, so its right half is read past the cropped width. A
+    /// decoder that returns its picture buffers as they are (OpenH264 does)
+    /// meets this; one that packs planes to the cropped width does not.
+    ///
     /// The default returns an error; implement it together with
     /// [`H264Decoder::supports_yuv420`].
     fn decode_yuv420(&mut self, data: &[u8]) -> DecoderResult<DecodedYuv420Frame> {
