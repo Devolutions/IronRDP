@@ -286,3 +286,185 @@ fn composite_graphics_pipeline_follows_a_reset_then_paints_the_frame() {
     let again = composite_graphics_pipeline(&mut gfx, &mut image).expect("composite again");
     assert!(!again.reset && again.region.is_none(), "drained output came back");
 }
+
+/// `ActiveStage` composites a registered pipeline through
+/// `composite_graphics_pipeline`, then widens the first update after a reset to
+/// the whole image and records each region it painted as damage.
+#[test]
+fn active_stage_widens_after_a_reset_and_records_damage() {
+    use std::borrow::Cow;
+
+    use ironrdp_core::encode_vec;
+    use ironrdp_dvc::DrdynvcClient;
+    use ironrdp_dvc::pdu::{CreateRequestPdu, DataPdu, DrdynvcDataPdu, DrdynvcServerPdu};
+    use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+    use ironrdp_egfx::pdu::{
+        Color, CreateSurfacePdu, EndFramePdu, GfxPdu, MapSurfaceToOutputPdu, PixelFormat as GfxPixelFormat,
+        ResetGraphicsPdu, SolidFillPdu, StartFramePdu, Timestamp,
+    };
+    use ironrdp_graphics::zgfx::wrap_uncompressed;
+    use ironrdp_pdu::Action;
+    use ironrdp_pdu::mcs::SendDataIndication;
+    use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
+    use ironrdp_pdu::x224::X224;
+    use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput};
+    use ironrdp_svc::StaticChannelSet;
+
+    struct Handler;
+    impl GraphicsPipelineHandler for Handler {}
+
+    const DRDYNVC: u16 = 1004;
+    const EGFX: u32 = 7;
+
+    let mut channels = StaticChannelSet::new();
+    channels.insert(DrdynvcClient::new().with_dynamic_channel(GraphicsPipelineClient::new(Box::new(Handler), None)));
+    channels.attach_channel_id(core::any::TypeId::of::<DrdynvcClient>(), DRDYNVC);
+    let mut active_stage = ActiveStageBuilder {
+        static_channels: channels,
+        user_channel_id: 1002,
+        io_channel_id: 1003,
+        message_channel_id: None,
+        share_id: 1,
+        compression_type: None,
+        enable_server_pointer: false,
+        pointer_software_rendering: false,
+    }
+    .build();
+
+    // A DRDYNVC PDU as the server sends it: one static channel chunk.
+    let frame = |pdu: &DrdynvcServerPdu| {
+        let pdu = encode_vec(pdu).expect("encode DRDYNVC PDU");
+        let mut data = encode_vec(&ChannelPduHeader {
+            length: u32::try_from(pdu.len()).expect("fits"),
+            flags: ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
+        })
+        .expect("encode channel header");
+        data.extend_from_slice(&pdu);
+        encode_vec(&X224(SendDataIndication {
+            initiator_id: 1002,
+            channel_id: DRDYNVC,
+            user_data: Cow::Owned(data),
+        }))
+        .expect("encode X224")
+    };
+    let gfx = |pdus: &[GfxPdu]| {
+        let mut bytes = Vec::new();
+        for pdu in pdus {
+            bytes.extend(encode_vec(pdu).expect("encode EGFX PDU"));
+        }
+        frame(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+            EGFX,
+            wrap_uncompressed(&bytes),
+        ))))
+    };
+    let fill = |frame_id, rect: ExclusiveRectangle| {
+        [
+            GfxPdu::StartFrame(StartFramePdu {
+                timestamp: Timestamp {
+                    milliseconds: 0,
+                    seconds: 0,
+                    minutes: 0,
+                    hours: 0,
+                },
+                frame_id,
+            }),
+            GfxPdu::SolidFill(SolidFillPdu {
+                surface_id: 1,
+                fill_pixel: Color {
+                    b: 0x30,
+                    g: 0x20,
+                    r: 0x10,
+                    xa: 0xFF,
+                },
+                rectangles: vec![rect],
+            }),
+            GfxPdu::EndFrame(EndFramePdu { frame_id }),
+        ]
+    };
+    let graphics_updates = |outputs: Vec<ActiveStageOutput>| -> Vec<_> {
+        outputs
+            .into_iter()
+            .filter_map(|output| match output {
+                ActiveStageOutput::GraphicsUpdate(region) => Some(region),
+                _ => None,
+            })
+            .collect()
+    };
+
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 2, 2);
+    active_stage
+        .process(
+            &mut image,
+            Action::X224,
+            &frame(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+                EGFX,
+                ironrdp_egfx::CHANNEL_NAME.to_owned(),
+            ))),
+        )
+        .expect("open the EGFX channel");
+
+    let mut first = vec![
+        GfxPdu::ResetGraphics(ResetGraphicsPdu {
+            width: 64,
+            height: 32,
+            monitors: Vec::new(),
+        }),
+        GfxPdu::CreateSurface(CreateSurfacePdu {
+            surface_id: 1,
+            width: 64,
+            height: 32,
+            pixel_format: GfxPixelFormat::XRgb,
+        }),
+        GfxPdu::MapSurfaceToOutput(MapSurfaceToOutputPdu {
+            surface_id: 1,
+            output_origin_x: 0,
+            output_origin_y: 0,
+        }),
+    ];
+    first.extend(fill(
+        1,
+        ExclusiveRectangle {
+            left: 8,
+            top: 4,
+            right: 24,
+            bottom: 12,
+        },
+    ));
+    let updates = graphics_updates(
+        active_stage
+            .process(&mut image, Action::X224, &gfx(&first))
+            .expect("first frame"),
+    );
+    assert_eq!((image.width(), image.height()), (64, 32));
+    let [update] = updates.as_slice() else {
+        panic!("one graphics update, got {updates:?}");
+    };
+    assert_eq!(
+        (update.left, update.top, update.right, update.bottom),
+        (0, 0, 63, 31),
+        "the update after a reset covers the whole image"
+    );
+
+    let second = fill(
+        2,
+        ExclusiveRectangle {
+            left: 40,
+            top: 20,
+            right: 48,
+            bottom: 28,
+        },
+    );
+    let updates = graphics_updates(
+        active_stage
+            .process(&mut image, Action::X224, &gfx(&second))
+            .expect("second frame"),
+    );
+    assert_eq!(updates.len(), 1, "one graphics update, got {updates:?}");
+    let damage = active_stage.take_damage_regions();
+    assert!(
+        damage
+            .iter()
+            .any(|region| (region.left, region.top, region.right, region.bottom) == (40, 20, 47, 27)),
+        "the fill is recorded as damage, got {damage:?}"
+    );
+}
