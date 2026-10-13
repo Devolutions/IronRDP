@@ -857,7 +857,12 @@ impl GraphicsPipelineClient {
                 self.decode_avc444v2(pdu.surface_id, &pdu.bitmap_data)?;
             }
             Codec1Type::Avc444 => {
-                debug!("AVC444 (v1 layout) not yet implemented, forwarding to handler");
+                // A server that confirmed a V10.x set may send the v1 layout;
+                // the region stays stale, so leave a trace.
+                warn!(
+                    surface_id = pdu.surface_id,
+                    "AVC444 (v1 layout) not yet implemented, forwarding to handler"
+                );
                 self.handler.on_unhandled_pdu(&GfxPdu::WireToSurface1(pdu));
             }
             Codec1Type::ClearCodec => {
