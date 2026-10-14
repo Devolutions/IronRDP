@@ -12,6 +12,8 @@ export interface RDCleanPathDetails {
     readonly httpStatusCode?: number;
     readonly wsaErrorCode?: number;
     readonly tlsAlertCode?: number;
+    /** Stable snake_case name of the reason the proxy rejected the connection, such as `expired`. */
+    readonly reason?: string;
 }
 
 export interface IronError {

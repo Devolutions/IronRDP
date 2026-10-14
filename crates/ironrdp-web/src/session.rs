@@ -1853,11 +1853,14 @@ where
                 );
             }
             (_, ironrdp_rdcleanpath::RDCleanPathMessage::GeneralErr(error)) => {
-                let details = iron_remote_desktop::RDCleanPathDetails::new(
+                let mut details = iron_remote_desktop::RDCleanPathDetails::new(
                     error.http_status_code,
                     error.wsa_last_error,
                     error.tls_alert_code,
                 );
+                if let Some(reason) = error.reason() {
+                    details = details.with_reason(reason);
+                }
                 return Err(
                     IronError::from(anyhow::Error::new(error).context("received an RDCleanPath error"))
                         .with_kind(IronErrorKind::RDCleanPath)
