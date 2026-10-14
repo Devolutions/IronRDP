@@ -1295,23 +1295,6 @@ impl ClientConnector {
         }
     }
 
-    /// The user channel ID of the current phase when it is one that waits for its PDU on
-    /// the I/O channel and leaves the MCS message channel to `step_message_channel_pdu`:
-    /// connect-time auto-detection, licensing, capabilities exchange and connection
-    /// finalization. Multitransport bootstrapping reads its requests from the message
-    /// channel, so it routes by channel itself.
-    fn io_channel_phase_user_channel_id(&self) -> Option<u16> {
-        match &self.state {
-            ClientConnectorState::ConnectTimeAutoDetection { user_channel_id, .. }
-            | ClientConnectorState::LicensingExchange { user_channel_id, .. } => Some(*user_channel_id),
-            ClientConnectorState::CapabilitiesExchange { connection_activation }
-            | ClientConnectorState::ConnectionFinalization { connection_activation } => {
-                Some(connection_activation.user_channel_id())
-            }
-            _ => None,
-        }
-    }
-
     /// Tells a PDU on the MCS message channel from the I/O channel PDU a phase is waiting
     /// for.
     ///
@@ -1326,7 +1309,8 @@ impl ClientConnector {
 
     /// Handles a PDU that arrived on the MCS message channel while a phase from
     /// connect-time auto-detection to connection finalization was waiting for its PDU on
-    /// the I/O channel. The phase stays as it is: its PDU is still to come.
+    /// the I/O channel, or one other than a multitransport request during multitransport
+    /// bootstrapping. The phase stays as it is: its PDU is still to come.
     ///
     /// Answering Auto-Detect Requests is what connect-time auto-detection ([MS-RDPBCGR]
     /// 1.3.1.1) is for, and the phases after it do the same.
@@ -1339,9 +1323,8 @@ impl ClientConnector {
     /// connection before the session opened. mstsc and FreeRDP answer them whenever they
     /// come (FreeRDP's licensing step notes the same of Windows Server 2012 R2 and 2019),
     /// and so does this, as during the connect-time phase, so that the server's
-    /// measurement completes; auto-detection is advisory, so a server proceeds without an
-    /// answer as well. Any other PDU on the message channel is not this phase's business
-    /// and is ignored.
+    /// measurement completes. Any other PDU on the message channel is not this phase's
+    /// business and is ignored.
     fn step_message_channel_pdu(
         &mut self,
         ctx: mcs::SendDataIndicationCtx<'_>,
@@ -1354,6 +1337,15 @@ impl ClientConnector {
                 debug!(?request, "Answering a connect-time Auto-Detect Request");
 
                 self.respond_to_connect_time_autodetect(request, received_at, ctx.channel_id, user_channel_id, output)
+            }
+            // [MS-RDPBCGR] 1.3.1.1 places multitransport bootstrapping after licensing, so
+            // an Initiate Multitransport Request outside it is off-sequence. It is not
+            // answered; the server's attempt at a UDP transport times out, and the session
+            // goes on over TCP.
+            None if security_header_contains(ctx.user_data, rdp::headers::BasicSecurityHeaderFlags::TRANSPORT_REQ) => {
+                warn!("Ignoring an Initiate Multitransport Request received outside multitransport bootstrapping");
+
+                Ok(Written::Nothing)
             }
             None => {
                 debug!("Ignoring a message channel PDU while waiting on the I/O channel");
@@ -1375,8 +1367,11 @@ fn security_header_contains(user_data: &[u8], flag: rdp::headers::BasicSecurityH
 /// does ([MS-RDPBCGR] 2.2.14.3: `SEC_AUTODETECT_REQ`).
 ///
 /// A header without the flag is some other message channel PDU. One with it that does not
-/// decode as an Auto-Detect Request is logged and treated the same way: auto-detection is
-/// advisory, and the server proceeds without an answer.
+/// decode as an Auto-Detect Request (malformed, or a request type this does not know) is
+/// logged and treated the same way, as the connect-time phase always has: it cannot be
+/// answered either way. A server that waits for the answer (see the Bandwidth Measure
+/// Stop arm of `respond_to_connect_time_autodetect`) then stalls the handshake rather
+/// than seeing it end on a decode error.
 fn auto_detect_request(user_data: &[u8]) -> Option<rdp::autodetect::AutoDetectRequest> {
     if !security_header_contains(user_data, rdp::headers::BasicSecurityHeaderFlags::AUTODETECT_REQ) {
         return None;
@@ -1493,8 +1488,20 @@ impl Sequence for ClientConnector {
     ) -> ConnectorResult<Written> {
         // A PDU on the message channel is none of the PDUs these phases wait for on the I/O
         // channel (a licensing PDU, a Share Control PDU); it is answered or ignored, and the
-        // phase goes on waiting. See `step_message_channel_pdu`.
-        if let Some(user_channel_id) = self.io_channel_phase_user_channel_id()
+        // phase goes on waiting. See `step_message_channel_pdu`. Multitransport
+        // bootstrapping reads its requests from the message channel, so it routes by
+        // channel itself.
+        let io_channel_phase_user_channel_id = match &self.state {
+            ClientConnectorState::ConnectTimeAutoDetection { user_channel_id, .. }
+            | ClientConnectorState::LicensingExchange { user_channel_id, .. } => Some(*user_channel_id),
+            ClientConnectorState::CapabilitiesExchange { connection_activation }
+            | ClientConnectorState::ConnectionFinalization { connection_activation } => {
+                Some(connection_activation.user_channel_id())
+            }
+            _ => None,
+        };
+
+        if let Some(user_channel_id) = io_channel_phase_user_channel_id
             && let Some(ctx) = self.message_channel_pdu(input)
         {
             return self.step_message_channel_pdu(ctx, received_at, user_channel_id, output);
@@ -1786,7 +1793,6 @@ impl Sequence for ClientConnector {
             }
 
             //== Optional Connect-Time Auto-Detection ==//
-            // NOTE: IronRDP is not expecting the Auto-Detect Request PDU from server.
             ClientConnectorState::ConnectTimeAutoDetection {
                 io_channel_id,
                 user_channel_id,
