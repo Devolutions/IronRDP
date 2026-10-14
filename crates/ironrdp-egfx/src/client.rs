@@ -230,12 +230,11 @@ pub trait GraphicsPipelineHandler: Send {
     /// V10.x is absent from the default. Those versions signal AVC444 support
     /// unless `AVC_DISABLED` is set. [`GraphicsPipelineClient`] decodes
     /// [`Codec1Type::Avc444v2`] when its H.264 decoder returns YUV420 planes
-    /// ([`H264Decoder::supports_yuv420`]); [`Codec1Type::Avc444`] (the v1
-    /// layout) is not decoded yet and reaches
-    /// [`GraphicsPipelineHandler::on_unhandled_pdu`]. The server picks one of
-    /// the advertised sets ([capability negotiation]) and prefers the most
-    /// capable, so only add V10.x for servers that send AVC444v2, such as
-    /// GNOME Remote Desktop.
+    /// ([`H264Decoder::supports_yuv420`]); for [`Codec1Type::Avc444`] (the v1
+    /// layout) it paints the main view only, at YUV420 chroma. The server
+    /// picks one of the advertised sets ([capability negotiation]) and prefers
+    /// the most capable, so only add V10.x for servers that send AVC444v2, such
+    /// as GNOME Remote Desktop.
     ///
     /// Note: sets are filtered at advertisement time to what the configured
     /// decoder can handle: AVC-capable sets are dropped without an H.264
@@ -407,6 +406,9 @@ pub struct GraphicsPipelineClient {
     /// Reconstructed YUV444 frame per surface for AVC444, kept between PDUs
     /// because a PDU may carry only the luma or only the chroma view.
     avc444_frames: BTreeMap<u16, Yuv444Frame>,
+    /// Whether the warning that AVC444 v1 paints at YUV420 chroma has been
+    /// logged; it's logged once per client.
+    avc444v1_warned: bool,
     /// Built on first use via [`Self::decode_clearcodec`]. `None` means no ClearCodec
     /// frame has arrived yet, not that the codec is unsupported: keeping the ~1.37 MiB
     /// V-bar and glyph cache spine (see `ClearCodecDecoder::new`) unallocated saves that
@@ -441,6 +443,7 @@ impl GraphicsPipelineClient {
             handler,
             h264_decoder,
             avc444_frames: BTreeMap::new(),
+            avc444v1_warned: false,
             clearcodec_decoder: None,
             planar_decoder: BitmapStreamDecoder::default(),
             progressive_decoder: ProgressiveDecoder::new(),
@@ -853,18 +856,9 @@ impl GraphicsPipelineClient {
             Codec1Type::Avc420 => {
                 self.decode_avc420(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)?;
             }
-            Codec1Type::Avc444v2 => {
+            Codec1Type::Avc444 | Codec1Type::Avc444v2 => {
                 let surface_size = (surface.width, surface.height);
-                self.decode_avc444v2(pdu.surface_id, surface_size, &pdu.bitmap_data)?;
-            }
-            Codec1Type::Avc444 => {
-                // A server that confirmed a V10.x set may send the v1 layout;
-                // the region stays stale, so leave a trace.
-                warn!(
-                    surface_id = pdu.surface_id,
-                    "AVC444 (v1 layout) not yet implemented, forwarding to handler"
-                );
-                self.handler.on_unhandled_pdu(&GfxPdu::WireToSurface1(pdu));
+                self.decode_avc444(pdu.codec_id, pdu.surface_id, surface_size, &pdu.bitmap_data)?;
             }
             Codec1Type::ClearCodec => {
                 self.decode_clearcodec(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)?;
@@ -1098,13 +1092,18 @@ impl GraphicsPipelineClient {
         Ok(())
     }
 
-    /// Decode an AVC444v2 update ([MS-RDPEGFX] 2.2.4.6).
+    /// Decode an AVC444 ([MS-RDPEGFX] 2.2.4.5) or AVC444v2 (2.2.4.6) update.
     ///
     /// Both views go through the one H.264 decoder in order, as MS-RDPEGFX
     /// 2.2.4.5 requires ("decoded by a single MPEG-4 AVC/H.264 decoder as one
     /// stream"), and are combined into the surface's persistent YUV444 frame.
-    fn decode_avc444v2(
+    ///
+    /// The v1 auxiliary layout isn't reconstructed: a v1 update applies only
+    /// its main view, so it paints at YUV420 chroma. Its auxiliary view is
+    /// still decoded, since later frames of the stream may reference it.
+    fn decode_avc444(
         &mut self,
+        codec_id: Codec1Type,
         surface_id: u16,
         (surface_width, surface_height): (u16, u16),
         bitmap_data: &[u8],
@@ -1140,6 +1139,18 @@ impl GraphicsPipelineClient {
             && (luma.width(), luma.height()) != (chroma.width(), chroma.height())
         {
             return Err(pdu_other_err!("AVC444 views differ in size"));
+        }
+        // Only the views applied to the frame are painted.
+        let chroma = chroma.filter(|_| codec_id == Codec1Type::Avc444v2);
+        if codec_id == Codec1Type::Avc444 && !self.avc444v1_warned {
+            warn!(
+                surface_id,
+                "AVC444 v1 auxiliary view not reconstructed; painting the main view at YUV420 chroma"
+            );
+            self.avc444v1_warned = true;
+        }
+        if luma.is_none() && chroma.is_none() {
+            return Ok(());
         }
         let Some((width, height)) = luma
             .as_ref()
@@ -1199,7 +1210,7 @@ impl GraphicsPipelineClient {
         if luma.iter().chain(chroma.iter()).all(|(_, regions)| regions.is_empty()) {
             // Unlike AVC420, there is no destination-rectangle fallback: the
             // regions also bound what the views wrote into the frame.
-            warn!(surface_id, "AVC444v2 update with no regionRects -- nothing painted");
+            warn!(surface_id, "AVC444 update with no regionRects -- nothing painted");
         }
         let mut painted = HashSet::new();
         let regions = luma.iter().chain(chroma.iter()).flat_map(|(_, regions)| regions.iter());
@@ -1221,7 +1232,7 @@ impl GraphicsPipelineClient {
                     region_bottom = region.bottom,
                     max_right,
                     max_bottom,
-                    "AVC444v2 regionRect empty after clipping to surface/frame bounds -- skipped"
+                    "AVC444 regionRect empty after clipping to surface/frame bounds -- skipped"
                 );
                 continue;
             }
@@ -1235,7 +1246,7 @@ impl GraphicsPipelineClient {
             let update = BitmapUpdate {
                 surface_id,
                 destination_rectangle: rect.clone(),
-                codec_id: Codec1Type::Avc444v2,
+                codec_id,
                 data,
                 width: rect.right - rect.left,
                 height: rect.bottom - rect.top,
@@ -2044,7 +2055,7 @@ mod tests {
     ///
     /// The server picks one of the advertised sets and prefers the most capable,
     /// so a set that implies AVC444 makes the server send `Avc444`/`Avc444v2`,
-    /// which fall through to `on_unhandled_pdu` and leave the screen blank.
+    /// which only a decoder that returns YUV420 planes can decode.
     #[test]
     fn default_capabilities_do_not_advertise_avc444() {
         for cap in TestHandler.capabilities() {

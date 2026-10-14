@@ -344,7 +344,7 @@ mod end_to_end {
 
     impl GraphicsPipelineHandler for Capture {
         fn on_bitmap_updated(&mut self, update: &BitmapUpdate) {
-            assert_eq!(update.codec_id, Codec1Type::Avc444v2);
+            assert!(matches!(update.codec_id, Codec1Type::Avc444v2 | Codec1Type::Avc444));
             self.0
                 .lock()
                 .expect("lock")
@@ -484,9 +484,18 @@ mod end_to_end {
 
     /// Send `stream` to surface 1 as one AVC444v2 PDU.
     fn send(client: &mut GraphicsPipelineClient, stream: &Avc444BitmapStream<'_>) -> ironrdp_pdu::PduResult<()> {
+        send_as(client, Codec1Type::Avc444v2, stream)
+    }
+
+    /// Send `stream` to surface 1 as one PDU of `codec_id`.
+    fn send_as(
+        client: &mut GraphicsPipelineClient,
+        codec_id: Codec1Type,
+        stream: &Avc444BitmapStream<'_>,
+    ) -> ironrdp_pdu::PduResult<()> {
         let pdu = GfxPdu::WireToSurface1(WireToSurface1Pdu {
             surface_id: 1,
-            codec_id: Codec1Type::Avc444v2,
+            codec_id,
             pixel_format: PixelFormat::XRgb,
             destination_rectangle: full_frame()[0].clone(),
             bitmap_data: encode_vec(stream).expect("encode AVC444 stream"),
@@ -679,5 +688,50 @@ mod end_to_end {
             1,
             "painted chroma over the old surface's luma"
         );
+    }
+
+    #[test]
+    fn avc444v1_paints_the_main_view() {
+        // The v1 auxiliary layout isn't reconstructed: the main view is
+        // painted at YUV420 chroma. The auxiliary view still goes through the
+        // decoder, since the next frame of the stream may reference it.
+        let (y, u, v) = striped_source();
+        let (main, aux) = split_v2(&y, &u, &v);
+        let mut encoder = openh264::encoder::Encoder::with_api_config(
+            openh264::OpenH264API::from_source(),
+            openh264::encoder::EncoderConfig::new()
+                .skip_frames(false)
+                .bitrate(openh264::encoder::BitRate::from_bps(50_000_000)),
+        )
+        .expect("encoder");
+        let mut encode = |planes: &Planes420| {
+            let yuv = openh264::formats::YUVSlices::new((&planes.y, &planes.u, &planes.v), (W, H), (W, W / 2, W / 2));
+            encoder.encode(&yuv).expect("encode").to_vec()
+        };
+        let (main_h264, aux_h264, next_main_h264) = (encode(&main), encode(&aux), encode(&main));
+        let (mut client, updates) = client_with_surface();
+
+        send_as(
+            &mut client,
+            Codec1Type::Avc444,
+            &Avc444BitmapStream {
+                encoding: Encoding::LUMA_AND_CHROMA,
+                stream1: avc420_stream(&main_h264, &full_frame()),
+                stream2: Some(avc420_stream(&aux_h264, &full_frame())),
+            },
+        )
+        .expect("v1 update");
+        send_as(&mut client, Codec1Type::Avc444, &luma_only(&next_main_h264)).expect("v1 luma-only update");
+
+        let updates = updates.lock().expect("lock").clone();
+        assert_eq!(updates.len(), 2, "one bitmap update per PDU");
+        let mut luma = Yuv444Frame::new(W, H).expect("frame");
+        luma.apply_main_view(&main.view(), &full_frame()).expect("main");
+        let want = luma.to_rgba(&full_frame()[0]).expect("rgba");
+        for (i, (rect, got)) in updates.iter().enumerate() {
+            assert_eq!(rect, &full_frame()[0]);
+            let error = mean_abs_error(got, &want);
+            assert!(error < 4.0, "update {i} doesn't match the main view: error {error:.2}");
+        }
     }
 }
