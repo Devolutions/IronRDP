@@ -3,8 +3,8 @@
 //! In AVC444 mode the server splits each YUV444 frame into two YUV420p
 //! frames, sent as two H.264 streams: the main (luma) view and the auxiliary
 //! (chroma) view. [`Yuv444Frame`] holds the reconstructed YUV444 frame and
-//! applies each decoded view to it, following [MS-RDPEGFX] 3.3.8.3.2 (YUV444
-//! mode) and 3.3.8.3.3 ([YUV444v2 mode][1]).
+//! applies each decoded view to it, following [MS-RDPEGFX] 3.3.8.3.2 ([YUV444
+//! mode][1]) and 3.3.8.3.3 ([YUV444v2 mode][2]).
 //!
 //! The frame persists between updates because a PDU may carry only one of the
 //! views: a luma-only update is shown at YUV420 quality until the matching
@@ -14,7 +14,8 @@
 //! encoder stored a 2x2 average. It is used as-is; the specification's reverse
 //! filter is optional and not applied.
 //!
-//! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/781406c3-5e24-4f2b-b6ff-42b76bf64f6d
+//! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/8131c1bc-1af8-4907-a05a-f72f4581160f
+//! [2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/781406c3-5e24-4f2b-b6ff-42b76bf64f6d
 
 use ironrdp_pdu::geometry::ExclusiveRectangle;
 
@@ -112,6 +113,59 @@ impl Yuv444Frame {
                 for x in left..right {
                     self.u[dst + x] = main.u[src_u + x / 2];
                     self.v[dst + x] = main.v[src_v + x / 2];
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Apply a decoded auxiliary (chroma) view in YUV444 (v1) layout inside
+    /// `regions` (areas B4-B7).
+    ///
+    /// - Auxiliary Y: the odd rows of U and V, in 16-row blocks of 8 U rows
+    ///   then 8 V rows. Odd row `2i + 1` is at row `(i & !7) + i` for U and 8
+    ///   rows further for V.
+    /// - Auxiliary U and V: U and V at odd columns of even rows.
+    ///
+    /// For a frame cropped to a height that isn't a multiple of 16, the last
+    /// block reaches past the cropped height. Odd rows stored past the end of
+    /// the decoded plane keep the main view's chroma, as in FreeRDP; OpenH264's
+    /// planes stop at the cropped height.
+    pub fn apply_auxiliary_view_v1(
+        &mut self,
+        aux: &Yuv420Planes<'_>,
+        regions: &[ExclusiveRectangle],
+    ) -> DecoderResult<()> {
+        check_planes(
+            aux,
+            (self.width, self.height),
+            (self.width / 2, self.height.div_ceil(2)),
+        )?;
+        for region in regions {
+            let (left, top, right, bottom) = self.macroblock_bounds(region);
+
+            // B4, B5: odd rows.
+            for row in (top | 1..bottom).step_by(2) {
+                let i = row / 2;
+                let u_row = (i & !7) + i;
+                let dst = row * self.width;
+                let source = |aux_row: usize| aux.y.get(aux_row * aux.y_stride + left..aux_row * aux.y_stride + right);
+                if let Some(src) = source(u_row) {
+                    self.u[dst + left..dst + right].copy_from_slice(src);
+                }
+                if let Some(src) = source(u_row + 8) {
+                    self.v[dst + left..dst + right].copy_from_slice(src);
+                }
+            }
+
+            // B6, B7: odd columns of even rows. `top` rounds up, so a region
+            // clamped to an empty one at an odd bottom edge covers no row.
+            for y in top.div_ceil(2)..bottom.div_ceil(2) {
+                let (src_u, src_v) = (y * aux.u_stride, y * aux.v_stride);
+                let dst = 2 * y * self.width;
+                for x in (left / 2)..(right / 2) {
+                    self.u[dst + 2 * x + 1] = aux.u[src_u + x];
+                    self.v[dst + 2 * x + 1] = aux.v[src_v + x];
                 }
             }
         }

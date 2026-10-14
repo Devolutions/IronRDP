@@ -1,4 +1,5 @@
 use ironrdp_egfx::avc444::{Yuv420Planes, Yuv444Frame};
+use ironrdp_egfx::decode::DecoderResult;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
 
 const W: usize = 64;
@@ -93,6 +94,40 @@ fn split_v2(y444: &[u8], u444: &[u8], v444: &[u8]) -> (Planes420, Planes420) {
     (main, aux)
 }
 
+/// Split a YUV444 frame into main and auxiliary YUV420p views in YUV444 (v1)
+/// layout. A port of FreeRDP's encoder, `general_RGBToAVC444YUV_BGRX`
+/// (libfreerdp/primitives/prim_YUV.c), working from YUV planes instead of RGB.
+#[expect(clippy::similar_names, reason = "Y, U and V plane names")]
+fn split_v1(y444: &[u8], u444: &[u8], v444: &[u8]) -> (Planes420, Planes420) {
+    let (main, _) = split_v2(y444, u444, v444);
+    let mut aux = Planes420::new();
+    let half = W / 2;
+    for row in (0..H).step_by(2) {
+        // B4, B5: the odd row, in 16-row blocks of 8 U rows then 8 V rows.
+        let i = row / 2;
+        let n = (i & !7) + i;
+        let odd = (row + 1) * W;
+        aux.y[n * W..(n + 1) * W].copy_from_slice(&u444[odd..odd + W]);
+        aux.y[(n + 8) * W..(n + 9) * W].copy_from_slice(&v444[odd..odd + W]);
+
+        // B6, B7: odd columns of the even row.
+        for col in (0..W).step_by(2) {
+            aux.u[row / 2 * half + col / 2] = u444[row * W + col + 1];
+            aux.v[row / 2 * half + col / 2] = v444[row * W + col + 1];
+        }
+    }
+    (main, aux)
+}
+
+type Split = fn(&[u8], &[u8], &[u8]) -> (Planes420, Planes420);
+type ApplyAuxiliary = fn(&mut Yuv444Frame, &Yuv420Planes<'_>, &[ExclusiveRectangle]) -> DecoderResult<()>;
+
+/// Both layouts: how to split a frame, and how to apply its auxiliary view.
+const LAYOUTS: [(&str, Split, ApplyAuxiliary); 2] = [
+    ("v1", split_v1, Yuv444Frame::apply_auxiliary_view_v1),
+    ("v2", split_v2, Yuv444Frame::apply_auxiliary_view_v2),
+];
+
 fn full_frame() -> [ExclusiveRectangle; 1] {
     [ExclusiveRectangle {
         left: 0,
@@ -105,28 +140,36 @@ fn full_frame() -> [ExclusiveRectangle; 1] {
 #[test]
 fn main_then_auxiliary_view_reconstructs_yuv444() {
     let (y, u, v) = source_frame();
-    let (main, aux) = split_v2(&y, &u, &v);
+    for (layout, split, apply_auxiliary) in LAYOUTS {
+        let (main, aux) = split(&y, &u, &v);
 
-    let mut frame = Yuv444Frame::new(W, H).expect("frame");
-    frame.apply_main_view(&main.view(), &full_frame()).expect("main view");
-    frame
-        .apply_auxiliary_view_v2(&aux.view(), &full_frame())
-        .expect("auxiliary view");
+        let mut frame = Yuv444Frame::new(W, H).expect("frame");
+        frame.apply_main_view(&main.view(), &full_frame()).expect("main view");
+        apply_auxiliary(&mut frame, &aux.view(), &full_frame()).expect("auxiliary view");
 
-    assert_eq!(frame.y(), y.as_slice(), "luma");
-    for row in 0..H {
-        for col in 0..W {
-            let i = row * W + col;
-            if row % 2 == 0 && col % 2 == 0 {
-                // Only the main view's 2x2 average exists for these positions.
-                let block = |p: &[u8]| {
-                    (u32::from(p[i]) + u32::from(p[i + 1]) + u32::from(p[i + W]) + u32::from(p[i + W + 1])) / 4
-                };
-                assert_eq!(u32::from(frame.u()[i]), block(&u), "U average at ({col},{row})");
-                assert_eq!(u32::from(frame.v()[i]), block(&v), "V average at ({col},{row})");
-            } else {
-                assert_eq!(frame.u()[i], u[i], "U at ({col},{row})");
-                assert_eq!(frame.v()[i], v[i], "V at ({col},{row})");
+        assert_eq!(frame.y(), y.as_slice(), "{layout}: luma");
+        for row in 0..H {
+            for col in 0..W {
+                let i = row * W + col;
+                if row % 2 == 0 && col % 2 == 0 {
+                    // Only the main view's 2x2 average exists for these positions.
+                    let block = |p: &[u8]| {
+                        (u32::from(p[i]) + u32::from(p[i + 1]) + u32::from(p[i + W]) + u32::from(p[i + W + 1])) / 4
+                    };
+                    assert_eq!(
+                        u32::from(frame.u()[i]),
+                        block(&u),
+                        "{layout}: U average at ({col},{row})"
+                    );
+                    assert_eq!(
+                        u32::from(frame.v()[i]),
+                        block(&v),
+                        "{layout}: V average at ({col},{row})"
+                    );
+                } else {
+                    assert_eq!(frame.u()[i], u[i], "{layout}: U at ({col},{row})");
+                    assert_eq!(frame.v()[i], v[i], "{layout}: V at ({col},{row})");
+                }
             }
         }
     }
@@ -174,6 +217,31 @@ fn region_past_the_right_edge_changes_nothing() {
     assert_eq!(frame.y(), before.y());
     assert_eq!(frame.u(), before.u());
     assert_eq!(frame.v(), before.v());
+}
+
+#[test]
+fn region_below_the_bottom_edge_changes_nothing() {
+    // The region clamps to an empty one at the frame's bottom edge, which is
+    // odd here.
+    let (y, u, v) = source_frame();
+    for (layout, split, apply_auxiliary) in LAYOUTS {
+        let (main, aux) = split(&y, &u, &v);
+        let mut frame = Yuv444Frame::new(W, H - 1).expect("frame");
+        let before = frame.clone();
+
+        let below = [ExclusiveRectangle {
+            left: 0,
+            top: u16::try_from(H).expect("fits"),
+            right: u16::try_from(W).expect("fits"),
+            bottom: u16::try_from(H + 16).expect("fits"),
+        }];
+        frame.apply_main_view(&main.view(), &below).expect("main view");
+        apply_auxiliary(&mut frame, &aux.view(), &below).expect("auxiliary view");
+
+        assert_eq!(frame.y(), before.y(), "{layout}: Y");
+        assert_eq!(frame.u(), before.u(), "{layout}: U");
+        assert_eq!(frame.v(), before.v(), "{layout}: V");
+    }
 }
 
 #[test]
@@ -250,7 +318,12 @@ fn rejects_views_smaller_than_the_frame() {
         v: vec![0; W / 2 * H / 2],
     };
     assert!(frame.apply_main_view(&short.view(), &full_frame()).is_err());
-    assert!(frame.apply_auxiliary_view_v2(&short.view(), &full_frame()).is_err());
+    for (layout, _, apply_auxiliary) in LAYOUTS {
+        assert!(
+            apply_auxiliary(&mut frame, &short.view(), &full_frame()).is_err(),
+            "{layout}"
+        );
+    }
 }
 
 #[test]
@@ -315,6 +388,52 @@ fn cropped_frame_reads_auxiliary_view_at_coded_width() {
                     assert_eq!(frame.u()[i], u[src], "{width}x{height}: U at ({col},{row})");
                     assert_eq!(frame.v()[i], v[src], "{width}x{height}: V at ({col},{row})");
                 }
+            }
+        }
+    }
+}
+
+#[test]
+fn cropped_frame_reads_v1_rows_past_the_cropped_height() {
+    // Encoded W x H and cropped. The last block's V rows are stored past the
+    // cropped height: read while the planes hold them, and otherwise left at
+    // the main view's chroma.
+    let (y, u, v) = source_frame();
+    let (main, aux) = split_v1(&y, &u, &v);
+    // At a height 1 to 8 past a multiple of 16, the last block's V rows are
+    // past it.
+    let (width, height) = (W - 7, H - 8);
+    let region = [ExclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: u16::try_from(width).expect("fits"),
+        bottom: u16::try_from(height).expect("fits"),
+    }];
+    let to_height = Planes420 {
+        y: aux.y[..W * height].to_vec(),
+        u: aux.u.clone(),
+        v: aux.v.clone(),
+    };
+
+    for (planes, full) in [(&aux, true), (&to_height, false)] {
+        let mut frame = Yuv444Frame::new(width, height).expect("frame");
+        frame.apply_main_view(&main.view(), &region).expect("main view");
+        frame
+            .apply_auxiliary_view_v1(&planes.view(), &region)
+            .expect("auxiliary view");
+
+        for row in (1..height).step_by(2) {
+            let i = row / 2;
+            let v_row = (i & !7) + i + 8;
+            for col in 0..width {
+                let (dst, src) = (row * width + col, row * W + col);
+                assert_eq!(frame.u()[dst], u[src], "full {full}: U at ({col},{row})");
+                let want = if full || v_row < height {
+                    v[src]
+                } else {
+                    main.v[row / 2 * (W / 2) + col / 2]
+                };
+                assert_eq!(frame.v()[dst], want, "full {full}: V at ({col},{row})");
             }
         }
     }
@@ -691,24 +810,10 @@ mod end_to_end {
     }
 
     #[test]
-    fn avc444v1_paints_the_main_view() {
-        // The v1 auxiliary layout isn't reconstructed: the main view is
-        // painted at YUV420 chroma. The auxiliary view still goes through the
-        // decoder, since the next frame of the stream may reference it.
+    fn avc444v1_through_the_client_keeps_full_chroma() {
         let (y, u, v) = striped_source();
-        let (main, aux) = split_v2(&y, &u, &v);
-        let mut encoder = openh264::encoder::Encoder::with_api_config(
-            openh264::OpenH264API::from_source(),
-            openh264::encoder::EncoderConfig::new()
-                .skip_frames(false)
-                .bitrate(openh264::encoder::BitRate::from_bps(50_000_000)),
-        )
-        .expect("encoder");
-        let mut encode = |planes: &Planes420| {
-            let yuv = openh264::formats::YUVSlices::new((&planes.y, &planes.u, &planes.v), (W, H), (W, W / 2, W / 2));
-            encoder.encode(&yuv).expect("encode").to_vec()
-        };
-        let (main_h264, aux_h264, next_main_h264) = (encode(&main), encode(&aux), encode(&main));
+        let (main, aux) = split_v1(&y, &u, &v);
+        let (main_h264, aux_h264) = encode_views(&main, &aux);
         let (mut client, updates) = client_with_surface();
 
         send_as(
@@ -721,17 +826,22 @@ mod end_to_end {
             },
         )
         .expect("v1 update");
-        send_as(&mut client, Codec1Type::Avc444, &luma_only(&next_main_h264)).expect("v1 luma-only update");
 
         let updates = updates.lock().expect("lock").clone();
-        assert_eq!(updates.len(), 2, "one bitmap update per PDU");
-        let mut luma = Yuv444Frame::new(W, H).expect("frame");
-        luma.apply_main_view(&main.view(), &full_frame()).expect("main");
-        let want = luma.to_rgba(&full_frame()[0]).expect("rgba");
-        for (i, (rect, got)) in updates.iter().enumerate() {
-            assert_eq!(rect, &full_frame()[0]);
-            let error = mean_abs_error(got, &want);
-            assert!(error < 4.0, "update {i} doesn't match the main view: error {error:.2}");
-        }
+        assert_eq!(updates.len(), 1, "one bitmap update");
+        let (rect, got) = &updates[0];
+        assert_eq!(rect, &full_frame()[0]);
+        let mut full = Yuv444Frame::new(W, H).expect("frame");
+        full.apply_main_view(&main.view(), &full_frame()).expect("main");
+        full.apply_auxiliary_view_v1(&aux.view(), &full_frame()).expect("aux");
+        let mut luma_only = Yuv444Frame::new(W, H).expect("frame");
+        luma_only.apply_main_view(&main.view(), &full_frame()).expect("main");
+
+        let to_444 = mean_abs_error(got, &full.to_rgba(&full_frame()[0]).expect("rgba"));
+        let to_420 = mean_abs_error(got, &luma_only.to_rgba(&full_frame()[0]).expect("rgba"));
+        assert!(
+            to_444 * 4.0 < to_420,
+            "expected the output to match YUV444, not YUV420: error {to_444:.2} vs {to_420:.2}"
+        );
     }
 }

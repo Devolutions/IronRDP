@@ -229,12 +229,10 @@ pub trait GraphicsPipelineHandler: Send {
     ///
     /// V10.x is absent from the default. Those versions signal AVC444 support
     /// unless `AVC_DISABLED` is set. [`GraphicsPipelineClient`] decodes
-    /// [`Codec1Type::Avc444v2`] when its H.264 decoder returns YUV420 planes
-    /// ([`H264Decoder::supports_yuv420`]); for [`Codec1Type::Avc444`] (the v1
-    /// layout) it paints the main view only, at YUV420 chroma. The server
-    /// picks one of the advertised sets ([capability negotiation]) and prefers
-    /// the most capable, so only add V10.x for servers that send AVC444v2, such
-    /// as GNOME Remote Desktop.
+    /// [`Codec1Type::Avc444`] and [`Codec1Type::Avc444v2`] when its H.264
+    /// decoder returns YUV420 planes ([`H264Decoder::supports_yuv420`]). The
+    /// server picks one of the advertised sets ([capability negotiation]) and
+    /// prefers the most capable.
     ///
     /// Note: sets are filtered at advertisement time to what the configured
     /// decoder can handle: AVC-capable sets are dropped without an H.264
@@ -406,9 +404,6 @@ pub struct GraphicsPipelineClient {
     /// Reconstructed YUV444 frame per surface for AVC444, kept between PDUs
     /// because a PDU may carry only the luma or only the chroma view.
     avc444_frames: BTreeMap<u16, Yuv444Frame>,
-    /// Whether the warning that AVC444 v1 paints at YUV420 chroma has been
-    /// logged; it's logged once per client.
-    avc444v1_warned: bool,
     /// Built on first use via [`Self::decode_clearcodec`]. `None` means no ClearCodec
     /// frame has arrived yet, not that the codec is unsupported: keeping the ~1.37 MiB
     /// V-bar and glyph cache spine (see `ClearCodecDecoder::new`) unallocated saves that
@@ -443,7 +438,6 @@ impl GraphicsPipelineClient {
             handler,
             h264_decoder,
             avc444_frames: BTreeMap::new(),
-            avc444v1_warned: false,
             clearcodec_decoder: None,
             planar_decoder: BitmapStreamDecoder::default(),
             progressive_decoder: ProgressiveDecoder::new(),
@@ -1097,10 +1091,6 @@ impl GraphicsPipelineClient {
     /// Both views go through the one H.264 decoder in order, as MS-RDPEGFX
     /// 2.2.4.5 requires ("decoded by a single MPEG-4 AVC/H.264 decoder as one
     /// stream"), and are combined into the surface's persistent YUV444 frame.
-    ///
-    /// The v1 auxiliary layout isn't reconstructed: a v1 update applies only
-    /// its main view, so it paints at YUV420 chroma. Its auxiliary view is
-    /// still decoded, since later frames of the stream may reference it.
     fn decode_avc444(
         &mut self,
         codec_id: Codec1Type,
@@ -1139,18 +1129,6 @@ impl GraphicsPipelineClient {
             && (luma.width(), luma.height()) != (chroma.width(), chroma.height())
         {
             return Err(pdu_other_err!("AVC444 views differ in size"));
-        }
-        // Only the views applied to the frame are painted.
-        let chroma = chroma.filter(|_| codec_id == Codec1Type::Avc444v2);
-        if codec_id == Codec1Type::Avc444 && !self.avc444v1_warned {
-            warn!(
-                surface_id,
-                "AVC444 v1 auxiliary view not reconstructed; painting the main view at YUV420 chroma"
-            );
-            self.avc444v1_warned = true;
-        }
-        if luma.is_none() && chroma.is_none() {
-            return Ok(());
         }
         let Some((width, height)) = luma
             .as_ref()
@@ -1195,9 +1173,12 @@ impl GraphicsPipelineClient {
                 .map_err(|e| pdu_other_err!("AVC444 luma view", source: e))?;
         }
         if let Some((view, regions)) = &chroma {
-            frame
-                .apply_auxiliary_view_v2(&view.planes(), regions)
-                .map_err(|e| pdu_other_err!("AVC444 chroma view", source: e))?;
+            if codec_id == Codec1Type::Avc444 {
+                frame.apply_auxiliary_view_v1(&view.planes(), regions)
+            } else {
+                frame.apply_auxiliary_view_v2(&view.planes(), regions)
+            }
+            .map_err(|e| pdu_other_err!("AVC444 chroma view", source: e))?;
         }
 
         // The frame is current only inside the regions this PDU updated, so
