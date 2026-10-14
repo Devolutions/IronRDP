@@ -1334,7 +1334,7 @@ impl ClientConnector {
     ) -> ConnectorResult<Written> {
         match auto_detect_request(ctx.user_data) {
             Some(request) => {
-                debug!(?request, "Answering a connect-time Auto-Detect Request");
+                debug!(?request, phase = self.state.name(), "Answering an Auto-Detect Request");
 
                 self.respond_to_connect_time_autodetect(request, received_at, ctx.channel_id, user_channel_id, output)
             }
