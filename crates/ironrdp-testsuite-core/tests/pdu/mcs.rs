@@ -77,3 +77,46 @@ fn buffer_length_is_correct_for_connect_response() {
     let len = CONNECT_RESPONSE.size();
     assert_eq!(len, CONNECT_RESPONSE_BUFFER.len());
 }
+
+/// Decoding any prefix of a valid Connect Initial must never panic.
+///
+/// A Connect Initial truncated right before the PER padding following the conference name used to move the
+/// read cursor past the end of the buffer.
+///
+/// Some prefixes legitimately decode (the outer BER and PER lengths are not enforced, and a cut at a GCC block
+/// boundary yields a shorter, valid set of blocks), so only the absence of panics is asserted here.
+#[test]
+fn decoding_truncated_connect_initial_does_not_panic() {
+    for len in 0..CONNECT_INITIAL_BUFFER.len() {
+        let truncated = &CONNECT_INITIAL_BUFFER[..len];
+        let result = std::panic::catch_unwind(|| decode::<ConnectInitial>(truncated));
+        assert!(result.is_ok(), "prefix of length {len} panicked during decoding");
+    }
+}
+
+#[test]
+fn connect_initial_truncated_before_conference_name_padding() {
+    // 107 bytes of MCS Connect Initial header, then the conference create request up to and including the
+    // conference name: key choice (1), object identifier (6), connectPDU length (2), ConnectGCCPDU choice (1),
+    // selection (1), conference name length (1) and conference name (1).
+    const PADDING_OFFSET: usize = CONNECT_INITIAL_PREFIX_BUFFER.len() + 13;
+
+    let e = decode::<ConnectInitial>(&CONNECT_INITIAL_BUFFER[..PADDING_OFFSET])
+        .err()
+        .unwrap();
+
+    expect![[r#"
+        Error {
+            context: "<ironrdp_pdu::gcc::conference_create::ConferenceCreateRequest as ironrdp_core::decode::Decode<'_>>::decode",
+            kind: NotEnoughBytes {
+                received: 0,
+                expected: 1,
+                offset: Some(
+                    120,
+                ),
+            },
+            source: None,
+        }
+    "#]]
+    .assert_debug_eq(&e);
+}

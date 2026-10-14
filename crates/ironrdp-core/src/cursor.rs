@@ -61,10 +61,12 @@ impl<'a> ReadCursor<'a> {
     }
 
     /// Returns the number of bytes remaining.
+    ///
+    /// Returns 0 when the cursor was advanced past the end of the buffer (see [`Self::advance`]), so that
+    /// subsequent size checks fail with an error instead of overflowing.
     #[inline]
-    #[track_caller]
     pub const fn len(&self) -> usize {
-        self.inner.len() - self.pos
+        self.inner.len().saturating_sub(self.pos)
     }
 
     /// Returns `true` if there are no bytes remaining.
@@ -465,9 +467,16 @@ impl<'a> ReadCursor<'a> {
     }
 
     /// Advance the cursor by `len` bytes.
+    ///
+    /// This does not check that `len` bytes remain: the caller is responsible for it (e.g. with `ensure_size!`).
+    /// Prefer `read_padding!` for skipping bytes in a decoder, which returns an error when the buffer is too short.
+    ///
+    /// Advancing past the end is caught by a debug assertion, so that debug, test and fuzz builds report the
+    /// culprit rather than a later read.
     #[inline]
     #[track_caller]
     pub fn advance(&mut self, len: usize) {
+        debug_assert!(len <= self.len(), "advancing past the end of the buffer");
         self.pos += len;
     }
 
