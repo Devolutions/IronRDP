@@ -990,22 +990,41 @@ impl ClientConnector {
         }
     }
 
-    /// Tells a PDU on the MCS message channel from the I/O channel PDU a phase after
-    /// connect-time auto-detection is waiting for.
+    /// The user channel ID of the current phase when it is one that waits for its PDU on
+    /// the I/O channel and leaves the MCS message channel to `step_message_channel_pdu`:
+    /// connect-time auto-detection, licensing, capabilities exchange and connection
+    /// finalization. Multitransport bootstrapping reads its requests from the message
+    /// channel, so it routes by channel itself.
+    fn io_channel_phase_user_channel_id(&self) -> Option<u16> {
+        match &self.state {
+            ClientConnectorState::ConnectTimeAutoDetection { user_channel_id, .. }
+            | ClientConnectorState::LicensingExchange { user_channel_id, .. } => Some(*user_channel_id),
+            ClientConnectorState::CapabilitiesExchange { connection_activation }
+            | ClientConnectorState::ConnectionFinalization { connection_activation } => {
+                Some(connection_activation.user_channel_id())
+            }
+            _ => None,
+        }
+    }
+
+    /// Tells a PDU on the MCS message channel from the I/O channel PDU a phase is waiting
+    /// for.
     ///
     /// `None` when no message channel was negotiated, or when `input` is not a Send Data
     /// Indication on it: the phase's own decoder gets it, as before.
-    fn message_channel_pdu<'a>(&self, input: &'a [u8]) -> Option<(u16, mcs::SendDataIndicationCtx<'a>)> {
+    fn message_channel_pdu<'a>(&self, input: &'a [u8]) -> Option<mcs::SendDataIndicationCtx<'a>> {
         let message_channel_id = self.message_channel_id?;
         let ctx = mcs::decode_send_data_indication(input).ok()?;
 
-        (ctx.channel_id == message_channel_id).then_some((message_channel_id, ctx))
+        (ctx.channel_id == message_channel_id).then_some(ctx)
     }
 
-    /// Handles a PDU that arrived on the MCS message channel while a phase after
-    /// connect-time auto-detection (licensing, capabilities exchange, connection
-    /// finalization) was waiting for its PDU on the I/O channel. The phase stays as it
-    /// is: its PDU is still to come.
+    /// Handles a PDU that arrived on the MCS message channel while a phase from
+    /// connect-time auto-detection to connection finalization was waiting for its PDU on
+    /// the I/O channel. The phase stays as it is: its PDU is still to come.
+    ///
+    /// Answering Auto-Detect Requests is what connect-time auto-detection ([MS-RDPBCGR]
+    /// 1.3.1.1) is for, and the phases after it do the same.
     ///
     /// Windows Server with RDS licensing sends Auto-Detect Requests on the message channel
     /// in the middle of the licensing exchange, and again while it prepares the Demand
@@ -1020,29 +1039,19 @@ impl ClientConnector {
     /// and is ignored.
     fn step_message_channel_pdu(
         &mut self,
-        message_channel_id: u16,
         ctx: mcs::SendDataIndicationCtx<'_>,
         received_at: Option<MonotonicInstant>,
         user_channel_id: u16,
         output: &mut WriteBuf,
     ) -> ConnectorResult<Written> {
-        match auto_detect_request(ctx.user_data)? {
+        match auto_detect_request(ctx.user_data) {
             Some(request) => {
-                debug!(
-                    ?request,
-                    "Answering an Auto-Detect Request received after the connect-time auto-detection phase"
-                );
+                debug!(?request, "Answering a connect-time Auto-Detect Request");
 
-                self.respond_to_connect_time_autodetect(
-                    request,
-                    received_at,
-                    message_channel_id,
-                    user_channel_id,
-                    output,
-                )
+                self.respond_to_connect_time_autodetect(request, received_at, ctx.channel_id, user_channel_id, output)
             }
             None => {
-                debug!("Ignoring a message channel PDU received after the connect-time auto-detection phase");
+                debug!("Ignoring a message channel PDU while waiting on the I/O channel");
 
                 Ok(Written::Nothing)
             }
@@ -1050,24 +1059,31 @@ impl ClientConnector {
     }
 }
 
+/// Whether a message channel PDU's security header carries `flag`.
+///
+/// A PDU too short for a security header carries none.
+fn security_header_contains(user_data: &[u8], flag: rdp::headers::BasicSecurityHeaderFlags) -> bool {
+    decode::<rdp::headers::BasicSecurityHeader>(user_data).is_ok_and(|header| header.flags.contains(flag))
+}
+
 /// The Auto-Detect Request a message channel PDU carries, when its security header says it
 /// does ([MS-RDPBCGR] 2.2.14.3: `SEC_AUTODETECT_REQ`).
 ///
-/// A header without the flag is some other message channel PDU (`None`); one with it that
-/// does not decode as an Auto-Detect Request is an error, as any malformed PDU is.
-fn auto_detect_request(user_data: &[u8]) -> ConnectorResult<Option<rdp::autodetect::AutoDetectRequest>> {
-    let header = decode::<rdp::headers::BasicSecurityHeader>(user_data).map_err(ConnectorError::decode)?;
-
-    if !header
-        .flags
-        .contains(rdp::headers::BasicSecurityHeaderFlags::AUTODETECT_REQ)
-    {
-        return Ok(None);
+/// A header without the flag is some other message channel PDU. One with it that does not
+/// decode as an Auto-Detect Request is logged and treated the same way: auto-detection is
+/// advisory, and the server proceeds without an answer.
+fn auto_detect_request(user_data: &[u8]) -> Option<rdp::autodetect::AutoDetectRequest> {
+    if !security_header_contains(user_data, rdp::headers::BasicSecurityHeaderFlags::AUTODETECT_REQ) {
+        return None;
     }
 
-    let pdu = decode::<rdp::autodetect::AutoDetectReqPdu>(user_data).map_err(ConnectorError::decode)?;
-
-    Ok(Some(pdu.request))
+    match decode::<rdp::autodetect::AutoDetectReqPdu>(user_data) {
+        Ok(pdu) => Some(pdu.request),
+        Err(error) => {
+            warn!(%error, "Ignoring a malformed Auto-Detect Request");
+            None
+        }
+    }
 }
 
 /// Build an Initiate Multitransport Response carrying `hr_response`.
@@ -1163,6 +1179,15 @@ impl Sequence for ClientConnector {
         received_at: Option<MonotonicInstant>,
         output: &mut WriteBuf,
     ) -> ConnectorResult<Written> {
+        // A PDU on the message channel is none of the PDUs these phases wait for on the I/O
+        // channel (a licensing PDU, a Share Control PDU); it is answered or ignored, and the
+        // phase goes on waiting. See `step_message_channel_pdu`.
+        if let Some(user_channel_id) = self.io_channel_phase_user_channel_id()
+            && let Some(ctx) = self.message_channel_pdu(input)
+        {
+            return self.step_message_channel_pdu(ctx, received_at, user_channel_id, output);
+        }
+
         let (written, next_state) = match mem::take(&mut self.state) {
             // Invalid state
             ClientConnectorState::Consumed => {
@@ -1403,92 +1428,46 @@ impl Sequence for ClientConnector {
             } => {
                 // The server may run Optional Connect-Time Auto-Detection on the
                 // message channel before licensing ([MS-RDPBCGR] 1.3.8). When a
-                // message channel was negotiated we wait for a PDU here and demux
-                // by MCS channel: a PDU on the message channel is never a licensing
-                // PDU, so it must not be handed to the licensing sequence. An
-                // auto-detect request is answered and we keep listening; any other
-                // message-channel PDU is not ours to act on in this phase and is
-                // ignored. The first PDU that is not on the message channel (the
-                // licensing PDU on the I/O channel) ends the phase. Without a
-                // message channel nothing is read and we go straight to licensing,
-                // as before.
-                // Decode the inbound PDU once and demux on the MCS channel.
-                let message_channel_pdu = self.message_channel_id.and_then(|message_channel_id| {
-                    let mcs = decode::<X224<mcs::McsMessage<'_>>>(input).ok()?;
-                    match mcs.0 {
-                        mcs::McsMessage::SendDataIndication(data) if data.channel_id == message_channel_id => {
-                            Some((message_channel_id, data))
-                        }
-                        _ => None,
-                    }
-                });
-
-                if let Some((message_channel_id, data)) = message_channel_pdu {
-                    if let Ok(autodetect) = decode::<rdp::autodetect::AutoDetectReqPdu>(&data.user_data) {
-                        let written = self.respond_to_connect_time_autodetect(
-                            autodetect.request,
-                            received_at,
-                            message_channel_id,
-                            user_channel_id,
-                            output,
-                        )?;
-                        (
-                            written,
-                            ClientConnectorState::ConnectTimeAutoDetection {
-                                io_channel_id,
-                                user_channel_id,
-                            },
-                        )
-                    } else {
-                        // A message-channel PDU we do not handle in this phase (per the
-                        // canonical sequence multitransport bootstrap is Phase 8 and
-                        // heartbeat is post-connection, both after licensing). Ignore it
-                        // and keep listening rather than decoding it as a licensing PDU.
-                        (
-                            Written::Nothing,
-                            ClientConnectorState::ConnectTimeAutoDetection {
-                                io_channel_id,
-                                user_channel_id,
-                            },
-                        )
-                    }
-                } else {
-                    let license_exchange = LicenseExchangeSequence::new(
+                // message channel was negotiated we wait for a PDU here; one on the
+                // message channel never reaches this arm (see the top of `step`), so
+                // what does is the first licensing PDU on the I/O channel, and it ends
+                // the phase. Without a message channel nothing is read and we go
+                // straight to licensing, as before.
+                let license_exchange = LicenseExchangeSequence::new(
+                    io_channel_id,
+                    self.config.credentials.username().unwrap_or("").to_owned(),
+                    self.config.domain.clone(),
+                    self.config.hardware_id.unwrap_or_default(),
+                    self.config
+                        .license_cache
+                        .clone()
+                        .unwrap_or_else(|| Arc::new(NoopLicenseCache)),
+                );
+                // If a PDU was read (message channel present) it is the first
+                // licensing PDU; advance the licensing sequence with it now,
+                // through the same helper the LicensingExchange state uses, so
+                // the terminal-state transition lives in one place. Otherwise
+                // nothing was read and the licensing sequence runs from its
+                // first step when the next PDU arrives.
+                if self.message_channel_id.is_some() {
+                    advance_licensing_exchange(
+                        license_exchange,
                         io_channel_id,
-                        self.config.credentials.username().unwrap_or("").to_owned(),
-                        self.config.domain.clone(),
-                        self.config.hardware_id.unwrap_or_default(),
-                        self.config
-                            .license_cache
-                            .clone()
-                            .unwrap_or_else(|| Arc::new(NoopLicenseCache)),
-                    );
-                    // If a PDU was read (message channel present) it is the first
-                    // licensing PDU; advance the licensing sequence with it now,
-                    // through the same helper the LicensingExchange state uses, so
-                    // the terminal-state transition lives in one place. Otherwise
-                    // nothing was read and the licensing sequence runs from its
-                    // first step when the next PDU arrives.
-                    if self.message_channel_id.is_some() {
-                        advance_licensing_exchange(
-                            license_exchange,
+                        user_channel_id,
+                        self.message_channel_id,
+                        input,
+                        received_at,
+                        output,
+                    )?
+                } else {
+                    (
+                        Written::Nothing,
+                        ClientConnectorState::LicensingExchange {
                             io_channel_id,
                             user_channel_id,
-                            self.message_channel_id,
-                            input,
-                            received_at,
-                            output,
-                        )?
-                    } else {
-                        (
-                            Written::Nothing,
-                            ClientConnectorState::LicensingExchange {
-                                io_channel_id,
-                                user_channel_id,
-                                license_exchange,
-                            },
-                        )
-                    }
+                            license_exchange,
+                        },
+                    )
                 }
             }
 
@@ -1501,21 +1480,6 @@ impl Sequence for ClientConnector {
                 license_exchange,
             } => {
                 debug!("Licensing Exchange");
-
-                // A PDU on the message channel is never a licensing PDU; see
-                // `step_message_channel_pdu`.
-                if let Some((message_channel_id, ctx)) = self.message_channel_pdu(input) {
-                    let written =
-                        self.step_message_channel_pdu(message_channel_id, ctx, received_at, user_channel_id, output)?;
-
-                    self.state = ClientConnectorState::LicensingExchange {
-                        io_channel_id,
-                        user_channel_id,
-                        license_exchange,
-                    };
-
-                    return Ok(written);
-                }
 
                 advance_licensing_exchange(
                     license_exchange,
@@ -1552,18 +1516,14 @@ impl Sequence for ClientConnector {
                 let ctx = mcs::decode_send_data_indication(input).map_err(ConnectorError::decode)?;
 
                 if Some(ctx.channel_id) == message_channel_id {
-                    // An Auto-Detect Request mixed into this phase is answered, and the
-                    // phase goes on waiting for the next request or the Demand Active; see
+                    // A multitransport request carries SEC_TRANSPORT_REQ. Anything else on
+                    // the message channel (an Auto-Detect Request mixed into this phase) is
+                    // answered or ignored as in the other phases, and the phase goes on
+                    // waiting for the next request or the Demand Active; see
                     // `step_message_channel_pdu`. Only multitransport requests count
                     // towards the cap.
-                    if let Some(request) = auto_detect_request(ctx.user_data)? {
-                        let written = self.respond_to_connect_time_autodetect(
-                            request,
-                            received_at,
-                            ctx.channel_id,
-                            user_channel_id,
-                            output,
-                        )?;
+                    if !security_header_contains(ctx.user_data, rdp::headers::BasicSecurityHeaderFlags::TRANSPORT_REQ) {
+                        let written = self.step_message_channel_pdu(ctx, received_at, user_channel_id, output)?;
 
                         self.state = ClientConnectorState::MultitransportBootstrapping {
                             io_channel_id,
@@ -1652,18 +1612,6 @@ impl Sequence for ClientConnector {
             ClientConnectorState::CapabilitiesExchange {
                 mut connection_activation,
             } => {
-                // A PDU on the message channel is never a Share Control PDU; see
-                // `step_message_channel_pdu`.
-                if let Some((message_channel_id, ctx)) = self.message_channel_pdu(input) {
-                    let user_channel_id = connection_activation.user_channel_id();
-                    let written =
-                        self.step_message_channel_pdu(message_channel_id, ctx, received_at, user_channel_id, output)?;
-
-                    self.state = ClientConnectorState::CapabilitiesExchange { connection_activation };
-
-                    return Ok(written);
-                }
-
                 let written = connection_activation.step(input, received_at, output)?;
                 match connection_activation.connection_activation_state() {
                     ConnectionActivationState::ConnectionFinalization { .. } => (
@@ -1688,18 +1636,6 @@ impl Sequence for ClientConnector {
             ClientConnectorState::ConnectionFinalization {
                 mut connection_activation,
             } => {
-                // A PDU on the message channel is none of the finalization PDUs; see
-                // `step_message_channel_pdu`.
-                if let Some((message_channel_id, ctx)) = self.message_channel_pdu(input) {
-                    let user_channel_id = connection_activation.user_channel_id();
-                    let written =
-                        self.step_message_channel_pdu(message_channel_id, ctx, received_at, user_channel_id, output)?;
-
-                    self.state = ClientConnectorState::ConnectionFinalization { connection_activation };
-
-                    return Ok(written);
-                }
-
                 let written = connection_activation.step(input, received_at, output)?;
 
                 let next_state = if !connection_activation.connection_activation_state().is_terminal() {
