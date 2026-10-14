@@ -717,6 +717,64 @@ fn licensing_exchange_ignores_other_message_channel_pdus() {
 }
 
 #[test]
+fn licensing_exchange_ignores_a_malformed_autodetect_request() {
+    let mut connector = licensing_exchange_connector();
+    let mut output = WriteBuf::new();
+
+    // SEC_AUTODETECT_REQ with no Auto-Detect Request after it. Auto-detection is
+    // advisory, so this is ignored as during the connect-time phase rather than
+    // ending the connection.
+    let user_data = encode_vec(&BasicSecurityHeader {
+        flags: BasicSecurityHeaderFlags::AUTODETECT_REQ,
+    })
+    .unwrap();
+    let written = connector
+        .step(
+            &server_send_data_indication(MESSAGE_CHANNEL_ID, user_data),
+            None,
+            &mut output,
+        )
+        .unwrap();
+
+    assert_eq!(written, Written::Nothing, "a malformed request produces no response");
+    assert!(
+        matches!(connector.state, ClientConnectorState::LicensingExchange { .. }),
+        "licensing goes on waiting for its PDU"
+    );
+}
+
+#[test]
+fn multitransport_bootstrapping_ignores_other_message_channel_pdus() {
+    let mut connector = multitransport_bootstrapping_connector();
+    let mut output = WriteBuf::new();
+
+    let user_data = encode_vec(&BasicSecurityHeader {
+        flags: BasicSecurityHeaderFlags::HEARTBEAT,
+    })
+    .unwrap();
+    let written = connector
+        .step(
+            &server_send_data_indication(MESSAGE_CHANNEL_ID, user_data),
+            None,
+            &mut output,
+        )
+        .unwrap();
+
+    assert_eq!(
+        written,
+        Written::Nothing,
+        "an unrelated message-channel PDU produces no response"
+    );
+    assert!(
+        matches!(
+            connector.state,
+            ClientConnectorState::MultitransportBootstrapping { requests_seen: 0, .. }
+        ),
+        "the phase goes on waiting, and the PDU is not counted as a multitransport request"
+    );
+}
+
+#[test]
 fn multitransport_bootstrapping_answers_an_autodetect_request_and_keeps_waiting() {
     let mut connector = multitransport_bootstrapping_connector();
     let mut output = WriteBuf::new();
