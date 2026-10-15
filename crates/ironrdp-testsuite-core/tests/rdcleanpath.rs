@@ -328,7 +328,8 @@ fn standard_error_code_display() {
 }
 
 #[test]
-fn implementation_specific_error_is_kept_as_general_error() {
+fn unknown_error_code_is_kept_as_general_error() {
+    // The crate does not know what an implementation-specific code means.
     let error = error_with_code(16384);
     let pdu = RDCleanPathPdu {
         error: Some(error.clone()),
