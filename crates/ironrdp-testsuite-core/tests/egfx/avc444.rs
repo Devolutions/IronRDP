@@ -39,6 +39,7 @@ impl Planes420 {
 
     fn view(&self) -> Yuv420Planes<'_> {
         Yuv420Planes {
+            width: u32::try_from(W).expect("fits"),
             y: &self.y,
             y_stride: W,
             u: &self.u,
@@ -377,7 +378,13 @@ fn cropped_frame_reads_auxiliary_view_at_coded_width() {
         let mut frame = Yuv444Frame::new(width, height).expect("frame");
         frame.apply_main_view(&main.view(), &region).expect("main view");
         frame
-            .apply_auxiliary_view_v2(&aux.view(), &region)
+            .apply_auxiliary_view_v2(
+                &Yuv420Planes {
+                    width: u32::try_from(width).expect("fits"),
+                    ..aux.view()
+                },
+                &region,
+            )
             .expect("auxiliary view");
 
         for row in 0..height {
@@ -434,6 +441,37 @@ fn cropped_frame_reads_v1_rows_past_the_cropped_height() {
                     main.v[row / 2 * (W / 2) + col / 2]
                 };
                 assert_eq!(frame.v()[dst], want, "full {full}: V at ({col},{row})");
+            }
+        }
+    }
+}
+
+#[test]
+fn frame_narrower_than_the_views_reads_auxiliary_view_at_their_width() {
+    // A frame clipped to a surface narrower than the picture: the auxiliary
+    // view's V half still starts at half the picture's width.
+    let (y, u, v) = source_frame();
+    let (main, aux) = split_v2(&y, &u, &v);
+    let width = 16;
+    let region = [ExclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: u16::try_from(width).expect("fits"),
+        bottom: u16::try_from(H).expect("fits"),
+    }];
+    let mut frame = Yuv444Frame::new(width, H).expect("frame");
+    frame.apply_main_view(&main.view(), &region).expect("main view");
+    frame
+        .apply_auxiliary_view_v2(&aux.view(), &region)
+        .expect("auxiliary view");
+
+    for row in 0..H {
+        for col in 0..width {
+            let (i, src) = (row * width + col, row * W + col);
+            assert_eq!(frame.y()[i], y[src], "Y at ({col},{row})");
+            if row % 2 == 1 || col % 2 == 1 {
+                assert_eq!(frame.u()[i], u[src], "U at ({col},{row})");
+                assert_eq!(frame.v()[i], v[src], "V at ({col},{row})");
             }
         }
     }
