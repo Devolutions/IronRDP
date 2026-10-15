@@ -12,7 +12,9 @@ export interface RDCleanPathDetails {
     readonly httpStatusCode?: number;
     readonly wsaErrorCode?: number;
     readonly tlsAlertCode?: number;
-    /** Stable snake_case name of the reason the proxy rejected the connection, such as `expired`. */
+    /** RDCleanPath error code; codes 16384 to 32767 are specific to the proxy implementation. */
+    readonly errorCode?: number;
+    /** Stable snake_case name of the standard reason the proxy rejected the connection, such as `expired`. */
     readonly reason?: string;
 }
 

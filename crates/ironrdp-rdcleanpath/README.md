@@ -17,37 +17,53 @@ the client then performs CredSSP followed by X.224.
 
 An error PDU carries an `error_code`, and optionally an HTTP status code, a WSA error, or a TLS alert.
 
-| Code | Meaning |
+| Codes | Meaning |
 | --- | --- |
+| 0 | Reserved |
 | 1 | General error |
 | 2 | Negotiation error: the X.224 field holds the server's negotiation response |
+| 3 to 99 | Reserved |
+| 100 to 16383 | Standard reasons, assigned by IronRDP |
+| 16384 to 32767 | Implementation-specific reasons, defined by each proxy |
+| 32768 to 65535 | Reserved, so that implementations storing the code as a signed 16-bit integer can represent every code in use |
 
-Codes from 100 tell why the proxy rejected the connection.
-Each one maps to a stable snake_case reason name, shared with Devolutions Gateway.
+### Standard reasons
+
+A standard reason describes a condition any client can explain to its user without knowing which proxy it talks to.
+Each one has a stable snake_case name:
 [`RDCleanPathErr::reason`](crate::RDCleanPathErr::reason) returns the name for a code, and
 [`RDCleanPathErr::error_code_for_reason`](crate::RDCleanPathErr::error_code_for_reason) returns the code for a name.
+The credential is the `proxy_auth` value the client sent.
 
 | Code | Reason | Meaning |
 | --- | --- | --- |
-| 100 | `bad_signature` | The token signature does not verify |
-| 101 | `expired` | The token has expired |
-| 102 | `not_yet_valid` | The token is not valid yet |
-| 103 | `gateway_id_mismatch` | The token was issued for a different gateway |
-| 104 | `revoked` | The token has been revoked |
-| 105 | `unexpected_replay` | The token was reused when reuse is not allowed |
-| 106 | `wrong_token_type` | The token type does not match the request |
-| 107 | `target_unreachable` | The proxy could not connect to the target |
-| 108 | `dns_resolution_failed` | The proxy could not resolve the target host name |
-| 109 | `tls_handshake_failed` | The TLS handshake with the target failed |
-| 110 | `agent_unavailable` | The agent that routes to the target is unavailable |
+| 100 | `expired` | The credential has expired |
+| 101 | `not_yet_valid` | The credential is not valid yet |
+| 102 | `revoked` | The credential has been revoked |
+| 103 | `target_unreachable` | The proxy could not connect to the target |
+| 104 | `dns_resolution_failed` | The proxy could not resolve the target host name |
+| 105 | `tls_handshake_failed` | The TLS handshake between the proxy and the target failed |
 
-Clients that predate a code still decode the PDU and display it as an unknown error.
-To keep those clients informative, a proxy sending a reason code still fills in the detail fields it sent before:
-the HTTP status code for token failures (for example, 401 with `expired`), and the WSA error or TLS alert for connection failures.
+To propose a new standard reason, open a pull request against IronRDP.
+It must make sense for any proxy, regardless of its credential format or network topology,
+and carry information the HTTP status, WSA error and TLS alert fields do not.
+New reasons take the next free code; never renumber or reuse a code.
+
+### Implementation-specific reasons
+
+A proxy assigns codes from 16384 to 32767 to reasons that only make sense for that proxy,
+such as checks specific to its credential format or the components it routes through.
+These codes have no registry: two proxies may give the same code different meanings.
+A client interprets them only when it knows which proxy it talks to, and otherwise treats them as general errors.
+Prefer a standard reason when one fits.
+
+### Compatibility
 
 A receiver treats any code it does not know as a general error.
-New reasons take the next free code; never renumber or reuse a code.
-Codes 3 to 99 are reserved.
+Clients that predate a code still decode the PDU, and see it as an unknown error.
+To keep those clients informative, a proxy sending a reason code still fills in the detail fields that describe the failure:
+the HTTP status code for authorization failures (for example, 401 with `expired`),
+and the WSA error or TLS alert for connection failures.
 
 Do not add fields to the PDU or to the error structure to carry new information.
 Deployed decoders reject unknown trailing fields, so a peer that predates a new field fails to decode any PDU carrying it.

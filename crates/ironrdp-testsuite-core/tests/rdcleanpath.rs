@@ -1,10 +1,9 @@
 use expect_test::{Expect, expect};
 use ironrdp_rdcleanpath::{
-    AGENT_UNAVAILABLE_ERROR_CODE, BAD_SIGNATURE_ERROR_CODE, DNS_RESOLUTION_FAILED_ERROR_CODE, DetectionResult,
-    EXPIRED_ERROR_CODE, GATEWAY_ID_MISMATCH_ERROR_CODE, GENERAL_ERROR_CODE, NEGOTIATION_ERROR_CODE,
-    NOT_YET_VALID_ERROR_CODE, RDCleanPathErr, RDCleanPathMessage, RDCleanPathPdu, REVOKED_ERROR_CODE,
-    TARGET_UNREACHABLE_ERROR_CODE, TLS_HANDSHAKE_FAILED_ERROR_CODE, UNEXPECTED_REPLAY_ERROR_CODE, VERSION_1,
-    WRONG_TOKEN_TYPE_ERROR_CODE,
+    DNS_RESOLUTION_FAILED_ERROR_CODE, DetectionResult, EXPIRED_ERROR_CODE, GENERAL_ERROR_CODE,
+    IMPLEMENTATION_SPECIFIC_ERROR_CODES, NEGOTIATION_ERROR_CODE, NOT_YET_VALID_ERROR_CODE, RDCleanPathErr,
+    RDCleanPathMessage, RDCleanPathPdu, REVOKED_ERROR_CODE, TARGET_UNREACHABLE_ERROR_CODE,
+    TLS_HANDSHAKE_FAILED_ERROR_CODE, VERSION_1,
 };
 use rstest::rstest;
 
@@ -101,9 +100,9 @@ fn response_reason_error() -> RDCleanPathPdu {
     }
 }
 
-// Same layout as RESPONSE_HTTP_ERROR_DER: only the error code (0x65) and HTTP status (0x0191) values differ.
+// Same layout as RESPONSE_HTTP_ERROR_DER: only the error code (0x64) and HTTP status (0x0191) values differ.
 const RESPONSE_REASON_ERROR_DER: &[u8] = &[
-    0x30, 0x15, 0xA0, 0x4, 0x2, 0x2, 0xD, 0x3E, 0xA1, 0xD, 0x30, 0xB, 0xA0, 0x3, 0x2, 0x1, 0x65, 0xA1, 0x4, 0x2, 0x2,
+    0x30, 0x15, 0xA0, 0x4, 0x2, 0x2, 0xD, 0x3E, 0xA1, 0xD, 0x30, 0xB, 0xA0, 0x3, 0x2, 0x1, 0x64, 0xA1, 0x4, 0x2, 0x2,
     0x1, 0x91,
 ];
 
@@ -311,7 +310,7 @@ fn response_shape_selects_explicit_semantic_variant() {
         wsa_last_error: None,
         tls_alert_code: None,
     },
-    expect!["token expired (code 101); HTTP 401 unauthorized"],
+    expect!["credential expired (code 100); HTTP 401 unauthorized"],
 )]
 #[case::reason_wsa(
     RDCleanPathErr {
@@ -320,7 +319,7 @@ fn response_shape_selects_explicit_semantic_variant() {
         wsa_last_error: Some(10061),
         tls_alert_code: None,
     },
-    expect!["target unreachable (code 107); WSA 10061 connection refused"],
+    expect!["target unreachable (code 103); WSA 10061 connection refused"],
 )]
 #[case::reason_tls(
     RDCleanPathErr {
@@ -329,7 +328,16 @@ fn response_shape_selects_explicit_semantic_variant() {
         wsa_last_error: None,
         tls_alert_code: Some(40),
     },
-    expect!["TLS handshake failed (code 109); TLS alert 40 handshake failure"],
+    expect!["TLS handshake failed (code 105); TLS alert 40 handshake failure"],
+)]
+#[case::implementation_specific(
+    RDCleanPathErr {
+        error_code: 16384,
+        http_status_code: Some(401),
+        wsa_last_error: None,
+        tls_alert_code: None,
+    },
+    expect!["implementation-specific error (code 16384); HTTP 401 unauthorized"],
 )]
 #[case::unknown_codes(
     RDCleanPathErr {
@@ -344,21 +352,16 @@ fn error_display(#[case] error: RDCleanPathErr, #[case] expected: Expect) {
     expected.assert_eq(&error.to_string());
 }
 
-/// Reason error codes, their wire values, and their names.
+/// Standard reason error codes, their wire values, and their names.
 ///
 /// The wire values are a contract with deployed peers: never change them.
 const REASON_ERROR_CODES: &[(u16, u16, &str)] = &[
-    (BAD_SIGNATURE_ERROR_CODE, 100, "bad_signature"),
-    (EXPIRED_ERROR_CODE, 101, "expired"),
-    (NOT_YET_VALID_ERROR_CODE, 102, "not_yet_valid"),
-    (GATEWAY_ID_MISMATCH_ERROR_CODE, 103, "gateway_id_mismatch"),
-    (REVOKED_ERROR_CODE, 104, "revoked"),
-    (UNEXPECTED_REPLAY_ERROR_CODE, 105, "unexpected_replay"),
-    (WRONG_TOKEN_TYPE_ERROR_CODE, 106, "wrong_token_type"),
-    (TARGET_UNREACHABLE_ERROR_CODE, 107, "target_unreachable"),
-    (DNS_RESOLUTION_FAILED_ERROR_CODE, 108, "dns_resolution_failed"),
-    (TLS_HANDSHAKE_FAILED_ERROR_CODE, 109, "tls_handshake_failed"),
-    (AGENT_UNAVAILABLE_ERROR_CODE, 110, "agent_unavailable"),
+    (EXPIRED_ERROR_CODE, 100, "expired"),
+    (NOT_YET_VALID_ERROR_CODE, 101, "not_yet_valid"),
+    (REVOKED_ERROR_CODE, 102, "revoked"),
+    (TARGET_UNREACHABLE_ERROR_CODE, 103, "target_unreachable"),
+    (DNS_RESOLUTION_FAILED_ERROR_CODE, 104, "dns_resolution_failed"),
+    (TLS_HANDSHAKE_FAILED_ERROR_CODE, 105, "tls_handshake_failed"),
 ];
 
 fn error_with_code(error_code: u16) -> RDCleanPathErr {
@@ -450,7 +453,7 @@ fn deployed_peer_rejects_unknown_error_field() {
     // RESPONSE_REASON_ERROR_DER with a hypothetical `[4] UTF8String "expired"` appended to the error.
     // This is why reasons are error codes and not a new field.
     const DER: &[u8] = &[
-        0x30, 0x20, 0xA0, 0x4, 0x2, 0x2, 0xD, 0x3E, 0xA1, 0x18, 0x30, 0x16, 0xA0, 0x3, 0x2, 0x1, 0x65, 0xA1, 0x4, 0x2,
+        0x30, 0x20, 0xA0, 0x4, 0x2, 0x2, 0xD, 0x3E, 0xA1, 0x18, 0x30, 0x16, 0xA0, 0x3, 0x2, 0x1, 0x64, 0xA1, 0x4, 0x2,
         0x2, 0x1, 0x91, 0xA4, 0x9, 0xC, 0x7, 0x65, 0x78, 0x70, 0x69, 0x72, 0x65, 0x64,
     ];
 
@@ -470,18 +473,62 @@ fn reason_error_display() {
         .join("\n");
 
     expect![["
-        invalid token signature (code 100)
-        token expired (code 101)
-        token not yet valid (code 102)
-        token issued for a different gateway (code 103)
-        token revoked (code 104)
-        token unexpectedly reused (code 105)
-        wrong token type (code 106)
-        target unreachable (code 107)
-        DNS resolution failed (code 108)
-        TLS handshake failed (code 109)
-        agent unavailable (code 110)"]]
+        credential expired (code 100)
+        credential not yet valid (code 101)
+        credential revoked (code 102)
+        target unreachable (code 103)
+        DNS resolution failed (code 104)
+        TLS handshake failed (code 105)"]]
     .assert_eq(&descriptions);
+}
+
+#[test]
+fn implementation_specific_error_codes() {
+    use der::{Decode as _, Encode as _};
+
+    // The range is part of the wire contract.
+    assert_eq!(IMPLEMENTATION_SPECIFIC_ERROR_CODES, 16384..=32767);
+
+    for (error_code, expected) in [(16383, false), (16384, true), (32767, true), (32768, false)] {
+        assert_eq!(
+            error_with_code(error_code).is_implementation_specific(),
+            expected,
+            "{error_code}"
+        );
+    }
+
+    for &(error_code, _, reason) in REASON_ERROR_CODES {
+        assert!(!error_with_code(error_code).is_implementation_specific(), "{reason}");
+    }
+
+    for error_code in [
+        *IMPLEMENTATION_SPECIFIC_ERROR_CODES.start(),
+        *IMPLEMENTATION_SPECIFIC_ERROR_CODES.end(),
+    ] {
+        let pdu = RDCleanPathPdu {
+            error: Some(RDCleanPathErr {
+                http_status_code: Some(401),
+                ..error_with_code(error_code)
+            }),
+            ..RDCleanPathPdu::default()
+        };
+        let encoded = pdu.to_der().unwrap();
+
+        let decoded = RDCleanPathPdu::from_der(&encoded).unwrap();
+        assert_eq!(decoded, pdu);
+
+        let RDCleanPathMessage::GeneralErr(error) = decoded.into_message().unwrap() else {
+            panic!("{error_code} is not decoded as a general error");
+        };
+        assert_eq!(error.reason(), None);
+
+        // A peer that predates the range sees the same code and HTTP status.
+        let deployed = deployed::RDCleanPathPdu::from_der(&encoded).unwrap();
+        assert_eq!(deployed.to_der().unwrap(), encoded);
+        let deployed_error = deployed.error.unwrap();
+        assert_eq!(deployed_error.error_code, error_code);
+        assert_eq!(deployed_error.http_status_code, Some(401));
+    }
 }
 
 /// RDCleanPath structures as deployed peers (ironrdp-rdcleanpath 0.2) define them.
