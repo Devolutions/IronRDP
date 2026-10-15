@@ -916,4 +916,32 @@ mod end_to_end {
             "expected the output to match YUV444, not YUV420: error {to_444:.2} vs {to_420:.2}"
         );
     }
+
+    #[test]
+    fn avc444v1_luma_then_chroma_in_separate_updates_combine() {
+        // As for v2: the main view alone (LC = 1), then the auxiliary view
+        // alone (LC = 2), which paints full chroma.
+        let (y, u, v) = striped_source();
+        let (main, aux) = split_v1(&y, &u, &v);
+        let (main_h264, aux_h264) = encode_views(&main, &aux);
+        let (mut client, updates) = client_with_surface();
+
+        send_as(&mut client, Codec1Type::Avc444, &luma_only(&main_h264)).expect("luma-only update");
+        send_as(&mut client, Codec1Type::Avc444, &chroma_only(&aux_h264)).expect("chroma-only update");
+
+        let updates = updates.lock().expect("lock").clone();
+        assert_eq!(updates.len(), 2, "one bitmap update per PDU");
+        let mut full = Yuv444Frame::new(W, H).expect("frame");
+        full.apply_main_view(&main.view(), &full_frame()).expect("main");
+        full.apply_auxiliary_view_v1(&aux.view(), &full_frame()).expect("aux");
+        let mut luma_only = Yuv444Frame::new(W, H).expect("frame");
+        luma_only.apply_main_view(&main.view(), &full_frame()).expect("main");
+        let got = &updates[1].1;
+        let to_444 = mean_abs_error(got, &full.to_rgba(&full_frame()[0]).expect("rgba"));
+        let to_420 = mean_abs_error(got, &luma_only.to_rgba(&full_frame()[0]).expect("rgba"));
+        assert!(
+            to_444 * 4.0 < to_420,
+            "expected the chroma-only update to complete YUV444: error {to_444:.2} vs {to_420:.2}"
+        );
+    }
 }
