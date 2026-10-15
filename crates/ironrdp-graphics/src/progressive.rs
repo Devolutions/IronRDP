@@ -4182,33 +4182,86 @@ mod tests {
 
     #[test]
     fn large_region_decodes_the_same_as_tile_by_tile() {
-        use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveTile, TileSimple};
+        use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveTile, TileFirst, TileSimple, TileUpgrade};
 
         // A 4x3-tile surface: a region naming all 12 tiles takes the parallel
         // path when rayon is enabled, and one tile at a time never does.
         const TILES_WIDE: u16 = 4;
         const TILES_HIGH: u16 = 3;
         let quant_vals = [ComponentCodecQuant::LOSSLESS];
+        // First passes drop a bit of LL3, which the upgrades restore.
+        let mut first_quant = ComponentCodecQuant::LOSSLESS;
+        first_quant.ll3 = 1;
+        let prog_quant_vals = [
+            ProgressiveCodecQuant {
+                quality: 0,
+                y_quant: first_quant,
+                cb_quant: first_quant,
+                cr_quant: first_quant,
+            },
+            ProgressiveCodecQuant {
+                quality: 1,
+                y_quant: ComponentCodecQuant::LOSSLESS,
+                cb_quant: ComponentCodecQuant::LOSSLESS,
+                cr_quant: ComponentCodecQuant::LOSSLESS,
+            },
+        ];
 
         let tile_data = |seed: i16| [seed, seed / 2 - 20, 30 - seed].map(encode_full_quality_component);
         let originals: Vec<_> = (0..12).map(|i| tile_data(i * 9 - 50)).collect();
         let updates: Vec<_> = (0..12).map(|i| tile_data(i * 5 - 25)).collect();
-        let first_blocks = blocks(&originals, |_| false);
-        let update_blocks = blocks(&updates, |i| i % 2 == 0);
+        let firsts: Vec<_> = (0..12).map(|i| tile_data(i * 7 - 40)).collect();
+        let raws: Vec<[u8; 8]> = (0..12u8).map(|i| [i.wrapping_mul(37) | 1; 8]).collect();
+
+        let regions = [
+            simple(&originals, |_| false),
+            simple(&updates, |i| i % 2 == 0),
+            blocks(&firsts, |i, x_idx, y_idx, [y_data, cb_data, cr_data]| {
+                ProgressiveTile::First(TileFirst {
+                    quant_idx_y: 0,
+                    quant_idx_cb: 0,
+                    quant_idx_cr: 0,
+                    x_idx,
+                    y_idx,
+                    flags: if i % 3 == 0 { TILE_FLAG_DIFFERENCE } else { 0 },
+                    quality: 0,
+                    y_data,
+                    cb_data,
+                    cr_data,
+                    tail_data: &[],
+                })
+            }),
+            blocks(&raws, |_, x_idx, y_idx, raw_data| {
+                ProgressiveTile::Upgrade(TileUpgrade {
+                    quant_idx_y: 0,
+                    quant_idx_cb: 0,
+                    quant_idx_cr: 0,
+                    x_idx,
+                    y_idx,
+                    quality: 1,
+                    y_srl_data: &[],
+                    y_raw_data: raw_data,
+                    cb_srl_data: &[],
+                    cb_raw_data: raw_data,
+                    cr_srl_data: &[],
+                    cr_raw_data: raw_data,
+                })
+            }),
+        ];
 
         let mut whole_surface = SurfaceTiles::new(TILES_WIDE * 64, TILES_HIGH * 64, false).unwrap();
         let mut whole_references = BTreeMap::new();
         let mut single_surface = SurfaceTiles::new(TILES_WIDE * 64, TILES_HIGH * 64, false).unwrap();
         let mut single_references = BTreeMap::new();
 
-        for region in [&first_blocks, &update_blocks] {
+        for region in &regions {
             let whole = decode_tile_blocks(
                 1,
                 &mut whole_surface,
                 &mut whole_references,
                 region,
                 &quant_vals,
-                &[],
+                &prog_quant_vals,
                 false,
             )
             .expect("whole region should decode");
@@ -4221,48 +4274,56 @@ mod tests {
                         &mut single_references,
                         block,
                         &quant_vals,
-                        &[],
+                        &prog_quant_vals,
                         false,
                     )
                     .expect("single tile should decode")
                 })
                 .collect();
 
+            assert_eq!(whole.len(), 12);
             assert_eq!(whole.len(), single.len());
             for (whole, single) in whole.iter().zip(&single) {
                 assert_eq!((whole.x_idx, whole.y_idx), (single.x_idx, single.y_idx));
                 assert!(whole.pixels == single.pixels, "tile pixels differ");
             }
+
+            for (whole, single) in whole_surface.tiles.iter().zip(&single_surface.tiles) {
+                let (whole, single) = (whole.as_deref().unwrap(), single.as_deref().unwrap());
+                assert!(whole.coefficients == single.coefficients, "tile coefficients differ");
+                assert!(whole.sign == single.sign, "tile signs differ");
+                assert_eq!(whole.pass, single.pass);
+                assert_eq!(whole.is_difference, single.is_difference);
+                assert_eq!(whole.quality, single.quality);
+            }
+            assert!(whole_references == single_references, "sub-band references differ");
+            assert_eq!(whole_references.len(), 12);
         }
 
-        for (whole, single) in whole_surface.tiles.iter().zip(&single_surface.tiles) {
-            let (whole, single) = (whole.as_deref().unwrap(), single.as_deref().unwrap());
-            assert!(whole.coefficients == single.coefficients, "tile coefficients differ");
-            assert!(whole.sign == single.sign, "tile signs differ");
-            assert_eq!(whole.pass, single.pass);
-            assert_eq!(whole.is_difference, single.is_difference);
-            assert_eq!(whole.quality, single.quality);
+        fn simple(data: &[[Vec<u8>; 3]], difference: fn(u16) -> bool) -> Vec<ProgressiveTile<'_>> {
+            blocks(data, |i, x_idx, y_idx, [y_data, cb_data, cr_data]| {
+                ProgressiveTile::Simple(TileSimple {
+                    quant_idx_y: 0,
+                    quant_idx_cb: 0,
+                    quant_idx_cr: 0,
+                    x_idx,
+                    y_idx,
+                    flags: if difference(i) { TILE_FLAG_DIFFERENCE } else { 0 },
+                    y_data,
+                    cb_data,
+                    cr_data,
+                    tail_data: &[],
+                })
+            })
         }
-        assert!(whole_references == single_references, "sub-band references differ");
-        assert_eq!(whole_references.len(), 12);
 
-        fn blocks(data: &[[Vec<u8>; 3]], difference: fn(u16) -> bool) -> Vec<ProgressiveTile<'_>> {
+        fn blocks<'a, T>(
+            data: &'a [T],
+            tile: impl Fn(u16, u16, u16, &'a T) -> ProgressiveTile<'a>,
+        ) -> Vec<ProgressiveTile<'a>> {
             (0..TILES_WIDE * TILES_HIGH)
                 .zip(data)
-                .map(|(i, [y_data, cb_data, cr_data])| {
-                    ProgressiveTile::Simple(TileSimple {
-                        quant_idx_y: 0,
-                        quant_idx_cb: 0,
-                        quant_idx_cr: 0,
-                        x_idx: i % TILES_WIDE,
-                        y_idx: i / TILES_WIDE,
-                        flags: if difference(i) { TILE_FLAG_DIFFERENCE } else { 0 },
-                        y_data,
-                        cb_data,
-                        cr_data,
-                        tail_data: &[],
-                    })
-                })
+                .map(|(i, data)| tile(i, i % TILES_WIDE, i / TILES_WIDE, data))
                 .collect()
         }
     }
