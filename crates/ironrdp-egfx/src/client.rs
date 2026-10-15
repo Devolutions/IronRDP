@@ -1151,15 +1151,12 @@ impl GraphicsPipelineClient {
             );
             self.avc444v1_warned = true;
         }
-        if luma.is_none() && chroma.is_none() {
-            return Ok(());
-        }
         let Some((width, height)) = luma
             .as_ref()
             .or(chroma.as_ref())
             .map(|(frame, _)| (frame.width(), frame.height()))
         else {
-            return Err(pdu_other_err!("AVC444 update without a view"));
+            return Ok(());
         };
         let picture = (
             usize::try_from(width).map_err(|_| pdu_other_err!("AVC444 frame too wide"))?,
