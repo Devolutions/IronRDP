@@ -23,6 +23,8 @@ use crate::decode::{DecoderError, DecoderResult};
 /// Borrowed planes of a decoded YUV420p frame (8-bit, 4:2:0).
 #[derive(Debug, Clone, Copy)]
 pub struct Yuv420Planes<'a> {
+    /// Width of the decoded picture, after any cropping.
+    pub width: u32,
     pub y: &'a [u8],
     pub y_stride: usize,
     pub u: &'a [u8],
@@ -51,7 +53,8 @@ impl core::fmt::Debug for Yuv444Frame {
 }
 
 impl Yuv444Frame {
-    /// Create a frame the size of the decoded views, after any cropping.
+    /// Create a frame of the area to keep: the decoded views clipped to
+    /// what can be painted.
     pub fn new(width: usize, height: usize) -> DecoderResult<Self> {
         if width == 0 || height == 0 {
             return Err(DecoderError::msg("AVC444 frame is empty"));
@@ -145,14 +148,17 @@ impl Yuv444Frame {
     ///   quarter: V.
     ///
     /// The halves and quarters are of the coded width, before cropping. It
-    /// is taken as the frame width rounded up to a whole macroblock, as an
-    /// encoder pads a frame for H.264 and crops the padding off.
+    /// is taken as the view's width rounded up to a whole macroblock, as an
+    /// encoder pads a frame for H.264 and crops the padding off. The frame
+    /// may be narrower than the view.
     pub fn apply_auxiliary_view_v2(
         &mut self,
         aux: &Yuv420Planes<'_>,
         regions: &[ExclusiveRectangle],
     ) -> DecoderResult<()> {
-        let coded_width = self.width.next_multiple_of(16);
+        let coded_width = usize::try_from(aux.width)
+            .map_err(|_| DecoderError::msg("AVC444 view too wide"))?
+            .next_multiple_of(16);
         let (half, quarter) = (coded_width / 2, coded_width / 4);
         check_planes(
             aux,

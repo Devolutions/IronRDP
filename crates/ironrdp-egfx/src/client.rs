@@ -53,8 +53,8 @@
 //! [3.3.5.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/90aba3e3-d4a8-4af1-b1bb-a94e2313bbf0
 //! [3.3.5.12]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/e3c80bff-3e4e-4e65-b7c2-c2cd6b1fb4f5
 
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, HashSet};
 
 use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
@@ -230,12 +230,11 @@ pub trait GraphicsPipelineHandler: Send {
     /// V10.x is absent from the default. Those versions signal AVC444 support
     /// unless `AVC_DISABLED` is set. [`GraphicsPipelineClient`] decodes
     /// [`Codec1Type::Avc444v2`] when its H.264 decoder returns YUV420 planes
-    /// ([`H264Decoder::supports_yuv420`]); [`Codec1Type::Avc444`] (the v1
-    /// layout) is not decoded yet and reaches
-    /// [`GraphicsPipelineHandler::on_unhandled_pdu`]. The server picks one of
-    /// the advertised sets ([capability negotiation]) and prefers the most
-    /// capable, so only add V10.x for servers that send AVC444v2, such as
-    /// GNOME Remote Desktop.
+    /// ([`H264Decoder::supports_yuv420`]); for [`Codec1Type::Avc444`] (the v1
+    /// layout) it paints the main view only, at YUV420 chroma. The server
+    /// picks one of the advertised sets ([capability negotiation]) and prefers
+    /// the most capable, so only add V10.x for servers that send AVC444v2, such
+    /// as GNOME Remote Desktop.
     ///
     /// Note: sets are filtered at advertisement time to what the configured
     /// decoder can handle: AVC-capable sets are dropped without an H.264
@@ -405,8 +404,13 @@ pub struct GraphicsPipelineClient {
     handler: Box<dyn GraphicsPipelineHandler>,
     h264_decoder: Option<Box<dyn H264Decoder>>,
     /// Reconstructed YUV444 frame per surface for AVC444, kept between PDUs
-    /// because a PDU may carry only the luma or only the chroma view.
-    avc444_frames: BTreeMap<u16, Yuv444Frame>,
+    /// because a PDU may carry only the luma or only the chroma view, with
+    /// the size of the picture it was decoded from. The frame holds only the
+    /// part of the picture inside the surface.
+    avc444_frames: BTreeMap<u16, ((usize, usize), Yuv444Frame)>,
+    /// Whether the warning that AVC444 v1 paints at YUV420 chroma has been
+    /// logged; it's logged once per client.
+    avc444v1_warned: bool,
     /// Built on first use via [`Self::decode_clearcodec`]. `None` means no ClearCodec
     /// frame has arrived yet, not that the codec is unsupported: keeping the ~1.37 MiB
     /// V-bar and glyph cache spine (see `ClearCodecDecoder::new`) unallocated saves that
@@ -441,6 +445,7 @@ impl GraphicsPipelineClient {
             handler,
             h264_decoder,
             avc444_frames: BTreeMap::new(),
+            avc444v1_warned: false,
             clearcodec_decoder: None,
             planar_decoder: BitmapStreamDecoder::default(),
             progressive_decoder: ProgressiveDecoder::new(),
@@ -853,12 +858,9 @@ impl GraphicsPipelineClient {
             Codec1Type::Avc420 => {
                 self.decode_avc420(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)?;
             }
-            Codec1Type::Avc444v2 => {
-                self.decode_avc444v2(pdu.surface_id, &pdu.bitmap_data)?;
-            }
-            Codec1Type::Avc444 => {
-                debug!("AVC444 (v1 layout) not yet implemented, forwarding to handler");
-                self.handler.on_unhandled_pdu(&GfxPdu::WireToSurface1(pdu));
+            Codec1Type::Avc444 | Codec1Type::Avc444v2 => {
+                let surface_size = (surface.width, surface.height);
+                self.decode_avc444(pdu.codec_id, pdu.surface_id, surface_size, &pdu.bitmap_data)?;
             }
             Codec1Type::ClearCodec => {
                 self.decode_clearcodec(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)?;
@@ -1092,12 +1094,22 @@ impl GraphicsPipelineClient {
         Ok(())
     }
 
-    /// Decode an AVC444v2 update ([MS-RDPEGFX] 2.2.4.6).
+    /// Decode an AVC444 ([MS-RDPEGFX] 2.2.4.5) or AVC444v2 (2.2.4.6) update.
     ///
     /// Both views go through the one H.264 decoder in order, as MS-RDPEGFX
     /// 2.2.4.5 requires ("decoded by a single MPEG-4 AVC/H.264 decoder as one
     /// stream"), and are combined into the surface's persistent YUV444 frame.
-    fn decode_avc444v2(&mut self, surface_id: u16, bitmap_data: &[u8]) -> PduResult<()> {
+    ///
+    /// The v1 auxiliary layout isn't reconstructed: a v1 update applies only
+    /// its main view, so it paints at YUV420 chroma. Its auxiliary view is
+    /// still decoded, since later frames of the stream may reference it.
+    fn decode_avc444(
+        &mut self,
+        codec_id: Codec1Type,
+        surface_id: u16,
+        (surface_width, surface_height): (u16, u16),
+        bitmap_data: &[u8],
+    ) -> PduResult<()> {
         let mut cursor = ReadCursor::new(bitmap_data);
         let stream = Avc444BitmapStream::decode(&mut cursor).map_err(|e| decode_err!(e))?;
 
@@ -1130,34 +1142,57 @@ impl GraphicsPipelineClient {
         {
             return Err(pdu_other_err!("AVC444 views differ in size"));
         }
+        // Only the views applied to the frame are painted.
+        let chroma = chroma.filter(|_| codec_id == Codec1Type::Avc444v2);
+        if codec_id == Codec1Type::Avc444 && !self.avc444v1_warned {
+            warn!(
+                surface_id,
+                "AVC444 v1 auxiliary view not reconstructed; painting the main view at YUV420 chroma"
+            );
+            self.avc444v1_warned = true;
+        }
         let Some((width, height)) = luma
             .as_ref()
             .or(chroma.as_ref())
             .map(|(frame, _)| (frame.width(), frame.height()))
         else {
-            return Err(pdu_other_err!("AVC444 update without a view"));
+            return Ok(());
         };
-        let (width, height) = (
+        let picture = (
             usize::try_from(width).map_err(|_| pdu_other_err!("AVC444 frame too wide"))?,
             usize::try_from(height).map_err(|_| pdu_other_err!("AVC444 frame too tall"))?,
         );
+        // A surface the compositor refused paints nothing, so it keeps no
+        // frame either. The views were still decoded, for the H.264 stream.
+        if !self.compositor.has_surface(surface_id) {
+            debug!(surface_id, "AVC444 update for a surface without pixels -- skipped");
+            return Ok(());
+        }
+        // Only the part of the picture inside the surface can be painted.
+        let (max_right, max_bottom) = (
+            surface_width.min(u16::try_from(picture.0).unwrap_or(u16::MAX)),
+            surface_height.min(u16::try_from(picture.1).unwrap_or(u16::MAX)),
+        );
 
-        let frame = match self.avc444_frames.entry(surface_id) {
-            Entry::Occupied(entry) if entry.get().width() == width && entry.get().height() == height => {
-                entry.into_mut()
-            }
+        let (_, frame) = match self.avc444_frames.entry(surface_id) {
+            Entry::Occupied(entry) if entry.get().0 == picture => entry.into_mut(),
             entry => {
                 // A chroma-only update refines the luma already there; without
                 // luma of its size, it would paint chroma over black.
                 if luma.is_none() {
                     warn!(
                         surface_id,
-                        width, height, "Ignoring AVC444 chroma without a luma frame of its size"
+                        width = picture.0,
+                        height = picture.1,
+                        "Ignoring AVC444 chroma without a luma frame of its size"
                     );
                     return Ok(());
                 }
-                let frame =
-                    Yuv444Frame::new(width, height).map_err(|e| pdu_other_err!("AVC444 frame size", source: e))?;
+                let frame = (
+                    picture,
+                    Yuv444Frame::new(usize::from(max_right), usize::from(max_bottom))
+                        .map_err(|e| pdu_other_err!("AVC444 frame size", source: e))?,
+                );
                 match entry {
                     Entry::Occupied(mut entry) => {
                         entry.insert(frame);
@@ -1181,15 +1216,12 @@ impl GraphicsPipelineClient {
         // The frame is current only inside the regions this PDU updated, so
         // paint just those. Region rectangles are in surface coordinates, with
         // the picture's top-left at the surface origin, as FreeRDP reads them.
-        let surface = self
-            .surfaces
-            .get(&surface_id)
-            .ok_or_else(|| pdu_other_err!("unknown surface in WireToSurface1"))?;
-        let (max_right, max_bottom) = (
-            surface.width.min(u16::try_from(width).unwrap_or(u16::MAX)),
-            surface.height.min(u16::try_from(height).unwrap_or(u16::MAX)),
-        );
-        let mut painted: Vec<ExclusiveRectangle> = Vec::new();
+        if luma.iter().chain(chroma.iter()).all(|(_, regions)| regions.is_empty()) {
+            // Unlike AVC420, there is no destination-rectangle fallback: the
+            // regions also bound what the views wrote into the frame.
+            warn!(surface_id, "AVC444 update with no regionRects -- nothing painted");
+        }
+        let mut painted = HashSet::new();
         let regions = luma.iter().chain(chroma.iter()).flat_map(|(_, regions)| regions.iter());
         for region in regions {
             let rect = ExclusiveRectangle {
@@ -1209,12 +1241,12 @@ impl GraphicsPipelineClient {
                     region_bottom = region.bottom,
                     max_right,
                     max_bottom,
-                    "AVC444v2 regionRect empty after clipping to surface/frame bounds -- skipped"
+                    "AVC444 regionRect empty after clipping to surface/frame bounds -- skipped"
                 );
                 continue;
             }
             // Both views usually list the same regions; paint each once.
-            if painted.contains(&rect) {
+            if !painted.insert((rect.left, rect.top, rect.right, rect.bottom)) {
                 continue;
             }
             let data = frame
@@ -1223,14 +1255,13 @@ impl GraphicsPipelineClient {
             let update = BitmapUpdate {
                 surface_id,
                 destination_rectangle: rect.clone(),
-                codec_id: Codec1Type::Avc444v2,
+                codec_id,
                 data,
                 width: rect.right - rect.left,
                 height: rect.bottom - rect.top,
             };
             self.compositor.apply_bitmap(surface_id, &rect, &update.data);
             self.handler.on_bitmap_updated(&update);
-            painted.push(rect);
         }
         Ok(())
     }
@@ -2033,7 +2064,7 @@ mod tests {
     ///
     /// The server picks one of the advertised sets and prefers the most capable,
     /// so a set that implies AVC444 makes the server send `Avc444`/`Avc444v2`,
-    /// which fall through to `on_unhandled_pdu` and leave the screen blank.
+    /// which only a decoder that returns YUV420 planes can decode.
     #[test]
     fn default_capabilities_do_not_advertise_avc444() {
         for cap in TestHandler.capabilities() {
@@ -2846,5 +2877,114 @@ mod tests {
         assert_eq!(ack.frame_id, 7);
         assert_eq!(ack.total_frames_decoded, 4);
         assert_eq!(ack.queue_depth, QueueDepth::Unavailable);
+    }
+
+    /// AVC444 through a client with OpenH264, to check what it keeps per
+    /// surface.
+    #[cfg(feature = "openh264-bundled")]
+    mod avc444_frames {
+        use super::*;
+        use crate::decode::OpenH264Decoder;
+        use crate::pdu::{Avc420BitmapStream, Avc444BitmapStream, CapabilitiesV107Flags, Encoding, QuantQuality};
+
+        /// The picture the server encodes, larger than the small surface.
+        const PICTURE: usize = 64;
+
+        /// A luma-only AVC444v2 update of a `PICTURE`-sized gray frame.
+        fn luma_only_picture() -> Vec<u8> {
+            let config = openh264::encoder::EncoderConfig::new().skip_frames(false);
+            let mut encoder = openh264::encoder::Encoder::with_api_config(openh264::OpenH264API::from_source(), config)
+                .expect("encoder");
+            let (y, uv) = (vec![128u8; PICTURE * PICTURE], vec![128u8; PICTURE * PICTURE / 4]);
+            let yuv = openh264::formats::YUVSlices::new(
+                (&y, &uv, &uv),
+                (PICTURE, PICTURE),
+                (PICTURE, PICTURE / 2, PICTURE / 2),
+            );
+            let h264 = encoder.encode(&yuv).expect("encode").to_vec();
+            let edge = u16::try_from(PICTURE).expect("fits");
+            let region = ExclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: edge,
+                bottom: edge,
+            };
+            ironrdp_core::encode_vec(&Avc444BitmapStream {
+                encoding: Encoding::LUMA,
+                stream1: Avc420BitmapStream {
+                    rectangles: vec![region],
+                    quant_qual_vals: vec![QuantQuality {
+                        quantization_parameter: 22,
+                        progressive: false,
+                        quality: 100,
+                    }],
+                    data: &h264,
+                },
+                stream2: None,
+            })
+            .expect("encode AVC444 stream")
+        }
+
+        /// A client with V10.7 confirmed and surface 1 of `width` x `height`,
+        /// after one luma-only update of a `PICTURE`-sized frame.
+        fn client_after_update(width: u16, height: u16) -> GraphicsPipelineClient {
+            let mut client = GraphicsPipelineClient::new(
+                Box::new(TestHandler),
+                Some(Box::new(OpenH264Decoder::new().expect("decoder"))),
+            );
+            client
+                .handle_pdu(GfxPdu::CapabilitiesConfirm(
+                    crate::pdu::CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V10_7 {
+                        flags: CapabilitiesV107Flags::empty(),
+                    }),
+                ))
+                .unwrap();
+            client
+                .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                    surface_id: 1,
+                    width,
+                    height,
+                    pixel_format: PixelFormat::XRgb,
+                }))
+                .unwrap();
+            client
+                .handle_pdu(GfxPdu::WireToSurface1(crate::pdu::WireToSurface1Pdu {
+                    surface_id: 1,
+                    codec_id: Codec1Type::Avc444v2,
+                    pixel_format: PixelFormat::XRgb,
+                    destination_rectangle: ExclusiveRectangle {
+                        left: 0,
+                        top: 0,
+                        right: width,
+                        bottom: height,
+                    },
+                    bitmap_data: luma_only_picture(),
+                }))
+                .unwrap();
+            client
+        }
+
+        fn frame_size(client: &GraphicsPipelineClient) -> Option<(usize, usize)> {
+            client
+                .avc444_frames
+                .get(&1)
+                .map(|(_, frame)| (frame.width(), frame.height()))
+        }
+
+        /// Only the surface is painted, so a larger picture must not grow the
+        /// frame kept for it.
+        #[test]
+        fn frame_is_no_larger_than_its_surface() {
+            let client = client_after_update(16, 16);
+            assert_eq!(frame_size(&client), Some((16, 16)));
+        }
+
+        /// A surface the compositor refused paints nothing, so it keeps no
+        /// frame.
+        #[test]
+        fn no_frame_for_a_refused_surface() {
+            let client = client_after_update(16384, 16384);
+            assert_eq!(frame_size(&client), None);
+        }
     }
 }

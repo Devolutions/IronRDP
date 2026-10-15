@@ -219,16 +219,17 @@ impl Compositor {
     /// allocated; subsequent commands targeting them become no-ops (the metadata
     /// tracked by the client is unaffected).
     pub(crate) fn create_surface(&mut self, id: u16, width: u16, height: u16) {
+        // Release first, so re-creating a surface doesn't charge twice for the
+        // same slot. The old surface goes even if the new one is refused, as
+        // its pixels are of another size than the client now tracks.
+        if let Some(previous) = self.surfaces.remove(&id) {
+            self.release(previous.data.len());
+        }
+
         if width == 0 || height == 0 || width > MAX_SURFACE_DIM || height > MAX_SURFACE_DIM {
             return;
         }
         let len = usize::from(width) * usize::from(height) * BYTES_PER_PIXEL;
-
-        // Release first: `BTreeMap::insert` drops any surface already under this id,
-        // so re-creating one must not charge twice for the same slot.
-        if let Some(previous) = self.surfaces.remove(&id) {
-            self.release(previous.data.len());
-        }
 
         if !self.charge(len) {
             return;
@@ -243,6 +244,11 @@ impl Compositor {
                 mapping: None,
             },
         );
+    }
+
+    /// Whether surface `id` has pixels: it was created and not refused.
+    pub(crate) fn has_surface(&self, id: u16) -> bool {
+        self.surfaces.contains_key(&id)
     }
 
     /// Handle `DeleteSurface`.
@@ -1060,6 +1066,19 @@ mod tests {
         c.create_surface(1, MAX_SURFACE_DIM, MAX_SURFACE_DIM);
 
         assert!(c.surfaces.is_empty(), "a 1 GiB surface must not be allocated");
+        assert_eq!(c.allocated_bytes, 0);
+    }
+
+    /// Re-creating a surface replaces it even when the new one is refused for
+    /// its size: the old pixels are of another size than the client now tracks.
+    #[test]
+    fn recreating_a_surface_too_large_drops_the_old_one() {
+        let mut c = Compositor::default();
+        c.reset(1920, 1080);
+        c.create_surface(1, 16, 16);
+        c.create_surface(1, MAX_SURFACE_DIM + 1, 16);
+
+        assert!(!c.has_surface(1));
         assert_eq!(c.allocated_bytes, 0);
     }
 

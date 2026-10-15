@@ -280,6 +280,7 @@ impl DecodedYuv420Frame {
     /// Borrow the planes for [`crate::avc444::Yuv444Frame`].
     pub fn planes(&self) -> crate::avc444::Yuv420Planes<'_> {
         crate::avc444::Yuv420Planes {
+            width: self.width,
             y: &self.y,
             y_stride: self.y_stride,
             u: &self.u,
