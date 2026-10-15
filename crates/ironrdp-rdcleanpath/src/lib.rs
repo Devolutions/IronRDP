@@ -89,8 +89,8 @@ fn find_reason(error_code: u16) -> Option<&'static Reason> {
 /// See the crate documentation for the list of codes.
 ///
 /// Do not add fields to this structure.
-/// Deployed decoders reject unknown trailing fields,
-/// so a peer that predates a new field fails to decode any PDU carrying it.
+/// IronRDP-based peers decode it with der's derived decoder, which rejects fields it does not know
+/// despite the context-specific tags, so such a peer fails to decode any PDU carrying a field added after its release.
 /// Use a standard or an implementation-specific error code instead.
 #[derive(Clone, Debug, Eq, PartialEq, der::Sequence)]
 #[asn1(tag_mode = "EXPLICIT")]
@@ -265,8 +265,8 @@ impl core::error::Error for RDCleanPathErr {}
 
 /// The RDCleanPath PDU.
 ///
-/// Do not add fields to this structure: as with [`RDCleanPathErr`], a peer that predates a new field fails to decode
-/// any PDU carrying it.
+/// Do not add fields to this structure: as with [`RDCleanPathErr`], an IronRDP-based peer fails to decode any PDU
+/// carrying a field added after its release.
 #[derive(Clone, Debug, Eq, PartialEq, der::Sequence)]
 #[asn1(tag_mode = "EXPLICIT")]
 pub struct RDCleanPathPdu {
