@@ -3,6 +3,9 @@
  *
  * Same values as the constants of the `ironrdp-rdcleanpath` crate, whose README specifies them.
  * Codes 16384 to 32767 are implementation-specific: their meaning depends on the proxy.
+ *
+ * Unlike `FileContentsFlags`, no union type of these values is exported: the code space is open,
+ * so `errorCode` stays a `number` and may carry codes not listed here.
  */
 export const RDCleanPathErrorCode = {
     /** General error, without a more specific reason. */
