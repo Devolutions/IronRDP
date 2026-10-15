@@ -1009,8 +1009,9 @@ fn process_slow_path_pointer(
 #[non_exhaustive]
 pub struct CompositedGraphics {
     /// The image was resized and cleared for a `ResetGraphics`. `region` covers
-    /// only what was painted since, so the caller repaints the whole image, as
-    /// [`ActiveStage`] does with its next graphics update.
+    /// only what was painted since, and is `None` when nothing was, so the
+    /// caller remembers the reset and repaints the whole image at its next
+    /// paint, as [`ActiveStage`] does with its next graphics update.
     pub reset: bool,
     /// The union of the regions changed, or `None` when nothing changed.
     pub region: Option<InclusiveRectangle>,
@@ -1026,10 +1027,14 @@ pub struct CompositedGraphics {
 /// elsewhere, such as on a thread of its own so that a slow H.264 decode
 /// doesn't hold up the session's other channels. The caller then also:
 ///
-/// - registers in its place a dynamic channel processor named
+/// - registers in its place a [`DvcClientProcessor`] named
 ///   [`ironrdp_egfx::CHANNEL_NAME`] that forwards each message to the
 ///   pipeline;
-/// - sends the pipeline's replies (capabilities, frame acknowledgements) with
+/// - sends the pipeline's replies (capabilities, frame acknowledgements):
+///   wraps them with [`ironrdp_dvc::encode_dvc_messages`] for the channel,
+///   then, if [`ActiveStage::dvc_tunnel_for_channel`] names a Soft-Sync
+///   tunnel, sends each one's [`SvcMessage::encode_unframed_pdu`] through
+///   it, and otherwise encodes them for TCP with
 ///   [`ActiveStage::encode_dvc_messages`];
 /// - shares `image` with the session under a lock, since other updates
 ///   (bitmaps, the pointer) write to it too;
