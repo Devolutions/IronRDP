@@ -44,8 +44,8 @@ pub const IMPLEMENTATION_SPECIFIC_ERROR_CODES: core::ops::RangeInclusive<u16> = 
 /// See the crate documentation for the list of codes.
 ///
 /// Do not add fields to this structure.
-/// IronRDP-based peers decode it with der's derived decoder, which rejects fields it does not know
-/// despite the context-specific tags, so such a peer fails to decode any PDU carrying a field added after its release.
+/// IronRDP-based peers decode it with der's derived decoder, which rejects an unknown field that follows the last
+/// field it knows, so a peer that predates a new field fails to decode any PDU carrying it.
 /// Use a standard or an implementation-specific error code instead.
 #[derive(Clone, Debug, Eq, PartialEq, der::Sequence)]
 #[asn1(tag_mode = "EXPLICIT")]
@@ -201,8 +201,8 @@ impl core::error::Error for RDCleanPathErr {}
 
 /// The RDCleanPath PDU.
 ///
-/// Do not add fields to this structure: as with [`RDCleanPathErr`], an IronRDP-based peer fails to decode any PDU
-/// carrying a field added after its release.
+/// Do not add fields to this structure: IronRDP-based peers reject an unknown field that follows the last field they
+/// know, and der 0.8 also rejects one between known fields.
 #[derive(Clone, Debug, Eq, PartialEq, der::Sequence)]
 #[asn1(tag_mode = "EXPLICIT")]
 pub struct RDCleanPathPdu {

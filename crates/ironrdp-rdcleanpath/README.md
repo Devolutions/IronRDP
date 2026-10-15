@@ -67,8 +67,9 @@ the HTTP status code for authorization failures (for example, 401 with `expired`
 and the WSA error or TLS alert for connection failures.
 
 Do not add fields to the PDU or to the error structure to carry new information.
-IronRDP-based peers decode them with der's derived decoder, which rejects fields it does not know despite the context-specific tags,
-so such a peer fails to decode any PDU carrying a field added after its release.
+IronRDP-based peers decode them with der's derived decoder, which rejects an unknown field that follows the last field it knows, despite the context-specific tags.
+der 0.8 also rejects an unknown field between known ones.
+A new error field would follow the last one, so a peer that predates it fails to decode any error PDU carrying it.
 
 This crate is part of the [IronRDP] project.
 
