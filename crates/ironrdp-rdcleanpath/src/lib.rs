@@ -15,20 +15,20 @@ pub const VERSION_1: u64 = BASE_VERSION + 1;
 pub const GENERAL_ERROR_CODE: u16 = 1;
 pub const NEGOTIATION_ERROR_CODE: u16 = 2;
 
-// Standard reason codes say why the proxy rejected the connection, in terms any client can explain.
-// They start at 100, and each one maps to a stable snake_case reason name (see `REASONS`).
+// Standard reason codes, from 100, say why the proxy rejected the connection in terms any client can explain.
+// Deployed peers rely on these numbers: never renumber or reuse one.
 
-/// `expired`: the proxy credential (`proxy_auth`) has expired.
+/// The proxy credential (`proxy_auth`) has expired.
 pub const EXPIRED_ERROR_CODE: u16 = 100;
-/// `not_yet_valid`: the proxy credential (`proxy_auth`) is not valid yet.
+/// The proxy credential (`proxy_auth`) is not valid yet.
 pub const NOT_YET_VALID_ERROR_CODE: u16 = 101;
-/// `revoked`: the proxy credential (`proxy_auth`) has been revoked.
+/// The proxy credential (`proxy_auth`) has been revoked.
 pub const REVOKED_ERROR_CODE: u16 = 102;
-/// `target_unreachable`: the proxy could not connect to the target.
+/// The proxy could not connect to the target.
 pub const TARGET_UNREACHABLE_ERROR_CODE: u16 = 103;
-/// `dns_resolution_failed`: the proxy could not resolve the target host name.
+/// The proxy could not resolve the target host name.
 pub const DNS_RESOLUTION_FAILED_ERROR_CODE: u16 = 104;
-/// `tls_handshake_failed`: the TLS handshake between the proxy and the target failed.
+/// The TLS handshake between the proxy and the target failed.
 pub const TLS_HANDSHAKE_FAILED_ERROR_CODE: u16 = 105;
 
 /// Error codes whose meaning each proxy implementation defines (16384 to 32767).
@@ -37,51 +37,6 @@ pub const TLS_HANDSHAKE_FAILED_ERROR_CODE: u16 = 105;
 /// Two implementations may give the same code different meanings,
 /// so a client interprets these codes only when it knows which proxy it talks to.
 pub const IMPLEMENTATION_SPECIFIC_ERROR_CODES: core::ops::RangeInclusive<u16> = 0x4000..=0x7FFF;
-
-struct Reason {
-    error_code: u16,
-    name: &'static str,
-    description: &'static str,
-}
-
-// INVARIANT: each error code and each name appears exactly once.
-// Entries are append-only: deployed peers rely on these numbers, so never renumber or reuse one.
-const REASONS: &[Reason] = &[
-    Reason {
-        error_code: EXPIRED_ERROR_CODE,
-        name: "expired",
-        description: "credential expired",
-    },
-    Reason {
-        error_code: NOT_YET_VALID_ERROR_CODE,
-        name: "not_yet_valid",
-        description: "credential not yet valid",
-    },
-    Reason {
-        error_code: REVOKED_ERROR_CODE,
-        name: "revoked",
-        description: "credential revoked",
-    },
-    Reason {
-        error_code: TARGET_UNREACHABLE_ERROR_CODE,
-        name: "target_unreachable",
-        description: "target unreachable",
-    },
-    Reason {
-        error_code: DNS_RESOLUTION_FAILED_ERROR_CODE,
-        name: "dns_resolution_failed",
-        description: "DNS resolution failed",
-    },
-    Reason {
-        error_code: TLS_HANDSHAKE_FAILED_ERROR_CODE,
-        name: "tls_handshake_failed",
-        description: "TLS handshake failed",
-    },
-];
-
-fn find_reason(error_code: u16) -> Option<&'static Reason> {
-    REASONS.iter().find(|reason| reason.error_code == error_code)
-}
 
 /// The proxy error.
 ///
@@ -105,38 +60,19 @@ pub struct RDCleanPathErr {
     pub tls_alert_code: Option<u8>,
 }
 
-impl RDCleanPathErr {
-    /// Returns the snake_case name of the standard reason carried by `error_code`, such as `expired`.
-    ///
-    /// Returns `None` for [`GENERAL_ERROR_CODE`], [`NEGOTIATION_ERROR_CODE`], implementation-specific codes,
-    /// and codes this version does not know.
-    pub fn reason(&self) -> Option<&'static str> {
-        find_reason(self.error_code).map(|reason| reason.name)
-    }
-
-    /// Returns the error code for a standard snake_case reason name, such as `expired`.
-    ///
-    /// Returns `None` when the name is not a known standard reason.
-    pub fn error_code_for_reason(name: &str) -> Option<u16> {
-        REASONS
-            .iter()
-            .find(|reason| reason.name == name)
-            .map(|reason| reason.error_code)
-    }
-
-    /// Returns whether `error_code` is in [`IMPLEMENTATION_SPECIFIC_ERROR_CODES`].
-    pub fn is_implementation_specific(&self) -> bool {
-        IMPLEMENTATION_SPECIFIC_ERROR_CODES.contains(&self.error_code)
-    }
-}
-
 impl fmt::Display for RDCleanPathErr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let error_description = match self.error_code {
             GENERAL_ERROR_CODE => "general error",
             NEGOTIATION_ERROR_CODE => "negotiation error",
-            _ if self.is_implementation_specific() => "implementation-specific error",
-            error_code => find_reason(error_code).map_or("unknown error", |reason| reason.description),
+            EXPIRED_ERROR_CODE => "credential expired",
+            NOT_YET_VALID_ERROR_CODE => "credential not yet valid",
+            REVOKED_ERROR_CODE => "credential revoked",
+            TARGET_UNREACHABLE_ERROR_CODE => "target unreachable",
+            DNS_RESOLUTION_FAILED_ERROR_CODE => "DNS resolution failed",
+            TLS_HANDSHAKE_FAILED_ERROR_CODE => "TLS handshake failed",
+            error_code if IMPLEMENTATION_SPECIFIC_ERROR_CODES.contains(&error_code) => "implementation-specific error",
+            _ => "unknown error",
         };
         write!(f, "{error_description} (code {})", self.error_code)?;
 

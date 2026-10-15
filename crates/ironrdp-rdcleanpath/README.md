@@ -23,26 +23,27 @@ An error PDU carries an `error_code`, and optionally an HTTP status code, a WSA 
 | 1 | General error |
 | 2 | Negotiation error: the X.224 field holds the server's negotiation response |
 | 3 to 99 | Reserved |
-| 100 to 16383 | Standard reasons, assigned by IronRDP |
+| 100 to 16383 | Standard reasons |
 | 16384 to 32767 | Implementation-specific reasons, defined by each proxy |
 | 32768 to 65535 | Reserved, so that implementations storing the code as a signed 16-bit integer can represent every code in use |
+
+IronRDP assigns every code outside the implementation-specific range.
 
 ### Standard reasons
 
 A standard reason describes a condition any client can explain to its user without knowing which proxy it talks to.
-Each one has a stable snake_case name:
-[`RDCleanPathErr::reason`](crate::RDCleanPathErr::reason) returns the name for a code, and
-[`RDCleanPathErr::error_code_for_reason`](crate::RDCleanPathErr::error_code_for_reason) returns the code for a name.
 The credential is the `proxy_auth` value the client sent.
 
-| Code | Reason | Meaning |
+| Code | Constant | Meaning |
 | --- | --- | --- |
-| 100 | `expired` | The credential has expired |
-| 101 | `not_yet_valid` | The credential is not valid yet |
-| 102 | `revoked` | The credential has been revoked |
-| 103 | `target_unreachable` | The proxy could not connect to the target |
-| 104 | `dns_resolution_failed` | The proxy could not resolve the target host name |
-| 105 | `tls_handshake_failed` | The TLS handshake between the proxy and the target failed |
+| 100 | `EXPIRED_ERROR_CODE` | The credential has expired |
+| 101 | `NOT_YET_VALID_ERROR_CODE` | The credential is not valid yet |
+| 102 | `REVOKED_ERROR_CODE` | The credential has been revoked |
+| 103 | `TARGET_UNREACHABLE_ERROR_CODE` | The proxy could not connect to the target |
+| 104 | `DNS_RESOLUTION_FAILED_ERROR_CODE` | The proxy could not resolve the target host name |
+| 105 | `TLS_HANDSHAKE_FAILED_ERROR_CODE` | The TLS handshake between the proxy and the target failed |
+
+The web client's `@devolutions/iron-remote-desktop-rdp` package exports the same codes as `RDCleanPathErrorCode`.
 
 To propose a new standard reason, open a pull request against IronRDP.
 It must make sense for any proxy, regardless of its credential format or network topology,

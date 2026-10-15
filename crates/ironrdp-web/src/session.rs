@@ -1858,7 +1858,7 @@ where
                     error.wsa_last_error,
                     error.tls_alert_code,
                 )
-                .with_error_code(error.error_code, error.reason());
+                .with_error_code(error.error_code);
                 return Err(
                     IronError::from(anyhow::Error::new(error).context("received an RDCleanPath error"))
                         .with_kind(IronErrorKind::RDCleanPath)

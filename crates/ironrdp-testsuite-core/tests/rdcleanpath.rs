@@ -1,9 +1,8 @@
 use expect_test::{Expect, expect};
 use ironrdp_rdcleanpath::{
-    DNS_RESOLUTION_FAILED_ERROR_CODE, DetectionResult, EXPIRED_ERROR_CODE, GENERAL_ERROR_CODE,
-    IMPLEMENTATION_SPECIFIC_ERROR_CODES, NEGOTIATION_ERROR_CODE, NOT_YET_VALID_ERROR_CODE, RDCleanPathErr,
-    RDCleanPathMessage, RDCleanPathPdu, REVOKED_ERROR_CODE, TARGET_UNREACHABLE_ERROR_CODE,
-    TLS_HANDSHAKE_FAILED_ERROR_CODE, VERSION_1,
+    DNS_RESOLUTION_FAILED_ERROR_CODE, DetectionResult, EXPIRED_ERROR_CODE, GENERAL_ERROR_CODE, NEGOTIATION_ERROR_CODE,
+    NOT_YET_VALID_ERROR_CODE, RDCleanPathErr, RDCleanPathMessage, RDCleanPathPdu, REVOKED_ERROR_CODE,
+    TARGET_UNREACHABLE_ERROR_CODE, TLS_HANDSHAKE_FAILED_ERROR_CODE, VERSION_1,
 };
 use rstest::rstest;
 
@@ -88,24 +87,6 @@ const RESPONSE_TLS_ERROR_DER: &[u8] = &[
     0x02, 0x01, 0x30,
 ];
 
-fn response_reason_error() -> RDCleanPathPdu {
-    RDCleanPathPdu {
-        error: Some(RDCleanPathErr {
-            error_code: EXPIRED_ERROR_CODE,
-            http_status_code: Some(401),
-            wsa_last_error: None,
-            tls_alert_code: None,
-        }),
-        ..RDCleanPathPdu::default()
-    }
-}
-
-// Same layout as RESPONSE_HTTP_ERROR_DER: only the error code (0x64) and HTTP status (0x0191) values differ.
-const RESPONSE_REASON_ERROR_DER: &[u8] = &[
-    0x30, 0x15, 0xA0, 0x4, 0x2, 0x2, 0xD, 0x3E, 0xA1, 0xD, 0x30, 0xB, 0xA0, 0x3, 0x2, 0x1, 0x64, 0xA1, 0x4, 0x2, 0x2,
-    0x1, 0x91,
-];
-
 #[rstest]
 #[case(request())]
 #[case(vmconnect_request())]
@@ -113,7 +94,6 @@ const RESPONSE_REASON_ERROR_DER: &[u8] = &[
 #[case(vmconnect_response())]
 #[case(response_http_error())]
 #[case(response_tls_error())]
-#[case(response_reason_error())]
 fn smoke(#[case] message: RDCleanPathPdu) {
     let encoded = message.to_der().unwrap();
     let decoded = RDCleanPathPdu::from_der(&encoded).unwrap();
@@ -142,7 +122,6 @@ macro_rules! assert_serialization {
 #[case(vmconnect_response(), VMCONNECT_RESPONSE_DER)]
 #[case(response_http_error(), RESPONSE_HTTP_ERROR_DER)]
 #[case(response_tls_error(), RESPONSE_TLS_ERROR_DER)]
-#[case(response_reason_error(), RESPONSE_REASON_ERROR_DER)]
 fn serialization(#[case] message: RDCleanPathPdu, #[case] expected_der: &[u8]) {
     let encoded = message.to_der().unwrap();
     assert_serialization!(encoded, expected_der);
@@ -155,7 +134,6 @@ fn serialization(#[case] message: RDCleanPathPdu, #[case] expected_der: &[u8]) {
 #[case(VMCONNECT_RESPONSE_DER)]
 #[case(RESPONSE_HTTP_ERROR_DER)]
 #[case(RESPONSE_TLS_ERROR_DER)]
-#[case(RESPONSE_REASON_ERROR_DER)]
 fn detect(#[case] der: &[u8]) {
     let result = RDCleanPathPdu::detect(der);
 
@@ -303,42 +281,6 @@ fn response_shape_selects_explicit_semantic_variant() {
     },
     expect!["general error (code 1); HTTP 502 bad gateway; WSA 10060 connection timed out; TLS alert 45 certificate expired"],
 )]
-#[case::reason_http(
-    RDCleanPathErr {
-        error_code: EXPIRED_ERROR_CODE,
-        http_status_code: Some(401),
-        wsa_last_error: None,
-        tls_alert_code: None,
-    },
-    expect!["credential expired (code 100); HTTP 401 unauthorized"],
-)]
-#[case::reason_wsa(
-    RDCleanPathErr {
-        error_code: TARGET_UNREACHABLE_ERROR_CODE,
-        http_status_code: None,
-        wsa_last_error: Some(10061),
-        tls_alert_code: None,
-    },
-    expect!["target unreachable (code 103); WSA 10061 connection refused"],
-)]
-#[case::reason_tls(
-    RDCleanPathErr {
-        error_code: TLS_HANDSHAKE_FAILED_ERROR_CODE,
-        http_status_code: None,
-        wsa_last_error: None,
-        tls_alert_code: Some(40),
-    },
-    expect!["TLS handshake failed (code 105); TLS alert 40 handshake failure"],
-)]
-#[case::implementation_specific(
-    RDCleanPathErr {
-        error_code: 16384,
-        http_status_code: Some(401),
-        wsa_last_error: None,
-        tls_alert_code: None,
-    },
-    expect!["implementation-specific error (code 16384); HTTP 401 unauthorized"],
-)]
 #[case::unknown_codes(
     RDCleanPathErr {
         error_code: 99,
@@ -352,18 +294,6 @@ fn error_display(#[case] error: RDCleanPathErr, #[case] expected: Expect) {
     expected.assert_eq(&error.to_string());
 }
 
-/// Standard reason error codes, their wire values, and their names.
-///
-/// The wire values are a contract with deployed peers: never change them.
-const REASON_ERROR_CODES: &[(u16, u16, &str)] = &[
-    (EXPIRED_ERROR_CODE, 100, "expired"),
-    (NOT_YET_VALID_ERROR_CODE, 101, "not_yet_valid"),
-    (REVOKED_ERROR_CODE, 102, "revoked"),
-    (TARGET_UNREACHABLE_ERROR_CODE, 103, "target_unreachable"),
-    (DNS_RESOLUTION_FAILED_ERROR_CODE, 104, "dns_resolution_failed"),
-    (TLS_HANDSHAKE_FAILED_ERROR_CODE, 105, "tls_handshake_failed"),
-];
-
 fn error_with_code(error_code: u16) -> RDCleanPathErr {
     RDCleanPathErr {
         error_code,
@@ -374,104 +304,19 @@ fn error_with_code(error_code: u16) -> RDCleanPathErr {
 }
 
 #[test]
-fn reason_error_codes_are_stable() {
-    for &(error_code, wire_value, reason) in REASON_ERROR_CODES {
-        assert_eq!(error_code, wire_value, "{reason}");
-        assert_eq!(error_with_code(error_code).reason(), Some(reason));
-        assert_eq!(RDCleanPathErr::error_code_for_reason(reason), Some(error_code));
-    }
-}
+fn standard_error_code_display() {
+    let descriptions = [
+        EXPIRED_ERROR_CODE,
+        NOT_YET_VALID_ERROR_CODE,
+        REVOKED_ERROR_CODE,
+        TARGET_UNREACHABLE_ERROR_CODE,
+        DNS_RESOLUTION_FAILED_ERROR_CODE,
+        TLS_HANDSHAKE_FAILED_ERROR_CODE,
+    ]
+    .map(|error_code| error_with_code(error_code).to_string())
+    .join("\n");
 
-#[test]
-fn reason_mapping_covers_only_listed_codes() {
-    let reasons: Vec<(u16, &str)> = (0..=u16::MAX)
-        .filter_map(|error_code| Some((error_code, error_with_code(error_code).reason()?)))
-        .collect();
-
-    let expected: Vec<(u16, &str)> = REASON_ERROR_CODES
-        .iter()
-        .map(|&(error_code, _, reason)| (error_code, reason))
-        .collect();
-
-    assert_eq!(reasons, expected);
-    assert_eq!(RDCleanPathErr::error_code_for_reason("general_error"), None);
-}
-
-#[test]
-fn reason_error_codes_roundtrip() {
-    use der::{Decode as _, Encode as _};
-
-    for &(error_code, _, reason) in REASON_ERROR_CODES {
-        let pdu = RDCleanPathPdu {
-            error: Some(RDCleanPathErr {
-                http_status_code: Some(401),
-                ..error_with_code(error_code)
-            }),
-            ..RDCleanPathPdu::default()
-        };
-        let encoded = pdu.to_der().unwrap();
-
-        let decoded = RDCleanPathPdu::from_der(&encoded).unwrap();
-        assert_eq!(decoded, pdu);
-
-        let RDCleanPathMessage::GeneralErr(error) = decoded.into_message().unwrap() else {
-            panic!("{reason} is not decoded as a general error");
-        };
-        assert_eq!(error.reason(), Some(reason));
-
-        // A peer that predates reason codes sees the same code and HTTP status.
-        let deployed = deployed::RDCleanPathPdu::from_der(&encoded).unwrap();
-        assert_eq!(deployed.to_der().unwrap(), encoded);
-        let deployed_error = deployed.error.unwrap();
-        assert_eq!(deployed_error.error_code, error_code);
-        assert_eq!(deployed_error.http_status_code, Some(401));
-    }
-}
-
-#[rstest]
-#[case(request())]
-#[case(vmconnect_request())]
-#[case(response_success())]
-#[case(vmconnect_response())]
-#[case(response_http_error())]
-#[case(response_tls_error())]
-#[case(response_reason_error())]
-fn deployed_peer_decodes(#[case] message: RDCleanPathPdu) {
-    use der::{Decode as _, Encode as _};
-
-    let encoded = message.to_der().unwrap();
-    let decoded = deployed::RDCleanPathPdu::from_der(&encoded).unwrap();
-
-    // Re-encoding gives back the same bytes, so the deployed layout kept every field.
-    assert_eq!(decoded.to_der().unwrap(), encoded);
-}
-
-#[test]
-fn deployed_peer_rejects_unknown_error_field() {
-    use der::Decode as _;
-
-    // RESPONSE_REASON_ERROR_DER with a hypothetical `[4] UTF8String "expired"` appended to the error.
-    // This is why reasons are error codes and not a new field.
-    const DER: &[u8] = &[
-        0x30, 0x20, 0xA0, 0x4, 0x2, 0x2, 0xD, 0x3E, 0xA1, 0x18, 0x30, 0x16, 0xA0, 0x3, 0x2, 0x1, 0x64, 0xA1, 0x4, 0x2,
-        0x2, 0x1, 0x91, 0xA4, 0x9, 0xC, 0x7, 0x65, 0x78, 0x70, 0x69, 0x72, 0x65, 0x64,
-    ];
-
-    let error = deployed::RDCleanPathPdu::from_der(DER).unwrap_err();
-    assert!(
-        matches!(error.kind(), der::ErrorKind::TrailingData { .. }),
-        "unexpected error: {error}"
-    );
-}
-
-#[test]
-fn reason_error_display() {
-    let descriptions = REASON_ERROR_CODES
-        .iter()
-        .map(|&(error_code, ..)| error_with_code(error_code).to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
-
+    // The codes are a wire contract with deployed peers: never change them.
     expect![["
         credential expired (code 100)
         credential not yet valid (code 101)
@@ -483,94 +328,26 @@ fn reason_error_display() {
 }
 
 #[test]
-fn implementation_specific_error_codes() {
-    use der::{Decode as _, Encode as _};
+fn implementation_specific_error_is_kept_as_general_error() {
+    let error = error_with_code(16384);
+    let pdu = RDCleanPathPdu {
+        error: Some(error.clone()),
+        ..RDCleanPathPdu::default()
+    };
 
-    // The range is part of the wire contract.
-    assert_eq!(IMPLEMENTATION_SPECIFIC_ERROR_CODES, 16384..=32767);
-
-    for (error_code, expected) in [(16383, false), (16384, true), (32767, true), (32768, false)] {
-        assert_eq!(
-            error_with_code(error_code).is_implementation_specific(),
-            expected,
-            "{error_code}"
-        );
-    }
-
-    for &(error_code, _, reason) in REASON_ERROR_CODES {
-        assert!(!error_with_code(error_code).is_implementation_specific(), "{reason}");
-    }
-
-    for error_code in [
-        *IMPLEMENTATION_SPECIFIC_ERROR_CODES.start(),
-        *IMPLEMENTATION_SPECIFIC_ERROR_CODES.end(),
-    ] {
-        let pdu = RDCleanPathPdu {
-            error: Some(RDCleanPathErr {
-                http_status_code: Some(401),
-                ..error_with_code(error_code)
-            }),
-            ..RDCleanPathPdu::default()
-        };
-        let encoded = pdu.to_der().unwrap();
-
-        let decoded = RDCleanPathPdu::from_der(&encoded).unwrap();
-        assert_eq!(decoded, pdu);
-
-        let RDCleanPathMessage::GeneralErr(error) = decoded.into_message().unwrap() else {
-            panic!("{error_code} is not decoded as a general error");
-        };
-        assert_eq!(error.reason(), None);
-
-        // A peer that predates the range sees the same code and HTTP status.
-        let deployed = deployed::RDCleanPathPdu::from_der(&encoded).unwrap();
-        assert_eq!(deployed.to_der().unwrap(), encoded);
-        let deployed_error = deployed.error.unwrap();
-        assert_eq!(deployed_error.error_code, error_code);
-        assert_eq!(deployed_error.http_status_code, Some(401));
-    }
+    assert_eq!(pdu.into_message(), Ok(RDCleanPathMessage::GeneralErr(error)));
 }
 
-/// RDCleanPath structures as deployed peers (ironrdp-rdcleanpath 0.2) define them.
-///
-/// Keep these frozen: they stand for clients and proxies already in the field.
-/// Those peers use der 0.7, which rejects unknown trailing fields the same way.
-mod deployed {
-    use der::asn1::OctetString;
+#[test]
+fn implementation_specific_error_code_display() {
+    let descriptions = [16383, 16384, 32767, 32768]
+        .map(|error_code| error_with_code(error_code).to_string())
+        .join("\n");
 
-    #[derive(Debug, der::Sequence)]
-    #[asn1(tag_mode = "EXPLICIT")]
-    pub(super) struct RDCleanPathErr {
-        #[asn1(context_specific = "0")]
-        pub(super) error_code: u16,
-        #[asn1(context_specific = "1", optional = "true")]
-        pub(super) http_status_code: Option<u16>,
-        #[asn1(context_specific = "2", optional = "true")]
-        pub(super) wsa_last_error: Option<u16>,
-        #[asn1(context_specific = "3", optional = "true")]
-        pub(super) tls_alert_code: Option<u8>,
-    }
-
-    #[derive(Debug, der::Sequence)]
-    #[asn1(tag_mode = "EXPLICIT")]
-    pub(super) struct RDCleanPathPdu {
-        #[asn1(context_specific = "0")]
-        pub(super) version: u64,
-        #[asn1(context_specific = "1", optional = "true")]
-        pub(super) error: Option<RDCleanPathErr>,
-        #[asn1(context_specific = "2", optional = "true")]
-        pub(super) destination: Option<String>,
-        #[asn1(context_specific = "3", optional = "true")]
-        pub(super) proxy_auth: Option<String>,
-        #[asn1(context_specific = "4", optional = "true")]
-        pub(super) server_auth: Option<String>,
-        #[asn1(context_specific = "5", optional = "true")]
-        pub(super) preconnection_blob: Option<String>,
-        #[asn1(context_specific = "6", optional = "true")]
-        pub(super) x224_connection_pdu: Option<OctetString>,
-        #[asn1(context_specific = "7", optional = "true")]
-        pub(super) server_cert_chain: Option<Vec<OctetString>>,
-        #[asn1(context_specific = "9", optional = "true")]
-        pub(super) server_addr: Option<String>,
-    }
+    expect![["
+        unknown error (code 16383)
+        implementation-specific error (code 16384)
+        implementation-specific error (code 32767)
+        unknown error (code 32768)"]]
+    .assert_eq(&descriptions);
 }

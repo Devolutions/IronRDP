@@ -37,7 +37,6 @@ visibility = { version = "0.1", optional = true }
 [dev-dependencies]
 anyhow = "1"
 async-trait = "0.1"
-der = { version = "0.8", features = ["derive", "alloc"] }
 expect-test.workspace = true
 hex = "0.4"
 ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"

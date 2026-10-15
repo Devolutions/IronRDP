@@ -8,13 +8,9 @@
 //! match error.kind() {
 //!     IronErrorKind::RDCleanPath => {
 //!         if let Some(details) = error.rdcleanpath_details() {
-//!             // Check for a standard rejection reason
-//!             if details.reason().as_deref() == Some("expired") {
+//!             // Check for a specific RDCleanPath error code
+//!             if details.error_code() == Some(100) {
 //!                 // Handle expired credential
-//!             }
-//!             // Check for a code specific to the proxy implementation in use
-//!             if details.error_code() == Some(16384) {
-//!                 // Handle proxy-specific reason
 //!             }
 //!             // Check for specific HTTP errors
 //!             if details.http_status_code() == Some(403) {
@@ -63,15 +59,15 @@ pub enum IronErrorKind {
 /// Detailed error information for RDCleanPath errors.
 ///
 /// When an RDCleanPath error occurs, this structure provides granular details
-/// about the underlying cause, including the error code and rejection reason,
-/// HTTP status codes, Windows Socket errors, and TLS alert codes.
+/// about the underlying cause, including the RDCleanPath error code, HTTP status codes,
+/// Windows Socket errors, and TLS alert codes.
 #[derive(Clone, Copy, Debug)]
 #[wasm_bindgen]
 pub struct RDCleanPathDetails {
     http_status_code: Option<u16>,
     wsa_error_code: Option<u16>,
     tls_alert_code: Option<u8>,
-    error_code: Option<ErrorCode>,
+    error_code: Option<u16>,
 }
 
 // NOTE: multiple impl blocks required because wasm-bindgen doesn't support
@@ -119,22 +115,15 @@ impl RDCleanPathDetails {
 
     /// RDCleanPath error code sent by the proxy.
     ///
+    /// Common values:
+    /// - 1: General error
+    /// - 100: Credential expired
+    /// - 103: Target unreachable
+    ///
     /// Codes 16384 to 32767 are implementation-specific: their meaning depends on the proxy.
-    /// Standard codes are also available by name through `reason`.
     #[wasm_bindgen(getter, js_name = errorCode)]
     pub fn error_code(&self) -> Option<u16> {
-        self.error_code.map(|error_code| error_code.value)
-    }
-
-    /// Stable snake_case name of the standard reason the proxy rejected the connection.
-    ///
-    /// Absent when the proxy did not send a standard reason, or sent one this version does not know.
-    /// Examples: `expired`, `revoked`, `target_unreachable`.
-    #[wasm_bindgen(getter)]
-    pub fn reason(&self) -> Option<String> {
         self.error_code
-            .and_then(|error_code| error_code.reason)
-            .map(str::to_owned)
     }
 }
 
@@ -156,20 +145,9 @@ impl RDCleanPathDetails {
         }
     }
 
-    /// Sets the RDCleanPath error code, with the name of its standard reason when it has one.
     #[must_use]
-    pub fn with_error_code(mut self, error_code: u16, reason: Option<&'static str>) -> Self {
-        self.error_code = Some(ErrorCode {
-            value: error_code,
-            reason,
-        });
+    pub fn with_error_code(mut self, error_code: u16) -> Self {
+        self.error_code = Some(error_code);
         self
     }
-}
-
-/// An RDCleanPath error code, with the name of its standard reason when it has one.
-#[derive(Clone, Copy, Debug)]
-struct ErrorCode {
-    value: u16,
-    reason: Option<&'static str>,
 }
