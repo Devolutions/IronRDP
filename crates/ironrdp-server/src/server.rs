@@ -133,10 +133,12 @@ pub enum PostConnectionAction {
 /// Per-connection metadata captured during connection setup, made available to
 /// [`ConnectionHandler::on_connection_info`] once the connection is established.
 ///
-/// These are GCC Client Core Data fields (MS-RDPBCGR 2.2.1.3.2) that the acceptor
-/// captures but has no use for itself; embedders that want to act on them (for
-/// example, selecting a server-side keyboard layout matching the client) can do
-/// so here without reaching into the acceptor's internals.
+/// These are GCC Client Core Data fields (MS-RDPBCGR 2.2.1.3.2) and the Client
+/// Monitor Data block (2.2.1.3.6) that the acceptor captures but has no use for
+/// itself; embedders that want to act on them (for example, selecting a
+/// server-side keyboard layout matching the client, or presenting as many
+/// outputs as the client has monitors) can do so here without reaching into the
+/// acceptor's internals.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ConnectionInfo {
@@ -149,6 +151,11 @@ pub struct ConnectionInfo {
     /// The client came back with an auto-reconnect cookie the server
     /// verified, in place of its credentials.
     pub auto_reconnect: bool,
+    /// See [`ironrdp_acceptor::AcceptorResult::client_monitors`]. Taken from the
+    /// GCC Client Monitor Data (MS-RDPBCGR 2.2.1.3.6), not Client Core Data, and
+    /// empty when the client sent none. It doesn't change the Monitor Layout PDU
+    /// the acceptor sends, which still describes one monitor.
+    pub client_monitors: Vec<ironrdp_pdu::gcc::Monitor>,
 }
 
 impl ConnectionInfo {
@@ -162,6 +169,7 @@ impl ConnectionInfo {
             keyboard_type,
             ime_file_name,
             auto_reconnect: false,
+            client_monitors: Vec::new(),
         }
     }
 }
@@ -4687,6 +4695,7 @@ impl RdpServer {
                     keyboard_type: result.keyboard_type,
                     ime_file_name: result.ime_file_name.clone(),
                     auto_reconnect: is_auto_reconnect,
+                    client_monitors: result.client_monitors.clone(),
                 });
             });
         }
