@@ -130,10 +130,16 @@ impl Yuv444Frame {
     ///   rows further for V.
     /// - Auxiliary U and V: U and V at odd columns of even rows.
     ///
-    /// For a frame cropped to a height that isn't a multiple of 16, the last
-    /// block reaches past the cropped height. Odd rows stored past the end of
-    /// the decoded plane keep the main view's chroma, as in FreeRDP; OpenH264's
-    /// planes stop at the cropped height.
+    /// The blocks are of the view, which may be larger than the frame. For a
+    /// view cropped to a height that isn't a multiple of 16, the last block
+    /// reaches past the cropped height. Odd rows whose V is stored past the
+    /// end of the decoded plane keep the main view's chroma; OpenH264's planes
+    /// stop at the cropped height.
+    ///
+    /// FreeRDP's `general_ChromaV1ToYUV444` keeps the main view's chroma for
+    /// more rows: it reads only rows inside each region rectangle, with blocks
+    /// counted from the region's top, so any odd row whose V is stored at or
+    /// past a region's bottom keeps it.
     pub fn apply_auxiliary_view_v1(
         &mut self,
         aux: &Yuv420Planes<'_>,
