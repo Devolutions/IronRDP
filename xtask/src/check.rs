@@ -63,6 +63,11 @@ pub fn lints(sh: &Shell) -> anyhow::Result<()> {
         "{CARGO} clippy --workspace --all-targets --features helper,__bench --locked -- -D warnings"
     )
     .run()?;
+    cmd!(
+        sh,
+        "{CARGO} clippy -p ironrdp-graphics --all-targets --features rayon --locked -- -D warnings"
+    )
+    .run()?;
 
     println!("All good!");
 
