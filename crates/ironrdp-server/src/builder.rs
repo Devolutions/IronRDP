@@ -1,5 +1,4 @@
 use core::net::SocketAddr;
-use core::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::Arc;
 
 use ironrdp_pdu::codecs::rfx::Quant;
@@ -8,7 +7,7 @@ use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use tokio_rustls::TlsAcceptor;
 
 use super::clipboard::CliprdrServerFactory;
-use super::display::{DesktopSize, RdpServerDisplay};
+use super::display::{DesktopSize, DisplayContext, RdpServerDisplay};
 #[cfg(feature = "egfx")]
 use super::gfx::GfxServerFactory;
 use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
@@ -57,11 +56,6 @@ pub struct BuilderDone {
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
     #[cfg(feature = "usb")]
     usb_factory: Option<Box<dyn DeviceFactory>>,
-    display_suppressed: Option<Arc<AtomicBool>>,
-    autodetect_rtt: Option<Arc<AtomicU32>>,
-    autodetect_baseline_rtt: Option<Arc<AtomicU32>>,
-    autodetect_bandwidth: Option<Arc<AtomicU32>>,
-    autodetect_bandwidth_generation: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
     auto_reconnect_on_request: bool,
@@ -175,11 +169,6 @@ impl RdpServerBuilder<WantsDisplay> {
                 gfx_factory: None,
                 #[cfg(feature = "usb")]
                 usb_factory: None,
-                display_suppressed: None,
-                autodetect_rtt: None,
-                autodetect_baseline_rtt: None,
-                autodetect_bandwidth: None,
-                autodetect_bandwidth_generation: None,
                 honor_client_desktop_size: None,
                 connection_policy,
                 auto_reconnect_cookie: None,
@@ -214,11 +203,6 @@ impl RdpServerBuilder<WantsDisplay> {
                 gfx_factory: None,
                 #[cfg(feature = "usb")]
                 usb_factory: None,
-                display_suppressed: None,
-                autodetect_rtt: None,
-                autodetect_baseline_rtt: None,
-                autodetect_bandwidth: None,
-                autodetect_bandwidth_generation: None,
                 honor_client_desktop_size: None,
                 connection_policy,
                 auto_reconnect_cookie: None,
@@ -301,26 +285,6 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
-    /// Share the server's "display suppressed" flag with the display
-    /// backend before construction.
-    ///
-    /// The flag is `true` while the connected client has sent
-    /// `SuppressOutput { desktop_rect: None }` (e.g., mstsc minimized).
-    /// Display backends that want to skip frame emission while the
-    /// client is minimized create one `Arc<AtomicBool>` in the
-    /// application, hand a clone to the display, and pass the same
-    /// `Arc` here so the server's per-connection PDU handler writes to
-    /// the same instance the backend reads.
-    ///
-    /// When this is not called, the server allocates its own internal
-    /// flag (still readable via [`RdpServer::display_suppressed_handle`])
-    /// — useful when the backend can call `display_suppressed_handle()`
-    /// after construction to obtain a handle, rather than sharing one in.
-    pub fn with_display_suppressed_handle(mut self, handle: Arc<AtomicBool>) -> Self {
-        self.state.display_suppressed = Some(handle);
-        self
-    }
-
     /// Negotiate each session at the desktop size the client requests in its
     /// Client Core Data, rather than the size reported by the display handler.
     ///
@@ -399,53 +363,6 @@ impl RdpServerBuilder<BuilderDone> {
     /// Set a binder that replaces display/input handlers after credentials are accepted.
     pub fn with_connection_binder(mut self, binder: Option<Arc<dyn ConnectionBinder>>) -> Self {
         self.state.connection_binder = binder;
-        self
-    }
-
-    /// Inject a shared NetworkAutoDetect RTT handle (milliseconds, `u32::MAX`
-    /// until the first measurement). The server writes the latest measured RTT
-    /// to the same instance the backend reads. When not called, the server
-    /// allocates its own (still readable via
-    /// [`RdpServer::autodetect_rtt_handle`]). The value stays `u32::MAX` unless
-    /// auto-detect is enabled via [`RdpServer::enable_autodetect`].
-    pub fn with_autodetect_rtt_handle(mut self, handle: Arc<AtomicU32>) -> Self {
-        self.state.autodetect_rtt = Some(handle);
-        self
-    }
-
-    /// Inject a shared session-lifetime baseline RTT handle (milliseconds,
-    /// `u32::MAX` until the first measurement; see
-    /// [`RdpServer::autodetect_baseline_rtt_handle`] for what distinguishes
-    /// this from [`Self::with_autodetect_rtt_handle`]). The server writes the
-    /// latest baseline to the same instance the backend reads. When not
-    /// called, the server allocates its own (still readable via
-    /// [`RdpServer::autodetect_baseline_rtt_handle`]). The value stays
-    /// `u32::MAX` unless auto-detect is enabled via
-    /// [`RdpServer::enable_autodetect`].
-    pub fn with_autodetect_baseline_rtt_handle(mut self, handle: Arc<AtomicU32>) -> Self {
-        self.state.autodetect_baseline_rtt = Some(handle);
-        self
-    }
-
-    /// Inject a shared NetworkAutoDetect bandwidth handle (kilobits per
-    /// second, `u32::MAX` until the first measurement completes). The server
-    /// writes the latest measured bandwidth to the same instance the backend
-    /// reads. When not called, the server allocates its own (still readable
-    /// via [`RdpServer::autodetect_bandwidth_handle`]). The value stays
-    /// `u32::MAX` unless auto-detect is enabled via
-    /// [`RdpServer::enable_autodetect`].
-    pub fn with_autodetect_bandwidth_handle(mut self, handle: Arc<AtomicU32>) -> Self {
-        self.state.autodetect_bandwidth = Some(handle);
-        self
-    }
-
-    /// Pairs with [`Self::with_autodetect_bandwidth_handle`]: the bandwidth
-    /// figure alone repeats too often to tell a fresh measurement window
-    /// apart from a stale one. When not called, the server allocates its own
-    /// (still readable via
-    /// [`RdpServer::autodetect_bandwidth_generation_handle`]).
-    pub fn with_autodetect_bandwidth_generation_handle(mut self, handle: Arc<AtomicU32>) -> Self {
-        self.state.autodetect_bandwidth_generation = Some(handle);
         self
     }
 
@@ -564,13 +481,8 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.connection_handler,
             #[cfg(feature = "egfx")]
             self.state.gfx_factory,
-            self.state.display_suppressed,
             #[cfg(feature = "usb")]
             self.state.usb_factory,
-            self.state.autodetect_rtt,
-            self.state.autodetect_baseline_rtt,
-            self.state.autodetect_bandwidth,
-            self.state.autodetect_bandwidth_generation,
         );
         server.set_credential_validator(self.state.credential_validator);
         server.set_auto_reconnect_cookie(self.state.auto_reconnect_cookie);
@@ -605,7 +517,7 @@ impl RdpServerDisplay for NoopDisplay {
         DesktopSize { width: 0, height: 0 }
     }
 
-    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(&mut self, _: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(NoopDisplayUpdates {}))
     }
 }
