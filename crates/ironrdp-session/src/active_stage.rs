@@ -48,6 +48,7 @@ pub struct ActiveStage {
     enable_server_pointer: bool,
     window_support_level: Option<WindowSupportLevel>,
     graphics_output_needs_full_refresh: bool,
+    graphics_output_reset: Option<(u16, u16)>,
     damage_regions: Vec<InclusiveRectangle>,
 }
 
@@ -106,6 +107,7 @@ impl ActiveStageBuilder {
             enable_server_pointer,
             window_support_level: None,
             graphics_output_needs_full_refresh: false,
+            graphics_output_reset: None,
             damage_regions: Vec::new(),
         }
     }
@@ -130,6 +132,14 @@ impl ActiveStage {
     /// Takes the exact framebuffer regions changed by the most recent processing call.
     pub fn take_damage_regions(&mut self) -> Vec<InclusiveRectangle> {
         core::mem::take(&mut self.damage_regions)
+    }
+
+    /// Takes the most recent successfully applied `ResetGraphics` output size.
+    ///
+    /// Unlike a framebuffer size comparison, this also reports resets that keep the
+    /// same dimensions, such as Display Control requests that only change scaling.
+    pub fn take_graphics_output_reset(&mut self) -> Option<(u16, u16)> {
+        self.graphics_output_reset.take()
     }
 
     /// Encodes outgoing input events and modifies image if necessary (e.g for client-side pointer
@@ -290,6 +300,7 @@ impl ActiveStage {
             .unwrap_or_default();
         if let Some((width, height)) = output_reset {
             image.reset_preserving_pointer(width, height)?;
+            self.graphics_output_reset = Some((width, height));
             self.graphics_output_needs_full_refresh = true;
         }
         let (region, damage_regions) =
@@ -391,6 +402,7 @@ impl ActiveStage {
         // The x224 processor encodes ShareDataPdu with the server's (possibly new) share_id.
         self.x224_processor.set_share_id(share_id);
         self.enable_server_pointer = enable_server_pointer;
+        self.graphics_output_reset = None;
 
         true
     }
