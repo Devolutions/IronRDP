@@ -25,6 +25,9 @@ export interface UserInteraction {
 
     ctrlV(): void;
 
+    /** A key event for this session, whether or not its canvas has the focus. */
+    sendKeyboardEvent(evt: KeyboardEvent): void;
+
     shutdown(): void;
 
     setCursorStyleOverride(style: string | null): void;
