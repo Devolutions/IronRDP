@@ -11,6 +11,8 @@ use crate::{
     MonotonicInstant, Sequence, State, Written, general_err, reason_err,
 };
 
+const MAX_DESKTOP_DIM: u16 = 32766;
+
 /// Represents the Capability Exchange and Connection Finalization phases
 /// of the connection sequence (section [1.3.1.1]).
 ///
@@ -291,6 +293,17 @@ impl Sequence for ConnectionActivationSequence {
                         width: self.config.desktop_size.width,
                         height: self.config.desktop_size.height,
                     });
+
+                if !(1..=MAX_DESKTOP_DIM).contains(&desktop_size.width)
+                    || !(1..=MAX_DESKTOP_DIM).contains(&desktop_size.height)
+                {
+                    return Err(reason_err!(
+                        "ConnectionActivation::CapabilitiesExchange",
+                        "server desktop size {}x{} is outside the supported range",
+                        desktop_size.width,
+                        desktop_size.height
+                    ));
+                }
 
                 let share_id = share_control_ctx.share_id;
 
