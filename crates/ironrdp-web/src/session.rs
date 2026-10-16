@@ -25,7 +25,7 @@ use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::rdp::capability_sets::{BitmapCodecs, client_codecs_capabilities};
-use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+use ironrdp::pdu::rdp::client_info::{OptionalSystemTime, PerformanceFlags, TimezoneInfo};
 use ironrdp::rdpdr::Rdpdr;
 use ironrdp::rdpdr::pdu::efs::{DEFAULT_PRINTER_DRIVER_NAME, MICROSOFT_PRINT_TO_PDF_DRIVER_NAME};
 use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
@@ -101,6 +101,10 @@ struct SessionBuilderInner {
     enable_server_pointer: bool,
     legacy_graphics: bool,
     outbound_message_size_limit: Option<usize>,
+    pointer_software_rendering: bool,
+    desktop_scale_factor: u32,
+    performance_flags: PerformanceFlags,
+    timezone_info: TimezoneInfo,
 }
 
 impl Default for SessionBuilderInner {
@@ -146,6 +150,10 @@ impl Default for SessionBuilderInner {
             enable_server_pointer: true,
             legacy_graphics: false,
             outbound_message_size_limit: None,
+            pointer_software_rendering: false,
+            desktop_scale_factor: 0,
+            performance_flags: PerformanceFlags::default(),
+            timezone_info: TimezoneInfo::default(),
         }
     }
 }
@@ -278,6 +286,27 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 };
                 self.0.borrow_mut().outbound_message_size_limit = if limit > 0 { Some(limit) } else { None };
             };
+            |pointer_software_rendering: bool| { self.0.borrow_mut().pointer_software_rendering = pointer_software_rendering };
+            |desktop_scale_factor: f64| {
+                self.0.borrow_mut().desktop_scale_factor = parse_desktop_scale_factor(desktop_scale_factor);
+            };
+            // Bitmask of `PerformanceFlags`. Disabling wallpaper, theming, font smoothing and
+            // desktop composition cuts both bandwidth and CPU, which is what a browser client
+            // over a slow link needs.
+            |performance_flags: f64| {
+                self.0.borrow_mut().performance_flags = parse_performance_flags(performance_flags);
+            };
+            // Timezone of the browser user, so clocks shown by the remote session match local time.
+            // The browser reports the offset in effect right now, not the zone's DST rules.
+            |timezone_info: JsValue| {
+                match parse_timezone_info(timezone_info) {
+                    Ok(info) => self.0.borrow_mut().timezone_info = info,
+                    Err(error) => {
+                        let reason = iron_remote_desktop::IronError::backtrace(&error);
+                        warn!(%reason, "Invalid timezone_info; falling back to default");
+                    }
+                }
+            };
             // File transfer callbacks - protocol-specific, routed through extension()
             // rather than dedicated trait methods to keep iron-remote-desktop protocol-agnostic.
             |files_available_callback: JsValue| {
@@ -374,6 +403,10 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_device_id,
             printer_driver_name,
             outbound_message_size_limit,
+            pointer_software_rendering,
+            desktop_scale_factor,
+            performance_flags,
+            timezone_info,
             legacy_graphics,
             security,
         );
@@ -392,7 +425,10 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             kdc_proxy_url = inner.kdc_proxy_url.clone();
             client_name = inner.client_name.clone();
             desktop_size = inner.desktop_size;
-
+            pointer_software_rendering = inner.pointer_software_rendering;
+            desktop_scale_factor = inner.desktop_scale_factor;
+            performance_flags = inner.performance_flags;
+            timezone_info = inner.timezone_info.clone();
             render_canvas = inner.render_canvas.clone().context("render_canvas missing")?;
 
             set_cursor_style_callback = inner
@@ -447,6 +483,10 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         let enable_server_pointer = self.0.borrow().enable_server_pointer;
         config.enable_server_pointer = enable_server_pointer;
+        config.pointer_software_rendering = pointer_software_rendering;
+        config.desktop_scale_factor = desktop_scale_factor;
+        config.performance_flags = performance_flags;
+        config.timezone_info = timezone_info;
 
         let (input_events_tx, input_events_rx) = mpsc::unbounded();
 
@@ -1303,28 +1343,26 @@ fn into_object(val: JsValue) -> Result<js_sys::Object, IronError> {
         .map_err(|_| anyhow::anyhow!("expected object").into())
 }
 
+fn get_property(obj: &js_sys::Object, key: &str) -> anyhow::Result<JsValue> {
+    js_sys::Reflect::get(obj, &JsValue::from_str(key)).map_err(|e| anyhow::anyhow!("get property `{key}`: {e:?}"))
+}
+
 fn get_u32(obj: &js_sys::Object, key: &str) -> Result<u32, IronError> {
-    let val = js_sys::Reflect::get(obj, &JsValue::from_str(key))
-        .map_err(|e| anyhow::anyhow!("get property `{key}`: {e:?}"))?;
-    let f = val
+    let f = get_property(obj, key)?
         .as_f64()
         .with_context(|| format!("invalid type for property `{key}`"))?;
     Ok(f64_to_u32_saturating_cast(f))
 }
 
 fn get_i32(obj: &js_sys::Object, key: &str) -> Result<i32, IronError> {
-    let val = js_sys::Reflect::get(obj, &JsValue::from_str(key))
-        .map_err(|e| anyhow::anyhow!("get property `{key}`: {e:?}"))?;
-    let f = val
+    let f = get_property(obj, key)?
         .as_f64()
         .with_context(|| format!("invalid type for property `{key}`"))?;
     Ok(f64_to_i32_saturating_cast(f))
 }
 
 fn get_u64(obj: &js_sys::Object, key: &str) -> Result<u64, IronError> {
-    let val = js_sys::Reflect::get(obj, &JsValue::from_str(key))
-        .map_err(|e| anyhow::anyhow!("get property `{key}`: {e:?}"))?;
-    let f = val
+    let f = get_property(obj, key)?
         .as_f64()
         .with_context(|| format!("invalid type for property `{key}`"))?;
     // Validate integer precision before casting
@@ -1339,17 +1377,25 @@ fn get_u64(obj: &js_sys::Object, key: &str) -> Result<u64, IronError> {
     Ok(f as u64)
 }
 
+fn get_str(obj: &js_sys::Object, key: &str) -> Result<String, IronError> {
+    let val = get_property(obj, key)?;
+    if val.is_undefined() || val.is_null() {
+        return Ok(String::new());
+    }
+    val.as_string()
+        .with_context(|| format!("invalid type for property `{key}`"))
+        .map_err(Into::into)
+}
+
 fn get_bool(obj: &js_sys::Object, key: &str) -> Result<bool, IronError> {
-    let val = js_sys::Reflect::get(obj, &JsValue::from_str(key))
-        .map_err(|e| anyhow::anyhow!("get property `{key}`: {e:?}"))?;
-    val.as_bool()
+    get_property(obj, key)?
+        .as_bool()
         .with_context(|| format!("invalid type for property `{key}`"))
         .map_err(Into::into)
 }
 
 fn get_u32_opt(obj: &js_sys::Object, key: &str) -> Result<Option<u32>, IronError> {
-    let val = js_sys::Reflect::get(obj, &JsValue::from_str(key))
-        .map_err(|e| anyhow::anyhow!("get property `{key}`: {e:?}"))?;
+    let val = get_property(obj, key)?;
     if val.is_undefined() || val.is_null() {
         return Ok(None);
     }
@@ -1357,6 +1403,113 @@ fn get_u32_opt(obj: &js_sys::Object, key: &str) -> Result<Option<u32>, IronError
         .as_f64()
         .with_context(|| format!("invalid type for property `{key}`"))?;
     Ok(Some(f64_to_u32_saturating_cast(f)))
+}
+
+/// Reads the `desktop_scale_factor` extension value as a percentage.
+///
+/// [MS-RDPBCGR] 2.2.1.13.1.2 stores the factor in the `desktopScaleFactor`
+/// field of the `TS_UD_CS_CORE` structure and states that the server ignores it
+/// below 100% or above 500%, so forwarding a value outside that window would be
+/// a silent no-op. Zero is not a percentage: it is the “let the server pick the
+/// factor matching the requested desktop size” default.
+///
+/// Ratios such as `devicePixelRatio` (1.5) are rejected rather than floored,
+/// because 1.5 truncated to 1 is outside the window the server honours anyway.
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/00f1da4a-ee9c-421a-852f-c19f92343d73
+fn parse_desktop_scale_factor(value: f64) -> u32 {
+    const MIN_PERCENT: f64 = 100.0;
+    const MAX_PERCENT: f64 = 500.0;
+
+    let is_percentage = value.is_finite() && value.fract() == 0.0 && (MIN_PERCENT..=MAX_PERCENT).contains(&value);
+
+    if value == 0.0 || is_percentage {
+        #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let percentage = value as u32;
+
+        percentage
+    } else {
+        warn!(value, "Invalid desktop scale factor; using default");
+        0
+    }
+}
+
+/// Reads the `performance_flags` extension value as a `PerformanceFlags` bitmask.
+///
+/// JS numbers are doubles, so a value that is not a whole number in
+/// `0..=u32::MAX` (a ratio, a negative number, or something past `u32::MAX`)
+/// cannot be a bitmask, and casting it would silently truncate it. Such a value
+/// falls back to `PerformanceFlags::default()` rather than to an empty set, so
+/// a type-invalid value keeps advertising the behaviour the client had before
+/// this extension existed.
+///
+/// Bits outside the known set are dropped rather than rejected, matching how
+/// the connector treats the flags it forwards.
+fn parse_performance_flags(value: f64) -> PerformanceFlags {
+    let is_bitmask = value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= f64::from(u32::MAX);
+
+    if !is_bitmask {
+        warn!(value, "Invalid performance flags; using default");
+        return PerformanceFlags::default();
+    }
+
+    #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let bits = value as u32;
+
+    PerformanceFlags::from_bits_truncate(bits)
+}
+
+/// Builds a `TimezoneInfo` from the browser timezone reported through the extension.
+///
+/// `bias` follows [MS-RDPBCGR] 2.2.1.11.1.1.1.1 (`UTC = local time + bias`) and
+/// matches `Date::getTimezoneOffset()`: a client ahead of UTC sends a negative
+/// value.
+///
+/// Both transition dates stay zeroed because the browser exposes the offset in
+/// effect right now, not the zone's DST rules. [MS-RDPBCGR] reads a zeroed
+/// `StandardDate` or `DaylightDate` as “this client does not support daylight
+/// saving time” and makes the server ignore `standard_bias` and `daylight_bias`,
+/// so the remote clock stays correct until the zone's next transition rather
+/// than until the session ends.
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/526ed635-d7a9-4d3c-bbe1-4e3fb17585f4
+fn parse_timezone_info(value: JsValue) -> Result<TimezoneInfo, IronError> {
+    let obj = into_object(value)?;
+    let bias = get_i32(&obj, "bias")?;
+
+    // The bias is a number of minutes, so no time zone is more than a day away.
+    if !(-1440..=1440).contains(&bias) {
+        return Err(anyhow::anyhow!("timezone_info bias {bias} is out of range").into());
+    }
+
+    Ok(TimezoneInfo {
+        bias,
+        standard_name: truncate_timezone_name(&get_str(&obj, "standard_name")?),
+        standard_date: OptionalSystemTime(None),
+        standard_bias: 0,
+        daylight_name: truncate_timezone_name(&get_str(&obj, "daylight_name")?),
+        daylight_date: OptionalSystemTime(None),
+        daylight_bias: 0,
+    })
+}
+
+/// Truncates a time zone name so that it fits the `TS_TIME_ZONE_INFORMATION` name fields.
+///
+/// [MS-RDPBCGR] 2.2.1.11.1.1.1.1 fixes `StandardName` and `DaylightName` at 64
+/// bytes, that is 32 UTF-16 code units. The encoder only pads that field, it
+/// never truncates it, so a longer name would overrun the boundary and shift
+/// the rest of the Client Info PDU.
+///
+/// Truncation counts code units rather than `char`s because a character
+/// outside the basic multilingual plane encodes to two code units, and a
+/// truncation that splits a surrogate pair decodes to a replacement character
+/// without growing past the limit.
+fn truncate_timezone_name(name: &str) -> String {
+    const MAX_NAME_CODE_UNITS: usize = 32;
+
+    let code_units: Vec<u16> = name.encode_utf16().take(MAX_NAME_CODE_UNITS).collect();
+
+    String::from_utf16_lossy(&code_units)
 }
 
 fn parse_print_job_stream_callbacks(callbacks: JsValue) -> anyhow::Result<JsPrinterStreamCallbacks> {
@@ -1377,8 +1530,7 @@ fn get_required_function(obj: &js_sys::Object, key: &str) -> anyhow::Result<js_s
 }
 
 fn get_optional_function(obj: &js_sys::Object, key: &str) -> anyhow::Result<Option<js_sys::Function>> {
-    let val = js_sys::Reflect::get(obj, &JsValue::from_str(key))
-        .map_err(|e| anyhow::anyhow!("get property `{key}`: {e:?}"))?;
+    let val = get_property(obj, key)?;
 
     if val.is_undefined() || val.is_null() {
         return Ok(None);
@@ -1529,6 +1681,8 @@ fn build_config(
         compression_type: None,
         enable_server_pointer: true,
         autologon: false,
+        // Audio is not played by the web client: RDPSND is attached with a no-op backend, so
+        // advertising playback would only make the server send audio that is then discarded.
         enable_audio_playback: false,
         enable_audio_capture: false,
         request_data: None,
@@ -2521,5 +2675,84 @@ mod tests {
             }
             _ => panic!("Expected correct flags conversion"),
         }
+    }
+
+    #[test]
+    fn desktop_scale_factor_keeps_the_server_default_for_zero() {
+        assert_eq!(parse_desktop_scale_factor(0.0), 0);
+    }
+
+    #[test]
+    fn desktop_scale_factor_accepts_the_ms_rdpbcgr_percentages() {
+        for (percentage, expected) in [(100.0, 100), (150.0, 150), (175.0, 175), (500.0, 500)] {
+            assert_eq!(parse_desktop_scale_factor(percentage), expected);
+        }
+    }
+
+    #[test]
+    fn desktop_scale_factor_rejects_ratios_and_out_of_range_percentages() {
+        // A `devicePixelRatio`-style ratio must not be floored: 1.5 truncated to
+        // 1 is outside the window the server honours, so it would be a silent
+        // no-op.
+        for invalid in [1.5, 99.0, 501.0, -100.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(parse_desktop_scale_factor(invalid), 0, "unexpected scale for {invalid}");
+        }
+    }
+
+    #[test]
+    fn performance_flags_drops_unknown_bits() {
+        let known = PerformanceFlags::DISABLE_WALLPAPER;
+        // A bit the `PerformanceFlags` set does not define.
+        let unknown = 0x0000_0200;
+
+        let flags = parse_performance_flags(f64::from(known.bits() | unknown));
+
+        assert_eq!(flags, known);
+    }
+
+    #[test]
+    fn performance_flags_fall_back_to_the_default_on_a_type_invalid_value() {
+        // The log says "falling back to the default", so the stored value has to
+        // be that default rather than an empty set.
+        for invalid in [-1.0, 1.5, f64::from(u32::MAX) + 1.0, f64::NAN] {
+            assert_eq!(
+                parse_performance_flags(invalid),
+                PerformanceFlags::default(),
+                "unexpected flags for {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn timezone_names_are_truncated_on_utf16_code_units() {
+        // An emoji: encoded as a surrogate pair, so two UTF-16 code units.
+        const ASTRAL: char = '\u{1f980}';
+
+        // 32 characters of the basic multilingual plane fill the 64-byte field
+        // exactly.
+        let exact = "a".repeat(32);
+
+        assert_eq!(truncate_timezone_name(&exact), exact);
+
+        // Each character below needs two UTF-16 code units, so only half of them
+        // fit. Counting `char`s instead would emit 128 bytes and overrun the
+        // field.
+        let astral = ASTRAL.to_string().repeat(20);
+        let truncated = truncate_timezone_name(&astral);
+
+        assert_eq!(truncated, ASTRAL.to_string().repeat(16));
+        assert_eq!(truncated.encode_utf16().count(), 32);
+    }
+
+    #[test]
+    fn timezone_names_that_split_a_surrogate_pair_stay_within_the_field() {
+        // 31 code units, then one half of a surrogate pair: the lossy decode
+        // turns it into a single replacement character instead of growing.
+        let name = format!("{}\u{1f980}", "a".repeat(31));
+
+        let truncated = truncate_timezone_name(&name);
+
+        assert_eq!(truncated.encode_utf16().count(), 32);
+        assert_eq!(truncated, format!("{}\u{fffd}", "a".repeat(31)));
     }
 }
