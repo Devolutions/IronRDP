@@ -137,6 +137,11 @@ impl DataControlSource {
 #[derive(Debug)]
 #[cfg_attr(feature = "__test", visibility::make(pub))]
 pub(crate) enum Command {
+    /// Signal `sender` once the compositor has processed every earlier request.
+    ///
+    /// The selection events those requests caused are dispatched before the
+    /// signal, so [`Shared`] reflects them when it arrives.
+    Synchronize(std::sync::mpsc::Sender<()>),
     /// Set the clipboard selection on the compositor.
     ///
     /// Creates a data control source with the offered MIME types and

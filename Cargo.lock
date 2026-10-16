@@ -2814,6 +2814,7 @@ name = "ironrdp-cliprdr-native"
 version = "0.7.0"
 dependencies = [
  "ironrdp-cliprdr",
+ "ironrdp-cliprdr-format",
  "ironrdp-core 0.2.1",
  "nix",
  "tracing",
@@ -2822,6 +2823,7 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-wlr",
  "windows",
+ "x11rb",
 ]
 
 [[package]]
@@ -3455,6 +3457,8 @@ dependencies = [
  "ironrdp-bulk",
  "ironrdp-cfg",
  "ironrdp-client",
+ "ironrdp-cliprdr",
+ "ironrdp-cliprdr-format",
  "ironrdp-cliprdr-native",
  "ironrdp-core 0.2.1",
  "ironrdp-daemon",
@@ -3480,6 +3484,7 @@ dependencies = [
  "ironrdp-tokio",
  "ironrdp-viewer",
  "ironrdp-vmconnect",
+ "png",
  "rcgen",
  "semver",
  "tokio",
