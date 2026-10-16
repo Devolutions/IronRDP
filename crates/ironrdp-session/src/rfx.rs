@@ -154,7 +154,7 @@ impl DecodingContext {
         let mut final_update_rectangle = clipping_rectangles.extents.clone();
 
         for (update_rectangle, tile_data) in tiles_to_rectangles(tile_set.tiles.as_slice(), destination)
-            .zip(map_tiles_data(tile_set.tiles.as_slice(), tile_set.quants.as_slice()))
+            .zip(map_tiles_data(tile_set.tiles.as_slice(), tile_set.quants.as_slice())?)
         {
             decode_tile(
                 &tile_data,
@@ -266,16 +266,28 @@ fn tiles_to_rectangles<'a>(
     })
 }
 
-fn map_tiles_data<'a>(tiles: &[Tile<'a>], quants: &[Quant]) -> Vec<TileData<'a>> {
+fn map_tiles_data<'a>(tiles: &[Tile<'a>], quants: &[Quant]) -> SessionResult<Vec<TileData<'a>>> {
+    let quant = |index: u8| {
+        quants.get(usize::from(index)).cloned().ok_or_else(|| {
+            reason_err!(
+                "rfx::DecodingContext",
+                "tile quant index {index} out of range for numQuant {}",
+                quants.len()
+            )
+        })
+    };
+
     tiles
         .iter()
-        .map(|t| TileData {
-            quants: [
-                quants[usize::from(t.y_quant_index)].clone(),
-                quants[usize::from(t.cb_quant_index)].clone(),
-                quants[usize::from(t.cr_quant_index)].clone(),
-            ],
-            data: [t.y_data, t.cb_data, t.cr_data],
+        .map(|t| {
+            Ok(TileData {
+                quants: [
+                    quant(t.y_quant_index)?,
+                    quant(t.cb_quant_index)?,
+                    quant(t.cr_quant_index)?,
+                ],
+                data: [t.y_data, t.cb_data, t.cr_data],
+            })
         })
         .collect()
 }
