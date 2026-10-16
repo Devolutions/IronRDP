@@ -312,7 +312,9 @@ pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Re
                         let n_index = compute_n_index(code_remainder);
 
                         let val1 = load_be_u32(try_split_bits!(bits, n_index));
-                        let val2 = code_remainder - val1;
+                        let val2 = code_remainder
+                            .checked_sub(val1)
+                            .ok_or(RlgrError::InvalidIntegralConversion("code remainder - val1"))?;
                         if val1 != 0 && val2 != 0 {
                             kp = kp.saturating_sub(2 * DQ_GR);
                             k = kp >> LS_GR;
