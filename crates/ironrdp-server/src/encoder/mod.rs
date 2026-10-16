@@ -16,6 +16,7 @@ use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, Surfa
 use tracing::{debug, warn};
 
 use self::bitmap::BitmapEncoder;
+pub(crate) use self::fast_path::MAX_FASTPATH_UPDATE_SIZE;
 use self::rfx::RfxEncoder;
 use super::BitmapUpdate;
 use crate::error::{ServerError, ServerErrorExt as _, ServerResult, ServerResultExt as _};
@@ -367,7 +368,7 @@ impl UpdateEncoder {
         // MultifragmentUpdate reassembly buffer.
         let mut tiled = Vec::with_capacity(diffs.len());
         for rect in diffs {
-            if rect.width * rect.height * 4 <= self.max_request_size {
+            if rect.width * rect.height * 4 <= self.max_tile_bytes() {
                 tiled.push(rect);
             } else {
                 let rects = self.split_diff(rect);
@@ -377,19 +378,29 @@ impl UpdateEncoder {
         tiled
     }
 
-    /// Split a rect into tiles that fit within `max_request_size`.
+    /// Uncompressed size a tile may have so that its encoded update fits `max_request_size`.
+    ///
+    /// A tile is sized before it is encoded and cannot be re-encoded smaller afterwards
+    /// (RemoteFX and QOIZ keep state across updates), so room is held back for what encoding
+    /// adds: the update and bitmap headers (tens of bytes; raw and QOI output is otherwise
+    /// no larger than the pixels, and the other codecs compress).
+    fn max_tile_bytes(&self) -> usize {
+        self.max_request_size - self.max_request_size / 64
+    }
+
+    /// Split a rect into tiles that fit within `max_tile_bytes`.
     /// Splits by height first, then by width within each horizontal strip.
     fn split_diff(&self, rect: Rect) -> Vec<Rect> {
         let mut rects = Vec::new();
 
-        let max_height = (self.max_request_size / (rect.width * 4)).max(1);
+        let max_height = (self.max_tile_bytes() / (rect.width * 4)).max(1);
         let mut y = rect.y;
         let y_end = rect.y + rect.height;
         while y < y_end {
             let h = (y_end - y).min(max_height);
             // Width splitting is unlikely in practice (would require
             // max_request_size < ~256 KB), but ensures correctness.
-            let max_width = (self.max_request_size / (h * 4)).max(1);
+            let max_width = (self.max_tile_bytes() / (h * 4)).max(1);
             let mut x = rect.x;
             let x_end = rect.x + rect.width;
             while x < x_end {
@@ -603,7 +614,19 @@ impl EncoderIter<'_> {
                         bitmap,
                         pos: pos + 1,
                     };
-                    encoder.bitmap(sub).await
+                    let update = encoder.bitmap(sub).await;
+                    if let Ok(update) = &update
+                        && encoder.max_request_size < update.data.len()
+                    {
+                        // `max_tile_bytes` leaves room for this; a codec that still outgrew it
+                        // would overflow a client with that small a reassembly buffer.
+                        warn!(
+                            len = update.data.len(),
+                            max_request_size = encoder.max_request_size,
+                            "Encoded bitmap update exceeds the negotiated request size"
+                        );
+                    }
+                    update
                 }
                 State::Ended => return None,
             };
@@ -942,4 +965,85 @@ fn set_surface(bitmap: &BitmapUpdate, codec_id: u8, data: &[u8]) -> ServerResult
         UpdateCode::SurfaceCommands,
         encode_vec(&cmd).map_err(ServerError::encode)?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use core::num::NonZeroUsize;
+
+    use bytes::Bytes;
+
+    use super::*;
+    use crate::PixelFormat;
+
+    /// The largest update the encoder emits for one full frame of pixels that compress badly.
+    async fn largest_update(
+        width: u16,
+        height: u16,
+        surface_flags: CmdFlags,
+        codecs: UpdateEncoderCodecs,
+        max_request_size: u32,
+    ) -> usize {
+        let mut encoder = UpdateEncoder::new(
+            DesktopSize { width, height },
+            surface_flags,
+            codecs,
+            max_request_size,
+            0,
+            LargePointerSupportFlags::empty(),
+        )
+        .expect("encoder");
+        let len = usize::from(width) * usize::from(height) * 4;
+        // xorshift64: no runs, repeats or small deltas for a codec to exploit.
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let data: Vec<u8> = core::iter::repeat_with(|| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()[0]
+        })
+        .take(len)
+        .collect();
+        let bitmap = BitmapUpdate {
+            x: 0,
+            y: 0,
+            width: NonZeroU16::new(width).expect("width"),
+            height: NonZeroU16::new(height).expect("height"),
+            format: PixelFormat::BgrA32,
+            data: Bytes::from(data),
+            stride: NonZeroUsize::new(usize::from(width) * 4).expect("stride"),
+        };
+
+        let mut updates = encoder.update(DisplayUpdate::Bitmap(bitmap));
+        let mut largest = 0;
+        while let Some(update) = updates.next().await {
+            largest = largest.max(update.expect("update").data.len());
+        }
+        largest
+    }
+
+    #[tokio::test]
+    async fn no_update_outgrows_the_negotiated_request_size() {
+        let raw = UpdateEncoderCodecs::new;
+        // 2048-pixel rows: a 2048x8 tile is exactly 65,536 pixel bytes, plus its headers.
+        assert!(largest_update(2048, 64, CmdFlags::SET_SURFACE_BITS, raw(), 65_536).await <= 65_536);
+        assert!(largest_update(1440, 900, CmdFlags::empty(), raw(), 65_536).await <= 65_536);
+        assert!(largest_update(1440, 900, CmdFlags::empty(), raw(), 16_374).await <= 16_374);
+
+        #[cfg(feature = "qoi")]
+        {
+            let mut qoi = raw();
+            qoi.set_qoi(Some(1));
+            assert!(largest_update(2048, 64, CmdFlags::SET_SURFACE_BITS, qoi, 65_536).await <= 65_536);
+        }
+        #[cfg(feature = "qoiz")]
+        {
+            let mut qoiz = raw();
+            qoiz.set_qoiz(Some(1));
+            assert!(largest_update(2048, 64, CmdFlags::SET_SURFACE_BITS, qoiz, 65_536).await <= 65_536);
+        }
+        let mut remotefx = raw();
+        remotefx.set_remotefx(Some((EntropyBits::Rlgr3, 1)));
+        assert!(largest_update(2048, 64, CmdFlags::SET_SURFACE_BITS, remotefx, 65_536).await <= 65_536);
+    }
 }

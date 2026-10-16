@@ -60,7 +60,7 @@ use crate::autodetect::{AutoDetectManager, AutoDetectOutcome};
 use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
-use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
+use crate::encoder::{MAX_FASTPATH_UPDATE_SIZE, UpdateEncoder, UpdateEncoderCodecs};
 use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
@@ -88,6 +88,33 @@ fn client_core_frame_ack_limit(capabilities: &[CapabilitySet]) -> Option<NonZero
         _ => None,
     })
 }
+
+/// The Fast-Path Update size the client can reassemble, capped by the server's own.
+///
+/// A client's [MaxRequestSize] is the size of its reassembly buffer, which caps the largest
+/// fragmented Fast-Path Update it can take. A client that sends no Multifragment Update
+/// Capability Set, or a zero size, leaves the server's in place.
+///
+/// The client's value is not taken below one Fast-Path fragment: an update that size is
+/// sent unfragmented and never reaches the reassembly buffer, and a smaller value would
+/// only make the encoder cut every frame into tiny tiles.
+///
+/// [MaxRequestSize]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/01717954-716a-424d-af35-28fb2b86df89
+fn client_max_request_size(server_max_request_size: u32, capabilities: &[CapabilitySet]) -> u32 {
+    let one_fragment = u32::try_from(MAX_FASTPATH_UPDATE_SIZE).unwrap_or(u32::MAX);
+    capabilities
+        .iter()
+        .find_map(|capability| match capability {
+            CapabilitySet::MultiFragmentUpdate(capability) if capability.max_request_size != 0 => {
+                Some(capability.max_request_size)
+            }
+            _ => None,
+        })
+        .map_or(server_max_request_size, |client| {
+            client.max(one_fragment).min(server_max_request_size)
+        })
+}
+
 const AUTO_RECONNECT_COOKIE_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// How long a single [`ironrdp_acceptor::accept_finalize`] pass may take before
@@ -4744,6 +4771,7 @@ impl RdpServer {
         // which per MS-RDPBCGR 2.2.7.2.7 leaves the pointer size ceiling at 32x32 (the
         // base Color/New Pointer Update limit with no large-pointer flags set).
         let mut large_pointer_flags = LargePointerSupportFlags::empty();
+        let max_request_size = client_max_request_size(self.opts.max_request_size, &result.capabilities);
         for c in result.capabilities {
             match c {
                 CapabilitySet::General(c) => {
@@ -4854,7 +4882,7 @@ impl RdpServer {
             desktop_size,
             surface_flags,
             update_codecs,
-            self.opts.max_request_size,
+            max_request_size,
             pointer_cache_size,
             large_pointer_flags,
         )?;
@@ -6835,6 +6863,23 @@ mod tests {
         assert!(
             released.load(Ordering::Relaxed),
             "the channel backends of a finished connection must be released, not held until the next client"
+        );
+    }
+
+    #[test]
+    fn a_smaller_client_max_request_size_caps_the_servers() {
+        use ironrdp_pdu::rdp::capability_sets::MultifragmentUpdate;
+
+        let client = |max_request_size| CapabilitySet::MultiFragmentUpdate(MultifragmentUpdate { max_request_size });
+
+        assert_eq!(client_max_request_size(8 * 1024 * 1024, &[client(65536)]), 65536);
+        assert_eq!(client_max_request_size(65536, &[client(8 * 1024 * 1024)]), 65536);
+        assert_eq!(client_max_request_size(65536, &[client(0)]), 65536);
+        assert_eq!(client_max_request_size(65536, &[]), 65536);
+        assert_eq!(
+            client_max_request_size(65536, &[client(1)]),
+            16_374,
+            "one fragment at least"
         );
     }
 }
