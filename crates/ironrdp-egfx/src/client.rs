@@ -873,6 +873,22 @@ impl GraphicsPipelineClient {
             .get(&pdu.surface_id)
             .ok_or_else(|| pdu_other_err!("unknown surface in WireToSurface2"))?;
         let (surface_width, surface_height) = (surface.width, surface.height);
+        // A surface the compositor refused paints nothing, so it keeps no
+        // Progressive tile state either, only the CONTEXT flag a re-created
+        // surface of the same id falls back on.
+        if !self.compositor.has_surface(pdu.surface_id) {
+            debug!(
+                surface_id = pdu.surface_id,
+                "WireToSurface2 for a surface without pixels -- not decoded"
+            );
+            return self
+                .progressive_decoder
+                .skip_bitmap(pdu.surface_id, &pdu.bitmap_data)
+                .map_err(|error| {
+                    warn!(?error, "rfx progressive stream unreadable");
+                    pdu_other_err!("rfx progressive stream unreadable")
+                });
+        }
 
         let tiles = self
             .progressive_decoder
@@ -2385,6 +2401,62 @@ mod tests {
                 }))
                 .unwrap();
         });
+    }
+
+    /// A client with surface 1 created at a size the compositor refuses:
+    /// 16384 x 16384 is 1 GiB of pixels, past its budget.
+    fn progressive_client_with_refused_surface() -> GraphicsPipelineClient {
+        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
+        client
+            .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
+                width: 64,
+                height: 64,
+                monitors: vec![],
+            }))
+            .unwrap();
+        client
+            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                surface_id: 1,
+                width: 16384,
+                height: 16384,
+                pixel_format: PixelFormat::XRgb,
+            }))
+            .unwrap();
+        client
+    }
+
+    /// A surface the compositor refused paints nothing, so its Progressive
+    /// updates aren't decoded: one without a CONTEXT to decode with is
+    /// accepted rather than failing.
+    #[test]
+    fn refused_surface_does_not_decode_progressive() {
+        let mut client = progressive_client_with_refused_surface();
+        assert!(wire_progressive(&mut client, progressive_context_stream(false)).is_ok());
+    }
+
+    /// A refused surface still records the CONTEXT flag, so a surface re-created
+    /// with its id after a reset decodes the CONTEXT-less updates Windows sends.
+    #[test]
+    fn refused_surface_keeps_its_progressive_context_flag() {
+        let mut client = progressive_client_with_refused_surface();
+        wire_progressive(&mut client, progressive_context_stream(true)).unwrap();
+
+        client
+            .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
+                width: 64,
+                height: 64,
+                monitors: vec![],
+            }))
+            .unwrap();
+        client
+            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                surface_id: 1,
+                width: 64,
+                height: 64,
+                pixel_format: PixelFormat::XRgb,
+            }))
+            .unwrap();
+        assert!(wire_progressive(&mut client, progressive_context_stream(false)).is_ok());
     }
 
     // ========================================================================
