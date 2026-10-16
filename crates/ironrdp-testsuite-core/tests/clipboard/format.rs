@@ -1,5 +1,5 @@
 use ironrdp_cliprdr_format::bitmap::{
-    dib_to_png, dibv5_to_png, png_to_cf_dib, png_to_cf_dibv5, validate_dib, validate_dibv5,
+    BitmapError, dib_to_png, dibv5_to_png, png_to_cf_dib, png_to_cf_dibv5, validate_dib, validate_dibv5,
 };
 use ironrdp_cliprdr_format::html::{cf_html_to_plain_html, plain_html_to_cf_html, validate_cf_html};
 use png::{BitDepth, ColorType, Encoder};
@@ -30,6 +30,81 @@ fn dib_to_png_conversion_1() {
     let png = dib_to_png(input).unwrap();
     let converted = png_to_cf_dib(&png).unwrap();
     assert_eq!(converted, input);
+}
+
+const BI_BITFIELDS: u32 = 3;
+const STANDARD_BGRA_MASKS: [u32; 3] = [0x00FF_0000, 0x0000_FF00, 0x0000_00FF];
+
+/// Rewrites a `BI_RGB` `CF_DIB` fixture as `BI_BITFIELDS`: the 40-byte `BITMAPINFOHEADER` with its
+/// compression patched, followed by the three color masks, then the untouched pixel data.
+fn v1_dib_with_bitfields(rgb_dib: &[u8], masks: [u32; 3]) -> Vec<u8> {
+    let mut dib = rgb_dib[..40].to_vec();
+    dib[16..20].copy_from_slice(&BI_BITFIELDS.to_le_bytes());
+    for mask in masks {
+        dib.extend_from_slice(&mask.to_le_bytes());
+    }
+    dib.extend_from_slice(&rgb_dib[40..]);
+    dib
+}
+
+/// Patches a `CF_DIBV5` fixture to `BI_BITFIELDS` with the given red/green/blue/alpha masks, which
+/// live inside the fixed `BITMAPV5HEADER` right after the V1 part.
+fn v5_dib_with_bitfields(dibv5: &[u8], masks: [u32; 4]) -> Vec<u8> {
+    let mut dib = dibv5.to_vec();
+    dib[16..20].copy_from_slice(&BI_BITFIELDS.to_le_bytes());
+    for (i, mask) in masks.into_iter().enumerate() {
+        let at = 40 + i * 4;
+        dib[at..at + 4].copy_from_slice(&mask.to_le_bytes());
+    }
+    dib
+}
+
+#[test]
+fn dib_to_png_accepts_v1_bitfields_with_standard_masks() {
+    // Windows commonly places 32bpp `CF_DIB` on the clipboard with `BI_BITFIELDS` compression and
+    // the standard BGRA masks; the pixels are laid out exactly as with `BI_RGB`, so the result must
+    // be identical to decoding the `BI_RGB` fixture.
+    let rgb = include_bytes!("../../test_data/pdu/clipboard/cf_dib.pdu");
+    let bitfields = v1_dib_with_bitfields(rgb, STANDARD_BGRA_MASKS);
+
+    assert_eq!(dib_to_png(&bitfields).unwrap(), dib_to_png(rgb).unwrap());
+    // The logical length accounts for the masks that sit between the header and the pixels.
+    assert_eq!(validate_dib(&bitfields).unwrap(), bitfields.len());
+    assert_eq!(bitfields.len(), rgb.len() + 12);
+}
+
+#[test]
+fn dib_to_png_rejects_v1_bitfields_with_non_standard_masks() {
+    // Dropping the masks and reading the pixels as BGRA is only valid for the standard order; any
+    // other order (here red and blue swapped) would silently swap channels, so it is refused.
+    let rgb = include_bytes!("../../test_data/pdu/clipboard/cf_dib.pdu");
+    let rgb_order = v1_dib_with_bitfields(rgb, [0x0000_00FF, 0x0000_FF00, 0x00FF_0000]);
+
+    assert!(matches!(dib_to_png(&rgb_order), Err(BitmapError::Unsupported(_))));
+    assert!(matches!(validate_dib(&rgb_order), Err(BitmapError::Unsupported(_))));
+}
+
+#[test]
+fn dib_to_png_rejects_v1_bitfields_with_truncated_masks() {
+    // A `BI_BITFIELDS` header that is cut off inside the color masks is a decode error, not a
+    // panic and not a bitmap decoded from garbage masks.
+    let rgb = include_bytes!("../../test_data/pdu/clipboard/cf_dib.pdu");
+    let mut truncated = v1_dib_with_bitfields(rgb, STANDARD_BGRA_MASKS);
+    truncated.truncate(40 + 8);
+
+    assert!(matches!(dib_to_png(&truncated), Err(BitmapError::Decode(_))));
+}
+
+#[test]
+fn dibv5_to_png_bitfields_masks_are_still_validated() {
+    // The mask validation is shared with the `CF_DIBV5` path; make sure the V5 behavior is
+    // unchanged: standard masks decode like `BI_RGB`, a non-standard order is refused.
+    let rgb = include_bytes!("../../test_data/pdu/clipboard/cf_dibv5.pdu");
+    let standard = v5_dib_with_bitfields(rgb, [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0xFF00_0000]);
+    let rgb_order = v5_dib_with_bitfields(rgb, [0x0000_00FF, 0x0000_FF00, 0x00FF_0000, 0xFF00_0000]);
+
+    assert_eq!(dibv5_to_png(&standard).unwrap(), dibv5_to_png(rgb).unwrap());
+    assert!(matches!(dibv5_to_png(&rgb_order), Err(BitmapError::Unsupported(_))));
 }
 
 #[test]
