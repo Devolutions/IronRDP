@@ -146,6 +146,10 @@ pub struct ConnectionInfo {
     pub keyboard_type: ironrdp_pdu::gcc::KeyboardType,
     /// See [`ironrdp_acceptor::AcceptorResult::ime_file_name`].
     pub ime_file_name: String,
+    /// See [`ironrdp_acceptor::AcceptorResult::desktop_scale_factor`].
+    pub desktop_scale_factor: Option<u32>,
+    /// See [`ironrdp_acceptor::AcceptorResult::device_scale_factor`].
+    pub device_scale_factor: Option<u32>,
     /// The client came back with an auto-reconnect cookie the server
     /// verified, in place of its credentials.
     pub auto_reconnect: bool,
@@ -156,11 +160,16 @@ impl ConnectionInfo {
     /// that want to exercise [`ConnectionHandler::on_connection_info`] in their own unit tests
     /// without going through a live connection. `#[non_exhaustive]` blocks struct-literal
     /// construction outside this crate, so a constructor is the only way to do that.
+    ///
+    /// Fields it doesn't take start unset and, being public, can be set on the
+    /// result, e.g. `info.desktop_scale_factor = Some(200);` to exercise a 2x client.
     pub fn new(keyboard_layout: u32, keyboard_type: ironrdp_pdu::gcc::KeyboardType, ime_file_name: String) -> Self {
         Self {
             keyboard_layout,
             keyboard_type,
             ime_file_name,
+            desktop_scale_factor: None,
+            device_scale_factor: None,
             auto_reconnect: false,
         }
     }
@@ -4686,6 +4695,8 @@ impl RdpServer {
                     keyboard_layout: result.keyboard_layout,
                     keyboard_type: result.keyboard_type,
                     ime_file_name: result.ime_file_name.clone(),
+                    desktop_scale_factor: result.desktop_scale_factor,
+                    device_scale_factor: result.device_scale_factor,
                     auto_reconnect: is_auto_reconnect,
                 });
             });
