@@ -10,5 +10,9 @@ repositories:
       - markdown-writer
       - prose-verifier
       - prose-writer
+      - rust-style
+      - rust-style-reviewer
       - skeptical-reviewer
       - tessl-skill-linting
+      - test-oracle-reviewer
+      - test-pruner
