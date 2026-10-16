@@ -2,4 +2,5 @@
 
 #![allow(unused_crate_dependencies)] // Package dependencies are used by standalone and Criterion targets.
 
+pub mod connector_replay;
 pub mod replay;
