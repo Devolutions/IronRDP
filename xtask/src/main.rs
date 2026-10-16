@@ -64,6 +64,7 @@ fn main() -> anyhow::Result<()> {
         }
         Action::BenchCorpusFetch => bench::corpus_fetch(&sh)?,
         Action::BenchCorpusList => bench::corpus_list()?,
+        Action::BenchReplay { capture } => bench::corpus_replay(capture.as_deref())?,
         Action::CheckFmt => check::fmt(&sh)?,
         Action::CheckLints => check::lints(&sh)?,
         Action::CheckLocks => check::lock_files(&sh)?,
@@ -104,6 +105,8 @@ fn main() -> anyhow::Result<()> {
             features::run_all(&sh)?;
             check::dependencies(&sh)?;
             check::capture_files(&sh)?;
+            bench::corpus_fetch(&sh)?;
+            bench::corpus_replay(None)?;
             wasm::check(&sh)?;
             fuzz::run(&sh, None, None)?;
             web::install(&sh)?;
