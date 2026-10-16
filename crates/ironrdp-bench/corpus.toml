@@ -70,6 +70,7 @@ id = "no-nla-accepted"
 file = "rdp-no-nla-accepted1.pcapng"
 sha256 = "1146ef447ad88e58f25d14adf81581233c8265bf49140fa6f7a172fd30f3c402"
 intent = "RDP without NLA accepted by the server."
+performance = { criterion = "partial-replay/no-nla-accepted/processing" }
 expect = { outcome = "partial", summary = { client_pdus = 666, server_pdus = 740, connection_pdus = 15, client_observation_pdus = 666, fast_path_pdus = 20, io_channel_pdus = 4, message_channel_pdus = 38, static_channel_pdus = 662, other_server_message_pdus = 1, graphics_updates = 78, final_dimensions = "1024x768", fingerprint = "5f280762f289c4420327a0b8b6e302ccfc3a40465a2eed9bf2dc2fa833ec7b19", lifecycle = "active", framing_gaps = 0, truncated_pdu_gaps = 0, static_channel_gaps = 8, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 0, unsupported_gaps = 0, gap_fingerprint = "4b8da452635699c6de2820276840579b4f05cf92f9f636c707737312456934f1" } }
 
 [[capture]]
@@ -84,6 +85,7 @@ id = "no-nla-smartcard"
 file = "rdp-no-nla-smartcard-auth1.pcapng"
 sha256 = "b29eedb9e81ed6fab7e0730951880e78fc60c3d64bfb6b37e4fa604ea3a30ff2"
 intent = "RDP without NLA using smartcard authentication."
+performance = { criterion = "partial-replay/no-nla-smartcard/processing" }
 expect = { outcome = "partial", summary = { client_pdus = 903, server_pdus = 934, connection_pdus = 15, client_observation_pdus = 903, fast_path_pdus = 12, io_channel_pdus = 4, message_channel_pdus = 38, static_channel_pdus = 864, other_server_message_pdus = 1, graphics_updates = 79, final_dimensions = "1024x768", fingerprint = "51069cfd256a082e8bf9aa9d159ebc1c1d82c5f0bf7991f07d61bfa09eb81426", lifecycle = "active", framing_gaps = 0, truncated_pdu_gaps = 0, static_channel_gaps = 8, dynamic_channel_gaps = 0, session_gaps = 0, incomplete_activation_gaps = 0, unsupported_gaps = 0, gap_fingerprint = "1c6187ca6547aa904e0e752f5122a592f9eca8b68d2aa4315076536a7039a7ec" } }
 
 [[capture]]

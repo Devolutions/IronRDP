@@ -31,8 +31,17 @@ struct Capture {
     sha256: String,
     /// Recorded upstream scenario description.
     intent: String,
+    /// Optional focused performance workload for this capture.
+    performance: Option<PerformanceWorkload>,
     /// Observed replay behavior for this exact capture revision.
     expect: ReplayExpectation,
+}
+
+/// A focused performance workload declared by the corpus manifest.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PerformanceWorkload {
+    /// Exact Criterion benchmark identifier.
+    criterion: String,
 }
 
 /// Strict expected result for one capture replay.
@@ -158,6 +167,42 @@ pub fn corpus_replay(selector: Option<&str>) -> anyhow::Result<()> {
         complete, partial, unsupported,
     );
     Ok(())
+}
+
+/// Run the manifest-declared Criterion workload for one eligible capture.
+pub fn capture_replay_benchmark(selector: &str) -> anyhow::Result<()> {
+    let corpus = load_corpus()?;
+    let criterion = capture_replay_criterion(&corpus, selector)?;
+    let status = Command::new(env!("CARGO"))
+        .current_dir(project_root())
+        .args([
+            "bench",
+            "-p",
+            "ironrdp-bench",
+            "--bench",
+            "capture_replay",
+            "--locked",
+            "--",
+        ])
+        .arg(criterion)
+        .arg("--exact")
+        .status()
+        .context("run selected capture replay benchmark")?;
+    anyhow::ensure!(status.success(), "selected capture replay benchmark failed: {selector}");
+    Ok(())
+}
+
+fn capture_replay_criterion<'a>(corpus: &'a Corpus, selector: &str) -> anyhow::Result<&'a str> {
+    let capture = corpus
+        .captures
+        .iter()
+        .find(|capture| capture.id == selector)
+        .with_context(|| format!("unknown benchmark capture selector: {selector}"))?;
+    capture
+        .performance
+        .as_ref()
+        .map(|performance| performance.criterion.as_str())
+        .with_context(|| format!("capture is not eligible for a performance benchmark: {selector}"))
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -347,7 +392,11 @@ fn parse_corpus(contents: &str) -> anyhow::Result<Corpus> {
 
     for capture in captures {
         let capture = capture.as_table().context("capture entry must be a TOML table")?;
-        ensure_allowed_keys(capture, &["id", "file", "sha256", "intent", "expect"], "capture")?;
+        ensure_allowed_keys(
+            capture,
+            &["id", "file", "sha256", "intent", "performance", "expect"],
+            "capture",
+        )?;
 
         let id = string(capture, "id", "capture")?.to_owned();
         anyhow::ensure!(is_identifier(&id), "invalid capture identifier: {id}");
@@ -367,12 +416,32 @@ fn parse_corpus(contents: &str) -> anyhow::Result<Corpus> {
         let intent = string(capture, "intent", "capture")?.to_owned();
         anyhow::ensure!(!intent.is_empty(), "capture intent must not be empty: {file}");
 
+        let performance = capture.get("performance").map(parse_performance_workload).transpose()?;
         let expect = parse_replay_expectation(table(capture, "expect", "capture")?)?;
+        if let Some(performance) = &performance {
+            anyhow::ensure!(
+                expect.outcome == ReplayOutcome::Partial,
+                "performance capture must have a partial replay expectation: {id}"
+            );
+            let summary = expect
+                .summary
+                .as_ref()
+                .expect("partial replay expectations always have a summary");
+            anyhow::ensure!(
+                summary_lifecycle(summary) == Some("active"),
+                "performance capture must end with an active lifecycle: {id}"
+            );
+            anyhow::ensure!(
+                performance.criterion == format!("partial-replay/{id}/processing"),
+                "invalid performance Criterion workload for capture: {id}"
+            );
+        }
         parsed_captures.push(Capture {
             id,
             file,
             sha256,
             intent,
+            performance,
             expect,
         });
     }
@@ -380,6 +449,14 @@ fn parse_corpus(contents: &str) -> anyhow::Result<Corpus> {
     Ok(Corpus {
         revision,
         captures: parsed_captures,
+    })
+}
+
+fn parse_performance_workload(value: &toml::Value) -> anyhow::Result<PerformanceWorkload> {
+    let value = value.as_table().context("capture.performance must be a TOML table")?;
+    ensure_allowed_keys(value, &["criterion"], "capture.performance")?;
+    Ok(PerformanceWorkload {
+        criterion: string(value, "criterion", "capture.performance")?.to_owned(),
     })
 }
 
@@ -712,6 +789,43 @@ expect = {{ outcome = "unsupported", stage = "negotiate", reason = "missing-rdp-
     }
 
     #[test]
+    fn selects_manifest_qualified_capture_replay_workload() {
+        let corpus =
+            parse_corpus(include_str!("../../crates/ironrdp-bench/corpus.toml")).expect("valid corpus manifest");
+
+        assert_eq!(
+            capture_replay_criterion(&corpus, "no-nla-accepted").expect("qualified capture"),
+            "partial-replay/no-nla-accepted/processing"
+        );
+        assert_eq!(
+            capture_replay_criterion(&corpus, "no-nla-smartcard").expect("qualified capture"),
+            "partial-replay/no-nla-smartcard/processing"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_capture_replay_workload_before_running_cargo() {
+        let corpus = parse_corpus(&corpus_toml("accepted-rdp.pcapng")).expect("valid manifest");
+
+        let error = capture_replay_criterion(&corpus, "typo").expect_err("unknown selector must fail");
+
+        assert!(error.to_string().contains("unknown benchmark capture selector: typo"));
+    }
+
+    #[test]
+    fn rejects_nonperformance_capture_replay_workload_before_running_cargo() {
+        let corpus = parse_corpus(&corpus_toml("accepted-rdp.pcapng")).expect("valid manifest");
+
+        let error = capture_replay_criterion(&corpus, "accepted-rdp").expect_err("ineligible selector must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("capture is not eligible for a performance benchmark: accepted-rdp")
+        );
+    }
+
+    #[test]
     fn rejects_unsafe_capture_file() {
         let error = parse_corpus(&corpus_toml("../capture.pcapng")).expect_err("unsafe path must fail");
 
@@ -823,6 +937,7 @@ expect = {{ outcome = "unsupported", stage = "negotiate", reason = "missing-rdp-
             file: "accepted-rdp.pcapng".to_owned(),
             sha256: SHA256_ABC.to_owned(),
             intent: "A direct RDP session accepted by the server.".to_owned(),
+            performance: None,
             expect: ReplayExpectation {
                 outcome: ReplayOutcome::Unsupported,
                 stage: Some("negotiate".to_owned()),
