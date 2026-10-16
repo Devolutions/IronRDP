@@ -71,9 +71,12 @@ impl TlsIdentityCtx {
 
     /// Builds a TLS acceptor for this identity.
     ///
-    /// The crypto provider is the process-level default if one is installed, otherwise the one this
-    /// crate was built with (the `aws-lc-rs` or `ring` feature). With neither, this returns an error
-    /// rather than letting rustls panic.
+    /// The crypto provider is the process-level default if one is installed, otherwise the one
+    /// rustls selects from the providers compiled in. With no process-level default and neither of
+    /// this crate's `aws-lc-rs` and `ring` features enabled, this returns an error rather than
+    /// letting rustls panic. The check reads this crate's features, not rustls' own, so a graph
+    /// that compiles a provider into rustls through another dependency is refused too: install
+    /// that provider as the process-level default, as the error says.
     pub fn make_acceptor(&self) -> ServerResult<TlsAcceptor> {
         if rustls::crypto::CryptoProvider::get_default().is_none()
             && !cfg!(any(feature = "aws-lc-rs", feature = "ring"))

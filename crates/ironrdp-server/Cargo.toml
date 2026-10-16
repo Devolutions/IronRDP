@@ -18,11 +18,15 @@ test = false
 
 [features]
 default = ["rayon", "qoi", "qoiz", "aws-lc-rs"]
-# The crypto provider tokio-rustls is built with. `aws-lc-rs` is the default, as it is
+# The crypto provider this crate asks tokio-rustls for. `aws-lc-rs` is the default, as it is
 # tokio-rustls' own; a consumer that runs its TLS on ring disables default features and
-# enables `ring` instead, so aws-lc-rs is not linked. With neither, the consumer installs a
-# process-level provider (`CryptoProvider::install_default`) before building a `ServerConfig`;
-# `TlsIdentityCtx::make_acceptor` returns an error if there is none.
+# enables `ring` instead, so this crate does not pull aws-lc-rs in. Features are additive across
+# the dependency graph: another dependency that enables tokio-rustls' or rustls' `aws_lc_rs`
+# still links it, and when both providers are compiled in rustls prefers aws-lc-rs unless a
+# process-level default is installed, so a consumer that must run on ring installs
+# `rustls::crypto::ring::default_provider()` with `CryptoProvider::install_default`. With
+# neither feature, the consumer installs a process-level provider before building a
+# `ServerConfig`; `TlsIdentityCtx::make_acceptor` returns an error if there is none.
 aws-lc-rs = ["tokio-rustls/aws_lc_rs"]
 ring = ["tokio-rustls/ring"]
 helper = ["dep:x509-cert", "dep:rustls-pemfile"]
