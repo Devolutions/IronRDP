@@ -1,0 +1,89 @@
+name: CodSpeed
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  RUST_BACKTRACE: short
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: 1
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+jobs:
+  simulation:
+    name: CodSpeed simulation
+    if: vars.CODSPEED_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        uses: ./.github/actions/install-build-deps
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.9.1
+
+      - name: Corpus cache
+        uses: actions/cache@v5
+        with:
+          path: ./bench-data/wireshark-rdp
+          key: ${{ runner.os }}-codspeed-corpus-${{ hashFiles('crates/ironrdp-bench/corpus.toml') }}
+
+      - name: Fetch corpus
+        run: cargo xtask bench corpus-fetch
+
+      - name: Install cargo-codspeed
+        run: cargo install cargo-codspeed --version 5.0.1 --locked
+
+      - name: Build benchmarks
+        run: cargo codspeed build -p ironrdp-bench --bench bench --bench capture_replay --features codspeed --locked -m simulation
+
+      - name: Measure benchmarks
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: simulation
+          run: cargo codspeed run -p ironrdp-bench --bench bench --bench capture_replay -m simulation
+
+  walltime:
+    name: CodSpeed walltime
+    if: github.event_name == 'workflow_dispatch' && vars.CODSPEED_ENABLED == 'true' && vars.CODSPEED_WALLTIME_RUNNER != ''
+    runs-on: ${{ vars.CODSPEED_WALLTIME_RUNNER }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        uses: ./.github/actions/install-build-deps
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.9.1
+
+      - name: Corpus cache
+        uses: actions/cache@v5
+        with:
+          path: ./bench-data/wireshark-rdp
+          key: ${{ runner.os }}-codspeed-corpus-${{ hashFiles('crates/ironrdp-bench/corpus.toml') }}
+
+      - name: Fetch corpus
+        run: cargo xtask bench corpus-fetch
+
+      - name: Build replay command
+        run: cargo build --release -p ironrdp-bench --bin capture-replay-bench --locked
+
+      - name: Measure replay commands
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: walltime
