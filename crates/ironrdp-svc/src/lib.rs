@@ -406,9 +406,7 @@ impl ChunkProcessor {
             ));
         }
 
-        self.chunked_pdu.extend_from_slice(chunk);
-
-        if !header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) && self.chunked_pdu.len() > expected_length {
+        if expected_length < self.chunked_pdu.len().saturating_add(chunk.len()) {
             self.clear_sequence();
             return Err(ironrdp_core::invalid_field_err!(
                 "length",
@@ -416,6 +414,8 @@ impl ChunkProcessor {
                 in: cursor
             ));
         }
+
+        self.chunked_pdu.extend_from_slice(chunk);
 
         if !last {
             return Ok(None);
