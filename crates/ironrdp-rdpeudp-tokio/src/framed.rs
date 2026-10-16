@@ -74,11 +74,15 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::transport::TunnelMessage;
+    use crate::transport::{ReceivedMessage, TunnelMessage};
 
     /// Build a `UdpTransport` backed by test channels (no real network).
-    fn test_transport() -> (UdpTransport, mpsc::Sender<TunnelMessage>, mpsc::Receiver<TunnelMessage>) {
-        let (incoming_tx, incoming_rx) = mpsc::channel::<TunnelMessage>(16);
+    fn test_transport() -> (
+        UdpTransport,
+        mpsc::Sender<ReceivedMessage>,
+        mpsc::Receiver<TunnelMessage>,
+    ) {
+        let (incoming_tx, incoming_rx) = mpsc::channel::<ReceivedMessage>(16);
         let (outgoing_tx, outgoing_rx) = mpsc::channel::<TunnelMessage>(16);
 
         let transport = UdpTransport::from_channels(incoming_rx, outgoing_tx);
