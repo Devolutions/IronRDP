@@ -206,6 +206,12 @@ Mixed count labels block automatic review until repaired; legitimacy triage and 
 A suspected overlap with another pull request is advisory: at confidence 0.85 or greater it adds `triage/overlap` and a non-blocking comment, and review proceeds under the usual gates.
 The classifier reports possible shared scope in `overlap`, using candidate titles and truncated bodies.
 An unavailable or invalid exact-head classification or an attempted eligible review adds only `automation-failed`.
+When a current-head classification or review check reports a failure, the PR author or a collaborator with live `write`, `maintain`, or `admin` permission can comment `@github-actions retry` to request one ordinary non-forced retry.
+Only a standalone new issue comment created after the failed check completed, with `automation-failed` in the event's label snapshot and on the live open, non-draft PR, is accepted.
+Classification failures retry classification first; review failures retry review only with valid current classification, green latest exact-head CI, available quota, and normal review-count and policy gates.
+The exact-head `AI retry admission` check records the comment ID, failed-check ID, stage, and server-created time; duplicate comments are ignored, and each head and stage permits at most three accepted retries spaced by at least one hour between the server-created comment and previous admission.
+Dispatch errors leave the admission in place and fail the workflow visibly because server acceptance may already have occurred; a crash after admission also counts rather than risking duplicate model work.
+An older successful same-head check or partially published review makes the failed state inconsistent and requires manual repair instead of comment retry.
 `needs-review` means a human reviewer can act now and is the current next actor.
 `needs-author-action` means the pull request author is the current next actor.
 Lifecycle reconciliation is the only writer of these mutually exclusive actor labels.

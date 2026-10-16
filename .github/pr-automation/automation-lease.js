@@ -52,8 +52,16 @@ async function ownerIsActive(github, lease) {
 }
 async function claimAutomaticLease({
   github, owner, repo, kind, headSha, runId, attempt, allowSuccess = false, prNumber, gate,
+  retryBinding,
 }) {
   const eligible = async (lease) => {
+    // The new in-progress canonical lease supersedes the failed check after claim.
+    if (retryBinding && !lease) {
+      const { validRetryBinding } = require("./retry-command");
+      if (retryBinding.headSha !== headSha || !await validRetryBinding({
+        github, owner, repo, prNumber, stage: kind, binding: retryBinding,
+      })) return false;
+    }
     if (prNumber === undefined) return true;
     if (kind === "review") {
       return await recheckAutomaticReview({

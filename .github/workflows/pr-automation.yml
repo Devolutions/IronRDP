@@ -38,6 +38,18 @@ on:
         required: true
         default: false
         type: boolean
+      retry-head-sha:
+        description: Expected retry head (internal retry dispatch)
+        required: false
+        type: string
+      retry-failure-check-id:
+        description: Expected failed canonical check ID (internal retry dispatch)
+        required: false
+        type: string
+      retry-admission-check-id:
+        description: Expected admission check ID (internal retry dispatch)
+        required: false
+        type: string
 
 concurrency:
   # Keep event routes separate while retaining every bounded pending wake-up.
@@ -58,7 +70,10 @@ jobs:
     name: Resolve pull request
     runs-on: ubuntu-latest
     permissions:
+      actions: read
+      checks: read
       contents: read
+      issues: read
       pull-requests: read
     outputs:
       ok: ${{ steps.resolve.outputs.ok }}
@@ -69,6 +84,7 @@ jobs:
       labels: ${{ steps.resolve.outputs.labels }}
       author: ${{ steps.resolve.outputs.author }}
       force: ${{ steps.resolve.outputs.force }}
+      retry-binding: ${{ steps.resolve.outputs.retry-binding }}
       observed-ci-run: ${{ steps.resolve.outputs.observed-ci-run }}
       review-requested: ${{ steps.resolve.outputs.review-requested }}
       classification-requested: ${{ steps.resolve.outputs.classification-requested }}
@@ -105,6 +121,7 @@ jobs:
             core.setOutput("labels", JSON.stringify(result.labels ?? []));
             core.setOutput("author", JSON.stringify(result.author ?? null));
             core.setOutput("force", result.force === true);
+            core.setOutput("retry-binding", result.retryBinding ? JSON.stringify(result.retryBinding) : "");
             core.setOutput("observed-ci-run", result.observedCiRun ? JSON.stringify(result.observedCiRun) : "");
             core.setOutput("review-requested", result.reviewRequested === true);
             core.setOutput("classification-requested", result.classificationRequested === true);
@@ -232,6 +249,7 @@ jobs:
       actions: read
       checks: write
       contents: read
+      issues: read
       pull-requests: read
     outputs:
       owner: ${{ steps.claim.outputs.owner }}
@@ -249,6 +267,7 @@ jobs:
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
           FORCE: ${{ needs.resolve-pr.outputs.force }}
           ALLOW_SUCCESS: ${{ needs.resolve-pr.outputs.review-requested }}
+          RETRY_BINDING: ${{ needs.resolve-pr.outputs.retry-binding }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         with:
@@ -265,6 +284,7 @@ jobs:
               prNumber: Number(process.env.PULL_REQUEST_NUMBER),
               runId: Number(process.env.RUN_ID), attempt: Number(process.env.RUN_ATTEMPT),
               allowSuccess: process.env.ALLOW_SUCCESS === "true",
+              retryBinding: process.env.RETRY_BINDING ? JSON.parse(process.env.RETRY_BINDING) : null,
             });
             core.setOutput("owner", decision.owner);
             core.setOutput("lease", decision.lease ? JSON.stringify(decision.lease) : "");
@@ -788,6 +808,7 @@ jobs:
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
           GATE: ${{ needs.review-gate.outputs.gate }}
           FORCE: ${{ needs.resolve-pr.outputs.force }}
+          RETRY_BINDING: ${{ needs.resolve-pr.outputs.retry-binding }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         with:
@@ -804,6 +825,7 @@ jobs:
               kind: "review", headSha: process.env.HEAD_SHA,
               prNumber: Number(process.env.PULL_REQUEST_NUMBER), gate,
               runId: Number(process.env.RUN_ID), attempt: Number(process.env.RUN_ATTEMPT),
+              retryBinding: process.env.RETRY_BINDING ? JSON.parse(process.env.RETRY_BINDING) : null,
             });
             core.setOutput("owner", decision.owner);
             core.setOutput("lease", decision.lease ? JSON.stringify(decision.lease) : "");
