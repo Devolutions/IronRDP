@@ -1857,7 +1857,8 @@ where
                     error.http_status_code,
                     error.wsa_last_error,
                     error.tls_alert_code,
-                );
+                )
+                .with_error_code(error.error_code);
                 return Err(
                     IronError::from(anyhow::Error::new(error).context("received an RDCleanPath error"))
                         .with_kind(IronErrorKind::RDCleanPath)
@@ -2167,6 +2168,46 @@ mod tests {
             "unexpected error: {}",
             error.backtrace()
         );
+    }
+
+    #[test]
+    fn rdcleanpath_error_exposes_error_code() {
+        let response = ironrdp_rdcleanpath::RDCleanPathPdu {
+            error: Some(ironrdp_rdcleanpath::RDCleanPathErr {
+                error_code: ironrdp_rdcleanpath::EXPIRED_ERROR_CODE,
+                http_status_code: Some(401),
+                wsa_last_error: None,
+                tls_alert_code: None,
+            }),
+            ..Default::default()
+        }
+        .to_der()
+        .expect("encode RDCleanPath error");
+        let mut framed = rdcleanpath_framed(&response);
+        let mut connector = ClientConnector::new(
+            connector_config(SecurityConfig {
+                enable_credssp: false,
+                enable_standard_rdp_security: false,
+            }),
+            core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
+        );
+        let mut network_client = WasmNetworkClient;
+
+        let error = match connect_rdcleanpath(
+            &mut framed,
+            &mut connector,
+            &mut network_client,
+            rdcleanpath_connect_params(),
+        )
+        .now_or_never()
+        .expect("in-memory RDCleanPath I/O should be ready")
+        {
+            Ok(_) => panic!("RDCleanPath error accepted as a response"),
+            Err(error) => error,
+        };
+
+        let details = error.rdcleanpath_details().expect("RDCleanPath error details");
+        assert_eq!(details.error_code(), Some(ironrdp_rdcleanpath::EXPIRED_ERROR_CODE));
     }
 
     #[test]
