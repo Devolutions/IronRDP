@@ -1,6 +1,6 @@
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_size, invalid_field_err,
-    other_err,
+    other_err, read_padding,
 };
 
 use super::{ClientGccBlocks, ServerGccBlocks};
@@ -163,7 +163,7 @@ impl<'de> Decode<'de> for ConferenceCreateRequest {
         // ConferenceCreateRequest::ConferenceName
         per::read_numeric_string(src, 1).map_err(|e| other_err!("confName", source: e))?;
         // padding
-        per::read_padding(src, 1);
+        read_padding!(src, 1);
 
         // UserData (SET OF SEQUENCE)
         // one set of UserData

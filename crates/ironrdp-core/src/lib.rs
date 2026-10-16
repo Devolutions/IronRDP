@@ -48,7 +48,7 @@ pub use self::error::{
 pub use self::into_owned::IntoOwned;
 #[cfg(feature = "alloc")]
 pub use self::non_empty::NonEmpty;
-pub use self::padding::{read_padding, write_padding};
+pub use self::padding::{read_padding, try_read_padding, write_padding};
 pub use self::time::MonotonicInstant;
 #[cfg(feature = "alloc")]
 pub use self::write_buf::WriteBuf;

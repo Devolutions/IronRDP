@@ -156,10 +156,6 @@ pub(crate) fn write_number_of_sets(dst: &mut WriteCursor<'_>, number_of_sets: u8
     dst.write_u8(number_of_sets);
 }
 
-pub(crate) fn read_padding(src: &mut ReadCursor<'_>, padding_length: usize) {
-    src.advance(padding_length);
-}
-
 pub(crate) fn write_padding(dst: &mut WriteCursor<'_>, padding_length: usize) {
     for _ in 0..padding_length {
         dst.write_u8(0);

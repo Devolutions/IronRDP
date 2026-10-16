@@ -534,10 +534,15 @@ macro_rules! write_padding {
 
 /// Moves read cursor, ignoring padding bytes.
 ///
-/// This is similar to `ironrdp_pdu::padding::read`, only exists for consistency with `write_padding!`.
+/// This is similar to `ironrdp_core::try_read_padding`, but like `ensure_size!` it returns a "not enough bytes" error
+/// from the enclosing function when fewer than `n` bytes remain, instead of moving the cursor past the end of
+/// the buffer. The error carries the name of the enclosing function and the current cursor position.
 #[macro_export]
 macro_rules! read_padding {
-    ($src:expr, $n:expr) => {
-        $crate::read_padding($src, $n)
-    };
+    ($src:expr, $n:expr) => {{
+        let n: usize = $n;
+        let src: &mut $crate::ReadCursor<'_> = $src;
+        $crate::ensure_size!(in: src, size: n);
+        src.advance(n);
+    }};
 }
