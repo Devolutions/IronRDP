@@ -165,7 +165,8 @@ fn decode_first_pass_to_dwtq(
 ///
 /// # Errors
 ///
-/// Returns [`SrlError`] for a malformed or truncated SRL stream.
+/// Returns [`SrlError`] for a band whose SRL magnitude width, the previous
+/// bit position minus the current one, is outside 1 to 15 bits.
 /// See MS-RDPEGFX section 3.3.8.2.1.2.
 pub fn decode_upgrade_pass(
     srl_data: &[u8],
@@ -2022,8 +2023,8 @@ mod tests {
             hh1: 0,
         };
 
-        // Zero run 0 (10), positive sign (0), magnitude 1 (1), then the
-        // required trailing zero byte.
+        // Zero run 0 (10), positive sign (0), magnitude 1 (1), then a
+        // trailing zero byte.
         let srl_data = vec![0b1001_0000, 0x00];
         let raw_data = vec![];
 
@@ -2075,13 +2076,13 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_pass_rejects_truncated_srl() {
+    fn upgrade_pass_rejects_an_srl_width_over_15_bits() {
         let mut coefficients = [0i16; COEFFICIENTS_PER_COMPONENT];
         let mut sign = [SIGN_POSITIVE; COEFFICIENTS_PER_COMPONENT];
         sign[0] = SIGN_ZERO;
 
         let mut prev_prog_quant = ComponentCodecQuant::LOSSLESS;
-        prev_prog_quant.hl1 = 4;
+        prev_prog_quant.hl1 = 16;
 
         assert_eq!(
             decode_upgrade_pass(
@@ -2093,16 +2094,21 @@ mod tests {
                 &mut coefficients,
                 &mut sign,
             ),
-            Err(SrlError::Truncated)
+            Err(SrlError::InvalidBitCount(16))
         );
     }
 
     #[test]
     fn tile_upgrade_keeps_all_components_on_srl_error() {
+        // Y decodes and changes a coefficient; Cb's SRL width is invalid, so
+        // the tile must keep none of Y's change either.
         let mut tile = TileState::new();
-        let mut prev_prog_quant = ComponentCodecQuant::LOSSLESS;
-        prev_prog_quant.hl1 = 4;
-        tile.prog_quant = [prev_prog_quant; 3];
+        let mut y_quant = ComponentCodecQuant::LOSSLESS;
+        y_quant.hl1 = 4;
+        let mut cb_quant = ComponentCodecQuant::LOSSLESS;
+        cb_quant.hl1 = 16;
+        let prog_quant = [y_quant, cb_quant, y_quant];
+        tile.prog_quant = prog_quant;
         tile.pass = 1;
         tile.quality = 50;
         tile.sign[0][0] = SIGN_ZERO;
@@ -2118,12 +2124,12 @@ mod tests {
                 [ComponentCodecQuant::LOSSLESS; 3],
                 75,
             ),
-            Err(SrlError::Truncated)
+            Err(SrlError::InvalidBitCount(16))
         );
 
         assert_eq!(tile.coefficients, coefficients);
         assert_eq!(tile.sign, sign);
-        assert_eq!(tile.prog_quant, [prev_prog_quant; 3]);
+        assert_eq!(tile.prog_quant, prog_quant);
         assert_eq!(tile.pass, 1);
         assert_eq!(tile.quality, 50);
     }
