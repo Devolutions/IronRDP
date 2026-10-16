@@ -149,8 +149,7 @@ impl ActiveStage {
         let mut output = Vec::with_capacity(events.len().div_ceil(FastPathInput::MAX_EVENTS) + 1);
 
         for event_chunk in events.chunks(FastPathInput::MAX_EVENTS) {
-            // PERF: unnecessary copy
-            let fastpath_input = FastPathInput::new(event_chunk.to_vec()).map_err(SessionError::decode)?;
+            let fastpath_input = FastPathInput::new(event_chunk).map_err(SessionError::decode)?;
             let frame = ironrdp_core::encode_vec(&fastpath_input).map_err(SessionError::encode)?;
             output.push(ActiveStageOutput::ResponseFrame(frame));
         }
