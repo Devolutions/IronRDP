@@ -1218,6 +1218,17 @@ impl core::fmt::Display for ProgressiveDecodeError {
     }
 }
 
+impl core::error::Error for ProgressiveDecodeError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Pdu(e) => Some(e),
+            Self::Rlgr(e) => Some(e),
+            Self::Srl(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
 impl From<ironrdp_core::DecodeError> for ProgressiveDecodeError {
     fn from(e: ironrdp_core::DecodeError) -> Self {
         Self::Pdu(e)
@@ -1545,6 +1556,21 @@ impl ProgressiveDecoder {
         self.frame_tiles
             .retain(|(context_surface_id, _), _| *context_surface_id != surface_id);
         self.surface_context_flags.remove(&surface_id);
+    }
+
+    /// Total retained difference-tile coefficient buffers across all surfaces.
+    #[must_use]
+    pub fn total_reference_count(&self) -> usize {
+        self.references.len()
+    }
+
+    /// Drop every surface's difference-tile coefficient buffers.
+    ///
+    /// `ResetGraphics` implicitly destroys all surfaces (MS-RDPEGFX 2.2.2.14)
+    /// but does not re-negotiate progressive CONTEXT. Tile references belong
+    /// to the destroyed surfaces; CONTEXT does not.
+    pub fn clear_tile_references(&mut self) {
+        self.references.clear();
     }
 
     /// Reset codec-context state while retaining surface sub-band references.
@@ -2075,7 +2101,7 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_pass_rejects_truncated_srl() {
+    fn upgrade_pass_completes_when_the_srl_stream_ends_early() {
         let mut coefficients = [0i16; COEFFICIENTS_PER_COMPONENT];
         let mut sign = [SIGN_POSITIVE; COEFFICIENTS_PER_COMPONENT];
         sign[0] = SIGN_ZERO;
@@ -2083,6 +2109,9 @@ mod tests {
         let mut prev_prog_quant = ComponentCodecQuant::LOSSLESS;
         prev_prog_quant.hl1 = 4;
 
+        // Windows stops emitting once the remaining coefficients are all zero, so the SRL
+        // stream is shorter than the band's coefficient count. This used to drop the whole
+        // tile update, which on screen is a block that never refreshes.
         assert_eq!(
             decode_upgrade_pass(
                 &[0x80, 0x00],
@@ -2093,7 +2122,7 @@ mod tests {
                 &mut coefficients,
                 &mut sign,
             ),
-            Err(SrlError::Truncated)
+            Ok(())
         );
     }
 
@@ -2102,28 +2131,40 @@ mod tests {
         let mut tile = TileState::new();
         let mut prev_prog_quant = ComponentCodecQuant::LOSSLESS;
         prev_prog_quant.hl1 = 4;
-        tile.prog_quant = [prev_prog_quant; 3];
+
+        // The third component's quantization bit width is out of range, so its magnitude
+        // decode must fail. On the wire a quant is a 4-bit nibble (see
+        // `ComponentCodecQuant::decode`) and cannot reach 16; this goes through a struct
+        // literal instead, for the same reason as the `quant_validate` tests in rfx.rs: a
+        // literal-constructed value deserves to be rejected before it is used.
+        let mut out_of_range_quant = ComponentCodecQuant::LOSSLESS;
+        out_of_range_quant.hl1 = 20;
+
+        tile.prog_quant = [prev_prog_quant, prev_prog_quant, out_of_range_quant];
         tile.pass = 1;
         tile.quality = 50;
+        // Each component leaves one SRL entry in HL1, so the first two decode successfully.
         tile.sign[0][0] = SIGN_ZERO;
         tile.sign[1][0] = SIGN_ZERO;
+        tile.sign[2][0] = SIGN_ZERO;
 
         let coefficients = tile.coefficients;
         let sign = tile.sign;
+        let prog_quant = tile.prog_quant;
 
         assert_eq!(
             tile.decode_upgrade(
-                [&[0x90, 0x00], &[0x80, 0x00], &[]],
+                [&[0x90, 0x00], &[0x80, 0x00], &[0x90, 0x00]],
                 [&[], &[], &[]],
                 [ComponentCodecQuant::LOSSLESS; 3],
                 75,
             ),
-            Err(SrlError::Truncated)
+            Err(SrlError::InvalidBitCount(20))
         );
 
         assert_eq!(tile.coefficients, coefficients);
         assert_eq!(tile.sign, sign);
-        assert_eq!(tile.prog_quant, [prev_prog_quant; 3]);
+        assert_eq!(tile.prog_quant, prog_quant);
         assert_eq!(tile.pass, 1);
         assert_eq!(tile.quality, 50);
     }

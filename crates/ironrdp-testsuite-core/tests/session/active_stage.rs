@@ -1,17 +1,35 @@
 //! Regression tests for `composite_graphics_updates`, which applies EGFX compositor
-//! deltas and returns both their exact regions and the union reported by `ActiveStage`.
+//! deltas and returns both their exact regions and the union reported by `ActiveStage`,
+//! and for the output reset that must precede compositing in `ActiveStage::process`.
 //!
 //! `ironrdp-session` builds with `[lib] test = false`, so inline `#[cfg(test)]`
 //! modules there never run under `cargo test --workspace --locked`. These tests
 //! live here instead so they actually execute in CI.
 
+use core::any::TypeId;
+use std::borrow::Cow;
 use std::sync::Arc;
 
+use ironrdp_core::encode_vec;
+use ironrdp_dvc::DrdynvcClient;
+use ironrdp_dvc::pdu::{CreateRequestPdu, DataPdu, DrdynvcDataPdu, DrdynvcServerPdu};
+use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+use ironrdp_egfx::pdu::{
+    CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitySet, Color, CreateSurfacePdu, EndFramePdu, GfxPdu,
+    MapSurfaceToOutputPdu, PixelFormat as GfxPixelFormat, ResetGraphicsPdu, SolidFillPdu, StartFramePdu, Timestamp,
+};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::DecodedPointer;
+use ironrdp_graphics::zgfx::wrap_uncompressed;
+use ironrdp_pdu::Action;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
+use ironrdp_pdu::mcs::{McsMessage, SendDataIndication};
+use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
+use ironrdp_pdu::x224::X224;
 use ironrdp_session::composite_graphics_updates;
 use ironrdp_session::image::DecodedImage;
+use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
+use ironrdp_svc::{StaticChannelSet, SvcProcessor as _};
 
 fn update(left: u16, top: u16, right: u16, bottom: u16) -> (ExclusiveRectangle, Vec<u8>) {
     let w = usize::from(right - left);
@@ -203,4 +221,209 @@ fn reset_graphics_clips_a_hotspot_cursor_to_one_pixel() {
         .expect("clip pointer to one-pixel framebuffer");
 
     assert_eq!(image.data(), &[0xFF, 0xFF, 0xFF, 0]);
+}
+
+// ── EGFX ResetGraphics ───────────────────────────────────────────────────────
+
+const USER_CHANNEL_ID: u16 = 1001;
+const IO_CHANNEL_ID: u16 = 1003;
+const DRDYNVC_CHANNEL_ID: u16 = 1004;
+/// Any non-zero id works; the server picks this when it opens the EGFX channel.
+const EGFX_DVC_ID: u32 = 7;
+
+const OLD_WIDTH: u16 = 640;
+const OLD_HEIGHT: u16 = 480;
+const NEW_WIDTH: u16 = 1024;
+const NEW_HEIGHT: u16 = 768;
+
+/// The handler is only notified; the compositing under test is driven by the PDUs.
+struct NoopEgfxHandler;
+
+impl GraphicsPipelineHandler for NoopEgfxHandler {}
+
+/// One complete static-channel chunk: the SVC layer dechunkifies before dispatching, so
+/// a payload without FIRST|LAST is rejected as a fragment with no opening.
+fn channel_chunk(data: &[u8]) -> Vec<u8> {
+    let header = ChannelPduHeader {
+        length: u32::try_from(data.len()).expect("chunk length fits u32"),
+        flags: ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
+    };
+    let mut chunk = encode_vec(&header).expect("encode channel header");
+    chunk.extend_from_slice(data);
+    chunk
+}
+
+/// Wrap EGFX PDUs the way a server does: concatenated, ZGFX-segmented, carried on a
+/// DVC data PDU inside an MCS Send Data Indication for the drdynvc channel.
+fn egfx_frame(pdus: &[GfxPdu]) -> Vec<u8> {
+    let mut raw = Vec::new();
+    for pdu in pdus {
+        raw.extend_from_slice(&encode_vec(pdu).expect("encode EGFX PDU"));
+    }
+
+    let dvc = DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(EGFX_DVC_ID, wrap_uncompressed(&raw))));
+
+    let indication = McsMessage::SendDataIndication(SendDataIndication {
+        initiator_id: USER_CHANNEL_ID,
+        channel_id: DRDYNVC_CHANNEL_ID,
+        user_data: Cow::Owned(channel_chunk(&encode_vec(&dvc).expect("encode DVC data"))),
+    });
+
+    encode_vec(&X224(indication)).expect("encode MCS indication")
+}
+
+/// An `ActiveStage` whose EGFX channel is open and past capability negotiation.
+fn active_stage_with_active_egfx() -> ActiveStage {
+    // Register by listener so the channel is reachable by type, which is how
+    // `ActiveStage` looks the EGFX processor up.
+    let mut drdynvc =
+        DrdynvcClient::new().with_dynamic_channel(GraphicsPipelineClient::new(Box::new(NoopEgfxHandler), None));
+
+    // Open the channel and get past capability negotiation before the stage exists, so
+    // the frame under test carries nothing but the reset and the drawing after it.
+    let create = DrdynvcServerPdu::Create(CreateRequestPdu::new(
+        EGFX_DVC_ID,
+        ironrdp_egfx::CHANNEL_NAME.to_owned(),
+    ));
+    drdynvc
+        .process(&encode_vec(&create).expect("encode create request"))
+        .expect("open EGFX channel");
+
+    let confirm = GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V8 {
+        flags: CapabilitiesV8Flags::empty(),
+    }));
+    let raw = wrap_uncompressed(&encode_vec(&confirm).expect("encode caps confirm"));
+    let dvc = DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(EGFX_DVC_ID, raw)));
+    drdynvc
+        .process(&encode_vec(&dvc).expect("encode DVC data"))
+        .expect("confirm capabilities");
+
+    let mut static_channels = StaticChannelSet::new();
+    assert!(static_channels.insert(drdynvc).is_none());
+    assert!(
+        static_channels
+            .attach_channel_id(TypeId::of::<DrdynvcClient>(), DRDYNVC_CHANNEL_ID)
+            .is_none()
+    );
+
+    ActiveStageBuilder {
+        static_channels,
+        user_channel_id: USER_CHANNEL_ID,
+        io_channel_id: IO_CHANNEL_ID,
+        message_channel_id: None,
+        share_id: 1,
+        compression_type: None,
+        enable_server_pointer: false,
+        pointer_software_rendering: false,
+    }
+    .build()
+}
+
+/// The image adopts the new output size before the deltas from the same payload are
+/// composited into it.
+///
+/// A server changing resolution sends `ResetGraphics` and the drawing that repaints the
+/// new desktop together, and it does not send those deltas again. The compositor already
+/// holds them by the time the stage drains it, so an image still sized for the previous
+/// output silently drops everything beyond the old bounds — see
+/// `an_out_of_bounds_delta_is_dropped_not_unioned` for that half. The result on screen is
+/// the previous desktop left behind under the new resolution: the tearing this guards.
+///
+/// The fill here lands entirely outside the old 640x480 image and inside the new
+/// 1024x768 one, so it can only survive if the resize happened first.
+#[test]
+fn egfx_reset_resizes_the_image_before_compositing_the_same_payload() {
+    let mut stage = active_stage_with_active_egfx();
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, OLD_WIDTH, OLD_HEIGHT);
+
+    let fill = ExclusiveRectangle {
+        left: 704,
+        top: 512,
+        right: 768,
+        bottom: 576,
+    };
+    assert!(
+        fill.left >= OLD_WIDTH && fill.top >= OLD_HEIGHT,
+        "the fill has to start outside the old image for this test to mean anything"
+    );
+
+    let frame = egfx_frame(&[
+        GfxPdu::ResetGraphics(ResetGraphicsPdu {
+            width: u32::from(NEW_WIDTH),
+            height: u32::from(NEW_HEIGHT),
+            monitors: Vec::new(),
+        }),
+        GfxPdu::CreateSurface(CreateSurfacePdu {
+            surface_id: 1,
+            width: NEW_WIDTH,
+            height: NEW_HEIGHT,
+            pixel_format: GfxPixelFormat::XRgb,
+        }),
+        GfxPdu::MapSurfaceToOutput(MapSurfaceToOutputPdu {
+            surface_id: 1,
+            output_origin_x: 0,
+            output_origin_y: 0,
+        }),
+        GfxPdu::StartFrame(StartFramePdu {
+            timestamp: Timestamp {
+                milliseconds: 0,
+                seconds: 0,
+                minutes: 0,
+                hours: 0,
+            },
+            frame_id: 1,
+        }),
+        GfxPdu::SolidFill(SolidFillPdu {
+            surface_id: 1,
+            fill_pixel: Color {
+                b: 0x10,
+                g: 0x20,
+                r: 0x30,
+                xa: 0,
+            },
+            rectangles: vec![fill.clone()],
+        }),
+        GfxPdu::EndFrame(EndFramePdu { frame_id: 1 }),
+    ]);
+
+    let outputs = stage
+        .process(&mut image, Action::X224, &frame)
+        .expect("process EGFX reset frame");
+
+    assert_eq!(
+        (image.width(), image.height()),
+        (NEW_WIDTH, NEW_HEIGHT),
+        "the image must follow the output size the server just set"
+    );
+
+    let regions: Vec<_> = outputs
+        .iter()
+        .filter_map(|output| match output {
+            ActiveStageOutput::GraphicsUpdate(region) => Some(region),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        regions.len(),
+        1,
+        "the fill from this payload must be reported, not dropped as out of bounds"
+    );
+
+    let region = regions[0];
+    assert!(
+        region.left <= fill.left
+            && region.top <= fill.top
+            && region.right >= fill.right - 1
+            && region.bottom >= fill.bottom - 1,
+        "reported region {region:?} must cover the fill {fill:?}"
+    );
+
+    // The pixels really landed, in the image's RGBA order.
+    let stride = usize::from(image.width()) * 4;
+    let offset = usize::from(fill.top) * stride + usize::from(fill.left) * 4;
+    assert_eq!(
+        &image.data()[offset..offset + 4],
+        &[0x30, 0x20, 0x10, 0xFF],
+        "the filled pixel must be present at its new-output coordinates"
+    );
 }
