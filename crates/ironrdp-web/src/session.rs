@@ -67,6 +67,7 @@ struct SessionBuilderInner {
     server_domain: Option<String>,
     password: Option<String>,
     proxy_address: Option<String>,
+    websocket_protocols: Result<Option<js_sys::Array>, &'static str>,
     auth_token: Option<String>,
     pcb: Option<String>,
     vmconnect: Option<String>,
@@ -111,6 +112,7 @@ impl Default for SessionBuilderInner {
             server_domain: None,
             password: None,
             proxy_address: None,
+            websocket_protocols: Ok(None),
             auth_token: None,
             pcb: None,
             vmconnect: None,
@@ -189,6 +191,34 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
     /// Required
     fn proxy_address(&self, address: String) -> Self {
         self.0.borrow_mut().proxy_address = Some(address);
+        self.clone()
+    }
+
+    /// Optional
+    fn websocket_protocols(&self, protocols: js_sys::Array) -> Self {
+        // Copy validated values so later changes to the caller's array cannot change the configuration.
+        let protocols = if js_sys::Array::is_array(&protocols) {
+            protocols
+                .iter()
+                .try_fold(js_sys::Array::new(), |copy, protocol| {
+                    if !protocol.is_string() {
+                        return Err("websocket protocols must be strings");
+                    }
+
+                    copy.push(&protocol);
+                    Ok(copy)
+                })
+                .map(|protocols| (protocols.length() != 0).then_some(protocols))
+        } else {
+            Err("websocket protocols must be an array")
+        };
+
+        if let Err(error) = protocols {
+            warn!(%error, "Invalid WebSocket protocols");
+        }
+
+        self.0.borrow_mut().websocket_protocols = protocols;
+
         self.clone()
     }
 
@@ -350,6 +380,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             server_domain,
             password,
             proxy_address,
+            websocket_protocols,
             auth_token,
             pcb,
             vmconnect,
@@ -381,6 +412,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         {
             let inner = self.0.borrow();
 
+            websocket_protocols = inner.websocket_protocols.clone().map_err(anyhow::Error::msg)?;
             username = inner.username.clone().context("username missing")?;
             destination = inner.destination.clone().context("destination missing")?;
             server_domain = inner.server_domain.clone();
@@ -491,7 +523,14 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         let printer_name = printer_name.unwrap_or_else(|| "IronRDP Virtual Printer".to_owned());
         let printer_driver_name = printer_driver_name.unwrap_or_else(default_printer_driver_name);
 
-        let ws = WebSocket::open(&proxy_address).context("couldn't open WebSocket")?;
+        let ws = if let Some(protocols) = websocket_protocols {
+            web_sys::WebSocket::new_with_str_sequence(&proxy_address, &protocols)
+                .map_err(|error| anyhow::anyhow!("{error:?}"))
+                .and_then(|socket| WebSocket::try_from(socket).map_err(anyhow::Error::from))
+        } else {
+            WebSocket::open(&proxy_address).map_err(anyhow::Error::from)
+        }
+        .context("couldn't open WebSocket")?;
 
         // NOTE: ideally, when the WebSocket can't be opened, the above call should fail with details on why is that
         // (e.g., the proxy hostname could not be resolved, proxy service is not running), but errors are neved
