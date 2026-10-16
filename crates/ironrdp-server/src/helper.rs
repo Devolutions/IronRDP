@@ -83,7 +83,7 @@ impl TlsIdentityCtx {
         {
             return Err(ServerError::reason(
                 "TLS crypto provider",
-                "none available: enable the `aws-lc-rs` or `ring` feature, or install a process-level default with `CryptoProvider::install_default`",
+                "no process-level default is installed and this crate's `aws-lc-rs` and `ring` features are both off: enable one of them, or install a provider (including one another dependency compiles into rustls) with `CryptoProvider::install_default`",
             ));
         }
 
