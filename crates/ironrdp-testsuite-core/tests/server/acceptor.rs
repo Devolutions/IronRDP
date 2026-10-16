@@ -12,7 +12,7 @@ use ironrdp_acceptor::{
 use ironrdp_async::bytes::BytesMut;
 use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper};
 use ironrdp_connector::credssp::CredsspSequence;
-use ironrdp_connector::sspi::credssp::TsRequest;
+use ironrdp_connector::sspi::credssp::{NStatusCode, TsRequest};
 use ironrdp_connector::sspi::generator::{GeneratorState, NetworkRequest};
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
 use ironrdp_connector::{DesktopSize, Sequence as _, Written, encode_x224_packet};
@@ -787,7 +787,10 @@ impl FramedWrite for HandshakeStream {
             && buf.len() != 4
         {
             let request = client.decode_server_message(buf).unwrap().unwrap();
-            self.incoming.push_back(client_credssp_message(client, request));
+            // A request with an error code ends the exchange; the client does not answer it.
+            if request.error_code.is_none() {
+                self.incoming.push_back(client_credssp_message(client, request));
+            }
         }
         ready(Ok(()))
     }
@@ -1101,4 +1104,60 @@ async fn credssp_authorization_uses_selected_protocol(
     assert_eq!(handler.received[0].credentials.domain.as_deref(), expected_domain);
     assert_eq!(handler.received[0].credentials.password, "secret");
     assert_eq!(handler.capability_calls, usize::from(!reject_credentials));
+}
+
+/// A failed NLA logon is reported with STATUS_LOGON_FAILURE ([MS-CSSP] 2.2.1, [MS-ERREF] 2.3.1),
+/// so that the client can ask for new credentials.
+#[rstest::rstest]
+#[case::wrong_password("alice", "wrong")]
+#[case::unknown_user("bob", "secret")]
+#[tokio::test]
+async fn credssp_failed_logon_is_reported_as_logon_failure(
+    #[case] username: &str,
+    #[case] password: &str,
+    #[values(SecurityProtocol::HYBRID, SecurityProtocol::HYBRID_EX)] protocol: SecurityProtocol,
+) {
+    let mut acceptor = negotiated_acceptor(protocol);
+    let public_key = vec![0x42; 32];
+    let (mut client, request) = CredsspSequence::init(
+        ironrdp_connector::Credentials::UsernamePassword {
+            username: username.to_owned(),
+            password: password.to_owned(),
+        },
+        None,
+        protocol,
+        "server.example.com".to_owned().into(),
+        public_key.clone(),
+        None,
+    )
+    .unwrap();
+    let first_message = client_credssp_message(&mut client, request);
+    let mut framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: [first_message].into(),
+        credssp_client: Some(client),
+        ..HandshakeStream::default()
+    });
+    let outgoing = Rc::clone(&framed.get_inner().0.outgoing);
+    let mut handler = SetupHandler::default();
+    let result = accept_credssp_with(
+        &mut framed,
+        &mut acceptor,
+        &mut NoNetwork,
+        "client.example.com".to_owned().into(),
+        public_key,
+        None,
+        &mut handler,
+    )
+    .await;
+
+    assert!(result.is_err(), "the logon should fail");
+    assert!(handler.received.is_empty());
+
+    let outgoing = outgoing.borrow();
+    let mut writes = outgoing.iter().rev();
+    if protocol == SecurityProtocol::HYBRID_EX {
+        assert_eq!(writes.next().unwrap(), &5u32.to_le_bytes());
+    }
+    let ts_request = TsRequest::from_buffer(writes.next().unwrap()).unwrap();
+    assert_eq!(ts_request.error_code, Some(NStatusCode::LOGON_FAILURE));
 }
