@@ -3306,6 +3306,94 @@ async fn input_is_handled_while_a_large_write_is_pending() {
         .await;
 }
 
+/// At a normal end (here the client's Disconnect Provider Ultimatum) the
+/// server writes what is still queued within a time limit, so a client that
+/// does not read cannot hold the connection open. The server drops the rest,
+/// and the client reads much less than was queued.
+#[tokio::test]
+async fn the_final_flush_to_a_client_that_does_not_read_has_a_time_limit() {
+    // The server's `FINAL_FLUSH_TIMEOUT`, and a margin.
+    const FLUSH_WAIT: Duration = Duration::from_secs(5 + 1);
+    const QUEUED: usize = 16 * 1024 * 1024;
+
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+            let client = tokio::task::spawn_local(async move {
+                let server_addr = local_addr_of(&ev).await;
+                let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+                socket.set_recv_buffer_size(4096).expect("SO_RCVBUF");
+                let tcp_stream = socket.connect(server_addr).await.expect("TCP connect");
+                let (mut framed, _) = connect_client_on(
+                    tcp_stream,
+                    |client_addr| {
+                        connector::ClientConnector::new(default_client_config(), client_addr)
+                            .with_static_channel(DrdynvcClient::new())
+                    },
+                    |stream| stream,
+                )
+                .await;
+
+                ev.send(ServerEvent::Egfx(ironrdp_server::EgfxServerMessage::SendMessages {
+                    messages: vec![SvcMessage::from(vec![0u8; QUEUED])],
+                }))
+                .unwrap();
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let disconnect = pdu::x224::X224(pdu::mcs::DisconnectProviderUltimatum::from_reason(
+                    pdu::mcs::DisconnectReason::UserRequested,
+                ));
+                framed
+                    .write_all(&encode_vec(&disconnect).expect("encode disconnect"))
+                    .await
+                    .expect("write disconnect");
+
+                // Read nothing until the server gave up, then read to the end.
+                tokio::time::sleep(FLUSH_WAIT).await;
+                let mut read = 0;
+                let end = tokio::time::timeout(Duration::from_secs(10), async {
+                    while let Ok((_, frame)) = framed.read_pdu().await {
+                        read += frame.len();
+                    }
+                })
+                .await;
+                ev.send(ServerEvent::Quit("bye".into())).unwrap();
+                (end.is_ok(), read)
+            });
+            let (ended, read) = client.await.expect("client");
+            server_task.abort();
+            assert!(ended, "the server closed the connection");
+            assert!(
+                read < QUEUED / 2,
+                "the client read {read} of {QUEUED} queued bytes: the server waited for it"
+            );
+        })
+        .await;
+}
+
 /// Server clipboard with no clipboard behind it: the channel only answers
 /// the client's PDUs.
 #[derive(Debug)]

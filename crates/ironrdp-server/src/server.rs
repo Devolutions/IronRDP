@@ -2168,6 +2168,12 @@ const EVICTION_GRACE: Duration = Duration::from_millis(750);
 /// Set Error Info PDU for an error.
 const ERROR_INFO_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// How long the client loop, at a normal end, writes what is still queued (a
+/// Deactivate All, a disconnect reason, the rest of a frame). A peer that
+/// does not read must not hold the loop until TCP gives up. Longer than
+/// [`EVICTION_GRACE`], because a resize goes on on the same connection.
+const FINAL_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// How long a candidate gets to complete negotiation and authentication before
 /// it is abandoned.
 ///
@@ -5522,11 +5528,24 @@ impl RdpServer {
                 Err(ServerError::reason("client loop", "the writer stopped"))
             }
         };
-        // The writer is not cancelled mid-PDU; on a normal end it writes what
-        // is queued (a Deactivate All, a disconnect reason) before returning.
+        // On a normal end the writer writes what is queued (a Deactivate
+        // All, a disconnect reason) before returning, within a time limit.
+        // At the limit it stops, maybe mid-PDU, so the connection ends.
         if state.is_ok() {
             queue.finish();
-            write_queued.await?;
+            match tokio::time::timeout(FINAL_FLUSH_TIMEOUT, &mut write_queued).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    warn!(
+                        queued_bytes = queue.queued_bytes.get(),
+                        "The client did not read the last PDUs in time; ending the connection"
+                    );
+                    return Err(ServerError::reason(
+                        "client loop",
+                        "the client did not read the last PDUs in time",
+                    ));
+                }
+            }
         }
 
         debug!("End of client loop: {state:?}");
