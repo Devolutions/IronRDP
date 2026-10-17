@@ -2491,9 +2491,9 @@ impl GraphicsPipelineServer {
         let pdus: Vec<_> = self.output_queue.drain(..).collect();
 
         // D2: ZGFX compression timing. drain_output runs synchronously on the
-        // event-dispatch thread and is held under both `this.lock()` and the
-        // SharedWriter lock — so any slowness here blocks both inbound PDU
-        // processing AND outbound writes. Sum per-PDU compress times; log
+        // event-dispatch thread, often under ironrdp-server's connection lock,
+        // so any slowness here delays inbound PDU processing and the next
+        // outbound writes. Sum per-PDU compress times; log
         // INFO if the batch exceeded a budget so operators can see when ZGFX
         // is the limiter on a slow VM.
         let drain_start = Instant::now();

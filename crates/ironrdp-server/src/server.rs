@@ -1590,15 +1590,14 @@ pub enum ServerEvent {
     ///
     /// Acquire `permit` from a shared, bounded semaphore before allocating `payload`.
     /// Limit each payload's size; the server does not impose a byte budget.
-    /// Dispatch holds server state while the entire PDU holds the shared writer lock.
-    /// Large payloads or slow writes stall other session output, inbound PDU handling (including
-    /// frame acknowledgments), and auto-reconnect cookie updates until the write finishes or fails.
+    /// Dispatch queues the entire PDU on the connection's outbound queue, which is written in order.
+    /// Large payloads or slow writes delay session output queued after them until the write finishes or fails.
     /// Await completion before submitting another PDU to bound queued data.
     /// A closed receiver means dispatch failed, the event was discarded, or the channel was not joined.
     /// Failure does not prove that no bytes were sent, so it is not permission to retry.
     /// Completion confirms the transport write, not acceptance by the peer.
     /// The event retains its permit until sent or discarded, even if its producer stops waiting.
-    /// Dispatch checks `is_current` and receiver cancellation under the writer lock before transmission.
+    /// The writer checks `is_current` and receiver cancellation again when the PDU's turn to be written comes.
     /// Once transmission begins, producer cancellation does not interrupt the write.
     ///
     /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
@@ -1611,7 +1610,7 @@ pub enum ServerEvent {
         permit: tokio::sync::OwnedSemaphorePermit,
         /// A nonblocking predicate indicating whether this producer's data is still current.
         /// Shared generation state lets an owner invalidate data without owning the completion receiver.
-        /// It runs with server-state and writer locks held; waiting on work needing either can deadlock.
+        /// It runs with server state held at dispatch; waiting on work needing server state can deadlock.
         is_current: Box<dyn Fn() -> bool + Send>,
     },
     /// Reports whether the client joined a static channel.
@@ -3985,7 +3984,7 @@ impl RdpServer {
         &mut self,
         conn: &mut ConnectionState,
         events: &mut Vec<ServerEvent>,
-        writer: &mut SharedWriter<'_, impl FramedWrite>,
+        writer: &mut QueuedWriter,
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
@@ -4020,7 +4019,7 @@ impl RdpServer {
                     name,
                     payload,
                     completion,
-                    permit: _permit,
+                    permit,
                     is_current,
                 } => {
                     if completion.is_closed() || !is_current() {
@@ -4038,20 +4037,20 @@ impl RdpServer {
                     }
                     let data = server_encode_svc_messages(vec![message], channel_id, user_channel_id)
                         .map_err(ServerError::encode)?;
-                    let sent = writer
-                        .write_all_if(&data, || !completion.is_closed() && is_current())
-                        .await
+                    // The writer future checks `completion` and `is_current`
+                    // again right before it writes the PDU, and completes it
+                    // after the write.
+                    writer
+                        .queue_with_completion(
+                            data,
+                            WriteCompletion {
+                                channel_id,
+                                completion,
+                                _permit: permit,
+                                is_current,
+                            },
+                        )
                         .map_err(|error| ServerError::io("write static channel data", error))?;
-                    if !sent {
-                        trace!(
-                            channel_id,
-                            "Discarding canceled static channel write after waiting for the writer"
-                        );
-                        continue;
-                    }
-                    if completion.send(()).is_err() {
-                        trace!(channel_id, "Static channel producer stopped waiting for dispatch");
-                    }
                 }
                 ServerEvent::StaticChannelJoined(name, reply) => {
                     let joined = conn.static_channels.get_channel_id_by_channel_name(&name).is_some();
@@ -5144,7 +5143,13 @@ impl RdpServer {
                 return Err(error);
             }
         };
-        let mut writer = SharedWriter::new(writer);
+        // Every future below queues its PDUs here and one writer future puts
+        // them on the wire in queue order. A future that holds the `this`
+        // lock so never waits for the socket, and input and frame acks read
+        // by `dispatch_pdu` get the lock while a large write is in progress.
+        let socket_writer = writer;
+        let queue = Rc::new(OutboundQueue::default());
+        let mut writer = QueuedWriter::new(Rc::clone(&queue));
         let mut display_writer = writer.clone();
         let mut event_writer = writer.clone();
         let mut auto_reconnect_writer = writer.clone();
@@ -5219,6 +5224,9 @@ impl RdpServer {
             let mut buffer = vec![0u8; 4096];
 
             loop {
+                // Back-pressure: take the next update only when what was
+                // queued before is on the wire, as when this wrote directly.
+                display_writer.wait_until_written().await;
                 match display_updates.next_update().await {
                     Ok(Some(update)) => {
                         let _graphics = graphics_write.lock().await;
@@ -5261,15 +5269,18 @@ impl RdpServer {
                     debug!("No sever events.. stopping");
                     break Ok(RunState::Disconnect);
                 }
+                // Back-pressure without the `this` lock: wait for the queued
+                // PDUs to be written, so that `dispatch_pdu` can run meanwhile.
+                event_writer.wait_until_written().await;
                 while let Ok(ev) = ev_receiver.try_recv() {
                     events.push(ev);
                 }
 
                 // D7: per-batch dispatch_events timing. The events Vec can
                 // grow up to 100+ entries; dispatch_server_events holds the
-                // `this` mutex AND the SharedWriter mutex for the full
-                // batch. Log batch size + total dispatch time so operators
-                // can see when an event batch ties up both locks.
+                // `this` mutex for the full batch (its writes only queue).
+                // Log batch size + total dispatch time so operators can see
+                // when an event batch ties up the lock.
                 let batch_size = events.len();
                 let lock_start = Instant::now();
                 let mut this = this.lock().await;
@@ -5479,15 +5490,33 @@ impl RdpServer {
             }
         };
 
-        let state = tokio::select!(
-            state = dispatch_pdu => state,
-            state = dispatch_display => state,
-            state = dispatch_events => state,
-            state = refresh_auto_reconnect_cookie => state,
-            state = send_heartbeats => state,
-            state = dispatch_udp_tunnel => state,
-            state = drive_cliprdr_timeouts => state,
-        );
+        let others = async move {
+            tokio::select!(
+                state = dispatch_pdu => state,
+                state = dispatch_display => state,
+                state = dispatch_events => state,
+                state = refresh_auto_reconnect_cookie => state,
+                state = send_heartbeats => state,
+                state = dispatch_udp_tunnel => state,
+                state = drive_cliprdr_timeouts => state,
+            )
+        };
+        let write_queued = queue.write_queued(socket_writer);
+        let mut others = Box::pin(others);
+        tokio::pin!(write_queued);
+        let state = tokio::select! {
+            state = &mut others => state,
+            result = &mut write_queued => {
+                result?;
+                Err(ServerError::reason("client loop", "the writer stopped"))
+            }
+        };
+        // The writer is not cancelled mid-PDU; on a normal end it writes what
+        // is queued (a Deactivate All, a disconnect reason) before returning.
+        if state.is_ok() {
+            queue.finish();
+            write_queued.await?;
+        }
 
         debug!("End of client loop: {state:?}");
         state
@@ -6660,90 +6689,203 @@ async fn send_access_denied(acceptor: &Acceptor, writer: &mut impl FramedWrite) 
     Ok(())
 }
 
+/// Outbound PDUs of one client loop, in the order they were queued.
+#[derive(Default)]
 #[cfg_attr(feature = "__test", visibility::make(pub))]
-struct SharedWriter<'w, W: FramedWrite> {
-    writer: Rc<Mutex<&'w mut W>>,
-    /// Count of successful `write_all` calls across all clones. The heartbeat
-    /// loop compares it across ticks to honor 2.2.16.1's idle-only SHOULD: a
-    /// changed count means ordinary traffic already served as the liveness
-    /// signal for that interval.
-    writes: Arc<AtomicU64>,
+struct OutboundQueue {
+    pending: RefCell<VecDeque<QueuedPdu>>,
+    /// Bytes queued and not yet fully written.
+    queued_bytes: core::cell::Cell<usize>,
+    /// Write what is queued, then stop.
+    finishing: core::cell::Cell<bool>,
+    /// The writer stopped (write error, or finished).
+    closed: core::cell::Cell<bool>,
+    pushed: tokio::sync::Notify,
+    drained: tokio::sync::Notify,
 }
 
-impl<W: FramedWrite> Clone for SharedWriter<'_, W> {
-    fn clone(&self) -> Self {
-        Self {
-            writer: Rc::clone(&self.writer),
-            writes: Arc::clone(&self.writes),
+struct QueuedPdu {
+    bytes: Vec<u8>,
+    completion: Option<WriteCompletion>,
+}
+
+/// The producer side of a [`ServerEvent::StaticChannelWithCompletion`] write.
+struct WriteCompletion {
+    channel_id: u16,
+    completion: oneshot::Sender<()>,
+    /// INVARIANT: Retained until the transport write completes or the PDU is discarded.
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    is_current: Box<dyn Fn() -> bool + Send>,
+}
+
+impl OutboundQueue {
+    fn push(&self, bytes: Vec<u8>, completion: Option<WriteCompletion>) -> std::io::Result<()> {
+        if self.closed.get() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "the connection writer stopped",
+            ));
         }
+        self.queued_bytes.set(self.queued_bytes.get() + bytes.len());
+        self.pending.borrow_mut().push_back(QueuedPdu { bytes, completion });
+        self.pushed.notify_one();
+        Ok(())
+    }
+
+    /// Waits until everything queued so far is written (or the writer stopped).
+    async fn wait_until_written(&self) {
+        loop {
+            let drained = self.drained.notified();
+            if self.queued_bytes.get() == 0 || self.closed.get() {
+                return;
+            }
+            drained.await;
+        }
+    }
+
+    /// Lets [`Self::write_queued`] return once the queue is empty.
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
+    fn finish(&self) {
+        self.finishing.set(true);
+        self.pushed.notify_one();
+    }
+
+    /// Writes queued PDUs in order. Runs until a write fails or, after
+    /// [`Self::finish`], the queue is empty. PDUs still queued when it stops
+    /// are dropped, which closes their completions and releases their permits.
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
+    async fn write_queued<W: FramedWrite>(&self, writer: &mut W) -> ServerResult<()> {
+        let result = loop {
+            let pushed = self.pushed.notified();
+            let next = self.pending.borrow_mut().pop_front();
+            let Some(QueuedPdu { bytes, completion }) = next else {
+                if self.finishing.get() {
+                    break Ok(());
+                }
+                pushed.await;
+                continue;
+            };
+            let len = bytes.len();
+            // A static channel write is checked when its turn to be written
+            // comes, after the PDUs queued before it.
+            let canceled = completion
+                .as_ref()
+                .is_some_and(|c| c.completion.is_closed() || !(c.is_current)());
+            let res = if canceled {
+                if let Some(c) = &completion {
+                    trace!(
+                        channel_id = c.channel_id,
+                        "Discarding canceled static channel write after waiting for the writer"
+                    );
+                }
+                Ok(())
+            } else {
+                // INVARIANT: Producer cancellation does not interrupt a partially written RDP frame.
+                let write_start = Instant::now();
+                let res = writer.write_all(&bytes).await;
+                let write_ms = u64::try_from(write_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                // A write that takes this long on a healthy LAN is TCP
+                // back-pressure (slow client or link); only the writer waits.
+                if write_ms >= 50 {
+                    warn!(
+                        bytes = len,
+                        write_ms, "client write stalled, possible TCP back-pressure"
+                    );
+                } else {
+                    trace!(bytes = len, write_ms, "client write");
+                }
+                if res.is_ok()
+                    && let Some(c) = completion
+                    && c.completion.send(()).is_err()
+                {
+                    trace!(
+                        channel_id = c.channel_id,
+                        "Static channel producer stopped waiting for dispatch"
+                    );
+                }
+                res
+            };
+            self.queued_bytes.set(self.queued_bytes.get() - len);
+            if let Err(e) = res {
+                break Err(ServerError::io("write_all", e));
+            }
+            if self.queued_bytes.get() == 0 {
+                self.drained.notify_waiters();
+            }
+        };
+        self.closed.set(true);
+        self.pending.borrow_mut().clear();
+        self.queued_bytes.set(0);
+        self.drained.notify_waiters();
+        result
     }
 }
 
-impl<W> FramedWrite for SharedWriter<'_, W>
-where
-    W: FramedWrite,
-{
+/// [`FramedWrite`] that queues PDUs on the client loop's [`OutboundQueue`]:
+/// `write_all` returns as soon as the bytes are queued.
+#[derive(Clone)]
+#[cfg_attr(feature = "__test", visibility::make(pub))]
+struct QueuedWriter {
+    queue: Rc<OutboundQueue>,
+    /// Count of PDUs queued across all clones. The heartbeat loop compares
+    /// it across ticks to honor 2.2.16.1's idle-only SHOULD: a changed count
+    /// means ordinary traffic already served as the liveness signal for that
+    /// interval.
+    writes: Arc<AtomicU64>,
+}
+
+impl FramedWrite for QueuedWriter {
     type WriteAllFut<'write>
-        = core::pin::Pin<Box<dyn Future<Output = std::io::Result<()>> + 'write>>
+        = core::future::Ready<std::io::Result<()>>
     where
         Self: 'write;
 
     fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
-        Box::pin(async move { self.write_all_if(buf, || true).await.map(|_| ()) })
+        core::future::ready(self.queue_pdu(buf.to_vec(), None))
     }
 }
 
-impl<'a, W: FramedWrite> SharedWriter<'a, W> {
+impl QueuedWriter {
     #[cfg_attr(feature = "__test", visibility::make(pub))]
-    fn new(writer: &'a mut W) -> Self {
+    fn new(queue: Rc<OutboundQueue>) -> Self {
         Self {
-            writer: Rc::new(Mutex::new(writer)),
+            queue,
             writes: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    fn queue_pdu(&mut self, bytes: Vec<u8>, completion: Option<WriteCompletion>) -> std::io::Result<()> {
+        let res = self.queue.push(bytes, completion);
+        if res.is_ok() {
+            self.writes.fetch_add(1, Ordering::Relaxed);
+        }
+        res
+    }
+
+    /// Queues a static channel PDU that [`OutboundQueue::write_queued`]
+    /// writes only if its producer still wants it, and completes after the
+    /// write. On error the completion is closed and the permit released.
+    fn queue_with_completion(&mut self, bytes: Vec<u8>, completion: WriteCompletion) -> std::io::Result<()> {
+        self.queue_pdu(bytes, Some(completion))
     }
 
     fn write_counter(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.writes)
     }
 
-    async fn write_all_if(&mut self, buf: &[u8], can_write: impl FnOnce() -> bool) -> std::io::Result<bool> {
-        // Measure lock contention separately from transport back-pressure.
-        let len = buf.len();
-        let wait_start = Instant::now();
-        let mut writer = self.writer.lock().await;
-        let wait_ms = u64::try_from(wait_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        if !can_write() {
-            return Ok(false);
-        }
-
-        // INVARIANT: Producer cancellation does not interrupt a partially written RDP frame.
-        let write_start = Instant::now();
-        let res = writer.write_all(buf).await;
-        let write_ms = u64::try_from(write_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-
-        if 50 <= wait_ms + write_ms {
-            tracing::warn!(
-                bytes = len,
-                lock_wait_ms = wait_ms,
-                write_ms,
-                "SharedWriter.write_all stalled, possible TCP back-pressure or writer-mutex contention"
-            );
-        } else {
-            tracing::trace!(bytes = len, lock_wait_ms = wait_ms, write_ms, "SharedWriter.write_all");
-        }
-        if res.is_ok() {
-            self.writes.fetch_add(1, Ordering::Relaxed);
-        }
-        res.map(|()| true)
+    async fn wait_until_written(&self) {
+        self.queue.wait_until_written().await;
     }
 }
 
+/// Queues `events` as the client loop does; [`OutboundQueue::write_queued`]
+/// writes them.
 #[cfg(feature = "__test")]
 pub async fn dispatch_static_channel_events(
     server: &mut RdpServer,
     channels: StaticChannelSet,
     events: &mut Vec<ServerEvent>,
-    writer: &mut SharedWriter<'_, impl FramedWrite>,
+    writer: &mut QueuedWriter,
 ) -> ServerResult<()> {
     let mut conn = ConnectionState {
         static_channels: channels,
@@ -7563,6 +7705,29 @@ mod cliprdr_error_tests {
         }
     }
 
+    /// Queued PDUs reach the socket in queue order, and a finished queue is
+    /// written out before the writer returns.
+    #[tokio::test]
+    async fn queued_writes_keep_their_order() {
+        let queue = Rc::new(OutboundQueue::default());
+        let mut a = QueuedWriter::new(Rc::clone(&queue));
+        let mut b = a.clone();
+        a.write_all(b"one").await.expect("queue");
+        b.write_all(b"two").await.expect("queue");
+        a.write_all(b"three").await.expect("queue");
+        assert_eq!(a.write_counter().load(Ordering::Relaxed), 3);
+
+        let mut socket = CapturingWriter::default();
+        queue.finish();
+        queue.write_queued(&mut socket).await.expect("write");
+        assert_eq!(socket.0, b"onetwothree");
+        // Written, and the writer stopped: nothing more is accepted.
+        tokio::time::timeout(Duration::from_millis(100), a.wait_until_written())
+            .await
+            .expect("nothing left to write");
+        assert!(a.write_all(b"late").await.is_err());
+    }
+
     /// A clipboard message the channel refuses keeps the session alive.
     #[tokio::test]
     async fn a_refused_clipboard_message_does_not_end_the_client_loop() {
@@ -7595,12 +7760,12 @@ mod cliprdr_error_tests {
             },
         ))];
 
-        let mut writer = CapturingWriter::default();
+        let queue = Rc::new(OutboundQueue::default());
         let state = server
             .dispatch_server_events(
                 &mut conn,
                 &mut events,
-                &mut SharedWriter::new(&mut writer),
+                &mut QueuedWriter::new(Rc::clone(&queue)),
                 1003,
                 1002,
                 None,
@@ -7608,6 +7773,9 @@ mod cliprdr_error_tests {
             )
             .await
             .expect("a refused clipboard message must not surface as a session error");
+        let mut writer = CapturingWriter::default();
+        queue.finish();
+        queue.write_queued(&mut writer).await.expect("write queued");
 
         assert!(
             matches!(state, RunState::Continue),

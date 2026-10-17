@@ -3169,6 +3169,18 @@ where
     S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
 {
     let tcp_stream = TcpStream::connect(server_addr).await.expect("TCP connect");
+    connect_client_on(tcp_stream, make_connector, wrap).await
+}
+
+/// Connects like [`connect_client_with`], on a TCP connection the caller made.
+async fn connect_client_on<S>(
+    tcp_stream: TcpStream,
+    make_connector: impl FnOnce(SocketAddr) -> connector::ClientConnector,
+    wrap: impl FnOnce(TlsStream<TcpStream>) -> S,
+) -> (Framed<TokioStream<S>>, connector::ConnectionResult)
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
     let client_addr = tcp_stream.local_addr().expect("local_addr");
     let mut framed = ironrdp_tokio::TokioFramed::new(tcp_stream);
     let mut connector = make_connector(client_addr);
@@ -3199,6 +3211,99 @@ where
     .and_then(connector::ConnectionOutcome::into_connected)
     .expect("finalize connection");
     (upgraded_framed, connection_result)
+}
+
+/// Input from the client is handled while the server is in a long write: a
+/// large EGFX batch to a client that does not read stays in the socket.
+#[tokio::test]
+async fn input_is_handled_while_a_large_write_is_pending() {
+    struct MouseRecorder(UnboundedSender<MouseEvent>);
+
+    impl RdpServerInputHandler for MouseRecorder {
+        fn keyboard(&mut self, _: KeyboardEvent) {}
+        fn mouse(&mut self, event: MouseEvent) {
+            let _ = self.0.send(event);
+        }
+    }
+
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+    let (mouse_tx, mut mouse_rx) = mpsc::unbounded_channel();
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(MouseRecorder(mouse_tx))
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+            let client = tokio::task::spawn_local(async move {
+                let server_addr = local_addr_of(&ev).await;
+                // A small receive buffer, so that the server's write stays pending.
+                let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+                socket.set_recv_buffer_size(4096).expect("SO_RCVBUF");
+                let tcp_stream = socket.connect(server_addr).await.expect("TCP connect");
+                let (mut framed, _) = connect_client_on(
+                    tcp_stream,
+                    |client_addr| {
+                        connector::ClientConnector::new(default_client_config(), client_addr)
+                            .with_static_channel(DrdynvcClient::new())
+                    },
+                    |stream| stream,
+                )
+                .await;
+
+                // 16 MiB on the DRDYNVC channel, more than the socket buffers hold.
+                // The client does not read it.
+                ev.send(ServerEvent::Egfx(ironrdp_server::EgfxServerMessage::SendMessages {
+                    messages: vec![SvcMessage::from(vec![0u8; 16 * 1024 * 1024])],
+                }))
+                .unwrap();
+                tokio::time::sleep(Duration::from_millis(300)).await;
+
+                let input = pdu::input::fast_path::FastPathInput::new(vec![
+                    pdu::input::fast_path::FastPathInputEvent::MouseEvent(pdu::input::MousePdu {
+                        flags: pdu::input::mouse::PointerFlags::MOVE,
+                        number_of_wheel_rotation_units: 0,
+                        x_position: 12,
+                        y_position: 34,
+                    }),
+                ])
+                .expect("one event");
+                framed
+                    .write_all(&encode_vec(&input).expect("encode input"))
+                    .await
+                    .expect("write input");
+                let handled = tokio::time::timeout(Duration::from_secs(2), mouse_rx.recv()).await;
+                drop(framed);
+                ev.send(ServerEvent::Quit("bye".into())).unwrap();
+                handled
+            });
+            let handled = client.await.expect("client");
+            server_task.abort();
+            let event = handled
+                .expect("input handled while the write is pending")
+                .expect("a mouse event");
+            assert!(matches!(event, MouseEvent::Move { x: 12, y: 34 }), "{event:?}");
+        })
+        .await;
 }
 
 /// Counts how often each `ConnectionHandler` hook reached the handler.
