@@ -3306,6 +3306,153 @@ async fn input_is_handled_while_a_large_write_is_pending() {
         .await;
 }
 
+/// Server clipboard with no clipboard behind it: the channel only answers
+/// the client's PDUs.
+#[derive(Debug)]
+struct NoClipboard;
+
+impl_as_any!(NoClipboard);
+
+impl ironrdp::cliprdr::backend::CliprdrBackend for NoClipboard {
+    fn temporary_directory(&self) -> &str {
+        ".cliprdr"
+    }
+    fn client_capabilities(&self) -> ironrdp::cliprdr::pdu::ClipboardGeneralCapabilityFlags {
+        ironrdp::cliprdr::pdu::ClipboardGeneralCapabilityFlags::empty()
+    }
+    fn on_ready(&mut self) {}
+    fn on_request_format_list(&mut self) {}
+    fn on_process_negotiated_capabilities(&mut self, _: ironrdp::cliprdr::pdu::ClipboardGeneralCapabilityFlags) {}
+    fn on_remote_copy(&mut self, _: &[ironrdp::cliprdr::pdu::ClipboardFormat]) {}
+    fn on_format_data_request(&mut self, _: ironrdp::cliprdr::pdu::FormatDataRequest) {}
+    fn on_format_data_response(&mut self, _: ironrdp::cliprdr::pdu::FormatDataResponse<'_>) {}
+    fn on_file_contents_request(&mut self, _: ironrdp::cliprdr::pdu::FileContentsRequest) {}
+    fn on_file_contents_response(&mut self, _: ironrdp::cliprdr::pdu::FileContentsResponse<'_>) {}
+    fn on_lock(&mut self, _: ironrdp::cliprdr::pdu::LockDataId) {}
+    fn on_unlock(&mut self, _: ironrdp::cliprdr::pdu::LockDataId) {}
+}
+
+struct NoClipboardFactory;
+
+impl ironrdp::cliprdr::backend::CliprdrBackendFactory for NoClipboardFactory {
+    fn build_cliprdr_backend(&self) -> Box<dyn ironrdp::cliprdr::backend::CliprdrBackend> {
+        Box::new(NoClipboard)
+    }
+}
+
+impl ServerEventSender for NoClipboardFactory {
+    fn set_sender(&mut self, _: UnboundedSender<ServerEvent>) {}
+}
+
+impl server::CliprdrServerFactory for NoClipboardFactory {}
+
+/// Client side of the CLIPRDR static channel that ignores what it gets.
+#[derive(Debug)]
+struct RawCliprdrClient;
+
+impl_as_any!(RawCliprdrClient);
+
+impl SvcProcessor for RawCliprdrClient {
+    fn channel_name(&self) -> gcc::ChannelName {
+        gcc::ChannelName::from_static(b"cliprdr\0")
+    }
+
+    fn process(&mut self, _: &[u8]) -> pdu::PduResult<Vec<SvcMessage>> {
+        Ok(Vec::new())
+    }
+}
+
+impl ironrdp::svc::SvcClientProcessor for RawCliprdrClient {}
+
+/// A client that sends requests and does not read the replies: the server
+/// stops reading from it once the queued replies reach their bound, so its
+/// memory does not grow without limit. Each Format List gets a Format List
+/// Response (MS-RDPECLIP 3.1.5.2.2) of about the same size.
+#[tokio::test]
+async fn a_client_that_does_not_read_its_replies_is_not_read_further() {
+    // Replies the server may queue (`MAX_QUEUED_REPLY_BYTES`), plus what the
+    // socket buffers on both sides hold, is far below this.
+    const FLOOD_BYTES: usize = 64 * 1024 * 1024;
+
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .with_cliprdr_factory(Some(Box::new(NoClipboardFactory)))
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+            let client = tokio::task::spawn_local(async move {
+                let server_addr = local_addr_of(&ev).await;
+                let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+                socket.set_recv_buffer_size(4096).expect("SO_RCVBUF");
+                socket.set_send_buffer_size(4096).expect("SO_SNDBUF");
+                let tcp_stream = socket.connect(server_addr).await.expect("TCP connect");
+                let (mut framed, result) = connect_client_on(
+                    tcp_stream,
+                    |client_addr| {
+                        connector::ClientConnector::new(default_client_config(), client_addr)
+                            .with_static_channel(RawCliprdrClient)
+                    },
+                    |stream| stream,
+                )
+                .await;
+                let channel_id = result
+                    .static_channels
+                    .get_channel_id_by_type::<RawCliprdrClient>()
+                    .expect("the CLIPRDR channel joined");
+
+                let format_list = ironrdp::cliprdr::pdu::ClipboardPdu::FormatList(
+                    ironrdp::cliprdr::pdu::FormatList::new_unicode(&[], false).expect("format list"),
+                );
+                let message = SvcMessage::from(format_list).with_flags(ironrdp::svc::ChannelFlags::SHOW_PROTOCOL);
+                let one = ironrdp::svc::client_encode_svc_messages(vec![message], channel_id, result.user_channel_id)
+                    .expect("encode format list");
+                let batch = one.repeat(1000);
+
+                let mut sent = 0;
+                while sent < FLOOD_BYTES {
+                    let write = tokio::time::timeout(Duration::from_secs(1), framed.write_all(&batch)).await;
+                    if write.is_err() {
+                        break;
+                    }
+                    write.expect("checked").expect("write format lists");
+                    sent += batch.len();
+                }
+                drop(framed);
+                ev.send(ServerEvent::Quit("bye".into())).unwrap();
+                sent
+            });
+            let sent = client.await.expect("client");
+            server_task.abort();
+            assert!(
+                sent < 16 * 1024 * 1024,
+                "the server read {sent} bytes of requests from a client that reads no replies"
+            );
+        })
+        .await;
+}
+
 /// Counts how often each `ConnectionHandler` hook reached the handler.
 /// `on_accept` fires before a connection is served, `on_connection_info`
 /// mid-connection, `on_disconnected` after it ends.
