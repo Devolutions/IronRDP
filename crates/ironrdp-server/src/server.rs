@@ -6817,6 +6817,9 @@ impl OutboundQueue {
     /// are dropped, which closes their completions and releases their permits.
     #[cfg_attr(feature = "__test", visibility::make(pub))]
     async fn write_queued<W: FramedWrite>(&self, writer: &mut W) -> ServerResult<()> {
+        // Stalled writes so far: the first is a warning, the rest go to debug
+        // (a slow link stalls on every large frame).
+        let mut stalls: u32 = 0;
         let result = loop {
             let pushed = self.pushed.notified();
             let next = self.pending.borrow_mut().pop_front();
@@ -6854,10 +6857,16 @@ impl OutboundQueue {
                 // A write that takes this long on a healthy LAN is TCP
                 // back-pressure (slow client or link); only the writer waits.
                 if write_ms >= 50 {
-                    warn!(
-                        bytes = len,
-                        write_ms, "client write stalled, possible TCP back-pressure"
-                    );
+                    stalls += 1;
+                    if stalls == 1 {
+                        warn!(
+                            bytes = len,
+                            write_ms,
+                            "client write stalled, possible TCP back-pressure (more stalls of this connection at debug level)"
+                        );
+                    } else {
+                        debug!(bytes = len, write_ms, stalls, "client write stalled");
+                    }
                 } else {
                     trace!(bytes = len, write_ms, "client write");
                 }
