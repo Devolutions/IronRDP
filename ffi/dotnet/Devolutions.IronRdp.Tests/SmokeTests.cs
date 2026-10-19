@@ -26,6 +26,32 @@ internal static class SmokeTests
             Throws<IronRdpException>(() => image.FillData(new byte[4]));
         });
 
+        yield return ("decoded image copies only the requested rectangle", () =>
+        {
+            var image = DecodedImage.New(PixelFormat.BgrA32, 8, 4);
+            const int stride = 8 * 4 + 4;
+            var buffer = new byte[stride * 4];
+            Array.Fill(buffer, (byte)0xff);
+
+            image.CopyRectInto(InclusiveRectangle.New(2, 1, 4, 2), buffer, stride);
+
+            for (int y = 0; y < 4; y++)
+            {
+                for (int x = 0; x < stride; x++)
+                {
+                    bool inside = y is >= 1 and <= 2 && x >= 2 * 4 && x < 5 * 4;
+                    Equal(inside ? (byte)0 : (byte)0xff, buffer[y * stride + x], $"byte ({x}, {y})");
+                }
+            }
+
+            var inverted = Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(3, 0, 2, 0), buffer, stride));
+            True(inverted.Message.Contains("rectangle is inverted"), $"error message: {inverted.Message}");
+            var outside = Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 8, 0), buffer, stride));
+            True(outside.Message.Contains("rectangle is outside the image"), $"error message: {outside.Message}");
+            Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 7, 0), buffer, 8 * 4 - 1));
+            Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 7, 3), new byte[stride * 3], stride));
+        });
+
         yield return ("vec u8 round-trips bytes", () =>
         {
             var vec = VecU8.FromBytes(new byte[] { 1, 2, 3 });
