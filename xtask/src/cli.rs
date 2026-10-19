@@ -16,6 +16,8 @@ TASKS:
                           Replay cached captures and verify their expectations
   bench replay --capture <ID>
                           Time capture replay of one cached capture
+  bench connector --capture <ID>
+                          Time the connector from one cached capture's connection confirm to Connected
   check fmt               Check formatting
   check lints             Check lints
   check locks             Check for dirty or staged lock files not yet committed
@@ -97,7 +99,8 @@ pub enum Action {
     BenchCorpusCheck {
         capture: Option<String>,
     },
-    BenchReplay {
+    BenchTime {
+        kind: &'static str,
         capture: String,
     },
     CheckFmt,
@@ -169,7 +172,12 @@ pub fn parse_args() -> anyhow::Result<Args> {
                 Some("corpus-check") => Action::BenchCorpusCheck {
                     capture: args.opt_value_from_str("--capture")?,
                 },
-                Some("replay") => Action::BenchReplay {
+                Some("replay") => Action::BenchTime {
+                    kind: "replay",
+                    capture: args.value_from_str("--capture")?,
+                },
+                Some("connector") => Action::BenchTime {
+                    kind: "connector",
                     capture: args.value_from_str("--capture")?,
                 },
                 Some(unknown) => anyhow::bail!("unknown bench action: {unknown}"),
