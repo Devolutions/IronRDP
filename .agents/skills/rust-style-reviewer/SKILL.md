@@ -9,5 +9,5 @@ Invoke `rust-style` and use its rules as review criteria without following its g
 `STYLE.md` is the full guide those rules summarize; open the matching section when a rule's intent is unclear and cite it in the finding.
 Review only the touched Rust lines.
 Report each violation with its exact location and the replacement text, and group mechanical instances that share one fix.
-Do not report what rustfmt handles, naming preferences, or rules the guide does not state.
+Do not report what rustfmt handles, naming preferences, or rules stated by neither `rust-style` nor the guide.
 Return no findings when the touched code already follows these rules.
