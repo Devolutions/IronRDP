@@ -62,18 +62,22 @@ pub mod ffi {
     }
 
     impl MonitorLayoutEntry {
+        #[diplomat::attr(auto, getter = "left")]
         pub fn get_left(&self) -> i32 {
             self.0.left
         }
 
+        #[diplomat::attr(auto, getter = "top")]
         pub fn get_top(&self) -> i32 {
             self.0.top
         }
 
+        #[diplomat::attr(auto, getter = "right")]
         pub fn get_right(&self) -> i32 {
             self.0.right
         }
 
+        #[diplomat::attr(auto, getter = "bottom")]
         pub fn get_bottom(&self) -> i32 {
             self.0.bottom
         }
@@ -294,6 +298,7 @@ pub mod ffi {
             Ok(())
         }
 
+        #[diplomat::attr(auto, setter = "enable_server_pointer")]
         pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {
             self.0.set_enable_server_pointer(enable_server_pointer);
         }
@@ -321,6 +326,7 @@ pub mod ffi {
     }
 
     impl ActiveStageOutput {
+        #[diplomat::attr(auto, getter = "enum_type")]
         pub fn get_enum_type(&self) -> ActiveStageOutputType {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::ResponseFrame { .. } => ActiveStageOutputType::ResponseFrame,
@@ -345,6 +351,7 @@ pub mod ffi {
             }
         }
 
+        #[diplomat::attr(auto, getter = "response_frame")]
         pub fn get_response_frame(&self) -> Result<Box<BytesSlice<'_>>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::ResponseFrame(frame) => Ok(Box::new(BytesSlice(frame))),
@@ -354,6 +361,7 @@ pub mod ffi {
             }
         }
 
+        #[diplomat::attr(auto, getter = "graphics_update")]
         pub fn get_graphics_update(&self) -> Result<Box<InclusiveRectangle>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::GraphicsUpdate(rect) => {
@@ -365,6 +373,7 @@ pub mod ffi {
             }
         }
 
+        #[diplomat::attr(auto, getter = "pointer_position")]
         pub fn get_pointer_position(&self) -> Result<Position, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::PointerPosition { x, y } => Ok(Position { x: *x, y: *y }),
@@ -374,6 +383,7 @@ pub mod ffi {
             }
         }
 
+        #[diplomat::attr(auto, getter = "pointer_bitmap")]
         pub fn get_pointer_bitmap(&self) -> Result<Box<DecodedPointer>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::PointerBitmap(decoded_pointer) => {
@@ -386,6 +396,7 @@ pub mod ffi {
             .map(Box::new)
         }
 
+        #[diplomat::attr(auto, getter = "windowing_orders")]
         pub fn get_windowing_orders(&self) -> Result<Box<BytesSlice<'_>>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::WindowingOrders(orders) => Ok(Box::new(BytesSlice(orders))),
@@ -395,6 +406,7 @@ pub mod ffi {
             }
         }
 
+        #[diplomat::attr(auto, getter = "monitor_layout")]
         pub fn get_monitor_layout(&self) -> Result<Box<MonitorLayoutIterator>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::MonitorLayout(monitors) => {
@@ -406,6 +418,7 @@ pub mod ffi {
             }
         }
 
+        #[diplomat::attr(auto, getter = "terminate")]
         pub fn get_terminate(&self) -> Result<Box<GracefulDisconnectReason>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::Terminate(reason) => Ok(GracefulDisconnectReason(reason.clone())),
@@ -424,6 +437,7 @@ pub mod ffi {
             clippy::as_conversions,
             reason = "RequestedProtocol is #[repr(u16)], cast is lossless"
         )]
+        #[diplomat::attr(auto, getter = "multitransport_request")]
         pub fn get_multitransport_request(&self) -> Result<MultitransportRequest, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::MultitransportRequest(pdu) => Ok(MultitransportRequest {
@@ -440,6 +454,7 @@ pub mod ffi {
         /// Returns RTT and bandwidth measurements for health monitoring.
         /// These values will feed into FramePacingFeedback when the
         /// library-level health observer traits from #1158 land.
+        #[diplomat::attr(auto, getter = "autodetect_network_characteristics")]
         pub fn get_autodetect_network_characteristics(&self) -> Result<NetworkCharacteristics, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::AutoDetect(

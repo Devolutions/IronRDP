@@ -11,6 +11,7 @@ pub mod ffi {
             Box::new(VecU8(bytes.to_vec()))
         }
 
+        #[diplomat::attr(auto, getter = "size")]
         pub fn get_size(&self) -> usize {
             self.0.len()
         }
@@ -28,6 +29,7 @@ pub mod ffi {
     pub struct BytesSlice<'a>(pub &'a [u8]);
 
     impl<'a> BytesSlice<'a> {
+        #[diplomat::attr(auto, getter = "size")]
         pub fn get_size(&'a self) -> usize {
             self.0.len()
         }
@@ -41,6 +43,7 @@ pub mod ffi {
     pub struct U32Slice<'a>(pub &'a [u32]);
 
     impl<'a> U32Slice<'a> {
+        #[diplomat::attr(auto, getter = "size")]
         pub fn get_size(&'a self) -> usize {
             self.0.len()
         }

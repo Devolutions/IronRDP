@@ -22,6 +22,7 @@ pub mod ffi {
             crate::utils::fill_prefix(buf, self.0.filled())
         }
 
+        #[diplomat::attr(auto, getter = "filled")]
         pub fn get_filled(&self) -> Box<VecU8> {
             Box::new(VecU8(self.0.filled().to_vec()))
         }
@@ -37,26 +38,32 @@ pub mod ffi {
     pub struct InclusiveRectangle(pub ironrdp::pdu::geometry::InclusiveRectangle);
 
     impl InclusiveRectangle {
+        #[diplomat::attr(auto, getter = "left")]
         pub fn get_left(&self) -> u16 {
             self.0.left
         }
 
+        #[diplomat::attr(auto, getter = "top")]
         pub fn get_top(&self) -> u16 {
             self.0.top
         }
 
+        #[diplomat::attr(auto, getter = "right")]
         pub fn get_right(&self) -> u16 {
             self.0.right
         }
 
+        #[diplomat::attr(auto, getter = "bottom")]
         pub fn get_bottom(&self) -> u16 {
             self.0.bottom
         }
 
+        #[diplomat::attr(auto, getter = "width")]
         pub fn get_width(&self) -> u16 {
             self.0.width()
         }
 
+        #[diplomat::attr(auto, getter = "height")]
         pub fn get_height(&self) -> u16 {
             self.0.height()
         }
@@ -69,10 +76,12 @@ pub mod ffi {
     pub struct PduInfo(pub ironrdp::pdu::PduInfo);
 
     impl PduInfo {
+        #[diplomat::attr(auto, getter = "action")]
         pub fn get_action(&self) -> Box<Action> {
             Box::new(Action(self.0.action))
         }
 
+        #[diplomat::attr(auto, getter = "length")]
         pub fn get_length(&self) -> usize {
             self.0.length
         }

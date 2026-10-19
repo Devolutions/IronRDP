@@ -15,14 +15,17 @@ pub mod ffi {
         }
 
         // The bytes array lives as long as the DecodedImage
+        #[diplomat::attr(auto, getter = "data")]
         pub fn get_data(&self) -> Box<BytesSlice<'_>> {
             Box::new(BytesSlice(self.0.data()))
         }
 
+        #[diplomat::attr(auto, getter = "width")]
         pub fn get_width(&self) -> u16 {
             self.0.width()
         }
 
+        #[diplomat::attr(auto, getter = "height")]
         pub fn get_height(&self) -> u16 {
             self.0.height()
         }
