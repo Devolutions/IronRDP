@@ -100,7 +100,6 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     anyhow::ensure!(n_updates > 0, "RGBX input contains no complete frames");
-    anyhow::ensure!(n_fragments > 0, "encoder produced no output fragments");
     anyhow::ensure!(total_enc > 0, "encoder produced no output bytes");
 
     #[expect(clippy::as_conversions, reason = "casting u64 to f64")]

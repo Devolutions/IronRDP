@@ -89,18 +89,21 @@ pub fn to_ycbcr_bench(c: &mut Criterion) {
     let mut cb = [0i16; WIDTH * HEIGHT];
     let mut cr = [0i16; WIDTH * HEIGHT];
     let format = ironrdp_graphics::image_processing::PixelFormat::ARgb32;
+    let convert = |y: &mut [i16; WIDTH * HEIGHT], cb: &mut [i16; WIDTH * HEIGHT], cr: &mut [i16; WIDTH * HEIGHT]| {
+        to_64x64_ycbcr_tile(
+            black_box(&input),
+            WIDTH.try_into().expect("can't panic"),
+            HEIGHT.try_into().expect("can't panic"),
+            stride.try_into().expect("can't panic"),
+            format,
+            y,
+            cb,
+            cr,
+        )
+        .expect("representative ARGB tile is valid");
+    };
 
-    to_64x64_ycbcr_tile(
-        &input,
-        WIDTH.try_into().expect("can't panic"),
-        HEIGHT.try_into().expect("can't panic"),
-        stride.try_into().expect("can't panic"),
-        format,
-        &mut y,
-        &mut cb,
-        &mut cr,
-    )
-    .expect("representative ARGB tile is valid");
+    convert(&mut y, &mut cb, &mut cr);
     assert!(
         y.iter().chain(&cb).chain(&cr).any(|component| *component != 0),
         "color conversion must produce nonzero output"
@@ -108,17 +111,7 @@ pub fn to_ycbcr_bench(c: &mut Criterion) {
 
     c.bench_function("to_ycbcr", |b| {
         b.iter(|| {
-            to_64x64_ycbcr_tile(
-                black_box(&input),
-                WIDTH.try_into().expect("can't panic"),
-                HEIGHT.try_into().expect("can't panic"),
-                stride.try_into().expect("can't panic"),
-                format,
-                &mut y,
-                &mut cb,
-                &mut cr,
-            )
-            .expect("representative ARGB tile is valid");
+            convert(&mut y, &mut cb, &mut cr);
             black_box((y[0], cb[0], cr[0]))
         });
     });
