@@ -126,7 +126,7 @@ impl ConnectorReplay {
     }
 
     /// Run one fresh connection and describe it, with outbound PDU names for diagnostics.
-    pub(crate) fn observe(&self) -> anyhow::Result<(ConnectorMeasurement, ConnectorExpectation, Vec<&'static str>)> {
+    fn observe(&self) -> anyhow::Result<(ConnectorMeasurement, ConnectorExpectation, Vec<&'static str>)> {
         let (measurement, output) = self.drive()?;
         let frames = split_frames(output.filled())?;
         let pdus = frames
@@ -212,7 +212,7 @@ impl ConnectorReplay {
 }
 
 /// Describe an observed connection as a paste-ready manifest table, followed by its outbound PDU names.
-pub(crate) fn mismatch(observed: &ConnectorExpectation, pdus: &[&str]) -> anyhow::Result<String> {
+fn mismatch(observed: &ConnectorExpectation, pdus: &[&str]) -> anyhow::Result<String> {
     Ok(format!(
         "connector result does not match its expectation; replace it with:\n[capture.connector]\n{}outbound PDUs: {pdus:?}",
         toml::to_string(observed)?

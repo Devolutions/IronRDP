@@ -18,7 +18,7 @@ use ironrdp_capture_replay::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::connector_replay::{ConnectorExpectation, ConnectorReplay, mismatch};
+use crate::connector_replay::{ConnectorExpectation, ConnectorReplay};
 
 const MANIFEST: &str = include_str!("../corpus.toml");
 const UPSTREAM_REPOSITORY: &str = "awakecoding/wireshark-rdp";
@@ -460,19 +460,14 @@ pub fn check(selector: Option<&str>, out: &mut dyn Write) -> anyhow::Result<()> 
         .into_iter()
         .filter(|capture| capture.lists(CONNECTOR_BENCHMARK))
     {
-        let result = capture.prepare_connector(&cache_dir).and_then(|connector| {
-            let (_, observed, pdus) = connector.observe()?;
-            Ok((capture.connector.as_ref() == Some(&observed), observed, pdus))
-        });
-        match result {
-            Ok((true, _, _)) => writeln!(out, "{}: connector", capture.id)?,
-            Ok((false, observed, pdus)) => {
-                failures += 1;
-                writeln!(out, "{}: {}", capture.id, mismatch(&observed, &pdus)?)?;
-            }
+        match capture
+            .prepare_connector(&cache_dir)
+            .and_then(|connector| connector.verify())
+        {
+            Ok(_) => writeln!(out, "{}: connector", capture.id)?,
             Err(error) => {
                 failures += 1;
-                writeln!(out, "{}: connector error: {error:#}", capture.id)?;
+                writeln!(out, "{}: {error:#}", capture.id)?;
             }
         }
     }
