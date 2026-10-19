@@ -9,6 +9,7 @@ cargo xtask bench corpus-fetch
 cargo xtask bench corpus-list
 ```
 
+Both commands run the `corpus-bench` binary from `ironrdp-bench`, which owns the corpus code and its dependencies.
 `corpus-fetch` uses `curl` to download the captures listed in `crates/ironrdp-bench/corpus.toml` from the pinned upstream commit and verifies each SHA-256 digest.
 Verified captures are cached under the ignored `bench-data/wireshark-rdp/<revision>/captures` directory.
 

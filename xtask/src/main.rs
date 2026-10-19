@@ -1,12 +1,10 @@
 #![allow(clippy::print_stdout)]
 #![allow(clippy::print_stderr)]
 #![allow(unreachable_pub)]
-#![allow(unused_crate_dependencies, reason = "the library target owns corpus dependencies")]
 
 mod macros;
 
-use xtask::{bench, project_root};
-
+mod bench;
 mod bin_install;
 mod bin_version;
 mod check;
@@ -62,8 +60,8 @@ fn main() -> anyhow::Result<()> {
                 list_files(&sh, local_bin())?;
             }
         }
-        Action::BenchCorpusFetch => bench::corpus_fetch(&sh)?,
-        Action::BenchCorpusList => bench::corpus_list()?,
+        Action::BenchCorpusFetch => bench::corpus(&sh, "fetch")?,
+        Action::BenchCorpusList => bench::corpus(&sh, "list")?,
         Action::CheckFmt => check::fmt(&sh)?,
         Action::CheckLints => check::lints(&sh)?,
         Action::CheckLocks => check::lock_files(&sh)?,
@@ -144,6 +142,14 @@ fn new_shell() -> anyhow::Result<Shell> {
     update_env_path(&sh)?;
 
     Ok(sh)
+}
+
+fn project_root() -> PathBuf {
+    Path::new(&env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(1)
+        .expect("failed to retrieve project root path")
+        .to_path_buf()
 }
 
 fn update_env_path(sh: &Shell) -> anyhow::Result<()> {

@@ -2692,10 +2692,14 @@ dependencies = [
 name = "ironrdp-bench"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "criterion",
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-server",
+ "serde",
+ "sha2 0.10.9",
+ "toml",
 ]
 
 [[package]]
@@ -7883,9 +7887,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "pico-args",
- "sha2 0.10.9",
  "tinyjson",
- "toml",
  "xshell",
 ]
 
