@@ -1,0 +1,6 @@
+benchmarks:
+  - name: replay/no-nla-accepted/cli
+    exec: ./target/release/corpus-bench replay --capture no-nla-accepted
+
+  - name: replay/no-nla-smartcard/cli
+    exec: ./target/release/corpus-bench replay --capture no-nla-smartcard

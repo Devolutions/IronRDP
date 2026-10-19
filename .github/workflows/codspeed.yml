@@ -1,0 +1,47 @@
+name: CodSpeed
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  codspeed:
+    name: CodSpeed ${{ matrix.mode }}
+    if: vars.CODSPEED_ENABLED == 'true'
+    strategy:
+      matrix:
+        mode: ${{ fromJSON(github.event_name == 'workflow_dispatch' && vars.CODSPEED_WALLTIME_RUNNER != '' && '["simulation","walltime"]' || '["simulation"]') }}
+    runs-on: ${{ matrix.mode == 'walltime' && vars.CODSPEED_WALLTIME_RUNNER || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/install-build-deps
+      - uses: Swatinem/rust-cache@v2.9.1
+      - id: corpus-key
+        shell: bash
+        run: echo "hash=$(grep -E '^(revision|file|sha256) = ' crates/ironrdp-bench/corpus.toml | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v5
+        with:
+          path: ./bench-data/wireshark-rdp
+          key: ${{ runner.os }}-benchmark-corpus-${{ steps.corpus-key.outputs.hash }}
+      - run: cargo xtask bench corpus-fetch
+      - if: matrix.mode == 'simulation'
+        run: |
+          cargo install cargo-codspeed --version 5.0.1 --locked
+          cargo codspeed build -p ironrdp-bench --bench bench --bench corpus --no-default-features --features codspeed --locked -m simulation
+      - if: matrix.mode == 'simulation'
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: simulation
+          run: cargo codspeed run -p ironrdp-bench -m simulation
+      - if: matrix.mode == 'walltime'
+        run: cargo build --release -p ironrdp-bench --bin corpus-bench --no-default-features --locked
+      - if: matrix.mode == 'walltime'
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: walltime
