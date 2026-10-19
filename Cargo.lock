@@ -2732,6 +2732,8 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "criterion",
+ "ironrdp-capture",
+ "ironrdp-capture-replay",
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-server",
@@ -2793,6 +2795,7 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-session",
  "ironrdp-svc",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
 ]
 

@@ -132,7 +132,7 @@ impl StagedOutput {
         }
     }
 
-    fn write_frame(&mut self, frame: ReplayFrame) -> Result<(), ExportError> {
+    fn write_frame(&mut self, frame: ReplayFrame<'_>) -> Result<(), ExportError> {
         let name = format!("frame_{:06}.png", self.frame_count);
         encode_png(&self.directory.join(name), &frame)?;
         self.frame_metadata.push_str(&format!(
@@ -285,13 +285,13 @@ fn replace_output_directory(staging: &Path, directory: &Path, replace: bool) -> 
     fs::rename(staging, directory).map_err(ExportError::FinalizeOutput)
 }
 
-fn encode_png(path: &Path, frame: &ReplayFrame) -> Result<(), ExportError> {
+fn encode_png(path: &Path, frame: &ReplayFrame<'_>) -> Result<(), ExportError> {
     let file = fs::File::create(path).map_err(ExportError::WriteOutput)?;
     let mut encoder = png::Encoder::new(file, u32::from(frame.width), u32::from(frame.height));
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().map_err(ExportError::EncodePng)?;
-    writer.write_image_data(&frame.pixels).map_err(ExportError::EncodePng)?;
+    writer.write_image_data(frame.pixels).map_err(ExportError::EncodePng)?;
     writer.finish().map_err(ExportError::EncodePng)?;
     Ok(())
 }
