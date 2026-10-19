@@ -9,15 +9,15 @@ These notes target cargo-mutants 27.1.
 Scope with `--file '<package-dir>/src/<module>/**'` for a crate or module, `--re '<fn>|<fn>'` for a pull request's changed functions, or `--in-diff <diff>` for its whole diff; build time dominates, so scope first.
 A test-only diff yields no mutants under `--in-diff`, so scope with `--re` to the production functions the changed tests call, including unchanged ones.
 Make no deletion decision on an empty or near-empty viable sample; with nothing to catch, every test has zero unique kills and the invariant passes trivially.
-Package directories differ: `devolutions-gateway/src` sits at the repository root, while most libraries live under `crates/`.
+Package directories vary; take the path from `cargo metadata` rather than assuming `crates/<name>`.
 
 ```sh
 cargo mutants --file '<path>' --test-package <test-package> --in-place --baseline skip --timeout <s> --build-timeout <s> -- <cargo-test-args>
 ```
 
-The baseline phase ignores `--test-package` and tests the mutated package, so it fails when the tests live in `testsuite`.
+The baseline phase ignores `--test-package` and tests the mutated package, so it fails when the tests live in a separate test crate.
 Run the scoped tests once by hand instead and keep the log, then skip the baseline and set both timeouts to a few times the measured test run and incremental build.
-Arguments after `--` go to `cargo test`, and a second `--` reaches the test binary: `-- --test integration_tests -- <module>::` runs only that module's tests of the `testsuite` binary.
+Arguments after `--` go to `cargo test`, and a second `--` reaches the test binary: `-- --test <target> -- <module>::` runs only that module's tests of one test target.
 Confirm the clean scoped run executes tests before trusting any result; a filter that matches nothing passes silently and yields an empty kill matrix.
 Scope every run to one test binary with `--test <name>` or `--lib`; the kill matrix keys tests by harness name, which can repeat across binaries.
 Pass `--features <f>` for feature-gated code; discovery ignores `cfg` conditions, so mutants behind a disabled feature are still generated, compile away, and appear missed rather than absent, and a survivor there is a scoping error, not a coverage gap.

@@ -10,4 +10,4 @@ Invoke `rust-style` and use its rules as review criteria without following its g
 Review only the touched Rust lines.
 Report each violation with its exact location and the replacement text, and group mechanical instances that share one fix.
 Do not report what rustfmt handles, naming preferences, or rules the guide does not state.
-Return no findings when the touched code already complies.
+Return no findings when the touched code already follows these rules.
