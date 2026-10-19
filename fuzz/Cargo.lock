@@ -432,6 +432,7 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-pdu",
  "tracing",
+ "yuv",
 ]
 
 [[package]]
