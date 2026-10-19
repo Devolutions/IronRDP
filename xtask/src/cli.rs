@@ -14,6 +14,8 @@ TASKS:
   bench corpus-list       List pinned benchmark capture corpus metadata
   bench corpus-check [--capture <ID>]
                           Replay cached captures and verify their expectations
+  bench replay --capture <ID>
+                          Time capture replay of one cached capture
   check fmt               Check formatting
   check lints             Check lints
   check locks             Check for dirty or staged lock files not yet committed
@@ -95,6 +97,9 @@ pub enum Action {
     BenchCorpusCheck {
         capture: Option<String>,
     },
+    BenchReplay {
+        capture: String,
+    },
     CheckFmt,
     CheckLints,
     CheckLocks,
@@ -163,6 +168,9 @@ pub fn parse_args() -> anyhow::Result<Args> {
                 Some("corpus-list") => Action::BenchCorpusList,
                 Some("corpus-check") => Action::BenchCorpusCheck {
                     capture: args.opt_value_from_str("--capture")?,
+                },
+                Some("replay") => Action::BenchReplay {
+                    capture: args.value_from_str("--capture")?,
                 },
                 Some(unknown) => anyhow::bail!("unknown bench action: {unknown}"),
                 None => Action::ShowHelp,

@@ -25,7 +25,7 @@ anyhow = "1" # public
 async-trait = "0.1"
 ironrdp = { path = "../ironrdp", features = ["server", "pdu", "__bench"] }
 ironrdp-capture.path = "../ironrdp-capture"
-ironrdp-capture-replay.path = "../ironrdp-capture-replay"
+ironrdp-capture-replay.path = "../ironrdp-capture-replay" # public
 pico-args = "0.5"
 serde = { version = "1", features = ["derive"] } # public
 sha2 = "0.10"
@@ -43,6 +43,11 @@ ironrdp-server = { path = "../ironrdp-server", features = ["__bench"] }
 [[bench]]
 name = "bench"
 path = "benches/bench.rs"
+harness = false
+
+[[bench]]
+name = "corpus"
+path = "benches/corpus.rs"
 harness = false
 
 [lints]

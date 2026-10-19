@@ -97,6 +97,7 @@ id = "no-nla-accepted"
 file = "rdp-no-nla-accepted1.pcapng"
 sha256 = "1146ef447ad88e58f25d14adf81581233c8265bf49140fa6f7a172fd30f3c402"
 intent = "RDP without NLA accepted by the server."
+benchmark = ["replay"]
 
 [capture.expect]
 outcome = "complete"
@@ -129,6 +130,7 @@ id = "no-nla-smartcard"
 file = "rdp-no-nla-smartcard-auth1.pcapng"
 sha256 = "b29eedb9e81ed6fab7e0730951880e78fc60c3d64bfb6b37e4fa604ea3a30ff2"
 intent = "RDP without NLA using smartcard authentication."
+benchmark = ["replay"]
 
 [capture.expect]
 outcome = "complete"
