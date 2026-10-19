@@ -230,3 +230,189 @@ fn wts2_diff_requires_retained_reference() {
         Err(ProgressiveDecodeError::MissingTileReference { x_idx: 3, y_idx: 2 })
     ));
 }
+
+/// Cold-decode every Haven difference-only WireToSurface2 fixture through
+/// [`ProgressiveDecoder`]. These captures are mid-stream refinement PDUs from
+/// Windows — without a prior retained tile they must fail with
+/// [`ProgressiveDecodeError::MissingTileReference`] (MS-RDPRFX 3.1.8.1.7.1).
+///
+/// This is the same failure class a client hits when EGFX starts mid-refinement
+/// or loses codec-context references.
+#[rstest]
+#[case::diff_2tiles(
+    include_bytes!("../../test_data/egfx/haven/wts2_64x64_diff_2tiles.bin").as_slice(),
+    1280,
+    800,
+    3,
+    2
+)]
+#[case::diff_3tiles(
+    include_bytes!("../../test_data/egfx/haven/wts2_64x128_diff_3tiles.bin").as_slice(),
+    1280,
+    800,
+    3,
+    2
+)]
+#[case::diff_column_9tiles(
+    include_bytes!("../../test_data/egfx/haven/wts2_37x560_diff_column_9tiles.bin").as_slice(),
+    1280,
+    800,
+    19,
+    3
+)]
+fn haven_wts2_cold_decode_reproduces_missing_tile_reference(
+    #[case] bytes: &[u8],
+    #[case] surface_width: u16,
+    #[case] surface_height: u16,
+    #[case] expect_x: u16,
+    #[case] expect_y: u16,
+) {
+    use ironrdp_graphics::progressive::{ProgressiveDecodeError, ProgressiveDecoder};
+    use ironrdp_pdu::codecs::rfx::RfxRectangle;
+    use ironrdp_pdu::codecs::rfx::progressive::{
+        ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu, ProgressiveRegion,
+        ProgressiveSyncPdu, encode_progressive_stream,
+    };
+
+    let GfxPdu::WireToSurface2(pdu) = decode(bytes) else {
+        panic!("expected WireToSurface2");
+    };
+
+    // Establish CONTEXT only — no base tiles — matching a client that joins
+    // (or resets) after Windows already has difference state.
+    let init = encode_progressive_stream(&[
+        ProgressiveBlock::Sync(ProgressiveSyncPdu),
+        ProgressiveBlock::Context(ProgressiveContextPdu {
+            context_id: 0,
+            tile_size: 0x40,
+            flags: 0,
+        }),
+        ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
+            frame_index: 0,
+            region_count: 1,
+        }),
+        ProgressiveBlock::Region(ProgressiveRegion {
+            tile_size: 0x40,
+            rects: vec![RfxRectangle {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            }],
+            quant_vals: vec![],
+            quant_prog_vals: vec![],
+            flags: 0,
+            tiles: vec![],
+        }),
+        ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
+    ])
+    .unwrap();
+
+    let mut decoder = ProgressiveDecoder::new();
+    decoder
+        .decode_bitmap(pdu.surface_id, 0, surface_width, surface_height, &init)
+        .expect("CONTEXT init");
+
+    let err = match decoder.decode_bitmap(
+        pdu.surface_id,
+        pdu.codec_context_id,
+        surface_width,
+        surface_height,
+        &pdu.bitmap_data,
+    ) {
+        Err(e) => e,
+        Ok(_) => panic!("difference-only Haven fixture must fail without retained references"),
+    };
+
+    assert!(
+        matches!(
+            err,
+            ProgressiveDecodeError::MissingTileReference { x_idx, y_idx }
+            if x_idx == expect_x && y_idx == expect_y
+        ),
+        "unexpected ProgressiveDecodeError: {err:?}"
+    );
+}
+
+/// Mixed Haven fixture carries base + difference tiles in one REGION. Decoding
+/// it cold (CONTEXT only) still fails on the first difference tile whose
+/// coordinate has no retained reference yet — even though base tiles exist
+/// later/elsewhere in the same PDU.
+#[test]
+fn haven_wts2_mixed_25tiles_cold_decode_hits_missing_tile_reference() {
+    use ironrdp_graphics::progressive::{ProgressiveDecodeError, ProgressiveDecoder};
+    use ironrdp_pdu::codecs::rfx::RfxRectangle;
+    use ironrdp_pdu::codecs::rfx::progressive::{
+        ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu, ProgressiveRegion,
+        ProgressiveSyncPdu, encode_progressive_stream,
+    };
+
+    let bytes = include_bytes!("../../test_data/egfx/haven/wts2_progressive_tile_first_mixed_25tiles.bin");
+    let GfxPdu::WireToSurface2(pdu) = decode(bytes) else {
+        panic!("expected WireToSurface2");
+    };
+
+    let init = encode_progressive_stream(&[
+        ProgressiveBlock::Sync(ProgressiveSyncPdu),
+        ProgressiveBlock::Context(ProgressiveContextPdu {
+            context_id: 0,
+            tile_size: 0x40,
+            flags: 0,
+        }),
+        ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
+            frame_index: 0,
+            region_count: 1,
+        }),
+        ProgressiveBlock::Region(ProgressiveRegion {
+            tile_size: 0x40,
+            rects: vec![RfxRectangle {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            }],
+            quant_vals: vec![],
+            quant_prog_vals: vec![],
+            flags: 0,
+            tiles: vec![],
+        }),
+        ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
+    ])
+    .unwrap();
+
+    let mut decoder = ProgressiveDecoder::new();
+    decoder
+        .decode_bitmap(pdu.surface_id, 0, 1280, 800, &init)
+        .expect("CONTEXT init");
+
+    let err = match decoder.decode_bitmap(pdu.surface_id, pdu.codec_context_id, 1280, 800, &pdu.bitmap_data) {
+        Err(e) => e,
+        Ok(_) => panic!("mixed fixture still needs retained refs for difference tiles"),
+    };
+
+    assert!(
+        matches!(err, ProgressiveDecodeError::MissingTileReference { .. }),
+        "expected MissingTileReference, got {err:?}"
+    );
+}
+
+/// Bare difference fixture with no CONTEXT seed at all → MissingBlock("CONTEXT").
+#[test]
+fn haven_wts2_no_context_reproduces_missing_block() {
+    use ironrdp_graphics::progressive::{ProgressiveDecodeError, ProgressiveDecoder};
+
+    let bytes = include_bytes!("../../test_data/egfx/haven/wts2_64x64_diff_2tiles.bin");
+    let GfxPdu::WireToSurface2(pdu) = decode(bytes) else {
+        panic!("expected WireToSurface2");
+    };
+
+    let mut decoder = ProgressiveDecoder::new();
+    let err = match decoder.decode_bitmap(pdu.surface_id, pdu.codec_context_id, 1280, 800, &pdu.bitmap_data) {
+        Err(e) => e,
+        Ok(_) => panic!("must fail without CONTEXT"),
+    };
+    assert!(
+        matches!(err, ProgressiveDecodeError::MissingBlock("CONTEXT")),
+        "expected MissingBlock(CONTEXT), got {err:?}"
+    );
+}
