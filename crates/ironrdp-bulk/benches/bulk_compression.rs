@@ -70,65 +70,62 @@ fn algo_name(ct: CompressionType) -> &'static str {
 fn bench_compress_decompress(c: &mut Criterion, ct: CompressionType, data: &[u8], label: &str) {
     let name = algo_name(ct);
 
-    // Verify data actually compresses with this algorithm
+    // Verify data actually compresses and round-trips with this algorithm
     let mut test_comp = BulkCompressor::new(ct);
     let (test_size, test_flags) = test_comp.compress(data).expect("bulk compression should succeed");
-    let is_compressed = test_flags & flags::PACKET_COMPRESSED != 0;
+    assert_ne!(
+        test_flags & flags::PACKET_COMPRESSED,
+        0,
+        "{name}/{label} input must compress"
+    );
+    let compressed = test_comp.compressed_data(test_size).to_vec();
+    assert_eq!(
+        BulkCompressor::new(ct)
+            .decompress(&compressed, test_flags)
+            .expect("bulk decompression should succeed"),
+        data,
+        "{name}/{label} must round-trip"
+    );
 
-    if is_compressed {
-        let compressed = test_comp.compressed_data(test_size).to_vec();
+    let mut group = c.benchmark_group(format!("{name}/{label}"));
+    group.throughput(Throughput::Bytes(u64::try_from(data.len()).unwrap_or(u64::MAX)));
 
-        // Benchmark compress
-        {
-            let mut group = c.benchmark_group(format!("{name}/{label}"));
-            group.throughput(Throughput::Bytes(u64::try_from(data.len()).unwrap_or(u64::MAX)));
-
-            group.bench_function(BenchmarkId::new("compress", data.len()), |b| {
-                b.iter_batched(
-                    || BulkCompressor::new(ct),
-                    |mut compressor| {
-                        black_box(
-                            compressor
-                                .compress(black_box(data))
-                                .expect("bulk compression should succeed"),
-                        );
-                    },
-                    criterion::BatchSize::SmallInput,
+    // `iter_batched_ref` keeps codec construction and destruction outside the timed routine.
+    group.bench_function(BenchmarkId::new("compress", data.len()), |b| {
+        b.iter_batched_ref(
+            || BulkCompressor::new(ct),
+            |compressor| {
+                black_box(
+                    compressor
+                        .compress(black_box(data))
+                        .expect("bulk compression should succeed"),
                 );
-            });
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
 
-            group.finish();
-        }
-
-        // Benchmark decompress
-        {
-            let mut group = c.benchmark_group(format!("{name}/{label}"));
-            group.throughput(Throughput::Bytes(u64::try_from(data.len()).unwrap_or(u64::MAX)));
-
-            group.bench_function(BenchmarkId::new("decompress", data.len()), |b| {
-                b.iter_batched(
-                    || BulkCompressor::new(ct),
-                    |mut decompressor| {
-                        black_box(
-                            decompressor
-                                .decompress(black_box(&compressed), black_box(test_flags))
-                                .expect("bulk decompression should succeed"),
-                        );
-                    },
-                    criterion::BatchSize::SmallInput,
+    group.bench_function(BenchmarkId::new("decompress", data.len()), |b| {
+        b.iter_batched_ref(
+            || BulkCompressor::new(ct),
+            |decompressor| {
+                black_box(
+                    decompressor
+                        .decompress(black_box(&compressed), black_box(test_flags))
+                        .expect("bulk decompression should succeed"),
                 );
-            });
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
 
-            group.finish();
-        }
-    }
+    group.finish();
 }
 
 fn bench_all(c: &mut Criterion) {
+    // Inputs of 16 KiB or more reach BulkCompressor's passthrough threshold and never compress.
     let text_4k = generate_text_data(4096);
-    let text_16k = generate_text_data(16384);
     let bitmap_4k = generate_structured_bitmap(4096);
-    let bitmap_16k = generate_structured_bitmap(16384);
 
     for ct in [
         CompressionType::Rdp4,
@@ -137,9 +134,7 @@ fn bench_all(c: &mut Criterion) {
         CompressionType::Rdp61,
     ] {
         bench_compress_decompress(c, ct, &text_4k, "text_4k");
-        bench_compress_decompress(c, ct, &text_16k, "text_16k");
         bench_compress_decompress(c, ct, &bitmap_4k, "bitmap_4k");
-        bench_compress_decompress(c, ct, &bitmap_16k, "bitmap_16k");
     }
 }
 

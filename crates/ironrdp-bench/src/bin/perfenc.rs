@@ -1,10 +1,9 @@
 #![allow(unused_crate_dependencies)] // False positives because there are both a library and a binary.
-#![allow(clippy::print_stderr)]
 #![allow(clippy::print_stdout)]
 
 use core::num::{NonZeroU16, NonZeroUsize};
 use core::time::Duration;
-use std::io::Write as _;
+use std::io;
 use std::time::Instant;
 
 use anyhow::Context as _;
@@ -34,8 +33,9 @@ async fn main() -> Result<(), anyhow::Error> {
         std::process::exit(0);
     }
 
-    let width = args.opt_value_from_str("--width")?.unwrap_or(3840);
-    let height = args.opt_value_from_str("--height")?.unwrap_or(2400);
+    let width = NonZeroU16::new(args.opt_value_from_str("--width")?.unwrap_or(3840)).context("width cannot be zero")?;
+    let height =
+        NonZeroU16::new(args.opt_value_from_str("--height")?.unwrap_or(2400)).context("height cannot be zero")?;
     let codec = args.opt_value_from_str("--codec")?.unwrap_or_else(OptCodec::default);
     let fps = args.opt_value_from_str("--fps")?.unwrap_or(0);
 
@@ -64,7 +64,10 @@ async fn main() -> Result<(), anyhow::Error> {
     // no-capability default silently start dropping any pointer updates the replay
     // file happens to contain.
     let mut encoder = UpdateEncoder::new(
-        DesktopSize { width, height },
+        DesktopSize {
+            width: width.get(),
+            height: height.get(),
+        },
         flags,
         update_codecs,
         8 * 1024 * 1024,
@@ -76,13 +79,13 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut total_raw = 0u64;
     let mut total_enc = 0u64;
     let mut n_updates = 0u64;
-    let mut updates = DisplayUpdates::new(file, DesktopSize { width, height }, fps);
+    let mut n_fragments = 0u64;
+    let mut updates = DisplayUpdates::new(file, width, height, fps);
     while let Some(up) = updates.next_update().await? {
         if let DisplayUpdate::Bitmap(ref up) = up {
             total_raw += u64::try_from(up.data.len())?;
         } else {
-            eprintln!("Invalid update");
-            break;
+            anyhow::bail!("invalid update");
         }
         let mut iter = encoder.update(up);
         loop {
@@ -91,39 +94,40 @@ async fn main() -> Result<(), anyhow::Error> {
             };
             let len = u64::try_from(frag?.data.len())?;
             total_enc += len;
+            n_fragments += 1;
         }
         n_updates += 1;
-        print!(".");
-        std::io::stdout().flush()?;
     }
-    println!();
+
+    anyhow::ensure!(n_updates > 0, "RGBX input contains no complete frames");
+    anyhow::ensure!(n_fragments > 0, "encoder produced no output fragments");
+    anyhow::ensure!(total_enc > 0, "encoder produced no output bytes");
 
     #[expect(clippy::as_conversions, reason = "casting u64 to f64")]
     let ratio = total_enc as f64 / total_raw as f64;
     let percent = 100.0 - ratio * 100.0;
-    println!("Encoder: {encoder:?}");
-    println!("Nb updates: {n_updates:?}");
     println!(
-        "Sum of bytes: {}/{} ({:.2}%)",
-        bytesize::ByteSize(total_enc),
-        bytesize::ByteSize(total_raw),
-        percent,
+        "updates={n_updates}\tfragments={n_fragments}\traw_bytes={total_raw}\tencoded_bytes={total_enc}\treduction={percent:.2}%"
     );
     Ok(())
 }
 
 struct DisplayUpdates {
     file: File,
-    desktop_size: DesktopSize,
+    width: NonZeroU16,
+    height: NonZeroU16,
+    stride: NonZeroUsize,
     fps: u64,
     last_update_time: Option<Instant>,
 }
 
 impl DisplayUpdates {
-    fn new(file: File, desktop_size: DesktopSize, fps: u64) -> Self {
+    fn new(file: File, width: NonZeroU16, height: NonZeroU16, fps: u64) -> Self {
         Self {
             file,
-            desktop_size,
+            width,
+            height,
+            stride: NonZeroUsize::new(usize::from(width.get()) * 4).expect("nonzero width has a nonzero RGBX stride"),
             fps,
             last_update_time: None,
         }
@@ -135,43 +139,65 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
     async fn next_update(&mut self) -> ironrdp::server::ServerResult<Option<DisplayUpdate>> {
         use ironrdp::server::ServerErrorExt as _;
 
-        let stride = self.desktop_size.width as usize * 4;
-        let frame_size = stride * self.desktop_size.height as usize;
+        let frame_size = self.stride.get() * usize::from(self.height.get());
         let mut buf = vec![0u8; frame_size];
-        // FIXME: AsyncReadExt::read_exact is not cancellation safe.
-        self.file
-            .read_exact(&mut buf)
+        // FIXME: read_frame is not cancellation safe; cancelling it loses a partially read frame.
+        match read_frame(&mut self.file, &mut buf)
             .await
-            .map_err(|e| ironrdp::server::ServerError::io("read exact", e))?;
-
-        let now = Instant::now();
-        if let Some(last_update_time) = self.last_update_time {
-            let elapsed = now - last_update_time;
-            if self.fps > 0 && elapsed < Duration::from_millis(1000 / self.fps) {
-                sleep(Duration::from_millis(
-                    1000 / self.fps
-                        - u64::try_from(elapsed.as_millis())
-                            .map_err(|e| ironrdp::server::ServerError::custom("invalid `elapsed millis`", e))?,
-                ))
-                .await;
+            .map_err(|e| ironrdp::server::ServerError::io("read frame", e))?
+        {
+            FrameRead::EndOfFile => return Ok(None),
+            FrameRead::Truncated => {
+                return Err(ironrdp::server::ServerError::reason("perfenc", "truncated RGBX frame"));
             }
+            FrameRead::Complete => {}
         }
-        self.last_update_time = Some(now);
+
+        if self.fps > 0 {
+            if let Some(last_update_time) = self.last_update_time {
+                let frame_interval = Duration::from_nanos(1_000_000_000 / self.fps);
+                let elapsed = last_update_time.elapsed();
+                if elapsed < frame_interval {
+                    sleep(frame_interval - elapsed).await;
+                }
+            }
+            self.last_update_time = Some(Instant::now());
+        }
 
         let up = DisplayUpdate::Bitmap(BitmapUpdate {
             x: 0,
             y: 0,
-            width: NonZeroU16::new(self.desktop_size.width)
-                .ok_or_else(|| ironrdp::server::ServerError::reason("perfenc", "width cannot be zero"))?,
-            height: NonZeroU16::new(self.desktop_size.height)
-                .ok_or_else(|| ironrdp::server::ServerError::reason("perfenc", "height cannot be zero"))?,
+            width: self.width,
+            height: self.height,
             format: PixelFormat::RgbX32,
             data: buf.into(),
-            stride: NonZeroUsize::new(stride)
-                .ok_or_else(|| ironrdp::server::ServerError::reason("perfenc", "stride cannot be zero"))?,
+            stride: self.stride,
         });
         Ok(Some(up))
     }
+}
+
+enum FrameRead {
+    Complete,
+    EndOfFile,
+    Truncated,
+}
+
+/// Fill `frame`, distinguishing a clean end of input from a truncated final frame.
+async fn read_frame(file: &mut File, frame: &mut [u8]) -> io::Result<FrameRead> {
+    let mut filled = 0;
+    while filled < frame.len() {
+        let read = file.read(&mut frame[filled..]).await?;
+        if read == 0 {
+            return Ok(if filled == 0 {
+                FrameRead::EndOfFile
+            } else {
+                FrameRead::Truncated
+            });
+        }
+        filled += read;
+    }
+    Ok(FrameRead::Complete)
 }
 
 fn setup_logging() -> anyhow::Result<()> {
@@ -221,5 +247,52 @@ impl core::str::FromStr for OptCodec {
             "qoiz" => Ok(Self::QoiZ),
             _ => anyhow::bail!("unknown codec: {s}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    static NEXT_TEMPORARY_FILE: AtomicUsize = AtomicUsize::new(0);
+
+    // A per-process counter keeps concurrently created fixtures distinct on coarse clocks.
+    fn temporary_path(name: &str) -> std::path::PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time is after the Unix epoch")
+            .as_nanos();
+        let sequence = NEXT_TEMPORARY_FILE.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "ironrdp-perfenc-{name}-{}-{timestamp}-{sequence}",
+            std::process::id()
+        ))
+    }
+
+    async fn display_updates(name: &str, bytes: &[u8]) -> (DisplayUpdates, std::path::PathBuf) {
+        let path = temporary_path(name);
+        fs::write(&path, bytes).expect("write temporary frame source");
+        let file = File::open(&path).await.expect("open temporary frame source");
+        let one = NonZeroU16::new(1).expect("one is nonzero");
+        (DisplayUpdates::new(file, one, one, 0), path)
+    }
+
+    #[tokio::test]
+    async fn returns_none_at_clean_eof() {
+        let (mut updates, path) = display_updates("clean-eof", &[]).await;
+        assert!(updates.next_update().await.expect("clean EOF is valid").is_none());
+        fs::remove_file(path).expect("remove temporary frame source");
+    }
+
+    #[tokio::test]
+    async fn rejects_truncated_frame() {
+        let (mut updates, path) = display_updates("truncated", &[0, 1, 2]).await;
+        let error = updates.next_update().await.expect_err("partial frame must fail");
+        assert!(error.to_string().contains("truncated RGBX frame"));
+        fs::remove_file(path).expect("remove temporary frame source");
     }
 }

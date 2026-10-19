@@ -12,13 +12,27 @@ doctest = false
 name = "corpus-bench"
 test = false
 
+[[bin]]
+name = "perfenc"
+
+[features]
+default = ["qoi", "qoiz"]
+qoi = ["ironrdp/qoi"]
+qoiz = ["ironrdp/qoiz"]
+
 [dependencies]
 anyhow = "1" # public
+async-trait = "0.1"
+ironrdp = { path = "../ironrdp", features = ["server", "pdu", "__bench"] }
 ironrdp-capture.path = "../ironrdp-capture"
 ironrdp-capture-replay.path = "../ironrdp-capture-replay"
+pico-args = "0.5"
 serde = { version = "1", features = ["derive"] } # public
 sha2 = "0.10"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt", "sync", "time"] }
 toml = "1.1"
+tracing = { version = "0.1", features = ["log"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 criterion = "0.8"
