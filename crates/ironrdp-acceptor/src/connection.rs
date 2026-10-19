@@ -48,6 +48,7 @@ pub struct Acceptor {
     /// not the latter (2.2.1.4).
     multitransport_flags: Option<gcc::MultiTransportFlags>,
     early_capability_flags: gcc::ClientEarlyCapabilityFlags,
+    client_monitors: Vec<gcc::Monitor>,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
@@ -216,6 +217,20 @@ pub struct AcceptorResult {
     /// to gate optional features the client has to opt into, e.g. Server
     /// Heartbeat PDUs (`RNS_UD_CS_SUPPORT_HEARTBEAT_PDU`, section 2.2.16.1).
     pub client_early_capability_flags: gcc::ClientEarlyCapabilityFlags,
+    /// The monitors the client announced in its GCC Client Monitor Data
+    /// (section 2.2.1.3.6), in the order it sent them, with their positions on
+    /// the client's virtual desktop.
+    ///
+    /// Empty when the client did not send the block, which a client with a
+    /// single monitor commonly does not. Servers that can present a variable
+    /// number of outputs use it to present as many as the client has.
+    ///
+    /// This is the client's layout, in the client's coordinates. It does not
+    /// change what the acceptor announces back: the Monitor Layout PDU
+    /// (section 2.2.12.1, sent when the client supports it) describes the
+    /// server's session and still lists one monitor spanning the desktop size,
+    /// whatever the server presents.
+    pub client_monitors: Vec<gcc::Monitor>,
     /// Multitransport (MS-RDPEMT) capability flags announced by the client in
     /// its GCC `MultiTransportChannelData` block (section 2.2.1.3.8).
     ///
@@ -265,6 +280,7 @@ impl Acceptor {
             ime_file_name: String::new(),
             multitransport_flags: None,
             early_capability_flags: gcc::ClientEarlyCapabilityFlags::empty(),
+            client_monitors: Vec::new(),
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation: Default::default(),
@@ -501,6 +517,7 @@ impl Acceptor {
             ime_file_name: consumed.ime_file_name,
             multitransport_flags: consumed.multitransport_flags,
             early_capability_flags: consumed.early_capability_flags,
+            client_monitors: consumed.client_monitors,
             server_capabilities: consumed.server_capabilities,
             static_channels,
             saved_for_reactivation,
@@ -698,6 +715,7 @@ impl Acceptor {
                     .unwrap_or_else(gcc::MultiTransportFlags::empty),
                 multitransport_response_success: self.received_multitransport_response,
                 client_early_capability_flags: self.early_capability_flags,
+                client_monitors: self.client_monitors.clone(),
                 reactivation: self.reactivation,
                 credentials: self.credentials_for_result(),
                 auto_reconnect: self.received_auto_reconnect.take(),
@@ -1001,6 +1019,7 @@ impl Sequence for Acceptor {
                 let early_capability = gcc_blocks.core.optional_data.early_capability_flags;
                 self.early_capability_flags = early_capability.unwrap_or(gcc::ClientEarlyCapabilityFlags::empty());
                 let client_wants_message_channel = gcc_blocks.message_channel.is_some();
+                self.client_monitors = gcc_blocks.monitor.map_or_else(Vec::new, |data| data.monitors);
                 self.keyboard_layout = gcc_blocks.core.keyboard_layout;
                 self.keyboard_type = gcc_blocks.core.keyboard_type;
                 self.ime_file_name.clone_from(&gcc_blocks.core.ime_file_name);
