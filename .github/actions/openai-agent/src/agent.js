@@ -701,19 +701,16 @@ async function runAgent({
         metrics?.recordCompletion(requestMetrics, response);
         return response;
       } catch (rawError) {
-        const error = monitor.failure || rawError;
+        const caught = monitor.failure || rawError;
         metrics?.finishActiveAttempt();
         stage.check(state);
+        const error = caught instanceof SyntaxError
+          ? malformedStream(state, metrics, "sse-json-invalid", { cause: caught })
+          : caught;
         const outcome = error instanceof AgentFailure
           ? { retryable: error.retryable }
           : providerFailure(error);
         if (!outcome.retryable || attempt === config.max_request_retries) {
-          if (error instanceof SyntaxError) {
-            metrics?.recordStreamStructuralViolation("sse-json-invalid");
-            throw new AgentFailure("provider stream was malformed", {
-              cause: error, category: "provider-response", state,
-            });
-          }
           throw withState(error, state);
         }
         const retryDelay = retryAfterMilliseconds(error?.headers) ??
@@ -789,7 +786,7 @@ async function consumeCompletionStream(stream, stage, state, metrics) {
             continue;
           }
           metrics?.recordPostFinishShape(postFinishShape);
-          throw malformedStream(state, metrics, "post-finish");
+          throw malformedStream(state, metrics, "post-finish", { postFinishShape });
         }
         if (choice === null || typeof choice !== "object" || Array.isArray(choice)) {
           throw malformedStream(state, metrics, "choice-invalid");
@@ -982,17 +979,37 @@ function classifyPostFinishChoice(choices, choice, finishReason) {
   if (prototype !== Object.prototype && prototype !== null) {
     return "delta-invalid";
   }
-  if (Object.hasOwn(delta, "content")) return "delta-content";
-  if (Object.hasOwn(delta, "reasoning_content")) return "delta-reasoning";
+  const hasContent = Object.hasOwn(delta, "content");
+  const hasReasoning = Object.hasOwn(delta, "reasoning_content");
+  if (hasContent && !emptyStreamText(delta.content)) return "delta-content";
+  if (hasReasoning && !emptyStreamText(delta.reasoning_content)) return "delta-reasoning";
   if (Object.hasOwn(delta, "tool_calls")) return "delta-tool-calls";
-  return Reflect.ownKeys(delta).length === 0 ? undefined : "delta-extension";
+  const keys = Reflect.ownKeys(delta);
+  if (keys.some((key) => key !== "content" && key !== "reasoning_content")) {
+    return "delta-extension";
+  }
+  // Only empty text keys remain; they are still rejected but reported apart from carried text.
+  if (hasContent) return "delta-content-empty";
+  if (hasReasoning) return "delta-reasoning-empty";
+  return undefined;
+
+  function emptyStreamText(value) {
+    return value === undefined || value === null || value === "";
+  }
 }
 
-function malformedStream(state, metrics, violation = "stream-structure-invalid") {
+// A structurally malformed stream is a provider transport defect rather than invalid model output:
+// nothing from the attempt is committed, so the unchanged logical call is safe to resend.
+function malformedStream(state, metrics, violation = "stream-structure-invalid", {
+  cause, postFinishShape,
+} = {}) {
   metrics?.recordStreamStructuralViolation(violation);
-  return new AgentFailure("provider stream was malformed", {
-    category: "provider-response", state,
+  const error = new AgentFailure("provider stream was malformed", {
+    cause, category: "provider-response", retryable: true, state,
   });
+  error.streamStructuralViolation = violation;
+  if (postFinishShape !== undefined) error.postFinishShape = postFinishShape;
+  return error;
 }
 
 function retryBackoffMilliseconds(retryIndex) {
