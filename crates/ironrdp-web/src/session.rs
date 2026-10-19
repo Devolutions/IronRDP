@@ -1006,6 +1006,12 @@ impl iron_remote_desktop::Session for Session {
                         //
                         // Therefore, we need to scale the cursor sprite down to 32x32 if it is
                         // bigger than that.
+                        // Its transparent margin is cut off first, so that only what shows is scaled, if anything.
+                        // UNTESTED: the size, hotspot and pixels below all come from the cropped pointer.
+                        // Mixing in the original's would misplace the hotspot or shrink the arrow again.
+                        // When changing this code, check that the shadowed `pointer` still covers all three.
+                        let cropped = crate::cursor::crop_transparent(&pointer);
+                        let pointer = cropped.as_ref().unwrap_or(&pointer);
                         const MAX_CURSOR_SIZE: u16 = 32;
                         // INVARIANT: 0 < scale <= 1.0
                         // INVARIANT: pointer.width * scale <= MAX_CURSOR_SIZE
