@@ -77,7 +77,11 @@ pub fn wrap_uncompressed(data: &[u8]) -> Vec<u8> {
     if data.len() <= ZGFX_SEGMENTED_MAXSIZE {
         wrap_single_segment(data, false)
     } else {
-        wrap_multipart_segments(data, false)
+        let segments: Vec<(bool, &[u8])> = data
+            .chunks(ZGFX_SEGMENTED_MAXSIZE)
+            .map(|chunk| (false, chunk))
+            .collect();
+        wrap_multipart(data.len(), &segments)
     }
 }
 
@@ -182,21 +186,6 @@ fn wrap_single_segment(data: &[u8], compressed: bool) -> Vec<u8> {
     output.extend_from_slice(data);
 
     output
-}
-
-/// Wrap data in multiple ZGFX segments
-///
-/// # Arguments
-///
-/// * `data` - Data to wrap
-/// * `compressed` - Whether the data is already ZGFX-compressed
-fn wrap_multipart_segments(data: &[u8], compressed: bool) -> Vec<u8> {
-    let segments: Vec<(bool, &[u8])> = data
-        .chunks(ZGFX_SEGMENTED_MAXSIZE)
-        .map(|segment| (compressed, segment))
-        .collect();
-
-    wrap_multipart(data.len(), &segments)
 }
 
 #[cfg(test)]

@@ -21,7 +21,8 @@ pub enum CompressionMode {
     Never,
     /// Compress and use the smaller result (bandwidth vs CPU trade-off).
     Auto,
-    /// Always compress (best bandwidth).
+    /// Always compress (best bandwidth), except a segment that compression would grow by
+    /// more than 1,000 bytes (MS-RDPEGFX 3.1.9.1.2), which is sent uncompressed.
     Always,
 }
 
@@ -224,9 +225,15 @@ mod tests {
         out
     }
 
-    /// Decompresses a multipart message one segment at a time and checks that no segment
-    /// decompresses to more than 65535 bytes. Returns the segment layout and the output.
-    fn decompress_checked(decompressor: &mut super::super::Decompressor, wrapped: &[u8]) -> (Vec<bool>, Vec<u8>) {
+    /// Decompresses a multipart message one segment at a time with `per_segment` and checks that
+    /// no segment decompresses to more than 65535 bytes, and decompresses the whole message with
+    /// `whole`, as a client does, which must give the same output. Returns the segment layout and
+    /// the output.
+    fn decompress_checked(
+        per_segment: &mut super::super::Decompressor,
+        whole: &mut super::super::Decompressor,
+        wrapped: &[u8],
+    ) -> (Vec<bool>, Vec<u8>) {
         let mut layout = Vec::new();
         let mut output = Vec::new();
 
@@ -240,13 +247,17 @@ mod tests {
             };
 
             let before = output.len();
-            decompressor.decompress(&single, &mut output).unwrap();
+            per_segment.decompress(&single, &mut output).unwrap();
             assert!(
                 output.len() - before <= ZGFX_SEGMENTED_MAXSIZE,
                 "segment decompresses too large"
             );
             layout.push(compressed);
         }
+
+        let mut whole_output = Vec::new();
+        whole.decompress(wrapped, &mut whole_output).unwrap();
+        assert_eq!(whole_output, output, "whole message decompresses differently");
 
         (layout, output)
     }
@@ -272,11 +283,12 @@ mod tests {
         for mode in [CompressionMode::Auto, CompressionMode::Always] {
             let mut compressor = Compressor::new();
             let mut decompressor = Decompressor::new();
+            let mut whole = Decompressor::new();
 
             // Two messages in a row: the second one uses the shared history.
             for _ in 0..2 {
                 let wrapped = compress_and_wrap_egfx(&data, &mut compressor, mode).unwrap();
-                let (layout, output) = decompress_checked(&mut decompressor, &wrapped);
+                let (layout, output) = decompress_checked(&mut decompressor, &mut whole, &wrapped);
 
                 assert_eq!(layout.len(), 2, "mode {mode:?}");
                 assert!(layout.contains(&true), "mode {mode:?}");
@@ -294,8 +306,9 @@ mod tests {
         for mode in [CompressionMode::Auto, CompressionMode::Always] {
             let mut compressor = Compressor::new();
             let mut decompressor = Decompressor::new();
+            let mut whole = Decompressor::new();
             let wrapped = compress_and_wrap_egfx(&data, &mut compressor, mode).unwrap();
-            let (layout, output) = decompress_checked(&mut decompressor, &wrapped);
+            let (layout, output) = decompress_checked(&mut decompressor, &mut whole, &wrapped);
 
             assert_eq!(layout.len(), 3, "mode {mode:?}");
             assert_eq!(output, data, "round trip failed for mode {mode:?}");
@@ -315,8 +328,9 @@ mod tests {
         for mode in [CompressionMode::Auto, CompressionMode::Always] {
             let mut compressor = Compressor::new();
             let mut decompressor = Decompressor::new();
+            let mut whole = Decompressor::new();
             let wrapped = compress_and_wrap_egfx(&data, &mut compressor, mode).unwrap();
-            let (layout, output) = decompress_checked(&mut decompressor, &wrapped);
+            let (layout, output) = decompress_checked(&mut decompressor, &mut whole, &wrapped);
 
             assert_eq!(layout, [false, true], "mode {mode:?}");
             assert_eq!(output, data, "round trip failed for mode {mode:?}");
@@ -333,8 +347,9 @@ mod tests {
 
         let mut compressor = Compressor::new();
         let mut decompressor = Decompressor::new();
+        let mut whole = Decompressor::new();
         let wrapped = compress_and_wrap_egfx(&data, &mut compressor, CompressionMode::Always).unwrap();
-        let (layout, output) = decompress_checked(&mut decompressor, &wrapped);
+        let (layout, output) = decompress_checked(&mut decompressor, &mut whole, &wrapped);
 
         assert_eq!(layout, [true, false]);
         assert_eq!(output, data);
