@@ -3,8 +3,10 @@
 use core::num::{NonZeroU16, NonZeroUsize};
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use ironrdp_egfx::avc444::{Yuv420Planes, Yuv444Frame};
 use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;
 use ironrdp_pdu::codecs::rfx;
+use ironrdp_pdu::geometry::ExclusiveRectangle;
 use ironrdp_server::BitmapUpdate;
 use ironrdp_server::bench::encoder::rfx::{rfx_enc, rfx_enc_tile};
 
@@ -76,5 +78,38 @@ pub fn to_ycbcr_bench(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, rfx_enc_tile_bench, rfx_enc_bench, to_ycbcr_bench);
+pub fn avc444_bench(c: &mut Criterion) {
+    // A 1080p picture, coded as 1920x1088, with one region covering it.
+    const WIDTH: usize = 1920;
+    const HEIGHT: usize = 1080;
+    const CODED_HEIGHT: usize = 1088;
+
+    let y = vec![0u8; WIDTH * CODED_HEIGHT];
+    let uv = vec![0u8; WIDTH / 2 * CODED_HEIGHT / 2];
+    let view = Yuv420Planes {
+        width: u32::try_from(WIDTH).expect("can't panic"),
+        y: &y,
+        y_stride: WIDTH,
+        u: &uv,
+        u_stride: WIDTH / 2,
+        v: &uv,
+        v_stride: WIDTH / 2,
+    };
+    let region = [ExclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: u16::try_from(WIDTH).expect("can't panic"),
+        bottom: u16::try_from(HEIGHT).expect("can't panic"),
+    }];
+    let mut frame = Yuv444Frame::new(WIDTH, HEIGHT).expect("frame");
+
+    c.bench_function("avc444_main_view", |b| {
+        b.iter(|| frame.apply_main_view(&view, &region).expect("main view"))
+    });
+    c.bench_function("avc444_auxiliary_view_v2", |b| {
+        b.iter(|| frame.apply_auxiliary_view_v2(&view, &region).expect("auxiliary view"))
+    });
+}
+
+criterion_group!(benches, rfx_enc_tile_bench, rfx_enc_bench, to_ycbcr_bench, avc444_bench);
 criterion_main!(benches);

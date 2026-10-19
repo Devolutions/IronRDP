@@ -7,6 +7,7 @@ publish = false
 
 [dev-dependencies]
 criterion = "0.8"
+ironrdp-egfx.path = "../ironrdp-egfx"
 ironrdp-graphics.path = "../ironrdp-graphics"
 ironrdp-pdu.path = "../ironrdp-pdu"
 ironrdp-server = { path = "../ironrdp-server", features = ["__bench"] }

@@ -3,9 +3,9 @@ use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_egfx::client::{BitmapUpdate, GraphicsPipelineClient, GraphicsPipelineHandler, Surface};
 use ironrdp_egfx::decode::{DecodedFrame, DecoderResult, H264Decoder};
 use ironrdp_egfx::pdu::{
-    CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitySet, CapabilityVersion,
-    Codec1Type, CreateSurfacePdu, DeleteSurfacePdu, EndFramePdu, GfxPdu, PixelFormat, ResetGraphicsPdu, StartFramePdu,
-    Timestamp, WireToSurface1Pdu,
+    CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitiesV81Flags, CapabilitiesV107Flags,
+    CapabilitySet, CapabilityVersion, Codec1Type, CreateSurfacePdu, DeleteSurfacePdu, EndFramePdu, GfxPdu, PixelFormat,
+    ResetGraphicsPdu, StartFramePdu, Timestamp, WireToSurface1Pdu,
 };
 use ironrdp_graphics::clearcodec::ClearCodecEncoder;
 use ironrdp_graphics::zgfx::wrap_uncompressed;
@@ -181,10 +181,74 @@ fn client_keeps_avc_caps_with_decoder() {
         2,
         "expected both capability sets with decoder present"
     );
-    // V10.x is absent by design: those versions imply AVC444, which the client
-    // cannot decode, and the server would then send only frames it discards.
+    // V10.x is absent from the default capabilities.
     assert_eq!(caps_pdu.0[0].version, CapabilityVersion::V8_1);
     assert_eq!(caps_pdu.0[1].version, CapabilityVersion::V8);
+}
+
+/// A handler that offers V10.7 (AVC444) ahead of the defaults.
+struct Avc444CapsHandler;
+
+impl GraphicsPipelineHandler for Avc444CapsHandler {
+    fn capabilities(&self) -> Vec<CapabilitySet> {
+        vec![
+            CapabilitySet::V10_7 {
+                flags: CapabilitiesV107Flags::empty(),
+            },
+            CapabilitySet::V8_1 {
+                flags: CapabilitiesV81Flags::AVC420_ENABLED,
+            },
+            CapabilitySet::V8 {
+                flags: CapabilitiesV8Flags::empty(),
+            },
+        ]
+    }
+}
+
+/// A decoder that reports YUV420 output, so AVC444 can be advertised.
+struct MockYuvDecoder;
+
+impl H264Decoder for MockYuvDecoder {
+    fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
+        MockH264Decoder.decode(data)
+    }
+
+    fn supports_yuv420(&self) -> bool {
+        true
+    }
+}
+
+fn advertised_versions(client: &mut GraphicsPipelineClient) -> Vec<CapabilityVersion> {
+    let messages = client.start(0).expect("start should succeed");
+    decode_caps_from_message(&messages[0])
+        .0
+        .iter()
+        .map(|cap| cap.version)
+        .collect()
+}
+
+#[test]
+fn client_drops_avc444_caps_when_decoder_lacks_yuv420() {
+    let mut client = GraphicsPipelineClient::new(Box::new(Avc444CapsHandler), Some(Box::new(MockH264Decoder)));
+    assert_eq!(
+        advertised_versions(&mut client),
+        [CapabilityVersion::V8_1, CapabilityVersion::V8]
+    );
+}
+
+#[test]
+fn client_keeps_avc444_caps_with_yuv420_decoder() {
+    let mut client = GraphicsPipelineClient::new(Box::new(Avc444CapsHandler), Some(Box::new(MockYuvDecoder)));
+    assert_eq!(
+        advertised_versions(&mut client),
+        [CapabilityVersion::V10_7, CapabilityVersion::V8_1, CapabilityVersion::V8]
+    );
+}
+
+#[test]
+fn client_drops_all_avc_caps_without_decoder() {
+    let mut client = GraphicsPipelineClient::new(Box::new(Avc444CapsHandler), None);
+    assert_eq!(advertised_versions(&mut client), [CapabilityVersion::V8]);
 }
 
 // ============================================================================

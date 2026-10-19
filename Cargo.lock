@@ -2693,6 +2693,7 @@ name = "ironrdp-bench"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "ironrdp-egfx",
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-server",
