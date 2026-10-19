@@ -96,17 +96,14 @@ pub fn wrap_uncompressed_recorded(data: &[u8], compressor: &mut Compressor) -> V
     wrap_uncompressed(data)
 }
 
-/// Largest growth of a chunk through compression that `Always` mode still accepts.
-const ZGFX_MAX_EXPANSION: usize = 1000;
-
 /// Compress input larger than one segment as a multipart message.
 ///
 /// Each segment decompresses to at most `ZGFX_SEGMENTED_MAXSIZE` bytes
 /// (MS-RDPEGFX 3.1.9.1). The chunks go through the compressor in order, so its
 /// history stays in step with the client, which decompresses segments in order.
-/// A chunk whose compressed form is not usable (too large, or in `Auto` mode not
-/// smaller, or in `Always` mode grown by more than `ZGFX_MAX_EXPANSION`) is sent
-/// raw; the client adds raw segments to its history as well.
+/// A chunk whose compressed form is not usable is sent raw, with the same rules
+/// as a single segment: too large for a segment, or in `Auto` mode not smaller.
+/// The client adds raw segments to its history as well.
 fn compress_and_wrap_multipart(
     data: &[u8],
     compressor: &mut Compressor,
@@ -118,10 +115,7 @@ fn compress_and_wrap_multipart(
     for chunk in chunks.clone() {
         let compressed = compressor.compress(chunk)?;
         let usable = compressed.len() <= ZGFX_SEGMENTED_MAXSIZE
-            && match mode {
-                CompressionMode::Always => compressed.len() <= chunk.len() + ZGFX_MAX_EXPANSION,
-                _ => compressed.len() < chunk.len(),
-            };
+            && (mode == CompressionMode::Always || compressed.len() < chunk.len());
 
         compressed_chunks.push(usable.then_some(compressed));
     }
@@ -200,13 +194,7 @@ mod tests {
         use super::super::Decompressor;
 
         let text = b"a tile of text that repeats later in the session, ".repeat(40);
-        let mut state: u32 = 0x1234_5678;
-        let entropy_coded: Vec<u8> = core::iter::repeat_with(|| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            u8::try_from(state >> 24).unwrap()
-        })
-        .take(8_000)
-        .collect();
+        let entropy_coded = pseudo_random(8_000, 0x1234_5678);
 
         let mut compressor = Compressor::new();
         let mut decompressor = Decompressor::new();
@@ -344,10 +332,11 @@ mod tests {
     }
 
     #[test]
-    fn always_mode_sends_badly_expanding_chunk_raw() {
+    fn always_mode_compresses_expanding_chunk_that_fits() {
         use super::super::Decompressor;
 
-        // The random tail grows by more than 1000 bytes when compressed, but still fits a segment.
+        // The random tail grows when compressed but still fits a segment, so `Always` mode
+        // sends it compressed, as it does for a single segment.
         let mut data = vec![0x55; ZGFX_SEGMENTED_MAXSIZE];
         data.extend_from_slice(&pseudo_random(20_000, 7));
 
@@ -356,7 +345,7 @@ mod tests {
         let wrapped = compress_and_wrap_egfx(&data, &mut compressor, CompressionMode::Always).unwrap();
         let (layout, output) = decompress_checked(&mut decompressor, &wrapped);
 
-        assert_eq!(layout, [true, false]);
+        assert_eq!(layout, [true, true]);
         assert_eq!(output, data);
     }
 }
