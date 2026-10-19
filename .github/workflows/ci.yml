@@ -245,6 +245,9 @@ jobs:
       - name: Build .NET projects
         run: cd ./ffi/dotnet && dotnet build
 
+      - name: Run .NET smoke tests
+        run: dotnet run --project ./ffi/dotnet/Devolutions.IronRdp.Tests --no-build
+
   feature-matrix-setup:
     name: feature matrix setup
     needs: [formatting]
