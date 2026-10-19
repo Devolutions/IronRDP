@@ -132,34 +132,22 @@ pub fn dependencies(sh: &Shell) -> anyhow::Result<()> {
 pub fn capture_files(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("CAPTURE-FILES");
 
-    let tracked_files = cmd!(sh, "git ls-files -z").output()?;
-    let captures = tracked_files
-        .stdout
-        .split(|byte| *byte == b'\0')
-        .filter(|path| is_capture_file(path))
-        .collect::<Vec<_>>();
+    let captures = cmd!(
+        sh,
+        "git ls-files -z -- ':(glob,icase)**/*.pcap' ':(glob,icase)**/*.pcapng'"
+    )
+    .output()?
+    .stdout;
 
     if !captures.is_empty() {
-        let captures = captures
-            .iter()
-            .map(|path| String::from_utf8_lossy(path))
-            .collect::<Vec<_>>()
-            .join("\n");
         anyhow::bail!(
-            "packet captures must not be tracked; cache them under ignored dependencies instead:\n{}",
-            captures
+            "packet captures must not be tracked; keep them under the ignored `bench-data` directory instead:\n{}",
+            String::from_utf8_lossy(&captures).replace('\0', "\n").trim_end()
         );
     }
 
     println!("All good!");
     Ok(())
-}
-
-fn is_capture_file(path: &[u8]) -> bool {
-    path.rsplit(|byte| *byte == b'/' || *byte == b'\\')
-        .next()
-        .and_then(|name| name.iter().rposition(|byte| *byte == b'.').map(|dot| &name[dot + 1..]))
-        .is_some_and(|extension| extension.eq_ignore_ascii_case(b"pcap") || extension.eq_ignore_ascii_case(b"pcapng"))
 }
 
 pub fn test_settings(sh: &Shell, base: &str, head: &str) -> anyhow::Result<()> {

@@ -1,5 +1,5 @@
+# Upstream: https://github.com/awakecoding/wireshark-rdp
 [upstream]
-repository = "awakecoding/wireshark-rdp"
 revision = "683505a753dfd7a2b27713b3a21e9a6951abacc4"
 
 [[capture]]

@@ -4,24 +4,13 @@ Free-form automation following [`cargo xtask`](https://github.com/matklad/cargo-
 
 ## Benchmark capture corpus
 
-Fetch the pinned benchmark capture corpus before running capture-based benchmarks:
-
 ```PowerShell
 cargo xtask bench corpus-fetch
-```
-
-List the pinned capture identifiers, filenames, digests, and upstream scenario intent with:
-
-```PowerShell
 cargo xtask bench corpus-list
 ```
 
-The fetch command downloads only the files listed in `crates/ironrdp-bench/corpus.toml` from immutable raw URLs at the manifest's Git commit.
-It requires the cross-platform `curl` command to be available on `PATH`.
-It verifies every download and warm-cache entry with the manifest SHA-256 digest before storing files under `bench-data/wireshark-rdp/<revision>/captures`.
-Keep generated benchmark output under `bench-data/benchmark-output`, separate from the corpus cache.
-The ignored `bench-data` directory must never be committed.
-Capture-based commands must work from the verified local cache and must not perform network I/O after this explicit fetch step.
+`corpus-fetch` uses `curl` to download the captures listed in `crates/ironrdp-bench/corpus.toml` from the pinned upstream commit and verifies each SHA-256 digest.
+Verified captures are cached under the ignored `bench-data/wireshark-rdp/<revision>/captures` directory.
 
-To update the corpus, inspect the upstream capture inventory, revise the manifest revision, inventory, scenario intent metadata, and SHA-256 digests together, then run `cargo xtask bench corpus-fetch`.
-Do not commit captures, TLS key material, decrypted payloads, screenshots, or generated output.
+To update the corpus, change the manifest revision, entries, and digests together, then run `cargo xtask bench corpus-fetch`.
+Never commit captures, TLS key material, decrypted payloads, or generated output.
