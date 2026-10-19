@@ -42,39 +42,31 @@ pub fn compress_and_wrap_egfx(
         return compress_and_wrap_multipart(data, compressor, mode);
     }
 
-    match mode {
-        CompressionMode::Never => Ok(wrap_uncompressed(data)),
-        CompressionMode::Auto => {
-            let compressed = compressor.compress(data)?;
-
-            // Only use compressed wrapping if it fits a single segment.
-            // Incompressible data can expand beyond the limit; fall back
-            // to uncompressed.
-            if compressed.len() <= ZGFX_SEGMENTED_MAXSIZE {
-                let wrapped_compressed = wrap_compressed(&compressed);
-                let wrapped_uncompressed = wrap_uncompressed(data);
-
-                if wrapped_compressed.len() < wrapped_uncompressed.len() {
-                    Ok(wrapped_compressed)
-                } else {
-                    Ok(wrapped_uncompressed)
-                }
-            } else {
-                Ok(wrap_uncompressed(data))
-            }
-        }
-        CompressionMode::Always => {
-            let compressed = compressor.compress(data)?;
-
-            if compressed.len() <= ZGFX_SEGMENTED_MAXSIZE {
-                Ok(wrap_compressed(&compressed))
-            } else {
-                // Compressed output too large for single segment;
-                // send uncompressed to avoid invalid segmentation
-                Ok(wrap_uncompressed(data))
-            }
-        }
+    if mode == CompressionMode::Never {
+        return Ok(wrap_uncompressed(data));
     }
+
+    let compressed = compressor.compress(data)?;
+
+    if is_usable(&compressed, data, mode) {
+        Ok(wrap_compressed(&compressed))
+    } else {
+        Ok(wrap_uncompressed(data))
+    }
+}
+
+/// Maximum expansion of a segment when compressed (MS-RDPEGFX 3.1.9.1.2, RDP 8.0 compressor limits).
+const ZGFX_MAX_EXPANSION: usize = 1000;
+
+/// Whether the compressed form of `raw` can be sent in place of it.
+///
+/// It must fit a segment and stay within the spec's expansion limit. In `Auto`
+/// mode it must also be smaller. Otherwise the raw bytes are sent; the client
+/// adds raw segments to its history as well.
+fn is_usable(compressed: &[u8], raw: &[u8], mode: CompressionMode) -> bool {
+    compressed.len() <= ZGFX_SEGMENTED_MAXSIZE
+        && compressed.len() <= raw.len() + ZGFX_MAX_EXPANSION
+        && (mode == CompressionMode::Always || compressed.len() < raw.len())
 }
 
 /// Wrap `data` in uncompressed ZGFX segments and record its bytes in the
@@ -101,9 +93,8 @@ pub fn wrap_uncompressed_recorded(data: &[u8], compressor: &mut Compressor) -> V
 /// Each segment decompresses to at most `ZGFX_SEGMENTED_MAXSIZE` bytes
 /// (MS-RDPEGFX 3.1.9.1). The chunks go through the compressor in order, so its
 /// history stays in step with the client, which decompresses segments in order.
-/// A chunk whose compressed form is not usable is sent raw, with the same rules
-/// as a single segment: too large for a segment, or in `Auto` mode not smaller.
-/// The client adds raw segments to its history as well.
+/// Each chunk is sent compressed or raw with the same rules as a single segment
+/// (see `is_usable`).
 fn compress_and_wrap_multipart(
     data: &[u8],
     compressor: &mut Compressor,
@@ -114,9 +105,7 @@ fn compress_and_wrap_multipart(
 
     for chunk in chunks.clone() {
         let compressed = compressor.compress(chunk)?;
-        let usable = compressed.len() <= ZGFX_SEGMENTED_MAXSIZE
-            && (mode == CompressionMode::Always || compressed.len() < chunk.len());
-
+        let usable = is_usable(&compressed, chunk, mode);
         compressed_chunks.push(usable.then_some(compressed));
     }
 
@@ -244,8 +233,11 @@ mod tests {
         for (compressed, payload) in multipart_segments(wrapped) {
             assert!(payload.len() <= ZGFX_SEGMENTED_MAXSIZE);
 
-            let mut single = vec![0xE0, if compressed { 0x24 } else { 0x04 }];
-            single.extend_from_slice(payload);
+            let single = if compressed {
+                wrap_compressed(payload)
+            } else {
+                wrap_uncompressed(payload)
+            };
 
             let before = output.len();
             decompressor.decompress(&single, &mut output).unwrap();
@@ -332,11 +324,10 @@ mod tests {
     }
 
     #[test]
-    fn always_mode_compresses_expanding_chunk_that_fits() {
+    fn always_mode_sends_badly_expanding_chunk_raw() {
         use super::super::Decompressor;
 
-        // The random tail grows when compressed but still fits a segment, so `Always` mode
-        // sends it compressed, as it does for a single segment.
+        // The random tail grows by more than 1000 bytes when compressed, but still fits a segment.
         let mut data = vec![0x55; ZGFX_SEGMENTED_MAXSIZE];
         data.extend_from_slice(&pseudo_random(20_000, 7));
 
@@ -345,7 +336,24 @@ mod tests {
         let wrapped = compress_and_wrap_egfx(&data, &mut compressor, CompressionMode::Always).unwrap();
         let (layout, output) = decompress_checked(&mut decompressor, &wrapped);
 
-        assert_eq!(layout, [true, true]);
+        assert_eq!(layout, [true, false]);
+        assert_eq!(output, data);
+    }
+
+    #[test]
+    fn always_mode_sends_badly_expanding_single_segment_raw() {
+        use super::super::Decompressor;
+
+        // Grows by more than 1000 bytes when compressed, but still fits a segment.
+        let data = pseudo_random(20_000, 7);
+
+        let mut compressor = Compressor::new();
+        let mut decompressor = Decompressor::new();
+        let wrapped = compress_and_wrap_egfx(&data, &mut compressor, CompressionMode::Always).unwrap();
+        assert_eq!(wrapped[1], 0x04, "sent uncompressed");
+
+        let mut output = Vec::new();
+        decompressor.decompress(&wrapped, &mut output).unwrap();
         assert_eq!(output, data);
     }
 }
