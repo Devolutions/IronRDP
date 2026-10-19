@@ -177,6 +177,23 @@ public partial class InclusiveRectangle
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>InclusiveRectangle</c> allocated on Rust side.
+    /// </returns>
+    public static InclusiveRectangle New(ushort left, ushort top, ushort right, ushort bottom)
+    {
+        unsafe
+        {
+            var result = Raw.InclusiveRectangle.New(left, top, right, bottom);
+            if (!result.IsOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            return new InclusiveRectangle(result.Ok);
+        }
+    }
+
     private void Cleanup()
     {
         unsafe

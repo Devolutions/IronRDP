@@ -9,6 +9,9 @@ namespace Devolutions.IronRdp.Raw;
 internal partial struct InclusiveRectangle
 {
 
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "InclusiveRectangle_new", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DiplomatResultInclusiveRectangleIronRdpError New(ushort left, ushort top, ushort right, ushort bottom);
+
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "InclusiveRectangle_get_left", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern ushort GetLeft(InclusiveRectangle* handle);
 

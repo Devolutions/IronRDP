@@ -39,6 +39,32 @@ pub mod ffi {
     pub struct InclusiveRectangle(pub ironrdp::pdu::geometry::InclusiveRectangle);
 
     impl InclusiveRectangle {
+        /// Makes a rectangle from its edges, which are all part of the rectangle.
+        ///
+        /// # Errors
+        ///
+        /// Fails when `right` is left of `left` or `bottom` is above `top`, or when the rectangle
+        /// spans all 65536 columns or rows, because [`Self::get_width`] and [`Self::get_height`]
+        /// could not report that size.
+        pub fn new(left: u16, top: u16, right: u16, bottom: u16) -> Result<Box<InclusiveRectangle>, Box<IronRdpError>> {
+            if !(left <= right && top <= bottom) {
+                return Err("rectangle is inverted".into());
+            }
+
+            if !(right - left < u16::MAX && bottom - top < u16::MAX) {
+                return Err("rectangle is too large".into());
+            }
+
+            Ok(Box::new(InclusiveRectangle(
+                ironrdp::pdu::geometry::InclusiveRectangle {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                },
+            )))
+        }
+
         #[diplomat::attr(auto, getter = "left")]
         pub fn get_left(&self) -> u16 {
             self.0.left
