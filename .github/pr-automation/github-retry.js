@@ -18,7 +18,6 @@ function isTransientError(error) {
 // Bounded retry of transient GitHub server errors for idempotent requests. Installed as an Octokit
 // request hook so every read and write in the state-publication path shares one policy.
 function retryTransientRequests(github, {
-  delaysMs = RETRY_DELAYS_MS,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   onRetry = () => {},
 } = {}) {
@@ -27,18 +26,17 @@ function retryTransientRequests(github, {
       try {
         return await request(options);
       } catch (error) {
-        if (attempt >= delaysMs.length || !isTransientError(error) || !isIdempotentRequest(options)) {
+        if (attempt >= RETRY_DELAYS_MS.length || !isTransientError(error) || !isIdempotentRequest(options)) {
           throw error;
         }
         onRetry({
           method: options.method, url: options.url, status: error.status,
-          attempt: attempt + 1, delayMs: delaysMs[attempt],
+          attempt: attempt + 1, delayMs: RETRY_DELAYS_MS[attempt],
         });
-        await sleep(delaysMs[attempt]);
+        await sleep(RETRY_DELAYS_MS[attempt]);
       }
     }
   });
-  return github;
 }
 
-module.exports = { RETRY_DELAYS_MS, isIdempotentRequest, isTransientError, retryTransientRequests };
+module.exports = { RETRY_DELAYS_MS, retryTransientRequests };
