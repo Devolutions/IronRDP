@@ -24,6 +24,7 @@ use crate::{ColorPointer, DisplayUpdate, Framebuffer, LargePointer, RGBAPointer}
 
 mod bitmap;
 mod fast_path;
+mod pointer_mask;
 pub(crate) mod rfx;
 
 pub(crate) use fast_path::*;
@@ -243,6 +244,7 @@ impl UpdateEncoder {
 
     fn rgba_pointer(ptr: RGBAPointer) -> ServerResult<UpdateFragmenter> {
         let xor_mask = ptr.data;
+        let and_mask = pointer_mask::and_mask_from_alpha(&xor_mask, ptr.width, ptr.height);
 
         let hot_spot = Point16 {
             x: ptr.hot_x,
@@ -254,7 +256,7 @@ impl UpdateEncoder {
             width: ptr.width,
             height: ptr.height,
             xor_mask: &xor_mask,
-            and_mask: &[],
+            and_mask: &and_mask,
         };
         let ptr = PointerAttribute {
             xor_bpp: 32,
@@ -268,6 +270,7 @@ impl UpdateEncoder {
 
     fn large_pointer(ptr: LargePointer) -> ServerResult<UpdateFragmenter> {
         let xor_mask = ptr.data;
+        let and_mask = pointer_mask::and_mask_from_alpha(&xor_mask, ptr.width, ptr.height);
 
         let hot_spot = Point16 {
             x: ptr.hot_x,
@@ -280,7 +283,7 @@ impl UpdateEncoder {
             width: ptr.width,
             height: ptr.height,
             xor_mask: &xor_mask,
-            and_mask: &[],
+            and_mask: &and_mask,
         };
         Ok(UpdateFragmenter::new(
             UpdateCode::LargePointer,

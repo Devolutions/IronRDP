@@ -5,6 +5,7 @@ mod credential_validator;
 mod fast_path;
 mod finalize_timeout;
 mod multitransport_finalize;
+mod pointer_mask;
 mod rdpdr;
 mod rdpei;
 mod remotefx_entropy_coder;
