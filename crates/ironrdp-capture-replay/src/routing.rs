@@ -26,7 +26,6 @@ use sha2::{Digest as _, Sha256};
 use crate::{NegotiatedState, ReplayError, recover_negotiated_state};
 
 const MAX_DESKTOP_DIM: u16 = 8192;
-const DER_SEQUENCE_TAG: u8 = 0x30;
 const MAX_EGFX_OUTPUT_DIM: u16 = 32_766;
 // Match the EGFX compositor's budget for full exported RGBA snapshots.
 const MAX_REPLAY_FRAMEBUFFER_BYTES: usize = 256 * 1024 * 1024;
@@ -738,13 +737,14 @@ pub fn prepare_replay_capture(capture: &Capture) -> Result<(ReplayRouter, Plaint
 pub fn prepare_capture(capture: &Capture) -> Result<PreparedReplay, ReplayError> {
     let plaintext = decrypt_rdp(capture)?;
     let state = recover_negotiated_state(&plaintext)?;
-    // NLA sends DER-encoded CredSSP TSRequest messages before the MCS connection sequence.
-    if plaintext
-        .server
-        .iter()
-        .find_map(|(_, payload)| payload.first())
-        .is_some_and(|first| *first == DER_SEQUENCE_TAG)
-    {
+    // NLA exchanges CredSSP TSRequest messages in both directions before the MCS connection sequence.
+    let begins_with_ts_request = |stream: &PacketStream| {
+        stream
+            .iter()
+            .find(|(_, payload)| !payload.is_empty())
+            .is_some_and(|(_, payload)| is_ts_request_header(payload))
+    };
+    if begins_with_ts_request(&plaintext.client) && begins_with_ts_request(&plaintext.server) {
         return Err(ReplayError::CredsspPrefix);
     }
     let activation = CapturedActivation {
@@ -752,6 +752,21 @@ pub fn prepare_capture(capture: &Capture) -> Result<PreparedReplay, ReplayError>
         compression_type: captured_compression_type(&plaintext),
     };
     Ok(PreparedReplay { activation, plaintext })
+}
+
+/// Whether `bytes` starts with a DER [`TSRequest`] header: a SEQUENCE whose first element is the `[0] version` field.
+///
+/// [`TSRequest`]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cssp/6aac4dea-08ef-47a6-8747-22ea7f6d8685
+fn is_ts_request_header(bytes: &[u8]) -> bool {
+    const DER_SEQUENCE_TAG: u8 = 0x30;
+    const TS_REQUEST_VERSION_TAG: u8 = 0xa0;
+
+    let header_len = match bytes.get(1) {
+        Some(length) if *length < 0x80 => 2,
+        Some(length) if (0x81..=0x84).contains(length) => 2 + usize::from(length & 0x7f),
+        _ => return false,
+    };
+    bytes.first() == Some(&DER_SEQUENCE_TAG) && bytes.get(header_len) == Some(&TS_REQUEST_VERSION_TAG)
 }
 
 fn summarize_report(summary: &mut ReplaySummary, report: &ReplayReport) {

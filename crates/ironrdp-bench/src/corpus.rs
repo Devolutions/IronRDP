@@ -166,25 +166,41 @@ impl Corpus {
 impl Expectation {
     /// Build the expectation that a replay summary satisfies.
     pub fn from_summary(summary: &ReplaySummary) -> Self {
+        // Destructure exhaustively so a new summary field cannot be silently omitted from expectations.
+        let ReplaySummary {
+            lifecycle,
+            client_pdus,
+            connection_pdus,
+            fast_path_pdus,
+            io_channel_pdus,
+            message_channel_pdus,
+            static_channel_pdus,
+            other_server_message_pdus,
+            graphics_updates,
+            final_dimensions,
+            output_fingerprint,
+            gaps,
+            gap_fingerprint,
+        } = summary;
         let observation = || Observation {
-            lifecycle: match summary.lifecycle {
+            lifecycle: match lifecycle {
                 ReplayLifecycle::NeverActivated => Lifecycle::NeverActivated,
                 ReplayLifecycle::Active => Lifecycle::Active,
                 ReplayLifecycle::Deactivated => Lifecycle::Deactivated,
                 ReplayLifecycle::Terminated => Lifecycle::Terminated,
             },
-            client_pdus: summary.client_pdus,
-            connection_pdus: summary.connection_pdus,
-            fast_path_pdus: summary.fast_path_pdus,
-            io_channel_pdus: summary.io_channel_pdus,
-            message_channel_pdus: summary.message_channel_pdus,
-            static_channel_pdus: summary.static_channel_pdus,
-            other_server_message_pdus: summary.other_server_message_pdus,
-            graphics_updates: summary.graphics_updates,
-            final_dimensions: summary.final_dimensions.map(|(width, height)| [width, height]),
-            gaps: summary.gaps,
-            fingerprint: summary.output_fingerprint.clone().unwrap_or_default(),
-            gap_fingerprint: summary.gap_fingerprint.clone(),
+            client_pdus: *client_pdus,
+            connection_pdus: *connection_pdus,
+            fast_path_pdus: *fast_path_pdus,
+            io_channel_pdus: *io_channel_pdus,
+            message_channel_pdus: *message_channel_pdus,
+            static_channel_pdus: *static_channel_pdus,
+            other_server_message_pdus: *other_server_message_pdus,
+            graphics_updates: *graphics_updates,
+            final_dimensions: final_dimensions.map(|(width, height)| [width, height]),
+            gaps: *gaps,
+            fingerprint: output_fingerprint.clone().unwrap_or_default(),
+            gap_fingerprint: gap_fingerprint.clone(),
         };
         match summary.outcome() {
             ReplayOutcome::Complete => Self::Complete(observation()),
@@ -292,8 +308,7 @@ pub fn check(selector: Option<&str>, out: &mut dyn Write) -> anyhow::Result<()> 
         selector.unwrap_or_default()
     );
 
-    let mut counts = [0usize; 3];
-    let mut failures = 0usize;
+    let (mut complete, mut partial, mut unsupported, mut failures) = (0usize, 0usize, 0usize, 0usize);
     for capture in captures {
         let (observed, gaps) = match observe(&cache_dir.join(&capture.file), &capture.sha256) {
             Ok(observed) => observed,
@@ -303,11 +318,11 @@ pub fn check(selector: Option<&str>, out: &mut dyn Write) -> anyhow::Result<()> 
                 continue;
             }
         };
-        counts[match observed {
-            Expectation::Complete(_) => 0,
-            Expectation::Partial(_) => 1,
-            Expectation::Unsupported(_) => 2,
-        }] += 1;
+        match observed {
+            Expectation::Complete(_) => complete += 1,
+            Expectation::Partial(_) => partial += 1,
+            Expectation::Unsupported(_) => unsupported += 1,
+        }
         if observed == capture.expect {
             writeln!(out, "{}: {}", capture.id, observed.outcome())?;
             continue;
@@ -338,7 +353,6 @@ pub fn check(selector: Option<&str>, out: &mut dyn Write) -> anyhow::Result<()> 
         }
     }
 
-    let [complete, partial, unsupported] = counts;
     writeln!(
         out,
         "Capture outcomes: complete={complete}, partial={partial}, unsupported={unsupported}"

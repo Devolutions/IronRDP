@@ -204,11 +204,16 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.9.1
 
+      - name: Corpus cache key
+        id: corpus-key
+        shell: bash
+        run: echo "hash=$(grep -E '^(revision|file|sha256) = ' crates/ironrdp-bench/corpus.toml | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
       - name: Corpus cache
         uses: actions/cache@v5
         with:
           path: ./bench-data/wireshark-rdp
-          key: ${{ runner.os }}-benchmark-corpus-${{ hashFiles('crates/ironrdp-bench/corpus.toml') }}
+          key: ${{ runner.os }}-benchmark-corpus-${{ steps.corpus-key.outputs.hash }}
 
       - name: Fetch corpus
         run: cargo xtask bench corpus-fetch
