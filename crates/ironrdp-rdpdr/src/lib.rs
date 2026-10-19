@@ -55,6 +55,9 @@ pub struct Rdpdr {
     server_capabilities_received: bool,
     printer_capability_negotiated: bool,
     client_id_confirmed: bool,
+    /// Windows can send User Logged On before Client ID Confirm, for example when it
+    /// re-announces the channel after logon; handle it once the client ID is confirmed.
+    user_logged_on_pending: bool,
     post_logon_devices_announced: bool,
     pending_device_announcements: Vec<u32>,
     pending_drive_removals: Vec<u32>,
@@ -82,6 +85,7 @@ impl Rdpdr {
             server_capabilities_received: false,
             printer_capability_negotiated: false,
             client_id_confirmed: false,
+            user_logged_on_pending: false,
             post_logon_devices_announced: false,
             pending_device_announcements: Vec::new(),
             pending_drive_removals: Vec::new(),
@@ -355,6 +359,7 @@ impl Rdpdr {
         self.server_capabilities_received = false;
         self.printer_capability_negotiated = false;
         self.client_id_confirmed = false;
+        self.user_logged_on_pending = false;
         self.post_logon_devices_announced = false;
         self.pending_device_announcements.clear();
         self.manually_announced_device_ids.clear();
@@ -428,7 +433,7 @@ impl Rdpdr {
             .map(|(device, (device_id, _))| (device, device_id))
             .unzip();
 
-        let messages = if device_list.is_empty() {
+        let mut messages = if device_list.is_empty() {
             Vec::new()
         } else {
             self.announce_devices(device_list, device_ids)?
@@ -436,6 +441,9 @@ impl Rdpdr {
 
         self.client_id_confirmed = true;
         self.post_logon_devices_announced = announce_all_devices;
+        if core::mem::take(&mut self.user_logged_on_pending) {
+            messages.extend(self.handle_user_logged_on()?);
+        }
         Ok(messages)
     }
 
@@ -572,9 +580,9 @@ impl Rdpdr {
 
     fn handle_user_logged_on(&mut self) -> PduResult<Vec<SvcMessage>> {
         if !self.client_id_confirmed {
-            return Err(pdu_other_err!(
-                "received RDPDR user logged on before client ID confirmation"
-            ));
+            debug!("Deferring RDPDR user logged on until the client ID is confirmed");
+            self.user_logged_on_pending = true;
+            return Ok(Vec::new());
         }
 
         let mut backend = self.backend.take().expect("missing rdpdr backend");
@@ -862,6 +870,7 @@ mod tests {
         added_drives: Vec<u32>,
         removed_drives: Vec<u32>,
         deferred_messages: Vec<SvcMessage>,
+        user_logged_on_calls: usize,
     }
 
     impl_as_any!(TrackingBackend);
@@ -926,6 +935,11 @@ mod tests {
 
         fn poll_deferred_messages(&mut self) -> PduResult<Vec<SvcMessage>> {
             Ok(core::mem::take(&mut self.deferred_messages))
+        }
+
+        fn handle_user_logged_on(&mut self, _rdpdr: &mut Rdpdr) -> PduResult<Vec<SvcMessage>> {
+            self.user_logged_on_calls += 1;
+            Ok(Vec::new())
         }
     }
 
@@ -1005,6 +1019,85 @@ mod tests {
                 .process(&encoded_server_device_announce_response(device_id, NtStatus::SUCCESS))
                 .expect("process accepted device announcement")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn user_logged_on_before_client_id_confirm_is_deferred() {
+        let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned())
+            .with_drives(Some(vec![(42, "C:".to_owned())]));
+        rdpdr
+            .process(&encoded_server_announce(0x1234))
+            .expect("process server announce");
+
+        assert!(
+            rdpdr
+                .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+                .expect("defer early user logged on")
+                .is_empty()
+        );
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .user_logged_on_calls,
+            0
+        );
+        assert_eq!(
+            rdpdr
+                .process(&encoded_server_client_id_confirm(0x1234))
+                .expect("process server client ID confirm")
+                .len(),
+            1
+        );
+        assert!(
+            rdpdr
+                .process(&encoded_server_device_announce_response(42, NtStatus::SUCCESS))
+                .expect("process accepted device announcement")
+                .is_empty()
+        );
+        assert_eq!(
+            rdpdr
+                .process(&encoded_drive_io_request(42, 0x100, MajorFunction::Close))
+                .expect("process drive close")
+                .len(),
+            1
+        );
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .user_logged_on_calls,
+            1
+        );
+    }
+
+    #[test]
+    fn server_announce_discards_a_deferred_user_logged_on() {
+        let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned())
+            .with_drives(Some(vec![(42, "C:".to_owned())]));
+        rdpdr
+            .process(&encoded_server_announce(0x1234))
+            .expect("process server announce");
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+            .expect("defer early user logged on");
+
+        rdpdr
+            .process(&encoded_server_announce(0x5678))
+            .expect("process replacement server announce");
+        assert!(
+            rdpdr
+                .process(&encoded_server_client_id_confirm(0x5678))
+                .expect("process server client ID confirm")
+                .is_empty()
+        );
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .user_logged_on_calls,
+            0
         );
     }
 
