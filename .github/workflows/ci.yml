@@ -224,20 +224,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2.9.1
-
-      - name: Binary cache
-        uses: actions/cache@v5
-        with:
-          path: |
-            ./.cargo/local_root/bin
-            ./.cargo/local_root/*.source
-            ./.cargo/local_root/*.version
-          key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
-
-      - name: Prepare runner
-        run: cargo xtask ffi install -v
+      - name: Set up the pinned diplomat-tool
+        uses: ./.github/actions/setup-diplomat-tool
 
       - name: Build native library
         run: cargo xtask ffi build -v
@@ -250,6 +238,45 @@ jobs:
 
       - name: Run .NET smoke tests
         run: dotnet run --project ./ffi/dotnet/Devolutions.IronRdp.Tests --no-build
+
+  ffi-bindings-check:
+    name: FFI bindings reproducibility
+    needs: [formatting]
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up the pinned diplomat-tool
+        uses: ./.github/actions/setup-diplomat-tool
+
+      # The solution is built below, after the regenerated bindings pass the drift check.
+      - name: Regenerate C# bindings
+        run: cargo xtask ffi bindings --skip-dotnet-build -v
+
+      - name: Check generated binding drift
+        shell: pwsh
+        run: |
+          $paths = @(
+            "ffi/dotnet/Devolutions.IronRdp/Generated",
+            "ffi/dotnet-interop-conf.toml"
+          )
+          $changes = git status --porcelain=v1 --untracked-files=all -- $paths
+          if ($changes) {
+            [Console]::Error.WriteLine('FFI bindings are not reproducible. Regenerate them with `cargo xtask ffi install` then `cargo xtask ffi bindings` and commit the result.')
+            $changes
+            git --no-pager diff -- $paths
+            exit 1
+          }
+
+      - name: Build native library
+        run: cargo xtask ffi build -v
+
+      - name: Build IronRdp.sln
+        run: dotnet build ffi/dotnet/IronRdp.sln -c Release
+
+      - name: Run .NET smoke tests
+        run: dotnet run --project ffi/dotnet/Devolutions.IronRdp.Tests -c Release --no-build
 
   feature-matrix-setup:
     name: feature matrix setup
@@ -306,7 +333,7 @@ jobs:
   success:
     name: Success
     if: ${{ always() }}
-    needs: [formatting, test-settings, typos, openai-agent, checks, fuzz, web, ffi, feature-matrix-setup, feature-matrix]
+    needs: [formatting, test-settings, typos, openai-agent, checks, fuzz, web, ffi, ffi-bindings-check, feature-matrix-setup, feature-matrix]
     runs-on: ubuntu-latest
 
     steps:
