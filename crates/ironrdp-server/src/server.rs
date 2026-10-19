@@ -5588,7 +5588,7 @@ fn encode_autodetect_request(
 /// headerLength and headerTypeId, common to every auto-detect structure
 /// ([MS-RDPBCGR] 2.2.14.1).
 #[cfg(feature = "egfx")]
-const AUTODETECT_HEADER_SIZE: usize = 2;
+const AUTODETECT_HEADER_SIZE: usize = 1 /* headerLength */ + 1 /* headerTypeId */;
 
 /// Carries an auto-detect request as an RDP_TUNNEL_SUBHEADER, alone in a
 /// Tunnel Data PDU of its own ([MS-RDPBCGR] 1.3.9, [MS-RDPEMT] 2.2.1.1.1).
