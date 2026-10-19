@@ -19,10 +19,11 @@ internal static class SmokeTests
 
             var data = image.Data;
             Equal(64 * 32 * 4, (int)data.Size, "data size");
-            var bytes = new byte[(int)data.Size];
+            var bytes = new byte[(int)data.Size + 1];
             Array.Fill(bytes, (byte)0xff);
             data.Fill(bytes);
-            True(bytes.All(b => b == 0), "new image is zeroed");
+            True(bytes[..^1].All(b => b == 0), "new image is zeroed");
+            Equal((byte)0xff, bytes[^1], "bytes past the image are untouched");
         });
 
         yield return ("vec u8 round-trips bytes", () =>
@@ -34,12 +35,35 @@ internal static class SmokeTests
             True(bytes.SequenceEqual(new byte[] { 1, 2, 3 }), "filled bytes");
         });
 
+        yield return ("fill leaves the rest of a larger buffer alone", () =>
+        {
+            var vec = VecU8.FromBytes(new byte[] { 1, 2, 3 });
+            var bytes = new byte[] { 9, 9, 9, 9, 9 };
+            vec.Fill(bytes);
+            True(bytes.SequenceEqual(new byte[] { 1, 2, 3, 9, 9 }), "filled bytes");
+        });
+
         yield return ("short output buffer surfaces IronRdpException", () =>
         {
             var vec = VecU8.FromBytes(new byte[] { 1, 2, 3 });
             var error = Throws<IronRdpException>(() => vec.Fill(new byte[2]));
             Equal(IronRdpErrorKind.Generic, error.Inner.Kind, "error kind");
             True(error.Message.Contains("buffer is too small"), $"error message: {error.Message}");
+        });
+
+        yield return ("write buf reads into a larger buffer and rejects a short one", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            var buf = WriteBuf.New();
+            var size = (int)connector.StepNoInput(buf).Size.Get();
+
+            var bytes = new byte[size + 1];
+            bytes[size] = 0xff;
+            buf.ReadIntoBuf(bytes);
+            Equal(0x03, (int)bytes[0], "TPKT version");
+            Equal((byte)0xff, bytes[size], "bytes past the data are untouched");
+
+            Throws<IronRdpException>(() => buf.ReadIntoBuf(new byte[size - 1]));
         });
 
         yield return ("pdu find_size reads the TPKT length", () =>
