@@ -17,7 +17,7 @@ TASKS:
   bench replay --capture <ID>
                           Time capture replay of one cached capture
   bench connector --capture <ID>
-                          Time the connector from one cached capture's connection confirm to Connected
+                          Time the connector from construction to Connected on one cached capture
   check fmt               Check formatting
   check lints             Check lints
   check locks             Check for dirty or staged lock files not yet committed

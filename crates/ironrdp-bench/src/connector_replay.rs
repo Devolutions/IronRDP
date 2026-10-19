@@ -1,7 +1,7 @@
 //! Capture-backed connection benchmark for the production `ClientConnector`.
 //!
-//! The connector runs from the captured X.224 Connection Confirm to `Connected`.
-//! It consumes only decrypted server frames; captured client frames only supply its configuration.
+//! Each run constructs the connector, attaches the captured static channels, and steps it to `Connected`.
+//! The captured X.224 Connection Confirm and decrypted server frames are its only input; captured client frames only supply its configuration.
 //! The session that follows `Connected` is measured by the capture replay, not here.
 //!
 //! Known divergences from the captured client:
@@ -108,7 +108,7 @@ impl ConnectorReplay {
         })
     }
 
-    /// Run one fresh connection from the captured confirm to `Connected`.
+    /// Construct a fresh connector and step it to `Connected` from the captured server frames.
     pub fn replay(&self) -> anyhow::Result<ConnectorMeasurement> {
         self.drive().map(|(measurement, _)| measurement)
     }

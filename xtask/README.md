@@ -53,13 +53,14 @@ hyperfine --warmup 1 '.\target\release\corpus-bench.exe replay --capture no-nla-
 
 `corpus-check` rejects a capture listing `replay` unless its expectation renders an active or terminated session.
 
-Time the production connector from the captured connection confirm to `Connected` for one capture that lists `connector`:
+Time the production connector from construction to `Connected` for one capture that lists `connector`:
 
 ```PowerShell
 cargo xtask bench connector --capture no-nla-accepted
 ```
 
-The connector uses a client configuration derived from the captured client frames and consumes only the decrypted server frames.
+Each timed run constructs the connector with a client configuration derived from the captured client frames and steps it to `Connected`.
+The captured Connection Confirm and decrypted server frames are its only input.
 It does not run the TLS handshake, CredSSP, or the session after `Connected`; the replay benchmark measures that session.
 A capture listing `connector` must have a `[capture.connector]` table with the expected step count, outbound frame count, consumed server frames, and SHA-256 of the connector output.
 The benchmark verifies the full output once, then times connections that skip framing and hashing it.

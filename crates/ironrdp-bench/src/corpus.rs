@@ -26,7 +26,7 @@ const MAX_GAP_DETAILS: usize = 16;
 
 /// Benchmark kind that times capture replay of a rendered session.
 pub const REPLAY_BENCHMARK: &str = "replay";
-/// Benchmark kind that times the production connector from the captured connection confirm to `Connected`.
+/// Benchmark kind that times the production connector from construction to `Connected`, fed by captured server frames.
 pub const CONNECTOR_BENCHMARK: &str = "connector";
 const BENCHMARK_KINDS: &[&str] = &[REPLAY_BENCHMARK, CONNECTOR_BENCHMARK];
 
