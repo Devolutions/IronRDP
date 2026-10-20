@@ -184,24 +184,14 @@ impl ActiveStage {
 
     /// Process a frame received from the server.
     ///
-    /// Without an arrival time, bandwidth measurements are answered with an untimed,
-    /// zero-byte result; see [`Self::process_with_timestamp`].
-    pub fn process(
-        &mut self,
-        image: &mut DecodedImage,
-        action: Action,
-        frame: &[u8],
-    ) -> SessionResult<Vec<ActiveStageOutput>> {
-        self.process_with_timestamp(image, action, frame, None)
-    }
-
-    /// Process a frame received from the server, together with its arrival time.
+    /// `received_at` is when the transport read the frame, such as `Framed::last_read_at()`
+    /// from `ironrdp-async` or `ironrdp-blocking`. Use one monotonic clock for every frame, and
+    /// keep the read time for buffered frames so bandwidth measurements reflect network arrival.
+    /// With `None`, a Bandwidth Measure Stop is answered with `timeDelta = 1` and
+    /// `byteCount = 0`, which the server reads as 0 kbps ([\[MS-RDPBCGR\] 3.3.5.14]).
     ///
-    /// The clock stays outside this state machine: `received_at` is the time the transport
-    /// read the frame, from the same monotonic clock for every frame. Frames that were
-    /// buffered must keep their read time so a bandwidth measurement reflects network arrival
-    /// rather than the time spent decoding earlier frames.
-    pub fn process_with_timestamp(
+    /// [\[MS-RDPBCGR\] 3.3.5.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b716fd9a-5a0b-4970-b5d0-f1be451408b7
+    pub fn process(
         &mut self,
         image: &mut DecodedImage,
         action: Action,
@@ -225,9 +215,9 @@ impl ActiveStage {
                 )
             }
             Action::X224 => {
-                let x224_outputs =
-                    self.x224_processor
-                        .process_with_timestamp(frame, &mut self.bulk_decompressor, received_at)?;
+                let x224_outputs = self
+                    .x224_processor
+                    .process(frame, &mut self.bulk_decompressor, received_at)?;
                 let mut stage_outputs = Vec::new();
                 let mut processor_updates = Vec::new();
 

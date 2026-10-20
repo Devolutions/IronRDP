@@ -372,7 +372,7 @@ fn active_stage(
 
         trace!(?action, frame_length = payload.len(), "Frame received");
 
-        let outputs = active_stage.process(image, action, &payload)?;
+        let outputs = active_stage.process(image, action, &payload, framed.last_read_at())?;
 
         for out in outputs {
             match out {

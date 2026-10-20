@@ -73,9 +73,10 @@ pub enum ProcessorOutput {
     /// Auto-detect network characteristics from server ([\[MS-RDPBCGR\] 2.2.14]).
     ///
     /// Currently only surfaces [`AutoDetectRequest::NetworkCharacteristicsResult`].
-    /// RTT and bandwidth measurement requests are answered internally.
+    /// RTT requests and continuous reliable bandwidth measurements are answered internally;
+    /// other bandwidth measurement types are ignored.
     ///
-    /// [\[MS-RDPBCGR\] 2.2.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dc672839-4f4e-40b1-a71c-cd6a959baa38
+    /// [\[MS-RDPBCGR\] 2.2.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/925b8e3a-fe60-43fe-aaff-29f07dc18993
     AutoDetect(AutoDetectRequest),
     /// Slow-path graphics update ([MS-RDPBCGR] 2.2.9.1.1.3).
     /// Raw update payload starting with `updateType(u16)`.
@@ -211,19 +212,9 @@ impl Processor {
 
     /// Processes a received PDU. Returns a vector of [`ProcessorOutput`] that must be processed
     /// in the returned order.
-    pub fn process(
-        &mut self,
-        frame: &[u8],
-        bulk_decompressor: &mut Option<BulkCompressor>,
-    ) -> SessionResult<Vec<ProcessorOutput>> {
-        self.process_with_timestamp(frame, bulk_decompressor, None)
-    }
-
-    /// Processes a frame with its driver-observed arrival time.
     ///
-    /// Supply the same monotonic clock for every frame. Without a timestamp,
-    /// bandwidth replies use a conservative zero-byte measurement.
-    pub fn process_with_timestamp(
+    /// `received_at` is when the transport read the frame; see [`crate::ActiveStage::process`].
+    pub fn process(
         &mut self,
         frame: &[u8],
         bulk_decompressor: &mut Option<BulkCompressor>,
@@ -471,9 +462,10 @@ impl Processor {
         Ok(decompressed)
     }
 
-    /// Counts received session bytes while a continuous bandwidth window is open.
-    /// Exclude framing only when an RDP Security Header is present, counting just
-    /// the bytes after that header ([MS-RDPBCGR] 3.2.5.14).
+    /// Counts received bytes while a continuous bandwidth window is open. When an RDP Security
+    /// Header is present, pass only the bytes after it ([\[MS-RDPBCGR\] 3.2.5.14]).
+    ///
+    /// [\[MS-RDPBCGR\] 3.2.5.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/16ffa852-8aa7-481c-99a0-36c1a9a198f6
     pub(crate) fn record_bandwidth_bytes(&mut self, bytes: usize) {
         self.auto_detect.record_bytes(bytes);
     }
@@ -804,7 +796,7 @@ mod tests {
         let mut processor = Processor::new(StaticChannelSet::new(), 1002, 1003, None, 0);
 
         let outputs = processor
-            .process(&frame, &mut None)
+            .process(&frame, &mut None, None)
             .expect("disconnect provider ultimatum should not be a protocol error");
 
         assert!(matches!(

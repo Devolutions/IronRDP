@@ -371,7 +371,11 @@ impl ReplayRouter {
         if route == ReplayRoute::OtherServerMessage {
             return Ok((route, false));
         }
-        match self.stage.process(&mut self.image, message.action, &message.bytes) {
+        // A replay has no live server to measure bandwidth for.
+        match self
+            .stage
+            .process(&mut self.image, message.action, &message.bytes, None)
+        {
             Ok(outputs) => {
                 if outputs
                     .iter()

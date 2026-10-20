@@ -1,55 +1,42 @@
-//! Client answers to the network auto-detect requests of [MS-RDPBCGR] 2.2.14.
+//! Client answers to the network auto-detect requests of [\[MS-RDPBCGR\] 2.2.14].
 //!
-//! [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dc672839-4f4e-40b1-a71c-cd6a959baa38
+//! [\[MS-RDPBCGR\] 2.2.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/925b8e3a-fe60-43fe-aaff-29f07dc18993
 
 use ironrdp_core::MonotonicInstant;
 use ironrdp_pdu::rdp::autodetect::{
-    AutoDetectRequest, AutoDetectResponse, BW_RESULTS_CONNECT_TIME, BW_RESULTS_CONTINUOUS, BW_START_CONNECT_TIME,
-    BW_START_RELIABLE_UDP, BW_STOP_CONNECT_TIME, BW_STOP_RELIABLE_UDP,
+    AutoDetectRequest, AutoDetectResponse, BW_RESULTS_CONTINUOUS, BW_START_RELIABLE_UDP, BW_STOP_RELIABLE_UDP,
 };
 use tracing::debug;
 
-/// Answers the RTT and bandwidth measurement requests that arrive on one transport.
+/// Answers RTT requests and continuous reliable bandwidth measurements on one transport.
 ///
-/// Each transport keeps its own, because a continuous measurement counts the data received on
-/// the transport it runs on ([MS-RDPBCGR] 3.2.5.14). Timestamps come from the caller, from the
-/// same monotonic clock for every request on that transport.
+/// Connect-time measurements belong to the connection sequence, which `ironrdp-connector`
+/// handles, and lossy-transport measurements are not answered. Each transport keeps its own
+/// responder, because a continuous measurement counts the data received on the transport it
+/// runs on ([\[MS-RDPBCGR\] 3.2.5.14]).
 ///
-/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/16ffa852-8aa7-481c-99a0-36c1a9a198f6
+/// [\[MS-RDPBCGR\] 3.2.5.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/16ffa852-8aa7-481c-99a0-36c1a9a198f6
 #[derive(Debug, Default)]
 pub(crate) struct AutoDetectResponder {
     bandwidth: Option<BandwidthMeasurement>,
 }
 
-/// Size of the auto-detect header fields [MS-RDPBCGR] 3.2.5.14 counts along with payloadLength:
-/// headerLength, headerTypeId, sequenceNumber, requestType and payloadLength itself.
+/// `timeDelta` reported when no timed window exists, and the floor for one that does: the
+/// server divides `byteCount * 8` by it ([\[MS-RDPBCGR\] 3.3.5.14]).
 ///
-/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/16ffa852-8aa7-481c-99a0-36c1a9a198f6
-const AUTO_DETECT_HEADER_LEN: u32 = 8;
-
-/// Reported as `timeDelta` for a window that was not timed, and the floor for one that was:
-/// a server computing `byteCount * 8 / timeDelta` divides by it ([MS-RDPBCGR] 3.3.5.14).
+/// [\[MS-RDPBCGR\] 3.3.5.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b716fd9a-5a0b-4970-b5d0-f1be451408b7
 const UNMEASURABLE_INTERVAL_MS: u32 = 1;
-
-/// Bytes a connect-time Payload or Stop adds to the count: payloadLength plus the auto-detect
-/// header, but not the security header. This is the rule the connector applies to the same PDUs.
-fn counted_len(payload_len: usize) -> u32 {
-    u32::try_from(payload_len)
-        .unwrap_or(u32::MAX)
-        .saturating_add(AUTO_DETECT_HEADER_LEN)
-}
 
 #[derive(Debug)]
 struct BandwidthMeasurement {
     started_at: MonotonicInstant,
     bytes: u32,
-    continuous: bool,
 }
 
 impl AutoDetectResponder {
-    /// Counts received bytes while a continuous bandwidth window is open.
+    /// Counts received bytes while a bandwidth window is open.
     pub(crate) fn record_bytes(&mut self, bytes: usize) {
-        if let Some(measurement) = self.bandwidth.as_mut().filter(|measurement| measurement.continuous) {
+        if let Some(measurement) = self.bandwidth.as_mut() {
             measurement.bytes = measurement
                 .bytes
                 .saturating_add(u32::try_from(bytes).unwrap_or(u32::MAX));
@@ -58,8 +45,8 @@ impl AutoDetectResponder {
 
     /// Returns the response `request` calls for, if any.
     ///
-    /// Without an arrival time, a bandwidth measurement is answered with an untimed, zero-byte
-    /// result.
+    /// Without an arrival time for both the Start and the Stop, a Bandwidth Measure Stop is
+    /// answered with `timeDelta = 1` and `byteCount = 0`.
     pub(crate) fn respond(
         &mut self,
         request: AutoDetectRequest,
@@ -69,55 +56,26 @@ impl AutoDetectResponder {
             AutoDetectRequest::RttRequest { sequence_number, .. } => {
                 Some(AutoDetectResponse::RttResponse { sequence_number })
             }
-            AutoDetectRequest::BandwidthMeasureStart { request_type, .. }
-                if matches!(request_type, BW_START_CONNECT_TIME | BW_START_RELIABLE_UDP) =>
-            {
-                self.bandwidth = received_at.map(|started_at| BandwidthMeasurement {
-                    started_at,
-                    bytes: 0,
-                    continuous: request_type == BW_START_RELIABLE_UDP,
-                });
-                None
-            }
-            AutoDetectRequest::BandwidthMeasurePayload { payload, .. } => {
-                if let Some(measurement) = self.bandwidth.as_mut().filter(|measurement| !measurement.continuous) {
-                    measurement.bytes = measurement.bytes.saturating_add(counted_len(payload.len()));
-                }
+            AutoDetectRequest::BandwidthMeasureStart {
+                request_type: BW_START_RELIABLE_UDP,
+                ..
+            } => {
+                self.bandwidth = received_at.map(|started_at| BandwidthMeasurement { started_at, bytes: 0 });
                 None
             }
             AutoDetectRequest::BandwidthMeasureStop {
                 sequence_number,
-                request_type,
-                payload,
-            } if matches!(request_type, BW_STOP_CONNECT_TIME | BW_STOP_RELIABLE_UDP) => {
-                let continuous = request_type == BW_STOP_RELIABLE_UDP;
-                // A Stop of the other measurement type leaves the open window in place, so a
-                // later Stop of the matching type still reports it.
-                let measurement = if self
-                    .bandwidth
-                    .as_ref()
-                    .is_some_and(|measurement| measurement.continuous == continuous)
-                {
-                    self.bandwidth.take()
-                } else {
-                    None
-                };
-                let stop_bytes = if continuous {
-                    0
-                } else {
-                    counted_len(payload.as_ref().map_or(0, Vec::len))
-                };
-                let (time_delta_ms, byte_count) = match (measurement, received_at) {
+                request_type: BW_STOP_RELIABLE_UDP,
+                ..
+            } => {
+                let (time_delta_ms, byte_count) = match (self.bandwidth.take(), received_at) {
                     (Some(measurement), Some(stopped_at)) => (
                         u32::try_from(stopped_at.duration_since(measurement.started_at).as_millis())
                             .unwrap_or(u32::MAX)
                             .max(UNMEASURABLE_INTERVAL_MS),
-                        measurement.bytes.saturating_add(stop_bytes),
+                        measurement.bytes,
                     ),
                     (Some(measurement), None) => {
-                        // The window was timed but this Stop was not, so there is nothing to
-                        // divide the count by. Log the drop so it does not look like the
-                        // ordinary no-window case.
                         debug!(
                             dropped_bytes = measurement.bytes,
                             "Bandwidth Measure Stop arrived with no arrival time although its window was open; \
@@ -126,27 +84,20 @@ impl AutoDetectResponder {
                         (UNMEASURABLE_INTERVAL_MS, 0)
                     }
                     (None, _) => {
-                        debug!(
-                            continuous,
-                            "Bandwidth Measure Stop arrived with no matching open window; reporting no measurement"
-                        );
+                        debug!("Bandwidth Measure Stop arrived with no open window; reporting no measurement");
                         (UNMEASURABLE_INTERVAL_MS, 0)
                     }
                 };
                 Some(AutoDetectResponse::BandwidthMeasureResults {
                     sequence_number,
-                    response_type: if continuous {
-                        BW_RESULTS_CONTINUOUS
-                    } else {
-                        BW_RESULTS_CONNECT_TIME
-                    },
+                    response_type: BW_RESULTS_CONTINUOUS,
                     time_delta_ms,
                     byte_count,
                 })
             }
             request => {
-                // Lossy-transport measurements are not answered here, and a Network
-                // Characteristics Result needs no answer.
+                // Connect-time measurements only occur during the connection sequence, lossy-transport
+                // measurements are not answered here, and a Network Characteristics Result needs no answer.
                 debug!(?request, "Not answering auto-detect request");
                 None
             }

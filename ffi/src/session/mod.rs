@@ -125,7 +125,11 @@ pub mod ffi {
             action: &Action,
             payload: &[u8],
         ) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
-            let outputs = self.0.process(&mut image.0, action.0, payload)?;
+            // The .NET host calls this right after reading each frame, so the call time stands in
+            // for the arrival time.
+            let outputs = self
+                .0
+                .process(&mut image.0, action.0, payload, Some(crate::utils::monotonic_now()))?;
             Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
         }
 
