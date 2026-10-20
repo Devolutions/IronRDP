@@ -13,7 +13,7 @@ internal partial struct ActiveStageOutput
     internal static unsafe extern ActiveStageOutputType GetEnumType(ActiveStageOutput* handle);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStageOutput_get_response_frame", CallingConvention = CallingConvention.Cdecl)]
-    internal static unsafe extern DiplomatResultBytesSliceIronRdpError GetResponseFrame(ActiveStageOutput* handle);
+    internal static unsafe extern DiplomatResultVecU8IronRdpError GetResponseFrame(ActiveStageOutput* handle);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStageOutput_get_graphics_update", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultInclusiveRectangleIronRdpError GetGraphicsUpdate(ActiveStageOutput* handle);
@@ -25,7 +25,7 @@ internal partial struct ActiveStageOutput
     internal static unsafe extern DiplomatResultDecodedPointerIronRdpError GetPointerBitmap(ActiveStageOutput* handle);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStageOutput_get_windowing_orders", CallingConvention = CallingConvention.Cdecl)]
-    internal static unsafe extern DiplomatResultBytesSliceIronRdpError GetWindowingOrders(ActiveStageOutput* handle);
+    internal static unsafe extern DiplomatResultVecU8IronRdpError GetWindowingOrders(ActiveStageOutput* handle);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStageOutput_get_monitor_layout", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultMonitorLayoutIteratorIronRdpError GetMonitorLayout(ActiveStageOutput* handle);

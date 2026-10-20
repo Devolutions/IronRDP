@@ -7,20 +7,16 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class DecodedPointer
+public partial class DecodedPointer: IDisposable
 {
     private unsafe RustHandle<Raw.DecodedPointer>? _inner;
 
     private static readonly unsafe RustDestructor<Raw.DecodedPointer> _destroy = Raw.DecodedPointer.Destroy;
 
     /// <returns>
-    /// A <c>BytesSlice</c> allocated on Rust side.
+    /// A <c>VecU8</c> allocated on Rust side.
     /// </returns>
-    /// <remarks>
-    /// Lifetime: the returned native-backed value may borrow from the receiver or one or more inputs.
-    /// Source handles stay reachable while the returned value exists.
-    /// </remarks>
-    public BytesSlice Data
+    public VecU8 Data
     {
         get
         {
@@ -30,8 +26,8 @@ public partial class DecodedPointer
                 try
                 {
                     selfLease = _diplomatHandle.Lease(BorrowKind.Shared);
-                    Raw.BytesSlice* result = Raw.DecodedPointer.GetData(selfLease!.Ptr);
-                    return new BytesSlice(result, LifetimeEdge.Move(ref selfLease));
+                    Raw.VecU8* result = Raw.DecodedPointer.GetData(selfLease!.Ptr);
+                    return new VecU8(result);
                 }
                 finally
                 {
@@ -178,5 +174,19 @@ public partial class DecodedPointer
             inner.ReleaseWrapper();
             _inner = null;
         }
+    }
+    /// <summary>
+    /// Releases this wrapper's native resource immediately.
+    /// </summary>
+    /// <remarks>
+    /// Retained-borrow returns sourced from a manually_disposable opaque are
+    /// rejected during generation, so Dispose is not a parent-invalidation API.
+    /// Callers must not race Dispose with calls from another thread. Later calls
+    /// throw <see cref="ObjectDisposedException"/>.
+    /// </remarks>
+    public void Dispose()
+    {
+        Cleanup();
+        GC.SuppressFinalize(this);
     }
 }

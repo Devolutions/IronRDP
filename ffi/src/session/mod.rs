@@ -45,7 +45,7 @@ pub mod ffi {
     use crate::error::{IncorrectEnumTypeError, ValueConsumedError};
     use crate::graphics::ffi::DecodedPointer;
     use crate::pdu::ffi::{Action, FastPathInputEventIterator, InclusiveRectangle};
-    use crate::utils::ffi::{BytesSlice, Position, VecU8};
+    use crate::utils::ffi::{Position, VecU8};
 
     #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque_mut]
@@ -55,7 +55,8 @@ pub mod ffi {
     );
 
     /// The second field holds windowing orders re-encoded as a slow-path Orders update,
-    /// so the byte-oriented getter can borrow them.
+    /// so the byte-oriented getter can return them.
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque]
     pub struct ActiveStageOutput(
         pub ironrdp::session::ActiveStageOutput,
@@ -498,9 +499,9 @@ pub mod ffi {
         }
 
         #[diplomat::attr(auto, getter = "response_frame")]
-        pub fn get_response_frame<'a>(&'a self) -> Result<Box<BytesSlice<'a>>, Box<IronRdpError>> {
+        pub fn get_response_frame(&self) -> Result<Box<VecU8>, Box<IronRdpError>> {
             match &self.0 {
-                ironrdp::session::ActiveStageOutput::ResponseFrame(frame) => Ok(Box::new(BytesSlice(frame))),
+                ironrdp::session::ActiveStageOutput::ResponseFrame(frame) => Ok(Box::new(VecU8(frame.clone()))),
                 _ => Err(IncorrectEnumTypeError::on_variant("ResponseFrame")
                     .of_enum("ActiveStageOutput")
                     .into()),
@@ -543,10 +544,10 @@ pub mod ffi {
         }
 
         #[diplomat::attr(auto, getter = "windowing_orders")]
-        pub fn get_windowing_orders<'a>(&'a self) -> Result<Box<BytesSlice<'a>>, Box<IronRdpError>> {
+        pub fn get_windowing_orders(&self) -> Result<Box<VecU8>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::WindowingOrders(_) => match &self.1 {
-                    Some(Ok(update)) => Ok(Box::new(BytesSlice(update))),
+                    Some(Ok(update)) => Ok(Box::new(VecU8(update.clone()))),
                     Some(Err(error)) => Err(error.as_str().into()),
                     None => Err("windowing orders were not encoded".into()),
                 },

@@ -249,10 +249,9 @@ public partial class MainWindow : Window
                 byte[] buffer;
                 lock (_stageLock)
                 {
-                    var data = _decodedImage!.Data;
-                    bufferSize = (int)data.Size;
+                    bufferSize = (int)_decodedImage!.DataSize;
                     buffer = new byte[bufferSize];
-                    data.Fill(buffer);
+                    _decodedImage.FillData(buffer);
                     width = _decodedImage.Width;
                     height = _decodedImage.Height;
                 }
@@ -546,7 +545,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                var output =
+                using var output =
                     outputIterator
                         .Next()!; // outputIterator.Next() is not null since outputIterator.IsEmpty() is false
                 if (output.EnumType == ActiveStageOutputType.Terminate)
@@ -557,7 +556,7 @@ public partial class MainWindow : Window
                 if (output.EnumType == ActiveStageOutputType.ResponseFrame)
                 {
                     // Send the response frame to the server
-                    var responseFrame = output.ResponseFrame;
+                    using var responseFrame = output.ResponseFrame;
                     byte[] responseFrameBytes = new byte[responseFrame.Size];
                     responseFrame.Fill(responseFrameBytes);
                     await _framed!.Write(responseFrameBytes);
@@ -589,8 +588,10 @@ public partial class MainWindow : Window
 
                         lock (_stageLock)
                         {
+                            var previousImage = _decodedImage;
                             _decodedImage = DecodedImage.New(PixelFormat.RgbA32, desktopSize.Width,
                                 desktopSize.Height);
+                            previousImage?.Dispose();
 
                             _activeStage!.Reactivate(
                                 ioChannelId,
