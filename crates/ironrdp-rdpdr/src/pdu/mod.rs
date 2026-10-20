@@ -365,6 +365,35 @@ impl Encode for RdpdrPdu {
 
 impl SvcEncode for RdpdrPdu {}
 
+/// A [2.2.1.5] Device I/O Response (DR_DEVICE_IOCOMPLETION) with no reply body after the header.
+///
+/// Completes requests that have no response layout of their own, such as one whose MajorFunction or
+/// MinorFunction is not described by MS-RDPEFS.
+///
+/// [2.2.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/1c412a84-0776-4984-b35c-3f0445fcae65
+pub(crate) struct DeviceIoCompletion(pub(crate) DeviceIoResponse);
+
+impl Encode for DeviceIoCompletion {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        SharedHeader {
+            component: Component::RdpdrCtypCore,
+            packet_id: PacketId::CoreDeviceIoCompletion,
+        }
+        .encode(dst)?;
+        self.0.encode(dst)
+    }
+
+    fn name(&self) -> &'static str {
+        "DR_DEVICE_IOCOMPLETION"
+    }
+
+    fn size(&self) -> usize {
+        SharedHeader::SIZE + self.0.size()
+    }
+}
+
+impl SvcEncode for DeviceIoCompletion {}
+
 impl fmt::Debug for RdpdrPdu {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

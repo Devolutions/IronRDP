@@ -17,7 +17,7 @@ use pdu::efs::{
     VERSION_MINOR_12, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
-use pdu::{PacketId, RdpdrPdu, SharedHeader};
+use pdu::{DeviceIoCompletion, PacketId, RdpdrPdu, SharedHeader};
 use tracing::{debug, trace, warn};
 
 pub mod backend;
@@ -801,8 +801,8 @@ impl Rdpdr {
     /// this client does not implement, so that the server receives a failure status instead of the
     /// whole channel being torn down.
     ///
-    /// Returns `None` for requests [`ServerDriveIoRequest::decode`] accepts, and for truncated
-    /// requests, which are left to fail decoding as malformed.
+    /// Returns `None` for requests [`ServerDriveIoRequest::decode`] accepts, and for requests whose
+    /// size does not match their declared buffer length, which are left to fail decoding as malformed.
     fn unsupported_drive_io_response(dev_io_req: &DeviceIoRequest, body: &[u8]) -> Option<SvcMessage> {
         // DR_DRIVE_SET_VOLUME_INFORMATION_REQ: FsInformationClass, Length, Padding (24 bytes), SetVolumeBuffer.
         const SET_VOLUME_INFORMATION_FIXED_PART_SIZE: usize = 4 + 4 + 24;
@@ -863,9 +863,12 @@ impl Rdpdr {
                 // > protocol, the request SHOULD be completed with a Device I/O Response message that has the
                 // > IoStatus field set to STATUS_UNSUCCESSFUL.
                 // source: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/9925f2e4-8d5a-4777-a41a-7ba6ef6e8bff
-                _ => RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
-                    device_io_response: DeviceIoResponse::new(dev_io_req.clone(), NtStatus::UNSUCCESSFUL),
-                }),
+                _ => {
+                    return Some(SvcMessage::from(DeviceIoCompletion(DeviceIoResponse::new(
+                        dev_io_req.clone(),
+                        NtStatus::UNSUCCESSFUL,
+                    ))));
+                }
             },
             _ => return None,
         };
@@ -880,8 +883,8 @@ impl Rdpdr {
     }
 }
 
-/// Reads the information class and the length of the trailing buffer of a drive request,
-/// or returns `None` when the request is too short to hold them and that buffer.
+/// Reads the information class and the length of the trailing buffer of a drive request, or
+/// returns `None` unless the request holds exactly its fixed part and that buffer.
 fn read_class_and_length(body: &[u8], fixed_part_size: usize, length_offset: usize) -> Option<(u32, u32)> {
     let read_u32 = |offset: usize| {
         body.get(offset..offset + 4)
@@ -892,7 +895,7 @@ fn read_class_and_length(body: &[u8], fixed_part_size: usize, length_offset: usi
     let length = read_u32(length_offset)?;
     let buffer_end = fixed_part_size.checked_add(usize::try_from(length).ok()?)?;
 
-    (body.len() >= buffer_end).then_some((class, length))
+    (body.len() == buffer_end).then_some((class, length))
 }
 
 impl SvcProcessor for Rdpdr {

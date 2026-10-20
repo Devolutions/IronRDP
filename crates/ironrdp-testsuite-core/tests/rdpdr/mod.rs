@@ -811,11 +811,11 @@ fn drive_directory_control_with_unknown_minor_function_is_completed_as_unsuccess
     let request = encoded_drive_device_io_request(MajorFunction::DirectoryControl, MinorFunction::from(0x99));
 
     let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::UNSUCCESSFUL);
-    assert_eq!(encoded.len(), 20); // Shares the DR_CLOSE_RSP layout, with its 4 bytes of padding
+    assert_eq!(encoded.len(), 16); // Header-only DR_DEVICE_IOCOMPLETION
 }
 
 #[test]
-fn truncated_unsupported_drive_irps_are_still_decode_errors() {
+fn malformed_unsupported_drive_irps_are_still_decode_errors() {
     let mut rdpdr = acknowledged_drive();
 
     let mut request = encoded_drive_information_request(MajorFunction::SetVolumeInformation, 0x02, &[0; 4]);
@@ -828,6 +828,15 @@ fn truncated_unsupported_drive_irps_are_still_decode_errors() {
 
     let mut request = encoded_drive_information_request(MajorFunction::QueryVolumeInformation, 6, &[]);
     request.pop();
+    assert!(rdpdr.process(&request).is_err());
+
+    // Trailing data after the declared buffer
+    let mut request = encoded_drive_information_request(MajorFunction::SetVolumeInformation, 0x02, &[0; 4]);
+    request.push(0);
+    assert!(rdpdr.process(&request).is_err());
+
+    let mut request = encoded_drive_information_request(MajorFunction::SetInformation, 14, &[0; 8]);
+    request.push(0);
     assert!(rdpdr.process(&request).is_err());
 }
 
