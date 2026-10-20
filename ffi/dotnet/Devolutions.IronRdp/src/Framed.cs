@@ -4,8 +4,11 @@ namespace Devolutions.IronRdp;
 
 public class Framed<TS> where TS : Stream
 {
+    private const int ReadChunkSize = 8192;
+
     private readonly TS _stream;
-    private List<byte> _buffer;
+    private readonly List<byte> _buffer;
+    private readonly byte[] _readBuffer = new byte[ReadChunkSize];
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
     public Framed(TS stream)
@@ -21,9 +24,10 @@ public class Framed<TS> where TS : Stream
 
     public async Task<(Action, byte[])> ReadPdu()
     {
+        var pdu = IronRdpPdu.New();
         while (true)
         {
-            var pduInfo = IronRdpPdu.New().FindSize(this._buffer.ToArray());
+            var pduInfo = pdu.FindSize(this._buffer.ToArray());
 
             // Don't remove, FindSize is generated and can return null
             if (null != pduInfo)
@@ -64,8 +68,8 @@ public class Framed<TS> where TS : Stream
         {
             if (_buffer.Count >= (int)size)
             {
-                var res = this._buffer.Take((int)size).ToArray();
-                this._buffer = this._buffer.Skip((int)size).ToList();
+                var res = CollectionsMarshal.AsSpan(this._buffer)[..(int)size].ToArray();
+                this._buffer.RemoveRange(0, (int)size);
                 return res;
             }
 
@@ -79,10 +83,8 @@ public class Framed<TS> where TS : Stream
 
     async Task<int> Read()
     {
-        var buffer = new byte[8096];
-        Memory<byte> memory = buffer;
-        var size = await this._stream.ReadAsync(memory);
-        this._buffer.AddRange(buffer.Take(size));
+        var size = await this._stream.ReadAsync(_readBuffer.AsMemory());
+        this._buffer.AddRange(_readBuffer.AsSpan(0, size));
         return size;
     }
 
