@@ -15,7 +15,7 @@ use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tracing::{debug, trace};
 
 use crate::error::{UdpTransportError, UdpTransportErrorExt as _};
-use crate::transport::TunnelMessage;
+use crate::transport::{ReceivedMessage, TunnelMessage};
 
 /// Read a complete RDPEMT PDU from the stream using self-framing.
 ///
@@ -129,13 +129,18 @@ where
 pub(crate) async fn tunnel_data_loop<S>(
     stream: &mut S,
     tunnel: &mut RdpemtTunnel,
-    data_tx: &tokio::sync::mpsc::Sender<TunnelMessage>,
+    data_tx: &tokio::sync::mpsc::Sender<ReceivedMessage>,
 ) -> Result<(), UdpTransportError>
 where
     S: AsyncRead + Unpin,
 {
     loop {
-        let pdu = match read_tunnel_pdu(stream).await {
+        let read = read_tunnel_pdu(stream).await;
+        // Stamp the PDU now, before it waits in the channel, so a bandwidth
+        // measurement sees when it came off the tunnel rather than when the
+        // application got to it.
+        let received_at = ironrdp_async::monotonic_now();
+        let pdu = match read {
             Ok(Some(pdu)) => pdu,
             // Clean shutdown: EOF before any byte of a new PDU.
             Ok(None) => {
@@ -164,7 +169,11 @@ where
                         sub_headers = sub_headers.len(),
                         "Forwarding tunnel data"
                     );
-                    if data_tx.send(TunnelMessage { sub_headers, data }).await.is_err() {
+                    let received = ReceivedMessage {
+                        message: TunnelMessage { sub_headers, data },
+                        received_at,
+                    };
+                    if data_tx.send(received).await.is_err() {
                         debug!("Tunnel data receiver dropped, stopping read pump");
                         // Application dropped the receiver
                         return Ok(());
@@ -298,12 +307,16 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let mut stream = io::Cursor::new(wire);
+        let before = ironrdp_async::monotonic_now();
         tunnel_data_loop(&mut stream, &mut tunnel, &tx)
             .await
             .expect("clean EOF");
+        let after = ironrdp_async::monotonic_now();
 
-        let message = rx.recv().await.expect("one message");
-        assert_eq!(message.sub_headers, vec![sub_header]);
-        assert!(message.data.is_empty());
+        let received = rx.recv().await.expect("one message");
+        assert_eq!(received.message.sub_headers, vec![sub_header]);
+        assert!(received.message.data.is_empty());
+        // The pump stamps the read on the clock the main connection's reader uses.
+        assert!(before <= received.received_at && received.received_at <= after);
     }
 }
