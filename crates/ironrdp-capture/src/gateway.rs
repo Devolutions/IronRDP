@@ -220,9 +220,7 @@ fn data_packets(frames: &PacketStream) -> Result<PacketStream, CaptureError> {
         return Err(CaptureError::GatewayFraming("truncated gateway packet".to_owned()));
     }
     if output.is_empty() {
-        return Err(CaptureError::GatewayFraming(
-            "gateway tunnel does not contain RDP data".to_owned(),
-        ));
+        return Err(CaptureError::MissingTunneledRdp);
     }
     Ok(output)
 }

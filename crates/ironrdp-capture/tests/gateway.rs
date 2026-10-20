@@ -185,7 +185,7 @@ fn rejects_tunneled_capture_without_data_packets() {
 
     assert!(matches!(
         extract_tunneled_rdp(&plaintext),
-        Err(CaptureError::GatewayFraming(_))
+        Err(CaptureError::MissingTunneledRdp)
     ));
 }
 

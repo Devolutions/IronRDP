@@ -76,8 +76,7 @@ pub fn extract_rpch_from_flows(flows: &[Plaintext]) -> Result<Option<Plaintext>,
             }
         }
     }
-    Err(last_error
-        .unwrap_or_else(|| CaptureError::GatewayFraming("RPC-over-HTTP tunnel does not contain RDP data".to_owned())))
+    Err(last_error.unwrap_or(CaptureError::MissingTunneledRdp))
 }
 
 /// Extract the tunneled RDP bytes from a pair of decrypted RPCH channel flows.
@@ -94,9 +93,7 @@ pub fn extract_rpch_tunneled_rdp(input: &Plaintext, output: &Plaintext) -> Resul
     let client = client_rdp_bytes(&client_flat[client_start..], &client_packets, client_start)?;
     let server = server_rdp_bytes(&server_flat[server_start..], &server_packets, server_start)?;
     if client.is_empty() || server.is_empty() {
-        return Err(CaptureError::GatewayFraming(
-            "RPC-over-HTTP tunnel does not contain RDP data".to_owned(),
-        ));
+        return Err(CaptureError::MissingTunneledRdp);
     }
     Ok(Plaintext { client, server })
 }
