@@ -10,7 +10,7 @@ pub use error::CaptureError;
 pub use gateway::{extract_tunneled_rdp, is_gateway_tunnel};
 pub use gateway_rpch::{extract_rpch_from_flows, extract_rpch_tunneled_rdp};
 pub use tls::{Plaintext, decrypt_tls};
-pub use transport::{Capture, Endpoint, Flow, PacketStream, TlsKeyLog, read_capture};
+pub use transport::{Capture, Endpoint, Flow, PacketStream, TlsKeyLog, flatten, read_capture};
 
 /// Decrypt the RDP plaintext of a capture.
 ///

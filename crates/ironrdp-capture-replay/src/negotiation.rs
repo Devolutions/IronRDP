@@ -5,7 +5,7 @@ use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
 use ironrdp_pdu::rdp::headers::{self, ShareControlPdu};
 use ironrdp_pdu::x224::{X224, X224Data};
 
-use ironrdp_capture::Plaintext;
+use ironrdp_capture::{Plaintext, flatten};
 
 use crate::ReplayError;
 
@@ -148,10 +148,6 @@ fn tpkt_frames(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
         }
         None
     })
-}
-
-fn flatten(stream: &ironrdp_capture::PacketStream) -> Vec<u8> {
-    stream.iter().flat_map(|(_, bytes)| bytes).copied().collect()
 }
 
 #[cfg(test)]
