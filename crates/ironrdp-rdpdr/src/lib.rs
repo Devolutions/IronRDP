@@ -7,14 +7,16 @@ use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::efs::{
-    AnyIoCtlCode, Capabilities, ClientDeviceListAnnounce, ClientDeviceListRemove, ClientNameRequest,
-    ClientNameRequestUnicodeFlag, CoreCapability, CoreCapabilityKind, DEFAULT_PRINTER_DRIVER_NAME,
-    DeviceAnnounceHeader, DeviceCloseResponse, DeviceControlRequest, DeviceControlResponse, DeviceCreateResponse,
-    DeviceIoRequest, DeviceIoResponse, DeviceType, Devices, Information, MajorFunction, NtStatus, PrinterIoRequest,
-    ServerDeviceAnnounceResponse, VERSION_MINOR_12, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
+    AnyIoCtlCode, Capabilities, ClientDeviceListAnnounce, ClientDeviceListRemove, ClientDriveQueryDirectoryResponse,
+    ClientDriveQueryVolumeInformationResponse, ClientDriveSetInformationResponse,
+    ClientDriveSetVolumeInformationResponse, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability,
+    CoreCapabilityKind, DEFAULT_PRINTER_DRIVER_NAME, DeviceAnnounceHeader, DeviceCloseResponse, DeviceControlRequest,
+    DeviceControlResponse, DeviceCreateResponse, DeviceIoRequest, DeviceIoResponse, DeviceType, Devices, Information,
+    MajorFunction, NtStatus, PrinterIoRequest, ServerDeviceAnnounceResponse, UnsupportedDriveIoRequest,
+    VERSION_MINOR_12, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
-use pdu::{PacketId, RdpdrPdu, SharedHeader};
+use pdu::{DeviceIoCompletion, PacketId, RdpdrPdu, SharedHeader};
 use tracing::{debug, trace, warn};
 
 pub mod backend;
@@ -671,10 +673,16 @@ impl Rdpdr {
                     }
                     src.advance(CLOSE_REQUEST_PADDING_SIZE);
                 }
-                let req = ServerDriveIoRequest::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
+                let req = ServerDriveIoRequest::decode_or_unsupported(dev_io_req, src).map_err(|e| decode_err!(e))?;
+                // Directory control requests with an undescribed minor function have no defined body,
+                // so their decoding consumes everything and this check never rejects them.
                 if !src.is_empty() {
                     return Err(pdu_other_err!("received filesystem IRP with trailing RDPDR data"));
                 }
+                let req = match req {
+                    Ok(req) => req,
+                    Err(unsupported) => return Ok(vec![Self::unsupported_drive_io_response(unsupported)]),
+                };
 
                 debug!(?req);
 
@@ -781,6 +789,60 @@ impl Rdpdr {
                 Ok(Vec::new())
             }
         }
+    }
+
+    /// Completes a filesystem IRP that is well-formed but asks for a function or information class
+    /// this client does not implement, so that the server receives a failure status instead of the
+    /// whole channel being torn down.
+    ///
+    /// MS-RDPEFS 3.1.5.2 says an unrecognized field value SHOULD terminate the channel, and an
+    /// information class outside a request's table is one. Like FreeRDP, such requests are completed
+    /// with STATUS_NOT_SUPPORTED instead, which keeps the session alive.
+    fn unsupported_drive_io_response(req: UnsupportedDriveIoRequest) -> SvcMessage {
+        let not_supported = |device_io_request| DeviceIoResponse::new(device_io_request, NtStatus::NOT_SUPPORTED);
+
+        let message = match req {
+            UnsupportedDriveIoRequest::SetVolumeInformation {
+                device_io_request,
+                length,
+            } => SvcMessage::from(DeviceIoCompletion::SetVolumeInformation(
+                ClientDriveSetVolumeInformationResponse {
+                    device_io_reply: not_supported(device_io_request),
+                    length,
+                },
+            )),
+            UnsupportedDriveIoRequest::SetInformation {
+                device_io_request,
+                length,
+            } => SvcMessage::from(RdpdrPdu::ClientDriveSetInformationResponse(
+                ClientDriveSetInformationResponse {
+                    device_io_reply: not_supported(device_io_request),
+                    length,
+                },
+            )),
+            UnsupportedDriveIoRequest::QueryVolumeInformation(device_io_request) => SvcMessage::from(
+                RdpdrPdu::ClientDriveQueryVolumeInformationResponse(ClientDriveQueryVolumeInformationResponse {
+                    device_io_reply: not_supported(device_io_request),
+                    buffer: None,
+                }),
+            ),
+            UnsupportedDriveIoRequest::QueryDirectory(device_io_request) => SvcMessage::from(
+                RdpdrPdu::ClientDriveQueryDirectoryResponse(ClientDriveQueryDirectoryResponse {
+                    device_io_reply: not_supported(device_io_request),
+                    buffer: None,
+                }),
+            ),
+            // > If the request contains MajorFunction or MinorFunction fields that are not described by this
+            // > protocol, the request SHOULD be completed with a Device I/O Response message that has the
+            // > IoStatus field set to STATUS_UNSUCCESSFUL.
+            // source: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/9925f2e4-8d5a-4777-a41a-7ba6ef6e8bff
+            UnsupportedDriveIoRequest::DirectoryControl(device_io_request) => SvcMessage::from(
+                DeviceIoCompletion::Bare(DeviceIoResponse::new(device_io_request, NtStatus::UNSUCCESSFUL)),
+            ),
+        };
+        debug!(?message, "Completing unsupported filesystem IRP");
+
+        message
     }
 
     fn unsupported_printer_io_response(device_io_request: DeviceIoRequest) -> SvcMessage {

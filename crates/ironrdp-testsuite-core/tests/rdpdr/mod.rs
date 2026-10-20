@@ -689,6 +689,197 @@ fn printer_cache_pdu_is_ignored_before_decode() {
     assert!(rdpdr.process(&pdu).unwrap().is_empty());
 }
 
+fn acknowledged_drive() -> Rdpdr {
+    let mut rdpdr =
+        Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_drives(Some(vec![(42, "share".to_owned())]));
+
+    let client_id = announce_client_id(&mut rdpdr, 12);
+    assert!(
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .unwrap()
+            .is_empty()
+    );
+    let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
+    assert_eq!(announced_devices(&responses[0]), vec![(42, DeviceType::Filesystem)]);
+    assert!(
+        rdpdr
+            .process(
+                &encode_vec(&RdpdrPdu::ServerDeviceAnnounceResponse(ServerDeviceAnnounceResponse {
+                    device_id: 42,
+                    result_code: NtStatus::SUCCESS,
+                }))
+                .unwrap(),
+            )
+            .unwrap()
+            .is_empty()
+    );
+
+    rdpdr
+}
+
+fn encoded_drive_device_io_request(major_function: MajorFunction, minor_function: MinorFunction) -> Vec<u8> {
+    encode_vec(&RdpdrPdu::DeviceIoRequest(DeviceIoRequest {
+        device_id: 42,
+        file_id: 1,
+        completion_id: 0x100,
+        major_function,
+        minor_function,
+    }))
+    .unwrap()
+}
+
+/// Encodes a request laid out as FsInformationClass, Length, Padding (24 bytes), Buffer, as the
+/// query volume information, set volume information and set information requests are.
+fn encoded_drive_information_request(major_function: MajorFunction, class: u32, buffer: &[u8]) -> Vec<u8> {
+    let mut encoded = encoded_drive_device_io_request(major_function, MinorFunction::from(0));
+    encoded.extend_from_slice(&class.to_le_bytes());
+    encoded.extend_from_slice(&u32::try_from(buffer.len()).unwrap().to_le_bytes());
+    encoded.extend_from_slice(&[0; 24]); // Padding
+    encoded.extend_from_slice(buffer);
+    encoded
+}
+
+/// Encodes a query directory request for `class` with an initial query on `*`.
+fn encoded_drive_query_directory_request(class: u32) -> Vec<u8> {
+    let path = [b'*', 0, 0, 0];
+    let mut encoded =
+        encoded_drive_device_io_request(MajorFunction::DirectoryControl, MinorFunction::IRP_MN_QUERY_DIRECTORY);
+    encoded.extend_from_slice(&class.to_le_bytes());
+    encoded.push(1); // InitialQuery
+    encoded.extend_from_slice(&u32::try_from(path.len()).unwrap().to_le_bytes());
+    encoded.extend_from_slice(&[0; 23]); // Padding
+    encoded.extend_from_slice(&path);
+    encoded
+}
+
+/// Processes `request` and returns the single encoded completion, after checking that it
+/// answers the request and carries `status`.
+fn single_drive_completion(rdpdr: &mut Rdpdr, request: &[u8], status: NtStatus) -> Vec<u8> {
+    let responses = rdpdr.process(request).unwrap();
+    assert_eq!(responses.len(), 1);
+
+    let encoded = responses[0].encode_unframed_pdu().unwrap();
+    assert_eq!(&encoded[..4], &[0x72, 0x44, 0x43, 0x49]); // RDPDR + DEVICE_IOCOMPLETION
+    assert_eq!(read_u32(&encoded[4..]), 42); // DeviceId
+    assert_eq!(read_u32(&encoded[8..]), 0x100); // CompletionId
+    assert_eq!(ntstatus_at(&encoded, 12), status);
+    encoded
+}
+
+#[test]
+fn drive_set_volume_information_is_completed_as_not_supported() {
+    let mut rdpdr = acknowledged_drive();
+    // FileFsLabelInformation: VolumeLabelLength, VolumeLabel ("LB")
+    let label = [4, 0, 0, 0, b'L', 0, b'B', 0];
+    let request = encoded_drive_information_request(MajorFunction::SetVolumeInformation, 0x02, &label);
+
+    let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::NOT_SUPPORTED);
+    assert_eq!(encoded.len(), 20);
+    assert_eq!(read_u32(&encoded[16..]), 8); // Length echoes the request
+
+    // VolumeLabelLength runs past the buffer
+    let request = encoded_drive_information_request(MajorFunction::SetVolumeInformation, 0x02, &[8, 0, 0, 0, b'L', 0]);
+    let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::NOT_SUPPORTED);
+    assert_eq!(read_u32(&encoded[16..]), 6);
+
+    // FileFsObjectIdInformation, outside the one class the request MUST contain
+    let request = encoded_drive_information_request(MajorFunction::SetVolumeInformation, 8, &[0; 4]);
+    let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::NOT_SUPPORTED);
+    assert_eq!(read_u32(&encoded[16..]), 4);
+}
+
+#[test]
+fn drive_irps_with_supported_classes_still_reach_the_backend() {
+    fn assert_reaches_backend(rdpdr: &mut Rdpdr, request: &[u8]) {
+        let error = rdpdr.process(request).unwrap_err();
+        assert!(
+            error.to_string().contains("noop RDPDR backend"),
+            "expected the backend to reject the request, got: {error}"
+        );
+    }
+
+    let mut rdpdr = acknowledged_drive();
+
+    // FileFsSizeInformation
+    let request = encoded_drive_information_request(MajorFunction::QueryVolumeInformation, 3, &[]);
+    assert_reaches_backend(&mut rdpdr, &request);
+
+    // FileEndOfFileInformation: EndOfFile
+    let request = encoded_drive_information_request(MajorFunction::SetInformation, 20, &[0; 8]);
+    assert_reaches_backend(&mut rdpdr, &request);
+
+    let request = encoded_drive_query_directory_request(3); // FileBothDirectoryInformation
+    assert_reaches_backend(&mut rdpdr, &request);
+}
+
+#[test]
+fn drive_set_information_with_unsupported_class_is_completed_as_not_supported() {
+    let mut rdpdr = acknowledged_drive();
+    // FilePositionInformation: CurrentByteOffset
+    let request = encoded_drive_information_request(MajorFunction::SetInformation, 14, &[0; 8]);
+
+    let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::NOT_SUPPORTED);
+    assert_eq!(encoded.len(), 20);
+    assert_eq!(read_u32(&encoded[16..]), 8); // Length echoes the request
+}
+
+#[test]
+fn drive_query_volume_information_with_unsupported_class_is_completed_as_not_supported() {
+    let mut rdpdr = acknowledged_drive();
+    // FileFsControlInformation
+    let request = encoded_drive_information_request(MajorFunction::QueryVolumeInformation, 6, &[]);
+
+    let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::NOT_SUPPORTED);
+    assert_eq!(encoded.len(), 20);
+    assert_eq!(read_u32(&encoded[16..]), 0); // Length
+}
+
+#[test]
+fn drive_query_directory_with_unsupported_class_is_completed_as_not_supported() {
+    let mut rdpdr = acknowledged_drive();
+    let request = encoded_drive_query_directory_request(37); // FileIdBothDirectoryInformation
+
+    let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::NOT_SUPPORTED);
+    assert_eq!(encoded.len(), 21);
+    assert_eq!(read_u32(&encoded[16..]), 0); // Length, followed by one byte of padding
+}
+
+#[test]
+fn drive_directory_control_with_unknown_minor_function_is_completed_as_unsuccessful() {
+    let mut rdpdr = acknowledged_drive();
+    let request = encoded_drive_device_io_request(MajorFunction::DirectoryControl, MinorFunction::from(0x99));
+
+    let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::UNSUCCESSFUL);
+    assert_eq!(encoded.len(), 16); // Header-only DR_DEVICE_IOCOMPLETION
+}
+
+#[test]
+fn malformed_unsupported_drive_irps_are_still_decode_errors() {
+    let mut rdpdr = acknowledged_drive();
+
+    let mut request = encoded_drive_information_request(MajorFunction::SetVolumeInformation, 0x02, &[0; 4]);
+    request.pop();
+    assert!(rdpdr.process(&request).is_err());
+
+    let mut request = encoded_drive_information_request(MajorFunction::SetInformation, 14, &[0; 8]);
+    request.truncate(request.len() - 9);
+    assert!(rdpdr.process(&request).is_err());
+
+    let mut request = encoded_drive_information_request(MajorFunction::QueryVolumeInformation, 6, &[]);
+    request.pop();
+    assert!(rdpdr.process(&request).is_err());
+
+    // Trailing data after the declared buffer
+    let mut request = encoded_drive_information_request(MajorFunction::SetVolumeInformation, 0x02, &[0; 4]);
+    request.push(0);
+    assert!(rdpdr.process(&request).is_err());
+
+    let mut request = encoded_drive_information_request(MajorFunction::SetInformation, 14, &[0; 8]);
+    request.push(0);
+    assert!(rdpdr.process(&request).is_err());
+}
+
 // ─── Server-side decode / encode round-trips ──────────────────────────────
 //
 // The tests above exercise the existing client-side `Rdpdr` processor. These cover the new
