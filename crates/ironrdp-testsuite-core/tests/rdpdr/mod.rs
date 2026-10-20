@@ -534,6 +534,62 @@ fn smartcard_device_announce_remains_pre_logon() {
     assert_eq!(announced_devices(&responses[0]), vec![(42, DeviceType::Print)]);
 }
 
+fn encoded_smartcard_establish_context_request(output_buffer_length: u32) -> Vec<u8> {
+    let mut encoded = encode_vec(&RdpdrPdu::DeviceIoRequest(DeviceIoRequest {
+        device_id: 1,
+        file_id: 0,
+        completion_id: 0x200,
+        major_function: MajorFunction::DeviceControl,
+        minor_function: MinorFunction::from(0),
+    }))
+    .unwrap();
+    // EstablishContext_Call { dwScope: SCARD_SCOPE_USER } in an MS-RPCE type serialization stream.
+    let input = [
+        [0x01, 0x10, 0x08, 0x00, 0xCC, 0xCC, 0xCC, 0xCC], // Common type header
+        [0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // Private header, 8-byte object buffer
+        [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // dwScope + alignment padding
+    ]
+    .concat();
+    encoded.extend_from_slice(&output_buffer_length.to_le_bytes());
+    encoded.extend_from_slice(&u32::try_from(input.len()).unwrap().to_le_bytes());
+    encoded.extend_from_slice(&0x0009_0014u32.to_le_bytes()); // SCARD_IOCTL_ESTABLISHCONTEXT
+    encoded.extend_from_slice(&[0; 20]); // Padding
+    encoded.extend_from_slice(&input);
+    encoded
+}
+
+#[test]
+fn noop_backend_completes_smartcard_calls_with_no_service() {
+    const SCARD_E_NO_SERVICE: u32 = 0x8010_001D;
+
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_smartcard(1);
+
+    let responses = rdpdr
+        .process(&encoded_smartcard_establish_context_request(2048))
+        .unwrap();
+    assert_eq!(responses.len(), 1);
+
+    let encoded = responses[0].encode_unframed_pdu().unwrap();
+    assert_eq!(&encoded[..4], &[0x72, 0x44, 0x43, 0x49]); // RDPDR + DEVICE_IOCOMPLETION
+    assert_eq!(read_u32(&encoded[8..]), 0x200); // CompletionId
+    assert_eq!(ntstatus_at(&encoded, 12), NtStatus::SUCCESS);
+    // OutputBuffer holds EstablishContext_Return after the 16-byte MS-RPCE headers.
+    assert_eq!(read_u32_as_usize(&encoded[16..]), encoded.len() - 20);
+    assert_eq!(read_u32(&encoded[36..]), SCARD_E_NO_SERVICE);
+}
+
+#[test]
+fn noop_backend_reports_small_smartcard_output_buffer() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_smartcard(1);
+
+    let responses = rdpdr.process(&encoded_smartcard_establish_context_request(0)).unwrap();
+    assert_eq!(responses.len(), 1);
+
+    let encoded = responses[0].encode_unframed_pdu().unwrap();
+    assert_eq!(ntstatus_at(&encoded, 12), NtStatus::BUFFER_TOO_SMALL);
+    assert_eq!(read_u32(&encoded[16..]), 0); // OutputBufferLength
+}
+
 #[test]
 fn rdp51_client_id_confirm_announces_all_devices_pre_logon() {
     let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned())

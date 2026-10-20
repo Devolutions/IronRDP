@@ -167,6 +167,67 @@ impl ScardCall {
             }
         }
     }
+
+    /// Builds the IOCTL-specific `*_Return` structure for a call that failed with `return_code`.
+    ///
+    /// Per [\[MS-RDPESC\]] section 3.1.4, smart card errors are carried in the `ReturnCode` of the
+    /// structure the server decodes for this IOCTL, while `IoStatus` stays `STATUS_SUCCESS`. All
+    /// other output fields are left empty.
+    ///
+    /// [\[MS-RDPESC\]]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/0428ca28-b4dc-46a3-97c3-01887fa44a90
+    pub fn error_return(&self, io_ctl_code: ScardIoCtlCode, return_code: ReturnCode) -> Box<dyn rpce::Encode> {
+        let undefined = CardProtocol::SCARD_PROTOCOL_UNDEFINED;
+        let charset = match io_ctl_code {
+            ScardIoCtlCode::ListReadersA | ScardIoCtlCode::ListReaderGroupsA | ScardIoCtlCode::StatusA => {
+                CharacterSet::Ansi
+            }
+            _ => CharacterSet::Unicode,
+        };
+
+        match self {
+            ScardCall::EstablishContextCall(_) => {
+                Box::new(EstablishContextReturn::new(return_code, ScardContext::from_native(0)))
+            }
+            ScardCall::ListReaderGroupsCall(_) | ScardCall::ListReadersCall(_) => {
+                Box::new(ListReadersReturn::probe(return_code, 0, charset))
+            }
+            // LocateCards_Return has the same layout as GetStatusChange_Return.
+            ScardCall::GetStatusChangeCall(_) | ScardCall::LocateCardsCall(_) | ScardCall::LocateCardsByAtrCall(_) => {
+                Box::new(GetStatusChangeReturn::new(return_code, Vec::new()))
+            }
+            ScardCall::ConnectCall(_) => Box::new(ConnectReturn::new(
+                return_code,
+                ScardHandle::from_native(ScardContext::from_native(0), 0),
+                undefined,
+            )),
+            ScardCall::ReconnectCall(_) => Box::new(ReconnectReturn::new(return_code, undefined)),
+            ScardCall::TransmitCall(_) => Box::new(TransmitReturn::new(return_code, None, Vec::new())),
+            ScardCall::StatusCall(_) => Box::new(StatusReturn::names_probe(
+                return_code,
+                0,
+                CardState::Unknown,
+                undefined,
+                [0; 32],
+                0,
+                charset,
+            )),
+            ScardCall::StateCall(_) => Box::new(StateReturn::atr_probe(return_code, CardState::Unknown, undefined, 0)),
+            ScardCall::ControlCall(_) => Box::new(ControlReturn::new(return_code, Vec::new())),
+            ScardCall::GetAttribCall(_) => Box::new(GetAttribReturn::new(return_code, Vec::new())),
+            ScardCall::GetTransmitCountCall(_) => Box::new(GetTransmitCountReturn::new(return_code, 0)),
+            ScardCall::GetDeviceTypeIdCall(_) => Box::new(GetDeviceTypeIdReturn::new(return_code, 0)),
+            ScardCall::ReadCacheCall(_) => Box::new(ReadCacheReturn::new(return_code, Vec::new())),
+            ScardCall::GetReaderIconCall(_) => Box::new(GetReaderIconReturn::new(return_code, Vec::new())),
+            ScardCall::AccessStartedEventCall(_)
+            | ScardCall::HCardAndDispositionCall(_)
+            | ScardCall::SetAttribCall(_)
+            | ScardCall::ContextCall(_)
+            | ScardCall::WriteCacheCall(_)
+            | ScardCall::ContextAndStringCall(_)
+            | ScardCall::ContextAndTwoStringCall(_)
+            | ScardCall::Unsupported => Box::new(LongReturn::new(return_code)),
+        }
+    }
 }
 
 /// MS-RDPESC `cbContext` / `cbHandle` maximum (`range(0,16)`).
