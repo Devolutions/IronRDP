@@ -26,6 +26,9 @@ tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0"
 
+[target.'cfg(windows)'.dependencies]
+ironrdp-rdpdr-native.path = "../crates/ironrdp-rdpdr-native"
+
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3.0"
 

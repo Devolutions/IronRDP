@@ -55,6 +55,12 @@ pub mod ffi {
 
         // FIXME: We need to create opaque for ironrdp::rdpdr::Rdpdr
         /// Must use
+        ///
+        /// Announces a smartcard device. On Windows, calls are passed through to the local
+        /// WinSCard service; elsewhere every call fails with `SCARD_E_NO_SERVICE`.
+        ///
+        /// Some WinSCard calls complete asynchronously: call `ActiveStage::poll_rdpdr_deferred`
+        /// periodically to send their results to the server.
         pub fn with_static_channel_rdpdr(
             &mut self,
             computer_name: &str,
@@ -63,12 +69,20 @@ pub mod ffi {
             let Some(connector) = self.0.take() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            self.0 = Some(
-                connector.with_static_channel(
-                    ironrdp::rdpdr::Rdpdr::new(Box::new(ironrdp::rdpdr::NoopRdpdrBackend {}), computer_name.to_owned())
-                        .with_smartcard(smart_card_device_id),
-                ),
+
+            #[cfg(windows)]
+            let backend: Box<dyn ironrdp::rdpdr::RdpdrBackend> = Box::new(
+                ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(Vec::new())
+                    .map_err(|_| "invalid RDPDR backend configuration")?
+                    .with_smartcard(true)
+                    .build(),
             );
+            #[cfg(not(windows))]
+            let backend: Box<dyn ironrdp::rdpdr::RdpdrBackend> = Box::new(ironrdp::rdpdr::NoopRdpdrBackend);
+
+            self.0 = Some(connector.with_static_channel(
+                ironrdp::rdpdr::Rdpdr::new(backend, computer_name.to_owned()).with_smartcard(smart_card_device_id),
+            ));
 
             Ok(())
         }

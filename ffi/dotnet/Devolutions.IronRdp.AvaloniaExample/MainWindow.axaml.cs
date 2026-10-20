@@ -20,6 +20,8 @@ namespace Devolutions.IronRdp.AvaloniaExample;
 
 public partial class MainWindow : Window
 {
+    static readonly TimeSpan RdpdrDeferredPollInterval = TimeSpan.FromMilliseconds(50);
+
     readonly InputDatabase? _inputDatabase = InputDatabase.New();
     ActiveStage? _activeStage;
     DecodedImage? _decodedImage;
@@ -304,12 +306,32 @@ public partial class MainWindow : Window
             try
             {
                 var keepLooping = true;
+                Task<(Action, byte[])>? readPduTask = null;
                 while (keepLooping)
                 {
-                    var (action, payload) = await _framed!.ReadPdu();
+                    // Start the next read only once the previous frame's outputs are handled:
+                    // reactivation reads from the same stream.
+                    readPduTask ??= _framed!.ReadPdu();
+
+                    // Wake up periodically to send RDPDR completions (e.g. smartcard calls) that
+                    // finished while the server sent nothing.
+                    if (readPduTask != await Task.WhenAny(readPduTask, Task.Delay(RdpdrDeferredPollInterval)))
+                    {
+                        var deferred = WithStageLock(() => _activeStage!.PollRdpdrDeferred());
+                        keepLooping = await HandleActiveStageOutput(deferred);
+                        continue;
+                    }
+
+                    var (action, payload) = await readPduTask;
+                    readPduTask = null;
                     var outputIterator = WithStageLock(() => _activeStage!.Process(_decodedImage!, action, payload));
                     keepLooping = await HandleActiveStageOutput(outputIterator);
                 }
+
+                // The session can end while a read is still pending: report its failure, if any.
+                readPduTask?.ContinueWith(
+                    t => Trace.TraceError("Error reading PDU: " + t.Exception!.GetBaseException().Message),
+                    TaskContinuationOptions.OnlyOnFaulted);
 
                 Trace.TraceInformation("ReadPduAndProcessActiveStage loop ended");
             }
@@ -492,6 +514,11 @@ public partial class MainWindow : Window
 
     private void SendFastpath(FastPathInputEventIterator fastpath)
     {
+        if (_activeStage == null || _decodedImage == null)
+        {
+            return;
+        }
+
         var output = WithStageLock(() => _activeStage!.ProcessFastpathInput(_decodedImage!, fastpath));
         var _ = HandleActiveStageOutput(output);
     }

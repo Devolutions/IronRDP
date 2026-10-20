@@ -123,6 +123,36 @@ public partial class ActiveStage: IDisposable
         }
     }
 
+    /// <summary>
+    /// Collects RDPDR completions that finished asynchronously (e.g. smartcard waits).
+    /// </summary>
+    /// <remarks>
+    /// [`Self::process`] already collects them after each frame. Also call this on a short
+    /// timer (e.g. every 50 ms) so that they reach the server while it sends no frames. Do
+    /// not call it concurrently with other methods of this `ActiveStage`.
+    /// </remarks>
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ActiveStageOutputIterator</c> allocated on Rust side.
+    /// </returns>
+    public ActiveStageOutputIterator PollRdpdrDeferred()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError result = Raw.ActiveStage.PollRdpdrDeferred(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ActiveStageOutputIterator* retVal = result.Ok;
+            return new ActiveStageOutputIterator(retVal);
+        }
+    }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>ActiveStageOutputIterator</c> allocated on Rust side.

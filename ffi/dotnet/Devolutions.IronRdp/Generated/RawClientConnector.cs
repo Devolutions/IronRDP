@@ -28,6 +28,13 @@ public partial struct ClientConnector
     /// <summary>
     /// Must use
     /// </summary>
+    /// <remarks>
+    /// Announces a smartcard device. On Windows, calls are passed through to the local
+    /// WinSCard service; elsewhere every call fails with `SCARD_E_NO_SERVICE`.
+    /// <br/>
+    /// Some WinSCard calls complete asynchronously: call `ActiveStage::poll_rdpdr_deferred`
+    /// periodically to send their results to the server.
+    /// </remarks>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_with_static_channel_rdpdr", ExactSpelling = true)]
     public static unsafe extern ConnectorFfiResultVoidBoxIronRdpError WithStaticChannelRdpdr(ClientConnector* self, byte* computerName, nuint computerNameSz, uint smartCardDeviceId);
 
