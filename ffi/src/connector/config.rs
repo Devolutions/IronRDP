@@ -48,7 +48,7 @@ pub mod ffi {
     }
 
     #[derive(Default)]
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ConfigBuilder {
         pub credentials: Option<Credentials>,
         pub domain: Option<String>,
@@ -287,7 +287,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     #[derive(Default)]
     pub struct PerformanceFlags(pub ironrdp::pdu::rdp::client_info::PerformanceFlags);
 
