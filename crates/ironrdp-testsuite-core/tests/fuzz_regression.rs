@@ -43,6 +43,11 @@ fn check_bulk_decompress_xcrush() {
 }
 
 #[test]
+fn check_bulk_decompress_rdp8() {
+    check!(bulk_decompress_rdp8);
+}
+
+#[test]
 fn check_bulk_round_trip() {
     check!(bulk_round_trip);
 }

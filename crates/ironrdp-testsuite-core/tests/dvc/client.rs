@@ -1,8 +1,9 @@
 use ironrdp_core::{Decode as _, ReadCursor, encode_vec, impl_as_any};
 use ironrdp_dvc::ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_dvc::pdu::{
-    CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateRequestPdu, CreationStatus, DataPdu,
-    DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu, SoftSyncTunnelType,
+    CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateRequestPdu, CreationStatus,
+    DataCompressedPdu, DataPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList,
+    SoftSyncRequestPdu, SoftSyncTunnelType,
 };
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessage, DvcMessageBatch, DvcProcessor};
 use ironrdp_svc::SvcMessage;
@@ -146,17 +147,11 @@ fn failed_established_dynamic_channel_attachment_is_not_registered() {
 }
 
 #[test]
-fn capabilities_response_never_claims_compressed_data_support() {
-    // Version 3 only adds DYNVC_DATA_FIRST_COMPRESSED and DYNVC_DATA_COMPRESSED, which the
-    // client cannot decompress, so a version 3 server must be answered with version 2.
-    for (offered, expected) in [
-        (CapsVersion::V1, CapsVersion::V1),
-        (CapsVersion::V2, CapsVersion::V2),
-        (CapsVersion::V3, CapsVersion::V2),
-    ] {
+fn capabilities_response_echoes_the_offered_version() {
+    for version in [CapsVersion::V1, CapsVersion::V2, CapsVersion::V3] {
         let mut client = DrdynvcClient::new();
         let request = encode_vec(&DrdynvcServerPdu::Capabilities(CapabilitiesRequestPdu::new(
-            offered, None,
+            version, None,
         )))
         .expect("Capabilities Request should encode");
 
@@ -168,10 +163,100 @@ fn capabilities_response_never_claims_compressed_data_support() {
         };
         assert_eq!(
             decode_client_pdu(response),
-            DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(expected)),
-            "server offered {offered:?}"
+            DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(version)),
+            "server offered {version:?}"
         );
     }
+}
+
+#[test]
+fn compressed_and_uncompressed_blocks_reassemble_into_one_message() {
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    client
+        .attach_established_dynamic_channel(3, RecordedDvc::default())
+        .expect("recorded channel should attach");
+
+    // MS-RDPEDYC 4.3.3 and 4.3.4, byte for byte. The first block decompresses to 1,595 bytes
+    // and the second, which matches against the first, to 1,597. The sample declares 3,195
+    // bytes in total, so an uncompressed DYNVC_DATA block supplies the last three.
+    let data_first_compressed = [0x64, 0x03, 0x7b, 0x0c, 0xe0, 0x26, 0x38, 0xc4, 0x3f, 0xf4, 0x74, 0x01];
+    let data_compressed = [0x70, 0x03, 0xe0, 0x26, 0x88, 0x7f, 0xe8, 0xf4, 0x02];
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        3,
+        b"qqq".to_vec(),
+    ))))
+    .expect("DVC data should encode");
+
+    for pdu in [&data_first_compressed[..], &data_compressed[..], data.as_slice()] {
+        assert!(client.process(pdu).expect("DVC data should be processed").is_empty());
+    }
+
+    let channel = client
+        .get_dvc_by_channel_id::<RecordedDvc>(3)
+        .expect("recorded channel should remain attached");
+    assert_eq!(channel.processor().received, vec![vec![b'q'; 3195]]);
+}
+
+#[test]
+fn each_channel_has_its_own_decompression_history() {
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    for channel_id in [3, 4] {
+        client
+            .attach_established_dynamic_channel(channel_id, RecordedDvc::default())
+            .expect("recorded channel should attach");
+    }
+
+    let data_compressed = |channel_id, data: &[u8]| {
+        encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::DataCompressed(
+            DataCompressedPdu::new(channel_id, data.to_vec()),
+        )))
+        .expect("DVC compressed data should encode")
+    };
+    // An RDP 8.0 Lite segment carried uncompressed, which still enters the history.
+    let literal = [0xe0, 0x06, b'x', b'y', b'z'];
+    // A compressed segment holding one match: distance 3, length 3.
+    let back_reference = [0xe0, 0x26, 0b1000_1000, 0b1100_0000, 0x05];
+
+    client
+        .process(&data_compressed(3, &literal))
+        .expect("DVC compressed data should be processed");
+    client
+        .process(&data_compressed(3, &back_reference))
+        .expect("DVC compressed data should be processed");
+    client
+        .process(&data_compressed(4, &back_reference))
+        .expect("DVC compressed data should be processed");
+
+    let received = |channel_id| {
+        client
+            .get_dvc_by_channel_id::<RecordedDvc>(channel_id)
+            .expect("recorded channel should remain attached")
+            .processor()
+            .received
+            .clone()
+    };
+    assert_eq!(received(3), vec![b"xyz".to_vec(), b"xyz".to_vec()]);
+    // Channel 4 never saw "xyz", so the match reads its still-empty history.
+    assert_eq!(received(4), vec![vec![0; 3]]);
+}
+
+#[test]
+fn malformed_compressed_data_is_an_error() {
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    client
+        .attach_established_dynamic_channel(3, RecordedDvc::default())
+        .expect("recorded channel should attach");
+
+    // RDP_SEGMENTED_DATA with an unknown descriptor.
+    let pdu = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::DataCompressed(
+        DataCompressedPdu::new(3, vec![0x12, 0x26, 0x00]),
+    )))
+    .expect("DVC compressed data should encode");
+
+    assert!(client.process(&pdu).is_err());
 }
 
 #[test]

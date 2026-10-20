@@ -342,14 +342,7 @@ impl DrdynvcClient {
     }
 
     fn create_capabilities_response(&mut self, server_version: CapsVersion) -> SvcMessage {
-        // Version 3 only adds the compressed data PDUs (MS-RDPEDYC 2.2.3.3, 2.2.3.4), which this
-        // client cannot decompress, so it never claims more than version 2. Soft-Sync does not
-        // depend on the version: it is negotiated through the multitransport flags.
-        let version = match server_version {
-            CapsVersion::V1 => CapsVersion::V1,
-            CapsVersion::V2 | CapsVersion::V3 => CapsVersion::V2,
-        };
-        let caps_response = DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(version));
+        let caps_response = DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(server_version));
         debug!("Send DVC Capabilities Response PDU: {caps_response:?}");
         self.cap_handshake_done = true;
         SvcMessage::from(caps_response)

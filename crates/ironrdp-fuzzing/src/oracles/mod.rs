@@ -51,6 +51,35 @@ pub fn bulk_decompress_xcrush(data: &[u8]) {
     let _ = bulk.decompress(data, flags::PACKET_COMPRESSED | 0x03);
 }
 
+/// RDP 8.0 decompressor used by the dynamic virtual channels, checked against the
+/// graphics pipeline's ZGFX decoder on the same input. `ironrdp-bulk` also accepts
+/// RDP 8.0 Lite segments, so it may decode inputs the graphics decoder rejects, but never
+/// the other way around.
+///
+/// # Panics
+///
+/// Panics (reporting the bug to libFuzzer) when the graphics decoder accepts an input that
+/// `ironrdp-bulk` rejects or decodes to different bytes.
+#[expect(clippy::panic, reason = "panic is the libFuzzer bug-reporting mechanism")]
+pub fn bulk_decompress_rdp8(data: &[u8]) {
+    use ironrdp_bulk::rdp8::Rdp8Decompressor;
+    use ironrdp_graphics::zgfx::Decompressor;
+
+    let mut reference = Vec::new();
+    let reference_result = Decompressor::new().decompress(data, &mut reference);
+
+    let mut output = Vec::new();
+    let result = Rdp8Decompressor::new().decompress(data, &mut output);
+
+    if reference_result.is_ok() {
+        match result {
+            Ok(_) if output == reference => {}
+            Ok(_) => panic!("RDP 8.0 decompressors disagree on the output"),
+            Err(e) => panic!("ironrdp-bulk rejected input the graphics decoder accepts: {e}"),
+        }
+    }
+}
+
 /// Round-trip oracle: compress uncompressed input then decompress the result,
 /// assert byte-equality with the original. `BulkCompressor` holds both halves;
 /// a fresh compressor and decompressor are constructed per call to avoid

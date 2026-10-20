@@ -414,6 +414,7 @@ dependencies = [
 name = "ironrdp-dvc"
 version = "0.8.0"
 dependencies = [
+ "ironrdp-bulk",
  "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
