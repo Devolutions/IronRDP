@@ -41,8 +41,7 @@ pub fn decrypt_tls(capture: &Capture) -> Result<Plaintext, CaptureError> {
 /// Decrypt TLS application data from a pair of directional byte streams.
 ///
 /// Used after gateway unwrap, when the inner RDP session is itself TLS.
-#[doc(hidden)]
-pub fn decrypt_tls_streams(
+pub(crate) fn decrypt_tls_streams(
     client_stream: &PacketStream,
     server_stream: &PacketStream,
     key_log: &str,
