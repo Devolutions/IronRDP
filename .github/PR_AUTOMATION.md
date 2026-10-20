@@ -221,7 +221,7 @@ This handoff works after `/1`, `/2`, or `/3` without a model call or review-coun
 The command can be accepted while CI is pending or failing, but only green current exact-head CI and clear lifecycle gates select `needs-review`; failed CI still selects `needs-author-action`.
 Editing or deleting the source comment after acknowledgement does not revoke it; a new head or newer same-head authoritative review supersedes it.
 The separate app-owned exact-head `AI review-ready` check stores a bounded, versioned receipt binding head SHA, source comment ID, latest published bot review ID, and authoritative review check ID.
-Reconciliation validates the check's server-created timestamp, app, exact SHA, name, external ID, success, and receipt before prioritizing acknowledgement over findings.
+Reconciliation validates the check's server-assigned completion timestamp, app, exact SHA, name, external ID, success, and receipt before prioritizing acknowledgement over findings.
 Duplicate deliveries and further comments for the same review do not create competing checks; a newer findings review can replace the existing head-bound acknowledgement.
 After a third review, a newly classified head with green exact-head CI hands off to `needs-review` without a fourth review only when the latest published bot review matches a trusted `/3` receipt; legacy receipts never authorize this handoff.
 Contributor changes acknowledge findings; automation does not verify their resolution.
