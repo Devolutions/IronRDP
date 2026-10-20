@@ -5,6 +5,10 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use ironrdp_capture::{
+    Capture, CaptureError, PacketStream, Plaintext, decrypt_tls_streams, extract_rpch_from_flows, extract_tunneled_rdp,
+    is_gateway_tunnel,
+};
 use ironrdp_core::{decode, impl_as_any};
 use ironrdp_dvc::pdu::DrdynvcServerPdu;
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessage, DvcProcessor};
@@ -21,10 +25,7 @@ use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcMessage, SvcProcessor};
 
-use crate::tls::decrypt_tls_streams;
-use crate::{
-    Capture, NegotiatedState, PacketStream, Plaintext, ReplayError, gateway, gateway_rpch, recover_negotiated_state,
-};
+use crate::{NegotiatedState, ReplayError, recover_negotiated_state};
 
 const MAX_DESKTOP_DIM: u16 = 8192;
 const MAX_EGFX_OUTPUT_DIM: u16 = 32_766;
@@ -584,15 +585,19 @@ pub(crate) fn prepare_replay_capture(capture: &Capture) -> Result<(ReplayRouter,
             }
         }
     }
-    let plaintext = if let Some(outer) = decrypted.iter().find(|plaintext| gateway::is_gateway_tunnel(plaintext)) {
-        let tunneled = gateway::extract_tunneled_rdp(outer)?;
+    let plaintext = if let Some(outer) = decrypted.iter().find(|plaintext| is_gateway_tunnel(plaintext)) {
+        let tunneled = extract_tunneled_rdp(outer)?;
         decrypt_tunneled_rdp(&tunneled, capture)?
-    } else if let Some(tunneled) = gateway_rpch::extract_rpch_from_flows(&decrypted)? {
+    } else if let Some(tunneled) = extract_rpch_from_flows(&decrypted)? {
         decrypt_tunneled_rdp(&tunneled, capture)?
     } else {
         match decrypted.into_iter().next() {
             Some(plaintext) => plaintext,
-            None => return Err(decrypt_error.unwrap_or(ReplayError::MissingRdpState)),
+            None => {
+                return Err(decrypt_error
+                    .map(ReplayError::from)
+                    .unwrap_or(ReplayError::MissingRdpState));
+            }
         }
     };
     let router = ReplayRouter::new(CapturedActivation {
@@ -604,10 +609,10 @@ pub(crate) fn prepare_replay_capture(capture: &Capture) -> Result<(ReplayRouter,
 
 fn decrypt_tunneled_rdp(tunneled: &Plaintext, capture: &Capture) -> Result<Plaintext, ReplayError> {
     decrypt_tls_streams(&tunneled.client, &tunneled.server, capture.tls_key_log.as_str()).map_err(|error| {
-        if matches!(error, ReplayError::MissingTlsSecret) {
-            ReplayError::MissingTunneledTlsSecret
+        if matches!(error, CaptureError::MissingTlsSecret) {
+            ReplayError::Capture(CaptureError::MissingTunneledTlsSecret)
         } else {
-            error
+            ReplayError::Capture(error)
         }
     })
 }

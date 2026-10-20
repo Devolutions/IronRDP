@@ -7,7 +7,7 @@ use pcap_parser::traits::{PcapNGPacketBlock as _, PcapReaderIterator as _};
 use pcap_parser::{PcapBlockOwned, PcapError, PcapNGReader};
 use zeroize::Zeroize as _;
 
-use crate::ReplayError;
+use crate::CaptureError;
 
 const ETHERNET_LINKTYPE: i32 = 1;
 
@@ -117,9 +117,9 @@ struct Segment {
 }
 
 /// Read an Ethernet direct TCP RDP flow from a pcapng capture.
-pub fn read_capture(path: &Path) -> Result<Capture, ReplayError> {
-    let file = File::open(path).map_err(ReplayError::Io)?;
-    let mut reader = PcapNGReader::new(1024 * 1024, file).map_err(|error| ReplayError::Pcap(error.to_string()))?;
+pub fn read_capture(path: &Path) -> Result<Capture, CaptureError> {
+    let file = File::open(path).map_err(CaptureError::Io)?;
+    let mut reader = PcapNGReader::new(1024 * 1024, file).map_err(|error| CaptureError::Pcap(error.to_string()))?;
     let mut packet = 0;
     let mut linktypes = Vec::new();
     let mut has_ethernet = false;
@@ -141,19 +141,19 @@ pub fn read_capture(path: &Path) -> Result<Capture, ReplayError> {
                         if secrets.secrets_type == SecretsType::TlsKeyLog =>
                     {
                         let length = usize::try_from(secrets.secrets_len)
-                            .map_err(|_| ReplayError::Pcap("TLS secret block is too large".to_owned()))?;
+                            .map_err(|_| CaptureError::Pcap("TLS secret block is too large".to_owned()))?;
                         let data = secrets
                             .data
                             .get(..length)
-                            .ok_or_else(|| ReplayError::Pcap("truncated TLS secret block".to_owned()))?;
+                            .ok_or_else(|| CaptureError::Pcap("truncated TLS secret block".to_owned()))?;
                         let text = core::str::from_utf8(data)
-                            .map_err(|_| ReplayError::Pcap("TLS secret block is not UTF-8".to_owned()))?;
+                            .map_err(|_| CaptureError::Pcap("TLS secret block is not UTF-8".to_owned()))?;
                         tls_key_log.push_str(text);
                     }
                     PcapBlockOwned::NG(Block::EnhancedPacket(packet_block)) => {
                         packet += 1;
                         let interface = usize::try_from(packet_block.if_id)
-                            .map_err(|_| ReplayError::Pcap("interface ID is too large".to_owned()))?;
+                            .map_err(|_| CaptureError::Pcap("interface ID is too large".to_owned()))?;
                         if linktypes.get(interface) == Some(&ETHERNET_LINKTYPE) && !packet_block.truncated() {
                             if let Some(segment) = parse_tcp_packet(packet, packet_block.packet_data()) {
                                 segments.push(segment);
@@ -165,13 +165,13 @@ pub fn read_capture(path: &Path) -> Result<Capture, ReplayError> {
                 reader.consume(offset);
             }
             Err(PcapError::Eof) => break,
-            Err(PcapError::Incomplete(_)) => reader.refill().map_err(|error| ReplayError::Pcap(error.to_string()))?,
-            Err(error) => return Err(ReplayError::Pcap(error.to_string())),
+            Err(PcapError::Incomplete(_)) => reader.refill().map_err(|error| CaptureError::Pcap(error.to_string()))?,
+            Err(error) => return Err(CaptureError::Pcap(error.to_string())),
         }
     }
 
     if !has_ethernet {
-        return Err(ReplayError::UnsupportedTransport);
+        return Err(CaptureError::UnsupportedTransport);
     }
 
     let (flow, gateway_alternates) = assemble_flow(segments)?;
@@ -267,7 +267,7 @@ fn parse_tcp_packet(packet: usize, bytes: &[u8]) -> Option<Segment> {
     })
 }
 
-fn assemble_flow(mut segments: Vec<Segment>) -> Result<(Flow, Vec<Flow>), ReplayError> {
+fn assemble_flow(mut segments: Vec<Segment>) -> Result<(Flow, Vec<Flow>), CaptureError> {
     segments.retain(|segment| !segment.data.is_empty() || segment.syn || segment.fin || segment.rst);
     let mut missing_tcp_flow = false;
     let mut gateways = Vec::new();
@@ -357,9 +357,9 @@ fn assemble_flow(mut segments: Vec<Segment>) -> Result<(Flow, Vec<Flow>), Replay
     }
 
     Err(if missing_tcp_flow {
-        ReplayError::MissingTcpFlow
+        CaptureError::MissingTcpFlow
     } else {
-        ReplayError::UnsupportedTransport
+        CaptureError::UnsupportedTransport
     })
 }
 
@@ -378,7 +378,7 @@ pub(crate) fn x224_connection_tpdu_end(bytes: &[u8], code: u8) -> Option<usize> 
 
     // MS-RDPBCGR 2.2.1.1 and 2.2.1.2 include optional connection fields in LI.
     let li = usize::from(*frame.get(4)?);
-    (li >= 6
+    (6 <= li
         && li < usize::from(u8::MAX)
         && li.checked_add(5)? == frame.len()
         && frame.get(5) == Some(&code)
@@ -386,7 +386,7 @@ pub(crate) fn x224_connection_tpdu_end(bytes: &[u8], code: u8) -> Option<usize> 
     .then_some(length)
 }
 
-fn reassemble(segments: Vec<Segment>, origin: u32) -> Result<PacketStream, ReplayError> {
+fn reassemble(segments: Vec<Segment>, origin: u32) -> Result<PacketStream, CaptureError> {
     let mut segments = segments
         .into_iter()
         .filter(|segment| !segment.data.is_empty())
@@ -411,20 +411,20 @@ fn reassemble(segments: Vec<Segment>, origin: u32) -> Result<PacketStream, Repla
     let mut stream = vec![(packet, data)];
     for (packet, sequence, data) in segments {
         let data_end = sequence
-            .checked_add(u32::try_from(data.len()).map_err(|_| ReplayError::MissingTcpFlow)?)
-            .ok_or(ReplayError::MissingTcpFlow)?;
+            .checked_add(u32::try_from(data.len()).map_err(|_| CaptureError::MissingTcpFlow)?)
+            .ok_or(CaptureError::MissingTcpFlow)?;
         let stream_end = start_sequence
-            .checked_add(u32::try_from(bytes.len()).map_err(|_| ReplayError::MissingTcpFlow)?)
-            .ok_or(ReplayError::MissingTcpFlow)?;
-        if sequence > stream_end {
-            return Err(ReplayError::MissingTcpFlow);
+            .checked_add(u32::try_from(bytes.len()).map_err(|_| CaptureError::MissingTcpFlow)?)
+            .ok_or(CaptureError::MissingTcpFlow)?;
+        if stream_end < sequence {
+            return Err(CaptureError::MissingTcpFlow);
         }
-        let offset = usize::try_from(sequence - start_sequence).map_err(|_| ReplayError::MissingTcpFlow)?;
+        let offset = usize::try_from(sequence - start_sequence).map_err(|_| CaptureError::MissingTcpFlow)?;
         let overlap = usize::try_from(stream_end - sequence)
-            .map_err(|_| ReplayError::MissingTcpFlow)?
+            .map_err(|_| CaptureError::MissingTcpFlow)?
             .min(data.len());
         if bytes[offset..offset + overlap] != data[..overlap] {
-            return Err(ReplayError::MissingTcpFlow);
+            return Err(CaptureError::MissingTcpFlow);
         }
         if data_end > stream_end {
             let data = data[overlap..].to_vec();
@@ -513,7 +513,7 @@ mod tests {
     fn reassembly_rejects_conflicting_overlap() {
         let error = reassemble(vec![segment(1, 1, b"hello"), segment(3, 2, b"XX")], 1).unwrap_err();
 
-        assert!(matches!(error, ReplayError::MissingTcpFlow));
+        assert!(matches!(error, CaptureError::MissingTcpFlow));
     }
 
     #[test]
@@ -693,7 +693,7 @@ mod tests {
         ])
         .unwrap_err();
 
-        assert!(matches!(error, ReplayError::MissingTcpFlow));
+        assert!(matches!(error, CaptureError::MissingTcpFlow));
     }
 
     #[test]

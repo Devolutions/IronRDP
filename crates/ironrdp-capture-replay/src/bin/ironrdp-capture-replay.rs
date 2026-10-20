@@ -15,7 +15,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use ironrdp_capture_replay::{ExportOptions, export_capture, read_capture};
+use ironrdp_capture::read_capture;
+use ironrdp_capture_replay::{ExportOptions, export_capture};
 use zeroize::Zeroize as _;
 
 fn main() -> ExitCode {

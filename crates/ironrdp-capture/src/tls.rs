@@ -4,7 +4,7 @@ use hmac::{Hmac, Mac};
 use sha2::{Sha256, Sha384};
 
 use crate::transport::x224_connection_tpdu_end;
-use crate::{Capture, PacketStream, ReplayError};
+use crate::{Capture, CaptureError, PacketStream};
 
 #[cfg(test)]
 use crate::TlsKeyLog;
@@ -30,7 +30,7 @@ pub struct Plaintext {
 ///
 /// TLS key-log entries are used only in memory and are not retained by the
 /// returned streams.
-pub fn decrypt_tls(capture: &Capture) -> Result<Plaintext, ReplayError> {
+pub fn decrypt_tls(capture: &Capture) -> Result<Plaintext, CaptureError> {
     decrypt_tls_streams(
         &capture.flow.client_stream,
         &capture.flow.server_stream,
@@ -41,20 +41,21 @@ pub fn decrypt_tls(capture: &Capture) -> Result<Plaintext, ReplayError> {
 /// Decrypt TLS application data from a pair of directional byte streams.
 ///
 /// Used after gateway unwrap, when the inner RDP session is itself TLS.
-pub(crate) fn decrypt_tls_streams(
+#[doc(hidden)]
+pub fn decrypt_tls_streams(
     client_stream: &PacketStream,
     server_stream: &PacketStream,
     key_log: &str,
-) -> Result<Plaintext, ReplayError> {
+) -> Result<Plaintext, CaptureError> {
     let client_records = collect_tls_records(client_stream, 0xe0)?;
     let server_records = collect_tls_records(server_stream, 0xd0)?;
     let (client_records, server_records) = match (client_records, server_records) {
         (Some(client_records), Some(server_records)) => (client_records, server_records),
-        (None, None) => return Err(ReplayError::StandardSecurity),
-        _ => return Err(ReplayError::UnsupportedTls),
+        (None, None) => return Err(CaptureError::StandardSecurity),
+        _ => return Err(CaptureError::UnsupportedTls),
     };
     if client_records.is_empty() && server_records.is_empty() {
-        return Err(ReplayError::StandardSecurity);
+        return Err(CaptureError::StandardSecurity);
     }
     let tls = Tls::from_records(&client_records, &server_records, key_log)?;
 
@@ -82,9 +83,9 @@ enum Tls {
 }
 
 impl Tls {
-    fn from_records(client: &PacketStream, server: &PacketStream, key_log: &str) -> Result<Self, ReplayError> {
-        let client_hello = first_handshake(client, 1).ok_or(ReplayError::UnsupportedTls)?;
-        let server_hello = first_handshake(server, 2).ok_or(ReplayError::UnsupportedTls)?;
+    fn from_records(client: &PacketStream, server: &PacketStream, key_log: &str) -> Result<Self, CaptureError> {
+        let client_hello = first_handshake(client, 1).ok_or(CaptureError::UnsupportedTls)?;
+        let server_hello = first_handshake(server, 2).ok_or(CaptureError::UnsupportedTls)?;
         let suite = tls_cipher_suite(&server_hello)?;
 
         match suite {
@@ -93,7 +94,7 @@ impl Tls {
         }
     }
 
-    fn decrypt(&self, direction: Direction, records: &PacketStream) -> Result<PacketStream, ReplayError> {
+    fn decrypt(&self, direction: Direction, records: &PacketStream) -> Result<PacketStream, CaptureError> {
         match self {
             Self::V12(tls) => tls.decrypt(direction, records),
             Self::V13(tls) => tls.decrypt(direction, records),
@@ -110,18 +111,18 @@ struct Tls12 {
 }
 
 impl Tls12 {
-    fn from_hello(client_hello: &[u8], server_hello: &[u8], suite: u16, key_log: &str) -> Result<Self, ReplayError> {
+    fn from_hello(client_hello: &[u8], server_hello: &[u8], suite: u16, key_log: &str) -> Result<Self, CaptureError> {
         if client_hello.len() < 34 || server_hello.len() < 38 {
-            return Err(ReplayError::UnsupportedTls);
+            return Err(CaptureError::UnsupportedTls);
         }
         let client_random = &client_hello[2..34];
         let server_random = &server_hello[2..34];
         let cipher = match suite {
             0x009c | 0xc02b | 0xc02f => Cipher::Aes128GcmSha256,
             0x009d | 0xc02c | 0xc030 => Cipher::Aes256GcmSha384,
-            _ => return Err(ReplayError::UnsupportedTls),
+            _ => return Err(CaptureError::UnsupportedTls),
         };
-        let master = parse_master_secret(key_log, client_random).ok_or(ReplayError::MissingTlsSecret)?;
+        let master = parse_master_secret(key_log, client_random).ok_or(CaptureError::MissingTlsSecret)?;
         let mut seed = Vec::with_capacity(64);
         seed.extend_from_slice(server_random);
         seed.extend_from_slice(client_random);
@@ -142,17 +143,17 @@ impl Tls12 {
             cipher,
             client_key: client_key.to_vec(),
             server_key: server_key.to_vec(),
-            client_iv: client_iv.try_into().map_err(|_| ReplayError::UnsupportedTls)?,
-            server_iv: server_iv.try_into().map_err(|_| ReplayError::UnsupportedTls)?,
+            client_iv: client_iv.try_into().map_err(|_| CaptureError::UnsupportedTls)?,
+            server_iv: server_iv.try_into().map_err(|_| CaptureError::UnsupportedTls)?,
         })
     }
 
-    fn decrypt(&self, direction: Direction, records: &PacketStream) -> Result<PacketStream, ReplayError> {
+    fn decrypt(&self, direction: Direction, records: &PacketStream) -> Result<PacketStream, CaptureError> {
         let mut encrypted = false;
         let mut sequence = 0u64;
         let mut output = Vec::new();
         for (packet, record) in records {
-            let (content_type, version, body) = parse_tls_record(record).ok_or(ReplayError::UnsupportedTls)?;
+            let (content_type, version, body) = parse_tls_record(record).ok_or(CaptureError::UnsupportedTls)?;
             if content_type == TLS_CONTENT_CHANGE_CIPHER_SPEC {
                 encrypted = true;
                 sequence = 0;
@@ -162,7 +163,7 @@ impl Tls12 {
                 continue;
             }
             let plaintext = self.decrypt_record(direction, sequence, content_type, version, body)?;
-            sequence = sequence.checked_add(1).ok_or(ReplayError::UnsupportedTls)?;
+            sequence = sequence.checked_add(1).ok_or(CaptureError::UnsupportedTls)?;
             if content_type == TLS_CONTENT_APPLICATION_DATA {
                 output.push((*packet, plaintext));
             }
@@ -177,13 +178,13 @@ impl Tls12 {
         content_type: u8,
         version: u16,
         body: &[u8],
-    ) -> Result<Vec<u8>, ReplayError> {
+    ) -> Result<Vec<u8>, CaptureError> {
         if version != TLS_VERSION_1_2 || body.len() < 8 + 16 {
-            return Err(ReplayError::UnsupportedTls);
+            return Err(CaptureError::UnsupportedTls);
         }
         let (explicit, ciphertext_and_tag) = body.split_at(8);
         let (ciphertext, tag_bytes) = ciphertext_and_tag.split_at(ciphertext_and_tag.len() - 16);
-        let plaintext_len = u16::try_from(ciphertext.len()).map_err(|_| ReplayError::UnsupportedTls)?;
+        let plaintext_len = u16::try_from(ciphertext.len()).map_err(|_| CaptureError::UnsupportedTls)?;
         let mut additional_data = Vec::with_capacity(13);
         additional_data.extend_from_slice(&sequence.to_be_bytes());
         additional_data.push(content_type);
@@ -200,13 +201,13 @@ impl Tls12 {
         let mut plaintext = ciphertext.to_vec();
         let result = match self.cipher {
             Cipher::Aes128GcmSha256 => Aes128Gcm::new_from_slice(key)
-                .map_err(|_| ReplayError::UnsupportedTls)?
+                .map_err(|_| CaptureError::UnsupportedTls)?
                 .decrypt_in_place_detached(Nonce::from_slice(&nonce), &additional_data, &mut plaintext, tag),
             Cipher::Aes256GcmSha384 => Aes256Gcm::new_from_slice(key)
-                .map_err(|_| ReplayError::UnsupportedTls)?
+                .map_err(|_| CaptureError::UnsupportedTls)?
                 .decrypt_in_place_detached(Nonce::from_slice(&nonce), &additional_data, &mut plaintext, tag),
         };
-        result.map_err(|_| ReplayError::TlsAuthentication)?;
+        result.map_err(|_| CaptureError::TlsAuthentication)?;
         Ok(plaintext)
     }
 }
@@ -225,12 +226,12 @@ struct TrafficKey {
 }
 
 impl Tls13 {
-    fn from_hello(client_hello: &[u8], suite: u16, key_log: &str) -> Result<Self, ReplayError> {
-        let client_random = client_hello.get(2..34).ok_or(ReplayError::UnsupportedTls)?;
+    fn from_hello(client_hello: &[u8], suite: u16, key_log: &str) -> Result<Self, CaptureError> {
+        let client_random = client_hello.get(2..34).ok_or(CaptureError::UnsupportedTls)?;
         let cipher = match suite {
             0x1301 => Cipher::Aes128GcmSha256,
             0x1302 => Cipher::Aes256GcmSha384,
-            _ => return Err(ReplayError::UnsupportedTls),
+            _ => return Err(CaptureError::UnsupportedTls),
         };
         let key_len = match cipher {
             Cipher::Aes128GcmSha256 => 16,
@@ -266,7 +267,7 @@ impl Tls13 {
         })
     }
 
-    fn decrypt(&self, direction: Direction, records: &PacketStream) -> Result<PacketStream, ReplayError> {
+    fn decrypt(&self, direction: Direction, records: &PacketStream) -> Result<PacketStream, CaptureError> {
         let (handshake, application) = match direction {
             Direction::Client => (&self.client_handshake, &self.client_application),
             Direction::Server => (&self.server_handshake, &self.server_application),
@@ -277,13 +278,13 @@ impl Tls13 {
         let mut handshake_data = Vec::new();
         let mut handshake_phase = true;
         for (packet, record) in records {
-            let (content_type, version, body) = parse_tls_record(record).ok_or(ReplayError::UnsupportedTls)?;
+            let (content_type, version, body) = parse_tls_record(record).ok_or(CaptureError::UnsupportedTls)?;
             if content_type != TLS_CONTENT_APPLICATION_DATA {
                 continue;
             }
             let plaintext = decrypt_tls13_record(self.cipher, key, sequence, content_type, version, body)?;
-            sequence = sequence.checked_add(1).ok_or(ReplayError::UnsupportedTls)?;
-            let (content, inner_type) = tls13_inner_plaintext(&plaintext).ok_or(ReplayError::UnsupportedTls)?;
+            sequence = sequence.checked_add(1).ok_or(CaptureError::UnsupportedTls)?;
+            let (content, inner_type) = tls13_inner_plaintext(&plaintext).ok_or(CaptureError::UnsupportedTls)?;
             if inner_type == TLS_CONTENT_HANDSHAKE && handshake_phase {
                 handshake_data.extend_from_slice(content);
                 if tls13_handshake_contains_finished(&handshake_data) {
@@ -293,7 +294,7 @@ impl Tls13 {
                 }
             }
             if inner_type == TLS_CONTENT_HANDSHAKE && !handshake_phase && tls13_handshake_contains_key_update(content) {
-                return Err(ReplayError::TlsKeyUpdate);
+                return Err(CaptureError::TlsKeyUpdate);
             }
             if inner_type == TLS_CONTENT_APPLICATION_DATA {
                 output.push((*packet, content.to_vec()));
@@ -303,7 +304,7 @@ impl Tls13 {
     }
 }
 
-fn collect_tls_records(stream: &PacketStream, x224_code: u8) -> Result<Option<PacketStream>, ReplayError> {
+fn collect_tls_records(stream: &PacketStream, x224_code: u8) -> Result<Option<PacketStream>, CaptureError> {
     let mut bytes = Vec::new();
     let mut packet_offsets = Vec::with_capacity(stream.len());
     for (packet, chunk) in stream {
@@ -329,9 +330,9 @@ fn collect_tls_records(stream: &PacketStream, x224_code: u8) -> Result<Option<Pa
     while offset + 5 <= bytes.len() {
         let length = usize::from(u16::from_be_bytes([bytes[offset + 3], bytes[offset + 4]]));
         if length > TLS_MAX_RECORD_LENGTH {
-            return Err(ReplayError::UnsupportedTls);
+            return Err(CaptureError::UnsupportedTls);
         }
-        let end = offset.checked_add(5 + length).ok_or(ReplayError::UnsupportedTls)?;
+        let end = offset.checked_add(5 + length).ok_or(CaptureError::UnsupportedTls)?;
         if end > bytes.len() {
             break;
         }
@@ -372,15 +373,15 @@ fn first_handshake(records: &PacketStream, wanted_type: u8) -> Option<Vec<u8>> {
     None
 }
 
-fn tls_cipher_suite(server_hello: &[u8]) -> Result<u16, ReplayError> {
-    let session_len = usize::from(*server_hello.get(34).ok_or(ReplayError::UnsupportedTls)?);
-    let suite_offset = 35usize.checked_add(session_len).ok_or(ReplayError::UnsupportedTls)?;
+fn tls_cipher_suite(server_hello: &[u8]) -> Result<u16, CaptureError> {
+    let session_len = usize::from(*server_hello.get(34).ok_or(CaptureError::UnsupportedTls)?);
+    let suite_offset = 35usize.checked_add(session_len).ok_or(CaptureError::UnsupportedTls)?;
     server_hello
         .get(suite_offset..suite_offset + 2)
-        .ok_or(ReplayError::UnsupportedTls)?
+        .ok_or(CaptureError::UnsupportedTls)?
         .try_into()
         .map(u16::from_be_bytes)
-        .map_err(|_| ReplayError::UnsupportedTls)
+        .map_err(|_| CaptureError::UnsupportedTls)
 }
 
 fn parse_master_secret(key_log: &str, client_random: &[u8]) -> Option<Vec<u8>> {
@@ -394,7 +395,7 @@ fn parse_master_secret(key_log: &str, client_random: &[u8]) -> Option<Vec<u8>> {
     })
 }
 
-fn parse_tls13_secret(key_log: &str, label: &str, client_random: &[u8]) -> Result<Vec<u8>, ReplayError> {
+fn parse_tls13_secret(key_log: &str, label: &str, client_random: &[u8]) -> Result<Vec<u8>, CaptureError> {
     let client_random = hex(client_random);
     key_log
         .lines()
@@ -404,7 +405,7 @@ fn parse_tls13_secret(key_log: &str, label: &str, client_random: &[u8]) -> Resul
                 .then(|| decode_hex(fields.next()?))
         })
         .flatten()
-        .ok_or(ReplayError::MissingTlsSecret)
+        .ok_or(CaptureError::MissingTlsSecret)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -430,24 +431,24 @@ fn decode_hex(input: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-fn tls_prf_sha256(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Result<Vec<u8>, ReplayError> {
+fn tls_prf_sha256(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Result<Vec<u8>, CaptureError> {
     let mut label_seed = Vec::with_capacity(label.len() + seed.len());
     label_seed.extend_from_slice(label);
     label_seed.extend_from_slice(seed);
     let mut a = <Hmac<Sha256> as Mac>::new_from_slice(secret)
-        .map_err(|_| ReplayError::UnsupportedTls)?
+        .map_err(|_| CaptureError::UnsupportedTls)?
         .chain_update(&label_seed)
         .finalize()
         .into_bytes()
         .to_vec();
     let mut output = Vec::with_capacity(length);
     while output.len() < length {
-        let mut hmac = <Hmac<Sha256> as Mac>::new_from_slice(secret).map_err(|_| ReplayError::UnsupportedTls)?;
+        let mut hmac = <Hmac<Sha256> as Mac>::new_from_slice(secret).map_err(|_| CaptureError::UnsupportedTls)?;
         hmac.update(&a);
         hmac.update(&label_seed);
         output.extend_from_slice(&hmac.finalize().into_bytes());
         a = <Hmac<Sha256> as Mac>::new_from_slice(secret)
-            .map_err(|_| ReplayError::UnsupportedTls)?
+            .map_err(|_| CaptureError::UnsupportedTls)?
             .chain_update(&a)
             .finalize()
             .into_bytes()
@@ -457,24 +458,24 @@ fn tls_prf_sha256(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Re
     Ok(output)
 }
 
-fn tls_prf_sha384(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Result<Vec<u8>, ReplayError> {
+fn tls_prf_sha384(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Result<Vec<u8>, CaptureError> {
     let mut label_seed = Vec::with_capacity(label.len() + seed.len());
     label_seed.extend_from_slice(label);
     label_seed.extend_from_slice(seed);
     let mut a = <Hmac<Sha384> as Mac>::new_from_slice(secret)
-        .map_err(|_| ReplayError::UnsupportedTls)?
+        .map_err(|_| CaptureError::UnsupportedTls)?
         .chain_update(&label_seed)
         .finalize()
         .into_bytes()
         .to_vec();
     let mut output = Vec::with_capacity(length);
     while output.len() < length {
-        let mut hmac = <Hmac<Sha384> as Mac>::new_from_slice(secret).map_err(|_| ReplayError::UnsupportedTls)?;
+        let mut hmac = <Hmac<Sha384> as Mac>::new_from_slice(secret).map_err(|_| CaptureError::UnsupportedTls)?;
         hmac.update(&a);
         hmac.update(&label_seed);
         output.extend_from_slice(&hmac.finalize().into_bytes());
         a = <Hmac<Sha384> as Mac>::new_from_slice(secret)
-            .map_err(|_| ReplayError::UnsupportedTls)?
+            .map_err(|_| CaptureError::UnsupportedTls)?
             .chain_update(&a)
             .finalize()
             .into_bytes()
@@ -484,23 +485,23 @@ fn tls_prf_sha384(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Re
     Ok(output)
 }
 
-fn tls13_traffic_key(cipher: Cipher, secret: Vec<u8>, key_len: usize) -> Result<TrafficKey, ReplayError> {
+fn tls13_traffic_key(cipher: Cipher, secret: Vec<u8>, key_len: usize) -> Result<TrafficKey, CaptureError> {
     let key = tls13_expand_label(cipher, &secret, b"key", key_len)?;
     let iv = tls13_expand_label(cipher, &secret, b"iv", 12)?
         .try_into()
-        .map_err(|_| ReplayError::UnsupportedTls)?;
+        .map_err(|_| CaptureError::UnsupportedTls)?;
     Ok(TrafficKey { key, iv })
 }
 
-fn tls13_expand_label(cipher: Cipher, secret: &[u8], label: &[u8], length: usize) -> Result<Vec<u8>, ReplayError> {
+fn tls13_expand_label(cipher: Cipher, secret: &[u8], label: &[u8], length: usize) -> Result<Vec<u8>, CaptureError> {
     let mut info = Vec::with_capacity(2 + 1 + 6 + label.len() + 1);
     info.extend_from_slice(
         &u16::try_from(length)
-            .map_err(|_| ReplayError::UnsupportedTls)?
+            .map_err(|_| CaptureError::UnsupportedTls)?
             .to_be_bytes(),
     );
-    let label_len = 6usize.checked_add(label.len()).ok_or(ReplayError::UnsupportedTls)?;
-    info.push(u8::try_from(label_len).map_err(|_| ReplayError::UnsupportedTls)?);
+    let label_len = 6usize.checked_add(label.len()).ok_or(CaptureError::UnsupportedTls)?;
+    info.push(u8::try_from(label_len).map_err(|_| CaptureError::UnsupportedTls)?);
     info.extend_from_slice(b"tls13 ");
     info.extend_from_slice(label);
     info.push(0);
@@ -510,11 +511,11 @@ fn tls13_expand_label(cipher: Cipher, secret: &[u8], label: &[u8], length: usize
     }
 }
 
-fn hkdf_expand_sha256(secret: &[u8], info: &[u8], length: usize) -> Result<Vec<u8>, ReplayError> {
+fn hkdf_expand_sha256(secret: &[u8], info: &[u8], length: usize) -> Result<Vec<u8>, CaptureError> {
     let mut previous = Vec::new();
     let mut output = Vec::with_capacity(length);
     for counter in 1..=u8::MAX {
-        let mut hmac = <Hmac<Sha256> as Mac>::new_from_slice(secret).map_err(|_| ReplayError::UnsupportedTls)?;
+        let mut hmac = <Hmac<Sha256> as Mac>::new_from_slice(secret).map_err(|_| CaptureError::UnsupportedTls)?;
         hmac.update(&previous);
         hmac.update(info);
         hmac.update(&[counter]);
@@ -525,14 +526,14 @@ fn hkdf_expand_sha256(secret: &[u8], info: &[u8], length: usize) -> Result<Vec<u
             return Ok(output);
         }
     }
-    Err(ReplayError::UnsupportedTls)
+    Err(CaptureError::UnsupportedTls)
 }
 
-fn hkdf_expand_sha384(secret: &[u8], info: &[u8], length: usize) -> Result<Vec<u8>, ReplayError> {
+fn hkdf_expand_sha384(secret: &[u8], info: &[u8], length: usize) -> Result<Vec<u8>, CaptureError> {
     let mut previous = Vec::new();
     let mut output = Vec::with_capacity(length);
     for counter in 1..=u8::MAX {
-        let mut hmac = <Hmac<Sha384> as Mac>::new_from_slice(secret).map_err(|_| ReplayError::UnsupportedTls)?;
+        let mut hmac = <Hmac<Sha384> as Mac>::new_from_slice(secret).map_err(|_| CaptureError::UnsupportedTls)?;
         hmac.update(&previous);
         hmac.update(info);
         hmac.update(&[counter]);
@@ -543,7 +544,7 @@ fn hkdf_expand_sha384(secret: &[u8], info: &[u8], length: usize) -> Result<Vec<u
             return Ok(output);
         }
     }
-    Err(ReplayError::UnsupportedTls)
+    Err(CaptureError::UnsupportedTls)
 }
 
 fn decrypt_tls13_record(
@@ -553,9 +554,9 @@ fn decrypt_tls13_record(
     content_type: u8,
     version: u16,
     body: &[u8],
-) -> Result<Vec<u8>, ReplayError> {
+) -> Result<Vec<u8>, CaptureError> {
     if version != TLS_VERSION_1_2 || body.len() < 16 {
-        return Err(ReplayError::UnsupportedTls);
+        return Err(CaptureError::UnsupportedTls);
     }
     let (ciphertext, tag_bytes) = body.split_at(body.len() - 16);
     let mut nonce = key.iv;
@@ -567,20 +568,20 @@ fn decrypt_tls13_record(
     additional_data.extend_from_slice(&version.to_be_bytes());
     additional_data.extend_from_slice(
         &u16::try_from(body.len())
-            .map_err(|_| ReplayError::UnsupportedTls)?
+            .map_err(|_| CaptureError::UnsupportedTls)?
             .to_be_bytes(),
     );
     let tag = Tag::from_slice(tag_bytes);
     let mut plaintext = ciphertext.to_vec();
     let result = match cipher {
         Cipher::Aes128GcmSha256 => Aes128Gcm::new_from_slice(&key.key)
-            .map_err(|_| ReplayError::UnsupportedTls)?
+            .map_err(|_| CaptureError::UnsupportedTls)?
             .decrypt_in_place_detached(Nonce::from_slice(&nonce), &additional_data, &mut plaintext, tag),
         Cipher::Aes256GcmSha384 => Aes256Gcm::new_from_slice(&key.key)
-            .map_err(|_| ReplayError::UnsupportedTls)?
+            .map_err(|_| CaptureError::UnsupportedTls)?
             .decrypt_in_place_detached(Nonce::from_slice(&nonce), &additional_data, &mut plaintext, tag),
     };
-    result.map_err(|_| ReplayError::TlsAuthentication)?;
+    result.map_err(|_| CaptureError::TlsAuthentication)?;
     Ok(plaintext)
 }
 
@@ -683,7 +684,7 @@ mod tests {
             "",
         );
 
-        assert!(matches!(result, Err(ReplayError::MissingTlsSecret)));
+        assert!(matches!(result, Err(CaptureError::MissingTlsSecret)));
     }
 
     #[test]
@@ -699,7 +700,7 @@ mod tests {
             tls_key_log: TlsKeyLog::new(String::new()),
         };
 
-        assert!(matches!(decrypt_tls(&capture), Err(ReplayError::StandardSecurity)));
+        assert!(matches!(decrypt_tls(&capture), Err(CaptureError::StandardSecurity)));
     }
 
     #[test]
