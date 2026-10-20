@@ -2292,29 +2292,27 @@ async fn connect_gateway(
     };
     #[cfg(feature = "rdpdr")]
     let rdpdr_factory = {
-        if gateway_redirection_policy.disables_all() && rdpdr_factory.is_some() {
-            debug!(
-                redirection_flags = ?gateway_redirection_policy.flags(),
-                "Suppressing RDPDR due to gateway device-redirection policy"
-            );
-        }
-        if gateway_redirection_policy.disables_drive()
-            && !gateway_redirection_policy.disables_all()
-            && rdpdr_factory.is_some()
-        {
-            debug!(
-                redirection_flags = ?gateway_redirection_policy.flags(),
-                "Suppressing RDPDR drive redirection due to gateway device-redirection policy"
-            );
-        }
-        if gateway_redirection_policy.disables_printer()
-            && !gateway_redirection_policy.disables_all()
-            && rdpdr_factory.is_some()
-        {
-            debug!(
-                redirection_flags = ?gateway_redirection_policy.flags(),
-                "Suppressing RDPDR printer redirection due to gateway device-redirection policy"
-            );
+        if rdpdr_factory.is_some() {
+            let redirection_flags = gateway_redirection_policy.flags();
+            if gateway_redirection_policy.disables_all() {
+                debug!(
+                    ?redirection_flags,
+                    "Suppressing RDPDR due to gateway device-redirection policy"
+                );
+            } else {
+                if !rdpdr_policy.drives {
+                    debug!(
+                        ?redirection_flags,
+                        "Suppressing RDPDR drive redirection due to gateway device-redirection policy"
+                    );
+                }
+                if !rdpdr_policy.printers {
+                    debug!(
+                        ?redirection_flags,
+                        "Suppressing RDPDR printer redirection due to gateway device-redirection policy"
+                    );
+                }
+            }
         }
         (!gateway_redirection_policy.disables_all())
             .then_some(rdpdr_factory)
