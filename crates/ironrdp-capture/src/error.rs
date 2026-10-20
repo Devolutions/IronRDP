@@ -27,9 +27,7 @@ pub enum CaptureError {
     #[error("capture does not include an NSS TLS secret for the negotiated session")]
     MissingTlsSecret,
     /// The capture lacks the key-log entry for the gateway-tunneled TLS session.
-    #[error(
-        "capture does not include an NSS TLS secret for the gateway-tunneled session; supply the original key log with --keylog or Capture::add_tls_key_log"
-    )]
+    #[error("capture does not include an NSS TLS secret for the gateway-tunneled session")]
     MissingTunneledTlsSecret,
     /// TLS record authentication failed.
     #[error("capture TLS authentication failed")]
@@ -37,6 +35,9 @@ pub enum CaptureError {
     /// The capture requires unsupported TLS 1.3 key rotation.
     #[error("capture uses unsupported TLS 1.3 key rotation")]
     TlsKeyUpdate,
+    /// The gateway tunnel was decoded but carries no RDP stream.
+    #[error("gateway tunnel does not contain RDP data")]
+    MissingTunneledRdp,
     /// The gateway tunnel framing is incomplete or malformed.
     #[error("capture gateway tunnel framing is invalid: {0}")]
     GatewayFraming(String),

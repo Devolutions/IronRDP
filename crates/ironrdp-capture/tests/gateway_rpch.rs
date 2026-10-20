@@ -251,7 +251,7 @@ fn rejects_a_tunnel_without_rdp_payloads() {
 
     assert!(matches!(
         extract_rpch_tunneled_rdp(&input, &output),
-        Err(CaptureError::GatewayFraming(_))
+        Err(CaptureError::MissingTunneledRdp)
     ));
 }
 
