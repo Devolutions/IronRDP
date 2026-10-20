@@ -16,11 +16,7 @@ pub mod ffi {
         }
 
         pub fn fill(&self, buffer: &mut [u8]) -> Result<(), Box<IronRdpError>> {
-            if buffer.len() < self.0.len() {
-                return Err("buffer is too small".into());
-            }
-            buffer.copy_from_slice(&self.0);
-            Ok(())
+            super::fill_prefix(buffer, &self.0)
         }
 
         pub fn new_empty() -> Box<VecU8> {
@@ -37,11 +33,7 @@ pub mod ffi {
         }
 
         pub fn fill(&'a self, buffer: &'a mut [u8]) -> Result<(), Box<IronRdpError>> {
-            if buffer.len() < self.0.len() {
-                return Err("buffer is too small".into());
-            }
-            buffer.copy_from_slice(self.0);
-            Ok(())
+            super::fill_prefix(buffer, self.0)
         }
     }
 
@@ -54,11 +46,7 @@ pub mod ffi {
         }
 
         pub fn fill(&'a self, buffer: &'a mut [u32]) -> Result<(), Box<IronRdpError>> {
-            if buffer.len() < self.0.len() {
-                return Err("buffer is too small".into());
-            }
-            buffer.copy_from_slice(self.0);
-            Ok(())
+            super::fill_prefix(buffer, self.0)
         }
     }
 
@@ -88,4 +76,12 @@ pub mod ffi {
 pub(crate) fn monotonic_now() -> ironrdp::connector::MonotonicInstant {
     static EPOCH: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
     ironrdp::connector::MonotonicInstant::from_millis(u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX))
+}
+
+pub(crate) fn fill_prefix<T: Copy>(buffer: &mut [T], src: &[T]) -> Result<(), Box<crate::error::ffi::IronRdpError>> {
+    buffer
+        .get_mut(..src.len())
+        .ok_or("buffer is too small")?
+        .copy_from_slice(src);
+    Ok(())
 }

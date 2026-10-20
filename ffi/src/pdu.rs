@@ -19,8 +19,7 @@ pub mod ffi {
         }
 
         pub fn read_into_buf(&mut self, buf: &mut [u8]) -> Result<(), Box<IronRdpError>> {
-            buf.copy_from_slice(&self.0[..buf.len()]);
-            Ok(())
+            crate::utils::fill_prefix(buf, self.0.filled())
         }
 
         pub fn get_filled(&self) -> Box<VecU8> {
