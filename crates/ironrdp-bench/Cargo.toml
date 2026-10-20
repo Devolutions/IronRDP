@@ -14,25 +14,28 @@ test = false
 
 [[bin]]
 name = "perfenc"
+required-features = ["perfenc"]
 
 [features]
 default = ["qoi", "qoiz"]
-qoi = ["ironrdp/qoi"]
-qoiz = ["ironrdp/qoiz"]
+# Server encoding dependencies for the perfenc binary; the corpus tooling builds without them.
+perfenc = ["dep:async-trait", "dep:ironrdp", "dep:pico-args", "dep:tokio", "dep:tracing", "dep:tracing-subscriber"]
+qoi = ["perfenc", "ironrdp/qoi"]
+qoiz = ["perfenc", "ironrdp/qoiz"]
 
 [dependencies]
 anyhow = "1" # public
-async-trait = "0.1"
-ironrdp = { path = "../ironrdp", features = ["server", "pdu", "__bench"] }
+async-trait = { version = "0.1", optional = true }
+ironrdp = { path = "../ironrdp", features = ["server", "pdu", "__bench"], optional = true }
 ironrdp-capture.path = "../ironrdp-capture"
 ironrdp-capture-replay.path = "../ironrdp-capture-replay" # public
-pico-args = "0.5"
+pico-args = { version = "0.5", optional = true }
 serde = { version = "1", features = ["derive"] } # public
 sha2 = "0.10"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt", "sync", "time"], optional = true }
 toml = "1.1"
-tracing = { version = "0.1", features = ["log"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = { version = "0.1", features = ["log"], optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 [dev-dependencies]
 criterion = "0.8"

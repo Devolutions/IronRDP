@@ -3,7 +3,7 @@ use crate::prelude::*;
 pub fn corpus(sh: &Shell, arguments: &[&str]) -> anyhow::Result<()> {
     cmd!(
         sh,
-        "{CARGO} run --locked --package ironrdp-bench --bin corpus-bench -- {arguments...}"
+        "{CARGO} run --locked --package ironrdp-bench --no-default-features --bin corpus-bench -- {arguments...}"
     )
     .run()?;
     Ok(())
@@ -16,7 +16,7 @@ pub fn replay(sh: &Shell, capture: &str) -> anyhow::Result<()> {
     // Criterion exits successfully without measuring anything when the filter matches no benchmark.
     let listed = cmd!(
         sh,
-        "{CARGO} bench --locked --package ironrdp-bench --bench corpus -- {benchmark} --exact --list"
+        "{CARGO} bench --locked --package ironrdp-bench --no-default-features --bench corpus -- {benchmark} --exact --list"
     )
     .read()?;
     anyhow::ensure!(
@@ -26,7 +26,7 @@ pub fn replay(sh: &Shell, capture: &str) -> anyhow::Result<()> {
 
     cmd!(
         sh,
-        "{CARGO} bench --locked --package ironrdp-bench --bench corpus -- {benchmark} --exact"
+        "{CARGO} bench --locked --package ironrdp-bench --no-default-features --bench corpus -- {benchmark} --exact"
     )
     .run()?;
     Ok(())
