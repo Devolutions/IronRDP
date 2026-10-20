@@ -28,6 +28,7 @@ On Windows, pass `--smartcard` (or set `ironrdp_smartcard:i:1` in a `.rdp` file)
 RPC mode (`--rpc`) enables smartcard the same way via agent connect properties (`ironrdp_smartcard` / sandbox `SmartCardRedirection`).
 
 On Windows, pass `--printer` (or set `redirectprinters:i:1` in a `.rdp` file) to redirect the current default printer.
+An explicit `ironrdp_rdpdr:i:0` in the file overrides `redirectprinters:i:1`, but not the `--printer` flag.
 Jobs are sent to the local queue as `RAW` data, so the remote host needs a printer driver with the same name as the local queue's driver; Easy Print/XPS is not supported.
 RPC mode enables it through the `redirectprinters` connect property.
 

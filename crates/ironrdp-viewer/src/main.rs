@@ -26,6 +26,8 @@ fn main() -> anyhow::Result<()> {
     }
 
     let dump_rdp = cli.dump_rdp().map(ToOwned::to_owned);
+    #[cfg(windows)]
+    let redirect_printers = cli.redirect_printers();
     let config = cli.into_config().context("configuration")?;
 
     if let Some(dump_path) = dump_rdp {
@@ -46,11 +48,6 @@ fn main() -> anyhow::Result<()> {
 
     #[cfg(windows)]
     let enable_smartcard = config.channels().rdpdr.smartcard;
-    #[cfg(windows)]
-    let redirect_printers = {
-        use ironrdp_cfg::PropertySetExt as _;
-        config.properties().redirect_printers().unwrap_or(false)
-    };
     let client = RdpClient::new(config, output_event_sender);
     #[cfg(windows)]
     let client = attach_windows_rdpdr_backend(client, enable_smartcard, redirect_printers)?;

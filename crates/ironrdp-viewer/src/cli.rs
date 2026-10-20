@@ -297,6 +297,7 @@ pub struct ViewerConfig {
     dump_rdp: Option<PathBuf>,
     rpc: bool,
     rpc_endpoint: Option<String>,
+    redirect_printers: bool,
 }
 
 impl ViewerConfig {
@@ -340,14 +341,18 @@ impl ViewerConfig {
                 dump_rdp: None,
                 rpc: true,
                 rpc_endpoint: args.rpc_endpoint,
+                redirect_printers: false,
             });
         }
 
+        // Opt-in only: an absent `redirectprinters` leaves printer redirection disabled. mstsc writes
+        // `redirectprinters:i:1` by default, so an explicit `ironrdp_rdpdr:i:0` in the file takes
+        // precedence; the CLI `--printer` flag still wins.
+        let redirect_printers = args.printer
+            || (properties.redirect_printers().unwrap_or(false) && properties.enable_rdpdr() != Some(false));
         if args.printer {
             properties.set_redirect_printers(true);
         }
-        // Opt-in only: an absent `redirectprinters` leaves printer redirection disabled.
-        let redirect_printers = properties.redirect_printers().unwrap_or(false);
 
         // The library overlays everything expressible as a `.rdp` property: destination, credentials,
         // transport, channels, desktop size, audio, DVC proxies, etc.
@@ -378,6 +383,7 @@ impl ViewerConfig {
             dump_rdp,
             rpc: false,
             rpc_endpoint: None,
+            redirect_printers,
         })
     }
 
@@ -397,6 +403,11 @@ impl ViewerConfig {
     /// Path to dump the effective `.rdp` PropertySet to, if `--dump-rdp` was given.
     pub fn dump_rdp(&self) -> Option<&std::path::Path> {
         self.dump_rdp.as_deref()
+    }
+
+    /// Whether the session should redirect the local default printer.
+    pub fn redirect_printers(&self) -> bool {
+        self.redirect_printers
     }
 
     /// Whether the viewer should host the local RPC server.

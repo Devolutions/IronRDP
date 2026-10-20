@@ -948,8 +948,10 @@ impl Daemon {
         // Always set smartcard explicitly so the client feature default (`true`) cannot announce a
         // smartcard device without a matching WinSCard backend.
         let smartcard = properties.enable_smartcard().unwrap_or(self.smartcard_default);
-        // Printer redirection is opt-in: an absent `redirectprinters` leaves it disabled.
-        let redirect_printers = properties.redirect_printers().unwrap_or(false);
+        // Printer redirection is opt-in: an absent `redirectprinters` leaves it disabled. mstsc writes
+        // `redirectprinters:i:1` by default, so an explicit `ironrdp_rdpdr:i:0` takes precedence.
+        let redirect_printers =
+            properties.redirect_printers().unwrap_or(false) && properties.enable_rdpdr() != Some(false);
         #[cfg(windows)]
         let rdpdr_factory =
             match resolve_rdpdr_factory(self.rdpdr_backend_factory.as_ref(), smartcard, redirect_printers) {
@@ -968,19 +970,16 @@ impl Daemon {
             builder.with_smartcard(false)
         };
         #[cfg(not(windows))]
-        if redirect_printers {
-            return Response::typed_error(
-                crate::ipc::AgentErrorCategory::InvalidRequest,
-                "printer redirection is only available on Windows",
-            );
-        }
-        #[cfg(not(windows))]
         let builder = if smartcard {
             return Response::typed_error(
                 crate::ipc::AgentErrorCategory::InvalidRequest,
                 "smartcard redirection is only available on Windows",
             );
         } else {
+            if redirect_printers {
+                // Unlike `ironrdp_smartcard`, stock `.rdp` files commonly carry this property.
+                warn!("Ignoring printer redirection request; it is only available on Windows");
+            }
             // Client feature defaults smartcard on; never announce without a WinSCard backend.
             builder.with_smartcard(false)
         };
