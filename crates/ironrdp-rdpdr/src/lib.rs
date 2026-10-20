@@ -792,6 +792,10 @@ impl Rdpdr {
     /// Completes a filesystem IRP that is well-formed but asks for a function or information class
     /// this client does not implement, so that the server receives a failure status instead of the
     /// whole channel being torn down.
+    ///
+    /// MS-RDPEFS 3.1.5.2 says an unrecognized field value SHOULD terminate the channel, and an
+    /// information class outside a request's table is one. Like FreeRDP, such requests are completed
+    /// with STATUS_NOT_SUPPORTED instead, which keeps the session alive.
     fn unsupported_drive_io_response(req: UnsupportedDriveIoRequest) -> SvcMessage {
         let not_supported = |device_io_request| DeviceIoResponse::new(device_io_request, NtStatus::NOT_SUPPORTED);
 

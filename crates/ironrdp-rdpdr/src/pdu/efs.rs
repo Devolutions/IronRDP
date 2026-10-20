@@ -2075,7 +2075,7 @@ impl DeviceIoResponse {
 
 /// Outcome of decoding a drive request whose information class field may name a class outside
 /// the values that request "MUST contain".
-pub(crate) enum ClassDecode<T> {
+enum ClassDecode<T> {
     Supported(T),
     /// The class is not supported. The rest of the request, including its declared buffer, has
     /// been consumed.
@@ -2083,6 +2083,16 @@ pub(crate) enum ClassDecode<T> {
         /// The request's buffer length field (Length or PathLength).
         length: u32,
     },
+}
+
+impl<T> ClassDecode<T> {
+    /// Rejects an unsupported class as an invalid `field`, as the public decoders do.
+    fn supported_or_invalid(self, context: &'static str, field: &'static str) -> DecodeResult<T> {
+        match self {
+            Self::Supported(req) => Ok(req),
+            Self::Unsupported { .. } => Err(invalid_field_err!(context, field, "received invalid level")),
+        }
+    }
 }
 
 /// A well-formed drive request asking for an operation or an information class this crate does
@@ -2209,10 +2219,8 @@ impl ServerDriveIoRequest {
             MajorFunction::QuerySecurity => ServerDriveQuerySecurityRequest::decode(dev_io_req, src)?.into(),
             MajorFunction::SetSecurity => ServerDriveSetSecurityRequest::decode(dev_io_req, src)?.into(),
             MajorFunction::SetVolumeInformation => {
-                let length = match ServerDriveSetVolumeInformationRequest::decode_class(dev_io_req.clone(), src)? {
-                    ClassDecode::Supported(req) => req.set_volume_buffer_length,
-                    ClassDecode::Unsupported { length } => length,
-                };
+                // Never performed, so the request body only needs to be well-framed.
+                let (_, length, _) = ServerDriveSetVolumeInformationRequest::decode_frame(src)?;
                 return Ok(Err(UnsupportedDriveIoRequest::SetVolumeInformation {
                     device_io_request: dev_io_req,
                     length,
@@ -4111,20 +4119,11 @@ impl ServerDriveQueryDirectoryRequest {
     const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 1 /* InitialQuery */ + 4 /* PathLength */ + 23 /* Padding */;
 
     pub fn decode(device_io_request: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        match Self::decode_class(device_io_request, src)? {
-            ClassDecode::Supported(req) => Ok(req),
-            ClassDecode::Unsupported { .. } => Err(invalid_field_err!(
-                "ServerDriveQueryDirectoryRequest::decode",
-                "file_info_class_lvl",
-                "received invalid level"
-            )),
-        }
+        Self::decode_class(device_io_request, src)?
+            .supported_or_invalid("ServerDriveQueryDirectoryRequest::decode", "file_info_class_lvl")
     }
 
-    pub(crate) fn decode_class(
-        device_io_request: DeviceIoRequest,
-        src: &mut ReadCursor<'_>,
-    ) -> DecodeResult<ClassDecode<Self>> {
+    fn decode_class(device_io_request: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<ClassDecode<Self>> {
         ensure_fixed_part_size!(in: src);
         let file_info_class_lvl = FileInformationClassLevel::from(src.read_u32());
         let initial_query = src.read_u8();
@@ -4323,20 +4322,11 @@ impl ServerDriveQueryVolumeInformationRequest {
     const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 4 /* Length */ + 24 /* Padding */;
 
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        match Self::decode_class(dev_io_req, src)? {
-            ClassDecode::Supported(req) => Ok(req),
-            ClassDecode::Unsupported { .. } => Err(invalid_field_err!(
-                "ServerDriveQueryVolumeInformationRequest::decode",
-                "fs_info_class_lvl",
-                "received invalid level"
-            )),
-        }
+        Self::decode_class(dev_io_req, src)?
+            .supported_or_invalid("ServerDriveQueryVolumeInformationRequest::decode", "fs_info_class_lvl")
     }
 
-    pub(crate) fn decode_class(
-        dev_io_req: DeviceIoRequest,
-        src: &mut ReadCursor<'_>,
-    ) -> DecodeResult<ClassDecode<Self>> {
+    fn decode_class(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<ClassDecode<Self>> {
         ensure_fixed_part_size!(in: src);
         let fs_info_class_lvl = FileSystemInformationClassLevel::from(src.read_u32());
 
@@ -4402,37 +4392,14 @@ impl ServerDriveSetVolumeInformationRequest {
     const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 4 /* Length */ + 24 /* Padding */;
 
     pub fn decode(device_io_request: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        match Self::decode_class(device_io_request, src)? {
-            ClassDecode::Supported(req) => Ok(req),
-            ClassDecode::Unsupported { .. } => Err(invalid_field_err!(
+        let (fs_info_class_lvl, set_volume_buffer_length, buffer) = Self::decode_frame(src)?;
+        // This field MUST contain the following value.
+        if fs_info_class_lvl != FileSystemInformationClassLevel::FILE_FS_LABEL_INFORMATION {
+            return Err(invalid_field_err!(
                 "ServerDriveSetVolumeInformationRequest::decode",
                 "fs_info_class_lvl",
                 "received invalid level"
-            )),
-        }
-    }
-
-    pub(crate) fn decode_class(
-        device_io_request: DeviceIoRequest,
-        src: &mut ReadCursor<'_>,
-    ) -> DecodeResult<ClassDecode<Self>> {
-        ensure_fixed_part_size!(in: src);
-        let fs_info_class_lvl = FileSystemInformationClassLevel::from(src.read_u32());
-        let set_volume_buffer_length = src.read_u32();
-        read_padding!(src, 24);
-        let length = cast_length!(
-            "ServerDriveSetVolumeInformationRequest",
-            "set_volume_buffer_length",
-            set_volume_buffer_length
-        )?;
-        ensure_size!(in: src, size: length);
-        let buffer = src.read_slice(length);
-
-        // This field MUST contain the following value.
-        if fs_info_class_lvl != FileSystemInformationClassLevel::FILE_FS_LABEL_INFORMATION {
-            return Ok(ClassDecode::Unsupported {
-                length: set_volume_buffer_length,
-            });
+            ));
         }
 
         if buffer.len() < 4 {
@@ -4463,11 +4430,27 @@ impl ServerDriveSetVolumeInformationRequest {
         }
         let volume_label = decode_string(&buffer[4..label_end], CharacterSet::Unicode, false)?;
 
-        Ok(ClassDecode::Supported(Self {
+        Ok(Self {
             device_io_request,
             set_volume_buffer_length,
             volume_label,
-        }))
+        })
+    }
+
+    /// Reads the FsInformationClass, the Length field and the SetVolumeBuffer it declares.
+    fn decode_frame<'a>(src: &mut ReadCursor<'a>) -> DecodeResult<(FileSystemInformationClassLevel, u32, &'a [u8])> {
+        ensure_fixed_part_size!(in: src);
+        let fs_info_class_lvl = FileSystemInformationClassLevel::from(src.read_u32());
+        let set_volume_buffer_length = src.read_u32();
+        read_padding!(src, 24);
+        let length = cast_length!(
+            "ServerDriveSetVolumeInformationRequest",
+            "set_volume_buffer_length",
+            set_volume_buffer_length
+        )?;
+        ensure_size!(in: src, size: length);
+
+        Ok((fs_info_class_lvl, set_volume_buffer_length, src.read_slice(length)))
     }
 }
 
@@ -5171,20 +5154,13 @@ impl ServerDriveSetInformationRequest {
     const FIXED_PART_SIZE: usize = 4 /* FileInformationClass */ + 4 /* Length */ + 24 /* Padding */;
 
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        match Self::decode_class(dev_io_req, src)? {
-            ClassDecode::Supported(req) => Ok(req),
-            ClassDecode::Unsupported { .. } => Err(invalid_field_err!(
-                "ServerDriveSetInformationRequest::decode",
-                "file_information_class_level",
-                "received invalid level"
-            )),
-        }
+        Self::decode_class(dev_io_req, src)?.supported_or_invalid(
+            "ServerDriveSetInformationRequest::decode",
+            "file_information_class_level",
+        )
     }
 
-    pub(crate) fn decode_class(
-        dev_io_req: DeviceIoRequest,
-        src: &mut ReadCursor<'_>,
-    ) -> DecodeResult<ClassDecode<Self>> {
+    fn decode_class(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<ClassDecode<Self>> {
         ensure_fixed_part_size!(in: src);
         let file_information_class_level = FileInformationClassLevel::from(src.read_u32());
         let length_field = src.read_u32();
