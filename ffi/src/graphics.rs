@@ -2,8 +2,9 @@
 pub mod ffi {
     use std::sync::Arc;
 
-    use crate::utils::ffi::BytesSlice;
+    use crate::utils::ffi::VecU8;
 
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque]
     pub struct DecodedPointer(pub Arc<ironrdp::graphics::pointer::DecodedPointer>);
 
@@ -29,8 +30,8 @@ pub mod ffi {
         }
 
         #[diplomat::attr(auto, getter = "data")]
-        pub fn get_data<'a>(&'a self) -> Box<BytesSlice<'a>> {
-            Box::new(BytesSlice(&self.0.bitmap_data))
+        pub fn get_data(&self) -> Box<VecU8> {
+            Box::new(VecU8(self.0.bitmap_data.clone()))
         }
     }
 }

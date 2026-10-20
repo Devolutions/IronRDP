@@ -13,7 +13,7 @@ pub mod ffi {
     use crate::error::{IncorrectEnumTypeError, ValueConsumedError};
     use crate::graphics::ffi::DecodedPointer;
     use crate::pdu::ffi::{Action, FastPathInputEventIterator, InclusiveRectangle};
-    use crate::utils::ffi::{BytesSlice, Position, VecU8};
+    use crate::utils::ffi::{Position, VecU8};
 
     #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque_mut]
@@ -22,6 +22,7 @@ pub mod ffi {
         pub ironrdp::connector::connection_activation::ConnectionActivationFactory,
     );
 
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque]
     pub struct ActiveStageOutput(pub ironrdp::session::ActiveStageOutput);
 
@@ -354,9 +355,9 @@ pub mod ffi {
         }
 
         #[diplomat::attr(auto, getter = "response_frame")]
-        pub fn get_response_frame<'a>(&'a self) -> Result<Box<BytesSlice<'a>>, Box<IronRdpError>> {
+        pub fn get_response_frame(&self) -> Result<Box<VecU8>, Box<IronRdpError>> {
             match &self.0 {
-                ironrdp::session::ActiveStageOutput::ResponseFrame(frame) => Ok(Box::new(BytesSlice(frame))),
+                ironrdp::session::ActiveStageOutput::ResponseFrame(frame) => Ok(Box::new(VecU8(frame.clone()))),
                 _ => Err(IncorrectEnumTypeError::on_variant("ResponseFrame")
                     .of_enum("ActiveStageOutput")
                     .into()),
@@ -399,9 +400,9 @@ pub mod ffi {
         }
 
         #[diplomat::attr(auto, getter = "windowing_orders")]
-        pub fn get_windowing_orders<'a>(&'a self) -> Result<Box<BytesSlice<'a>>, Box<IronRdpError>> {
+        pub fn get_windowing_orders(&self) -> Result<Box<VecU8>, Box<IronRdpError>> {
             match &self.0 {
-                ironrdp::session::ActiveStageOutput::WindowingOrders(orders) => Ok(Box::new(BytesSlice(orders))),
+                ironrdp::session::ActiveStageOutput::WindowingOrders(orders) => Ok(Box::new(VecU8(orders.clone()))),
                 _ => Err(IncorrectEnumTypeError::on_variant("WindowingOrders")
                     .of_enum("ActiveStageOutput")
                     .into()),
