@@ -674,6 +674,8 @@ impl Rdpdr {
                     src.advance(CLOSE_REQUEST_PADDING_SIZE);
                 }
                 let req = ServerDriveIoRequest::decode_or_unsupported(dev_io_req, src).map_err(|e| decode_err!(e))?;
+                // Directory control requests with an undescribed minor function have no defined body,
+                // so their decoding consumes everything and this check never rejects them.
                 if !src.is_empty() {
                     return Err(pdu_other_err!("received filesystem IRP with trailing RDPDR data"));
                 }

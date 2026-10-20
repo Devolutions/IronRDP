@@ -2080,6 +2080,7 @@ enum ClassDecode<T> {
     /// The class is not supported. The rest of the request, including its declared buffer, has
     /// been consumed.
     Unsupported {
+        device_io_request: DeviceIoRequest,
         /// The request's buffer length field (Length or PathLength).
         length: u32,
     },
@@ -2178,31 +2179,34 @@ impl ServerDriveIoRequest {
             MajorFunction::FlushBuffers => DeviceFlushBuffersRequest::decode(dev_io_req).into(),
             MajorFunction::DeviceControl => DeviceControlRequest::<AnyIoCtlCode>::decode(dev_io_req, src)?.into(),
             MajorFunction::QueryVolumeInformation => {
-                match ServerDriveQueryVolumeInformationRequest::decode_class(dev_io_req.clone(), src)? {
+                match ServerDriveQueryVolumeInformationRequest::decode_class(dev_io_req, src)? {
                     ClassDecode::Supported(req) => req.into(),
-                    ClassDecode::Unsupported { .. } => {
-                        return Ok(Err(UnsupportedDriveIoRequest::QueryVolumeInformation(dev_io_req)));
+                    ClassDecode::Unsupported { device_io_request, .. } => {
+                        return Ok(Err(UnsupportedDriveIoRequest::QueryVolumeInformation(
+                            device_io_request,
+                        )));
                     }
                 }
             }
             MajorFunction::QueryInformation => ServerDriveQueryInformationRequest::decode(dev_io_req, src)?.into(),
-            MajorFunction::SetInformation => {
-                match ServerDriveSetInformationRequest::decode_class(dev_io_req.clone(), src)? {
-                    ClassDecode::Supported(req) => req.into(),
-                    ClassDecode::Unsupported { length } => {
-                        return Ok(Err(UnsupportedDriveIoRequest::SetInformation {
-                            device_io_request: dev_io_req,
-                            length,
-                        }));
-                    }
+            MajorFunction::SetInformation => match ServerDriveSetInformationRequest::decode_class(dev_io_req, src)? {
+                ClassDecode::Supported(req) => req.into(),
+                ClassDecode::Unsupported {
+                    device_io_request,
+                    length,
+                } => {
+                    return Ok(Err(UnsupportedDriveIoRequest::SetInformation {
+                        device_io_request,
+                        length,
+                    }));
                 }
-            }
+            },
             MajorFunction::DirectoryControl => match dev_io_req.minor_function {
                 MinorFunction::IRP_MN_QUERY_DIRECTORY => {
-                    match ServerDriveQueryDirectoryRequest::decode_class(dev_io_req.clone(), src)? {
+                    match ServerDriveQueryDirectoryRequest::decode_class(dev_io_req, src)? {
                         ClassDecode::Supported(req) => req.into(),
-                        ClassDecode::Unsupported { .. } => {
-                            return Ok(Err(UnsupportedDriveIoRequest::QueryDirectory(dev_io_req)));
+                        ClassDecode::Unsupported { device_io_request, .. } => {
+                            return Ok(Err(UnsupportedDriveIoRequest::QueryDirectory(device_io_request)));
                         }
                     }
                 }
@@ -2210,7 +2214,9 @@ impl ServerDriveIoRequest {
                     ServerDriveNotifyChangeDirectoryRequest::decode(dev_io_req, src)?.into()
                 }
                 _ => {
-                    // The protocol defines no body for other minor functions, so whatever follows is ignored.
+                    // The protocol defines no body for other minor functions, so everything after the
+                    // header is ignored. This also discards trailing data the processor would otherwise
+                    // reject: with no declared length there is nothing to tell a body from trailing data.
                     src.advance(src.len());
                     return Ok(Err(UnsupportedDriveIoRequest::DirectoryControl(dev_io_req)));
                 }
@@ -4144,6 +4150,7 @@ impl ServerDriveQueryDirectoryRequest {
         ) {
             read_padding!(src, path_length);
             return Ok(ClassDecode::Unsupported {
+                device_io_request,
                 length: path_length_field,
             });
         }
@@ -4348,7 +4355,10 @@ impl ServerDriveQueryVolumeInformationRequest {
                 | FileSystemInformationClassLevel::FILE_FS_FULL_SIZE_INFORMATION
                 | FileSystemInformationClassLevel::FILE_FS_DEVICE_INFORMATION
         ) {
-            return Ok(ClassDecode::Unsupported { length: length_field });
+            return Ok(ClassDecode::Unsupported {
+                device_io_request: dev_io_req,
+                length: length_field,
+            });
         }
 
         Ok(ClassDecode::Supported(Self {
@@ -5179,7 +5189,10 @@ impl ServerDriveSetInformationRequest {
         ) {
             ensure_size!(in: src, size: length);
             read_padding!(src, length); // SetBuffer
-            return Ok(ClassDecode::Unsupported { length: length_field });
+            return Ok(ClassDecode::Unsupported {
+                device_io_request: dev_io_req,
+                length: length_field,
+            });
         }
 
         let set_buffer = FileInformationClass::decode(file_information_class_level, length, src)?;
