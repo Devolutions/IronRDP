@@ -455,6 +455,22 @@ fn redirectclipboard_zero_disables_clipboard_for_default_mode() {
 }
 
 #[test]
+fn printer_redirection_is_opt_in() {
+    let rdp = "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\n";
+
+    let config = parse_config_from_rdp(rdp, &[]);
+    assert_eq!(config.properties().redirect_printers(), None);
+
+    let config = parse_config_from_rdp(rdp, &["--printer"]);
+    assert_eq!(config.properties().redirect_printers(), Some(true));
+    assert!(config.channels().rdpdr.enabled);
+
+    let config = parse_config_from_rdp(&format!("{rdp}redirectprinters:i:1\nironrdp_rdpdr:i:0\n"), &[]);
+    assert_eq!(config.properties().redirect_printers(), Some(true));
+    assert!(config.channels().rdpdr.enabled);
+}
+
+#[test]
 fn audiomode_two_disables_audio_playback() {
     let config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:2\n",

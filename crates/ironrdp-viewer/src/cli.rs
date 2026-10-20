@@ -275,6 +275,13 @@ struct Args {
     /// Ignored on other platforms except for the property value itself.
     #[clap(long)]
     smartcard: bool,
+
+    /// Redirect the local default Windows printer (sets `redirectprinters`).
+    ///
+    /// The remote host must have a printer driver with the same name as the local queue's driver.
+    /// Ignored on other platforms except for the property value itself.
+    #[clap(long)]
+    printer: bool,
 }
 
 /// Result of parsing CLI args + loading the `.rdp` file: a configured [`ConfigBuilder`] plus the
@@ -336,6 +343,12 @@ impl ViewerConfig {
             });
         }
 
+        if args.printer {
+            properties.set_redirect_printers(true);
+        }
+        // Opt-in only: an absent `redirectprinters` leaves printer redirection disabled.
+        let redirect_printers = properties.redirect_printers().unwrap_or(false);
+
         // The library overlays everything expressible as a `.rdp` property: destination, credentials,
         // transport, channels, desktop size, audio, DVC proxies, etc.
         let builder = ConfigBuilder::from_property_set(&properties)?;
@@ -355,6 +368,9 @@ impl ViewerConfig {
         } else {
             builder.with_smartcard(false)
         };
+        if redirect_printers {
+            builder = builder.with_rdpdr(true);
+        }
 
         Ok(Self {
             builder,

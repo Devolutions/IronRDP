@@ -46,9 +46,14 @@ fn main() -> anyhow::Result<()> {
 
     #[cfg(windows)]
     let enable_smartcard = config.channels().rdpdr.smartcard;
+    #[cfg(windows)]
+    let redirect_printers = {
+        use ironrdp_cfg::PropertySetExt as _;
+        config.properties().redirect_printers().unwrap_or(false)
+    };
     let client = RdpClient::new(config, output_event_sender);
     #[cfg(windows)]
-    let client = attach_windows_rdpdr_backend(client, enable_smartcard)?;
+    let client = attach_windows_rdpdr_backend(client, enable_smartcard, redirect_printers)?;
     let input_event_sender = client.input_sender();
 
     let mut app =
@@ -155,19 +160,25 @@ fn run_rpc(cli: ViewerConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Attaches the Windows RDPDR backend when smartcard redirection is enabled.
+/// Attaches the Windows RDPDR backend when smartcard or printer redirection is enabled.
 ///
-/// Drive redirection is not yet exposed on the viewer CLI; smartcard-only sessions use an
-/// empty drive list with WinSCard enabled.
+/// Drive redirection is not yet exposed on the viewer CLI, so the backend uses an empty drive list.
+/// Printer redirection announces the current default queue; when there is none, the session
+/// continues without a printer.
 #[cfg(windows)]
-fn attach_windows_rdpdr_backend(client: RdpClient, enable_smartcard: bool) -> anyhow::Result<RdpClient> {
-    if !enable_smartcard {
+fn attach_windows_rdpdr_backend(
+    client: RdpClient,
+    enable_smartcard: bool,
+    redirect_printers: bool,
+) -> anyhow::Result<RdpClient> {
+    if !enable_smartcard && !redirect_printers {
         return Ok(client);
     }
 
     let factory = ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(Vec::new())
-        .map_err(|error| anyhow::anyhow!("invalid smartcard-only rdpdr configuration: {error}"))?
-        .with_smartcard(true);
+        .map_err(|error| anyhow::anyhow!("invalid rdpdr configuration: {error}"))?
+        .with_smartcard(enable_smartcard)
+        .with_default_printer(redirect_printers);
     Ok(client.with_rdpdr_backend_factory(Box::new(factory)))
 }
 

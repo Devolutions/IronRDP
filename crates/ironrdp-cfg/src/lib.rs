@@ -492,6 +492,13 @@ pub trait PropertySetExt {
     /// Removes the `redirectwebauthn` property.
     fn clear_redirect_webauthn(&mut self);
 
+    /// Whether printer redirection is requested (`redirectprinters`).
+    fn redirect_printers(&self) -> Option<bool>;
+    /// Sets the `redirectprinters` property.
+    fn set_redirect_printers(&mut self, value: bool);
+    /// Removes the `redirectprinters` property.
+    fn clear_redirect_printers(&mut self);
+
     /// RemoteApp application name (`remoteapplicationname`).
     fn remote_application_name(&self) -> Option<&str>;
     /// Sets the `remoteapplicationname` property.
@@ -964,6 +971,18 @@ impl PropertySetExt for PropertySet {
 
     fn clear_redirect_webauthn(&mut self) {
         self.remove("redirectwebauthn");
+    }
+
+    fn redirect_printers(&self) -> Option<bool> {
+        self.get::<bool>("redirectprinters")
+    }
+
+    fn set_redirect_printers(&mut self, value: bool) {
+        self.insert("redirectprinters", value);
+    }
+
+    fn clear_redirect_printers(&mut self) {
+        self.remove("redirectprinters");
     }
 
     fn remote_application_name(&self) -> Option<&str> {
