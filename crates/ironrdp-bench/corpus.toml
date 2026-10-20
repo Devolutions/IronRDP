@@ -99,7 +99,7 @@ sha256 = "1146ef447ad88e58f25d14adf81581233c8265bf49140fa6f7a172fd30f3c402"
 intent = "RDP without NLA accepted by the server."
 
 [capture.expect]
-outcome = "partial"
+outcome = "complete"
 lifecycle = "terminated"
 client_pdus = 664
 connection_pdus = 15
@@ -108,11 +108,11 @@ io_channel_pdus = 4
 message_channel_pdus = 38
 static_channel_pdus = 661
 other_server_message_pdus = 0
-graphics_updates = 79
+graphics_updates = 86
 final_dimensions = [1024, 768]
-gaps = 8
-fingerprint = "9043e81b889c74addc2f6fe80c55051f5acc95ad4514fc2f1f420b60b0a7e51b"
-gap_fingerprint = "1e55c2cd2be210a7f7533c1a28882d2ef18fe8bf307ae10f6fd663a6177feb65"
+gaps = 0
+fingerprint = "b72e9e2ed8d55bc13b5d87dbb29608928d7531c2884c7bff253ba15a962f7fed"
+gap_fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 [[capture]]
 id = "no-nla-rejected"
@@ -131,7 +131,7 @@ sha256 = "b29eedb9e81ed6fab7e0730951880e78fc60c3d64bfb6b37e4fa604ea3a30ff2"
 intent = "RDP without NLA using smartcard authentication."
 
 [capture.expect]
-outcome = "partial"
+outcome = "complete"
 lifecycle = "terminated"
 client_pdus = 902
 connection_pdus = 15
@@ -140,11 +140,11 @@ io_channel_pdus = 4
 message_channel_pdus = 38
 static_channel_pdus = 863
 other_server_message_pdus = 0
-graphics_updates = 79
+graphics_updates = 87
 final_dimensions = [1024, 768]
-gaps = 8
-fingerprint = "51069cfd256a082e8bf9aa9d159ebc1c1d82c5f0bf7991f07d61bfa09eb81426"
-gap_fingerprint = "3f0d393761aa4f99d341dd4d05f045fceab15f46c819c79ca3911a897f0eddc3"
+gaps = 0
+fingerprint = "a95c8df5daef2ca8f0fd446650590b82314e72aff7fb453c27c69cb0aa108786"
+gap_fingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 [[capture]]
 id = "no-tls-accepted"
