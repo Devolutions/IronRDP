@@ -165,7 +165,7 @@ impl Corpus {
 
 impl Expectation {
     /// Build the expectation that a replay summary satisfies.
-    pub fn from_summary(summary: &ReplaySummary) -> Self {
+    fn from_summary(summary: &ReplaySummary) -> Self {
         // Destructure exhaustively so a new summary field cannot be silently omitted from expectations.
         let ReplaySummary {
             lifecycle,
