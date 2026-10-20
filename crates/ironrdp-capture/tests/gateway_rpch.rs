@@ -3,7 +3,7 @@
     reason = "integration tests link the library crate and do not use its direct dependencies"
 )]
 
-use ironrdp_capture_replay::{Plaintext, ReplayError, extract_rpch_from_flows, extract_rpch_tunneled_rdp};
+use ironrdp_capture::{CaptureError, Plaintext, extract_rpch_from_flows, extract_rpch_tunneled_rdp};
 
 const COMMON_HEADER: usize = 16;
 const RESPONSE_HEADER: usize = COMMON_HEADER + 8;
@@ -179,7 +179,7 @@ fn rejects_invalid_dce_rpc_authentication_padding() {
 
     assert!(matches!(
         extract_rpch_tunneled_rdp(&input, &out_channel(response)),
-        Err(ReplayError::GatewayFraming(message)) if message == "invalid DCE/RPC authentication padding"
+        Err(CaptureError::GatewayFraming(message)) if message == "invalid DCE/RPC authentication padding"
     ));
 }
 
@@ -251,7 +251,7 @@ fn rejects_a_tunnel_without_rdp_payloads() {
 
     assert!(matches!(
         extract_rpch_tunneled_rdp(&input, &output),
-        Err(ReplayError::MissingRdpState)
+        Err(CaptureError::GatewayFraming(_))
     ));
 }
 

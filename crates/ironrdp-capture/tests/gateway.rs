@@ -3,7 +3,7 @@
     reason = "integration tests link the library crate and do not use its direct dependencies"
 )]
 
-use ironrdp_capture_replay::{Plaintext, ReplayError, extract_tunneled_rdp, is_gateway_tunnel};
+use ironrdp_capture::{CaptureError, Plaintext, extract_tunneled_rdp, is_gateway_tunnel};
 
 const DATA_PACKET_HEADER: usize = 8 /* packet header */ + 2 /* data length */;
 
@@ -185,7 +185,7 @@ fn rejects_tunneled_capture_without_data_packets() {
 
     assert!(matches!(
         extract_tunneled_rdp(&plaintext),
-        Err(ReplayError::MissingRdpState)
+        Err(CaptureError::GatewayFraming(_))
     ));
 }
 
@@ -197,7 +197,7 @@ fn rejects_truncated_data_packet() {
 
     assert!(matches!(
         extract_tunneled_rdp(&plaintext),
-        Err(ReplayError::GatewayFraming(_))
+        Err(CaptureError::GatewayFraming(_))
     ));
 }
 
@@ -210,7 +210,7 @@ fn rejects_trailing_truncated_websocket_bytes() {
 
     assert!(matches!(
         extract_tunneled_rdp(&plaintext),
-        Err(ReplayError::GatewayFraming(_))
+        Err(CaptureError::GatewayFraming(_))
     ));
 }
 
@@ -222,7 +222,7 @@ fn rejects_an_unfinished_websocket_message() {
 
     assert!(matches!(
         extract_tunneled_rdp(&plaintext),
-        Err(ReplayError::GatewayFraming(_))
+        Err(CaptureError::GatewayFraming(_))
     ));
 }
 
@@ -235,6 +235,6 @@ fn rejects_a_truncated_packet_after_a_valid_data_packet() {
 
     assert!(matches!(
         extract_tunneled_rdp(&plaintext),
-        Err(ReplayError::GatewayFraming(_))
+        Err(CaptureError::GatewayFraming(_))
     ));
 }

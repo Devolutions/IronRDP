@@ -6,7 +6,7 @@
 //! and TsProxy framing and recovers the tunneled RDP byte stream ([MS-TSGU] 3.6).
 
 use crate::transport::flatten;
-use crate::{PacketStream, Plaintext, ReplayError};
+use crate::{CaptureError, PacketStream, Plaintext};
 
 /// DCE/RPC common header length.
 const COMMON_HEADER: usize = 16;
@@ -50,7 +50,7 @@ fn rpch_channel(plaintext: &Plaintext) -> Option<RpchChannel> {
 ///
 /// Candidate IN and OUT channels are tried until one pair yields an inner RDP
 /// stream. A single IN or OUT HTTP flow is not a complete tunnel.
-pub fn extract_rpch_from_flows(flows: &[Plaintext]) -> Result<Option<Plaintext>, ReplayError> {
+pub fn extract_rpch_from_flows(flows: &[Plaintext]) -> Result<Option<Plaintext>, CaptureError> {
     let inputs: Vec<_> = flows
         .iter()
         .filter(|flow| rpch_channel(flow) == Some(RpchChannel::In))
@@ -63,7 +63,7 @@ pub fn extract_rpch_from_flows(flows: &[Plaintext]) -> Result<Option<Plaintext>,
         return Ok(None);
     }
     if inputs.is_empty() || outputs.is_empty() {
-        return Err(ReplayError::GatewayFraming(
+        return Err(CaptureError::GatewayFraming(
             "incomplete RPC-over-HTTP tunnel".to_owned(),
         ));
     }
@@ -76,7 +76,8 @@ pub fn extract_rpch_from_flows(flows: &[Plaintext]) -> Result<Option<Plaintext>,
             }
         }
     }
-    Err(last_error.unwrap_or(ReplayError::MissingRdpState))
+    Err(last_error
+        .unwrap_or_else(|| CaptureError::GatewayFraming("RPC-over-HTTP tunnel does not contain RDP data".to_owned())))
 }
 
 /// Extract the tunneled RDP bytes from a pair of decrypted RPCH channel flows.
@@ -84,7 +85,7 @@ pub fn extract_rpch_from_flows(flows: &[Plaintext]) -> Result<Option<Plaintext>,
 /// `input` is the IN-channel flow (client requests) and `output` is the OUT-channel
 /// flow (server responses). The returned streams contain raw RDP traffic (starting
 /// with the X.224 connection request) exactly as a direct TCP capture would carry it.
-pub fn extract_rpch_tunneled_rdp(input: &Plaintext, output: &Plaintext) -> Result<Plaintext, ReplayError> {
+pub fn extract_rpch_tunneled_rdp(input: &Plaintext, output: &Plaintext) -> Result<Plaintext, CaptureError> {
     let (client_flat, client_packets) = concat_stream(&input.client);
     let (server_flat, server_packets) = concat_stream(&output.server);
     let client_start = strip_http_heads(&client_flat, Direction::Client);
@@ -93,7 +94,9 @@ pub fn extract_rpch_tunneled_rdp(input: &Plaintext, output: &Plaintext) -> Resul
     let client = client_rdp_bytes(&client_flat[client_start..], &client_packets, client_start)?;
     let server = server_rdp_bytes(&server_flat[server_start..], &server_packets, server_start)?;
     if client.is_empty() || server.is_empty() {
-        return Err(ReplayError::MissingRdpState);
+        return Err(CaptureError::GatewayFraming(
+            "RPC-over-HTTP tunnel does not contain RDP data".to_owned(),
+        ));
     }
     Ok(Plaintext { client, server })
 }
@@ -196,21 +199,21 @@ struct Fragment<'a> {
 /// auth_len - 8 - auth_pad_len`, where `auth_pad_len` is read from the security trailer
 /// itself ([MS-RPCE] 2.2.2.10 and 2.2.2.11). `alloc_hint` cannot be used here: on a
 /// continuation fragment it advertises the *remaining* stub, not this fragment's share.
-fn fragments(mut bytes: &[u8], header_size: usize) -> Result<Vec<Fragment<'_>>, ReplayError> {
+fn fragments(mut bytes: &[u8], header_size: usize) -> Result<Vec<Fragment<'_>>, CaptureError> {
     let mut offset = 0;
     let mut fragments = Vec::new();
     while !bytes.is_empty() {
         let header = bytes
             .get(..COMMON_HEADER)
-            .ok_or_else(|| ReplayError::GatewayFraming("truncated DCE/RPC header".to_owned()))?;
+            .ok_or_else(|| CaptureError::GatewayFraming("truncated DCE/RPC header".to_owned()))?;
         if header[0] != 5 {
-            return Err(ReplayError::GatewayFraming("invalid DCE/RPC version".to_owned()));
+            return Err(CaptureError::GatewayFraming("invalid DCE/RPC version".to_owned()));
         }
         let ptype = header[2];
         let flags = header[3];
         let fragment_length = usize::from(u16::from_le_bytes([header[8], header[9]]));
         if !(COMMON_HEADER..=MAX_FRAGMENT).contains(&fragment_length) {
-            return Err(ReplayError::GatewayFraming(
+            return Err(CaptureError::GatewayFraming(
                 "invalid DCE/RPC fragment length".to_owned(),
             ));
         }
@@ -218,7 +221,7 @@ fn fragments(mut bytes: &[u8], header_size: usize) -> Result<Vec<Fragment<'_>>, 
         let call_id = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
         let pdu = bytes
             .get(..fragment_length)
-            .ok_or_else(|| ReplayError::GatewayFraming("truncated DCE/RPC fragment".to_owned()))?;
+            .ok_or_else(|| CaptureError::GatewayFraming("truncated DCE/RPC fragment".to_owned()))?;
         let fragment_offset = offset;
         bytes = &bytes[fragment_length..];
         offset += fragment_length;
@@ -227,14 +230,14 @@ fn fragments(mut bytes: &[u8], header_size: usize) -> Result<Vec<Fragment<'_>>, 
         let stub_end = if auth_length > 0 {
             let sec_trailer = fragment_length
                 .checked_sub(auth_length + 8)
-                .ok_or_else(|| ReplayError::GatewayFraming("invalid DCE/RPC authentication trailer".to_owned()))?;
+                .ok_or_else(|| CaptureError::GatewayFraming("invalid DCE/RPC authentication trailer".to_owned()))?;
             let auth_pad_len =
                 usize::from(*pdu.get(sec_trailer + 2).ok_or_else(|| {
-                    ReplayError::GatewayFraming("truncated DCE/RPC authentication trailer".to_owned())
+                    CaptureError::GatewayFraming("truncated DCE/RPC authentication trailer".to_owned())
                 })?);
             sec_trailer
                 .checked_sub(auth_pad_len)
-                .ok_or_else(|| ReplayError::GatewayFraming("invalid DCE/RPC authentication padding".to_owned()))?
+                .ok_or_else(|| CaptureError::GatewayFraming("invalid DCE/RPC authentication padding".to_owned()))?
         } else {
             fragment_length
         };
@@ -266,7 +269,7 @@ fn fragments(mut bytes: &[u8], header_size: usize) -> Result<Vec<Fragment<'_>>, 
 }
 
 /// Reassemble DCE/RPC request fragments that share a call id into complete PDUs.
-fn request_pdus(bytes: &[u8], packet_offsets: &[(usize, usize)], body_start: usize) -> Result<Vec<Pdu>, ReplayError> {
+fn request_pdus(bytes: &[u8], packet_offsets: &[(usize, usize)], body_start: usize) -> Result<Vec<Pdu>, CaptureError> {
     let mut complete = Vec::new();
     let mut pending: Option<Pdu> = None;
     for fragment in fragments(bytes, REQUEST_HEADER)? {
@@ -301,7 +304,7 @@ fn client_rdp_bytes(
     body: &[u8],
     packet_offsets: &[(usize, usize)],
     body_start: usize,
-) -> Result<PacketStream, ReplayError> {
+) -> Result<PacketStream, CaptureError> {
     let mut output = Vec::new();
     for pdu in request_pdus(body, packet_offsets, body_start)? {
         if pdu.ptype != PTYPE_REQUEST || pdu.opnum != SEND_TO_SERVER_OPNUM {
@@ -320,13 +323,13 @@ fn client_rdp_bytes(
 ///
 /// [MS-TSGU] 3.6.5.1 requires network byte order. Some clients emit little-endian
 /// lengths, so both encodings are accepted when `numBuffers` is in 1..=3.
-fn send_to_server_payload(stub: &[u8]) -> Result<Vec<u8>, ReplayError> {
+fn send_to_server_payload(stub: &[u8]) -> Result<Vec<u8>, CaptureError> {
     parse_send_to_server(stub, u32::from_be_bytes).or_else(|_| parse_send_to_server(stub, u32::from_le_bytes))
 }
 
-fn parse_send_to_server(stub: &[u8], from_bytes: fn([u8; 4]) -> u32) -> Result<Vec<u8>, ReplayError> {
+fn parse_send_to_server(stub: &[u8], from_bytes: fn([u8; 4]) -> u32) -> Result<Vec<u8>, CaptureError> {
     const HANDLE: usize = 20;
-    let framing = || ReplayError::GatewayFraming("malformed send-to-server stub".to_owned());
+    let framing = || CaptureError::GatewayFraming("malformed send-to-server stub".to_owned());
     let mut cursor = stub.get(HANDLE..).ok_or_else(framing)?;
     let _total = read_u32(&mut cursor, from_bytes).ok_or_else(framing)?;
     let buffer_count =
@@ -355,7 +358,7 @@ fn server_rdp_bytes(
     body: &[u8],
     packet_offsets: &[(usize, usize)],
     body_start: usize,
-) -> Result<PacketStream, ReplayError> {
+) -> Result<PacketStream, CaptureError> {
     let mut output = Vec::new();
     // The receive pipe carries every server-to-client RDP byte on one RPC call: the
     // `TsProxySetupReceivePipe` call. Ordinary data fragments stay non-final for the

@@ -5,7 +5,7 @@
 //! recovers the tunneled RDP byte stream ([MS-TSGU] 2.2.10).
 
 use crate::transport::flatten;
-use crate::{PacketStream, Plaintext, ReplayError};
+use crate::{CaptureError, PacketStream, Plaintext};
 
 /// `HTTP_DATA_PACKET` payload prefix: 2-byte length after the packet header.
 const DATA_PACKET_HEADER: usize = 8 /* packet header */ + 2 /* data length */;
@@ -21,7 +21,7 @@ pub fn is_gateway_tunnel(plaintext: &Plaintext) -> bool {
 ///
 /// The returned streams contain raw RDP traffic (starting with the X.224
 /// connection request) exactly as a direct TCP capture would carry it.
-pub fn extract_tunneled_rdp(plaintext: &Plaintext) -> Result<Plaintext, ReplayError> {
+pub fn extract_tunneled_rdp(plaintext: &Plaintext) -> Result<Plaintext, CaptureError> {
     let client = websocket_payloads(&plaintext.client, true)?;
     let server = websocket_payloads(&plaintext.server, false)?;
     Ok(Plaintext {
@@ -39,7 +39,7 @@ const REQUEST_HEAD_PREFIXES: [&[u8]; 2] = [b"RDG_OUT_DATA ".as_slice(), b"RDG_IN
 /// Authentication can add request/response round trips (e.g. an NTLM 401
 /// challenge) before the final WebSocket upgrade, so interim HTTP heads are
 /// skipped until the bytes no longer look like HTTP.
-fn websocket_payloads(stream: &PacketStream, masked: bool) -> Result<PacketStream, ReplayError> {
+fn websocket_payloads(stream: &PacketStream, masked: bool) -> Result<PacketStream, CaptureError> {
     let mut bytes = Vec::new();
     let mut packet_offsets = Vec::with_capacity(stream.len());
     for (packet, chunk) in stream {
@@ -59,7 +59,7 @@ fn websocket_payloads(stream: &PacketStream, masked: bool) -> Result<PacketStrea
             .windows(4)
             .position(|window| window == b"\r\n\r\n")
             .map(|position| position + 4)
-            .ok_or(ReplayError::UnsupportedTransport)?;
+            .ok_or(CaptureError::UnsupportedTransport)?;
         // Interim responses such as NTLM 401 challenges carry an error body.
         if !masked {
             head_end += content_length(&bytes[head_start..head_end]);
@@ -77,7 +77,7 @@ fn websocket_payloads(stream: &PacketStream, masked: bool) -> Result<PacketStrea
     let mut message_packet = 0usize;
     while offset < bytes.len() {
         let Some(frame) = parse_websocket_frame(&bytes[offset..], masked) else {
-            return Err(ReplayError::GatewayFraming("truncated websocket frame".to_owned()));
+            return Err(CaptureError::GatewayFraming("truncated websocket frame".to_owned()));
         };
         let packet_index = packet_offsets.partition_point(|(chunk_offset, _)| *chunk_offset <= offset) - 1;
         offset += frame.encoded_len;
@@ -97,12 +97,12 @@ fn websocket_payloads(stream: &PacketStream, masked: bool) -> Result<PacketStrea
             0x9 | 0xA => {}
             // Close ends the tunnel.
             0x8 => break,
-            _ => return Err(ReplayError::UnsupportedTransport),
+            _ => return Err(CaptureError::UnsupportedTransport),
         }
     }
 
     if !message.is_empty() {
-        return Err(ReplayError::GatewayFraming("truncated websocket message".to_owned()));
+        return Err(CaptureError::GatewayFraming("truncated websocket message".to_owned()));
     }
     Ok(frames)
 }
@@ -177,7 +177,7 @@ fn parse_websocket_frame(bytes: &[u8], masked: bool) -> Option<WebsocketFrame> {
 }
 
 /// Keep the RDP payloads of `HTTP_DATA_PACKET` packets in tunnel order.
-fn data_packets(frames: &PacketStream) -> Result<PacketStream, ReplayError> {
+fn data_packets(frames: &PacketStream) -> Result<PacketStream, CaptureError> {
     let mut output = Vec::new();
     let mut pending = Vec::new();
     for (packet, frame) in frames {
@@ -187,9 +187,9 @@ fn data_packets(frames: &PacketStream) -> Result<PacketStream, ReplayError> {
             let length = usize::try_from(u32::from_le_bytes(
                 header[4..8].try_into().expect("header length slice"),
             ))
-            .map_err(|_| ReplayError::GatewayFraming("packet length is too large".to_owned()))?;
+            .map_err(|_| CaptureError::GatewayFraming("packet length is too large".to_owned()))?;
             if !(8..=MAX_WEBSOCKET_PAYLOAD).contains(&length) {
-                return Err(ReplayError::GatewayFraming("packet length is invalid".to_owned()));
+                return Err(CaptureError::GatewayFraming("packet length is invalid".to_owned()));
             }
             if pending.len() - offset < length {
                 break;
@@ -200,12 +200,12 @@ fn data_packets(frames: &PacketStream) -> Result<PacketStream, ReplayError> {
                 // HTTP_DATA_PACKET ([MS-TSGU] 2.2.10.6).
                 let data = packet_bytes
                     .get(DATA_PACKET_HEADER..)
-                    .ok_or_else(|| ReplayError::GatewayFraming("truncated data packet".to_owned()))?;
+                    .ok_or_else(|| CaptureError::GatewayFraming("truncated data packet".to_owned()))?;
                 let declared = usize::from(u16::from_le_bytes(
                     packet_bytes[8..10].try_into().expect("data length slice"),
                 ));
                 if declared != data.len() {
-                    return Err(ReplayError::GatewayFraming(
+                    return Err(CaptureError::GatewayFraming(
                         "data packet length does not match its header".to_owned(),
                     ));
                 }
@@ -217,10 +217,12 @@ fn data_packets(frames: &PacketStream) -> Result<PacketStream, ReplayError> {
     }
 
     if !pending.is_empty() {
-        return Err(ReplayError::GatewayFraming("truncated gateway packet".to_owned()));
+        return Err(CaptureError::GatewayFraming("truncated gateway packet".to_owned()));
     }
     if output.is_empty() {
-        return Err(ReplayError::MissingRdpState);
+        return Err(CaptureError::GatewayFraming(
+            "gateway tunnel does not contain RDP data".to_owned(),
+        ));
     }
     Ok(output)
 }

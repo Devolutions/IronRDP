@@ -9,7 +9,8 @@ use std::process::Command;
 use aes_gcm::aead::{AeadInPlace as _, KeyInit as _};
 use aes_gcm::{Aes128Gcm, Nonce};
 use hmac::{Hmac, Mac};
-use ironrdp_capture_replay::{ReplayError, decrypt_tls, read_capture, replay_capture};
+use ironrdp_capture::{CaptureError, decrypt_tls, read_capture};
+use ironrdp_capture_replay::{ReplayError, replay_capture};
 use sha2::Sha256;
 
 fn temporary_path(name: &str) -> PathBuf {
@@ -345,7 +346,7 @@ fn decrypts_gateway_tunnel_with_external_key_log() {
     capture.add_tls_key_log(&outer_key_log);
     assert!(matches!(
         replay_capture(&capture),
-        Err(ReplayError::MissingTunneledTlsSecret)
+        Err(ReplayError::Capture(CaptureError::MissingTunneledTlsSecret))
     ));
 
     capture.add_tls_key_log(&inner_key_log);
