@@ -3645,13 +3645,17 @@ dependencies = [
 name = "ironrdp-testsuite-extra"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm 0.10.3",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
+ "hmac 0.12.1",
+
  "ironrdp",
  "ironrdp-agent",
  "ironrdp-async",
  "ironrdp-bulk",
+ "ironrdp-capture",
  "ironrdp-cfg",
  "ironrdp-client",
  "ironrdp-cliprdr",
@@ -3690,6 +3694,8 @@ dependencies = [
  "rstest",
  "semver",
  "serde_json",
+ "sha2 0.10.9",
+
  "tokio",
  "tokio-rustls",
  "tracing",
