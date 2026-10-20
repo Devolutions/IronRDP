@@ -76,6 +76,22 @@ internal static class SmokeTests
             Equal(TpktX224ConfirmSelectingTls.Length, (int)info!.Length, "PDU length");
         });
 
+        yield return ("framed serializes writes and releases its lock on another thread", () =>
+        {
+            var stream = new PendingWriteStream();
+            var framed = new Framed<PendingWriteStream>(stream);
+
+            var first = framed.Write(new byte[] { 1, 2 });
+            var second = framed.Write(new byte[] { 3 });
+            True(!first.IsCompleted, "first write waits for the stream");
+            Equal(2, (int)stream.Length, "second write waits for the first");
+
+            stream.FinishOnAnotherThread();
+            first.GetAwaiter().GetResult();
+            second.GetAwaiter().GetResult();
+            True(stream.ToArray().SequenceEqual(new byte[] { 1, 2, 3 }), "written bytes");
+        });
+
         yield return ("config builder reports the first missing field", () =>
         {
             var builder = ConfigBuilder.New();
@@ -123,6 +139,24 @@ internal static class SmokeTests
         builder.EnableCredssp = false;
         builder.PerformanceFlags = PerformanceFlags.NewDefault();
         return builder.Build();
+    }
+
+    private sealed class PendingWriteStream : MemoryStream
+    {
+        private readonly TaskCompletionSource _written = new();
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            Write(buffer.Span);
+            return new ValueTask(_written.Task);
+        }
+
+        public void FinishOnAnotherThread()
+        {
+            var thread = new Thread(() => _written.SetResult());
+            thread.Start();
+            thread.Join();
+        }
     }
 
     private static T Throws<T>(System.Action action) where T : Exception

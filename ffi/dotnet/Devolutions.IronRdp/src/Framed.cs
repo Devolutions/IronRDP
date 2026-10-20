@@ -6,7 +6,7 @@ public class Framed<TS> where TS : Stream
 {
     private readonly TS _stream;
     private List<byte> _buffer;
-    private readonly Mutex _writeLock = new();
+    private readonly SemaphoreSlim _writeLock = new(1, 1);
 
     public Framed(TS stream)
     {
@@ -88,7 +88,7 @@ public class Framed<TS> where TS : Stream
 
     public async Task Write(byte[] data)
     {
-        _writeLock.WaitOne();
+        await _writeLock.WaitAsync();
         try
         {
             ReadOnlyMemory<byte> memory = data;
@@ -96,7 +96,7 @@ public class Framed<TS> where TS : Stream
         }
         finally
         {
-            _writeLock.ReleaseMutex();
+            _writeLock.Release();
         }
     }
 
