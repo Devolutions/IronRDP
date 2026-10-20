@@ -730,7 +730,7 @@ impl iron_remote_desktop::Session for Session {
                     let (action, payload) = frame.context("read frame")?;
                     trace!(?action, frame_length = payload.len(), "Frame received");
 
-                    active_stage.process(&mut image, action, &payload)?
+                    active_stage.process(&mut image, action, &payload, framed.last_read_at())?
                 }
                 input_events = input_events.next() => {
                     let event = input_events.context("read next input events")?;

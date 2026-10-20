@@ -120,7 +120,9 @@ async fn test_deactivation_reactivation() {
                 .unwrap();
             {
                 let (action, payload) = framed.read_pdu().await.expect("valid PDU");
-                let outputs = stage.process(&mut image, action, &payload).expect("stage process");
+                let outputs = stage
+                    .process(&mut image, action, &payload, None)
+                    .expect("stage process");
                 let out = outputs.into_iter().next().unwrap();
                 match out {
                     ActiveStageOutput::DeactivateAll => {
@@ -204,7 +206,7 @@ fn test_reactivation_preserves_bulk_decompression_history() {
     assert_ne!(first_flags & bulk_flags::PACKET_COMPRESSED, 0);
 
     stage
-        .process(&mut image, pdu::Action::FastPath, &first_frame)
+        .process(&mut image, pdu::Action::FastPath, &first_frame, None)
         .expect("compressed FastPath update before reactivation");
 
     assert!(stage.reactivate(1003, 1001, 2, false, false, 1600));
@@ -217,7 +219,7 @@ fn test_reactivation_preserves_bulk_decompression_history() {
     );
 
     let outputs = stage
-        .process(&mut image, pdu::Action::FastPath, &second_frame)
+        .process(&mut image, pdu::Action::FastPath, &second_frame, None)
         .expect("compressed FastPath update referencing pre-reactivation history");
 
     assert!(
@@ -293,7 +295,7 @@ async fn drive_echo_round_trip(
                 continue;
             };
 
-            let outputs = stage.process(&mut image, action, &frame).expect("stage process");
+            let outputs = stage.process(&mut image, action, &frame, None).expect("stage process");
             for output in outputs {
                 if let ActiveStageOutput::ResponseFrame(frame) = output {
                     framed.write_all(&frame).await.expect("write response frame");
@@ -439,7 +441,7 @@ async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool)
                     continue;
                 };
 
-                let outputs = stage.process(&mut image, action, &frame).expect("stage process");
+                let outputs = stage.process(&mut image, action, &frame, None).expect("stage process");
                 for output in outputs {
                     if let ActiveStageOutput::ResponseFrame(frame) = output {
                         framed.write_all(&frame).await.expect("write response frame");
@@ -657,7 +659,10 @@ async fn each_connection_gets_its_own_display_context() {
                 let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
                 'probe: loop {
                     let (action, payload) = framed.read_pdu().await.expect("valid PDU");
-                    for out in stage.process(&mut image, action, &payload).expect("stage process") {
+                    for out in stage
+                        .process(&mut image, action, &payload, None)
+                        .expect("stage process")
+                    {
                         if let ActiveStageOutput::ResponseFrame(frame) = out {
                             framed.write_all(&frame).await.expect("write RTT response");
                             break 'probe;
@@ -682,7 +687,10 @@ async fn each_connection_gets_its_own_display_context() {
                     .unwrap();
                 'deactivate: loop {
                     let (action, payload) = framed.read_pdu().await.expect("valid PDU");
-                    for out in stage.process(&mut image, action, &payload).expect("stage process") {
+                    for out in stage
+                        .process(&mut image, action, &payload, None)
+                        .expect("stage process")
+                    {
                         if matches!(out, ActiveStageOutput::DeactivateAll) {
                             break 'deactivate;
                         }
@@ -1195,7 +1203,9 @@ async fn drive_rdpdr_until_complete(
             continue;
         };
         let (action, frame) = frame_result.expect("read RDPDR frame");
-        let outputs = stage.process(&mut image, action, &frame).expect("process RDPDR frame");
+        let outputs = stage
+            .process(&mut image, action, &frame, None)
+            .expect("process RDPDR frame");
         for output in outputs {
             if let ActiveStageOutput::ResponseFrame(frame) = output {
                 framed.write_all(&frame).await.expect("write RDPDR response");
@@ -1613,7 +1623,7 @@ async fn egfx_moves_onto_the_udp_tunnel_with_soft_sync() {
                             }
                             pdu = framed.read_pdu() => {
                                 let (action, frame) = pdu.expect("read PDU");
-                                for output in stage.process(&mut image, action, &frame).expect("stage process") {
+                                for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
                                     if let ActiveStageOutput::ResponseFrame(frame) = output {
                                         framed.write_all(&frame).await.expect("write response frame");
                                     }
@@ -1647,7 +1657,7 @@ async fn egfx_moves_onto_the_udp_tunnel_with_soft_sync() {
                     loop {
                         let (action, frame) = framed.read_pdu().await.expect("read PDU");
                         let mut responses = Vec::new();
-                        for output in stage.process(&mut image, action, &frame).expect("stage process") {
+                        for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
                             if let ActiveStageOutput::ResponseFrame(frame) = output {
                                 responses.push(frame);
                             }
@@ -1694,7 +1704,7 @@ async fn egfx_moves_onto_the_udp_tunnel_with_soft_sync() {
                             }
                             pdu = framed.read_pdu() => {
                                 let (action, frame) = pdu.expect("read PDU");
-                                for output in stage.process(&mut image, action, &frame).expect("stage process") {
+                                for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
                                     if let ActiveStageOutput::ResponseFrame(frame) = output {
                                         framed.write_all(&frame).await.expect("write response frame");
                                     }
@@ -2056,7 +2066,7 @@ impl CookieProbe {
                 Ok(Ok(pdu)) => pdu,
                 Ok(Err(error)) => return Err(format!("read PDU: {error}")),
             };
-            let outputs = match self.stage.process(&mut self.image, action, &frame) {
+            let outputs = match self.stage.process(&mut self.image, action, &frame, None) {
                 Ok(outputs) => outputs,
                 Err(error) => return Err(format!("stage process: {error}")),
             };
@@ -2095,7 +2105,7 @@ impl CookieProbe {
             let (action, frame) = self.framed.read_pdu().await.expect("read PDU");
             let outputs = self
                 .stage
-                .process(&mut self.image, action, &frame)
+                .process(&mut self.image, action, &frame, None)
                 .expect("stage process");
             if outputs
                 .iter()

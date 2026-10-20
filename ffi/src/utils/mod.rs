@@ -80,3 +80,12 @@ pub mod ffi {
         }
     }
 }
+
+/// Reads a monotonic clock for `received_at` arguments. Epoch is the first call; only
+/// differences are meaningful. This binding targets native .NET hosts only, never
+/// `wasm32-unknown-unknown`, so `std::time::Instant` is sufficient here (compare
+/// `ironrdp-blocking`'s identical helper, which makes the same assumption for the same reason).
+pub(crate) fn monotonic_now() -> ironrdp::connector::MonotonicInstant {
+    static EPOCH: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
+    ironrdp::connector::MonotonicInstant::from_millis(u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX))
+}

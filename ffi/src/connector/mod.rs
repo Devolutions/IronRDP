@@ -23,18 +23,7 @@ pub mod ffi {
     use crate::error::ValueConsumedError;
     use crate::error::ffi::{IronRdpError, IronRdpErrorKind};
     use crate::pdu::ffi::WriteBuf;
-
-    /// Reads a monotonic clock for `Sequence::step`'s `received_at`. Epoch is the
-    /// first call; only differences are meaningful. This binding targets native
-    /// .NET hosts only, never `wasm32-unknown-unknown`, so `std::time::Instant`
-    /// is sufficient here (compare `ironrdp-blocking`'s identical helper, which
-    /// makes the same assumption for the same reason).
-    fn monotonic_now() -> ironrdp::connector::MonotonicInstant {
-        static EPOCH: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
-        ironrdp::connector::MonotonicInstant::from_millis(
-            u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX),
-        )
-    }
+    use crate::utils::monotonic_now;
 
     #[diplomat::opaque] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
     pub struct ClientConnector(pub Option<ironrdp::connector::ClientConnector>);

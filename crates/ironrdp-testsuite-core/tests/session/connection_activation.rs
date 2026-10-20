@@ -419,7 +419,7 @@ fn active_processor_surfaces_multitransport_request_on_message_channel() {
     );
 
     let outputs = processor
-        .process(&frame, &mut None)
+        .process(&frame, &mut None, None)
         .expect("active processor should surface multitransport request");
 
     assert!(matches!(

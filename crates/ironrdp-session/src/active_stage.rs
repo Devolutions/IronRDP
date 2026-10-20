@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
-use ironrdp_core::{ReadCursor, WriteBuf};
+use ironrdp_core::{MonotonicInstant, ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_dvc::pdu::SoftSyncTunnelType;
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessageBatch, DynamicChannelMut, DynamicChannelRef};
@@ -183,15 +183,28 @@ impl ActiveStage {
     }
 
     /// Process a frame received from the server.
+    ///
+    /// `received_at` is when the transport read the frame, such as `Framed::last_read_at()`
+    /// from `ironrdp-async` or `ironrdp-blocking`. Use one monotonic clock for every frame, and
+    /// keep the read time for buffered frames so bandwidth measurements reflect network arrival.
+    /// With `None`, a Bandwidth Measure Stop is answered with `timeDelta = 1` and
+    /// `byteCount = 0`, which the server reads as 0 kbps ([\[MS-RDPBCGR\] 3.3.5.14]).
+    ///
+    /// [\[MS-RDPBCGR\] 3.3.5.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b716fd9a-5a0b-4970-b5d0-f1be451408b7
     pub fn process(
         &mut self,
         image: &mut DecodedImage,
         action: Action,
         frame: &[u8],
+        received_at: Option<MonotonicInstant>,
     ) -> SessionResult<Vec<ActiveStageOutput>> {
         self.damage_regions.clear();
         let (mut stage_outputs, processor_updates) = match action {
             Action::FastPath => {
+                // Fast-path frames carry no security flags or data signature: IronRDP supports
+                // Enhanced RDP Security, and Standard RDP Security only at ENCRYPTION_LEVEL_NONE.
+                // The continuous bandwidth count therefore includes the entire frame.
+                self.x224_processor.record_bandwidth_bytes(frame.len());
                 let mut output = WriteBuf::new();
                 let processor_updates =
                     self.fast_path_processor
@@ -202,7 +215,9 @@ impl ActiveStage {
                 )
             }
             Action::X224 => {
-                let x224_outputs = self.x224_processor.process(frame, &mut self.bulk_decompressor)?;
+                let x224_outputs = self
+                    .x224_processor
+                    .process(frame, &mut self.bulk_decompressor, received_at)?;
                 let mut stage_outputs = Vec::new();
                 let mut processor_updates = Vec::new();
 
