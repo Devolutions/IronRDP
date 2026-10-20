@@ -1,8 +1,8 @@
 use ironrdp_core::{Decode as _, ReadCursor, encode_vec, impl_as_any};
 use ironrdp_dvc::ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_dvc::pdu::{
-    CapabilitiesRequestPdu, CapsVersion, ClosePdu, CreateRequestPdu, CreationStatus, DataPdu, DrdynvcClientPdu,
-    DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu, SoftSyncTunnelType,
+    CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateRequestPdu, CreationStatus, DataPdu,
+    DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu, SoftSyncTunnelType,
 };
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessage, DvcMessageBatch, DvcProcessor};
 use ironrdp_svc::SvcMessage;
@@ -143,6 +143,35 @@ fn failed_established_dynamic_channel_attachment_is_not_registered() {
             .attach_established_dynamic_channel(7, RecordedDvc::default())
             .is_ok()
     );
+}
+
+#[test]
+fn capabilities_response_never_claims_compressed_data_support() {
+    // Version 3 only adds DYNVC_DATA_FIRST_COMPRESSED and DYNVC_DATA_COMPRESSED, which the
+    // client cannot decompress, so a version 3 server must be answered with version 2.
+    for (offered, expected) in [
+        (CapsVersion::V1, CapsVersion::V1),
+        (CapsVersion::V2, CapsVersion::V2),
+        (CapsVersion::V3, CapsVersion::V2),
+    ] {
+        let mut client = DrdynvcClient::new();
+        let request = encode_vec(&DrdynvcServerPdu::Capabilities(CapabilitiesRequestPdu::new(
+            offered, None,
+        )))
+        .expect("Capabilities Request should encode");
+
+        let responses = client
+            .process(&request)
+            .expect("Capabilities Request should be processed");
+        let [response] = responses.as_slice() else {
+            panic!("expected exactly one Capabilities Response");
+        };
+        assert_eq!(
+            decode_client_pdu(response),
+            DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(expected)),
+            "server offered {offered:?}"
+        );
+    }
 }
 
 #[test]
