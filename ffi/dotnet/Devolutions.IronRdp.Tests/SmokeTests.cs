@@ -183,6 +183,20 @@ internal static class SmokeTests
             True(stream.ToArray().SequenceEqual(new byte[] { 1, 2, 3 }), "written bytes");
         });
 
+        yield return ("framed reads back-to-back PDUs", () =>
+        {
+            var stream = new MemoryStream(TpktX224ConfirmSelectingTls.Concat(TpktX224ConfirmSelectingTls).ToArray());
+            var framed = new Framed<MemoryStream>(stream);
+
+            for (int i = 0; i < 2; i++)
+            {
+                var (_, frame) = framed.ReadPdu().GetAwaiter().GetResult();
+                True(frame.SequenceEqual(TpktX224ConfirmSelectingTls), $"PDU {i} bytes");
+            }
+
+            True(framed.Peek().IsEmpty, "nothing left in the buffer");
+        });
+
         yield return ("config builder reports the first missing field", () =>
         {
             var builder = ConfigBuilder.New();
