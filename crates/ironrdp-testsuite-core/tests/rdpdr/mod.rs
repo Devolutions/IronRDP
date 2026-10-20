@@ -764,6 +764,42 @@ fn drive_set_volume_information_is_completed_as_not_supported() {
     let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::NOT_SUPPORTED);
     assert_eq!(encoded.len(), 20);
     assert_eq!(read_u32(&encoded[16..]), 8); // Length echoes the request
+
+    // FileFsObjectIdInformation, outside the one class the request MUST contain
+    let request = encoded_drive_information_request(MajorFunction::SetVolumeInformation, 8, &[0; 4]);
+    let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::NOT_SUPPORTED);
+    assert_eq!(read_u32(&encoded[16..]), 4);
+}
+
+#[test]
+fn drive_irps_with_supported_classes_still_reach_the_backend() {
+    fn assert_reaches_backend(rdpdr: &mut Rdpdr, request: &[u8]) {
+        let error = rdpdr.process(request).unwrap_err();
+        assert!(
+            error.to_string().contains("noop RDPDR backend"),
+            "expected the backend to reject the request, got: {error}"
+        );
+    }
+
+    let mut rdpdr = acknowledged_drive();
+
+    // FileFsSizeInformation
+    let request = encoded_drive_information_request(MajorFunction::QueryVolumeInformation, 3, &[]);
+    assert_reaches_backend(&mut rdpdr, &request);
+
+    // FileEndOfFileInformation: EndOfFile
+    let request = encoded_drive_information_request(MajorFunction::SetInformation, 20, &[0; 8]);
+    assert_reaches_backend(&mut rdpdr, &request);
+
+    let path = [b'*', 0, 0, 0];
+    let mut request =
+        encoded_drive_device_io_request(MajorFunction::DirectoryControl, MinorFunction::IRP_MN_QUERY_DIRECTORY);
+    request.extend_from_slice(&3u32.to_le_bytes()); // FileBothDirectoryInformation
+    request.push(1); // InitialQuery
+    request.extend_from_slice(&u32::try_from(path.len()).unwrap().to_le_bytes());
+    request.extend_from_slice(&[0; 23]); // Padding
+    request.extend_from_slice(&path);
+    assert_reaches_backend(&mut rdpdr, &request);
 }
 
 #[test]

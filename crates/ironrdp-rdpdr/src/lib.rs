@@ -8,12 +8,11 @@ use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::efs::{
     AnyIoCtlCode, Capabilities, ClientDeviceListAnnounce, ClientDeviceListRemove, ClientDriveQueryDirectoryResponse,
-    ClientDriveQueryVolumeInformationResponse, ClientDriveSetInformationResponse, ClientNameRequest,
-    ClientNameRequestUnicodeFlag, CoreCapability, CoreCapabilityKind, DEFAULT_PRINTER_DRIVER_NAME,
-    DeviceAnnounceHeader, DeviceCloseResponse, DeviceControlRequest, DeviceControlResponse, DeviceCreateResponse,
-    DeviceIoRequest, DeviceIoResponse, DeviceType, Devices, FileInformationClassLevel, FileSystemInformationClassLevel,
-    Information, MajorFunction, MinorFunction, NtStatus, PrinterIoRequest, ServerDeviceAnnounceResponse,
-    ServerDriveQueryDirectoryRequest, ServerDriveQueryVolumeInformationRequest, ServerDriveSetInformationRequest,
+    ClientDriveQueryVolumeInformationResponse, ClientDriveSetInformationResponse,
+    ClientDriveSetVolumeInformationResponse, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability,
+    CoreCapabilityKind, DEFAULT_PRINTER_DRIVER_NAME, DeviceAnnounceHeader, DeviceCloseResponse, DeviceControlRequest,
+    DeviceControlResponse, DeviceCreateResponse, DeviceIoRequest, DeviceIoResponse, DeviceType, Devices, Information,
+    MajorFunction, NtStatus, PrinterIoRequest, ServerDeviceAnnounceResponse, UnsupportedDriveIoRequest,
     VERSION_MINOR_12, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
@@ -650,17 +649,6 @@ impl Rdpdr {
                     );
                     return Ok(Vec::new());
                 }
-                if let Some(response) = Self::unsupported_drive_io_response(&dev_io_req, src.remaining()) {
-                    debug!(
-                        major = ?dev_io_req.major_function,
-                        minor = ?dev_io_req.minor_function,
-                        file_id = dev_io_req.file_id,
-                        completion_id = dev_io_req.completion_id,
-                        "Completing unsupported filesystem IRP"
-                    );
-
-                    return Ok(vec![response]);
-                }
                 if dev_io_req.major_function == MajorFunction::DeviceControl {
                     let req = DeviceControlRequest::<AnyIoCtlCode>::decode_with_input_buffer(dev_io_req, src)
                         .map_err(|e| decode_err!(e))?;
@@ -685,10 +673,14 @@ impl Rdpdr {
                     }
                     src.advance(CLOSE_REQUEST_PADDING_SIZE);
                 }
-                let req = ServerDriveIoRequest::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
+                let req = ServerDriveIoRequest::decode_or_unsupported(dev_io_req, src).map_err(|e| decode_err!(e))?;
                 if !src.is_empty() {
                     return Err(pdu_other_err!("received filesystem IRP with trailing RDPDR data"));
                 }
+                let req = match req {
+                    Ok(req) => req,
+                    Err(unsupported) => return Ok(vec![Self::unsupported_drive_io_response(unsupported)]),
+                };
 
                 debug!(?req);
 
@@ -800,80 +792,51 @@ impl Rdpdr {
     /// Completes a filesystem IRP that is well-formed but asks for a function or information class
     /// this client does not implement, so that the server receives a failure status instead of the
     /// whole channel being torn down.
-    ///
-    /// Returns `None` for requests [`ServerDriveIoRequest::decode`] accepts, and for requests whose
-    /// size does not match their declared buffer length, which are left to fail decoding as malformed.
-    fn unsupported_drive_io_response(dev_io_req: &DeviceIoRequest, body: &[u8]) -> Option<SvcMessage> {
-        // DR_DRIVE_SET_VOLUME_INFORMATION_REQ: FsInformationClass, Length, Padding (24 bytes), SetVolumeBuffer.
-        const SET_VOLUME_INFORMATION_FIXED_PART_SIZE: usize = 4 + 4 + 24;
+    fn unsupported_drive_io_response(req: UnsupportedDriveIoRequest) -> SvcMessage {
+        let not_supported = |device_io_request| DeviceIoResponse::new(device_io_request, NtStatus::NOT_SUPPORTED);
 
-        let not_supported = || DeviceIoResponse::new(dev_io_req.clone(), NtStatus::NOT_SUPPORTED);
-
-        let pdu = match dev_io_req.major_function {
-            MajorFunction::SetVolumeInformation => {
-                let (_, length) = read_class_and_length(body, SET_VOLUME_INFORMATION_FIXED_PART_SIZE, 4)?;
-
-                // Same layout as the set-information response: Length MUST echo the request.
-                RdpdrPdu::ClientDriveSetInformationResponse(ClientDriveSetInformationResponse::from_parts(
-                    not_supported(),
+        let message = match req {
+            UnsupportedDriveIoRequest::SetVolumeInformation {
+                device_io_request,
+                length,
+            } => SvcMessage::from(DeviceIoCompletion::SetVolumeInformation(
+                ClientDriveSetVolumeInformationResponse {
+                    device_io_reply: not_supported(device_io_request),
                     length,
-                ))
-            }
-            MajorFunction::SetInformation => {
-                let (class, length) =
-                    read_class_and_length(body, ServerDriveSetInformationRequest::FIXED_PART_SIZE, 4)?;
-                if ServerDriveSetInformationRequest::is_valid_class(&FileInformationClassLevel::from(class)) {
-                    return None;
-                }
-
-                RdpdrPdu::ClientDriveSetInformationResponse(ClientDriveSetInformationResponse::from_parts(
-                    not_supported(),
+                },
+            )),
+            UnsupportedDriveIoRequest::SetInformation {
+                device_io_request,
+                length,
+            } => SvcMessage::from(RdpdrPdu::ClientDriveSetInformationResponse(
+                ClientDriveSetInformationResponse {
+                    device_io_reply: not_supported(device_io_request),
                     length,
-                ))
-            }
-            MajorFunction::QueryVolumeInformation => {
-                let (class, _) =
-                    read_class_and_length(body, ServerDriveQueryVolumeInformationRequest::FIXED_PART_SIZE, 4)?;
-                if ServerDriveQueryVolumeInformationRequest::is_valid_class(&FileSystemInformationClassLevel::from(
-                    class,
-                )) {
-                    return None;
-                }
-
+                },
+            )),
+            UnsupportedDriveIoRequest::QueryVolumeInformation(device_io_request) => SvcMessage::from(
                 RdpdrPdu::ClientDriveQueryVolumeInformationResponse(ClientDriveQueryVolumeInformationResponse {
-                    device_io_reply: not_supported(),
+                    device_io_reply: not_supported(device_io_request),
                     buffer: None,
-                })
-            }
-            MajorFunction::DirectoryControl => match dev_io_req.minor_function {
-                MinorFunction::IRP_MN_QUERY_DIRECTORY => {
-                    // FsInformationClass, InitialQuery (1 byte), PathLength, Padding (23 bytes), Path.
-                    let (class, _) = read_class_and_length(body, ServerDriveQueryDirectoryRequest::FIXED_PART_SIZE, 5)?;
-                    if ServerDriveQueryDirectoryRequest::is_valid_class(&FileInformationClassLevel::from(class)) {
-                        return None;
-                    }
-
-                    RdpdrPdu::ClientDriveQueryDirectoryResponse(ClientDriveQueryDirectoryResponse {
-                        device_io_reply: not_supported(),
-                        buffer: None,
-                    })
-                }
-                MinorFunction::IRP_MN_NOTIFY_CHANGE_DIRECTORY => return None,
-                // > If the request contains MajorFunction or MinorFunction fields that are not described by this
-                // > protocol, the request SHOULD be completed with a Device I/O Response message that has the
-                // > IoStatus field set to STATUS_UNSUCCESSFUL.
-                // source: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/9925f2e4-8d5a-4777-a41a-7ba6ef6e8bff
-                _ => {
-                    return Some(SvcMessage::from(DeviceIoCompletion(DeviceIoResponse::new(
-                        dev_io_req.clone(),
-                        NtStatus::UNSUCCESSFUL,
-                    ))));
-                }
-            },
-            _ => return None,
+                }),
+            ),
+            UnsupportedDriveIoRequest::QueryDirectory(device_io_request) => SvcMessage::from(
+                RdpdrPdu::ClientDriveQueryDirectoryResponse(ClientDriveQueryDirectoryResponse {
+                    device_io_reply: not_supported(device_io_request),
+                    buffer: None,
+                }),
+            ),
+            // > If the request contains MajorFunction or MinorFunction fields that are not described by this
+            // > protocol, the request SHOULD be completed with a Device I/O Response message that has the
+            // > IoStatus field set to STATUS_UNSUCCESSFUL.
+            // source: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/9925f2e4-8d5a-4777-a41a-7ba6ef6e8bff
+            UnsupportedDriveIoRequest::DirectoryControl(device_io_request) => SvcMessage::from(
+                DeviceIoCompletion::Bare(DeviceIoResponse::new(device_io_request, NtStatus::UNSUCCESSFUL)),
+            ),
         };
+        debug!(?message, "Completing unsupported filesystem IRP");
 
-        Some(SvcMessage::from(pdu))
+        message
     }
 
     fn unsupported_printer_io_response(device_io_request: DeviceIoRequest) -> SvcMessage {
@@ -881,21 +844,6 @@ impl Rdpdr {
             device_io_response: DeviceIoResponse::new(device_io_request, NtStatus::NOT_SUPPORTED),
         }))
     }
-}
-
-/// Reads the information class and the length of the trailing buffer of a drive request, or
-/// returns `None` unless the request holds exactly its fixed part and that buffer.
-fn read_class_and_length(body: &[u8], fixed_part_size: usize, length_offset: usize) -> Option<(u32, u32)> {
-    let read_u32 = |offset: usize| {
-        body.get(offset..offset + 4)
-            .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four-byte integer")))
-    };
-
-    let class = read_u32(0)?;
-    let length = read_u32(length_offset)?;
-    let buffer_end = fixed_part_size.checked_add(usize::try_from(length).ok()?)?;
-
-    (body.len() == buffer_end).then_some((class, length))
 }
 
 impl SvcProcessor for Rdpdr {
@@ -1089,7 +1037,7 @@ mod tests {
             file_id: 1,
             completion_id,
             major_function,
-            minor_function: MinorFunction::from(0),
+            minor_function: pdu::efs::MinorFunction::from(0),
         }))
         .expect("encode drive I/O request");
         if major_function == MajorFunction::Close {

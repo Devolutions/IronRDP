@@ -2073,6 +2073,38 @@ impl DeviceIoResponse {
     }
 }
 
+/// Outcome of decoding a drive request whose information class field may name a class outside
+/// the values that request "MUST contain".
+pub(crate) enum ClassDecode<T> {
+    Supported(T),
+    /// The class is not supported. The rest of the request, including its declared buffer, has
+    /// been consumed.
+    Unsupported {
+        /// The request's buffer length field (Length or PathLength).
+        length: u32,
+    },
+}
+
+/// A well-formed drive request asking for an operation or an information class this crate does
+/// not implement.
+pub(crate) enum UnsupportedDriveIoRequest {
+    /// IRP_MJ_SET_VOLUME_INFORMATION, which this crate never performs.
+    SetVolumeInformation {
+        device_io_request: DeviceIoRequest,
+        /// The request's Length field, which the response MUST echo.
+        length: u32,
+    },
+    SetInformation {
+        device_io_request: DeviceIoRequest,
+        /// The request's Length field, which the response MUST echo.
+        length: u32,
+    },
+    QueryVolumeInformation(DeviceIoRequest),
+    QueryDirectory(DeviceIoRequest),
+    /// IRP_MJ_DIRECTORY_CONTROL with a MinorFunction MS-RDPEFS does not describe.
+    DirectoryControl(DeviceIoRequest),
+}
+
 /// [2.2.3.3] Server Drive I/O Request (DR_DRIVE_CORE_DEVICE_IOREQUEST)
 ///
 /// [2.2.3.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/89bb51af-c54d-40fb-81c1-d1bb353c4536
@@ -2096,37 +2128,99 @@ pub enum ServerDriveIoRequest {
 
 impl ServerDriveIoRequest {
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        match dev_io_req.major_function {
-            MajorFunction::Create => Ok(DeviceCreateRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::Close => Ok(DeviceCloseRequest::decode(dev_io_req).into()),
-            MajorFunction::Read => Ok(DeviceReadRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::Write => Ok(DeviceWriteRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::FlushBuffers => Ok(DeviceFlushBuffersRequest::decode(dev_io_req).into()),
-            MajorFunction::DeviceControl => Ok(DeviceControlRequest::<AnyIoCtlCode>::decode(dev_io_req, src)?.into()),
+        match Self::decode_or_unsupported(dev_io_req, src)? {
+            Ok(req) => Ok(req),
+            Err(UnsupportedDriveIoRequest::SetVolumeInformation { .. }) => Err(unsupported_value_err!(
+                "ServerDriveIoRequest::decode",
+                "MajorFunction",
+                "unsupported value".to_owned()
+            )),
+            // If MajorFunction is set to IRP_MJ_DIRECTORY_CONTROL and MinorFunction is set to any other value, we've encountered a server bug.
+            Err(UnsupportedDriveIoRequest::DirectoryControl(_)) => Err(invalid_field_err!(
+                "ServerDriveIoRequest::decode",
+                "MinorFunction",
+                "invalid value"
+            )),
+            Err(
+                UnsupportedDriveIoRequest::SetInformation { .. }
+                | UnsupportedDriveIoRequest::QueryVolumeInformation(_)
+                | UnsupportedDriveIoRequest::QueryDirectory(_),
+            ) => Err(invalid_field_err!(
+                "ServerDriveIoRequest::decode",
+                "FsInformationClass",
+                "received invalid level"
+            )),
+        }
+    }
+
+    /// Decodes a request like [`Self::decode`], but returns well-formed requests this crate does
+    /// not implement as [`UnsupportedDriveIoRequest`] instead of an error, so that they can be
+    /// completed with a failure status.
+    pub(crate) fn decode_or_unsupported(
+        dev_io_req: DeviceIoRequest,
+        src: &mut ReadCursor<'_>,
+    ) -> DecodeResult<Result<Self, UnsupportedDriveIoRequest>> {
+        let req = match dev_io_req.major_function {
+            MajorFunction::Create => DeviceCreateRequest::decode(dev_io_req, src)?.into(),
+            MajorFunction::Close => DeviceCloseRequest::decode(dev_io_req).into(),
+            MajorFunction::Read => DeviceReadRequest::decode(dev_io_req, src)?.into(),
+            MajorFunction::Write => DeviceWriteRequest::decode(dev_io_req, src)?.into(),
+            MajorFunction::FlushBuffers => DeviceFlushBuffersRequest::decode(dev_io_req).into(),
+            MajorFunction::DeviceControl => DeviceControlRequest::<AnyIoCtlCode>::decode(dev_io_req, src)?.into(),
             MajorFunction::QueryVolumeInformation => {
-                Ok(ServerDriveQueryVolumeInformationRequest::decode(dev_io_req, src)?.into())
+                match ServerDriveQueryVolumeInformationRequest::decode_class(dev_io_req.clone(), src)? {
+                    ClassDecode::Supported(req) => req.into(),
+                    ClassDecode::Unsupported { .. } => {
+                        return Ok(Err(UnsupportedDriveIoRequest::QueryVolumeInformation(dev_io_req)));
+                    }
+                }
             }
-            MajorFunction::QueryInformation => Ok(ServerDriveQueryInformationRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::SetInformation => Ok(ServerDriveSetInformationRequest::decode(dev_io_req, src)?.into()),
+            MajorFunction::QueryInformation => ServerDriveQueryInformationRequest::decode(dev_io_req, src)?.into(),
+            MajorFunction::SetInformation => {
+                match ServerDriveSetInformationRequest::decode_class(dev_io_req.clone(), src)? {
+                    ClassDecode::Supported(req) => req.into(),
+                    ClassDecode::Unsupported { length } => {
+                        return Ok(Err(UnsupportedDriveIoRequest::SetInformation {
+                            device_io_request: dev_io_req,
+                            length,
+                        }));
+                    }
+                }
+            }
             MajorFunction::DirectoryControl => match dev_io_req.minor_function {
                 MinorFunction::IRP_MN_QUERY_DIRECTORY => {
-                    Ok(ServerDriveQueryDirectoryRequest::decode(dev_io_req, src)?.into())
+                    match ServerDriveQueryDirectoryRequest::decode_class(dev_io_req.clone(), src)? {
+                        ClassDecode::Supported(req) => req.into(),
+                        ClassDecode::Unsupported { .. } => {
+                            return Ok(Err(UnsupportedDriveIoRequest::QueryDirectory(dev_io_req)));
+                        }
+                    }
                 }
                 MinorFunction::IRP_MN_NOTIFY_CHANGE_DIRECTORY => {
-                    Ok(ServerDriveNotifyChangeDirectoryRequest::decode(dev_io_req, src)?.into())
+                    ServerDriveNotifyChangeDirectoryRequest::decode(dev_io_req, src)?.into()
                 }
-                // If MajorFunction is set to IRP_MJ_DIRECTORY_CONTROL and MinorFunction is set to any other value, we've encountered a server bug.
-                _ => Err(invalid_field_err!( "ServerDriveIoRequest::decode",
-                    "MinorFunction",
-                    "invalid value", in: src)),
+                _ => {
+                    // The protocol defines no body for other minor functions, so whatever follows is ignored.
+                    src.advance(src.len());
+                    return Ok(Err(UnsupportedDriveIoRequest::DirectoryControl(dev_io_req)));
+                }
             },
-            MajorFunction::LockControl => Ok(ServerDriveLockControlRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::QuerySecurity => Ok(ServerDriveQuerySecurityRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::SetSecurity => Ok(ServerDriveSetSecurityRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::SetVolumeInformation => Err(unsupported_value_err!( "ServerDriveIoRequest::decode",
-                "MajorFunction",
-                "unsupported value".to_owned(), in: src)),
-        }
+            MajorFunction::LockControl => ServerDriveLockControlRequest::decode(dev_io_req, src)?.into(),
+            MajorFunction::QuerySecurity => ServerDriveQuerySecurityRequest::decode(dev_io_req, src)?.into(),
+            MajorFunction::SetSecurity => ServerDriveSetSecurityRequest::decode(dev_io_req, src)?.into(),
+            MajorFunction::SetVolumeInformation => {
+                let length = match ServerDriveSetVolumeInformationRequest::decode_class(dev_io_req.clone(), src)? {
+                    ClassDecode::Supported(req) => req.set_volume_buffer_length,
+                    ClassDecode::Unsupported { length } => length,
+                };
+                return Ok(Err(UnsupportedDriveIoRequest::SetVolumeInformation {
+                    device_io_request: dev_io_req,
+                    length,
+                }));
+            }
+        };
+
+        Ok(Ok(req))
     }
 }
 
@@ -4014,35 +4108,47 @@ pub struct ServerDriveQueryDirectoryRequest {
 }
 
 impl ServerDriveQueryDirectoryRequest {
-    pub(crate) const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 1 /* InitialQuery */ + 4 /* PathLength */ + 23 /* Padding */;
-
-    /// Whether `level` is one of the classes the FsInformationClass field "MUST contain".
-    pub(crate) fn is_valid_class(level: &FileInformationClassLevel) -> bool {
-        matches!(
-            *level,
-            FileInformationClassLevel::FILE_DIRECTORY_INFORMATION
-                | FileInformationClassLevel::FILE_FULL_DIRECTORY_INFORMATION
-                | FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION
-                | FileInformationClassLevel::FILE_NAMES_INFORMATION
-        )
-    }
+    const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 1 /* InitialQuery */ + 4 /* PathLength */ + 23 /* Padding */;
 
     pub fn decode(device_io_request: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        match Self::decode_class(device_io_request, src)? {
+            ClassDecode::Supported(req) => Ok(req),
+            ClassDecode::Unsupported { .. } => Err(invalid_field_err!(
+                "ServerDriveQueryDirectoryRequest::decode",
+                "file_info_class_lvl",
+                "received invalid level"
+            )),
+        }
+    }
+
+    pub(crate) fn decode_class(
+        device_io_request: DeviceIoRequest,
+        src: &mut ReadCursor<'_>,
+    ) -> DecodeResult<ClassDecode<Self>> {
         ensure_fixed_part_size!(in: src);
         let file_info_class_lvl = FileInformationClassLevel::from(src.read_u32());
-
-        if !Self::is_valid_class(&file_info_class_lvl) {
-            return Err(invalid_field_err!( "ServerDriveQueryDirectoryRequest::decode",
-                "file_info_class_lvl",
-                "received invalid level", in: src));
-        }
-
         let initial_query = src.read_u8();
-        let path_length = cast_length!("ServerDriveQueryDirectoryRequest", "path_length", src.read_u32(), in: src)?;
+        let path_length_field = src.read_u32();
+        let path_length = cast_length!("ServerDriveQueryDirectoryRequest", "path_length", path_length_field, in: src)?;
         // Padding (23 bytes): An array of 23 bytes. This field is unused and MUST be ignored.
         read_padding!(src, 23);
 
         ensure_size!(in: src, size: path_length);
+
+        // This field MUST contain one of the following values.
+        if !matches!(
+            file_info_class_lvl,
+            FileInformationClassLevel::FILE_DIRECTORY_INFORMATION
+                | FileInformationClassLevel::FILE_FULL_DIRECTORY_INFORMATION
+                | FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION
+                | FileInformationClassLevel::FILE_NAMES_INFORMATION
+        ) {
+            read_padding!(src, path_length);
+            return Ok(ClassDecode::Unsupported {
+                length: path_length_field,
+            });
+        }
+
         let path = if initial_query == 0 {
             // MS-RDPEFS explicitly ignores the continuation path, including its
             // declared length and contents.
@@ -4052,12 +4158,12 @@ impl ServerDriveQueryDirectoryRequest {
             decode_string(src.read_slice(path_length), CharacterSet::Unicode, true)?
         };
 
-        Ok(Self {
+        Ok(ClassDecode::Supported(Self {
             device_io_request,
             file_info_class_lvl,
             initial_query,
             path,
-        })
+        }))
     }
 
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
@@ -4214,42 +4320,51 @@ pub struct ServerDriveQueryVolumeInformationRequest {
 }
 
 impl ServerDriveQueryVolumeInformationRequest {
-    pub(crate) const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 4 /* Length */ + 24 /* Padding */;
+    const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 4 /* Length */ + 24 /* Padding */;
 
-    /// Whether `level` is one of the classes the FsInformationClass field "MUST contain".
-    pub(crate) fn is_valid_class(level: &FileSystemInformationClassLevel) -> bool {
-        matches!(
-            *level,
+    pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        match Self::decode_class(dev_io_req, src)? {
+            ClassDecode::Supported(req) => Ok(req),
+            ClassDecode::Unsupported { .. } => Err(invalid_field_err!(
+                "ServerDriveQueryVolumeInformationRequest::decode",
+                "fs_info_class_lvl",
+                "received invalid level"
+            )),
+        }
+    }
+
+    pub(crate) fn decode_class(
+        dev_io_req: DeviceIoRequest,
+        src: &mut ReadCursor<'_>,
+    ) -> DecodeResult<ClassDecode<Self>> {
+        ensure_fixed_part_size!(in: src);
+        let fs_info_class_lvl = FileSystemInformationClassLevel::from(src.read_u32());
+
+        // We only need to read the buffer up to the FileInformationClass to get the job done, so the rest of the fields in
+        // this structure are discarded. See FreeRDP:
+        // https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L464
+        let length_field = src.read_u32(); // Length
+        let length = cast_length!("ServerDriveQueryVolumeInformationRequest", "length", length_field, in: src)?;
+        read_padding!(src, 24); // Padding
+        ensure_size!(in: src, size: length);
+        read_padding!(src, length); // QueryVolumeBuffer
+
+        // This field MUST contain one of the following values.
+        if !matches!(
+            fs_info_class_lvl,
             FileSystemInformationClassLevel::FILE_FS_VOLUME_INFORMATION
                 | FileSystemInformationClassLevel::FILE_FS_SIZE_INFORMATION
                 | FileSystemInformationClassLevel::FILE_FS_ATTRIBUTE_INFORMATION
                 | FileSystemInformationClassLevel::FILE_FS_FULL_SIZE_INFORMATION
                 | FileSystemInformationClassLevel::FILE_FS_DEVICE_INFORMATION
-        )
-    }
-
-    pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        ensure_fixed_part_size!(in: src);
-        let fs_info_class_lvl = FileSystemInformationClassLevel::from(src.read_u32());
-
-        if !Self::is_valid_class(&fs_info_class_lvl) {
-            return Err(invalid_field_err!( "ServerDriveQueryVolumeInformationRequest::decode",
-                    "fs_info_class_lvl",
-                    "received invalid level", in: src));
+        ) {
+            return Ok(ClassDecode::Unsupported { length: length_field });
         }
 
-        // We only need to read the buffer up to the FileInformationClass to get the job done, so the rest of the fields in
-        // this structure are discarded. See FreeRDP:
-        // https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L464
-        let length = cast_length!("ServerDriveQueryVolumeInformationRequest", "length", src.read_u32(), in: src)?; // Length
-        read_padding!(src, 24); // Padding
-        ensure_size!(in: src, size: length);
-        read_padding!(src, length); // QueryVolumeBuffer
-
-        Ok(Self {
+        Ok(ClassDecode::Supported(Self {
             device_io_request: dev_io_req,
             fs_info_class_lvl,
-        })
+        }))
     }
 
     /// A request built by this crate never carries a QueryVolumeBuffer: decode already
@@ -4287,16 +4402,22 @@ impl ServerDriveSetVolumeInformationRequest {
     const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 4 /* Length */ + 24 /* Padding */;
 
     pub fn decode(device_io_request: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        ensure_fixed_part_size!(in: src);
-        let fs_info_class_lvl = FileSystemInformationClassLevel::from(src.read_u32());
-        if fs_info_class_lvl != FileSystemInformationClassLevel::FILE_FS_LABEL_INFORMATION {
-            return Err(invalid_field_err!(
+        match Self::decode_class(device_io_request, src)? {
+            ClassDecode::Supported(req) => Ok(req),
+            ClassDecode::Unsupported { .. } => Err(invalid_field_err!(
                 "ServerDriveSetVolumeInformationRequest::decode",
                 "fs_info_class_lvl",
                 "received invalid level"
-            ));
+            )),
         }
+    }
 
+    pub(crate) fn decode_class(
+        device_io_request: DeviceIoRequest,
+        src: &mut ReadCursor<'_>,
+    ) -> DecodeResult<ClassDecode<Self>> {
+        ensure_fixed_part_size!(in: src);
+        let fs_info_class_lvl = FileSystemInformationClassLevel::from(src.read_u32());
         let set_volume_buffer_length = src.read_u32();
         read_padding!(src, 24);
         let length = cast_length!(
@@ -4306,6 +4427,14 @@ impl ServerDriveSetVolumeInformationRequest {
         )?;
         ensure_size!(in: src, size: length);
         let buffer = src.read_slice(length);
+
+        // This field MUST contain the following value.
+        if fs_info_class_lvl != FileSystemInformationClassLevel::FILE_FS_LABEL_INFORMATION {
+            return Ok(ClassDecode::Unsupported {
+                length: set_volume_buffer_length,
+            });
+        }
+
         if buffer.len() < 4 {
             return Err(invalid_field_err!(
                 "ServerDriveSetVolumeInformationRequest::decode",
@@ -4334,11 +4463,11 @@ impl ServerDriveSetVolumeInformationRequest {
         }
         let volume_label = decode_string(&buffer[4..label_end], CharacterSet::Unicode, false)?;
 
-        Ok(Self {
+        Ok(ClassDecode::Supported(Self {
             device_io_request,
             set_volume_buffer_length,
             volume_label,
-        })
+        }))
     }
 }
 
@@ -5039,40 +5168,50 @@ pub struct ServerDriveSetInformationRequest {
 }
 
 impl ServerDriveSetInformationRequest {
-    pub(crate) const FIXED_PART_SIZE: usize = 4 /* FileInformationClass */ + 4 /* Length */ + 24 /* Padding */;
+    const FIXED_PART_SIZE: usize = 4 /* FileInformationClass */ + 4 /* Length */ + 24 /* Padding */;
 
-    /// Whether `level` is one of the classes the FileInformationClass field "MUST contain".
-    pub(crate) fn is_valid_class(level: &FileInformationClassLevel) -> bool {
-        matches!(
-            *level,
+    pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        match Self::decode_class(dev_io_req, src)? {
+            ClassDecode::Supported(req) => Ok(req),
+            ClassDecode::Unsupported { .. } => Err(invalid_field_err!(
+                "ServerDriveSetInformationRequest::decode",
+                "file_information_class_level",
+                "received invalid level"
+            )),
+        }
+    }
+
+    pub(crate) fn decode_class(
+        dev_io_req: DeviceIoRequest,
+        src: &mut ReadCursor<'_>,
+    ) -> DecodeResult<ClassDecode<Self>> {
+        ensure_fixed_part_size!(in: src);
+        let file_information_class_level = FileInformationClassLevel::from(src.read_u32());
+        let length_field = src.read_u32();
+        let length = cast_length!("ServerDriveSetInformationRequest", "length", length_field, in: src)?;
+
+        read_padding!(src, 24); // Padding
+
+        // This field MUST contain one of the following values.
+        if !matches!(
+            file_information_class_level,
             FileInformationClassLevel::FILE_BASIC_INFORMATION
                 | FileInformationClassLevel::FILE_END_OF_FILE_INFORMATION
                 | FileInformationClassLevel::FILE_DISPOSITION_INFORMATION
                 | FileInformationClassLevel::FILE_RENAME_INFORMATION
                 | FileInformationClassLevel::FILE_ALLOCATION_INFORMATION
-        )
-    }
-
-    pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        ensure_fixed_part_size!(in: src);
-        let file_information_class_level = FileInformationClassLevel::from(src.read_u32());
-
-        if !Self::is_valid_class(&file_information_class_level) {
-            return Err(invalid_field_err!( "ServerDriveSetInformationRequest::decode",
-                "file_information_class_level",
-                "received invalid level", in: src));
+        ) {
+            ensure_size!(in: src, size: length);
+            read_padding!(src, length); // SetBuffer
+            return Ok(ClassDecode::Unsupported { length: length_field });
         }
-
-        let length = cast_length!("ServerDriveSetInformationRequest", "length", src.read_u32(), in: src)?;
-
-        read_padding!(src, 24); // Padding
 
         let set_buffer = FileInformationClass::decode(file_information_class_level, length, src)?;
 
-        Ok(Self {
+        Ok(ClassDecode::Supported(Self {
             device_io_request: dev_io_req,
             set_buffer,
-        })
+        }))
     }
 
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
@@ -5249,9 +5388,9 @@ impl FileAllocationInformation {
 /// [2.2.3.4.9]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/16b893d5-5d8b-49d1-8dcb-ee21e7612970
 #[derive(Debug, PartialEq, Clone)]
 pub struct ClientDriveSetInformationResponse {
-    device_io_reply: DeviceIoResponse,
+    pub(crate) device_io_reply: DeviceIoResponse,
     /// This field MUST be equal to the Length field in the Server Drive Set Information Request (section 2.2.3.3.9).
-    length: u32,
+    pub(crate) length: u32,
 }
 
 impl ClientDriveSetInformationResponse {
@@ -5262,16 +5401,6 @@ impl ClientDriveSetInformationResponse {
             device_io_reply: DeviceIoResponse::new(req.device_io_request.clone(), io_status),
             length: cast_length!("ClientDriveSetInformationResponse", "length", req.set_buffer.size())?,
         })
-    }
-
-    /// Builds a response for a request that could not be decoded into a [`ServerDriveSetInformationRequest`].
-    ///
-    /// `length` MUST be the Length field of the request being completed.
-    pub(crate) fn from_parts(device_io_reply: DeviceIoResponse, length: u32) -> Self {
-        Self {
-            device_io_reply,
-            length,
-        }
     }
 
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {

@@ -10,10 +10,11 @@ use self::efs::{
     ClientDeviceListAnnounce, ClientDeviceListRemove, ClientDriveLockControlResponse,
     ClientDriveNotifyChangeDirectoryResponse, ClientDriveQueryDirectoryResponse, ClientDriveQueryInformationResponse,
     ClientDriveQuerySecurityResponse, ClientDriveQueryVolumeInformationResponse, ClientDriveSetInformationResponse,
-    ClientDriveSetSecurityResponse, ClientNameRequest, CoreCapability, CoreCapabilityKind, DeviceCloseResponse,
-    DeviceControlResponse, DeviceCreateResponse, DeviceFlushBuffersResponse, DeviceIoRequest, DeviceIoResponse,
-    DeviceReadResponse, DeviceWriteResponse, FileInformationClassLevel, FileSystemInformationClassLevel, MajorFunction,
-    MinorFunction, ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
+    ClientDriveSetSecurityResponse, ClientDriveSetVolumeInformationResponse, ClientNameRequest, CoreCapability,
+    CoreCapabilityKind, DeviceCloseResponse, DeviceControlResponse, DeviceCreateResponse, DeviceFlushBuffersResponse,
+    DeviceIoRequest, DeviceIoResponse, DeviceReadResponse, DeviceWriteResponse, FileInformationClassLevel,
+    FileSystemInformationClassLevel, MajorFunction, MinorFunction, ServerDeviceAnnounceResponse, VersionAndIdPdu,
+    VersionAndIdPduKind,
 };
 
 pub mod efs;
@@ -365,13 +366,16 @@ impl Encode for RdpdrPdu {
 
 impl SvcEncode for RdpdrPdu {}
 
-/// A [2.2.1.5] Device I/O Response (DR_DEVICE_IOCOMPLETION) with no reply body after the header.
-///
-/// Completes requests that have no response layout of their own, such as one whose MajorFunction or
-/// MinorFunction is not described by MS-RDPEFS.
-///
-/// [2.2.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/1c412a84-0776-4984-b35c-3f0445fcae65
-pub(crate) struct DeviceIoCompletion(pub(crate) DeviceIoResponse);
+/// Device I/O completions the client sends that [`RdpdrPdu`] has no variant for.
+pub(crate) enum DeviceIoCompletion {
+    /// A [2.2.1.5] Device I/O Response (DR_DEVICE_IOCOMPLETION) with no reply body after the
+    /// header, for requests with no response layout of their own, such as one whose MajorFunction
+    /// or MinorFunction is not described by MS-RDPEFS.
+    ///
+    /// [2.2.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/1c412a84-0776-4984-b35c-3f0445fcae65
+    Bare(DeviceIoResponse),
+    SetVolumeInformation(ClientDriveSetVolumeInformationResponse),
+}
 
 impl Encode for DeviceIoCompletion {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
@@ -380,15 +384,25 @@ impl Encode for DeviceIoCompletion {
             packet_id: PacketId::CoreDeviceIoCompletion,
         }
         .encode(dst)?;
-        self.0.encode(dst)
+        match self {
+            Self::Bare(response) => response.encode(dst),
+            Self::SetVolumeInformation(response) => response.encode(dst),
+        }
     }
 
     fn name(&self) -> &'static str {
-        "DR_DEVICE_IOCOMPLETION"
+        match self {
+            Self::Bare(_) => "DR_DEVICE_IOCOMPLETION",
+            Self::SetVolumeInformation(response) => response.name(),
+        }
     }
 
     fn size(&self) -> usize {
-        SharedHeader::SIZE + self.0.size()
+        SharedHeader::SIZE
+            + match self {
+                Self::Bare(response) => response.size(),
+                Self::SetVolumeInformation(response) => response.size(),
+            }
     }
 }
 
