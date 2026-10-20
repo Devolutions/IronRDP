@@ -239,6 +239,7 @@ Forced reviews consume the next count when one is available and retain `ai-revie
 Automatic classification and review claim their existing canonical check run before provider work.
 The in-progress check contains only a versioned ownership marker with the kind, exact head SHA, workflow run ID, and run attempt.
 Admission reads all matching check history, accepts only the GitHub Actions app, and blocks while the marked owner is active.
+The owner is the workflow run rather than one attempt, so **Re-run failed jobs** publishes the result the earlier attempt computed, while other runs stay blocked until the rerun completes.
 Canonical success is absorbing for an exact head, so later automatic or forced neutral and failure states do not change its check, labels, comments, or review count.
 Classification admission, review admission, result publication, and lifecycle reconciliation serialize through one per-pull-request mutation boundary.
 Automatic review validates the live PR, exact head, CI generation, policy, authoritative classification, and review count before claiming, then validates those facts with active lease ownership after the claim and before provider work or publication.
@@ -274,6 +275,8 @@ Same-repository pull requests are also exempt.
 SHA-bound GitHub checks carry classification and review state between permission-isolated jobs.
 Workflow artifacts carry evidence and validated results between review-pipeline jobs.
 The final writer serializes its mutations per pull request and then reconciles actor labels from a fresh live snapshot.
+It retries GitHub 5xx responses up to three times with 1, 2, and 4 second delays for reads, updates, deletions, and label additions.
+It never retries creating a comment, review, check run, or dispatch, because GitHub may have applied the first request.
 Workflow-level cancellation retains the established event and label grouping.
 The final writer rechecks the current head, current review policy, authoritative classification, lease, review count, and, for successful non-forced review or handoff, the latest exact-head CI generation.
 Model-execution jobs have read-only or empty permissions.

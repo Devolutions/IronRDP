@@ -39,12 +39,14 @@ async function readCanonicalRuns({ github, owner, repo, kind, headSha }) {
     github, owner, repo, ref: headSha, checkName: spec.name,
   }), { kind, headSha });
 }
+// The workflow run owns the lease. GitHub runs a run's attempts sequentially, so a later attempt
+// continues the lease of an earlier one, for example after "Re-run failed jobs".
 async function ownerIsActive(github, lease) {
   try {
     const { data: run } = await github.rest.actions.getWorkflowRun({
       owner: lease.owner, repo: lease.repo, run_id: lease.runId,
     });
-    return run.run_attempt === lease.attempt && run.status !== "completed";
+    return run.run_attempt >= lease.attempt && run.status !== "completed";
   } catch (error) {
     if (error?.status === 404) return false;
     throw error;
@@ -81,7 +83,8 @@ async function claimAutomaticLease({
     if (!lease || lease.kind !== kind || lease.headSha !== headSha) {
       return { owner: false, available: false, reason: "canonical lease is ambiguous" };
     }
-    if (await ownerIsActive(github, { ...lease, owner, repo })) {
+    // An earlier attempt of this run is never concurrent with it, so its lease does not block.
+    if (lease.runId !== runId && await ownerIsActive(github, { ...lease, owner, repo })) {
       return { owner: false, available: true, reason: "canonical lease is active" };
     }
   }

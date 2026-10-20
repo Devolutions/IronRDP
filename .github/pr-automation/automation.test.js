@@ -34,6 +34,7 @@ const {
   StalePolicyError, applyLabels, escapeMarkdown, markerBody, writeState,
 } = require("./write-state");
 const { forkRateLimit } = require("./fork-rate-limit");
+const { RETRY_DELAYS_MS, retryTransientRequests } = require("./github-retry");
 const { reviewSkipReasons } = require("./review-skip-summary");
 const { renderReviewReport } = require("./review-report-summary");
 const {
@@ -865,12 +866,14 @@ function writeStateScript(workflow = readWorkflow()) {
 
 test("the embedded writer script catches a current-head stale error", async () => {
   const messages = [];
+  const hooks = [];
   let reconciled = 0;
   await new AsyncFunction("core", "github", "context", "require", "process", writeStateScript())(
     { info: (message) => messages.push(message) },
-    {}, { repo: { owner: "Devolutions", repo: "IronRDP" } },
+    { hook: { wrap: (name) => hooks.push(name) } }, { repo: { owner: "Devolutions", repo: "IronRDP" } },
     (name) => {
       if (name === "node:fs") return { readFileSync: () => { throw new Error("no artifact"); } };
+      if (name === "./.github/pr-automation/github-retry") return require("./github-retry");
       if (name === "./.github/pr-automation/write-state") {
         return { writeState: async () => { throw new StaleHeadError(); } };
       }
@@ -888,6 +891,61 @@ test("the embedded writer script catches a current-head stale error", async () =
   );
   assert.equal(messages.includes("Result publication became stale; reconciling lifecycle only"), true);
   assert.equal(reconciled, 1);
+  assert.deepEqual(hooks, ["request"]);
+});
+
+test("the writer retries transient GitHub errors only for idempotent requests", async () => {
+  const transient = (status = 500) => Object.assign(
+    new Error("Unexpected end of JSON input"), { name: "HttpError", status });
+  const run = async (options, failures, { status = 500 } = {}) => {
+    let wrapper;
+    const retries = [];
+    const sleeps = [];
+    retryTransientRequests({ hook: { wrap: (name, fn) => { wrapper = fn; } } }, {
+      sleep: async (ms) => sleeps.push(ms), onRetry: (retry) => retries.push(retry),
+    });
+    let calls = 0;
+    const request = async () => {
+      calls += 1;
+      if (calls <= failures) throw transient(status);
+      return { status: 200 };
+    };
+    try {
+      await wrapper(request, options);
+      return { ok: true, calls, sleeps, retries };
+    } catch (error) {
+      return { ok: false, status: error.status, calls, sleeps, retries };
+    }
+  };
+  const addLabels = { method: "POST", url: "/repos/{owner}/{repo}/issues/{issue_number}/labels" };
+  assert.deepEqual(await run(addLabels, 1), {
+    ok: true, calls: 2, sleeps: [1000],
+    retries: [{ ...addLabels, status: 500, attempt: 1, delayMs: 1000 }],
+  });
+  for (const options of [
+    { method: "GET", url: "/repos/{owner}/{repo}/pulls/{pull_number}" },
+    { method: "PATCH", url: "/repos/{owner}/{repo}/check-runs/{check_run_id}" },
+    { method: "DELETE", url: "/repos/{owner}/{repo}/issues/{issue_number}/labels/{name}" },
+  ]) {
+    assert.equal((await run(options, 2, { status: 502 })).ok, true);
+  }
+  const exhausted = await run(addLabels, 10);
+  assert.equal(exhausted.ok, false);
+  assert.equal(exhausted.calls, RETRY_DELAYS_MS.length + 1);
+  assert.deepEqual(exhausted.sleeps, RETRY_DELAYS_MS);
+  for (const url of [
+    "/repos/{owner}/{repo}/issues/{issue_number}/comments",
+    "/repos/{owner}/{repo}/pulls/{pull_number}/reviews",
+    "/repos/{owner}/{repo}/check-runs",
+    "/repos/{owner}/{repo}/dispatches",
+  ]) {
+    assert.deepEqual(await run({ method: "POST", url }, 1),
+      { ok: false, status: 500, calls: 1, sleeps: [], retries: [] }, url);
+  }
+  for (const status of [404, 422]) {
+    assert.deepEqual(await run(addLabels, 1, { status }),
+      { ok: false, status, calls: 1, sleeps: [], retries: [] });
+  }
 });
 
 async function runReviewGateScript({
@@ -6050,7 +6108,10 @@ test("automatic admission neutralizes a claim when post-validation observes a dr
 
 test("automatic leases rerun after terminal or missing owners and fail closed on malformed claims", async () => {
   const marker = leaseMarker({ kind: "classification", headSha: SHA, runId: 7, attempt: 1 });
-  const admit = async ({ status = "completed", missing = false, summary = marker, app = "github-actions" } = {}) => {
+  const admit = async ({
+    status = "completed", missing = false, summary = marker, app = "github-actions", runAttempt = 1,
+    runId = 8, attempt = 1,
+  } = {}) => {
     const creates = [];
     const github = {
       paginate: { iterator: async function* () {
@@ -6070,17 +6131,24 @@ test("automatic leases rerun after terminal or missing owners and fail closed on
             error.status = 404;
             throw error;
           }
-          return { data: { run_attempt: 1, status } };
+          return { data: { run_attempt: runAttempt, status } };
         } },
       },
     };
     const result = await claimAutomaticLease({
       github, owner: "Devolutions", repo: "IronRDP", kind: "classification", headSha: SHA,
-      runId: 8, attempt: 1,
+      runId, attempt,
     });
     return { result, creates };
   };
   assert.equal((await admit({ status: "in_progress" })).result.owner, false);
+  // A rerun keeps the owning run active, so another run stays blocked.
+  assert.equal((await admit({ status: "in_progress", runAttempt: 2 })).result.owner, false);
+  // A rerun of the owning run may reclaim the lease of its own earlier attempt.
+  const rerun = await admit({ status: "in_progress", runAttempt: 2, runId: 7, attempt: 2 });
+  assert.equal(rerun.result.owner, true);
+  assert.equal(rerun.creates[0].output.summary,
+    leaseMarker({ kind: "classification", headSha: SHA, runId: 7, attempt: 2 }));
   assert.equal((await admit()).result.owner, true);
   assert.equal((await admit({ missing: true })).result.owner, true);
   assert.equal((await admit({ summary: "not a lease" })).result.available, false);
@@ -6411,6 +6479,63 @@ test("a leased review failure mutates only the failure label before its neutral 
     ["add", FAILURE_LABEL],
     ["check", "neutral"],
   ]);
+});
+
+test("a rerun attempt of the lease owner completes publication and other owners stay excluded", async () => {
+  const lease = {
+    kind: "classification", headSha: SHA, runId: 7, attempt: 1, checkRunId: 19,
+    marker: leaseMarker({ kind: "classification", headSha: SHA, runId: 7, attempt: 1 }),
+  };
+  const publish = async (ownerRun) => {
+    const calls = [];
+    const github = {
+      paginate: { iterator: async function* () {
+        yield { data: [{
+          id: 19, head_sha: SHA, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+          status: "in_progress", app: { slug: "github-actions" }, output: { summary: lease.marker },
+        }] };
+      } },
+      rest: {
+        checks: {
+          listForRef: () => {},
+          update: async (payload) => calls.push(["check", payload.check_run_id, payload.conclusion]),
+        },
+        actions: { getWorkflowRun: async ({ run_id }) => {
+          assert.equal(run_id, 7);
+          return { data: ownerRun };
+        } },
+        pulls: { get: async () => ({ data: { state: "open", draft: false, head: { sha: SHA } } }) },
+        issues: {
+          get: async () => ({ data: { labels: [] } }),
+          addLabels: async ({ labels }) => calls.push(["add", labels.join(",")]),
+        },
+      },
+    };
+    const result = await writeState({
+      github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+      state: {
+        ok: true, mode: "classification", expectedSha: SHA, lease, failed: true,
+        labelSets: [{ owned: [FAILURE_LABEL], desired: [FAILURE_LABEL] }],
+        comments: [],
+        check: {
+          name: "AI classification", externalId: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+          title: "Classification unavailable", summary: "failed", conclusion: "neutral",
+          machineState: {
+            protocolRelated: false, risk: "unknown", specialistReviewers: [],
+            automaticReviewEligible: false,
+          },
+        },
+      },
+    });
+    return { result, calls };
+  };
+  // "Re-run failed jobs" reuses the attempt-1 lease output in attempt 2 of the same run.
+  const rerun = await publish({ run_attempt: 2, status: "in_progress" });
+  assert.equal(rerun.result.superseded, undefined);
+  assert.deepEqual(rerun.calls, [["add", FAILURE_LABEL], ["check", 19, "neutral"]]);
+  const terminal = await publish({ run_attempt: 2, status: "completed" });
+  assert.equal(terminal.result.superseded, true);
+  assert.deepEqual(terminal.calls, []);
 });
 
 test("a leased blocked review completes its claim without actor-label mutation", async () => {
