@@ -276,10 +276,11 @@ struct Args {
     #[clap(long)]
     smartcard: bool,
 
-    /// Redirect the local default Windows printer (sets `redirectprinters`).
+    /// Redirect the local default Windows printer.
     ///
     /// The remote host must have a printer driver with the same name as the local queue's driver.
-    /// Ignored on other platforms except for the property value itself.
+    /// The `.rdp` `redirectprinters` property does not enable this, because mstsc writes it by
+    /// default. Ignored on other platforms.
     #[clap(long)]
     printer: bool,
 }
@@ -345,14 +346,9 @@ impl ViewerConfig {
             });
         }
 
-        // Opt-in only: an absent `redirectprinters` leaves printer redirection disabled. mstsc writes
-        // `redirectprinters:i:1` by default, so an explicit `ironrdp_rdpdr:i:0` in the file takes
-        // precedence; the CLI `--printer` flag still wins.
-        let redirect_printers = args.printer
-            || (properties.redirect_printers().unwrap_or(false) && properties.enable_rdpdr() != Some(false));
-        if args.printer {
-            properties.set_redirect_printers(true);
-        }
+        // Printer redirection requires the explicit CLI flag: mstsc writes `redirectprinters:i:1` by
+        // default, so the file property alone would announce the local printer without the user asking.
+        let redirect_printers = args.printer;
 
         // The library overlays everything expressible as a `.rdp` property: destination, credentials,
         // transport, channels, desktop size, audio, DVC proxies, etc.

@@ -38,9 +38,7 @@ impl Drop for TempRdpFile {
     }
 }
 
-fn parse_config_from_rdp_result(content: &str, extra_args: &[&str]) -> anyhow::Result<ironrdp_client::config::Config> {
-    let rdp_file = TempRdpFile::new(content);
-
+fn viewer_args(rdp_file: &TempRdpFile, extra_args: &[&str]) -> Vec<String> {
     let mut args = vec![
         "ironrdp-client".to_owned(),
         "--rdp-file".to_owned(),
@@ -48,22 +46,17 @@ fn parse_config_from_rdp_result(content: &str, extra_args: &[&str]) -> anyhow::R
     ];
 
     args.extend(extra_args.iter().map(|arg| (*arg).to_owned()));
+    args
+}
 
-    parse_config_from(args)
+fn parse_config_from_rdp_result(content: &str, extra_args: &[&str]) -> anyhow::Result<ironrdp_client::config::Config> {
+    let rdp_file = TempRdpFile::new(content);
+    parse_config_from(viewer_args(&rdp_file, extra_args))
 }
 
 fn parse_viewer_config_from_rdp(content: &str, extra_args: &[&str]) -> ViewerConfig {
     let rdp_file = TempRdpFile::new(content);
-
-    let mut args = vec![
-        "ironrdp-client".to_owned(),
-        "--rdp-file".to_owned(),
-        rdp_file.path().display().to_string(),
-    ];
-
-    args.extend(extra_args.iter().map(|arg| (*arg).to_owned()));
-
-    ViewerConfig::parse_from(args).expect("failed to parse viewer config")
+    ViewerConfig::parse_from(viewer_args(&rdp_file, extra_args)).expect("failed to parse viewer config")
 }
 
 fn parse_config_from_rdp(content: &str, extra_args: &[&str]) -> ironrdp_client::config::Config {
@@ -469,60 +462,28 @@ fn redirectclipboard_zero_disables_clipboard_for_default_mode() {
 }
 
 #[test]
-fn printer_redirection_is_opt_in() {
+fn printer_redirection_requires_the_cli_flag() {
     let rdp = "full address:s:rdp.example.com
 username:s:test-user
 ClearTextPassword:s:test-pass
 ";
 
-    let viewer = parse_viewer_config_from_rdp(rdp, &[]);
-    assert!(!viewer.redirect_printers());
+    assert!(!parse_viewer_config_from_rdp(rdp, &[]).redirect_printers());
 
-    let viewer = parse_viewer_config_from_rdp(rdp, &["--printer"]);
-    assert!(viewer.redirect_printers());
-    let config = viewer.into_config().expect("failed to build client config");
-    assert_eq!(config.properties().redirect_printers(), Some(true));
-    assert!(config.channels().rdpdr.enabled);
+    // mstsc writes `redirectprinters:i:1` by default, so the file property alone must not redirect.
+    let stock = format!(
+        "{rdp}redirectprinters:i:1
+"
+    );
+    assert!(!parse_viewer_config_from_rdp(&stock, &[]).redirect_printers());
 
     let viewer = parse_viewer_config_from_rdp(
         &format!(
-            "{rdp}redirectprinters:i:1
+            "{rdp}ironrdp_rdpdr:i:0
 "
         ),
-        &[],
+        &["--printer"],
     );
-    assert!(viewer.redirect_printers());
-    assert!(
-        viewer
-            .into_config()
-            .expect("failed to build client config")
-            .channels()
-            .rdpdr
-            .enabled
-    );
-}
-
-#[test]
-fn explicit_rdpdr_disable_overrides_file_printer_redirection() {
-    let rdp = "full address:s:rdp.example.com
-username:s:test-user
-ClearTextPassword:s:test-pass
-redirectprinters:i:1
-ironrdp_rdpdr:i:0
-";
-
-    let viewer = parse_viewer_config_from_rdp(rdp, &[]);
-    assert!(!viewer.redirect_printers());
-    assert!(
-        !viewer
-            .into_config()
-            .expect("failed to build client config")
-            .channels()
-            .rdpdr
-            .enabled
-    );
-
-    let viewer = parse_viewer_config_from_rdp(rdp, &["--printer"]);
     assert!(viewer.redirect_printers());
     assert!(
         viewer
