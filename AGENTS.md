@@ -29,6 +29,7 @@ Crate changelogs are not normal hand-maintained documentation.
 Think before silencing a lint, then use `#[expect(clippy::<lint>, reason = "...")]` so the suppression explains itself and expires when it stops being needed.
 Write Rust with the `rust-style` skill and tests with the `test-writer` skill.
 Most tests belong in `ironrdp-testsuite-core` and `ironrdp-testsuite-extra`, not inline in the crate; see `ARCHITECTURE.md` § Testing.
+Benchmark and capture corpus policy: `crates/ironrdp-bench/AGENTS.md`.
 When decoding PDUs, follow the error-construction and unknown-value sections of `STYLE.md`.
 Preserve the core-tier invariants listed in `ARCHITECTURE.md`; no tool checks them.
 
