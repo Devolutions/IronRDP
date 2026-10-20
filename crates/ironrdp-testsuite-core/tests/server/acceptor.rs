@@ -12,14 +12,14 @@ use ironrdp_acceptor::{
 use ironrdp_async::bytes::BytesMut;
 use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper};
 use ironrdp_connector::credssp::CredsspSequence;
-use ironrdp_connector::sspi::credssp::TsRequest;
+use ironrdp_connector::sspi::credssp::{NStatusCode, TsRequest};
 use ironrdp_connector::sspi::generator::{GeneratorState, NetworkRequest};
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
 use ironrdp_connector::{DesktopSize, Sequence as _, Written, encode_x224_packet};
 use ironrdp_core::{WriteBuf, decode, encode_vec};
 use ironrdp_pdu::gcc::{
-    ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientMessageChannelData, MultiTransportChannelData,
-    MultiTransportFlags,
+    ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientMessageChannelData, ClientMonitorData, Monitor,
+    MonitorFlags, MultiTransportChannelData, MultiTransportFlags,
 };
 use ironrdp_pdu::mcs::{self, ConnectInitial};
 use ironrdp_pdu::nego::{self, SecurityProtocol};
@@ -741,6 +741,93 @@ fn multitransport_not_offered_when_client_does_not_reciprocate() {
     assert!(acceptor.multitransport_request().is_none());
 }
 
+/// Drives a fresh acceptor through the whole connection sequence, from the
+/// Connection Request to `Connected`, with `monitors` sent as the client's GCC
+/// Client Monitor Data (MS-RDPBCGR 2.2.1.3.6), or with no such block when
+/// `None`, and returns the monitors the acceptor hands back in its result.
+fn client_monitors_after_accepting(monitors: Option<Vec<Monitor>>) -> Vec<Monitor> {
+    let mut acceptor = Acceptor::new(
+        SecurityProtocol::SSL,
+        DesktopSize {
+            width: 1920,
+            height: 1080,
+        },
+        Vec::new(),
+        None,
+    );
+
+    let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    client_blocks.network = None;
+    client_blocks.monitor = monitors.map(|monitors| ClientMonitorData { monitors });
+    let (user_channel_id, io_channel_id, ..) = drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
+
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping: nothing to send
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // CapabilitiesSendServer: sends Demand Active
+
+    let confirm_active = encode_send_data_request(user_channel_id, io_channel_id, &CLIENT_DEMAND_ACTIVE_PDU_BUFFER);
+    acceptor.step(&confirm_active, None, &mut WriteBuf::new()).unwrap();
+
+    let finalization = [
+        ShareDataPdu::Synchronize(SynchronizePdu { target_user_id: 0 }),
+        ShareDataPdu::Control(ControlPdu {
+            action: ControlAction::Cooperate,
+            grant_id: 0,
+            control_id: 0,
+        }),
+        ShareDataPdu::Control(ControlPdu {
+            action: ControlAction::RequestControl,
+            grant_id: 0,
+            control_id: 0,
+        }),
+        ShareDataPdu::FontList(Default::default()),
+    ];
+    for pdu in finalization {
+        let request = encode_send_data_request(user_channel_id, io_channel_id, &encode_client_share_data(pdu));
+        acceptor.step(&request, None, &mut WriteBuf::new()).unwrap();
+    }
+
+    // The server's four confirmation sends, completing finalization.
+    for _ in 0..4 {
+        acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    }
+    assert_eq!(acceptor.state().name(), "Connected");
+
+    acceptor
+        .get_result()
+        .expect("a connected acceptor has a result")
+        .client_monitors
+}
+
+/// The client's monitors reach `AcceptorResult::client_monitors` as sent,
+/// order included: the primary monitor comes second here.
+#[test]
+fn client_monitor_data_is_kept_in_the_order_sent() {
+    let monitors = vec![
+        Monitor {
+            left: 1280,
+            top: 0,
+            right: 2559,
+            bottom: 799,
+            flags: MonitorFlags::empty(),
+        },
+        Monitor {
+            left: 0,
+            top: 0,
+            right: 1279,
+            bottom: 799,
+            flags: MonitorFlags::PRIMARY,
+        },
+    ];
+
+    assert_eq!(client_monitors_after_accepting(Some(monitors.clone())), monitors);
+}
+
+#[test]
+fn a_client_without_monitor_data_announces_no_monitors() {
+    assert!(client_monitors_after_accepting(None).is_empty());
+}
+
 #[derive(Default)]
 struct HandshakeStream {
     incoming: VecDeque<Vec<u8>>,
@@ -787,7 +874,10 @@ impl FramedWrite for HandshakeStream {
             && buf.len() != 4
         {
             let request = client.decode_server_message(buf).unwrap().unwrap();
-            self.incoming.push_back(client_credssp_message(client, request));
+            // A request with an error code ends the exchange; the client does not answer it.
+            if request.error_code.is_none() {
+                self.incoming.push_back(client_credssp_message(client, request));
+            }
         }
         ready(Ok(()))
     }
@@ -1101,4 +1191,60 @@ async fn credssp_authorization_uses_selected_protocol(
     assert_eq!(handler.received[0].credentials.domain.as_deref(), expected_domain);
     assert_eq!(handler.received[0].credentials.password, "secret");
     assert_eq!(handler.capability_calls, usize::from(!reject_credentials));
+}
+
+/// A failed NLA logon is reported with STATUS_LOGON_FAILURE ([MS-CSSP] 2.2.1, [MS-ERREF] 2.3.1),
+/// so that the client can ask for new credentials.
+#[rstest::rstest]
+#[case::wrong_password("alice", "wrong")]
+#[case::unknown_user("bob", "secret")]
+#[tokio::test]
+async fn credssp_failed_logon_is_reported_as_logon_failure(
+    #[case] username: &str,
+    #[case] password: &str,
+    #[values(SecurityProtocol::HYBRID, SecurityProtocol::HYBRID_EX)] protocol: SecurityProtocol,
+) {
+    let mut acceptor = negotiated_acceptor(protocol);
+    let public_key = vec![0x42; 32];
+    let (mut client, request) = CredsspSequence::init(
+        ironrdp_connector::Credentials::UsernamePassword {
+            username: username.to_owned(),
+            password: password.to_owned(),
+        },
+        None,
+        protocol,
+        "server.example.com".to_owned().into(),
+        public_key.clone(),
+        None,
+    )
+    .unwrap();
+    let first_message = client_credssp_message(&mut client, request);
+    let mut framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: [first_message].into(),
+        credssp_client: Some(client),
+        ..HandshakeStream::default()
+    });
+    let outgoing = Rc::clone(&framed.get_inner().0.outgoing);
+    let mut handler = SetupHandler::default();
+    let result = accept_credssp_with(
+        &mut framed,
+        &mut acceptor,
+        &mut NoNetwork,
+        "client.example.com".to_owned().into(),
+        public_key,
+        None,
+        &mut handler,
+    )
+    .await;
+
+    assert!(result.is_err(), "the logon should fail");
+    assert!(handler.received.is_empty());
+
+    let outgoing = outgoing.borrow();
+    let mut writes = outgoing.iter().rev();
+    if protocol == SecurityProtocol::HYBRID_EX {
+        assert_eq!(writes.next().unwrap(), &5u32.to_le_bytes());
+    }
+    let ts_request = TsRequest::from_buffer(writes.next().unwrap()).unwrap();
+    assert_eq!(ts_request.error_code, Some(NStatusCode::LOGON_FAILURE));
 }

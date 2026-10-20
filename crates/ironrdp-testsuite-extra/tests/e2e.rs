@@ -21,8 +21,9 @@ use ironrdp::pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode};
 use ironrdp::pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp::pdu::{self, gcc};
 use ironrdp::server::{
-    self, Acceptor, DesktopSize, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer, RdpServerDisplay,
-    RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerResult, StaticChannelFactory, TlsIdentityCtx,
+    self, Acceptor, DesktopSize, DisplayContext, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer,
+    RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerResult, StaticChannelFactory,
+    TlsIdentityCtx,
 };
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{self, ActiveStage, ActiveStageBuilder, ActiveStageOutput};
@@ -365,6 +366,101 @@ async fn a_new_connection_starts_without_the_previous_sessions_events() {
 }
 
 #[tokio::test]
+async fn display_control_channel_is_created_when_the_display_offers_it() {
+    let (echo_started, display_control_started) = run_display_control_probe(true).await;
+
+    assert!(
+        echo_started,
+        "the echo channel must open for the probe to mean anything"
+    );
+    assert!(
+        display_control_started,
+        "a display that offers Display Control must get the channel created on the client"
+    );
+}
+
+#[tokio::test]
+async fn display_control_channel_is_not_created_when_the_display_declines_it() {
+    let (echo_started, display_control_started) = run_display_control_probe(false).await;
+
+    assert!(
+        echo_started,
+        "the echo channel must open for the probe to mean anything"
+    );
+    assert!(
+        !display_control_started,
+        "a display that declines Display Control must not get the channel created on the client"
+    );
+}
+
+/// Connects a real client that registers a Display Control channel and an
+/// echo channel, and reports whether each was created by the server.
+///
+/// The server sends the Create request for every dynamic channel together, in
+/// its reply to the client's capabilities. Once the echo channel has opened and
+/// the connection then goes quiet, every one of them has been processed, so the
+/// answer for Display Control is final whatever order the channels were
+/// registered in.
+async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool) {
+    let echo_started = Arc::new(AtomicBool::new(false));
+    let display_control_started = Arc::new(AtomicBool::new(false));
+
+    let connector_echo = Arc::clone(&echo_started);
+    let connector_display_control = Arc::clone(&display_control_started);
+    let observed_echo = Arc::clone(&echo_started);
+
+    client_server_with_display(
+        move |rx| TestDisplay {
+            rx,
+            offers_display_control,
+        },
+        None,
+        default_client_config(),
+        Vec::new(),
+        None,
+        move |connector| {
+            connector.with_static_channel(
+                DrdynvcClient::new()
+                    .with_dynamic_channel(StartRecorder::new(
+                        ironrdp::displaycontrol::CHANNEL_NAME,
+                        connector_display_control,
+                    ))
+                    .with_dynamic_channel(StartRecorder::new(ironrdp::echo::CHANNEL_NAME, connector_echo)),
+            )
+        },
+        move |mut stage, _activation_factory, mut framed, display_tx, _echo_handle| async move {
+            let _display_tx = display_tx;
+            let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut settled = false;
+            while !settled && Instant::now() < deadline {
+                let read_result = tokio::time::timeout(Duration::from_millis(150), framed.read_pdu()).await;
+                let Ok(Ok((action, frame))) = read_result else {
+                    settled = observed_echo.load(Ordering::Relaxed);
+                    continue;
+                };
+
+                let outputs = stage.process(&mut image, action, &frame, None).expect("stage process");
+                for output in outputs {
+                    if let ActiveStageOutput::ResponseFrame(frame) = output {
+                        framed.write_all(&frame).await.expect("write response frame");
+                    }
+                }
+            }
+
+            (stage, framed)
+        },
+    )
+    .await;
+
+    (
+        echo_started.load(Ordering::Relaxed),
+        display_control_started.load(Ordering::Relaxed),
+    )
+}
+
+#[tokio::test]
 async fn rdpdr_static_channel_announces_a_drive_and_completes_an_unsupported_create() {
     let fixture = RdpdrFixtureFactory::new(RdpdrFixtureOperation::UnsupportedCreate);
     let fixture_state = fixture.state();
@@ -513,6 +609,178 @@ async fn tls_validation_preserves_the_default_and_strict_is_explicit() {
     server.await.expect("TLS test server task");
 }
 
+/// The display backend gets the handles the server writes, the same ones again
+/// after a Deactivation-Reactivation Sequence, and a new connection gets its
+/// own, back at their initial values whatever the previous connection left in
+/// its handles.
+#[tokio::test]
+async fn each_connection_gets_its_own_display_context() {
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    let (ctx_tx, mut ctx_rx) = mpsc::unbounded_channel();
+    let (display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(RecordingDisplay {
+            contexts: ctx_tx,
+            updates: Arc::new(Mutex::new(display_rx)),
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    server.enable_autodetect();
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server = tokio::task::spawn_local(async move {
+                server.run().await.unwrap();
+            });
+
+            let client = tokio::task::spawn_local(async move {
+                let server_addr = local_addr_of(&ev).await;
+
+                let (mut stage, activation_factory, mut framed) =
+                    connect_active_client(server_addr, default_client_config(), None).await;
+                let first = ctx_rx.recv().await.expect("first connection's display context");
+
+                // The client answers an RTT probe on its own, and the server
+                // records the result on the handles it gave the display.
+                ev.send(ServerEvent::AutoDetectRttRequest).unwrap();
+                let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+                'probe: loop {
+                    let (action, payload) = framed.read_pdu().await.expect("valid PDU");
+                    for out in stage
+                        .process(&mut image, action, &payload, None)
+                        .expect("stage process")
+                    {
+                        if let ActiveStageOutput::ResponseFrame(frame) = out {
+                            framed.write_all(&frame).await.expect("write RTT response");
+                            break 'probe;
+                        }
+                    }
+                }
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while first.autodetect.rtt.load(Ordering::Relaxed) == u32::MAX {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("the RTT reaches the display's handle");
+
+                // A resize deactivates and reactivates the same connection,
+                // and the display is asked for its updates again.
+                display_tx
+                    .send(DisplayUpdate::Resize(DesktopSize {
+                        width: 2048,
+                        height: 2048,
+                    }))
+                    .unwrap();
+                'deactivate: loop {
+                    let (action, payload) = framed.read_pdu().await.expect("valid PDU");
+                    for out in stage
+                        .process(&mut image, action, &payload, None)
+                        .expect("stage process")
+                    {
+                        if matches!(out, ActiveStageOutput::DeactivateAll) {
+                            break 'deactivate;
+                        }
+                    }
+                }
+                run_reactivation(&mut stage, &activation_factory, &mut framed).await;
+                let reactivated = ctx_rx.recv().await.expect("reactivated connection's display context");
+                assert!(Arc::ptr_eq(&first.display_suppressed, &reactivated.display_suppressed));
+                assert!(Arc::ptr_eq(&first.autodetect.rtt, &reactivated.autodetect.rtt));
+                assert!(Arc::ptr_eq(
+                    &first.autodetect.baseline_rtt,
+                    &reactivated.autodetect.baseline_rtt
+                ));
+                assert!(Arc::ptr_eq(
+                    &first.autodetect.bandwidth,
+                    &reactivated.autodetect.bandwidth
+                ));
+                assert!(Arc::ptr_eq(
+                    &first.autodetect.bandwidth_generation,
+                    &reactivated.autodetect.bandwidth_generation
+                ));
+
+                // Leave every handle away from its initial value, as a
+                // connection that ends minimized after a full measurement would.
+                first.display_suppressed.store(true, Ordering::Relaxed);
+                first.autodetect.bandwidth.store(50_000, Ordering::Relaxed);
+                first.autodetect.bandwidth_generation.store(3, Ordering::Release);
+                disconnect(stage, framed).await;
+
+                let (stage, _, framed) = connect_active_client(server_addr, default_client_config(), None).await;
+                let second = ctx_rx.recv().await.expect("second connection's display context");
+                assert!(!Arc::ptr_eq(&first.display_suppressed, &second.display_suppressed));
+                assert!(!Arc::ptr_eq(&first.autodetect.rtt, &second.autodetect.rtt));
+                assert!(!Arc::ptr_eq(
+                    &first.autodetect.baseline_rtt,
+                    &second.autodetect.baseline_rtt
+                ));
+                assert!(!Arc::ptr_eq(&first.autodetect.bandwidth, &second.autodetect.bandwidth));
+                assert!(!Arc::ptr_eq(
+                    &first.autodetect.bandwidth_generation,
+                    &second.autodetect.bandwidth_generation
+                ));
+                assert!(!second.display_suppressed.load(Ordering::Relaxed));
+                assert_eq!(second.autodetect.rtt.load(Ordering::Relaxed), u32::MAX);
+                assert_eq!(second.autodetect.baseline_rtt.load(Ordering::Relaxed), u32::MAX);
+                assert_eq!(second.autodetect.bandwidth.load(Ordering::Relaxed), u32::MAX);
+                assert_eq!(second.autodetect.bandwidth_generation.load(Ordering::Acquire), 0);
+                disconnect(stage, framed).await;
+
+                ev.send(ServerEvent::Quit("bye".into())).unwrap();
+            });
+
+            tokio::try_join!(server, client).expect("join");
+        })
+        .await;
+
+    /// Hands every context it receives to the test, and draws whatever the
+    /// test sends on `updates`.
+    struct RecordingDisplay {
+        contexts: UnboundedSender<DisplayContext>,
+        updates: DisplayUpdatesRx,
+    }
+
+    #[async_trait::async_trait]
+    impl RdpServerDisplay for RecordingDisplay {
+        async fn size(&mut self) -> DesktopSize {
+            DesktopSize {
+                width: DESKTOP_WIDTH,
+                height: DESKTOP_HEIGHT,
+            }
+        }
+
+        async fn updates(&mut self, ctx: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+            self.contexts.send(ctx).expect("the test is still receiving");
+            Ok(Box::new(TestDisplayUpdates {
+                rx: Arc::clone(&self.updates),
+            }))
+        }
+    }
+
+    async fn disconnect(stage: ActiveStage, mut framed: Framed<TokioStream<TlsStream<TcpStream>>>) {
+        for out in stage.graceful_shutdown().expect("shutdown") {
+            if let ActiveStageOutput::ResponseFrame(frame) = out {
+                framed.write_all(&frame).await.expect("write shutdown frame");
+            }
+        }
+        while framed.read_pdu().await.is_ok() {}
+    }
+}
+
 type DisplayUpdatesRx = Arc<Mutex<UnboundedReceiver<DisplayUpdate>>>;
 
 struct TestDisplayUpdates {
@@ -530,6 +798,7 @@ impl RdpServerDisplayUpdates for TestDisplayUpdates {
 
 struct TestDisplay {
     rx: DisplayUpdatesRx,
+    offers_display_control: bool,
 }
 
 #[async_trait::async_trait]
@@ -541,12 +810,47 @@ impl RdpServerDisplay for TestDisplay {
         }
     }
 
-    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(&mut self, _: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(TestDisplayUpdates {
             rx: Arc::clone(&self.rx),
         }))
     }
+
+    async fn offers_display_control(&mut self) -> bool {
+        self.offers_display_control
+    }
 }
+
+/// Client-side dynamic channel that only records that the server created it.
+struct StartRecorder {
+    name: &'static str,
+    started: Arc<AtomicBool>,
+}
+
+impl StartRecorder {
+    fn new(name: &'static str, started: Arc<AtomicBool>) -> Self {
+        Self { name, started }
+    }
+}
+
+impl_as_any!(StartRecorder);
+
+impl DvcProcessor for StartRecorder {
+    fn channel_name(&self) -> &str {
+        self.name
+    }
+
+    fn start(&mut self, _channel_id: u32) -> pdu::PduResult<Vec<DvcMessage>> {
+        self.started.store(true, Ordering::Relaxed);
+        Ok(Vec::new())
+    }
+
+    fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> pdu::PduResult<Vec<DvcMessage>> {
+        Ok(Vec::new())
+    }
+}
+
+impl DvcClientProcessor for StartRecorder {}
 
 struct TestInputHandler;
 impl RdpServerInputHandler for TestInputHandler {
@@ -1017,6 +1321,43 @@ async fn client_server_impl<F, Fut, C>(
     Fut: Future<Output = (ActiveStage, Framed<TokioStream<TlsStream<TcpStream>>>)>,
     C: FnOnce(connector::ClientConnector) -> connector::ClientConnector + 'static,
 {
+    client_server_with_display(
+        |rx| TestDisplay {
+            rx,
+            offers_display_control: true,
+        },
+        stale_events,
+        client_config,
+        static_channel_factories,
+        server_udp_addr,
+        connector_factory,
+        clientfn,
+    )
+    .await;
+}
+
+async fn client_server_with_display<D, DF, F, Fut, C>(
+    display_factory: DF,
+    stale_events: Option<Vec<ServerEvent>>,
+    client_config: connector::Config,
+    static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+    server_udp_addr: Option<SocketAddr>,
+    connector_factory: C,
+    clientfn: F,
+) where
+    D: RdpServerDisplay + 'static,
+    DF: FnOnce(DisplayUpdatesRx) -> D,
+    F: FnOnce(
+            ActiveStage,
+            connector::connection_activation::ConnectionActivationFactory,
+            Framed<TokioStream<TlsStream<TcpStream>>>,
+            UnboundedSender<DisplayUpdate>,
+            server::EchoServerHandle,
+        ) -> Fut
+        + 'static,
+    Fut: Future<Output = (ActiveStage, Framed<TokioStream<TlsStream<TcpStream>>>)>,
+    C: FnOnce(connector::ClientConnector) -> connector::ClientConnector + 'static,
+{
     // FIXME(@CBenoit): If this is really necessary, we may consider a non-global way of registering the subscriber; otherwise it’s unnecessary to register that.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -1032,9 +1373,7 @@ async fn client_server_impl<F, Fut, C>(
         .with_addr(([127, 0, 0, 1], 0))
         .with_tls(acceptor)
         .with_input_handler(TestInputHandler)
-        .with_display_handler(TestDisplay {
-            rx: Arc::new(Mutex::new(display_rx)),
-        });
+        .with_display_handler(display_factory(Arc::new(Mutex::new(display_rx))));
     for factory in static_channel_factories {
         server_builder = server_builder.with_static_channel_factory(factory);
     }
@@ -1173,6 +1512,7 @@ async fn egfx_moves_onto_the_udp_tunnel_with_soft_sync() {
         .with_input_handler(TestInputHandler)
         .with_display_handler(TestDisplay {
             rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
         })
         .with_gfx_factory(Some(Box::new(TestGfxFactory { caps_tx })))
         .with_udp_transport(udp_addr)
@@ -1639,6 +1979,7 @@ fn auto_reconnect_server(on_request: bool) -> (RdpServer, UnboundedSender<Displa
         .with_input_handler(TestInputHandler)
         .with_display_handler(TestDisplay {
             rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
         })
         .with_auto_reconnect_cookie(Some(ServerAutoReconnect {
             logon_id: 1,
@@ -2101,6 +2442,7 @@ fn hook_recording_server(
         .with_input_handler(TestInputHandler)
         .with_display_handler(TestDisplay {
             rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
         })
         .with_connection_handler(Some(Box::new(HookRecorder(Arc::clone(&counts)))))
         .with_connection_policy(policy)
@@ -2241,6 +2583,7 @@ async fn the_default_under_hybrid_lets_an_authenticated_newcomer_take_over() {
         .with_input_handler(TestInputHandler)
         .with_display_handler(TestDisplay {
             rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
         })
         .build();
     server.set_credentials(Some(server::Credentials {
@@ -2286,6 +2629,298 @@ async fn the_default_under_hybrid_lets_an_authenticated_newcomer_take_over() {
         assert!(evicted.is_ok(), "the incumbent's connection must be closed");
 
         drop(second);
+        server_task.abort();
+    }))
+    .await;
+}
+
+/// A [`server::ConnectionSource`] over a TCP listener, standing in for an
+/// embedder's own accept loop. With `report_peer` false it gives no peer
+/// address, as a Unix socket or an AF_VSOCK listener would.
+struct ListenerSource {
+    listener: TcpListener,
+    report_peer: bool,
+    /// The tag given to the next connection; 1 for the first.
+    next_tag: u64,
+}
+
+#[async_trait::async_trait]
+impl server::ConnectionSource for ListenerSource {
+    type Stream = TcpStream;
+
+    async fn accept(&mut self) -> std::io::Result<Option<server::IncomingConnection<TcpStream>>> {
+        let (stream, peer) = self.listener.accept().await?;
+        let incoming =
+            server::IncomingConnection::new(stream, server::TransportTls::Managed, self.report_peer.then_some(peer))
+                .with_tag(self.next_tag);
+        self.next_tag += 1;
+        Ok(Some(incoming))
+    }
+}
+
+async fn listener_source(report_peer: bool) -> (ListenerSource, SocketAddr) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+    (
+        ListenerSource {
+            listener,
+            report_peer,
+            next_tag: 1,
+        },
+        addr,
+    )
+}
+
+/// Checks that a connection made now is closed without being served, which
+/// reads as end of stream, and that the live session `incumbent` carries on.
+async fn assert_refused_and_incumbent_alive(
+    server_addr: SocketAddr,
+    incumbent: &mut Framed<TokioStream<TlsStream<TcpStream>>>,
+) {
+    use tokio::io::AsyncReadExt as _;
+
+    let mut stream = TcpStream::connect(server_addr).await.expect("TCP connect");
+    let mut buf = [0u8; 16];
+    assert!(
+        matches!(
+            tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await,
+            Ok(Ok(0) | Err(_))
+        ),
+        "the second connection must be closed, not left waiting"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), incumbent.read_pdu())
+            .await
+            .is_err(),
+        "the live session must carry on"
+    );
+}
+
+/// The TLS identity the e2e servers present, from the certificate and key
+/// under `tests/certs`.
+fn test_tls_identity() -> TlsIdentityCtx {
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity")
+}
+
+const HYBRID_USER: &str = "user";
+const HYBRID_PASSWORD: &str = "password";
+
+/// A server that authenticates clients with CredSSP, whose default policy under
+/// that security is `Preempt`, and the display sender to keep alive for the
+/// test: once it drops, the display stream ends and the server closes the
+/// session.
+fn hybrid_server() -> (RdpServer, UnboundedSender<DisplayUpdate>) {
+    let identity = test_tls_identity();
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    let (display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_hybrid(acceptor, identity.pub_key)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: HYBRID_USER.into(),
+        password: HYBRID_PASSWORD.into(),
+        domain: None,
+    }));
+    (server, display_tx)
+}
+
+/// The client configuration that logs in to [`hybrid_server`].
+fn hybrid_client_config() -> connector::Config {
+    connector::Config {
+        credentials: connector::Credentials::UsernamePassword {
+            username: HYBRID_USER.into(),
+            password: HYBRID_PASSWORD.into(),
+        },
+        ..default_client_config()
+    }
+}
+
+/// Connects a client to a [`hybrid_server`] and then a second one, which takes
+/// the session over, and checks that the first client's connection is closed.
+/// Returns the second client, which keeps the session for as long as the caller
+/// holds it.
+async fn connect_hybrid_takeover(server_addr: SocketAddr) -> Framed<TokioStream<TlsStream<TcpStream>>> {
+    let connect = || {
+        connect_client(server_addr, |client_addr| {
+            connector::ClientConnector::new(hybrid_client_config(), client_addr)
+        })
+    };
+
+    let (mut first, _) = connect().await;
+    let (second, _) = tokio::time::timeout(Duration::from_secs(10), connect())
+        .await
+        .expect("the authenticated newcomer must be served (Preempt), not queued");
+
+    let evicted = tokio::time::timeout(Duration::from_secs(5), async {
+        while first.read_pdu().await.is_ok() {}
+    })
+    .await;
+    assert!(evicted.is_ok(), "the incumbent's connection must be closed");
+
+    second
+}
+
+/// The same takeover as `the_default_under_hybrid_lets_an_authenticated_newcomer_take_over`,
+/// for connections an embedder accepts itself and that have no peer address:
+/// `serve` runs the race, so the second client takes the session over once it
+/// has completed CredSSP, and the first client's connection is closed.
+#[tokio::test]
+async fn serve_lets_an_authenticated_newcomer_take_over_connections_without_a_peer_address() {
+    let (mut server, _display_tx) = hybrid_server();
+    let (mut source, server_addr) = listener_source(false).await;
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server.serve(&mut source).await;
+        });
+
+        let second = connect_hybrid_takeover(server_addr).await;
+
+        drop(second);
+        server_task.abort();
+    }))
+    .await;
+}
+
+/// The embedder owns the accept loop and calls `serve_connection` for each
+/// session: the connection that replaced a session comes back in the outcome and
+/// is served next, without negotiating again.
+#[tokio::test]
+async fn serve_connection_hands_the_replacement_to_the_embedders_loop() {
+    let (mut server, _display_tx) = hybrid_server();
+    let (mut source, server_addr) = listener_source(false).await;
+    let (served_tx, mut served_rx) = mpsc::unbounded_channel();
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            use server::ConnectionSource as _;
+
+            let mut next: server::NextConnection<TcpStream> = match source.accept().await {
+                Ok(Some(first)) => server::NextConnection::Incoming(first),
+                _ => return,
+            };
+            loop {
+                let server::SessionOutcome { result, successor, .. } = server.serve_connection(next, &mut source).await;
+                let _ = served_tx.send((
+                    result.is_ok(),
+                    successor.as_ref().map(server::AuthenticatedConnection::tag),
+                ));
+                next = match successor {
+                    Some(winner) => server::NextConnection::Authenticated(winner),
+                    None => match source.accept().await {
+                        Ok(Some(incoming)) => server::NextConnection::Incoming(incoming),
+                        _ => return,
+                    },
+                };
+            }
+        });
+        let second = connect_hybrid_takeover(server_addr).await;
+
+        let (_, successor_tag) = tokio::time::timeout(Duration::from_secs(5), served_rx.recv())
+            .await
+            .expect("the first session must report its outcome")
+            .expect("outcome channel");
+        assert_eq!(
+            successor_tag,
+            Some(2),
+            "the outcome of the evicted session carries the replacement, with the tag its source gave it"
+        );
+
+        drop(second);
+        server_task.abort();
+    }))
+    .await;
+}
+
+/// Under `Reject`, `serve` closes a connection that arrives mid-session at
+/// once and leaves the live session alone.
+#[tokio::test]
+async fn serve_rejects_a_second_connection_under_reject() {
+    let (mut server, counts, _display_tx) = hook_recording_server(server::ConnectionPolicy::Reject);
+    let (mut source, server_addr) = listener_source(true).await;
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server.serve(&mut source).await;
+        });
+        let (mut first, _) = connect_client(server_addr, |client_addr| {
+            connector::ClientConnector::new(default_client_config(), client_addr)
+        })
+        .await;
+
+        assert_refused_and_incumbent_alive(server_addr, &mut first).await;
+        assert_eq!(counts.get().0, 1, "only the first connection reached on_accept");
+
+        drop(first);
+        server_task.abort();
+    }))
+    .await;
+}
+
+/// Refuses the second connection it is asked about.
+struct RefuseSecond(Arc<AtomicUsize>);
+
+impl server::ConnectionHandler for RefuseSecond {
+    fn on_accept(&mut self, _peer: SocketAddr) -> bool {
+        self.0.fetch_add(1, Ordering::SeqCst) == 0
+    }
+}
+
+/// `on_accept` gates a newcomer before it can negotiate, so under `Preempt` a
+/// connection the handler refuses never takes the session over. The peer
+/// address comes from the source.
+#[tokio::test]
+async fn serve_gates_a_preempting_newcomer_with_on_accept() {
+    let acceptor = test_tls_identity()
+        .make_acceptor()
+        .expect("failed to build TLS acceptor");
+
+    let asked = Arc::new(AtomicUsize::new(0));
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .with_connection_handler(Some(Box::new(RefuseSecond(Arc::clone(&asked)))))
+        .with_connection_policy(server::ConnectionPolicy::Preempt)
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let (mut source, server_addr) = listener_source(true).await;
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server.serve(&mut source).await;
+        });
+        let (mut first, _) = connect_client(server_addr, |client_addr| {
+            connector::ClientConnector::new(default_client_config(), client_addr)
+        })
+        .await;
+
+        assert_refused_and_incumbent_alive(server_addr, &mut first).await;
+        assert_eq!(asked.load(Ordering::SeqCst), 2, "on_accept saw both connections");
+
+        drop(first);
         server_task.abort();
     }))
     .await;

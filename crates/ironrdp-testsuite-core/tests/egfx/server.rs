@@ -6,9 +6,10 @@ use ironrdp_egfx::pdu::{
     Codec1Type, Codec2Type, Encoding, FrameAcknowledgePdu, GfxPdu, PixelFormat, QueueDepth,
 };
 use ironrdp_egfx::server::{
-    Avc444SubStream, Avc444Tile, GraphicsPipelineHandler, GraphicsPipelineServer, MixedTilePayload, QoeMetrics, Surface,
+    Avc444SubStream, Avc444Tile, FrameSubmissionError, GraphicsPipelineHandler, GraphicsPipelineServer,
+    MixedTilePayload, QoeMetrics, Surface,
 };
-use ironrdp_graphics::zgfx::Decompressor;
+use ironrdp_graphics::zgfx::{CompressionMode, Decompressor};
 use ironrdp_pdu::geometry::ExclusiveRectangle;
 use rstest::rstest;
 
@@ -74,6 +75,14 @@ fn encode_pdu<T: Encode>(pdu: &T) -> Vec<u8> {
 // ============================================================================
 // Tests
 // ============================================================================
+
+fn ack_pdu(frame_id: u32, queue_depth: QueueDepth) -> GfxPdu {
+    GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        frame_id,
+        queue_depth,
+        total_frames_decoded: 1,
+    })
+}
 
 #[test]
 fn test_server_creation() {
@@ -149,8 +158,11 @@ fn test_server_not_ready_before_capabilities() {
     let h264_data = vec![0x00, 0x00, 0x00, 0x01, 0x67];
     let regions = vec![Avc420Region::full_frame(1920, 1080, 22)];
 
-    let result = server.send_avc420_frame(0, &h264_data, &regions, 0);
-    assert!(result.is_none());
+    assert_eq!(
+        server.try_send_avc420_frame(0, &h264_data, &regions, 0),
+        Err(FrameSubmissionError::NotReady)
+    );
+    assert!(server.send_avc420_frame(0, &h264_data, &regions, 0).is_none());
 }
 
 #[test]
@@ -352,6 +364,101 @@ fn avc444v2_sender_rejects_invalid_stream_shapes_without_queueing() {
         assert!(!server.has_pending_output());
         assert_eq!(server.frames_in_flight(), 0);
     }
+}
+
+// ============================================================================
+// ZGFX Output Tests
+// ============================================================================
+
+/// Whether the first ZGFX segment of a wrapped DVC message is compressed
+/// (MS-RDPEGFX 2.2.5.1 to 2.2.5.3; PACKET_COMPRESSED is 0x20).
+fn first_segment_is_compressed(wrapped: &[u8]) -> bool {
+    match wrapped[0] {
+        0xE0 => wrapped[1] & 0x20 != 0,
+        0xE1 => wrapped[1 + 2 + 4 + 4] & 0x20 != 0,
+        descriptor => panic!("unexpected ZGFX descriptor {descriptor:#x}"),
+    }
+}
+
+/// H.264 surface commands go out uncompressed in both compressing modes, for each of the three
+/// H.264 codecs, and the receiver's history stays in step with the sender's. 70,000 bytes is
+/// above the 65,535 of a single ZGFX segment, so that case is multipart and records one large push.
+#[rstest]
+fn zgfx_sends_h264_uncompressed_and_keeps_history_in_step(
+    #[values(CompressionMode::Auto, CompressionMode::Always)] mode: CompressionMode,
+    #[values(Codec1Type::Avc420, Codec1Type::Avc444, Codec1Type::Avc444v2)] h264_codec: Codec1Type,
+    #[values(8_000, 70_000)] h264_len: usize,
+) {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::with_compression(handler, mode);
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::SMALL_CACHE,
+    }]));
+    server
+        .process(0, &encode_pdu(&client_caps_pdu))
+        .expect("process capabilities");
+    let surface_id = server.create_surface(64, 64).expect("create surface");
+
+    let mut decompressor = Decompressor::new();
+    let mut decode_all = |server: &mut GraphicsPipelineServer| -> Vec<(bool, GfxPdu)> {
+        server
+            .drain_output()
+            .iter()
+            .map(|message| {
+                let wrapped = encode_vec(message.as_ref()).expect("encode DVC message");
+                let mut decoded = Vec::new();
+                decompressor.decompress(&wrapped, &mut decoded).expect("decompress PDU");
+                let pdu = GfxPdu::decode(&mut ReadCursor::new(&decoded)).expect("decode PDU");
+                (first_segment_is_compressed(&wrapped), pdu)
+            })
+            .collect()
+    };
+    decode_all(&mut server);
+
+    let clearcodec_data = b"lossless tile bytes that repeat ".repeat(64);
+    let h264_data: Vec<u8> = (0..=u8::MAX).cycle().skip(3).step_by(7).take(h264_len).collect();
+    let destination = ExclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: 16,
+        bottom: 16,
+    };
+
+    // ClearCodec, then H.264, then ClearCodec again: the last one only
+    // decodes if both sides recorded the H.264 bytes in their histories.
+    server
+        .send_clearcodec_frame(surface_id, destination.clone(), clearcodec_data.clone(), 42)
+        .expect("queue ClearCodec frame");
+    let regions = [Avc420Region::full_frame(64, 64, 22)];
+    match h264_codec {
+        Codec1Type::Avc420 => server.send_avc420_frame(surface_id, &h264_data, &regions, 42),
+        Codec1Type::Avc444 => server.send_avc444_frame(surface_id, &h264_data, &regions, None, None, 42),
+        Codec1Type::Avc444v2 => {
+            server.send_avc444v2_frame(surface_id, Encoding::LUMA, &h264_data, &regions, None, None, 42)
+        }
+        other => panic!("not an H.264 codec: {other:?}"),
+    }
+    .expect("queue H.264 frame");
+    server
+        .send_clearcodec_frame(surface_id, destination, clearcodec_data.clone(), 42)
+        .expect("queue ClearCodec frame");
+
+    let mut codecs = Vec::new();
+    for (compressed, pdu) in decode_all(&mut server) {
+        let GfxPdu::WireToSurface1(wire) = pdu else {
+            continue;
+        };
+        match wire.codec_id {
+            Codec1Type::ClearCodec => {
+                assert!(compressed, "ClearCodec PDU should be compressed");
+                assert_eq!(wire.bitmap_data, clearcodec_data);
+            }
+            codec if codec == h264_codec => assert!(!compressed, "H.264 PDU should be sent uncompressed"),
+            other => panic!("unexpected codec {other:?}"),
+        }
+        codecs.push(wire.codec_id);
+    }
+    assert_eq!(codecs, [Codec1Type::ClearCodec, h264_codec, Codec1Type::ClearCodec]);
 }
 
 // ============================================================================
@@ -816,6 +923,52 @@ fn mixed_frame_of_avc444_tiles_alone_is_allowed_before_10_4() {
 // ============================================================================
 
 #[test]
+fn avc444v2_submission_preserves_typed_rejections() {
+    let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
+    assert_eq!(server.avc444_submission_state(0), Err(FrameSubmissionError::NotReady));
+    let caps = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::empty(),
+    }]));
+    server.process(0, &encode_pdu(&caps)).unwrap();
+    let surface = server.create_surface(64, 64).unwrap();
+    server.drain_output();
+    let regions = vec![Avc420Region::full_frame(64, 64, 22)];
+    assert_eq!(
+        server.try_send_avc444v2_frame(surface, Encoding::LUMA_AND_CHROMA, &[1], &regions, None, None, 1),
+        Err(FrameSubmissionError::InvalidFrame)
+    );
+    assert!(!server.has_pending_output());
+    assert_eq!(server.frames_in_flight(), 0);
+    assert_eq!(server.avc444_submission_state(surface), Ok(()));
+    assert_eq!(
+        server.avc444_submission_state(u16::MAX),
+        Err(FrameSubmissionError::UnknownSurface { surface_id: u16::MAX })
+    );
+    server.set_max_frames_in_flight(1);
+    assert!(
+        server
+            .try_send_avc444v2_frame(surface, Encoding::LUMA, &[1], &regions, None, None, 2)
+            .is_ok()
+    );
+    server.drain_output();
+    assert!(matches!(
+        server.try_send_avc444v2_frame(surface, Encoding::LUMA, &[2], &regions, None, None, 3),
+        Err(FrameSubmissionError::Backpressured {
+            frames_in_flight: 1,
+            max_frames_in_flight: 1
+        })
+    ));
+    assert_eq!(
+        server.avc444_submission_state(surface),
+        Err(FrameSubmissionError::Backpressured {
+            frames_in_flight: 1,
+            max_frames_in_flight: 1
+        })
+    );
+    assert!(!server.has_pending_output());
+}
+
+#[test]
 fn test_planar_frame_round_trip() {
     let handler = Box::new(TestHandler::new());
     let mut server = GraphicsPipelineServer::new(handler);
@@ -967,41 +1120,276 @@ fn test_resize() {
 fn test_frame_flow_control() {
     let handler = Box::new(TestHandler::new());
     let mut server = GraphicsPipelineServer::new(handler);
-    server.set_max_frames_in_flight(2);
+    server.set_max_frames_in_flight(3);
+    assert_eq!(server.max_frames_in_flight(), 3);
+    assert_eq!(
+        server.set_client_frame_ack_limit(Some(core::num::NonZeroU32::new(1).expect("one is non-zero"))),
+        1
+    );
 
-    // Negotiate capabilities with AVC420
     let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
         flags: CapabilitiesV81Flags::AVC420_ENABLED,
     }]));
-    let payload = encode_pdu(&client_caps_pdu);
-    let _output = server.process(0, &payload).expect("process failed");
-
-    // Create surface
-    let surface_id = server.create_surface(1920, 1080).unwrap();
-    server.drain_output(); // Clear setup PDUs
+    server
+        .process(0, &encode_pdu(&client_caps_pdu))
+        .expect("process capabilities");
+    let surface_id = server.create_surface(1920, 1080).expect("create surface");
+    server.drain_output();
 
     let h264_data = vec![0x00, 0x00, 0x00, 0x01, 0x67];
     let regions = vec![Avc420Region::full_frame(1920, 1080, 22)];
 
-    // First two frames should succeed
-    let frame1 = server.send_avc420_frame(surface_id, &h264_data, &regions, 0);
-    assert!(frame1.is_some());
-
-    let frame2 = server.send_avc420_frame(surface_id, &h264_data, &regions, 16);
-    assert!(frame2.is_some());
-
-    // Check backpressure is active
+    let frame1 = server
+        .try_send_avc420_frame(surface_id, &h264_data, &regions, 0)
+        .expect("first frame should be accepted");
     assert!(server.should_backpressure());
-    assert_eq!(server.frames_in_flight(), 2);
+    assert_eq!(server.frames_in_flight(), 1);
+    assert_eq!(
+        server.avc420_submission_state(surface_id),
+        Err(FrameSubmissionError::Backpressured {
+            frames_in_flight: 1,
+            max_frames_in_flight: 1,
+        })
+    );
+    assert_eq!(
+        server.try_send_avc420_frame(surface_id, &h264_data, &regions, 16),
+        Err(FrameSubmissionError::Backpressured {
+            frames_in_flight: 1,
+            max_frames_in_flight: 1,
+        })
+    );
 
-    // Third frame should fail due to backpressure
-    let frame3 = server.send_avc420_frame(surface_id, &h264_data, &regions, 33);
-    assert!(frame3.is_none());
+    let ack_pdu = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        frame_id: frame1,
+        queue_depth: QueueDepth::AvailableBytes(1),
+        total_frames_decoded: 1,
+    });
+    server.process(0, &encode_pdu(&ack_pdu)).expect("process ACK");
+    assert_eq!(server.frames_in_flight(), 0);
+    assert_eq!(server.avc420_submission_state(surface_id), Ok(()));
+    assert!(
+        server
+            .try_send_avc420_frame(surface_id, &h264_data, &regions, 33)
+            .is_ok()
+    );
 }
 
-// ============================================================================
-// QoE Statistics Tests
-// ============================================================================
+#[test]
+fn negotiated_ceiling_can_be_refreshed_after_resize() {
+    let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
+    server.set_max_frames_in_flight(3);
+    server.set_client_frame_ack_limit(core::num::NonZeroU32::new(1));
+    server.resize(64, 64);
+    assert_eq!(server.max_frames_in_flight(), 1);
+    assert_eq!(server.set_client_frame_ack_limit(core::num::NonZeroU32::new(2)), 2);
+    assert_eq!(server.set_client_frame_ack_limit(None), 3);
+}
+
+#[test]
+fn new_connection_replaces_the_previous_client_ceiling() {
+    let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
+    server.set_max_frames_in_flight(3);
+    assert_eq!(server.set_client_frame_ack_limit(core::num::NonZeroU32::new(1)), 1);
+    server.close(7);
+    assert_eq!(server.set_client_frame_ack_limit(core::num::NonZeroU32::new(2)), 2);
+    assert_eq!(server.set_client_frame_ack_limit(None), 3);
+    server.set_max_frames_in_flight(0);
+    assert_eq!(server.set_client_frame_ack_limit(core::num::NonZeroU32::new(1)), 1);
+    assert_eq!(server.set_client_frame_ack_limit(None), 0);
+}
+
+#[test]
+fn test_close_reopen_clears_stale_frame_window_and_output() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    server.set_max_frames_in_flight(3);
+    server.start(7).expect("initial DVC start");
+    server.set_client_frame_ack_limit(Some(core::num::NonZeroU32::new(1).expect("one is non-zero")));
+
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
+        flags: CapabilitiesV81Flags::AVC420_ENABLED,
+    }]));
+    server
+        .process(7, &encode_pdu(&client_caps_pdu))
+        .expect("initial capabilities");
+    let surface = server.create_surface(1920, 1080).expect("initial surface");
+    server.drain_output();
+
+    let h264_data = vec![0x00, 0x00, 0x00, 0x01, 0x67];
+    let regions = vec![Avc420Region::full_frame(1920, 1080, 22)];
+    server
+        .try_send_avc420_frame(surface, &h264_data, &regions, 0)
+        .expect("initial frame");
+    assert_eq!(server.frames_in_flight(), 1);
+    assert!(server.has_pending_output());
+
+    server.close(7);
+    assert_eq!(server.frames_in_flight(), 0);
+    assert!(!server.has_pending_output());
+    assert_eq!(server.max_frames_in_flight(), 1);
+
+    server.start(8).expect("reopened DVC start");
+    // No new core capability exchange occurs when only the DVC reopens.
+    assert_eq!(server.max_frames_in_flight(), 1);
+    server
+        .process(8, &encode_pdu(&client_caps_pdu))
+        .expect("reopened capabilities");
+    let surface = server.create_surface(1920, 1080).expect("reopened surface");
+    server.drain_output();
+
+    let stale_ack = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        frame_id: u32::MAX,
+        queue_depth: QueueDepth::Suspend,
+        total_frames_decoded: 1,
+    });
+    server
+        .process(8, &encode_pdu(&stale_ack))
+        .expect("stale ACK processing");
+    assert_eq!(server.client_queue_depth(), 0);
+
+    assert!(server.try_send_avc420_frame(surface, &h264_data, &regions, 16).is_ok());
+    assert!(
+        server.should_backpressure(),
+        "stale suspend ACK must not disable the current frame ceiling"
+    );
+}
+
+#[test]
+fn acknowledged_duplicates_cannot_resume_a_later_suspension() {
+    let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
+    let caps = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
+        flags: CapabilitiesV81Flags::AVC420_ENABLED,
+    }]));
+    server.process(0, &encode_pdu(&caps)).unwrap();
+    let surface = server.create_surface(64, 64).unwrap();
+    let regions = [Avc420Region::full_frame(64, 64, 22)];
+    let ack = ack_pdu;
+    let outstanding = server.send_avc420_frame(surface, &[1], &regions, 1).unwrap();
+    let already_acked = server.send_avc420_frame(surface, &[2], &regions, 2).unwrap();
+    let suspending = server.send_avc420_frame(surface, &[3], &regions, 3).unwrap();
+    server
+        .process(0, &encode_pdu(&ack(already_acked, QueueDepth::AvailableBytes(12))))
+        .unwrap();
+    server
+        .process(0, &encode_pdu(&ack(suspending, QueueDepth::Suspend)))
+        .unwrap();
+    // This duplicate is newer than an outstanding frame, so a broad ID range is insufficient.
+    server
+        .process(0, &encode_pdu(&ack(already_acked, QueueDepth::AvailableBytes(99))))
+        .unwrap();
+    server
+        .process(0, &encode_pdu(&ack(suspending, QueueDepth::AvailableBytes(99))))
+        .unwrap();
+    assert_eq!(server.client_queue_depth(), 0);
+    server.send_avc420_frame(surface, &[4], &regions, 4).unwrap();
+    assert_eq!(server.frames_in_flight(), 0);
+    // A frame outstanding at suspension is still allowed to resume.
+    server
+        .process(0, &encode_pdu(&ack(outstanding, QueueDepth::AvailableBytes(8))))
+        .unwrap();
+    assert_eq!(server.client_queue_depth(), 8);
+    let next = server.send_avc420_frame(surface, &[5], &regions, 5).unwrap();
+    assert_eq!(server.frames_in_flight(), 1);
+    server.process(0, &encode_pdu(&ack(next, QueueDepth::Suspend))).unwrap();
+    // Eligibility was cleared on the previous resume; it must not carry into this pause.
+    server
+        .process(0, &encode_pdu(&ack(outstanding, QueueDepth::AvailableBytes(99))))
+        .unwrap();
+    assert_eq!(server.client_queue_depth(), 0);
+    server.send_avc420_frame(surface, &[6], &regions, 6).unwrap();
+    assert_eq!(server.frames_in_flight(), 0);
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn delayed_suspend_ack_survives_graphics_reset(#[case] readvertise: bool) {
+    let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
+    let caps = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
+        flags: CapabilitiesV81Flags::AVC420_ENABLED,
+    }]));
+    server.start(7).unwrap();
+    server.process(7, &encode_pdu(&caps)).unwrap();
+    let surface = server.create_surface(64, 64).unwrap();
+    let regions = [Avc420Region::full_frame(64, 64, 22)];
+    let before_reset = server.send_avc420_frame(surface, &[1], &regions, 1).unwrap();
+    server.set_max_frames_in_flight(1);
+    if readvertise {
+        server.process(7, &encode_pdu(&caps)).unwrap();
+    } else {
+        server.resize(64, 64);
+    }
+    let surface = server.create_surface(64, 64).unwrap();
+    let after_reset = server.send_avc420_frame(surface, &[2], &regions, 2).unwrap();
+    assert!(server.should_backpressure());
+    let suspend = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        frame_id: before_reset,
+        queue_depth: QueueDepth::Suspend,
+        total_frames_decoded: 1,
+    });
+    server.process(7, &encode_pdu(&suspend)).unwrap();
+    assert_eq!(server.frames_in_flight(), 0);
+    assert!(
+        !server.should_backpressure(),
+        "graphics reset must not invalidate an issued suspend ACK"
+    );
+    server.send_avc420_frame(surface, &[3], &regions, 3).unwrap();
+    let resume = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        frame_id: after_reset,
+        queue_depth: QueueDepth::Unavailable,
+        total_frames_decoded: 2,
+    });
+    server.process(7, &encode_pdu(&resume)).unwrap();
+    server.send_avc420_frame(surface, &[4], &regions, 4).unwrap();
+    assert_eq!(server.frames_in_flight(), 1);
+    assert!(server.should_backpressure());
+}
+
+#[test]
+fn closed_generation_cannot_resume_or_suspend_current_tracking() {
+    let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
+    let caps = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
+        flags: CapabilitiesV81Flags::AVC420_ENABLED,
+    }]));
+    server.start(7).unwrap();
+    server.process(7, &encode_pdu(&caps)).unwrap();
+    let surface = server.create_surface(64, 64).unwrap();
+    let regions = [Avc420Region::full_frame(64, 64, 22)];
+    let old_frame = server.send_avc420_frame(surface, &[1], &regions, 1).unwrap();
+    let ack = ack_pdu;
+    server
+        .process(7, &encode_pdu(&ack(old_frame, QueueDepth::Unavailable)))
+        .unwrap();
+    assert!(server.qoe_snapshot().is_some());
+    server.close(7);
+    assert!(server.qoe_snapshot().is_none());
+    server.start(8).unwrap();
+    server.process(8, &encode_pdu(&caps)).unwrap();
+    let surface = server.create_surface(64, 64).unwrap();
+    server.set_max_frames_in_flight(1);
+    let current = server.send_avc420_frame(surface, &[2], &regions, 2).unwrap();
+    server
+        .process(8, &encode_pdu(&ack(old_frame, QueueDepth::Suspend)))
+        .unwrap();
+    assert!(server.should_backpressure());
+    server
+        .process(8, &encode_pdu(&ack(current, QueueDepth::Suspend)))
+        .unwrap();
+    server
+        .process(8, &encode_pdu(&ack(old_frame, QueueDepth::Unavailable)))
+        .unwrap();
+    let during_suspend = server.send_avc420_frame(surface, &[3], &regions, 3).unwrap();
+    assert_eq!(
+        server.frames_in_flight(),
+        0,
+        "old ACK must not resume the current generation"
+    );
+    server
+        .process(8, &encode_pdu(&ack(during_suspend, QueueDepth::Unavailable)))
+        .unwrap();
+    server.send_avc420_frame(surface, &[4], &regions, 4).unwrap();
+    assert!(server.should_backpressure());
+}
 
 #[test]
 fn test_qoe_snapshot_none_before_data() {
@@ -1214,6 +1602,156 @@ fn test_send_uncompressed_frame_backpressure() {
 }
 
 #[test]
+fn uncompressed_region_is_placed_at_its_rectangle() {
+    let (mut server, surface_id) = mixed_frame_server(CapabilitySet::V8 {
+        flags: CapabilitiesV8Flags::SMALL_CACHE,
+    });
+    let region = ExclusiveRectangle {
+        left: 4,
+        top: 6,
+        right: 20,
+        bottom: 14,
+    };
+    let pixels = vec![0xABu8; 16 * 8 * 4];
+
+    server
+        .try_send_uncompressed_region(surface_id, &pixels, region.clone(), 42)
+        .expect("queue region");
+
+    let pdus = decode_drained_pdus(&mut server);
+    assert_eq!(pdus.len(), 3, "StartFrame, WireToSurface1 and EndFrame");
+    let GfxPdu::WireToSurface1(wire) = &pdus[1] else {
+        panic!("expected WireToSurface1");
+    };
+    assert_eq!(wire.surface_id, surface_id);
+    assert_eq!(wire.codec_id, Codec1Type::Uncompressed);
+    assert_eq!(wire.destination_rectangle, region);
+    assert_eq!(wire.bitmap_data, pixels);
+    assert_eq!(server.frames_in_flight(), 1);
+}
+
+#[rstest]
+#[case::empty_width(ExclusiveRectangle { left: 8, top: 0, right: 8, bottom: 4 }, 0)]
+#[case::empty_height(ExclusiveRectangle { left: 0, top: 4, right: 8, bottom: 4 }, 0)]
+#[case::inverted(ExclusiveRectangle { left: 8, top: 0, right: 4, bottom: 4 }, 16)]
+#[case::past_the_right_edge(ExclusiveRectangle { left: 60, top: 0, right: 65, bottom: 4 }, 5 * 4 * 4)]
+#[case::past_the_bottom_edge(ExclusiveRectangle { left: 0, top: 60, right: 4, bottom: 65 }, 4 * 5 * 4)]
+#[case::payload_too_short(ExclusiveRectangle { left: 0, top: 0, right: 4, bottom: 4 }, 4 * 4 * 4 - 1)]
+#[case::payload_too_long(ExclusiveRectangle { left: 0, top: 0, right: 4, bottom: 4 }, 4 * 4 * 4 + 4)]
+fn uncompressed_region_rejects_what_the_client_cannot_place(#[case] region: ExclusiveRectangle, #[case] len: usize) {
+    let (mut server, surface_id) = mixed_frame_server(CapabilitySet::V8 {
+        flags: CapabilitiesV8Flags::SMALL_CACHE,
+    });
+
+    assert_eq!(
+        server.try_send_uncompressed_region(surface_id, &vec![0u8; len], region, 0),
+        Err(FrameSubmissionError::InvalidFrame)
+    );
+    assert!(server.drain_output().is_empty(), "a rejected region queues nothing");
+    assert_eq!(server.frames_in_flight(), 0);
+}
+
+#[test]
+fn uncompressed_region_reports_why_it_wasn_t_sent() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    let region = ExclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: 4,
+        bottom: 4,
+    };
+    let pixels = vec![0u8; 4 * 4 * 4];
+    assert_eq!(
+        server.try_send_uncompressed_region(0, &pixels, region.clone(), 0),
+        Err(FrameSubmissionError::NotReady)
+    );
+
+    let (mut server, surface_id) = mixed_frame_server(CapabilitySet::V8 {
+        flags: CapabilitiesV8Flags::SMALL_CACHE,
+    });
+    assert_eq!(
+        server.try_send_uncompressed_region(surface_id + 1, &pixels, region.clone(), 0),
+        Err(FrameSubmissionError::UnknownSurface {
+            surface_id: surface_id + 1
+        })
+    );
+
+    server.set_max_frames_in_flight(1);
+    server
+        .try_send_uncompressed_region(surface_id, &pixels, region.clone(), 0)
+        .expect("first region");
+    assert_eq!(
+        server.try_send_uncompressed_region(surface_id, &pixels, region, 16),
+        Err(FrameSubmissionError::Backpressured {
+            frames_in_flight: 1,
+            max_frames_in_flight: 1
+        })
+    );
+}
+
+#[rstest]
+#[case::empty_region(ExclusiveRectangle { left: 8, top: 0, right: 8, bottom: 4 }, 0)]
+#[case::payload_too_short(ExclusiveRectangle { left: 0, top: 0, right: 4, bottom: 4 }, 4 * 4 * 4 - 1)]
+fn uncompressed_region_reports_a_malformed_argument_even_when_backpressured(
+    #[case] region: ExclusiveRectangle,
+    #[case] len: usize,
+) {
+    use ironrdp_egfx::pdu::QoeFrameAcknowledgePdu;
+
+    let (mut server, surface_id) = mixed_frame_server(CapabilitySet::V8 {
+        flags: CapabilitiesV8Flags::SMALL_CACHE,
+    });
+    server.set_max_frames_in_flight(1);
+    // The snapshot only exists once there is a QoE report or an RTT sample.
+    let qoe_pdu = GfxPdu::QoeFrameAcknowledge(QoeFrameAcknowledgePdu {
+        frame_id: 0,
+        timestamp: 1000,
+        time_diff_se: 50,
+        time_diff_dr: 3000,
+    });
+    server.process(0, &encode_pdu(&qoe_pdu)).expect("process QoE report");
+    let valid = ExclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: 4,
+        bottom: 4,
+    };
+    server
+        .try_send_uncompressed_region(surface_id, &[0u8; 4 * 4 * 4], valid, 0)
+        .expect("first region");
+    assert!(server.should_backpressure());
+    let before = server.qoe_snapshot().expect("QoE snapshot").backpressure_count;
+
+    assert_eq!(
+        server.try_send_uncompressed_region(surface_id, &vec![0u8; len], region, 16),
+        Err(FrameSubmissionError::InvalidFrame)
+    );
+    assert_eq!(
+        server.qoe_snapshot().expect("QoE snapshot").backpressure_count,
+        before,
+        "a malformed region isn't a backpressure rejection"
+    );
+
+    // Whether a well-formed region lies inside the surface needs the surface, so
+    // backpressure is reported first for one that doesn't.
+    let outside = ExclusiveRectangle {
+        left: 60,
+        top: 0,
+        right: 65,
+        bottom: 4,
+    };
+    assert!(matches!(
+        server.try_send_uncompressed_region(surface_id, &[0u8; 5 * 4 * 4], outside, 16),
+        Err(FrameSubmissionError::Backpressured { .. })
+    ));
+    assert_eq!(
+        server.qoe_snapshot().expect("QoE snapshot").backpressure_count,
+        before + 1
+    );
+}
+
+#[test]
 fn test_frames_sent_while_acknowledgement_is_suspended_do_not_hold_backpressure() {
     let handler = Box::new(TestHandler::new());
     let mut server = GraphicsPipelineServer::new(handler);
@@ -1268,6 +1806,8 @@ fn test_frames_sent_while_acknowledgement_is_suspended_do_not_hold_backpressure(
         "frames counted during the pause hold backpressure on for good: with no \
          frame going out there is no End Frame left for the client to acknowledge"
     );
+    assert_eq!(server.frames_in_flight(), 1, "resume must restore tracking");
+    assert!(server.should_backpressure());
 }
 
 #[test]
@@ -1329,6 +1869,8 @@ fn test_suspension_does_not_shrink_the_window_for_the_rest_of_the_connection() {
             "frame {index} after resume was held back by a frame stranded in the pause"
         );
     }
+    assert_eq!(server.frames_in_flight(), 3);
+    assert!(server.should_backpressure());
 }
 
 #[test]

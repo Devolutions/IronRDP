@@ -29,7 +29,9 @@ impl GlobalMemoryBuffer {
         unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), dst.cast::<u8>(), data.len()) };
 
         // SAFETY: We called `GlobalLock` on this handle just above.
-        if let Err(error) = unsafe { GlobalUnlock(handle) } {
+        if let Err(error) = unsafe { GlobalUnlock(handle) }
+            && error.code().is_err()
+        {
             error!(%error, "Failed to unlock memory");
         }
 

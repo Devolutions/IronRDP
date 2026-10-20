@@ -32,6 +32,8 @@ visibility = { version = "0.1", optional = true }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+x11rb = { version = "0.13", features = ["xfixes"] }
+ironrdp-cliprdr-format = { path = "../ironrdp-cliprdr-format", version = "0.2" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

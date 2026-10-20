@@ -540,12 +540,115 @@ test("main logs only static post-finish diagnostics", async () => {
         phase: "runtime",
         reason: "provider stream was malformed",
         category: "provider-response",
-        retryable: false,
+        retryable: true,
         streamStructuralViolation: "post-finish",
         postFinishShape: "delta-content",
       },
     );
     assert.doesNotMatch(JSON.stringify(core.events), new RegExp(sentinel));
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+async function withProviderFetch(responses, run) {
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    const next = responses[calls++];
+    return typeof next === "function" ? next() : next;
+  };
+  try {
+    await run();
+  } finally {
+    globalThis.fetch = original;
+  }
+  return calls;
+}
+
+function sseBody(chunks) {
+  return new Response(`${chunks.map((choices) => `data: ${JSON.stringify({
+    id: "completion", object: "chat.completion.chunk", created: 0, model: "test", choices,
+  })}\n\n`).join("")}data: [DONE]\n\n`, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
+function retryingActionFixture() {
+  const workspace = actionFixture();
+  const config = JSON.parse(fs.readFileSync(path.join(workspace.directory, "config.json"), "utf8"));
+  write(workspace.directory, "config.json", JSON.stringify({ ...config, max_request_retries: 1 }));
+  return workspace;
+}
+
+const malformedPostFinishStream = () => sseBody([
+  [{ index: 0, delta: { content: '{"answer":"MODEL_STREAM_SECRET_SENTINEL"}' }, finish_reason: "stop" }],
+  [{ index: 0, delta: { content: "" } }],
+]);
+
+test("main reports a malformed stream that a request retry recovered", async () => {
+  const workspace = retryingActionFixture();
+  const core = mockCore({
+    "api-key": "key",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+  });
+  try {
+    const calls = await withProviderFetch([
+      malformedPostFinishStream,
+      () => sseBody([[{ index: 0, delta: { content: '{"answer":"done"}' }, finish_reason: "stop" }]]),
+    ], () => main(core, { GITHUB_WORKSPACE: workspace.directory }));
+    assert.equal(calls, 2);
+    assert.equal(core.outputs.get("failure-reason"), "");
+    assert.equal(core.outputs.get("structured-output"), '{"answer":"done"}');
+    assert.equal(core.outputs.get("turn-count"), "1");
+    const diagnostics = JSON.parse(core.outputs.get("diagnostics"));
+    assert.equal(diagnostics.requestRetryCount, 1);
+    assert.deepEqual(
+      diagnostics.providerAttempts.map((attempt) => attempt.postFinishShape),
+      ["delta-content-empty", undefined],
+    );
+    const completion = core.events.filter((event) => event[0] === "info")
+      .map((event) => JSON.parse(event[1]))
+      .find((event) => event.event === "openai-agent.complete");
+    assert.equal(completion.requestRetryCount, 1);
+    assert.equal(completion.streamStructuralViolation, "post-finish");
+    assert.equal(completion.postFinishShape, "delta-content-empty");
+    assert.doesNotMatch(JSON.stringify(core.events), /MODEL_STREAM_SECRET_SENTINEL/);
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test("main logs only the violation that caused the terminal failure", async () => {
+  const workspace = retryingActionFixture();
+  const core = mockCore({
+    "api-key": "key",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+  });
+  try {
+    await withProviderFetch([
+      malformedPostFinishStream,
+      () => new Response("{}", { status: 401, headers: { "content-type": "application/json" } }),
+    ], () => main(core, { GITHUB_WORKSPACE: workspace.directory }));
+    assert.equal(core.outputs.get("failure-reason"), "provider credential rejected");
+    assert.equal(
+      JSON.parse(core.outputs.get("diagnostics")).streamStructuralViolation,
+      "post-finish",
+    );
+    assert.deepEqual(
+      core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
+        .find((event) => event.event === "openai-agent.provider-failure"),
+      {
+        event: "openai-agent.provider-failure",
+        reason: "provider credential rejected",
+        category: "provider-credential",
+        retryable: false,
+        status: 401,
+      },
+    );
   } finally {
     workspace.cleanup();
   }
@@ -580,7 +683,7 @@ test("main reduces malformed SSE parser errors to a static structural violation"
         event: "openai-agent.provider-failure",
         reason: "provider stream was malformed",
         category: "provider-response",
-        retryable: false,
+        retryable: true,
         streamStructuralViolation: "sse-json-invalid",
       },
     );

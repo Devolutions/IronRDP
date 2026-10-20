@@ -260,6 +260,19 @@ impl DataControl {
         })
     }
 
+    /// Wait until the compositor has processed the requests sent so far.
+    ///
+    /// Afterwards [`owns_selection`](Self::owns_selection) reflects the outcome of an earlier
+    /// [`set_selection`](Self::set_selection), including a copy by another client that won.
+    pub(crate) fn synchronize(&self) -> Result<()> {
+        let (sender, receiver) = mpsc::channel();
+        self.link.send(Command::Synchronize(sender))?;
+        receiver.recv_timeout(READ_IDLE_TIMEOUT).map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => Error::Timeout,
+            mpsc::RecvTimeoutError::Disconnected => Error::Stopped,
+        })
+    }
+
     /// The protocol the compositor is speaking.
     #[must_use]
     pub fn protocol(&self) -> Protocol {

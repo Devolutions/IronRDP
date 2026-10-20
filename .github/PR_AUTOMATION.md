@@ -142,7 +142,7 @@ For validator checks, `previousCandidate` is the earliest canonical JSON-parsed 
 Validator-directed corrections may use only necessary bounded read-only evidence lookup, while invalid output remains terminal after its configured repair budget.
 One model turn is one logical model call.
 The action owns retry HTTP attempts for that logical call through the SDK's public completion API and honors valid `Retry-After` delays.
-Pre-header failures, status failures, and interrupted streams share one retry budget and discard partial response state before resending the unchanged history.
+Pre-header failures, status failures, interrupted streams, and structurally malformed streams share one retry budget and discard partial response state before resending the unchanged history.
 Known transient statuses retry, while known terminal statuses stop despite provider retry hints.
 Every request streams under a per-attempt raw-body and idle-progress budget plus one monotonic stage deadline that also covers backoff, tools, validation, and repair.
 The checked-in profiles request high reasoning effort and leave the provider token cap unset.

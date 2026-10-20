@@ -408,6 +408,8 @@ pub struct GraphicsPipelineClient {
     clearcodec_decoder: Option<ClearCodecDecoder>,
     planar_decoder: BitmapStreamDecoder,
     progressive_decoder: ProgressiveDecoder,
+    /// Lifetime decode failures, used to throttle diagnostics.
+    dropped_updates: u64,
 
     decompressor: zgfx::Decompressor,
     decompressed_buffer: Vec<u8>,
@@ -419,7 +421,6 @@ pub struct GraphicsPipelineClient {
     surfaces: BTreeMap<u16, Surface>,
     compositor: Compositor,
     current_frame_id: Option<u32>,
-    frames_queued: u32,
     total_frames_decoded: u32,
     pending_output_reset: Option<(u16, u16)>,
 }
@@ -438,6 +439,7 @@ impl GraphicsPipelineClient {
             clearcodec_decoder: None,
             planar_decoder: BitmapStreamDecoder::default(),
             progressive_decoder: ProgressiveDecoder::new(),
+            dropped_updates: 0,
             decompressor: zgfx::Decompressor::new(),
             decompressed_buffer: Vec::new(),
             state: ClientState::WaitingForConfirm,
@@ -446,7 +448,6 @@ impl GraphicsPipelineClient {
             surfaces: BTreeMap::new(),
             compositor: Compositor::default(),
             current_frame_id: None,
-            frames_queued: 0,
             total_frames_decoded: 0,
             pending_output_reset: None,
         }
@@ -484,6 +485,12 @@ impl GraphicsPipelineClient {
     #[must_use]
     pub fn total_frames_decoded(&self) -> u32 {
         self.total_frames_decoded
+    }
+
+    /// Get the lifetime number of surface updates dropped after a codec decoding failure.
+    #[must_use]
+    pub fn dropped_updates(&self) -> u64 {
+        self.dropped_updates
     }
 
     /// Take the output-buffer regions that changed in completed frames.
@@ -535,7 +542,6 @@ impl GraphicsPipelineClient {
             }
             GfxPdu::StartFrame(start) => {
                 self.current_frame_id = Some(start.frame_id);
-                self.frames_queued = self.frames_queued.saturating_add(1);
                 self.progressive_decoder.begin_frame();
                 trace!(frame_id = start.frame_id, "StartFrame");
                 Ok(vec![])
@@ -704,7 +710,6 @@ impl GraphicsPipelineClient {
         // per spec, capabilities are negotiated via CapabilitiesConfirm before
         // ResetGraphics, and a ResetGraphics does not re-negotiate capabilities.
         self.current_frame_id = None;
-        self.frames_queued = 0;
 
         // Reset decoder state for new stream
         if let Some(ref mut decoder) = self.h264_decoder {
@@ -843,27 +848,29 @@ impl GraphicsPipelineClient {
             );
         }
 
-        match pdu.codec_id {
-            Codec1Type::Avc420 => {
-                self.decode_avc420(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)?;
+        let result = match pdu.codec_id {
+            Codec1Type::Avc420 => self.decode_avc420(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data),
+            Codec1Type::ClearCodec => {
+                self.decode_clearcodec(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)
             }
+            Codec1Type::Planar => self.decode_planar(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data),
             Codec1Type::Avc444 | Codec1Type::Avc444v2 => {
                 debug!("AVC444 codec not yet implemented, forwarding to handler");
                 self.handler.on_unhandled_pdu(&GfxPdu::WireToSurface1(pdu));
-            }
-            Codec1Type::ClearCodec => {
-                self.decode_clearcodec(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)?;
-            }
-            Codec1Type::Planar => {
-                self.decode_planar(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)?;
+                return Ok(());
             }
             Codec1Type::Uncompressed => {
                 self.handle_uncompressed(pdu);
+                return Ok(());
             }
             _ => {
                 trace!(codec_id = ?pdu.codec_id, "Forwarding unsupported codec to handler");
                 self.handler.on_unhandled_pdu(&GfxPdu::WireToSurface1(pdu));
+                return Ok(());
             }
+        };
+        if let Err(error) = result {
+            self.drop_update(pdu.codec_id, pdu.surface_id, pdu.bitmap_data.len(), &error);
         }
 
         Ok(())
@@ -878,19 +885,19 @@ impl GraphicsPipelineClient {
             .ok_or_else(|| pdu_other_err!("unknown surface in WireToSurface2"))?;
         let (surface_width, surface_height) = (surface.width, surface.height);
 
-        let tiles = self
-            .progressive_decoder
-            .decode_bitmap(
-                pdu.surface_id,
-                pdu.codec_context_id,
-                surface_width,
-                surface_height,
-                &pdu.bitmap_data,
-            )
-            .map_err(|error| {
-                warn!(?error, "rfx progressive decode failed");
-                pdu_other_err!("rfx progressive decode failed")
-            })?;
+        let tiles = match self.progressive_decoder.decode_bitmap(
+            pdu.surface_id,
+            pdu.codec_context_id,
+            surface_width,
+            surface_height,
+            &pdu.bitmap_data,
+        ) {
+            Ok(tiles) => tiles,
+            Err(error) => {
+                self.drop_update(pdu.codec_id, pdu.surface_id, pdu.bitmap_data.len(), &error);
+                return Ok(());
+            }
+        };
 
         for tile in tiles {
             let tile_left = tile.x_idx.saturating_mul(TILE_DIM);
@@ -958,6 +965,27 @@ impl GraphicsPipelineClient {
         Ok(())
     }
 
+    // Decode failures do not end the session or discard protocol-persistent contexts and caches.
+    fn drop_update(
+        &mut self,
+        codec: impl core::fmt::Debug,
+        surface_id: u16,
+        bytes: usize,
+        error: &dyn core::fmt::Debug,
+    ) {
+        self.dropped_updates = self.dropped_updates.saturating_add(1);
+        if self.dropped_updates == 1 || self.dropped_updates.is_multiple_of(64) {
+            warn!(
+                ?error,
+                ?codec,
+                surface_id,
+                bytes,
+                dropped_total = self.dropped_updates,
+                "Dropping an undecodable surface update"
+            );
+        }
+    }
+
     fn decode_avc420(&mut self, surface_id: u16, dest_rect: &ExclusiveRectangle, bitmap_data: &[u8]) -> PduResult<()> {
         let mut cursor = ReadCursor::new(bitmap_data);
         let stream = Avc420BitmapStream::decode(&mut cursor).map_err(|e| decode_err!(e))?;
@@ -980,14 +1008,14 @@ impl GraphicsPipelineClient {
         // Larger is expected (macroblock alignment) and handled by cropping.
         // Smaller means the server sent mismatched dimensions.
         if frame.width() < u32::from(dest_width) || frame.height() < u32::from(dest_height) {
-            warn!(
-                frame_width = frame.width(),
-                frame_height = frame.height(),
-                dest_width,
-                dest_height,
-                "decoded frame smaller than destination rectangle"
-            );
-            return Err(pdu_other_err!("decoded frame smaller than destination rectangle"));
+            return Err(pdu_other_err!(
+                "decoded frame smaller than destination rectangle",
+                source: crate::decode::DecoderError::msg(format!(
+                    "frame_width={}, frame_height={}, dest_width={dest_width}, dest_height={dest_height}",
+                    frame.width(),
+                    frame.height(),
+                )),
+            ));
         }
 
         // MS-RDPEGFX 2.2.4.4 (RFX_AVC420_METABLOCK): `regionRects` lists the
@@ -1191,7 +1219,6 @@ impl GraphicsPipelineClient {
     fn handle_end_frame(&mut self, frame_id: u32) -> PduResult<Vec<DvcMessage>> {
         self.total_frames_decoded = self.total_frames_decoded.wrapping_add(1);
         self.current_frame_id = None;
-        self.frames_queued = self.frames_queued.saturating_sub(1);
 
         self.progressive_decoder.end_frame();
 
@@ -1201,10 +1228,10 @@ impl GraphicsPipelineClient {
         self.handler.on_frame_complete(frame_id);
 
         // Per [3.3.5.12]: client MUST send FrameAcknowledge after EndFrame.
-        // We send the actual queue depth (not Unavailable / 0xFFFFFFFF as FreeRDP does);
-        // the real value gives the server backpressure information for frame pacing.
+        // QueueDepth counts queued bytes, not decoded/queued frames. This client
+        // does not measure queued bytes, so report Unavailable (not Suspend).
         let ack = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
-            queue_depth: QueueDepth::from_u32(self.frames_queued),
+            queue_depth: QueueDepth::Unavailable,
             frame_id,
             total_frames_decoded: self.total_frames_decoded,
         });
@@ -1819,7 +1846,6 @@ mod tests {
             frame_id: 42,
         }));
         assert!(client.current_frame_id.is_some());
-        assert_eq!(client.frames_queued, 1);
 
         let _ = client.handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
             width: 1920,
@@ -1829,7 +1855,6 @@ mod tests {
 
         assert!(client.surfaces.is_empty(), "surfaces should be cleared");
         assert!(client.current_frame_id.is_none(), "frame_id should be reset");
-        assert_eq!(client.frames_queued, 0, "frame queue should be reset");
     }
 
     #[test]
@@ -2327,17 +2352,197 @@ mod tests {
         assert!(client.drain_output().is_empty());
     }
 
+    fn progressive_upgrade_stream() -> Vec<u8> {
+        use ironrdp_pdu::codecs::rfx::progressive::{
+            ComponentCodecQuant, ProgressiveBlock, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu, ProgressiveRegion,
+            ProgressiveTile, TileUpgrade, encode_progressive_stream,
+        };
+
+        encode_progressive_stream(&[
+            ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
+                frame_index: 1,
+                region_count: 1,
+            }),
+            ProgressiveBlock::Region(ProgressiveRegion {
+                tile_size: 0x40,
+                rects: vec![rect(0, 0, 64, 64)],
+                quant_vals: vec![ComponentCodecQuant::LOSSLESS],
+                quant_prog_vals: vec![],
+                flags: 0,
+                tiles: vec![ProgressiveTile::Upgrade(TileUpgrade {
+                    quant_idx_y: 0,
+                    quant_idx_cb: 0,
+                    quant_idx_cr: 0,
+                    x_idx: 0,
+                    y_idx: 0,
+                    quality: 0xFF,
+                    y_srl_data: &[],
+                    y_raw_data: &[],
+                    cb_srl_data: &[],
+                    cb_raw_data: &[],
+                    cr_srl_data: &[],
+                    cr_raw_data: &[],
+                })],
+            }),
+            ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn repeated_decode_failures_preserve_progressive_tiles_on_all_surfaces() {
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let mut client = progressive_client();
+        client.handler = Box::new(CapturingHandler {
+            updates: Arc::clone(&updates),
+            unhandled: Arc::new(Mutex::new(0)),
+        });
+        client
+            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                surface_id: 2,
+                width: 64,
+                height: 64,
+                pixel_format: PixelFormat::XRgb,
+            }))
+            .unwrap();
+        for surface_id in [1, 2] {
+            send(&mut client, surface_id, progressive_tile_stream(0, 0, 64, 64));
+        }
+        assert_eq!(updates.lock().unwrap().len(), 2);
+        updates.lock().unwrap().clear();
+
+        for _ in 0..64 {
+            wire_progressive(&mut client, vec![0xFF; 32]).unwrap();
+        }
+        assert_eq!(client.dropped_updates, 64);
+        for surface_id in [2, 1] {
+            send(&mut client, surface_id, progressive_upgrade_stream());
+        }
+        let updates = updates.lock().unwrap();
+        assert_eq!(
+            updates.len(),
+            2,
+            "both contexts must retain the first-pass tile for UPGRADE"
+        );
+        assert_eq!(&updates[0].3[..4], &[128, 128, 128, 255]);
+        assert_eq!(&updates[1].3[..4], &[128, 128, 128, 255]);
+
+        fn send(client: &mut GraphicsPipelineClient, surface_id: u16, bitmap_data: Vec<u8>) {
+            client
+                .handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
+                    surface_id,
+                    codec_id: crate::pdu::Codec2Type::RemoteFxProgressive,
+                    codec_context_id: 7,
+                    pixel_format: PixelFormat::XRgb,
+                    bitmap_data,
+                }))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn repeated_decode_failures_preserve_clearcodec_glyphs_across_graphics_reset() {
+        use ironrdp_graphics::clearcodec::ClearCodecEncoder;
+        use ironrdp_pdu::codecs::clearcodec::FLAG_GLYPH_HIT;
+
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let mut client = progressive_client();
+        client.handler = Box::new(CapturingHandler {
+            updates: Arc::clone(&updates),
+            unhandled: Arc::new(Mutex::new(0)),
+        });
+        let mut encoder = ClearCodecEncoder::new();
+        let pixel = [0x12, 0x34, 0x56, 0xFF];
+        send(&mut client, encoder.encode(&pixel, 1, 1));
+        let glyph_hit = encoder.encode(&pixel, 1, 1);
+        assert_ne!(glyph_hit[0] & FLAG_GLYPH_HIT, 0);
+
+        for _ in 0..15 {
+            send(&mut client, vec![0xFF; 16]);
+        }
+        client
+            .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
+                width: 64,
+                height: 64,
+                monitors: vec![],
+            }))
+            .unwrap();
+        client
+            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                surface_id: 1,
+                width: 64,
+                height: 64,
+                pixel_format: PixelFormat::XRgb,
+            }))
+            .unwrap();
+        for _ in 0..49 {
+            send(&mut client, vec![0xFF; 16]);
+        }
+        assert_eq!(client.dropped_updates, 64);
+        send(&mut client, glyph_hit);
+        assert_eq!(client.dropped_updates, 64, "cached glyph must still decode");
+        let updates = updates.lock().unwrap();
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].3, updates[1].3);
+
+        fn send(client: &mut GraphicsPipelineClient, bitmap_data: Vec<u8>) {
+            client
+                .handle_pdu(GfxPdu::WireToSurface1(crate::pdu::WireToSurface1Pdu {
+                    surface_id: 1,
+                    codec_id: Codec1Type::ClearCodec,
+                    pixel_format: PixelFormat::XRgb,
+                    destination_rectangle: ExclusiveRectangle {
+                        left: 0,
+                        top: 0,
+                        right: 1,
+                        bottom: 1,
+                    },
+                    bitmap_data,
+                }))
+                .unwrap();
+        }
+    }
+
     fn assert_progressive_context_is_deleted(clear: impl FnOnce(&mut GraphicsPipelineClient)) {
         let mut client = progressive_client();
         wire_progressive(&mut client, progressive_context_stream(true)).unwrap();
         clear(&mut client);
-        assert!(wire_progressive(&mut client, progressive_context_stream(false)).is_err());
+        assert!(wire_progressive(&mut client, progressive_context_stream(false)).is_ok());
+        assert_eq!(client.dropped_updates, 1);
+    }
+
+    #[test]
+    fn an_undecodable_clearcodec_update_is_dropped_not_fatal() {
+        let mut client = progressive_client();
+
+        let result = client.handle_pdu(GfxPdu::WireToSurface1(crate::pdu::WireToSurface1Pdu {
+            surface_id: 1,
+            codec_id: Codec1Type::ClearCodec,
+            pixel_format: PixelFormat::XRgb,
+            destination_rectangle: ExclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 64,
+                bottom: 64,
+            },
+            bitmap_data: vec![0xFF; 16],
+        }));
+
+        assert!(result.is_ok());
+        assert_eq!(client.dropped_updates, 1);
     }
 
     #[test]
     fn progressive_context_survives_graphics_reset() {
+        let updates = Arc::new(Mutex::new(Vec::new()));
         let mut client = progressive_client();
-        wire_progressive(&mut client, progressive_context_stream(true)).unwrap();
+        client.handler = Box::new(CapturingHandler {
+            updates: Arc::clone(&updates),
+            unhandled: Arc::new(Mutex::new(0)),
+        });
+        wire_progressive(&mut client, progressive_tile_stream(0, 0, 64, 64)).unwrap();
+        assert_eq!(updates.lock().unwrap().len(), 1);
+        updates.lock().unwrap().clear();
 
         client
             .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
@@ -2357,7 +2562,11 @@ mod tests {
 
         // Windows never re-sends SYNC + CONTEXT after a reset, so a CONTEXT-less
         // continuation has to keep decoding.
-        assert!(wire_progressive(&mut client, progressive_context_stream(false)).is_ok());
+        wire_progressive(&mut client, progressive_upgrade_stream()).unwrap();
+        assert_eq!(client.dropped_updates(), 0);
+        let updates = updates.lock().unwrap();
+        assert_eq!(updates.len(), 1, "UPGRADE must retain its first-pass tile");
+        assert_eq!(&updates[0].3[..4], &[128, 128, 128, 255]);
     }
 
     #[test]
@@ -2461,6 +2670,30 @@ mod tests {
         let mut cursor = WriteCursor::new(&mut buf);
         stream.encode(&mut cursor).expect("encode avc420 stream");
         buf
+    }
+
+    #[test]
+    fn avc420_size_mismatch_keeps_dimensions_in_error() {
+        let mut client = GraphicsPipelineClient::new(
+            Box::new(TestHandler),
+            Some(Box::new(CoordinateDecoder { width: 2, height: 3 })),
+        );
+        let error = client
+            .decode_avc420(
+                1,
+                &ExclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 4,
+                    bottom: 5,
+                },
+                &encode_avc420_wire(&[]),
+            )
+            .unwrap_err();
+        let diagnostic = format!("{error:?}");
+        for dimension in ["frame_width=2", "frame_height=3", "dest_width=4", "dest_height=5"] {
+            assert!(diagnostic.contains(dimension), "Missing {dimension} in {diagnostic}");
+        }
     }
 
     /// A partial AVC420 update must draw each region rectangle from its OWN
@@ -2682,5 +2915,18 @@ mod tests {
             "region B must be drawn from its absolute origin (100, 104); \
              a destRect-relative reading would take (28, 32) instead (issue #2042)"
         );
+    }
+    #[test]
+    fn frame_ack_queue_depth_is_not_a_frame_count() {
+        let mut handler = GraphicsPipelineClient::new(Box::new(TestHandler), None);
+        handler.total_frames_decoded = 3;
+        let responses = handler.handle_end_frame(7).unwrap();
+        let bytes = ironrdp_core::encode_vec(responses[0].as_ref()).unwrap();
+        let GfxPdu::FrameAcknowledge(ack) = ironrdp_core::decode::<GfxPdu>(&bytes).unwrap() else {
+            panic!("expected frame ack")
+        };
+        assert_eq!(ack.frame_id, 7);
+        assert_eq!(ack.total_frames_decoded, 4);
+        assert_eq!(ack.queue_depth, QueueDepth::Unavailable);
     }
 }
