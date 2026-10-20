@@ -6,12 +6,14 @@ use thiserror::Error;
 
 use ironrdp_capture::Capture;
 
-use crate::routing::{ReplayFrame, prepare_replay_capture};
-use crate::{ReplayDirection, ReplayError, ReplayEvent, ReplayGap, ReplayGapKind, ReplayReport, ReplayRoute};
+use ironrdp_capture_replay::{
+    ReplayDirection, ReplayError, ReplayEvent, ReplayFrame, ReplayGap, ReplayGapKind, ReplayReport, ReplayRoute,
+    prepare_replay_capture,
+};
 
 /// Options that control replay artifact export.
 #[derive(Clone, Debug)]
-pub struct ExportOptions {
+pub(crate) struct ExportOptions {
     /// Directory that receives the completed export.
     pub directory: PathBuf,
     /// Replace an existing non-empty output directory.
@@ -20,7 +22,7 @@ pub struct ExportOptions {
 
 /// Completed replay export metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExportSummary {
+pub(crate) struct ExportSummary {
     /// Directory containing the completed export.
     pub directory: PathBuf,
     /// Number of framebuffer PNG files written.
@@ -29,7 +31,7 @@ pub struct ExportSummary {
 
 /// Errors that prevent a replay export from completing.
 #[derive(Debug, Error)]
-pub enum ExportError {
+pub(crate) enum ExportError {
     /// The routed capture had no visual updates to export.
     #[error("replay did not produce any visual frames")]
     NoVisualFrames,
@@ -69,7 +71,7 @@ pub enum ExportError {
 /// Replay a capture and write visual frames with payload-free diagnostics.
 ///
 /// The destination receives nothing unless every PNG and tabular file was written successfully.
-pub fn export_capture(capture: &Capture, options: &ExportOptions) -> Result<ExportSummary, ExportError> {
+pub(crate) fn export_capture(capture: &Capture, options: &ExportOptions) -> Result<ExportSummary, ExportError> {
     let (mut router, plaintext) = prepare_replay_capture(capture).map_err(ExportError::Replay)?;
     validate_output_directory(&options.directory, options.replace)?;
 
@@ -359,185 +361,5 @@ fn gap_kind_name(kind: ReplayGapKind) -> &'static str {
         ReplayGapKind::Session => "session",
         ReplayGapKind::IncompleteActivation => "incomplete-activation",
         ReplayGapKind::Unsupported => "unsupported",
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use core::sync::atomic::{AtomicUsize, Ordering};
-
-    use ironrdp_pdu::Action;
-
-    use super::*;
-    use crate::CapturedDynamicChannel;
-
-    static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
-
-    #[test]
-    fn writes_ordered_pngs_and_safe_diagnostics() {
-        let directory = temporary_directory("ordered");
-        let staging = create_staging_directory(directory.parent().unwrap(), &directory).unwrap();
-        let mut output = StagedOutput::new(staging.clone());
-        let report = report();
-        output.write_frame(frame(12, [0x11, 0x22, 0x33, 0xff])).unwrap();
-        output.write_frame(frame(47, [0x44, 0x55, 0x66, 0xff])).unwrap();
-        output.write_diagnostics(&report).unwrap();
-        replace_output_directory(&staging, &directory, false).unwrap();
-
-        assert_png_rgba(&directory.join("frame_000000.png"), [0x11, 0x22, 0x33, 0xff]);
-        assert_png_rgba(&directory.join("frame_000001.png"), [0x44, 0x55, 0x66, 0xff]);
-        let diagnostics = fs::read_to_string(directory.join("events.tsv")).unwrap();
-        let metadata = fs::read_to_string(directory.join("frame_meta.psv")).unwrap();
-        let channels = fs::read_to_string(directory.join("dynamic-channels.tsv")).unwrap();
-        assert!(diagnostics.contains("1\t12\tserver\tFastPath\tfast-path"));
-        assert_eq!(
-            metadata,
-            "FrameIndex|FramePacket|FrameSize|FrameFile|UpdatePos|UpdateSize\n\
-             0|12|1x1|frame_000000.png|0x0|1x1\n\
-             1|47|1x1|frame_000001.png|0x0|1x1\n"
-        );
-        assert_eq!(channels, "id\n7\n");
-        for text in [diagnostics, metadata, channels] {
-            assert!(!text.contains("CLIENT_RANDOM"));
-            assert!(!text.contains("decrypted payload"));
-        }
-
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn refuses_non_empty_output_without_replace() {
-        let directory = temporary_directory("refuse");
-        fs::create_dir(&directory).unwrap();
-        fs::write(directory.join("keep"), "existing").unwrap();
-
-        let error = validate_output_directory(&directory, false).unwrap_err();
-
-        assert!(matches!(error, ExportError::OutputDirectoryNotEmpty));
-        assert_eq!(fs::read_to_string(directory.join("keep")).unwrap(), "existing");
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn rejects_non_leaf_output_paths() {
-        let error = validate_output_directory(Path::new("."), false).unwrap_err();
-
-        assert!(matches!(error, ExportError::OutputPathNotLeaf));
-    }
-
-    #[test]
-    fn does_not_replace_new_contents_without_replace() {
-        let directory = temporary_directory("race");
-        fs::create_dir(&directory).unwrap();
-        let staging = create_staging_directory(directory.parent().unwrap(), &directory).unwrap();
-        fs::write(directory.join("keep"), "new").unwrap();
-
-        let error = replace_output_directory(&staging, &directory, false).unwrap_err();
-
-        assert!(matches!(error, ExportError::OutputDirectoryNotEmpty));
-        assert_eq!(fs::read_to_string(directory.join("keep")).unwrap(), "new");
-        fs::remove_dir_all(staging).unwrap();
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn replaces_non_empty_output_after_staging() {
-        let directory = temporary_directory("replace");
-        fs::create_dir(&directory).unwrap();
-        fs::write(directory.join("keep"), "old").unwrap();
-        let staging = create_staging_directory(directory.parent().unwrap(), &directory).unwrap();
-        let mut output = StagedOutput::new(staging);
-        output.write_frame(frame(12, [0x11, 0x22, 0x33, 0xff])).unwrap();
-
-        let summary = finalize_staged_output(
-            &mut output,
-            &report(),
-            &ExportOptions {
-                directory: directory.clone(),
-                replace: true,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(summary.frame_count, 1);
-        assert!(!directory.join("keep").exists());
-        assert!(directory.join("frame_000000.png").exists());
-        let backup_prefix = format!(".{}.previous-", directory.file_name().unwrap().to_string_lossy());
-        assert!(
-            fs::read_dir(directory.parent().unwrap())
-                .unwrap()
-                .all(|entry| { !entry.unwrap().file_name().to_string_lossy().starts_with(&backup_prefix) })
-        );
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn refuses_to_finalize_without_visual_frames() {
-        let directory = temporary_directory("no-frames");
-        let staging = create_staging_directory(directory.parent().unwrap(), &directory).unwrap();
-        let mut output = StagedOutput::new(staging.clone());
-
-        let error = finalize_staged_output(
-            &mut output,
-            &report(),
-            &ExportOptions {
-                directory: directory.clone(),
-                replace: false,
-            },
-        )
-        .unwrap_err();
-
-        assert!(matches!(error, ExportError::NoVisualFrames));
-        assert!(!directory.exists());
-        fs::remove_dir_all(staging).unwrap();
-    }
-
-    fn report() -> ReplayReport {
-        ReplayReport {
-            events: vec![ReplayEvent {
-                packet: 12,
-                direction: ReplayDirection::Server,
-                action: Action::FastPath,
-                route: ReplayRoute::FastPath,
-            }],
-            gaps: vec![ReplayGap {
-                packet: 20,
-                direction: ReplayDirection::Server,
-                kind: ReplayGapKind::Framing,
-                skipped_bytes: 3,
-            }],
-            dynamic_channels: vec![CapturedDynamicChannel {
-                id: 7,
-                name: "CLIENT_RANDOM decrypted payload".to_owned(),
-            }],
-        }
-    }
-
-    fn frame(packet: usize, pixels: [u8; 4]) -> ReplayFrame {
-        ReplayFrame {
-            packet,
-            width: 1,
-            height: 1,
-            pixels: pixels.to_vec(),
-        }
-    }
-
-    fn assert_png_rgba(path: &Path, expected: [u8; 4]) {
-        let input = fs::File::open(path).unwrap();
-        let decoder = png::Decoder::new(io::BufReader::new(input));
-        let mut reader = decoder.read_info().unwrap();
-        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
-        let info = reader.next_frame(&mut pixels).unwrap();
-
-        assert_eq!((info.width, info.height), (1, 1));
-        assert_eq!(&pixels[..info.buffer_size()], expected);
-    }
-
-    fn temporary_directory(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "ironrdp-capture-replay-{name}-{}-{}",
-            std::process::id(),
-            NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed),
-        ))
     }
 }

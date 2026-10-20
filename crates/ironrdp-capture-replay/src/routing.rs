@@ -88,11 +88,16 @@ pub struct ReplayEvent {
     pub route: ReplayRoute,
 }
 
+/// A rendered framebuffer snapshot produced while replaying a capture.
 #[derive(Clone, Eq, PartialEq)]
-pub(crate) struct ReplayFrame {
+pub struct ReplayFrame {
+    /// Packet number that produced this frame.
     pub packet: usize,
+    /// Framebuffer width in pixels.
     pub width: u16,
+    /// Framebuffer height in pixels.
     pub height: u16,
+    /// RGBA framebuffer pixels.
     pub pixels: Vec<u8>,
 }
 
@@ -272,7 +277,8 @@ impl ReplayRouter {
         }
     }
 
-    pub(crate) fn route_plaintext_with_frame_sink<E>(
+    /// Route a recorded plaintext capture and pass each rendered frame to `frame_sink`.
+    pub fn route_plaintext_with_frame_sink<E>(
         &mut self,
         plaintext: &Plaintext,
         frame_sink: &mut impl FnMut(ReplayFrame) -> Result<(), E>,
@@ -569,7 +575,8 @@ pub fn replay_capture(capture: &Capture) -> Result<ReplayReport, ReplayError> {
     Ok(router.route_plaintext(&plaintext))
 }
 
-pub(crate) fn prepare_replay_capture(capture: &Capture) -> Result<(ReplayRouter, Plaintext), ReplayError> {
+/// Decrypt a capture and prepare an offline router for its recovered plaintext.
+pub fn prepare_replay_capture(capture: &Capture) -> Result<(ReplayRouter, Plaintext), ReplayError> {
     let plaintext = decrypt_rdp(capture)?;
     let router = ReplayRouter::new(CapturedActivation {
         state: recover_negotiated_state(&plaintext)?,

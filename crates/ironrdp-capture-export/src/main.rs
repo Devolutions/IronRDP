@@ -1,8 +1,4 @@
 #![expect(
-    unused_crate_dependencies,
-    reason = "the binary delegates replay implementation to the library crate"
-)]
-#![expect(
     clippy::print_stdout,
     reason = "the command reports a completed export path to its interactive caller"
 )]
@@ -16,7 +12,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use ironrdp_capture::{CaptureError, read_capture};
-use ironrdp_capture_replay::{ExportOptions, export_capture};
+mod output;
+
+use output::{ExportOptions, export_capture};
 use zeroize::Zeroize as _;
 
 fn main() -> ExitCode {
@@ -105,5 +103,5 @@ fn parse_arguments(arguments: impl Iterator<Item = OsString>) -> Result<Argument
 }
 
 fn usage() -> String {
-    "usage: ironrdp-capture-replay [--replace] [--keylog <tls-keys.log>] <capture.pcapng> <output-directory>".to_owned()
+    "usage: ironrdp-capture-export [--replace] [--keylog <tls-keys.log>] <capture.pcapng> <output-directory>".to_owned()
 }
