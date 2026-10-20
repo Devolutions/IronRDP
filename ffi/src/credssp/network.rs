@@ -12,7 +12,7 @@ pub mod ffi {
     use crate::utils::ffi::VecU8;
 
     #[diplomat::attr(dotnet, manually_disposable)]
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct CredsspProcessGenerator<'a>(pub ironrdp::connector::credssp::CredsspProcessGenerator<'a>);
 
     #[diplomat::opaque]
@@ -101,7 +101,7 @@ pub mod ffi {
         }
 
         #[diplomat::attr(auto, getter = "url")]
-        pub fn get_url(&self, writeable: &mut diplomat_runtime::DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
+        pub fn get_url(&self, writeable: &mut diplomat_runtime::DiplomatWrite) -> Result<(), Box<IronRdpError>> {
             use core::fmt::Write as _;
             let url: &str = self.0.url.as_ref();
             write!(writeable, "{url}")?;

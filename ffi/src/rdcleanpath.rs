@@ -3,7 +3,7 @@ pub mod ffi {
     use core::fmt::Write as _;
 
     use anyhow::Context as _;
-    use diplomat_runtime::DiplomatWriteable;
+    use diplomat_runtime::DiplomatWrite;
 
     use crate::error::GenericError;
     use crate::error::ffi::IronRdpError;
@@ -179,7 +179,7 @@ pub mod ffi {
 
         /// Gets the server address string (for Response variant)
         #[diplomat::attr(auto, getter = "server_addr")]
-        pub fn get_server_addr<'a>(&'a self, writeable: &'a mut DiplomatWriteable) {
+        pub fn get_server_addr<'a>(&'a self, writeable: &'a mut DiplomatWrite) {
             if self.0.server_addr.is_some() && self.0.server_cert_chain.is_some() {
                 if let Some(server_addr) = &self.0.server_addr {
                     let _ = write!(writeable, "{server_addr}");
@@ -189,7 +189,7 @@ pub mod ffi {
 
         /// Gets error message (for GeneralError variant)
         #[diplomat::attr(auto, getter = "error_message")]
-        pub fn get_error_message<'a>(&'a self, writeable: &'a mut DiplomatWriteable) {
+        pub fn get_error_message<'a>(&'a self, writeable: &'a mut DiplomatWrite) {
             if let Ok(err) = self.general_error() {
                 let _ = write!(writeable, "{err}");
             }
@@ -227,7 +227,7 @@ pub mod ffi {
         }
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, PartialEq, Eq)]
     pub enum RDCleanPathResultType {
         Request,
         Response,
@@ -261,7 +261,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct CertificateChainIterator {
         certs: Vec<Vec<u8>>,
         index: usize,

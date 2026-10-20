@@ -3,7 +3,7 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
     use crate::pdu::ffi::FastPathInputEventIterator;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct InputDatabase(pub ironrdp::input::Database);
 
     impl InputDatabase {

@@ -29,7 +29,7 @@ pub mod ffi {
         }
 
         #[diplomat::attr(auto, getter = "data")]
-        pub fn get_data(&self) -> Box<BytesSlice<'_>> {
+        pub fn get_data<'a>(&'a self) -> Box<BytesSlice<'a>> {
             Box::new(BytesSlice(&self.0.bitmap_data))
         }
     }

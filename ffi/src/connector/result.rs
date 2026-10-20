@@ -4,7 +4,7 @@ pub mod ffi {
     use crate::error::ValueConsumedError;
     use crate::error::ffi::IronRdpError;
     use crate::utils::ffi::{OptionalUsize, VecU8};
-    use diplomat_runtime::DiplomatWriteable;
+    use diplomat_runtime::DiplomatWrite;
 
     #[diplomat::opaque]
     pub struct Written(pub ironrdp::connector::Written);
@@ -32,7 +32,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ConnectionResult(pub Option<ironrdp::connector::ConnectionResult>);
 
     impl ConnectionResult {
@@ -112,17 +112,17 @@ pub mod ffi {
         }
 
         /// Writes the target FQDN, or nothing when the PDU has none.
-        pub fn get_target_fqdn(&self, writeable: &mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
+        pub fn get_target_fqdn(&self, writeable: &mut DiplomatWrite) -> Result<(), Box<IronRdpError>> {
             write_optional(writeable, self.0.target_fqdn.as_deref())
         }
 
         /// Writes the target NetBIOS name, or nothing when the PDU has none.
-        pub fn get_target_netbios_name(&self, writeable: &mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
+        pub fn get_target_netbios_name(&self, writeable: &mut DiplomatWrite) -> Result<(), Box<IronRdpError>> {
             write_optional(writeable, self.0.target_netbios_name.as_deref())
         }
 
         /// Writes the target IP address, or nothing when the PDU has none.
-        pub fn get_target_net_address(&self, writeable: &mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
+        pub fn get_target_net_address(&self, writeable: &mut DiplomatWrite) -> Result<(), Box<IronRdpError>> {
             write_optional(writeable, self.0.target_net_address.as_deref())
         }
 
@@ -135,7 +135,7 @@ pub mod ffi {
         pub fn get_target_net_addresses_at(
             &self,
             index: usize,
-            writeable: &mut DiplomatWriteable,
+            writeable: &mut DiplomatWrite,
         ) -> Result<(), Box<IronRdpError>> {
             let address = self
                 .0
@@ -147,12 +147,12 @@ pub mod ffi {
         }
 
         /// Writes the user name, or nothing when the PDU has none.
-        pub fn get_username(&self, writeable: &mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
+        pub fn get_username(&self, writeable: &mut DiplomatWrite) -> Result<(), Box<IronRdpError>> {
             write_optional(writeable, self.0.username.as_deref())
         }
 
         /// Writes the domain, or nothing when the PDU has none.
-        pub fn get_domain(&self, writeable: &mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
+        pub fn get_domain(&self, writeable: &mut DiplomatWrite) -> Result<(), Box<IronRdpError>> {
             write_optional(writeable, self.0.domain.as_deref())
         }
 
@@ -181,7 +181,7 @@ pub mod ffi {
         }
     }
 
-    fn write_optional(writeable: &mut DiplomatWriteable, value: Option<&str>) -> Result<(), Box<IronRdpError>> {
+    fn write_optional(writeable: &mut DiplomatWrite, value: Option<&str>) -> Result<(), Box<IronRdpError>> {
         use core::fmt::Write as _;
 
         if let Some(value) = value {
