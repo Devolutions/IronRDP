@@ -13,7 +13,7 @@ use ironrdp_client::config::{
 use ironrdp_client::config::{MissingField, TransportKind};
 use ironrdp_pdu::gcc::{ClientMonitorData, Monitor, MonitorFlags};
 use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
-use ironrdp_viewer::cli::parse_config_from;
+use ironrdp_viewer::cli::{ViewerConfig, parse_config_from};
 use uuid::Uuid;
 
 struct TempRdpFile {
@@ -38,9 +38,7 @@ impl Drop for TempRdpFile {
     }
 }
 
-fn parse_config_from_rdp_result(content: &str, extra_args: &[&str]) -> anyhow::Result<ironrdp_client::config::Config> {
-    let rdp_file = TempRdpFile::new(content);
-
+fn viewer_args(rdp_file: &TempRdpFile, extra_args: &[&str]) -> Vec<String> {
     let mut args = vec![
         "ironrdp-client".to_owned(),
         "--rdp-file".to_owned(),
@@ -48,8 +46,17 @@ fn parse_config_from_rdp_result(content: &str, extra_args: &[&str]) -> anyhow::R
     ];
 
     args.extend(extra_args.iter().map(|arg| (*arg).to_owned()));
+    args
+}
 
-    parse_config_from(args)
+fn parse_config_from_rdp_result(content: &str, extra_args: &[&str]) -> anyhow::Result<ironrdp_client::config::Config> {
+    let rdp_file = TempRdpFile::new(content);
+    parse_config_from(viewer_args(&rdp_file, extra_args))
+}
+
+fn parse_viewer_config_from_rdp(content: &str, extra_args: &[&str]) -> ViewerConfig {
+    let rdp_file = TempRdpFile::new(content);
+    ViewerConfig::parse_from(viewer_args(&rdp_file, extra_args)).expect("failed to parse viewer config")
 }
 
 fn parse_config_from_rdp(content: &str, extra_args: &[&str]) -> ironrdp_client::config::Config {
@@ -455,6 +462,40 @@ fn redirectclipboard_zero_disables_clipboard_for_default_mode() {
 }
 
 #[test]
+fn printer_redirection_requires_the_cli_flag() {
+    let rdp = "full address:s:rdp.example.com
+username:s:test-user
+ClearTextPassword:s:test-pass
+";
+
+    assert!(!parse_viewer_config_from_rdp(rdp, &[]).redirect_printers());
+
+    // mstsc writes `redirectprinters:i:1` by default, so the file property alone must not redirect.
+    let stock = format!(
+        "{rdp}redirectprinters:i:1
+"
+    );
+    assert!(!parse_viewer_config_from_rdp(&stock, &[]).redirect_printers());
+
+    let viewer = parse_viewer_config_from_rdp(
+        &format!(
+            "{rdp}ironrdp_rdpdr:i:0
+"
+        ),
+        &["--printer"],
+    );
+    assert!(viewer.redirect_printers());
+    assert!(
+        viewer
+            .into_config()
+            .expect("failed to build client config")
+            .channels()
+            .rdpdr
+            .enabled
+    );
+}
+
+#[test]
 fn audiomode_two_disables_audio_playback() {
     let config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:2\n",
@@ -743,16 +784,13 @@ fn udp_offer_without_udp_is_rejected() {
 
 #[test]
 fn udp_offer_requires_udp_in_rpc_mode() {
-    let error = ironrdp_viewer::cli::ViewerConfig::parse_from(["ironrdp-viewer", "--rpc", "--udp-offer", "2"])
+    let error = ViewerConfig::parse_from(["ironrdp-viewer", "--rpc", "--udp-offer", "2"])
         .err()
         .expect("clap must validate UDP arguments before entering RPC mode");
     assert!(error.to_string().contains("required arguments"), "{error:?}");
     assert!(error.to_string().contains("--udp"), "{error:?}");
 
-    assert!(
-        ironrdp_viewer::cli::ViewerConfig::parse_from(["ironrdp-viewer", "--rpc", "--udp=false", "--udp-offer", "2",])
-            .is_ok()
-    );
+    assert!(ViewerConfig::parse_from(["ironrdp-viewer", "--rpc", "--udp=false", "--udp-offer", "2",]).is_ok());
 }
 
 #[test]

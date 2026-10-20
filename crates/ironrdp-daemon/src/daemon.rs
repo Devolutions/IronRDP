@@ -948,16 +948,21 @@ impl Daemon {
         // Always set smartcard explicitly so the client feature default (`true`) cannot announce a
         // smartcard device without a matching WinSCard backend.
         let smartcard = properties.enable_smartcard().unwrap_or(self.smartcard_default);
+        // Printer redirection is opt-in: an absent `redirectprinters` leaves it disabled. mstsc writes
+        // `redirectprinters:i:1` by default, so an explicit `ironrdp_rdpdr:i:0` takes precedence.
+        let redirect_printers =
+            properties.redirect_printers().unwrap_or(false) && properties.enable_rdpdr() != Some(false);
         #[cfg(windows)]
-        let rdpdr_factory = match resolve_rdpdr_factory(self.rdpdr_backend_factory.as_ref(), smartcard) {
-            Ok(factory) => factory,
-            Err(error) => {
-                return Response::typed_error(
-                    crate::ipc::AgentErrorCategory::Internal,
-                    format!("invalid rdpdr configuration: {error:#}"),
-                );
-            }
-        };
+        let rdpdr_factory =
+            match resolve_rdpdr_factory(self.rdpdr_backend_factory.as_ref(), smartcard, redirect_printers) {
+                Ok(factory) => factory,
+                Err(error) => {
+                    return Response::typed_error(
+                        crate::ipc::AgentErrorCategory::Internal,
+                        format!("invalid rdpdr configuration: {error:#}"),
+                    );
+                }
+            };
         #[cfg(windows)]
         let builder = if rdpdr_factory.is_some() {
             builder.with_rdpdr(true).with_smartcard(smartcard)
@@ -971,6 +976,10 @@ impl Daemon {
                 "smartcard redirection is only available on Windows",
             );
         } else {
+            if redirect_printers {
+                // Unlike `ironrdp_smartcard`, stock `.rdp` files commonly carry this property.
+                warn!("Ignoring printer redirection request; it is only available on Windows");
+            }
             // Client feature defaults smartcard on; never announce without a WinSCard backend.
             builder.with_smartcard(false)
         };
@@ -2470,29 +2479,29 @@ fn rdpdr_backend_factory(
 }
 
 /// Resolves the RDPDR factory for one connect: clone the startup factory (if any) and apply the
-/// effective smartcard flag. Smartcard-only sessions may create an empty-drive factory on demand.
-/// An empty-drive factory is dropped when smartcard is disabled so RDPDR is not attached without a
-/// device to announce.
+/// effective smartcard and printer flags. Smartcard- or printer-only sessions may create an
+/// empty-drive factory on demand. An empty-drive factory is dropped when both are disabled so
+/// RDPDR is not attached without a device to announce.
 #[cfg(windows)]
 fn resolve_rdpdr_factory(
     base: Option<&WindowsRdpdrBackendFactory>,
     smartcard: bool,
+    redirect_printers: bool,
 ) -> anyhow::Result<Option<WindowsRdpdrBackendFactory>> {
-    match base {
-        Some(factory) => {
-            let factory = factory.clone().with_smartcard(smartcard);
-            if factory.initial_drives().is_empty() && !smartcard {
-                Ok(None)
-            } else {
-                Ok(Some(factory))
-            }
-        }
-        None if smartcard => WindowsRdpdrBackendFactory::from_drives(Vec::new())
-            .map(|factory| factory.with_smartcard(true))
-            .map(Some)
-            .map_err(|error| anyhow::anyhow!("invalid smartcard-only rdpdr configuration: {error}")),
-        None => Ok(None),
+    let factory = match base {
+        Some(factory) => factory.clone(),
+        None if smartcard || redirect_printers => WindowsRdpdrBackendFactory::from_drives(Vec::new())
+            .map_err(|error| anyhow::anyhow!("invalid rdpdr configuration: {error}"))?,
+        None => return Ok(None),
+    };
+    if factory.initial_drives().is_empty() && !smartcard && !redirect_printers {
+        return Ok(None);
     }
+    Ok(Some(
+        factory
+            .with_smartcard(smartcard)
+            .with_default_printer(redirect_printers),
+    ))
 }
 
 #[cfg(windows)]
@@ -3492,16 +3501,43 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn resolve_rdpdr_factory_creates_smartcard_only_on_demand() {
-        let factory = super::resolve_rdpdr_factory(None, true)
+        let factory = super::resolve_rdpdr_factory(None, true, false)
             .expect("smartcard-only factory")
             .expect("factory present");
         assert!(factory.smartcard());
+        assert!(!factory.default_printer());
         assert!(factory.initial_drives().is_empty());
-        assert!(super::resolve_rdpdr_factory(None, false).expect("no factory").is_none());
         assert!(
-            super::resolve_rdpdr_factory(Some(&factory), false)
+            super::resolve_rdpdr_factory(None, false, false)
+                .expect("no factory")
+                .is_none()
+        );
+        assert!(
+            super::resolve_rdpdr_factory(Some(&factory), false, false)
                 .expect("disable smartcard-only")
                 .is_none()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_rdpdr_factory_creates_printer_only_on_demand() {
+        let factory = super::resolve_rdpdr_factory(None, false, true)
+            .expect("printer-only factory")
+            .expect("factory present");
+        assert!(factory.default_printer());
+        assert!(!factory.smartcard());
+        assert!(factory.initial_drives().is_empty());
+        assert!(
+            super::resolve_rdpdr_factory(Some(&factory), false, false)
+                .expect("disable printer-only")
+                .is_none()
+        );
+        assert!(
+            !super::resolve_rdpdr_factory(Some(&factory), true, false)
+                .expect("smartcard without printer")
+                .expect("factory present")
+                .default_printer()
         );
     }
 

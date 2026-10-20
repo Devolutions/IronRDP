@@ -1361,10 +1361,33 @@ type RdpdrFactoryRef<'a> = Option<&'a (dyn RdpdrBackendFactory + Send)>;
 #[cfg(not(feature = "rdpdr"))]
 type RdpdrFactoryRef<'a> = core::marker::PhantomData<&'a ()>;
 
+/// RDPDR device classes permitted on one connection after any gateway policy.
+#[cfg(feature = "rdpdr")]
+#[derive(Clone, Copy, Debug)]
+struct RdpdrDevicePolicy {
+    drives: bool,
+    printers: bool,
+}
+#[cfg(not(feature = "rdpdr"))]
+#[derive(Clone, Copy, Debug)]
+struct RdpdrDevicePolicy;
+
+impl RdpdrDevicePolicy {
+    #[cfg(feature = "rdpdr")]
+    const ALLOW_ALL: Self = Self {
+        drives: true,
+        printers: true,
+    };
+    #[cfg(not(feature = "rdpdr"))]
+    const ALLOW_ALL: Self = Self;
+}
+
 #[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr")))]
 const HTTP_TUNNEL_REDIR_DISABLE_ALL: u32 = 0x4000_0000;
 #[cfg(all(feature = "gateway", feature = "rdpdr"))]
 const HTTP_TUNNEL_REDIR_DISABLE_DRIVE: u32 = 0x0000_0001;
+#[cfg(all(feature = "gateway", feature = "rdpdr"))]
+const HTTP_TUNNEL_REDIR_DISABLE_PRINTER: u32 = 0x0000_0002;
 #[cfg(all(feature = "gateway", feature = "clipboard"))]
 const HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD: u32 = 0x0000_0008;
 
@@ -1388,6 +1411,11 @@ impl GatewayRedirectionPolicy {
     #[cfg(feature = "rdpdr")]
     fn disables_drive(self) -> bool {
         self.disables(HTTP_TUNNEL_REDIR_DISABLE_DRIVE)
+    }
+
+    #[cfg(feature = "rdpdr")]
+    fn disables_printer(self) -> bool {
+        self.disables(HTTP_TUNNEL_REDIR_DISABLE_PRINTER)
     }
 
     #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
@@ -1428,7 +1456,7 @@ impl core::error::Error for RdpdrBackendBuildError {
 fn build_rdpdr_channel(
     factory: RdpdrFactoryRef<'_>,
     config: &crate::config::RdpdrConfig,
-    allow_drives: bool,
+    policy: RdpdrDevicePolicy,
 ) -> ConnectorResult<Option<ironrdp_rdpdr::Rdpdr>> {
     if !config.enabled {
         return Ok(None);
@@ -1440,11 +1468,11 @@ fn build_rdpdr_channel(
     let product = factory
         .build_rdpdr_backend()
         .map_err(|error| ironrdp_connector::custom_err!("build RDPDR backend", RdpdrBackendBuildError(error)))?;
-    let drive_hotplug = allow_drives && product.drive_hotplug();
-    let printer = product.printer().cloned();
+    let drive_hotplug = policy.drives && product.drive_hotplug();
+    let printer = product.printer().filter(|_| policy.printers).cloned();
     let (backend, initial_drives) = product.into_parts();
-    // Gateway drive restrictions do not apply to smartcard redirection, which shares RDPDR.
-    let initial_drives = if allow_drives { initial_drives } else { Vec::new() };
+    // Gateway drive and printer restrictions do not apply to smartcard redirection, which shares RDPDR.
+    let initial_drives = if policy.drives { initial_drives } else { Vec::new() };
 
     #[cfg(feature = "smartcard")]
     let smartcard = config.smartcard;
@@ -1581,7 +1609,7 @@ fn build_connector(
     event_senders: (&RdpInputSender, &crate::output_channel::OutputEventSender),
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
-    rdpdr_drives_allowed: bool,
+    rdpdr_policy: RdpdrDevicePolicy,
     enable_udp: bool,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
 ) -> ConnectorResult<ironrdp_connector::ClientConnector> {
@@ -1599,7 +1627,7 @@ fn build_connector(
     #[cfg(not(feature = "clipboard"))]
     let _ = cliprdr_factory;
     #[cfg(not(feature = "rdpdr"))]
-    let _ = (rdpdr_factory, rdpdr_drives_allowed);
+    let _ = (rdpdr_factory, rdpdr_policy);
     #[cfg(not(all(windows, feature = "vmconnect")))]
     let _ = output_event_sender;
 
@@ -1883,14 +1911,13 @@ fn build_connector(
     }
 
     #[cfg(feature = "rdpdr")]
-    let rdpdr_channel =
-        build_rdpdr_channel(rdpdr_factory, &config.channels.rdpdr, rdpdr_drives_allowed)?.or_else(|| {
-            config
-                .channels
-                .rdpdr
-                .enabled
-                .then(|| ironrdp_rdpdr::Rdpdr::new(Box::new(ironrdp_rdpdr::NoopRdpdrBackend), "IronRDP".to_owned()))
-        });
+    let rdpdr_channel = build_rdpdr_channel(rdpdr_factory, &config.channels.rdpdr, rdpdr_policy)?.or_else(|| {
+        config
+            .channels
+            .rdpdr
+            .enabled
+            .then(|| ironrdp_rdpdr::Rdpdr::new(Box::new(ironrdp_rdpdr::NoopRdpdrBackend), "IronRDP".to_owned()))
+    });
     #[cfg(feature = "rdpdr")]
     input_sender.set_rdpdr_drive_hotplug_available(
         rdpdr_channel
@@ -2144,7 +2171,7 @@ async fn connect_direct(
         (input_sender, output_event_sender),
         cliprdr_factory,
         rdpdr_factory,
-        true,
+        RdpdrDevicePolicy::ALLOW_ALL,
         enable_udp,
         auto_reconnect_cookie,
     )?;
@@ -2202,7 +2229,7 @@ async fn connect_named_pipe(
         (input_sender, output_event_sender),
         cliprdr_factory,
         rdpdr_factory,
-        true,
+        RdpdrDevicePolicy::ALLOW_ALL,
         false,
         auto_reconnect_cookie,
     )?;
@@ -2259,30 +2286,40 @@ async fn connect_gateway(
             .flatten()
     };
     #[cfg(feature = "rdpdr")]
-    let rdpdr_drives_allowed = !gateway_redirection_policy.disables_drive();
+    let rdpdr_policy = RdpdrDevicePolicy {
+        drives: !gateway_redirection_policy.disables_drive(),
+        printers: !gateway_redirection_policy.disables_printer(),
+    };
     #[cfg(feature = "rdpdr")]
     let rdpdr_factory = {
-        if gateway_redirection_policy.disables_all() && rdpdr_factory.is_some() {
-            debug!(
-                redirection_flags = ?gateway_redirection_policy.flags(),
-                "Suppressing RDPDR due to gateway device-redirection policy"
-            );
-        }
-        if gateway_redirection_policy.disables_drive()
-            && !gateway_redirection_policy.disables_all()
-            && rdpdr_factory.is_some()
-        {
-            debug!(
-                redirection_flags = ?gateway_redirection_policy.flags(),
-                "Suppressing RDPDR drive redirection due to gateway device-redirection policy"
-            );
+        if rdpdr_factory.is_some() {
+            let redirection_flags = gateway_redirection_policy.flags();
+            if gateway_redirection_policy.disables_all() {
+                debug!(
+                    ?redirection_flags,
+                    "Suppressing RDPDR due to gateway device-redirection policy"
+                );
+            } else {
+                if !rdpdr_policy.drives {
+                    debug!(
+                        ?redirection_flags,
+                        "Suppressing RDPDR drive redirection due to gateway device-redirection policy"
+                    );
+                }
+                if !rdpdr_policy.printers {
+                    debug!(
+                        ?redirection_flags,
+                        "Suppressing RDPDR printer redirection due to gateway device-redirection policy"
+                    );
+                }
+            }
         }
         (!gateway_redirection_policy.disables_all())
             .then_some(rdpdr_factory)
             .flatten()
     };
     #[cfg(not(feature = "rdpdr"))]
-    let rdpdr_drives_allowed = true;
+    let rdpdr_policy = RdpdrDevicePolicy::ALLOW_ALL;
     #[cfg(not(any(feature = "clipboard", feature = "rdpdr")))]
     let _ = tunnel_policy;
 
@@ -2294,7 +2331,7 @@ async fn connect_gateway(
         (input_sender, output_event_sender),
         cliprdr_factory,
         rdpdr_factory,
-        rdpdr_drives_allowed,
+        rdpdr_policy,
         false,
         auto_reconnect_cookie,
     )?;
@@ -2352,7 +2389,7 @@ async fn connect_rdcleanpath_transport(
         (input_sender, output_event_sender),
         cliprdr_factory,
         rdpdr_factory,
-        true,
+        RdpdrDevicePolicy::ALLOW_ALL,
         false,
         auto_reconnect_cookie,
     )?;
@@ -4732,12 +4769,19 @@ mod tests {
         let disable_drive = GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_DRIVE));
         assert!(!disable_drive.disables_clipboard());
         assert!(disable_drive.disables_drive());
+        assert!(!disable_drive.disables_printer());
+
+        let disable_printer = GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_PRINTER));
+        assert!(!disable_printer.disables_clipboard());
+        assert!(!disable_printer.disables_drive());
+        assert!(disable_printer.disables_printer());
 
         let disable_all = GatewayRedirectionPolicy::from_flags(Some(
             HTTP_TUNNEL_REDIR_DISABLE_ALL | HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD,
         ));
         assert!(disable_all.disables_clipboard());
         assert!(disable_all.disables_drive());
+        assert!(disable_all.disables_printer());
         assert!(disable_all.disables_all());
     }
 
@@ -4875,7 +4919,7 @@ mod tests {
         };
 
         assert!(
-            build_rdpdr_channel(Some(&factory), &config, true)
+            build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
                 .expect("disabled RDPDR should not fail")
                 .is_none()
         );
@@ -4895,7 +4939,7 @@ mod tests {
         };
 
         assert!(
-            build_rdpdr_channel(Some(&factory), &config, true)
+            build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
                 .expect("empty RDPDR product should not fail")
                 .is_none()
         );
@@ -4914,7 +4958,7 @@ mod tests {
             smartcard: false,
         };
 
-        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, true)
+        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
             .expect("printer-only RDPDR product should build")
             .expect("printer metadata keeps the RDPDR channel attached");
         let client_id = 0x1234_5678;
@@ -4983,7 +5027,7 @@ mod tests {
             smartcard: false,
         };
 
-        assert!(build_rdpdr_channel(Some(&factory), &config, true).is_err());
+        assert!(build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL).is_err());
     }
 
     #[cfg(feature = "rdpdr")]
@@ -4996,7 +5040,7 @@ mod tests {
             smartcard: false,
         };
 
-        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, true)
+        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
             .expect("hotplug-only RDPDR product should not fail")
             .expect("hotplug-only product should build a channel");
         let server_capability = RdpdrPdu::CoreCapability(CoreCapability {
@@ -5016,6 +5060,38 @@ mod tests {
     }
 
     #[cfg(feature = "rdpdr")]
+    const DRIVES_RESTRICTED: RdpdrDevicePolicy = RdpdrDevicePolicy {
+        drives: false,
+        printers: true,
+    };
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn printer_restricted_rdpdr_without_other_devices_omits_the_channel() {
+        let factory = CountingRdpdrFactory::new(Vec::new()).with_printer(RdpdrPrinter::new(
+            42,
+            "Office Printer".to_owned(),
+            "Office Driver".to_owned(),
+        ));
+        let config = crate::config::RdpdrConfig {
+            enabled: true,
+            #[cfg(feature = "smartcard")]
+            smartcard: false,
+        };
+        let policy = RdpdrDevicePolicy {
+            drives: true,
+            printers: false,
+        };
+
+        assert!(
+            build_rdpdr_channel(Some(&factory), &config, policy)
+                .expect("printer-restricted RDPDR should not fail")
+                .is_none()
+        );
+        assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "rdpdr")]
     #[test]
     fn drive_restricted_rdpdr_without_smartcard_omits_the_channel() {
         let factory = CountingRdpdrFactory::new(vec![RdpdrDrive::new(42, "fixtures".to_owned())]);
@@ -5026,7 +5102,7 @@ mod tests {
         };
 
         assert!(
-            build_rdpdr_channel(Some(&factory), &config, false)
+            build_rdpdr_channel(Some(&factory), &config, DRIVES_RESTRICTED)
                 .expect("drive-restricted RDPDR should not fail")
                 .is_none()
         );
@@ -5042,7 +5118,7 @@ mod tests {
             smartcard: true,
         };
 
-        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, false)
+        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, DRIVES_RESTRICTED)
             .expect("drive-restricted RDPDR should not fail")
             .expect("smartcard-only product should build a channel");
 
@@ -5135,10 +5211,10 @@ mod tests {
             smartcard: false,
         };
 
-        let first = build_rdpdr_channel(Some(&factory), &config, true)
+        let first = build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
             .expect("first connection attempt should build")
             .expect("first product contains a filesystem device");
-        let second = build_rdpdr_channel(Some(&factory), &config, true)
+        let second = build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
             .expect("second connection attempt should build")
             .expect("second product contains a filesystem device");
 
@@ -5168,7 +5244,7 @@ mod tests {
             #[cfg(feature = "smartcard")]
             smartcard: false,
         };
-        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, true)
+        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
             .expect("RDPDR channel should build")
             .expect("product contains a filesystem device");
         let client_id = 0x1234_5678;
@@ -5240,7 +5316,7 @@ mod tests {
             (&input_sender, &output_event_sender),
             no_cliprdr_factory(),
             Some(&factory),
-            true,
+            RdpdrDevicePolicy::ALLOW_ALL,
             false,
             None,
         )
@@ -5271,7 +5347,7 @@ mod tests {
             (&input_sender, &output_event_sender),
             no_cliprdr_factory(),
             None,
-            true,
+            RdpdrDevicePolicy::ALLOW_ALL,
             false,
             None,
         )

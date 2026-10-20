@@ -275,6 +275,14 @@ struct Args {
     /// Ignored on other platforms except for the property value itself.
     #[clap(long)]
     smartcard: bool,
+
+    /// Redirect the local default Windows printer.
+    ///
+    /// The remote host must have a printer driver with the same name as the local queue's driver.
+    /// The `.rdp` `redirectprinters` property does not enable this, because mstsc writes it by
+    /// default. Ignored on other platforms.
+    #[clap(long)]
+    printer: bool,
 }
 
 /// Result of parsing CLI args + loading the `.rdp` file: a configured [`ConfigBuilder`] plus the
@@ -290,6 +298,7 @@ pub struct ViewerConfig {
     dump_rdp: Option<PathBuf>,
     rpc: bool,
     rpc_endpoint: Option<String>,
+    redirect_printers: bool,
 }
 
 impl ViewerConfig {
@@ -333,8 +342,13 @@ impl ViewerConfig {
                 dump_rdp: None,
                 rpc: true,
                 rpc_endpoint: args.rpc_endpoint,
+                redirect_printers: false,
             });
         }
+
+        // Printer redirection requires the explicit CLI flag: mstsc writes `redirectprinters:i:1` by
+        // default, so the file property alone would announce the local printer without the user asking.
+        let redirect_printers = args.printer;
 
         // The library overlays everything expressible as a `.rdp` property: destination, credentials,
         // transport, channels, desktop size, audio, DVC proxies, etc.
@@ -355,6 +369,9 @@ impl ViewerConfig {
         } else {
             builder.with_smartcard(false)
         };
+        if redirect_printers {
+            builder = builder.with_rdpdr(true);
+        }
 
         Ok(Self {
             builder,
@@ -362,6 +379,7 @@ impl ViewerConfig {
             dump_rdp,
             rpc: false,
             rpc_endpoint: None,
+            redirect_printers,
         })
     }
 
@@ -381,6 +399,11 @@ impl ViewerConfig {
     /// Path to dump the effective `.rdp` PropertySet to, if `--dump-rdp` was given.
     pub fn dump_rdp(&self) -> Option<&std::path::Path> {
         self.dump_rdp.as_deref()
+    }
+
+    /// Whether the session should redirect the local default printer.
+    pub fn redirect_printers(&self) -> bool {
+        self.redirect_printers
     }
 
     /// Whether the viewer should host the local RPC server.

@@ -27,6 +27,11 @@ RDP_HOSTNAME=<HOSTNAME> RDP_USERNAME=<USERNAME> RDP_PASSWORD=<PASSWORD> ironrdp-
 On Windows, pass `--smartcard` (or set `ironrdp_smartcard:i:1` in a `.rdp` file) to redirect local smart cards through WinSCard.
 RPC mode (`--rpc`) enables smartcard the same way via agent connect properties (`ironrdp_smartcard` / sandbox `SmartCardRedirection`).
 
+On Windows, pass `--printer` to redirect the current default printer.
+The `.rdp` `redirectprinters` property does not enable it, because mstsc writes `redirectprinters:i:1` by default.
+Jobs are sent to the local queue as `RAW` data, so the remote host needs a printer driver with the same name as the local queue's driver; Easy Print/XPS is not supported.
+RPC mode enables it through the `redirectprinters` connect property.
+
 To open the basic console of a local Hyper-V VM with the current Windows account:
 
 ```powershell
