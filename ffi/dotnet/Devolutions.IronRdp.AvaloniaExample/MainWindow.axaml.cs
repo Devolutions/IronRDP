@@ -199,8 +199,8 @@ public partial class MainWindow : Window
                     Trace.TraceInformation("=== DIRECT CONNECTION SUCCESSFUL ===");
                 }
 
-                this._decodedImage = DecodedImage.New(PixelFormat.RgbA32, res.GetDesktopSize().GetWidth(),
-                    res.GetDesktopSize().GetHeight());
+                this._decodedImage = DecodedImage.New(PixelFormat.RgbA32, res.DesktopSize.Width,
+                    res.DesktopSize.Height);
                 this._activeStage = ActiveStage.New(res);
                 ReadPduAndProcessActiveStage();
 
@@ -245,12 +245,12 @@ public partial class MainWindow : Window
                 byte[] buffer;
                 lock (_stageLock)
                 {
-                    var data = _decodedImage!.GetData();
-                    bufferSize = (int)data.GetSize();
+                    var data = _decodedImage!.Data;
+                    bufferSize = (int)data.Size;
                     buffer = new byte[bufferSize];
                     data.Fill(buffer);
-                    width = _decodedImage.GetWidth();
-                    height = _decodedImage.GetHeight();
+                    width = _decodedImage.Width;
+                    height = _decodedImage.Height;
                 }
 
                 if (_imageControl is not { Source: WriteableBitmap writableBitmap })
@@ -334,21 +334,21 @@ public partial class MainWindow : Window
                 var message = _cliprdr.NextClipboardMessageBlocking();
 
                 VecU8 frame;
-                var messageType = message.GetMessageType();
+                var messageType = message.MessageType;
                 Trace.TraceInformation("Clipboard message type: " + messageType);
                 if (messageType == ClipboardMessageType.SendFormatData)
                 {
-                    var formatData = message.GetSendFormatData()!;
+                    var formatData = message.SendFormatData!;
                     frame = WithStageLock(() => _activeStage!.SubmitClipboardFormatData(formatData));
                 }
                 else if (messageType == ClipboardMessageType.SendInitiateCopy)
                 {
-                    var initiateCopy = message.GetSendInitiateCopy()!;
+                    var initiateCopy = message.SendInitiateCopy!;
                     frame = WithStageLock(() => _activeStage!.InitiateClipboardCopy(initiateCopy));
                 }
                 else if (messageType == ClipboardMessageType.SendInitiatePaste)
                 {
-                    var initiatePaste = message.GetSendInitiatePaste()!;
+                    var initiatePaste = message.SendInitiatePaste!;
                     frame = WithStageLock(() => _activeStage!.InitiateClipboardPaste(initiatePaste));
                 }
                 else
@@ -357,7 +357,7 @@ public partial class MainWindow : Window
                     break;
                 }
 
-                var toWriteBack = new byte[frame.GetSize()];
+                var toWriteBack = new byte[frame.Size];
                 frame.Fill(toWriteBack);
 
                 await _framed!.Write(toWriteBack);
@@ -372,13 +372,13 @@ public partial class MainWindow : Window
         configBuilder.WithUsernameAndPassword(username, password);
         if (domain != null)
         {
-            configBuilder.SetDomain(domain);
+            configBuilder.Domain = domain;
         }
 
         configBuilder.SetDesktopSize((ushort)height, (ushort)width);
-        configBuilder.SetClientName("IronRdp");
-        configBuilder.SetClientDir("C:\\");
-        configBuilder.SetPerformanceFlags(PerformanceFlags.NewDefault());
+        configBuilder.ClientName = "IronRdp";
+        configBuilder.ClientDir = "C:\\";
+        configBuilder.PerformanceFlags = PerformanceFlags.NewDefault();
 
         return configBuilder.Build();
     }
@@ -513,24 +513,24 @@ public partial class MainWindow : Window
                 var output =
                     outputIterator
                         .Next()!; // outputIterator.Next() is not null since outputIterator.IsEmpty() is false
-                if (output.GetEnumType() == ActiveStageOutputType.Terminate)
+                if (output.EnumType == ActiveStageOutputType.Terminate)
                 {
                     return false;
                 }
 
-                if (output.GetEnumType() == ActiveStageOutputType.ResponseFrame)
+                if (output.EnumType == ActiveStageOutputType.ResponseFrame)
                 {
                     // Send the response frame to the server
-                    var responseFrame = output.GetResponseFrame();
-                    byte[] responseFrameBytes = new byte[responseFrame.GetSize()];
+                    var responseFrame = output.ResponseFrame;
+                    byte[] responseFrameBytes = new byte[responseFrame.Size];
                     responseFrame.Fill(responseFrameBytes);
                     await _framed!.Write(responseFrameBytes);
                 }
-                else if (output.GetEnumType() == ActiveStageOutputType.GraphicsUpdate)
+                else if (output.EnumType == ActiveStageOutputType.GraphicsUpdate)
                 {
                     Render();
                 }
-                else if (output.GetEnumType() == ActiveStageOutputType.DeactivateAll)
+                else if (output.EnumType == ActiveStageOutputType.DeactivateAll)
                 {
                     var activationSequence = WithStageLock(() => _activeStage!.CreateConnectionActivation());
                     var writeBuf = WriteBuf.New();
@@ -538,23 +538,23 @@ public partial class MainWindow : Window
                     {
                         await Connection.SingleSequenceStep(activationSequence, writeBuf, _framed!);
 
-                        if (activationSequence.GetState().GetType() != ConnectionActivationStateType.Finalized)
+                        if (activationSequence.State.Type != ConnectionActivationStateType.Finalized)
                             continue;
 
-                        var finalized = activationSequence.GetState().GetFinalized();
-                        var desktopSize = finalized.GetDesktopSize();
-                        var ioChannelId = activationSequence.GetIoChannelId();
-                        var userChannelId = activationSequence.GetUserChannelId();
-                        var shareId = finalized.GetShareId();
-                        var enableServerPointer = finalized.GetEnableServerPointer();
-                        var pointerSoftwareRendering = finalized.GetPointerSoftwareRendering();
-                        var staticChannelChunkSize = finalized.GetStaticChannelChunkSize();
-                        var windowSupportLevel = finalized.GetWindowSupportLevel();
+                        var finalized = activationSequence.State.Finalized;
+                        var desktopSize = finalized.DesktopSize;
+                        var ioChannelId = activationSequence.IoChannelId;
+                        var userChannelId = activationSequence.UserChannelId;
+                        var shareId = finalized.ShareId;
+                        var enableServerPointer = finalized.EnableServerPointer;
+                        var pointerSoftwareRendering = finalized.PointerSoftwareRendering;
+                        var staticChannelChunkSize = finalized.StaticChannelChunkSize;
+                        var windowSupportLevel = finalized.WindowSupportLevel;
 
                         lock (_stageLock)
                         {
-                            _decodedImage = DecodedImage.New(PixelFormat.RgbA32, desktopSize.GetWidth(),
-                                desktopSize.GetHeight());
+                            _decodedImage = DecodedImage.New(PixelFormat.RgbA32, desktopSize.Width,
+                                desktopSize.Height);
 
                             _activeStage!.Reactivate(
                                 ioChannelId,
@@ -566,7 +566,7 @@ public partial class MainWindow : Window
                                 windowSupportLevel
                             );
 
-                            _activeStage.SetEnableServerPointer(enableServerPointer);
+                            _activeStage.EnableServerPointer = enableServerPointer;
                         }
 
                         break;
@@ -574,7 +574,7 @@ public partial class MainWindow : Window
                 }
                 else
                 {
-                    Trace.TraceError("Unhandled ActiveStageOutputType: " + output.GetEnumType());
+                    Trace.TraceError("Unhandled ActiveStageOutputType: " + output.EnumType);
                 }
             }
             catch (Exception e)

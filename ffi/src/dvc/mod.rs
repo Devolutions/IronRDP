@@ -23,7 +23,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     #[derive(Clone)]
     pub struct DvcPipeProxyConfig {
         pub message_sink: DvcPipeProxyMessageSink,

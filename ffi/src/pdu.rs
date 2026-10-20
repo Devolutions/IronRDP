@@ -7,7 +7,7 @@ pub mod ffi {
     use crate::utils::ffi::VecU8;
 
     #[diplomat::attr(dotnet, manually_disposable)]
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct WriteBuf(pub ironrdp_core::WriteBuf);
 
     impl WriteBuf {

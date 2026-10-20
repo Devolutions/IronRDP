@@ -109,7 +109,7 @@ pub mod ffi {
     pub struct ClipboardFormatIterator(pub Vec<ironrdp::cliprdr::pdu::ClipboardFormat>);
 
     #[diplomat::attr(dotnet, manually_disposable)]
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct FormatDataResponse(pub Option<ironrdp::cliprdr::pdu::OwnedFormatDataResponse>);
 
     #[diplomat::opaque]

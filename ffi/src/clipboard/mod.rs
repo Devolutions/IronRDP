@@ -20,7 +20,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct Cliprdr(pub Option<ironrdp::cliprdr::Cliprdr<Client>>);
 
     #[diplomat::attr(dotnet, manually_disposable)]

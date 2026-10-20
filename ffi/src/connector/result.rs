@@ -31,7 +31,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ConnectionResult(pub Option<ironrdp::connector::ConnectionResult>);
 
     impl ConnectionResult {
