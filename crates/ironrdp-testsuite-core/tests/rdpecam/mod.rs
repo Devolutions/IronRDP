@@ -170,7 +170,6 @@ fn enumeration_negotiates_before_advertising_selected_devices() {
     let response = encode_vec(&EnumerationPdu::SelectVersionResponse(ProtocolVersion::V1)).unwrap();
     let advertised = client.process(41, &response).unwrap();
     assert!(client.ready());
-    assert_eq!(client.version(), Some(ProtocolVersion::V1));
     assert_eq!(session.negotiated_version(), Some(ProtocolVersion::V1));
     assert_eq!(
         decode_message::<EnumerationPdu>(&advertised),
@@ -236,7 +235,7 @@ fn enumeration_advertises_with_the_negotiated_version_2() {
 
     let response = encode_vec(&EnumerationPdu::SelectVersionResponse(ProtocolVersion::V2)).unwrap();
     let advertised = client.process(41, &response).unwrap();
-    assert_eq!(client.version(), Some(ProtocolVersion::V2));
+    assert_eq!(session.negotiated_version(), Some(ProtocolVersion::V2));
     assert_eq!(
         decode_message::<EnumerationPdu>(&advertised),
         EnumerationPdu::DeviceAdded {

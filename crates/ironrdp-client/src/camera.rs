@@ -41,13 +41,6 @@ impl Default for CameraConfig {
 }
 
 impl CameraConfig {
-    /// Parses a `camerastoredirect` value.
-    pub fn from_rdp_value(value: &str) -> Self {
-        let mut config = Self::default();
-        config.apply_rdp_value(value);
-        config
-    }
-
     /// Replaces the camera selection with a `camerastoredirect` value, keeping encoding options.
     pub fn apply_rdp_value(&mut self, value: &str) {
         self.redirect_all = false;

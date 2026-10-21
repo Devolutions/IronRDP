@@ -590,13 +590,18 @@ impl PendingSamples {
             let Some(frame) = self.frames.pop_front() else {
                 break;
             };
+            // H.264 pictures depend on each other, so one the session cannot take yet is kept.
+            let retry = self.keep_all.then(|| Frame {
+                data: frame.data.clone(),
+                key_frame: frame.key_frame,
+            });
             match sink.send_sample(STREAM_INDEX, frame.data) {
                 SampleDelivery::Sent | SampleDelivery::Rejected | SampleDelivery::NotRequested => {}
                 SampleDelivery::Failed => {
-                    // The picture is lost; H.264 decoding can only resume at a key frame.
-                    if self.keep_all {
-                        self.frames.clear();
-                        self.waiting_for_key_frame = true;
+                    // The session input queue is full: the request stays outstanding and the
+                    // picture is sent again with the next captured frame.
+                    if let Some(frame) = retry {
+                        self.frames.push_front(frame);
                     }
                     break;
                 }
@@ -798,13 +803,14 @@ fn worker_main(
             }
         };
         match command {
-            Some(Command::Shutdown(reply)) => {
-                lock(pending).reset();
-                drop(device);
-                let _ = reply.send(Ok(()));
-                return;
+            Some(command) => {
+                if let Some(reply) = device.handle(command, pending) {
+                    lock(pending).reset();
+                    drop(device);
+                    let _ = reply.send(Ok(()));
+                    return;
+                }
             }
-            Some(command) => device.handle(command, pending),
             None => device.capture_one(pending),
         }
     }
@@ -860,7 +866,8 @@ impl OpenDevice {
         })
     }
 
-    fn handle(&mut self, command: Command, pending: &Mutex<PendingSamples>) {
+    /// Runs one command. A shutdown is returned, for the worker to release the device first.
+    fn handle(&mut self, command: Command, pending: &Mutex<PendingSamples>) -> Option<Reply<()>> {
         match command {
             Command::MediaTypes(reply) => {
                 let media_types = self
@@ -896,10 +903,9 @@ impl OpenDevice {
             Command::SetProperty(property_set, property_id, value, reply) => {
                 let _ = reply.send(self.set_property_value(property_set, property_id, value));
             }
-            Command::Shutdown(reply) => {
-                let _ = reply.send(Ok(()));
-            }
+            Command::Shutdown(reply) => return Some(reply),
         }
+        None
     }
 
     /// Replaces the stream and its sink. On failure, the previous stream keeps going.

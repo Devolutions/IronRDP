@@ -949,7 +949,8 @@ fn camerastoredirect_selects_redirected_cameras() {
     assert!(cameras.selects(r"\\?\usb#vid_0002", "Rear Camera"));
     assert!(!cameras.selects(r"\\?\USB#VID_0001", "Excluded Camera"));
 
-    let explicit = ironrdp_client::camera::CameraConfig::from_rdp_value("front camera");
+    let mut explicit = ironrdp_client::camera::CameraConfig::default();
+    explicit.apply_rdp_value("front camera");
     assert!(!explicit.redirect_all);
     assert!(explicit.selects(r"\\?\usb#vid_0003", "Front Camera"));
     assert!(!explicit.selects(r"\\?\usb#vid_0002", "Rear Camera"));
