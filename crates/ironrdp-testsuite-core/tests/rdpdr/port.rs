@@ -4,10 +4,9 @@ use ironrdp_core::{Decode as _, ReadCursor, encode_vec, impl_as_any};
 use ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::pdu::efs::{
-    Capabilities, CapabilityMessage, ClientDeviceListAnnounce, CoreCapability, CoreCapabilityKind,
-    DeviceAnnounceHeader, DeviceCloseResponse, DeviceControlRequest, DeviceControlResponse, DeviceIoRequest,
-    DeviceIoResponse, DeviceType, MajorFunction, MinorFunction, NtStatus, PORT_CAPABILITY_VERSION_01,
-    ServerDeviceAnnounceResponse, ServerDriveIoRequest,
+    Capabilities, CapabilityMessage, ClientDeviceListAnnounce, CoreCapability, CoreCapabilityKind, DeviceCloseResponse,
+    DeviceControlRequest, DeviceControlResponse, DeviceIoRequest, DeviceIoResponse, DeviceType, Devices, MajorFunction,
+    MinorFunction, NtStatus, PORT_CAPABILITY_VERSION_01, ServerDeviceAnnounceResponse, ServerDriveIoRequest,
 };
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
 use ironrdp_rdpdr::pdu::esp::{
@@ -171,10 +170,15 @@ fn port_capability_wire_layout() {
 /// [MS-RDPESP] 4.1 shows these exact announcements for COM2 and LPT1.
 #[test]
 fn port_announces_match_ms_rdpesp_annotations() {
-    let com2 = encode_vec(&RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
-        device_list: vec![DeviceAnnounceHeader::new_serial(1, "COM2".to_owned())],
-    }))
-    .unwrap();
+    let announce = |device_id, device_type, name: &str| {
+        let mut devices = Devices::new();
+        devices.add_port(device_id, device_type, name.to_owned());
+        encode_vec(&RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
+            device_list: devices.clone_inner(),
+        }))
+        .unwrap()
+    };
+    let com2 = announce(1, DeviceType::Serial, "COM2");
     assert_eq!(
         com2,
         [
@@ -183,10 +187,7 @@ fn port_announces_match_ms_rdpesp_annotations() {
         ]
     );
 
-    let lpt1 = encode_vec(&RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
-        device_list: vec![DeviceAnnounceHeader::new_parallel(2, "LPT1".to_owned())],
-    }))
-    .unwrap();
+    let lpt1 = announce(2, DeviceType::Parallel, "LPT1");
     assert_eq!(
         &lpt1[8..],
         &[

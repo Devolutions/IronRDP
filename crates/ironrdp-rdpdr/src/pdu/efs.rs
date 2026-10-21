@@ -1386,16 +1386,6 @@ impl DeviceAnnounceHeader {
         }
     }
 
-    /// Construct a serial port announce, see [`Self::new_port`].
-    pub fn new_serial(device_id: u32, dos_name: String) -> Self {
-        Self::new_port(device_id, DeviceType::Serial, dos_name)
-    }
-
-    /// Construct a parallel port announce, see [`Self::new_port`].
-    pub fn new_parallel(device_id: u32, dos_name: String) -> Self {
-        Self::new_port(device_id, DeviceType::Parallel, dos_name)
-    }
-
     /// Construct a port announce as described by [MS-RDPESP 2.2.2.1].
     ///
     /// `dos_name` is the client-side port name, such as `COM1` or `LPT1`. Ports carry no

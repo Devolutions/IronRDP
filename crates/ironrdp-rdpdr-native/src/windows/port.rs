@@ -755,12 +755,11 @@ impl PortSession {
                     .unwrap_or(usize::MAX)
                     .min(MAX_PORT_TRANSFER);
                 let code = control.request.io_control_code;
+                // Rejected before reaching the driver, so there is no output, not even a wait mask.
                 if let Err(status) = code.check_buffers(&control.input_buffer, control.request.output_buffer_length) {
-                    return vec![failure_completion(
-                        PortIoKind::DeviceControl(code),
-                        control.request.header,
-                        status,
-                    )];
+                    return vec![SvcMessage::from(RdpdrPdu::DeviceControlResponse(
+                        DeviceControlResponse::with_raw_output(control.request.header, status, Vec::new()),
+                    ))];
                 }
                 self.submit(
                     PortIoKind::DeviceControl(code),
@@ -1456,12 +1455,16 @@ mod tests {
         let wait = wait[0].encode_unframed_pdu().expect("encode wait completion");
         assert_ne!(status_of(&wait), NtStatus::SUCCESS);
         assert_eq!(u32::from_le_bytes(wait[16..20].try_into().expect("length")), 4);
-        // Too-short buffers are rejected before reaching the driver.
+        // Too-short buffers are rejected before reaching the driver, with no output.
         let status = session.handle(control(11, PortIoCtlCode::IOCTL_SERIAL_GET_COMMSTATUS, 18));
         assert_eq!(
             status_of(&status[0].encode_unframed_pdu().expect("encode status completion")),
             NtStatus::BUFFER_TOO_SMALL
         );
+        let wait = session.handle(control(12, PortIoCtlCode::IOCTL_SERIAL_WAIT_ON_MASK, 3));
+        let wait = wait[0].encode_unframed_pdu().expect("encode rejected wait");
+        assert_eq!(status_of(&wait), NtStatus::BUFFER_TOO_SMALL);
+        assert_eq!(u32::from_le_bytes(wait[16..20].try_into().expect("length")), 0);
 
         // Closing cancels the pending read; its completion precedes the close completion.
         assert!(session.handle(read(5)).is_empty());

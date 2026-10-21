@@ -116,11 +116,12 @@ impl PortIoCtlCode {
             Self::IOCTL_SERIAL_SET_TIMEOUTS => SerialTimeouts::SIZE,
             _ => 0,
         };
-        let required_output: u32 = match self {
-            Self::IOCTL_SERIAL_WAIT_ON_MASK => 4,    // SERIAL_EV_* mask
-            Self::IOCTL_SERIAL_GET_COMMSTATUS => 20, // SERIAL_STATUS with alignment padding
+        let required_output = match self {
+            Self::IOCTL_SERIAL_WAIT_ON_MASK => size_of::<u32>(), // SERIAL_EV_* mask
+            Self::IOCTL_SERIAL_GET_COMMSTATUS => SerialStatus::SIZE,
             _ => 0,
         };
+        let output_buffer_length = usize::try_from(output_buffer_length).unwrap_or(usize::MAX);
         if input.len() < required_input || output_buffer_length < required_output {
             return Err(NtStatus::BUFFER_TOO_SMALL);
         }

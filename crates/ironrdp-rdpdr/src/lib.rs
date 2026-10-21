@@ -16,7 +16,7 @@ use pdu::efs::{
     VERSION_MINOR_12, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
-use pdu::esp::{PortIoRequest, SerialIoCtlInput};
+use pdu::esp::PortIoRequest;
 use pdu::{DeviceIoCompletion, PacketId, RdpdrPdu, SharedHeader};
 use tracing::{debug, trace, warn};
 
@@ -920,21 +920,12 @@ impl Rdpdr {
         };
 
         if let PortIoRequest::DeviceControl(control) = &req {
-            match SerialIoCtlInput::decode(control.request.io_control_code, &control.input_buffer) {
-                Ok(Some(input)) => debug!(
-                    ioctl = ?control.request.io_control_code,
-                    ?input,
-                    output_buffer_length = control.request.output_buffer_length,
-                    "Dispatching port device-control IRP"
-                ),
-                // The driver validates and fails short buffers, so they are forwarded as received.
-                Ok(None) | Err(_) => debug!(
-                    ioctl = ?control.request.io_control_code,
-                    input_buffer_length = control.input_buffer.len(),
-                    output_buffer_length = control.request.output_buffer_length,
-                    "Dispatching port device-control IRP"
-                ),
-            }
+            debug!(
+                ioctl = ?control.request.io_control_code,
+                input_buffer_length = control.input_buffer.len(),
+                output_buffer_length = control.request.output_buffer_length,
+                "Dispatching port device-control IRP"
+            );
         } else {
             debug!(?req, "Dispatching port IRP");
         }
