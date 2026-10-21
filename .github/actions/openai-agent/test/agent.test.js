@@ -2422,6 +2422,71 @@ test("real SDK classifies interrupted response bodies as recoverable connections
   assert.equal(metrics.snapshot().providerAttempts[0].durationMs >= 40, true);
 });
 
+test("real SDK retries error events inside an accepted stream", async () => {
+  const metrics = new RuntimeMetrics();
+  const errorEvents = [
+    `data: ${JSON.stringify({ error: { message: "secret" } })}\n\n`,
+    `event: error\ndata: ${JSON.stringify({ message: "secret" })}\n\n`,
+  ];
+  let calls = 0;
+  const client = createProviderClient(OpenAI, {
+    apiKey: "test-key",
+    baseURL: "https://provider.example/v1",
+  }, metrics, async () => {
+    const errorEvent = errorEvents[calls++];
+    if (errorEvent === undefined) return sseResponse('{"answer":"done"}');
+    return new Response(errorEvent, {
+      status: 200,
+      headers: { "content-type": "text/event-stream", "retry-after-ms": "0" },
+    });
+  });
+
+  const result = await runAgent({
+    client,
+    config: { ...baseConfig, max_request_retries: 2 },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+    metrics,
+    retrySleep: async () => {},
+  });
+
+  assert.equal(result.output, '{"answer":"done"}');
+  assert.equal(result.turnCount, 1);
+  assert.equal(calls, 3);
+  assert.equal(metrics.snapshot().requestRetryCount, 2);
+});
+
+test("real SDK does not retry a quota error event inside an accepted stream", async () => {
+  let calls = 0;
+  const client = createProviderClient(OpenAI, {
+    apiKey: "test-key",
+    baseURL: "https://provider.example/v1",
+  }, new RuntimeMetrics(), async () => {
+    calls++;
+    return new Response(
+      `data: ${JSON.stringify({ error: { message: "secret", code: "insufficient_quota" } })}\n\n`,
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  });
+
+  await assert.rejects(
+    runAgent({
+      client,
+      config: { ...baseConfig, max_request_retries: 2 },
+      methodologies: [],
+      prompt: "p",
+      sandbox,
+      schema,
+      retrySleep: async () => {},
+    }),
+    (error) => error.reason === "provider quota exhausted" &&
+      error.category === "provider-quota" && !error.retryable,
+  );
+  assert.equal(calls, 1);
+});
+
 test("real SDK does not treat ordinary EOF as streamed completion", async () => {
   const metrics = new RuntimeMetrics();
   const client = createProviderClient(OpenAI, {

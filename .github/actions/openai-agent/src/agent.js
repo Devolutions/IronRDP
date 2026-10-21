@@ -1,7 +1,7 @@
 "use strict";
 
 const Ajv = require("ajv");
-const { APIConnectionError, APIConnectionTimeoutError } = require("openai");
+const { APIConnectionError, APIConnectionTimeoutError, APIError } = require("openai");
 
 const { ActionError, fail } = require("./errors");
 const {
@@ -99,6 +99,12 @@ function providerFailure(error) {
     return failure("provider service unavailable", "provider-service", true);
   }
   if (status >= 400 && status <= 499) return failure("provider rejected the request", "provider-request");
+  // The SDK raises a status-less APIError for an error event inside an accepted stream; the
+  // provider already accepted the request, so only an explicit quota code makes it permanent.
+  if (error?.constructor === APIError && error.status === undefined) {
+    if (knownQuotaError(error)) return failure("provider quota exhausted", "provider-quota");
+    return failure("provider stream reported an error", "provider-response", true);
+  }
   if (error instanceof ResponseBodyIdleError) {
     return failure("provider stream made no progress before the idle limit", "provider-timeout", true);
   }
