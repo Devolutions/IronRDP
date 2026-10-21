@@ -379,13 +379,29 @@ mod native {
         let channel_id = enumeration.channel_id();
         let mut messages = Vec::new();
         for change in device_changes {
-            let result = match change {
-                DeviceChange::Added(device) => enumeration.processor_mut().add_device(device),
-                DeviceChange::Removed(channel_name) => enumeration.processor_mut().remove_device(&channel_name),
-            };
-            match result {
-                Ok(change_messages) => messages.extend(change_messages),
-                Err(error) => debug!(%error, "Camera change not applied"),
+            match change {
+                DeviceChange::Added(device) => {
+                    let channel_name = device.descriptor().channel_name.clone();
+                    match enumeration.processor_mut().add_device(device) {
+                        Ok(change_messages) => messages.extend(change_messages),
+                        Err(error) => {
+                            warn!(%error, channel = %channel_name, "Camera not advertised");
+                            // A reopened enumeration channel must not advertise it either.
+                            let advertised = enumeration
+                                .processor_mut()
+                                .advertised_channels()
+                                .any(|advertised| advertised == channel_name);
+                            if !advertised {
+                                lock(&queue.devices).retain(|device| device.descriptor().channel_name != channel_name);
+                            }
+                        }
+                    }
+                }
+                // Failing to remove a camera means it was not advertised.
+                DeviceChange::Removed(channel_name) => match enumeration.processor_mut().remove_device(&channel_name) {
+                    Ok(change_messages) => messages.extend(change_messages),
+                    Err(error) => debug!(%error, channel = %channel_name, "Camera removal not advertised"),
+                },
             }
         }
         if messages.is_empty() {
