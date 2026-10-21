@@ -12,7 +12,7 @@ use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::PduResult;
 use pdu::gcc::ChannelName;
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::pdu::{
     CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
@@ -152,6 +152,9 @@ pub struct DrdynvcClient {
     tunnel_channels: BTreeMap<DynamicChannelId, SoftSyncTunnelType>,
     switched_tunnels: BTreeSet<SoftSyncTunnelType>,
     soft_sync_complete: bool,
+    /// Channels the client closed, with the tunnel they were bound to, until the server
+    /// acknowledges the close.
+    client_closed: BTreeMap<DynamicChannelId, Option<SoftSyncTunnelType>>,
 }
 
 impl fmt::Debug for DrdynvcClient {
@@ -180,6 +183,7 @@ impl DrdynvcClient {
             tunnel_channels: BTreeMap::new(),
             switched_tunnels: BTreeSet::new(),
             soft_sync_complete: false,
+            client_closed: BTreeMap::new(),
         }
     }
 
@@ -348,7 +352,23 @@ impl DrdynvcClient {
         SvcMessage::from(caps_response)
     }
 
+    /// Closes a dynamic channel on the client's initiative and returns the Close PDU to send.
+    ///
+    /// Data the server sent before receiving the Close PDU is dropped until the server
+    /// acknowledges the close, instead of failing on a channel that no longer exists.
     pub fn close_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
+        let tunnel = self.tunnel_channels.get(&channel_id).copied();
+        let message = self.remove_channel(channel_id)?;
+        self.client_closed.insert(channel_id, tunnel);
+        Some(message)
+    }
+
+    /// Returns whether the client closed `channel_id` and the server has not acknowledged it yet.
+    pub fn is_closing(&self, channel_id: DynamicChannelId) -> bool {
+        self.client_closed.contains_key(&channel_id)
+    }
+
+    fn remove_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
         self.tunnel_channels.remove(&channel_id);
         self.dynamic_channels.remove_by_channel_id(channel_id)?;
         Some(SvcMessage::from(DrdynvcClientPdu::Close(ClosePdu::new(channel_id))))
@@ -416,6 +436,10 @@ impl DrdynvcClient {
         match pdu {
             DrdynvcServerPdu::Data(data) => {
                 let channel_id = data.channel_id();
+                if self.client_closed.get(&channel_id) == Some(&Some(tunnel_type)) {
+                    trace!(channel_id, "Dropping tunneled DVC data for a channel the client closed");
+                    return Ok(DvcMessageBatch::new(channel_id, Vec::new()));
+                }
                 let selected_tunnel =
                     self.tunnel_channels.get(&channel_id).copied().ok_or_else(|| {
                         pdu_other_err!("received tunneled data for a channel not selected by Soft-Sync")
@@ -484,6 +508,11 @@ impl DrdynvcClient {
                 (CreationStatus::NO_LISTENER, Vec::new())
             };
 
+        if creation_status == CreationStatus::OK {
+            // The server reused the ID of a channel the client closed, so its close is settled.
+            self.client_closed.remove(&channel_id);
+        }
+
         let create_response = DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, creation_status));
         debug!("Send DVC Create Response PDU: {create_response:?}");
         responses.push(SvcMessage::from(create_response));
@@ -501,7 +530,12 @@ impl DrdynvcClient {
     /// Closes a dynamic channel at the server's request. The Close response is only sent for a
     /// channel that was open.
     fn process_close(&mut self, channel_id: DynamicChannelId) -> Vec<SvcMessage> {
-        let Some(close_response) = self.close_channel(channel_id) else {
+        // The server acknowledging a close the client initiated needs no response.
+        if self.client_closed.remove(&channel_id).is_some() {
+            debug!(channel_id, "Server acknowledged the DVC close");
+            return Vec::new();
+        }
+        let Some(close_response) = self.remove_channel(channel_id) else {
             return Vec::new();
         };
         debug!(channel_id, "Send DVC Close Response PDU");
@@ -608,6 +642,13 @@ impl SvcProcessor for DrdynvcClient {
                 responses.extend(self.process_close(close.channel_id()));
             }
             DrdynvcServerPdu::Data(data) => {
+                if self.client_closed.get(&data.channel_id()) == Some(&None) {
+                    trace!(
+                        channel_id = data.channel_id(),
+                        "Dropping DVC data for a channel the client closed"
+                    );
+                    return Ok(responses);
+                }
                 if self.tunnel_channels.contains_key(&data.channel_id()) {
                     return Err(pdu_other_err!("received TCP data for a channel selected by Soft-Sync"));
                 }

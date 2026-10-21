@@ -548,3 +548,42 @@ fn tunnel_refuses_a_create_request_before_the_capabilities_exchange() {
         .expect("Create Request on the tunnel should be processed after the capabilities exchange");
     assert_eq!(client.tunnel_for_channel(16), Some(SoftSyncTunnelType::RELIABLE_UDP));
 }
+
+#[test]
+fn data_racing_a_client_close_is_dropped_until_the_server_acknowledges() {
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("recorded channel should attach");
+
+    let close = client.close_channel(7).expect("open channel should close");
+    assert!(matches!(decode_client_pdu(&close), DrdynvcClientPdu::Close(_)));
+    assert!(client.is_closing(7));
+
+    // The server sent this before it received the Close PDU.
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        7,
+        b"late".to_vec(),
+    ))))
+    .expect("DVC data should encode");
+    assert!(
+        client
+            .process(&data)
+            .expect("late data for a closing channel should be dropped")
+            .is_empty()
+    );
+
+    // The server's Close acknowledges the client close and needs no response.
+    let acknowledgement = encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(7))).expect("Close should encode");
+    assert!(
+        client
+            .process(&acknowledgement)
+            .expect("Close acknowledgement should be processed")
+            .is_empty()
+    );
+    assert!(!client.is_closing(7));
+    client
+        .process(&data)
+        .expect_err("data for a channel that is fully closed is still an error");
+}
