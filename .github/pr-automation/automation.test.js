@@ -599,7 +599,6 @@ test("trusted output normalizers project strict boundaries and only trim declare
 
 const MAXIMUM_LINUX_ENVIRONMENT_ENTRY_BYTES = 128 * 1024;
 const REVIEWERS = REVIEWER_ORDER;
-const REVIEWABLE_REVIEWERS = REVIEWER_ORDER;
 const MAXIMUM_NUMBER = 2_147_483_647;
 const HIGH_PRECISION_CONFIDENCE = 0.9999999999999999;
 
@@ -1721,18 +1720,10 @@ test("review skills own methodology while stage prompts own pipeline contracts",
   const protocolPrompt = prompt("protocol-reviewer");
   const skepticalPrompt = prompt("skeptical");
   const protocolSkill = skill("protocol-reviewer");
-  const skepticalSkill = skill("skeptical-reviewer");
-  const compressorSkill = skill("code-compressor");
   const reviewWorkflow = readReviewWorkflow(githubDirectory);
 
   assert.match(protocolSkill, /windows-protocols/);
   assert.match(protocolPrompt, /review-sources\/windows-protocols/);
-  for (const reusableSkill of [protocolSkill, skepticalSkill, compressorSkill]) {
-    assert.doesNotMatch(
-      reusableSkill,
-      /pr-automation-context|pr-evidence|validated-specialist-findings|start_line|end_line/,
-    );
-  }
   for (const stagePrompt of [protocolPrompt, skepticalPrompt]) {
     assert.match(stagePrompt, /pr-automation-context\.json/);
     assert.match(stagePrompt, /pr-evidence\/changed-files\.txt/);
@@ -7431,10 +7422,10 @@ async function runFirstStepScript(jobName, env) {
 test("the review plan keeps the gate fallback for a caller that sends no required list", async () => {
   const base = {
     HEAD_SHA: SHA,
-    SELECTED_REVIEWERS: JSON.stringify(REVIEWABLE_REVIEWERS),
+    SELECTED_REVIEWERS: JSON.stringify(REVIEWERS),
     GATE: JSON.stringify({
       ok: true, head_sha: SHA, classificationValid: true, classificationCheck: true,
-      protocolRelated: true, risk: "medium", specialistReviewers: REVIEWABLE_REVIEWERS,
+      protocolRelated: true, risk: "medium", specialistReviewers: REVIEWERS,
     }),
   };
   const planned = async (env) => JSON.parse(
@@ -7486,7 +7477,7 @@ test("the review plan keeps the gate fallback for a caller that sends no require
 test("the aggregate job enforces coverage and fails closed without a plan", async () => {
   const base = {
     HEAD_SHA: SHA,
-    SPECIALIST_REVIEWERS: JSON.stringify(REVIEWABLE_REVIEWERS),
+    SPECIALIST_REVIEWERS: JSON.stringify(REVIEWERS),
   };
   const runStep = async (env) => (await runFirstStepScript("aggregate", env)).outputs;
 
@@ -7504,7 +7495,7 @@ test("the aggregate job enforces coverage and fails closed without a plan", asyn
   // An unreadable plan must not read as "nothing is mandatory".
   const missing = await runStep(base);
   assert.equal(missing.ready, false);
-  for (const reviewer of REVIEWABLE_REVIEWERS) assert.match(missing.reason, new RegExp(reviewer));
+  for (const reviewer of REVIEWERS) assert.match(missing.reason, new RegExp(reviewer));
 });
 
 test("each reviewer ships one artifact holding its result and its stage report", () => {

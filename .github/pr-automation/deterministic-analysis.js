@@ -91,8 +91,8 @@ function addedText(patch) {
 // that holds tests at the merge base or at the head selects the review, even for a production-only
 // edit. A test path, or a marker in the added lines, decides without reading either revision.
 function isTestChangeWithoutReads(file) {
-  if (!isTestSource(file.filename) || file.status === "removed") return false;
-  return isTestPath(file) || (typeof file.patch === "string" && hasTestMarker(addedText(file.patch), file.filename));
+  return needsHeadRead(file) &&
+    (isTestPath(file) || (typeof file.patch === "string" && hasTestMarker(addedText(file.patch), file.filename)));
 }
 
 function needsHeadRead(file) {
