@@ -22,6 +22,15 @@ const MEDIA_TYPE_SIZE: usize = 1 // Format
     + 4 // PixelAspectRatioDenominator
     + 1; // Flags
 const START_STREAM_INFO_SIZE: usize = 1 /* StreamIndex */ + MEDIA_TYPE_SIZE;
+const PROPERTY_DESCRIPTION_SIZE: usize = 1 // PropertySet
+    + 1 // PropertyId
+    + 1 // Capabilities
+    + 4 // MinValue
+    + 4 // MaxValue
+    + 4 // Step
+    + 4; // DefaultValue
+const PROPERTY_VALUE_SIZE: usize = 1 /* Mode */ + 4 /* Value */;
+const PROPERTY_KEY_SIZE: usize = 1 /* PropertySet */ + 1 /* PropertyId */;
 
 const MESSAGE_SUCCESS_RESPONSE: u8 = 0x01;
 const MESSAGE_ERROR_RESPONSE: u8 = 0x02;
@@ -42,6 +51,11 @@ const MESSAGE_STOP_STREAMS_REQUEST: u8 = 0x10;
 const MESSAGE_SAMPLE_REQUEST: u8 = 0x11;
 const MESSAGE_SAMPLE_RESPONSE: u8 = 0x12;
 const MESSAGE_SAMPLE_ERROR_RESPONSE: u8 = 0x13;
+const MESSAGE_PROPERTY_LIST_REQUEST: u8 = 0x14;
+const MESSAGE_PROPERTY_LIST_RESPONSE: u8 = 0x15;
+const MESSAGE_PROPERTY_VALUE_REQUEST: u8 = 0x16;
+const MESSAGE_PROPERTY_VALUE_RESPONSE: u8 = 0x17;
+const MESSAGE_SET_PROPERTY_VALUE_REQUEST: u8 = 0x18;
 
 /// Largest accepted width or height.
 pub const MAX_FRAME_DIMENSION: u32 = 8192;
@@ -53,12 +67,25 @@ pub const MAX_MEDIA_TYPES: usize = 4096;
 pub const MAX_DEVICE_NAME_LEN: usize = 1024;
 /// Largest accepted device channel name, excluding its terminator.
 pub const MAX_CHANNEL_NAME_LEN: usize = 256;
+/// Largest accepted device property list.
+pub const MAX_PROPERTIES: usize = 256;
 
 /// MS-RDPECAM protocol versions supported by this crate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Version 2 adds the device property messages ([2.2.3.16] to [2.2.3.20]).
+///
+/// [2.2.3.16]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpecam/
+/// [2.2.3.20]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpecam/
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum ProtocolVersion {
     V1 = 1,
+    V2 = 2,
+}
+
+impl ProtocolVersion {
+    /// Highest version implemented by this crate.
+    pub const MAX: Self = Self::V2;
 }
 
 impl TryFrom<u8> for ProtocolVersion {
@@ -67,6 +94,7 @@ impl TryFrom<u8> for ProtocolVersion {
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(Self::V1),
+            2 => Ok(Self::V2),
             _ => Err(invalid_field_err!("Version", "unsupported RDPECAM protocol version")),
         }
     }
@@ -76,6 +104,7 @@ impl From<ProtocolVersion> for u8 {
     fn from(value: ProtocolVersion) -> Self {
         match value {
             ProtocolVersion::V1 => 1,
+            ProtocolVersion::V2 => 2,
         }
     }
 }
@@ -93,6 +122,12 @@ pub enum ErrorCode {
     InvalidStreamNumber = 0x0000_0005,
     InvalidMediaType = 0x0000_0006,
     OutOfMemory = 0x0000_0007,
+    /// Version 2 only: the device does not support the requested property.
+    ItemNotFound = 0x0000_0008,
+    /// Version 2 only: the device does not support the requested property set.
+    SetNotFound = 0x0000_0009,
+    /// Version 2 only: the requested operation is not supported.
+    OperationNotSupported = 0x0000_000A,
 }
 
 impl TryFrom<u32> for ErrorCode {
@@ -107,10 +142,10 @@ impl TryFrom<u32> for ErrorCode {
             5 => Ok(Self::InvalidStreamNumber),
             6 => Ok(Self::InvalidMediaType),
             7 => Ok(Self::OutOfMemory),
-            _ => Err(invalid_field_err!(
-                "ErrorCode",
-                "unsupported RDPECAM version 1 error code"
-            )),
+            8 => Ok(Self::ItemNotFound),
+            9 => Ok(Self::SetNotFound),
+            10 => Ok(Self::OperationNotSupported),
+            _ => Err(invalid_field_err!("ErrorCode", "unsupported RDPECAM error code")),
         }
     }
 }
@@ -125,6 +160,9 @@ impl From<ErrorCode> for u32 {
             ErrorCode::InvalidStreamNumber => 5,
             ErrorCode::InvalidMediaType => 6,
             ErrorCode::OutOfMemory => 7,
+            ErrorCode::ItemNotFound => 8,
+            ErrorCode::SetNotFound => 9,
+            ErrorCode::OperationNotSupported => 10,
         }
     }
 }
@@ -347,10 +385,26 @@ impl MediaType {
         }
     }
 
+    /// Returns whether the format carries compressed pictures (H.264 or MJPEG).
+    pub fn is_compressed(&self) -> bool {
+        matches!(self.format, MediaFormat::H264 | MediaFormat::Mjpg)
+    }
+
+    /// Checks that a sample is plausible for this media type.
+    ///
+    /// Uncompressed samples must have the exact packed frame size.
+    /// Compressed samples must be bounded and start like a picture of their format: an Annex B
+    /// start code for H.264 and a JPEG start-of-image marker for MJPEG. Their payload is not
+    /// parsed further; the server decodes it.
     pub fn validate_sample(&self, sample: &[u8]) -> bool {
-        match self.uncompressed_sample_len() {
-            Some(expected) => sample.len() == expected,
-            None => false,
+        match self.format {
+            MediaFormat::H264 => {
+                sample.len() <= MAX_SAMPLE_SIZE && (sample.starts_with(&[0, 0, 1]) || sample.starts_with(&[0, 0, 0, 1]))
+            }
+            MediaFormat::Mjpg => sample.len() <= MAX_SAMPLE_SIZE && sample.starts_with(&[0xFF, 0xD8]),
+            _ => self
+                .uncompressed_sample_len()
+                .is_some_and(|expected| sample.len() == expected),
         }
     }
 
@@ -470,6 +524,171 @@ impl<'de> Decode<'de> for StartStreamInfo {
     }
 }
 
+/// Property set identifier from [2.2.3.17.1] PROPERTY_DESCRIPTION.
+///
+/// Unknown values are retained so that requests for unsupported sets can be answered with
+/// [`ErrorCode::SetNotFound`].
+///
+/// [2.2.3.17.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpecam/
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PropertySet(pub u8);
+
+impl PropertySet {
+    pub const CAMERA_CONTROL: Self = Self(0x01);
+    pub const VIDEO_PROC_AMP: Self = Self(0x02);
+
+    pub fn is_known(self) -> bool {
+        matches!(self, Self::CAMERA_CONTROL | Self::VIDEO_PROC_AMP)
+    }
+}
+
+/// Property identifiers from [2.2.3.17.1] PROPERTY_DESCRIPTION.
+///
+/// The meaning of an identifier depends on its [`PropertySet`].
+///
+/// [2.2.3.17.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpecam/
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PropertyId(pub u8);
+
+impl PropertyId {
+    pub const CAMERA_CONTROL_EXPOSURE: Self = Self(0x01);
+    pub const CAMERA_CONTROL_FOCUS: Self = Self(0x02);
+    pub const CAMERA_CONTROL_PAN: Self = Self(0x03);
+    pub const CAMERA_CONTROL_ROLL: Self = Self(0x04);
+    pub const CAMERA_CONTROL_TILT: Self = Self(0x05);
+    pub const CAMERA_CONTROL_ZOOM: Self = Self(0x06);
+
+    pub const VIDEO_PROC_AMP_BACKLIGHT_COMPENSATION: Self = Self(0x01);
+    pub const VIDEO_PROC_AMP_BRIGHTNESS: Self = Self(0x02);
+    pub const VIDEO_PROC_AMP_CONTRAST: Self = Self(0x03);
+    pub const VIDEO_PROC_AMP_HUE: Self = Self(0x04);
+    pub const VIDEO_PROC_AMP_WHITE_BALANCE: Self = Self(0x05);
+}
+
+/// How a property value is controlled, from [2.2.3.17.1] and [2.2.3.19.1].
+///
+/// As a capability set it is a combination of flags; as a [`PropertyValue::mode`] it holds
+/// exactly one of them. Unknown bits are retained.
+///
+/// [2.2.3.17.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpecam/
+/// [2.2.3.19.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpecam/
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PropertyMode(pub u8);
+
+impl PropertyMode {
+    pub const MANUAL: Self = Self(0x01);
+    pub const AUTO: Self = Self(0x02);
+
+    pub fn contains(self, other: Self) -> bool {
+        other.0 != 0 && self.0 & other.0 == other.0
+    }
+}
+
+/// A device property from [2.2.3.17.1] PROPERTY_DESCRIPTION.
+///
+/// [2.2.3.17.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpecam/
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PropertyDescription {
+    pub property_set: PropertySet,
+    pub property_id: PropertyId,
+    /// Supported control modes.
+    pub capabilities: PropertyMode,
+    pub min_value: i32,
+    pub max_value: i32,
+    pub step: i32,
+    pub default_value: i32,
+}
+
+impl PropertyDescription {
+    /// Returns whether `value` is acceptable for this property.
+    ///
+    /// Automatic mode ignores the value. A manual value must be within range.
+    pub fn accepts(&self, value: PropertyValue) -> bool {
+        match value.mode {
+            PropertyMode::AUTO => self.capabilities.contains(PropertyMode::AUTO),
+            PropertyMode::MANUAL => {
+                self.capabilities.contains(PropertyMode::MANUAL)
+                    && self.min_value <= value.value
+                    && value.value <= self.max_value
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Encode for PropertyDescription {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: PROPERTY_DESCRIPTION_SIZE);
+        dst.write_u8(self.property_set.0);
+        dst.write_u8(self.property_id.0);
+        dst.write_u8(self.capabilities.0);
+        dst.write_i32(self.min_value);
+        dst.write_i32(self.max_value);
+        dst.write_i32(self.step);
+        dst.write_i32(self.default_value);
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "PROPERTY_DESCRIPTION"
+    }
+
+    fn size(&self) -> usize {
+        PROPERTY_DESCRIPTION_SIZE
+    }
+}
+
+impl<'de> Decode<'de> for PropertyDescription {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: PROPERTY_DESCRIPTION_SIZE);
+        Ok(Self {
+            property_set: PropertySet(src.read_u8()),
+            property_id: PropertyId(src.read_u8()),
+            capabilities: PropertyMode(src.read_u8()),
+            min_value: src.read_i32(),
+            max_value: src.read_i32(),
+            step: src.read_i32(),
+            default_value: src.read_i32(),
+        })
+    }
+}
+
+/// A property value from [2.2.3.19.1] PROPERTY_VALUE.
+///
+/// [2.2.3.19.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpecam/
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PropertyValue {
+    pub mode: PropertyMode,
+    pub value: i32,
+}
+
+impl Encode for PropertyValue {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: PROPERTY_VALUE_SIZE);
+        dst.write_u8(self.mode.0);
+        dst.write_i32(self.value);
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "PROPERTY_VALUE"
+    }
+
+    fn size(&self) -> usize {
+        PROPERTY_VALUE_SIZE
+    }
+}
+
+impl<'de> Decode<'de> for PropertyValue {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: PROPERTY_VALUE_SIZE);
+        Ok(Self {
+            mode: PropertyMode(src.read_u8()),
+            value: src.read_i32(),
+        })
+    }
+}
+
 /// Messages exchanged on the RDPECAM device-enumeration channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnumerationPdu {
@@ -577,7 +796,9 @@ impl<'de> Decode<'de> for EnumerationPdu {
 
 impl DvcEncode for EnumerationPdu {}
 
-/// Version 1 messages exchanged on a per-device RDPECAM channel.
+/// Messages exchanged on a per-device RDPECAM channel.
+///
+/// The wire form, including the protocol version in its header, is [`DeviceMessage`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DevicePdu {
     SuccessResponse,
@@ -593,8 +814,31 @@ pub enum DevicePdu {
     StartStreamsRequest(Vec<StartStreamInfo>),
     StopStreamsRequest,
     SampleRequest(u8),
-    SampleResponse { stream_index: u8, sample: Vec<u8> },
-    SampleErrorResponse { stream_index: u8, error: ErrorCode },
+    SampleResponse {
+        stream_index: u8,
+        sample: Vec<u8>,
+    },
+    SampleErrorResponse {
+        stream_index: u8,
+        error: ErrorCode,
+    },
+    /// Version 2 only.
+    PropertyListRequest,
+    /// Version 2 only.
+    PropertyListResponse(Vec<PropertyDescription>),
+    /// Version 2 only.
+    PropertyValueRequest {
+        property_set: PropertySet,
+        property_id: PropertyId,
+    },
+    /// Version 2 only.
+    PropertyValueResponse(PropertyValue),
+    /// Version 2 only.
+    SetPropertyValueRequest {
+        property_set: PropertySet,
+        property_id: PropertyId,
+        value: PropertyValue,
+    },
 }
 
 impl DevicePdu {
@@ -615,20 +859,73 @@ impl DevicePdu {
             Self::SampleRequest(_) => MESSAGE_SAMPLE_REQUEST,
             Self::SampleResponse { .. } => MESSAGE_SAMPLE_RESPONSE,
             Self::SampleErrorResponse { .. } => MESSAGE_SAMPLE_ERROR_RESPONSE,
+            Self::PropertyListRequest => MESSAGE_PROPERTY_LIST_REQUEST,
+            Self::PropertyListResponse(_) => MESSAGE_PROPERTY_LIST_RESPONSE,
+            Self::PropertyValueRequest { .. } => MESSAGE_PROPERTY_VALUE_REQUEST,
+            Self::PropertyValueResponse(_) => MESSAGE_PROPERTY_VALUE_RESPONSE,
+            Self::SetPropertyValueRequest { .. } => MESSAGE_SET_PROPERTY_VALUE_REQUEST,
         }
     }
-}
 
-impl Encode for DevicePdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        ensure_size!(in: dst, size: self.size());
-        encode_header(dst, ProtocolVersion::V1, self.message_id());
+    /// Lowest protocol version that defines this message.
+    pub fn min_version(&self) -> ProtocolVersion {
+        match self {
+            Self::PropertyListRequest
+            | Self::PropertyListResponse(_)
+            | Self::PropertyValueRequest { .. }
+            | Self::PropertyValueResponse(_)
+            | Self::SetPropertyValueRequest { .. } => ProtocolVersion::V2,
+            _ => ProtocolVersion::V1,
+        }
+    }
+
+    /// Returns whether the client, rather than the server, sends this message.
+    pub fn is_client_message(&self) -> bool {
+        matches!(
+            self,
+            Self::SuccessResponse
+                | Self::ErrorResponse(_)
+                | Self::StreamListResponse(_)
+                | Self::MediaTypeListResponse(_)
+                | Self::CurrentMediaTypeResponse(_)
+                | Self::SampleResponse { .. }
+                | Self::SampleErrorResponse { .. }
+                | Self::PropertyListResponse(_)
+                | Self::PropertyValueResponse(_)
+        )
+    }
+
+    fn body_size(&self) -> usize {
         match self {
             Self::SuccessResponse
             | Self::ActivateDeviceRequest
             | Self::DeactivateDeviceRequest
             | Self::StreamListRequest
-            | Self::StopStreamsRequest => {}
+            | Self::StopStreamsRequest
+            | Self::PropertyListRequest => 0,
+            Self::ErrorResponse(_) => 4,
+            Self::StreamListResponse(streams) => streams.len() * STREAM_DESCRIPTION_SIZE,
+            Self::MediaTypeListRequest(_) | Self::CurrentMediaTypeRequest(_) | Self::SampleRequest(_) => 1,
+            Self::MediaTypeListResponse(media_types) => media_types.len() * MEDIA_TYPE_SIZE,
+            Self::CurrentMediaTypeResponse(_) => MEDIA_TYPE_SIZE,
+            Self::StartStreamsRequest(streams) => streams.len() * START_STREAM_INFO_SIZE,
+            Self::SampleResponse { sample, .. } => 1 + sample.len(),
+            Self::SampleErrorResponse { .. } => 1 + 4,
+            Self::PropertyListResponse(properties) => properties.len() * PROPERTY_DESCRIPTION_SIZE,
+            Self::PropertyValueRequest { .. } => PROPERTY_KEY_SIZE,
+            Self::PropertyValueResponse(_) => PROPERTY_VALUE_SIZE,
+            Self::SetPropertyValueRequest { .. } => PROPERTY_KEY_SIZE + PROPERTY_VALUE_SIZE,
+        }
+    }
+
+    fn encode_body(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        match self {
+            Self::SuccessResponse
+            | Self::ActivateDeviceRequest
+            | Self::DeactivateDeviceRequest
+            | Self::StreamListRequest
+            | Self::StopStreamsRequest
+            | Self::PropertyListRequest => {}
             Self::ErrorResponse(error) => dst.write_u32((*error).into()),
             Self::StreamListResponse(streams) => {
                 validate_u8_count("StreamDescriptions", streams.len())?;
@@ -666,37 +963,39 @@ impl Encode for DevicePdu {
                 dst.write_u8(*stream_index);
                 dst.write_u32((*error).into());
             }
+            Self::PropertyListResponse(properties) => {
+                if properties.len() > MAX_PROPERTIES {
+                    return Err(invalid_field_err!(
+                        "Properties",
+                        "property list exceeds the supported bound"
+                    ));
+                }
+                for property in properties {
+                    property.encode(dst)?;
+                }
+            }
+            Self::PropertyValueRequest {
+                property_set,
+                property_id,
+            } => {
+                dst.write_u8(property_set.0);
+                dst.write_u8(property_id.0);
+            }
+            Self::PropertyValueResponse(value) => value.encode(dst)?,
+            Self::SetPropertyValueRequest {
+                property_set,
+                property_id,
+                value,
+            } => {
+                dst.write_u8(property_set.0);
+                dst.write_u8(property_id.0);
+                value.encode(dst)?;
+            }
         }
         Ok(())
     }
 
-    fn name(&self) -> &'static str {
-        "RDPECAM_DEVICE_PDU"
-    }
-
-    fn size(&self) -> usize {
-        HEADER_SIZE
-            + match self {
-                Self::SuccessResponse
-                | Self::ActivateDeviceRequest
-                | Self::DeactivateDeviceRequest
-                | Self::StreamListRequest
-                | Self::StopStreamsRequest => 0,
-                Self::ErrorResponse(_) => 4,
-                Self::StreamListResponse(streams) => streams.len() * STREAM_DESCRIPTION_SIZE,
-                Self::MediaTypeListRequest(_) | Self::CurrentMediaTypeRequest(_) | Self::SampleRequest(_) => 1,
-                Self::MediaTypeListResponse(media_types) => media_types.len() * MEDIA_TYPE_SIZE,
-                Self::CurrentMediaTypeResponse(_) => MEDIA_TYPE_SIZE,
-                Self::StartStreamsRequest(streams) => streams.len() * START_STREAM_INFO_SIZE,
-                Self::SampleResponse { sample, .. } => 1 + sample.len(),
-                Self::SampleErrorResponse { .. } => 1 + 4,
-            }
-    }
-}
-
-impl<'de> Decode<'de> for DevicePdu {
-    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
-        let (_version, message_id) = decode_header(src)?;
+    fn decode_body(message_id: u8, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let pdu = match message_id {
             MESSAGE_SUCCESS_RESPONSE => Self::SuccessResponse,
             MESSAGE_ERROR_RESPONSE => {
@@ -759,10 +1058,49 @@ impl<'de> Decode<'de> for DevicePdu {
                 let error = ErrorCode::try_from(src.read_u32())?;
                 Self::SampleErrorResponse { stream_index, error }
             }
+            MESSAGE_PROPERTY_LIST_REQUEST => Self::PropertyListRequest,
+            MESSAGE_PROPERTY_LIST_RESPONSE => {
+                if !src.len().is_multiple_of(PROPERTY_DESCRIPTION_SIZE) {
+                    return Err(invalid_field_err!(
+                        "MessageLength",
+                        "message body is not an array of property descriptions",
+                        in: src
+                    ));
+                }
+                let count = src.len() / PROPERTY_DESCRIPTION_SIZE;
+                if count > MAX_PROPERTIES {
+                    return Err(invalid_field_err!(
+                        "MessageLength",
+                        "property list exceeds the supported bound",
+                        in: src
+                    ));
+                }
+                let mut properties = Vec::with_capacity(count);
+                while !src.is_empty() {
+                    properties.push(PropertyDescription::decode(src)?);
+                }
+                Self::PropertyListResponse(properties)
+            }
+            MESSAGE_PROPERTY_VALUE_REQUEST => {
+                ensure_size!(in: src, size: PROPERTY_KEY_SIZE);
+                Self::PropertyValueRequest {
+                    property_set: PropertySet(src.read_u8()),
+                    property_id: PropertyId(src.read_u8()),
+                }
+            }
+            MESSAGE_PROPERTY_VALUE_RESPONSE => Self::PropertyValueResponse(PropertyValue::decode(src)?),
+            MESSAGE_SET_PROPERTY_VALUE_REQUEST => {
+                ensure_size!(in: src, size: PROPERTY_KEY_SIZE + PROPERTY_VALUE_SIZE);
+                Self::SetPropertyValueRequest {
+                    property_set: PropertySet(src.read_u8()),
+                    property_id: PropertyId(src.read_u8()),
+                    value: PropertyValue::decode(src)?,
+                }
+            }
             _ => {
                 return Err(invalid_field_err!(
                     "MessageId",
-                    "message is not supported by RDPECAM version 1",
+                    "message is not valid on a device channel",
                     in: src
                 ));
             }
@@ -772,7 +1110,62 @@ impl<'de> Decode<'de> for DevicePdu {
     }
 }
 
-impl DvcEncode for DevicePdu {}
+/// A [`DevicePdu`] with its [2.2.1] SHARED_MSG_HEADER version.
+///
+/// Every message on a device channel carries the version selected on the enumeration channel.
+/// Decoding rejects messages that do not exist in the version their header declares.
+///
+/// [2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpecam/
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceMessage {
+    pub version: ProtocolVersion,
+    pub pdu: DevicePdu,
+}
+
+impl DeviceMessage {
+    pub fn new(version: ProtocolVersion, pdu: DevicePdu) -> Self {
+        Self { version, pdu }
+    }
+}
+
+impl Encode for DeviceMessage {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        if self.version < self.pdu.min_version() {
+            return Err(invalid_field_err!(
+                "Version",
+                "message is not defined in the selected RDPECAM version"
+            ));
+        }
+        ensure_size!(in: dst, size: self.size());
+        encode_header(dst, self.version, self.pdu.message_id());
+        self.pdu.encode_body(dst)
+    }
+
+    fn name(&self) -> &'static str {
+        "RDPECAM_DEVICE_PDU"
+    }
+
+    fn size(&self) -> usize {
+        HEADER_SIZE + self.pdu.body_size()
+    }
+}
+
+impl<'de> Decode<'de> for DeviceMessage {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        let (version, message_id) = decode_header(src)?;
+        let pdu = DevicePdu::decode_body(message_id, src)?;
+        if version < pdu.min_version() {
+            return Err(invalid_field_err!(
+                "MessageId",
+                "message is not defined in the declared RDPECAM version",
+                in: src
+            ));
+        }
+        Ok(Self { version, pdu })
+    }
+}
+
+impl DvcEncode for DeviceMessage {}
 
 fn encode_header(dst: &mut WriteCursor<'_>, version: ProtocolVersion, message_id: u8) {
     dst.write_u8(version.into());

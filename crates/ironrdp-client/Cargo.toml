@@ -49,6 +49,8 @@ dvc-com-plugin = ["dep:ironrdp-dvc-com-plugin"]
 webauthn = ["dep:ironrdp-rdpewa", "dep:ironrdp-rdpewa-native", "dvc-com-plugin"]
 vmconnect = ["dep:ironrdp-vmconnect"]
 location = ["dep:ironrdp-rdpel"]
+# MS-RDPECAM camera redirection. Capture uses Media Foundation and is only available on Windows.
+camera = ["dep:ironrdp-rdpecam", "dep:ironrdp-rdpecam-native"]
 udp = [
     "dep:ironrdp-rdpeudp",
     "dep:ironrdp-rdpeudp-tokio",
@@ -66,6 +68,7 @@ all = [
     "webauthn",
     "vmconnect",
     "location",
+    "camera",
     "udp",
 ]
 
@@ -123,6 +126,8 @@ x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 ironrdp-dvc-com-plugin = { path = "../ironrdp-dvc-com-plugin", version = "0.1", optional = true }
 ironrdp-rdpewa = { path = "../ironrdp-rdpewa", version = "0.1", optional = true }
 ironrdp-rdpewa-native = { path = "../ironrdp-rdpewa-native", version = "0.1", optional = true }
+ironrdp-rdpecam = { path = "../ironrdp-rdpecam", version = "0.0.0", optional = true }
+ironrdp-rdpecam-native = { path = "../ironrdp-rdpecam-native", version = "0.0.0", optional = true }
 
 [lints]
 workspace = true

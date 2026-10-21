@@ -899,6 +899,34 @@ fn with_audio_capture_enables_client_info_flag_and_channel() {
 }
 
 #[test]
+fn camerastoredirect_selects_redirected_cameras() {
+    let mut properties = ironrdp_propertyset::PropertySet::new();
+    properties.insert("camerastoredirect", r"*; -\\?\usb#vid_0001 ;Front Camera;");
+
+    let config = complete_builder()
+        .with_property_set(&properties)
+        .expect("valid camera selection")
+        .build()
+        .expect("valid configuration");
+
+    let cameras = &config.channels().cameras;
+    assert!(cameras.is_enabled());
+    assert!(cameras.redirect_all);
+    assert_eq!(cameras.include, ["Front Camera"]);
+    assert_eq!(cameras.exclude, [r"\\?\usb#vid_0001"]);
+    assert!(cameras.encode_video);
+    assert!(cameras.selects(r"\\?\usb#vid_0002", "Rear Camera"));
+    assert!(!cameras.selects(r"\\?\USB#VID_0001", "Excluded Camera"));
+
+    let mut explicit = ironrdp_client::camera::CameraConfig::default();
+    explicit.apply_rdp_value("front camera");
+    assert!(!explicit.redirect_all);
+    assert!(explicit.selects(r"\\?\usb#vid_0003", "Front Camera"));
+    assert!(!explicit.selects(r"\\?\usb#vid_0002", "Rear Camera"));
+    assert!(!ironrdp_client::camera::CameraConfig::default().is_enabled());
+}
+
+#[test]
 fn with_audio_capture_disabled_clears_channel() {
     use ironrdp_cfg::AudioCaptureMode;
 

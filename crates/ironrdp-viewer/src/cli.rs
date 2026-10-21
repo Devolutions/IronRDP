@@ -219,6 +219,21 @@ struct Args {
     #[clap(long)]
     microphone: bool,
 
+    /// Camera to redirect (MS-RDPECAM), by symbolic link or friendly name
+    ///
+    /// Repeat to redirect several cameras. `*` redirects every camera, including cameras attached
+    /// during the session, and a `-` prefix excludes one (`--camera '*' --camera -Integrated`).
+    /// Overrides the `.rdp` `camerastoredirect` property, which uses the same entries separated
+    /// by `;`. Capture is only available on Windows.
+    #[clap(long = "camera", value_name = "CAMERA", allow_hyphen_values = true)]
+    cameras: Vec<String>,
+
+    /// Send raw camera frames instead of encoding them to H.264
+    ///
+    /// Encoding only applies to cameras without a compressed (H.264 or MJPEG) format.
+    #[clap(long)]
+    camera_raw: bool,
+
     /// The bitmap codecs to use (remotefx:on, ...)
     #[clap(long, num_args = 1.., value_delimiter = ',')]
     codecs: Vec<String>,
@@ -542,6 +557,17 @@ fn apply_cli_to_builder(
 
     if args.microphone {
         builder = builder.with_audio_capture(true);
+    }
+
+    if !args.cameras.is_empty() || args.camera_raw {
+        let mut cameras = builder.cameras().clone();
+        if !args.cameras.is_empty() {
+            cameras.apply_rdp_value(&args.cameras.join(";"));
+        }
+        if args.camera_raw {
+            cameras.encode_video = false;
+        }
+        builder = builder.with_cameras(cameras);
     }
 
     // CLI-only knobs that are not representable as `.rdp` properties.
