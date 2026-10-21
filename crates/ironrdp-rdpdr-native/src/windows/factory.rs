@@ -4,13 +4,19 @@ use core::fmt;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use ironrdp_rdpdr::{RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPrinter};
+use ironrdp_rdpdr::{
+    RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPort, RdpdrPrinter,
+};
 use tracing::warn;
 
 use super::backend::WindowsRdpdrBackend;
+use super::port::{WindowsPortRedirection, resolve_ports};
 use super::printer::{RdpdrWorkerThreadHooks, discover_default_printer};
 
 const DEFAULT_PRINTER_DEVICE_ID: u32 = u32::MAX - 1;
+/// First device ID used for redirected ports, well above drive letters and named drives and
+/// below the printer IDs counted down from the top of the range.
+const FIRST_PORT_DEVICE_ID: u32 = 0x4000_0000;
 
 /// Immutable logical-volume definition selected for Windows RDPDR redirection.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,6 +115,7 @@ pub struct WindowsRdpdrBackendFactory {
     smartcard: bool,
     default_printer: bool,
     worker_thread_hooks: Option<RdpdrWorkerThreadHooks>,
+    ports: WindowsPortRedirection,
 }
 
 impl WindowsRdpdrBackendFactory {
@@ -123,6 +130,7 @@ impl WindowsRdpdrBackendFactory {
             smartcard: false,
             default_printer: false,
             worker_thread_hooks: None,
+            ports: WindowsPortRedirection::default(),
         }
     }
 
@@ -163,6 +171,7 @@ impl WindowsRdpdrBackendFactory {
             smartcard: false,
             default_printer: false,
             worker_thread_hooks: None,
+            ports: WindowsPortRedirection::default(),
         })
     }
 
@@ -206,6 +215,22 @@ impl WindowsRdpdrBackendFactory {
         self.default_printer
     }
 
+    /// Selects the serial and parallel ports announced by each product.
+    ///
+    /// Ports are enumerated when [`RdpdrBackendFactory::build_rdpdr_backend`] builds the
+    /// product, so each connection announces the ports present at that time.
+    #[must_use]
+    pub fn with_port_redirection(mut self, ports: WindowsPortRedirection) -> Self {
+        self.ports = ports;
+        self
+    }
+
+    /// Returns the serial and parallel port selection.
+    #[must_use]
+    pub fn port_redirection(&self) -> &WindowsPortRedirection {
+        &self.ports
+    }
+
     /// Configures host lifetime hooks for native worker threads.
     #[must_use]
     pub fn with_worker_thread_hooks(mut self, hooks: RdpdrWorkerThreadHooks) -> Self {
@@ -239,13 +264,12 @@ impl WindowsRdpdrBackendFactory {
         WindowsRdpdrBackend::from_drives(self.drives.clone())
     }
 
-    fn build_product(&self, printer: Option<RdpdrPrinter>) -> RdpdrBackendProduct {
+    fn build_product(&self, printer: Option<RdpdrPrinter>, ports: Vec<RdpdrPort>) -> RdpdrBackendProduct {
         let mut product = RdpdrBackendProduct::new(
-            Box::new(WindowsRdpdrBackend::from_configuration(
-                self.drives.clone(),
-                printer.clone(),
-                self.worker_thread_hooks,
-            )),
+            Box::new(
+                WindowsRdpdrBackend::from_configuration(self.drives.clone(), printer.clone(), self.worker_thread_hooks)
+                    .with_ports(ports.clone()),
+            ),
             self.initial_drives()
                 .into_iter()
                 .map(|(device_id, name)| RdpdrDrive::new(device_id, name))
@@ -255,7 +279,7 @@ impl WindowsRdpdrBackendFactory {
         if let Some(printer) = printer {
             product = product.with_printer(printer);
         }
-        product
+        product.with_ports(ports)
     }
 }
 
@@ -272,11 +296,24 @@ impl RdpdrBackendFactory for WindowsRdpdrBackendFactory {
         } else {
             None
         };
-        Ok(self.build_product(printer))
+        let ports = resolve_ports(&self.ports, self.port_device_ids());
+        Ok(self.build_product(printer, ports))
     }
 }
 
 impl WindowsRdpdrBackendFactory {
+    /// Yields port device IDs counting up from [`FIRST_PORT_DEVICE_ID`], skipping configured drives.
+    fn port_device_ids(&self) -> impl FnMut() -> Option<u32> + '_ {
+        let mut next = Some(FIRST_PORT_DEVICE_ID);
+        move || loop {
+            let device_id = next?;
+            next = device_id.checked_add(1).filter(|id| *id < DEFAULT_PRINTER_DEVICE_ID);
+            if !self.drives.iter().any(|drive| drive.device_id() == device_id) {
+                return Some(device_id);
+            }
+        }
+    }
+
     fn default_printer_device_id(&self) -> Result<u32, NoAvailablePrinterDeviceId> {
         let mut device_id = DEFAULT_PRINTER_DEVICE_ID;
         while self.drives.iter().any(|drive| drive.device_id() == device_id) {
@@ -410,14 +447,17 @@ mod tests {
     #[test]
     fn factory_product_preserves_default_printer_metadata() {
         let factory = WindowsRdpdrBackendFactory::from_drives(Vec::new()).expect("empty drive list is valid");
-        let product = factory.build_product(Some(
-            RdpdrPrinter::new(
-                DEFAULT_PRINTER_DEVICE_ID,
-                "Office Printer".to_owned(),
-                "Office Driver".to_owned(),
-            )
-            .with_network(false),
-        ));
+        let product = factory.build_product(
+            Some(
+                RdpdrPrinter::new(
+                    DEFAULT_PRINTER_DEVICE_ID,
+                    "Office Printer".to_owned(),
+                    "Office Driver".to_owned(),
+                )
+                .with_network(false),
+            ),
+            Vec::new(),
+        );
 
         let printer = product.printer().expect("printer metadata is present");
         assert_eq!(printer.device_id(), DEFAULT_PRINTER_DEVICE_ID);
