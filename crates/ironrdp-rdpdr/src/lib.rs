@@ -585,7 +585,9 @@ impl Rdpdr {
     /// A device awaiting its announcement response counts as announced. Windows can send the first
     /// IRP for a device just before the response accepting it, and an unanswered IRP stalls the
     /// server for about 30 seconds. A later rejection removes the drive from the backend, which
-    /// cancels its pending IRPs. FreeRDP likewise serves every announced device until rejected.
+    /// cancels its pending IRPs; printer creates still wait for acceptance, because a rejected
+    /// printer's job would not be released. FreeRDP likewise serves every announced device until
+    /// rejected.
     fn device_is_announced(&self, device_id: u32) -> bool {
         self.active_device_ids.contains(&device_id) || self.pending_device_announcements.contains(&device_id)
     }
@@ -720,6 +722,25 @@ impl Rdpdr {
                         "Ignoring printer IRP for a device that was not announced"
                     );
                     return Ok(Vec::new());
+                }
+                // A printer create starts a native print job, which a later rejection would leave
+                // allocated because the rejected device's close is ignored. Fail it until the
+                // server accepts the printer.
+                if dev_io_req.major_function == MajorFunction::Create
+                    && !self.active_device_ids.contains(&dev_io_req.device_id)
+                {
+                    debug!(
+                        device_id = dev_io_req.device_id,
+                        completion_id = dev_io_req.completion_id,
+                        "Failing printer create before the announcement response"
+                    );
+                    return Ok(vec![SvcMessage::from(RdpdrPdu::DeviceCreateResponse(
+                        DeviceCreateResponse {
+                            device_io_reply: DeviceIoResponse::new(dev_io_req, NtStatus::UNSUCCESSFUL),
+                            file_id: 0,
+                            information: Information::empty(),
+                        },
+                    ))]);
                 }
 
                 match dev_io_req.major_function {

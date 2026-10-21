@@ -663,6 +663,28 @@ fn printer_irp_before_the_announcement_response_is_completed() {
         ntstatus_at(&responses[0].encode_unframed_pdu().unwrap(), 12),
         NtStatus::NOT_SUPPORTED
     );
+
+    // A create would start a print job that a rejection could leave behind, so it fails without
+    // reaching the backend, whose default answer is NOT_SUPPORTED.
+    let responses = rdpdr.process(&encoded_printer_create_request(0)).unwrap();
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        ntstatus_at(&responses[0].encode_unframed_pdu().unwrap(), 12),
+        NtStatus::UNSUCCESSFUL
+    );
+}
+
+#[test]
+fn printer_create_after_the_announcement_response_reaches_the_backend() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
+    acknowledge_printer(&mut rdpdr, NtStatus::SUCCESS);
+
+    let responses = rdpdr.process(&encoded_printer_create_request(0)).unwrap();
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        ntstatus_at(&responses[0].encode_unframed_pdu().unwrap(), 12),
+        NtStatus::NOT_SUPPORTED
+    );
 }
 
 #[test]
