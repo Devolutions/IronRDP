@@ -11,6 +11,7 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
     use crate::utils::ffi::VecU8;
 
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque]
     pub struct CredsspProcessGenerator<'a>(pub ironrdp::connector::credssp::CredsspProcessGenerator<'a>);
 

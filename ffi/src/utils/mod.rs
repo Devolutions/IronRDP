@@ -3,6 +3,7 @@ pub mod ffi {
 
     use crate::error::ffi::IronRdpError;
 
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque]
     pub struct VecU8(pub Vec<u8>);
 

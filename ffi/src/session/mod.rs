@@ -15,6 +15,7 @@ pub mod ffi {
     use crate::pdu::ffi::{Action, FastPathInputEventIterator, InclusiveRectangle};
     use crate::utils::ffi::{BytesSlice, Position, VecU8};
 
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque]
     pub struct ActiveStage(
         pub ironrdp::session::ActiveStage,
@@ -24,6 +25,7 @@ pub mod ffi {
     #[diplomat::opaque]
     pub struct ActiveStageOutput(pub ironrdp::session::ActiveStageOutput);
 
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque]
     pub struct ActiveStageOutputIterator(pub VecDeque<ironrdp::session::ActiveStageOutput>);
 
