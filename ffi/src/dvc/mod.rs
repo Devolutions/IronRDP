@@ -42,6 +42,7 @@ pub mod ffi {
             self.descriptors.push(descriptor.clone());
         }
 
+        #[diplomat::attr(auto, getter = "message_sink")]
         pub fn get_message_sink(&self) -> Box<DvcPipeProxyMessageSink> {
             Box::new(self.message_sink.clone())
         }

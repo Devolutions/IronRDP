@@ -41,6 +41,7 @@ pub mod ffi {
             Box::<ConfigBuilder>::default()
         }
 
+        #[diplomat::attr(auto, getter = "dvc_pipe_proxy")]
         pub fn get_dvc_pipe_proxy(&self) -> Option<Box<DvcPipeProxyConfig>> {
             self.dvc_pipe_proxy.as_ref().map(|dvc| Box::new(dvc.clone()))
         }
@@ -88,10 +89,12 @@ pub mod ffi {
     pub struct DesktopSize(pub ironrdp::connector::DesktopSize);
 
     impl DesktopSize {
+        #[diplomat::attr(auto, getter = "width")]
         pub fn get_width(&self) -> u16 {
             self.0.width
         }
 
+        #[diplomat::attr(auto, getter = "height")]
         pub fn get_height(&self) -> u16 {
             self.0.height
         }
@@ -109,38 +112,47 @@ pub mod ffi {
             });
         }
 
+        #[diplomat::attr(auto, setter = "domain")]
         pub fn set_domain(&mut self, domain: &str) {
             self.domain = Some(domain.to_owned());
         }
 
+        #[diplomat::attr(auto, setter = "enable_tls")]
         pub fn set_enable_tls(&mut self, enable_tls: bool) {
             self.enable_tls = Some(enable_tls);
         }
 
+        #[diplomat::attr(auto, setter = "enable_credssp")]
         pub fn set_enable_credssp(&mut self, enable_credssp: bool) {
             self.enable_credssp = Some(enable_credssp);
         }
 
+        #[diplomat::attr(auto, setter = "keyboard_layout")]
         pub fn set_keyboard_layout(&mut self, keyboard_layout: u32) {
             self.keyboard_layout = Some(keyboard_layout);
         }
 
+        #[diplomat::attr(auto, setter = "keyboard_type")]
         pub fn set_keyboard_type(&mut self, keyboard_type: KeyboardType) {
             self.keyboard_type = Some(keyboard_type.into());
         }
 
+        #[diplomat::attr(auto, setter = "keyboard_subtype")]
         pub fn set_keyboard_subtype(&mut self, keyboard_subtype: u32) {
             self.keyboard_subtype = Some(keyboard_subtype);
         }
 
+        #[diplomat::attr(auto, setter = "keyboard_functional_keys_count")]
         pub fn set_keyboard_functional_keys_count(&mut self, keyboard_functional_keys_count: u32) {
             self.keyboard_functional_keys_count = Some(keyboard_functional_keys_count);
         }
 
+        #[diplomat::attr(auto, setter = "ime_file_name")]
         pub fn set_ime_file_name(&mut self, ime_file_name: &str) {
             self.ime_file_name = Some(ime_file_name.to_owned());
         }
 
+        #[diplomat::attr(auto, setter = "dig_product_id")]
         pub fn set_dig_product_id(&mut self, dig_product_id: &str) {
             self.dig_product_id = Some(dig_product_id.to_owned());
         }
@@ -149,6 +161,7 @@ pub mod ffi {
             self.desktop_size = Some(ironrdp::connector::DesktopSize { width, height });
         }
 
+        #[diplomat::attr(auto, setter = "performance_flags")]
         pub fn set_performance_flags(&mut self, performance_flags: &PerformanceFlags) {
             self.performance_flags = Some(performance_flags.0);
         }
@@ -157,34 +170,42 @@ pub mod ffi {
         //     self.timezone_info = timezone_info;
         // }
 
+        #[diplomat::attr(auto, setter = "bitmap_config")]
         pub fn set_bitmap_config(&mut self, bitmap: &BitmapConfig) {
             self.bitmap = Some(bitmap.0.clone());
         }
 
+        #[diplomat::attr(auto, setter = "client_build")]
         pub fn set_client_build(&mut self, client_build: u32) {
             self.client_build = Some(client_build);
         }
 
+        #[diplomat::attr(auto, setter = "client_name")]
         pub fn set_client_name(&mut self, client_name: &str) {
             self.client_name = Some(client_name.to_owned());
         }
 
+        #[diplomat::attr(auto, setter = "client_dir")]
         pub fn set_client_dir(&mut self, client_dir: &str) {
             self.client_dir = Some(client_dir.to_owned());
         }
 
+        #[diplomat::attr(auto, setter = "enable_server_pointer")]
         pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {
             self.enable_server_pointer = Some(enable_server_pointer);
         }
 
+        #[diplomat::attr(auto, setter = "autologon")]
         pub fn set_autologon(&mut self, autologon: bool) {
             self.autologon = Some(autologon);
         }
 
+        #[diplomat::attr(auto, setter = "pointer_software_rendering")]
         pub fn set_pointer_software_rendering(&mut self, pointer_software_rendering: bool) {
             self.pointer_software_rendering = Some(pointer_software_rendering);
         }
 
+        #[diplomat::attr(auto, setter = "dvc_pipe_proxy")]
         pub fn set_dvc_pipe_proxy(&mut self, dvc_pipe_proxy: &DvcPipeProxyConfig) {
             self.dvc_pipe_proxy = Some(dvc_pipe_proxy.clone());
         }
