@@ -73,7 +73,11 @@ pub mod ffi {
             #[cfg(windows)]
             let backend: Box<dyn ironrdp::rdpdr::RdpdrBackend> = Box::new(
                 ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(Vec::new())
-                    .map_err(|_| "invalid RDPDR backend configuration")?
+                    .map_err(|error| {
+                        crate::error::GenericError(
+                            anyhow::Error::new(error).context("invalid RDPDR backend configuration"),
+                        )
+                    })?
                     .with_smartcard(true)
                     .build(),
             );

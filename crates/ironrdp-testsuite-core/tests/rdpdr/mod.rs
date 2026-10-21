@@ -159,13 +159,26 @@ fn encoded_printer_device_control_request() -> Vec<u8> {
 }
 
 fn encoded_printer_device_control_request_with_input(input: &[u8]) -> Vec<u8> {
-    let mut encoded = encoded_printer_device_io_request(MajorFunction::DeviceControl);
-    encoded.extend_from_slice(&0u32.to_le_bytes()); // OutputBufferLength
-    encoded.extend_from_slice(&u32::try_from(input.len()).unwrap().to_le_bytes());
-    encoded.extend_from_slice(&0u32.to_le_bytes()); // IoControlCode
-    encoded.extend_from_slice(&[0; 20]); // Padding
-    encoded.extend_from_slice(input);
-    encoded
+    encoded_device_control_request(
+        encoded_printer_device_io_request(MajorFunction::DeviceControl),
+        0,
+        0,
+        input,
+    )
+}
+
+fn encoded_device_control_request(
+    mut encoded_header: Vec<u8>,
+    output_buffer_length: u32,
+    io_control_code: u32,
+    input: &[u8],
+) -> Vec<u8> {
+    encoded_header.extend_from_slice(&output_buffer_length.to_le_bytes());
+    encoded_header.extend_from_slice(&u32::try_from(input.len()).unwrap().to_le_bytes());
+    encoded_header.extend_from_slice(&io_control_code.to_le_bytes());
+    encoded_header.extend_from_slice(&[0; 20]); // Padding
+    encoded_header.extend_from_slice(input);
+    encoded_header
 }
 
 fn encoded_printer_create_request(path_length: u32) -> Vec<u8> {
@@ -535,7 +548,7 @@ fn smartcard_device_announce_remains_pre_logon() {
 }
 
 fn encoded_smartcard_establish_context_request(output_buffer_length: u32) -> Vec<u8> {
-    let mut encoded = encode_vec(&RdpdrPdu::DeviceIoRequest(DeviceIoRequest {
+    let header = encode_vec(&RdpdrPdu::DeviceIoRequest(DeviceIoRequest {
         device_id: 1,
         file_id: 0,
         completion_id: 0x200,
@@ -550,12 +563,8 @@ fn encoded_smartcard_establish_context_request(output_buffer_length: u32) -> Vec
         [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // dwScope + alignment padding
     ]
     .concat();
-    encoded.extend_from_slice(&output_buffer_length.to_le_bytes());
-    encoded.extend_from_slice(&u32::try_from(input.len()).unwrap().to_le_bytes());
-    encoded.extend_from_slice(&0x0009_0014u32.to_le_bytes()); // SCARD_IOCTL_ESTABLISHCONTEXT
-    encoded.extend_from_slice(&[0; 20]); // Padding
-    encoded.extend_from_slice(&input);
-    encoded
+    // SCARD_IOCTL_ESTABLISHCONTEXT
+    encoded_device_control_request(header, output_buffer_length, 0x0009_0014, &input)
 }
 
 #[test]

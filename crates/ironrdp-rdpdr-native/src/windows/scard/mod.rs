@@ -142,18 +142,13 @@ impl ScardSession {
                 active_protocol,
             } => {
                 if code != ReturnCode::Success {
-                    return complete_connect(req, code, ScardHandle::from_native(context, 0), active_protocol);
+                    return connect_failed(req, code);
                 }
                 let ctx = context.native();
                 if !self.contexts.contains_key(&ctx) {
                     // SAFETY: orphan card after context vanished.
                     let _ = unsafe { SCardDisconnect(native_handle, 0) };
-                    return complete_connect(
-                        req,
-                        ReturnCode::InvalidHandle,
-                        ScardHandle::from_native(context, 0),
-                        CardProtocol::SCARD_PROTOCOL_UNDEFINED,
-                    );
+                    return connect_failed(req, ReturnCode::InvalidHandle);
                 }
                 self.cards.insert(native_handle, ctx);
                 complete_connect(
@@ -328,7 +323,7 @@ impl ScardSession {
         // SAFETY: WinSCard context allocation.
         let code = map_status(unsafe { SCardEstablishContext(scope, None, None, &mut native) });
         if code != ReturnCode::Success {
-            return complete_establish(req, code, ScardContext::from_native(0));
+            return establish_failed(req, code);
         }
         self.contexts.insert(native, ());
         complete_establish(req, ReturnCode::Success, ScardContext::from_native(native))
@@ -423,14 +418,7 @@ impl ScardSession {
         }
         let native_ctx = match self.ctx(call.common.context) {
             Ok(n) => n,
-            Err(c) => {
-                return Ok(vec![complete_connect(
-                    req,
-                    c,
-                    ScardHandle::from_native(call.common.context, 0),
-                    CardProtocol::SCARD_PROTOCOL_UNDEFINED,
-                )]);
-            }
+            Err(c) => return Ok(vec![connect_failed(req, c)]),
         };
         let context = call.common.context;
         self.defer(
@@ -460,14 +448,7 @@ impl ScardSession {
                     active_protocol: CardProtocol::from_bits_retain(active),
                 }
             },
-            move |req, c| {
-                complete_connect(
-                    req,
-                    c,
-                    ScardHandle::from_native(context, 0),
-                    CardProtocol::SCARD_PROTOCOL_UNDEFINED,
-                )
-            },
+            connect_failed,
         )
     }
 
@@ -1321,13 +1302,11 @@ fn complete_long(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode) ->
     complete_rpce(req, Box::new(LongReturn::new(code)))
 }
 fn complete_establish(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode, ctx: ScardContext) -> SvcMessage {
-    // MS-RDPESC 2.2.3: all fields besides ReturnCode are zero on failure.
-    let ctx = if code == ReturnCode::Success {
-        ctx
-    } else {
-        ScardContext::empty()
-    };
     complete_rpce(req, Box::new(EstablishContextReturn::new(code, ctx)))
+}
+// MS-RDPESC 2.2.3: all fields besides ReturnCode are zero on failure.
+fn establish_failed(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode) -> SvcMessage {
+    complete_establish(req, code, ScardContext::empty())
 }
 fn complete_gsc(
     req: DeviceControlRequest<ScardIoCtlCode>,
@@ -1342,13 +1321,11 @@ fn complete_connect(
     handle: ScardHandle,
     proto: CardProtocol,
 ) -> SvcMessage {
-    // MS-RDPESC 2.2.3: all fields besides ReturnCode are zero on failure.
-    let handle = if code == ReturnCode::Success {
-        handle
-    } else {
-        ScardHandle::empty()
-    };
     complete_rpce(req, Box::new(ConnectReturn::new(code, handle, proto)))
+}
+// MS-RDPESC 2.2.3: all fields besides ReturnCode are zero on failure.
+fn connect_failed(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode) -> SvcMessage {
+    complete_connect(req, code, ScardHandle::empty(), CardProtocol::SCARD_PROTOCOL_UNDEFINED)
 }
 fn complete_reconnect(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode, proto: CardProtocol) -> SvcMessage {
     complete_rpce(req, Box::new(ReconnectReturn::new(code, proto)))

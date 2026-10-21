@@ -238,6 +238,7 @@ impl ScardCall {
             ScardCall::Unsupported if io_ctl_code == ScardIoCtlCode::ReleaseTartedEvent => {
                 Box::new(LongReturn::new(return_code))
             }
+            // Unreachable today: every other `ScardIoCtlCode` decodes to a known call.
             ScardCall::Unsupported => return None,
         };
         Some(output)
