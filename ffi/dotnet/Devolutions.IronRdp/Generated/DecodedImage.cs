@@ -156,6 +156,37 @@ public partial class DecodedImage: IDisposable
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
+    public void CopyRectInto(InclusiveRectangle rect, byte[] buffer, nuint bufferStride)
+    {
+        unsafe
+        {
+            if (rect == null) throw new ArgumentNullException(nameof(rect));
+            if (buffer == null) throw new ArgumentNullException(nameof(buffer));
+            BorrowLease<Raw.DecodedImage>? selfLease = null;
+            BorrowLease<Raw.InclusiveRectangle>? rectLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Shared);
+                rectLease = rect._diplomatHandle.Lease(BorrowKind.Shared);
+                fixed (byte* bufferPtr = buffer)
+                {
+                    var result = Raw.DecodedImage.CopyRectInto(selfLease!.Ptr, rectLease!.Ptr, new DiplomatSliceMutU8 { Ptr = bufferPtr, Len = (nuint)buffer.Length }, bufferStride);
+                    if (!result.IsOk)
+                    {
+                        throw new IronRdpException(new IronRdpError(result.Err));
+                    }
+                    return;
+                }
+            }
+            finally
+            {
+                selfLease?.Release();
+                rectLease?.Release();
+            }
+        }
+    }
+
     private void Cleanup()
     {
         unsafe

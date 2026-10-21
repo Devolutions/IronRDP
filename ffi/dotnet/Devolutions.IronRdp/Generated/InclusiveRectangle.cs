@@ -177,6 +177,18 @@ public partial class InclusiveRectangle
         }
     }
 
+    /// <returns>
+    /// A <c>InclusiveRectangle</c> allocated on Rust side.
+    /// </returns>
+    public static InclusiveRectangle New(ushort left, ushort top, ushort right, ushort bottom)
+    {
+        unsafe
+        {
+            Raw.InclusiveRectangle* result = Raw.InclusiveRectangle.New(left, top, right, bottom);
+            return new InclusiveRectangle(result);
+        }
+    }
+
     private void Cleanup()
     {
         unsafe

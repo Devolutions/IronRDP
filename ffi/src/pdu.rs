@@ -39,6 +39,15 @@ pub mod ffi {
     pub struct InclusiveRectangle(pub ironrdp::pdu::geometry::InclusiveRectangle);
 
     impl InclusiveRectangle {
+        pub fn new(left: u16, top: u16, right: u16, bottom: u16) -> Box<InclusiveRectangle> {
+            Box::new(InclusiveRectangle(ironrdp::pdu::geometry::InclusiveRectangle {
+                left,
+                top,
+                right,
+                bottom,
+            }))
+        }
+
         #[diplomat::attr(auto, getter = "left")]
         pub fn get_left(&self) -> u16 {
             self.0.left
