@@ -176,9 +176,10 @@ impl Rdpdr {
 
     /// Adds port redirection capability and announces a serial or parallel port.
     ///
-    /// Like printers, ports are announced after the remote user logs on, and only when the
-    /// server advertises the port capability. IRPs targeting this device are dispatched to
-    /// [`RdpdrBackend::handle_port_io_request`].
+    /// Ports are only announced when the server advertises the port capability. Serial ports
+    /// are announced at Client ID Confirm, after the smart cards and in their own PDU, and
+    /// parallel ports after the remote user logs on, as mstsc does. IRPs targeting this device
+    /// are dispatched to [`RdpdrBackend::handle_port_io_request`].
     #[must_use]
     pub fn with_port(mut self, port: RdpdrPort) -> Self {
         let (device_id, kind, name) = port.into_parts();
@@ -455,11 +456,18 @@ impl Rdpdr {
             .map(|(device, (device_id, _))| (device, device_id))
             .unzip();
 
-        let mut messages = if device_list.is_empty() {
-            Vec::new()
-        } else {
-            self.announce_devices(device_list, device_ids)?
-        };
+        // Like mstsc, serial ports follow the smart cards in a Device List Announce of their own.
+        let (serial, other): (Vec<_>, Vec<_>) = device_list
+            .into_iter()
+            .zip(device_ids)
+            .partition(|(device, _)| !announce_all_devices && device.device_type() == DeviceType::Serial);
+        let mut messages = Vec::new();
+        for batch in [other, serial] {
+            if !batch.is_empty() {
+                let (device_list, device_ids) = batch.into_iter().unzip();
+                messages.extend(self.announce_devices(device_list, device_ids)?);
+            }
+        }
 
         self.client_id_confirmed = true;
         self.post_logon_devices_announced = announce_all_devices;
@@ -484,16 +492,33 @@ impl Rdpdr {
             .filter(|(device, (device_id, _))| {
                 !self.manually_announced_device_ids.contains(device_id)
                     && self.device_capability_negotiated(device)
-                    && !Self::is_pre_logon_device(device)
+                    // A pre-logon device is announced here when Client ID Confirm came before
+                    // the server capability that enables it, as mstsc does for serial ports.
+                    && (!Self::is_pre_logon_device(device) || !self.device_announced(*device_id))
             })
             .map(|(device, (device_id, _))| (device, device_id))
             .unzip();
 
-        if device_list.is_empty() {
-            return Ok(Vec::new());
+        // Late pre-logon devices go in their own announce, ahead of the post-logon batch.
+        let (pre_logon, post_logon): (Vec<_>, Vec<_>) = device_list
+            .into_iter()
+            .zip(device_ids)
+            .partition(|(device, _)| Self::is_pre_logon_device(device));
+        let mut messages = Vec::new();
+        for batch in [pre_logon, post_logon] {
+            if !batch.is_empty() {
+                let (device_list, device_ids) = batch.into_iter().unzip();
+                messages.extend(self.announce_devices(device_list, device_ids)?);
+            }
         }
+        Ok(messages)
+    }
 
-        self.announce_devices(device_list, device_ids)
+    /// Whether the device was announced in the current initialization sequence.
+    fn device_announced(&self, device_id: u32) -> bool {
+        self.pending_device_announcements.contains(&device_id)
+            || self.active_device_ids.contains(&device_id)
+            || self.rejected_device_ids.contains(&device_id)
     }
 
     /// Printers and ports are only announced when the server advertised their capability set.
@@ -505,8 +530,10 @@ impl Rdpdr {
         }
     }
 
+    /// Smart cards and serial ports are announced before logon, as mstsc does. Parallel ports
+    /// go with drives and printers once the user has logged on.
     fn is_pre_logon_device(device: &DeviceAnnounceHeader) -> bool {
-        matches!(device.device_type(), DeviceType::Smartcard)
+        matches!(device.device_type(), DeviceType::Smartcard | DeviceType::Serial)
     }
 
     fn enable_drive_capability(&mut self) {
@@ -877,17 +904,18 @@ impl Rdpdr {
         }
         let req = match req {
             Ok(req) => req,
-            Err(device_io_request) => {
+            Err(rejection) => {
                 // MS-RDPESP only describes create, close, read, write and device control for
                 // ports. Other requests are completed instead of tearing down the channel.
                 debug!(
-                    major = ?device_io_request.major_function,
-                    device_id = device_io_request.device_id,
-                    completion_id = device_io_request.completion_id,
-                    "Completing unsupported port IRP"
+                    major = ?rejection.device_io_request.major_function,
+                    device_id = rejection.device_io_request.device_id,
+                    completion_id = rejection.device_io_request.completion_id,
+                    status = ?rejection.io_status,
+                    "Completing rejected port IRP"
                 );
                 return Ok(vec![SvcMessage::from(DeviceIoCompletion::Padded(
-                    DeviceIoResponse::new(device_io_request, NtStatus::NOT_SUPPORTED),
+                    DeviceIoResponse::new(rejection.device_io_request, rejection.io_status),
                 ))]);
             }
         };

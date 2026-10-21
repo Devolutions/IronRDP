@@ -1,33 +1,34 @@
 //! Windows serial (COM) and parallel (LPT) port redirection for [MS-RDPESP].
 //!
-//! Each redirected port is opened once with asynchronous native I/O while the server
-//! holds at least one file open on it. Serial and parallel devices are exclusive, so all
-//! server file IDs for a port share the local handle. Reads, writes and device-control
-//! requests are forwarded unchanged to the local driver, and the driver's NTSTATUS and
-//! transfer count are returned as-is, as MS-RDPESP Appendix A describes for Windows.
-//! Requests the driver pends, such as reads waiting for data or
-//! `IOCTL_SERIAL_WAIT_ON_MASK`, complete later through
-//! [`PortSession::poll`]; closing a file cancels the requests still pending on it.
-//! A flush completes once the writes pending on its port when it arrived have completed,
-//! which is what the serial driver's own flush waits for.
+//! Like mstsc, every server create opens its own local handle, with the server's access and
+//! share mode and asynchronous native I/O, so a second open of an exclusive port fails as it
+//! would locally. A newly opened serial port gets its default configuration and mstsc's read
+//! and write timeouts, which bound reads that would otherwise wait for data indefinitely.
+//! Reads, writes and device-control requests are forwarded unchanged to the local driver,
+//! and the driver's NTSTATUS and transfer count are returned as-is, as MS-RDPESP Appendix A
+//! describes for Windows. Requests the driver pends, such as reads waiting for data or
+//! `IOCTL_SERIAL_WAIT_ON_MASK`, complete later through [`PortSession::poll`]; closing a file
+//! cancels the requests still pending on it and completes them before the close. A flush
+//! completes once the writes pending on its file when it arrived have completed, which is
+//! what the serial driver's own flush waits for.
 //!
 //! [MS-RDPESP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesp/
 
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread;
 use std::time::Instant;
 
 use ironrdp_rdpdr::pdu::RdpdrPdu;
+use ironrdp_rdpdr::pdu::efs::{CreateDisposition, DeviceCreateRequest};
 use ironrdp_rdpdr::pdu::efs::{
     DeviceCloseResponse, DeviceControlResponse, DeviceCreateResponse, DeviceFlushBuffersResponse, DeviceIoRequest,
     DeviceIoResponse, DeviceReadResponse, DeviceWriteResponse, Information, NtStatus,
 };
-use ironrdp_rdpdr::pdu::esp::PortIoRequest;
+use ironrdp_rdpdr::pdu::esp::{PortIoCtlCode, PortIoRequest};
 use ironrdp_rdpdr::{RdpdrPort, RdpdrPortKind};
 use ironrdp_svc::SvcMessage;
 use tracing::{debug, warn};
@@ -35,20 +36,17 @@ use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 
 use super::printer::RdpdrWorkerThreadHooks;
 use windows::Wdk::Storage::FileSystem::{
-    FILE_NON_DIRECTORY_FILE, FILE_OPEN, NtCancelIoFileEx, NtCreateFile, NtReadFile, NtWriteFile,
+    FILE_NON_DIRECTORY_FILE, NTCREATEFILE_CREATE_DISPOSITION, NtCancelIoFileEx, NtCreateFile, NtReadFile, NtWriteFile,
 };
 use windows::Wdk::System::IO::NtDeviceIoControlFile;
-use windows::Win32::Foundation::{
-    CloseHandle, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS, HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE,
-    UNICODE_STRING, WAIT_OBJECT_0,
+use windows::Win32::Devices::Communication::{
+    COMMCONFIG, COMMTIMEOUTS, GetCommTimeouts, GetDefaultCommConfigW, SetCommState, SetCommTimeouts,
 };
+use windows::Win32::Foundation::{CloseHandle, HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, UNICODE_STRING, WAIT_OBJECT_0};
 use windows::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_MODE, QueryDosDeviceW,
+    FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_MODE, QueryDosDeviceW,
 };
 use windows::Win32::System::IO::IO_STATUS_BLOCK;
-use windows::Win32::System::Registry::{
-    HKEY, HKEY_LOCAL_MACHINE, KEY_READ, REG_SZ, RegCloseKey, RegEnumValueW, RegOpenKeyExW,
-};
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
 use windows::core::{PCWSTR, PWSTR};
 
@@ -63,8 +61,12 @@ const MAX_OPEN_PORT_FILES: usize = 64;
 const CANCELLATION_TIMEOUT: Duration = Duration::from_secs(2);
 const STATUS_PENDING: NTSTATUS = NTSTATUS(0x0000_0103);
 
-const SERIALCOMM_KEY: &str = r"HARDWARE\DEVICEMAP\SERIALCOMM";
-const PARALLEL_PORTS_KEY: &str = r"HARDWARE\DEVICEMAP\PARALLEL PORTS";
+/// Timeouts mstsc sets on every newly opened serial port, in milliseconds.
+const READ_INTERVAL_TIMEOUT_MS: u32 = 200;
+const READ_TOTAL_TIMEOUT_CONSTANT_MS: u32 = 5_000;
+const WRITE_TOTAL_TIMEOUT_CONSTANT_MS: u32 = 60_000;
+/// Marks a DOS device that is itself a redirected port, as in a nested remote session.
+const REDIRECTED_PORT_TARGET: &str = "RDPDR";
 
 /// Which local ports of one kind to redirect.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -125,25 +127,24 @@ pub struct LocalPort {
 
 /// Lists the serial and parallel ports on this computer.
 ///
-/// Ports are the `COM<n>` and `LPT<n>` DOS devices, like the names mstsc probes, plus the
-/// names port drivers publish in `HKLM\HARDWARE\DEVICEMAP\SERIALCOMM` and
-/// `HKLM\HARDWARE\DEVICEMAP\PARALLEL PORTS`. Names without a DOS device link are skipped.
+/// Like mstsc, ports are the `COM<n>` and `LPT<n>` DOS devices, including ports that are
+/// currently in use. Ports that are themselves redirected from another client, as in a
+/// nested remote session, are skipped. Unlike mstsc, which probes `COM1`..`COM32` and
+/// `LPT0`..`LPT9` by opening each one, the DOS device list is read without opening the
+/// ports, and there is no upper bound on the port number.
 pub fn local_ports() -> Vec<LocalPort> {
     let dos_devices = dos_device_names();
     let mut ports = Vec::new();
-    for (kind, prefix, key) in [
-        (RdpdrPortKind::Serial, "COM", SERIALCOMM_KEY),
-        (RdpdrPortKind::Parallel, "LPT", PARALLEL_PORTS_KEY),
-    ] {
-        let numbered = dos_devices.iter().filter(|name| {
-            name.strip_prefix(prefix)
-                .is_some_and(|number| !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
-        });
-        let mapped = registry_string_values(key)
-            .into_iter()
-            .filter_map(|name| normalize_port_name(&name))
-            .filter(|name| dos_device_exists(name));
-        let mut names = numbered.cloned().chain(mapped).collect::<Vec<_>>();
+    for (kind, prefix) in [(RdpdrPortKind::Serial, "COM"), (RdpdrPortKind::Parallel, "LPT")] {
+        let mut names = dos_devices
+            .iter()
+            .filter(|name| {
+                name.strip_prefix(prefix)
+                    .is_some_and(|number| !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
+            })
+            .filter(|name| !is_redirected_port(name))
+            .cloned()
+            .collect::<Vec<_>>();
         names.sort_by_key(|name| port_sort_key(name));
         names.dedup();
         ports.extend(names.into_iter().map(|name| LocalPort { kind, name }));
@@ -180,11 +181,13 @@ pub(super) fn resolve_ports(
                         warn!(port = %requested, "Ignoring invalid port name");
                         continue;
                     };
-                    // Virtual port drivers do not always publish their names in the device map.
-                    if local.iter().any(|port| port.kind == kind && port.name == name) || dos_device_exists(&name) {
+                    // Virtual ports can use names other than COM<n> and LPT<n>.
+                    if local.iter().any(|port| port.kind == kind && port.name == name)
+                        || dos_device_target(&name).is_some_and(|_| !is_redirected_port(&name))
+                    {
                         selected.push((kind, name));
                     } else {
-                        warn!(port = %name, "Ignoring port that is not present on this computer");
+                        warn!(port = %name, "Ignoring port that is not present on this computer or is redirected");
                     }
                 }
             }
@@ -258,76 +261,23 @@ fn dos_device_names() -> Vec<String> {
     }
 }
 
-fn dos_device_exists(name: &str) -> bool {
+/// Returns the NT target of a DOS device, or `None` if it does not exist.
+fn dos_device_target(name: &str) -> Option<String> {
     let name = wide(name);
-    let mut target = [0u16; 512];
+    let mut target = [0u16; 1024];
     // SAFETY: `name` is a NUL-terminated UTF-16 string and `target` is a writable buffer whose
     // length the binding passes alongside it.
     let length = unsafe { QueryDosDeviceW(PCWSTR(name.as_ptr()), Some(&mut target)) };
-    length != 0
+    let length = usize::try_from(length).expect("u32 fits in usize").min(target.len());
+    // The result holds NUL-separated targets; the first one is the active link.
+    (length != 0).then(|| {
+        let first = target[..length].split(|unit| *unit == 0).next().unwrap_or_default();
+        String::from_utf16_lossy(first)
+    })
 }
 
-fn registry_string_values(subkey: &str) -> Vec<String> {
-    struct RegistryKey(HKEY);
-
-    impl Drop for RegistryKey {
-        fn drop(&mut self) {
-            // SAFETY: the key was opened by RegOpenKeyExW and is closed exactly once here.
-            let _ = unsafe { RegCloseKey(self.0) };
-        }
-    }
-
-    let subkey = wide(subkey);
-    let mut key = HKEY::default();
-    // SAFETY: `subkey` is NUL-terminated and `key` is valid writable storage for the opened key.
-    let status = unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, PCWSTR(subkey.as_ptr()), None, KEY_READ, &mut key) };
-    if status != ERROR_SUCCESS {
-        // The key only exists while at least one port of that kind is installed.
-        debug!(key = %String::from_utf16_lossy(&subkey[..subkey.len() - 1]), ?status, "No port device map");
-        return Vec::new();
-    }
-    let key = RegistryKey(key);
-
-    let mut values = Vec::new();
-    for index in 0u32.. {
-        let mut value_name = [0u16; 256];
-        let mut value_name_length = u32::try_from(value_name.len()).expect("buffer length fits in u32");
-        let mut value_type = 0u32;
-        let mut data = [0u16; 256];
-        let mut data_length = u32::try_from(size_of_val(&data)).expect("buffer size fits in u32");
-        // SAFETY: every out pointer refers to writable local storage, and the length arguments
-        // describe the capacity of their buffers in characters and bytes respectively.
-        let status = unsafe {
-            RegEnumValueW(
-                key.0,
-                index,
-                Some(PWSTR(value_name.as_mut_ptr())),
-                &mut value_name_length,
-                None,
-                Some(&mut value_type),
-                Some(data.as_mut_ptr().cast()),
-                Some(&mut data_length),
-            )
-        };
-        if status == ERROR_NO_MORE_ITEMS {
-            break;
-        }
-        if status == ERROR_MORE_DATA {
-            continue;
-        }
-        if status != ERROR_SUCCESS {
-            warn!(?status, index, "Failed to enumerate port device map");
-            break;
-        }
-        if value_type != REG_SZ.0 {
-            continue;
-        }
-        let units = usize::try_from(data_length).expect("u32 fits in usize") / size_of::<u16>();
-        let value = &data[..units.min(data.len())];
-        let value = value.split(|unit| *unit == 0).next().unwrap_or_default();
-        values.push(String::from_utf16_lossy(value));
-    }
-    values
+fn is_redirected_port(name: &str) -> bool {
+    dos_device_target(name).is_some_and(|target| target.to_ascii_uppercase().contains(REDIRECTED_PORT_TARGET))
 }
 
 /// An owned native handle closed on drop.
@@ -353,7 +303,19 @@ fn port_device_path(name: &str) -> String {
     format!(r"\??\{name}")
 }
 
-fn open_port(path: &str) -> Result<OwnedHandle, NtStatus> {
+/// Opens a port for one server create with the server's access and share mode.
+///
+/// As mstsc does, FILE_SHARE_DELETE is dropped and the supersede and overwrite dispositions,
+/// which have no meaning for a device, are rejected.
+fn open_port(path: &str, create: &DeviceCreateRequest) -> Result<OwnedHandle, NtStatus> {
+    if matches!(
+        create.create_disposition,
+        CreateDisposition::FILE_SUPERSEDE | CreateDisposition::FILE_OVERWRITE
+    ) {
+        return Err(NtStatus::INVALID_PARAMETER);
+    }
+    let share_access = FILE_SHARE_MODE(create.shared_access.bits()) & !FILE_SHARE_DELETE;
+
     let mut path = path.encode_utf16().collect::<Vec<_>>();
     let path_length = path
         .len()
@@ -379,18 +341,17 @@ fn open_port(path: &str) -> Result<OwnedHandle, NtStatus> {
     // SAFETY:
     // - `path`, `unicode_name` and `object_attributes` stay alive for the entire call.
     // - `handle` and `io_status` are valid writable storage.
-    // - without FILE_SYNCHRONOUS_IO_* the handle is opened for asynchronous I/O, and a zero
-    //   share mode requests the exclusive access serial and parallel drivers require.
+    // - without FILE_SYNCHRONOUS_IO_* the handle is opened for asynchronous I/O.
     let status = unsafe {
         NtCreateFile(
             &mut handle,
-            FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+            FILE_ACCESS_RIGHTS(create.desired_access.bits()),
             &object_attributes,
             &mut io_status,
             None,
             FILE_ATTRIBUTE_NORMAL,
-            FILE_SHARE_MODE(0),
-            FILE_OPEN,
+            share_access,
+            NTCREATEFILE_CREATE_DISPOSITION(u32::from(create.create_disposition)),
             FILE_NON_DIRECTORY_FILE,
             None,
             0,
@@ -401,6 +362,44 @@ fn open_port(path: &str) -> Result<OwnedHandle, NtStatus> {
     }
 
     Ok(OwnedHandle(handle))
+}
+
+/// Gives a newly opened serial port its default configuration and mstsc's timeouts.
+///
+/// Like mstsc, nothing is changed when the default configuration cannot be read, and errors
+/// are ignored: the server configures the port itself through IOCTLs.
+fn apply_serial_defaults(handle: HANDLE, name: &str) {
+    let name = wide(name);
+    // COMMCONFIG ends with provider-specific data, so leave room after the fixed part.
+    let mut buffer = vec![0u64; 128];
+    let mut size = u32::try_from(size_of_val(buffer.as_slice())).expect("buffer size fits in u32");
+    let config = buffer.as_mut_ptr().cast::<COMMCONFIG>();
+    // SAFETY: `name` is NUL-terminated, and `config` points to `size` writable bytes aligned
+    // for COMMCONFIG.
+    if let Err(error) = unsafe { GetDefaultCommConfigW(PCWSTR(name.as_ptr()), config, &mut size) } {
+        debug!(%error, "No default serial port configuration; keeping the current one");
+        return;
+    }
+    // SAFETY: GetDefaultCommConfigW initialized the configuration.
+    let dcb = unsafe { (*config).dcb };
+    // SAFETY: the handle is an open serial port and `dcb` is a valid DCB.
+    if let Err(error) = unsafe { SetCommState(handle, &dcb) } {
+        debug!(%error, "Failed to apply the default serial port configuration");
+    }
+
+    let mut timeouts = COMMTIMEOUTS::default();
+    // SAFETY: the handle is an open serial port and `timeouts` is writable.
+    if let Err(error) = unsafe { GetCommTimeouts(handle, &mut timeouts) } {
+        debug!(%error, "Failed to read serial port timeouts");
+        return;
+    }
+    timeouts.ReadIntervalTimeout = READ_INTERVAL_TIMEOUT_MS;
+    timeouts.ReadTotalTimeoutConstant = READ_TOTAL_TIMEOUT_CONSTANT_MS;
+    timeouts.WriteTotalTimeoutConstant = WRITE_TOTAL_TIMEOUT_CONSTANT_MS;
+    // SAFETY: the handle is an open serial port and `timeouts` is a valid COMMTIMEOUTS.
+    if let Err(error) = unsafe { SetCommTimeouts(handle, &timeouts) } {
+        debug!(%error, "Failed to set serial port timeouts");
+    }
 }
 
 fn to_nt_status(status: NTSTATUS) -> NtStatus {
@@ -427,7 +426,15 @@ unsafe impl Send for PortIo {}
 enum PortIoKind {
     Read,
     Write,
-    DeviceControl,
+    DeviceControl(PortIoCtlCode),
+}
+
+/// Like mstsc, a wait-on-mask completion always carries its 4-byte event mask.
+fn control_output(code: PortIoCtlCode, mut output: Vec<u8>) -> Vec<u8> {
+    if code == PortIoCtlCode::IOCTL_SERIAL_WAIT_ON_MASK {
+        output.resize(size_of::<u32>(), 0);
+    }
+    output
 }
 
 impl PortIo {
@@ -456,7 +463,7 @@ impl PortIo {
     /// # Safety
     ///
     /// When this returns `STATUS_PENDING`, `self` must stay allocated and unmoved until its event is signaled.
-    unsafe fn submit(&mut self, handle: HANDLE, io_control_code: u32) -> NTSTATUS {
+    unsafe fn submit(&mut self, handle: HANDLE) -> NTSTATUS {
         // MS-RDPESP: the Offset field of reads and writes is ignored. Asynchronous handles
         // still require an explicit byte offset.
         let offset = 0i64;
@@ -493,14 +500,14 @@ impl PortIo {
                 )
             },
             // SAFETY: as for reads; empty buffers are passed as null pointers with a zero length.
-            PortIoKind::DeviceControl => unsafe {
+            PortIoKind::DeviceControl(code) => unsafe {
                 NtDeviceIoControlFile(
                     handle,
                     Some(self.event.0),
                     None,
                     None,
                     &mut self.io_status,
-                    io_control_code,
+                    u32::from(code),
                     (!self.input.is_empty()).then(|| self.input.as_ptr().cast()),
                     input_length,
                     (!self.output.is_empty()).then(|| self.output.as_mut_ptr().cast()),
@@ -556,12 +563,12 @@ impl PortIo {
                 device_io_reply: reply,
                 length: u32::try_from(transferred.min(self.input.len())).expect("PDU-bounded write fits in u32"),
             })),
-            PortIoKind::DeviceControl => {
+            PortIoKind::DeviceControl(code) => {
                 self.output.truncate(transferred.min(self.output.len()));
                 SvcMessage::from(RdpdrPdu::DeviceControlResponse(DeviceControlResponse::with_raw_output(
                     self.request.clone(),
                     io_status,
-                    core::mem::take(&mut self.output),
+                    control_output(code, core::mem::take(&mut self.output)),
                 )))
             }
         }
@@ -635,7 +642,7 @@ impl fmt::Debug for PortIoSlot {
     }
 }
 
-/// A flush waits for the writes on its device that were pending when it arrived.
+/// A flush waits for the writes on its file that were pending when it arrived.
 #[derive(Debug)]
 struct PendingFlush {
     device_id: u32,
@@ -647,10 +654,8 @@ struct PendingFlush {
 /// Serial and parallel port state for one RDPDR channel lifetime.
 #[derive(Debug)]
 pub(super) struct PortSession {
-    /// NT device path of each configured port, by device ID.
-    ports: HashMap<u32, String>,
-    handles: HashMap<u32, Arc<OwnedHandle>>,
-    files: HashMap<u32, u32>,
+    ports: HashMap<u32, ConfiguredPort>,
+    files: HashMap<u32, OpenPortFile>,
     next_file_id: u32,
     next_operation_id: u64,
     pending: HashMap<u64, PendingPortIo>,
@@ -660,14 +665,38 @@ pub(super) struct PortSession {
     worker_thread_hooks: Option<RdpdrWorkerThreadHooks>,
 }
 
+#[derive(Debug)]
+struct ConfiguredPort {
+    kind: RdpdrPortKind,
+    /// The DOS name, such as `COM3`.
+    name: String,
+    /// The NT path opened for each server create, such as `\??\COM3`.
+    path: String,
+}
+
+/// One server file, backed by its own local handle.
+#[derive(Debug)]
+struct OpenPortFile {
+    device_id: u32,
+    handle: Arc<OwnedHandle>,
+}
+
 impl PortSession {
     pub(super) fn new(ports: Vec<RdpdrPort>, worker_thread_hooks: Option<RdpdrWorkerThreadHooks>) -> Self {
         Self {
             ports: ports
                 .into_iter()
-                .map(|port| (port.device_id(), port_device_path(port.name())))
+                .map(|port| {
+                    (
+                        port.device_id(),
+                        ConfiguredPort {
+                            kind: port.kind(),
+                            name: port.name().to_owned(),
+                            path: port_device_path(port.name()),
+                        },
+                    )
+                })
                 .collect(),
-            handles: HashMap::new(),
             files: HashMap::new(),
             next_file_id: 1,
             next_operation_id: 1,
@@ -685,43 +714,44 @@ impl PortSession {
 
     pub(super) fn handle(&mut self, req: PortIoRequest) -> Vec<SvcMessage> {
         let device_id = req.device_io_request().device_id;
-        let Some(path) = self.ports.get(&device_id) else {
+        if !self.ports.contains_key(&device_id) {
             return vec![SvcMessage::from(req.failure_response(NtStatus::INVALID_DEVICE_REQUEST))];
-        };
-        let path = path.clone();
+        }
 
         if !matches!(req, PortIoRequest::Create(_)) {
             let file_id = req.device_io_request().file_id;
-            if self.files.get(&file_id) != Some(&device_id) {
+            if self.files.get(&file_id).map(|file| file.device_id) != Some(device_id) {
                 return vec![SvcMessage::from(req.failure_response(NtStatus::INVALID_HANDLE))];
             }
         }
 
         match req {
             PortIoRequest::Create(create) => {
-                vec![SvcMessage::from(RdpdrPdu::DeviceCreateResponse(
-                    self.create(create.device_io_request, &path),
-                ))]
+                vec![SvcMessage::from(RdpdrPdu::DeviceCreateResponse(self.create(create)))]
             }
             PortIoRequest::Close(close) => self.close(close.device_io_request),
             PortIoRequest::Read(read) => {
                 let length = usize::try_from(read.length)
                     .unwrap_or(usize::MAX)
                     .min(MAX_PORT_TRANSFER);
-                self.submit(PortIoKind::Read, read.device_io_request, 0, Vec::new(), length)
+                self.submit(PortIoKind::Read, read.device_io_request, Vec::new(), length)
             }
-            PortIoRequest::Write(write) => {
-                self.submit(PortIoKind::Write, write.device_io_request, 0, write.write_data, 0)
-            }
+            PortIoRequest::Write(write) => self.submit(PortIoKind::Write, write.device_io_request, write.write_data, 0),
             PortIoRequest::DeviceControl(control) => {
                 let output_length = usize::try_from(control.request.output_buffer_length)
                     .unwrap_or(usize::MAX)
                     .min(MAX_PORT_TRANSFER);
-                let code = u32::from(control.request.io_control_code);
+                let code = control.request.io_control_code;
+                if let Err(status) = code.check_buffers(&control.input_buffer, control.request.output_buffer_length) {
+                    return vec![failure_completion(
+                        PortIoKind::DeviceControl(code),
+                        control.request.header,
+                        status,
+                    )];
+                }
                 self.submit(
-                    PortIoKind::DeviceControl,
+                    PortIoKind::DeviceControl(code),
                     control.request.header,
-                    code,
                     control.input_buffer,
                     output_length,
                 )
@@ -730,7 +760,8 @@ impl PortSession {
         }
     }
 
-    fn create(&mut self, request: DeviceIoRequest, path: &str) -> DeviceCreateResponse {
+    fn create(&mut self, create: DeviceCreateRequest) -> DeviceCreateResponse {
+        let request = create.device_io_request.clone();
         let device_id = request.device_id;
         let fail = |request, status| DeviceCreateResponse {
             device_io_reply: DeviceIoResponse::new(request, status),
@@ -740,22 +771,28 @@ impl PortSession {
         if self.files.len() == MAX_OPEN_PORT_FILES {
             return fail(request, NtStatus::INSUFFICIENT_RESOURCES);
         }
+        let port = self.ports.get(&device_id).expect("the caller checked the device ID");
 
-        if let Entry::Vacant(entry) = self.handles.entry(device_id) {
-            match open_port(path) {
-                Ok(handle) => {
-                    debug!(port = %path, device_id, "Opened redirected port");
-                    entry.insert(Arc::new(handle));
-                }
-                Err(status) => {
-                    debug!(port = %path, device_id, ?status, "Failed to open redirected port");
-                    return fail(request, status);
-                }
+        let handle = match open_port(&port.path, &create) {
+            Ok(handle) => handle,
+            Err(status) => {
+                debug!(port = %port.name, device_id, ?status, "Failed to open redirected port");
+                return fail(request, status);
             }
+        };
+        if port.kind == RdpdrPortKind::Serial {
+            apply_serial_defaults(handle.0, &port.name);
         }
+        debug!(port = %port.name, device_id, "Opened redirected port");
 
         let file_id = self.allocate_file_id();
-        self.files.insert(file_id, device_id);
+        self.files.insert(
+            file_id,
+            OpenPortFile {
+                device_id,
+                handle: Arc::new(handle),
+            },
+        );
         DeviceCreateResponse {
             device_io_reply: DeviceIoResponse::new(request, NtStatus::SUCCESS),
             file_id,
@@ -778,12 +815,13 @@ impl PortSession {
         // MS-RDPESP 3.2.5.1.3: the client MUST cancel pending I/O on the port before closing it.
         let mut messages =
             self.cancel(|device_id, file_id| device_id == request.device_id && file_id == request.file_id);
+        // Requests left to an unresponsive driver keep the handle open until they finish.
         self.files.remove(&request.file_id);
-        if !self.files.values().any(|device_id| *device_id == request.device_id) {
-            // Workers still finishing cancelled requests keep their own reference.
-            self.handles.remove(&request.device_id);
-            debug!(device_id = request.device_id, "Closed redirected port");
-        }
+        debug!(
+            device_id = request.device_id,
+            file_id = request.file_id,
+            "Closed redirected port"
+        );
         messages.push(SvcMessage::from(RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
             device_io_response: DeviceIoResponse::new(request, NtStatus::SUCCESS),
         })));
@@ -794,14 +832,15 @@ impl PortSession {
         &mut self,
         kind: PortIoKind,
         request: DeviceIoRequest,
-        io_control_code: u32,
         input: Vec<u8>,
         output_length: usize,
     ) -> Vec<SvcMessage> {
         let handle = Arc::clone(
-            self.handles
-                .get(&request.device_id)
-                .expect("open files keep their port handle"),
+            &self
+                .files
+                .get(&request.file_id)
+                .expect("the caller checked the file ID")
+                .handle,
         );
         if self.outstanding() >= MAX_PENDING_PORT_OPERATIONS {
             return vec![failure_completion(kind, request, NtStatus::INSUFFICIENT_RESOURCES)];
@@ -813,7 +852,7 @@ impl PortSession {
 
         // SAFETY: a pending request stays boxed and owned, first by this function and then by
         // the worker that waits for its event, until the driver completes it.
-        let status = unsafe { io.submit(handle.0, io_control_code) };
+        let status = unsafe { io.submit(handle.0) };
         if status != STATUS_PENDING {
             // A request the driver completed synchronously has already updated its status block.
             // One rejected before reaching the driver carries no data.
@@ -903,7 +942,7 @@ impl PortSession {
             .pending
             .iter()
             .filter_map(|(operation_id, io)| {
-                (io.device_id == request.device_id && io.kind == PortIoKind::Write).then_some(*operation_id)
+                (io.file_id == request.file_id && io.kind == PortIoKind::Write).then_some(*operation_id)
             })
             .collect::<Vec<_>>();
         if writes.is_empty() {
@@ -1005,16 +1044,24 @@ impl PortSession {
     pub(super) fn reset(&mut self) {
         let _ = self.cancel(|_, _| true);
         self.files.clear();
-        self.handles.clear();
     }
 }
 
 #[cfg(test)]
 impl PortSession {
     /// Configures one port opened from an arbitrary NT path instead of its DOS device.
+    ///
+    /// The port is parallel, so opening it does not apply serial defaults.
     fn with_device_path(device_id: u32, path: String) -> Self {
         let mut session = Self::new(Vec::new(), None);
-        session.ports.insert(device_id, path);
+        session.ports.insert(
+            device_id,
+            ConfiguredPort {
+                kind: RdpdrPortKind::Parallel,
+                name: "PIPE".to_owned(),
+                path,
+            },
+        );
         session
     }
 }
@@ -1055,8 +1102,8 @@ fn failure_completion(kind: PortIoKind, request: DeviceIoRequest, status: NtStat
             device_io_reply: reply,
             length: 0,
         })),
-        PortIoKind::DeviceControl => SvcMessage::from(RdpdrPdu::DeviceControlResponse(
-            DeviceControlResponse::with_raw_output(request, status, Vec::new()),
+        PortIoKind::DeviceControl(code) => SvcMessage::from(RdpdrPdu::DeviceControlResponse(
+            DeviceControlResponse::with_raw_output(request, status, control_output(code, Vec::new())),
         )),
     }
 }
@@ -1133,24 +1180,33 @@ mod tests {
 
     #[test]
     fn opening_a_missing_port_fails_with_the_driver_status() {
-        use ironrdp_rdpdr::pdu::efs::{MajorFunction, MinorFunction};
-
         let mut session = PortSession::new(
             vec![RdpdrPort::new(7, RdpdrPortKind::Serial, "COM250".to_owned()).expect("valid port name")],
             None,
         );
-        let response = session.create(
-            DeviceIoRequest {
-                device_id: 7,
-                file_id: 0,
-                completion_id: 1,
-                major_function: MajorFunction::Create,
-                minor_function: MinorFunction::from(0),
-            },
-            r"\??\COM250",
-        );
-        assert_ne!(response.device_io_reply.io_status, NtStatus::SUCCESS);
-        assert_eq!(response.file_id, 0);
+        let response = session.handle(create_request(1));
+        let response = response[0].encode_unframed_pdu().expect("encode create completion");
+        assert_ne!(status_of(&response), NtStatus::SUCCESS);
+        assert_eq!(u32::from_le_bytes(response[16..20].try_into().expect("file ID")), 0);
+        assert!(session.files.is_empty());
+    }
+
+    #[test]
+    fn supersede_and_overwrite_creates_are_rejected() {
+        use ironrdp_rdpdr::pdu::efs::CreateDisposition;
+
+        let mut session = PortSession::with_device_path(7, r"\??\pipe\ironrdp-port-test-unused".to_owned());
+        for disposition in [CreateDisposition::FILE_SUPERSEDE, CreateDisposition::FILE_OVERWRITE] {
+            let PortIoRequest::Create(mut create) = create_request(1) else {
+                unreachable!("create_request builds a create");
+            };
+            create.create_disposition = disposition;
+            let response = session.handle(PortIoRequest::Create(create));
+            assert_eq!(
+                status_of(&response[0].encode_unframed_pdu().expect("encode create completion")),
+                NtStatus::INVALID_PARAMETER
+            );
+        }
         assert!(session.files.is_empty());
     }
 
@@ -1185,22 +1241,28 @@ mod tests {
         }
     }
 
-    fn create_file(session: &mut PortSession, completion_id: u32) -> u32 {
+    /// A create with the read and write access a server application asks for.
+    fn create_request(completion_id: u32) -> PortIoRequest {
         use ironrdp_rdpdr::pdu::efs::{
             CreateDisposition, CreateOptions, DesiredAccess, DeviceCreateRequest, FileAttributes, MajorFunction,
             SharedAccess,
         };
 
-        let create = session.handle(PortIoRequest::Create(DeviceCreateRequest {
+        PortIoRequest::Create(DeviceCreateRequest {
             device_io_request: io_request(MajorFunction::Create, 0, completion_id),
-            desired_access: DesiredAccess::empty(),
+            // FILE_GENERIC_READ | FILE_GENERIC_WRITE
+            desired_access: DesiredAccess::from_bits_retain(0x0012_019F),
             allocation_size: 0,
             file_attributes: FileAttributes::empty(),
             shared_access: SharedAccess::empty(),
             create_disposition: CreateDisposition::FILE_OPEN,
             create_options: CreateOptions::empty(),
             path: String::new(),
-        }));
+        })
+    }
+
+    fn create_file(session: &mut PortSession, completion_id: u32) -> u32 {
+        let create = session.handle(create_request(completion_id));
         let create = create[0].encode_unframed_pdu().expect("encode create completion");
         assert_eq!(status_of(&create), NtStatus::SUCCESS);
         let file_id = u32::from_le_bytes(create[16..20].try_into().expect("file ID"));
@@ -1324,6 +1386,29 @@ mod tests {
         assert_ne!(status_of(&control), NtStatus::SUCCESS);
         assert_eq!(u32::from_le_bytes(control[16..20].try_into().expect("length")), 0);
 
+        let control = |completion_id, code, output_buffer_length| {
+            PortIoRequest::DeviceControl(DecodedDeviceControlRequest {
+                request: DeviceControlRequest {
+                    header: io_request(MajorFunction::DeviceControl, file_id, completion_id),
+                    output_buffer_length,
+                    input_buffer_length: 0,
+                    io_control_code: code,
+                },
+                input_buffer: Vec::new(),
+            })
+        };
+        // Like mstsc, a wait-on-mask completion always carries a 4-byte mask, even on failure.
+        let wait = session.handle(control(10, PortIoCtlCode::IOCTL_SERIAL_WAIT_ON_MASK, 4));
+        let wait = wait[0].encode_unframed_pdu().expect("encode wait completion");
+        assert_ne!(status_of(&wait), NtStatus::SUCCESS);
+        assert_eq!(u32::from_le_bytes(wait[16..20].try_into().expect("length")), 4);
+        // Too-short buffers are rejected before reaching the driver.
+        let status = session.handle(control(11, PortIoCtlCode::IOCTL_SERIAL_GET_COMMSTATUS, 18));
+        assert_eq!(
+            status_of(&status[0].encode_unframed_pdu().expect("encode status completion")),
+            NtStatus::BUFFER_TOO_SMALL
+        );
+
         // Closing cancels the pending read before completing the close.
         assert!(session.handle(read(5)).is_empty());
         let close = session.handle(close_request(file_id, 6));
@@ -1337,45 +1422,55 @@ mod tests {
         let closed = close[1].encode_unframed_pdu().expect("encode close completion");
         assert_eq!(u32::from_le_bytes(closed[8..12].try_into().expect("completion ID")), 6);
         assert_eq!(status_of(&closed), NtStatus::SUCCESS);
-        assert!(session.handles.is_empty());
+        assert!(session.files.is_empty());
         assert!(session.poll().is_empty());
     }
 
     /// A request that completed but was not polled yet keeps its status block allocated, so closing
-    /// its file cannot cancel a later request that would otherwise reuse the address.
+    /// its file reports its real result instead of cancelling an unrelated request.
     #[test]
-    fn closing_a_completed_request_before_polling_leaves_other_files_pending() {
-        let (server, mut session, first) = open_pipe_port();
-        let second = create_file(&mut session, 2);
-        assert_ne!(first, second);
+    fn closing_a_file_reports_a_completed_request_that_was_not_polled() {
+        let (server, mut session, file_id) = open_pipe_port();
 
-        assert!(session.handle(read_request(first, 3)).is_empty());
+        assert!(session.handle(read_request(file_id, 3)).is_empty());
         write_to_pipe(&server, b"one");
         let deadline = Instant::now() + Duration::from_secs(5);
         while !session.pending.values().all(|io| io.slot.is_finished()) {
             assert!(Instant::now() < deadline, "first read did not complete");
             thread::sleep(Duration::from_millis(5));
         }
+        assert!(session.handle(read_request(file_id, 4)).is_empty());
 
-        assert!(session.handle(read_request(second, 4)).is_empty());
-        let close = session.handle(close_request(first, 5));
-        assert_eq!(close.len(), 2);
-        let first_read = close[0].encode_unframed_pdu().expect("encode first read");
-        assert_eq!(completion_id_of(&first_read), 3);
-        assert_eq!(status_of(&first_read), NtStatus::SUCCESS);
-        assert_eq!(&first_read[20..], b"one");
+        let close = session.handle(close_request(file_id, 5));
+        assert_eq!(close.len(), 3);
+        let mut reads = close[..2]
+            .iter()
+            .map(|message| message.encode_unframed_pdu().expect("encode read completion"))
+            .collect::<Vec<_>>();
+        reads.sort_by_key(|read| completion_id_of(read));
+        assert_eq!(completion_id_of(&reads[0]), 3);
+        assert_eq!(status_of(&reads[0]), NtStatus::SUCCESS);
+        assert_eq!(&reads[0][20..], b"one");
+        assert_eq!(completion_id_of(&reads[1]), 4);
+        assert_eq!(status_of(&reads[1]), NtStatus::CANCELLED);
         assert_eq!(
-            completion_id_of(&close[1].encode_unframed_pdu().expect("encode close")),
+            completion_id_of(&close[2].encode_unframed_pdu().expect("encode close")),
             5
         );
+    }
 
-        // The second file's read is still pending on the shared handle.
-        assert!(session.poll().is_empty());
-        write_to_pipe(&server, b"two");
-        let second_read = poll_until_completed(&mut session);
-        assert_eq!(completion_id_of(&second_read), 4);
-        assert_eq!(status_of(&second_read), NtStatus::SUCCESS);
-        assert_eq!(&second_read[20..], b"two");
+    /// Like mstsc, every server create opens its own handle, so a second open of an exclusive
+    /// device fails as it would locally.
+    #[test]
+    fn each_create_opens_its_own_handle() {
+        let (_server, mut session, file_id) = open_pipe_port();
+
+        // The test pipe has a single instance, which is already connected.
+        let second = session.handle(create_request(2));
+        let second = second[0].encode_unframed_pdu().expect("encode create completion");
+        assert_ne!(status_of(&second), NtStatus::SUCCESS);
+        assert_eq!(session.files.len(), 1);
+        assert!(session.files.contains_key(&file_id));
     }
 
     #[test]

@@ -75,9 +75,15 @@ fn port_channel(backend: Box<dyn RdpdrBackend>) -> Rdpdr {
         .with_port(RdpdrPort::new(PARALLEL_ID, RdpdrPortKind::Parallel, "LPT1".to_owned()).unwrap())
 }
 
-/// Runs the initialization sequence and returns the client capability response and the
-/// messages sent once the user logs on.
-fn initialize(rdpdr: &mut Rdpdr, server_supports_ports: bool) -> (Vec<u8>, Vec<SvcMessage>) {
+/// Messages the client sent while initializing.
+struct Initialized {
+    client_capability: Vec<u8>,
+    client_id_confirmed: Vec<SvcMessage>,
+    logged_on: Vec<SvcMessage>,
+}
+
+/// Runs the initialization sequence up to User Logged On.
+fn initialize(rdpdr: &mut Rdpdr, server_supports_ports: bool) -> Initialized {
     let client_id = announce_client_id(rdpdr, 12);
     let mut capabilities = vec![CapabilityMessage::new_general(0)];
     if server_supports_ports {
@@ -91,15 +97,13 @@ fn initialize(rdpdr: &mut Rdpdr, server_supports_ports: bool) -> (Vec<u8>, Vec<S
     assert_eq!(responses.len(), 1);
     let client_capability = responses[0].encode_unframed_pdu().unwrap();
 
-    // Ports are not pre-logon devices.
-    assert!(
-        rdpdr
-            .process(&encoded_server_client_id_confirm(client_id))
-            .unwrap()
-            .is_empty()
-    );
+    let client_id_confirmed = rdpdr.process(&encoded_server_client_id_confirm(client_id)).unwrap();
     let logged_on = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
-    (client_capability, logged_on)
+    Initialized {
+        client_capability,
+        client_id_confirmed,
+        logged_on,
+    }
 }
 
 fn acknowledge(rdpdr: &mut Rdpdr, device_id: u32) {
@@ -117,8 +121,9 @@ fn acknowledge(rdpdr: &mut Rdpdr, device_id: u32) {
 
 fn acknowledged_ports(backend: Box<dyn RdpdrBackend>) -> Rdpdr {
     let mut rdpdr = port_channel(backend);
-    let (_, logged_on) = initialize(&mut rdpdr, true);
-    assert_eq!(logged_on.len(), 1);
+    let initialized = initialize(&mut rdpdr, true);
+    assert_eq!(initialized.client_id_confirmed.len(), 1);
+    assert_eq!(initialized.logged_on.len(), 1);
     acknowledge(&mut rdpdr, SERIAL_ID);
     acknowledge(&mut rdpdr, PARALLEL_ID);
     rdpdr
@@ -212,30 +217,71 @@ fn port_names_must_fit_preferred_dos_name() {
 }
 
 #[test]
-fn ports_are_announced_after_logon_when_the_server_supports_them() {
-    let mut rdpdr = port_channel(Box::new(RecordingPortBackend::default()));
-    let (client_capability, logged_on) = initialize(&mut rdpdr, true);
+fn serial_ports_are_announced_before_logon_and_parallel_ports_after() {
+    let mut rdpdr = port_channel(Box::new(RecordingPortBackend::default())).with_smartcard(9);
+    let initialized = initialize(&mut rdpdr, true);
 
-    assert_eq!(read_u16(&client_capability[4..]), 2);
-    assert_eq!(read_u16(&client_capability[8 + 44..]), 0x0003);
-    assert_eq!(logged_on.len(), 1);
+    assert_eq!(read_u16(&initialized.client_capability[4..]), 2);
+    assert_eq!(read_u16(&initialized.client_capability[8 + 44..]), 0x0003);
+    // Like mstsc: the smart cards, then the serial ports in their own announce.
+    assert_eq!(initialized.client_id_confirmed.len(), 2);
     assert_eq!(
-        announced_devices(&logged_on[0]),
-        vec![(SERIAL_ID, DeviceType::Serial), (PARALLEL_ID, DeviceType::Parallel)]
+        announced_devices(&initialized.client_id_confirmed[0]),
+        vec![(9, DeviceType::Smartcard)]
+    );
+    assert_eq!(
+        announced_devices(&initialized.client_id_confirmed[1]),
+        vec![(SERIAL_ID, DeviceType::Serial)]
+    );
+    assert_eq!(initialized.logged_on.len(), 1);
+    assert_eq!(
+        announced_devices(&initialized.logged_on[0]),
+        vec![(PARALLEL_ID, DeviceType::Parallel)]
+    );
+}
+
+/// Windows sends Client ID Confirm before its capability request when it re-announces the
+/// channel for an existing session; serial ports are then announced at User Logged On.
+#[test]
+fn serial_ports_missed_at_client_id_confirm_are_announced_at_logon() {
+    let mut rdpdr = port_channel(Box::new(RecordingPortBackend::default()));
+    let client_id = announce_client_id(&mut rdpdr, 12);
+    assert!(
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .unwrap()
+            .is_empty()
+    );
+    let server_capability = RdpdrPdu::CoreCapability(CoreCapability {
+        capabilities: vec![CapabilityMessage::new_general(0), CapabilityMessage::new_port()],
+        kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
+    });
+    assert_eq!(
+        rdpdr.process(&encode_vec(&server_capability).unwrap()).unwrap().len(),
+        1
+    );
+
+    let logged_on = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
+    assert_eq!(logged_on.len(), 2);
+    assert_eq!(announced_devices(&logged_on[0]), vec![(SERIAL_ID, DeviceType::Serial)]);
+    assert_eq!(
+        announced_devices(&logged_on[1]),
+        vec![(PARALLEL_ID, DeviceType::Parallel)]
     );
 }
 
 #[test]
 fn ports_are_not_announced_without_server_port_capability() {
     let mut rdpdr = port_channel(Box::new(RecordingPortBackend::default()));
-    let (client_capability, logged_on) = initialize(&mut rdpdr, false);
+    let initialized = initialize(&mut rdpdr, false);
 
     assert_eq!(
-        read_u16(&client_capability[4..]),
+        read_u16(&initialized.client_capability[4..]),
         1,
         "only the general capability is echoed"
     );
-    assert!(logged_on.is_empty());
+    assert!(initialized.client_id_confirmed.is_empty());
+    assert!(initialized.logged_on.is_empty());
 }
 
 /// Device control and close requests and responses from [MS-RDPESP] 4.4.
@@ -397,8 +443,8 @@ fn unsupported_port_irps_are_completed_without_reaching_the_backend() {
 #[test]
 fn port_irps_before_acknowledgement_are_ignored() {
     let mut rdpdr = port_channel(Box::new(RecordingPortBackend::default()));
-    let (_, logged_on) = initialize(&mut rdpdr, true);
-    assert_eq!(logged_on.len(), 1);
+    let initialized = initialize(&mut rdpdr, true);
+    assert_eq!(initialized.logged_on.len(), 1);
 
     assert!(
         rdpdr
@@ -407,6 +453,77 @@ fn port_irps_before_acknowledgement_are_ignored() {
             .is_empty()
     );
     assert!(recorded_requests(&rdpdr).is_empty());
+}
+
+#[test]
+fn control_input_longer_than_the_pdu_is_completed_as_invalid_parameter() {
+    let mut rdpdr = acknowledged_ports(Box::new(RecordingPortBackend::default()));
+
+    let mut control = Vec::new();
+    control.extend_from_slice(&0u32.to_le_bytes()); // OutputBufferLength
+    control.extend_from_slice(&8u32.to_le_bytes()); // InputBufferLength
+    control.extend_from_slice(&u32::from(PortIoCtlCode::IOCTL_SERIAL_SET_QUEUE_SIZE).to_le_bytes());
+    control.extend_from_slice(&[0; 20]); // Padding
+    control.extend_from_slice(&[0; 4]); // Half of the declared input
+    let responses = rdpdr
+        .process(&encoded_port_request(SERIAL_ID, MajorFunction::DeviceControl, &control))
+        .unwrap();
+    assert_eq!(responses.len(), 1);
+    let encoded = responses[0].encode_unframed_pdu().unwrap();
+    assert_eq!(read_u32(&encoded[8..]), 0x10);
+    assert_eq!(ntstatus_at(&encoded, 12), NtStatus::INVALID_PARAMETER);
+    assert!(recorded_requests(&rdpdr).is_empty());
+}
+
+#[test]
+fn serial_ioctl_buffers_are_checked_like_mstsc() {
+    let timeouts = |interval, multiplier, constant| {
+        encode_vec(&SerialTimeouts {
+            read_interval_timeout: interval,
+            read_total_timeout_multiplier: multiplier,
+            read_total_timeout_constant: constant,
+            write_total_timeout_multiplier: 0,
+            write_total_timeout_constant: 0,
+        })
+        .unwrap()
+    };
+
+    for (code, input) in [
+        (PortIoCtlCode::IOCTL_SERIAL_SET_BAUD_RATE, &[0x80, 0x25, 0][..]),
+        (PortIoCtlCode::IOCTL_SERIAL_SET_QUEUE_SIZE, &[0; 7][..]),
+        (PortIoCtlCode::IOCTL_SERIAL_SET_TIMEOUTS, &[0; 19][..]),
+        (PortIoCtlCode::IOCTL_SERIAL_PURGE, &[0; 3][..]),
+    ] {
+        assert_eq!(
+            code.check_buffers(input, 0),
+            Err(NtStatus::BUFFER_TOO_SMALL),
+            "{code:?}"
+        );
+    }
+    assert_eq!(
+        PortIoCtlCode::IOCTL_SERIAL_WAIT_ON_MASK.check_buffers(&[], 3),
+        Err(NtStatus::BUFFER_TOO_SMALL)
+    );
+    assert_eq!(
+        PortIoCtlCode::IOCTL_SERIAL_GET_COMMSTATUS.check_buffers(&[], 19),
+        Err(NtStatus::BUFFER_TOO_SMALL)
+    );
+    assert_eq!(
+        PortIoCtlCode::IOCTL_SERIAL_SET_TIMEOUTS.check_buffers(&timeouts(u32::MAX, u32::MAX, u32::MAX), 0),
+        Err(NtStatus::INVALID_PARAMETER)
+    );
+
+    assert_eq!(
+        PortIoCtlCode::IOCTL_SERIAL_SET_TIMEOUTS.check_buffers(&timeouts(u32::MAX, 0, 0), 0),
+        Ok(())
+    );
+    assert_eq!(PortIoCtlCode::IOCTL_SERIAL_WAIT_ON_MASK.check_buffers(&[], 4), Ok(()));
+    assert_eq!(
+        PortIoCtlCode::IOCTL_SERIAL_GET_COMMSTATUS.check_buffers(&[], 20),
+        Ok(())
+    );
+    assert_eq!(PortIoCtlCode::IOCTL_SERIAL_SET_DTR.check_buffers(&[], 0), Ok(()));
+    assert_eq!(PortIoCtlCode::IOCTL_PAR_QUERY_INFORMATION.check_buffers(&[], 0), Ok(()));
 }
 
 #[test]

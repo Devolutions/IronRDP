@@ -143,6 +143,40 @@ impl PortIoCtlCode {
         Some(name)
     }
 
+    /// Checks the buffer sizes and values the serial driver requires before the request
+    /// reaches the device, as mstsc does.
+    ///
+    /// Too-short buffers fail with `STATUS_BUFFER_TOO_SMALL`. Timeouts that set the read
+    /// interval, multiplier and constant all to `MAXULONG` fail with `STATUS_INVALID_PARAMETER`.
+    /// Other codes are not checked.
+    pub fn check_buffers(self, input: &[u8], output_buffer_length: u32) -> Result<(), NtStatus> {
+        let required_input = match self {
+            Self::IOCTL_SERIAL_SET_BAUD_RATE | Self::IOCTL_SERIAL_PURGE => size_of::<u32>(),
+            Self::IOCTL_SERIAL_SET_QUEUE_SIZE => SerialQueueSize::SIZE,
+            Self::IOCTL_SERIAL_SET_TIMEOUTS => SerialTimeouts::SIZE,
+            _ => 0,
+        };
+        let required_output: u32 = match self {
+            Self::IOCTL_SERIAL_WAIT_ON_MASK => 4,    // SERIAL_EV_* mask
+            Self::IOCTL_SERIAL_GET_COMMSTATUS => 20, // SERIAL_STATUS with alignment padding
+            _ => 0,
+        };
+        if input.len() < required_input || output_buffer_length < required_output {
+            return Err(NtStatus::BUFFER_TOO_SMALL);
+        }
+        if self == Self::IOCTL_SERIAL_SET_TIMEOUTS {
+            let timeouts =
+                SerialTimeouts::decode(&mut ReadCursor::new(input)).map_err(|_| NtStatus::BUFFER_TOO_SMALL)?;
+            if timeouts.read_interval_timeout == u32::MAX
+                && timeouts.read_total_timeout_multiplier == u32::MAX
+                && timeouts.read_total_timeout_constant == u32::MAX
+            {
+                return Err(NtStatus::INVALID_PARAMETER);
+            }
+        }
+        Ok(())
+    }
+
     /// Whether the code uses the serial device type (`FILE_DEVICE_SERIAL_PORT`).
     pub fn is_serial(self) -> bool {
         self.0 >> 16 == 0x001B
@@ -202,13 +236,16 @@ pub enum PortIoRequest {
 impl PortIoRequest {
     const CLOSE_PADDING_SIZE: usize = 32;
 
-    /// Decodes a port request, or returns `Ok(Err(request))` for a major function that ports
-    /// do not implement. Such a request's body is discarded, because only the request kind
-    /// defines its layout.
+    /// Decodes a port request, or returns `Ok(Err(rejection))` for a request that must be
+    /// completed with a failure status instead of reaching the backend:
+    ///
+    /// - a major function that ports do not implement (`STATUS_NOT_SUPPORTED`), whose body
+    ///   is discarded because only the request kind defines its layout;
+    /// - a device control whose InputBufferLength exceeds the PDU (`STATUS_INVALID_PARAMETER`).
     pub fn decode_or_unsupported(
         dev_io_req: DeviceIoRequest,
         src: &mut ReadCursor<'_>,
-    ) -> DecodeResult<Result<Self, DeviceIoRequest>> {
+    ) -> DecodeResult<Result<Self, PortIoRejection>> {
         let req = match dev_io_req.major_function {
             MajorFunction::Create => Self::Create(DeviceCreateRequest::decode(dev_io_req, src)?),
             MajorFunction::Close => {
@@ -224,12 +261,25 @@ impl PortIoRequest {
                 src.advance(src.len());
                 Self::FlushBuffers(DeviceFlushBuffersRequest::decode(dev_io_req))
             }
-            MajorFunction::DeviceControl => Self::DeviceControl(
-                DeviceControlRequest::<PortIoCtlCode>::decode_with_input_buffer(dev_io_req, src)?,
-            ),
+            MajorFunction::DeviceControl => {
+                let request = DeviceControlRequest::<PortIoCtlCode>::decode(dev_io_req, src)?;
+                let input_buffer_length = usize::try_from(request.input_buffer_length).unwrap_or(usize::MAX);
+                if src.len() < input_buffer_length {
+                    src.advance(src.len());
+                    return Ok(Err(PortIoRejection {
+                        device_io_request: request.header,
+                        io_status: NtStatus::INVALID_PARAMETER,
+                    }));
+                }
+                let input_buffer = src.read_slice(input_buffer_length).to_vec();
+                Self::DeviceControl(DecodedDeviceControlRequest { request, input_buffer })
+            }
             _ => {
                 src.advance(src.len());
-                return Ok(Err(dev_io_req));
+                return Ok(Err(PortIoRejection {
+                    device_io_request: dev_io_req,
+                    io_status: NtStatus::NOT_SUPPORTED,
+                }));
             }
         };
 
@@ -279,6 +329,13 @@ impl PortIoRequest {
             }),
         }
     }
+}
+
+/// A port request completed by the channel before it reaches the backend.
+#[derive(Debug, PartialEq, Clone)]
+pub struct PortIoRejection {
+    pub device_io_request: DeviceIoRequest,
+    pub io_status: NtStatus,
 }
 
 bitflags! {
