@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 use alloc::collections::btree_map::BTreeMap;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
@@ -67,6 +68,35 @@ impl DvcChannelListener for OnceListener {
 
     fn is_available(&self) -> bool {
         self.inner.is_some()
+    }
+}
+
+/// Re-armable pre-registered DVC: a fresh processor is built for every DYNVC_CREATE_REQ.
+///
+/// Servers may create the same dynamic channel again during a session (xrdp re-creates the
+/// graphics pipeline channel after a Deactivation-Reactivation Sequence, for instance). A
+/// [`OnceListener`] rejects the second request with NO_LISTENER, silently losing the channel.
+struct FactoryListener<T, F> {
+    name: String,
+    first: Option<T>,
+    factory: F,
+}
+
+impl<T, F> DvcChannelListener for FactoryListener<T, F>
+where
+    T: DvcClientProcessor + 'static,
+    F: FnMut() -> T + Send,
+{
+    fn channel_name(&self) -> &str {
+        &self.name
+    }
+
+    fn create(&mut self, _channel_id: DynamicChannelId) -> Option<Box<dyn DvcClientProcessor>> {
+        let processor = match self.first.take() {
+            Some(processor) => processor,
+            None => (self.factory)(),
+        };
+        Some(Box::new(processor))
     }
 }
 
@@ -176,6 +206,22 @@ impl DrdynvcClient {
         T: DvcClientProcessor + 'static,
     {
         self.dynamic_channels.register_once(channel);
+        self
+    }
+
+    /// Registers a dynamic virtual channel built by `factory`, re-created each time the server
+    /// creates the channel (e.g. again after a Deactivation-Reactivation Sequence).
+    ///
+    /// Like [`DrdynvcClient::with_dynamic_channel`], the channel is retrievable by type with
+    /// [`DrdynvcClient::get_dvc`]; the lookup always resolves to the most recently created
+    /// instance.
+    #[must_use]
+    pub fn with_dynamic_channel_factory<T, F>(mut self, factory: F) -> Self
+    where
+        T: DvcClientProcessor + 'static,
+        F: FnMut() -> T + Send + 'static,
+    {
+        self.dynamic_channels.register_factory(factory);
         self
     }
 
@@ -622,6 +668,26 @@ impl DynamicChannelSet {
             name,
             ListenerEntry {
                 listener: Box::new(OnceListener::new(channel)),
+                type_id: Some(TypeId::of::<T>()),
+            },
+        );
+    }
+
+    fn register_factory<T, F>(&mut self, mut factory: F)
+    where
+        T: DvcClientProcessor + 'static,
+        F: FnMut() -> T + Send + 'static,
+    {
+        let first = factory();
+        let name = first.channel_name().to_owned();
+        self.listeners.insert(
+            name.clone(),
+            ListenerEntry {
+                listener: Box::new(FactoryListener {
+                    name,
+                    first: Some(first),
+                    factory,
+                }),
                 type_id: Some(TypeId::of::<T>()),
             },
         );
