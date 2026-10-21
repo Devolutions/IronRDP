@@ -115,6 +115,7 @@ impl RedirectedDevice {
             state: Arc::new(spin::Mutex::new(DeviceState {
                 backend: None,
                 activation_depth: 0,
+                holders: Vec::new(),
                 sink: None,
                 open_channels: 0,
             })),
@@ -577,6 +578,8 @@ struct DeviceState<B> {
     /// Created when the first channel opens and kept for the device's lifetime.
     backend: Option<B>,
     activation_depth: u32,
+    /// Activations held by each channel, as (channel id, count), summing to `activation_depth`.
+    holders: Vec<(u32, u32)>,
     sink: Option<SampleSink>,
     open_channels: u32,
 }
@@ -599,6 +602,42 @@ where
             }
         }
         self.activation_depth = 0;
+        self.holders.clear();
+    }
+
+    fn activate(&mut self, channel_id: u32) {
+        self.activation_depth += 1;
+        match self.holders.iter_mut().find(|(holder, _)| *holder == channel_id) {
+            Some((_, count)) => *count += 1,
+            None => self.holders.push((channel_id, 1)),
+        }
+    }
+
+    /// Releases one activation, preferring one held by `channel_id`.
+    ///
+    /// A channel may deactivate a device another channel activated; that activation then no
+    /// longer belongs to the other channel.
+    fn deactivate(&mut self, channel_id: u32) {
+        self.activation_depth = self.activation_depth.saturating_sub(1);
+        let position = self
+            .holders
+            .iter()
+            .position(|(holder, _)| *holder == channel_id)
+            .or_else(|| (!self.holders.is_empty()).then_some(0));
+        if let Some(position) = position {
+            self.holders[position].1 -= 1;
+            if self.holders[position].1 == 0 {
+                self.holders.swap_remove(position);
+            }
+        }
+    }
+
+    /// Returns the activations `channel_id` holds.
+    fn held_by(&self, channel_id: u32) -> u32 {
+        self.holders
+            .iter()
+            .find(|(holder, _)| *holder == channel_id)
+            .map_or(0, |(_, count)| *count)
     }
 }
 
@@ -613,8 +652,6 @@ pub struct DeviceClient<B> {
     uplink: SampleUplink,
     version: ProtocolVersion,
     channel_id: Option<u32>,
-    /// Activations requested on this channel, released when it closes.
-    activations: u32,
 }
 
 impl<B> DeviceClient<B>
@@ -628,6 +665,7 @@ where
         let state = Arc::new(spin::Mutex::new(DeviceState {
             backend: Some(backend),
             activation_depth: 0,
+            holders: Vec::new(),
             sink: None,
             open_channels: 0,
         }));
@@ -643,7 +681,6 @@ where
             uplink,
             version: ProtocolVersion::V1,
             channel_id: None,
-            activations: 0,
         }
     }
 
@@ -670,7 +707,7 @@ where
     }
 
     /// Handles one server request. `None` means the response is sent later.
-    fn respond(&mut self, request: DevicePdu) -> Option<DevicePdu> {
+    fn respond(&mut self, channel_id: u32, request: DevicePdu) -> Option<DevicePdu> {
         let device = Arc::clone(&self.device);
         let mut state = device.lock();
         let state = &mut *state;
@@ -686,8 +723,7 @@ where
                     return Some(DevicePdu::ErrorResponse(error));
                 }
             }
-            state.activation_depth += 1;
-            self.activations += 1;
+            state.activate(channel_id);
             return Some(DevicePdu::SuccessResponse);
         }
         if request.min_version() > self.version {
@@ -717,8 +753,7 @@ where
                         return Some(DevicePdu::ErrorResponse(error));
                     }
                 }
-                state.activation_depth -= 1;
-                self.activations = self.activations.saturating_sub(1);
+                state.deactivate(channel_id);
                 DevicePdu::SuccessResponse
             }
             DevicePdu::StreamListRequest => match backend.streams() {
@@ -750,25 +785,20 @@ where
                     Err(error) => DevicePdu::ErrorResponse(error),
                 },
             },
-            DevicePdu::StartStreamsRequest(streams) => {
-                let Some(channel_id) = self.channel_id else {
-                    return Some(DevicePdu::ErrorResponse(ErrorCode::Unexpected));
-                };
-                match start_streams(backend, &streams) {
-                    Err(error) => DevicePdu::ErrorResponse(error),
-                    Ok(()) => {
-                        let sink = SampleSink::new(channel_id, self.version, &streams, Arc::clone(&self.uplink));
-                        if let Err(error) = backend.start_streams(&streams, sink.clone()) {
-                            sink.stop();
-                            return Some(DevicePdu::ErrorResponse(error));
-                        }
-                        if let Some(previous) = state.sink.replace(sink) {
-                            previous.stop();
-                        }
-                        DevicePdu::SuccessResponse
+            DevicePdu::StartStreamsRequest(streams) => match start_streams(backend, &streams) {
+                Err(error) => DevicePdu::ErrorResponse(error),
+                Ok(()) => {
+                    let sink = SampleSink::new(channel_id, self.version, &streams, Arc::clone(&self.uplink));
+                    if let Err(error) = backend.start_streams(&streams, sink.clone()) {
+                        sink.stop();
+                        return Some(DevicePdu::ErrorResponse(error));
                     }
+                    if let Some(previous) = state.sink.replace(sink) {
+                        previous.stop();
+                    }
+                    DevicePdu::SuccessResponse
                 }
-            }
+            },
             DevicePdu::StopStreamsRequest => {
                 if let Some(sink) = &state.sink {
                     if let Err(error) = backend.stop_streams() {
@@ -787,9 +817,7 @@ where
                     });
                 };
                 // Samples answer on the channel that asked for them.
-                if let Some(channel_id) = self.channel_id {
-                    sink.route_to(channel_id);
-                }
+                sink.route_to(channel_id);
                 return match sink.request(stream_index) {
                     Ok(()) => {
                         backend.sample_requested(stream_index);
@@ -832,14 +860,18 @@ where
 
     /// Releases this channel's hold on the device.
     fn release(&mut self) {
+        let Some(channel_id) = self.channel_id else {
+            return;
+        };
         let mut state = self.device.lock();
-        state.activation_depth = state.activation_depth.saturating_sub(self.activations);
-        self.activations = 0;
-        if self.channel_id.is_some() {
-            state.open_channels = state.open_channels.saturating_sub(1);
-        }
-        if state.activation_depth == 0 || state.open_channels == 0 {
+        state.open_channels = state.open_channels.saturating_sub(1);
+        let held = state.held_by(channel_id);
+        // Shutting down sees the activations being released, so the backend still learns about them.
+        if state.activation_depth == held || state.open_channels == 0 {
             state.shutdown();
+        } else {
+            state.activation_depth -= held;
+            state.holders.retain(|(holder, _)| *holder != channel_id);
         }
     }
 
@@ -946,7 +978,6 @@ where
     fn process(&mut self, channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         if !self.advertised.load(Ordering::Acquire) {
             self.device.lock().shutdown();
-            self.activations = 0;
             let response = match decode::<DeviceMessage>(payload) {
                 Ok(request) if request.pdu.is_client_message() => return Ok(Vec::new()),
                 Ok(DeviceMessage {
@@ -978,7 +1009,20 @@ where
                 } else {
                     debug!(channel_id, request = ?request.pdu, "Camera request");
                 }
-                match self.respond(request.pdu) {
+                let response = if request.version != self.version {
+                    // Every message on a device channel carries the negotiated version.
+                    warn!(channel_id, version = ?request.version, "Rejecting camera request with the wrong version");
+                    Some(match request.pdu {
+                        DevicePdu::SampleRequest(stream_index) => DevicePdu::SampleErrorResponse {
+                            stream_index,
+                            error: ErrorCode::InvalidMessage,
+                        },
+                        _ => DevicePdu::ErrorResponse(ErrorCode::InvalidMessage),
+                    })
+                } else {
+                    self.respond(channel_id, request.pdu)
+                };
+                match response {
                     Some(response) => {
                         debug!(channel_id, ?response, "Camera response");
                         response

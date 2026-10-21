@@ -87,8 +87,11 @@ pub(crate) use native::{attach, process_hotplug};
 
 #[cfg(windows)]
 mod native {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::time::Duration;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
+    use std::thread;
 
     use ironrdp_dvc::{DrdynvcClient, DvcMessageBatch};
     use ironrdp_pdu::pdu_other_err;
@@ -101,13 +104,64 @@ mod native {
         enumerate_cameras,
     };
     use ironrdp_session::ActiveStage;
+    use tokio::sync::mpsc::error::TrySendError;
     use tracing::{debug, info, warn};
 
     use super::{CameraConfig, CameraEncodingQuality};
     use crate::rdp::{RdpInputEvent, RdpInputSender};
 
-    /// Camera attached or removed while the session runs.
-    pub struct CameraHotplug(HotplugKind);
+    /// Delay between attempts to wake a session whose input queue is full.
+    const HOTPLUG_RETRY_DELAY: Duration = Duration::from_millis(50);
+
+    /// Wakes the session to apply the camera changes queued since the last wake-up.
+    pub struct CameraHotplug(Arc<HotplugQueue>);
+
+    impl core::fmt::Debug for CameraHotplug {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("CameraHotplug").finish_non_exhaustive()
+        }
+    }
+
+    /// Camera changes waiting for the session, kept until it applies them.
+    #[derive(Default)]
+    struct HotplugQueue {
+        changes: Mutex<Vec<HotplugKind>>,
+        /// A wake-up event is queued, or being retried.
+        notified: AtomicBool,
+    }
+
+    impl HotplugQueue {
+        /// Queues `change` and makes sure a wake-up event reaches the session.
+        fn push(self: &Arc<Self>, change: HotplugKind, sender: &RdpInputSender) {
+            lock(&self.changes).push(change);
+            if self.notified.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            let wake = || RdpInputEvent::Camera(Box::new(CameraHotplug(Arc::clone(self))));
+            if !matches!(sender.try_send(wake()), Err(TrySendError::Full(_))) {
+                return;
+            }
+            // Retry without blocking the watcher; the attempts end with the session.
+            debug!("Session input queue is full; retrying the camera change");
+            let queue = Arc::clone(self);
+            let sender = sender.clone();
+            let retry = thread::Builder::new()
+                .name("rdpecam-hotplug".to_owned())
+                .spawn(move || {
+                    loop {
+                        thread::sleep(HOTPLUG_RETRY_DELAY);
+                        let wake = RdpInputEvent::Camera(Box::new(CameraHotplug(Arc::clone(&queue))));
+                        if !matches!(sender.try_send(wake), Err(TrySendError::Full(_))) {
+                            break;
+                        }
+                    }
+                });
+            if let Err(error) = retry {
+                warn!(%error, "Unable to retry a camera change; it applies with the next one");
+                self.notified.store(false, Ordering::Release);
+            }
+        }
+    }
 
     enum HotplugKind {
         Added {
@@ -119,18 +173,9 @@ mod native {
         },
     }
 
-    impl core::fmt::Debug for CameraHotplug {
-        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-            match &self.0 {
-                HotplugKind::Added { device, .. } => f
-                    .debug_struct("Added")
-                    .field("device", device.descriptor())
-                    .finish_non_exhaustive(),
-                HotplugKind::Removed { channel_name } => {
-                    f.debug_struct("Removed").field("channel_name", channel_name).finish()
-                }
-            }
-        }
+    enum DeviceChange {
+        Added(RedirectedDevice),
+        Removed(String),
     }
 
     /// Selection state shared by the initial enumeration and the device watcher.
@@ -240,6 +285,7 @@ mod native {
         let selector = Arc::new(Mutex::new(selector));
         let watched_devices = Arc::clone(&devices);
         let hotplug_sender = sender.clone();
+        let hotplug_queue = Arc::new(HotplugQueue::default());
         let watcher = CameraWatcher::new(cameras, move |event| {
             let mut selector = lock(&selector);
             let hotplug = match event {
@@ -268,12 +314,7 @@ mod native {
                     HotplugKind::Removed { channel_name }
                 }
             };
-            if hotplug_sender
-                .try_send(RdpInputEvent::Camera(Box::new(CameraHotplug(hotplug))))
-                .is_err()
-            {
-                warn!("Dropping a camera change because the session input queue is full");
-            }
+            hotplug_queue.push(hotplug, &hotplug_sender);
         });
         let watcher = match watcher {
             Ok(watcher) => Some(watcher),
@@ -300,35 +341,48 @@ mod native {
         mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Applies a camera change to the active session.
+    /// Applies the queued camera changes to the active session.
     pub(crate) fn process_hotplug(active_stage: &mut ActiveStage, event: CameraHotplug) -> Option<DvcMessageBatch> {
-        let (device, removed) = match event.0 {
-            HotplugKind::Added { device, listener } => {
-                let drdynvc = active_stage.get_svc_processor_mut::<DrdynvcClient>()?;
-                drdynvc.attach_listener(listener);
-                (Some(device), None)
-            }
-            HotplugKind::Removed { channel_name } => (None, Some(channel_name)),
-        };
+        let queue = event.0;
+        // Changes queued from now on need another wake-up.
+        queue.notified.store(false, Ordering::Release);
+        let changes = core::mem::take(&mut *lock(&queue.changes));
+        if changes.is_empty() {
+            return None;
+        }
+
+        // Listeners are attached even without an open enumeration channel, which advertises the
+        // shared device list when it opens.
+        let drdynvc = active_stage.get_svc_processor_mut::<DrdynvcClient>()?;
+        let device_changes: Vec<DeviceChange> = changes
+            .into_iter()
+            .map(|change| match change {
+                HotplugKind::Added { device, listener } => {
+                    drdynvc.attach_listener(listener);
+                    DeviceChange::Added(device)
+                }
+                HotplugKind::Removed { channel_name } => DeviceChange::Removed(channel_name),
+            })
+            .collect();
+
         let mut enumeration = active_stage.get_dvc_mut::<EnumerationClient>()?;
         let channel_id = enumeration.channel_id();
-        let result = match (device, removed) {
-            (Some(device), _) => enumeration.processor_mut().add_device(device),
-            (None, Some(channel_name)) => enumeration.processor_mut().remove_device(&channel_name),
-            (None, None) => return None,
-        };
-        let messages = match result {
-            Ok(messages) => messages,
-            Err(error) => {
-                debug!(%error, "Camera change not applied");
-                return None;
+        let mut messages = Vec::new();
+        for change in device_changes {
+            let result = match change {
+                DeviceChange::Added(device) => enumeration.processor_mut().add_device(device),
+                DeviceChange::Removed(channel_name) => enumeration.processor_mut().remove_device(&channel_name),
+            };
+            match result {
+                Ok(change_messages) => messages.extend(change_messages),
+                Err(error) => debug!(%error, "Camera change not applied"),
             }
-        };
+        }
         if messages.is_empty() {
             return None;
         }
         DvcMessageBatch::try_new(channel_id, messages)
-            .inspect_err(|error| warn!(%error, "Unable to send camera change"))
+            .inspect_err(|error| warn!(%error, "Unable to send camera changes"))
             .ok()
     }
 }
