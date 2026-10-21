@@ -557,6 +557,7 @@ pub struct ViewerConfig {
     printers: Option<PrinterOptions>,
     named_drives: Vec<NamedDrive>,
     ports: PortOptions,
+    list_usb_devices: bool,
     list_audio_devices: bool,
 }
 
@@ -576,8 +577,16 @@ impl ViewerConfig {
 
     fn from_args(mut args: Args) -> anyhow::Result<Self> {
         if args.usb.iter().any(|rules| rules == "list") {
-            print_usb_devices()?;
-            std::process::exit(0);
+            return Ok(Self {
+                builder: ConfigBuilder::new(),
+                log_file: args.log_file,
+                dump_rdp: None,
+                rpc: false,
+                rpc_endpoint: None,
+                redirect_printers: false,
+                ports: PortOptions::default(),
+                list_usb_devices: true,
+            });
         }
 
         let mut properties = ironrdp_propertyset::PropertySet::new();
@@ -625,6 +634,7 @@ impl ViewerConfig {
                 printers: None,
                 named_drives: Vec::new(),
                 ports: PortOptions::default(),
+                list_usb_devices: false,
                 list_audio_devices: false,
             });
         }
@@ -727,6 +737,7 @@ impl ViewerConfig {
             printers,
             named_drives,
             ports,
+            list_usb_devices: false,
             list_audio_devices,
         })
     }
@@ -769,6 +780,11 @@ impl ViewerConfig {
         &self.ports
     }
 
+    /// Whether `--usb list` asked to print the local USB devices instead of connecting.
+    pub fn list_usb_devices(&self) -> bool {
+        self.list_usb_devices
+    }
+
     /// Whether the viewer should host the local RPC server.
     pub fn rpc_mode(&self) -> bool {
         self.rpc
@@ -786,7 +802,7 @@ impl ViewerConfig {
 }
 
 /// Print the local USB devices, with the values `--usb` rules match against.
-fn print_usb_devices() -> anyhow::Result<()> {
+pub fn print_usb_devices() -> anyhow::Result<()> {
     let devices = ironrdp::client::usb::local_devices().context("failed to list USB devices")?;
 
     println!("{:<11} {:<7} {:<6} {:<10} DEVICE", "ID", "ADDR", "CLASS", "DRIVER");
