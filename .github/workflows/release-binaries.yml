@@ -181,6 +181,8 @@ jobs:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
 
       - name: Install build dependencies
+        # This action's only Windows dependency is NASM, an x86/x64 assembler.
+        if: runner.os != 'Windows' || runner.arch != 'ARM64' || matrix.target != 'aarch64-pc-windows-msvc'
         uses: ./.github/actions/install-build-deps
 
       - name: Rust cache
