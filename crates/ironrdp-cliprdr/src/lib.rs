@@ -362,7 +362,9 @@ pub trait Role: core::fmt::Debug + Send + 'static {
 /// Per MS-RDPECLIP 3.1.5.3.2, clipboard changes should auto-unlock, but
 /// malicious or buggy implementations may not comply. This limit provides
 /// defense-in-depth protection.
-const MAX_LOCKED_FILE_LISTS: usize = 100;
+///
+/// Backends keeping their own per-lock state can use it to stay within the same bound.
+pub const MAX_LOCKED_FILE_LISTS: usize = 100;
 
 /// Maximum number of outgoing clipboard locks we will create.
 ///

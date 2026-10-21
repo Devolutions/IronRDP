@@ -1,6 +1,7 @@
 use ironrdp_cliprdr::pdu::ClipboardFormatId;
 use tracing::error;
 use windows::Win32::Foundation::{GetLastError, GlobalFree, HANDLE, HGLOBAL, WIN32_ERROR};
+use windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC};
 use windows::Win32::System::DataExchange::SetClipboardData;
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalUnlock};
 
@@ -88,4 +89,15 @@ pub(crate) unsafe fn render_format(format: ClipboardFormatId, data: &[u8]) -> Wi
 pub(crate) fn get_last_winapi_error() -> WIN32_ERROR {
     // SAFETY: `GetLastError` is always safe to call.
     unsafe { GetLastError() }
+}
+
+/// A `FORMATETC` for `format` in `tymed`, for the whole content (`lindex` -1) or one item of it.
+pub(crate) fn format_etc(format: u16, lindex: i32, tymed: i32) -> FORMATETC {
+    FORMATETC {
+        cfFormat: format,
+        ptd: core::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex,
+        tymed: tymed.cast_unsigned(),
+    }
 }

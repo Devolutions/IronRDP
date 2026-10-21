@@ -44,7 +44,7 @@ use crate::windows::file_list::{
     HUGE_FILE_POSITION, MAX_FILE_CONTENTS_CHUNK, encode_file_group_descriptor, is_directory, range_request_len,
 };
 use crate::windows::transport::{RemoteFileList, RemoteTransport};
-use crate::windows::utils::GlobalMemoryBuffer;
+use crate::windows::utils::{GlobalMemoryBuffer, format_etc};
 
 /// Bytes fetched ahead when a stream reader asks for less, to save round trips on readers
 /// that read in small pieces.
@@ -83,14 +83,14 @@ impl RemoteDataObject {
         let generation = transport.generation();
 
         let mut formats = vec![
-            format_etc(format_ids.file_descriptor, TYMED_HGLOBAL.0),
-            format_etc(format_ids.file_contents, TYMED_ISTREAM.0),
-            format_etc(format_ids.preferred_drop_effect, TYMED_HGLOBAL.0),
+            format_etc(format_ids.file_descriptor, -1, TYMED_HGLOBAL.0),
+            format_etc(format_ids.file_contents, -1, TYMED_ISTREAM.0),
+            format_etc(format_ids.preferred_drop_effect, -1, TYMED_HGLOBAL.0),
         ];
         formats.extend(
             passthrough
                 .iter()
-                .map(|(local_format, _)| format_etc(*local_format, TYMED_HGLOBAL.0)),
+                .map(|(local_format, _)| format_etc(*local_format, -1, TYMED_HGLOBAL.0)),
         );
 
         Self {
@@ -623,16 +623,6 @@ impl IStream_Impl for RemoteFileStream_Impl {
 
     fn Clone(&self) -> windows::core::Result<IStream> {
         Err(E_NOTIMPL.into())
-    }
-}
-
-fn format_etc(format: u16, tymed: i32) -> FORMATETC {
-    FORMATETC {
-        cfFormat: format,
-        ptd: core::ptr::null_mut(),
-        dwAspect: DVASPECT_CONTENT.0,
-        lindex: -1,
-        tymed: tymed.cast_unsigned(),
     }
 }
 

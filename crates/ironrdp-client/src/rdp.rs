@@ -980,7 +980,10 @@ impl RdpClient {
                     {
                         use crate::clipboard::ClientClipboardMessageProxy;
                         use ironrdp_cliprdr_native::WinClipboard;
-                        match WinClipboard::new(ClientClipboardMessageProxy::new(self.input_event_sender.clone())) {
+                        match WinClipboard::with_file_transfer(
+                            ClientClipboardMessageProxy::new(self.input_event_sender.clone()),
+                            true,
+                        ) {
                             Ok(win_cb) => {
                                 cliprdr_factory = Some(win_cb.backend_factory());
                                 _win_clipboard = Some(win_cb);

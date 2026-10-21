@@ -12,15 +12,16 @@ This crate is part of the [IronRDP] project.
 Only formats whose data is a self-contained `HGLOBAL` are exchanged; handle-based formats (`CF_BITMAP`, `CF_ENHMETAFILE`, `CF_METAFILEPICT`, `CF_PALETTE`), local paths and shell items (`CF_HDROP`, `FileNameW`, `Shell IDList Array`) and OLE storage formats are never advertised in either direction.
 Windows synthesizes `CF_DIB` from `CF_BITMAP`, so images still go through.
 
-Files are copied in both directions with the [MS-RDPECLIP] file stream protocol:
+With file transfer enabled (`WinClipboard::with_file_transfer`; `WinClipboard::new` leaves it off), files are copied in both directions with the [MS-RDPECLIP] file stream protocol:
 
 - Local files (`CF_HDROP`, with directories walked into relative paths, or `FileGroupDescriptorW` and `FileContents` from another application) are offered with `FileGroupDescriptorW`, and the remote's `FileContents` requests are answered from them, including from the snapshot a Lock PDU took.
 - Remote files are put on the clipboard as an OLE data object offering `FileGroupDescriptorW` and one `FileContents` stream per file, so that Explorer can paste them.
   Each stream reads its file through `RANGE` requests carrying the `clipDataId` of the lock `Cliprdr` took when the remote advertised the files, so a paste keeps working after the remote clipboard changes, until that lock is released.
   This needs OLE, so it is only enabled when the thread is a single-threaded apartment.
 
-Like rendering a delay-rendered format, a stream read blocks the clipboard thread until the remote answers or a timeout expires.
-The embedder must route the file stream `ClipboardMessage`s to `Cliprdr` and drive `Cliprdr::drive_timeouts`; `WinClipboard::with_file_transfer` turns file transfer off for embedders that don't.
+Like rendering a delay-rendered format, a stream read blocks the clipboard thread for one round trip (up to 1 MiB, 30 seconds at most).
+The thread goes back to its message loop between reads, so the window stays responsive on a fast link, but pauses for each chunk on a slow one while a large file is pasted.
+The embedder must route the file stream `ClipboardMessage`s to `Cliprdr` and drive `Cliprdr::drive_timeouts`.
 
 Pure logic tests run with `cargo test -p ironrdp-testsuite-extra cliprdr_native::windows`.
 Tests against the real clipboard, with a `CliprdrClient` over `WinClipboard` talking to an in-memory server and Explorer pasting the files, replace the clipboard contents and briefly open an Explorer window, so they only run on request:

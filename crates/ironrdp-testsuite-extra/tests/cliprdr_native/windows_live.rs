@@ -346,7 +346,7 @@ impl Harness {
             // SAFETY: Balanced below, on this thread.
             unsafe { OleInitialize(None) }.unwrap();
 
-            let clipboard = WinClipboard::new(Proxy(client_tx)).unwrap();
+            let clipboard = WinClipboard::with_file_transfer(Proxy(client_tx), true).unwrap();
             // SAFETY: Always safe to call.
             let thread_id = unsafe { GetCurrentThreadId() };
             gui_tx.send((thread_id, clipboard.backend_factory())).unwrap();

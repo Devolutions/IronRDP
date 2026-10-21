@@ -170,11 +170,17 @@ pub(crate) enum BackendEvent {
 /// pasting into Explorer works. The latter needs a single-threaded apartment: it is only
 /// enabled when [`WinClipboard`] is created on an STA thread (a GUI thread normally is).
 ///
-/// The embedder must route [`ClipboardMessage::SendInitiateFileCopy`],
+/// File transfer is off unless enabled with [`WinClipboard::with_file_transfer`]. The embedder
+/// must then route [`ClipboardMessage::SendInitiateFileCopy`],
 /// [`ClipboardMessage::SendFileContentsRequest`] and
 /// [`ClipboardMessage::SendFileContentsResponse`] to `Cliprdr`, and drive
-/// `Cliprdr::drive_timeouts`. Embedders that don't should use
-/// [`WinClipboard::with_file_transfer`] to turn file transfer off.
+/// `Cliprdr::drive_timeouts`.
+///
+/// Like rendering a delay-rendered format, reading a remote file blocks the clipboard thread:
+/// each read the pasting application makes waits for one `FileContentsRequest` round trip (up to
+/// 1 MiB, 30 seconds at most). The thread goes back to its message loop between reads, so the
+/// window stays responsive on a fast link, but on a slow one it pauses for each chunk while a
+/// large file is pasted.
 ///
 /// [MS-RDPECLIP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/fb9b7e0b-6db4-41c2-b83c-f889c1ee7688
 /// [`ClipboardMessage::SendInitiateFileCopy`]: ironrdp_cliprdr::backend::ClipboardMessage::SendInitiateFileCopy
@@ -199,17 +205,18 @@ pub struct WinClipboard {
 }
 
 impl WinClipboard {
-    /// Creates new clipboard instance, with file transfer enabled.
+    /// Creates new clipboard instance, without file transfer.
     ///
     /// Under the hood, a hidden window is created for capturing the clipboard events.
     pub fn new(message_proxy: impl ClipboardMessageProxy + 'static) -> WinCliprdrResult<Self> {
-        Self::with_file_transfer(message_proxy, true)
+        Self::with_file_transfer(message_proxy, false)
     }
 
     /// Creates new clipboard instance, with file transfer enabled or not.
     ///
-    /// With `file_transfer` off, the backend neither negotiates nor produces any file stream
-    /// message, and file lists are not advertised in either direction.
+    /// With `file_transfer` on, the embedder must handle the file stream messages (see
+    /// [`WinClipboard`]). With it off, the backend neither negotiates nor produces any, and file
+    /// lists are not advertised in either direction.
     pub fn with_file_transfer(
         message_proxy: impl ClipboardMessageProxy + 'static,
         file_transfer: bool,

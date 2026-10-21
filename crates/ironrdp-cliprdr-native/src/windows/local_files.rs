@@ -6,19 +6,16 @@ use core::ffi::c_void;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
+use ironrdp_cliprdr::MAX_LOCKED_FILE_LISTS;
 use ironrdp_cliprdr::pdu::{FileContentsFlags, FileContentsRequest, FileContentsResponse, FileDescriptor};
 use tracing::debug;
 use windows::Win32::Foundation::HGLOBAL;
-use windows::Win32::System::Com::{
-    DVASPECT_CONTENT, FORMATETC, IDataObject, IStream, STREAM_SEEK_SET, TYMED_HGLOBAL, TYMED_ISTREAM,
-};
+use windows::Win32::System::Com::{IDataObject, IStream, STREAM_SEEK_SET, TYMED_HGLOBAL, TYMED_ISTREAM};
 use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::ReleaseStgMedium;
 
 use crate::windows::file_list::{LocalFileEntry, MAX_FILE_CONTENTS_CHUNK, is_directory, read_file_contents};
-
-/// Locked snapshots kept at most, as in `Cliprdr` itself.
-const MAX_LOCKED_SOURCES: usize = 100;
+use crate::windows::utils::format_etc;
 
 /// Format lists awaiting their response kept at most.
 const MAX_PENDING_OFFERS: usize = 16;
@@ -65,13 +62,7 @@ impl VirtualFiles {
             return read_stream(&stream, request);
         }
 
-        let format = FORMATETC {
-            cfFormat: self.file_contents_format,
-            ptd: core::ptr::null_mut(),
-            dwAspect: DVASPECT_CONTENT.0,
-            lindex,
-            tymed: (TYMED_ISTREAM.0 | TYMED_HGLOBAL.0).cast_unsigned(),
-        };
+        let format = format_etc(self.file_contents_format, lindex, TYMED_ISTREAM.0 | TYMED_HGLOBAL.0);
 
         // SAFETY: `format` is a valid FORMATETC without a target device.
         let mut medium = match unsafe { self.data_object.GetData(&format) } {
@@ -206,7 +197,8 @@ impl LocalFiles {
             return;
         };
 
-        if MAX_LOCKED_SOURCES <= self.locked.len() && !self.locked.contains_key(&clip_data_id) {
+        // The same bound as `Cliprdr`, which tracks the same locks.
+        if MAX_LOCKED_FILE_LISTS <= self.locked.len() && !self.locked.contains_key(&clip_data_id) {
             debug!(
                 clip_data_id,
                 "Too many locked local file lists; not snapshotting this one"
@@ -292,13 +284,7 @@ fn read_slice(contents: &[u8], request: &FileContentsRequest) -> Option<Vec<u8>>
 
 /// Reads `format` from `data_object` as an `HGLOBAL`.
 pub(crate) fn hglobal_data(data_object: &IDataObject, format: u16) -> Option<Vec<u8>> {
-    let format = FORMATETC {
-        cfFormat: format,
-        ptd: core::ptr::null_mut(),
-        dwAspect: DVASPECT_CONTENT.0,
-        lindex: -1,
-        tymed: TYMED_HGLOBAL.0.cast_unsigned(),
-    };
+    let format = format_etc(format, -1, TYMED_HGLOBAL.0);
 
     // SAFETY: `format` is a valid FORMATETC without a target device.
     let mut medium = match unsafe { data_object.GetData(&format) } {
