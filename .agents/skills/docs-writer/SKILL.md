@@ -16,7 +16,7 @@ Keep examples minimal, realistic, and responsible for unique information.
 Place warnings and constraints beside the step they affect.
 Preserve established terminology and verify technical claims against the implementation.
 
-Write the requested documentation directly.
-Prefer no net word-count growth when restructuring existing documentation without adding requested information.
-New structure should replace or consolidate prose; allow small justified growth when it materially improves navigation without duplication.
-Before finishing, remove repetition and confirm that a reader can find the next action without reconstructing it from implementation details.
+When restructuring, new structure replaces or consolidates existing prose instead of adding to it.
+Write a comment or doc comment only for non-obvious behavior, invariants, or rationale, never to restate the code.
+Public API docs state caller-visible behavior and guarantees, because callers treat whatever they say as a contract; put implementation details in comments inside the item.
+Before finishing, confirm that a reader can find the next action without reconstructing it from implementation details.
