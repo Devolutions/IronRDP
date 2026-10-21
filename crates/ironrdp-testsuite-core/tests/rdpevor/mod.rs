@@ -286,6 +286,7 @@ struct Harness {
     clock: Arc<AtomicU64>,
     decoded: Arc<AtomicUsize>,
     inputs: Arc<Mutex<Vec<Vec<u8>>>>,
+    created: Arc<AtomicUsize>,
 }
 
 impl Harness {
@@ -294,10 +295,13 @@ impl Harness {
         let clock = Arc::new(AtomicU64::new(1_000_000_000));
         let decoded = Arc::new(AtomicUsize::new(0));
         let inputs = Arc::new(Mutex::new(Vec::new()));
+        let created = Arc::new(AtomicUsize::new(0));
         let (factory_decoded, factory_inputs) = (Arc::clone(&decoded), Arc::clone(&inputs));
+        let factory_created = Arc::clone(&created);
         let now = Arc::clone(&clock);
         let presenter = VideoPresenter::new(
             Box::new(move || {
+                factory_created.fetch_add(1, Ordering::SeqCst);
                 let fake: Box<dyn H264Decoder> = Box::new(FakeDecoder {
                     width: 16,
                     height: 16,
@@ -313,6 +317,7 @@ impl Harness {
             clock,
             decoded,
             inputs,
+            created,
         }
     }
 
@@ -576,4 +581,65 @@ fn lost_packets_request_a_key_frame_and_skip_until_it_arrives() {
     // Closing the control channel ends the presentation.
     control.close(1);
     assert_eq!(harness.presenter().presentation_id(), None);
+}
+
+#[test]
+fn a_decoder_that_keeps_failing_is_recreated() {
+    let harness = Harness::new();
+    let mut data = VideoDataClient::new(Arc::clone(&harness.presenter));
+    assert!(harness.presenter().start(&small_request()));
+    assert_eq!(harness.created.load(Ordering::SeqCst), 1);
+    data.process(2, &packet(1, 1, 1, KEY, 0, &[0, 0, 1, 0x67])).unwrap();
+
+    for sample in 2..5 {
+        data.process(2, &packet(sample, 1, 1, DELTA, 0, b"\0\0\x01corrupt"))
+            .unwrap();
+    }
+    assert_eq!(harness.created.load(Ordering::SeqCst), 2);
+
+    // The new decoder starts at a key frame.
+    data.process(2, &packet(5, 1, 1, DELTA, 0, &[0, 0, 1, 0x41])).unwrap();
+    assert_eq!(harness.decoded.load(Ordering::SeqCst), 1);
+    data.process(2, &packet(6, 1, 1, KEY, 0, &[0, 0, 1, 0x67])).unwrap();
+    assert_eq!(harness.decoded.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn late_pictures_ask_the_server_for_fewer_frames() {
+    let harness = Harness::new();
+    let mut data = VideoDataClient::new(Arc::clone(&harness.presenter));
+    assert!(harness.presenter().start(&small_request()));
+
+    // Pictures nobody presents overflow the queue; each overflow drops a late picture.
+    data.process(2, &packet(1, 1, 1, KEY, 0, &[0, 0, 1, 0x67])).unwrap();
+    for sample in 2..12 {
+        data.process(
+            2,
+            &packet(sample, 1, 1, DELTA, u64::from(sample) * 333_333, &[0, 0, 1, 0x41]),
+        )
+        .unwrap();
+    }
+    assert!(harness.presenter().take_notifications().is_empty());
+    data.process(2, &packet(12, 1, 1, DELTA, 12 * 333_333, &[0, 0, 1, 0x41]))
+        .unwrap();
+    assert_eq!(
+        harness.presenter().take_notifications(),
+        [ClientNotification {
+            presentation_id: 3,
+            notification: Notification::FrameRateOverride {
+                flags: Notification::OVERRIDE_FRAME_RATE,
+                desired_frame_rate: 22,
+            },
+        }]
+    );
+
+    // Within the same second, more late pictures do not repeat the request.
+    for sample in 13..20 {
+        data.process(
+            2,
+            &packet(sample, 1, 1, DELTA, u64::from(sample) * 333_333, &[0, 0, 1, 0x41]),
+        )
+        .unwrap();
+    }
+    assert!(harness.presenter().take_notifications().is_empty());
 }

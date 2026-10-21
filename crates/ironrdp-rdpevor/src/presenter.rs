@@ -31,8 +31,16 @@ const MAX_QUEUED_FRAMES: usize = 8;
 const LATE_RESYNC: u64 = 5_000_000;
 /// A picture due further ahead than this resynchronizes the presentation clock (2 s).
 const AHEAD_RESYNC: u64 = 20_000_000;
-/// Shortest interval between two network error notifications (1 s).
+/// Shortest interval between two notifications of the same kind (1 s).
 const NOTIFICATION_INTERVAL: u64 = 10_000_000;
+/// Consecutive decoding failures after which the decoder is recreated.
+const DECODER_RESET_FAILURES: u32 = 3;
+/// Pictures dropped for lateness within one notification interval before fewer are requested.
+const LATE_DROPS_PER_OVERRIDE: u32 = 4;
+/// Highest frame rate a frame rate override may request ([2.2.1.5]).
+///
+/// [2.2.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpevor/
+const MAX_FRAME_RATE: u32 = 30;
 
 /// Pixels to composite into the desktop framebuffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +84,58 @@ struct Presentation {
     frames: VecDeque<PendingFrame>,
     presented: u64,
     dropped: u64,
+    /// Consecutive samples the decoder failed to decode.
+    decode_failures: u32,
+    /// Duration of the latest sample, in 100-ns units.
+    frame_duration: u64,
+    /// Start and count of the pictures dropped for lateness in the current interval.
+    late_drops: (u64, u32),
+    /// Frame rate requested from the server, and when, once pictures are dropped for lateness.
+    frame_rate_override: Option<(u32, u64)>,
+}
+
+impl Presentation {
+    /// Notes a picture dropped because the client did not keep up, and asks the server for
+    /// fewer frames once that happens repeatedly ([2.2.1.5]).
+    ///
+    /// [2.2.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpevor/
+    fn drop_late_picture(&mut self, now: u64, notifications: &mut Vec<ClientNotification>) {
+        self.dropped += 1;
+        let (start, count) = &mut self.late_drops;
+        if now >= start.saturating_add(NOTIFICATION_INTERVAL) {
+            *start = now;
+            *count = 0;
+        }
+        *count += 1;
+        if *count < LATE_DROPS_PER_OVERRIDE {
+            return;
+        }
+        let current = match self.frame_rate_override {
+            Some((_, requested_at)) if now < requested_at.saturating_add(NOTIFICATION_INTERVAL) => return,
+            Some((rate, _)) => rate,
+            None => 10_000_000u64
+                .checked_div(self.frame_duration)
+                .and_then(|rate| u32::try_from(rate).ok())
+                .unwrap_or(MAX_FRAME_RATE),
+        };
+        let desired_frame_rate = (current.clamp(1, MAX_FRAME_RATE) * 3 / 4).max(1);
+        if self
+            .frame_rate_override
+            .is_some_and(|(rate, _)| rate == desired_frame_rate)
+        {
+            return;
+        }
+        debug!(desired_frame_rate, "Video pictures are late; asking for fewer frames");
+        self.frame_rate_override = Some((desired_frame_rate, now));
+        self.late_drops = (now, 0);
+        notifications.push(ClientNotification {
+            presentation_id: self.id,
+            notification: Notification::FrameRateOverride {
+                flags: Notification::OVERRIDE_FRAME_RATE,
+                desired_frame_rate,
+            },
+        });
+    }
 }
 
 /// Decodes and schedules the pictures of the active video presentation.
@@ -181,6 +241,10 @@ impl VideoPresenter {
             frames: VecDeque::new(),
             presented: 0,
             dropped: 0,
+            decode_failures: 0,
+            frame_duration: 0,
+            late_drops: (0, 0),
+            frame_rate_override: None,
         });
         true
     }
@@ -315,7 +379,7 @@ impl VideoPresenter {
         let mut due = None;
         while presentation.frames.front().is_some_and(|frame| frame.publish_at <= now) {
             if due.is_some() {
-                presentation.dropped += 1;
+                presentation.drop_late_picture(now, &mut self.notifications);
             }
             due = presentation.frames.pop_front();
         }
@@ -366,10 +430,26 @@ impl VideoPresenter {
             data = with_header;
         }
 
+        if assembly.duration != 0 {
+            presentation.frame_duration = assembly.duration;
+        }
         let frame = match presentation.decoder.decode(&data) {
-            Ok(frame) => frame,
+            Ok(frame) => {
+                presentation.decode_failures = 0;
+                frame
+            }
             Err(error) => {
                 debug!(%error, sample_number = assembly.sample_number, "Failed to decode a video sample");
+                presentation.decode_failures += 1;
+                if DECODER_RESET_FAILURES <= presentation.decode_failures {
+                    // The decoder may be broken for good, as after a Media Foundation timeout.
+                    if let Some(decoder) = (self.decoder_factory)() {
+                        info!(presentation_id = presentation.id, "Recreated the video decoder");
+                        presentation.decoder = decoder;
+                        presentation.awaiting_key_frame = true;
+                    }
+                    presentation.decode_failures = 0;
+                }
                 self.request_key_frame(now);
                 return;
             }
@@ -390,7 +470,7 @@ impl VideoPresenter {
         };
         if presentation.frames.len() == MAX_QUEUED_FRAMES {
             presentation.frames.pop_front();
-            presentation.dropped += 1;
+            presentation.drop_late_picture(now, &mut self.notifications);
         }
         presentation.frames.push_back(PendingFrame { publish_at, frame });
     }
