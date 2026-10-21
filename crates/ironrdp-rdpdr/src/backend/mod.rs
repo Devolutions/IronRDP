@@ -66,6 +66,10 @@ pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
     /// Handles the server result for a device announcement.
     ///
     /// A rejected filesystem device is never eligible for server I/O.
+    ///
+    /// Port IRPs are served before the response arrives, so a backend that opened files for a
+    /// port the server then rejects should release them here: the SVC processor ignores the
+    /// rejected device's later closes.
     fn handle_server_device_announce_response(&mut self, pdu: ServerDeviceAnnounceResponse) -> PduResult<()>;
 
     /// Handles a decoded smart-card Device Control IRP.

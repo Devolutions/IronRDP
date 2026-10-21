@@ -22,12 +22,16 @@ const PARALLEL_ID: u32 = 3;
 #[derive(Debug, Default)]
 struct RecordingPortBackend {
     requests: Vec<PortIoRequest>,
+    rejected_device_ids: Vec<u32>,
 }
 
 impl_as_any!(RecordingPortBackend);
 
 impl RdpdrBackend for RecordingPortBackend {
-    fn handle_server_device_announce_response(&mut self, _pdu: ServerDeviceAnnounceResponse) -> PduResult<()> {
+    fn handle_server_device_announce_response(&mut self, pdu: ServerDeviceAnnounceResponse) -> PduResult<()> {
+        if pdu.result_code != NtStatus::SUCCESS {
+            self.rejected_device_ids.push(pdu.device_id);
+        }
         Ok(())
     }
 
@@ -101,17 +105,21 @@ fn initialize(rdpdr: &mut Rdpdr, server_supports_ports: bool) -> Initialized {
     }
 }
 
-fn acknowledge(rdpdr: &mut Rdpdr, device_id: u32) {
+fn respond_to_announce(rdpdr: &mut Rdpdr, device_id: u32, result_code: NtStatus) {
     let responses = rdpdr
         .process(
             &encode_vec(&RdpdrPdu::ServerDeviceAnnounceResponse(ServerDeviceAnnounceResponse {
                 device_id,
-                result_code: NtStatus::SUCCESS,
+                result_code,
             }))
             .unwrap(),
         )
         .unwrap();
     assert!(responses.is_empty());
+}
+
+fn acknowledge(rdpdr: &mut Rdpdr, device_id: u32) {
+    respond_to_announce(rdpdr, device_id, NtStatus::SUCCESS);
 }
 
 fn acknowledged_ports(backend: Box<dyn RdpdrBackend>) -> Rdpdr {
@@ -135,6 +143,15 @@ fn encoded_port_request(device_id: u32, major_function: MajorFunction, body: &[u
     .unwrap();
     encoded.extend_from_slice(body);
     encoded
+}
+
+fn encoded_get_baud_rate_request(device_id: u32) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&4u32.to_le_bytes()); // OutputBufferLength
+    body.extend_from_slice(&0u32.to_le_bytes()); // InputBufferLength
+    body.extend_from_slice(&PortIoCtlCode::IOCTL_SERIAL_GET_BAUD_RATE.0.to_le_bytes());
+    body.extend_from_slice(&[0; 20]); // Padding
+    encoded_port_request(device_id, MajorFunction::DeviceControl, &body)
 }
 
 fn recorded_requests(rdpdr: &Rdpdr) -> &[PortIoRequest] {
@@ -439,11 +456,46 @@ fn unsupported_port_irps_are_completed_without_reaching_the_backend() {
 }
 
 #[test]
-fn port_irps_before_acknowledgement_are_ignored() {
+fn port_irps_before_the_announcement_response_reach_the_backend() {
     let mut rdpdr = port_channel(Box::new(RecordingPortBackend::default()));
     let initialized = initialize(&mut rdpdr, true);
+    assert_eq!(initialized.client_id_confirmed.len(), 1);
     assert_eq!(initialized.logged_on.len(), 1);
 
+    // Windows can send a port's first IRP just before the response accepting the port.
+    for device_id in [SERIAL_ID, PARALLEL_ID] {
+        let responses = rdpdr.process(&encoded_get_baud_rate_request(device_id)).unwrap();
+        assert_eq!(responses.len(), 1);
+        let encoded = responses[0].encode_unframed_pdu().unwrap();
+        assert_eq!(read_u32(&encoded[4..]), device_id);
+        assert_eq!(ntstatus_at(&encoded, 12), NtStatus::SUCCESS);
+    }
+    assert_eq!(recorded_requests(&rdpdr).len(), 2);
+}
+
+#[test]
+fn port_irps_are_ignored_for_unannounced_and_rejected_ports() {
+    let mut rdpdr = port_channel(Box::new(RecordingPortBackend::default()));
+    initialize(&mut rdpdr, false);
+    assert!(
+        rdpdr
+            .process(&encoded_get_baud_rate_request(SERIAL_ID))
+            .unwrap()
+            .is_empty()
+    );
+
+    let mut rdpdr = port_channel(Box::new(RecordingPortBackend::default()));
+    initialize(&mut rdpdr, true);
+    respond_to_announce(&mut rdpdr, SERIAL_ID, NtStatus::ACCESS_DENIED);
+    // The backend sees the rejection, so it can release files the server opened before it.
+    let backend = rdpdr.downcast_backend::<RecordingPortBackend>().unwrap();
+    assert_eq!(backend.rejected_device_ids, [SERIAL_ID]);
+    assert!(
+        rdpdr
+            .process(&encoded_get_baud_rate_request(SERIAL_ID))
+            .unwrap()
+            .is_empty()
+    );
     assert!(
         rdpdr
             .process(&encoded_port_request(SERIAL_ID, MajorFunction::Close, &[0; 32]))

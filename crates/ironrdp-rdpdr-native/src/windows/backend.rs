@@ -5,8 +5,8 @@ use ironrdp_core::impl_as_any;
 use ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_rdpdr::RdpdrBackend;
 use ironrdp_rdpdr::pdu::efs::{
-    AnyIoCtlCode, DecodedDeviceControlRequest, DeviceControlRequest, PrinterIoRequest, ServerDeviceAnnounceResponse,
-    ServerDriveIoRequest,
+    AnyIoCtlCode, DecodedDeviceControlRequest, DeviceControlRequest, NtStatus, PrinterIoRequest,
+    ServerDeviceAnnounceResponse, ServerDriveIoRequest,
 };
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
 use ironrdp_rdpdr::pdu::esp::PortIoRequest;
@@ -195,7 +195,10 @@ impl RdpdrBackend for WindowsRdpdrBackend {
         self.activate_drive(device_id)
     }
 
-    fn handle_server_device_announce_response(&mut self, _pdu: ServerDeviceAnnounceResponse) -> PduResult<()> {
+    fn handle_server_device_announce_response(&mut self, pdu: ServerDeviceAnnounceResponse) -> PduResult<()> {
+        if pdu.result_code != NtStatus::SUCCESS {
+            self.ports.release_device(pdu.device_id);
+        }
         Ok(())
     }
 

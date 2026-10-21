@@ -640,8 +640,9 @@ impl Rdpdr {
     /// A device awaiting its announcement response counts as announced. Windows can send the first
     /// IRP for a device just before the response accepting it, and an unanswered IRP stalls the
     /// server for about 30 seconds. A later rejection removes the drive from the backend, which
-    /// cancels its pending IRPs; printer creates still wait for acceptance, because a rejected
-    /// printer's job would not be released. FreeRDP likewise serves every announced device until
+    /// cancels its pending IRPs, and a port backend releases a rejected port's files when it sees
+    /// the response; printer creates still wait for acceptance, because a rejected printer's job
+    /// would not be released. FreeRDP likewise serves every announced device until
     /// rejected.
     fn device_is_announced(&self, device_id: u32) -> bool {
         self.active_device_ids.contains(&device_id) || self.pending_device_announcements.contains(&device_id)
@@ -887,12 +888,12 @@ impl Rdpdr {
             );
             return Ok(Vec::new());
         }
-        if !self.active_device_ids.contains(&dev_io_req.device_id) {
+        if !self.device_is_announced(dev_io_req.device_id) {
             warn!(
                 device_id = dev_io_req.device_id,
                 file_id = dev_io_req.file_id,
                 completion_id = dev_io_req.completion_id,
-                "Ignoring port IRP before device announcement confirmation"
+                "Ignoring port IRP for a device that was not announced"
             );
             return Ok(Vec::new());
         }

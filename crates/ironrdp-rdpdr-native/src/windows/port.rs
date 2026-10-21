@@ -1052,6 +1052,32 @@ impl PortSession {
         messages
     }
 
+    /// Discards the files and pending requests of a port the server rejected.
+    ///
+    /// The server can open a port before the announcement response, and the processor ignores
+    /// IRPs for the port once it is rejected, closes included. Nothing is completed and nothing
+    /// waits for the driver: cancelled requests are left to their workers.
+    pub(super) fn release_device(&mut self, device_id: u32) {
+        let abandoned = &mut self.abandoned;
+        self.pending.retain(|_, io| {
+            if io.device_id != device_id {
+                return true;
+            }
+            cancel_request(&io.handle, io.io_status_block);
+            if !io.slot.is_finished() {
+                abandoned.push(Arc::clone(&io.slot));
+            }
+            false
+        });
+        self.flushes.retain(|flush| flush.request.device_id != device_id);
+        self.closes.retain(|close| close.device_id != device_id);
+        let open_files = self.files.len();
+        self.files.retain(|_, file| file.device_id != device_id);
+        if open_files != self.files.len() {
+            debug!(device_id, "Released the files of a rejected port");
+        }
+    }
+
     /// Discards every open file and pending request for a new RDPDR initialization sequence.
     ///
     /// Nothing waits for the driver: cancelled requests are left to their workers.
@@ -1515,6 +1541,25 @@ mod tests {
         assert!(session.pending.is_empty());
         assert!(session.files.is_empty());
         // The cancelled read is left to its worker, which finishes on its own.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !session.abandoned.iter().all(|slot| slot.is_finished()) {
+            assert!(Instant::now() < deadline, "cancelled read did not finish");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(session.poll().is_empty());
+        assert!(session.abandoned.is_empty());
+    }
+
+    /// A port the server opened before rejecting it loses its files and pending requests, since
+    /// no close for it will be processed.
+    #[test]
+    fn releasing_a_rejected_port_closes_its_files_without_completions() {
+        let (_server, mut session, file_id) = open_pipe_port();
+        assert!(session.handle(read_request(file_id, 2)).is_empty());
+
+        session.release_device(7);
+        assert!(session.pending.is_empty());
+        assert!(session.files.is_empty());
         let deadline = Instant::now() + Duration::from_secs(5);
         while !session.abandoned.iter().all(|slot| slot.is_finished()) {
             assert!(Instant::now() < deadline, "cancelled read did not finish");
