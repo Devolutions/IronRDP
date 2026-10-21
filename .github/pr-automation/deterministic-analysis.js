@@ -138,14 +138,11 @@ function diffReviewers(files, intentPaths, baseContents, headContents) {
     ...intentPaths,
     ...present.map((file) => file.filename).filter((path) => INTENT_FILE.test(path)),
   ])];
-  const intentEdited = (file) => file.status === "renamed"
-    ? pathsOf(file).some((path) => INTENT_FILE.test(path))
-    : file.status !== "removed" && INTENT_FILE.test(file.filename);
   const selected = [];
   if (files.some((file) => pathsOf(file).some((path) => isGovernedByIntent(path, governing)))) {
     selected.push("intent-drift");
   }
-  if (files.some(intentEdited)) selected.push("intent-review");
+  if (present.some((file) => pathsOf(file).some((path) => INTENT_FILE.test(path)))) selected.push("intent-review");
   if (files.some((file) => isTestChange(file, baseContents, headContents))) selected.push("test");
   if (files.some((file) => file.additions > 0 && pathsOf(file).some((path) => DEPENDENCY_MANIFEST.test(path)))) {
     selected.push("dependency");
