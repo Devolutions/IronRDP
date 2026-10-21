@@ -28,4 +28,5 @@ mod create;
 mod data;
 mod data_compressed;
 mod data_first;
+mod server;
 mod soft_sync;
