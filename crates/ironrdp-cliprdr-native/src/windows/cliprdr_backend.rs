@@ -74,6 +74,10 @@ impl CliprdrBackend for WinCliprdrBackend {
         self.send_event(BackendEvent::Ready);
     }
 
+    fn on_format_list_response(&mut self, ok: bool) {
+        self.send_event(BackendEvent::FormatListResponse(ok));
+    }
+
     fn on_process_negotiated_capabilities(&mut self, capabilities: ClipboardGeneralCapabilityFlags) {
         self.send_event(BackendEvent::DowngradedCapabilities(capabilities))
     }

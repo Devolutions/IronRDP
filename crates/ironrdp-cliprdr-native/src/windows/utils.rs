@@ -2,7 +2,7 @@ use ironrdp_cliprdr::pdu::ClipboardFormatId;
 use tracing::error;
 use windows::Win32::Foundation::{GetLastError, GlobalFree, HANDLE, HGLOBAL, WIN32_ERROR};
 use windows::Win32::System::DataExchange::SetClipboardData;
-use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+use windows::Win32::System::Memory::{GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalUnlock};
 
 use crate::windows::WinCliprdrResult;
 
@@ -12,11 +12,12 @@ pub(crate) struct GlobalMemoryBuffer(HGLOBAL);
 impl GlobalMemoryBuffer {
     /// Creates new global memory buffer and copies data into it.
     pub(crate) fn from_slice(data: &[u8]) -> WinCliprdrResult<Self> {
-        // A zero-byte allocation can't be locked, so empty data still gets one byte.
+        // A zero-byte allocation can't be locked, so empty data still gets one byte, zeroed so
+        // that no uninitialized memory is handed out.
         //
         // SAFETY: GlobalAlloc will return null only if there is not enough memory to allocate
         // `windows` crate will catch this error via internal invalid handle check
-        let handle = unsafe { GlobalAlloc(GMEM_MOVEABLE, data.len().max(1))? };
+        let handle = unsafe { GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, data.len().max(1))? };
 
         // SAFETY: We created the handle and ensured it wasn’t null just above.
         // Note that we don’t check for failure because we own the handle and

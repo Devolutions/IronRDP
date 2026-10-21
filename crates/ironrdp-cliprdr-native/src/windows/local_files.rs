@@ -3,11 +3,12 @@
 
 use core::cell::RefCell;
 use core::ffi::c_void;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use ironrdp_cliprdr::pdu::{FileContentsFlags, FileContentsRequest, FileContentsResponse, FileDescriptor};
 use tracing::debug;
+use windows::Win32::Foundation::HGLOBAL;
 use windows::Win32::System::Com::{
     DVASPECT_CONTENT, FORMATETC, IDataObject, IStream, STREAM_SEEK_SET, TYMED_HGLOBAL, TYMED_ISTREAM,
 };
@@ -18,6 +19,9 @@ use crate::windows::file_list::{LocalFileEntry, MAX_FILE_CONTENTS_CHUNK, is_dire
 
 /// Locked snapshots kept at most, as in `Cliprdr` itself.
 const MAX_LOCKED_SOURCES: usize = 100;
+
+/// Format lists awaiting their response kept at most.
+const MAX_PENDING_OFFERS: usize = 16;
 
 /// Files on the local clipboard.
 #[derive(Debug)]
@@ -91,19 +95,7 @@ impl VirtualFiles {
             // SAFETY: `tymed` says `hGlobal` is the active member.
             let hglobal = unsafe { medium.u.hGlobal };
             // SAFETY: The handle stays valid until `ReleaseStgMedium` below.
-            let size = unsafe { GlobalSize(hglobal) };
-            // SAFETY: Same as above.
-            let ptr = unsafe { GlobalLock(hglobal) }.cast::<u8>().cast_const();
-            if ptr.is_null() {
-                None
-            } else {
-                // SAFETY: The locked block holds `size` bytes.
-                let contents = unsafe { core::slice::from_raw_parts(ptr, size) };
-                let data = read_slice(contents, request);
-                // SAFETY: Locked just above.
-                let _ = unsafe { GlobalUnlock(hglobal) };
-                data
-            }
+            unsafe { with_locked(hglobal, |contents| read_slice(contents, request)) }.flatten()
         } else {
             None
         };
@@ -168,18 +160,42 @@ impl LocalFileSource {
 ///
 /// [MS-RDPECLIP] 3.1.5.4.6: a request carrying a `clipDataId` is served from the files that
 /// were on the clipboard when that lock was taken, even if the clipboard changed since.
+///
+/// What the remote knows of is not the latest offer made here: a format list is only sent once
+/// `Cliprdr` processes it, after which the remote answers it with a Format List Response, before
+/// any Lock or request about it ([MS-RDPECLIP] 3.1.5.2.2). Offers are therefore queued as they
+/// are made, and the one the remote acknowledged last is what locks snapshot and requests read.
 #[derive(Debug, Default)]
 pub(crate) struct LocalFiles {
+    /// Offers sent, oldest first, waiting for their Format List Response (`None`: no files).
+    offered: VecDeque<Option<Rc<LocalFileSource>>>,
+    /// The offer the remote acknowledged last.
     current: Option<Rc<LocalFileSource>>,
     locked: HashMap<u32, Rc<LocalFileSource>>,
 }
 
 impl LocalFiles {
-    pub(crate) fn set_current(&mut self, source: Option<Rc<LocalFileSource>>) {
-        self.current = source;
+    /// Records a format list sent to the remote, with the files it offers if any.
+    pub(crate) fn offer(&mut self, source: Option<Rc<LocalFileSource>>) {
+        if MAX_PENDING_OFFERS <= self.offered.len() {
+            // Responses got lost (e.g. the embedder dropped a message): start over from here.
+            self.offered.clear();
+        }
+        self.offered.push_back(source);
+    }
+
+    /// Handles the Format List Response for the oldest offer.
+    pub(crate) fn acknowledge(&mut self, accepted: bool) {
+        let Some(offered) = self.offered.pop_front() else {
+            return;
+        };
+
+        // A rejected list leaves the remote with no local files, as in `Cliprdr`.
+        self.current = if accepted { offered } else { None };
     }
 
     pub(crate) fn clear(&mut self) {
+        self.offered.clear();
         self.current = None;
         self.locked.clear();
     }
@@ -272,4 +288,61 @@ fn read_slice(contents: &[u8], request: &FileContentsRequest) -> Option<Vec<u8>>
     let end = start.saturating_add(len).min(contents.len());
 
     Some(contents.get(start..end).unwrap_or_default().to_vec())
+}
+
+/// Reads `format` from `data_object` as an `HGLOBAL`.
+pub(crate) fn hglobal_data(data_object: &IDataObject, format: u16) -> Option<Vec<u8>> {
+    let format = FORMATETC {
+        cfFormat: format,
+        ptd: core::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0.cast_unsigned(),
+    };
+
+    // SAFETY: `format` is a valid FORMATETC without a target device.
+    let mut medium = match unsafe { data_object.GetData(&format) } {
+        Ok(medium) => medium,
+        Err(error) => {
+            debug!(%error, format = format.cfFormat, "Failed to get local clipboard data");
+            return None;
+        }
+    };
+
+    let data = if medium.tymed == TYMED_HGLOBAL.0.cast_unsigned() {
+        // SAFETY: `tymed` says `hGlobal` is the active member.
+        let hglobal = unsafe { medium.u.hGlobal };
+        // SAFETY: The handle stays valid until released below.
+        unsafe { with_locked(hglobal, <[u8]>::to_vec) }
+    } else {
+        None
+    };
+
+    // SAFETY: `medium` came from `GetData` and is released once.
+    unsafe { ReleaseStgMedium(&mut medium) };
+
+    data
+}
+
+/// Runs `f` on the contents of `hglobal`, or returns `None` if it can't be locked.
+///
+/// # Safety
+///
+/// `hglobal` must be a valid global memory handle for the duration of the call.
+unsafe fn with_locked<R>(hglobal: HGLOBAL, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+    // SAFETY: The caller guarantees the handle is valid.
+    let size = unsafe { GlobalSize(hglobal) };
+    // SAFETY: Same as above.
+    let ptr = unsafe { GlobalLock(hglobal) }.cast::<u8>().cast_const();
+    if ptr.is_null() {
+        return None;
+    }
+
+    // SAFETY: The locked block holds `size` bytes.
+    let result = f(unsafe { core::slice::from_raw_parts(ptr, size) });
+
+    // SAFETY: Locked just above.
+    let _ = unsafe { GlobalUnlock(hglobal) };
+
+    Some(result)
 }

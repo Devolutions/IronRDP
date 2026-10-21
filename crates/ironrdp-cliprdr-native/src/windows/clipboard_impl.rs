@@ -8,14 +8,16 @@ use std::sync::mpsc;
 
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
 use ironrdp_cliprdr::pdu::{
-    ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, FileDescriptor,
-    FormatDataRequest, FormatDataResponse,
+    ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, FormatDataRequest,
+    FormatDataResponse,
 };
 use tracing::{debug, error, warn};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, S_OK, WPARAM};
 use windows::Win32::System::Com::IDataObject;
-use windows::Win32::System::DataExchange::{GetClipboardOwner, IsClipboardFormatAvailable};
-use windows::Win32::System::Ole::{OleGetClipboard, OleSetClipboard};
+use windows::Win32::System::DataExchange::{
+    GetClipboardOwner, IsClipboardFormatAvailable, RemoveClipboardFormatListener,
+};
+use windows::Win32::System::Ole::{OleGetClipboard, OleSetClipboard, OleUninitialize};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     KillTimer, SetTimer, WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_CLIPBOARDUPDATE, WM_NCDESTROY,
@@ -29,19 +31,20 @@ use crate::windows::file_list::{
     build_local_file_list, decode_file_group_descriptor, is_file_list_format, is_portable_format,
     is_sendable_descriptor,
 };
-use crate::windows::local_files::{LocalFileSource, LocalFiles, VirtualFiles};
+use crate::windows::local_files::{LocalFileSource, LocalFiles, VirtualFiles, hglobal_data};
 use crate::windows::os_clipboard::OwnedOsClipboard;
 use crate::windows::remote_format_registry::{RemoteClipboardFormatRegistry, register_format_name};
 use crate::windows::transport::RemoteTransport;
 use crate::windows::utils::render_format;
-use crate::windows::{BackendEvent, WM_CLIPRDR_BACKEND_EVENT, WM_CLIPRDR_SHUTDOWN, WinCliprdrError, WinCliprdrResult};
+use crate::windows::{BackendEvent, WM_CLIPRDR_BACKEND_EVENT, WM_CLIPRDR_RELEASE, WinCliprdrError, WinCliprdrResult};
 
 const IDT_CLIPBOARD_RETRY: usize = 1;
 
 /// Files found on the local clipboard, before they are turned into a [`LocalFileSource`].
 enum LocalClipboardFiles {
     Paths(Vec<PathBuf>),
-    Virtual(Vec<FileDescriptor>),
+    /// `FileGroupDescriptorW` and `FileContents` from another application.
+    Virtual,
 }
 
 /// Internal implementation of the clipboard processing logic.
@@ -162,7 +165,7 @@ impl WinClipboardImpl {
     fn on_clipboard_update(&mut self) -> WinCliprdrResult<Option<ClipboardMessage>> {
         if self.owns_clipboard() {
             // The clipboard holds remote data (e.g. while reconnecting): it can't be offered back.
-            self.local_files.set_current(None);
+            self.local_files.offer(None);
             return Ok(Some(ClipboardMessage::SendInitiateCopy(Vec::new())));
         }
 
@@ -179,11 +182,11 @@ impl WinClipboardImpl {
         if let Some(source) = files.and_then(|files| self.local_file_source(files)) {
             let descriptors = source.descriptors();
             debug!(file_count = descriptors.len(), "Offering local files to the remote");
-            self.local_files.set_current(Some(Rc::new(source)));
+            self.local_files.offer(Some(Rc::new(source)));
             return Ok(Some(ClipboardMessage::SendInitiateFileCopy(descriptors)));
         }
 
-        self.local_files.set_current(None);
+        self.local_files.offer(None);
 
         let mut formats = formats;
         formats.retain(is_portable_format);
@@ -215,8 +218,7 @@ impl WinClipboardImpl {
         let file_contents = ClipboardFormatId::new(u32::from(ids.file_contents));
 
         if self.ole_available && has_format(file_descriptor) && has_format(file_contents) {
-            let data = ClipboardDataRef::get(clipboard, file_descriptor)?;
-            return decode_file_group_descriptor(data.data()).map(LocalClipboardFiles::Virtual);
+            return Some(LocalClipboardFiles::Virtual);
         }
 
         None
@@ -231,17 +233,8 @@ impl WinClipboardImpl {
                 }
                 Some(LocalFileSource::Paths(entries))
             }
-            LocalClipboardFiles::Virtual(descriptors) => {
+            LocalClipboardFiles::Virtual => {
                 let ids = self.file_format_ids?;
-
-                let files = descriptors
-                    .into_iter()
-                    .zip(0i32..)
-                    .filter(|(descriptor, _)| is_sendable_descriptor(descriptor))
-                    .collect::<Vec<_>>();
-                if files.is_empty() {
-                    return None;
-                }
 
                 // SAFETY: OLE was initialized on this thread (`ole_available`).
                 let data_object = match unsafe { OleGetClipboard() } {
@@ -251,6 +244,20 @@ impl WinClipboardImpl {
                         return None;
                     }
                 };
+
+                // The list comes from the object that provides the contents, so the two match
+                // even if the clipboard changes meanwhile.
+                let descriptors = hglobal_data(&data_object, ids.file_descriptor)
+                    .and_then(|data| decode_file_group_descriptor(&data))?;
+
+                let files = descriptors
+                    .into_iter()
+                    .zip(0i32..)
+                    .filter(|(descriptor, _)| is_sendable_descriptor(descriptor))
+                    .collect::<Vec<_>>();
+                if files.is_empty() {
+                    return None;
+                }
 
                 Some(LocalFileSource::Virtual(VirtualFiles::new(
                     data_object,
@@ -430,8 +437,11 @@ impl WinClipboardImpl {
                 .is_some_and(|ids| is_available(u32::from(ids.file_descriptor)))
     }
 
-    /// Takes the remote data object off the clipboard, as it can't be served anymore.
+    /// Takes the remote data object off the clipboard, as it can't be served anymore, and lets go
+    /// of the COM objects held, before OLE is uninitialized.
     fn shutdown(&mut self) {
+        self.local_files.clear();
+
         if self.owns_ole_clipboard() {
             // SAFETY: OLE was initialized on this thread, as the data object was set.
             if let Err(error) = unsafe { OleSetClipboard(None) } {
@@ -471,6 +481,10 @@ impl WinClipboardImpl {
             BackendEvent::FileContentsRequest(request) => Ok(Some(ClipboardMessage::SendFileContentsResponse(
                 self.local_files.file_contents(request),
             ))),
+            BackendEvent::FormatListResponse(accepted) => {
+                self.local_files.acknowledge(*accepted);
+                Ok(None)
+            }
             BackendEvent::Lock(data_id) => {
                 self.local_files.lock(data_id.0);
                 Ok(None)
@@ -599,24 +613,36 @@ fn is_current_ole_clipboard(data_object: &IDataObject) -> bool {
 /// lets other processes' `WM_RENDERFORMAT` requests through. A message arriving that way must
 /// not touch the [`WinClipboardImpl`] already borrowed by the outer handler, so it is put off
 /// until that handler returns.
+///
+/// The state is reference counted: [`crate::WinClipboard`] holds one reference, the subclass
+/// another, and every running handler its own, so that nothing a handler on the stack uses is
+/// freed under it, even when the clipboard is dropped from within one of its calls.
 pub(crate) struct ClipboardWindowState {
     inner: UnsafeCell<WinClipboardImpl>,
+    /// OLE was initialized for this clipboard, to be uninitialized on teardown.
+    ole_initialized: bool,
     busy: Cell<bool>,
     window_is_active: Cell<bool>,
     missed_backend_events: Cell<u32>,
     missed_clipboard_update: Cell<bool>,
     missed_retry_timer: Cell<bool>,
+    /// The clipboard was dropped while a handler was busy: the outermost one tears it down.
+    teardown_requested: Cell<bool>,
+    torn_down: Cell<bool>,
 }
 
 impl ClipboardWindowState {
-    pub(crate) fn new(inner: WinClipboardImpl) -> Self {
+    pub(crate) fn new(inner: WinClipboardImpl, ole_initialized: bool) -> Self {
         Self {
             inner: UnsafeCell::new(inner),
+            ole_initialized,
             busy: Cell::new(false),
             window_is_active: Cell::new(true), // We assume that we start with current window active,
             missed_backend_events: Cell::new(0),
             missed_clipboard_update: Cell::new(false),
             missed_retry_timer: Cell::new(false),
+            teardown_requested: Cell::new(false),
+            torn_down: Cell::new(false),
         }
     }
 
@@ -662,11 +688,58 @@ impl ClipboardWindowState {
     }
 }
 
+/// Gives up the [`crate::WinClipboard`] reference to `state`, tearing the clipboard down.
+///
+/// Must be called on the window's thread. If a handler is running further up the stack, the
+/// teardown happens when it returns instead.
+pub(crate) fn release(window: HWND, state: Rc<ClipboardWindowState>) {
+    if state.busy.get() {
+        state.teardown_requested.set(true);
+        return;
+    }
+
+    teardown(window, &state);
+}
+
+/// Takes the remote data object off the clipboard, detaches the window and uninitializes OLE.
+///
+/// The caller holds a reference to `state` besides the subclass's, which this releases.
+fn teardown(window: HWND, state: &ClipboardWindowState) {
+    if state.torn_down.replace(true) {
+        return;
+    }
+
+    // Not busy here: callers check, so this always runs.
+    let _ = state.with_impl(|ctx, _| ctx.shutdown());
+
+    // SAFETY: The format listener was registered when the clipboard was created.
+    if let Err(error) = unsafe { RemoveClipboardFormatListener(window) } {
+        debug!(%error, "Failed to remove clipboard listener");
+    }
+
+    // SAFETY: Removing our own subclass, on the window's thread.
+    if unsafe { RemoveWindowSubclass(window, Some(clipboard_subproc), 0) }.as_bool() {
+        // SAFETY: The subclass held a reference from `Rc::into_raw`, and can't use it anymore. The
+        // caller's reference keeps `state` alive past this.
+        drop(unsafe { Rc::from_raw(core::ptr::from_ref(state)) });
+    } else {
+        // Already removed on `WM_NCDESTROY`, with its reference.
+        debug!("Clipboard window subclass already removed");
+    }
+
+    if state.ole_initialized {
+        // SAFETY: Balances the successful `OleInitialize` made when the clipboard was created, on
+        // the same thread, now that no call into OLE is on the stack.
+        unsafe { OleUninitialize() };
+    }
+}
+
 /// WinAPI event loop for clipboard processing
 ///
 /// # Safety
 ///
-/// This function should only be used for windows subclassing api via `SetWindowSubclass`.
+/// This function should only be used for windows subclassing api via `SetWindowSubclass`, with
+/// a reference to a [`ClipboardWindowState`] from `Rc::into_raw` as `data`.
 pub(crate) unsafe extern "system" fn clipboard_subproc(
     hwnd: HWND,
     msg: u32,
@@ -675,36 +748,43 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
     id: usize,
     data: usize,
 ) -> LRESULT {
-    if msg == WM_NCDESTROY {
-        // Last message of the window: detach and drop the state.
+    let subclass_reference = with_exposed_provenance::<ClipboardWindowState>(data);
 
-        // SAFETY: Removing our own subclass from within its procedure is allowed.
-        if !unsafe { RemoveWindowSubclass(hwnd, Some(clipboard_subproc), id) }.as_bool() {
-            error!("Failed to remove window subclass");
+    // This handler's own reference, so that the state outlives it even if the clipboard is torn
+    // down by a call it makes.
+    //
+    // SAFETY: The subclass holds a reference from `Rc::into_raw`, valid while it is installed.
+    unsafe { Rc::increment_strong_count(subclass_reference) };
+    // SAFETY: Same as above; this takes over the count just added.
+    let state = unsafe { Rc::from_raw(subclass_reference) };
+
+    let result = match msg {
+        // Last message of the window: the subclass goes, with its reference.
+        WM_NCDESTROY => {
+            // SAFETY: Removing our own subclass from within its procedure is allowed.
+            if unsafe { RemoveWindowSubclass(hwnd, Some(clipboard_subproc), id) }.as_bool() {
+                // SAFETY: The subclass can't use its reference anymore.
+                drop(unsafe { Rc::from_raw(subclass_reference) });
+            } else {
+                error!("Failed to remove window subclass");
+            }
+
+            // SAFETY: `DefSubclassProc` is always safe to call in context of subclass event loop
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
         }
-
-        // SAFETY: `data` is a valid pointer, returned by `Box::into_raw`, transferred to OS earlier
-        // via `SetWindowSubclass` call. The subclass is gone, so nothing else uses it anymore.
-        drop(unsafe { Box::from_raw(core::ptr::with_exposed_provenance_mut::<ClipboardWindowState>(data)) });
-
-        // SAFETY: `DefSubclassProc` is always safe to call in context of subclass event loop
-        return unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
-    }
-
-    // SAFETY: `data` is a valid pointer, returned by `Box::into_raw`, transferred to OS earlier
-    // via `SetWindowSubclass` call, and it is only freed once the subclass is removed.
-    let state = unsafe { &*(with_exposed_provenance::<ClipboardWindowState>(data)) };
-
-    match msg {
         // We need to keep track of window state to distinguish between local and remote copy
-        WM_ACTIVATE | WM_ACTIVATEAPP => state
-            .window_is_active
-            .set(wparam.0 != usize::try_from(WA_INACTIVE).expect("WA_INACTIVE fits into usize")),
+        WM_ACTIVATE | WM_ACTIVATEAPP => {
+            state
+                .window_is_active
+                .set(wparam.0 != usize::try_from(WA_INACTIVE).expect("WA_INACTIVE fits into usize"));
+            LRESULT(0)
+        }
         // Sent by the OS when OS clipboard content is changed
         WM_CLIPBOARDUPDATE => {
             if state.with_impl(|ctx, state| state.on_clipboard_update(ctx)).is_none() {
                 state.missed_clipboard_update.set(true);
             }
+            LRESULT(0)
         }
         // Sent by the OS when delay-rendered data is requested for rendering.
         WM_RENDERFORMAT => {
@@ -716,6 +796,7 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
                 // The data has to be set before returning, and it can't be fetched right now.
                 warn!(?format, "Clipboard data requested while busy; not rendered");
             }
+            LRESULT(0)
         }
         // Sent by the OS when all delay-rendered data is requested for rendering.
         WM_RENDERALLFORMATS => {
@@ -725,6 +806,7 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
             {
                 warn!("All clipboard data requested while busy; not rendered");
             }
+            LRESULT(0)
         }
         // User event, a message was sent by the `Cliprdr` backend shim
         WM_CLIPRDR_BACKEND_EVENT => {
@@ -733,11 +815,15 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
                     .missed_backend_events
                     .set(state.missed_backend_events.get().saturating_add(1));
             }
+            LRESULT(0)
         }
-        WM_CLIPRDR_SHUTDOWN => {
-            if state.with_impl(|ctx, _| ctx.shutdown()).is_none() {
-                warn!("Clipboard shut down while busy");
-            }
+        // A `WinClipboard` dropped on another thread handed its reference over.
+        WM_CLIPRDR_RELEASE => {
+            let address = lparam.0.cast_unsigned();
+            // SAFETY: `WinClipboard::drop` posts a reference from `Rc::into_raw` as `lparam`.
+            let reference = unsafe { Rc::from_raw(with_exposed_provenance::<ClipboardWindowState>(address)) };
+            release(hwnd, reference);
+            LRESULT(0)
         }
         // Retry timer. Some operations clipboard operations such as `OpenClipboard` are
         // fallible. We need to retry them a few times before giving up.
@@ -745,14 +831,18 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
             if state.with_impl(|ctx, _| ctx.handle_retry_timer()).is_none() {
                 state.missed_retry_timer.set(true);
             }
+            LRESULT(0)
         }
-        _ => {
-            // Call next event handler in the subclass chain
-
-            // SAFETY: `DefSubclassProc` is always safe to call in context of subclass event loop
-            return unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
-        }
+        // Call next event handler in the subclass chain
+        //
+        // SAFETY: `DefSubclassProc` is always safe to call in context of subclass event loop
+        _ => unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) },
     };
 
-    LRESULT(0) // SUCCESS
+    // The clipboard was dropped by a call made from a handler: the outermost one tears it down.
+    if state.teardown_requested.get() && !state.busy.get() {
+        teardown(hwnd, &state);
+    }
+
+    result
 }

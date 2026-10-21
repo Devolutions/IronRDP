@@ -16,6 +16,7 @@ mod remote_format_registry;
 mod transport;
 mod utils;
 
+use std::rc::Rc;
 use std::sync::mpsc as mpsc_sync;
 
 use ironrdp_cliprdr::backend::{ClipboardMessageProxy, CliprdrBackend, CliprdrBackendFactory};
@@ -23,27 +24,29 @@ use ironrdp_cliprdr::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse,
     FileDescriptor, FormatDataRequest, FormatDataResponse, LockDataId,
 };
-use tracing::{debug, error};
+use tracing::{debug, warn};
 pub use windows::Win32::Foundation::HWND;
 use windows::Win32::Foundation::{CLIPBRD_E_CANT_OPEN, E_ACCESSDENIED, FALSE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Com::{APTTYPE, APTTYPE_MAINSTA, APTTYPE_STA, APTTYPEQUALIFIER, CoGetApartmentType};
-use windows::Win32::System::DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener};
+use windows::Win32::System::DataExchange::AddClipboardFormatListener;
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
-use windows::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
+use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::Shell::SetWindowSubclass;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CW_USEDEFAULT, CreateWindowExA, DefWindowProcA, GetClassInfoA, RegisterClassA, SendMessageW, WINDOW_EX_STYLE,
+    CW_USEDEFAULT, CreateWindowExA, DefWindowProcA, GetClassInfoA, PostMessageW, RegisterClassA, WINDOW_EX_STYLE,
     WM_USER, WNDCLASSA, WS_POPUP,
 };
 use windows::core::{Error, s};
 
-use self::clipboard_impl::{ClipboardWindowState, WinClipboardImpl, clipboard_subproc};
+use self::clipboard_impl::{ClipboardWindowState, WinClipboardImpl, clipboard_subproc, release};
 use self::cliprdr_backend::WinCliprdrBackend;
 
 const BACKEND_CHANNEL_SIZE: usize = 8;
 const WM_CLIPRDR_BACKEND_EVENT: u32 = WM_USER;
-/// Sent by [`WinClipboard`] when it is dropped, while the subclass is still installed.
-const WM_CLIPRDR_SHUTDOWN: u32 = WM_USER + 1;
+/// Posted by a [`WinClipboard`] dropped on another thread than its own, with its reference to the
+/// window state as `lparam`.
+const WM_CLIPRDR_RELEASE: u32 = WM_USER + 1;
 
 pub type WinCliprdrResult<T> = Result<T, WinCliprdrError>;
 
@@ -134,6 +137,8 @@ pub(crate) enum BackendEvent {
     FormatDataRequest(FormatDataRequest),
     FormatDataResponse(FormatDataResponse<'static>),
     RemoteRequestsFormatList,
+    /// The remote answered a format list this side sent: `true` if it accepted it.
+    FormatListResponse(bool),
     RemoteFileList {
         files: Vec<FileDescriptor>,
         clip_data_id: Option<u32>,
@@ -179,9 +184,10 @@ pub struct WinClipboard {
     window: HWND,
     backend_tx: mpsc_sync::SyncSender<BackendEvent>,
     file_transfer: bool,
-    ole_initialized: bool,
-    /// Address of the subclass state, from `Box::into_raw`.
-    state: usize,
+    /// Shared with the window subclass; `None` once dropped.
+    state: Option<Rc<ClipboardWindowState>>,
+    /// The thread that created the window, which owns it, its subclass and OLE.
+    thread_id: u32,
 
     /// From MS docs:
     /// ```text
@@ -267,26 +273,27 @@ impl WinClipboard {
 
         let ole_initialized = file_transfer && init_ole();
 
-        let ctx = Box::new(ClipboardWindowState::new(WinClipboardImpl::new(
-            window,
-            message_proxy,
-            backend_rx,
-            file_transfer,
+        let state = Rc::new(ClipboardWindowState::new(
+            WinClipboardImpl::new(window, message_proxy, backend_rx, file_transfer, ole_initialized),
             ole_initialized,
-        )));
+        ));
 
-        let state = Box::into_raw(ctx).expose_provenance();
+        let subclass_reference = Rc::into_raw(Rc::clone(&state)).expose_provenance();
 
         // We need to receive winapi messages in the main thread, so we need to add a subclass to
         // the window.
         //
         // SAFETY: `window` is a valid window handle, `clipboard_subproc` is in the static memory,
-        // `ctx` is valid and its ownership is transferred to the subclass via `into_raw`.
-        let winapi_result = unsafe { SetWindowSubclass(window, Some(clipboard_subproc), 0, state) };
+        // and the subclass gets its own reference to the state, from `Rc::into_raw`.
+        let winapi_result = unsafe { SetWindowSubclass(window, Some(clipboard_subproc), 0, subclass_reference) };
 
         if winapi_result == FALSE {
-            // SAFETY: `state` comes from `Box::into_raw` above and the subclass procedure never got it.
-            drop(unsafe { Box::from_raw(core::ptr::with_exposed_provenance_mut::<ClipboardWindowState>(state)) });
+            // SAFETY: The reference comes from `Rc::into_raw` above and the subclass never got it.
+            drop(unsafe {
+                Rc::from_raw(core::ptr::with_exposed_provenance::<ClipboardWindowState>(
+                    subclass_reference,
+                ))
+            });
             if ole_initialized {
                 // SAFETY: Balances the successful `OleInitialize` above, on the same thread.
                 unsafe { OleUninitialize() };
@@ -298,8 +305,9 @@ impl WinClipboard {
             window,
             backend_tx,
             file_transfer,
-            ole_initialized,
-            state,
+            state: Some(state),
+            // SAFETY: Always safe to call.
+            thread_id: unsafe { GetCurrentThreadId() },
             _thread_marker: Default::default(),
         })
     }
@@ -316,39 +324,34 @@ impl WinClipboard {
 
 impl Drop for WinClipboard {
     fn drop(&mut self) {
-        // Let the clipboard implementation take its OLE data object off the clipboard: it can't
-        // serve anything once this instance is gone.
-        //
-        // SAFETY: `window` is a valid window handle owned by this thread.
-        unsafe { SendMessageW(self.window, WM_CLIPRDR_SHUTDOWN, None, None) };
+        let Some(state) = self.state.take() else {
+            return;
+        };
 
-        // Remove clipboard processing from WinAPI event loop
-
-        // SAFETY: Format listener was registered in the `new` method previously.
-        if let Err(err) = unsafe { RemoveClipboardFormatListener(self.window) } {
-            error!("Failed to remove clipboard listener: {}", err)
+        // SAFETY: Always safe to call.
+        if unsafe { GetCurrentThreadId() } == self.thread_id {
+            release(self.window, state);
+            return;
         }
 
-        // SAFETY: Subclass was registered in the `new` method previously.
-        if unsafe { RemoveWindowSubclass(self.window, Some(clipboard_subproc), 0) }.as_bool() {
-            // The subclass procedure can't run anymore, so its state can go.
-            //
-            // SAFETY: `state` is the pointer returned by `Box::into_raw` in `new`. It was not freed
-            // yet: that only happens on `WM_NCDESTROY`, after which the subclass is already gone and
-            // can't be removed here.
-            drop(unsafe {
-                Box::from_raw(core::ptr::with_exposed_provenance_mut::<ClipboardWindowState>(
-                    self.state,
-                ))
-            });
-        } else {
-            error!("Failed to remove window subclass")
-        }
+        // Dropped on another thread, e.g. by a .NET finalizer: the window, its subclass and OLE
+        // belong to the thread that created them, so the reference is handed over to it rather
+        // than used, or waited on, from here.
+        let address = Rc::into_raw(state).expose_provenance();
 
-        if self.ole_initialized {
-            // SAFETY: Balances the successful `OleInitialize` in `new`, on the same thread
-            // (`WinClipboard` is neither `Send` nor `Sync`).
-            unsafe { OleUninitialize() };
+        // SAFETY: Posting is safe from any thread; the window's thread takes over the reference.
+        let posted = unsafe {
+            PostMessageW(
+                Some(self.window),
+                WM_CLIPRDR_RELEASE,
+                WPARAM(0),
+                LPARAM(address.cast_signed()),
+            )
+        };
+
+        if let Err(error) = posted {
+            // The window's thread is gone: leaking the state is all that is safe from here.
+            warn!(%error, "Clipboard dropped on another thread and its own is gone; leaking it");
         }
     }
 }
@@ -371,7 +374,7 @@ fn init_ole() -> bool {
         return false;
     }
 
-    // SAFETY: Called on an STA thread; balanced by `OleUninitialize` in `WinClipboard::drop`.
+    // SAFETY: Called on an STA thread; balanced by `OleUninitialize` when the clipboard is torn down.
     match unsafe { OleInitialize(None) } {
         Ok(()) => true,
         Err(error) => {

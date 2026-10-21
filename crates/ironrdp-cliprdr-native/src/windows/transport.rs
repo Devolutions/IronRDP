@@ -103,10 +103,15 @@ impl RemoteTransport {
     }
 
     pub(crate) fn start_session(&self) {
-        self.session.set(self.session.get().wrapping_add(1));
-        self.next_generation();
+        self.next_session();
         self.capabilities.set(ClipboardGeneralCapabilityFlags::empty());
         self.released_locks.borrow_mut().clear();
+    }
+
+    /// Invalidates everything fetched or requested in the previous channel.
+    fn next_session(&self) {
+        self.session.set(self.session.get().wrapping_add(1));
+        self.next_generation();
     }
 
     pub(crate) fn release_locks(&self, clip_data_ids: impl IntoIterator<Item = u32>) {
@@ -204,10 +209,21 @@ impl RemoteTransport {
                 WinCliprdrError::DataReceiveTimeout
             })?;
 
-            // Applied right away rather than when the event is handled: a stream reading in a
-            // loop must not send another request under a lock `Cliprdr` already released.
-            if let BackendEvent::OutgoingLocksCleared(data_ids) = &event {
-                self.release_locks(data_ids.iter().map(|data_id| data_id.0));
+            // Invalidation is applied right away rather than when the event is handled: a stream
+            // reading in a loop must not send another request under a lock `Cliprdr` already
+            // released, or for a clipboard or channel that was replaced. Applying it again when
+            // the event is handled is harmless.
+            match &event {
+                BackendEvent::OutgoingLocksCleared(data_ids) => {
+                    self.release_locks(data_ids.iter().map(|data_id| data_id.0));
+                }
+                BackendEvent::RemoteFormatList(_) => {
+                    self.next_generation();
+                }
+                BackendEvent::SessionStarted => {
+                    self.next_session();
+                }
+                _ => {}
             }
 
             match accept(event) {

@@ -408,9 +408,9 @@ impl RemoteFileStream {
         Ok(size)
     }
 
-    /// Fills `out` from the current position, returning the byte count; fewer only at the end
-    /// of the file or on a failure after some bytes were read.
-    fn read_into(&self, out: &mut [u8]) -> Result<usize, HRESULT> {
+    /// Fills `out` from the current position, returning the byte count and the failure that
+    /// stopped it, if any. Without a failure, fewer bytes than `out` holds means end of file.
+    fn read_into(&self, out: &mut [u8]) -> (usize, Option<HRESULT>) {
         let mut filled = 0;
 
         while let Some(remaining_out) = out.get_mut(filled..).filter(|rest| !rest.is_empty()) {
@@ -423,7 +423,7 @@ impl RemoteFileStream {
                     let count = buffered.len().min(remaining_out.len());
                     remaining_out[..count].copy_from_slice(&buffered[..count]);
                     filled += count;
-                    state.position = position + u64::try_from(count).map_err(|_| STG_E_READFAULT)?;
+                    state.position = position.saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
                     continue;
                 }
 
@@ -438,8 +438,8 @@ impl RemoteFileStream {
 
             let data = match self.request(FileContentsFlags::RANGE, position, len) {
                 Ok(data) => data,
-                Err(error) if filled == 0 => return Err(error),
-                Err(_) => break,
+                // Never a short successful read: a reader would take it for the end of the file.
+                Err(error) => return (filled, Some(error)),
             };
 
             if data.is_empty() {
@@ -453,7 +453,7 @@ impl RemoteFileStream {
             state.buffer_start = position;
         }
 
-        Ok(filled)
+        (filled, None)
     }
 }
 
@@ -471,11 +471,9 @@ impl ISequentialStream_Impl for RemoteFileStream_Impl {
         let out = unsafe { core::slice::from_raw_parts_mut(pv.cast::<u8>(), len) };
 
         trace!(lindex = self.lindex, cb, "Remote file stream read");
-        let (count, result) = match self.read_into(out) {
-            Ok(0) if cb != 0 => (0, S_FALSE),
-            Ok(count) => (count, S_OK),
-            Err(error) => (0, error),
-        };
+        let (count, error) = self.read_into(out);
+        // S_FALSE for a read cut short by the end of the file.
+        let result = error.unwrap_or(if count < len { S_FALSE } else { S_OK });
 
         if !pcbread.is_null() {
             // SAFETY: `pcbread` is either null or valid for writes, and `count <= cb`.
@@ -540,11 +538,10 @@ impl IStream_Impl for RemoteFileStream_Impl {
                 break Ok(());
             }
 
-            let read = match self.read_into(&mut buffer[..wanted]) {
-                Ok(0) => break Ok(()),
-                Ok(read) => read,
-                Err(error) => break Err(windows::core::Error::from(error)),
-            };
+            let (read, error) = self.read_into(&mut buffer[..wanted]);
+            if read == 0 {
+                break error.map_or(Ok(()), |error| Err(windows::core::Error::from(error)));
+            }
             total_read += u64::try_from(read).unwrap_or(u64::MAX);
 
             let mut written = 0u32;
@@ -554,6 +551,11 @@ impl IStream_Impl for RemoteFileStream_Impl {
             total_written += u64::from(written);
             if let Err(error) = write_result.ok() {
                 break Err(error);
+            }
+
+            // What was read before a failure is written out first.
+            if let Some(error) = error {
+                break Err(windows::core::Error::from(error));
             }
         };
 
