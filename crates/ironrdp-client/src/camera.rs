@@ -123,11 +123,13 @@ mod native {
     }
 
     /// Camera changes waiting for the session, kept until it applies them.
-    #[derive(Default)]
     struct HotplugQueue {
         changes: Mutex<Vec<HotplugKind>>,
         /// A wake-up event is queued, or being retried.
         notified: AtomicBool,
+        /// Cameras a reopened enumeration channel advertises. Only the session thread changes it,
+        /// together with the device listeners, so every advertised camera has a listener.
+        devices: Arc<Mutex<Vec<RedirectedDevice>>>,
     }
 
     impl HotplugQueue {
@@ -283,9 +285,12 @@ mod native {
         let devices = Arc::new(Mutex::new(devices));
 
         let selector = Arc::new(Mutex::new(selector));
-        let watched_devices = Arc::clone(&devices);
         let hotplug_sender = sender.clone();
-        let hotplug_queue = Arc::new(HotplugQueue::default());
+        let hotplug_queue = Arc::new(HotplugQueue {
+            changes: Mutex::new(Vec::new()),
+            notified: AtomicBool::new(false),
+            devices: Arc::clone(&devices),
+        });
         let watcher = CameraWatcher::new(cameras, move |event| {
             let mut selector = lock(&selector);
             let hotplug = match event {
@@ -293,13 +298,6 @@ mod native {
                     let Some((device, listener)) = selector.select(&camera) else {
                         return;
                     };
-                    let mut devices = lock(&watched_devices);
-                    if usize::from(u8::MAX) <= devices.len() {
-                        warn!(camera = %camera.friendly_name, "Too many redirected cameras");
-                        return;
-                    }
-                    devices.retain(|existing| existing.descriptor().channel_name != device.descriptor().channel_name);
-                    devices.push(device.clone());
                     HotplugKind::Added { device, listener }
                 }
                 CameraEvent::Removed { symbolic_link } => {
@@ -310,7 +308,6 @@ mod native {
                     else {
                         return;
                     };
-                    lock(&watched_devices).retain(|device| device.descriptor().channel_name != channel_name);
                     HotplugKind::Removed { channel_name }
                 }
             };
@@ -351,19 +348,32 @@ mod native {
             return None;
         }
 
-        // Listeners are attached even without an open enumeration channel, which advertises the
-        // shared device list when it opens.
+        // Listeners and the advertised list change even without an open enumeration channel, which
+        // advertises that list when it opens.
         let drdynvc = active_stage.get_svc_processor_mut::<DrdynvcClient>()?;
-        let device_changes: Vec<DeviceChange> = changes
-            .into_iter()
-            .map(|change| match change {
-                HotplugKind::Added { device, listener } => {
-                    drdynvc.attach_listener(listener);
-                    DeviceChange::Added(device)
+        let mut device_changes = Vec::with_capacity(changes.len());
+        {
+            let mut devices = lock(&queue.devices);
+            for change in changes {
+                match change {
+                    HotplugKind::Added { device, listener } => {
+                        let channel_name = device.descriptor().channel_name.clone();
+                        devices.retain(|existing| existing.descriptor().channel_name != channel_name);
+                        if usize::from(u8::MAX) <= devices.len() {
+                            warn!(camera = %device.descriptor().display_name, "Too many redirected cameras");
+                            continue;
+                        }
+                        drdynvc.attach_listener(listener);
+                        devices.push(device.clone());
+                        device_changes.push(DeviceChange::Added(device));
+                    }
+                    HotplugKind::Removed { channel_name } => {
+                        devices.retain(|device| device.descriptor().channel_name != channel_name);
+                        device_changes.push(DeviceChange::Removed(channel_name));
+                    }
                 }
-                HotplugKind::Removed { channel_name } => DeviceChange::Removed(channel_name),
-            })
-            .collect();
+            }
+        }
 
         let mut enumeration = active_stage.get_dvc_mut::<EnumerationClient>()?;
         let channel_id = enumeration.channel_id();

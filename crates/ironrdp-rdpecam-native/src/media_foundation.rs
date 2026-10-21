@@ -456,23 +456,9 @@ impl CameraBackend for MediaFoundationCamera {
         if stream.stream_index != STREAM_INDEX {
             return Err(ErrorCode::InvalidStreamNumber);
         }
-        // Pause delivery so that frames of the new format never reach the previous sink.
-        let previous = lock(&self.pending).sink.take();
+        // The worker installs the sink before capturing frames of the new format.
         let media_type = stream.media_type;
-        match self.request(|reply| Command::Start(media_type, reply)) {
-            Ok(()) => {
-                lock(&self.pending).start(sink, media_type);
-                Ok(())
-            }
-            Err(error) => {
-                let mut pending = lock(&self.pending);
-                pending.sink = previous;
-                // Answers requests that waited while the sink was detached, with errors if the
-                // previous stream could not be restored.
-                pending.flush();
-                Err(error)
-            }
-        }
+        self.request(|reply| Command::Start(media_type, sink, reply))
     }
 
     fn stop_streams(&mut self) -> Result<(), ErrorCode> {
@@ -517,7 +503,7 @@ type Reply<T> = mpsc::SyncSender<Result<T, ErrorCode>>;
 enum Command {
     MediaTypes(Reply<Vec<MediaType>>),
     CurrentMediaType(Reply<MediaType>),
-    Start(MediaType, Reply<()>),
+    Start(MediaType, SampleSink, Reply<()>),
     Stop(Reply<()>),
     Properties(Reply<Vec<PropertyDescription>>),
     GetProperty(PropertySet, PropertyId, Reply<PropertyValue>),
@@ -623,6 +609,12 @@ impl PendingSamples {
                 }
             }
         }
+    }
+
+    /// Drops queued frames after the reader lost some; H.264 resumes at the next key frame.
+    fn resync(&mut self) {
+        self.frames.clear();
+        self.waiting_for_key_frame = self.keep_all;
     }
 
     /// Fails outstanding and later requests after the device stopped producing frames.
@@ -890,8 +882,8 @@ impl OpenDevice {
                     .ok_or(ErrorCode::InvalidMediaType);
                 let _ = reply.send(current);
             }
-            Command::Start(media_type, reply) => {
-                let _ = reply.send(self.start(media_type, pending));
+            Command::Start(media_type, sink, reply) => {
+                let _ = reply.send(self.start(media_type, sink, pending));
             }
             Command::Stop(reply) => {
                 self.streaming = None;
@@ -913,8 +905,13 @@ impl OpenDevice {
         }
     }
 
-    /// Replaces the stream's media type. On failure, the previous stream keeps going.
-    fn start(&mut self, media_type: MediaType, pending: &Mutex<PendingSamples>) -> Result<(), ErrorCode> {
+    /// Replaces the stream and its sink. On failure, the previous stream keeps going.
+    fn start(
+        &mut self,
+        media_type: MediaType,
+        sink: SampleSink,
+        pending: &Mutex<PendingSamples>,
+    ) -> Result<(), ErrorCode> {
         let native = self
             .media_types
             .iter()
@@ -945,17 +942,19 @@ impl OpenDevice {
             });
             if let Some(previous) = previous {
                 self.flush_reader();
-                if select_media_type(&self.reader, &previous.native).is_err() {
+                if select_media_type(&self.reader, &previous.native).is_ok() {
+                    // The flush lost frames the queued ones may depend on.
+                    lock(pending).resync();
+                } else {
                     warn!("Failed to restore the previous camera media type");
                     self.streaming = None;
-                    // Requests fail from now on; the backend flushes the outstanding ones once
-                    // the previous sink is back.
-                    lock(pending).failed = true;
+                    lock(pending).fail();
                 }
             }
             return Err(error);
         }
         info!(?media_type, encoded = encoder.is_some(), "Camera streaming started");
+        lock(pending).start(sink, media_type);
         self.streaming = Some(Streaming {
             media_type,
             sequence_header,
