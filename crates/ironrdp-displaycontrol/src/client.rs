@@ -1,4 +1,4 @@
-use ironrdp_core::{EncodeResult, decode, impl_as_any};
+use ironrdp_core::{EncodeResult, decode, impl_as_any, invalid_field_err};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor, encode_dvc_messages};
 use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
@@ -11,8 +11,8 @@ use crate::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout, Displa
 pub struct DisplayControlClient {
     /// A callback that will be called when capabilities are received from the server.
     on_capabilities_received: OnCapabilitiesReceived,
-    /// Indicates whether the capabilities have been received from the server.
-    ready: bool,
+    /// The capabilities received from the server, if any.
+    capabilities: Option<DisplayControlCapabilities>,
 }
 
 impl DisplayControlClient {
@@ -27,12 +27,17 @@ impl DisplayControlClient {
     {
         Self {
             on_capabilities_received: Box::new(callback),
-            ready: false,
+            capabilities: None,
         }
     }
 
     pub fn ready(&self) -> bool {
-        self.ready
+        self.capabilities.is_some()
+    }
+
+    /// Returns the capabilities received from the server, if any.
+    pub fn capabilities(&self) -> Option<&DisplayControlCapabilities> {
+        self.capabilities.as_ref()
     }
 
     /// Builds a [`DisplayControlPdu::MonitorLayout`] with a single primary monitor
@@ -44,10 +49,14 @@ impl DisplayControlClient {
     /// - The `scale_factor` MUST be ignored if it is less than 100 percent or greater than 500 percent.
     /// - The `physical_dims` (width, height) MUST be ignored if either is less than 10 mm or greater than 10,000 mm.
     ///
+    /// See [`DisplayControlMonitorLayout::new_single_primary_monitor`] for how the scale factors and
+    /// the orientation are derived. Once capabilities are received, the monitor is scaled down to
+    /// the server's maximum monitor area if needed.
+    ///
     /// Use [`crate::pdu::MonitorLayoutEntry::adjust_display_size`] to adjust `width` and `height` before calling this function
     /// to ensure the display size is within the valid range.
     ///
-    /// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
+    /// [2.2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
     pub fn encode_single_primary_monitor(
         &self,
         channel_id: u32,
@@ -56,9 +65,37 @@ impl DisplayControlClient {
         scale_factor: Option<u32>,
         physical_dims: Option<(u32, u32)>,
     ) -> EncodeResult<Vec<SvcMessage>> {
-        // TODO: prevent resolution with values greater than max monitor area received in caps.
-        let pdu: DisplayControlPdu =
-            DisplayControlMonitorLayout::new_single_primary_monitor(width, height, scale_factor, physical_dims)?.into();
+        let layout =
+            DisplayControlMonitorLayout::new_single_primary_monitor(width, height, scale_factor, physical_dims)?;
+        let layout = match &self.capabilities {
+            Some(capabilities) => layout.fit_to_capabilities(capabilities)?,
+            None => layout,
+        };
+        let pdu = DisplayControlPdu::from(layout);
+        debug!(?pdu, "Sending monitor layout");
+        encode_dvc_messages(channel_id, vec![Box::new(pdu)], ChannelFlags::empty())
+    }
+
+    /// Builds a [`DisplayControlPdu::MonitorLayout`] carrying the complete client monitor `layout`,
+    /// and wraps it as an [`SvcMessage`].
+    ///
+    /// The layout is first adapted to the server capabilities with
+    /// [`DisplayControlMonitorLayout::fit_to_capabilities`], per [3.2.5.2]. Fails when the
+    /// capabilities have not been received yet.
+    ///
+    /// [3.2.5.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
+    pub fn encode_monitor_layout(
+        &self,
+        channel_id: u32,
+        layout: &DisplayControlMonitorLayout,
+    ) -> EncodeResult<Vec<SvcMessage>> {
+        let Some(capabilities) = &self.capabilities else {
+            return Err(invalid_field_err!(
+                "Capabilities",
+                "display control capabilities have not been received"
+            ));
+        };
+        let pdu = DisplayControlPdu::from(layout.fit_to_capabilities(capabilities)?);
         debug!(?pdu, "Sending monitor layout");
         encode_dvc_messages(channel_id, vec![Box::new(pdu)], ChannelFlags::empty())
     }
@@ -88,7 +125,7 @@ impl DvcProcessor for DisplayControlClient {
             }
         };
         debug!("Received {:?}", caps);
-        self.ready = true;
+        self.capabilities = Some(caps.clone());
         (self.on_capabilities_received)(caps)
     }
 }

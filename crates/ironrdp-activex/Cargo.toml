@@ -29,6 +29,7 @@ ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.10" }
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
 ironrdp-daemon = { path = "../ironrdp-daemon", version = "0.1" }
+ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.8" }
 ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
 ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" }

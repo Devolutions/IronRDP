@@ -30,6 +30,9 @@ use ironrdp_cliprdr_format::html::validate_cf_html;
 use ironrdp_cliprdr_native::WinClipboard;
 use ironrdp_connector::{ConnectorError, ConnectorErrorKind, Credentials};
 use ironrdp_core::{DecodeError, DecodeErrorKind, ReadCursor, encode_vec};
+use ironrdp_displaycontrol::pdu::{
+    DeviceScaleFactor, DisplayControlMonitorLayout, MonitorLayoutEntry, MonitorOrientation,
+};
 use ironrdp_input::{Database as InputDatabase, MouseButton, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::gcc::{
     ChannelName, ChannelOptions, ClientMonitorData, ConnectionType, KeyboardType, MONITOR_COUNT_MAX, Monitor,
@@ -74,9 +77,10 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACKNESS, BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateRectRgn,
-    DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint, EnumDisplayMonitors, GdiFlush, GetMonitorInfoW, HBITMAP, HDC,
-    HGDIOBJ, HMONITOR, InvalidateRect, MONITORINFO, PAINTSTRUCT, PatBlt, SRCCOPY, ScreenToClient, SelectObject,
-    SetWindowRgn, StretchBlt, StretchDIBits,
+    DEVMODEW, DIB_RGB_COLORS, DMDO_90, DMDO_180, DMDO_270, DeleteDC, DeleteObject, ENUM_CURRENT_SETTINGS,
+    ENUM_DISPLAY_SETTINGS_FLAGS, EndPaint, EnumDisplayMonitors, EnumDisplaySettingsExW, GdiFlush, GetMonitorInfoW,
+    HBITMAP, HDC, HGDIOBJ, HMONITOR, InvalidateRect, MONITORINFO, MONITORINFOEXW, PAINTSTRUCT, PatBlt, SRCCOPY,
+    ScreenToClient, SelectObject, SetWindowRgn, StretchBlt, StretchDIBits,
 };
 use windows::Win32::Media::KernelStreaming::KSCATEGORY_VIDEO_CAMERA;
 use windows::Win32::Security::Credentials::{
@@ -119,7 +123,7 @@ use windows::Win32::UI::Controls::{
     TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TDCBF_CANCEL_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION, TDF_SIZE_TO_CONTENT,
     WM_MOUSELEAVE,
 };
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetKeyState, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE, TRACKMOUSEEVENT,
     TrackMouseEvent, VIRTUAL_KEY, VK_CANCEL, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_PAUSE, VK_SHIFT, VK_TAB,
@@ -138,8 +142,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOZORDER,
     SendMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TOUCH_MASK_CONTACTAREA,
     TOUCH_MASK_ORIENTATION, TOUCH_MASK_PRESSURE, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP,
-    WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_DPICHANGED, WM_ENABLE, WM_KEYDOWN, WM_KEYUP,
-    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+    WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENABLE, WM_KEYDOWN,
+    WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
     WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN,
     WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SHOWWINDOW, WM_SIZE,
     WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_CHILD,
@@ -183,6 +187,8 @@ const TSC_SHELL_CONTAINER_CLASS: &[u16] = &[
 ];
 const DISPLAY_RESIZE_TIMER_ID: usize = 0x4952_4450;
 const DISPLAY_RESIZE_DEBOUNCE_MILLISECONDS: u32 = 250;
+/// Debounces local monitor topology and DPI changes before sending a multimonitor layout.
+const MONITOR_TOPOLOGY_TIMER_ID: usize = 0x4952_4455;
 const NATIVE_MSTSC_LAYOUT_TIMER_ID: usize = 0x4952_4451;
 const NATIVE_MSTSC_LAYOUT_POLL_MILLISECONDS: u32 = 100;
 const PROJECTED_RAIL_INPUT_RETRY_TIMER_ID: usize = 0x4952_4452;
@@ -1072,8 +1078,25 @@ struct DisplayLayout {
     physical_width: u32,
     physical_height: u32,
     orientation: u32,
+    /// Percent; 0 leaves it unspecified, so each monitor keeps the scale of its own DPI.
     desktop_scale_factor: u32,
+    /// Percent; 0 leaves it unspecified, so it follows the desktop scale factor.
     device_scale_factor: u32,
+}
+
+impl DisplayLayout {
+    /// A desktop size request that leaves physical size, orientation and scale unspecified.
+    fn unscaled(desktop_width: u32, desktop_height: u32) -> Self {
+        Self {
+            desktop_width,
+            desktop_height,
+            physical_width: 0,
+            physical_height: 0,
+            orientation: 0,
+            desktop_scale_factor: 0,
+            device_scale_factor: 0,
+        }
+    }
 }
 
 const MAX_RDP_VIRTUAL_DESKTOP_DIMENSION: i64 = 32_766;
@@ -1083,11 +1106,31 @@ const MIN_RDP_VIRTUAL_DESKTOP_DIMENSION: i64 = 200;
 struct HostMonitor {
     rect: RECT,
     primary: bool,
+    attributes: MonitorAttributes,
+}
+
+/// The per-monitor display settings carried by a Display Control monitor layout (MS-RDPEDISP 2.2.2.2.1).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MonitorAttributes {
+    /// Desktop scale factor in percent, from the monitor's effective DPI.
+    desktop_scale_factor: u32,
+    orientation: MonitorOrientation,
+}
+
+impl Default for MonitorAttributes {
+    fn default() -> Self {
+        Self {
+            desktop_scale_factor: 100,
+            orientation: MonitorOrientation::Landscape,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MonitorTopology {
     monitors: Vec<Monitor>,
+    /// Display settings of each monitor, in the order of `monitors`.
+    attributes: Vec<MonitorAttributes>,
     desktop_width: u16,
     desktop_height: u16,
 }
@@ -1108,6 +1151,7 @@ impl MonitorTopology {
         let primary = primary_monitors[0].rect;
 
         let mut monitors = Vec::with_capacity(host_monitors.len());
+        let attributes = host_monitors.iter().map(|monitor| monitor.attributes).collect();
         for monitor in host_monitors {
             let width = i64::from(monitor.rect.right) - i64::from(monitor.rect.left);
             let height = i64::from(monitor.rect.bottom) - i64::from(monitor.rect.top);
@@ -1195,6 +1239,7 @@ impl MonitorTopology {
 
         Ok(Self {
             monitors,
+            attributes,
             desktop_width: u16::try_from(width).expect("RDP virtual desktop width is within u16 range"),
             desktop_height: u16::try_from(height).expect("RDP virtual desktop height is within u16 range"),
         })
@@ -1203,6 +1248,56 @@ impl MonitorTopology {
     fn client_monitor_data(&self) -> ClientMonitorData {
         ClientMonitorData {
             monitors: self.monitors.clone(),
+        }
+    }
+
+    /// Builds the Display Control monitor layout matching this topology, so the layout sent during
+    /// the session agrees with the GCC Client Monitor Data advertised at connection time.
+    ///
+    /// `desktop_scale_factor` and `device_scale_factor`, when set, override every monitor's own
+    /// scale. Otherwise each monitor uses the scale of its effective DPI, and the device scale
+    /// factor follows the desktop scale factor.
+    fn display_control_layout(
+        &self,
+        desktop_scale_factor: Option<u32>,
+        device_scale_factor: Option<DeviceScaleFactor>,
+    ) -> Result<DisplayControlMonitorLayout> {
+        let entries = self
+            .monitors
+            .iter()
+            .zip(&self.attributes)
+            .map(|(monitor, attributes)| {
+                let width =
+                    u32::try_from(i64::from(monitor.right) - i64::from(monitor.left) + 1).map_err(invalid_layout)?;
+                let height =
+                    u32::try_from(i64::from(monitor.bottom) - i64::from(monitor.top) + 1).map_err(invalid_layout)?;
+                let entry = if monitor.flags.contains(MonitorFlags::PRIMARY) {
+                    MonitorLayoutEntry::new_primary(width, height)
+                } else {
+                    MonitorLayoutEntry::new_secondary(width, height)
+                }
+                .and_then(|entry| entry.with_position(monitor.left, monitor.top))
+                .map_err(invalid_layout)?;
+                let desktop_scale_factor = MonitorLayoutEntry::adjust_desktop_scale_factor(
+                    desktop_scale_factor.unwrap_or(attributes.desktop_scale_factor),
+                );
+                entry
+                    .with_orientation(attributes.orientation)
+                    .with_desktop_scale_factor(desktop_scale_factor)
+                    .map(|entry| {
+                        entry.with_device_scale_factor(
+                            device_scale_factor
+                                .unwrap_or_else(|| DeviceScaleFactor::from_desktop_scale_factor(desktop_scale_factor)),
+                        )
+                    })
+                    .map_err(invalid_layout)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        return DisplayControlMonitorLayout::new(&entries).map_err(invalid_layout);
+
+        fn invalid_layout(error: impl core::fmt::Display) -> Error {
+            tracing::debug!(%error, "Local monitor topology is not a valid Display Control layout");
+            Error::from_hresult(E_INVALIDARG)
         }
     }
 
@@ -1260,17 +1355,59 @@ unsafe extern "system" fn collect_local_monitor(
     context: LPARAM,
 ) -> WinBool {
     let host_monitors = unsafe { &mut *(context.0 as *mut Vec<HostMonitor>) };
-    let mut monitor_info = MONITORINFO {
-        cbSize: u32::try_from(size_of::<MONITORINFO>()).expect("MONITORINFO size fits in u32"),
+    let mut monitor_info = MONITORINFOEXW {
+        monitorInfo: MONITORINFO {
+            cbSize: u32::try_from(size_of::<MONITORINFOEXW>()).expect("MONITORINFOEXW size fits in u32"),
+            ..Default::default()
+        },
         ..Default::default()
     };
-    if !unsafe { GetMonitorInfoW(monitor, &mut monitor_info) }.as_bool() {
+    if !unsafe { GetMonitorInfoW(monitor, &mut monitor_info.monitorInfo) }.as_bool() {
         return WinBool(0);
     }
 
+    let mut dpi_x = 0;
+    let mut dpi_y = 0;
+    let desktop_scale_factor =
+        if unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) }.is_ok() && dpi_x != 0 {
+            dpi_x.saturating_mul(100).saturating_add(DEFAULT_DPI / 2) / DEFAULT_DPI
+        } else {
+            100
+        };
+
+    let mut device_mode = DEVMODEW {
+        dmSize: u16::try_from(size_of::<DEVMODEW>()).expect("DEVMODEW size fits in u16"),
+        ..Default::default()
+    };
+    let orientation = if unsafe {
+        EnumDisplaySettingsExW(
+            PCWSTR(monitor_info.szDevice.as_ptr()),
+            ENUM_CURRENT_SETTINGS,
+            &mut device_mode,
+            ENUM_DISPLAY_SETTINGS_FLAGS(0),
+        )
+    }
+    .as_bool()
+    {
+        // DMDO_* give the device rotation counter-clockwise, which is the rotation of the desktop
+        // clockwise that MS-RDPEDISP orientations describe: DMDO_90 is ORIENTATION_PORTRAIT.
+        match unsafe { device_mode.Anonymous1.Anonymous2.dmDisplayOrientation } {
+            DMDO_90 => MonitorOrientation::Portrait,
+            DMDO_180 => MonitorOrientation::LandscapeFlipped,
+            DMDO_270 => MonitorOrientation::PortraitFlipped,
+            _ => MonitorOrientation::Landscape,
+        }
+    } else {
+        MonitorOrientation::Landscape
+    };
+
     host_monitors.push(HostMonitor {
-        rect: monitor_info.rcMonitor,
-        primary: monitor_info.dwFlags & 0x0000_0001 != 0,
+        rect: monitor_info.monitorInfo.rcMonitor,
+        primary: monitor_info.monitorInfo.dwFlags & 0x0000_0001 != 0,
+        attributes: MonitorAttributes {
+            desktop_scale_factor,
+            orientation,
+        },
     });
     WinBool(1)
 }
@@ -1382,15 +1519,7 @@ fn display_layout_from_renderer_size(width: i32, height: i32) -> Option<DisplayL
     let (Ok(desktop_width), Ok(desktop_height)) = (u32::try_from(width), u32::try_from(height)) else {
         return None;
     };
-    (desktop_width != 0 && desktop_height != 0).then_some(DisplayLayout {
-        desktop_width,
-        desktop_height,
-        physical_width: 0,
-        physical_height: 0,
-        orientation: 0,
-        desktop_scale_factor: 100,
-        device_scale_factor: 100,
-    })
+    (desktop_width != 0 && desktop_height != 0).then_some(DisplayLayout::unscaled(desktop_width, desktop_height))
 }
 
 fn native_shell_presentation_enabled(native_shell_integration: bool, native_shell: bool) -> bool {
@@ -4518,6 +4647,9 @@ enum WorkerEvent {
     DisplayResizeFallback {
         generation: u64,
     },
+    MonitorLayoutRejected {
+        generation: u64,
+    },
     RailWindowingOrders {
         generation: u64,
         data: Vec<u8>,
@@ -4568,6 +4700,7 @@ impl WorkerEvent {
             | Self::LoginComplete { generation }
             | Self::Image { generation, .. }
             | Self::DisplayResizeFallback { generation }
+            | Self::MonitorLayoutRejected { generation }
             | Self::RailWindowingOrders { generation, .. }
             | Self::RailExecuteResult { generation, .. }
             | Self::RailExecuteFailed { generation, .. }
@@ -8088,6 +8221,8 @@ pub(crate) struct Control {
     remote_size: Cell<Option<(i32, i32)>>,
     configured_monitor_topology: RefCell<Option<MonitorTopology>>,
     active_monitor_topology: RefCell<Option<MonitorTopology>>,
+    /// The last multimonitor Display Control layout queued for the session, scale overrides included.
+    last_multimon_layout: RefCell<Option<DisplayControlMonitorLayout>>,
     input_sender: Rc<RefCell<Option<RdpInputSender>>>,
     drive_session: Rc<DriveSessionState>,
     location_altitude: Cell<i32>,
@@ -8460,6 +8595,7 @@ impl Control {
             remote_size: Cell::new(None),
             configured_monitor_topology: RefCell::new(None),
             active_monitor_topology: RefCell::new(None),
+            last_multimon_layout: RefCell::new(None),
             input_sender,
             drive_session,
             location_altitude: Cell::new(0),
@@ -10998,7 +11134,13 @@ impl Control {
                     let topology = self.configured_monitor_topology.borrow().clone();
                     if topology.as_ref().is_some_and(|topology| topology.monitors == monitors) {
                         *self.active_monitor_topology.borrow_mut() = topology;
-                    } else {
+                    } else if !self
+                        .active_monitor_topology
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|topology| topology.monitors == monitors)
+                    {
+                        // The server confirmed neither the requested nor the current topology.
                         self.active_monitor_topology.borrow_mut().take();
                     }
                 }
@@ -11021,6 +11163,7 @@ impl Control {
                     self.present_frame(update);
                 }
                 WorkerEvent::DisplayResizeFallback { .. } => self.report_display_resize_fallback(),
+                WorkerEvent::MonitorLayoutRejected { .. } => self.monitor_layout_rejected(),
                 WorkerEvent::RailWindowingOrders { data, .. } => {
                     if self.rail_windows.borrow().is_enabled() {
                         self.rail_windows.borrow_mut().consume(&data);
@@ -11213,16 +11356,8 @@ impl Control {
                         "width and height must be non-zero",
                     )
                 } else {
-                    self.update_display_layout(DisplayLayout {
-                        desktop_width: u32::from(width),
-                        desktop_height: u32::from(height),
-                        physical_width: 0,
-                        physical_height: 0,
-                        orientation: 0,
-                        desktop_scale_factor: 100,
-                        device_scale_factor: 100,
-                    })
-                    .map_or_else(rpc_control_error, |_| ironrdp_agent::ipc::Response::ok())
+                    self.update_display_layout(DisplayLayout::unscaled(u32::from(width), u32::from(height)))
+                        .map_or_else(rpc_control_error, |_| ironrdp_agent::ipc::Response::ok())
                 };
                 let _ = response.send(response_value);
             }
@@ -12017,6 +12152,7 @@ impl Control {
             .build()
             .map_err(|error| Error::new(E_INVALIDARG, format!("invalid RDP configuration: {error}")))?;
         *self.configured_monitor_topology.borrow_mut() = monitor_topology;
+        self.last_multimon_layout.borrow_mut().take();
         self.active_monitor_topology.borrow_mut().take();
         if using_rdcleanpath {
             self.clear_rdcleanpath_token();
@@ -12191,6 +12327,15 @@ impl Control {
                                                     &worker_event_posted,
                                                     hwnd,
                                                     WorkerEvent::MonitorLayout { generation, monitors },
+                                                );
+                                            }
+                                            RdpOutputEvent::MonitorLayoutRejected => {
+                                                trace_host_call("RdpWorker::MonitorLayoutRejected");
+                                                queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::MonitorLayoutRejected { generation },
                                                 );
                                             }
                                             RdpOutputEvent::LoginComplete => {
@@ -12418,7 +12563,27 @@ impl Control {
         Ok(())
     }
 
+    /// Applies a display layout requested through the mstscax API, preserving every display
+    /// setting the caller specifies.
     fn update_display_layout(&self, layout: DisplayLayout) -> Result<()> {
+        self.update_display_layout_impl(layout, true)
+    }
+
+    /// Returns whether the session mirrors the local monitors rather than the renderer size.
+    fn mirrors_local_monitors(&self) -> bool {
+        self.compatibility.borrow().use_multimon
+            || self
+                .configured_monitor_topology
+                .borrow()
+                .as_ref()
+                .is_some_and(|topology| topology.monitors.len() > 1)
+    }
+
+    /// `explicit` is false for updates IronRDP derives from the renderer size, whose scale and
+    /// orientation fields are defaults rather than caller choices: a multimonitor session then
+    /// keeps each monitor's own DPI and skips an unchanged topology, and a single monitor keeps
+    /// the scale and orientation the resize path derives.
+    fn update_display_layout_impl(&self, layout: DisplayLayout, explicit: bool) -> Result<()> {
         if self.state.get() != ConnectionState::Connected {
             return Err(Error::from_hresult(E_UNEXPECTED));
         }
@@ -12427,9 +12592,6 @@ impl Control {
             .borrow()
             .as_ref()
             .map_or(0, |topology| topology.monitors.len());
-        if configured_monitor_count > 1 {
-            return Err(Error::from_hresult(E_NOTIMPL));
-        }
         let desktop_width = u16::try_from(layout.desktop_width)
             .map_err(|_| Error::new(E_INVALIDARG, "desktop width must fit in u16"))?;
         let desktop_height = u16::try_from(layout.desktop_height)
@@ -12445,35 +12607,90 @@ impl Control {
                 "physical display dimensions must both be specified",
             ));
         }
-        if layout.orientation != 0 {
-            return Err(Error::from_hresult(E_NOTIMPL));
-        }
-        // IronRDP's active-session resize path carries desktop scaling, but not the separate
-        // device scale and rotation exposed by the mstscax API.
-        if layout.device_scale_factor != 0 && layout.device_scale_factor != 100 {
-            return Err(Error::from_hresult(E_NOTIMPL));
+        let orientation = MonitorOrientation::from_angle(layout.orientation)
+            .ok_or_else(|| Error::new(E_INVALIDARG, "orientation must be 0, 90, 180 or 270 degrees"))?;
+        let device_scale_factor = match layout.device_scale_factor {
+            0 => None,
+            value => Some(
+                DeviceScaleFactor::from_value(value)
+                    .ok_or_else(|| Error::new(E_INVALIDARG, "device scale factor must be 100, 140 or 180"))?,
+            ),
+        };
+        let desktop_scale_factor = (layout.desktop_scale_factor != 0).then_some(layout.desktop_scale_factor);
+
+        // A session connected with several monitors keeps mirroring the local monitors. With
+        // 'use multimon' alone, it does so only once the local topology has several monitors:
+        // a single local monitor keeps honoring the requested size and orientation.
+        let multimon_topology = if 1 < configured_monitor_count {
+            Some(local_monitor_topology()?)
+        } else if self.compatibility.borrow().use_multimon {
+            local_monitor_topology()
+                .ok()
+                .filter(|topology| 1 < topology.monitors.len())
+        } else {
+            None
+        };
+        if let Some(topology) = multimon_topology {
+            // Like mstsc, a multimonitor session mirrors the local monitors: the update resends the
+            // current local topology, each monitor with its own size, position, orientation and DPI.
+            // Explicit scale factors apply to every monitor and force the update; the requested
+            // desktop size and orientation describe a single monitor and do not apply.
+            let (desktop_scale_factor, device_scale_factor) = if explicit {
+                (desktop_scale_factor, device_scale_factor)
+            } else {
+                (None, None)
+            };
+            return self.send_multimon_display_layout(topology, desktop_scale_factor, device_scale_factor, explicit);
         }
 
-        let scale_factor = if layout.desktop_scale_factor == 0 {
-            100
-        } else {
-            layout.desktop_scale_factor
-        };
+        let scale_factor = MonitorLayoutEntry::adjust_desktop_scale_factor(desktop_scale_factor.unwrap_or(100));
         let physical_size = (layout.physical_width != 0).then_some((layout.physical_width, layout.physical_height));
+        let (adjusted_width, adjusted_height) =
+            MonitorLayoutEntry::adjust_display_size(u32::from(desktop_width), u32::from(desktop_height));
+        // The resize path derives the orientation from the size and the device scale from the
+        // desktop scale. Use it only when that matches what the caller asked for.
+        let derived_orientation = if adjusted_width < adjusted_height {
+            MonitorOrientation::Portrait
+        } else {
+            MonitorOrientation::Landscape
+        };
+        let derived_device_scale_factor = DeviceScaleFactor::from_desktop_scale_factor(scale_factor);
+        let event = if !explicit
+            || orientation == derived_orientation
+                && device_scale_factor
+                    .is_none_or(|device_scale_factor| device_scale_factor == derived_device_scale_factor)
+        {
+            RdpInputEvent::Resize {
+                width: desktop_width,
+                height: desktop_height,
+                scale_factor,
+                physical_size,
+            }
+        } else {
+            // An orientation or device scale the resize path would not derive needs the full layout.
+            let entry = MonitorLayoutEntry::new_primary(adjusted_width, adjusted_height)
+                .map_err(|_| Error::from_hresult(E_INVALIDARG))?
+                .with_orientation(orientation)
+                .with_desktop_scale_factor(scale_factor)
+                .map_err(|_| Error::from_hresult(E_INVALIDARG))?
+                .with_device_scale_factor(device_scale_factor.unwrap_or(derived_device_scale_factor));
+            let entry = match physical_size {
+                Some((physical_width, physical_height)) => entry
+                    .with_physical_dimensions(physical_width, physical_height)
+                    .map_err(|_| Error::new(E_INVALIDARG, "physical display dimensions are out of range"))?,
+                None => entry,
+            };
+            RdpInputEvent::MonitorLayout(
+                DisplayControlMonitorLayout::new(&[entry]).map_err(|_| Error::from_hresult(E_INVALIDARG))?,
+            )
+        };
         let sender = self
             .input_sender
             .borrow()
             .as_ref()
             .cloned()
             .ok_or_else(|| Error::from_hresult(E_UNEXPECTED))?;
-        sender
-            .try_send(RdpInputEvent::Resize {
-                width: desktop_width,
-                height: desktop_height,
-                scale_factor,
-                physical_size,
-            })
-            .map_err(|_| Error::from_hresult(E_UNEXPECTED))?;
+        sender.try_send(event).map_err(|_| Error::from_hresult(E_UNEXPECTED))?;
 
         if configured_monitor_count == 1 {
             self.active_monitor_topology.borrow_mut().take();
@@ -12485,6 +12702,97 @@ impl Control {
         Ok(())
     }
 
+    /// Sends the full Display Control layout of a multimonitor `topology` to the session.
+    ///
+    /// The topology becomes the configured (requested) one, so the server's monitor layout confirms
+    /// it as it confirms the topology advertised in the GCC Client Monitor Data block at connection
+    /// time. The active (confirmed) topology is kept until the server reports a different layout:
+    /// the session may still drop a layout its capabilities cannot accept.
+    /// Unless `force` is set, a layout identical to the last one sent, scale overrides included,
+    /// is not sent again.
+    fn send_multimon_display_layout(
+        &self,
+        topology: MonitorTopology,
+        desktop_scale_factor: Option<u32>,
+        device_scale_factor: Option<DeviceScaleFactor>,
+        force: bool,
+    ) -> Result<()> {
+        if self.state.get() != ConnectionState::Connected {
+            return Err(Error::from_hresult(E_UNEXPECTED));
+        }
+        let layout = topology.display_control_layout(desktop_scale_factor, device_scale_factor)?;
+        if !force && self.last_multimon_layout.borrow().as_ref() == Some(&layout) {
+            return Ok(());
+        }
+        let sender = self
+            .input_sender
+            .borrow()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::from_hresult(E_UNEXPECTED))?;
+        sender
+            .try_send(RdpInputEvent::MonitorLayout(layout.clone()))
+            .map_err(|_| Error::from_hresult(E_UNEXPECTED))?;
+        *self.last_multimon_layout.borrow_mut() = Some(layout);
+
+        {
+            let mut settings = self.settings.borrow_mut();
+            settings.desktop_width = topology.desktop_width;
+            settings.desktop_height = topology.desktop_height;
+        }
+        *self.configured_monitor_topology.borrow_mut() = Some(topology);
+        Ok(())
+    }
+
+    /// Rolls back to the confirmed topology, if any, after the session dropped a requested layout
+    /// its Display Control capabilities cannot accept.
+    ///
+    /// The rejected layout stays the last one sent, so display change notifications do not retry
+    /// it; any different local layout is sent again.
+    fn monitor_layout_rejected(&self) {
+        trace_host_call("Renderer::MonitorLayoutRejected");
+        let confirmed = self.active_monitor_topology.borrow().clone();
+        if let Some(confirmed) = &confirmed {
+            let mut settings = self.settings.borrow_mut();
+            settings.desktop_width = confirmed.desktop_width;
+            settings.desktop_height = confirmed.desktop_height;
+        }
+        *self.configured_monitor_topology.borrow_mut() = confirmed;
+    }
+
+    /// Schedules a multimonitor layout update after a local monitor topology or DPI change.
+    fn schedule_monitor_topology_refresh(&self, window: HWND) {
+        if !self.mirrors_local_monitors() || self.state.get() != ConnectionState::Connected {
+            return;
+        }
+        unsafe {
+            SetTimer(
+                Some(window),
+                MONITOR_TOPOLOGY_TIMER_ID,
+                DISPLAY_RESIZE_DEBOUNCE_MILLISECONDS,
+                None,
+            );
+        }
+    }
+
+    fn apply_monitor_topology_refresh(&self, window: HWND) {
+        unsafe {
+            let _ = KillTimer(Some(window), MONITOR_TOPOLOGY_TIMER_ID);
+        }
+        if self.state.get() != ConnectionState::Connected {
+            return;
+        }
+        match local_monitor_topology()
+            .and_then(|topology| self.send_multimon_display_layout(topology, None, None, false))
+        {
+            Ok(()) => trace_host_call("Renderer::MonitorTopologyUpdateRequested"),
+            Err(error) => {
+                trace_host_call("Renderer::MonitorTopologyUpdateRejected");
+                tracing::debug!(?error, "Unable to send the local monitor topology to the session");
+            }
+        }
+    }
+
     fn reconnect(&self, width: u32, height: u32, status: *mut i32) -> Result<()> {
         // Initialize the required out parameter before attempting the update so callers can
         // distinguish an invalid or inactive request from one queued for the RDP session.
@@ -12492,15 +12800,7 @@ impl Control {
         if self.state.get() != ConnectionState::Connected {
             return Err(Error::from_hresult(E_FAIL));
         }
-        self.update_display_layout(DisplayLayout {
-            desktop_width: width,
-            desktop_height: height,
-            physical_width: 0,
-            physical_height: 0,
-            orientation: 0,
-            desktop_scale_factor: 100,
-            device_scale_factor: 100,
-        })?;
+        self.update_display_layout(DisplayLayout::unscaled(width, height))?;
         write_out(status, CONTROL_RECONNECT_STARTED)
     }
 
@@ -12889,7 +13189,7 @@ impl Control {
             return;
         }
 
-        let result = self.update_display_layout(layout);
+        let result = self.update_display_layout_impl(layout, false);
         match result {
             Ok(()) => trace_host_call("Renderer::DisplayResizeRequested"),
             Err(error) => {
@@ -13573,6 +13873,11 @@ impl Control {
                 // Reflow only IronRDP-owned UI from current window DPI, then let the host retain
                 // ownership of the renderer's rectangle.
                 self.renderer_dpi_changed();
+                self.schedule_monitor_topology_refresh(window);
+                false
+            }
+            WM_DISPLAYCHANGE => {
+                self.schedule_monitor_topology_refresh(window);
                 false
             }
             WM_MOVE | WM_SIZE => {
@@ -13591,6 +13896,10 @@ impl Control {
             }
             WM_TIMER if wparam.0 == DISPLAY_RESIZE_TIMER_ID => {
                 self.apply_pending_display_resize(window);
+                true
+            }
+            WM_TIMER if wparam.0 == MONITOR_TOPOLOGY_TIMER_ID => {
+                self.apply_monitor_topology_refresh(window);
                 true
             }
             WM_TIMER if wparam.0 == NATIVE_MSTSC_LAYOUT_TIMER_ID => {
@@ -13869,15 +14178,10 @@ impl IDispatch_Impl for Control_Impl {
                     }
                 }
                 DISPID_MODERN_UPDATE_SESSION_DISPLAY_SETTINGS if arguments.len() == 2 => {
-                    self.update_display_layout(DisplayLayout {
-                        desktop_width: dispatch_variant_u32(&arguments[1])?,
-                        desktop_height: dispatch_variant_u32(&arguments[0])?,
-                        physical_width: 0,
-                        physical_height: 0,
-                        orientation: 0,
-                        desktop_scale_factor: 100,
-                        device_scale_factor: 100,
-                    })
+                    self.update_display_layout(DisplayLayout::unscaled(
+                        dispatch_variant_u32(&arguments[1])?,
+                        dispatch_variant_u32(&arguments[0])?,
+                    ))
                 }
                 DISPID_MODERN_ATTACH_EVENT | DISPID_MODERN_DETACH_EVENT if arguments.len() == 2 => {
                     let event_name = variant_string(&arguments[1], argument_error)?;
@@ -13961,15 +14265,7 @@ impl IRemoteDesktopClient_Impl for Control_Impl {
     }
 
     unsafe fn UpdateSessionDisplaySettings(&self, width: u32, height: u32) -> Result<()> {
-        self.update_display_layout(DisplayLayout {
-            desktop_width: width,
-            desktop_height: height,
-            physical_width: 0,
-            physical_height: 0,
-            orientation: 0,
-            desktop_scale_factor: 100,
-            device_scale_factor: 100,
-        })
+        self.update_display_layout(DisplayLayout::unscaled(width, height))
     }
 
     unsafe fn attachEvent(&self, event_name: Bstr, callback: *mut c_void) -> Result<()> {
@@ -14410,15 +14706,7 @@ impl IMsRdpClient9_Impl for Control_Impl {
         let desktop_width = u32::from(settings.desktop_width);
         let desktop_height = u32::from(settings.desktop_height);
         drop(settings);
-        self.update_display_layout(DisplayLayout {
-            desktop_width,
-            desktop_height,
-            physical_width: 0,
-            physical_height: 0,
-            orientation: 0,
-            desktop_scale_factor: 100,
-            device_scale_factor: 100,
-        })
+        self.update_display_layout(DisplayLayout::unscaled(desktop_width, desktop_height))
     }
 
     unsafe fn UpdateSessionDisplaySettings(
@@ -14836,11 +15124,9 @@ impl IMsRdpClientNonScriptable5_Impl for Control_Impl {
 
     unsafe fn get_RemoteMonitorLayoutMatchesLocal(&self, value: *mut i16) -> Result<()> {
         let matches_local = self.state.get() == ConnectionState::Connected
-            && self
-                .active_monitor_topology
-                .borrow()
-                .as_ref()
-                .is_some_and(|topology| local_monitor_topology().is_ok_and(|local| local == *topology));
+            && self.active_monitor_topology.borrow().as_ref().is_some_and(|topology| {
+                local_monitor_topology().is_ok_and(|local| local.monitors == topology.monitors)
+            });
         write_out(value, if matches_local { VARIANT_TRUE.0 } else { VARIANT_FALSE.0 })
     }
 
@@ -17076,6 +17362,7 @@ fn queue_worker_event(
         | WorkerEvent::MonitorLayout { .. }
         | WorkerEvent::LoginComplete { .. }
         | WorkerEvent::DisplayResizeFallback { .. }
+        | WorkerEvent::MonitorLayoutRejected { .. }
         | WorkerEvent::AutoReconnected { .. } => {
             if queue.iter().any(|pending| {
                 pending.generation() == event.generation()
@@ -18267,6 +18554,7 @@ mod tests {
                     bottom: 1_000,
                 },
                 primary: true,
+                attributes: MonitorAttributes::default(),
             },
             HostMonitor {
                 rect: RECT {
@@ -18276,6 +18564,7 @@ mod tests {
                     bottom: 1_000,
                 },
                 primary: false,
+                attributes: MonitorAttributes::default(),
             },
         ])
         .expect("a valid two-monitor topology");
@@ -18314,6 +18603,7 @@ mod tests {
                 bottom: 600,
             },
             primary: false,
+            attributes: MonitorAttributes::default(),
         }])
         .expect_err("a monitor topology needs exactly one primary monitor");
         assert_eq!(invalid_primary.code(), E_INVALIDARG);
@@ -18327,6 +18617,7 @@ mod tests {
                     bottom: 600,
                 },
                 primary: true,
+                attributes: MonitorAttributes::default(),
             },
             HostMonitor {
                 rect: RECT {
@@ -18336,6 +18627,7 @@ mod tests {
                     bottom: 600,
                 },
                 primary: false,
+                attributes: MonitorAttributes::default(),
             },
         ])
         .expect_err("overlapping monitor rectangles are invalid");
@@ -18350,6 +18642,7 @@ mod tests {
                     bottom: 600,
                 },
                 primary: true,
+                attributes: MonitorAttributes::default(),
             };
             MONITOR_COUNT_MAX + 1
         ])
@@ -18369,6 +18662,7 @@ mod tests {
                     bottom: 1_000,
                 },
                 primary: true,
+                attributes: MonitorAttributes::default(),
             },
             HostMonitor {
                 rect: RECT {
@@ -18378,6 +18672,7 @@ mod tests {
                     bottom: 1_000,
                 },
                 primary: false,
+                attributes: MonitorAttributes::default(),
             },
         ])
         .expect("a valid two-monitor topology");
@@ -20086,7 +20381,7 @@ try {
     }
 
     #[test]
-    fn renderer_resize_layout_ignores_minimized_bounds_and_uses_standard_scaling() {
+    fn renderer_resize_layout_ignores_minimized_bounds_and_leaves_scaling_unspecified() {
         assert!(display_layout_from_renderer_size(0, 1080).is_none());
         assert!(display_layout_from_renderer_size(1920, 0).is_none());
         assert!(display_layout_from_renderer_size(-1, 1080).is_none());
@@ -20097,8 +20392,8 @@ try {
         assert_eq!(layout.physical_width, 0);
         assert_eq!(layout.physical_height, 0);
         assert_eq!(layout.orientation, 0);
-        assert_eq!(layout.desktop_scale_factor, 100);
-        assert_eq!(layout.device_scale_factor, 100);
+        assert_eq!(layout.desktop_scale_factor, 0);
+        assert_eq!(layout.device_scale_factor, 0);
     }
 
     #[test]
@@ -21284,6 +21579,7 @@ try {
                 bottom: 1_080,
             },
             primary: true,
+            attributes: MonitorAttributes::default(),
         }])
         .expect("a valid single-monitor topology");
         *control.configured_monitor_topology.borrow_mut() = Some(topology.clone());
@@ -21297,7 +21593,7 @@ try {
                 physical_height: 190,
                 orientation: 0,
                 desktop_scale_factor: 150,
-                device_scale_factor: 100,
+                device_scale_factor: 0,
             })
             .expect("queue a supported active-session layout");
 
@@ -21316,49 +21612,148 @@ try {
         assert!(control.configured_monitor_topology.borrow().is_none());
     }
 
+    fn two_monitor_topology(secondary_attributes: MonitorAttributes) -> MonitorTopology {
+        MonitorTopology::from_host_monitors(vec![
+            HostMonitor {
+                rect: RECT {
+                    left: 0,
+                    top: 0,
+                    right: 1_920,
+                    bottom: 1_080,
+                },
+                primary: true,
+                attributes: MonitorAttributes::default(),
+            },
+            HostMonitor {
+                rect: RECT {
+                    left: 1_920,
+                    top: -420,
+                    right: 3_000,
+                    bottom: 1_500,
+                },
+                primary: false,
+                attributes: secondary_attributes,
+            },
+        ])
+        .expect("a valid monitor topology")
+    }
+
     #[test]
-    fn active_multimon_layout_rejects_dynamic_display_updates() {
+    fn active_multimon_layout_sends_full_display_control_layouts() {
         let control = Control::new();
         let (sender, mut receiver) = RdpInputSender::channel(16);
         *control.input_sender.borrow_mut() = Some(sender);
         control.state.set(ConnectionState::Connected);
-        *control.configured_monitor_topology.borrow_mut() = Some(
-            MonitorTopology::from_host_monitors(vec![
-                HostMonitor {
-                    rect: RECT {
-                        left: 0,
-                        top: 0,
-                        right: 1_920,
-                        bottom: 1_080,
-                    },
-                    primary: true,
-                },
-                HostMonitor {
-                    rect: RECT {
-                        left: 1_920,
-                        top: 0,
-                        right: 3_200,
-                        bottom: 1_080,
-                    },
-                    primary: false,
-                },
-            ])
-            .expect("a valid monitor topology"),
+        let connected = two_monitor_topology(MonitorAttributes::default());
+        *control.configured_monitor_topology.borrow_mut() = Some(connected.clone());
+        *control.active_monitor_topology.borrow_mut() = Some(connected.clone());
+
+        // A layout is sent once, then not again on a display or DPI change notification.
+        control
+            .send_multimon_display_layout(connected.clone(), None, None, false)
+            .expect("the local topology is accepted");
+        assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::MonitorLayout(_))));
+        control
+            .send_multimon_display_layout(connected.clone(), None, None, false)
+            .expect("an unchanged topology is accepted");
+        assert!(receiver.try_recv().is_err());
+        assert!(control.active_monitor_topology.borrow().is_some());
+
+        // An explicit scale override is remembered, so a later refresh restores the monitors' DPI.
+        control
+            .send_multimon_display_layout(connected.clone(), Some(200), None, true)
+            .expect("an explicit scale override is accepted");
+        assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::MonitorLayout(_))));
+        control
+            .send_multimon_display_layout(connected, None, None, false)
+            .expect("the local topology is accepted");
+        let Ok(RdpInputEvent::MonitorLayout(layout)) = receiver.try_recv() else {
+            panic!("expected the local DPI to be restored");
+        };
+        assert_eq!(layout.monitors()[0].desktop_scale_factor(), Some(100));
+
+        // The secondary monitor moved to 150% and was rotated to portrait.
+        let changed = two_monitor_topology(MonitorAttributes {
+            desktop_scale_factor: 150,
+            orientation: MonitorOrientation::Portrait,
+        });
+        control
+            .send_multimon_display_layout(changed.clone(), None, None, false)
+            .expect("a multimonitor session accepts a new local topology");
+
+        let Ok(RdpInputEvent::MonitorLayout(layout)) = receiver.try_recv() else {
+            panic!("expected a Display Control monitor layout");
+        };
+        let monitors = layout.monitors();
+        assert_eq!(monitors.len(), 2);
+        assert!(monitors[0].is_primary());
+        assert_eq!(monitors[0].position(), Some((0, 0)));
+        assert_eq!(monitors[0].dimensions(), (1920, 1080));
+        assert_eq!(monitors[0].desktop_scale_factor(), Some(100));
+        assert_eq!(monitors[0].orientation(), Some(MonitorOrientation::Landscape));
+        assert!(!monitors[1].is_primary());
+        assert_eq!(monitors[1].position(), Some((1920, -420)));
+        assert_eq!(monitors[1].dimensions(), (1080, 1920));
+        assert_eq!(monitors[1].desktop_scale_factor(), Some(150));
+        assert_eq!(
+            monitors[1].device_scale_factor(),
+            Some(DeviceScaleFactor::Scale140Percent)
+        );
+        assert_eq!(monitors[1].orientation(), Some(MonitorOrientation::Portrait));
+
+        // The confirmed topology stays active until the server reports the requested one.
+        assert_eq!(control.configured_monitor_topology.borrow().as_ref(), Some(&changed));
+        assert_eq!(
+            control
+                .active_monitor_topology
+                .borrow()
+                .as_ref()
+                .map(|topology| topology.monitors.clone()),
+            Some(changed.monitors.clone())
+        );
+        assert_eq!(
+            {
+                let settings = control.settings.borrow();
+                (settings.desktop_width, settings.desktop_height)
+            },
+            (3000, 1920)
         );
 
-        let error = control
-            .update_display_layout(DisplayLayout {
-                desktop_width: 1280,
-                desktop_height: 720,
-                physical_width: 0,
-                physical_height: 0,
-                orientation: 0,
-                desktop_scale_factor: 100,
-                device_scale_factor: 100,
-            })
-            .expect_err("dynamic display updates cannot change a negotiated monitor topology");
-        assert_eq!(error.code(), E_NOTIMPL);
+        // A layout the session drops rolls back to the confirmed topology. The identical layout
+        // is not retried, while any other local layout is sent.
+        control.monitor_layout_rejected();
+        assert_ne!(control.configured_monitor_topology.borrow().as_ref(), Some(&changed));
+        control
+            .send_multimon_display_layout(changed, None, None, false)
+            .expect("an unchanged rejected layout is accepted");
         assert!(receiver.try_recv().is_err());
+        control
+            .send_multimon_display_layout(two_monitor_topology(MonitorAttributes::default()), None, None, false)
+            .expect("another layout is accepted");
+        assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::MonitorLayout(_))));
+
+        // Without a confirmed topology, a rejection leaves nothing configured.
+        control.active_monitor_topology.borrow_mut().take();
+        control.monitor_layout_rejected();
+        assert!(control.configured_monitor_topology.borrow().is_none());
+    }
+
+    #[test]
+    fn multimon_display_layout_applies_explicit_scale_factors_to_every_monitor() {
+        let topology = two_monitor_topology(MonitorAttributes {
+            desktop_scale_factor: 150,
+            orientation: MonitorOrientation::Landscape,
+        });
+
+        let layout = topology
+            .display_control_layout(Some(200), Some(DeviceScaleFactor::Scale100Percent))
+            .expect("a valid Display Control layout");
+
+        for monitor in layout.monitors() {
+            assert_eq!(monitor.desktop_scale_factor(), Some(200));
+            assert_eq!(monitor.device_scale_factor(), Some(DeviceScaleFactor::Scale100Percent));
+        }
+        assert_eq!(layout.desktop_size(), (3000, 1920));
     }
 
     #[test]
@@ -21375,6 +21770,7 @@ try {
                     bottom: 600,
                 },
                 primary: true,
+                attributes: MonitorAttributes::default(),
             }])
             .expect("a valid monitor topology"),
         );
@@ -21426,6 +21822,7 @@ try {
                         bottom: 600,
                     },
                     primary: true,
+                    attributes: MonitorAttributes::default(),
                 },
                 HostMonitor {
                     rect: RECT {
@@ -21435,6 +21832,7 @@ try {
                         bottom: 600,
                     },
                     primary: false,
+                    attributes: MonitorAttributes::default(),
                 },
             ])
             .expect("a valid monitor topology"),
@@ -21463,21 +21861,6 @@ try {
 
         assert!(control.active_monitor_topology.borrow().is_none());
         assert!(control.configured_monitor_topology.borrow().is_some());
-        assert_eq!(
-            control
-                .update_display_layout(DisplayLayout {
-                    desktop_width: 800,
-                    desktop_height: 600,
-                    physical_width: 0,
-                    physical_height: 0,
-                    orientation: 0,
-                    desktop_scale_factor: 100,
-                    device_scale_factor: 100,
-                })
-                .expect_err("a mismatched multimonitor layout still blocks dynamic display updates")
-                .code(),
-            E_NOTIMPL
-        );
         assert_eq!(
             control.remote_monitor_bounds().expect("read remote frame bounds"),
             (0, 0, 1, 1)
@@ -21530,9 +21913,9 @@ try {
     }
 
     #[test]
-    fn display_layout_rejects_invalid_or_unmapped_scaling() {
+    fn display_layout_rejects_invalid_scaling_and_rotation() {
         let control = Control::new();
-        let (sender, _) = RdpInputSender::channel(16);
+        let (sender, mut receiver) = RdpInputSender::channel(16);
         *control.input_sender.borrow_mut() = Some(sender);
         control.state.set(ConnectionState::Connected);
         let topology = MonitorTopology::from_host_monitors(vec![HostMonitor {
@@ -21543,6 +21926,7 @@ try {
                 bottom: 600,
             },
             primary: true,
+            attributes: MonitorAttributes::default(),
         }])
         .expect("a valid single-monitor topology");
         *control.configured_monitor_topology.borrow_mut() = Some(topology.clone());
@@ -21571,8 +21955,8 @@ try {
                 desktop_scale_factor: 100,
                 device_scale_factor: 125,
             })
-            .expect_err("device scale without an IronRDP mapping is unsupported");
-        assert_eq!(error.code(), E_NOTIMPL);
+            .expect_err("MS-RDPEDISP only defines 100, 140 and 180 percent device scales");
+        assert_eq!(error.code(), E_INVALIDARG);
 
         let error = control
             .update_display_layout(DisplayLayout {
@@ -21580,13 +21964,106 @@ try {
                 desktop_height: 720,
                 physical_width: 0,
                 physical_height: 0,
-                orientation: 90,
+                orientation: 45,
                 desktop_scale_factor: 100,
                 device_scale_factor: 100,
             })
-            .expect_err("rotation without an IronRDP mapping is unsupported");
-        assert_eq!(error.code(), E_NOTIMPL);
+            .expect_err("MS-RDPEDISP only defines right-angle rotations");
+        assert_eq!(error.code(), E_INVALIDARG);
+        assert!(receiver.try_recv().is_err());
         assert!(control.active_monitor_topology.borrow().is_some());
+    }
+
+    #[test]
+    fn display_layout_sends_rotation_and_device_scale_as_a_monitor_layout() {
+        let control = Control::new();
+        let (sender, mut receiver) = RdpInputSender::channel(16);
+        *control.input_sender.borrow_mut() = Some(sender);
+        control.state.set(ConnectionState::Connected);
+
+        control
+            .update_display_layout(DisplayLayout {
+                desktop_width: 1080,
+                desktop_height: 1920,
+                physical_width: 190,
+                physical_height: 340,
+                orientation: 270,
+                desktop_scale_factor: 175,
+                device_scale_factor: 180,
+            })
+            .expect("queue a rotated single-monitor layout");
+
+        let Ok(RdpInputEvent::MonitorLayout(layout)) = receiver.try_recv() else {
+            panic!("expected a Display Control monitor layout");
+        };
+        let [monitor] = layout.monitors() else {
+            panic!("expected a single monitor");
+        };
+        assert!(monitor.is_primary());
+        assert_eq!(monitor.dimensions(), (1080, 1920));
+        assert_eq!(monitor.physical_dimensions(), Some((190, 340)));
+        assert_eq!(monitor.orientation(), Some(MonitorOrientation::PortraitFlipped));
+        assert_eq!(monitor.desktop_scale_factor(), Some(175));
+        assert_eq!(monitor.device_scale_factor(), Some(DeviceScaleFactor::Scale180Percent));
+    }
+
+    #[test]
+    fn display_layout_preserves_values_the_resize_path_would_derive_differently() {
+        let control = Control::new();
+        let (sender, mut receiver) = RdpInputSender::channel(16);
+        *control.input_sender.borrow_mut() = Some(sender);
+        control.state.set(ConnectionState::Connected);
+
+        control
+            .update_display_layout(DisplayLayout {
+                desktop_width: 1920,
+                desktop_height: 1080,
+                physical_width: 0,
+                physical_height: 0,
+                orientation: 0,
+                desktop_scale_factor: 200,
+                device_scale_factor: 100,
+            })
+            .expect("queue a layout with an explicit device scale");
+        let Ok(RdpInputEvent::MonitorLayout(layout)) = receiver.try_recv() else {
+            panic!("expected a Display Control monitor layout");
+        };
+        assert_eq!(
+            layout.monitors()[0].device_scale_factor(),
+            Some(DeviceScaleFactor::Scale100Percent)
+        );
+
+        control
+            .update_display_layout(DisplayLayout {
+                desktop_width: 1080,
+                desktop_height: 1920,
+                physical_width: 0,
+                physical_height: 0,
+                orientation: 0,
+                desktop_scale_factor: 100,
+                device_scale_factor: 100,
+            })
+            .expect("queue an unrotated portrait-sized layout");
+        let Ok(RdpInputEvent::MonitorLayout(layout)) = receiver.try_recv() else {
+            panic!("expected a Display Control monitor layout");
+        };
+        assert_eq!(layout.monitors()[0].orientation(), Some(MonitorOrientation::Landscape));
+
+        // Renderer-driven updates keep the resize path and its derived values.
+        control
+            .update_display_layout_impl(
+                display_layout_from_renderer_size(1080, 1920).expect("nonzero renderer size"),
+                false,
+            )
+            .expect("queue a renderer resize");
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(RdpInputEvent::Resize {
+                width: 1080,
+                height: 1920,
+                ..
+            })
+        ));
     }
 
     #[test]
