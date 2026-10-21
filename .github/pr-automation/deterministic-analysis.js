@@ -1,12 +1,77 @@
 "use strict";
 
 const fs = require("node:fs");
+const { execFileSync } = require("node:child_process");
 const { isDocumentationPath } = require("./validate-classifier");
 
 const MAX_FILES = 3000;
 const MAX_FILENAME = 500;
 const SIZE_LABELS = ["size/XS", "size/S", "size/M", "size/L", "size/XL", "size/XXL"];
 const SOURCE_FILE = /\.(?:rs|cs|[cm]?js|jsx|[cm]?ts|tsx|svelte|ya?ml|toml)$/i;
+
+// Diff facts that select the conditional specialists, mirroring the `code-review` skill triggers.
+const DEPENDENCY_MANIFEST = /(?:^|\/)(?:Cargo\.toml|Cargo\.lock|package\.json|package-lock\.json|[^/]+\.csproj)$/;
+const INTENT_FILE = /(?:^|\/)(?:INTENT[^/]*|[^/]+\.intent[^/]*)\.md$/;
+const RUST_TEST_PATH = /(?:^|\/)tests\/|^crates\/ironrdp-testsuite-[^/]+\/|(?:^|\/)(?:[^/]+_)?tests?\.rs$/;
+const CSHARP_TEST_PATH = /(?:^|\/)(?:tests|[^/]*\.Tests)\//i;
+const RUST_TEST_MARKER = /#\[(?:[\w:]+::)?test\b|#\[cfg\(test\)\]|#\[rstest\b|\bproptest!|\bexpect!\[/;
+const CSHARP_TEST_MARKER = /\[(?:Fact|Theory|Test|TestMethod|TestCase)\b/;
+
+function changedPatchLines(file) {
+  return (file.patch || "").split("\n")
+    .filter((line) => /^[+-]/.test(line) && !/^(?:\+\+\+|---)/.test(line));
+}
+
+function isTestChange(file) {
+  const { filename } = file;
+  if (filename.endsWith(".rs")) {
+    return RUST_TEST_PATH.test(filename) ||
+      changedPatchLines(file).some((line) => RUST_TEST_MARKER.test(line));
+  }
+  if (filename.endsWith(".cs")) {
+    return CSHARP_TEST_PATH.test(filename) ||
+      changedPatchLines(file).some((line) => CSHARP_TEST_MARKER.test(line));
+  }
+  return false;
+}
+
+// `intent-files` placement: `D/INTENT*.md` governs everything under `D`, and `D/<name>.intent*.md`
+// governs the module `D/<name>` or `D/<name>.<extension>` beside it.
+function isGovernedByIntent(path, intentPaths) {
+  return intentPaths.some((intentPath) => {
+    const slash = intentPath.lastIndexOf("/");
+    const directory = intentPath.slice(0, slash + 1);
+    const name = intentPath.slice(slash + 1);
+    if (/^INTENT[^/]*\.md$/.test(name)) return path.startsWith(directory);
+    const module = /^(.+?)\.intent[^/]*\.md$/.exec(name)?.[1];
+    if (!module) return false;
+    const target = `${directory}${module}`;
+    return path === target || path.startsWith(`${target}.`);
+  });
+}
+
+function diffReviewers(files, intentPaths) {
+  const present = files.filter((file) => file.status !== "removed");
+  const governing = [...new Set([
+    ...intentPaths,
+    ...present.map((file) => file.filename).filter((path) => INTENT_FILE.test(path)),
+  ])];
+  const selected = [];
+  if (files.some((file) => isGovernedByIntent(file.filename, governing))) selected.push("intent-drift");
+  if (present.some((file) => INTENT_FILE.test(file.filename))) selected.push("intent-review");
+  if (files.some(isTestChange)) selected.push("test");
+  if (files.some((file) => DEPENDENCY_MANIFEST.test(file.filename) && file.additions > 0)) {
+    selected.push("dependency");
+  }
+  if (files.some((file) => file.filename.endsWith(".rs") && file.additions > 0)) selected.push("rust-style");
+  return selected;
+}
+
+function listIntentFiles(repositoryRoot) {
+  return execFileSync("git", ["ls-files", "-z"], {
+    cwd: repositoryRoot, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+  }).split("\0").filter((path) => INTENT_FILE.test(path));
+}
 
 function globToRegExp(pattern) {
   let output = "^";
@@ -57,9 +122,12 @@ function sourceSizeLabel(files) {
   };
 }
 
-function analyzeFiles(files, { labelerRules, authorAssociation } = {}) {
+function analyzeFiles(files, { labelerRules, authorAssociation, intentPaths = [] } = {}) {
   if (!Array.isArray(files) || files.length > MAX_FILES) return { ok: false, reason: "too many files" };
   if (!labelerRules || typeof labelerRules !== "object") return { ok: false, reason: "invalid configured rules" };
+  if (!Array.isArray(intentPaths) || intentPaths.some((path) => typeof path !== "string")) {
+    return { ok: false, reason: "invalid intent paths" };
+  }
   for (const file of files) {
     if (!file || typeof file.filename !== "string" || file.filename.length > MAX_FILENAME ||
         !Number.isSafeInteger(file.additions) || file.additions < 0 ||
@@ -74,6 +142,7 @@ function analyzeFiles(files, { labelerRules, authorAssociation } = {}) {
     sizeLabels: SIZE_LABELS, changedLines: size.changedLines, touchedFiles: size.touchedFiles,
     firstTime: ["FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER"].includes(authorAssociation),
     documentationOnlyPaths: files.every((file) => isDocumentationPath(file.filename)),
+    reviewers: diffReviewers(files, intentPaths),
   };
 }
 
@@ -108,11 +177,14 @@ async function listPrFiles(github, { owner, repo, prNumber }) {
   return files;
 }
 
-async function deterministicAnalysis({ github, owner, repo, prNumber, authorAssociation, labelerPath }) {
+async function deterministicAnalysis({
+  github, owner, repo, prNumber, authorAssociation, labelerPath, repositoryRoot = ".",
+}) {
   try {
     const source = fs.readFileSync(labelerPath, "utf8");
     const result = analyzeFiles(await listPrFiles(github, { owner, repo, prNumber }), {
       labelerRules: parseLabelerRules(source), authorAssociation,
+      intentPaths: listIntentFiles(repositoryRoot),
     });
     return result.ok ? result : { ok: false, reason: result.reason };
   } catch {
@@ -120,4 +192,7 @@ async function deterministicAnalysis({ github, owner, repo, prNumber, authorAsso
   }
 }
 
-module.exports = { MAX_FILES, SIZE_LABELS, addedLinesByPath, analyzeFiles, deterministicAnalysis, globToRegExp, listPrFiles, parseLabelerRules };
+module.exports = {
+  MAX_FILES, SIZE_LABELS, addedLinesByPath, analyzeFiles, deterministicAnalysis, globToRegExp,
+  isGovernedByIntent, listIntentFiles, listPrFiles, parseLabelerRules,
+};

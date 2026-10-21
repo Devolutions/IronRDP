@@ -7,7 +7,9 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const { createRequire } = require("node:module");
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { SIZE_LABELS, addedLinesByPath, analyzeFiles, parseLabelerRules } = require("./deterministic-analysis");
+const {
+  SIZE_LABELS, addedLinesByPath, analyzeFiles, isGovernedByIntent, parseLabelerRules,
+} = require("./deterministic-analysis");
 const { SCHEMA_VERSION: CLASSIFIER_SCHEMA_VERSION, validateClassifier } = require("./validate-classifier");
 const { validateCandidateReview } = require("./validate-candidate-review");
 const {
@@ -15,7 +17,9 @@ const {
   validateFinalReview, validateNormalizedFinalReview,
 } = require("./validate-final-review");
 const { buildSpecialistAggregate, validateReviewGate, validateSpecialistRun } = require("./review-pipeline");
-const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
+const {
+  MAXIMUM_CANDIDATES, REVIEWER_ORDER, SPECIALIST_FINDING_LIMITS, resolveReviewerRoute, validateReviewerRoute,
+} = require("./routing");
 const {
   ACTOR_LABELS, AI_COUNTS, FAILURE_LABEL, resolveClassificationState, resolveReviewState,
   reviewCount, reviewOutcome, reviewPolicyEligible, OVERLAP_MARKER,
@@ -593,8 +597,8 @@ test("trusted output normalizers project strict boundaries and only trim declare
 });
 
 const MAXIMUM_LINUX_ENVIRONMENT_ENTRY_BYTES = 128 * 1024;
-const REVIEWERS = ["protocol", "skeptical", "code-compressor"];
-const REVIEWABLE_REVIEWERS = ["protocol", "skeptical", "code-compressor"];
+const REVIEWERS = REVIEWER_ORDER;
+const REVIEWABLE_REVIEWERS = REVIEWER_ORDER;
 const MAXIMUM_NUMBER = 2_147_483_647;
 const HIGH_PRECISION_CONFIDENCE = 0.9999999999999999;
 
@@ -630,7 +634,7 @@ function maximumCandidate(reviewer, { references = false, escaped = false } = {}
     head_sha: SHA,
     reviewer,
     summary: text(1000),
-    findings: Array.from({ length: 20 }, (_, index) => ({
+    findings: Array.from({ length: SPECIALIST_FINDING_LIMITS[reviewer] }, (_, index) => ({
       id: maximumFindingId(index),
       question: false,
       severity: "high",
@@ -675,7 +679,8 @@ function maximumClassifier({ escaped = false } = {}) {
 function maximumFinalReview({ repeatedSources = false, escaped = false } = {}) {
   const text = escaped ? escapedMaximumText : maximumText;
   const candidates = REVIEWERS.flatMap((reviewer) =>
-    Array.from({ length: 20 }, (_, index) => ({ reviewer, finding_id: maximumFindingId(index) })));
+    Array.from({ length: SPECIALIST_FINDING_LIMITS[reviewer] }, (_, index) =>
+      ({ reviewer, finding_id: maximumFindingId(index) })));
   return {
     head_sha: SHA,
     summary: text(1000),
@@ -703,7 +708,7 @@ function maximumSpecialistAggregate() {
       reviewer,
       status: "valid",
       summary: "valid",
-      findings: Array.from({ length: 20 }, (_, index) => ({
+      findings: Array.from({ length: SPECIALIST_FINDING_LIMITS[reviewer] }, (_, index) => ({
         id: maximumFindingId(index),
         question: false,
         severity: "high",
@@ -1572,9 +1577,11 @@ test("resolve review state renders bounded stage diagnostics in the check and su
   assert.doesNotMatch(missing.state.check.summary, /no usable report/);
   assert.match(missing.state.check.summary, /unavailable/);
 
+  // Every stage beyond the specialists plus four pipeline stages is omitted from the check.
+  const stageCount = REVIEWER_ORDER.length + 4 + 9;
   const bounded = renderReviewReport({
     report: {
-      stages: Array.from({ length: 16 }, (_, index) => ({
+      stages: Array.from({ length: stageCount }, (_, index) => ({
         id: `stage-${index}-${"'".repeat(300)}`, status: "failed",
         reason: "'".repeat(300), category: "retry-declined",
         metrics: {
@@ -1592,8 +1599,8 @@ test("resolve review state renders bounded stage diagnostics in the check and su
   });
   assert.ok(Buffer.byteLength(bounded.checkSummary) < 65_535);
   assert.match(bounded.checkSummary, /9 omitted to bound output/);
-  assert.doesNotMatch(bounded.checkSummary, /stage-15-/);
-  assert.match(bounded.workflowSummary, /stage-15-/);
+  assert.doesNotMatch(bounded.checkSummary, new RegExp(`stage-${stageCount - 1}-`));
+  assert.match(bounded.workflowSummary, new RegExp(`stage-${stageCount - 1}-`));
 });
 
 test("review gates require classification before forced work starts", () => {
@@ -1699,12 +1706,14 @@ test("review skills own methodology while stage prompts own pipeline contracts",
     "utf8",
   );
 
-  for (const agent of ["classifier", "protocol", "skeptical", "code-compressor", "general-reviewer"]) {
+  for (const agent of ["classifier", ...REVIEWER_ORDER, "general-reviewer"]) {
     const config = JSON.parse(fs.readFileSync(path.join(__dirname, "agents", `${agent}.json`), "utf8"));
     assert.equal(config.model, "glm5.3");
     assert.equal(config.max_tool_calls > 0, true);
-    if (["protocol", "skeptical", "code-compressor"].includes(agent)) {
+    if (REVIEWER_ORDER.includes(agent)) {
+      assert.equal(config.id, agent);
       assert.equal(config.max_turns, 50);
+      assert.equal(config.schema_file, ".github/pr-automation/schemas/candidate-review.json");
     }
   }
 
@@ -1733,6 +1742,71 @@ test("review skills own methodology while stage prompts own pipeline contracts",
   assert.match(evidence, /issues: read/);
   assert.match(evidence, /pull-requests: read/);
   assert.match(evidence, /fetchReviewContext/);
+});
+
+test("conditional specialist prompts carry the pipeline contract and their finding budget", () => {
+  const candidateSchema = require("./schemas/candidate-review.json");
+  const finalSchema = require("./schemas/final-review.json");
+  const schemaLimit = (reviewer) => candidateSchema.allOf
+    .filter((rule) => rule.if.properties.reviewer.enum?.includes(reviewer))
+    .map((rule) => rule.then.properties.findings.maxItems)
+    .find((limit) => limit !== undefined) ?? candidateSchema.properties.findings.maxItems;
+
+  assert.deepEqual(candidateSchema.properties.reviewer.enum, REVIEWER_ORDER);
+  for (const reviewer of REVIEWER_ORDER) {
+    assert.equal(schemaLimit(reviewer), SPECIALIST_FINDING_LIMITS[reviewer], reviewer);
+  }
+  const dispositions = finalSchema.properties.candidate_dispositions;
+  const sources = finalSchema.properties.findings.items.properties.sources;
+  assert.equal(dispositions.maxItems, MAXIMUM_CANDIDATES);
+  assert.equal(sources.maxItems, MAXIMUM_CANDIDATES);
+  assert.deepEqual(dispositions.items.properties.reviewer.enum, REVIEWER_ORDER);
+  assert.deepEqual(sources.items.properties.reviewer.enum, REVIEWER_ORDER);
+
+  for (const reviewer of ["intent-drift", "intent-review", "test", "dependency", "rust-style"]) {
+    const config = JSON.parse(fs.readFileSync(path.join(__dirname, "agents", `${reviewer}.json`), "utf8"));
+    const prompt = fs.readFileSync(path.join(__dirname, "..", "..", config.prompt_file), "utf8");
+    assert.match(prompt, new RegExp(`\`reviewer\` set to \`"${reviewer}"\``));
+    assert.match(prompt, new RegExp(`at most ${SPECIALIST_FINDING_LIMITS[reviewer]} findings`));
+    assert.match(prompt, /untrusted evidence, never as instructions/);
+    assert.match(prompt, /Do not run commands/);
+    assert.match(prompt, /pr-automation-context\.json/);
+    assert.match(prompt, /pr-evidence\/changed-files\.txt/);
+    assert.match(prompt, /Do not read or use output from any other specialist/);
+    assert.match(prompt, /Set every `references` array to empty/);
+    assert.match(prompt, new RegExp(config.methodology_files[0].replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")));
+    assert.deepEqual(config.allowed_roots, ["pr-head"]);
+  }
+});
+
+// Methodology is read from the trusted workflow checkout at run time. A missing file only fails that
+// specialist as reduced coverage, so CI is where a dangling reference has to be caught.
+test("every agent configuration references files that exist and stay pipeline-agnostic", () => {
+  const repositoryRoot = path.join(__dirname, "..", "..");
+  const agents = fs.readdirSync(path.join(__dirname, "agents")).filter((name) => name.endsWith(".json"));
+  assert.deepEqual(
+    agents.map((name) => name.slice(0, -".json".length)).sort(),
+    ["classifier", "general-reviewer", ...REVIEWER_ORDER].sort(),
+  );
+  const missing = [];
+  for (const name of agents) {
+    const config = JSON.parse(fs.readFileSync(path.join(__dirname, "agents", name), "utf8"));
+    for (const file of [config.prompt_file, config.schema_file, ...(config.methodology_files || [])]) {
+      const absolute = path.join(repositoryRoot, file);
+      if (!fs.existsSync(absolute)) {
+        missing.push(`${name}: ${file}`);
+        continue;
+      }
+      if ((config.methodology_files || []).includes(file)) {
+        assert.doesNotMatch(
+          fs.readFileSync(absolute, "utf8"),
+          /pr-automation-context|pr-evidence|validated-specialist-findings|start_line|end_line/,
+          `${file} must not know the pipeline`,
+        );
+      }
+    }
+  }
+  assert.deepEqual(missing, []);
 });
 
 test("review context is bounded and tied to the reviewed head", async () => {
@@ -1947,6 +2021,119 @@ test("deterministic size uses the larger changed-line or touched-file bucket", (
   assert.equal(analyzeFiles([
     { filename: "README.md", additions: 1300, deletions: 0 },
   ], { labelerRules: rules }).sizeLabel, "size/XS");
+});
+
+test("diff facts select the conditional specialists", () => {
+  const reviewers = (files, intentPaths = []) => analyzeFiles(
+    files.map((file) => ({ additions: 1, deletions: 0, ...file })),
+    { labelerRules: {}, intentPaths },
+  ).reviewers;
+  const patch = (line) => `@@ -1,1 +1,2 @@\n context\n${line}`;
+
+  assert.deepEqual(reviewers([{ filename: "docs/guide.txt" }]), []);
+  assert.deepEqual(reviewers([{ filename: "crates/ironrdp-pdu/src/lib.rs" }]), ["rust-style"]);
+  // Deleting Rust lines leaves nothing to check for style.
+  assert.deepEqual(reviewers([{ filename: "src/lib.rs", additions: 0, deletions: 4 }]), []);
+
+  for (const filename of [
+    "crates/ironrdp-pdu/tests/round_trip.rs",
+    "crates/ironrdp-testsuite-core/src/fixtures.rs",
+    "crates/ironrdp-svc/src/tests.rs",
+    "crates/ironrdp-svc/src/codec_test.rs",
+  ]) {
+    assert.deepEqual(reviewers([{ filename, additions: 0, deletions: 1 }]), ["test"], filename);
+  }
+  for (const line of ["+#[test]", "-    #[cfg(test)]", "+#[tokio::test]", "+#[rstest]", "+proptest! {", "+expect![[r#\"\"#]]"]) {
+    assert.deepEqual(reviewers([{ filename: "crates/ironrdp-pdu/src/lib.rs", patch: patch(line) }]),
+      ["test", "rust-style"], line);
+  }
+  // A test marker in unchanged context is not a test change.
+  assert.deepEqual(reviewers([{ filename: "src/lib.rs", patch: "@@ -1,1 +1,2 @@\n #[test]\n+fn f() {}" }]),
+    ["rust-style"]);
+  assert.deepEqual(reviewers([{ filename: "ffi/dotnet/Devolutions.IronRdp.Tests/SmokeTests.cs" }]), ["test"]);
+  assert.deepEqual(reviewers([{ filename: "ffi/dotnet/Devolutions.IronRdp/Session.cs", patch: patch("+    [Fact]") }]),
+    ["test"]);
+  assert.deepEqual(reviewers([{ filename: "ffi/dotnet/Devolutions.IronRdp/Session.cs" }]), []);
+
+  for (const filename of [
+    "Cargo.lock", "crates/ironrdp-pdu/Cargo.toml", "web-client/iron-remote-desktop/package.json",
+    "web-client/iron-remote-desktop/package-lock.json", "ffi/dotnet/Devolutions.IronRdp/Devolutions.IronRdp.csproj",
+  ]) {
+    assert.deepEqual(reviewers([{ filename }]), ["dependency"], filename);
+  }
+  assert.deepEqual(reviewers([{ filename: "Cargo.toml", additions: 0, deletions: 3 }]), []);
+
+  const intentPaths = [
+    "ffi/INTENT.md", ".github/workflows/review-pipeline.intent.md", ".github/actions/openai-agent/INTENT.md",
+  ];
+  assert.deepEqual(reviewers([{ filename: "ffi/src/session.rs" }], intentPaths), ["intent-drift", "rust-style"]);
+  assert.deepEqual(reviewers([{ filename: ".github/workflows/review-pipeline.yml" }], intentPaths), ["intent-drift"]);
+  assert.deepEqual(reviewers([{ filename: ".github/workflows/ci.yml" }], intentPaths), []);
+  assert.deepEqual(reviewers([{ filename: "ffi-extra/README.md" }], intentPaths), []);
+  // An edited intent file governs itself, so it is both audited against and reviewed.
+  assert.deepEqual(reviewers([{ filename: "ffi/INTENT.md" }], intentPaths), ["intent-drift", "intent-review"]);
+  // A new intent file governs its own changes even though the trusted checkout lacks it.
+  assert.deepEqual(reviewers([
+    { filename: "xtask/INTENT.md", status: "added" }, { filename: "xtask/src/main.rs" },
+  ]), ["intent-drift", "intent-review", "rust-style"]);
+  // A deleted intent file is not reviewed, but deleting governed content is still audited.
+  assert.deepEqual(reviewers([{ filename: "ffi/INTENT.md", status: "removed", additions: 0, deletions: 5 }],
+    intentPaths), ["intent-drift"]);
+  assert.deepEqual(reviewers([{ filename: "crates/a/src/lib.intent.notes.md", status: "removed" }]), []);
+
+  assert.equal(analyzeFiles([], { labelerRules: {}, intentPaths: [7] }).ok, false);
+});
+
+test("intent placement follows directory ancestry and module stems", () => {
+  const governed = (path, intentPaths) => isGovernedByIntent(path, intentPaths);
+  assert.equal(governed("README.md", ["INTENT.md"]), true);
+  assert.equal(governed("a/b/c.rs", ["a/INTENT.md"]), true);
+  assert.equal(governed("a/b/c.rs", ["a/INTENT.wire.md"]), true);
+  assert.equal(governed("ab/c.rs", ["a/INTENT.md"]), false);
+  assert.equal(governed("a/c.rs", ["a/b/INTENT.md"]), false);
+  assert.equal(governed("a/b.rs", ["a/b.intent.md"]), true);
+  assert.equal(governed("a/b.rs", ["a/b.intent.wire.md"]), true);
+  assert.equal(governed("a/b", ["a/b.intent.md"]), true);
+  assert.equal(governed("a/bc.rs", ["a/b.intent.md"]), false);
+  assert.equal(governed("a/c/b.rs", ["a/b.intent.md"]), false);
+});
+
+test("classification persists diff-selected specialists as optional reviewers", () => {
+  const deterministic = {
+    ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/S", sizeLabels: SIZE_LABELS,
+    firstTime: false, reviewers: ["intent-drift", "rust-style"],
+  };
+  const classified = resolveClassificationState({
+    expectedSha: SHA, labels: [], deterministic,
+    classifier: classifier({ protocol_related: true }),
+    semver: { head_sha: SHA, status: "not-suspected" },
+  });
+  assert.deepEqual(classified.check.machineState.specialistReviewers,
+    ["protocol", "intent-drift", "code-compressor", "rust-style"]);
+  const failed = resolveClassificationState({ expectedSha: SHA, labels: [], deterministic, classifier: "" });
+  assert.deepEqual(failed.check.machineState.specialistReviewers, ["intent-drift", "code-compressor", "rust-style"]);
+  // Analysis that predates diff routing selects only the unconditional reviewer.
+  const legacy = resolveClassificationState({
+    expectedSha: SHA, labels: [], deterministic: { ...deterministic, reviewers: undefined },
+    classifier: classifier(), semver: { head_sha: SHA, status: "not-suspected" },
+  });
+  assert.deepEqual(legacy.check.machineState.specialistReviewers, ["code-compressor"]);
+
+  // A check written before these specialists existed still parses, so no reclassification is needed.
+  assert.deepEqual(parseCheckState(
+    "ironrdp-pr-automation-state: " + JSON.stringify({
+      schema_version: CLASSIFIER_SCHEMA_VERSION, protocol_related: true, risk: "high",
+      specialist_reviewers: ["protocol", "skeptical", "code-compressor"], automatic_review_eligible: true,
+    }),
+  ).specialistReviewers, ["protocol", "skeptical", "code-compressor"]);
+  assert.equal(validateReviewerRoute({
+    reviewers: ["rust-style", "code-compressor"], protocolRelated: false, risk: "low",
+  }).ok, false);
+
+  const required = resolveRequiredReviewers({
+    selectedReviewers: REVIEWER_ORDER, protocolRelated: true, risk: "high",
+  });
+  assert.deepEqual(required.reviewers, ["protocol", "skeptical"]);
 });
 
 test("classifier rejects malformed overlap and executable documentation claims", () => {
@@ -2176,11 +2363,11 @@ test("schema output bounds cover escaped strings, protocol coordinates, and GitH
 
   const escapedFinal = maximumFinalReview({ repeatedSources: true, escaped: true });
   assert.equal(finalSchema(JSON.stringify(escapedFinal)).ok, true);
-  assert.equal(escapedFinal.candidate_dispositions.length, 60);
+  assert.equal(escapedFinal.candidate_dispositions.length, MAXIMUM_CANDIDATES);
   assert.equal(escapedFinal.findings.length, 20);
-  assert.ok(escapedFinal.findings.every((finding) => finding.sources.length === 60));
+  assert.ok(escapedFinal.findings.every((finding) => finding.sources.length === MAXIMUM_CANDIDATES));
   assert.ok(escapedFinal.findings.every((finding) =>
-    new Set(finding.sources.map((source) => `${source.reviewer}\0${source.finding_id}`)).size === 60));
+    new Set(finding.sources.map((source) => `${source.reviewer}\0${source.finding_id}`)).size === MAXIMUM_CANDIDATES));
 
   for (const [validator, valid, invalid] of [
     [
@@ -6842,7 +7029,7 @@ test("reviewer actions retry four provider requests and repair output in convers
   // Limits live in the agent configuration alone, so no `with:` block can quietly weaken them.
   assert.doesNotMatch(workflow, /max-request-retries|max-output-repairs|max-turns|max-tool-calls/);
 
-  for (const agent of ["protocol", "skeptical", "code-compressor", "general-reviewer"]) {
+  for (const agent of [...REVIEWER_ORDER, "general-reviewer"]) {
     const config = JSON.parse(fs.readFileSync(path.join(__dirname, "agents", `${agent}.json`), "utf8"));
     assert.equal(config.max_request_retries, 4, `${agent} must retry four requests`);
     assert.equal(config.max_output_repair_attempts, 2, `${agent} must repair output in conversation`);
