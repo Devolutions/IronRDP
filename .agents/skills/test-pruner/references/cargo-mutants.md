@@ -1,14 +1,12 @@
 # cargo-mutants mechanics
 
-cargo-mutants reports whether the suite caught each mutant.
-It has no user-defined mutation operators and keeps per-test results only in its logs, so both are built on its outputs.
+cargo-mutants keeps per-test results only in its logs, so the kill matrix is parsed from them.
 These notes target cargo-mutants 27.1.
 
 ## Run
 
 Scope with `--file '<package-dir>/src/<module>/**'` for a crate or module, `--re '<fn>|<fn>'` for a pull request's changed functions, or `--in-diff <diff>` for its whole diff; build time dominates, so scope first.
 A test-only diff yields no mutants under `--in-diff`, so scope with `--re` to the production functions the changed tests call, including unchanged ones.
-Make no deletion decision on an empty or near-empty viable sample; with nothing to catch, every test has zero unique kills and the invariant passes trivially.
 Package directories vary; take the path from `cargo metadata` rather than assuming `crates/<name>`.
 
 ```sh
@@ -56,49 +54,9 @@ $expected = Select-String -Path <clean-run-log> -Pattern '^test (\S+)(?: - shoul
     }
 ```
 
-A unique kill is a mutant caught by exactly one test in scope.
 For assertion-level evidence, read the `panicked at <file>:<line>` location of each failure; an assertion whose line never appears across its test's kills catches nothing the others miss.
 
 ## Rerun
 
-Rerun with the same scope and flags after each change.
 Run the scoped tests on the clean tree first; with `--baseline skip`, a suite broken by a test edit marks every mutant caught.
 Any mutant that moved from caught to missed without an approved deletion explaining it means revert.
-
-## Domain mutants
-
-Write each as a small patch; apply it, run the scoped tests, revert it with `git apply -R`; caught means any test failed.
-Patches are pull request evidence, not repository files.
-
-Codec catalog:
-
-- Swap endianness on one field read or write.
-- Length prefix off by one in either direction.
-- Remove one bounds check or remaining-length test.
-- Wrong padding count, or padding read but not skipped.
-- Swap two adjacent fields of the same type.
-- Flip one bit in a flags field.
-- Write one byte fewer than `size()` reports.
-- Return `Ok` on a malformed-input branch that returns `Err`.
-- Accept a reserved or out-of-range enum value.
-
-Async and resource catalog:
-
-- Remove or shorten a deadline.
-- Detach a task instead of aborting it, or hold a `JoinHandle` where an abort-on-drop handle is required.
-- Return early before a drain or flush.
-- Swallow an error as `Ok`.
-- Skip recording a state flag.
-- Swap two status or close codes.
-
-Decision and validation catalog, for each security or policy decision: remove it, weaken it, key it on the wrong identity, or apply it to the wrong object.
-
-- Always return `Ok` from the check.
-- Accept any candidate by dropping a filter.
-- Look up by the wrong key, such as a name hash instead of a thumbprint.
-- Stop after the first candidate.
-- Ignore one input source, such as caller-provided roots.
-- Skip verification of a candidate's chain.
-- Swap error precedence or report the wrong error.
-
-Add every mutant the challenger produces that the rest of the suite misses.
