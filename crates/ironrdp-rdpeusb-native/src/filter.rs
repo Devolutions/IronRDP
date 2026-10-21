@@ -103,7 +103,11 @@ impl UsbRedirectionConfig {
 
     /// Whether hotplug notifications are needed to apply this configuration.
     pub fn needs_hotplug(&self) -> bool {
-        self.auto || self.devices.iter().any(|rule| matches!(rule, UsbDeviceMatch::VidPid { .. }))
+        self.auto
+            || self
+                .devices
+                .iter()
+                .any(|rule| matches!(rule, UsbDeviceMatch::VidPid { .. }))
     }
 
     /// Whether a device present when the channel opens is redirected.
@@ -338,7 +342,15 @@ mod tests {
 
     #[test]
     fn rejects_malformed_cli_rules() {
-        for spec in ["id:046d", "id:xyz:1", "addr:100:1", "id:1:10000", "bogus", "auto:1", "filter:"] {
+        for spec in [
+            "id:046d",
+            "id:xyz:1",
+            "addr:100:1",
+            "id:1:10000",
+            "bogus",
+            "auto:1",
+            "filter:",
+        ] {
             let error = UsbRedirectionConfig::parse_cli(spec).expect_err(spec);
             assert!(spec.contains(error.item()), "{spec}");
         }

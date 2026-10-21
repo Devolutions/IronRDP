@@ -141,7 +141,9 @@ pub(crate) enum UsbRequest {
     },
     CurrentFrameNumber,
     /// An isochronous transfer, which the host backend cannot perform.
-    Isochronous { packets: Vec<UsbdIsoPacketDesc> },
+    Isochronous {
+        packets: Vec<UsbdIsoPacketDesc>,
+    },
     /// A request that is rejected with this status.
     Reject(UsbdStatus),
 }
@@ -170,9 +172,13 @@ pub(crate) fn translate_in(packet: TransferInPacket) -> UsbRequest {
             },
         },
         TsUrbInKind::GetCurFrameNum(_) => UsbRequest::CurrentFrameNumber,
-        TsUrbInKind::CtlTransfer(request) => {
-            control_transfer(request.setup_packet, Direction::In, length, Vec::new(), DEFAULT_CONTROL_TIMEOUT)
-        }
+        TsUrbInKind::CtlTransfer(request) => control_transfer(
+            request.setup_packet,
+            Direction::In,
+            length,
+            Vec::new(),
+            DEFAULT_CONTROL_TIMEOUT,
+        ),
         TsUrbInKind::CtlTransferEx(request) => control_transfer(
             request.setup_packet,
             Direction::In,
@@ -280,9 +286,13 @@ pub(crate) fn translate_out(packet: TransferOutPacket) -> UsbRequest {
     };
 
     match packet.ts_urb.kind {
-        TsUrbOutKind::CtlTransfer(request) => {
-            control_transfer(request.setup_packet, Direction::Out, length, data, DEFAULT_CONTROL_TIMEOUT)
-        }
+        TsUrbOutKind::CtlTransfer(request) => control_transfer(
+            request.setup_packet,
+            Direction::Out,
+            length,
+            data,
+            DEFAULT_CONTROL_TIMEOUT,
+        ),
         TsUrbOutKind::CtlTransferEx(request) => control_transfer(
             request.setup_packet,
             Direction::Out,
@@ -370,7 +380,14 @@ fn control_transfer(
     }
 }
 
-fn standard(direction: Direction, recipient: Recipient, request: u8, value: u16, index: u16, length: u16) -> UsbRequest {
+fn standard(
+    direction: Direction,
+    recipient: Recipient,
+    request: u8,
+    value: u16,
+    index: u16,
+    length: u16,
+) -> UsbRequest {
     UsbRequest::Control {
         setup: SetupPacket {
             request_type: RequestType::new(direction, RequestKind::STANDARD, recipient),
@@ -473,7 +490,10 @@ pub(crate) enum ControlRoute {
     /// `SET_CONFIGURATION`, which the host stack owns.
     SetConfiguration(u8),
     /// `SET_INTERFACE`, which must go through the host interface state.
-    SetInterface { interface_number: u8, alternate_setting: u8 },
+    SetInterface {
+        interface_number: u8,
+        alternate_setting: u8,
+    },
     /// `CLEAR_FEATURE(ENDPOINT_HALT)`, which must also reset the host-side data toggle.
     ClearHalt { endpoint: u8 },
     /// A request the host stack does not let user mode issue.
@@ -594,7 +614,10 @@ fn interface_result(
         sub_class: class.subclass,
         protocol: class.protocol,
         interface_handle: INTERFACE_HANDLE_TAG
-            | u32::from(u16::from_be_bytes([descriptor.alternate_setting(), descriptor.number()])),
+            | u32::from(u16::from_be_bytes([
+                descriptor.alternate_setting(),
+                descriptor.number(),
+            ])),
         pipes,
     })
 }
@@ -728,7 +751,22 @@ pub(crate) fn device_text(text_type: u32, description: &str, location: &str) -> 
 pub(crate) fn ms_os_vendor_code(descriptor: &[u8]) -> Option<u8> {
     // bLength, bDescriptorType, then "MSFT100" in UTF-16LE.
     const SIGNATURE: [u8; 16] = [
-        0x12, DESCRIPTOR_TYPE_STRING, b'M', 0, b'S', 0, b'F', 0, b'T', 0, b'1', 0, b'0', 0, b'0', 0,
+        0x12,
+        DESCRIPTOR_TYPE_STRING,
+        b'M',
+        0,
+        b'S',
+        0,
+        b'F',
+        0,
+        b'T',
+        0,
+        b'1',
+        0,
+        b'0',
+        0,
+        b'0',
+        0,
     ];
 
     if descriptor.get(..SIGNATURE.len())? != SIGNATURE {
@@ -1106,7 +1144,14 @@ mod tests {
         let endpoints: Vec<_> = bulk
             .pipes
             .iter()
-            .map(|pipe| (pipe.endpoint_address, pipe.pipe_type, pipe.max_packet_size, pipe.max_transfer_size))
+            .map(|pipe| {
+                (
+                    pipe.endpoint_address,
+                    pipe.pipe_type,
+                    pipe.max_packet_size,
+                    pipe.max_transfer_size,
+                )
+            })
             .collect();
         assert_eq!(
             endpoints,
@@ -1142,13 +1187,9 @@ mod tests {
 
     #[test]
     fn completions_carry_status_and_hresult() {
-        let CompletionData::TransferIn(read) = transfer_completion(
-            Envelope::In {
-                output_buffer_size: 2,
-            },
-            vec![1, 2, 3],
-            0,
-        ) else {
+        let CompletionData::TransferIn(read) =
+            transfer_completion(Envelope::In { output_buffer_size: 2 }, vec![1, 2, 3], 0)
+        else {
             panic!("expected a transfer-in completion");
         };
         assert_eq!(read.output_buffer, [1, 2]);
@@ -1235,7 +1276,10 @@ mod tests {
     #[test]
     fn device_text_types() {
         assert_eq!(device_text(0, "Pico", "Port_#0001.Hub_#0002").description, "Pico");
-        assert_eq!(device_text(1, "Pico", "Port_#0001.Hub_#0002").description, "Port_#0001.Hub_#0002");
+        assert_eq!(
+            device_text(1, "Pico", "Port_#0001.Hub_#0002").description,
+            "Port_#0001.Hub_#0002"
+        );
         assert_eq!(device_text(7, "Pico", "").hresult, HRESULT_NOT_SUPPORTED);
     }
 }

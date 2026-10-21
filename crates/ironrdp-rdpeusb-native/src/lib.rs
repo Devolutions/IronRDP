@@ -12,9 +12,7 @@ mod manager;
 mod urb;
 
 pub use device::OpenError;
-pub use filter::{
-    DEFAULT_LOCAL_CLASSES, UsbDeviceIdentity, UsbDeviceMatch, UsbFilterParseError, UsbRedirectionConfig,
-};
+pub use filter::{DEFAULT_LOCAL_CLASSES, UsbDeviceIdentity, UsbDeviceMatch, UsbFilterParseError, UsbRedirectionConfig};
 
 /// Work the RDP session loop must perform on behalf of the USB backend.
 ///
