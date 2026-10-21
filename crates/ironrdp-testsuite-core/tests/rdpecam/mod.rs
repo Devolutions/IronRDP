@@ -446,6 +446,42 @@ fn channels_of_one_device_share_activation_and_streams() {
 }
 
 #[test]
+fn overlapping_sample_requests_are_answered_on_their_own_channels() {
+    let uplink = Uplink::new();
+    let device = negotiated_device(ProtocolVersion::V2);
+    let mut listener = device.listener(|| Some(FakeCamera::new()), uplink.callback());
+    let mut first = listener.create(20).unwrap();
+    let mut second = listener.create(21).unwrap();
+    first.start(20).unwrap();
+    second.start(21).unwrap();
+
+    let send = |processor: &mut Box<dyn ironrdp_dvc::DvcClientProcessor>, channel_id, pdu| {
+        let encoded = encode_vec(&DeviceMessage::new(ProtocolVersion::V2, pdu)).unwrap();
+        let response = processor.process(channel_id, &encoded).unwrap();
+        (!response.is_empty()).then(|| decode_message::<DeviceMessage>(&response).pdu)
+    };
+    send(&mut first, 20, DevicePdu::ActivateDeviceRequest);
+    let start = StartStreamInfo {
+        stream_index: 0,
+        media_type: media_type(),
+    };
+    assert_eq!(
+        send(&mut first, 20, DevicePdu::StartStreamsRequest(vec![start])),
+        Some(DevicePdu::SuccessResponse)
+    );
+    assert_eq!(send(&mut second, 21, DevicePdu::SampleRequest(0)), None);
+    assert_eq!(send(&mut first, 20, DevicePdu::SampleRequest(0)), None);
+
+    let client = first.as_any().downcast_ref::<DeviceClient<FakeCamera>>().unwrap();
+    let sink = client.with_backend(|backend| backend.sink.clone()).unwrap().unwrap();
+    assert_eq!(sink.pending_requests(0), 2);
+    assert_eq!(sink.send_sample(0, vec![0x55; 12]), SampleDelivery::Sent);
+    assert_eq!(sink.send_sample(0, vec![0x55; 12]), SampleDelivery::Sent);
+    let channels: Vec<u32> = uplink.take().into_iter().map(|(channel_id, _)| channel_id).collect();
+    assert_eq!(channels, [21, 20]);
+}
+
+#[test]
 fn deactivating_on_another_channel_takes_over_the_activation() {
     let uplink = Uplink::new();
     let device = negotiated_device(ProtocolVersion::V2);
