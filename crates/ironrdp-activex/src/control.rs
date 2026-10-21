@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use ironrdp_cfg::{AudioMode, GatewayCredentialsSource, GatewayUsageMethod};
+use ironrdp_client::camera::{CameraConfig, CameraEncodingQuality};
 use ironrdp_client::config::{
     AudioQualityMode, ClipboardType, ConfigBuilder, Destination, RDCleanPathConfig, Transport, TransportKind,
 };
@@ -151,8 +152,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{s, w};
 use windows_core::{
-    BOOL as WinBool, BSTR, Error, GUID, HRESULT, HSTRING, IUnknown, IUnknown_Vtbl, IUnknownImpl as _, Interface as _,
-    PCWSTR, Ref, Result, implement,
+    AsImpl, BOOL as WinBool, BSTR, Error, GUID, HRESULT, HSTRING, IUnknown, IUnknown_Vtbl, IUnknownImpl as _,
+    Interface as _, PCWSTR, Ref, Result, implement,
 };
 
 use crate::com;
@@ -7171,6 +7172,8 @@ struct CameraCatalogEntry {
     instance_id: RefCell<Option<String>>,
     parent_instance_id: RefCell<Option<String>>,
     redirected: Cell<bool>,
+    /// Explicitly not redirected, even when the collection redirects by default.
+    excluded: Cell<bool>,
     device_exists: Cell<bool>,
 }
 
@@ -7182,8 +7185,14 @@ impl CameraCatalogEntry {
             instance_id: RefCell::new(None),
             parent_instance_id: RefCell::new(None),
             redirected: Cell::new(false),
+            excluded: Cell::new(false),
             device_exists: Cell::new(false),
         }
+    }
+
+    fn set_redirected(&self, redirected: bool) {
+        self.redirected.set(redirected);
+        self.excluded.set(!redirected);
     }
 
     fn update(&self, device: CameraDeviceInfo) {
@@ -7495,11 +7504,8 @@ impl IMsRdpCameraRedirConfig_Impl for CameraRedirConfig_Impl {
 
     unsafe fn put_Redirected(&self, redirected: i16) -> Result<()> {
         let redirected = normalize_variant_bool(redirected)? == VARIANT_TRUE.0;
-        if redirected {
-            return Err(Error::from_hresult(E_NOTIMPL));
-        }
         camera_settings_mutable(&self.settings.borrow())?;
-        self.entry.redirected.set(false);
+        self.entry.set_redirected(redirected);
         Ok(())
     }
 
@@ -7566,6 +7572,30 @@ impl CameraRedirConfigCollection {
         let config: IMsRdpCameraRedirConfig = CameraRedirConfig::new(entry, Rc::clone(&self.settings)).into();
         self.configs.borrow_mut().insert(key, config.clone());
         config
+    }
+
+    /// Camera redirection policy for a new connection.
+    fn camera_config(&self) -> CameraConfig {
+        let catalog = self.catalog.borrow();
+        let links = |select: fn(&CameraCatalogEntry) -> bool| {
+            catalog
+                .entries
+                .iter()
+                .filter(|entry| select(entry))
+                .map(|entry| entry.symbolic_link.clone())
+                .collect()
+        };
+        CameraConfig {
+            redirect_all: self.redirect_by_default.get(),
+            include: links(|entry| entry.redirected.get()),
+            exclude: links(|entry| entry.excluded.get()),
+            encode_video: self.encode_video.get(),
+            encoding_quality: match self.encoding_quality.get() {
+                0 => CameraEncodingQuality::Low,
+                1 => CameraEncodingQuality::Medium,
+                _ => CameraEncodingQuality::High,
+            },
+        }
     }
 
     fn write_config(&self, entry: Rc<CameraCatalogEntry>, output: InterfaceOut) -> Result<()> {
@@ -7658,21 +7688,15 @@ impl IMsRdpCameraRedirConfigCollection_Impl for CameraRedirConfigCollection_Impl
             return Err(Error::from_hresult(E_INVALIDARG));
         }
         let redirected = normalize_variant_bool(redirected)? == VARIANT_TRUE.0;
-        if redirected {
-            return Err(Error::from_hresult(E_NOTIMPL));
-        }
         camera_settings_mutable(&self.settings.borrow())?;
-        self.catalog.borrow_mut().add_config(link);
+        self.catalog.borrow_mut().add_config(link).set_redirected(redirected);
         Ok(())
     }
 
     unsafe fn put_RedirectByDefault(&self, redirect: i16) -> Result<()> {
         let redirect = normalize_variant_bool(redirect)? == VARIANT_TRUE.0;
-        if redirect {
-            return Err(Error::from_hresult(E_NOTIMPL));
-        }
         camera_settings_mutable(&self.settings.borrow())?;
-        self.redirect_by_default.set(false);
+        self.redirect_by_default.set(redirect);
         Ok(())
     }
 
@@ -12043,7 +12067,11 @@ impl Control {
             .with_webauthn(redirect_webauthn)
             .with_webauthn_parent_hwnd(hwnd.0 as isize)
             .with_rdpdr(rdpdr_enabled)
-            .with_smartcard(redirect_smart_cards);
+            .with_smartcard(redirect_smart_cards)
+            // SAFETY: the control creates its camera collection from `CameraRedirConfigCollection`.
+            .with_cameras(
+                unsafe { AsImpl::<CameraRedirConfigCollection>::as_impl(&self.camera_collection) }.camera_config(),
+            );
         let builder = if let Some(topology) = &monitor_topology {
             builder.with_monitor_layout(topology.client_monitor_data())
         } else {
@@ -25953,7 +25981,7 @@ try {
     }
 
     #[test]
-    fn camera_collection_exposes_stable_metadata_and_rejects_redirection() {
+    fn camera_collection_exposes_stable_metadata_and_redirection_policy() {
         let settings = Rc::new(RefCell::new(CompatibilitySettings::default()));
         let collection: IMsRdpCameraRedirConfigCollection = CameraRedirConfigCollection::new_with_devices(
             Rc::clone(&settings),
@@ -26022,19 +26050,12 @@ try {
             r"USB\ROOT"
         );
 
-        assert_eq!(
-            unsafe { config.put_Redirected(VARIANT_TRUE.0) }
-                .expect_err("camera redirection has no backend")
-                .code(),
-            E_NOTIMPL
-        );
+        unsafe { config.put_Redirected(VARIANT_TRUE.0) }.expect("redirect camera");
+        let mut redirected = VARIANT_FALSE.0;
+        unsafe { config.get_Redirected(&mut redirected) }.expect("get camera redirection");
+        assert_eq!(redirected, VARIANT_TRUE.0);
         unsafe { config.put_Redirected(VARIANT_FALSE.0) }.expect("explicitly disable camera");
-        assert_eq!(
-            unsafe { collection.put_RedirectByDefault(VARIANT_TRUE.0) }
-                .expect_err("default camera redirection has no backend")
-                .code(),
-            E_NOTIMPL
-        );
+        unsafe { collection.put_RedirectByDefault(VARIANT_TRUE.0) }.expect("redirect cameras by default");
 
         let offline_link = BSTR::from(r"\\?\usb#vid_missing");
         let invalid_link = BSTR::from("\\\\?\\usb#vid_missing\0suffix");
@@ -26044,13 +26065,7 @@ try {
                 .code(),
             E_INVALIDARG
         );
-        assert_eq!(
-            unsafe { collection.AddConfig(offline_link.as_ptr(), VARIANT_TRUE.0) }
-                .expect_err("enabled offline camera has no backend")
-                .code(),
-            E_NOTIMPL
-        );
-        unsafe { collection.AddConfig(offline_link.as_ptr(), VARIANT_FALSE.0) }.expect("add offline camera config");
+        unsafe { collection.AddConfig(offline_link.as_ptr(), VARIANT_TRUE.0) }.expect("add offline camera config");
         unsafe { collection.get_Count(&mut count) }.expect("get updated camera count");
         assert_eq!(count, 2);
 
@@ -26080,12 +26095,24 @@ try {
         unsafe { collection.get_EncodingQuality(&mut quality) }.expect("get encoding quality");
         assert_eq!(quality, 2);
 
+        let policy = unsafe { AsImpl::<CameraRedirConfigCollection>::as_impl(&collection) }.camera_config();
+        assert_eq!(
+            policy,
+            CameraConfig {
+                redirect_all: true,
+                include: vec![r"\\?\usb#vid_missing".to_owned()],
+                exclude: vec![r"\\?\usb#vid_0001".to_owned()],
+                encode_video: true,
+                encoding_quality: CameraEncodingQuality::High,
+            }
+        );
+
         settings.borrow_mut().connection_settings_sealed = true;
         assert_eq!(
             unsafe { config.put_Redirected(VARIANT_TRUE.0) }
-                .expect_err("unsupported camera redirection stays explicit after sealing")
+                .expect_err("camera redirection is sealed with the connection settings")
                 .code(),
-            E_NOTIMPL
+            E_FAIL
         );
         assert_eq!(
             unsafe { collection.put_EncodeVideo(VARIANT_FALSE.0) }

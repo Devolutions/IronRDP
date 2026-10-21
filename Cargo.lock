@@ -2773,6 +2773,8 @@ dependencies = [
  "ironrdp-rdcleanpath",
  "ironrdp-rdpdr",
  "ironrdp-rdpeai",
+ "ironrdp-rdpecam",
+ "ironrdp-rdpecam-native",
  "ironrdp-rdpei",
  "ironrdp-rdpel",
  "ironrdp-rdpeudp",
@@ -3163,6 +3165,15 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-svc",
  "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpecam-native"
+version = "0.0.0"
+dependencies = [
+ "ironrdp-rdpecam",
+ "tracing",
+ "windows",
 ]
 
 [[package]]

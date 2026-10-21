@@ -472,6 +472,9 @@ pub enum RdpInputEvent {
     },
     #[cfg(feature = "location")]
     Location(LocationRequest),
+    /// A redirected camera was attached or removed.
+    #[cfg(all(windows, feature = "camera"))]
+    Camera(Box<crate::camera::CameraHotplug>),
     /// Requests a RemoteApp launch over the RAIL static channel.
     RailExecute(ExecutePdu),
     /// Queues a client-originated RAIL input event.
@@ -1796,7 +1799,8 @@ fn build_connector(
         feature = "dvc-pipe-proxy",
         all(windows, feature = "dvc-com-plugin"),
         feature = "sound",
-        all(windows, feature = "webauthn")
+        all(windows, feature = "webauthn"),
+        all(windows, feature = "camera")
     )))]
     let _ = input_sender;
     #[cfg(not(feature = "clipboard"))]
@@ -1998,6 +2002,16 @@ fn build_connector(
     // Attach user-defined DVC channels from the extension registry.
     for attach_dvc in &config.extensions.dvc_channels {
         attach_dvc(&mut drdynvc, &config.properties);
+    }
+
+    // MS-RDPECAM camera redirection.
+    #[cfg(all(windows, feature = "camera"))]
+    {
+        drdynvc = crate::camera::attach(drdynvc, &config.channels.cameras, input_sender);
+    }
+    #[cfg(all(not(windows), feature = "camera"))]
+    if config.channels.cameras.is_enabled() {
+        warn!("Camera redirection is not supported on this platform");
     }
 
     // AUDIO_INPUT (MS-RDPEAI) microphone capture DVC.
@@ -3761,6 +3775,11 @@ async fn active_session(
                             }
                         }
                     }
+                    #[cfg(all(windows, feature = "camera"))]
+                    RdpInputEvent::Camera(event) => match crate::camera::process_hotplug(&mut active_stage, *event) {
+                        Some(batch) => ActiveSessionIteration::dvc(batch),
+                        None => ActiveSessionIteration::outputs(Vec::new()),
+                    },
                     RdpInputEvent::RailExecute(execute) => {
                         let executable = execute.executable.clone();
                         let flags = execute.flags;

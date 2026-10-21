@@ -7,6 +7,8 @@
 #![allow(clippy::cast_possible_wrap)]
 #![allow(clippy::cast_sign_loss)]
 
+#[cfg(feature = "camera")]
+pub mod camera;
 pub mod config;
 pub mod output_channel;
 pub mod rail;

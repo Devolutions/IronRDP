@@ -88,6 +88,7 @@ Currently supported properties:
 - `desktopheight:i:<value>`
 - `desktopscalefactor:i:<value>`
 - `compression:i:<0|1>`
+- `camerastoredirect:s:<value>` (Windows camera redirection; `*`, `;`-separated symbolic links or friendly names, `-` to exclude)
 
 Property precedence is:
 

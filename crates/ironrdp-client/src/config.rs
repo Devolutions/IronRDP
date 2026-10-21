@@ -387,6 +387,10 @@ pub struct ChannelConfig {
     /// Enable the MS-RDPEL location dynamic virtual channel.
     #[cfg(feature = "location")]
     pub location: bool,
+
+    /// MS-RDPECAM camera redirection (`camerastoredirect`). No camera is redirected by default.
+    #[cfg(feature = "camera")]
+    pub cameras: crate::camera::CameraConfig,
 }
 
 #[cfg_attr(
@@ -421,6 +425,8 @@ impl Default for ChannelConfig {
             webauthn: true,
             #[cfg(feature = "location")]
             location: false,
+            #[cfg(feature = "camera")]
+            cameras: crate::camera::CameraConfig::default(),
         }
     }
 }
@@ -1528,6 +1534,22 @@ impl ConfigBuilder {
         self
     }
 
+    /// Select the cameras to redirect over MS-RDPECAM.
+    ///
+    /// Capture is only implemented on Windows.
+    #[cfg(feature = "camera")]
+    #[must_use]
+    pub fn with_cameras(mut self, cameras: crate::camera::CameraConfig) -> Self {
+        self.channels.cameras = cameras;
+        self
+    }
+
+    /// Cameras currently selected for redirection, e.g. from a `.rdp` file.
+    #[cfg(feature = "camera")]
+    pub fn cameras(&self) -> &crate::camera::CameraConfig {
+        &self.channels.cameras
+    }
+
     /// Parent HWND used for WebAuthn UI prompts (Windows only).
     #[cfg(all(windows, feature = "webauthn"))]
     #[must_use]
@@ -2210,6 +2232,10 @@ impl ConfigBuilder {
             Ok(Some(AudioCaptureMode::CaptureFromClient)) => self.enable_audio_capture = Some(true),
             Ok(Some(AudioCaptureMode::Disabled)) => self.enable_audio_capture = Some(false),
             _ => {}
+        }
+        #[cfg(feature = "camera")]
+        if let Some(cameras) = ps.get::<&str>("camerastoredirect") {
+            self.channels.cameras.apply_rdp_value(cameras);
         }
         #[cfg(any(feature = "sound", feature = "rdpdr"))]
         if let Some(audio_quality_mode) = ps.get::<i64>("audioqualitymode") {

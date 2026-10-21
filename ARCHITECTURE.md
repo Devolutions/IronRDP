@@ -114,6 +114,7 @@ AUDIO_INPUT dynamic channel for client microphone capture implemented as describ
 
 Video capture dynamic channel client and backend boundary implemented as described in MS-RDPECAM.
 The crate performs no camera I/O and advertises only devices explicitly supplied by its caller.
+The Windows Media Foundation capture backend lives in [`crates/ironrdp-rdpecam-native`](./crates/ironrdp-rdpecam-native).
 
 #### [`crates/ironrdp-rdpel`](./crates/ironrdp-rdpel)
 
