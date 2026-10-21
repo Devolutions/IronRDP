@@ -115,20 +115,29 @@ pub(crate) fn attach(drdynvc: DrdynvcClient, config: &VideoConfig) -> DrdynvcCli
         Box::new(move || (decoder.0)()),
         Box::new(move || u64::try_from(epoch.elapsed().as_nanos() / 100).unwrap_or(u64::MAX)),
     )));
+    // The server may close and reopen these channels during a session, so each opening gets a
+    // new processor sharing the presenter.
     let geometry_presenter = Arc::clone(&presenter);
-    let geometry = GeometryClient::new().with_observer(Box::new(move |event| {
-        let mut presenter = geometry_presenter.lock().unwrap_or_else(PoisonError::into_inner);
-        match event {
-            GeometryEvent::Updated { mapping_id, geometry } => {
-                presenter.set_geometry(mapping_id, Some(geometry.clone()))
-            }
-            GeometryEvent::Cleared { mapping_id } => presenter.set_geometry(mapping_id, None),
-        }
-    }));
+    let control_presenter = Arc::clone(&presenter);
     drdynvc
-        .with_dynamic_channel(geometry)
-        .with_dynamic_channel(VideoControlClient::new(Arc::clone(&presenter)))
-        .with_dynamic_channel(VideoDataClient::new(presenter))
+        .with_dynamic_channel_factory(ironrdp_rdpegt::CHANNEL_NAME, move || {
+            let presenter = Arc::clone(&geometry_presenter);
+            GeometryClient::new().with_observer(Box::new(move |event| {
+                let mut presenter = presenter.lock().unwrap_or_else(PoisonError::into_inner);
+                match event {
+                    GeometryEvent::Updated { mapping_id, geometry } => {
+                        presenter.set_geometry(mapping_id, Some(geometry.clone()))
+                    }
+                    GeometryEvent::Cleared { mapping_id } => presenter.set_geometry(mapping_id, None),
+                }
+            }))
+        })
+        .with_dynamic_channel_factory(ironrdp_rdpevor::CONTROL_CHANNEL_NAME, move || {
+            VideoControlClient::new(Arc::clone(&control_presenter))
+        })
+        .with_dynamic_channel_factory(ironrdp_rdpevor::DATA_CHANNEL_NAME, move || {
+            VideoDataClient::new(Arc::clone(&presenter))
+        })
 }
 
 /// When the next decoded picture is due.
