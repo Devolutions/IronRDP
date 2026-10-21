@@ -211,6 +211,25 @@ fn monitor_layout_fit_drops_monitors_beyond_the_server_maximum() {
 }
 
 #[test]
+fn monitor_layout_fit_keeps_the_reduced_layout_connected() {
+    // The first secondary monitor listed only touches the second one, which bridges it to the primary.
+    let layout = pdu::DisplayControlMonitorLayout::new(&[
+        primary(1920, 1080),
+        secondary(1920, 1080, 3840, 0),
+        secondary(1920, 1080, 1920, 0),
+    ])
+    .unwrap();
+
+    let fitted = layout
+        .fit_to_capabilities(&pdu::DisplayControlCapabilities::new(2, 3840, 2400).unwrap())
+        .unwrap();
+    let monitors = fitted.monitors();
+    assert_eq!(monitors.len(), 2);
+    assert!(monitors[0].is_primary());
+    assert_eq!(monitors[1].position(), Some((1920, 0)));
+}
+
+#[test]
 fn monitor_layout_fit_scales_a_single_monitor_down_to_the_maximum_area() {
     let layout = pdu::DisplayControlMonitorLayout::new_single_primary_monitor(7680, 4320, Some(200), None).unwrap();
     let capabilities = pdu::DisplayControlCapabilities::new(1, 3840, 2400).unwrap();

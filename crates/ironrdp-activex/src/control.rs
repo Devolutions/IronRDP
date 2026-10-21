@@ -1245,19 +1245,15 @@ impl MonitorTopology {
         desktop_scale_factor: Option<u32>,
         device_scale_factor: Option<DeviceScaleFactor>,
     ) -> Result<DisplayControlMonitorLayout> {
-        let invalid_layout = |error| {
-            tracing::debug!(%error, "Local monitor topology is not a valid Display Control layout");
-            Error::from_hresult(E_INVALIDARG)
-        };
         let entries = self
             .monitors
             .iter()
             .zip(&self.attributes)
             .map(|(monitor, attributes)| {
-                let width = u32::try_from(i64::from(monitor.right) - i64::from(monitor.left) + 1)
-                    .map_err(|_| Error::from_hresult(E_INVALIDARG))?;
-                let height = u32::try_from(i64::from(monitor.bottom) - i64::from(monitor.top) + 1)
-                    .map_err(|_| Error::from_hresult(E_INVALIDARG))?;
+                let width =
+                    u32::try_from(i64::from(monitor.right) - i64::from(monitor.left) + 1).map_err(invalid_layout)?;
+                let height =
+                    u32::try_from(i64::from(monitor.bottom) - i64::from(monitor.top) + 1).map_err(invalid_layout)?;
                 let entry = if monitor.flags.contains(MonitorFlags::PRIMARY) {
                     MonitorLayoutEntry::new_primary(width, height)
                 } else {
@@ -1280,7 +1276,12 @@ impl MonitorTopology {
                     .map_err(invalid_layout)
             })
             .collect::<Result<Vec<_>>>()?;
-        DisplayControlMonitorLayout::new(&entries).map_err(invalid_layout)
+        return DisplayControlMonitorLayout::new(&entries).map_err(invalid_layout);
+
+        fn invalid_layout(error: impl core::fmt::Display) -> Error {
+            tracing::debug!(%error, "Local monitor topology is not a valid Display Control layout");
+            Error::from_hresult(E_INVALIDARG)
+        }
     }
 
     fn bounds(&self) -> (i32, i32, i32, i32) {
@@ -12598,38 +12599,43 @@ impl Control {
         };
         let desktop_scale_factor = (layout.desktop_scale_factor != 0).then_some(layout.desktop_scale_factor);
 
-        if self.mirrors_local_monitors() {
+        // A session connected with several monitors keeps mirroring the local monitors. With
+        // 'use multimon' alone, it does so only once the local topology has several monitors:
+        // a single local monitor keeps honoring the requested size and orientation.
+        let multimon_topology = if 1 < configured_monitor_count {
+            Some(local_monitor_topology()?)
+        } else if self.compatibility.borrow().use_multimon {
+            local_monitor_topology()
+                .ok()
+                .filter(|topology| 1 < topology.monitors.len())
+        } else {
+            None
+        };
+        if let Some(topology) = multimon_topology {
             // Like mstsc, a multimonitor session mirrors the local monitors: the update resends the
             // current local topology, each monitor with its own size, position, orientation and DPI.
-            // Explicit scale factors apply to every monitor; the requested desktop size and
-            // orientation describe a single monitor and do not apply.
-            return if explicit {
-                self.send_multimon_display_layout(
-                    local_monitor_topology()?,
-                    desktop_scale_factor,
-                    device_scale_factor,
-                    true,
-                )
+            // Explicit scale factors apply to every monitor and force the update; the requested
+            // desktop size and orientation describe a single monitor and do not apply.
+            let (desktop_scale_factor, device_scale_factor) = if explicit {
+                (desktop_scale_factor, device_scale_factor)
             } else {
-                self.send_multimon_display_layout(local_monitor_topology()?, None, None, false)
+                (None, None)
             };
+            return self.send_multimon_display_layout(topology, desktop_scale_factor, device_scale_factor, explicit);
         }
 
-        let scale_factor = desktop_scale_factor.unwrap_or(100);
+        let scale_factor = MonitorLayoutEntry::adjust_desktop_scale_factor(desktop_scale_factor.unwrap_or(100));
         let physical_size = (layout.physical_width != 0).then_some((layout.physical_width, layout.physical_height));
+        let (adjusted_width, adjusted_height) =
+            MonitorLayoutEntry::adjust_display_size(u32::from(desktop_width), u32::from(desktop_height));
         // The resize path derives the orientation from the size and the device scale from the
         // desktop scale. Use it only when that matches what the caller asked for.
-        let derived_orientation = {
-            let (width, height) =
-                MonitorLayoutEntry::adjust_display_size(u32::from(desktop_width), u32::from(desktop_height));
-            if width < height {
-                MonitorOrientation::Portrait
-            } else {
-                MonitorOrientation::Landscape
-            }
+        let derived_orientation = if adjusted_width < adjusted_height {
+            MonitorOrientation::Portrait
+        } else {
+            MonitorOrientation::Landscape
         };
-        let derived_device_scale_factor =
-            DeviceScaleFactor::from_desktop_scale_factor(MonitorLayoutEntry::adjust_desktop_scale_factor(scale_factor));
+        let derived_device_scale_factor = DeviceScaleFactor::from_desktop_scale_factor(scale_factor);
         let event = if !explicit
             || orientation == derived_orientation
                 && device_scale_factor
@@ -12643,19 +12649,12 @@ impl Control {
             }
         } else {
             // An orientation or device scale the resize path would not derive needs the full layout.
-            let (width, height) =
-                MonitorLayoutEntry::adjust_display_size(u32::from(desktop_width), u32::from(desktop_height));
-            let entry = MonitorLayoutEntry::new_primary(width, height)
+            let entry = MonitorLayoutEntry::new_primary(adjusted_width, adjusted_height)
                 .map_err(|_| Error::from_hresult(E_INVALIDARG))?
-                .with_orientation(orientation);
-            let desktop_scale_factor = MonitorLayoutEntry::adjust_desktop_scale_factor(scale_factor);
-            let entry = entry
-                .with_desktop_scale_factor(desktop_scale_factor)
+                .with_orientation(orientation)
+                .with_desktop_scale_factor(scale_factor)
                 .map_err(|_| Error::from_hresult(E_INVALIDARG))?
-                .with_device_scale_factor(
-                    device_scale_factor
-                        .unwrap_or_else(|| DeviceScaleFactor::from_desktop_scale_factor(desktop_scale_factor)),
-                );
+                .with_device_scale_factor(device_scale_factor.unwrap_or(derived_device_scale_factor));
             let entry = match physical_size {
                 Some((physical_width, physical_height)) => entry
                     .with_physical_dimensions(physical_width, physical_height)

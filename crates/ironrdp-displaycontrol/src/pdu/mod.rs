@@ -319,13 +319,16 @@ impl DisplayControlMonitorLayout {
     ///
     /// Per [3.2.5.2], the client must not exceed `MaxNumMonitors` nor the maximum monitor area
     /// (`MaxNumMonitors * MaxMonitorAreaFactorA * MaxMonitorAreaFactorB`):
-    /// - monitors beyond `MaxNumMonitors` are dropped, keeping the primary monitor and then the
-    ///   other monitors in their original order; the reduced layout must still satisfy the
-    ///   geometry rules of [`Self::new`];
+    /// - monitors beyond `MaxNumMonitors` are dropped: starting from the primary monitor, the
+    ///   monitors adjacent to an already kept monitor are kept first, in their original order,
+    ///   so the reduced layout stays connected;
     /// - a single-monitor layout larger than the maximum area is scaled down, preserving its
     ///   aspect ratio;
     /// - a multi-monitor layout larger than the maximum area is rejected, since shrinking it
     ///   would move the monitors relative to each other.
+    ///
+    /// An error means no layout within the server limits preserves the request; callers should
+    /// keep the current layout rather than send a partial one.
     ///
     /// [3.2.5.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
     pub fn fit_to_capabilities(&self, capabilities: &DisplayControlCapabilities) -> EncodeResult<Self> {
@@ -339,20 +342,34 @@ impl DisplayControlMonitorLayout {
                 requested = self.monitors.len(),
                 max_num_monitors, "Dropping monitors beyond the server maximum"
             );
-            let mut remaining_secondary = max_num_monitors.saturating_sub(1);
+            // Grow the kept set from the primary monitor, one adjacent monitor at a time, so the
+            // reduced layout stays connected whatever order the monitors are listed in.
+            let mut kept = self
+                .monitors
+                .iter()
+                .map(MonitorLayoutEntry::is_primary)
+                .collect::<Vec<_>>();
+            let mut kept_count = kept.iter().filter(|kept| **kept).count();
+            while kept_count < max_num_monitors {
+                let next = self.monitors.iter().enumerate().position(|(index, monitor)| {
+                    !kept[index]
+                        && self
+                            .monitors
+                            .iter()
+                            .zip(&kept)
+                            .any(|(other, other_kept)| *other_kept && monitor.touches(other))
+                });
+                let Some(next) = next else {
+                    break;
+                };
+                kept[next] = true;
+                kept_count = kept_count.saturating_add(1);
+            }
             self.monitors
                 .iter()
-                .filter(|monitor| {
-                    if monitor.is_primary() {
-                        true
-                    } else if 0 < remaining_secondary {
-                        remaining_secondary = remaining_secondary.saturating_sub(1);
-                        true
-                    } else {
-                        false
-                    }
-                })
-                .cloned()
+                .zip(kept)
+                .filter(|(_, kept)| *kept)
+                .map(|(monitor, _)| monitor.clone())
                 .collect::<Vec<_>>()
         } else {
             self.monitors.clone()
