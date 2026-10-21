@@ -7,8 +7,9 @@
 //! Reads, writes and device-control requests are forwarded unchanged to the local driver,
 //! and the driver's NTSTATUS and transfer count are returned as-is, as MS-RDPESP Appendix A
 //! describes for Windows. Requests the driver pends, such as reads waiting for data or
-//! `IOCTL_SERIAL_WAIT_ON_MASK`, complete later through [`PortSession::poll`]; closing a file
-//! cancels the requests still pending on it and completes them before the close. A flush
+//! `IOCTL_SERIAL_WAIT_ON_MASK`, complete later through [`PortSession::poll`]. Closing a file
+//! cancels the requests still pending on it; their completions, then the close completion,
+//! follow through [`PortSession::poll`] without blocking the channel. A flush
 //! completes once the writes pending on its file when it arrived have completed, which is
 //! what the serial driver's own flush waits for.
 //!
@@ -57,7 +58,7 @@ use windows::core::{PCWSTR, PWSTR};
 const MAX_PORT_TRANSFER: usize = 64 * 1024;
 const MAX_PENDING_PORT_OPERATIONS: usize = 64;
 const MAX_OPEN_PORT_FILES: usize = 64;
-/// How long a close waits for the driver to complete a cancelled request.
+/// How long the driver has to complete a cancelled request before it is reported as cancelled.
 const CANCELLATION_TIMEOUT: Duration = Duration::from_secs(2);
 const STATUS_PENDING: NTSTATUS = NTSTATUS(0x0000_0103);
 
@@ -77,6 +78,9 @@ pub enum PortSelection {
     /// Redirect every port of this kind present when the connection starts.
     All,
     /// Redirect the named ports, such as `COM3` or `LPT1`, that are present when the connection starts.
+    ///
+    /// Like mstsc, only `COM<n>` serial and `LPT<n>` parallel ports can be selected, so a name
+    /// cannot expose another kind of device to the server.
     Named(Vec<String>),
 }
 
@@ -107,6 +111,12 @@ impl WindowsPortRedirection {
             serial: PortSelection::All,
             parallel: PortSelection::All,
         }
+    }
+
+    /// Redirects every port when `enabled` is true, and none otherwise.
+    #[must_use]
+    pub fn from_enabled(enabled: bool) -> Self {
+        if enabled { Self::all() } else { Self::default() }
     }
 
     /// Returns whether any port may be redirected.
@@ -181,13 +191,10 @@ pub(super) fn resolve_ports(
                         warn!(port = %requested, "Ignoring invalid port name");
                         continue;
                     };
-                    // Virtual ports can use names other than COM<n> and LPT<n>.
-                    if local.iter().any(|port| port.kind == kind && port.name == name)
-                        || dos_device_target(&name).is_some_and(|_| !is_redirected_port(&name))
-                    {
+                    if local.iter().any(|port| port.kind == kind && port.name == name) {
                         selected.push((kind, name));
                     } else {
-                        warn!(port = %name, "Ignoring port that is not present on this computer or is redirected");
+                        warn!(port = %name, ?kind, "Ignoring a name that is not a local port of this kind");
                     }
                 }
             }
@@ -261,8 +268,8 @@ fn dos_device_names() -> Vec<String> {
     }
 }
 
-/// Returns the NT target of a DOS device, or `None` if it does not exist.
-fn dos_device_target(name: &str) -> Option<String> {
+/// Whether a DOS device is itself a redirected port, as in a nested remote session.
+fn is_redirected_port(name: &str) -> bool {
     let name = wide(name);
     let mut target = [0u16; 1024];
     // SAFETY: `name` is a NUL-terminated UTF-16 string and `target` is a writable buffer whose
@@ -270,14 +277,10 @@ fn dos_device_target(name: &str) -> Option<String> {
     let length = unsafe { QueryDosDeviceW(PCWSTR(name.as_ptr()), Some(&mut target)) };
     let length = usize::try_from(length).expect("u32 fits in usize").min(target.len());
     // The result holds NUL-separated targets; the first one is the active link.
-    (length != 0).then(|| {
-        let first = target[..length].split(|unit| *unit == 0).next().unwrap_or_default();
-        String::from_utf16_lossy(first)
-    })
-}
-
-fn is_redirected_port(name: &str) -> bool {
-    dos_device_target(name).is_some_and(|target| target.to_ascii_uppercase().contains(REDIRECTED_PORT_TARGET))
+    let first = target[..length].split(|unit| *unit == 0).next().unwrap_or_default();
+    String::from_utf16_lossy(first)
+        .to_ascii_uppercase()
+        .contains(REDIRECTED_PORT_TARGET)
 }
 
 /// An owned native handle closed on drop.
@@ -517,23 +520,28 @@ impl PortIo {
         }
     }
 
-    /// Blocks until the driver completes the request, and returns whether it did.
+    /// Waits up to `timeout_ms` for the driver to complete the request, and returns whether it did.
     ///
-    /// Waiting on the owned event cannot fail in practice. If it does, the caller must leak the
-    /// request, because the driver may still write to it.
-    fn wait(&self) -> bool {
+    /// When this returns false, the caller must leak the request, because the driver may still
+    /// write to it.
+    fn wait(&self, timeout_ms: u32) -> bool {
         // SAFETY: the event handle is owned by `self` and stays open during the wait.
-        let result = unsafe { WaitForSingleObject(self.event.0, INFINITE) };
-        if result != WAIT_OBJECT_0 {
-            tracing::error!(?result, "Failed to wait for a port request");
-        }
+        let result = unsafe { WaitForSingleObject(self.event.0, timeout_ms) };
         result == WAIT_OBJECT_0
     }
 
-    /// Waits for a request this thread still owns and builds its completion.
-    fn wait_and_complete(mut self: Box<Self>) -> SvcMessage {
-        if !self.wait() {
-            let message = failure_completion(self.kind, self.request.clone(), NtStatus::UNSUCCESSFUL);
+    /// Completes a request this thread still owns after cancelling it.
+    ///
+    /// The wait is bounded like a cancellation on close. A request the driver does not complete
+    /// in time is leaked and reported as cancelled.
+    fn complete_cancelled(mut self: Box<Self>) -> SvcMessage {
+        let timeout_ms = u32::try_from(CANCELLATION_TIMEOUT.as_millis()).expect("timeout fits in u32");
+        if !self.wait(timeout_ms) {
+            warn!(
+                completion_id = self.request.completion_id,
+                "Port driver did not complete a cancelled request; completing it as cancelled"
+            );
+            let message = failure_completion(self.kind, self.request.clone(), NtStatus::CANCELLED);
             Box::leak(self);
             return message;
         }
@@ -599,6 +607,8 @@ struct PendingPortIo {
     /// belong to another request on the shared handle.
     io_status_block: usize,
     slot: Arc<PortIoSlot>,
+    /// When the request was cancelled, the time by which the driver must have completed it.
+    cancel_deadline: Option<Instant>,
 }
 
 /// Where a worker hands a completed request back to the session.
@@ -645,7 +655,6 @@ impl fmt::Debug for PortIoSlot {
 /// A flush waits for the writes on its file that were pending when it arrived.
 #[derive(Debug)]
 struct PendingFlush {
-    device_id: u32,
     file_id: u32,
     request: DeviceIoRequest,
     writes: Vec<u64>,
@@ -660,6 +669,8 @@ pub(super) struct PortSession {
     next_operation_id: u64,
     pending: HashMap<u64, PendingPortIo>,
     flushes: Vec<PendingFlush>,
+    /// Closes waiting for the cancelled requests of their file to complete.
+    closes: Vec<DeviceIoRequest>,
     /// Requests whose cancellation the driver did not complete in time.
     abandoned: Vec<Arc<PortIoSlot>>,
     worker_thread_hooks: Option<RdpdrWorkerThreadHooks>,
@@ -702,6 +713,7 @@ impl PortSession {
             next_operation_id: 1,
             pending: HashMap::new(),
             flushes: Vec::new(),
+            closes: Vec::new(),
             abandoned: Vec::new(),
             worker_thread_hooks,
         }
@@ -805,7 +817,8 @@ impl PortSession {
         loop {
             let file_id = self.next_file_id;
             self.next_file_id = self.next_file_id.checked_add(1).unwrap_or(1);
-            if !self.files.contains_key(&file_id) {
+            // A closing file keeps its ID until its close completes.
+            if !self.files.contains_key(&file_id) && !self.closes.iter().any(|close| close.file_id == file_id) {
                 return file_id;
             }
         }
@@ -813,18 +826,36 @@ impl PortSession {
 
     fn close(&mut self, request: DeviceIoRequest) -> Vec<SvcMessage> {
         // MS-RDPESP 3.2.5.1.3: the client MUST cancel pending I/O on the port before closing it.
-        let mut messages =
-            self.cancel(|device_id, file_id| device_id == request.device_id && file_id == request.file_id);
-        // Requests left to an unresponsive driver keep the handle open until they finish.
+        // The cancelled requests complete through poll, followed by the close itself.
+        let deadline = Instant::now() + CANCELLATION_TIMEOUT;
+        for io in self.pending.values_mut() {
+            if io.file_id == request.file_id && io.cancel_deadline.is_none() {
+                cancel_request(&io.handle, io.io_status_block);
+                io.cancel_deadline = Some(deadline);
+            }
+        }
+        let mut messages = Vec::new();
+        self.flushes.retain(|flush| {
+            if flush.file_id == request.file_id {
+                messages.push(flush_completion(flush.request.clone(), NtStatus::CANCELLED));
+                false
+            } else {
+                true
+            }
+        });
+        // Requests still finishing keep the handle open until they complete.
         self.files.remove(&request.file_id);
         debug!(
             device_id = request.device_id,
             file_id = request.file_id,
             "Closed redirected port"
         );
-        messages.push(SvcMessage::from(RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
-            device_io_response: DeviceIoResponse::new(request, NtStatus::SUCCESS),
-        })));
+
+        if self.pending.values().any(|io| io.file_id == request.file_id) {
+            self.closes.push(request);
+        } else {
+            messages.push(close_completion(request));
+        }
         messages
     }
 
@@ -876,7 +907,7 @@ impl PortSession {
             Err(error) => {
                 warn!(%error, "Failed to acquire a port worker lifetime; cancelling the request");
                 cancel_request(&handle, io_status_block);
-                return vec![io.wait_and_complete()];
+                return vec![io.complete_cancelled()];
             }
         };
         let slot = Arc::new(PortIoSlot::default());
@@ -889,9 +920,10 @@ impl PortSession {
             .spawn(move || {
                 tracing::dispatcher::with_default(&dispatch, || {
                     if let Ok(io) = receiver.recv() {
-                        if io.wait() {
+                        if io.wait(INFINITE) {
                             *worker_slot.io.lock().unwrap_or_else(PoisonError::into_inner) = Some(io);
                         } else {
+                            tracing::error!("Failed to wait for a port request");
                             Box::leak(io);
                         }
                     }
@@ -909,12 +941,12 @@ impl PortSession {
         if let Err(error) = spawned {
             warn!(%error, "Failed to start a port worker; cancelling the request");
             cancel_request(&handle, io_status_block);
-            return vec![io.wait_and_complete()];
+            return vec![io.complete_cancelled()];
         }
         if let Err(mpsc::SendError(io)) = sender.send(io) {
             // The worker exited before receiving the request, so it is still owned here.
             cancel_request(&handle, io_status_block);
-            return vec![io.wait_and_complete()];
+            return vec![io.complete_cancelled()];
         }
 
         let operation_id = self.next_operation_id;
@@ -930,6 +962,7 @@ impl PortSession {
                 handle,
                 io_status_block,
                 slot,
+                cancel_deadline: None,
             },
         );
         Vec::new()
@@ -953,7 +986,6 @@ impl PortSession {
         }
 
         self.flushes.push(PendingFlush {
-            device_id: request.device_id,
             file_id: request.file_id,
             request,
             writes,
@@ -961,22 +993,38 @@ impl PortSession {
         Vec::new()
     }
 
-    /// Returns the completions of requests the driver finished since the last poll.
+    /// Returns the completions of requests the driver finished since the last poll, and of the
+    /// closes whose cancelled requests have all completed.
     pub(super) fn poll(&mut self) -> Vec<SvcMessage> {
         self.abandoned.retain(|slot| !slot.is_finished());
 
-        let finished = self
+        let now = Instant::now();
+        let retired = self
             .pending
             .iter()
-            .filter_map(|(operation_id, io)| io.slot.is_finished().then_some(*operation_id))
+            .filter_map(|(operation_id, io)| {
+                let overdue = io.cancel_deadline.is_some_and(|deadline| deadline <= now);
+                (io.slot.is_finished() || overdue).then_some(*operation_id)
+            })
             .collect::<Vec<_>>();
-        let mut messages = Vec::with_capacity(finished.len());
-        for operation_id in finished {
+        let mut messages = Vec::with_capacity(retired.len());
+        for operation_id in retired {
             let io = self
                 .pending
                 .remove(&operation_id)
                 .expect("operation was just listed as pending");
-            messages.push(io.slot.completion(io.kind, io.request));
+            if io.slot.is_finished() {
+                messages.push(io.slot.completion(io.kind, io.request));
+            } else {
+                warn!(
+                    device_id = io.device_id,
+                    completion_id = io.request.completion_id,
+                    "Port driver did not complete a cancelled request; completing it as cancelled"
+                );
+                // The worker keeps the request and its host lifetime guard until the driver completes it.
+                self.abandoned.push(io.slot);
+                messages.push(failure_completion(io.kind, io.request, NtStatus::CANCELLED));
+            }
         }
 
         let pending = &self.pending;
@@ -991,58 +1039,30 @@ impl PortSession {
             messages.push(flush_completion(flush.request.clone(), NtStatus::SUCCESS));
             false
         });
-        messages
-    }
 
-    /// Cancels the matching pending requests and returns their completions.
-    fn cancel(&mut self, matches: impl Fn(u32, u32) -> bool) -> Vec<SvcMessage> {
-        let operation_ids = self
-            .pending
-            .iter()
-            .filter_map(|(operation_id, io)| matches(io.device_id, io.file_id).then_some(*operation_id))
-            .collect::<Vec<_>>();
-        let mut messages = Vec::with_capacity(operation_ids.len());
-        for operation_id in operation_ids {
-            let io = self
-                .pending
-                .remove(&operation_id)
-                .expect("operation was just listed as pending");
-            cancel_request(&io.handle, io.io_status_block);
-            messages.push(self.finish_cancelled(io));
-        }
-        self.flushes.retain(|flush| {
-            if matches(flush.device_id, flush.file_id) {
-                messages.push(flush_completion(flush.request.clone(), NtStatus::CANCELLED));
-                false
-            } else {
-                true
+        let pending = &self.pending;
+        self.closes.retain(|close| {
+            if pending.values().any(|io| io.file_id == close.file_id) {
+                return true;
             }
+            messages.push(close_completion(close.clone()));
+            false
         });
         messages
     }
 
-    /// Waits for a cancelled request; the driver reports its actual outcome, usually STATUS_CANCELLED.
-    fn finish_cancelled(&mut self, io: PendingPortIo) -> SvcMessage {
-        let deadline = Instant::now() + CANCELLATION_TIMEOUT;
-        while !io.slot.is_finished() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(1));
-        }
-        if !io.slot.is_finished() {
-            warn!(
-                device_id = io.device_id,
-                completion_id = io.request.completion_id,
-                "Port driver did not complete a cancelled request; completing it as cancelled"
-            );
-            // The worker keeps the request and its host lifetime guard until the driver completes it.
-            self.abandoned.push(io.slot);
-            return failure_completion(io.kind, io.request, NtStatus::CANCELLED);
-        }
-        io.slot.completion(io.kind, io.request)
-    }
-
     /// Discards every open file and pending request for a new RDPDR initialization sequence.
+    ///
+    /// Nothing waits for the driver: cancelled requests are left to their workers.
     pub(super) fn reset(&mut self) {
-        let _ = self.cancel(|_, _| true);
+        for (_, io) in self.pending.drain() {
+            cancel_request(&io.handle, io.io_status_block);
+            if !io.slot.is_finished() {
+                self.abandoned.push(io.slot);
+            }
+        }
+        self.flushes.clear();
+        self.closes.clear();
         self.files.clear();
     }
 }
@@ -1106,6 +1126,12 @@ fn failure_completion(kind: PortIoKind, request: DeviceIoRequest, status: NtStat
             DeviceControlResponse::with_raw_output(request, status, control_output(code, Vec::new())),
         )),
     }
+}
+
+fn close_completion(request: DeviceIoRequest) -> SvcMessage {
+    SvcMessage::from(RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
+        device_io_response: DeviceIoResponse::new(request, NtStatus::SUCCESS),
+    }))
 }
 
 fn flush_completion(request: DeviceIoRequest, status: NtStatus) -> SvcMessage {
@@ -1226,6 +1252,32 @@ mod tests {
 
     fn status_of(encoded: &[u8]) -> NtStatus {
         NtStatus::from(u32::from_le_bytes(encoded[12..16].try_into().expect("status")))
+    }
+
+    /// Sends a close and collects its completion and everything completed before it.
+    ///
+    /// The close itself completes through poll once the cancelled requests have finished.
+    fn close_and_collect(session: &mut PortSession, file_id: u32, completion_id: u32) -> Vec<Vec<u8>> {
+        let mut messages = session
+            .handle(close_request(file_id, completion_id))
+            .into_iter()
+            .map(|message| message.encode_unframed_pdu().expect("encode completion"))
+            .collect::<Vec<_>>();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while messages
+            .last()
+            .is_none_or(|last| completion_id_of(last) != completion_id)
+        {
+            assert!(Instant::now() < deadline, "close did not complete");
+            thread::sleep(Duration::from_millis(5));
+            messages.extend(
+                session
+                    .poll()
+                    .into_iter()
+                    .map(|message| message.encode_unframed_pdu().expect("encode completion")),
+            );
+        }
+        messages
     }
 
     fn poll_until_completed(session: &mut PortSession) -> Vec<u8> {
@@ -1409,20 +1461,15 @@ mod tests {
             NtStatus::BUFFER_TOO_SMALL
         );
 
-        // Closing cancels the pending read before completing the close.
+        // Closing cancels the pending read; its completion precedes the close completion.
         assert!(session.handle(read(5)).is_empty());
-        let close = session.handle(close_request(file_id, 6));
+        let close = close_and_collect(&mut session, file_id, 6);
         assert_eq!(close.len(), 2);
-        let cancelled = close[0].encode_unframed_pdu().expect("encode cancelled read");
-        assert_eq!(
-            u32::from_le_bytes(cancelled[8..12].try_into().expect("completion ID")),
-            5
-        );
-        assert_eq!(status_of(&cancelled), NtStatus::CANCELLED);
-        let closed = close[1].encode_unframed_pdu().expect("encode close completion");
-        assert_eq!(u32::from_le_bytes(closed[8..12].try_into().expect("completion ID")), 6);
-        assert_eq!(status_of(&closed), NtStatus::SUCCESS);
+        assert_eq!(completion_id_of(&close[0]), 5);
+        assert_eq!(status_of(&close[0]), NtStatus::CANCELLED);
+        assert_eq!(status_of(&close[1]), NtStatus::SUCCESS);
         assert!(session.files.is_empty());
+        assert!(session.closes.is_empty());
         assert!(session.poll().is_empty());
     }
 
@@ -1441,22 +1488,35 @@ mod tests {
         }
         assert!(session.handle(read_request(file_id, 4)).is_empty());
 
-        let close = session.handle(close_request(file_id, 5));
+        let close = close_and_collect(&mut session, file_id, 5);
         assert_eq!(close.len(), 3);
-        let mut reads = close[..2]
-            .iter()
-            .map(|message| message.encode_unframed_pdu().expect("encode read completion"))
-            .collect::<Vec<_>>();
+        let mut reads = close[..2].to_vec();
         reads.sort_by_key(|read| completion_id_of(read));
         assert_eq!(completion_id_of(&reads[0]), 3);
         assert_eq!(status_of(&reads[0]), NtStatus::SUCCESS);
         assert_eq!(&reads[0][20..], b"one");
         assert_eq!(completion_id_of(&reads[1]), 4);
         assert_eq!(status_of(&reads[1]), NtStatus::CANCELLED);
-        assert_eq!(
-            completion_id_of(&close[2].encode_unframed_pdu().expect("encode close")),
-            5
-        );
+        assert_eq!(completion_id_of(&close[2]), 5);
+    }
+
+    /// A new initialization sequence discards pending requests without waiting for the driver.
+    #[test]
+    fn reset_abandons_pending_requests_without_waiting() {
+        let (_server, mut session, file_id) = open_pipe_port();
+        assert!(session.handle(read_request(file_id, 2)).is_empty());
+
+        session.reset();
+        assert!(session.pending.is_empty());
+        assert!(session.files.is_empty());
+        // The cancelled read is left to its worker, which finishes on its own.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !session.abandoned.iter().all(|slot| slot.is_finished()) {
+            assert!(Instant::now() < deadline, "cancelled read did not finish");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(session.poll().is_empty());
+        assert!(session.abandoned.is_empty());
     }
 
     /// Like mstsc, every server create opens its own handle, so a second open of an exclusive
@@ -1510,9 +1570,14 @@ mod tests {
             NtStatus::INSUFFICIENT_RESOURCES
         );
 
-        // Closing completes the write and every deferred flush before the close itself.
-        let close = session.handle(close_request(file_id, completion_id + 2));
+        // Closing completes every deferred flush and the write before the close itself.
+        let close = close_and_collect(&mut session, file_id, completion_id + 2);
         assert_eq!(close.len(), MAX_PENDING_PORT_OPERATIONS + 1);
+        assert!(
+            close[..close.len() - 1]
+                .iter()
+                .all(|completion| status_of(completion) == NtStatus::CANCELLED)
+        );
         assert!(session.flushes.is_empty());
         assert!(session.pending.is_empty());
     }

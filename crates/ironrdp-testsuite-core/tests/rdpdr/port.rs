@@ -675,7 +675,6 @@ fn serial_ioctl_buffers_decode_by_control_code() {
         input,
         SerialIoCtlInput::Purge(SerialPurgeMask::RXCLEAR | SerialPurgeMask::TXCLEAR)
     );
-    assert_eq!(input.io_control_code(), PortIoCtlCode::IOCTL_SERIAL_PURGE);
     assert_eq!(encode_vec(&input).unwrap(), purge);
 
     let wait_mask = SerialIoCtlInput::SetWaitMask(SerialEventMask::RXCHAR | SerialEventMask::CTS);
@@ -724,15 +723,12 @@ fn serial_ioctl_buffers_decode_by_control_code() {
 }
 
 #[test]
-fn port_ioctl_codes_are_named_and_classified() {
+fn port_ioctl_codes_are_named() {
     assert_eq!(
         format!("{:?}", PortIoCtlCode::IOCTL_SERIAL_WAIT_ON_MASK),
         "IOCTL_SERIAL_WAIT_ON_MASK"
     );
     assert_eq!(format!("{:?}", PortIoCtlCode(0x001B_00FC)), "PortIoCtlCode(0x001B00FC)");
-    assert!(PortIoCtlCode::IOCTL_SERIAL_GET_PROPERTIES.is_serial());
-    assert!(!PortIoCtlCode::IOCTL_SERIAL_GET_PROPERTIES.is_parallel());
-    assert!(PortIoCtlCode::IOCTL_PAR_IS_PORT_FREE.is_parallel());
     assert_eq!(
         PortIoCtlCode::IOCTL_PAR_IS_PORT_FREE.name(),
         Some("IOCTL_PAR_IS_PORT_FREE")

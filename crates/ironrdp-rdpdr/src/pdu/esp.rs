@@ -176,16 +176,6 @@ impl PortIoCtlCode {
         }
         Ok(())
     }
-
-    /// Whether the code uses the serial device type (`FILE_DEVICE_SERIAL_PORT`).
-    pub fn is_serial(self) -> bool {
-        self.0 >> 16 == 0x001B
-    }
-
-    /// Whether the code uses the parallel device type (`FILE_DEVICE_PARALLEL_PORT`).
-    pub fn is_parallel(self) -> bool {
-        self.0 >> 16 == 0x0016
-    }
 }
 
 impl fmt::Debug for PortIoCtlCode {
@@ -614,25 +604,6 @@ impl SerialIoCtlInput {
         };
 
         Ok(Some(input))
-    }
-
-    /// Returns the IOCTL that carries this input.
-    pub fn io_control_code(&self) -> PortIoCtlCode {
-        match self {
-            Self::SetBaudRate(_) => PortIoCtlCode::IOCTL_SERIAL_SET_BAUD_RATE,
-            Self::SetQueueSize(_) => PortIoCtlCode::IOCTL_SERIAL_SET_QUEUE_SIZE,
-            Self::SetLineControl(_) => PortIoCtlCode::IOCTL_SERIAL_SET_LINE_CONTROL,
-            Self::ImmediateChar(_) => PortIoCtlCode::IOCTL_SERIAL_IMMEDIATE_CHAR,
-            Self::SetTimeouts(_) => PortIoCtlCode::IOCTL_SERIAL_SET_TIMEOUTS,
-            Self::SetWaitMask(_) => PortIoCtlCode::IOCTL_SERIAL_SET_WAIT_MASK,
-            Self::Purge(_) => PortIoCtlCode::IOCTL_SERIAL_PURGE,
-            Self::SetChars(_) => PortIoCtlCode::IOCTL_SERIAL_SET_CHARS,
-            Self::SetHandflow(_) => PortIoCtlCode::IOCTL_SERIAL_SET_HANDFLOW,
-            Self::XoffCounter(_) => PortIoCtlCode::IOCTL_SERIAL_XOFF_COUNTER,
-            Self::LsrMstInsert(_) => PortIoCtlCode::IOCTL_SERIAL_LSRMST_INSERT,
-            Self::SetModemControl(_) => PortIoCtlCode::IOCTL_SERIAL_SET_MODEM_CONTROL,
-            Self::SetFifoControl(_) => PortIoCtlCode::IOCTL_SERIAL_SET_FIFO_CONTROL,
-        }
     }
 }
 

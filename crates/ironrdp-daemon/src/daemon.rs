@@ -2515,11 +2515,9 @@ fn resolve_rdpdr_factory(
         factory
             .with_smartcard(smartcard)
             .with_default_printer(redirect_printers)
-            .with_port_redirection(if redirect_ports {
-                ironrdp_rdpdr_native::WindowsPortRedirection::all()
-            } else {
-                ironrdp_rdpdr_native::WindowsPortRedirection::default()
-            }),
+            .with_port_redirection(ironrdp_rdpdr_native::WindowsPortRedirection::from_enabled(
+                redirect_ports,
+            )),
     ))
 }
 

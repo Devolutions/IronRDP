@@ -11888,11 +11888,9 @@ impl Control {
                 .map_err(|error| Error::new(E_FAIL, format!("invalid redirected-drive configuration: {error}")))?
                 .with_dynamic_drives(redirect_dynamic_drives)
                 .with_default_printer(redirect_printers)
-                .with_port_redirection(if redirect_ports {
-                    ironrdp_rdpdr_native::WindowsPortRedirection::all()
-                } else {
-                    ironrdp_rdpdr_native::WindowsPortRedirection::default()
-                })
+                .with_port_redirection(ironrdp_rdpdr_native::WindowsPortRedirection::from_enabled(
+                    redirect_ports,
+                ))
                 .with_worker_thread_hooks(ironrdp_rdpdr_native::RdpdrWorkerThreadHooks::new(
                     acquire_activex_printer_worker_guard,
                 ))
