@@ -17,13 +17,13 @@ internal static class SmokeTests
             Equal(64, (int)image.Width, "width");
             Equal(32, (int)image.Height, "height");
 
-            var data = image.Data;
-            Equal(64 * 32 * 4, (int)data.Size, "data size");
-            var bytes = new byte[(int)data.Size + 1];
+            Equal(64 * 32 * 4, (int)image.DataSize, "data size");
+            var bytes = new byte[(int)image.DataSize + 1];
             Array.Fill(bytes, (byte)0xff);
-            data.Fill(bytes);
+            image.FillData(bytes);
             True(bytes[..^1].All(b => b == 0), "new image is zeroed");
             Equal((byte)0xff, bytes[^1], "bytes past the image are untouched");
+            Throws<IronRdpException>(() => image.FillData(new byte[4]));
         });
 
         yield return ("vec u8 round-trips bytes", () =>

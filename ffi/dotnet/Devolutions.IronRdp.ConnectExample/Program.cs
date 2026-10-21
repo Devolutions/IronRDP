@@ -79,10 +79,8 @@ namespace Devolutions.IronRdp.ConnectExample
         {
             int width = decodedImage.Width;
             int height = decodedImage.Height;
-            var data = decodedImage.Data;
-
-            var bytes = new byte[data.Size];
-            data.Fill(bytes);
+            var bytes = new byte[decodedImage.DataSize];
+            decodedImage.FillData(bytes);
 
             using Image<Rgba32> image = new Image<Rgba32>(width, height);
 
