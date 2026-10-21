@@ -1,5 +1,6 @@
 //! Device discovery and the URBDRC device manager.
 
+use core::fmt;
 use core::time::Duration;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
@@ -191,7 +192,7 @@ async fn run_discovery(
 }
 
 /// Open the devices selected at connection time and announce them.
-fn announce_present_devices(shared: &Shared) {
+fn announce_present_devices(shared: &Arc<Shared>) {
     let devices = match nusb::list_devices().wait() {
         Ok(devices) => devices,
         Err(error) => {
@@ -215,7 +216,8 @@ fn announce_present_devices(shared: &Shared) {
 /// Queue an opened device for the next device channel and ask the session to request one.
 ///
 /// Returns `false` when the device is already announced or redirected.
-fn announce(shared: &Shared, device: OpenedDevice) -> bool {
+fn announce(shared: &Arc<Shared>, device: OpenedDevice) -> bool {
+    let id = device.id;
     let control_channel_id = {
         let mut state = shared.state();
         if state.redirected.contains_key(&device.id) {
@@ -228,10 +230,58 @@ fn announce(shared: &Shared, device: OpenedDevice) -> bool {
         state.pending.push_back(device);
         control_channel_id
     };
-    shared
-        .events
-        .send(UrbdrcEventKind::AddVirtualChannel { control_channel_id });
+    let announcement = Announcement {
+        shared: Arc::downgrade(shared),
+        device: Some(id),
+    };
+    shared.events.send(UrbdrcEventKind::AddVirtualChannel {
+        control_channel_id,
+        announcement,
+    });
     true
+}
+
+/// A device queued for the next device channel, until its `ADD_VIRTUAL_CHANNEL` is sent.
+///
+/// The device is opened, with its interfaces claimed, before it is announced. If the announcement
+/// is dropped without being sent, for example because the control channel closed, the device is
+/// released instead of staying claimed and unusable locally until it is unplugged.
+pub struct Announcement {
+    shared: Weak<Shared>,
+    /// Cleared once the announcement is sent.
+    device: Option<nusb::DeviceId>,
+}
+
+impl Announcement {
+    /// Record that `ADD_VIRTUAL_CHANNEL` was sent, so the device waits for its channel.
+    pub fn sent(mut self) {
+        self.device = None;
+    }
+}
+
+impl fmt::Debug for Announcement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Announcement")
+            .field("device", &self.device)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for Announcement {
+    fn drop(&mut self) {
+        let (Some(id), Some(shared)) = (self.device.take(), self.shared.upgrade()) else {
+            return;
+        };
+        let released = {
+            let mut state = shared.state();
+            state.redirected.remove(&id);
+            let position = state.pending.iter().position(|device| device.id == id);
+            position.and_then(|position| state.pending.remove(position))
+        };
+        if released.is_some() {
+            debug!("Released a USB device whose announcement was not sent");
+        }
+    }
 }
 
 async fn run_hotplug(mut watch: nusb::hotplug::HotplugWatch, mut stopped: oneshot::Receiver<()>, shared: Weak<Shared>) {

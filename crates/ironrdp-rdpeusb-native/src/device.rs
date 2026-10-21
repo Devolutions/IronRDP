@@ -438,7 +438,8 @@ impl NusbDeviceBackend {
             }
             UsbRequest::Reject(status) => Some(urb::failure_completion(envelope, status)),
             request => {
-                let Some(reservation) = self.budget.reserve(urb::buffer_bytes(&request)) else {
+                let charge = urb::buffer_bytes(&request).saturating_add(urb::REQUEST_OVERHEAD_BYTES);
+                let Some(reservation) = self.budget.reserve(charge) else {
                     debug!(request_id, "Rejecting a USB request beyond the in-flight buffer budget");
                     return Some(urb::failure_completion(envelope, usbd_status::INSUFFICIENT_RESOURCES));
                 };

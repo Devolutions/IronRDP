@@ -80,7 +80,10 @@ pub(crate) fn process_urbdrc_event(
                 }
             }
         }
-        UrbdrcEventKind::AddVirtualChannel { control_channel_id } => {
+        UrbdrcEventKind::AddVirtualChannel {
+            control_channel_id,
+            announcement,
+        } => {
             let Some(channel) = drdynvc.get_dvc_by_channel_id::<UrbdrcControlClient>(control_channel_id) else {
                 warn!(
                     control_channel_id,
@@ -88,8 +91,12 @@ pub(crate) fn process_urbdrc_event(
                 );
                 return Ok(None);
             };
+            // On every early return, dropping the announcement releases the device.
             match channel.processor().add_virtual_channel() {
-                Ok(message) => (control_channel_id, message),
+                Ok(message) => {
+                    announcement.sent();
+                    (control_channel_id, message)
+                }
                 Err(error) => {
                     warn!(%error, "Cannot announce a USB device");
                     return Ok(None);

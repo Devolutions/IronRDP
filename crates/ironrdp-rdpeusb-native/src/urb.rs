@@ -81,12 +81,16 @@ pub(crate) const MS_OS_STRING_VENDOR_CODE_OFFSET: usize = 16;
 /// class drivers stay well below this; WinUSB itself splits transfers above a few megabytes.
 pub(crate) const MAX_TRANSFER_LENGTH: u32 = 16 * 1024 * 1024;
 
-/// Bytes of transfer buffers one device may hold for requests in flight.
+/// Budget of one device for its requests in flight, in bytes.
 ///
-/// The server chooses how many requests it keeps outstanding and how large they are, so the
-/// buffers they pin are bounded per device. Requests beyond the budget fail with
+/// The server chooses how many requests it keeps outstanding and how large they are. Each request
+/// is charged its buffer plus [`REQUEST_OVERHEAD_BYTES`], so this bounds both the memory they pin
+/// and their number, at most 65536 per device. Requests beyond the budget fail with
 /// `USBD_STATUS_INSUFFICIENT_RESOURCES` before anything is allocated.
 pub(crate) const MAX_IN_FLIGHT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Budget charged to every request in flight on top of its buffer, including requests without one.
+pub(crate) const REQUEST_OVERHEAD_BYTES: usize = 1024;
 
 /// Timeout for control transfers that carry none, or ask for none.
 ///
@@ -790,9 +794,8 @@ pub(crate) fn device_text(text_type: u32, description: &str, location: &str) -> 
 
 /// Extract `bMS_VendorCode` from a Microsoft OS string descriptor.
 pub(crate) fn ms_os_vendor_code(descriptor: &[u8]) -> Option<u8> {
-    // bLength, bDescriptorType, then "MSFT100" in UTF-16LE.
-    const SIGNATURE: [u8; 16] = [
-        0x12,
+    // bDescriptorType, then "MSFT100" in UTF-16LE, after bLength.
+    const SIGNATURE: [u8; 15] = [
         DESCRIPTOR_TYPE_STRING,
         b'M',
         0,
@@ -810,7 +813,10 @@ pub(crate) fn ms_os_vendor_code(descriptor: &[u8]) -> Option<u8> {
         0,
     ];
 
-    if descriptor.get(..SIGNATURE.len())? != SIGNATURE {
+    // The Microsoft OS 1.0 descriptor is 0x12 bytes long. Accept a longer bLength, as one reading of
+    // MS-RDPEUSB 3.3.5.3.9 allows, as long as the descriptor reaches bMS_VendorCode.
+    let (&length, rest) = descriptor.split_first()?;
+    if usize::from(length) <= MS_OS_STRING_VENDOR_CODE_OFFSET || rest.get(..SIGNATURE.len())? != SIGNATURE {
         return None;
     }
     descriptor.get(MS_OS_STRING_VENDOR_CODE_OFFSET).copied()
@@ -1363,6 +1369,13 @@ mod tests {
             0x12, 0x03, b'M', 0, b'S', 0, b'F', 0, b'T', 0, b'1', 0, b'0', 0, b'0', 0, 0x20, 0x00,
         ];
         assert_eq!(ms_os_vendor_code(&descriptor), Some(0x20));
+
+        // A longer bLength is accepted; one too short to hold bMS_VendorCode is not.
+        descriptor[0] = 0x14;
+        assert_eq!(ms_os_vendor_code(&descriptor), Some(0x20));
+        descriptor[0] = 0x10;
+        assert_eq!(ms_os_vendor_code(&descriptor), None);
+        descriptor[0] = 0x12;
 
         descriptor[2] = b'X';
         assert_eq!(ms_os_vendor_code(&descriptor), None);

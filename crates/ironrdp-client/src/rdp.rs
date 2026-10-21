@@ -654,7 +654,8 @@ impl RdpInputSender {
     ///
     /// The queue stays bounded without a capacity: each completion answers a request this session
     /// loop already read from the server, so a stalled loop reads no new requests and the queue holds
-    /// at most the requests in flight. The other events follow device plugs and channel closes.
+    /// at most the requests in flight, which the backend caps per device (65536, zero-length requests
+    /// included). The other events follow device plugs and channel closes.
     #[cfg(feature = "usb")]
     pub fn send_urbdrc(
         &self,

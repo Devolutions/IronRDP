@@ -13,6 +13,7 @@ mod urb;
 
 pub use device::OpenError;
 pub use filter::{DEFAULT_LOCAL_CLASSES, UsbDeviceIdentity, UsbDeviceMatch, UsbFilterParseError, UsbRedirectionConfig};
+pub use manager::Announcement;
 
 /// Work the RDP session loop must perform on behalf of the USB backend.
 ///
@@ -63,7 +64,13 @@ pub enum UrbdrcEventKind {
     /// See [`UrbdrcControlClient::add_virtual_channel`].
     ///
     /// [`UrbdrcControlClient::add_virtual_channel`]: ironrdp_rdpeusb::client::UrbdrcControlClient::add_virtual_channel
-    AddVirtualChannel { control_channel_id: u32 },
+    ///
+    /// Call [`Announcement::sent`] once the message is sent. Dropping the announcement instead
+    /// releases the device, which the backend opened and claimed ahead of the announcement.
+    AddVirtualChannel {
+        control_channel_id: u32,
+        announcement: Announcement,
+    },
     /// A redirected device went away: close its device DVC.
     CloseChannel { channel_id: u32 },
 }
