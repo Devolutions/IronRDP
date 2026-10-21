@@ -160,6 +160,16 @@ pub(crate) fn identity(info: &nusb::DeviceInfo) -> UsbDeviceIdentity {
         address: info.device_address(),
         device_class: info.class(),
         interface_classes: info.interfaces().map(|interface| interface.class()).collect(),
+        #[cfg(windows)]
+        instance_id: Some(info.instance_id().to_string_lossy().into_owned()),
+        #[cfg(not(windows))]
+        instance_id: info.serial_number().filter(|serial| !serial.is_empty()).map(|serial| {
+            format!(
+                "USB\\VID_{:04X}&PID_{:04X}\\{serial}",
+                info.vendor_id(),
+                info.product_id()
+            )
+        }),
     }
 }
 
@@ -270,13 +280,23 @@ pub(crate) struct NusbDeviceBackend {
     started: Instant,
     commands: Option<mpsc::UnboundedSender<Command>>,
     reply: Reply,
-    on_close: Option<Box<dyn FnOnce() + Send>>,
+}
+
+/// Runs the wrapped callback when dropped.
+struct OnClose(Option<Box<dyn FnOnce() + Send>>);
+
+impl Drop for OnClose {
+    fn drop(&mut self) {
+        if let Some(on_close) = self.0.take() {
+            on_close();
+        }
+    }
 }
 
 impl NusbDeviceBackend {
     /// Start the worker thread for `device`, redirected on the device DVC `channel_id`.
     ///
-    /// `on_close` runs once the redirection ends, so that the device can be offered again.
+    /// `on_close` runs once the worker has released the device, so that it can be offered again.
     pub(crate) fn start(
         device: OpenedDevice,
         channel_id: u32,
@@ -306,15 +326,16 @@ impl NusbDeviceBackend {
             "urbdrc-{:04x}:{:04x}",
             info.descriptor.vendor_id, info.descriptor.product_id
         );
-        let spawned =
-            thread::Builder::new()
-                .name(thread_name)
-                .spawn(
-                    move || match tokio::runtime::Builder::new_current_thread().enable_time().build() {
-                        Ok(runtime) => runtime.block_on(worker.run(receiver)),
-                        Err(error) => warn!(%error, "Failed to start the USB device worker runtime"),
-                    },
-                );
+        // Dropped last on the worker thread, after the runtime and the claimed interfaces. If the
+        // thread cannot start, the closure is dropped right away and the callback still runs.
+        let on_close = OnClose(Some(on_close));
+        let spawned = thread::Builder::new().name(thread_name).spawn(move || {
+            let _on_close = on_close;
+            match tokio::runtime::Builder::new_current_thread().enable_time().build() {
+                Ok(runtime) => runtime.block_on(worker.run(receiver)),
+                Err(error) => warn!(%error, "Failed to start the USB device worker runtime"),
+            }
+        });
         let commands = match spawned {
             Ok(_) => Some(commands),
             Err(error) => {
@@ -330,7 +351,6 @@ impl NusbDeviceBackend {
             started: Instant::now(),
             commands,
             reply,
-            on_close: Some(on_close),
         }
     }
 
@@ -376,10 +396,8 @@ impl NusbDeviceBackend {
     }
 
     fn stop(&mut self) {
+        // Dropping the last strong sender ends the worker, which then releases the device.
         self.commands = None;
-        if let Some(on_close) = self.on_close.take() {
-            on_close();
-        }
     }
 }
 
@@ -609,8 +627,28 @@ impl Worker {
                     index: feature_index,
                     length,
                 };
-                match self.control_interface(&setup) {
-                    Some(interface) => {
+                // wIndex carries the feature index, so the interface comes from the request itself.
+                // WinUSB only accepts an interface-directed request whose wIndex low byte is the
+                // interface number of the handle, which a feature index does not satisfy in general.
+                let interface = if recipient == Recipient::INTERFACE {
+                    let reachable = !cfg!(windows) || feature_index.to_le_bytes()[0] == interface_number;
+                    if reachable {
+                        self.interfaces
+                            .get(&interface_number)
+                            .cloned()
+                            .ok_or(usbd_status::INVALID_PARAMETER)
+                    } else {
+                        Err(usbd_status::NOT_SUPPORTED)
+                    }
+                } else {
+                    self.interfaces
+                        .values()
+                        .next()
+                        .cloned()
+                        .ok_or(usbd_status::INVALID_PARAMETER)
+                };
+                match interface {
+                    Ok(interface) => {
                         let device = self.device.clone();
                         let reply = self.reply.clone();
                         self.spawn(request_id, async move {
@@ -641,7 +679,7 @@ impl Worker {
                         });
                         None
                     }
-                    None => Some(urb::failure_completion(envelope, usbd_status::INVALID_PARAMETER)),
+                    Err(status) => Some(urb::failure_completion(envelope, status)),
                 }
             }
             UsbRequest::SelectConfiguration {
@@ -884,8 +922,12 @@ impl Worker {
         interfaces: Vec<TsUsbdInterfaceInfo>,
     ) -> CompletionData {
         let Some(configuration_value) = configuration_value else {
-            // Unconfiguring happens when the server-side driver unloads; the device stays configured
-            // on the client.
+            // Unconfiguring happens when the server-side driver unloads. The device stays configured on
+            // the client, but its pipes are gone: stop their transfers.
+            let interface_numbers: Vec<u8> = self.interfaces.keys().copied().collect();
+            for interface_number in interface_numbers {
+                self.close_endpoints(interface_number).await;
+            }
             return urb::payload_completion(
                 envelope,
                 TsUrbResultPayload::SelectConfig(TsUrbSelectConfigResult {
@@ -1109,15 +1151,31 @@ async fn run_endpoint<T: BulkOrInterrupt, D: EndpointDirection>(
                 let Some(entry) = queue.in_flight.pop_front() else {
                     continue;
                 };
-                let collateral = queue.draining
-                    && D::DIR == nusb::transfer::Direction::In
-                    && completion.status == Err(TransferError::Cancelled)
-                    && completion.actual_len == 0;
+                let cancelled_with_others = queue.draining && completion.status == Err(TransferError::Cancelled);
                 if entry.cancelled {
                     trace!(request_id = entry.request_id, "Dropped the completion of a cancelled USB transfer");
-                } else if collateral {
-                    let buffer = Buffer::new(in_buffer_length(&endpoint, entry.length));
-                    queue.retry.push_back((entry, buffer));
+                } else if cancelled_with_others && completion.actual_len == 0 {
+                    // Nothing moved, so the transfer runs again as if it had never been cancelled. nusb
+                    // returns an OUT buffer with its whole payload.
+                    let buffer = if D::DIR == nusb::transfer::Direction::In {
+                        in_buffer_length(&endpoint, entry.length).map(Buffer::new)
+                    } else {
+                        Some(completion.buffer)
+                    };
+                    match buffer {
+                        Some(buffer) => queue.retry.push_back((entry, buffer)),
+                        None => reply.complete(
+                            entry.request_id,
+                            urb::failure_completion(entry.envelope, usbd_status::INVALID_PARAMETER),
+                        ),
+                    }
+                } else if cancelled_with_others {
+                    // Data already moved: report it as a short transfer rather than losing it.
+                    let completion = Completion {
+                        status: Ok(()),
+                        ..completion
+                    };
+                    reply.complete(entry.request_id, transfer_completion::<D>(&entry, completion));
                 } else {
                     reply.complete(entry.request_id, transfer_completion::<D>(&entry, completion));
                 }
@@ -1157,7 +1215,14 @@ fn submit<T: BulkOrInterrupt, D: EndpointDirection>(
             reply.complete(request_id, urb::transfer_completion(envelope, Vec::new(), 0));
             return;
         }
-        Buffer::new(in_buffer_length(endpoint, length))
+        let Some(buffer_length) = in_buffer_length(endpoint, length) else {
+            reply.complete(
+                request_id,
+                urb::failure_completion(envelope, usbd_status::INVALID_PARAMETER),
+            );
+            return;
+        };
+        Buffer::new(buffer_length)
     } else {
         Buffer::from(data)
     };
@@ -1173,11 +1238,15 @@ fn submit<T: BulkOrInterrupt, D: EndpointDirection>(
 
 /// nusb requires IN transfers to be a multiple of the maximum packet size.
 ///
-/// The extra room is never sent to the server: completions are truncated to the requested length.
-fn in_buffer_length<T: BulkOrInterrupt, D: EndpointDirection>(endpoint: &Endpoint<T, D>, length: u32) -> usize {
-    let length = usize::try_from(length).unwrap_or(usize::MAX);
+/// Data the device sends beyond the requested length is reported as a buffer overrun. Returns `None`
+/// for a length above [`urb::MAX_TRANSFER_LENGTH`], which [`urb::translate_in`] already rejects.
+fn in_buffer_length<T: BulkOrInterrupt, D: EndpointDirection>(endpoint: &Endpoint<T, D>, length: u32) -> Option<usize> {
+    if urb::MAX_TRANSFER_LENGTH < length {
+        return None;
+    }
+    let length = usize::try_from(length).ok()?;
     let max_packet_size = endpoint.max_packet_size().max(1);
-    length.div_ceil(max_packet_size).saturating_mul(max_packet_size)
+    length.div_ceil(max_packet_size).checked_mul(max_packet_size)
 }
 
 /// Cancel every pending and queued transfer, completing them as cancelled.
@@ -1219,8 +1288,18 @@ async fn cancel_all<T: BulkOrInterrupt, D: EndpointDirection>(
 fn transfer_completion<D: EndpointDirection>(entry: &InFlight, completion: Completion) -> CompletionData {
     match completion.status {
         Ok(()) if D::DIR == nusb::transfer::Direction::In => {
-            let mut data = completion.buffer.into_vec();
-            data.truncate(usize::try_from(entry.length).unwrap_or(usize::MAX));
+            let data = completion.buffer.into_vec();
+            if usize::try_from(entry.length).is_ok_and(|length| length < data.len()) {
+                // The buffer was rounded up to whole packets and the device filled more than the server
+                // asked for. Like the host controller would, report the overrun instead of dropping data.
+                debug!(
+                    request_id = entry.request_id,
+                    requested = entry.length,
+                    received = data.len(),
+                    "USB IN transfer overran its buffer"
+                );
+                return urb::failure_completion(entry.envelope, usbd_status::BUFFER_OVERRUN);
+            }
             urb::transfer_completion(entry.envelope, data, 0)
         }
         Ok(()) => urb::transfer_completion(

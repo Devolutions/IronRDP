@@ -29,6 +29,7 @@ pub(crate) mod usbd_status {
 
     pub(crate) const SUCCESS: UsbdStatus = 0x0000_0000;
     pub(crate) const STALL_PID: UsbdStatus = 0xc000_0004;
+    pub(crate) const BUFFER_OVERRUN: UsbdStatus = 0xc000_000c;
     pub(crate) const DEV_NOT_RESPONDING: UsbdStatus = 0xc000_0005;
     pub(crate) const INVALID_PARAMETER: UsbdStatus = 0x8000_0300;
     pub(crate) const REQUEST_FAILED: UsbdStatus = 0x8000_0500;
@@ -73,6 +74,12 @@ const DEVICE_TEXT_LOCATION_INFORMATION: u32 = 1;
 pub(crate) const MS_OS_STRING_DESCRIPTOR_INDEX: u8 = 0xee;
 /// Offset of `bMS_VendorCode` in the Microsoft OS string descriptor.
 pub(crate) const MS_OS_STRING_VENDOR_CODE_OFFSET: usize = 16;
+
+/// Largest bulk or interrupt IN transfer the client allocates a buffer for.
+///
+/// The server chooses the length of an IN transfer, so it must be bounded before allocating. Windows
+/// class drivers stay well below this; WinUSB itself splits transfers above a few megabytes.
+pub(crate) const MAX_TRANSFER_LENGTH: u32 = 16 * 1024 * 1024;
 
 /// Default timeout for control transfers that do not carry one.
 pub(crate) const DEFAULT_CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -186,6 +193,9 @@ pub(crate) fn translate_in(packet: TransferInPacket) -> UsbRequest {
             Vec::new(),
             ex_timeout(request.timeout),
         ),
+        TsUrbInKind::BulkInterruptTransfer(_) if MAX_TRANSFER_LENGTH < length => {
+            UsbRequest::Reject(usbd_status::INVALID_PARAMETER)
+        }
         TsUrbInKind::BulkInterruptTransfer(request) => UsbRequest::Transfer {
             endpoint: pipe_endpoint(request.pipe_handle),
             direction: Direction::In,
@@ -1026,6 +1036,33 @@ mod tests {
                 data: vec![0x55; 31],
             }
         );
+    }
+
+    #[test]
+    fn oversized_in_transfers_are_rejected_before_allocation() {
+        let read = |output_buffer_size| {
+            translate_in(transfer_in(
+                TsUrbInKind::BulkInterruptTransfer(TsUrbBulkOrInterruptTransfer {
+                    pipe_handle: PIPE_HANDLE_TAG | 0x81,
+                    transfer_flags: 0x3,
+                }),
+                UrbFunction::URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER,
+                output_buffer_size,
+            ))
+        };
+
+        assert_eq!(read(u32::MAX), UsbRequest::Reject(usbd_status::INVALID_PARAMETER));
+        assert_eq!(
+            read(MAX_TRANSFER_LENGTH + 1),
+            UsbRequest::Reject(usbd_status::INVALID_PARAMETER)
+        );
+        assert!(matches!(
+            read(MAX_TRANSFER_LENGTH),
+            UsbRequest::Transfer {
+                length: MAX_TRANSFER_LENGTH,
+                ..
+            }
+        ));
     }
 
     #[test]

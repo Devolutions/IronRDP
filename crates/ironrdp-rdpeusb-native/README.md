@@ -9,7 +9,9 @@ The backend runs USB I/O on its own threads and reports through `UrbdrcEvent`s, 
 ## Device selection
 
 `UsbRedirectionConfig` decides which devices are redirected.
-It is parsed from the FreeRDP `/usb` rule syntax (`id:VID:PID#...`, `addr:BUS:ADDR#...`, `auto`, `filter:CLASS#...` or `filter:none`, with hexadecimal numbers), or from the `.rdp` `usbdevicestoredirect` property (`*`, `USB\VID_xxxx&PID_yyyy...` instance IDs, and `-` prefixed exclusions).
+It is parsed from the FreeRDP `/usb` rule syntax (`id:VID:PID#...`, `addr:BUS:ADDR#...`, `auto`, `filter:CLASS#...` or `filter:none`, with hexadecimal numbers), or from the `.rdp` `usbdevicestoredirect` property (`*`, `USB\VID_xxxx&PID_yyyy` hardware IDs, `USB\VID_xxxx&PID_yyyy\INSTANCE` device instance IDs, and `-` prefixed exclusions).
+A device instance ID selects that single device: on Windows it is compared with the PnP instance ID, elsewhere with one built from the serial number, so on Linux and macOS it only matches devices whose Windows instance ID is their serial number.
+Entries without a product ID are rejected, because they would select every device of the vendor ahead of the classes kept local.
 `auto` and `*` keep audio, HID, mass storage, hub and smart card devices local by default, as FreeRDP does: those are better served by the high-level redirections, and redirecting them would take the local keyboard and mouse away.
 Hubs are never redirected.
 Device setup class GUIDs in `usbdevicestoredirect` cannot be matched from USB descriptors and are skipped.
@@ -35,7 +37,10 @@ What can be claimed depends on the platform, because nusb uses the generic user-
 - The active configuration cannot be changed: WinUSB does not allow it, and on other platforms it would invalidate every claimed interface.
   Selecting the active configuration, and alternate settings, works.
 - Port reset and cycle requests are acknowledged without resetting the device, like the FreeRDP client, because re-enumeration would end the redirection.
-- nusb cancels transfers per endpoint. When the server cancels one request, the other IN transfers pending on that endpoint that had not moved any data are submitted again in order; partially completed ones are reported as cancelled.
+- nusb cancels bulk and interrupt transfers per endpoint. When the server cancels one request, the other transfers pending on that endpoint that had not moved any data are submitted again in order, and partially completed ones are reported as short transfers.
+- nusb cannot cancel a control transfer once it is submitted. Cancelling one only drops its completion; the request still runs on the device until it completes or times out (30 seconds unless the server gave a timeout).
+- IN transfers are limited to 16 MiB, and data a device sends beyond the requested length is reported as `USBD_STATUS_BUFFER_OVERRUN`.
+- On Windows, interface-directed Microsoft OS feature descriptor requests are rejected with `USBD_STATUS_NOT_SUPPORTED` unless the feature index matches the interface number, because WinUSB refuses them otherwise.
 - Windows reads device-level descriptors through the hub driver, and on Windows hotplugged devices are opened after a short delay so that their driver can bind first.
 - The bus number in `addr:` rules is the platform bus number on Linux and macOS, and a stable byte derived from the host controller instance ID on Windows; `local_devices` shows it.
 

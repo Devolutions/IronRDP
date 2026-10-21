@@ -146,10 +146,10 @@ fn announce_present_devices(shared: &Arc<Shared>) -> Vec<DvcMessage> {
         Err(error) => warn!(%error, "Failed to enumerate USB devices"),
     }
 
-    if shared.config.needs_hotplug() {
-        let hotplug = watch_hotplug(Arc::downgrade(shared));
-        shared.state().hotplug = hotplug;
-    }
+    // Watch even when no rule follows new devices: unplugging a redirected device must close its
+    // channel, and `redirect_on_hotplug` already ignores rules that apply at connection only.
+    let hotplug = watch_hotplug(Arc::downgrade(shared));
+    shared.state().hotplug = hotplug;
 
     debug!(count = messages.len(), "Announcing USB devices");
     messages
@@ -175,7 +175,7 @@ fn watch_hotplug(shared: Weak<Shared>) -> Option<oneshot::Sender<()>> {
     let watch = match nusb::watch_devices() {
         Ok(watch) => watch,
         Err(error) => {
-            warn!(%error, "USB hotplug is unavailable; only devices present at connection are redirected");
+            warn!(%error, "USB hotplug is unavailable; plugged and unplugged devices are not followed");
             return None;
         }
     };
@@ -199,7 +199,7 @@ async fn run_hotplug(mut watch: nusb::hotplug::HotplugWatch, mut stopped: onesho
     loop {
         let event = tokio::select! {
             _ = &mut stopped => break,
-            event = core::future::poll_fn(|cx| Pin::new(&mut watch).poll_next(cx)) => event,
+            event = core::future::poll_fn(|cx| core::pin::Pin::new(&mut watch).poll_next(cx)) => event,
         };
         let (Some(event), Some(shared)) = (event, shared.upgrade()) else {
             break;
