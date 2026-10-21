@@ -19,8 +19,11 @@ use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
 };
 
-/// Longest time a decode waits for the worker thread.
-const DECODE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Longest time a decode waits for the worker thread. Pictures normally decode in milliseconds,
+/// and the caller is blocked meanwhile.
+const DECODE_TIMEOUT: Duration = Duration::from_secs(1);
+/// Longest time creating the decoder waits for Media Foundation to start.
+const START_TIMEOUT: Duration = Duration::from_secs(2);
 /// Spacing of the synthetic sample times, in 100-ns units (30 frames per second).
 const SAMPLE_DURATION: i64 = 333_333;
 
@@ -68,7 +71,7 @@ impl MediaFoundationH264Decoder {
             .name("h264-decoder".to_owned())
             .spawn(move || worker_main(matrix, &command_receiver, &ready))
             .map_err(|error| DecoderError::new("failed to spawn the H.264 decoder thread", error))?;
-        match ready_receiver.recv_timeout(DECODE_TIMEOUT) {
+        match ready_receiver.recv_timeout(START_TIMEOUT) {
             Ok(Ok(())) => Ok(Self {
                 commands: Some(commands),
                 thread: Some(thread),
@@ -448,7 +451,9 @@ fn nv12_to_rgba(nv12: &[u8], width: usize, height: usize, stride: usize, matrix:
 }
 
 fn clamp_channel(value: i32) -> u8 {
-    u8::try_from(value.clamp(0, 255)).unwrap_or(u8::MAX)
+    // The clamped value is its own low byte.
+    let [low, ..] = value.clamp(0, 255).to_le_bytes();
+    low
 }
 
 fn flag_bits(flag: i32) -> u32 {

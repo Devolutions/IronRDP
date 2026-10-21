@@ -392,7 +392,8 @@ pub struct ChannelConfig {
     #[cfg(feature = "camera")]
     pub cameras: crate::camera::CameraConfig,
 
-    /// MS-RDPEVOR video optimized remoting. Disabled unless an H.264 decoder is configured.
+    /// MS-RDPEVOR video optimized remoting, enabled when an H.264 decoder is available (by default
+    /// on Windows or with the `openh264` feature) unless `videoplaybackmode:i:0` turns it off.
     #[cfg(feature = "video")]
     pub video: crate::video::VideoConfig,
 }
@@ -2251,6 +2252,10 @@ impl ConfigBuilder {
         }
         if let Some(enabled) = ps.get::<i64>("ironrdp_egfx") {
             self.graphics_pipeline = enabled != 0;
+        }
+        #[cfg(feature = "video")]
+        if ps.get::<i64>("videoplaybackmode") == Some(0) {
+            self.channels.video.decoder = None;
         }
         #[cfg(feature = "camera")]
         if let Some(cameras) = ps.get::<&str>("camerastoredirect") {

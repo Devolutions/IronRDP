@@ -95,6 +95,46 @@ struct Presentation {
 }
 
 impl Presentation {
+    /// Adds one packet to the sample being reassembled.
+    ///
+    /// Returns why a sample was lost, if one was, and the sample once it is complete.
+    fn assemble(&mut self, data: &VideoData<'_>) -> (Option<&'static str>, Option<Assembly>) {
+        let mut loss = None;
+        if data.current_packet_index == 1 {
+            if self.assembly.take().is_some() {
+                loss = Some("video sample interrupted by a new sample");
+            }
+        } else if !self.assembly.as_ref().is_some_and(|assembly| {
+            assembly.sample_number == data.sample_number
+                && assembly.next_index == data.current_packet_index
+                && assembly.packets == data.packets_in_sample
+        }) {
+            self.assembly = None;
+            return (Some("video sample packet missing or out of order"), None);
+        }
+
+        let assembly = self.assembly.get_or_insert_with(|| Assembly {
+            sample_number: data.sample_number,
+            next_index: 1,
+            packets: data.packets_in_sample,
+            flags: data.flags,
+            timestamp: data.timestamp,
+            duration: data.duration,
+            data: Vec::new(),
+        });
+        if MAX_SAMPLE_SIZE - assembly.data.len() < data.sample.len() {
+            self.assembly = None;
+            return (Some("video sample exceeds the supported size"), None);
+        }
+        assembly.data.extend_from_slice(data.sample);
+        assembly.flags |= data.flags;
+        if data.current_packet_index < data.packets_in_sample {
+            assembly.next_index = data.current_packet_index + 1;
+            return (loss, None);
+        }
+        (loss, self.assembly.take())
+    }
+
     /// Notes a picture dropped because the client did not keep up, and asks the server for
     /// fewer frames once that happens repeatedly ([2.2.1.5]).
     ///
@@ -303,51 +343,11 @@ impl VideoPresenter {
             return;
         }
 
-        let continues = presentation.assembly.as_ref().is_some_and(|assembly| {
-            assembly.sample_number == data.sample_number
-                && assembly.next_index == data.current_packet_index
-                && assembly.packets == data.packets_in_sample
-        });
-        if data.current_packet_index == 1 {
-            let interrupted = presentation
-                .assembly
-                .replace(Assembly {
-                    sample_number: data.sample_number,
-                    next_index: 1,
-                    packets: data.packets_in_sample,
-                    flags: data.flags,
-                    timestamp: data.timestamp,
-                    duration: data.duration,
-                    data: Vec::new(),
-                })
-                .is_some();
-            if interrupted {
-                self.report_loss("video sample interrupted by a new sample");
-            }
-        } else if !continues {
-            presentation.assembly = None;
-            self.report_loss("video sample packet missing or out of order");
-            return;
+        let (loss, complete) = presentation.assemble(data);
+        if let Some(reason) = loss {
+            self.report_loss(reason);
         }
-
-        let Some(presentation) = self.presentation.as_mut() else {
-            return;
-        };
-        let Some(assembly) = presentation.assembly.as_mut() else {
-            return;
-        };
-        if MAX_SAMPLE_SIZE - assembly.data.len() < data.sample.len() {
-            presentation.assembly = None;
-            self.report_loss("video sample exceeds the supported size");
-            return;
-        }
-        assembly.data.extend_from_slice(data.sample);
-        assembly.flags |= data.flags;
-        if data.current_packet_index < data.packets_in_sample {
-            assembly.next_index = data.current_packet_index + 1;
-            return;
-        }
-        if let Some(assembly) = presentation.assembly.take() {
+        if let Some(assembly) = complete {
             self.decode_sample(assembly);
         }
     }

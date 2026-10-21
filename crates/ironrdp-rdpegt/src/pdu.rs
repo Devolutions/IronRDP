@@ -184,20 +184,18 @@ impl MappedGeometry {
     /// [2.2.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegt/
     pub fn visible_rects(&self) -> Vec<GeometryRect> {
         let desktop = self.desktop_rect();
-        let ignore_region = match &self.region {
-            None => true,
-            Some(region) => {
-                region.rects.is_empty()
-                    || (self.top_level_id != 0
-                        && region.rects.iter().all(|rect| rect.intersect(&region.bound).is_none()))
-            }
-        };
         match &self.region {
-            Some(region) if !ignore_region => region
-                .rects
-                .iter()
-                .filter_map(|rect| rect.offset(desktop.left, desktop.top).intersect(&desktop))
-                .collect(),
+            Some(region)
+                if !region.rects.is_empty()
+                    && (self.top_level_id == 0
+                        || region.rects.iter().any(|rect| rect.intersect(&region.bound).is_some())) =>
+            {
+                region
+                    .rects
+                    .iter()
+                    .filter_map(|rect| rect.offset(desktop.left, desktop.top).intersect(&desktop))
+                    .collect()
+            }
             _ if desktop.is_empty() => Vec::new(),
             _ => vec![desktop],
         }

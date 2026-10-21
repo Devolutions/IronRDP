@@ -762,6 +762,26 @@ fn graphics_pipeline_is_opt_in() {
 }
 
 #[test]
+fn video_playback_mode_zero_declines_video() {
+    let decoder = || Some(ironrdp_client::video::H264DecoderFactory::new(|| None));
+    let config = complete_builder()
+        .with_h264_decoder(decoder())
+        .build()
+        .expect("video config");
+    assert!(config.channels().video.decoder.is_some());
+
+    let mut properties = ironrdp_propertyset::PropertySet::new();
+    properties.insert("videoplaybackmode", 0i64);
+    let config = complete_builder()
+        .with_h264_decoder(decoder())
+        .with_property_set(&properties)
+        .expect("valid video playback property")
+        .build()
+        .expect("video playback property config");
+    assert!(config.channels().video.decoder.is_none());
+}
+
+#[test]
 fn udp_and_graphics_pipeline_cli_flags_reach_the_config() {
     let rdp = "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\n";
 
