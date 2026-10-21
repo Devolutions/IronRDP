@@ -1,11 +1,12 @@
 //! Client state machines for the MS-RDPECAM dynamic virtual channels.
 
 use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use ironrdp_core::{AsAny, decode, impl_as_any, invalid_field_err};
 use ironrdp_dvc::{DvcChannelListener, DvcClientProcessor, DvcMessage, DvcProcessor, encode_dvc_messages};
@@ -421,12 +422,12 @@ pub enum SampleDelivery {
 struct SinkStream {
     stream_index: u8,
     media_type: MediaType,
-    pending_requests: AtomicU32,
+    /// Channels of the unanswered Sample Requests, oldest first. Each response goes to the
+    /// channel of the request it answers.
+    requests: spin::Mutex<VecDeque<u32>>,
 }
 
 struct SampleSinkInner {
-    /// Channel of the latest Sample Request, which receives the samples.
-    channel_id: AtomicU32,
     version: ProtocolVersion,
     active: AtomicBool,
     streams: Vec<SinkStream>,
@@ -446,17 +447,15 @@ pub struct SampleSink {
 impl core::fmt::Debug for SampleSink {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SampleSink")
-            .field("channel_id", &self.inner.channel_id.load(Ordering::Relaxed))
             .field("active", &self.is_active())
             .finish_non_exhaustive()
     }
 }
 
 impl SampleSink {
-    fn new(channel_id: u32, version: ProtocolVersion, streams: &[StartStreamInfo], uplink: SampleUplink) -> Self {
+    fn new(version: ProtocolVersion, streams: &[StartStreamInfo], uplink: SampleUplink) -> Self {
         Self {
             inner: Arc::new(SampleSinkInner {
-                channel_id: AtomicU32::new(channel_id),
                 version,
                 active: AtomicBool::new(true),
                 streams: streams
@@ -464,7 +463,7 @@ impl SampleSink {
                     .map(|stream| SinkStream {
                         stream_index: stream.stream_index,
                         media_type: stream.media_type,
-                        pending_requests: AtomicU32::new(0),
+                        requests: spin::Mutex::new(VecDeque::new()),
                     })
                     .collect(),
                 uplink,
@@ -479,8 +478,9 @@ impl SampleSink {
 
     /// Number of unanswered Sample Requests for `stream_index`.
     pub fn pending_requests(&self, stream_index: u8) -> u32 {
-        self.stream(stream_index)
-            .map_or(0, |stream| stream.pending_requests.load(Ordering::Acquire))
+        self.stream(stream_index).map_or(0, |stream| {
+            u32::try_from(stream.requests.lock().len()).unwrap_or(u32::MAX)
+        })
     }
 
     /// Answers one outstanding Sample Request with `sample`.
@@ -522,15 +522,10 @@ impl SampleSink {
         if !self.is_active() {
             return SampleDelivery::Stopped;
         }
-        if stream
-            .pending_requests
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| pending.checked_sub(1))
-            .is_err()
-        {
+        let Some(channel_id) = stream.requests.lock().pop_front() else {
             return SampleDelivery::NotRequested;
-        }
+        };
         let message = DeviceMessage::new(self.inner.version, pdu);
-        let channel_id = self.inner.channel_id.load(Ordering::Acquire);
         let result = encode_dvc_messages(channel_id, vec![Box::new(message)], ChannelFlags::empty())
             .map_err(|error| encode_err!(error))
             .and_then(|messages| (self.inner.uplink)(channel_id, messages));
@@ -538,25 +533,20 @@ impl SampleSink {
             Ok(()) => SampleDelivery::Sent,
             Err(error) => {
                 trace!(%error, "Camera sample was not accepted by the session");
-                stream.pending_requests.fetch_add(1, Ordering::AcqRel);
+                stream.requests.lock().push_front(channel_id);
                 SampleDelivery::Failed
             }
         }
     }
 
-    fn request(&self, stream_index: u8) -> Result<(), ErrorCode> {
+    fn request(&self, stream_index: u8, channel_id: u32) -> Result<(), ErrorCode> {
         let stream = self.stream(stream_index).ok_or(ErrorCode::InvalidStreamNumber)?;
-        stream
-            .pending_requests
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
-                (pending < MAX_PENDING_SAMPLE_REQUESTS).then_some(pending + 1)
-            })
-            .map(|_| ())
-            .map_err(|_| ErrorCode::InvalidRequest)
-    }
-
-    fn route_to(&self, channel_id: u32) {
-        self.inner.channel_id.store(channel_id, Ordering::Release);
+        let mut requests = stream.requests.lock();
+        if MAX_PENDING_SAMPLE_REQUESTS <= u32::try_from(requests.len()).unwrap_or(u32::MAX) {
+            return Err(ErrorCode::InvalidRequest);
+        }
+        requests.push_back(channel_id);
+        Ok(())
     }
 
     fn stop(&self) {
@@ -774,7 +764,7 @@ where
             DevicePdu::StartStreamsRequest(streams) => match start_streams(backend, &streams) {
                 Err(error) => DevicePdu::ErrorResponse(error),
                 Ok(()) => {
-                    let sink = SampleSink::new(channel_id, self.version, &streams, Arc::clone(&self.uplink));
+                    let sink = SampleSink::new(self.version, &streams, Arc::clone(&self.uplink));
                     if let Err(error) = backend.start_streams(&streams, sink.clone()) {
                         sink.stop();
                         return Some(DevicePdu::ErrorResponse(error));
@@ -797,8 +787,7 @@ where
                     });
                 };
                 // Samples answer on the channel that asked for them.
-                sink.route_to(channel_id);
-                return match sink.request(stream_index) {
+                return match sink.request(stream_index, channel_id) {
                     Ok(()) => {
                         backend.sample_requested(stream_index);
                         None

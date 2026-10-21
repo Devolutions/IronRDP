@@ -38,7 +38,7 @@ use windows::Win32::Media::MediaFoundation::{
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize,
 };
-use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_UI4};
+use windows::Win32::System::Variant::VARIANT;
 use windows::core::{GUID, Interface as _, PWSTR};
 
 /// Index of the single capture stream exposed for each device.
@@ -88,7 +88,8 @@ pub struct CameraOptions {
     /// Encode raw camera frames to H.264 with the Media Foundation software encoder.
     ///
     /// Only used when the camera has no compressed media type. When disabled, or when the
-    /// encoder is unavailable, raw media types are advertised.
+    /// encoder is unavailable, raw media types are advertised. When the encoder accepts none of
+    /// the camera's media types, only raw types of at most 1920x1080 are advertised.
     pub encode_h264: bool,
     pub quality: EncodingQuality,
 }
@@ -176,7 +177,7 @@ pub enum CameraEvent {
 }
 
 struct WatcherContext {
-    wake: Mutex<mpsc::Sender<()>>,
+    wake: mpsc::Sender<()>,
 }
 
 /// Reports camera arrival and removal.
@@ -251,9 +252,7 @@ impl CameraWatcher {
             )
         })?;
         let rescan = wake_sender.clone();
-        let context = Box::into_raw(Box::new(WatcherContext {
-            wake: Mutex::new(wake_sender),
-        }));
+        let context = Box::into_raw(Box::new(WatcherContext { wake: wake_sender }));
         let filter = CM_NOTIFY_FILTER {
             cbSize: filter_size,
             FilterType: CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
@@ -318,9 +317,7 @@ unsafe extern "system" fn watcher_notification(
     // SAFETY: `context` is the `WatcherContext` registered in `CameraWatcher::new`, which outlives
     // the registration.
     let context = unsafe { &*context.cast::<WatcherContext>() };
-    if let Ok(wake) = context.wake.lock() {
-        let _ = wake.send(());
-    }
+    let _ = context.wake.send(());
     0
 }
 
@@ -1193,11 +1190,23 @@ fn native_media_types(reader: &IMFSourceReader, options: CameraOptions) -> windo
         if !encoded.is_empty() {
             return Ok(encoded);
         }
+        // Nothing the encoder accepts, such as RGB only or larger than 1080p: only raw types the
+        // encoder could have handled in size are offered, so that frames do not saturate the
+        // connection.
+        media_types.retain(|media_type| {
+            media_type
+                .description
+                .width
+                .checked_mul(media_type.description.height)
+                .is_some_and(|pixels| pixels <= MAX_ENCODED_PIXELS)
+        });
+        if media_types.is_empty() {
+            warn!("The camera has no media type small enough to send without encoding");
+        }
     }
     Ok(media_types)
 }
 
-/// Returns whether the software H.264 encoder accepts frames of this media type.
 /// Makes the reader deliver `native` frames from the video stream only.
 fn select_media_type(reader: &IMFSourceReader, native: &IMFMediaType) -> Result<(), ErrorCode> {
     // SAFETY: valid source reader; stream selection uses reserved stream constants.
@@ -1217,6 +1226,7 @@ fn select_media_type(reader: &IMFSourceReader, native: &IMFMediaType) -> Result<
     })
 }
 
+/// Returns whether the software H.264 encoder accepts frames of this media type.
 fn encodable(media_type: &MediaType) -> bool {
     matches!(
         media_type.format,
@@ -1243,13 +1253,13 @@ fn create_encoder(
     // SAFETY: COM is initialized on the worker thread.
     let encoder: IMFTransform = unsafe { CoCreateInstance(&CLSID_MSH264EncoderMFT, None, CLSCTX_INPROC_SERVER) }?;
     if let Ok(codec) = encoder.cast::<ICodecAPI>() {
-        let low_latency = variant_bool(true);
+        let low_latency = VARIANT::from(true);
         // SAFETY: valid codec interface; the value outlives the call.
         if let Err(error) = unsafe { codec.SetValue(&CODECAPI_AVLowLatencyMode, &low_latency) } {
             debug!(%error, "H.264 encoder rejected low-latency mode");
         }
         let frames_per_second = media_type.frame_rate_numerator / media_type.frame_rate_denominator.max(1);
-        let gop_size = variant_u32(frames_per_second.saturating_mul(2).max(1));
+        let gop_size = VARIANT::from(frames_per_second.saturating_mul(2).max(1));
         // SAFETY: as above.
         if let Err(error) = unsafe { codec.SetValue(&CODECAPI_AVEncMPVGOPSize, &gop_size) } {
             debug!(%error, "H.264 encoder rejected the GOP size");
@@ -1359,40 +1369,6 @@ fn encode_sample(
         frames.push(sample_frame(&picture, streaming)?);
     }
     Ok(frames)
-}
-
-fn variant_bool(value: bool) -> VARIANT {
-    VARIANT {
-        Anonymous: VARIANT_0 {
-            Anonymous: core::mem::ManuallyDrop::new(VARIANT_0_0 {
-                vt: VT_BOOL,
-                wReserved1: 0,
-                wReserved2: 0,
-                wReserved3: 0,
-                Anonymous: VARIANT_0_0_0 {
-                    boolVal: if value {
-                        windows::Win32::Foundation::VARIANT_TRUE
-                    } else {
-                        windows::Win32::Foundation::VARIANT_FALSE
-                    },
-                },
-            }),
-        },
-    }
-}
-
-fn variant_u32(value: u32) -> VARIANT {
-    VARIANT {
-        Anonymous: VARIANT_0 {
-            Anonymous: core::mem::ManuallyDrop::new(VARIANT_0_0 {
-                vt: VT_UI4,
-                wReserved1: 0,
-                wReserved2: 0,
-                wReserved3: 0,
-                Anonymous: VARIANT_0_0_0 { ulVal: value },
-            }),
-        },
-    }
 }
 
 fn describe_media_type(native: &IMFMediaType) -> Option<MediaType> {
