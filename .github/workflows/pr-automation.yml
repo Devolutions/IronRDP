@@ -206,6 +206,7 @@ jobs:
               prNumber: pullRequest.number,
               authorAssociation: pullRequest.author_association,
               baseSha: pullRequest.base.sha,
+              headSha: pullRequest.head.sha,
               labelerPath: "./.github/labeler.yml",
             });
             core.setOutput("analysis", JSON.stringify(result));

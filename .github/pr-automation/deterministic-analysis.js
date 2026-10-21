@@ -135,12 +135,16 @@ function testRegions(text, pattern) {
   return regions;
 }
 
-// Removed lines carry their base line number; an added line sits between two base lines.
+// Removed lines carry their base line number; an added line sits between two base lines. The patch
+// is relative to the merge base, so every context and removed line must match the base file there;
+// a hunk that does not is located nowhere and selects the review.
 function touchesTestRegion(file, base) {
   if (typeof base !== "string") return true;
   const regions = testRegions(base, basePathOf(file).endsWith(".rs") ? RUST_TEST_REGION : CSHARP_TEST_REGION);
   if (regions.length === 0) return false;
   if (!file.patch) return true;
+  const baseLines = base.split("\n").map((text) => text.replace(/\r$/, ""));
+  const aligned = (number, patchLine) => baseLines[number - 1] === patchLine.slice(1).replace(/\r$/, "");
   let line = null;
   for (const patchLine of file.patch.split("\n")) {
     const hunk = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@/.exec(patchLine);
@@ -149,20 +153,20 @@ function touchesTestRegion(file, base) {
       line = Number(hunk[1]) + (hunk[2] === "0" ? 1 : 0);
     } else if (line === null || patchLine.startsWith("\\")) {
       continue;
-    } else if (patchLine.startsWith("-")) {
-      const removed = line;
-      if (regions.some(([start, end]) => start <= removed && removed <= end)) return true;
-      line += 1;
     } else if (patchLine.startsWith("+")) {
       const after = line - 1;
       if (regions.some(([start, end]) => start <= after && line <= end)) return true;
     } else {
+      if (!aligned(line, patchLine)) return true;
+      const current = line;
+      if (patchLine.startsWith("-") && regions.some(([start, end]) => start <= current && current <= end)) {
+        return true;
+      }
       line += 1;
     }
   }
   return false;
 }
-
 function isTestChange(file, baseContents) {
   return isTestPathOrMarker(file) ||
     (needsBaseRead(file) && touchesTestRegion(file, baseContents.get(basePathOf(file))));
@@ -205,9 +209,24 @@ function diffReviewers(files, intentPaths, baseContents) {
   return selected;
 }
 
+// Pull request patches are three-dot diffs, so their old side is the merge base rather than the
+// target branch tip, which may have moved since the branch point.
+async function resolveMergeBase(github, { owner, repo, baseSha, headSha }) {
+  if (!SHA.test(baseSha || "") || !SHA.test(headSha || "")) return null;
+  try {
+    const { data } = await github.rest.repos.compareCommitsWithBasehead({
+      owner, repo, basehead: `${baseSha}...${headSha}`, per_page: 1,
+    });
+    const mergeBase = data?.merge_base_commit?.sha;
+    return SHA.test(mergeBase || "") ? mergeBase : null;
+  } catch {
+    return null;
+  }
+}
+
 // Base files are read only when no path or marker already selects the test specialist. A read that
 // fails is recorded as unavailable, which selects it rather than skipping the review.
-function readBaseFiles(files, { repositoryRoot, baseSha }) {
+async function readBaseFiles(files, { repositoryRoot, mergeBase }) {
   const contents = new Map();
   if (files.some(isTestPathOrMarker)) return contents;
   const paths = [...new Set(files.filter(needsBaseRead).map(basePathOf))];
@@ -215,10 +234,11 @@ function readBaseFiles(files, { repositoryRoot, baseSha }) {
   const git = (args) => execFileSync("git", args, {
     cwd: repositoryRoot, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"],
   });
-  let fetched = SHA.test(baseSha || "");
+  const sha = await mergeBase();
+  let fetched = SHA.test(sha || "");
   if (fetched) {
     try {
-      git(["fetch", "--no-tags", "--depth=1", "origin", baseSha]);
+      git(["fetch", "--no-tags", "--depth=1", "origin", sha]);
     } catch {
       fetched = false;
     }
@@ -227,7 +247,7 @@ function readBaseFiles(files, { repositoryRoot, baseSha }) {
     let content = null;
     if (fetched) {
       try {
-        content = git(["cat-file", "blob", `${baseSha}:${path}`]);
+        content = git(["cat-file", "blob", `${sha}:${path}`]);
       } catch {
         content = null;
       }
@@ -354,7 +374,7 @@ async function listPrFiles(github, { owner, repo, prNumber }) {
 }
 
 async function deterministicAnalysis({
-  github, owner, repo, prNumber, authorAssociation, labelerPath, baseSha, repositoryRoot = ".",
+  github, owner, repo, prNumber, authorAssociation, labelerPath, baseSha, headSha, repositoryRoot = ".",
 }) {
   try {
     const source = fs.readFileSync(labelerPath, "utf8");
@@ -362,7 +382,9 @@ async function deterministicAnalysis({
     const result = analyzeFiles(files, {
       labelerRules: parseLabelerRules(source), authorAssociation,
       intentPaths: listIntentFiles(repositoryRoot),
-      baseContents: readBaseFiles(files, { repositoryRoot, baseSha }),
+      baseContents: await readBaseFiles(files, {
+        repositoryRoot, mergeBase: () => resolveMergeBase(github, { owner, repo, baseSha, headSha }),
+      }),
     });
     return result.ok ? result : { ok: false, reason: result.reason };
   } catch {
@@ -372,5 +394,5 @@ async function deterministicAnalysis({
 
 module.exports = {
   MAX_FILES, SIZE_LABELS, addedLinesByPath, analyzeFiles, deterministicAnalysis, globToRegExp,
-  isGovernedByIntent, listIntentFiles, listPrFiles, parseLabelerRules, readBaseFiles,
+  isGovernedByIntent, listIntentFiles, listPrFiles, parseLabelerRules, readBaseFiles, resolveMergeBase,
 };

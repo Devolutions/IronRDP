@@ -9,6 +9,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   SIZE_LABELS, addedLinesByPath, analyzeFiles, isGovernedByIntent, parseLabelerRules, readBaseFiles,
+  resolveMergeBase,
 } = require("./deterministic-analysis");
 const { SCHEMA_VERSION: CLASSIFIER_SCHEMA_VERSION, validateClassifier } = require("./validate-classifier");
 const { validateCandidateReview } = require("./validate-candidate-review");
@@ -2171,23 +2172,99 @@ test("edits inside existing tests select the test specialist from the base revis
   assert.deepEqual(cs("@@ -3,1 +3,1 @@\n-    public void Helper() { }\n+    public void Helper() { Run(); }"), []);
 });
 
-test("base revisions are read only when needed and unreadable ones fail toward review", () => {
+test("base revisions are read only when needed and unreadable ones fail toward review", async () => {
   const files = [{ filename: "src/lib.rs", status: "modified", additions: 1, deletions: 1, patch: "@@ -1 +1 @@\n-a\n+b" }];
-  // A marker elsewhere already selects the specialist, so nothing is read.
-  assert.equal(readBaseFiles([...files, {
+  let resolved = 0;
+  const mergeBase = async () => { resolved += 1; return SHA; };
+  // A marker elsewhere already selects the specialist, so nothing is resolved or read.
+  assert.equal((await readBaseFiles([...files, {
     filename: "src/other.rs", status: "modified", additions: 1, deletions: 0, patch: "@@ -1,0 +1,1 @@\n+#[test]",
-  }], { repositoryRoot: __dirname, baseSha: SHA }).size, 0);
+  }], { repositoryRoot: __dirname, mergeBase })).size, 0);
   // New files and non-source files have no base revision to read.
-  assert.equal(readBaseFiles([
+  assert.equal((await readBaseFiles([
     { filename: "src/new.rs", status: "added", additions: 1, deletions: 0 },
     { filename: "README.md", status: "modified", additions: 1, deletions: 0 },
-  ], { repositoryRoot: __dirname, baseSha: SHA }).size, 0);
-  // A missing base SHA cannot be fetched, so every needed file is recorded as unreadable.
-  assert.deepEqual([...readBaseFiles(files, { repositoryRoot: __dirname, baseSha: undefined })], [["src/lib.rs", null]]);
-  assert.deepEqual([...readBaseFiles([{ ...files[0], filename: "src/new.rs", previous_filename: "src/old.rs", status: "renamed" }],
-    { repositoryRoot: __dirname, baseSha: "not-a-sha" })], [["src/old.rs", null]]);
+  ], { repositoryRoot: __dirname, mergeBase })).size, 0);
+  assert.equal(resolved, 0);
+  // An unresolved merge base cannot be fetched, so every needed file is recorded as unreadable.
+  assert.deepEqual([...await readBaseFiles(files, { repositoryRoot: __dirname, mergeBase: async () => null })],
+    [["src/lib.rs", null]]);
+  assert.deepEqual([...await readBaseFiles(
+    [{ ...files[0], filename: "src/new.rs", previous_filename: "src/old.rs", status: "renamed" }],
+    { repositoryRoot: __dirname, mergeBase: async () => "not-a-sha" },
+  )], [["src/old.rs", null]]);
 });
 
+test("the merge base comes from the compare API and failures leave it unresolved", async () => {
+  const head = "b".repeat(40);
+  const mergeBaseSha = "c".repeat(40);
+  const requests = [];
+  const github = (respond) => ({ rest: { repos: { compareCommitsWithBasehead: async (request) => {
+    requests.push(request);
+    return respond();
+  } } } });
+  assert.equal(await resolveMergeBase(github(() => ({ data: { merge_base_commit: { sha: mergeBaseSha } } })), {
+    owner: "Devolutions", repo: "IronRDP", baseSha: SHA, headSha: head,
+  }), mergeBaseSha);
+  assert.equal(requests[0].basehead, `${SHA}...${head}`);
+  assert.equal(await resolveMergeBase(github(() => { throw new Error("server error"); }), {
+    owner: "Devolutions", repo: "IronRDP", baseSha: SHA, headSha: head,
+  }), null);
+  assert.equal(await resolveMergeBase(github(() => ({ data: { merge_base_commit: { sha: "bad" } } })), {
+    owner: "Devolutions", repo: "IronRDP", baseSha: SHA, headSha: head,
+  }), null);
+  assert.equal(await resolveMergeBase(github(() => assert.fail("must not be called")), {
+    owner: "Devolutions", repo: "IronRDP", baseSha: SHA, headSha: undefined,
+  }), null);
+
+  // A failed comparison leaves every changed source file unreadable, which selects the review.
+  const files = [{ filename: "src/lib.rs", status: "modified", additions: 1, deletions: 1, patch: "@@ -1 +1 @@\n-a\n+b" }];
+  const contents = await readBaseFiles(files, {
+    repositoryRoot: __dirname,
+    mergeBase: () => resolveMergeBase(github(() => { throw new Error("server error"); }), {
+      owner: "Devolutions", repo: "IronRDP", baseSha: SHA, headSha: head,
+    }),
+  });
+  assert.deepEqual(analyzeFiles(files, { labelerRules: {}, baseContents: contents }).reviewers, ["test", "rust-style"]);
+});
+
+test("patches are located against the merge base and misaligned hunks fail toward review", () => {
+  const mergeBase = [
+    "pub fn prod() -> u8 {", //            1
+    "    1", //                            2
+    "}", //                                3
+    "", //                                 4
+    "#[cfg(test)]", //                     5
+    "mod tests {", //                      6
+    "    #[test]", //                      7
+    "    fn checks_prod() {", //           8
+    "        assert_eq!(super::prod(), 1);", // 9
+    "    }", //                            10
+    "}", //                                11
+    "",
+  ].join("\n");
+  // The target branch gained 20 lines above the test module after the pull request branched.
+  const tip = `${Array.from({ length: 20 }, (_, index) => `// target line ${index + 1}`).join("\n")}\n${mergeBase}`;
+  const analyze = (patch, base) => analyzeFiles([{
+    filename: "src/lib.rs", status: "modified", additions: 1, deletions: 1, patch,
+  }], { labelerRules: {}, baseContents: new Map([["src/lib.rs", base]]) }).reviewers;
+  const bodyEdit = "@@ -8,3 +8,3 @@\n     fn checks_prod() {\n-        assert_eq!(super::prod(), 1);\n" +
+    "+        assert_eq!(super::prod(), 2);\n     }";
+  const productionEdit = "@@ -1,3 +1,3 @@\n pub fn prod() -> u8 {\n-    1\n+    2\n }";
+
+  // Read at the merge base, the body-only edit lands in the test and the production edit does not.
+  assert.deepEqual(analyze(bodyEdit, mergeBase), ["test", "rust-style"]);
+  assert.deepEqual(analyze(productionEdit, mergeBase), ["rust-style"]);
+  // At the tip, old-side line 9 is a prepended comment outside every region, so trusting the
+  // coordinates would skip the review; the hunk no longer matches, which selects it instead.
+  assert.deepEqual(analyze(bodyEdit, tip), ["test", "rust-style"]);
+  assert.deepEqual(analyze(productionEdit, tip), ["test", "rust-style"]);
+  // A single mismatched context line is enough, even when the changed line would sit outside a test.
+  assert.deepEqual(analyze("@@ -1,3 +1,3 @@\n pub fn other() -> u8 {\n-    1\n+    2\n }", mergeBase),
+    ["test", "rust-style"]);
+  // Carriage returns on either side do not count as a mismatch.
+  assert.deepEqual(analyze(productionEdit, mergeBase.replace(/\n/g, "\r\n")), ["rust-style"]);
+});
 test("renamed files apply path rules to both their old and new paths", () => {
   const intentPaths = ["ffi/INTENT.md", ".github/workflows/review-pipeline.intent.md"];
   const renamed = (previous, filename, extra = {}) => analyzeFiles([{

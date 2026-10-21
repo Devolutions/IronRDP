@@ -50,7 +50,7 @@ Deterministic analysis also selects these optional specialists from the pull req
 - `dependency` runs when a `Cargo.toml`, `Cargo.lock`, `package.json`, `package-lock.json`, or `.csproj` file gains lines.
 - `rust-style` runs when a `.rs` file gains lines.
 
-A changed line inside an existing test also selects `test`: analysis reads each changed Rust or C# file at the pull request's base SHA, and selects `test` when a removed or inserted line falls between a test attribute and the end of the item it annotates, or when that base file cannot be read.
+A changed line inside an existing test also selects `test`: analysis reads each changed Rust or C# file at the pull request's merge base, which the patches are relative to, and selects `test` when a removed or inserted line falls between a test attribute and the end of the item it annotates, when a hunk's context or removed lines do not match that file, or when the merge base or file cannot be read.
 A renamed file matches the governed-path, intent-file, test-path, and manifest rules under both its old and new paths.
 
 `contract-review` joins with the first `CONTRACT*.md`, as one agent configuration, one prompt, and one path rule.
