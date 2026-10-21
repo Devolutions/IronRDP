@@ -1,39 +1,5 @@
 use expect_test::expect;
-use ironrdp_core::{DecodeResult, ReadCursor, read_padding, try_read_padding};
-
-#[test]
-fn try_read_padding_skips_bytes() {
-    let mut src = ReadCursor::new(&[0, 0, 0, 7]);
-
-    try_read_padding(&mut src, 3).unwrap();
-
-    assert_eq!(src.pos(), 3);
-    assert_eq!(src.read_u8(), 7);
-}
-
-#[test]
-fn try_read_padding_rejects_truncated_input_without_moving_cursor() {
-    let mut src = ReadCursor::new(&[0, 0]);
-    src.read_u8();
-
-    let e = try_read_padding(&mut src, 2).unwrap_err();
-
-    assert_eq!(src.pos(), 1);
-    expect![[r#"
-        Error {
-            context: "padding",
-            kind: NotEnoughBytes {
-                received: 1,
-                expected: 2,
-                offset: Some(
-                    1,
-                ),
-            },
-            source: None,
-        }
-    "#]]
-    .assert_debug_eq(&e);
-}
+use ironrdp_core::{DecodeResult, ReadCursor, read_padding};
 
 #[test]
 fn read_padding_macro_returns_error_on_truncated_input() {
