@@ -29,7 +29,6 @@ pub(crate) mod usbd_status {
 
     pub(crate) const SUCCESS: UsbdStatus = 0x0000_0000;
     pub(crate) const STALL_PID: UsbdStatus = 0xc000_0004;
-    pub(crate) const BUFFER_OVERRUN: UsbdStatus = 0xc000_000c;
     pub(crate) const DEV_NOT_RESPONDING: UsbdStatus = 0xc000_0005;
     pub(crate) const INVALID_PARAMETER: UsbdStatus = 0x8000_0300;
     pub(crate) const REQUEST_FAILED: UsbdStatus = 0x8000_0500;
@@ -84,7 +83,7 @@ pub(crate) const MAX_TRANSFER_LENGTH: u32 = 16 * 1024 * 1024;
 /// Default timeout for control transfers that do not carry one.
 pub(crate) const DEFAULT_CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 
-const DESCRIPTOR_TYPE_STRING: u8 = 0x03;
+pub(crate) const DESCRIPTOR_TYPE_STRING: u8 = 0x03;
 
 /// The RDPEUSB envelope a request arrived in, which decides the completion shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

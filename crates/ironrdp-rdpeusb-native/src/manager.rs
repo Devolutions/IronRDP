@@ -9,7 +9,6 @@ use futures_core::Stream as _;
 use ironrdp_dvc::DvcMessage;
 use ironrdp_pdu::PduResult;
 use ironrdp_rdpeusb::client::{DeviceManagerBackend, UrbdrcDeviceBackend};
-use ironrdp_rdpeusb::pdu::sink::AddVirtualChannel;
 use nusb::MaybeFuture as _;
 use nusb::hotplug::HotplugEvent;
 use tokio::sync::oneshot;
@@ -47,7 +46,8 @@ struct State {
     pending: VecDeque<OpenedDevice>,
     /// Devices announced or redirected, with their device DVC once it exists.
     redirected: HashMap<nusb::DeviceId, Option<u32>>,
-    hotplug: Option<oneshot::Sender<()>>,
+    /// Stops the discovery thread.
+    discovery: Option<oneshot::Sender<()>>,
 }
 
 impl Shared {
@@ -71,15 +71,23 @@ impl NusbDeviceManager {
     }
 
     /// Build the callback run once the control channel completed its capability exchange.
+    ///
+    /// The callback runs on the session loop, so it only starts the discovery thread: opening devices
+    /// blocks while the OS opens them. Devices are announced through
+    /// [`UrbdrcEventKind::AddVirtualChannel`] events as they are opened.
     pub(crate) fn on_capability_exchanged(&self) -> impl FnOnce() -> PduResult<Vec<DvcMessage>> + Send + 'static {
         let shared = Arc::clone(&self.shared);
-        move || Ok(announce_present_devices(&shared))
+        move || {
+            let discovery = start_discovery(&shared);
+            shared.state().discovery = discovery;
+            Ok(Vec::new())
+        }
     }
 }
 
 impl Drop for NusbDeviceManager {
     fn drop(&mut self) {
-        if let Some(stop) = self.shared.state().hotplug.take() {
+        if let Some(stop) = self.shared.state().discovery.take() {
             let _ = stop.send(());
         }
     }
@@ -124,41 +132,6 @@ impl DeviceManagerBackend for NusbDeviceManager {
     }
 }
 
-/// Open the devices selected at connection time and announce them.
-fn announce_present_devices(shared: &Arc<Shared>) -> Vec<DvcMessage> {
-    let mut messages: Vec<DvcMessage> = Vec::new();
-
-    match nusb::list_devices().wait() {
-        Ok(devices) => {
-            for info in devices {
-                if !shared.config.redirect_at_connect(&device::identity(&info)) {
-                    continue;
-                }
-                let Some(device) = open(&info) else {
-                    continue;
-                };
-
-                let mut state = shared.state();
-                if state.redirected.contains_key(&device.id) {
-                    continue;
-                }
-                state.redirected.insert(device.id, None);
-                state.pending.push_back(device);
-                messages.push(Box::new(AddVirtualChannel { msg_id: 0 }));
-            }
-        }
-        Err(error) => warn!(%error, "Failed to enumerate USB devices"),
-    }
-
-    // Watch even when no rule follows new devices: unplugging a redirected device must close its
-    // channel, and `redirect_on_hotplug` already ignores rules that apply at connection only.
-    let hotplug = watch_hotplug(Arc::downgrade(shared));
-    shared.state().hotplug = hotplug;
-
-    debug!(count = messages.len(), "Announcing USB devices");
-    messages
-}
-
 fn open(info: &nusb::DeviceInfo) -> Option<OpenedDevice> {
     match OpenedDevice::open(info) {
         Ok(device) => Some(device),
@@ -174,29 +147,91 @@ fn open(info: &nusb::DeviceInfo) -> Option<OpenedDevice> {
     }
 }
 
-/// Start the hotplug watcher thread, returning the handle that stops it.
-fn watch_hotplug(shared: Weak<Shared>) -> Option<oneshot::Sender<()>> {
-    let watch = match nusb::watch_devices() {
-        Ok(watch) => watch,
-        Err(error) => {
+/// Start the thread that announces the present devices and then follows hotplug, returning the
+/// handle that stops it.
+fn start_discovery(shared: &Arc<Shared>) -> Option<oneshot::Sender<()>> {
+    // Subscribe before enumerating, so that a device plugged in meanwhile is not missed. Watch even
+    // when no rule follows new devices: unplugging a redirected device must close its channel, and
+    // `redirect_on_hotplug` already ignores rules that apply at connection only.
+    let watch = nusb::watch_devices()
+        .inspect_err(|error| {
             warn!(%error, "USB hotplug is unavailable; plugged and unplugged devices are not followed");
-            return None;
-        }
-    };
+        })
+        .ok();
     let (stop, stopped) = oneshot::channel();
+    let shared = Arc::downgrade(shared);
 
-    let spawned = thread::Builder::new().name("urbdrc-hotplug".to_owned()).spawn(move || {
-        match tokio::runtime::Builder::new_current_thread().enable_time().build() {
-            Ok(runtime) => runtime.block_on(run_hotplug(watch, stopped, shared)),
-            Err(error) => warn!(%error, "Failed to start the USB hotplug runtime"),
-        }
-    });
+    let spawned = thread::Builder::new()
+        .name("urbdrc-discovery".to_owned())
+        .spawn(
+            move || match tokio::runtime::Builder::new_current_thread().enable_time().build() {
+                Ok(runtime) => runtime.block_on(run_discovery(watch, stopped, shared)),
+                Err(error) => warn!(%error, "Failed to start the USB discovery runtime"),
+            },
+        );
     if let Err(error) = spawned {
-        warn!(%error, "Failed to start the USB hotplug thread");
+        warn!(%error, "Failed to start the USB discovery thread");
         return None;
     }
 
     Some(stop)
+}
+
+async fn run_discovery(
+    watch: Option<nusb::hotplug::HotplugWatch>,
+    stopped: oneshot::Receiver<()>,
+    shared: Weak<Shared>,
+) {
+    if let Some(shared) = shared.upgrade() {
+        announce_present_devices(&shared);
+    }
+    if let Some(watch) = watch {
+        run_hotplug(watch, stopped, shared).await;
+    }
+}
+
+/// Open the devices selected at connection time and announce them.
+fn announce_present_devices(shared: &Shared) {
+    let devices = match nusb::list_devices().wait() {
+        Ok(devices) => devices,
+        Err(error) => {
+            warn!(%error, "Failed to enumerate USB devices");
+            return;
+        }
+    };
+
+    let mut count = 0usize;
+    for info in devices {
+        if shared.config.redirect_at_connect(&device::identity(&info))
+            && let Some(device) = open(&info)
+            && announce(shared, device)
+        {
+            count = count.saturating_add(1);
+        }
+    }
+    debug!(count, "Announced USB devices present at connection");
+}
+
+/// Queue an opened device for the next device channel and ask the session to request one.
+///
+/// Returns `false` when the device is already announced or redirected.
+fn announce(shared: &Shared, device: OpenedDevice) -> bool {
+    let control_channel_id = {
+        let mut state = shared.state();
+        if state.redirected.contains_key(&device.id) {
+            return false;
+        }
+        let Some(control_channel_id) = state.control_channel_id else {
+            return false;
+        };
+        state.redirected.insert(device.id, None);
+        state.pending.push_back(device);
+        control_channel_id
+    };
+    shared
+        .events
+        .send(UrbdrcEventKind::AddVirtualChannel { control_channel_id });
+    true
 }
 
 async fn run_hotplug(mut watch: nusb::hotplug::HotplugWatch, mut stopped: oneshot::Receiver<()>, shared: Weak<Shared>) {
@@ -227,25 +262,9 @@ async fn run_hotplug(mut watch: nusb::hotplug::HotplugWatch, mut stopped: onesho
                         break;
                     }
                 }
-                let Some(device) = device else {
-                    continue;
-                };
-
-                let control_channel_id = {
-                    let mut state = shared.state();
-                    if state.redirected.contains_key(&device.id) {
-                        continue;
-                    }
-                    let Some(control_channel_id) = state.control_channel_id else {
-                        continue;
-                    };
-                    state.redirected.insert(device.id, None);
-                    state.pending.push_back(device);
-                    control_channel_id
-                };
-                shared
-                    .events
-                    .send(UrbdrcEventKind::AddVirtualChannel { control_channel_id });
+                if let Some(device) = device {
+                    announce(&shared, device);
+                }
             }
             HotplugEvent::Disconnected(id) => {
                 let channel_id = {

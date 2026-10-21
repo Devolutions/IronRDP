@@ -10,7 +10,7 @@
 use core::fmt;
 use core::time::Duration;
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Instant;
 
@@ -44,8 +44,6 @@ use tracing::{debug, trace, warn};
 use crate::filter::UsbDeviceIdentity;
 use crate::urb::{self, ControlRoute, Envelope, PipeOperation, UsbRequest, usbd_status};
 use crate::{EventOrigin, UrbdrcEventKind, UrbdrcEventSink};
-
-const DESCRIPTOR_TYPE_STRING: u8 = 0x03;
 
 /// A local device that was opened, with every interface of its active configuration claimed.
 pub(crate) struct OpenedDevice {
@@ -133,6 +131,8 @@ impl OpenedDevice {
                     Some(nusb::Speed::SuperPlus) => UsbConnectionSpeed::SuperPlus,
                     _ => UsbConnectionSpeed::Unknown,
                 },
+                // Isochronous transfers are rejected (see `urb::isochronous_rejection`).
+                isochronous: false,
             },
             description: info
                 .product_string()
@@ -177,20 +177,34 @@ pub(crate) fn identity(info: &nusb::DeviceInfo) -> UsbDeviceIdentity {
 /// Map a platform bus identifier to the number used in `addr:` rules and device IDs.
 ///
 /// Linux and macOS identify buses with numbers. Windows uses host controller instance IDs, which are
-/// folded into a stable byte.
+/// numbered from 1 in sorted order: every controller gets a distinct number, and the numbers are the
+/// same in every process as long as the set of controllers does not change. A controller that
+/// appears later gets the next number without renumbering the others.
 fn bus_number(bus_id: &str) -> u8 {
+    static KNOWN_BUSES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
     if let Ok(number) = bus_id.parse::<u8>() {
         return number;
     }
 
-    // FNV-1a, folded to one byte and kept nonzero.
-    let hash = bus_id.bytes().fold(0x811c_9dc5u32, |hash, byte| {
-        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
-    });
-    hash.to_le_bytes()
-        .iter()
-        .fold(0, |folded: u8, byte| folded ^ byte)
-        .max(1)
+    let mut known = KNOWN_BUSES.lock().unwrap_or_else(PoisonError::into_inner);
+    if !known.iter().any(|known| known == bus_id) {
+        let mut present: Vec<String> = nusb::list_buses()
+            .wait()
+            .map(|buses| buses.map(|bus| bus.bus_id().to_owned()).collect())
+            .unwrap_or_default();
+        present.push(bus_id.to_owned());
+        present.sort();
+        present.dedup();
+        for id in present {
+            if !known.contains(&id) {
+                known.push(id);
+            }
+        }
+    }
+
+    let index = known.iter().position(|known| known == bus_id).unwrap_or(0);
+    u8::try_from(index.saturating_add(1)).unwrap_or(u8::MAX)
 }
 
 /// Error returned when a local device cannot be opened for redirection.
@@ -259,6 +273,13 @@ impl Reply {
             channel_id: self.channel_id,
             request_id,
             completion,
+        });
+    }
+
+    /// Close the device channel, for errors the protocol does not let the client report.
+    fn terminate(&self) {
+        self.events.send(UrbdrcEventKind::CloseChannel {
+            channel_id: self.channel_id,
         });
     }
 }
@@ -364,8 +385,8 @@ impl NusbDeviceBackend {
 
     fn frame_number(&self) -> u32 {
         // RDPEUSB only needs a monotonic 1 ms frame counter; it wraps like the USB frame number.
-        let elapsed = self.started.elapsed().as_millis();
-        u32::try_from(elapsed % (u128::from(u32::MAX) + 1)).unwrap_or(0)
+        let [b0, b1, b2, b3, ..] = self.started.elapsed().as_millis().to_le_bytes();
+        u32::from_le_bytes([b0, b1, b2, b3])
     }
 
     /// Execute `request` locally when possible, otherwise queue it to the worker.
@@ -662,7 +683,7 @@ impl Worker {
                         self.spawn(request_id, async move {
                             let vendor_code = device
                                 .get_descriptor(
-                                    DESCRIPTOR_TYPE_STRING,
+                                    urb::DESCRIPTOR_TYPE_STRING,
                                     urb::MS_OS_STRING_DESCRIPTOR_INDEX,
                                     0,
                                     urb::DEFAULT_CONTROL_TIMEOUT,
@@ -963,14 +984,9 @@ impl Worker {
             }
         }
 
-        let result = match self.device.active_configuration() {
-            Ok(config) => urb::select_configuration_result(config.as_bytes(), &interfaces),
-            Err(_) => Err(usbd_status::REQUEST_FAILED),
-        };
-        match result {
-            Ok(result) => urb::payload_completion(envelope, TsUrbResultPayload::SelectConfig(result)),
-            Err(status) => urb::failure_completion(envelope, status),
-        }
+        self.selection_completion(envelope, |config| {
+            urb::select_configuration_result(config, &interfaces).map(TsUrbResultPayload::SelectConfig)
+        })
     }
 
     async fn select_interface(&mut self, envelope: Envelope, interface: TsUsbdInterfaceInfo) -> CompletionData {
@@ -981,12 +997,25 @@ impl Worker {
             return urb::failure_completion(envelope, status);
         }
 
-        let result = match self.device.active_configuration() {
-            Ok(config) => urb::select_interface_result(config.as_bytes(), &interface),
-            Err(_) => Err(usbd_status::REQUEST_FAILED),
-        };
+        self.selection_completion(envelope, |config| {
+            urb::select_interface_result(config, &interface).map(TsUrbResultPayload::SelectIface)
+        })
+    }
+
+    /// Complete a selection request with the result `describe` builds from the active configuration
+    /// descriptor.
+    fn selection_completion(
+        &self,
+        envelope: Envelope,
+        describe: impl FnOnce(&[u8]) -> Result<TsUrbResultPayload, UsbdStatus>,
+    ) -> CompletionData {
+        let result = self
+            .device
+            .active_configuration()
+            .map_err(|_| usbd_status::REQUEST_FAILED)
+            .and_then(|config| describe(config.as_bytes()));
         match result {
-            Ok(result) => urb::payload_completion(envelope, TsUrbResultPayload::SelectIface(result)),
+            Ok(payload) => urb::payload_completion(envelope, payload),
             Err(status) => urb::failure_completion(envelope, status),
         }
     }
@@ -1183,9 +1212,9 @@ async fn run_endpoint<T: BulkOrInterrupt, D: EndpointDirection>(
                         status: Ok(()),
                         ..completion
                     };
-                    reply.complete(entry.request_id, transfer_completion::<D>(&entry, completion));
+                    complete_transfer::<D>(&reply, &entry, completion);
                 } else {
-                    reply.complete(entry.request_id, transfer_completion::<D>(&entry, completion));
+                    complete_transfer::<D>(&reply, &entry, completion);
                 }
 
                 if queue.draining && queue.in_flight.is_empty() {
@@ -1272,7 +1301,7 @@ async fn cancel_all<T: BulkOrInterrupt, D: EndpointDirection>(
             continue;
         };
         if !entry.cancelled {
-            reply.complete(entry.request_id, transfer_completion::<D>(&entry, completion));
+            complete_transfer::<D>(reply, &entry, completion);
         }
     }
     queue.in_flight.clear();
@@ -1293,20 +1322,29 @@ async fn cancel_all<T: BulkOrInterrupt, D: EndpointDirection>(
     }
 }
 
-fn transfer_completion<D: EndpointDirection>(entry: &InFlight, completion: Completion) -> CompletionData {
-    match completion.status {
+/// Complete a bulk or interrupt transfer, or terminate the device channel on an IN overrun.
+fn complete_transfer<D: EndpointDirection>(reply: &Reply, entry: &InFlight, completion: Completion) {
+    match transfer_completion::<D>(entry, completion) {
+        Some(completion) => reply.complete(entry.request_id, completion),
+        None => reply.terminate(),
+    }
+}
+
+/// Returns `None` when an IN transfer received more data than the server asked for.
+fn transfer_completion<D: EndpointDirection>(entry: &InFlight, completion: Completion) -> Option<CompletionData> {
+    Some(match completion.status {
         Ok(()) if D::DIR == nusb::transfer::Direction::In => {
             let data = completion.buffer.into_vec();
             if usize::try_from(entry.length).is_ok_and(|length| length < data.len()) {
                 // The buffer was rounded up to whole packets and the device filled more than the server
-                // asked for. Like the host controller would, report the overrun instead of dropping data.
-                debug!(
+                // asked for. MS-RDPEUSB 3.3.5.3.6 requires terminating the device channel in this case.
+                warn!(
                     request_id = entry.request_id,
                     requested = entry.length,
                     received = data.len(),
-                    "USB IN transfer overran its buffer"
+                    "USB IN transfer overran its buffer; closing the device channel"
                 );
-                return urb::failure_completion(entry.envelope, usbd_status::BUFFER_OVERRUN);
+                return None;
             }
             urb::transfer_completion(entry.envelope, data, 0)
         }
@@ -1316,7 +1354,7 @@ fn transfer_completion<D: EndpointDirection>(entry: &InFlight, completion: Compl
             u32::try_from(completion.actual_len).unwrap_or(u32::MAX),
         ),
         Err(error) => urb::failure_completion(entry.envelope, transfer_error_status(error)),
-    }
+    })
 }
 
 fn transfer_error_status(error: TransferError) -> UsbdStatus {
@@ -1355,8 +1393,15 @@ mod tests {
         assert_eq!(bus_number("3"), 3);
         assert_eq!(bus_number("003"), 3);
 
-        let windows = "PCI\\VEN_8086&DEV_A0ED&SUBSYS_0A1F1028&REV_20\\3&11583659&0&A0";
-        assert_eq!(bus_number(windows), bus_number(windows));
-        assert_ne!(bus_number(windows), 0);
+        // Host controller instance IDs get distinct numbers, stable across calls.
+        let first = r"PCI\VEN_8086&DEV_A0ED&SUBSYS_0A1F1028&REV_20\TEST&1";
+        let second = r"PCI\VEN_8086&DEV_A0ED&SUBSYS_0A1F1028&REV_20\TEST&2";
+        let first_number = bus_number(first);
+        let second_number = bus_number(second);
+        assert_ne!(first_number, 0);
+        assert_ne!(second_number, 0);
+        assert_ne!(first_number, second_number);
+        assert_eq!(bus_number(first), first_number);
+        assert_eq!(bus_number(second), second_number);
     }
 }
