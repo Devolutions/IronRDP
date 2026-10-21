@@ -46,14 +46,14 @@ Deterministic analysis also selects these optional specialists from the pull req
 
 - `intent-drift` runs when a changed path is governed by an intent file on `master` or added by the pull request, following the `intent-files` placement rule.
 - `intent-review` runs when the pull request adds or modifies an `INTENT*.md` or `*.intent*.md` file.
-- `test` runs when Rust or C# tests change, by test path or by a test marker on a changed patch line.
+- `test` runs when a changed, non-removed Rust or C# file holds tests, as described below.
 - `dependency` runs when a `Cargo.toml`, `Cargo.lock`, `package.json`, `package-lock.json`, or `.csproj` file gains lines.
 - `rust-style` runs when a `.rs` file gains lines.
 
-A changed line inside an existing test also selects `test`: analysis reads each changed Rust or C# file at the pull request's merge base, which the patches are relative to, and selects `test` when a removed or inserted line falls in a test region, when a hunk's context or removed lines do not match that file, or when the merge base or file cannot be read.
-A Rust test region starts at a `#[cfg(...)]` attribute whose predicate names `test` other than as `not(test)`, such as `all(test, feature = "...")`; the same attribute on a changed line is also a test marker.
-An inline test module's region runs to the end of its file, because the module must be the file's last item, and an out-of-line `mod name;` covers only its declaration.
-Test functions outside a test module, other test-gated items, and C# test methods end at their closing brace, found by a lexer that skips comments, character and byte literals, and plain, byte, C, and raw string literals.
+A changed Rust or C# file that is not removed selects `test` when it is on a test path, when its added lines contain a test marker, or when its content at the pull request's merge base, which the patches are relative to, contains one.
+Markers are matched over the whole text, so attributes may span lines: in Rust, `#[test]`, `#[<path>::test]`, `#[rstest]`, `#[case(`, `proptest!`, `expect![`, and `#[cfg(...)]` whose predicate names `test` other than as `not(test)`; in C#, `[Fact]`, `[Theory]`, `[Test]`, `[TestMethod]`, `[TestCase]`, and `[InlineData`.
+The rule is deliberately coarse: a production-only edit in a file that also holds tests selects `test`, because locating edits inside tests kept missing lexical forms.
+A file without a patch, an unresolvable merge base, or an unreadable file also selects `test`.
 A renamed file matches the governed-path, intent-file, test-path, and manifest rules under both its old and new paths.
 
 `contract-review` joins with the first `CONTRACT*.md`, as one agent configuration, one prompt, and one path rule.

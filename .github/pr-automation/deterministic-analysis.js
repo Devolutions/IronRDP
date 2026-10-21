@@ -14,12 +14,11 @@ const DEPENDENCY_MANIFEST = /(?:^|\/)(?:Cargo\.toml|Cargo\.lock|package\.json|pa
 const INTENT_FILE = /(?:^|\/)(?:INTENT[^/]*|[^/]+\.intent[^/]*)\.md$/;
 const RUST_TEST_PATH = /(?:^|\/)tests\/|^crates\/ironrdp-testsuite-[^/]+\/|(?:^|\/)(?:[^/]+_)?tests?\.rs$/;
 const CSHARP_TEST_PATH = /(?:^|\/)(?:tests|[^/]*\.Tests)\//i;
-// `#[cfg(...)]` attributes are recognised separately, because their predicate needs parsing.
-const RUST_TEST_MARKER = /#\[(?:[\w:]+::)?test\b|#\[rstest\b|\bproptest!|\bexpect!\[/;
-const CSHARP_TEST_MARKER = /\[(?:Fact|Theory|Test|TestMethod|TestCase)\b/;
-// Test functions and macros whose body is a test region in the base revision of a source file.
-const RUST_TEST_FUNCTION = /#\[(?:[\w:]+::)?test\b|#\[rstest\b|\bproptest!/g;
-const CSHARP_TEST_REGION = /\[(?:Fact|Theory|Test|TestMethod|TestCase)\b/g;
+// Test markers, matched over whole texts so an attribute may span lines. `#[cfg(...)]` attributes are
+// recognised separately, because their predicate needs parsing.
+const RUST_TEST_MARKER = /#\[\s*(?:[\w:]+::)?test\b|#\[\s*rstest\b|#\[\s*case\s*\(|\bproptest!|\bexpect!\[/;
+const CSHARP_TEST_MARKER = /\[\s*(?:Fact|Theory|Test|TestMethod|TestCase|InlineData)\b/;
+
 const SHA = /^[0-9a-f]{40}$/;
 
 // A rename moves content out of its old path, so path rules apply to both names.
@@ -33,24 +32,13 @@ function basePathOf(file) {
     : file.filename;
 }
 
-function changedPatchLines(file) {
-  return (file.patch || "").split("\n")
-    .filter((line) => /^[+-]/.test(line) && !/^(?:\+\+\+|---)/.test(line));
+function isTestSource(path) {
+  return /\.(?:rs|cs)$/.test(path);
 }
 
-function isTestPathOrMarker(file) {
-  const testPath = pathsOf(file).some((path) =>
+function isTestPath(file) {
+  return pathsOf(file).some((path) =>
     (path.endsWith(".rs") && RUST_TEST_PATH.test(path)) || (path.endsWith(".cs") && CSHARP_TEST_PATH.test(path)));
-  if (testPath) return true;
-  if (file.filename.endsWith(".rs")) {
-    return changedPatchLines(file).some((line) => RUST_TEST_MARKER.test(line) || testCfgAttributes(line).length > 0);
-  }
-  return file.filename.endsWith(".cs") && changedPatchLines(file).some((line) => CSHARP_TEST_MARKER.test(line));
-}
-
-// An edit inside an existing test can change no marker line, so it is located in the base revision.
-function needsBaseRead(file) {
-  return /\.(?:rs|cs)$/.test(basePathOf(file)) && file.status !== "added";
 }
 
 // A `cfg` predicate selects test code when it names `test` other than as `not(test)`, such as
@@ -84,144 +72,35 @@ function testCfgAttributes(text) {
   return attributes;
 }
 
-// Offsets of braces, brackets, parentheses, and semicolons outside comments and literals.
-function* structuralOffsets(text, from) {
-  for (let index = from; index < text.length; index += 1) {
-    const char = text[index];
-    const next = text[index + 1];
-    const startsToken = !/\w/.test(text[index - 1] || "");
-    // Raw strings, including byte and C raw strings: `r#"..."#`, `br#"..."#`, `cr"..."`.
-    const raw = startsToken && /[bcr]/.test(char) ? /^[bc]?r(#*)"/.exec(text.slice(index, index + 260)) : null;
-    if (char === "/" && next === "/") {
-      index = text.indexOf("\n", index);
-      if (index < 0) return;
-    } else if (char === "/" && next === "*") {
-      index = text.indexOf("*/", index + 2);
-      if (index < 0) return;
-      index += 1;
-    } else if (raw) {
-      index = text.indexOf(`"${raw[1]}`, index + raw[0].length);
-      if (index < 0) return;
-      index += raw[1].length;
-    } else if (char === "\"") {
-      // Also ends `b"..."` and `c"..."`, whose prefix is skipped as an identifier character.
-      for (index += 1; index < text.length && text[index] !== "\""; index += 1) {
-        if (text[index] === "\\") index += 1;
-      }
-    } else if (char === "'") {
-      // Character and byte literals such as `'{'`, `b'}'`, `'\''`, and `'😀'` close within a few
-      // code units; a lifetime such as `'a` never closes.
-      if (next === "\\") index = Math.max(index, text.indexOf("'", index + 3));
-      else if (text[index + 2] === "'") index += 2;
-      else if (text[index + 3] === "'" && !/[\w]/.test(next)) index += 3;
-    } else if ("{};()[]".includes(char)) {
-      yield index;
-    }
-  }
+function hasTestMarker(text, path) {
+  if (path.endsWith(".rs")) return RUST_TEST_MARKER.test(text) || testCfgAttributes(text).length > 0;
+  return CSHARP_TEST_MARKER.test(text);
 }
 
-function lineIndex(text) {
-  const lineStarts = [0];
-  for (let index = text.indexOf("\n"); index >= 0; index = text.indexOf("\n", index + 1)) {
-    lineStarts.push(index + 1);
-  }
-  return (offset) => {
-    let low = 0;
-    let high = lineStarts.length - 1;
-    while (low < high) {
-      const middle = Math.ceil((low + high) / 2);
-      if (lineStarts[middle] <= offset) low = middle; else high = middle - 1;
-    }
-    return low + 1;
-  };
+function addedText(patch) {
+  return patch.split("\n")
+    .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+    .map((line) => line.slice(1))
+    .join("\n");
 }
 
-// The line ending the item that starts after `from`: its outermost closing brace, or its first
-// semicolon outside brackets and braces. An item whose end cannot be found runs to the end of the file.
-function itemEnd(text, from, lineAt) {
-  let depth = 0;
-  // Parentheses and brackets hide semicolons such as the one in `[u8; 4]`; an attribute's own
-  // closing bracket may be the first one seen, so the count never drops below zero.
-  let nesting = 0;
-  for (const offset of structuralOffsets(text, from)) {
-    const char = text[offset];
-    if (char === "(" || char === "[") nesting += 1;
-    else if (char === ")" || char === "]") nesting = Math.max(0, nesting - 1);
-    else if (char === "{") depth += 1;
-    else if (char === "}" && depth > 1) depth -= 1;
-    else if ((char === ";" && depth === 0 && nesting === 0) || (char === "}" && depth === 1)) return lineAt(offset);
-  }
-  return Infinity;
+// Locating an edit inside a test kept missing lexical forms, so the rule is coarse instead: a file
+// that holds tests on either side of the change selects the review, even for a production-only edit.
+// A file without a patch to inspect selects it too.
+function isTestChangeWithoutBase(file) {
+  if (!isTestSource(file.filename) || file.status === "removed") return false;
+  return isTestPath(file) || typeof file.patch !== "string" || hasTestMarker(addedText(file.patch), file.filename);
 }
 
-// An inline test module must be the last item in its file (`rust-style`, clippy's
-// `items_after_test_module`), so its region runs to the end of the file without matching braces.
-// An out-of-line `mod name;` covers only its declaration. Other test items, and test functions
-// before the first inline test module, end where their item ends.
-function rustTestRegions(text, lineAt) {
-  const regions = [];
-  let moduleStart = Infinity;
-  for (const attribute of testCfgAttributes(text)) {
-    const module = /^(?:\s|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/|#!?\[[^\]]*\])*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+\w+\s*([;{])/
-      .exec(text.slice(attribute.end, attribute.end + 4096));
-    const start = lineAt(attribute.start);
-    if (module?.[1] === "{") {
-      moduleStart = Math.min(moduleStart, attribute.start);
-      regions.push([start, Infinity]);
-    } else if (module) {
-      regions.push([start, lineAt(attribute.end + module[0].length - 1)]);
-    } else if (attribute.start < moduleStart) {
-      regions.push([start, itemEnd(text, attribute.end, lineAt)]);
-    }
-  }
-  for (const match of text.matchAll(RUST_TEST_FUNCTION)) {
-    if (match.index > moduleStart) continue;
-    regions.push([lineAt(match.index), itemEnd(text, match.index + match[0].length, lineAt)]);
-  }
-  return regions;
+function needsBaseRead(file) {
+  return isTestSource(basePathOf(file)) && file.status !== "added" && file.status !== "removed";
 }
 
-function testRegions(text, path) {
-  const lineAt = lineIndex(text);
-  if (path.endsWith(".rs")) return rustTestRegions(text, lineAt);
-  return [...text.matchAll(CSHARP_TEST_REGION)]
-    .map((match) => [lineAt(match.index), itemEnd(text, match.index + match[0].length, lineAt)]);
-}
-// Removed lines carry their base line number; an added line sits between two base lines. The patch
-// is relative to the merge base, so every context and removed line must match the base file there;
-// a hunk that does not is located nowhere and selects the review.
-function touchesTestRegion(file, base) {
-  if (typeof base !== "string") return true;
-  const regions = testRegions(base, basePathOf(file));
-  if (regions.length === 0) return false;
-  if (!file.patch) return true;
-  const baseLines = base.split("\n").map((text) => text.replace(/\r$/, ""));
-  const aligned = (number, patchLine) => baseLines[number - 1] === patchLine.slice(1).replace(/\r$/, "");
-  let line = null;
-  for (const patchLine of file.patch.split("\n")) {
-    const hunk = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@/.exec(patchLine);
-    if (hunk) {
-      // An empty old side names the line the insertion follows.
-      line = Number(hunk[1]) + (hunk[2] === "0" ? 1 : 0);
-    } else if (line === null || patchLine.startsWith("\\")) {
-      continue;
-    } else if (patchLine.startsWith("+")) {
-      const after = line - 1;
-      if (regions.some(([start, end]) => start <= after && line <= end)) return true;
-    } else {
-      if (!aligned(line, patchLine)) return true;
-      const current = line;
-      if (patchLine.startsWith("-") && regions.some(([start, end]) => start <= current && current <= end)) {
-        return true;
-      }
-      line += 1;
-    }
-  }
-  return false;
-}
 function isTestChange(file, baseContents) {
-  return isTestPathOrMarker(file) ||
-    (needsBaseRead(file) && touchesTestRegion(file, baseContents.get(basePathOf(file))));
+  if (isTestChangeWithoutBase(file)) return true;
+  if (!isTestSource(file.filename) || !needsBaseRead(file)) return false;
+  const base = baseContents.get(basePathOf(file));
+  return typeof base !== "string" || hasTestMarker(base, basePathOf(file));
 }
 
 // `intent-files` placement: `D/INTENT*.md` governs everything under `D`, and `D/<name>.intent*.md`
@@ -276,11 +155,11 @@ async function resolveMergeBase(github, { owner, repo, baseSha, headSha }) {
   }
 }
 
-// Base files are read only when no path or marker already selects the test specialist. A read that
-// fails is recorded as unavailable, which selects it rather than skipping the review.
+// Base files are read only when nothing on the head side already selects the test specialist. A read
+// that fails is recorded as unavailable, which selects it rather than skipping the review.
 async function readBaseFiles(files, { repositoryRoot, mergeBase }) {
   const contents = new Map();
-  if (files.some(isTestPathOrMarker)) return contents;
+  if (files.some(isTestChangeWithoutBase)) return contents;
   const paths = [...new Set(files.filter(needsBaseRead).map(basePathOf))];
   if (paths.length === 0) return contents;
   const git = (args) => execFileSync("git", args, {
@@ -290,7 +169,9 @@ async function readBaseFiles(files, { repositoryRoot, mergeBase }) {
   let fetched = SHA.test(sha || "");
   if (fetched) {
     try {
-      git(["fetch", "--no-tags", "--depth=1", "origin", sha]);
+      // `--depth` would turn a complete clone shallow, so only an already shallow checkout uses it.
+      const shallow = git(["rev-parse", "--is-shallow-repository"]).trim() === "true";
+      git(["fetch", "--no-tags", ...(shallow ? ["--depth=1"] : []), "origin", sha]);
     } catch {
       fetched = false;
     }
@@ -308,6 +189,7 @@ async function readBaseFiles(files, { repositoryRoot, mergeBase }) {
   }
   return contents;
 }
+
 function listIntentFiles(repositoryRoot) {
   return execFileSync("git", ["ls-files", "-z"], {
     cwd: repositoryRoot, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
