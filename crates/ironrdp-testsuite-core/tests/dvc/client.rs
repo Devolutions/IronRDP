@@ -559,7 +559,6 @@ fn data_racing_a_client_close_is_dropped_until_the_server_acknowledges() {
 
     let close = client.close_channel(7).expect("open channel should close");
     assert!(matches!(decode_client_pdu(&close), DrdynvcClientPdu::Close(_)));
-    assert!(client.is_closing(7));
 
     // The server sent this before it received the Close PDU.
     let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
@@ -582,7 +581,6 @@ fn data_racing_a_client_close_is_dropped_until_the_server_acknowledges() {
             .expect("Close acknowledgement should be processed")
             .is_empty()
     );
-    assert!(!client.is_closing(7));
     client
         .process(&data)
         .expect_err("data for a channel that is fully closed is still an error");

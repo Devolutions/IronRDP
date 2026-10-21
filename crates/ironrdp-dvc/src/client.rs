@@ -357,10 +357,7 @@ impl DrdynvcClient {
     /// Data the server sent before receiving the Close PDU is dropped until the server
     /// acknowledges the close, instead of failing on a channel that no longer exists.
     pub fn close_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
-        let tunnel = self.tunnel_channels.get(&channel_id).copied();
-        let message = self.remove_channel(channel_id)?;
-        self.client_closed.insert(channel_id, tunnel);
-        Some(message)
+        self.client_close(channel_id).map(|(message, _)| message)
     }
 
     /// Closes a dynamic channel like [`Self::close_channel`], returning the Close PDU as a batch with
@@ -372,14 +369,17 @@ impl DrdynvcClient {
         &mut self,
         channel_id: DynamicChannelId,
     ) -> Option<(DvcMessageBatch, Option<SoftSyncTunnelType>)> {
-        let tunnel = self.tunnel_channels.get(&channel_id).copied();
-        let message = self.close_channel(channel_id)?;
+        let (message, tunnel) = self.client_close(channel_id)?;
         Some((DvcMessageBatch::new(channel_id, alloc::vec![message]), tunnel))
     }
 
-    /// Returns whether the client closed `channel_id` and the server has not acknowledged it yet.
-    pub fn is_closing(&self, channel_id: DynamicChannelId) -> bool {
-        self.client_closed.contains_key(&channel_id)
+    /// Closes a channel on the client's initiative, remembering it until the server acknowledges the
+    /// close, and returns the Close PDU with the tunnel the channel was bound to.
+    fn client_close(&mut self, channel_id: DynamicChannelId) -> Option<(SvcMessage, Option<SoftSyncTunnelType>)> {
+        let tunnel = self.tunnel_channels.get(&channel_id).copied();
+        let message = self.remove_channel(channel_id)?;
+        self.client_closed.insert(channel_id, tunnel);
+        Some((message, tunnel))
     }
 
     fn remove_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
