@@ -35,6 +35,7 @@ pub(crate) mod usbd_status {
     pub(crate) const INVALID_PIPE_HANDLE: UsbdStatus = 0x8000_0600;
     pub(crate) const NOT_SUPPORTED: UsbdStatus = 0xc000_0e00;
     pub(crate) const CANCELED: UsbdStatus = 0xc001_0000;
+    pub(crate) const INSUFFICIENT_RESOURCES: UsbdStatus = 0xc000_1000;
     pub(crate) const DEVICE_GONE: UsbdStatus = 0xc000_7000;
 
     /// `USBD_ERROR`: the high bit marks every failure status.
@@ -80,8 +81,19 @@ pub(crate) const MS_OS_STRING_VENDOR_CODE_OFFSET: usize = 16;
 /// class drivers stay well below this; WinUSB itself splits transfers above a few megabytes.
 pub(crate) const MAX_TRANSFER_LENGTH: u32 = 16 * 1024 * 1024;
 
-/// Default timeout for control transfers that do not carry one.
-pub(crate) const DEFAULT_CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+/// Bytes of transfer buffers one device may hold for requests in flight.
+///
+/// The server chooses how many requests it keeps outstanding and how large they are, so the
+/// buffers they pin are bounded per device. Requests beyond the budget fail with
+/// `USBD_STATUS_INSUFFICIENT_RESOURCES` before anything is allocated.
+pub(crate) const MAX_IN_FLIGHT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Timeout for control transfers that carry none, or ask for none.
+///
+/// Windows lets such a request run until it completes or is cancelled. nusb cannot cancel a
+/// submitted control transfer, so a long ceiling stands in for "never": long enough for slow
+/// operations such as a firmware download, short enough not to keep a stuck request forever.
+pub(crate) const DEFAULT_CONTROL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 pub(crate) const DESCRIPTOR_TYPE_STRING: u8 = 0x03;
 
@@ -411,8 +423,7 @@ fn standard(
 }
 
 fn ex_timeout(timeout_ms: u32) -> Duration {
-    // A zero TimeOut means that the request never times out. Fall back to the default rather than
-    // keeping a stuck request forever.
+    // A zero TimeOut means that the request never times out (see `DEFAULT_CONTROL_TIMEOUT`).
     if timeout_ms == 0 {
         DEFAULT_CONTROL_TIMEOUT
     } else {
@@ -478,6 +489,27 @@ fn is_set_feature(func: UrbFunction) -> bool {
             | UrbFunction::URB_FUNCTION_SET_FEATURE_TO_ENDPOINT
             | UrbFunction::URB_FUNCTION_SET_FEATURE_TO_OTHER
     )
+}
+
+/// Bytes of buffer the request holds while it is in flight, counted against
+/// [`MAX_IN_FLIGHT_BYTES`].
+pub(crate) fn buffer_bytes(request: &UsbRequest) -> usize {
+    match request {
+        UsbRequest::Control { setup, data, .. } => usize::from(setup.length).max(data.len()),
+        UsbRequest::Transfer {
+            direction: Direction::In,
+            length,
+            ..
+        } => usize::try_from(*length).unwrap_or(usize::MAX),
+        UsbRequest::Transfer { data, .. } => data.len(),
+        UsbRequest::OsFeatureDescriptor { length, .. } => usize::from(*length),
+        UsbRequest::SelectConfiguration { .. }
+        | UsbRequest::SelectInterface { .. }
+        | UsbRequest::Pipe { .. }
+        | UsbRequest::CurrentFrameNumber
+        | UsbRequest::Isochronous { .. }
+        | UsbRequest::Reject(_) => 0,
+    }
 }
 
 /// Endpoint address carried in a pipe handle returned by [`select_configuration_result`].
@@ -1035,6 +1067,34 @@ mod tests {
                 data: vec![0x55; 31],
             }
         );
+    }
+
+    #[test]
+    fn requests_count_their_buffers_against_the_budget() {
+        let read = UsbRequest::Transfer {
+            endpoint: 0x81,
+            direction: Direction::In,
+            length: 4096,
+            data: Vec::new(),
+        };
+        let write = UsbRequest::Transfer {
+            endpoint: 0x02,
+            direction: Direction::Out,
+            length: 3,
+            data: vec![1, 2, 3],
+        };
+
+        assert_eq!(buffer_bytes(&read), 4096);
+        assert_eq!(buffer_bytes(&write), 3);
+        assert_eq!(buffer_bytes(&control(0xc0, 0x01, 0, 0, 255)), 255);
+        assert_eq!(buffer_bytes(&UsbRequest::Reject(usbd_status::INVALID_PARAMETER)), 0);
+    }
+
+    #[test]
+    fn zero_control_timeout_uses_the_long_default() {
+        assert_eq!(ex_timeout(0), DEFAULT_CONTROL_TIMEOUT);
+        assert_eq!(ex_timeout(1500), Duration::from_millis(1500));
+        assert!(Duration::from_secs(60) < DEFAULT_CONTROL_TIMEOUT);
     }
 
     #[test]

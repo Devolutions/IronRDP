@@ -39,7 +39,8 @@ What can be claimed depends on the platform, because nusb uses the generic user-
   Selecting the active configuration, and alternate settings, works.
 - Port reset and cycle requests are acknowledged without resetting the device, like the FreeRDP client, because re-enumeration would end the redirection.
 - nusb cancels bulk and interrupt transfers per endpoint. When the server cancels one request, the other transfers pending on that endpoint that had not moved any data are submitted again in order, and partially completed ones are reported as short transfers.
-- nusb cannot cancel a control transfer once it is submitted. Cancelling one only drops its completion; the request still runs on the device until it completes or times out (30 seconds unless the server gave a timeout).
+- nusb cannot cancel a control transfer once it is submitted. Cancelling one completes it at once with `USBD_STATUS_CANCELED`, but the request still runs on the device until it completes or times out. A control transfer without a timeout, or with an infinite one, is given 5 minutes.
+- A device may hold at most 64 MiB of transfer buffers for requests in flight; requests beyond that fail with `USBD_STATUS_INSUFFICIENT_RESOURCES`.
 - IN transfers are limited to 16 MiB, and data a device sends beyond the requested length is reported as `USBD_STATUS_BUFFER_OVERRUN`.
 - On Windows, interface-directed Microsoft OS feature descriptor requests are rejected with `USBD_STATUS_NOT_SUPPORTED` unless the feature index matches the interface number, because WinUSB refuses them otherwise.
 - Windows reads device-level descriptors through the hub driver, and on Windows hotplugged devices are opened after a short delay so that their driver can bind first.

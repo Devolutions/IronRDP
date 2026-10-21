@@ -48,9 +48,9 @@ impl UrbdrcEvent {
 pub enum UrbdrcEventKind {
     /// A pending request finished.
     ///
-    /// Pass it to the [`UrbdrcDeviceClient`] of `channel_id` and send the resulting message. A request
-    /// that the server cancelled in the meantime is no longer pending there, and its completion must be
-    /// dropped.
+    /// Pass it to the [`UrbdrcDeviceClient`] of `channel_id` and send the resulting message. Requests
+    /// the server cancelled complete this way too, with `USBD_STATUS_CANCELED` when they were stopped.
+    /// A completion for a request that is no longer pending there must be dropped.
     ///
     /// [`UrbdrcDeviceClient`]: ironrdp_rdpeusb::client::UrbdrcDeviceClient
     Completion {

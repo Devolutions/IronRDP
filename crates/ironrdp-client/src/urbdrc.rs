@@ -73,7 +73,8 @@ pub(crate) fn process_urbdrc_event(
             match message {
                 Ok(message) => (channel_id, message),
                 Err(error) => {
-                    // The server cancelled the request, or retracted the device, in the meantime.
+                    // The server retracted the device in the meantime, or a cancelled control request
+                    // finished as its cancellation was being reported.
                     debug!(channel_id, request_id, %error, "Dropping a USB completion that is no longer pending");
                     return Ok(None);
                 }
