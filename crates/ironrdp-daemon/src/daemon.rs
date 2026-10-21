@@ -1838,7 +1838,8 @@ impl Daemon {
 
     /// Requests that the active RDP session resize.
     pub fn resize(&self, width: u16, height: u16) -> Response {
-        match self.try_resize(width, height) {
+        // No window/DPI concept in a headless agent: request the plain pixel size unscaled.
+        match self.try_resize(width, height, 100) {
             Ok(()) => Response::ok(),
             Err(ResizeError::InvalidDimensions) => Response::typed_error(
                 crate::ipc::AgentErrorCategory::InvalidRequest,
@@ -1860,10 +1861,13 @@ impl Daemon {
 
     /// Attempts to enqueue a resize without flattening temporary input-channel backpressure.
     ///
+    /// `scale_factor` is the desktop scale factor in percent: 100 for a headless agent, or the
+    /// DPI scale of the window presenting the session.
+    ///
     /// # Panics
     ///
     /// Panics if the daemon state mutex is poisoned.
-    pub fn try_resize(&self, width: u16, height: u16) -> Result<(), ResizeError> {
+    pub fn try_resize(&self, width: u16, height: u16, scale_factor: u32) -> Result<(), ResizeError> {
         if width == 0 || height == 0 {
             return Err(ResizeError::InvalidDimensions);
         }
@@ -1874,8 +1878,7 @@ impl Daemon {
         match session.input_tx.try_send(RdpInputEvent::Resize {
             width,
             height,
-            // No window/DPI concept in a headless agent: request the plain pixel size unscaled.
-            scale_factor: 100,
+            scale_factor,
             physical_size: None,
         }) {
             Ok(()) => Ok(()),
@@ -3309,7 +3312,7 @@ mod tests {
     fn resize_without_session_reports_no_active_session() {
         let daemon = Daemon::with_overlay(PropertySet::new());
 
-        assert_eq!(daemon.try_resize(1024, 768), Err(ResizeError::NoSession));
+        assert_eq!(daemon.try_resize(1024, 768, 100), Err(ResizeError::NoSession));
         assert!(matches!(daemon.resize(1024, 768), Response::Err(error) if error.message == "no active session"));
     }
 

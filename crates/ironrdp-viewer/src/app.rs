@@ -124,8 +124,10 @@ impl RpcApp {
         let Some((window, _)) = self.window.as_mut() else {
             return;
         };
+        // The viewer window spans a single monitor, so the session gets one primary monitor at the
+        // window DPI. A scale outside 100..=500 percent is clamped when the layout is encoded.
         #[expect(clippy::as_conversions, reason = "casting f64 to u32")]
-        let scale_factor = (window.scale_factor() * 100.0) as u32;
+        let scale_factor = (window.scale_factor() * 100.0).round() as u32;
 
         let width = u16::try_from(size.width).expect("reasonable width");
         let height = u16::try_from(size.height).expect("reasonable height");
@@ -150,7 +152,7 @@ impl RpcApp {
                     warn!("Unable to enqueue resize event because the RDP session is closed");
                 }
             },
-            InputTarget::Rpc(daemon) => match daemon.try_resize(width, height) {
+            InputTarget::Rpc(daemon) => match daemon.try_resize(width, height, scale_factor) {
                 Ok(()) => self.last_size = None,
                 Err(ResizeError::Full) => self.resize_timeout = Some(Instant::now() + Duration::from_millis(10)),
                 Err(error) => {
@@ -256,6 +258,13 @@ impl RpcApp {
         match event {
             WindowEvent::Resized(size) => {
                 self.last_size = Some(size);
+                self.resize_timeout = Some(Instant::now() + Duration::from_secs(1));
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                // The window moved to a monitor with another DPI, or the monitor DPI changed.
+                // Send the layout again with the matching desktop scale factor; winit usually
+                // follows with a `Resized` event, which refreshes the size within the same debounce.
+                self.last_size = Some(window.inner_size());
                 self.resize_timeout = Some(Instant::now() + Duration::from_secs(1));
             }
             WindowEvent::CloseRequested => match &self.input_target {
@@ -464,7 +473,6 @@ impl RpcApp {
             | WindowEvent::TouchpadPressure { .. }
             | WindowEvent::AxisMotion { .. }
             | WindowEvent::Touch(_)
-            | WindowEvent::ScaleFactorChanged { .. }
             | WindowEvent::ThemeChanged(_)
             | WindowEvent::Occluded(_) => {
                 // ignore
