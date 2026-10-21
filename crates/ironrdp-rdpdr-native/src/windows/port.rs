@@ -13,10 +13,12 @@
 //!
 //! [MS-RDPESP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesp/
 
+use core::fmt;
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread;
 use std::time::Instant;
 
@@ -30,6 +32,8 @@ use ironrdp_rdpdr::{RdpdrPort, RdpdrPortKind};
 use ironrdp_svc::SvcMessage;
 use tracing::{debug, warn};
 use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
+
+use super::printer::RdpdrWorkerThreadHooks;
 use windows::Wdk::Storage::FileSystem::{
     FILE_NON_DIRECTORY_FILE, FILE_OPEN, NtCancelIoFileEx, NtCreateFile, NtReadFile, NtWriteFile,
 };
@@ -506,11 +510,28 @@ impl PortIo {
         }
     }
 
-    /// Blocks until the driver completes the request.
-    fn wait(&self) {
+    /// Blocks until the driver completes the request, and returns whether it did.
+    ///
+    /// Waiting on the owned event cannot fail in practice. If it does, the caller must leak the
+    /// request, because the driver may still write to it.
+    fn wait(&self) -> bool {
         // SAFETY: the event handle is owned by `self` and stays open during the wait.
         let result = unsafe { WaitForSingleObject(self.event.0, INFINITE) };
-        debug_assert_eq!(result, WAIT_OBJECT_0, "waiting on an owned event cannot fail");
+        if result != WAIT_OBJECT_0 {
+            tracing::error!(?result, "Failed to wait for a port request");
+        }
+        result == WAIT_OBJECT_0
+    }
+
+    /// Waits for a request this thread still owns and builds its completion.
+    fn wait_and_complete(mut self: Box<Self>) -> SvcMessage {
+        if !self.wait() {
+            let message = failure_completion(self.kind, self.request.clone(), NtStatus::UNSUCCESSFUL);
+            Box::leak(self);
+            return message;
+        }
+        let status = self.final_status();
+        self.completion(status)
     }
 
     /// Builds the completion from the final status of a request that is no longer in flight.
@@ -566,8 +587,52 @@ struct PendingPortIo {
     request: DeviceIoRequest,
     handle: Arc<OwnedHandle>,
     /// Address of the request's I/O status block, the key NtCancelIoFileEx matches.
+    ///
+    /// INVARIANT: the request stays allocated while this entry exists, so the address cannot
+    /// belong to another request on the shared handle.
     io_status_block: usize,
-    worker: thread::JoinHandle<Option<SvcMessage>>,
+    slot: Arc<PortIoSlot>,
+}
+
+/// Where a worker hands a completed request back to the session.
+///
+/// The worker does not build the completion itself: the request stays in the slot until the
+/// session removes its pending entry, which keeps its status-block address from being reused
+/// while it may still be passed to NtCancelIoFileEx. Workers may also exit through a host
+/// lifetime guard, which never returns a value from the thread.
+#[derive(Default)]
+struct PortIoSlot {
+    io: Mutex<Option<Box<PortIo>>>,
+    finished: AtomicBool,
+}
+
+impl PortIoSlot {
+    fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
+    }
+
+    /// Builds the completion of a finished request.
+    fn completion(&self, kind: PortIoKind, request: DeviceIoRequest) -> SvcMessage {
+        let io = self.io.lock().unwrap_or_else(PoisonError::into_inner).take();
+        match io {
+            Some(mut io) => {
+                let status = io.final_status();
+                io.completion(status)
+            }
+            None => {
+                tracing::error!(completion_id = request.completion_id, "Port worker lost its request");
+                failure_completion(kind, request, NtStatus::UNSUCCESSFUL)
+            }
+        }
+    }
+}
+
+impl fmt::Debug for PortIoSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PortIoSlot")
+            .field("finished", &self.is_finished())
+            .finish_non_exhaustive()
+    }
 }
 
 /// A flush waits for the writes on its device that were pending when it arrived.
@@ -590,12 +655,13 @@ pub(super) struct PortSession {
     next_operation_id: u64,
     pending: HashMap<u64, PendingPortIo>,
     flushes: Vec<PendingFlush>,
-    /// Workers whose cancelled request the driver did not complete in time.
-    abandoned: Vec<thread::JoinHandle<Option<SvcMessage>>>,
+    /// Requests whose cancellation the driver did not complete in time.
+    abandoned: Vec<Arc<PortIoSlot>>,
+    worker_thread_hooks: Option<RdpdrWorkerThreadHooks>,
 }
 
 impl PortSession {
-    pub(super) fn new(ports: Vec<RdpdrPort>) -> Self {
+    pub(super) fn new(ports: Vec<RdpdrPort>, worker_thread_hooks: Option<RdpdrWorkerThreadHooks>) -> Self {
         Self {
             ports: ports
                 .into_iter()
@@ -608,7 +674,13 @@ impl PortSession {
             pending: HashMap::new(),
             flushes: Vec::new(),
             abandoned: Vec::new(),
+            worker_thread_hooks,
         }
+    }
+
+    /// Requests that hold resources until the driver completes them.
+    fn outstanding(&self) -> usize {
+        self.pending.len() + self.flushes.len()
     }
 
     pub(super) fn handle(&mut self, req: PortIoRequest) -> Vec<SvcMessage> {
@@ -731,7 +803,7 @@ impl PortSession {
                 .get(&request.device_id)
                 .expect("open files keep their port handle"),
         );
-        if self.pending.len() == MAX_PENDING_PORT_OPERATIONS {
+        if self.outstanding() >= MAX_PENDING_PORT_OPERATIONS {
             return vec![failure_completion(kind, request, NtStatus::INSUFFICIENT_RESOURCES)];
         }
         let mut io = match PortIo::new(kind, request.clone(), input, output_length) {
@@ -753,9 +825,23 @@ impl PortSession {
             return vec![io.completion(status)];
         }
 
-        let operation_id = self.next_operation_id;
-        self.next_operation_id = self.next_operation_id.wrapping_add(1);
         let io_status_block = core::ptr::addr_of!(io.io_status) as usize;
+        // A host such as an ActiveX control keeps its module loaded while the worker runs.
+        let guard = match self
+            .worker_thread_hooks
+            .as_ref()
+            .map(RdpdrWorkerThreadHooks::acquire)
+            .transpose()
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                warn!(%error, "Failed to acquire a port worker lifetime; cancelling the request");
+                cancel_request(&handle, io_status_block);
+                return vec![io.wait_and_complete()];
+            }
+        };
+        let slot = Arc::new(PortIoSlot::default());
+        let worker_slot = Arc::clone(&slot);
         let dispatch = tracing::dispatcher::get_default(Clone::clone);
         // The request is handed over only once the worker exists, so a failed spawn leaves it here.
         let (sender, receiver) = mpsc::sync_channel::<Box<PortIo>>(1);
@@ -763,30 +849,37 @@ impl PortSession {
             .name("ironrdp-rdpdr-port".to_owned())
             .spawn(move || {
                 tracing::dispatcher::with_default(&dispatch, || {
-                    let mut io = receiver.recv().ok()?;
-                    io.wait();
-                    let status = io.final_status();
-                    Some(io.completion(status))
-                })
+                    if let Ok(io) = receiver.recv() {
+                        if io.wait() {
+                            *worker_slot.io.lock().unwrap_or_else(PoisonError::into_inner) = Some(io);
+                        } else {
+                            Box::leak(io);
+                        }
+                    }
+                });
+                worker_slot.finished.store(true, Ordering::Release);
+                // A guarded exit ends the thread without running destructors.
+                drop(worker_slot);
+                drop(receiver);
+                drop(dispatch);
+                if let Some(guard) = guard {
+                    guard.exit();
+                }
             });
-        let worker = match spawned {
-            Ok(worker) => worker,
-            Err(error) => {
-                warn!(%error, "Failed to start a port worker; cancelling the request");
-                cancel_request(&handle, io_status_block);
-                io.wait();
-                let status = io.final_status();
-                return vec![io.completion(status)];
-            }
-        };
-        if let Err(mpsc::SendError(mut io)) = sender.send(io) {
+        // The thread is never joined: a guarded exit does not return through it.
+        if let Err(error) = spawned {
+            warn!(%error, "Failed to start a port worker; cancelling the request");
+            cancel_request(&handle, io_status_block);
+            return vec![io.wait_and_complete()];
+        }
+        if let Err(mpsc::SendError(io)) = sender.send(io) {
             // The worker exited before receiving the request, so it is still owned here.
             cancel_request(&handle, io_status_block);
-            io.wait();
-            let status = io.final_status();
-            let _ = worker.join();
-            return vec![io.completion(status)];
+            return vec![io.wait_and_complete()];
         }
+
+        let operation_id = self.next_operation_id;
+        self.next_operation_id = self.next_operation_id.wrapping_add(1);
 
         self.pending.insert(
             operation_id,
@@ -797,7 +890,7 @@ impl PortSession {
                 request,
                 handle,
                 io_status_block,
-                worker,
+                slot,
             },
         );
         Vec::new()
@@ -816,6 +909,9 @@ impl PortSession {
         if writes.is_empty() {
             return vec![flush_completion(request, NtStatus::SUCCESS)];
         }
+        if self.outstanding() >= MAX_PENDING_PORT_OPERATIONS {
+            return vec![flush_completion(request, NtStatus::INSUFFICIENT_RESOURCES)];
+        }
 
         self.flushes.push(PendingFlush {
             device_id: request.device_id,
@@ -828,12 +924,12 @@ impl PortSession {
 
     /// Returns the completions of requests the driver finished since the last poll.
     pub(super) fn poll(&mut self) -> Vec<SvcMessage> {
-        self.abandoned.retain(|worker| !worker.is_finished());
+        self.abandoned.retain(|slot| !slot.is_finished());
 
         let finished = self
             .pending
             .iter()
-            .filter_map(|(operation_id, io)| io.worker.is_finished().then_some(*operation_id))
+            .filter_map(|(operation_id, io)| io.slot.is_finished().then_some(*operation_id))
             .collect::<Vec<_>>();
         let mut messages = Vec::with_capacity(finished.len());
         for operation_id in finished {
@@ -841,13 +937,7 @@ impl PortSession {
                 .pending
                 .remove(&operation_id)
                 .expect("operation was just listed as pending");
-            match io.worker.join() {
-                Ok(Some(message)) => messages.push(message),
-                Ok(None) | Err(_) => {
-                    tracing::error!(device_id = io.device_id, "Port worker failed");
-                    messages.push(failure_completion(io.kind, io.request, NtStatus::UNSUCCESSFUL));
-                }
-            }
+            messages.push(io.slot.completion(io.kind, io.request));
         }
 
         let pending = &self.pending;
@@ -895,25 +985,20 @@ impl PortSession {
     /// Waits for a cancelled request; the driver reports its actual outcome, usually STATUS_CANCELLED.
     fn finish_cancelled(&mut self, io: PendingPortIo) -> SvcMessage {
         let deadline = Instant::now() + CANCELLATION_TIMEOUT;
-        while !io.worker.is_finished() && Instant::now() < deadline {
+        while !io.slot.is_finished() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(1));
         }
-        if !io.worker.is_finished() {
+        if !io.slot.is_finished() {
             warn!(
                 device_id = io.device_id,
                 completion_id = io.request.completion_id,
                 "Port driver did not complete a cancelled request; completing it as cancelled"
             );
-            self.abandoned.push(io.worker);
+            // The worker keeps the request and its host lifetime guard until the driver completes it.
+            self.abandoned.push(io.slot);
             return failure_completion(io.kind, io.request, NtStatus::CANCELLED);
         }
-        match io.worker.join() {
-            Ok(Some(message)) => message,
-            Ok(None) | Err(_) => {
-                tracing::error!(device_id = io.device_id, "Port worker failed");
-                failure_completion(io.kind, io.request, NtStatus::CANCELLED)
-            }
-        }
+        io.slot.completion(io.kind, io.request)
     }
 
     /// Discards every open file and pending request for a new RDPDR initialization sequence.
@@ -928,7 +1013,7 @@ impl PortSession {
 impl PortSession {
     /// Configures one port opened from an arbitrary NT path instead of its DOS device.
     fn with_device_path(device_id: u32, path: String) -> Self {
-        let mut session = Self::new(Vec::new());
+        let mut session = Self::new(Vec::new(), None);
         session.ports.insert(device_id, path);
         session
     }
@@ -936,7 +1021,7 @@ impl PortSession {
 
 impl Default for PortSession {
     fn default() -> Self {
-        Self::new(Vec::new())
+        Self::new(Vec::new(), None)
     }
 }
 
@@ -1023,9 +1108,10 @@ mod tests {
     fn unknown_file_ids_complete_with_invalid_handle() {
         use ironrdp_rdpdr::pdu::efs::{DeviceReadRequest, MajorFunction, MinorFunction};
 
-        let mut session = PortSession::new(vec![
-            RdpdrPort::new(7, RdpdrPortKind::Serial, "COM250".to_owned()).expect("valid port name"),
-        ]);
+        let mut session = PortSession::new(
+            vec![RdpdrPort::new(7, RdpdrPortKind::Serial, "COM250".to_owned()).expect("valid port name")],
+            None,
+        );
         let messages = session.handle(PortIoRequest::Read(DeviceReadRequest {
             device_io_request: DeviceIoRequest {
                 device_id: 7,
@@ -1049,9 +1135,10 @@ mod tests {
     fn opening_a_missing_port_fails_with_the_driver_status() {
         use ironrdp_rdpdr::pdu::efs::{MajorFunction, MinorFunction};
 
-        let mut session = PortSession::new(vec![
-            RdpdrPort::new(7, RdpdrPortKind::Serial, "COM250".to_owned()).expect("valid port name"),
-        ]);
+        let mut session = PortSession::new(
+            vec![RdpdrPort::new(7, RdpdrPortKind::Serial, "COM250".to_owned()).expect("valid port name")],
+            None,
+        );
         let response = session.create(
             DeviceIoRequest {
                 device_id: 7,
@@ -1098,17 +1185,36 @@ mod tests {
         }
     }
 
+    fn create_file(session: &mut PortSession, completion_id: u32) -> u32 {
+        use ironrdp_rdpdr::pdu::efs::{
+            CreateDisposition, CreateOptions, DesiredAccess, DeviceCreateRequest, FileAttributes, MajorFunction,
+            SharedAccess,
+        };
+
+        let create = session.handle(PortIoRequest::Create(DeviceCreateRequest {
+            device_io_request: io_request(MajorFunction::Create, 0, completion_id),
+            desired_access: DesiredAccess::empty(),
+            allocation_size: 0,
+            file_attributes: FileAttributes::empty(),
+            shared_access: SharedAccess::empty(),
+            create_disposition: CreateDisposition::FILE_OPEN,
+            create_options: CreateOptions::empty(),
+            path: String::new(),
+        }));
+        let create = create[0].encode_unframed_pdu().expect("encode create completion");
+        assert_eq!(status_of(&create), NtStatus::SUCCESS);
+        let file_id = u32::from_le_bytes(create[16..20].try_into().expect("file ID"));
+        assert_ne!(file_id, 0);
+        file_id
+    }
+
     /// A named pipe stands in for a serial port: like a port it is opened for asynchronous I/O,
     /// pends reads until the peer writes, and cancels them on close.
-    #[test]
-    fn pipe_backed_port_pends_reads_forwards_writes_and_cancels_on_close() {
-        use ironrdp_rdpdr::pdu::efs::{
-            CreateDisposition, CreateOptions, DecodedDeviceControlRequest, DesiredAccess, DeviceCloseRequest,
-            DeviceControlRequest, DeviceCreateRequest, DeviceReadRequest, DeviceWriteRequest, FileAttributes,
-            MajorFunction, SharedAccess,
-        };
-        use ironrdp_rdpdr::pdu::esp::PortIoCtlCode;
-        use windows::Win32::Storage::FileSystem::{PIPE_ACCESS_DUPLEX, ReadFile, WriteFile};
+    ///
+    /// Returns the pipe's server end, a session whose device 7 is the client end, and the first
+    /// server file ID opened on it.
+    fn open_pipe_port() -> (OwnedHandle, PortSession, u32) {
+        use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
         use windows::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, PIPE_TYPE_BYTE};
 
         let pipe_name = format!(
@@ -1137,36 +1243,52 @@ mod tests {
         let server = OwnedHandle(server);
 
         let mut session = PortSession::with_device_path(7, format!(r"\??\pipe\{pipe_name}"));
-        let create = session.handle(PortIoRequest::Create(DeviceCreateRequest {
-            device_io_request: io_request(MajorFunction::Create, 0, 1),
-            desired_access: DesiredAccess::empty(),
-            allocation_size: 0,
-            file_attributes: FileAttributes::empty(),
-            shared_access: SharedAccess::empty(),
-            create_disposition: CreateDisposition::FILE_OPEN,
-            create_options: CreateOptions::empty(),
-            path: String::new(),
-        }));
-        let create = create[0].encode_unframed_pdu().expect("encode create completion");
-        assert_eq!(status_of(&create), NtStatus::SUCCESS);
-        let file_id = u32::from_le_bytes(create[16..20].try_into().expect("file ID"));
-        assert_ne!(file_id, 0);
+        let file_id = create_file(&mut session, 1);
         // SAFETY: the server handle is open; the client is already connected, which this reports.
         let _ = unsafe { ConnectNamedPipe(server.0, None) };
+        (server, session, file_id)
+    }
 
-        let read = |completion_id| {
-            PortIoRequest::Read(DeviceReadRequest {
-                device_io_request: io_request(MajorFunction::Read, file_id, completion_id),
-                length: 16,
-                offset: 0,
-            })
+    fn write_to_pipe(server: &OwnedHandle, data: &[u8]) {
+        // SAFETY: the server handle is open and the buffer outlives the synchronous write.
+        unsafe { windows::Win32::Storage::FileSystem::WriteFile(server.0, Some(data), None, None) }
+            .expect("write to the test pipe");
+    }
+
+    fn read_request(file_id: u32, completion_id: u32) -> PortIoRequest {
+        PortIoRequest::Read(ironrdp_rdpdr::pdu::efs::DeviceReadRequest {
+            device_io_request: io_request(ironrdp_rdpdr::pdu::efs::MajorFunction::Read, file_id, completion_id),
+            length: 16,
+            offset: 0,
+        })
+    }
+
+    fn close_request(file_id: u32, completion_id: u32) -> PortIoRequest {
+        PortIoRequest::Close(ironrdp_rdpdr::pdu::efs::DeviceCloseRequest {
+            device_io_request: io_request(ironrdp_rdpdr::pdu::efs::MajorFunction::Close, file_id, completion_id),
+        })
+    }
+
+    fn completion_id_of(encoded: &[u8]) -> u32 {
+        u32::from_le_bytes(encoded[8..12].try_into().expect("completion ID"))
+    }
+
+    #[test]
+    fn pipe_backed_port_pends_reads_forwards_writes_and_cancels_on_close() {
+        use ironrdp_rdpdr::pdu::efs::{
+            DecodedDeviceControlRequest, DeviceControlRequest, DeviceWriteRequest, MajorFunction,
         };
+        use ironrdp_rdpdr::pdu::esp::PortIoCtlCode;
+        use windows::Win32::Storage::FileSystem::ReadFile;
+
+        let (server, mut session, file_id) = open_pipe_port();
+
+        let read = |completion_id| read_request(file_id, completion_id);
 
         // The read pends until the peer writes.
         assert!(session.handle(read(2)).is_empty());
         assert!(session.poll().is_empty());
-        // SAFETY: the server handle is open and the buffer outlives the synchronous write.
-        unsafe { WriteFile(server.0, Some(b"hello"), None, None) }.expect("write to the test pipe");
+        write_to_pipe(&server, b"hello");
         let completion = poll_until_completed(&mut session);
         assert_eq!(status_of(&completion), NtStatus::SUCCESS);
         assert_eq!(u32::from_le_bytes(completion[16..20].try_into().expect("length")), 5);
@@ -1204,9 +1326,7 @@ mod tests {
 
         // Closing cancels the pending read before completing the close.
         assert!(session.handle(read(5)).is_empty());
-        let close = session.handle(PortIoRequest::Close(DeviceCloseRequest {
-            device_io_request: io_request(MajorFunction::Close, file_id, 6),
-        }));
+        let close = session.handle(close_request(file_id, 6));
         assert_eq!(close.len(), 2);
         let cancelled = close[0].encode_unframed_pdu().expect("encode cancelled read");
         assert_eq!(
@@ -1219,5 +1339,86 @@ mod tests {
         assert_eq!(status_of(&closed), NtStatus::SUCCESS);
         assert!(session.handles.is_empty());
         assert!(session.poll().is_empty());
+    }
+
+    /// A request that completed but was not polled yet keeps its status block allocated, so closing
+    /// its file cannot cancel a later request that would otherwise reuse the address.
+    #[test]
+    fn closing_a_completed_request_before_polling_leaves_other_files_pending() {
+        let (server, mut session, first) = open_pipe_port();
+        let second = create_file(&mut session, 2);
+        assert_ne!(first, second);
+
+        assert!(session.handle(read_request(first, 3)).is_empty());
+        write_to_pipe(&server, b"one");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !session.pending.values().all(|io| io.slot.is_finished()) {
+            assert!(Instant::now() < deadline, "first read did not complete");
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        assert!(session.handle(read_request(second, 4)).is_empty());
+        let close = session.handle(close_request(first, 5));
+        assert_eq!(close.len(), 2);
+        let first_read = close[0].encode_unframed_pdu().expect("encode first read");
+        assert_eq!(completion_id_of(&first_read), 3);
+        assert_eq!(status_of(&first_read), NtStatus::SUCCESS);
+        assert_eq!(&first_read[20..], b"one");
+        assert_eq!(
+            completion_id_of(&close[1].encode_unframed_pdu().expect("encode close")),
+            5
+        );
+
+        // The second file's read is still pending on the shared handle.
+        assert!(session.poll().is_empty());
+        write_to_pipe(&server, b"two");
+        let second_read = poll_until_completed(&mut session);
+        assert_eq!(completion_id_of(&second_read), 4);
+        assert_eq!(status_of(&second_read), NtStatus::SUCCESS);
+        assert_eq!(&second_read[20..], b"two");
+    }
+
+    #[test]
+    fn deferred_flushes_count_toward_the_pending_limit() {
+        use ironrdp_rdpdr::pdu::efs::{DeviceFlushBuffersRequest, DeviceWriteRequest, MajorFunction};
+
+        let (_server, mut session, file_id) = open_pipe_port();
+        // The peer never reads, so a write larger than the pipe quota stays pending.
+        assert!(
+            session
+                .handle(PortIoRequest::Write(DeviceWriteRequest {
+                    device_io_request: io_request(MajorFunction::Write, file_id, 2),
+                    offset: 0,
+                    write_data: vec![0x55; 256 * 1024],
+                }))
+                .is_empty()
+        );
+
+        let flush = |completion_id| {
+            PortIoRequest::FlushBuffers(DeviceFlushBuffersRequest {
+                device_io_request: io_request(MajorFunction::FlushBuffers, file_id, completion_id),
+            })
+        };
+        let mut completion_id = 3;
+        for _ in 1..MAX_PENDING_PORT_OPERATIONS {
+            assert!(session.handle(flush(completion_id)).is_empty());
+            completion_id += 1;
+        }
+        let rejected = session.handle(flush(completion_id));
+        assert_eq!(
+            status_of(&rejected[0].encode_unframed_pdu().expect("encode rejected flush")),
+            NtStatus::INSUFFICIENT_RESOURCES
+        );
+        let rejected = session.handle(read_request(file_id, completion_id + 1));
+        assert_eq!(
+            status_of(&rejected[0].encode_unframed_pdu().expect("encode rejected read")),
+            NtStatus::INSUFFICIENT_RESOURCES
+        );
+
+        // Closing completes the write and every deferred flush before the close itself.
+        let close = session.handle(close_request(file_id, completion_id + 2));
+        assert_eq!(close.len(), MAX_PENDING_PORT_OPERATIONS + 1);
+        assert!(session.flushes.is_empty());
+        assert!(session.pending.is_empty());
     }
 }

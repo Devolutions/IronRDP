@@ -73,7 +73,7 @@ impl WindowsRdpdrBackend {
 
     /// Configures the serial and parallel ports announced with this backend.
     pub(super) fn with_ports(mut self, ports: Vec<ironrdp_rdpdr::RdpdrPort>) -> Self {
-        self.ports = PortSession::new(ports);
+        self.ports = PortSession::new(ports, self.worker_thread_hooks);
         self
     }
 

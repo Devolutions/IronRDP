@@ -426,7 +426,11 @@ impl ViewerConfig {
             serial: PortChoice::from_args(core::mem::take(&mut args.serial)),
             parallel: PortChoice::from_args(core::mem::take(&mut args.parallel)),
         };
-        if !ports.is_enabled() && properties.redirect_com_ports() == Some(true) {
+        // Explicit CLI ports take precedence; the file-derived selection honors `ironrdp_rdpdr:i:0`.
+        if !ports.is_enabled()
+            && properties.redirect_com_ports() == Some(true)
+            && properties.enable_rdpdr() != Some(false)
+        {
             ports = PortOptions {
                 serial: PortChoice::All,
                 parallel: PortChoice::All,

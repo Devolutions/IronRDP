@@ -535,6 +535,25 @@ ClearTextPassword:s:test-pass
     assert!(config.channels().rdpdr.enabled);
     assert!(config.channels().rdpdr.ports);
 
+    // The file's channel disable wins over its own port selection.
+    let disabled = parse_viewer_config_from_rdp(
+        &format!(
+            "{rdp}redirectcomports:i:1
+ironrdp_rdpdr:i:0
+"
+        ),
+        &[],
+    );
+    assert!(!disabled.ports().is_enabled());
+    assert!(
+        !disabled
+            .into_config()
+            .expect("failed to build client config")
+            .channels()
+            .rdpdr
+            .enabled
+    );
+
     // Explicit CLI ports replace the file's all-ports selection.
     let named = parse_viewer_config_from_rdp(
         &format!(

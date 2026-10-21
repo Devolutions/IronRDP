@@ -8516,6 +8516,7 @@ fn is_boolean_modern_property(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
         "redirectclipboard"
+            | "redirectcomports"
             | "enablecredsspsupport"
             | "compression"
             | "administrative session"
@@ -8554,6 +8555,7 @@ fn validate_modern_rdp_property(name: &str, value: &Value) -> Result<()> {
             _ => Err(Error::from_hresult(E_INVALIDARG)),
         },
         "redirectclipboard"
+        | "redirectcomports"
         | "enablecredsspsupport"
         | "compression"
         | "administrative session"
@@ -8739,6 +8741,9 @@ impl Control {
             }
             "redirectclipboard" => {
                 self.compatibility.borrow_mut().redirect_clipboard = value.as_int().unwrap_or_default() != 0;
+            }
+            "redirectcomports" => {
+                self.compatibility.borrow_mut().redirect_ports = value.as_int().unwrap_or_default() != 0;
             }
             "enablecredsspsupport" => {
                 self.compatibility.borrow_mut().enable_credssp = Some(value.as_int().unwrap_or_default() != 0);
@@ -22176,6 +22181,51 @@ try {
         assert_eq!(size_of::<IRemoteDesktopClientSettings_Vtbl>(), 11 * pointer_size);
         assert_eq!(size_of::<IRemoteDesktopClientActions_Vtbl>(), 11 * pointer_size);
         assert_eq!(size_of::<IRemoteDesktopClientTouchPointer_Vtbl>(), 13 * pointer_size);
+    }
+
+    #[test]
+    fn modern_settings_apply_and_retrieve_port_redirection() {
+        let control = Control::new();
+        control
+            .apply_modern_property_set(
+                ironrdp_rdpfile::parse(
+                    "redirectcomports:i:1
+",
+                )
+                .properties,
+            )
+            .expect("apply port redirection");
+        assert!(control.compatibility.borrow().redirect_ports);
+        assert_eq!(
+            control
+                .modern_rdp_property("RedirectComPorts")
+                .expect("retrieve port redirection")
+                .as_int(),
+            Some(1)
+        );
+        assert!(
+            control
+                .modern_property_snapshot()
+                .iter()
+                .any(|(name, value)| { name.as_ref() == "redirectcomports" && value.as_int() == Some(1) })
+        );
+
+        control
+            .set_modern_rdp_property("RedirectComPorts".to_owned(), Value::Int(0))
+            .expect("disable port redirection");
+        assert!(!control.compatibility.borrow().redirect_ports);
+        assert_eq!(
+            control
+                .modern_rdp_property("redirectcomports")
+                .expect("retrieve port redirection")
+                .as_int(),
+            Some(0)
+        );
+        assert!(
+            control
+                .set_modern_rdp_property("redirectcomports".to_owned(), Value::Str("yes".to_owned()))
+                .is_err()
+        );
     }
 
     #[test]

@@ -52,7 +52,7 @@ impl RdpdrWorkerThreadHooks {
         Self { acquire }
     }
 
-    fn acquire(&self) -> RdpdrWorkerThreadGuardResult {
+    pub(super) fn acquire(&self) -> RdpdrWorkerThreadGuardResult {
         (self.acquire)()
     }
 }
