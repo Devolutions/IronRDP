@@ -407,11 +407,6 @@ public partial class MainWindow : Window
 
     private void OnPointerPressed(object sender, PointerPressedEventArgs e)
     {
-        if (_activeStage == null || _decodedImage == null)
-        {
-            return;
-        }
-
         PointerUpdateKind mouseButton = e.GetCurrentPoint((Visual?)sender).Properties.PointerUpdateKind;
 
         MouseButtonType buttonType = mouseButton switch
@@ -452,11 +447,6 @@ public partial class MainWindow : Window
 
     private void OnPointerReleased(object sender, PointerReleasedEventArgs e)
     {
-        if (_activeStage == null || _decodedImage == null)
-        {
-            return;
-        }
-
         PointerUpdateKind mouseButton = e.GetCurrentPoint((Visual?)sender).Properties.PointerUpdateKind;
 
         MouseButtonType buttonType = mouseButton switch
