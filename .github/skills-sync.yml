@@ -18,3 +18,21 @@ repositories:
       - test-pruner
       - test-writer
       - test-reviewer
+      - agents-md
+      - agents-md-review
+      - blind-testsuite
+      - contract-authoring
+      - contract-review
+      - contribute
+      - dependency-pruner
+      - dependency-reviewer
+      - grill-intent
+      - intent-drift-audit
+      - intent-files
+      - intent-review
+      - lead
+      - orchestrate-effort
+      - review-feedback-loop
+      - skill-discipline
+      - tdd
+      - variants
