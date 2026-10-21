@@ -1,7 +1,6 @@
 [package]
 name = "ironrdp-rdpeusb"
 version = "0.1.0"
-readme = "README.md"
 description = "Remote Desktop Protocol: USB Devices Virtual Channel Extension implementation"
 edition.workspace = true
 rust-version = "1.94"
