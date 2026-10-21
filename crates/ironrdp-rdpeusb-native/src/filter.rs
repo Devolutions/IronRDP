@@ -54,7 +54,11 @@ impl UsbDeviceIdentity {
 /// A rule selecting local USB devices.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UsbDeviceMatch {
-    /// Every device that is not in a class kept local.
+    /// Every device.
+    ///
+    /// In [`UsbRedirectionConfig::exclude`], this keeps every device local (`-*` in `.rdp` files). In
+    /// [`UsbRedirectionConfig::devices`], it is an explicit rule like the others and also selects the
+    /// classes kept local; [`UsbRedirectionConfig::all`] is the wildcard that respects them.
     Any,
     /// Every device of this model.
     VidPid { vendor_id: u16, product_id: u16 },
@@ -87,11 +91,13 @@ pub struct UsbRedirectionConfig {
     pub devices: Vec<UsbDeviceMatch>,
     /// Devices never to redirect, even when another rule selects them.
     pub exclude: Vec<UsbDeviceMatch>,
-    /// Redirect devices plugged in during the session.
+    /// Redirect every device present when the channel opens, outside the classes kept local.
+    pub all: bool,
+    /// Redirect devices plugged in during the session, outside the classes kept local.
     pub auto: bool,
-    /// Base classes that [`UsbDeviceMatch::Any`] and [`Self::auto`] keep local.
+    /// Base classes that [`Self::all`] and [`Self::auto`] keep local.
     ///
-    /// Explicit VID/PID, instance ID and address rules are not affected.
+    /// Rules in [`Self::devices`] are not affected.
     pub local_classes: Vec<u8>,
 }
 
@@ -100,6 +106,7 @@ impl Default for UsbRedirectionConfig {
         Self {
             devices: Vec::new(),
             exclude: Vec::new(),
+            all: false,
             auto: false,
             local_classes: DEFAULT_LOCAL_CLASSES.to_vec(),
         }
@@ -109,7 +116,7 @@ impl Default for UsbRedirectionConfig {
 impl UsbRedirectionConfig {
     /// Whether this configuration can ever redirect a device.
     pub fn is_enabled(&self) -> bool {
-        self.auto || !self.devices.is_empty()
+        self.all || self.auto || !self.devices.is_empty()
     }
 
     /// Whether a device present when the channel opens is redirected.
@@ -130,20 +137,20 @@ impl UsbRedirectionConfig {
 
         let kept_local = self.local_classes.iter().any(|class| device.has_class(*class));
         let explicitly_selected = self.devices.iter().any(|rule| match rule {
-            UsbDeviceMatch::Any => false,
             // Bus addresses are reassigned on every plug, so only identity rules follow a device.
             UsbDeviceMatch::BusAddress { .. } => !hotplug && rule.matches(device),
-            UsbDeviceMatch::VidPid { .. } | UsbDeviceMatch::InstanceId(_) => rule.matches(device),
+            UsbDeviceMatch::Any | UsbDeviceMatch::VidPid { .. } | UsbDeviceMatch::InstanceId(_) => rule.matches(device),
         });
-        let selected_by_any = self.devices.contains(&UsbDeviceMatch::Any) || (hotplug && self.auto);
+        let selected_by_wildcard = if hotplug { self.auto } else { self.all };
 
-        explicitly_selected || (selected_by_any && !kept_local)
+        explicitly_selected || (selected_by_wildcard && !kept_local)
     }
 
     /// Merge another configuration into this one.
     pub fn merge(&mut self, other: Self) {
         self.devices.extend(other.devices);
         self.exclude.extend(other.exclude);
+        self.all |= other.all;
         self.auto |= other.auto;
         if other.local_classes != DEFAULT_LOCAL_CLASSES {
             self.local_classes = other.local_classes;
@@ -198,6 +205,9 @@ impl UsbRedirectionConfig {
 
     /// Parse the `.rdp` file `usbdevicestoredirect` property value.
     ///
+    /// `*` sets [`Self::all`] and [`Self::auto`], and `-*` excludes every device with
+    /// [`UsbDeviceMatch::Any`].
+    ///
     /// `*` redirects every device outside the classes kept local, including devices plugged in during
     /// the session.
     pub fn parse_rdp(value: &str) -> Result<Self, UsbFilterParseError> {
@@ -210,6 +220,11 @@ impl UsbRedirectionConfig {
             };
 
             let rule = if entry == "*" {
+                if !exclude {
+                    config.all = true;
+                    config.auto = true;
+                    continue;
+                }
                 UsbDeviceMatch::Any
             } else if entry.starts_with('{') && entry.ends_with('}') {
                 tracing::debug!(entry, "Skipping USB device setup class GUID, which cannot be matched");
@@ -221,9 +236,6 @@ impl UsbRedirectionConfig {
             if exclude {
                 config.exclude.push(rule);
             } else {
-                if rule == UsbDeviceMatch::Any {
-                    config.auto = true;
-                }
                 config.devices.push(rule);
             }
         }
@@ -416,11 +428,36 @@ mod tests {
     fn rdp_wildcard_redirects_present_and_hotplugged_devices() {
         let config = UsbRedirectionConfig::parse_rdp("*").expect("valid property");
 
+        assert!(config.all);
         assert!(config.auto);
+        assert!(config.devices.is_empty());
         assert!(config.redirect_at_connect(&device(0x2e8a, 0x000a, 0xef, &[0xff])));
         assert!(config.redirect_on_hotplug(&device(0x2e8a, 0x000a, 0xef, &[0xff])));
         // HID stays local under the wildcard.
         assert!(!config.redirect_at_connect(&device(0x046d, 0xc52b, 0x00, &[0x03])));
+    }
+
+    #[test]
+    fn rdp_wildcard_exclusion_keeps_every_device_local() {
+        let config = UsbRedirectionConfig::parse_rdp(r"USB\VID_2E8A&PID_000A;-*").expect("valid property");
+
+        assert!(!config.all);
+        assert_eq!(config.exclude, [UsbDeviceMatch::Any]);
+        assert!(!config.redirect_at_connect(&device(0x2e8a, 0x000a, 0xef, &[0xff])));
+    }
+
+    #[test]
+    fn any_device_rule_also_selects_local_classes() {
+        let config = UsbRedirectionConfig {
+            devices: vec![UsbDeviceMatch::Any],
+            ..UsbRedirectionConfig::default()
+        };
+        let mouse = device(0x046d, 0xc52b, 0x00, &[0x03]);
+
+        assert!(config.is_enabled());
+        assert!(config.redirect_at_connect(&mouse));
+        assert!(config.redirect_on_hotplug(&mouse));
+        assert!(!config.redirect_at_connect(&device(0x05e3, 0x0610, CLASS_HUB, &[CLASS_HUB])));
     }
 
     #[test]
