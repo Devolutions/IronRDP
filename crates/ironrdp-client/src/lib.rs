@@ -23,4 +23,7 @@ pub mod video;
 mod clipboard;
 mod redirection;
 
+#[cfg(feature = "usb")]
+mod usb;
+
 mod ws;

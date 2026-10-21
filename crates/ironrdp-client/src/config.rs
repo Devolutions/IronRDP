@@ -419,6 +419,10 @@ pub struct ChannelConfig {
     #[cfg(feature = "video")]
     pub video: crate::video::VideoConfig,
 
+    /// Local USB devices to redirect over MS-RDPEUSB (URBDRC), or `None` to disable the channel.
+    #[cfg(feature = "usb")]
+    pub usb: Option<ironrdp_rdpeusb_native::UsbRedirectionConfig>,
+
     /// H.264 decoder for the graphics pipeline and video optimized remoting.
     ///
     /// Defaults to [`crate::h264::H264DecoderFactory::platform_default`]: Media Foundation's on
@@ -451,6 +455,8 @@ impl Default for ChannelConfig {
             cameras: crate::camera::CameraConfig::default(),
             #[cfg(feature = "video")]
             video: crate::video::VideoConfig::default(),
+            #[cfg(feature = "usb")]
+            usb: None,
             h264_decoder: crate::h264::H264DecoderFactory::platform_default(),
         }
     }
@@ -1737,6 +1743,17 @@ impl ConfigBuilder {
         &self.channels.cameras
     }
 
+    /// Select the local USB devices to redirect over MS-RDPEUSB, or disable USB redirection with `None`.
+    ///
+    /// This is not mirrored into the property set: FreeRDP-style `addr:` and `auto` rules have no
+    /// `usbdevicestoredirect` equivalent.
+    #[cfg(feature = "usb")]
+    #[must_use]
+    pub fn with_usb_redirection(mut self, usb: Option<ironrdp_rdpeusb_native::UsbRedirectionConfig>) -> Self {
+        self.channels.usb = usb;
+        self
+    }
+
     /// Parent HWND used for WebAuthn UI prompts (Windows only).
     #[cfg(all(windows, feature = "webauthn"))]
     #[must_use]
@@ -2617,6 +2634,16 @@ impl ConfigBuilder {
             self.channels.qoiz = enabled;
         }
 
+        if let Some(devices) = ps.usb_devices_to_redirect() {
+            #[cfg(feature = "usb")]
+            {
+                let usb = ironrdp_rdpeusb_native::UsbRedirectionConfig::parse_rdp(devices)
+                    .context("invalid usbdevicestoredirect property")?;
+                self.channels.usb = usb.is_enabled().then_some(usb);
+            }
+            let _ = devices;
+        }
+
         #[cfg(feature = "dvc-pipe-proxy")]
         for (idx, proxy) in ps.dvc_pipe_proxies().enumerate() {
             let proxy = proxy.with_context(|| format!("invalid DVC pipe proxy spec at idx {idx}"))?;
@@ -3204,5 +3231,50 @@ mod tests {
         let builder = ConfigBuilder::from_property_set(&properties).expect("valid WebAuthn property");
         assert!(!builder.channels.webauthn);
         assert!(!builder.properties.redirect_webauthn().unwrap());
+    }
+
+    #[cfg(feature = "usb")]
+    #[test]
+    fn property_set_selects_usb_devices() {
+        use ironrdp_rdpeusb_native::UsbDeviceMatch;
+
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.set_usb_devices_to_redirect(r"USB\VID_2E8A&PID_000A\E66038B7135F2B2E;-USB\VID_046D&PID_C52B");
+
+        let builder = ConfigBuilder::from_property_set(&properties).expect("valid USB property");
+        let usb = builder.channels.usb.expect("USB redirection is enabled");
+        assert_eq!(
+            usb.devices,
+            [UsbDeviceMatch::VidPid {
+                vendor_id: 0x2e8a,
+                product_id: Some(0x000a),
+            }]
+        );
+        assert_eq!(
+            usb.exclude,
+            [UsbDeviceMatch::VidPid {
+                vendor_id: 0x046d,
+                product_id: Some(0xc52b),
+            }]
+        );
+    }
+
+    #[cfg(feature = "usb")]
+    #[test]
+    fn property_set_without_usb_devices_disables_usb() {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.set_usb_devices_to_redirect("{36fc9e60-c465-11cf-8056-444553540000}");
+
+        let builder = ConfigBuilder::from_property_set(&properties).expect("valid USB property");
+        assert!(builder.channels.usb.is_none());
+    }
+
+    #[cfg(feature = "usb")]
+    #[test]
+    fn property_set_rejects_invalid_usb_devices() {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.set_usb_devices_to_redirect(r"USB\VID_XYZ&PID_0001");
+
+        assert!(ConfigBuilder::from_property_set(&properties).is_err());
     }
 }

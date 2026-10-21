@@ -2793,6 +2793,8 @@ dependencies = [
  "ironrdp-rdpel",
  "ironrdp-rdpeudp",
  "ironrdp-rdpeudp-tokio",
+ "ironrdp-rdpeusb",
+ "ironrdp-rdpeusb-native",
  "ironrdp-rdpevor",
  "ironrdp-rdpewa",
  "ironrdp-rdpewa-native",

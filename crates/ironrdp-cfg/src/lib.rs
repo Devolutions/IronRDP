@@ -699,6 +699,16 @@ pub trait PropertySetExt {
     /// Removes the `shell working directory` property.
     fn clear_shell_working_directory(&mut self);
 
+    /// USB devices to redirect over MS-RDPEUSB (`usbdevicestoredirect`).
+    ///
+    /// A semicolon-separated list of `*`, device instance IDs such as `USB\VID_045E&PID_0040\...`,
+    /// device setup class GUIDs, and `-` prefixed exclusions.
+    fn usb_devices_to_redirect(&self) -> Option<&str>;
+    /// Sets the `usbdevicestoredirect` property.
+    fn set_usb_devices_to_redirect(&mut self, value: impl Into<String>);
+    /// Removes the `usbdevicestoredirect` property.
+    fn clear_usb_devices_to_redirect(&mut self);
+
     /// Username of the RDP account credentials (`username`).
     fn username(&self) -> Option<&str>;
     /// Sets the `username` property.
@@ -1251,6 +1261,18 @@ impl PropertySetExt for PropertySet {
 
     fn clear_shell_working_directory(&mut self) {
         self.remove("shell working directory");
+    }
+
+    fn usb_devices_to_redirect(&self) -> Option<&str> {
+        self.get::<&str>("usbdevicestoredirect")
+    }
+
+    fn set_usb_devices_to_redirect(&mut self, value: impl Into<String>) {
+        self.insert("usbdevicestoredirect", value.into());
+    }
+
+    fn clear_usb_devices_to_redirect(&mut self) {
+        self.remove("usbdevicestoredirect");
     }
 
     fn username(&self) -> Option<&str> {
