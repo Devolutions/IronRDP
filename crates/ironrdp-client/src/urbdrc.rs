@@ -50,7 +50,10 @@ pub(crate) fn process_urbdrc_event(active_stage: &mut ActiveStage, event: Urbdrc
             completion,
         } => {
             let Some(mut channel) = drdynvc.get_dvc_by_channel_id_mut::<UrbdrcDeviceClient>(channel_id) else {
-                trace!(channel_id, request_id, "Dropping a USB completion for a closed device channel");
+                trace!(
+                    channel_id,
+                    request_id, "Dropping a USB completion for a closed device channel"
+                );
                 return Ok(UrbdrcOutput::Nothing);
             };
             let device = channel.processor_mut();
@@ -71,7 +74,10 @@ pub(crate) fn process_urbdrc_event(active_stage: &mut ActiveStage, event: Urbdrc
         }
         UrbdrcEvent::AddVirtualChannel { control_channel_id } => {
             let Some(channel) = drdynvc.get_dvc_by_channel_id::<UrbdrcControlClient>(control_channel_id) else {
-                warn!(control_channel_id, "Cannot announce a USB device: the URBDRC control channel is closed");
+                warn!(
+                    control_channel_id,
+                    "Cannot announce a USB device: the URBDRC control channel is closed"
+                );
                 return Ok(UrbdrcOutput::Nothing);
             };
             match channel.processor().add_virtual_channel() {
