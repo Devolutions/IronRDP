@@ -175,11 +175,6 @@ impl EnumerationClient {
         self.state == EnumerationState::Ready
     }
 
-    /// Protocol version selected by the server, once negotiated.
-    pub fn version(&self) -> Option<ProtocolVersion> {
-        self.ready().then(|| self.session.version())
-    }
-
     /// Adds a newly selected camera.
     ///
     /// Once the version is negotiated, the camera is advertised right away and the returned
