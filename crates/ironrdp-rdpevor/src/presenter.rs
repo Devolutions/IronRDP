@@ -142,10 +142,13 @@ impl VideoPresenter {
             warn!(?dimensions, "Ignoring a video presentation with invalid dimensions");
             return false;
         }
-        if self.presentation_id() == Some(request.presentation_id) {
+        if let Some(active) = self.presentation_id() {
+            // MS-RDPEVOR 3.2.5.1: one presentation at a time, and Start is ignored outside the
+            // Uninitialized state.
             debug!(
+                active,
                 presentation_id = request.presentation_id,
-                "Ignoring a restart of the active video presentation"
+                "Ignoring a video presentation while another one is active"
             );
             return false;
         }
@@ -153,9 +156,6 @@ impl VideoPresenter {
             warn!("No H.264 decoder is available for the video presentation");
             return false;
         };
-        if let Some(previous) = self.presentation.take() {
-            info!(presentation_id = previous.id, "Replacing the active video presentation");
-        }
         info!(
             presentation_id = request.presentation_id,
             source_width = request.source_width,
@@ -245,25 +245,30 @@ impl VideoPresenter {
                 && assembly.packets == data.packets_in_sample
         });
         if data.current_packet_index == 1 {
-            if presentation.assembly.take().is_some() {
+            let interrupted = presentation
+                .assembly
+                .replace(Assembly {
+                    sample_number: data.sample_number,
+                    next_index: 1,
+                    packets: data.packets_in_sample,
+                    flags: data.flags,
+                    timestamp: data.timestamp,
+                    duration: data.duration,
+                    data: Vec::new(),
+                })
+                .is_some();
+            if interrupted {
                 self.report_loss("video sample interrupted by a new sample");
-                return self.push_packet(data);
             }
-            presentation.assembly = Some(Assembly {
-                sample_number: data.sample_number,
-                next_index: 1,
-                packets: data.packets_in_sample,
-                flags: data.flags,
-                timestamp: data.timestamp,
-                duration: data.duration,
-                data: Vec::new(),
-            });
         } else if !continues {
             presentation.assembly = None;
             self.report_loss("video sample packet missing or out of order");
             return;
         }
 
+        let Some(presentation) = self.presentation.as_mut() else {
+            return;
+        };
         let Some(assembly) = presentation.assembly.as_mut() else {
             return;
         };

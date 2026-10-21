@@ -154,8 +154,8 @@ pub(crate) fn deadline(active_stage: &ActiveStage) -> Option<tokio::time::Instan
 
 /// Composites the pictures due now into `image` and queues the server notifications.
 ///
-/// Notifications are only sent when the iteration has no other dynamic channel batch; otherwise
-/// they stay queued for a later iteration.
+/// Notifications are only sent when the iteration has no other non-empty dynamic channel batch;
+/// otherwise they stay queued for a later iteration.
 pub(crate) fn present(
     active_stage: &mut ActiveStage,
     image: &mut DecodedImage,
@@ -172,7 +172,7 @@ pub(crate) fn present(
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .poll(image.width(), image.height());
-    if dvc_batch.is_none() {
+    if dvc_batch.as_ref().is_none_or(|batch| batch.messages().is_empty()) {
         match control
             .processor_mut()
             .pending_messages()

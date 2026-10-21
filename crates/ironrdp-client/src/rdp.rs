@@ -3175,6 +3175,14 @@ impl ActiveSessionIteration {
     }
 }
 
+/// Completes at `deadline`, or never without one.
+async fn sleep_until_deadline(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => core::future::pending().await,
+    }
+}
+
 #[cfg(feature = "rdpdr")]
 fn poll_deferred_rdpdr_output(active_stage: &mut ActiveStage) -> SessionResult<Option<ActiveStageOutput>> {
     let messages = match active_stage.get_svc_processor_mut::<ironrdp_rdpdr::Rdpdr>() {
@@ -3954,21 +3962,11 @@ async fn active_session(
                     };
                     ActiveSessionIteration::outputs(outputs)
                 }
-                _ = async {
-                    match video_deadline {
-                        Some(deadline) => tokio::time::sleep_until(deadline).await,
-                        None => core::future::pending().await,
-                    }
-                } => {
+                _ = sleep_until_deadline(video_deadline) => {
                     // Due video pictures are composited below.
                     ActiveSessionIteration::outputs(Vec::new())
                 }
-                _ = async {
-                    match input_batch_deadline {
-                        Some(deadline) => tokio::time::sleep_until(deadline).await,
-                        None => core::future::pending().await,
-                    }
-                } => {
+                _ = sleep_until_deadline(input_batch_deadline) => {
                     ActiveSessionIteration::outputs(match input_batcher.flush(tokio::time::Instant::now()) {
                         Some(events) => active_stage.process_fastpath_input(&mut image, &events)?,
                         None => Vec::new(),

@@ -421,6 +421,18 @@ fn control_channel_answers_start_only_when_the_presentation_can_be_decoded() {
             .unwrap()
             .is_empty()
     );
+    // So is a start for another presentation while this one is active.
+    let other_presentation = PresentationRequest {
+        presentation_id: 4,
+        ..small_request()
+    };
+    assert!(
+        control
+            .process(1, &encode_vec(&other_presentation).unwrap())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(harness.presenter().presentation_id(), Some(3));
 
     let stop = PresentationRequest {
         command: PresentationCommand::STOP,

@@ -2,6 +2,7 @@
 //!
 //! [MS-RDPEGT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegt/
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use ironrdp_core::{
@@ -197,7 +198,8 @@ impl MappedGeometry {
                 .iter()
                 .filter_map(|rect| rect.offset(desktop.left, desktop.top).intersect(&desktop))
                 .collect(),
-            _ => desktop.intersect(&desktop).into_iter().collect(),
+            _ if desktop.is_empty() => Vec::new(),
+            _ => vec![desktop],
         }
     }
 }

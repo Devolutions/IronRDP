@@ -97,9 +97,16 @@ impl H264Decoder for MediaFoundationH264Decoder {
         commands
             .send(Command::Decode(data.to_vec(), reply))
             .map_err(|_| DecoderError::msg("the H.264 decoder thread has stopped"))?;
-        response
-            .recv_timeout(DECODE_TIMEOUT)
-            .map_err(|_| DecoderError::msg("the H.264 decoder did not answer"))?
+        match response.recv_timeout(DECODE_TIMEOUT) {
+            Ok(result) => result,
+            Err(_) => {
+                // A hung transform would stall every later sample, and joining it would block the
+                // session: later decodes fail at once and the thread is left to end on its own.
+                self.commands = None;
+                drop(self.thread.take());
+                Err(DecoderError::msg("the H.264 decoder did not answer and was abandoned"))
+            }
+        }
     }
 
     fn reset(&mut self) {
