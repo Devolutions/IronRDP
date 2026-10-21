@@ -580,6 +580,18 @@ impl Rdpdr {
         Ok(messages)
     }
 
+    /// Whether the server may send IRPs for `device_id`: it was announced and not rejected.
+    ///
+    /// A device awaiting its announcement response counts as announced. Windows can send the first
+    /// IRP for a device just before the response accepting it, and an unanswered IRP stalls the
+    /// server for about 30 seconds. A later rejection removes the drive from the backend, which
+    /// cancels its pending IRPs; printer creates still wait for acceptance, because a rejected
+    /// printer's job would not be released. FreeRDP likewise serves every announced device until
+    /// rejected.
+    fn device_is_announced(&self, device_id: u32) -> bool {
+        self.active_device_ids.contains(&device_id) || self.pending_device_announcements.contains(&device_id)
+    }
+
     fn handle_user_logged_on(&mut self) -> PduResult<Vec<SvcMessage>> {
         if !self.client_id_confirmed {
             debug!("Deferring RDPDR user logged on until the client ID is confirmed");
@@ -640,12 +652,12 @@ impl Rdpdr {
                     );
                     return Ok(Vec::new());
                 }
-                if !self.active_device_ids.contains(&dev_io_req.device_id) {
+                if !self.device_is_announced(dev_io_req.device_id) {
                     warn!(
                         device_id = dev_io_req.device_id,
                         file_id = dev_io_req.file_id,
                         completion_id = dev_io_req.completion_id,
-                        "Ignoring filesystem IRP before device announcement confirmation"
+                        "Ignoring filesystem IRP for a device that was not announced"
                     );
                     return Ok(Vec::new());
                 }
@@ -702,14 +714,33 @@ impl Rdpdr {
                     );
                     return Ok(Vec::new());
                 }
-                if !self.active_device_ids.contains(&dev_io_req.device_id) {
+                if !self.device_is_announced(dev_io_req.device_id) {
                     warn!(
                         device_id = dev_io_req.device_id,
                         file_id = dev_io_req.file_id,
                         completion_id = dev_io_req.completion_id,
-                        "Ignoring printer IRP before device announcement confirmation"
+                        "Ignoring printer IRP for a device that was not announced"
                     );
                     return Ok(Vec::new());
+                }
+                // A printer create starts a native print job, which a later rejection would leave
+                // allocated because the rejected device's close is ignored. Fail it until the
+                // server accepts the printer.
+                if dev_io_req.major_function == MajorFunction::Create
+                    && !self.active_device_ids.contains(&dev_io_req.device_id)
+                {
+                    debug!(
+                        device_id = dev_io_req.device_id,
+                        completion_id = dev_io_req.completion_id,
+                        "Failing printer create before the announcement response"
+                    );
+                    return Ok(vec![SvcMessage::from(RdpdrPdu::DeviceCreateResponse(
+                        DeviceCreateResponse {
+                            device_io_reply: DeviceIoResponse::new(dev_io_req, NtStatus::UNSUCCESSFUL),
+                            file_id: 0,
+                            information: Information::empty(),
+                        },
+                    ))]);
                 }
 
                 match dev_io_req.major_function {
@@ -1348,6 +1379,94 @@ mod tests {
                 .drive_requests
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn drive_irps_before_the_announcement_response_reach_the_backend() {
+        let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned())
+            .with_drives(Some(vec![(42, "C:".to_owned())]));
+        let responses = rdpdr
+            .process(&encoded_server_announce(0x1234))
+            .expect("process server announce");
+        let client_id = read_u32(
+            &responses[0]
+                .encode_unframed_pdu()
+                .expect("encode client announce response"),
+            8,
+        );
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .expect("process server client ID confirm");
+
+        // Not announced yet: the drive is only announced after the user logs on.
+        assert!(
+            rdpdr
+                .process(&encoded_drive_io_request(42, 0x100, MajorFunction::Close))
+                .expect("process request for an unannounced drive")
+                .is_empty()
+        );
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+            .expect("process user logged on");
+
+        // Windows can send the first IRP just before accepting the announcement.
+        rdpdr
+            .process(&encoded_drive_io_request(42, 0x101, MajorFunction::Close))
+            .expect("process request before the announcement response");
+        assert!(
+            rdpdr
+                .process(&encoded_server_device_announce_response(42, NtStatus::SUCCESS))
+                .expect("accept the drive")
+                .is_empty()
+        );
+        rdpdr
+            .process(&encoded_drive_io_request(42, 0x102, MajorFunction::Close))
+            .expect("process request after the announcement response");
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .drive_requests,
+            vec![(42, 0x101), (42, 0x102)]
+        );
+    }
+
+    #[test]
+    fn rejecting_a_drive_after_an_early_irp_removes_it_from_the_backend() {
+        let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned())
+            .with_drives(Some(vec![(42, "C:".to_owned())]));
+        let responses = rdpdr
+            .process(&encoded_server_announce(0x1234))
+            .expect("process server announce");
+        let client_id = read_u32(
+            &responses[0]
+                .encode_unframed_pdu()
+                .expect("encode client announce response"),
+            8,
+        );
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .expect("process server client ID confirm");
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+            .expect("process user logged on");
+
+        rdpdr
+            .process(&encoded_drive_io_request(42, 0x101, MajorFunction::Close))
+            .expect("process request before the announcement response");
+        let responses = rdpdr
+            .process(&encoded_server_device_announce_response(42, NtStatus::ACCESS_DENIED))
+            .expect("process rejected device announcement");
+        assert_eq!(responses.len(), 1, "the rejected drive is removed");
+        assert!(
+            rdpdr
+                .process(&encoded_drive_io_request(42, 0x102, MajorFunction::Close))
+                .expect("process request for the rejected drive")
+                .is_empty()
+        );
+        let backend = rdpdr.downcast_backend::<TrackingBackend>().expect("tracking backend");
+        assert_eq!(backend.drive_requests, vec![(42, 0x101)]);
+        assert_eq!(backend.removed_drives, vec![42]);
     }
 
     #[test]
