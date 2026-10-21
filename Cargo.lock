@@ -2834,6 +2834,7 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-wlr",
  "windows",
+ "windows-core",
  "x11rb",
 ]
 
@@ -3549,6 +3550,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "windows",
 ]
 
 [[package]]

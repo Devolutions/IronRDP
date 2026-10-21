@@ -1,9 +1,15 @@
+use std::ffi::OsString;
+use std::os::windows::ffi::OsStringExt as _;
+use std::path::PathBuf;
+
 use ironrdp_cliprdr::pdu::{ClipboardFormat, ClipboardFormatId, ClipboardFormatName};
 use tracing::error;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardFormatNameW, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardFormatNameW, OpenClipboard,
+    SetClipboardData,
 };
+use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 
 use crate::windows::WinCliprdrError;
 use crate::windows::utils::get_last_winapi_error;
@@ -69,6 +75,32 @@ impl OwnedOsClipboard {
         }
 
         Ok(formats)
+    }
+
+    /// Returns the paths in `CF_HDROP`, or `None` if the clipboard has no file drop.
+    #[expect(clippy::unused_self)] // ensure we own the clipboard using RAII, and exclusive &mut self reference
+    pub(crate) fn dropped_files(&mut self) -> Option<Vec<PathBuf>> {
+        // SAFETY: We own the clipboard at moment of method invocation, therefore it is safe to
+        // call `GetClipboardData`.
+        let handle = unsafe { GetClipboardData(ClipboardFormatId::CF_HDROP.value()) }.ok()?;
+        let hdrop = HDROP(handle.0);
+
+        // SAFETY: `hdrop` is the clipboard's CF_HDROP handle, valid while the clipboard is open;
+        // index 0xFFFFFFFF queries the file count.
+        let count = unsafe { DragQueryFileW(hdrop, u32::MAX, None) };
+
+        let mut paths = Vec::new();
+        for index in 0..count {
+            // SAFETY: Same as above; a missing buffer queries the path length.
+            let len = unsafe { DragQueryFileW(hdrop, index, None) };
+            let mut buffer = vec![0u16; usize::try_from(len).ok()?.saturating_add(1)];
+            // SAFETY: Same as above; `buffer` has room for the path and its null terminator.
+            let copied = unsafe { DragQueryFileW(hdrop, index, Some(&mut buffer)) };
+            buffer.truncate(usize::try_from(copied).ok()?);
+            paths.push(PathBuf::from(OsString::from_wide(&buffer)));
+        }
+
+        Some(paths)
     }
 
     /// Empties the clipboard

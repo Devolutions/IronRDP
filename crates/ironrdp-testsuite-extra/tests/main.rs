@@ -5,7 +5,7 @@ mod agent;
 mod async_framed;
 mod capture_helpers;
 mod client;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod cliprdr_native;
 mod dvc_pipe_proxy;
 mod e2e;

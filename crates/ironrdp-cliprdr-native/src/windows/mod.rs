@@ -1,33 +1,49 @@
 mod clipboard_data_ref;
 mod clipboard_impl;
 mod cliprdr_backend;
+mod data_object;
+#[cfg(feature = "__test")]
+pub mod file_list;
+#[cfg(not(feature = "__test"))]
+#[expect(
+    unreachable_pub,
+    reason = "the __test feature exposes internals to the shared test suite"
+)]
+pub(crate) mod file_list;
+mod local_files;
 mod os_clipboard;
 mod remote_format_registry;
+mod transport;
 mod utils;
 
 use std::sync::mpsc as mpsc_sync;
 
 use ironrdp_cliprdr::backend::{ClipboardMessageProxy, CliprdrBackend, CliprdrBackendFactory};
 use ironrdp_cliprdr::pdu::{
-    ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FormatDataRequest, FormatDataResponse,
+    ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse,
+    FileDescriptor, FormatDataRequest, FormatDataResponse, LockDataId,
 };
-use tracing::error;
+use tracing::{debug, error};
 pub use windows::Win32::Foundation::HWND;
-use windows::Win32::Foundation::{E_ACCESSDENIED, FALSE, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{CLIPBRD_E_CANT_OPEN, E_ACCESSDENIED, FALSE, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::Com::{APTTYPE, APTTYPE_MAINSTA, APTTYPE_STA, APTTYPEQUALIFIER, CoGetApartmentType};
 use windows::Win32::System::DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener};
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
+use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
 use windows::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CW_USEDEFAULT, CreateWindowExA, DefWindowProcA, GetClassInfoA, RegisterClassA, WINDOW_EX_STYLE, WM_USER, WNDCLASSA,
-    WS_POPUP,
+    CW_USEDEFAULT, CreateWindowExA, DefWindowProcA, GetClassInfoA, RegisterClassA, SendMessageW, WINDOW_EX_STYLE,
+    WM_USER, WNDCLASSA, WS_POPUP,
 };
 use windows::core::{Error, s};
 
-use self::clipboard_impl::{WinClipboardImpl, clipboard_subproc};
+use self::clipboard_impl::{ClipboardWindowState, WinClipboardImpl, clipboard_subproc};
 use self::cliprdr_backend::WinCliprdrBackend;
 
 const BACKEND_CHANNEL_SIZE: usize = 8;
 const WM_CLIPRDR_BACKEND_EVENT: u32 = WM_USER;
+/// Sent by [`WinClipboard`] when it is dropped, while the subclass is still installed.
+const WM_CLIPRDR_SHUTDOWN: u32 = WM_USER + 1;
 
 pub type WinCliprdrResult<T> = Result<T, WinCliprdrError>;
 
@@ -92,7 +108,8 @@ impl core::error::Error for WinCliprdrError {
 
 impl From<Error> for WinCliprdrError {
     fn from(err: Error) -> Self {
-        if err.code() == E_ACCESSDENIED {
+        // `CLIPBRD_E_CANT_OPEN` is what OLE reports when another application holds the clipboard.
+        if err.code() == E_ACCESSDENIED || err.code() == CLIPBRD_E_CANT_OPEN {
             WinCliprdrError::ClipboardAccessDenied
         } else {
             WinCliprdrError::WinAPI(err)
@@ -109,11 +126,23 @@ pub(crate) enum BackendEvent {
     RenderAllFormats,
 
     // PDU processing events
+    /// A backend was built for a new `CLIPRDR` channel.
+    SessionStarted,
     DowngradedCapabilities(ClipboardGeneralCapabilityFlags),
+    Ready,
     RemoteFormatList(Vec<ClipboardFormat>),
     FormatDataRequest(FormatDataRequest),
     FormatDataResponse(FormatDataResponse<'static>),
     RemoteRequestsFormatList,
+    RemoteFileList {
+        files: Vec<FileDescriptor>,
+        clip_data_id: Option<u32>,
+    },
+    FileContentsRequest(FileContentsRequest),
+    FileContentsResponse(FileContentsResponse<'static>),
+    Lock(LockDataId),
+    Unlock(LockDataId),
+    OutgoingLocksCleared(Vec<LockDataId>),
 }
 
 /// Windows RDP client clipboard implementation.
@@ -127,9 +156,32 @@ pub(crate) enum BackendEvent {
 /// This type is not thread safe, it should be used only in the main thread with a windows event
 /// loop. (GUI thread). However, backend factory returned by [`WinClipboard::backend_factory`]
 /// can be safely used in other threads.
+///
+/// # File transfer
+///
+/// Files are copied in both directions ([MS-RDPECLIP] file stream protocol): local files
+/// (`CF_HDROP`, or `FileGroupDescriptorW` from another application) are offered to the
+/// remote, and remote files are put on the local clipboard as an OLE data object, so that
+/// pasting into Explorer works. The latter needs a single-threaded apartment: it is only
+/// enabled when [`WinClipboard`] is created on an STA thread (a GUI thread normally is).
+///
+/// The embedder must route [`ClipboardMessage::SendInitiateFileCopy`],
+/// [`ClipboardMessage::SendFileContentsRequest`] and
+/// [`ClipboardMessage::SendFileContentsResponse`] to `Cliprdr`, and drive
+/// `Cliprdr::drive_timeouts`. Embedders that don't should use
+/// [`WinClipboard::with_file_transfer`] to turn file transfer off.
+///
+/// [MS-RDPECLIP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/fb9b7e0b-6db4-41c2-b83c-f889c1ee7688
+/// [`ClipboardMessage::SendInitiateFileCopy`]: ironrdp_cliprdr::backend::ClipboardMessage::SendInitiateFileCopy
+/// [`ClipboardMessage::SendFileContentsRequest`]: ironrdp_cliprdr::backend::ClipboardMessage::SendFileContentsRequest
+/// [`ClipboardMessage::SendFileContentsResponse`]: ironrdp_cliprdr::backend::ClipboardMessage::SendFileContentsResponse
 pub struct WinClipboard {
     window: HWND,
     backend_tx: mpsc_sync::SyncSender<BackendEvent>,
+    file_transfer: bool,
+    ole_initialized: bool,
+    /// Address of the subclass state, from `Box::into_raw`.
+    state: usize,
 
     /// From MS docs:
     /// ```text
@@ -141,10 +193,21 @@ pub struct WinClipboard {
 }
 
 impl WinClipboard {
-    /// Creates new clipboard instance.
+    /// Creates new clipboard instance, with file transfer enabled.
     ///
     /// Under the hood, a hidden window is created for capturing the clipboard events.
     pub fn new(message_proxy: impl ClipboardMessageProxy + 'static) -> WinCliprdrResult<Self> {
+        Self::with_file_transfer(message_proxy, true)
+    }
+
+    /// Creates new clipboard instance, with file transfer enabled or not.
+    ///
+    /// With `file_transfer` off, the backend neither negotiates nor produces any file stream
+    /// message, and file lists are not advertised in either direction.
+    pub fn with_file_transfer(
+        message_proxy: impl ClipboardMessageProxy + 'static,
+        file_transfer: bool,
+    ) -> WinCliprdrResult<Self> {
         extern "system" fn wndproc(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
             // SAFETY: default handler
             unsafe { DefWindowProcA(window, message, wparam, lparam) }
@@ -202,29 +265,41 @@ impl WinClipboard {
 
         let (backend_tx, backend_rx) = mpsc_sync::sync_channel(BACKEND_CHANNEL_SIZE);
 
-        let ctx = Box::new(WinClipboardImpl::new(window, message_proxy, backend_rx));
+        let ole_initialized = file_transfer && init_ole();
+
+        let ctx = Box::new(ClipboardWindowState::new(WinClipboardImpl::new(
+            window,
+            message_proxy,
+            backend_rx,
+            file_transfer,
+            ole_initialized,
+        )));
+
+        let state = Box::into_raw(ctx).expose_provenance();
 
         // We need to receive winapi messages in the main thread, so we need to add a subclass to
         // the window.
         //
         // SAFETY: `window` is a valid window handle, `clipboard_subproc` is in the static memory,
         // `ctx` is valid and its ownership is transferred to the subclass via `into_raw`.
-        let winapi_result = unsafe {
-            SetWindowSubclass(
-                window,
-                Some(clipboard_subproc),
-                0,
-                Box::into_raw(ctx).expose_provenance(),
-            )
-        };
+        let winapi_result = unsafe { SetWindowSubclass(window, Some(clipboard_subproc), 0, state) };
 
         if winapi_result == FALSE {
+            // SAFETY: `state` comes from `Box::into_raw` above and the subclass procedure never got it.
+            drop(unsafe { Box::from_raw(core::ptr::with_exposed_provenance_mut::<ClipboardWindowState>(state)) });
+            if ole_initialized {
+                // SAFETY: Balances the successful `OleInitialize` above, on the same thread.
+                unsafe { OleUninitialize() };
+            }
             return Err(WinCliprdrError::WindowSubclass);
         }
 
         Ok(Self {
             window,
             backend_tx,
+            file_transfer,
+            ole_initialized,
+            state,
             _thread_marker: Default::default(),
         })
     }
@@ -234,12 +309,19 @@ impl WinClipboard {
         Box::new(WinCliprdrBackendFactory {
             tx: self.backend_tx.clone(),
             window: self.window,
+            file_transfer: self.file_transfer,
         })
     }
 }
 
 impl Drop for WinClipboard {
     fn drop(&mut self) {
+        // Let the clipboard implementation take its OLE data object off the clipboard: it can't
+        // serve anything once this instance is gone.
+        //
+        // SAFETY: `window` is a valid window handle owned by this thread.
+        unsafe { SendMessageW(self.window, WM_CLIPRDR_SHUTDOWN, None, None) };
+
         // Remove clipboard processing from WinAPI event loop
 
         // SAFETY: Format listener was registered in the `new` method previously.
@@ -248,8 +330,53 @@ impl Drop for WinClipboard {
         }
 
         // SAFETY: Subclass was registered in the `new` method previously.
-        if !unsafe { RemoveWindowSubclass(self.window, Some(clipboard_subproc), 0) }.as_bool() {
+        if unsafe { RemoveWindowSubclass(self.window, Some(clipboard_subproc), 0) }.as_bool() {
+            // The subclass procedure can't run anymore, so its state can go.
+            //
+            // SAFETY: `state` is the pointer returned by `Box::into_raw` in `new`. It was not freed
+            // yet: that only happens on `WM_NCDESTROY`, after which the subclass is already gone and
+            // can't be removed here.
+            drop(unsafe {
+                Box::from_raw(core::ptr::with_exposed_provenance_mut::<ClipboardWindowState>(
+                    self.state,
+                ))
+            });
+        } else {
             error!("Failed to remove window subclass")
+        }
+
+        if self.ole_initialized {
+            // SAFETY: Balances the successful `OleInitialize` in `new`, on the same thread
+            // (`WinClipboard` is neither `Send` nor `Sync`).
+            unsafe { OleUninitialize() };
+        }
+    }
+}
+
+/// Initializes OLE on the current thread if it is a single-threaded apartment.
+///
+/// OLE needs an STA. Threads without COM are left alone, rather than turned into STAs behind
+/// the embedder's back.
+fn init_ole() -> bool {
+    let mut apartment_type = APTTYPE::default();
+    let mut qualifier = APTTYPEQUALIFIER::default();
+    // SAFETY: Both pointers are valid for writes.
+    let apartment = unsafe { CoGetApartmentType(&mut apartment_type, &mut qualifier) };
+
+    if apartment.is_err() || !(apartment_type == APTTYPE_STA || apartment_type == APTTYPE_MAINSTA) {
+        debug!(
+            ?apartment_type,
+            "Clipboard thread is not a single-threaded apartment; remote files can't be pasted"
+        );
+        return false;
+    }
+
+    // SAFETY: Called on an STA thread; balanced by `OleUninitialize` in `WinClipboard::drop`.
+    match unsafe { OleInitialize(None) } {
+        Ok(()) => true,
+        Err(error) => {
+            debug!(%error, "Failed to initialize OLE; remote files can't be pasted");
+            false
         }
     }
 }
@@ -258,6 +385,7 @@ impl Drop for WinClipboard {
 struct WinCliprdrBackendFactory {
     tx: mpsc_sync::SyncSender<BackendEvent>,
     window: HWND,
+    file_transfer: bool,
 }
 
 // SAFETY: window handle is thread safe for PostMessageW usage
@@ -265,6 +393,6 @@ unsafe impl Send for WinCliprdrBackendFactory {}
 
 impl CliprdrBackendFactory for WinCliprdrBackendFactory {
     fn build_cliprdr_backend(&self) -> Box<dyn CliprdrBackend> {
-        Box::new(WinCliprdrBackend::new(self.window, self.tx.clone()))
+        Box::new(WinCliprdrBackend::new(self.window, self.tx.clone(), self.file_transfer))
     }
 }

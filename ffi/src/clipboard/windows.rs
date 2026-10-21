@@ -96,7 +96,9 @@ impl WinCliprdrInner {
 
         let proxy = crate::clipboard::FfiClipboardMessageProxy { sender };
 
-        let clipboard = ironrdp_cliprdr_native::WinClipboard::new(proxy)?;
+        // The bindings can't submit file stream messages to `Cliprdr` yet, so file transfer
+        // stays off rather than producing messages nobody routes.
+        let clipboard = ironrdp_cliprdr_native::WinClipboard::with_file_transfer(proxy, false)?;
 
         Ok(WinCliprdrInner { clipboard, receiver })
     }

@@ -39,12 +39,16 @@ ironrdp-cliprdr-format = { path = "../ironrdp-cliprdr-format", version = "0.2" }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
     "Win32_System_DataExchange",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
+    "Win32_System_Ole",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+windows-core = "0.62" # `#[implement]` expands to paths into `windows_core`
 
 [lints]
 workspace = true

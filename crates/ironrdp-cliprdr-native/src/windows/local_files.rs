@@ -1,0 +1,275 @@
+//! Files offered from the local clipboard to the remote, and the answers to the remote's
+//! `FileContentsRequest`s for them.
+
+use core::cell::RefCell;
+use core::ffi::c_void;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use ironrdp_cliprdr::pdu::{FileContentsFlags, FileContentsRequest, FileContentsResponse, FileDescriptor};
+use tracing::debug;
+use windows::Win32::System::Com::{
+    DVASPECT_CONTENT, FORMATETC, IDataObject, IStream, STREAM_SEEK_SET, TYMED_HGLOBAL, TYMED_ISTREAM,
+};
+use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+use windows::Win32::System::Ole::ReleaseStgMedium;
+
+use crate::windows::file_list::{LocalFileEntry, MAX_FILE_CONTENTS_CHUNK, is_directory, read_file_contents};
+
+/// Locked snapshots kept at most, as in `Cliprdr` itself.
+const MAX_LOCKED_SOURCES: usize = 100;
+
+/// Files on the local clipboard.
+#[derive(Debug)]
+pub(crate) enum LocalFileSource {
+    /// Files and directories from `CF_HDROP`, read from disk.
+    Paths(Vec<LocalFileEntry>),
+    /// Files another application offers as `FileGroupDescriptorW` and `FileContents`
+    /// (e.g. e-mail attachments or files inside an archive), read through its data object.
+    Virtual(VirtualFiles),
+}
+
+#[derive(Debug)]
+pub(crate) struct VirtualFiles {
+    data_object: IDataObject,
+    file_contents_format: u16,
+    /// Each sent descriptor with its `lindex` in the source data object, which differs from
+    /// the index in the list sent when entries were left out.
+    files: Vec<(FileDescriptor, i32)>,
+    /// Last stream opened, reused while the remote reads the same file in chunks.
+    open_stream: RefCell<Option<(i32, IStream)>>,
+}
+
+impl VirtualFiles {
+    pub(crate) fn new(data_object: IDataObject, file_contents_format: u16, files: Vec<(FileDescriptor, i32)>) -> Self {
+        Self {
+            data_object,
+            file_contents_format,
+            files,
+            open_stream: RefCell::new(None),
+        }
+    }
+
+    fn read(&self, request: &FileContentsRequest, descriptor: &FileDescriptor, lindex: i32) -> Option<Vec<u8>> {
+        if request.flags.contains(FileContentsFlags::SIZE) {
+            if let Some(size) = descriptor.file_size {
+                return Some(size.to_le_bytes().to_vec());
+            }
+        }
+
+        if let Some(stream) = self.cached_stream(lindex) {
+            return read_stream(&stream, request);
+        }
+
+        let format = FORMATETC {
+            cfFormat: self.file_contents_format,
+            ptd: core::ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT.0,
+            lindex,
+            tymed: (TYMED_ISTREAM.0 | TYMED_HGLOBAL.0).cast_unsigned(),
+        };
+
+        // SAFETY: `format` is a valid FORMATETC without a target device.
+        let mut medium = match unsafe { self.data_object.GetData(&format) } {
+            Ok(medium) => medium,
+            Err(error) => {
+                debug!(%error, lindex, "Failed to get local virtual file contents");
+                return None;
+            }
+        };
+
+        let data = if medium.tymed == TYMED_ISTREAM.0.cast_unsigned() {
+            // SAFETY: `tymed` says `pstm` is the active member. Cloning adds the reference kept
+            // past `ReleaseStgMedium`.
+            let stream = unsafe { (*medium.u.pstm).clone() };
+            stream.and_then(|stream| {
+                let data = read_stream(&stream, request);
+                *self.open_stream.borrow_mut() = Some((lindex, stream));
+                data
+            })
+        } else if medium.tymed == TYMED_HGLOBAL.0.cast_unsigned() {
+            // SAFETY: `tymed` says `hGlobal` is the active member.
+            let hglobal = unsafe { medium.u.hGlobal };
+            // SAFETY: The handle stays valid until `ReleaseStgMedium` below.
+            let size = unsafe { GlobalSize(hglobal) };
+            // SAFETY: Same as above.
+            let ptr = unsafe { GlobalLock(hglobal) }.cast::<u8>().cast_const();
+            if ptr.is_null() {
+                None
+            } else {
+                // SAFETY: The locked block holds `size` bytes.
+                let contents = unsafe { core::slice::from_raw_parts(ptr, size) };
+                let data = read_slice(contents, request);
+                // SAFETY: Locked just above.
+                let _ = unsafe { GlobalUnlock(hglobal) };
+                data
+            }
+        } else {
+            None
+        };
+
+        // SAFETY: `medium` came from `GetData` and is released once.
+        unsafe { ReleaseStgMedium(&mut medium) };
+
+        data
+    }
+
+    fn cached_stream(&self, lindex: i32) -> Option<IStream> {
+        self.open_stream
+            .borrow()
+            .as_ref()
+            .filter(|(open_lindex, _)| *open_lindex == lindex)
+            .map(|(_, stream)| stream.clone())
+    }
+}
+
+impl LocalFileSource {
+    /// Descriptors to send with `ClipboardMessage::SendInitiateFileCopy`.
+    pub(crate) fn descriptors(&self) -> Vec<FileDescriptor> {
+        match self {
+            Self::Paths(entries) => entries.iter().map(|entry| entry.descriptor.clone()).collect(),
+            Self::Virtual(virtual_files) => virtual_files
+                .files
+                .iter()
+                .map(|(descriptor, _)| descriptor.clone())
+                .collect(),
+        }
+    }
+
+    fn file_contents(&self, request: &FileContentsRequest) -> FileContentsResponse<'static> {
+        let Ok(file_index) = usize::try_from(request.index) else {
+            return FileContentsResponse::new_error(request.stream_id);
+        };
+
+        match self {
+            Self::Paths(entries) => match entries.get(file_index) {
+                Some(entry) => read_file_contents(request, entry),
+                None => FileContentsResponse::new_error(request.stream_id),
+            },
+            Self::Virtual(virtual_files) => {
+                let Some((descriptor, lindex)) = virtual_files.files.get(file_index) else {
+                    return FileContentsResponse::new_error(request.stream_id);
+                };
+
+                if is_directory(descriptor) {
+                    return FileContentsResponse::new_error(request.stream_id);
+                }
+
+                match virtual_files.read(request, descriptor, *lindex) {
+                    Some(data) => FileContentsResponse::new_data_response(request.stream_id, data),
+                    None => FileContentsResponse::new_error(request.stream_id),
+                }
+            }
+        }
+    }
+}
+
+/// Current local file offer, plus the snapshots the remote locked.
+///
+/// [MS-RDPECLIP] 3.1.5.4.6: a request carrying a `clipDataId` is served from the files that
+/// were on the clipboard when that lock was taken, even if the clipboard changed since.
+#[derive(Debug, Default)]
+pub(crate) struct LocalFiles {
+    current: Option<Rc<LocalFileSource>>,
+    locked: HashMap<u32, Rc<LocalFileSource>>,
+}
+
+impl LocalFiles {
+    pub(crate) fn set_current(&mut self, source: Option<Rc<LocalFileSource>>) {
+        self.current = source;
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.current = None;
+        self.locked.clear();
+    }
+
+    pub(crate) fn lock(&mut self, clip_data_id: u32) {
+        let Some(current) = self.current.as_ref() else {
+            // Locks also arrive when there are no local files, see `Cliprdr`.
+            return;
+        };
+
+        if MAX_LOCKED_SOURCES <= self.locked.len() && !self.locked.contains_key(&clip_data_id) {
+            debug!(
+                clip_data_id,
+                "Too many locked local file lists; not snapshotting this one"
+            );
+            return;
+        }
+
+        self.locked.insert(clip_data_id, Rc::clone(current));
+    }
+
+    pub(crate) fn unlock(&mut self, clip_data_id: u32) {
+        self.locked.remove(&clip_data_id);
+    }
+
+    pub(crate) fn file_contents(&self, request: &FileContentsRequest) -> FileContentsResponse<'static> {
+        // Without a snapshot for its `clipDataId`, `Cliprdr` validated the request against the
+        // current list, so it is served from there as well.
+        let source = request
+            .data_id
+            .and_then(|data_id| self.locked.get(&data_id))
+            .or(self.current.as_ref());
+
+        match source {
+            Some(source) => source.file_contents(request),
+            None => {
+                debug!(
+                    stream_id = request.stream_id,
+                    "File contents requested with no local files"
+                );
+                FileContentsResponse::new_error(request.stream_id)
+            }
+        }
+    }
+}
+
+fn read_stream(stream: &IStream, request: &FileContentsRequest) -> Option<Vec<u8>> {
+    if request.flags.contains(FileContentsFlags::SIZE) {
+        let mut stat = Default::default();
+        // SAFETY: `stat` is valid for writes; no name is requested, so nothing to free.
+        unsafe { stream.Stat(&mut stat, windows::Win32::System::Com::STATFLAG_NONAME) }.ok()?;
+        return Some(stat.cbSize.to_le_bytes().to_vec());
+    }
+
+    let position = i64::try_from(request.position).ok()?;
+    // SAFETY: Plain COM call.
+    unsafe { stream.Seek(position, STREAM_SEEK_SET, None) }.ok()?;
+
+    let len = usize::try_from(request.requested_size.min(MAX_FILE_CONTENTS_CHUNK)).ok()?;
+    let mut data = vec![0u8; len];
+    let mut filled = 0usize;
+
+    while let Some(rest) = data.get_mut(filled..).filter(|rest| !rest.is_empty()) {
+        let mut read = 0u32;
+        let wanted = u32::try_from(rest.len()).ok()?;
+        // SAFETY: `rest` is valid for writes of `wanted` bytes.
+        let result = unsafe { stream.Read(rest.as_mut_ptr().cast::<c_void>(), wanted, Some(&raw mut read)) };
+        if result.is_err() {
+            debug!(error = %windows::core::Error::from(result), "Failed to read local virtual file");
+            return None;
+        }
+        if read == 0 {
+            break;
+        }
+        filled += usize::try_from(read).ok()?;
+    }
+
+    data.truncate(filled);
+    Some(data)
+}
+
+fn read_slice(contents: &[u8], request: &FileContentsRequest) -> Option<Vec<u8>> {
+    if request.flags.contains(FileContentsFlags::SIZE) {
+        let size = u64::try_from(contents.len()).ok()?;
+        return Some(size.to_le_bytes().to_vec());
+    }
+
+    let start = usize::try_from(request.position).ok()?;
+    let len = usize::try_from(request.requested_size.min(MAX_FILE_CONTENTS_CHUNK)).ok()?;
+    let end = start.saturating_add(len).min(contents.len());
+
+    Some(contents.get(start..end).unwrap_or_default().to_vec())
+}
