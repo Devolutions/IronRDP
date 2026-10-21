@@ -40,6 +40,26 @@ pub trait DvcChannelListener: Send {
 
 pub type DynamicChannelListener = Box<dyn DvcChannelListener>;
 
+/// Listener creating a new processor for every channel opened with its name.
+struct FactoryListener<F> {
+    channel_name: DynamicChannelName,
+    factory: F,
+}
+
+impl<T, F> DvcChannelListener for FactoryListener<F>
+where
+    T: DvcClientProcessor + 'static,
+    F: FnMut() -> T + Send,
+{
+    fn channel_name(&self) -> &str {
+        &self.channel_name
+    }
+
+    fn create(&mut self, _channel_id: DynamicChannelId) -> Option<Box<dyn DvcClientProcessor>> {
+        Some(Box::new((self.factory)()))
+    }
+}
+
 /// For pre-registered DVC
 struct OnceListener {
     inner: Option<Box<dyn DvcClientProcessor>>,
@@ -191,6 +211,26 @@ impl DrdynvcClient {
         T: DvcClientProcessor + 'static,
     {
         self.dynamic_channels.register_once(channel);
+    }
+
+    /// Registers a dynamic virtual channel whose processor is recreated by `factory` each time
+    /// the server opens the channel, for channels the server may close and reopen.
+    ///
+    /// Like [`DrdynvcClient::with_dynamic_channel`], the active processor can be looked up by type
+    /// with [`DrdynvcClient::get_dvc`].
+    ///
+    /// # Note
+    ///
+    /// If a listener or a pre-registered channel with the same name already exists,
+    /// it will be silently overwritten.
+    #[must_use]
+    pub fn with_dynamic_channel_factory<T, F>(mut self, channel_name: impl Into<DynamicChannelName>, factory: F) -> Self
+    where
+        T: DvcClientProcessor + 'static,
+        F: FnMut() -> T + Send + 'static,
+    {
+        self.dynamic_channels.register_factory(channel_name.into(), factory);
+        self
     }
 
     pub fn attach_established_dynamic_channel<T>(&mut self, channel_id: DynamicChannelId, channel: T) -> PduResult<()>
@@ -627,6 +667,20 @@ impl DynamicChannelSet {
         );
     }
 
+    fn register_factory<T, F>(&mut self, channel_name: DynamicChannelName, factory: F)
+    where
+        T: DvcClientProcessor + 'static,
+        F: FnMut() -> T + Send + 'static,
+    {
+        self.listeners.insert(
+            channel_name.clone(),
+            ListenerEntry {
+                listener: Box::new(FactoryListener { channel_name, factory }),
+                type_id: Some(TypeId::of::<T>()),
+            },
+        );
+    }
+
     fn attach_established_channel(
         &mut self,
         channel_id: DynamicChannelId,
@@ -739,6 +793,25 @@ mod tests {
     }
 
     impl DvcClientProcessor for TestDvc {}
+
+    #[test]
+    fn factory_channel_is_recreated_and_found_by_type() {
+        let mut client = DrdynvcClient::new().with_dynamic_channel_factory("test", || TestDvc);
+        assert!(client.has_registered_dvc::<TestDvc>());
+        for channel_id in [3, 4] {
+            let dvc = client
+                .dynamic_channels
+                .try_create_channel(&"test".to_owned(), channel_id)
+                .expect("factory creates a processor each time");
+            dvc.start(channel_id).unwrap();
+            assert_eq!(
+                client.get_dvc::<TestDvc>().map(|dvc| dvc.channel_id()),
+                Some(channel_id)
+            );
+            client.close_channel(channel_id);
+        }
+        assert!(client.has_registered_dvc::<TestDvc>());
+    }
 
     #[test]
     fn consumed_typed_listener_is_not_registered() {
