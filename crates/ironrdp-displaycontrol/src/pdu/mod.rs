@@ -176,16 +176,6 @@ impl DisplayControlCapabilities {
         self.max_num_monitors
     }
 
-    /// Returns `MaxMonitorAreaFactorA`.
-    pub fn max_monitor_area_factor_a(&self) -> u32 {
-        self.max_monitor_area_factor_a
-    }
-
-    /// Returns `MaxMonitorAreaFactorB`.
-    pub fn max_monitor_area_factor_b(&self) -> u32 {
-        self.max_monitor_area_factor_b
-    }
-
     /// Returns the maximum total area, in square pixels, of a monitor layout:
     /// `MaxNumMonitors * MaxMonitorAreaFactorA * MaxMonitorAreaFactorB`.
     pub fn max_monitor_area(&self) -> u64 {

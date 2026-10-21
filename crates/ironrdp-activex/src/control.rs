@@ -1078,7 +1078,9 @@ struct DisplayLayout {
     physical_width: u32,
     physical_height: u32,
     orientation: u32,
+    /// Percent; 0 leaves it unspecified, so each monitor keeps the scale of its own DPI.
     desktop_scale_factor: u32,
+    /// Percent; 0 leaves it unspecified, so it follows the desktop scale factor.
     device_scale_factor: u32,
 }
 
@@ -1508,8 +1510,8 @@ fn display_layout_from_renderer_size(width: i32, height: i32) -> Option<DisplayL
         physical_width: 0,
         physical_height: 0,
         orientation: 0,
-        desktop_scale_factor: 100,
-        device_scale_factor: 100,
+        desktop_scale_factor: 0,
+        device_scale_factor: 0,
     })
 }
 
@@ -4638,6 +4640,9 @@ enum WorkerEvent {
     DisplayResizeFallback {
         generation: u64,
     },
+    MonitorLayoutRejected {
+        generation: u64,
+    },
     RailWindowingOrders {
         generation: u64,
         data: Vec<u8>,
@@ -4688,6 +4693,7 @@ impl WorkerEvent {
             | Self::LoginComplete { generation }
             | Self::Image { generation, .. }
             | Self::DisplayResizeFallback { generation }
+            | Self::MonitorLayoutRejected { generation }
             | Self::RailWindowingOrders { generation, .. }
             | Self::RailExecuteResult { generation, .. }
             | Self::RailExecuteFailed { generation, .. }
@@ -8208,6 +8214,8 @@ pub(crate) struct Control {
     remote_size: Cell<Option<(i32, i32)>>,
     configured_monitor_topology: RefCell<Option<MonitorTopology>>,
     active_monitor_topology: RefCell<Option<MonitorTopology>>,
+    /// The last multimonitor Display Control layout queued for the session, scale overrides included.
+    last_multimon_layout: RefCell<Option<DisplayControlMonitorLayout>>,
     input_sender: Rc<RefCell<Option<RdpInputSender>>>,
     drive_session: Rc<DriveSessionState>,
     location_altitude: Cell<i32>,
@@ -8580,6 +8588,7 @@ impl Control {
             remote_size: Cell::new(None),
             configured_monitor_topology: RefCell::new(None),
             active_monitor_topology: RefCell::new(None),
+            last_multimon_layout: RefCell::new(None),
             input_sender,
             drive_session,
             location_altitude: Cell::new(0),
@@ -11147,6 +11156,7 @@ impl Control {
                     self.present_frame(update);
                 }
                 WorkerEvent::DisplayResizeFallback { .. } => self.report_display_resize_fallback(),
+                WorkerEvent::MonitorLayoutRejected { .. } => self.monitor_layout_rejected(),
                 WorkerEvent::RailWindowingOrders { data, .. } => {
                     if self.rail_windows.borrow().is_enabled() {
                         self.rail_windows.borrow_mut().consume(&data);
@@ -11345,8 +11355,8 @@ impl Control {
                         physical_width: 0,
                         physical_height: 0,
                         orientation: 0,
-                        desktop_scale_factor: 100,
-                        device_scale_factor: 100,
+                        desktop_scale_factor: 0,
+                        device_scale_factor: 0,
                     })
                     .map_or_else(rpc_control_error, |_| ironrdp_agent::ipc::Response::ok())
                 };
@@ -12143,6 +12153,7 @@ impl Control {
             .build()
             .map_err(|error| Error::new(E_INVALIDARG, format!("invalid RDP configuration: {error}")))?;
         *self.configured_monitor_topology.borrow_mut() = monitor_topology;
+        self.last_multimon_layout.borrow_mut().take();
         self.active_monitor_topology.borrow_mut().take();
         if using_rdcleanpath {
             self.clear_rdcleanpath_token();
@@ -12317,6 +12328,15 @@ impl Control {
                                                     &worker_event_posted,
                                                     hwnd,
                                                     WorkerEvent::MonitorLayout { generation, monitors },
+                                                );
+                                            }
+                                            RdpOutputEvent::MonitorLayoutRejected => {
+                                                trace_host_call("RdpWorker::MonitorLayoutRejected");
+                                                queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::MonitorLayoutRejected { generation },
                                                 );
                                             }
                                             RdpOutputEvent::LoginComplete => {
@@ -12689,7 +12709,8 @@ impl Control {
     /// it as it confirms the topology advertised in the GCC Client Monitor Data block at connection
     /// time. The active (confirmed) topology is kept until the server reports a different layout:
     /// the session may still drop a layout its capabilities cannot accept.
-    /// Unless `force` is set, a topology identical to the configured one is not sent again.
+    /// Unless `force` is set, a layout identical to the last one sent, scale overrides included,
+    /// is not sent again.
     fn send_multimon_display_layout(
         &self,
         topology: MonitorTopology,
@@ -12700,10 +12721,10 @@ impl Control {
         if self.state.get() != ConnectionState::Connected {
             return Err(Error::from_hresult(E_UNEXPECTED));
         }
-        if !force && self.configured_monitor_topology.borrow().as_ref() == Some(&topology) {
+        let layout = topology.display_control_layout(desktop_scale_factor, device_scale_factor)?;
+        if !force && self.last_multimon_layout.borrow().as_ref() == Some(&layout) {
             return Ok(());
         }
-        let layout = topology.display_control_layout(desktop_scale_factor, device_scale_factor)?;
         let sender = self
             .input_sender
             .borrow()
@@ -12711,8 +12732,9 @@ impl Control {
             .cloned()
             .ok_or_else(|| Error::from_hresult(E_UNEXPECTED))?;
         sender
-            .try_send(RdpInputEvent::MonitorLayout(layout))
+            .try_send(RdpInputEvent::MonitorLayout(layout.clone()))
             .map_err(|_| Error::from_hresult(E_UNEXPECTED))?;
+        *self.last_multimon_layout.borrow_mut() = Some(layout);
 
         {
             let mut settings = self.settings.borrow_mut();
@@ -12721,6 +12743,21 @@ impl Control {
         }
         *self.configured_monitor_topology.borrow_mut() = Some(topology);
         Ok(())
+    }
+
+    /// Rolls back to the confirmed topology after the session dropped a requested layout its
+    /// Display Control capabilities cannot accept, so a later local change is sent again.
+    fn monitor_layout_rejected(&self) {
+        trace_host_call("Renderer::MonitorLayoutRejected");
+        self.last_multimon_layout.borrow_mut().take();
+        let confirmed = self.active_monitor_topology.borrow().clone();
+        if let Some(confirmed) = confirmed {
+            let mut settings = self.settings.borrow_mut();
+            settings.desktop_width = confirmed.desktop_width;
+            settings.desktop_height = confirmed.desktop_height;
+            drop(settings);
+            *self.configured_monitor_topology.borrow_mut() = Some(confirmed);
+        }
     }
 
     /// Schedules a multimonitor layout update after a local monitor topology or DPI change.
@@ -12769,8 +12806,8 @@ impl Control {
             physical_width: 0,
             physical_height: 0,
             orientation: 0,
-            desktop_scale_factor: 100,
-            device_scale_factor: 100,
+            desktop_scale_factor: 0,
+            device_scale_factor: 0,
         })?;
         write_out(status, CONTROL_RECONNECT_STARTED)
     }
@@ -14155,8 +14192,8 @@ impl IDispatch_Impl for Control_Impl {
                         physical_width: 0,
                         physical_height: 0,
                         orientation: 0,
-                        desktop_scale_factor: 100,
-                        device_scale_factor: 100,
+                        desktop_scale_factor: 0,
+                        device_scale_factor: 0,
                     })
                 }
                 DISPID_MODERN_ATTACH_EVENT | DISPID_MODERN_DETACH_EVENT if arguments.len() == 2 => {
@@ -14247,8 +14284,8 @@ impl IRemoteDesktopClient_Impl for Control_Impl {
             physical_width: 0,
             physical_height: 0,
             orientation: 0,
-            desktop_scale_factor: 100,
-            device_scale_factor: 100,
+            desktop_scale_factor: 0,
+            device_scale_factor: 0,
         })
     }
 
@@ -14696,8 +14733,8 @@ impl IMsRdpClient9_Impl for Control_Impl {
             physical_width: 0,
             physical_height: 0,
             orientation: 0,
-            desktop_scale_factor: 100,
-            device_scale_factor: 100,
+            desktop_scale_factor: 0,
+            device_scale_factor: 0,
         })
     }
 
@@ -17354,6 +17391,7 @@ fn queue_worker_event(
         | WorkerEvent::MonitorLayout { .. }
         | WorkerEvent::LoginComplete { .. }
         | WorkerEvent::DisplayResizeFallback { .. }
+        | WorkerEvent::MonitorLayoutRejected { .. }
         | WorkerEvent::AutoReconnected { .. } => {
             if queue.iter().any(|pending| {
                 pending.generation() == event.generation()
@@ -20372,7 +20410,7 @@ try {
     }
 
     #[test]
-    fn renderer_resize_layout_ignores_minimized_bounds_and_uses_standard_scaling() {
+    fn renderer_resize_layout_ignores_minimized_bounds_and_leaves_scaling_unspecified() {
         assert!(display_layout_from_renderer_size(0, 1080).is_none());
         assert!(display_layout_from_renderer_size(1920, 0).is_none());
         assert!(display_layout_from_renderer_size(-1, 1080).is_none());
@@ -20383,8 +20421,8 @@ try {
         assert_eq!(layout.physical_width, 0);
         assert_eq!(layout.physical_height, 0);
         assert_eq!(layout.orientation, 0);
-        assert_eq!(layout.desktop_scale_factor, 100);
-        assert_eq!(layout.device_scale_factor, 100);
+        assert_eq!(layout.desktop_scale_factor, 0);
+        assert_eq!(layout.device_scale_factor, 0);
     }
 
     #[test]
@@ -21639,12 +21677,29 @@ try {
         *control.configured_monitor_topology.borrow_mut() = Some(connected.clone());
         *control.active_monitor_topology.borrow_mut() = Some(connected.clone());
 
-        // An unchanged topology is not sent again on a display or DPI change notification.
+        // A layout is sent once, then not again on a display or DPI change notification.
         control
-            .send_multimon_display_layout(connected, None, None, false)
+            .send_multimon_display_layout(connected.clone(), None, None, false)
+            .expect("the local topology is accepted");
+        assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::MonitorLayout(_))));
+        control
+            .send_multimon_display_layout(connected.clone(), None, None, false)
             .expect("an unchanged topology is accepted");
         assert!(receiver.try_recv().is_err());
         assert!(control.active_monitor_topology.borrow().is_some());
+
+        // An explicit scale override is remembered, so a later refresh restores the monitors' DPI.
+        control
+            .send_multimon_display_layout(connected.clone(), Some(200), None, true)
+            .expect("an explicit scale override is accepted");
+        assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::MonitorLayout(_))));
+        control
+            .send_multimon_display_layout(connected, None, None, false)
+            .expect("the local topology is accepted");
+        let Ok(RdpInputEvent::MonitorLayout(layout)) = receiver.try_recv() else {
+            panic!("expected the local DPI to be restored");
+        };
+        assert_eq!(layout.monitors()[0].desktop_scale_factor(), Some(100));
 
         // The secondary monitor moved to 150% and was rotated to portrait.
         let changed = two_monitor_topology(MonitorAttributes {
@@ -21683,10 +21738,23 @@ try {
                 .borrow()
                 .as_ref()
                 .map(|topology| topology.monitors.clone()),
-            Some(changed.monitors)
+            Some(changed.monitors.clone())
         );
-        let settings = control.settings.borrow();
-        assert_eq!((settings.desktop_width, settings.desktop_height), (3000, 1920));
+        assert_eq!(
+            {
+                let settings = control.settings.borrow();
+                (settings.desktop_width, settings.desktop_height)
+            },
+            (3000, 1920)
+        );
+
+        // A layout the session drops rolls back to the confirmed topology and can be sent again.
+        control.monitor_layout_rejected();
+        assert_ne!(control.configured_monitor_topology.borrow().as_ref(), Some(&changed));
+        control
+            .send_multimon_display_layout(changed, None, None, false)
+            .expect("a rejected layout can be requested again");
+        assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::MonitorLayout(_))));
     }
 
     #[test]

@@ -51,7 +51,8 @@ use ironrdp_rdpei::pdu::TouchEventPdu;
 use ironrdp_rdpel::client::LocationClient;
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{
-    ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionErrorExt as _, SessionResult,
+    ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionError, SessionErrorExt as _,
+    SessionResult,
 };
 use ironrdp_svc::SvcMessage;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
@@ -115,6 +116,9 @@ pub enum RdpOutputEvent {
     ///
     /// The server may send this during activation or after activation.
     MonitorLayout(Vec<Monitor>),
+    /// A requested [`RdpInputEvent::MonitorLayout`] was dropped because it does not fit the
+    /// server's Display Control capabilities. The session keeps its current layout.
+    MonitorLayoutRejected,
     /// Server Save Session Info notification.
     ///
     /// The PDU can contain sensitive session data, so this event does not expose its contents.
@@ -648,25 +652,37 @@ impl ResizeRequest {
         }
     }
 
-    fn prepare(&self, active_stage: &mut ActiveStage) -> Option<SessionResult<DvcMessageBatch>> {
-        match &self.layout {
-            Some(layout) => active_stage.prepare_monitor_layout(layout),
-            None => active_stage.prepare_resize(
+    /// Prepares the request for sending over Display Control.
+    ///
+    /// A layout request is first fitted to the server capabilities and replaced by the fitted
+    /// layout, so the desktop size reported to RAIL and used on fallback is the one the server
+    /// applies. A layout that cannot be fitted is returned as an error.
+    fn prepare(&mut self, active_stage: &mut ActiveStage) -> Option<SessionResult<DvcMessageBatch>> {
+        let Some(layout) = &self.layout else {
+            return active_stage.prepare_resize(
                 u32::from(self.width),
                 u32::from(self.height),
                 Some(self.scale_factor),
                 self.physical_size,
-            ),
+            );
+        };
+        if let Some(capabilities) = active_stage.display_control_capabilities() {
+            match layout.fit_to_capabilities(&capabilities) {
+                Ok(fitted) => *self = Self::from_layout(fitted),
+                Err(error) => return Some(Err(SessionError::encode(error))),
+            }
         }
+        active_stage.prepare_monitor_layout(self.layout.as_ref().expect("a layout request keeps its layout"))
     }
 
     /// The reconnection replacing this request when Display Control cannot apply it.
     ///
     /// A layout request advertises its monitors in the GCC Client Monitor Data block, which holds
-    /// at most [`MONITOR_COUNT_MAX`] monitors: a larger layout keeps its primary monitor and the
-    /// first other monitors, and becomes a single monitor of the requested desktop size when the
-    /// reduced layout is not valid. A plain resize advertises no monitor layout, so the next
-    /// connection never pairs the new desktop size with a stale topology.
+    /// at most [`MONITOR_COUNT_MAX`] monitors: a larger layout is reduced with
+    /// [`DisplayControlMonitorLayout::fit_to_capabilities`]. When no valid reduced layout exists,
+    /// the reconnection advertises no monitor data, like a plain resize: the server then creates
+    /// a single monitor of the requested desktop size. Advertising no monitor data on a plain
+    /// resize also means the next connection never pairs the new desktop size with a stale topology.
     fn reconnect_with_new_size(&self, reason: DisplayResizeFallbackReason) -> RdpControlFlow {
         let layout = self.layout.as_ref().and_then(|layout| {
             if layout.monitors().len() <= MONITOR_COUNT_MAX {
@@ -681,7 +697,7 @@ impl ResizeRequest {
             layout
                 .fit_to_capabilities(&gcc_limits)
                 .inspect_err(|error| {
-                    warn!(%error, "Reconnecting with a single monitor: the layout does not fit GCC monitor data");
+                    warn!(%error, "Reconnecting without monitor data: the layout does not fit GCC monitor data");
                 })
                 .ok()
         });
@@ -3038,7 +3054,7 @@ enum RdpControlFlow {
         monitor_layout: Option<ClientMonitorData>,
         reason: DisplayResizeFallbackReason,
     },
-    TransportFailure(ironrdp_session::SessionError),
+    TransportFailure(SessionError),
     TerminatedGracefully(GracefulDisconnectReason),
 }
 
@@ -3523,6 +3539,7 @@ async fn active_session(
                             }
                             _ => unreachable!("only resize events reach this arm"),
                         };
+                        let mut request = request;
                         if resize_queue.in_flight.is_some() || active_stage.display_control_ready() == Some(false) {
                             resize_queue.defer(request);
                             ActiveSessionIteration::outputs(Vec::new())
@@ -3530,6 +3547,17 @@ async fn active_session(
                             match dvc_batch {
                                 Err(error) if request.layout.is_some() => {
                                     warn!(%error, "Dropping a monitor layout the server cannot accept");
+                                    if !send_active_output_event(
+                                        output_event_sender,
+                                        RdpOutputEvent::MonitorLayoutRejected,
+                                        close_receiver,
+                                    )
+                                    .await?
+                                    {
+                                        return Ok(RdpControlFlow::TerminatedGracefully(
+                                            GracefulDisconnectReason::UserInitiated,
+                                        ));
+                                    }
                                     ActiveSessionIteration::outputs(Vec::new())
                                 }
                                 dvc_batch => {
@@ -3618,7 +3646,7 @@ async fn active_session(
                     RdpInputEvent::SendDvcMessages { channel_id, messages } => {
                         trace!(channel_id, ?messages, "Send DVC messages");
                         ActiveSessionIteration::dvc(
-                            DvcMessageBatch::try_new(channel_id, messages).map_err(ironrdp_session::SessionError::pdu)?,
+                            DvcMessageBatch::try_new(channel_id, messages).map_err(SessionError::pdu)?,
                         )
                     }
                     RdpInputEvent::SendStaticChannelData { channel_name, data } => {
@@ -4449,7 +4477,7 @@ async fn active_session(
         if resize_queue.in_flight.is_none()
             && let Some(pending) = resize_queue.pending.as_ref()
         {
-            let request = pending.request.clone();
+            let mut request = pending.request.clone();
             match active_stage.display_control_ready() {
                 Some(true) => 'pending_resize: {
                     let batch = match request
@@ -4459,6 +4487,17 @@ async fn active_session(
                         Err(error) if request.layout.is_some() => {
                             warn!(%error, "Dropping a monitor layout the server cannot accept");
                             resize_queue.pending = None;
+                            if !send_active_output_event(
+                                output_event_sender,
+                                RdpOutputEvent::MonitorLayoutRejected,
+                                close_receiver,
+                            )
+                            .await?
+                            {
+                                return Ok(RdpControlFlow::TerminatedGracefully(
+                                    GracefulDisconnectReason::UserInitiated,
+                                ));
+                            }
                             break 'pending_resize;
                         }
                         batch => batch?,

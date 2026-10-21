@@ -501,6 +501,9 @@ impl RpcApp {
             RdpOutputEvent::MonitorLayout(monitors) => {
                 debug!(monitor_count = monitors.len(), "Received remote monitor layout");
             }
+            RdpOutputEvent::MonitorLayoutRejected => {
+                warn!("The server cannot accept the requested monitor layout");
+            }
             RdpOutputEvent::LoginComplete => info!("RDP login complete"),
             RdpOutputEvent::PostLogonDisplayRedraw => info!("Requested post-logon display redraw"),
             RdpOutputEvent::MalformedBitmapDisplayRedraw => {
