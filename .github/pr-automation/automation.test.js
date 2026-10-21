@@ -8,7 +8,7 @@ const { createRequire } = require("node:module");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  SIZE_LABELS, addedLinesByPath, analyzeFiles, isGovernedByIntent, parseLabelerRules, readBaseFiles,
+  SIZE_LABELS, addedLinesByPath, analyzeFiles, isGovernedByIntent, parseLabelerRules, readChangeContents,
   resolveMergeBase,
 } = require("./deterministic-analysis");
 const { SCHEMA_VERSION: CLASSIFIER_SCHEMA_VERSION, validateClassifier } = require("./validate-classifier");
@@ -2028,7 +2028,8 @@ test("diff facts select the conditional specialists", () => {
   // New files need no base revision; tests of edits to existing files supply it explicitly.
   const reviewers = (files, intentPaths = []) => analyzeFiles(
     files.map((file) => ({ additions: 1, deletions: 0, status: "added", patch: "@@ -0,0 +1,1 @@\n+// change", ...file })),
-    { labelerRules: {}, intentPaths },
+    // Head files hold no markers beyond the ones a case adds.
+    { labelerRules: {}, intentPaths, headContents: new Map(files.map((file) => [file.filename, ""])) },
   ).reviewers;
   const patch = (line) => `@@ -1,1 +1,2 @@\n context\n${line}`;
 
@@ -2083,7 +2084,7 @@ test("diff facts select the conditional specialists", () => {
   assert.equal(analyzeFiles([], { labelerRules: {}, intentPaths: [7] }).ok, false);
 });
 
-test("the test specialist follows test markers on either side of the change", () => {
+test("the test specialist follows test markers at the merge base or the head", () => {
   const base = [
     "pub fn prod() -> u8 {",
     "    1",
@@ -2101,12 +2102,19 @@ test("the test specialist follows test markers on either side of the change", ()
     "}",
     "",
   ].join("\n");
-  const modified = (patch, contents = new Map([["src/lib.rs", base]]), extra = {}) => analyzeFiles(
-    [{ filename: "src/lib.rs", status: "modified", additions: 1, deletions: 1, patch, ...extra }],
-    { labelerRules: {}, baseContents: contents },
-  ).reviewers;
+  const clean = "pub fn prod() -> u8 {\n    1\n}\n";
+  // `head: undefined` leaves the head unread; omitting `head` reads a file without tests.
+  const modified = (patch, options = {}) => {
+    const { baseContents = new Map([["src/lib.rs", base]]), head: _head, ...extra } = options;
+    const head = "head" in options ? options.head : clean;
+    return analyzeFiles([{ filename: "src/lib.rs", status: "modified", additions: 1, deletions: 1, patch, ...extra }], {
+      labelerRules: {}, baseContents,
+      headContents: head === undefined ? new Map() : new Map([[extra.filename ?? "src/lib.rs", head]]),
+    }).reviewers;
+  };
   const assertionEdit = "@@ -12,1 +12,1 @@\n-        assert_eq!(prod(), 1);\n+        assert_eq!(prod(), 2);";
   const productionEdit = "@@ -2,1 +2,1 @@\n-    1\n+    2";
+  const cleanBase = new Map([["src/lib.rs", clean]]);
 
   // An assertion edit inside a test module changes no marker line; the merge-base file holds the tests.
   assert.deepEqual(modified(assertionEdit), ["test", "rust-style"]);
@@ -2114,44 +2122,60 @@ test("the test specialist follows test markers on either side of the change", ()
   // selects the review, because locating edits inside tests kept missing lexical forms.
   assert.deepEqual(modified(productionEdit), ["test", "rust-style"]);
   // A function added beneath an unchanged `#[test]` is caught the same way.
-  assert.deepEqual(analyzeFiles([{
-    filename: "src/codec.rs", status: "modified", additions: 1, deletions: 1,
-    patch: "@@ -1,2 +1,2 @@\n #[test]\n-fn existing() {}\n+fn added() {}",
-  }], {
-    labelerRules: {}, baseContents: new Map([["src/codec.rs", "#[test]\nfn existing() {}\n"]]),
-  }).reviewers, ["test", "rust-style"]);
-  // A file without tests on either side does not select it.
-  assert.deepEqual(modified(productionEdit, new Map([["src/lib.rs", "pub fn prod() -> u8 {\n    1\n}\n"]])),
-    ["rust-style"]);
-
-  // An unreadable merge-base file, or a file without a patch to inspect, fails toward review.
-  assert.deepEqual(modified(productionEdit, new Map([["src/lib.rs", null]])), ["test", "rust-style"]);
-  assert.deepEqual(modified(productionEdit, new Map()), ["test", "rust-style"]);
-  assert.deepEqual(modified(undefined, new Map([["src/lib.rs", "pub fn prod() {}\n"]])), ["test", "rust-style"]);
-  // A renamed file is read at its old path.
-  assert.deepEqual(modified(assertionEdit, new Map([["src/old.rs", base]]), {
-    filename: "src/new.rs", previous_filename: "src/old.rs", status: "renamed",
+  assert.deepEqual(modified("@@ -1,2 +1,2 @@\n #[test]\n-fn existing() {}\n+fn added() {}", {
+    filename: "src/codec.rs", baseContents: new Map([["src/codec.rs", "#[test]\nfn existing() {}\n"]]),
   }), ["test", "rust-style"]);
+  // A partial edit to a multiline attribute leaves no marker in the added lines and none at the merge
+  // base, but the head file holds the completed attribute.
+  assert.deepEqual(modified("@@ -1,3 +1,4 @@\n #[cfg(any(\n+    test,\n     feature = \"fuzzing\",\n ))]", {
+    baseContents: new Map([["src/lib.rs", "#[cfg(any(\n    feature = \"fuzzing\",\n))]\nmod helpers {}\n"]]),
+    head: "#[cfg(any(\n    test,\n    feature = \"fuzzing\",\n))]\nmod helpers {}\n",
+  }), ["test", "rust-style"]);
+  // A file without tests at either revision does not select it, with or without a patch.
+  assert.deepEqual(modified(productionEdit, { baseContents: cleanBase }), ["rust-style"]);
+  assert.deepEqual(modified(undefined, { baseContents: cleanBase }), ["rust-style"]);
+  assert.deepEqual(modified(undefined, { baseContents: cleanBase, head: `${clean}#[test]\nfn added() {}\n` }),
+    ["test", "rust-style"]);
+
+  // An unreadable revision fails toward review.
+  assert.deepEqual(modified(productionEdit, { baseContents: new Map([["src/lib.rs", null]]) }), ["test", "rust-style"]);
+  assert.deepEqual(modified(productionEdit, { baseContents: new Map() }), ["test", "rust-style"]);
+  assert.deepEqual(modified(productionEdit, { baseContents: cleanBase, head: null }), ["test", "rust-style"]);
+  assert.deepEqual(modified(productionEdit, { baseContents: cleanBase, head: undefined }), ["test", "rust-style"]);
+  // A renamed file is read at its old path at the merge base and at its new path at the head.
+  assert.deepEqual(modified(assertionEdit, {
+    filename: "src/new.rs", previous_filename: "src/old.rs", status: "renamed",
+    baseContents: new Map([["src/old.rs", base]]),
+  }), ["test", "rust-style"]);
+  assert.deepEqual(modified(productionEdit, {
+    filename: "src/new.rs", previous_filename: "src/old.rs", status: "renamed",
+    baseContents: new Map([["src/old.rs", clean]]),
+  }), ["rust-style"]);
   // A removed file selects nothing, even on a test path or with tests in it.
   assert.deepEqual(analyzeFiles([
     { filename: "crates/a/tests/codec.rs", status: "removed", additions: 0, deletions: 9, patch: "@@ -1,1 +0,0 @@\n-#[test]" },
     { filename: "src/gone.rs", status: "removed", additions: 0, deletions: 9 },
-  ], { labelerRules: {}, baseContents: new Map() }).reviewers, []);
+  ], { labelerRules: {} }).reviewers, []);
 
-  const csharp = (base) => analyzeFiles([{
+  const csharp = (baseText) => analyzeFiles([{
     filename: "ffi/dotnet/Devolutions.IronRdp/Session.cs", status: "modified", additions: 1, deletions: 1,
     patch: "@@ -3,1 +3,1 @@\n-    public void Helper() { }\n+    public void Helper() { Run(); }",
-  }], { labelerRules: {}, baseContents: new Map([["ffi/dotnet/Devolutions.IronRdp/Session.cs", base]]) }).reviewers;
+  }], {
+    labelerRules: {},
+    baseContents: new Map([["ffi/dotnet/Devolutions.IronRdp/Session.cs", baseText]]),
+    headContents: new Map([["ffi/dotnet/Devolutions.IronRdp/Session.cs", "public class Session { }"]]),
+  }).reviewers;
   assert.deepEqual(csharp("public class SessionTests\n{\n    public void Helper() { }\n    [Fact]\n    public void Connects() { }\n}\n"),
     ["test"]);
   assert.deepEqual(csharp("public class Session\n{\n    public void Helper() { }\n}\n"), []);
 });
 
 test("test markers span lines and include compound predicates", () => {
+  // A new file's head content is exactly its added lines.
   const added = (lines, filename = "src/lib.rs") => analyzeFiles([{
     filename, status: "added", additions: lines.length, deletions: 0,
     patch: `@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join("\n")}`,
-  }], { labelerRules: {} }).reviewers;
+  }], { labelerRules: {}, headContents: new Map([[filename, lines.join("\n")]]) }).reviewers;
   for (const lines of [
     ["#[cfg(all(test, feature = \"openh264-bundled\"))]"],
     ["#[cfg(any(test, fuzzing))]"],
@@ -2181,10 +2205,14 @@ test("test markers span lines and include compound predicates", () => {
     "}",
     "",
   ].join("\n");
-  const importEdit = (base) => analyzeFiles([{
+  const importEdit = (text) => analyzeFiles([{
     filename: "src/encode.rs", status: "modified", additions: 1, deletions: 1,
     patch: "@@ -5,1 +5,1 @@\n-    use super::encode;\n+    use super::{encode, decode};",
-  }], { labelerRules: {}, baseContents: new Map([["src/encode.rs", base]]) }).reviewers;
+  }], {
+    labelerRules: {},
+    baseContents: new Map([["src/encode.rs", text]]),
+    headContents: new Map([["src/encode.rs", text.replace("use super::encode;", "use super::{encode, decode};")]]),
+  }).reviewers;
   // An import inside a module gated on a compound test predicate is test code, even across lines.
   assert.deepEqual(importEdit(module("#[cfg(all(test, feature = \"openh264-bundled\"))]")), ["test", "rust-style"]);
   assert.deepEqual(importEdit(module("#[cfg(all(\n    test,\n    feature = \"openh264-bundled\"\n))]")),
@@ -2193,28 +2221,54 @@ test("test markers span lines and include compound predicates", () => {
   assert.deepEqual(importEdit(module("#[cfg(not(test))]")), ["rust-style"]);
 });
 
-test("base revisions are read only when needed and unreadable ones fail toward review", async () => {
+test("the cfg scan stays linear and treats an unclosed predicate as a marker", () => {
+  const scan = (text) => analyzeFiles([{
+    filename: "src/lib.rs", status: "added", additions: 1, deletions: 0, patch: "@@ -0,0 +1,1 @@\n+// change",
+  }], { labelerRules: {}, headContents: new Map([["src/lib.rs", text]]) }).reviewers;
+  // Every opener is unclosed, so the first one already decides.
+  const openers = "// #[cfg(\n".repeat(2048);
+  assert.ok(openers.length >= 20_000);
+  const started = performance.now();
+  assert.deepEqual(scan(openers), ["test", "rust-style"]);
+  assert.ok(performance.now() - started < 100, "repeated openers must not scan quadratically");
+  // A predicate longer than the scan bound counts as a marker, even when it would close later.
+  assert.deepEqual(scan(`#[cfg(feature = "${"x".repeat(5000)}")]\nfn f() {}\n`), ["test", "rust-style"]);
+  assert.deepEqual(scan("#[cfg(feature = \"std\")]\nfn f() {}\n"), ["rust-style"]);
+});
+
+test("revisions are read only when needed and unreadable ones fail toward review", async () => {
   const files = [{ filename: "src/lib.rs", status: "modified", additions: 1, deletions: 1, patch: "@@ -1 +1 @@\n-a\n+b" }];
   let resolved = 0;
   const mergeBase = async () => { resolved += 1; return SHA; };
-  // A marker on the head side already selects the specialist, so nothing is resolved or read.
-  assert.equal((await readBaseFiles([...files, {
+  // A marker in the added lines already selects the specialist, so nothing is resolved or read.
+  const shortCircuit = await readChangeContents([...files, {
     filename: "src/other.rs", status: "modified", additions: 1, deletions: 0, patch: "@@ -1,0 +1,1 @@\n+#[test]",
-  }], { repositoryRoot: __dirname, mergeBase })).size, 0);
-  // New, removed, and non-source files have no base revision to read.
-  assert.equal((await readBaseFiles([
+  }], { repositoryRoot: __dirname, mergeBase, headSha: SHA, prNumber: 7 });
+  assert.equal(shortCircuit.baseContents.size + shortCircuit.headContents.size, 0);
+  // New, removed, and non-source files have no merge-base revision to read; only the new source file
+  // is read at the head, which cannot be fetched here and is recorded as unreadable.
+  const added = await readChangeContents([
     { filename: "src/new.rs", status: "added", additions: 1, deletions: 0, patch: "@@ -0,0 +1 @@\n+a" },
     { filename: "src/gone.rs", status: "removed", additions: 0, deletions: 1, patch: "@@ -1 +0,0 @@\n-a" },
     { filename: "README.md", status: "modified", additions: 1, deletions: 0 },
-  ], { repositoryRoot: __dirname, mergeBase })).size, 0);
+  ], { repositoryRoot: __dirname, mergeBase, headSha: "not-a-sha", prNumber: 7 });
   assert.equal(resolved, 0);
-  // An unresolved merge base cannot be fetched, so every needed file is recorded as unreadable.
-  assert.deepEqual([...await readBaseFiles(files, { repositoryRoot: __dirname, mergeBase: async () => null })],
-    [["src/lib.rs", null]]);
-  assert.deepEqual([...await readBaseFiles(
+  assert.equal(added.baseContents.size, 0);
+  assert.deepEqual([...added.headContents], [["src/new.rs", null]]);
+  // An unresolved merge base cannot be fetched, which already decides, so the head is not read.
+  const unresolved = await readChangeContents(files, {
+    repositoryRoot: __dirname, mergeBase: async () => null, headSha: SHA, prNumber: 7,
+  });
+  assert.deepEqual([...unresolved.baseContents], [["src/lib.rs", null]]);
+  assert.equal(unresolved.headContents.size, 0);
+  assert.deepEqual([...(await readChangeContents(
     [{ ...files[0], filename: "src/new.rs", previous_filename: "src/old.rs", status: "renamed" }],
-    { repositoryRoot: __dirname, mergeBase: async () => "not-a-sha" },
-  )], [["src/old.rs", null]]);
+    { repositoryRoot: __dirname, mergeBase: async () => "not-a-sha", headSha: SHA, prNumber: 7 },
+  )).baseContents], [["src/old.rs", null]]);
+  // An unreadable head selects the review.
+  assert.deepEqual(analyzeFiles([{
+    filename: "src/new.rs", status: "added", additions: 1, deletions: 0, patch: "@@ -0,0 +1 @@\n+a",
+  }], { labelerRules: {}, ...added }).reviewers, ["test", "rust-style"]);
 });
 test("the merge base comes from the compare API and failures leave it unresolved", async () => {
   const head = "b".repeat(40);
@@ -2240,13 +2294,13 @@ test("the merge base comes from the compare API and failures leave it unresolved
 
   // A failed comparison leaves every changed source file unreadable, which selects the review.
   const files = [{ filename: "src/lib.rs", status: "modified", additions: 1, deletions: 1, patch: "@@ -1 +1 @@\n-a\n+b" }];
-  const contents = await readBaseFiles(files, {
-    repositoryRoot: __dirname,
+  const contents = await readChangeContents(files, {
+    repositoryRoot: __dirname, headSha: head, prNumber: 7,
     mergeBase: () => resolveMergeBase(github(() => { throw new Error("server error"); }), {
       owner: "Devolutions", repo: "IronRDP", baseSha: SHA, headSha: head,
     }),
   });
-  assert.deepEqual(analyzeFiles(files, { labelerRules: {}, baseContents: contents }).reviewers, ["test", "rust-style"]);
+  assert.deepEqual(analyzeFiles(files, { labelerRules: {}, ...contents }).reviewers, ["test", "rust-style"]);
 });
 
 test("renamed files apply path rules to both their old and new paths", () => {

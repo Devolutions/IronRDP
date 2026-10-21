@@ -50,10 +50,12 @@ Deterministic analysis also selects these optional specialists from the pull req
 - `dependency` runs when a `Cargo.toml`, `Cargo.lock`, `package.json`, `package-lock.json`, or `.csproj` file gains lines.
 - `rust-style` runs when a `.rs` file gains lines.
 
-A changed Rust or C# file that is not removed selects `test` when it is on a test path, when its added lines contain a test marker, or when its content at the pull request's merge base, which the patches are relative to, contains one.
+A changed Rust or C# file that is not removed selects `test` when it is on a test path, or when its content at the pull request's merge base, which the patches are relative to, or at the pull request's head contains a test marker.
+A marker in the added lines decides without reading either revision; otherwise the merge base is read first, then the head, each fetched once into the trusted checkout and only scanned as text.
 Markers are matched over the whole text, so attributes may span lines: in Rust, `#[test]`, `#[<path>::test]`, `#[rstest]`, `#[case(`, `proptest!`, `expect![`, and `#[cfg(...)]` whose predicate names `test` other than as `not(test)`; in C#, `[Fact]`, `[Theory]`, `[Test]`, `[TestMethod]`, `[TestCase]`, and `[InlineData`.
+A `#[cfg(` predicate is scanned for at most 4 KiB, and one still open at that bound or at the end of the text counts as a marker, which keeps the scan linear.
 The rule is deliberately coarse: a production-only edit in a file that also holds tests selects `test`, because locating edits inside tests kept missing lexical forms.
-A file without a patch, an unresolvable merge base, or an unreadable file also selects `test`.
+An unresolvable merge base, a head that cannot be fetched, or an unreadable file also selects `test`.
 A renamed file matches the governed-path, intent-file, test-path, and manifest rules under both its old and new paths.
 
 `contract-review` joins with the first `CONTRACT*.md`, as one agent configuration, one prompt, and one path rule.

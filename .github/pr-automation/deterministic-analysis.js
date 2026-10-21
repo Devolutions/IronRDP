@@ -49,31 +49,34 @@ function isTestPredicate(predicate) {
     .replace(/\bnot\s*\(\s*test\s*\)/g, ""));
 }
 
-// Offsets spanning each `#[cfg(<test predicate>)]` attribute in the text.
-function testCfgAttributes(text) {
-  const attributes = [];
+// Longest predicate scanned for one `#[cfg(` opener, which bounds the work per opener.
+const MAX_CFG_PREDICATE = 4096;
+
+// Whether the text holds a `#[cfg(<test predicate>)]` attribute. An opener whose predicate does not
+// close within the scan bound, or before the end of the text, counts as one, since no real attribute
+// is that long; this keeps the scan linear in the text length.
+function hasTestCfgAttribute(text) {
   for (const match of text.matchAll(/#\[\s*cfg\s*\(/g)) {
+    const start = match.index + match[0].length;
+    const limit = Math.min(text.length, start + MAX_CFG_PREDICATE);
     let depth = 1;
-    let index = match.index + match[0].length;
-    for (; index < text.length && depth > 0; index += 1) {
+    let index = start;
+    for (; index < limit && depth > 0; index += 1) {
       if (text[index] === "\"") {
-        for (index += 1; index < text.length && text[index] !== "\""; index += 1) {
+        for (index += 1; index < limit && text[index] !== "\""; index += 1) {
           if (text[index] === "\\") index += 1;
         }
       } else if (text[index] === "(") depth += 1;
       else if (text[index] === ")") depth -= 1;
     }
-    const close = /^\s*\]/.exec(text.slice(index, index + 64));
-    if (depth !== 0 || !close) continue;
-    if (isTestPredicate(text.slice(match.index + match[0].length, index - 1))) {
-      attributes.push({ start: match.index, end: index + close[0].length });
-    }
+    if (depth !== 0) return true;
+    if (/^\s*\]/.test(text.slice(index, index + 64)) && isTestPredicate(text.slice(start, index - 1))) return true;
   }
-  return attributes;
+  return false;
 }
 
 function hasTestMarker(text, path) {
-  if (path.endsWith(".rs")) return RUST_TEST_MARKER.test(text) || testCfgAttributes(text).length > 0;
+  if (path.endsWith(".rs")) return RUST_TEST_MARKER.test(text) || hasTestCfgAttribute(text);
   return CSHARP_TEST_MARKER.test(text);
 }
 
@@ -85,24 +88,35 @@ function addedText(patch) {
 }
 
 // Locating an edit inside a test kept missing lexical forms, so the rule is coarse instead: a file
-// that holds tests on either side of the change selects the review, even for a production-only edit.
-// A file without a patch to inspect selects it too.
-function isTestChangeWithoutBase(file) {
+// that holds tests at the merge base or at the head selects the review, even for a production-only
+// edit. A test path, or a marker in the added lines, decides without reading either revision.
+function isTestChangeWithoutReads(file) {
   if (!isTestSource(file.filename) || file.status === "removed") return false;
-  return isTestPath(file) || typeof file.patch !== "string" || hasTestMarker(addedText(file.patch), file.filename);
+  return isTestPath(file) || (typeof file.patch === "string" && hasTestMarker(addedText(file.patch), file.filename));
+}
+
+function needsHeadRead(file) {
+  return isTestSource(file.filename) && file.status !== "removed";
 }
 
 function needsBaseRead(file) {
-  return isTestSource(basePathOf(file)) && file.status !== "added" && file.status !== "removed";
+  return needsHeadRead(file) && isTestSource(basePathOf(file)) && file.status !== "added";
 }
 
-function isTestChange(file, baseContents) {
-  if (isTestChangeWithoutBase(file)) return true;
-  if (!isTestSource(file.filename) || !needsBaseRead(file)) return false;
-  const base = baseContents.get(basePathOf(file));
-  return typeof base !== "string" || hasTestMarker(base, basePathOf(file));
+// A revision that could not be read selects the review rather than skipping it.
+function holdsTests(content, path) {
+  return typeof content !== "string" || hasTestMarker(content, path);
 }
 
+function baseHoldsTests(file, baseContents) {
+  return needsBaseRead(file) && holdsTests(baseContents.get(basePathOf(file)), basePathOf(file));
+}
+
+function isTestChange(file, baseContents, headContents) {
+  if (!needsHeadRead(file)) return false;
+  return isTestChangeWithoutReads(file) || baseHoldsTests(file, baseContents) ||
+    holdsTests(headContents.get(file.filename), file.filename);
+}
 // `intent-files` placement: `D/INTENT*.md` governs everything under `D`, and `D/<name>.intent*.md`
 // governs the module `D/<name>` or `D/<name>.<extension>` beside it.
 function isGovernedByIntent(path, intentPaths) {
@@ -118,7 +132,7 @@ function isGovernedByIntent(path, intentPaths) {
   });
 }
 
-function diffReviewers(files, intentPaths, baseContents) {
+function diffReviewers(files, intentPaths, baseContents, headContents) {
   const present = files.filter((file) => file.status !== "removed");
   const governing = [...new Set([
     ...intentPaths,
@@ -132,7 +146,7 @@ function diffReviewers(files, intentPaths, baseContents) {
     selected.push("intent-drift");
   }
   if (files.some(intentEdited)) selected.push("intent-review");
-  if (files.some((file) => isTestChange(file, baseContents))) selected.push("test");
+  if (files.some((file) => isTestChange(file, baseContents, headContents))) selected.push("test");
   if (files.some((file) => file.additions > 0 && pathsOf(file).some((path) => DEPENDENCY_MANIFEST.test(path)))) {
     selected.push("dependency");
   }
@@ -155,41 +169,58 @@ async function resolveMergeBase(github, { owner, repo, baseSha, headSha }) {
   }
 }
 
-// Base files are read only when nothing on the head side already selects the test specialist. A read
-// that fails is recorded as unavailable, which selects it rather than skipping the review.
-async function readBaseFiles(files, { repositoryRoot, mergeBase }) {
-  const contents = new Map();
-  if (files.some(isTestChangeWithoutBase)) return contents;
-  const paths = [...new Set(files.filter(needsBaseRead).map(basePathOf))];
-  if (paths.length === 0) return contents;
+// Fetches one revision into the trusted checkout and reads the given paths from it as text; nothing
+// read is executed. A path that cannot be read is recorded as unavailable.
+function readRevisionFiles(paths, { repositoryRoot, sha, fallbackRefs = [] }) {
   const git = (args) => execFileSync("git", args, {
     cwd: repositoryRoot, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"],
   });
-  const sha = await mergeBase();
-  let fetched = SHA.test(sha || "");
-  if (fetched) {
+  let fetched = false;
+  if (SHA.test(sha || "")) {
+    // `--depth` would turn a complete clone shallow, so only an already shallow checkout uses it.
+    let depth = [];
     try {
-      // `--depth` would turn a complete clone shallow, so only an already shallow checkout uses it.
-      const shallow = git(["rev-parse", "--is-shallow-repository"]).trim() === "true";
-      git(["fetch", "--no-tags", ...(shallow ? ["--depth=1"] : []), "origin", sha]);
-    } catch {
-      fetched = false;
+      depth = git(["rev-parse", "--is-shallow-repository"]).trim() === "true" ? ["--depth=1"] : [];
+    } catch {}
+    for (const ref of [sha, ...fallbackRefs]) {
+      try {
+        git(["fetch", "--no-tags", ...depth, "origin", ref]);
+        git(["cat-file", "-e", `${sha}^{commit}`]);
+        fetched = true;
+        break;
+      } catch {}
     }
   }
+  const contents = new Map();
   for (const path of paths) {
     let content = null;
     if (fetched) {
       try {
         content = git(["cat-file", "blob", `${sha}:${path}`]);
-      } catch {
-        content = null;
-      }
+      } catch {}
     }
     contents.set(path, content);
   }
   return contents;
 }
 
+// Revisions are read only when a test path or an added marker does not already select the test
+// specialist. The merge base is read first, and the head only when the merge base did not decide it.
+async function readChangeContents(files, { repositoryRoot, mergeBase, headSha, prNumber }) {
+  const none = { baseContents: new Map(), headContents: new Map() };
+  if (files.some(isTestChangeWithoutReads)) return none;
+  const basePaths = [...new Set(files.filter(needsBaseRead).map(basePathOf))];
+  const baseContents = basePaths.length === 0
+    ? new Map()
+    : readRevisionFiles(basePaths, { repositoryRoot, sha: await mergeBase() });
+  if (files.some((file) => baseHoldsTests(file, baseContents))) return { baseContents, headContents: new Map() };
+  const headPaths = [...new Set(files.filter(needsHeadRead).map((file) => file.filename))];
+  const headContents = headPaths.length === 0 ? new Map() : readRevisionFiles(headPaths, {
+    repositoryRoot, sha: headSha,
+    fallbackRefs: Number.isSafeInteger(prNumber) && prNumber > 0 ? [`refs/pull/${prNumber}/head`] : [],
+  });
+  return { baseContents, headContents };
+}
 function listIntentFiles(repositoryRoot) {
   return execFileSync("git", ["ls-files", "-z"], {
     cwd: repositoryRoot, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
@@ -246,14 +277,16 @@ function sourceSizeLabel(files) {
 }
 
 function analyzeFiles(files, {
-  labelerRules, authorAssociation, intentPaths = [], baseContents = new Map(),
+  labelerRules, authorAssociation, intentPaths = [], baseContents = new Map(), headContents = new Map(),
 } = {}) {
   if (!Array.isArray(files) || files.length > MAX_FILES) return { ok: false, reason: "too many files" };
   if (!labelerRules || typeof labelerRules !== "object") return { ok: false, reason: "invalid configured rules" };
   if (!Array.isArray(intentPaths) || intentPaths.some((path) => typeof path !== "string")) {
     return { ok: false, reason: "invalid intent paths" };
   }
-  if (!(baseContents instanceof Map)) return { ok: false, reason: "invalid base contents" };
+  if (!(baseContents instanceof Map) || !(headContents instanceof Map)) {
+    return { ok: false, reason: "invalid revision contents" };
+  }
   for (const file of files) {
     if (!file || typeof file.filename !== "string" || file.filename.length > MAX_FILENAME ||
         !Number.isSafeInteger(file.additions) || file.additions < 0 ||
@@ -272,7 +305,7 @@ function analyzeFiles(files, {
     sizeLabels: SIZE_LABELS, changedLines: size.changedLines, touchedFiles: size.touchedFiles,
     firstTime: ["FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER"].includes(authorAssociation),
     documentationOnlyPaths: files.every((file) => isDocumentationPath(file.filename)),
-    reviewers: diffReviewers(files, intentPaths, baseContents),
+    reviewers: diffReviewers(files, intentPaths, baseContents, headContents),
   };
 }
 
@@ -313,12 +346,14 @@ async function deterministicAnalysis({
   try {
     const source = fs.readFileSync(labelerPath, "utf8");
     const files = await listPrFiles(github, { owner, repo, prNumber });
+    const contents = await readChangeContents(files, {
+      repositoryRoot, headSha, prNumber,
+      mergeBase: () => resolveMergeBase(github, { owner, repo, baseSha, headSha }),
+    });
     const result = analyzeFiles(files, {
       labelerRules: parseLabelerRules(source), authorAssociation,
       intentPaths: listIntentFiles(repositoryRoot),
-      baseContents: await readBaseFiles(files, {
-        repositoryRoot, mergeBase: () => resolveMergeBase(github, { owner, repo, baseSha, headSha }),
-      }),
+      ...contents,
     });
     return result.ok ? result : { ok: false, reason: result.reason };
   } catch {
@@ -328,5 +363,5 @@ async function deterministicAnalysis({
 
 module.exports = {
   MAX_FILES, SIZE_LABELS, addedLinesByPath, analyzeFiles, deterministicAnalysis, globToRegExp,
-  isGovernedByIntent, listIntentFiles, listPrFiles, parseLabelerRules, readBaseFiles, resolveMergeBase,
+  isGovernedByIntent, listIntentFiles, listPrFiles, parseLabelerRules, readChangeContents, resolveMergeBase,
 };
