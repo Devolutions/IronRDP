@@ -1,10 +1,10 @@
 [package]
 name = "ironrdp-daemon"
 version = "0.1.0"
-publish = false
 readme = "README.md"
 description = "Reusable persistent RDP session daemon support"
 edition.workspace = true
+rust-version = "1.94"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true

@@ -1,8 +1,6 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
-//! Reusable support for persistent RDP sessions hosted over local RPC.
-
 mod clipboard;
 pub mod daemon;
 pub mod known_certificates;
