@@ -3,6 +3,8 @@
 Reusable agent skills live in `.agents/skills/`; use the matching skill before committing, opening a pull request, posting a GitHub comment, or writing prose.
 Skills listed in `.github/skills-sync.yml` are overwritten weekly from `Devolutions/devolutions-gateway`; change those upstream, and keep repository-local skills out of that list.
 
+Start a work session with `/contribute`, which picks the delivery flow by scale and the skills each step needs.
+
 ## Intent files
 
 `INTENT.md` and `*.intent.md` files contain human-owned intent for the software.
