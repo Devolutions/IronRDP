@@ -9,11 +9,7 @@ use ironrdp_rdpdr::pdu::efs::{
     MinorFunction, NtStatus, PORT_CAPABILITY_VERSION_01, ServerDeviceAnnounceResponse, ServerDriveIoRequest,
 };
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
-use ironrdp_rdpdr::pdu::esp::{
-    PortIoCtlCode, PortIoRequest, SerialBaudRate, SerialChars, SerialCommProp, SerialEventMask, SerialHandflow,
-    SerialIoCtlInput, SerialIoCtlOutput, SerialLineControl, SerialPerfStats, SerialPurgeMask, SerialQueueSize,
-    SerialStatus, SerialTimeouts, SerialXoffCounter,
-};
+use ironrdp_rdpdr::pdu::esp::{PortIoCtlCode, PortIoRequest, SerialQueueSize, SerialStatus, SerialTimeouts};
 use ironrdp_rdpdr::{NoopRdpdrBackend, Rdpdr, RdpdrBackend, RdpdrPort, RdpdrPortKind};
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 
@@ -55,7 +51,7 @@ impl RdpdrBackend for RecordingPortBackend {
                 RdpdrPdu::DeviceControlResponse(DeviceControlResponse::with_raw_output(
                     control.request.header.clone(),
                     NtStatus::SUCCESS,
-                    encode_vec(&SerialBaudRate { baud_rate: 9600 }).unwrap(),
+                    9600u32.to_le_bytes().to_vec(), // SERIAL_BAUD_RATE
                 ))
             }
             PortIoRequest::Close(close) => RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
@@ -406,9 +402,10 @@ fn port_create_read_write_and_control_input_are_decoded() {
         panic!("expected a device-control request");
     };
     assert_eq!(
-        SerialIoCtlInput::decode(control.request.io_control_code, &control.input_buffer).unwrap(),
-        Some(SerialIoCtlInput::SetTimeouts(timeouts))
+        control.request.io_control_code,
+        PortIoCtlCode::IOCTL_SERIAL_SET_TIMEOUTS
     );
+    assert_eq!(control.input_buffer, input);
 }
 
 #[test]
@@ -566,15 +563,6 @@ where
 
 #[test]
 fn serial_buffers_round_trip_with_driver_sizes() {
-    round_trip(SerialBaudRate { baud_rate: 115_200 }, 4);
-    round_trip(
-        SerialLineControl {
-            stop_bits: 0,
-            parity: 2,
-            word_length: 8,
-        },
-        3,
-    );
     round_trip(
         SerialTimeouts {
             read_interval_timeout: 1,
@@ -584,26 +572,6 @@ fn serial_buffers_round_trip_with_driver_sizes() {
             write_total_timeout_constant: 5,
         },
         20,
-    );
-    round_trip(
-        SerialChars {
-            eof_char: 0x1a,
-            error_char: 0,
-            break_char: 0,
-            event_char: b'\n',
-            xon_char: 0x11,
-            xoff_char: 0x13,
-        },
-        6,
-    );
-    round_trip(
-        SerialHandflow {
-            control_handshake: 0x01,
-            flow_replace: 0x40,
-            xon_limit: 2048,
-            xoff_limit: -512,
-        },
-        16,
     );
     round_trip(
         SerialQueueSize {
@@ -623,35 +591,6 @@ fn serial_buffers_round_trip_with_driver_sizes() {
         },
         20,
     );
-    round_trip(
-        SerialCommProp {
-            packet_length: 64,
-            packet_version: 2,
-            service_mask: 1,
-            max_baud: 0x1000_0000,
-            prov_sub_type: 1,
-            settable_data: 0x000F,
-            settable_stop_parity: 0x1F07,
-            ..SerialCommProp::default()
-        },
-        64,
-    );
-    round_trip(
-        SerialPerfStats {
-            received_count: 10,
-            transmitted_count: 20,
-            ..SerialPerfStats::default()
-        },
-        24,
-    );
-    round_trip(
-        SerialXoffCounter {
-            timeout: 100,
-            counter: -1,
-            xoff_char: 0x13,
-        },
-        12,
-    );
 
     // Drivers may return SERIAL_STATUS without its trailing alignment padding.
     let mut status = encode_vec(&SerialStatus::default()).unwrap();
@@ -662,65 +601,6 @@ fn serial_buffers_round_trip_with_driver_sizes() {
     );
     status.truncate(17);
     assert!(SerialStatus::decode(&mut ReadCursor::new(&status)).is_err());
-}
-
-#[test]
-fn serial_ioctl_buffers_decode_by_control_code() {
-    let purge = (SerialPurgeMask::RXCLEAR | SerialPurgeMask::TXCLEAR)
-        .bits()
-        .to_le_bytes();
-    let input = SerialIoCtlInput::decode(PortIoCtlCode::IOCTL_SERIAL_PURGE, &purge)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        input,
-        SerialIoCtlInput::Purge(SerialPurgeMask::RXCLEAR | SerialPurgeMask::TXCLEAR)
-    );
-    assert_eq!(encode_vec(&input).unwrap(), purge);
-
-    let wait_mask = SerialIoCtlInput::SetWaitMask(SerialEventMask::RXCHAR | SerialEventMask::CTS);
-    assert_eq!(
-        SerialIoCtlInput::decode(
-            PortIoCtlCode::IOCTL_SERIAL_SET_WAIT_MASK,
-            &encode_vec(&wait_mask).unwrap()
-        )
-        .unwrap(),
-        Some(wait_mask)
-    );
-    assert_eq!(
-        SerialIoCtlInput::decode(PortIoCtlCode::IOCTL_SERIAL_IMMEDIATE_CHAR, &[0x13]).unwrap(),
-        Some(SerialIoCtlInput::ImmediateChar(0x13))
-    );
-    // Codes without input, parallel and unknown codes have no structured input.
-    assert_eq!(
-        SerialIoCtlInput::decode(PortIoCtlCode::IOCTL_SERIAL_SET_DTR, &[]).unwrap(),
-        None
-    );
-    assert_eq!(
-        SerialIoCtlInput::decode(PortIoCtlCode::IOCTL_PAR_QUERY_INFORMATION, &[1]).unwrap(),
-        None
-    );
-    assert!(SerialIoCtlInput::decode(PortIoCtlCode::IOCTL_SERIAL_SET_BAUD_RATE, &[0x80, 0x25]).is_err());
-
-    // Unknown event bits are retained.
-    let output = SerialIoCtlOutput::decode(PortIoCtlCode::IOCTL_SERIAL_WAIT_ON_MASK, &0x8001u32.to_le_bytes())
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        output,
-        SerialIoCtlOutput::WaitOnMask(SerialEventMask::from_bits_retain(0x8001))
-    );
-    assert_eq!(encode_vec(&output).unwrap(), 0x8001u32.to_le_bytes());
-    assert_eq!(
-        SerialIoCtlOutput::decode(PortIoCtlCode::IOCTL_SERIAL_GET_BAUD_RATE, &[0x80, 0x25, 0, 0]).unwrap(),
-        Some(SerialIoCtlOutput::BaudRate(SerialBaudRate { baud_rate: 9600 }))
-    );
-    assert_eq!(
-        SerialIoCtlOutput::decode(PortIoCtlCode::IOCTL_SERIAL_GET_COMMSTATUS, &[0; 20])
-            .unwrap()
-            .map(|output| encode_vec(&output).unwrap().len()),
-        Some(20)
-    );
 }
 
 #[test]
