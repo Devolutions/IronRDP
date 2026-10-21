@@ -63,13 +63,19 @@ impl OpenedDevice {
     /// interface that cannot be claimed is not redirected. On Windows, this is the case for every
     /// interface whose function driver is not WinUSB.
     pub(crate) fn open(info: &nusb::DeviceInfo) -> Result<Self, OpenError> {
-        let device = info.open().wait().map_err(|source| OpenError::new("open device", source))?;
+        let device = info
+            .open()
+            .wait()
+            .map_err(|source| OpenError::new("open device", source))?;
 
         let config = device
             .active_configuration()
             .map_err(|_| OpenError::message("device is not configured"))?;
         let mut interface_info = Vec::new();
-        for interface in config.interface_alt_settings().filter(|interface| interface.alternate_setting() == 0) {
+        for interface in config
+            .interface_alt_settings()
+            .filter(|interface| interface.alternate_setting() == 0)
+        {
             interface_info.push((
                 interface.interface_number(),
                 UsbClassCodes {
@@ -170,7 +176,10 @@ fn bus_number(bus_id: &str) -> u8 {
     let hash = bus_id.bytes().fold(0x811c_9dc5u32, |hash, byte| {
         (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
     });
-    hash.to_le_bytes().iter().fold(0, |folded: u8, byte| folded ^ byte).max(1)
+    hash.to_le_bytes()
+        .iter()
+        .fold(0, |folded: u8, byte| folded ^ byte)
+        .max(1)
 }
 
 /// Error returned when a local device cannot be opened for redirection.
@@ -291,18 +300,21 @@ impl NusbDeviceBackend {
             endpoints: BTreeMap::new(),
             controls: HashMap::new(),
             reply: reply.clone(),
-            commands: commands.clone(),
+            commands: commands.downgrade(),
         };
         let thread_name = format!(
             "urbdrc-{:04x}:{:04x}",
             info.descriptor.vendor_id, info.descriptor.product_id
         );
-        let spawned = thread::Builder::new().name(thread_name).spawn(move || {
-            match tokio::runtime::Builder::new_current_thread().enable_time().build() {
-                Ok(runtime) => runtime.block_on(worker.run(receiver)),
-                Err(error) => warn!(%error, "Failed to start the USB device worker runtime"),
-            }
-        });
+        let spawned =
+            thread::Builder::new()
+                .name(thread_name)
+                .spawn(
+                    move || match tokio::runtime::Builder::new_current_thread().enable_time().build() {
+                        Ok(runtime) => runtime.block_on(worker.run(receiver)),
+                        Err(error) => warn!(%error, "Failed to start the USB device worker runtime"),
+                    },
+                );
         let commands = match spawned {
             Ok(_) => Some(commands),
             Err(error) => {
@@ -472,7 +484,8 @@ struct Worker {
     endpoints: BTreeMap<u8, EndpointTask>,
     controls: HashMap<RequestId, AbortHandle>,
     reply: Reply,
-    commands: mpsc::UnboundedSender<Command>,
+    /// Weak, so that the worker stops once the backend drops the last strong sender.
+    commands: mpsc::WeakUnboundedSender<Command>,
 }
 
 struct EndpointTask {
@@ -550,10 +563,12 @@ impl Worker {
                 ControlRoute::SetInterface {
                     interface_number,
                     alternate_setting,
-                } => Some(match self.set_alternate_setting(interface_number, alternate_setting).await {
-                    Ok(()) => urb::transfer_completion(envelope, Vec::new(), 0),
-                    Err(status) => urb::failure_completion(envelope, status),
-                }),
+                } => Some(
+                    match self.set_alternate_setting(interface_number, alternate_setting).await {
+                        Ok(()) => urb::transfer_completion(envelope, Vec::new(), 0),
+                        Err(status) => urb::failure_completion(envelope, status),
+                    },
+                ),
                 ControlRoute::ClearHalt { endpoint } => Some(match self.clear_halt(endpoint).await {
                     Ok(()) => urb::transfer_completion(envelope, Vec::new(), 0),
                     Err(status) => urb::failure_completion(envelope, status),
@@ -632,7 +647,10 @@ impl Worker {
             UsbRequest::SelectConfiguration {
                 configuration_value,
                 interfaces,
-            } => Some(self.select_configuration(envelope, configuration_value, interfaces).await),
+            } => Some(
+                self.select_configuration(envelope, configuration_value, interfaces)
+                    .await,
+            ),
             UsbRequest::SelectInterface { interface } => Some(self.select_interface(envelope, interface).await),
             UsbRequest::Pipe { endpoint, operation } => Some(match operation {
                 PipeOperation::Abort => {
@@ -666,7 +684,9 @@ impl Worker {
         let commands = self.commands.clone();
         let task = tokio::spawn(async move {
             future.await;
-            let _ = commands.send(Command::ControlDone(request_id));
+            if let Some(commands) = commands.upgrade() {
+                let _ = commands.send(Command::ControlDone(request_id));
+            }
         });
         self.controls.insert(request_id, task.abort_handle());
     }
@@ -680,8 +700,10 @@ impl Worker {
         timeout: Duration,
     ) {
         let Some(interface) = self.control_interface(&setup) else {
-            self.reply
-                .complete(request_id, urb::failure_completion(envelope, usbd_status::INVALID_PARAMETER));
+            self.reply.complete(
+                request_id,
+                urb::failure_completion(envelope, usbd_status::INVALID_PARAMETER),
+            );
             return;
         };
 
@@ -724,14 +746,19 @@ impl Worker {
 
     /// Get the task serving an endpoint, opening the endpoint on first use.
     fn endpoint(&mut self, address: u8, direction: Direction) -> Result<&EndpointTask, UsbdStatus> {
-        let address_direction = if address & 0x80 == 0 { Direction::Out } else { Direction::In };
+        let address_direction = if address & 0x80 == 0 {
+            Direction::Out
+        } else {
+            Direction::In
+        };
         if address_direction != direction {
             return Err(usbd_status::INVALID_PIPE_HANDLE);
         }
 
         if !self.endpoints.contains_key(&address) {
-            let (interface_number, transfer_type) =
-                self.endpoint_descriptor(address).ok_or(usbd_status::INVALID_PIPE_HANDLE)?;
+            let (interface_number, transfer_type) = self
+                .endpoint_descriptor(address)
+                .ok_or(usbd_status::INVALID_PIPE_HANDLE)?;
             let interface = self
                 .interfaces
                 .get(&interface_number)
@@ -740,9 +767,11 @@ impl Worker {
             let (commands, receiver) = mpsc::unbounded_channel();
 
             let task = match (transfer_type, direction) {
-                (TransferType::Bulk, Direction::In) => {
-                    tokio::spawn(run_endpoint(open_endpoint::<Bulk, In>(interface, address)?, receiver, reply))
-                }
+                (TransferType::Bulk, Direction::In) => tokio::spawn(run_endpoint(
+                    open_endpoint::<Bulk, In>(interface, address)?,
+                    receiver,
+                    reply,
+                )),
                 (TransferType::Bulk, Direction::Out) => tokio::spawn(run_endpoint(
                     open_endpoint::<Bulk, Out>(interface, address)?,
                     receiver,
@@ -814,7 +843,16 @@ impl Worker {
     }
 
     async fn clear_halt(&mut self, endpoint: u8) -> Result<(), UsbdStatus> {
-        let direction = if endpoint & 0x80 == 0 { Direction::Out } else { Direction::In };
+        // The default control pipe clears its stall on the next SETUP packet.
+        if endpoint & 0x0f == 0 {
+            return Ok(());
+        }
+
+        let direction = if endpoint & 0x80 == 0 {
+            Direction::Out
+        } else {
+            Direction::In
+        };
         let task = self.endpoint(endpoint, direction)?;
         let (done, cleared) = oneshot::channel();
         task.commands
@@ -1167,7 +1205,12 @@ async fn cancel_all<T: BulkOrInterrupt, D: EndpointDirection>(
         .retry
         .drain(..)
         .map(|(entry, _)| (entry.request_id, entry.envelope))
-        .chain(queue.held.drain(..).map(|submission| (submission.request_id, submission.envelope)));
+        .chain(
+            queue
+                .held
+                .drain(..)
+                .map(|submission| (submission.request_id, submission.envelope)),
+        );
     for (request_id, envelope) in cancelled {
         reply.complete(request_id, urb::failure_completion(envelope, usbd_status::CANCELED));
     }
