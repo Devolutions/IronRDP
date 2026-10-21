@@ -8,7 +8,7 @@ const { createRequire } = require("node:module");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  SIZE_LABELS, addedLinesByPath, analyzeFiles, isGovernedByIntent, parseLabelerRules,
+  SIZE_LABELS, addedLinesByPath, analyzeFiles, isGovernedByIntent, parseLabelerRules, readBaseFiles,
 } = require("./deterministic-analysis");
 const { SCHEMA_VERSION: CLASSIFIER_SCHEMA_VERSION, validateClassifier } = require("./validate-classifier");
 const { validateCandidateReview } = require("./validate-candidate-review");
@@ -2024,8 +2024,9 @@ test("deterministic size uses the larger changed-line or touched-file bucket", (
 });
 
 test("diff facts select the conditional specialists", () => {
+  // New files need no base revision; tests of edits to existing files supply it explicitly.
   const reviewers = (files, intentPaths = []) => analyzeFiles(
-    files.map((file) => ({ additions: 1, deletions: 0, ...file })),
+    files.map((file) => ({ additions: 1, deletions: 0, status: "added", ...file })),
     { labelerRules: {}, intentPaths },
   ).reviewers;
   const patch = (line) => `@@ -1,1 +1,2 @@\n context\n${line}`;
@@ -2047,9 +2048,6 @@ test("diff facts select the conditional specialists", () => {
     assert.deepEqual(reviewers([{ filename: "crates/ironrdp-pdu/src/lib.rs", patch: patch(line) }]),
       ["test", "rust-style"], line);
   }
-  // A test marker in unchanged context is not a test change.
-  assert.deepEqual(reviewers([{ filename: "src/lib.rs", patch: "@@ -1,1 +1,2 @@\n #[test]\n+fn f() {}" }]),
-    ["rust-style"]);
   assert.deepEqual(reviewers([{ filename: "ffi/dotnet/Devolutions.IronRdp.Tests/SmokeTests.cs" }]), ["test"]);
   assert.deepEqual(reviewers([{ filename: "ffi/dotnet/Devolutions.IronRdp/Session.cs", patch: patch("+    [Fact]") }]),
     ["test"]);
@@ -2082,6 +2080,131 @@ test("diff facts select the conditional specialists", () => {
   assert.deepEqual(reviewers([{ filename: "crates/a/src/lib.intent.notes.md", status: "removed" }]), []);
 
   assert.equal(analyzeFiles([], { labelerRules: {}, intentPaths: [7] }).ok, false);
+});
+
+test("edits inside existing tests select the test specialist from the base revision", () => {
+  const base = [
+    "pub fn prod() -> u8 {", //     1
+    "    1", //                     2
+    "}", //                         3
+    "", //                          4
+    "#[cfg(test)]", //              5
+    "mod tests {", //               6
+    "    use super::*;", //         7
+    "", //                          8
+    "    #[test]", //               9
+    "    fn checks_prod() {", //    10
+    "        let open = \"{\";", // 11
+    "        assert_eq!(prod(), 1);", // 12
+    "    }", //                     13
+    "}", //                         14
+    "", //                          15
+  ].join("\n");
+  const modified = (patch, contents = new Map([["src/lib.rs", base]]), extra = {}) => analyzeFiles(
+    [{ filename: "src/lib.rs", status: "modified", additions: 1, deletions: 1, patch, ...extra }],
+    { labelerRules: {}, baseContents: contents },
+  ).reviewers;
+
+  // The assertion changes, but no changed line carries a test marker.
+  assert.deepEqual(modified("@@ -11,3 +11,3 @@\n         let open = \"{\";\n-        assert_eq!(prod(), 1);\n" +
+    "+        assert_eq!(prod(), 2);\n     }"), ["test", "rust-style"]);
+  // A production edit in a file whose test module sits at its end is not a test change, even when
+  // the hunk's context reaches the module.
+  assert.deepEqual(modified("@@ -1,5 +1,5 @@\n pub fn prod() -> u8 {\n-    1\n+    2\n }\n \n #[cfg(test)]"),
+    ["rust-style"]);
+  // An insertion straight after the closing brace of the module is outside it.
+  assert.deepEqual(modified("@@ -14,1 +14,2 @@\n }\n+pub fn other() {}"), ["rust-style"]);
+  // A function added beneath an unchanged `#[test]` is test code.
+  assert.deepEqual(analyzeFiles([{
+    filename: "src/codec.rs", status: "modified", additions: 1, deletions: 1,
+    patch: "@@ -1,2 +1,2 @@\n #[test]\n-fn existing() {}\n+fn added() {}",
+  }], {
+    labelerRules: {}, baseContents: new Map([["src/codec.rs", "#[test]\nfn existing() {}\n"]]),
+  }).reviewers, ["test", "rust-style"]);
+  // A pure insertion inside a test body uses the line the hunk's empty old side follows.
+  assert.deepEqual(modified("@@ -12,0 +13,1 @@\n+        assert!(true);"), ["test", "rust-style"]);
+  // A semicolon inside a type does not end the annotated item.
+  assert.deepEqual(analyzeFiles([{
+    filename: "src/a.rs", status: "modified", additions: 1, deletions: 1,
+    patch: "@@ -3,1 +3,1 @@\n-    [1, 2, 3, 4]\n+    [1, 2, 3, 5]",
+  }], {
+    labelerRules: {},
+    baseContents: new Map([["src/a.rs", "#[cfg(test)]\nfn fixture() -> [u8; 4] {\n    [1, 2, 3, 4]\n}\n"]]),
+  }).reviewers, ["test", "rust-style"]);
+  // An unmatched region runs to the end of the file rather than ending early.
+  assert.deepEqual(analyzeFiles([{
+    filename: "src/b.rs", status: "modified", additions: 1, deletions: 0, patch: "@@ -3,0 +4,1 @@\n+    x();",
+  }], {
+    labelerRules: {}, baseContents: new Map([["src/b.rs", "#[cfg(test)]\nmod tests {\n    fn y() {\n"]]),
+  }).reviewers, ["test", "rust-style"]);
+
+  // An unreadable base revision, or one without a patch to locate, fails toward review.
+  assert.deepEqual(modified("@@ -1,1 +1,1 @@\n-    1\n+    2", new Map([["src/lib.rs", null]])), ["test", "rust-style"]);
+  assert.deepEqual(modified("@@ -1,1 +1,1 @@\n-    1\n+    2", new Map()), ["test", "rust-style"]);
+  assert.deepEqual(modified(undefined), ["test", "rust-style"]);
+  // A file without test regions needs no patch to rule them out.
+  assert.deepEqual(modified(undefined, new Map([["src/lib.rs", "pub fn prod() {}\n"]])), ["rust-style"]);
+  // A renamed file is located at its base path.
+  assert.deepEqual(analyzeFiles([{
+    filename: "src/renamed.rs", previous_filename: "src/lib.rs", status: "renamed", additions: 1, deletions: 1,
+    patch: "@@ -12,1 +12,1 @@\n-        assert_eq!(prod(), 1);\n+        assert_eq!(prod(), 2);",
+  }], { labelerRules: {}, baseContents: new Map([["src/lib.rs", base]]) }).reviewers, ["test", "rust-style"]);
+
+  const csharp = [
+    "public class SessionTests", //  1
+    "{", //                           2
+    "    public void Helper() { }", // 3
+    "", //                            4
+    "    [Fact]", //                  5
+    "    public void Connects()", //  6
+    "    {", //                       7
+    "        Assert.True(true);", //  8
+    "    }", //                       9
+    "}", //                           10
+  ].join("\n");
+  const cs = (patch) => analyzeFiles([{
+    filename: "ffi/dotnet/Devolutions.IronRdp/Session.cs", status: "modified", additions: 1, deletions: 1, patch,
+  }], {
+    labelerRules: {}, baseContents: new Map([["ffi/dotnet/Devolutions.IronRdp/Session.cs", csharp]]),
+  }).reviewers;
+  assert.deepEqual(cs("@@ -8,1 +8,1 @@\n-        Assert.True(true);\n+        Assert.False(false);"), ["test"]);
+  assert.deepEqual(cs("@@ -3,1 +3,1 @@\n-    public void Helper() { }\n+    public void Helper() { Run(); }"), []);
+});
+
+test("base revisions are read only when needed and unreadable ones fail toward review", () => {
+  const files = [{ filename: "src/lib.rs", status: "modified", additions: 1, deletions: 1, patch: "@@ -1 +1 @@\n-a\n+b" }];
+  // A marker elsewhere already selects the specialist, so nothing is read.
+  assert.equal(readBaseFiles([...files, {
+    filename: "src/other.rs", status: "modified", additions: 1, deletions: 0, patch: "@@ -1,0 +1,1 @@\n+#[test]",
+  }], { repositoryRoot: __dirname, baseSha: SHA }).size, 0);
+  // New files and non-source files have no base revision to read.
+  assert.equal(readBaseFiles([
+    { filename: "src/new.rs", status: "added", additions: 1, deletions: 0 },
+    { filename: "README.md", status: "modified", additions: 1, deletions: 0 },
+  ], { repositoryRoot: __dirname, baseSha: SHA }).size, 0);
+  // A missing base SHA cannot be fetched, so every needed file is recorded as unreadable.
+  assert.deepEqual([...readBaseFiles(files, { repositoryRoot: __dirname, baseSha: undefined })], [["src/lib.rs", null]]);
+  assert.deepEqual([...readBaseFiles([{ ...files[0], filename: "src/new.rs", previous_filename: "src/old.rs", status: "renamed" }],
+    { repositoryRoot: __dirname, baseSha: "not-a-sha" })], [["src/old.rs", null]]);
+});
+
+test("renamed files apply path rules to both their old and new paths", () => {
+  const intentPaths = ["ffi/INTENT.md", ".github/workflows/review-pipeline.intent.md"];
+  const renamed = (previous, filename, extra = {}) => analyzeFiles([{
+    filename, previous_filename: previous, status: "renamed", additions: 0, deletions: 0, ...extra,
+  }], { labelerRules: {}, intentPaths }).reviewers;
+
+  // Moving a governed module or leaving a governed directory is audited against the intent it leaves.
+  assert.deepEqual(renamed(".github/workflows/review-pipeline.yml", ".github/workflows/reviews.yml"), ["intent-drift"]);
+  assert.deepEqual(renamed("ffi/src/session.c", "native/session.c"), ["intent-drift"]);
+  // Renaming an intent file is an intent edit under either name.
+  assert.deepEqual(renamed("ffi/INTENT.md", "ffi/NOTES.md"), ["intent-drift", "intent-review"]);
+  assert.deepEqual(renamed("docs/notes.md", "docs/INTENT.md"), ["intent-drift", "intent-review"]);
+  // A test or manifest path keeps its meaning after a move.
+  assert.deepEqual(renamed("crates/a/tests/codec.rs", "crates/a/src/codec_cases.rs"), ["test"]);
+  assert.deepEqual(renamed("crates/a/Cargo.toml", "crates/b/Cargo.toml", { additions: 1 }), ["dependency"]);
+  assert.equal(analyzeFiles([{ filename: "a", previous_filename: 7, additions: 0, deletions: 0 }],
+    { labelerRules: {} }).ok, false);
 });
 
 test("intent placement follows directory ancestry and module stems", () => {
