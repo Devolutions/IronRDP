@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Review IronRDP pull requests and diffs using focused protocol, compression, prose, and skeptical passes. Use whenever Copilot code review is requested or a proposed change needs review.
+description: Review IronRDP pull requests and diffs using focused protocol, intent, contract, compression, style, test, dependency, documentation, prose, and skeptical passes. Use whenever Copilot code review is requested or a proposed change needs review.
 ---
 
 # Code review
@@ -20,7 +20,7 @@ Inspect the diff, its stated goal, and repository guidance before selecting revi
 - Run `skeptical-reviewer` last for every diff.
 
 Prefer one `rubber-duck` sub-agent per applicable skill.
-Run the protocol, intent, compression, style, test, dependency, and prose reviews in parallel.
+Run the protocol, intent, compression, style, test, dependency, documentation, and prose reviews in parallel.
 Give every agent the change goal, review scope, base and head references, relevant repository guidance, and an instruction to invoke its named skill, inspect the diff itself, make no edits, and return only evidence-backed findings.
 If sub-agents or skill invocation are unavailable, apply the same skills directly and keep the ordering.
 
