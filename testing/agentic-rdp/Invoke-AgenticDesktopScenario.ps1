@@ -71,7 +71,6 @@ function Test-PngScreenshot {
         [int] $ExpectedHeight
     )
 
-    Add-Type -AssemblyName System.Drawing
     $bitmap = [System.Drawing.Bitmap]::new($Path)
     try {
         if ($bitmap.Width -ne $ExpectedWidth -or $bitmap.Height -ne $ExpectedHeight) {
