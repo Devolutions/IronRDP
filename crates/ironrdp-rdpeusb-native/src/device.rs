@@ -10,7 +10,7 @@
 use core::fmt;
 use core::time::Duration;
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
@@ -176,34 +176,29 @@ pub(crate) fn identity(info: &nusb::DeviceInfo) -> UsbDeviceIdentity {
 
 /// Map a platform bus identifier to the number used in `addr:` rules and device IDs.
 ///
-/// Linux and macOS identify buses with numbers. Windows uses host controller instance IDs, which are
-/// numbered from 1 in sorted order: every controller gets a distinct number, and the numbers are the
-/// same in every process as long as the set of controllers does not change. A controller that
-/// appears later gets the next number without renumbering the others.
+/// Linux and macOS identify buses with numbers. Windows uses host controller instance IDs, numbered
+/// from 1 by their position among the controllers present now, sorted by instance ID. Nothing is
+/// cached, so a fresh enumeration such as [`crate::local_devices`] reports the same numbers as long as
+/// no controller was added or removed in between. `addr:` rules apply to the devices present when the
+/// channel opens, which is when those devices are numbered.
 fn bus_number(bus_id: &str) -> u8 {
-    static KNOWN_BUSES: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
     if let Ok(number) = bus_id.parse::<u8>() {
         return number;
     }
 
-    let mut known = KNOWN_BUSES.lock().unwrap_or_else(PoisonError::into_inner);
-    if !known.iter().any(|known| known == bus_id) {
-        let mut present: Vec<String> = nusb::list_buses()
-            .wait()
-            .map(|buses| buses.map(|bus| bus.bus_id().to_owned()).collect())
-            .unwrap_or_default();
-        present.push(bus_id.to_owned());
-        present.sort();
-        present.dedup();
-        for id in present {
-            if !known.contains(&id) {
-                known.push(id);
-            }
-        }
-    }
+    let present = nusb::list_buses()
+        .wait()
+        .map(|buses| buses.map(|bus| bus.bus_id().to_owned()).collect())
+        .unwrap_or_default();
+    controller_number(bus_id, present)
+}
 
-    let index = known.iter().position(|known| known == bus_id).unwrap_or(0);
+/// Number `bus_id` by its position, from 1, among the `present` controllers sorted by instance ID.
+fn controller_number(bus_id: &str, mut present: Vec<String>) -> u8 {
+    present.push(bus_id.to_owned());
+    present.sort();
+    present.dedup();
+    let index = present.iter().position(|id| id == bus_id).unwrap_or(0);
     u8::try_from(index.saturating_add(1)).unwrap_or(u8::MAX)
 }
 
@@ -735,6 +730,9 @@ impl Worker {
                 },
                 PipeOperation::Ignore => urb::transfer_completion(envelope, Vec::new(), 0),
             }),
+            // Unreachable: `NusbDeviceBackend::dispatch`, the only producer of `Command::Submit`, answers
+            // these locally. The arms keep the match exhaustive and still complete the request should
+            // that ever change.
             UsbRequest::CurrentFrameNumber | UsbRequest::Isochronous { .. } => {
                 Some(urb::failure_completion(envelope, usbd_status::NOT_SUPPORTED))
             }
@@ -1389,19 +1387,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bus_numbers_are_stable_and_nonzero() {
+    fn bus_numbers_follow_the_present_controllers() {
         assert_eq!(bus_number("3"), 3);
         assert_eq!(bus_number("003"), 3);
 
-        // Host controller instance IDs get distinct numbers, stable across calls.
-        let first = r"PCI\VEN_8086&DEV_A0ED&SUBSYS_0A1F1028&REV_20\TEST&1";
-        let second = r"PCI\VEN_8086&DEV_A0ED&SUBSYS_0A1F1028&REV_20\TEST&2";
-        let first_number = bus_number(first);
-        let second_number = bus_number(second);
-        assert_ne!(first_number, 0);
-        assert_ne!(second_number, 0);
-        assert_ne!(first_number, second_number);
-        assert_eq!(bus_number(first), first_number);
-        assert_eq!(bus_number(second), second_number);
+        // Windows host controllers are numbered by sorted instance ID, from 1.
+        let present = || {
+            vec![
+                r"PCI\VEN_8086&DEV_A0ED&B".to_owned(),
+                r"PCI\VEN_8086&DEV_A0ED&A".to_owned(),
+            ]
+        };
+        assert_eq!(controller_number(r"PCI\VEN_8086&DEV_A0ED&A", present()), 1);
+        assert_eq!(controller_number(r"PCI\VEN_8086&DEV_A0ED&B", present()), 2);
+        // A controller missing from the listing, like one that just appeared, still gets a number.
+        assert_eq!(controller_number(r"PCI\VEN_8086&DEV_A0ED&C", present()), 3);
     }
 }

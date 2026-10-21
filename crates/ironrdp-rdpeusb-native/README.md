@@ -43,7 +43,7 @@ What can be claimed depends on the platform, because nusb uses the generic user-
 - IN transfers are limited to 16 MiB, and data a device sends beyond the requested length is reported as `USBD_STATUS_BUFFER_OVERRUN`.
 - On Windows, interface-directed Microsoft OS feature descriptor requests are rejected with `USBD_STATUS_NOT_SUPPORTED` unless the feature index matches the interface number, because WinUSB refuses them otherwise.
 - Windows reads device-level descriptors through the hub driver, and on Windows hotplugged devices are opened after a short delay so that their driver can bind first.
-- The bus number in `addr:` rules is the platform bus number on Linux and macOS, and a stable byte derived from the host controller instance ID on Windows; `local_devices` shows it.
+- The bus number in `addr:` rules is the platform bus number on Linux and macOS. On Windows it is the position of the host controller among the controllers present, sorted by instance ID, so it changes when a controller (a dock, for example) is added or removed; `local_devices` shows the current numbers.
 
 This crate is part of the [IronRDP] project.
 

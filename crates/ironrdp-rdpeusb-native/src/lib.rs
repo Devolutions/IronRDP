@@ -22,6 +22,11 @@ pub use filter::{DEFAULT_LOCAL_CLASSES, UsbDeviceIdentity, UsbDeviceMatch, UsbFi
 /// An event can still be queued after what produced it is gone: the device channel was closed, or the
 /// connection was replaced by a reconnection that may reuse the same channel IDs.
 /// [`Self::into_current`] filters those out.
+///
+/// The producers are the device manager, owned by the URBDRC listener, and each device backend, owned
+/// by its device channel processor: both live in the DRDYNVC client of the session loop that applies
+/// the events. Background threads only hold weak references to them, so a producer is dropped on that
+/// same loop, before or after an event is applied, never while one is being applied.
 #[derive(Debug)]
 pub struct UrbdrcEvent {
     /// Alive as long as the device backend or device manager that produced the event.
@@ -33,7 +38,8 @@ impl UrbdrcEvent {
     /// Returns the work to perform, or `None` when the device channel or the connection that produced
     /// the event no longer exists.
     pub fn into_current(self) -> Option<UrbdrcEventKind> {
-        (self.origin.strong_count() != 0).then_some(self.kind)
+        // `upgrade` decides atomically, unlike `strong_count`, which may be stale under concurrency.
+        self.origin.upgrade().map(|_| self.kind)
     }
 }
 
