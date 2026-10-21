@@ -32,6 +32,11 @@ The `.rdp` `redirectprinters` property does not enable it, because mstsc writes 
 Jobs are sent to the local queue as `RAW` data, so the remote host needs a printer driver with the same name as the local queue's driver; Easy Print/XPS is not supported.
 RPC mode enables it through the `redirectprinters` connect property.
 
+On Windows, pass `--camera <NAME>` (repeatable; `*` for every camera) to redirect local cameras, or set `camerastoredirect` in a `.rdp` file.
+Raw camera frames are encoded to H.264 unless `--camera-raw` is passed.
+
+Build with `--features openh264` to accept MS-RDPEVOR video optimized remoting, decoded with the bundled OpenH264 sources.
+
 To open the basic console of a local Hyper-V VM with the current Windows account:
 
 ```powershell

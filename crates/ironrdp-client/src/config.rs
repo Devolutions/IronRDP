@@ -391,6 +391,10 @@ pub struct ChannelConfig {
     /// MS-RDPECAM camera redirection (`camerastoredirect`). No camera is redirected by default.
     #[cfg(feature = "camera")]
     pub cameras: crate::camera::CameraConfig,
+
+    /// MS-RDPEVOR video optimized remoting. Disabled unless an H.264 decoder is configured.
+    #[cfg(feature = "video")]
+    pub video: crate::video::VideoConfig,
 }
 
 #[cfg_attr(
@@ -427,6 +431,8 @@ impl Default for ChannelConfig {
             location: false,
             #[cfg(feature = "camera")]
             cameras: crate::camera::CameraConfig::default(),
+            #[cfg(feature = "video")]
+            video: crate::video::VideoConfig::default(),
         }
     }
 }
@@ -1541,6 +1547,16 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_cameras(mut self, cameras: crate::camera::CameraConfig) -> Self {
         self.channels.cameras = cameras;
+        self
+    }
+
+    /// Set the H.264 decoder used for MS-RDPEVOR video optimized remoting.
+    ///
+    /// `None` declines the video channels.
+    #[cfg(feature = "video")]
+    #[must_use]
+    pub fn with_h264_decoder(mut self, decoder: Option<crate::video::H264DecoderFactory>) -> Self {
+        self.channels.video.decoder = decoder;
         self
     }
 

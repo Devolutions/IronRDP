@@ -13,6 +13,8 @@ pub mod config;
 pub mod output_channel;
 pub mod rail;
 pub mod rdp;
+#[cfg(feature = "video")]
+pub mod video;
 
 #[cfg(all(any(windows, target_os = "linux"), feature = "clipboard"))]
 mod clipboard;

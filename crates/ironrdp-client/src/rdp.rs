@@ -2004,6 +2004,12 @@ fn build_connector(
         attach_dvc(&mut drdynvc, &config.properties);
     }
 
+    // MS-RDPEVOR video optimized remoting and MS-RDPEGT geometry tracking.
+    #[cfg(feature = "video")]
+    {
+        drdynvc = crate::video::attach(drdynvc, &config.channels.video);
+    }
+
     // MS-RDPECAM camera redirection.
     #[cfg(all(windows, feature = "camera"))]
     {
@@ -3379,6 +3385,10 @@ async fn active_session(
     let disconnect_reason = 'outer: loop {
         let resize_deadline = resize_queue.deadline();
         let input_batch_deadline = input_batcher.deadline();
+        #[cfg(feature = "video")]
+        let video_deadline = crate::video::deadline(&active_stage);
+        #[cfg(not(feature = "video"))]
+        let video_deadline: Option<tokio::time::Instant> = None;
         let mut malformed_bitmap_redraw_queued = false;
         let clipboard_event = async {
             #[cfg(feature = "clipboard")]
@@ -3945,6 +3955,15 @@ async fn active_session(
                     ActiveSessionIteration::outputs(outputs)
                 }
                 _ = async {
+                    match video_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => core::future::pending().await,
+                    }
+                } => {
+                    // Due video pictures are composited below.
+                    ActiveSessionIteration::outputs(Vec::new())
+                }
+                _ = async {
                     match input_batch_deadline {
                         Some(deadline) => tokio::time::sleep_until(deadline).await,
                         None => core::future::pending().await,
@@ -3979,6 +3998,14 @@ async fn active_session(
                 }
             }
         };
+
+        #[cfg(feature = "video")]
+        crate::video::present(
+            &mut active_stage,
+            &mut image,
+            &mut iteration.outputs,
+            &mut iteration.dvc_batch,
+        )?;
 
         if let Some(batch) = iteration.dvc_batch {
             let channel_id = batch.channel_id();
