@@ -446,6 +446,131 @@ fn channels_of_one_device_share_activation_and_streams() {
 }
 
 #[test]
+fn deactivating_on_another_channel_takes_over_the_activation() {
+    let uplink = Uplink::new();
+    let device = negotiated_device(ProtocolVersion::V2);
+    let mut listener = device.listener(|| Some(FakeCamera::new()), uplink.callback());
+    let mut first = listener.create(20).unwrap();
+    let mut second = listener.create(21).unwrap();
+    first.start(20).unwrap();
+    second.start(21).unwrap();
+
+    let send = |processor: &mut Box<dyn ironrdp_dvc::DvcClientProcessor>, channel_id, pdu| {
+        let encoded = encode_vec(&DeviceMessage::new(ProtocolVersion::V2, pdu)).unwrap();
+        let response = processor.process(channel_id, &encoded).unwrap();
+        (!response.is_empty()).then(|| decode_message::<DeviceMessage>(&response).pdu)
+    };
+    assert_eq!(
+        send(&mut first, 20, DevicePdu::ActivateDeviceRequest),
+        Some(DevicePdu::SuccessResponse)
+    );
+    assert_eq!(
+        send(&mut second, 21, DevicePdu::DeactivateDeviceRequest),
+        Some(DevicePdu::SuccessResponse)
+    );
+    assert_eq!(
+        send(&mut second, 21, DevicePdu::ActivateDeviceRequest),
+        Some(DevicePdu::SuccessResponse)
+    );
+    let start = StartStreamInfo {
+        stream_index: 0,
+        media_type: media_type(),
+    };
+    assert_eq!(
+        send(&mut second, 21, DevicePdu::StartStreamsRequest(vec![start])),
+        Some(DevicePdu::SuccessResponse)
+    );
+
+    // The first channel no longer holds an activation, so closing it leaves the stream running.
+    first.close(20);
+    let client = second.as_any().downcast_ref::<DeviceClient<FakeCamera>>().unwrap();
+    assert!(client.is_activated());
+    assert!(client.is_streaming());
+    assert_eq!(send(&mut second, 21, DevicePdu::SampleRequest(0)), None);
+}
+
+#[test]
+fn closing_the_activating_channel_releases_an_idle_device() {
+    let uplink = Uplink::new();
+    let device = negotiated_device(ProtocolVersion::V2);
+    let mut listener = device.listener(|| Some(FakeCamera::new()), uplink.callback());
+    let mut control = listener.create(20).unwrap();
+    let observer = listener.create(21).unwrap();
+    control.start(20).unwrap();
+    let encoded = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::ActivateDeviceRequest,
+    ))
+    .unwrap();
+    control.process(20, &encoded).unwrap();
+
+    // Activated but not streaming: closing the channel still shuts the backend down.
+    control.close(20);
+    let client = observer.as_any().downcast_ref::<DeviceClient<FakeCamera>>().unwrap();
+    assert!(!client.is_activated());
+    assert_eq!(client.with_backend(|backend| backend.deactivate_count).unwrap(), 1);
+}
+
+#[test]
+fn requests_with_another_version_header_are_rejected() {
+    let device = negotiated_device(ProtocolVersion::V2);
+    let mut client = DeviceClient::new(&device, FakeCamera::new(), Uplink::new().callback());
+    client.start(7).unwrap();
+    assert_eq!(
+        exchange_versioned(&mut client, 7, ProtocolVersion::V1, DevicePdu::ActivateDeviceRequest),
+        Some(DeviceMessage::new(
+            ProtocolVersion::V2,
+            DevicePdu::ErrorResponse(ErrorCode::InvalidMessage)
+        ))
+    );
+    assert_eq!(client.with_backend(|backend| backend.activate_count).unwrap(), 0);
+
+    assert_eq!(
+        exchange(&mut client, 7, DevicePdu::ActivateDeviceRequest),
+        Some(DevicePdu::SuccessResponse)
+    );
+    let start = StartStreamInfo {
+        stream_index: 0,
+        media_type: media_type(),
+    };
+    assert_eq!(
+        exchange_versioned(
+            &mut client,
+            7,
+            ProtocolVersion::V1,
+            DevicePdu::StartStreamsRequest(vec![start])
+        ),
+        Some(DeviceMessage::new(
+            ProtocolVersion::V2,
+            DevicePdu::ErrorResponse(ErrorCode::InvalidMessage)
+        ))
+    );
+    assert!(!client.is_streaming());
+    assert_eq!(
+        exchange_versioned(&mut client, 7, ProtocolVersion::V1, DevicePdu::SampleRequest(0)),
+        Some(DeviceMessage::new(
+            ProtocolVersion::V2,
+            DevicePdu::SampleErrorResponse {
+                stream_index: 0,
+                error: ErrorCode::InvalidMessage,
+            }
+        ))
+    );
+
+    let device = negotiated_device(ProtocolVersion::V1);
+    let mut client = DeviceClient::new(&device, FakeCamera::new(), Uplink::new().callback());
+    client.start(8).unwrap();
+    assert_eq!(
+        exchange_versioned(&mut client, 8, ProtocolVersion::V2, DevicePdu::ActivateDeviceRequest),
+        Some(DeviceMessage::new(
+            ProtocolVersion::V1,
+            DevicePdu::ErrorResponse(ErrorCode::InvalidMessage)
+        ))
+    );
+    assert!(!client.is_activated());
+}
+
+#[test]
 fn compressed_media_types_are_streamed_with_picture_checks() {
     let uplink = Uplink::new();
     let mjpeg = MediaType::new(MediaFormat::Mjpg, 640, 480, 30, 1, 1, 1, MediaType::DECODING_REQUIRED).unwrap();

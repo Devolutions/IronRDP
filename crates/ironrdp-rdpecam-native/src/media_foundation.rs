@@ -250,6 +250,7 @@ impl CameraWatcher {
                 windows::core::Error::from_hresult(windows::Win32::Foundation::E_FAIL),
             )
         })?;
+        let rescan = wake_sender.clone();
         let context = Box::into_raw(Box::new(WatcherContext {
             wake: Mutex::new(wake_sender),
         }));
@@ -282,6 +283,8 @@ impl CameraWatcher {
                 windows::core::Error::from_hresult(windows::Win32::Foundation::E_FAIL),
             ));
         }
+        // Notifications only cover changes from now on: catch those since `initial` was enumerated.
+        let _ = rescan.send(());
         Ok(Self {
             registration,
             context,
@@ -462,7 +465,11 @@ impl CameraBackend for MediaFoundationCamera {
                 Ok(())
             }
             Err(error) => {
-                lock(&self.pending).sink = previous;
+                let mut pending = lock(&self.pending);
+                pending.sink = previous;
+                // Answers requests that waited while the sink was detached, with errors if the
+                // previous stream could not be restored.
+                pending.flush();
                 Err(error)
             }
         }
@@ -536,6 +543,8 @@ struct PendingSamples {
     /// H.264 pictures depend on each other and must all be delivered.
     keep_all: bool,
     waiting_for_key_frame: bool,
+    /// The device stopped producing frames: requests fail until streaming restarts.
+    failed: bool,
 }
 
 impl PendingSamples {
@@ -544,11 +553,13 @@ impl PendingSamples {
         self.frames.clear();
         self.keep_all = media_type.format == MediaFormat::H264;
         self.waiting_for_key_frame = self.keep_all;
+        self.failed = false;
     }
 
     fn reset(&mut self) {
         self.sink = None;
         self.frames.clear();
+        self.failed = false;
     }
 
     fn push(&mut self, frame: Frame) {
@@ -577,12 +588,21 @@ impl PendingSamples {
         self.frames.push_back(frame);
     }
 
-    /// Answers outstanding Sample Requests with queued frames.
+    /// Answers outstanding Sample Requests with queued frames, or with errors after a failure.
     fn flush(&mut self) {
         let Some(sink) = &self.sink else {
             self.frames.clear();
             return;
         };
+        if self.failed {
+            while sink.pending_requests(STREAM_INDEX) != 0 {
+                if sink.send_error(STREAM_INDEX, ErrorCode::Unexpected) != SampleDelivery::Sent {
+                    break;
+                }
+            }
+            self.frames.clear();
+            return;
+        }
         while sink.pending_requests(STREAM_INDEX) != 0 {
             let Some(frame) = self.frames.pop_front() else {
                 break;
@@ -605,16 +625,10 @@ impl PendingSamples {
         }
     }
 
-    /// Fails every outstanding request after the device stopped producing frames.
-    fn fail_requests(&mut self) {
-        if let Some(sink) = &self.sink {
-            while sink.pending_requests(STREAM_INDEX) != 0 {
-                if sink.send_error(STREAM_INDEX, ErrorCode::Unexpected) != SampleDelivery::Sent {
-                    break;
-                }
-            }
-        }
-        self.frames.clear();
+    /// Fails outstanding and later requests after the device stopped producing frames.
+    fn fail(&mut self) {
+        self.failed = true;
+        self.flush();
     }
 }
 
@@ -801,7 +815,7 @@ fn worker_main(
                 let _ = reply.send(Ok(()));
                 return;
             }
-            Some(command) => device.handle(command),
+            Some(command) => device.handle(command, pending),
             None => device.capture_one(pending),
         }
     }
@@ -857,7 +871,7 @@ impl OpenDevice {
         })
     }
 
-    fn handle(&mut self, command: Command) {
+    fn handle(&mut self, command: Command, pending: &Mutex<PendingSamples>) {
         match command {
             Command::MediaTypes(reply) => {
                 let media_types = self
@@ -877,14 +891,11 @@ impl OpenDevice {
                 let _ = reply.send(current);
             }
             Command::Start(media_type, reply) => {
-                let _ = reply.send(self.start(media_type));
+                let _ = reply.send(self.start(media_type, pending));
             }
             Command::Stop(reply) => {
                 self.streaming = None;
-                // SAFETY: valid source reader. Flushing drops buffered samples of the old stream.
-                if let Err(error) = unsafe { self.reader.Flush(first_video_stream()) } {
-                    debug!(%error, "Failed to flush the camera source reader");
-                }
+                self.flush_reader();
                 let _ = reply.send(Ok(()));
             }
             Command::Properties(reply) => {
@@ -902,31 +913,14 @@ impl OpenDevice {
         }
     }
 
-    fn start(&mut self, media_type: MediaType) -> Result<(), ErrorCode> {
+    /// Replaces the stream's media type. On failure, the previous stream keeps going.
+    fn start(&mut self, media_type: MediaType, pending: &Mutex<PendingSamples>) -> Result<(), ErrorCode> {
         let native = self
             .media_types
             .iter()
             .find(|candidate| candidate.description == media_type)
             .ok_or(ErrorCode::InvalidMediaType)?;
-        // SAFETY: valid source reader; stream selection uses reserved stream constants.
-        unsafe { self.reader.SetStreamSelection(all_streams(), false) }.map_err(|error| {
-            warn!(%error, "Failed to deselect camera streams");
-            ErrorCode::Unexpected
-        })?;
-        // SAFETY: as above.
-        unsafe { self.reader.SetStreamSelection(first_video_stream(), true) }.map_err(|error| {
-            warn!(%error, "Failed to select the camera video stream");
-            ErrorCode::Unexpected
-        })?;
-        // SAFETY: `native.native` is one of the reader's native media types.
-        unsafe {
-            self.reader
-                .SetCurrentMediaType(first_video_stream(), None, &native.native)
-        }
-        .map_err(|error| {
-            warn!(%error, "Failed to select the camera media type");
-            ErrorCode::InvalidMediaType
-        })?;
+        // Everything that can fail without touching the reader comes first.
         let (encoder, sequence_header) = if native.encode {
             let encoder = create_encoder(&native.native, &media_type, self.quality).map_err(|error| {
                 warn!(%error, "Failed to configure the H.264 encoder for the camera");
@@ -941,6 +935,26 @@ impl OpenDevice {
         } else {
             (None, None)
         };
+        // Buffered samples of the current type would otherwise hold up the change.
+        self.flush_reader();
+        if let Err(error) = select_media_type(&self.reader, &native.native) {
+            let previous = self.streaming.as_ref().and_then(|streaming| {
+                self.media_types
+                    .iter()
+                    .find(|candidate| candidate.description == streaming.media_type)
+            });
+            if let Some(previous) = previous {
+                self.flush_reader();
+                if select_media_type(&self.reader, &previous.native).is_err() {
+                    warn!("Failed to restore the previous camera media type");
+                    self.streaming = None;
+                    // Requests fail from now on; the backend flushes the outstanding ones once
+                    // the previous sink is back.
+                    lock(pending).failed = true;
+                }
+            }
+            return Err(error);
+        }
         info!(?media_type, encoded = encoder.is_some(), "Camera streaming started");
         self.streaming = Some(Streaming {
             media_type,
@@ -948,6 +962,14 @@ impl OpenDevice {
             encoder,
         });
         Ok(())
+    }
+
+    /// Drops the samples the reader buffered for the current stream.
+    fn flush_reader(&self) {
+        // SAFETY: valid source reader in synchronous mode.
+        if let Err(error) = unsafe { self.reader.Flush(first_video_stream()) } {
+            debug!(%error, "Failed to flush the camera source reader");
+        }
     }
 
     /// Reads one sample and queues it for the server.
@@ -970,7 +992,7 @@ impl OpenDevice {
         if result.is_err() || failed {
             warn!("Camera stopped producing frames");
             self.streaming = None;
-            lock(pending).fail_requests();
+            lock(pending).fail();
             return;
         }
         let Some(sample) = sample else {
@@ -1177,6 +1199,25 @@ fn native_media_types(reader: &IMFSourceReader, options: CameraOptions) -> windo
 }
 
 /// Returns whether the software H.264 encoder accepts frames of this media type.
+/// Makes the reader deliver `native` frames from the video stream only.
+fn select_media_type(reader: &IMFSourceReader, native: &IMFMediaType) -> Result<(), ErrorCode> {
+    // SAFETY: valid source reader; stream selection uses reserved stream constants.
+    unsafe { reader.SetStreamSelection(all_streams(), false) }.map_err(|error| {
+        warn!(%error, "Failed to deselect camera streams");
+        ErrorCode::Unexpected
+    })?;
+    // SAFETY: as above.
+    unsafe { reader.SetStreamSelection(first_video_stream(), true) }.map_err(|error| {
+        warn!(%error, "Failed to select the camera video stream");
+        ErrorCode::Unexpected
+    })?;
+    // SAFETY: `native` is one of the reader's native media types.
+    unsafe { reader.SetCurrentMediaType(first_video_stream(), None, native) }.map_err(|error| {
+        warn!(%error, "Failed to select the camera media type");
+        ErrorCode::InvalidMediaType
+    })
+}
+
 fn encodable(media_type: &MediaType) -> bool {
     matches!(
         media_type.format,
