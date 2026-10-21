@@ -477,11 +477,6 @@ impl SampleSink {
         self.inner.active.load(Ordering::Acquire)
     }
 
-    /// Media type selected for `stream_index`.
-    pub fn media_type(&self, stream_index: u8) -> Option<MediaType> {
-        self.stream(stream_index).map(|stream| stream.media_type)
-    }
-
     /// Number of unanswered Sample Requests for `stream_index`.
     pub fn pending_requests(&self, stream_index: u8) -> u32 {
         self.stream(stream_index)
@@ -590,13 +585,8 @@ where
 {
     /// Stops capture and releases the device once nothing uses it.
     fn shutdown(&mut self) {
-        let active = self.activation_depth != 0;
-        if let Some(sink) = self.sink.take() {
-            sink.stop();
-            if let Some(backend) = self.backend.as_mut() {
-                backend.shutdown();
-            }
-        } else if active {
+        let streaming = self.sink.take().inspect(SampleSink::stop).is_some();
+        if streaming || self.activation_depth != 0 {
             if let Some(backend) = self.backend.as_mut() {
                 backend.shutdown();
             }
@@ -741,12 +731,8 @@ where
         let response = match request {
             DevicePdu::DeactivateDeviceRequest => {
                 // Deactivation stops the streams, as in the Windows client.
-                if let Some(sink) = &state.sink {
-                    if let Err(error) = backend.stop_streams() {
-                        return Some(DevicePdu::ErrorResponse(error));
-                    }
-                    sink.stop();
-                    state.sink = None;
+                if let Err(error) = stop_streaming(backend, &mut state.sink) {
+                    return Some(DevicePdu::ErrorResponse(error));
                 }
                 if state.activation_depth == 1 {
                     if let Err(error) = backend.deactivate() {
@@ -799,16 +785,10 @@ where
                     DevicePdu::SuccessResponse
                 }
             },
-            DevicePdu::StopStreamsRequest => {
-                if let Some(sink) = &state.sink {
-                    if let Err(error) = backend.stop_streams() {
-                        return Some(DevicePdu::ErrorResponse(error));
-                    }
-                    sink.stop();
-                    state.sink = None;
-                }
-                DevicePdu::SuccessResponse
-            }
+            DevicePdu::StopStreamsRequest => match stop_streaming(backend, &mut state.sink) {
+                Ok(()) => DevicePdu::SuccessResponse,
+                Err(error) => DevicePdu::ErrorResponse(error),
+            },
             DevicePdu::SampleRequest(stream_index) => {
                 let Some(sink) = &state.sink else {
                     return Some(DevicePdu::SampleErrorResponse {
@@ -906,6 +886,17 @@ fn start_streams<B: CameraBackend>(backend: &mut B, streams: &[StartStreamInfo])
             || !supported.contains(&stream.media_type)
         {
             return Err(ErrorCode::InvalidMediaType);
+        }
+    }
+    Ok(())
+}
+
+/// Stops capture and its sink, if streaming. On failure, the sink keeps streaming.
+fn stop_streaming<B: CameraBackend>(backend: &mut B, sink: &mut Option<SampleSink>) -> Result<(), ErrorCode> {
+    if sink.is_some() {
+        backend.stop_streams()?;
+        if let Some(sink) = sink.take() {
+            sink.stop();
         }
     }
     Ok(())
