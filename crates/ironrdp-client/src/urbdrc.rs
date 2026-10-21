@@ -3,15 +3,18 @@
 //! The nusb backend performs USB I/O on its own threads and reports through [`UrbdrcEvent`]s. They
 //! travel on the unbounded, ordered event queue, because dropping a completion would leave a server
 //! driver waiting forever, and are applied here to the DRDYNVC client owned by the session loop.
+//! Events whose device channel or connection is gone are dropped, so that a reconnection reusing the
+//! same channel IDs never receives them.
 //!
 //! [MS-RDPEUSB]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/a1004d0e-99e9-4968-894b-0b924ef2f125
 
 use std::sync::Arc;
 
+use ironrdp_dvc::pdu::SoftSyncTunnelType;
 use ironrdp_dvc::{DrdynvcClient, DvcMessageBatch, encode_dvc_messages};
 use ironrdp_rdpeusb::client::{UrbdrcControlClient, UrbdrcDeviceClient, UrbdrcListener};
 use ironrdp_rdpeusb::io::CompletionData;
-use ironrdp_rdpeusb_native::{UrbdrcEvent, UsbRedirectionConfig};
+use ironrdp_rdpeusb_native::{UrbdrcEvent, UrbdrcEventKind, UsbRedirectionConfig};
 use ironrdp_session::{ActiveStage, SessionError, SessionErrorExt as _, SessionResult};
 use ironrdp_svc::ChannelFlags;
 use tracing::{debug, trace, warn};
@@ -20,8 +23,12 @@ use crate::rdp::RdpInputSender;
 
 /// What the session loop must send after applying an [`UrbdrcEvent`].
 pub(crate) enum UrbdrcOutput {
-    Dvc(DvcMessageBatch),
-    Frame(Vec<u8>),
+    /// Messages for one channel. `tunnel` is set when they must travel on the multitransport tunnel
+    /// that a channel used before it was closed; otherwise they follow the channel's current routing.
+    Dvc {
+        batch: DvcMessageBatch,
+        tunnel: Option<SoftSyncTunnelType>,
+    },
     Nothing,
 }
 
@@ -39,12 +46,16 @@ pub(crate) fn urbdrc_listener(config: &UsbRedirectionConfig, sender: RdpInputSen
 
 /// Apply a backend event to the URBDRC channels.
 pub(crate) fn process_urbdrc_event(active_stage: &mut ActiveStage, event: UrbdrcEvent) -> SessionResult<UrbdrcOutput> {
+    let Some(event) = event.into_current() else {
+        trace!("Dropping a USB redirection event from a closed device channel or an earlier connection");
+        return Ok(UrbdrcOutput::Nothing);
+    };
     let Some(drdynvc) = active_stage.get_svc_processor_mut::<DrdynvcClient>() else {
         return Ok(UrbdrcOutput::Nothing);
     };
 
     let (channel_id, message) = match event {
-        UrbdrcEvent::Completion {
+        UrbdrcEventKind::Completion {
             channel_id,
             request_id,
             completion,
@@ -72,7 +83,7 @@ pub(crate) fn process_urbdrc_event(active_stage: &mut ActiveStage, event: Urbdrc
                 }
             }
         }
-        UrbdrcEvent::AddVirtualChannel { control_channel_id } => {
+        UrbdrcEventKind::AddVirtualChannel { control_channel_id } => {
             let Some(channel) = drdynvc.get_dvc_by_channel_id::<UrbdrcControlClient>(control_channel_id) else {
                 warn!(
                     control_channel_id,
@@ -88,17 +99,18 @@ pub(crate) fn process_urbdrc_event(active_stage: &mut ActiveStage, event: Urbdrc
                 }
             }
         }
-        UrbdrcEvent::CloseChannel { channel_id } => {
-            let Some(message) = drdynvc.close_channel(channel_id) else {
-                return Ok(UrbdrcOutput::Nothing);
-            };
-            return Ok(UrbdrcOutput::Frame(active_stage.encode_dvc_messages(vec![message])?));
+        UrbdrcEventKind::CloseChannel { channel_id } => {
+            return Ok(match drdynvc.close_channel_batch(channel_id) {
+                Some((batch, tunnel)) => UrbdrcOutput::Dvc { batch, tunnel },
+                None => UrbdrcOutput::Nothing,
+            });
         }
     };
 
     let messages =
         encode_dvc_messages(channel_id, vec![message], ChannelFlags::empty()).map_err(SessionError::encode)?;
-    Ok(UrbdrcOutput::Dvc(
-        DvcMessageBatch::try_new(channel_id, messages).map_err(SessionError::pdu)?,
-    ))
+    Ok(UrbdrcOutput::Dvc {
+        batch: DvcMessageBatch::try_new(channel_id, messages).map_err(SessionError::pdu)?,
+        tunnel: None,
+    })
 }

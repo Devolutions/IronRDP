@@ -10,6 +10,7 @@
 use core::fmt;
 use core::time::Duration;
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
@@ -42,7 +43,7 @@ use tracing::{debug, trace, warn};
 
 use crate::filter::UsbDeviceIdentity;
 use crate::urb::{self, ControlRoute, Envelope, PipeOperation, UsbRequest, usbd_status};
-use crate::{UrbdrcEvent, UrbdrcEventSink};
+use crate::{EventOrigin, UrbdrcEventKind, UrbdrcEventSink};
 
 const DESCRIPTOR_TYPE_STRING: u8 = 0x03;
 
@@ -249,12 +250,12 @@ impl core::error::Error for OpenError {
 #[derive(Clone)]
 struct Reply {
     channel_id: u32,
-    sink: UrbdrcEventSink,
+    events: EventOrigin,
 }
 
 impl Reply {
     fn complete(&self, request_id: RequestId, completion: CompletionData) {
-        (self.sink)(UrbdrcEvent::Completion {
+        self.events.send(UrbdrcEventKind::Completion {
             channel_id: self.channel_id,
             request_id,
             completion,
@@ -280,6 +281,8 @@ pub(crate) struct NusbDeviceBackend {
     started: Instant,
     commands: Option<mpsc::UnboundedSender<Command>>,
     reply: Reply,
+    /// Keeps the events of this device current; they are dropped once the device channel is gone.
+    _events_token: Arc<()>,
 }
 
 /// Runs the wrapped callback when dropped.
@@ -311,7 +314,11 @@ impl NusbDeviceBackend {
             description,
             location,
         } = device;
-        let reply = Reply { channel_id, sink };
+        let events_token = Arc::new(());
+        let reply = Reply {
+            channel_id,
+            events: EventOrigin::new(&events_token, sink),
+        };
         let (commands, receiver) = mpsc::unbounded_channel();
 
         let worker = Worker {
@@ -351,6 +358,7 @@ impl NusbDeviceBackend {
             started: Instant::now(),
             commands,
             reply,
+            _events_token: events_token,
         }
     }
 
@@ -490,7 +498,7 @@ impl UrbdrcDeviceBackend for NusbDeviceBackend {
     fn retract(&mut self, channel_id: u32) -> PduResult<()> {
         debug!(channel_id, "Server retracted the redirected USB device");
         self.stop();
-        (self.reply.sink)(UrbdrcEvent::CloseChannel { channel_id });
+        self.reply.events.send(UrbdrcEventKind::CloseChannel { channel_id });
         Ok(())
     }
 }

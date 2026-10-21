@@ -4,6 +4,7 @@ Host USB device backend for the [MS-RDPEUSB] (URBDRC) client in `ironrdp-rdpeusb
 
 `urbdrc_listener` returns the DVC listener to register on the DRDYNVC client.
 The backend runs USB I/O on its own threads and reports through `UrbdrcEvent`s, which the session loop applies to the channels it owns: pending completions, `ADD_VIRTUAL_CHANNEL` for hotplugged devices, and channel closes for unplugged or retracted devices.
+An event can still be queued after its device channel was closed or its connection replaced by a reconnection that reuses channel IDs; `UrbdrcEvent::into_current` returns `None` for those.
 `ironrdp-client` wires this up behind its `usb` feature.
 
 ## Device selection

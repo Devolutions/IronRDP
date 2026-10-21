@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 
 use crate::device::{self, NusbDeviceBackend, OpenedDevice};
 use crate::filter::UsbRedirectionConfig;
-use crate::{UrbdrcEvent, UrbdrcEventSink};
+use crate::{EventOrigin, UrbdrcEventKind, UrbdrcEventSink};
 
 /// Attempts to open a hotplugged device, whose driver may still be loading when it is announced.
 const HOTPLUG_OPEN_ATTEMPTS: u32 = 5;
@@ -30,11 +30,13 @@ const HOTPLUG_OPEN_DELAY: Duration = Duration::from_millis(400);
 /// one device DVC per `ADD_VIRTUAL_CHANNEL`.
 pub(crate) struct NusbDeviceManager {
     shared: Arc<Shared>,
+    /// Keeps the manager's events current; they are dropped once the connection is torn down.
+    _events_token: Arc<()>,
 }
 
 struct Shared {
     config: UsbRedirectionConfig,
-    sink: UrbdrcEventSink,
+    events: EventOrigin,
     state: Mutex<State>,
 }
 
@@ -57,12 +59,14 @@ impl Shared {
 
 impl NusbDeviceManager {
     pub(crate) fn new(config: UsbRedirectionConfig, sink: UrbdrcEventSink) -> Self {
+        let events_token = Arc::new(());
         Self {
             shared: Arc::new(Shared {
                 config,
-                sink,
+                events: EventOrigin::new(&events_token, sink),
                 state: Mutex::new(State::default()),
             }),
+            _events_token: events_token,
         }
     }
 
@@ -114,7 +118,7 @@ impl DeviceManagerBackend for NusbDeviceManager {
         Some(Box::new(NusbDeviceBackend::start(
             device,
             channel_id,
-            Arc::clone(&self.shared.sink),
+            Arc::clone(self.shared.events.sink()),
             on_close,
         )))
     }
@@ -239,7 +243,9 @@ async fn run_hotplug(mut watch: nusb::hotplug::HotplugWatch, mut stopped: onesho
                     state.pending.push_back(device);
                     control_channel_id
                 };
-                (shared.sink)(UrbdrcEvent::AddVirtualChannel { control_channel_id });
+                shared
+                    .events
+                    .send(UrbdrcEventKind::AddVirtualChannel { control_channel_id });
             }
             HotplugEvent::Disconnected(id) => {
                 let channel_id = {
@@ -249,7 +255,7 @@ async fn run_hotplug(mut watch: nusb::hotplug::HotplugWatch, mut stopped: onesho
                 };
                 if let Some(channel_id) = channel_id {
                     debug!(channel_id, "Redirected USB device was unplugged");
-                    (shared.sink)(UrbdrcEvent::CloseChannel { channel_id });
+                    shared.events.send(UrbdrcEventKind::CloseChannel { channel_id });
                 }
             }
         }

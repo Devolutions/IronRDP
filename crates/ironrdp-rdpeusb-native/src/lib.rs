@@ -1,6 +1,6 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use ironrdp_rdpeusb::client::UrbdrcListener;
 use ironrdp_rdpeusb::io::{CompletionData, RequestId};
@@ -18,8 +18,28 @@ pub use filter::{DEFAULT_LOCAL_CLASSES, UsbDeviceIdentity, UsbDeviceMatch, UsbFi
 ///
 /// The backend runs USB I/O on its own threads. It reports through these events, which the session
 /// loop applies to the DRDYNVC client it owns.
+///
+/// An event can still be queued after what produced it is gone: the device channel was closed, or the
+/// connection was replaced by a reconnection that may reuse the same channel IDs.
+/// [`Self::into_current`] filters those out.
 #[derive(Debug)]
-pub enum UrbdrcEvent {
+pub struct UrbdrcEvent {
+    /// Alive as long as the device backend or device manager that produced the event.
+    origin: Weak<()>,
+    kind: UrbdrcEventKind,
+}
+
+impl UrbdrcEvent {
+    /// Returns the work to perform, or `None` when the device channel or the connection that produced
+    /// the event no longer exists.
+    pub fn into_current(self) -> Option<UrbdrcEventKind> {
+        (self.origin.strong_count() != 0).then_some(self.kind)
+    }
+}
+
+/// The work carried by an [`UrbdrcEvent`].
+#[derive(Debug)]
+pub enum UrbdrcEventKind {
     /// A pending request finished.
     ///
     /// Pass it to the [`UrbdrcDeviceClient`] of `channel_id` and send the resulting message. A request
@@ -47,6 +67,34 @@ pub enum UrbdrcEvent {
 /// It must not block; forwarding the event to the session loop through a channel is the expected
 /// implementation.
 pub type UrbdrcEventSink = Arc<dyn Fn(UrbdrcEvent) + Send + Sync>;
+
+/// Sends events on behalf of one producer, stamped with its liveness token.
+#[derive(Clone)]
+pub(crate) struct EventOrigin {
+    token: Weak<()>,
+    sink: UrbdrcEventSink,
+}
+
+impl EventOrigin {
+    /// Events sent through the returned origin are current while `token` is alive.
+    pub(crate) fn new(token: &Arc<()>, sink: UrbdrcEventSink) -> Self {
+        Self {
+            token: Arc::downgrade(token),
+            sink,
+        }
+    }
+
+    pub(crate) fn sink(&self) -> &UrbdrcEventSink {
+        &self.sink
+    }
+
+    pub(crate) fn send(&self, kind: UrbdrcEventKind) {
+        (self.sink)(UrbdrcEvent {
+            origin: Weak::clone(&self.token),
+            kind,
+        });
+    }
+}
 
 /// Build the URBDRC DVC listener that redirects the local USB devices selected by `config`.
 pub fn urbdrc_listener(config: UsbRedirectionConfig, sink: UrbdrcEventSink) -> UrbdrcListener {
@@ -86,4 +134,38 @@ pub fn local_devices() -> std::io::Result<Vec<LocalUsbDevice>> {
             driver: None,
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    #[test]
+    fn events_outlive_their_producer_as_stale() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let sink: UrbdrcEventSink = {
+            let received = Arc::clone(&received);
+            Arc::new(move |event| received.lock().expect("not poisoned").push(event))
+        };
+
+        let token = Arc::new(());
+        let origin = EventOrigin::new(&token, sink);
+        origin.send(UrbdrcEventKind::CloseChannel { channel_id: 7 });
+        origin.send(UrbdrcEventKind::CloseChannel { channel_id: 8 });
+
+        let mut events = received
+            .lock()
+            .expect("not poisoned")
+            .drain(..)
+            .collect::<Vec<_>>()
+            .into_iter();
+        let current = events.next().expect("first event").into_current();
+        assert!(matches!(current, Some(UrbdrcEventKind::CloseChannel { channel_id: 7 })));
+
+        // A reconnection drops the previous connection's producers before their queued events are applied.
+        drop(token);
+        assert!(events.next().expect("second event").into_current().is_none());
+    }
 }

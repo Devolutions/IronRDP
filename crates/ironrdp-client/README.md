@@ -47,6 +47,7 @@ Dedicated TCP-channel tests through that gateway also verified OUT-channel recyc
 The optional `usb` feature redirects local USB devices over MS-RDPEUSB (URBDRC) with the nusb backend from [`ironrdp-rdpeusb-native`](../ironrdp-rdpeusb-native).
 Select devices with `ConfigBuilder::with_usb_redirection` or the `.rdp` `usbdevicestoredirect` property.
 On Windows, only devices bound to the WinUSB driver can be redirected; see that crate for the coverage limits on each platform.
+Through an RD Gateway, USB redirection follows the gateway's Plug and Play device-redirection policy.
 
 For the end-user RDP client binary, see [`ironrdp-viewer`](../ironrdp-viewer).
 
