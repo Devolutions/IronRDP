@@ -280,10 +280,13 @@ impl WinClipboard {
 
         let ole_initialized = file_transfer && init_ole();
 
-        let state = Rc::new(ClipboardWindowState::new(
-            WinClipboardImpl::new(window, message_proxy, backend_rx, file_transfer, ole_initialized),
+        let state = Rc::new(ClipboardWindowState::new(WinClipboardImpl::new(
+            window,
+            message_proxy,
+            backend_rx,
+            file_transfer,
             ole_initialized,
-        ));
+        )));
 
         let subclass_reference = Rc::into_raw(Rc::clone(&state)).expose_provenance();
 

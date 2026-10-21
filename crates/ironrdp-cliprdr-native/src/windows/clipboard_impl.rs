@@ -28,8 +28,8 @@ use windows::core::{HRESULT, Interface as _};
 use crate::windows::clipboard_data_ref::ClipboardDataRef;
 use crate::windows::data_object::{FileFormatIds, RemoteDataObject};
 use crate::windows::file_list::{
-    build_local_file_list, decode_file_group_descriptor, is_file_list_format, is_portable_format,
-    is_sendable_descriptor,
+    build_local_file_list, decode_file_group_descriptor, fits_without_huge_file_support, is_file_list_format,
+    is_portable_format, is_sendable_descriptor,
 };
 use crate::windows::local_files::{LocalFileSource, LocalFiles, VirtualFiles, hglobal_data};
 use crate::windows::os_clipboard::OwnedOsClipboard;
@@ -52,6 +52,7 @@ pub(crate) struct WinClipboardImpl {
     window: HWND,
     transport: Rc<RemoteTransport>,
     file_transfer: bool,
+    /// OLE was initialized on this thread for this clipboard, and is uninitialized on teardown.
     ole_available: bool,
     /// Local ids of the formats used for files; `None` if they couldn't be registered.
     file_format_ids: Option<FileFormatIds>,
@@ -224,9 +225,18 @@ impl WinClipboardImpl {
     }
 
     fn local_file_source(&self, files: LocalClipboardFiles) -> Option<LocalFileSource> {
+        // Without it, the remote can't read past 4 GiB: larger files are left out of the offer.
+        let huge_files = self
+            .transport
+            .capabilities()
+            .contains(ClipboardGeneralCapabilityFlags::HUGE_FILE_SUPPORT_ENABLED);
+
         match files {
             LocalClipboardFiles::Paths(paths) => {
-                let entries = build_local_file_list(&paths);
+                let mut entries = build_local_file_list(&paths);
+                if !huge_files {
+                    entries.retain(|entry| fits_without_huge_file_support(&entry.descriptor));
+                }
                 if entries.is_empty() {
                     return None;
                 }
@@ -253,6 +263,7 @@ impl WinClipboardImpl {
                     .into_iter()
                     .zip(0i32..)
                     .filter(|(descriptor, _)| is_sendable_descriptor(descriptor))
+                    .filter(|(descriptor, _)| huge_files || fits_without_huge_file_support(descriptor))
                     .collect::<Vec<_>>();
                 if files.is_empty() {
                     return None;
@@ -306,11 +317,7 @@ impl WinClipboardImpl {
             return Ok(());
         }
 
-        if let Some(response) = self.get_remote_format_data(format)? {
-            Self::on_format_data_response(format, &response)?;
-        }
-
-        Ok(())
+        self.on_render_format(format).map(|_| ())
     }
 
     fn on_render_all_formats(&mut self) -> WinCliprdrResult<Option<ClipboardMessage>> {
@@ -477,9 +484,12 @@ impl WinClipboardImpl {
     fn handle_event(&mut self, event: BackendEvent) {
         let result = match &event {
             BackendEvent::FormatDataRequest(request) => self.on_format_data_request(request),
-            BackendEvent::FormatDataResponse(_)
-            | BackendEvent::RemoteFileList { .. }
-            | BackendEvent::FileContentsResponse(_) => {
+            BackendEvent::FormatDataResponse(_) | BackendEvent::RemoteFileList { .. } => {
+                // The answer to a paste whose wait gave up.
+                self.transport.drop_late_answer();
+                Ok(None)
+            }
+            BackendEvent::FileContentsResponse(_) => {
                 // Out-of-order message, ignore it.
                 Ok(None)
             }
@@ -641,8 +651,6 @@ fn is_current_ole_clipboard(data_object: &IDataObject) -> bool {
 /// freed under it, even when the clipboard is dropped from within one of its calls.
 pub(crate) struct ClipboardWindowState {
     inner: UnsafeCell<WinClipboardImpl>,
-    /// OLE was initialized for this clipboard, to be uninitialized on teardown.
-    ole_initialized: bool,
     busy: Cell<bool>,
     window_is_active: Cell<bool>,
     missed_backend_events: Cell<u32>,
@@ -655,10 +663,9 @@ pub(crate) struct ClipboardWindowState {
 }
 
 impl ClipboardWindowState {
-    pub(crate) fn new(inner: WinClipboardImpl, ole_initialized: bool) -> Self {
+    pub(crate) fn new(inner: WinClipboardImpl) -> Self {
         Self {
             inner: UnsafeCell::new(inner),
-            ole_initialized,
             busy: Cell::new(false),
             window_is_active: Cell::new(true), // We assume that we start with current window active,
             missed_backend_events: Cell::new(0),
@@ -739,7 +746,12 @@ fn teardown(window: HWND, state: &ClipboardWindowState) {
     }
 
     // Not busy here: callers check, so this always runs.
-    let _ = state.with_impl(|ctx, _| ctx.shutdown());
+    let ole_initialized = state
+        .with_impl(|ctx, _| {
+            ctx.shutdown();
+            ctx.ole_available
+        })
+        .unwrap_or(false);
 
     // SAFETY: The format listener was registered when the clipboard was created.
     if let Err(error) = unsafe { RemoveClipboardFormatListener(window) } {
@@ -756,7 +768,7 @@ fn teardown(window: HWND, state: &ClipboardWindowState) {
         debug!("Clipboard window subclass already removed");
     }
 
-    if state.ole_initialized {
+    if ole_initialized {
         // SAFETY: Balances the successful `OleInitialize` made when the clipboard was created, on
         // the same thread, now that no call into OLE is on the stack.
         unsafe { OleUninitialize() };

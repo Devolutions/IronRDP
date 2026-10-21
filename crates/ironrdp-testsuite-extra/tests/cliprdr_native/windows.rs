@@ -12,8 +12,8 @@ use ironrdp_cliprdr::{CliprdrClient, CliprdrState};
 use ironrdp_cliprdr_native::StubClipboard;
 use ironrdp_cliprdr_native::windows_file_list::{
     LocalFileEntry, MAX_FILE_CONTENTS_CHUNK, build_local_file_list, decode_file_group_descriptor,
-    encode_file_group_descriptor, is_directory, is_file_list_format, is_portable_format, is_sendable_descriptor,
-    range_request_len, read_file_contents,
+    encode_file_group_descriptor, fits_without_huge_file_support, is_directory, is_file_list_format,
+    is_portable_format, is_sendable_descriptor, range_request_len, read_file_contents,
 };
 
 use super::TempDir;
@@ -334,6 +334,18 @@ fn range_requests_stay_within_the_file_and_chunk_size() {
     let size = 6 * 1024 * 1024 * 1024u64;
     assert_eq!(range_request_len(size - 1, Some(size), 4096), 1);
     assert_eq!(range_request_len(1 << 32, Some(size), 4096), 4096);
+}
+
+#[test]
+fn files_over_4_gib_need_huge_file_support() {
+    let limit = u64::from(u32::MAX);
+    assert!(fits_without_huge_file_support(&FileDescriptor::new("dir")));
+    assert!(fits_without_huge_file_support(
+        &FileDescriptor::new("a").with_file_size(limit)
+    ));
+    assert!(!fits_without_huge_file_support(
+        &FileDescriptor::new("a").with_file_size(limit + 1)
+    ));
 }
 
 #[test]

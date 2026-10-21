@@ -245,10 +245,7 @@ impl IDataObject_Impl for RemoteDataObject_Impl {
             return E_POINTER;
         };
 
-        let result = match self.check_format(format) {
-            Ok(()) => S_OK,
-            Err(error) => error,
-        };
+        let result = self.check_format(format).err().unwrap_or(S_OK);
         trace!(format = format.cfFormat, tymed = format.tymed, %result, "Clipboard data queried");
         result
     }

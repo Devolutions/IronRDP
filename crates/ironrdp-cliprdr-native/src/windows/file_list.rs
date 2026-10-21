@@ -257,6 +257,14 @@ fn file_attributes(raw: u32) -> ClipboardFileAttributes {
     }
 }
 
+/// Returns whether `descriptor` can be offered when `CB_HUGE_FILE_SUPPORT_ENABLED` was not
+/// negotiated: files are then limited to 4,294,967,295 bytes ([MS-RDPECLIP] 2.2.2.1.1.1).
+pub fn fits_without_huge_file_support(descriptor: &FileDescriptor) -> bool {
+    descriptor
+        .file_size
+        .is_none_or(|file_size| u32::try_from(file_size).is_ok())
+}
+
 /// Returns whether `descriptor` describes a directory, which has no contents to transfer.
 pub fn is_directory(descriptor: &FileDescriptor) -> bool {
     descriptor

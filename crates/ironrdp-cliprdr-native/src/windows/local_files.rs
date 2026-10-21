@@ -160,6 +160,8 @@ impl LocalFileSource {
 pub(crate) struct LocalFiles {
     /// Offers sent, oldest first, waiting for their Format List Response (`None`: no files).
     offered: VecDeque<Option<Rc<LocalFileSource>>>,
+    /// Offers dropped from the front of `offered` to bound it, whose responses are still due.
+    dropped_offers: usize,
     /// The offer the remote acknowledged last.
     current: Option<Rc<LocalFileSource>>,
     locked: HashMap<u32, Rc<LocalFileSource>>,
@@ -169,14 +171,23 @@ impl LocalFiles {
     /// Records a format list sent to the remote, with the files it offers if any.
     pub(crate) fn offer(&mut self, source: Option<Rc<LocalFileSource>>) {
         if MAX_PENDING_OFFERS <= self.offered.len() {
-            // Responses got lost (e.g. the embedder dropped a message): start over from here.
-            self.offered.clear();
+            // The remote is not answering. The oldest offer goes, but its response is still
+            // counted, so that later responses keep pairing with the right offers.
+            self.offered.pop_front();
+            self.dropped_offers = self.dropped_offers.saturating_add(1);
         }
         self.offered.push_back(source);
     }
 
     /// Handles the Format List Response for the oldest offer.
     pub(crate) fn acknowledge(&mut self, accepted: bool) {
+        if self.dropped_offers != 0 {
+            // The acknowledged offer's files are gone: serve none rather than another offer's.
+            self.dropped_offers -= 1;
+            self.current = None;
+            return;
+        }
+
         let Some(offered) = self.offered.pop_front() else {
             return;
         };
@@ -187,6 +198,7 @@ impl LocalFiles {
 
     pub(crate) fn clear(&mut self) {
         self.offered.clear();
+        self.dropped_offers = 0;
         self.current = None;
         self.locked.clear();
     }

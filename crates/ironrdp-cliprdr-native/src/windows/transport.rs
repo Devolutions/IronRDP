@@ -52,6 +52,8 @@ pub(crate) struct RemoteTransport {
     /// Bumped on every new `CLIPRDR` channel (connection or reconnection).
     session: Cell<u64>,
     next_stream_id: Cell<u32>,
+    /// Answers still due for pastes whose wait gave up.
+    late_answers: Cell<u32>,
     /// Outgoing locks `Cliprdr` has released in the current session.
     released_locks: RefCell<HashSet<u32>>,
 }
@@ -66,6 +68,7 @@ impl RemoteTransport {
             generation: Cell::new(0),
             session: Cell::new(0),
             next_stream_id: Cell::new(1),
+            late_answers: Cell::new(0),
             released_locks: RefCell::new(HashSet::new()),
         }
     }
@@ -92,10 +95,8 @@ impl RemoteTransport {
         self.generation.get()
     }
 
-    pub(crate) fn next_generation(&self) -> u64 {
-        let generation = self.generation.get().wrapping_add(1);
-        self.generation.set(generation);
-        generation
+    pub(crate) fn next_generation(&self) {
+        self.generation.set(self.generation.get().wrapping_add(1));
     }
 
     pub(crate) fn session(&self) -> u64 {
@@ -106,6 +107,7 @@ impl RemoteTransport {
         self.next_session();
         self.capabilities.set(ClipboardGeneralCapabilityFlags::empty());
         self.released_locks.borrow_mut().clear();
+        self.late_answers.set(0);
     }
 
     /// Invalidates everything fetched or requested in the previous channel.
@@ -137,9 +139,9 @@ impl RemoteTransport {
     ) -> WinCliprdrResult<Option<FormatDataResponse<'static>>> {
         self.send(ClipboardMessage::SendInitiatePaste(remote_format));
 
-        self.wait_for(FORMAT_DATA_TIMEOUT, |event| match event {
-            BackendEvent::FormatDataResponse(response) => Wait::Done(Some(response)),
-            event => Wait::Defer(event),
+        self.wait_for_answer(|answer| match answer {
+            BackendEvent::FormatDataResponse(response) => Some(response),
+            _ => None,
         })
     }
 
@@ -153,16 +155,38 @@ impl RemoteTransport {
 
         self.send(ClipboardMessage::SendInitiatePaste(remote_format));
 
-        self.wait_for(FORMAT_DATA_TIMEOUT, |event| match event {
-            BackendEvent::RemoteFileList { files, clip_data_id } => Wait::Done(Ok(RemoteFileList {
+        self.wait_for_answer(|answer| match answer {
+            BackendEvent::RemoteFileList { files, clip_data_id } => Ok(RemoteFileList {
                 files,
                 clip_data_id,
                 generation,
                 session,
-            })),
-            BackendEvent::FormatDataResponse(_) => Wait::Done(Err(WinCliprdrError::ClipboardData)),
-            event => Wait::Defer(event),
+            }),
+            _ => Err(WinCliprdrError::ClipboardData),
         })?
+    }
+
+    /// Waits for the answer to the paste just initiated: a `FormatDataResponse`, or the
+    /// `RemoteFileList` `Cliprdr` decodes a file list response into.
+    ///
+    /// Answers carry no request id, but come in request order: after a wait gives up, the next
+    /// answer is the late one, and is dropped by any wait or by [`Self::drop_late_answer`].
+    fn wait_for_answer<T>(&self, mut accept: impl FnMut(BackendEvent) -> T) -> WinCliprdrResult<T> {
+        let result = self.wait_for(FORMAT_DATA_TIMEOUT, |event| match event {
+            BackendEvent::FormatDataResponse(_) | BackendEvent::RemoteFileList { .. } => Wait::Done(accept(event)),
+            event => Wait::Defer(event),
+        });
+
+        if result.is_err() {
+            self.late_answers.set(self.late_answers.get().saturating_add(1));
+        }
+
+        result
+    }
+
+    /// Accounts for an answer that arrived while nothing was waiting for it.
+    pub(crate) fn drop_late_answer(&self) {
+        self.late_answers.set(self.late_answers.get().saturating_sub(1));
     }
 
     /// Sends `request` and waits for the matching `FileContentsResponse`.
@@ -213,6 +237,16 @@ impl RemoteTransport {
             // reading in a loop must not send another request under a lock `Cliprdr` already
             // released, or for a clipboard or channel that was replaced. Applying it again when
             // the event is handled is harmless.
+            let is_answer = matches!(
+                event,
+                BackendEvent::FormatDataResponse(_) | BackendEvent::RemoteFileList { .. }
+            );
+            if is_answer && self.late_answers.get() != 0 {
+                self.late_answers.set(self.late_answers.get() - 1);
+                debug!("Dropping a late clipboard data answer");
+                continue;
+            }
+
             match &event {
                 BackendEvent::OutgoingLocksCleared(data_ids) => {
                     self.release_locks(data_ids.iter().map(|data_id| data_id.0));
