@@ -90,9 +90,8 @@ mod native {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
-    use ironrdp_core::impl_as_any;
-    use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessage, DvcMessageBatch, DvcProcessor};
-    use ironrdp_pdu::{PduResult, pdu_other_err};
+    use ironrdp_dvc::{DrdynvcClient, DvcMessageBatch};
+    use ironrdp_pdu::pdu_other_err;
     use ironrdp_rdpecam::client::DeviceChannelListener;
     use ironrdp_rdpecam::{
         CameraRedirectionSession, DeviceDescriptor, EnumerationClient, RedirectedDevice, SampleUplink,
@@ -133,34 +132,6 @@ mod native {
             }
         }
     }
-
-    /// Enumeration channel that also owns the device watcher for the lifetime of the connection.
-    struct CameraEnumeration {
-        inner: EnumerationClient,
-        _watcher: Option<CameraWatcher>,
-    }
-
-    impl_as_any!(CameraEnumeration);
-
-    impl DvcProcessor for CameraEnumeration {
-        fn channel_name(&self) -> &str {
-            self.inner.channel_name()
-        }
-
-        fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-            self.inner.start(channel_id)
-        }
-
-        fn process(&mut self, channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-            self.inner.process(channel_id, payload)
-        }
-
-        fn close(&mut self, channel_id: u32) {
-            self.inner.close(channel_id);
-        }
-    }
-
-    impl DvcClientProcessor for CameraEnumeration {}
 
     /// Selection state shared by the initial enumeration and the device watcher.
     struct CameraSelector {
@@ -258,23 +229,31 @@ mod native {
             info!("No selected camera is attached");
         }
 
-        let enumeration = match session.enumeration_client(devices) {
-            Ok(enumeration) => enumeration,
-            Err(error) => {
-                warn!(%error, "Unable to create the camera enumeration channel");
-                return drdynvc;
-            }
-        };
+        if let Err(error) = session.enumeration_client(devices.clone()) {
+            warn!(%error, "Unable to create the camera enumeration channel");
+            return drdynvc;
+        }
+        // Cameras to advertise, kept current by the watcher so that a reopened enumeration channel
+        // (Windows reopens it when the user desktop replaces the logon desktop) lists them all.
+        let devices = Arc::new(Mutex::new(devices));
 
         let selector = Arc::new(Mutex::new(selector));
+        let watched_devices = Arc::clone(&devices);
         let hotplug_sender = sender.clone();
         let watcher = CameraWatcher::new(cameras, move |event| {
-            let mut selector = selector.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut selector = lock(&selector);
             let hotplug = match event {
                 CameraEvent::Added(camera) => {
                     let Some((device, listener)) = selector.select(&camera) else {
                         return;
                     };
+                    let mut devices = lock(&watched_devices);
+                    if usize::from(u8::MAX) <= devices.len() {
+                        warn!(camera = %camera.friendly_name, "Too many redirected cameras");
+                        return;
+                    }
+                    devices.retain(|existing| existing.descriptor().channel_name != device.descriptor().channel_name);
+                    devices.push(device.clone());
                     HotplugKind::Added { device, listener }
                 }
                 CameraEvent::Removed { symbolic_link } => {
@@ -285,6 +264,7 @@ mod native {
                     else {
                         return;
                     };
+                    lock(&watched_devices).retain(|device| device.descriptor().channel_name != channel_name);
                     HotplugKind::Removed { channel_name }
                 }
             };
@@ -303,10 +283,21 @@ mod native {
             }
         };
 
-        drdynvc.with_dynamic_channel(CameraEnumeration {
-            inner: enumeration,
-            _watcher: watcher,
+        drdynvc.with_dynamic_channel_factory(ironrdp_rdpecam::ENUMERATION_CHANNEL_NAME, move || {
+            // The factory keeps the watcher alive for the lifetime of the connection.
+            let _watcher = &watcher;
+            let advertised = lock(&devices).clone();
+            session.enumeration_client(advertised).unwrap_or_else(|error| {
+                warn!(%error, "Advertising no camera");
+                session
+                    .enumeration_client(Vec::new())
+                    .unwrap_or_else(|_| unreachable!("an empty camera list is always valid"))
+            })
         })
+    }
+
+    fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+        mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Applies a camera change to the active session.
@@ -319,11 +310,11 @@ mod native {
             }
             HotplugKind::Removed { channel_name } => (None, Some(channel_name)),
         };
-        let mut enumeration = active_stage.get_dvc_mut::<CameraEnumeration>()?;
+        let mut enumeration = active_stage.get_dvc_mut::<EnumerationClient>()?;
         let channel_id = enumeration.channel_id();
         let result = match (device, removed) {
-            (Some(device), _) => enumeration.processor_mut().inner.add_device(device),
-            (None, Some(channel_name)) => enumeration.processor_mut().inner.remove_device(&channel_name),
+            (Some(device), _) => enumeration.processor_mut().add_device(device),
+            (None, Some(channel_name)) => enumeration.processor_mut().remove_device(&channel_name),
             (None, None) => return None,
         };
         let messages = match result {
