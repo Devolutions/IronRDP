@@ -18,7 +18,7 @@ use ironrdp_connector::connection_activation::ConnectionActivationState;
 use ironrdp_connector::{ConnectionResult, ConnectorResult};
 use ironrdp_core::WriteBuf;
 use ironrdp_displaycontrol::client::DisplayControlClient;
-use ironrdp_displaycontrol::pdu::MonitorLayoutEntry;
+use ironrdp_displaycontrol::pdu::{DisplayControlMonitorLayout, MonitorLayoutEntry};
 use ironrdp_dvc::DvcMessageBatch;
 use ironrdp_dvc::pdu::SoftSyncTunnelType;
 #[cfg(any(all(windows, feature = "dvc-com-plugin"), feature = "sound"))]
@@ -49,11 +49,9 @@ use ironrdp_rdpei::RdpeiClient;
 use ironrdp_rdpei::pdu::TouchEventPdu;
 #[cfg(feature = "location")]
 use ironrdp_rdpel::client::LocationClient;
-#[cfg(any(feature = "clipboard", feature = "rdpdr"))]
-use ironrdp_session::ActiveStage;
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{
-    ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionErrorExt as _, SessionResult,
+    ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionErrorExt as _, SessionResult,
 };
 use ironrdp_svc::SvcMessage;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
@@ -430,6 +428,13 @@ pub enum RdpInputEvent {
         /// Physical display size in millimetres (width, height).
         physical_size: Option<(u32, u32)>,
     },
+    /// Requests a complete client monitor layout over the Display Control channel (MS-RDPEDISP),
+    /// with every monitor's position, orientation, physical size and scale factors.
+    ///
+    /// Like [`Self::Resize`], it is deferred until Display Control is ready, and falls back to a
+    /// reconnection with the layout advertised in the GCC Client Monitor Data block when the
+    /// channel is unavailable.
+    MonitorLayout(DisplayControlMonitorLayout),
     FastPath(SmallVec<[FastPathInputEvent; 2]>),
     /// Multitouch frames for MS-RDPEI (`Microsoft::Windows::RDS::Input`).
     Touch(TouchEventPdu),
@@ -621,12 +626,67 @@ impl RdpInputSender {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ResizeRequest {
     width: u16,
     height: u16,
     scale_factor: u32,
     physical_size: Option<(u32, u32)>,
+    /// The complete monitor layout, for requests that carry more than a single monitor size.
+    layout: Option<DisplayControlMonitorLayout>,
+}
+
+impl ResizeRequest {
+    fn from_layout(layout: DisplayControlMonitorLayout) -> Self {
+        let (width, height) = layout.desktop_size();
+        Self {
+            width: u16::try_from(width).unwrap_or(u16::MAX),
+            height: u16::try_from(height).unwrap_or(u16::MAX),
+            scale_factor: 100,
+            physical_size: None,
+            layout: Some(layout),
+        }
+    }
+
+    fn prepare(&self, active_stage: &mut ActiveStage) -> Option<SessionResult<DvcMessageBatch>> {
+        match &self.layout {
+            Some(layout) => active_stage.prepare_monitor_layout(layout),
+            None => active_stage.prepare_resize(
+                u32::from(self.width),
+                u32::from(self.height),
+                Some(self.scale_factor),
+                self.physical_size,
+            ),
+        }
+    }
+
+    /// The GCC Client Monitor Data matching this request, advertised when the request falls
+    /// back to a reconnection.
+    fn client_monitor_data(&self) -> Option<ironrdp_pdu::gcc::ClientMonitorData> {
+        let layout = self.layout.as_ref()?;
+        let monitors = layout
+            .monitors()
+            .iter()
+            .map(|monitor| {
+                let (left, top) = monitor.position().unwrap_or_default();
+                let (width, height) = monitor.dimensions();
+                let width = i32::try_from(width).unwrap_or(i32::MAX);
+                let height = i32::try_from(height).unwrap_or(i32::MAX);
+                Monitor {
+                    left,
+                    top,
+                    right: left.saturating_add(width).saturating_sub(1),
+                    bottom: top.saturating_add(height).saturating_sub(1),
+                    flags: if monitor.is_primary() {
+                        ironrdp_pdu::gcc::MonitorFlags::PRIMARY
+                    } else {
+                        ironrdp_pdu::gcc::MonitorFlags::empty()
+                    },
+                }
+            })
+            .collect();
+        Some(ironrdp_pdu::gcc::ClientMonitorData { monitors })
+    }
 }
 
 struct TimedResizeRequest {
@@ -677,7 +737,7 @@ impl ResizeQueue {
             return Some((
                 self.pending
                     .as_ref()
-                    .map_or(in_flight.request, |pending| pending.request),
+                    .map_or_else(|| in_flight.request.clone(), |pending| pending.request.clone()),
                 DisplayResizeFallbackReason::ReactivationTimedOut,
             ));
         }
@@ -685,7 +745,12 @@ impl ResizeQueue {
         self.pending
             .as_ref()
             .filter(|pending| now >= pending.deadline)
-            .map(|pending| (pending.request, DisplayResizeFallbackReason::CapabilitiesTimedOut))
+            .map(|pending| {
+                (
+                    pending.request.clone(),
+                    DisplayResizeFallbackReason::CapabilitiesTimedOut,
+                )
+            })
     }
 }
 
@@ -1141,7 +1206,12 @@ impl RdpClient {
             )
             .await
             {
-                Ok(RdpControlFlow::ReconnectWithNewSize { width, height, reason }) => {
+                Ok(RdpControlFlow::ReconnectWithNewSize {
+                    width,
+                    height,
+                    monitor_layout,
+                    reason,
+                }) => {
                     if !self
                         .send_output_event(RdpOutputEvent::DisplayResizeFallback(reason))
                         .await
@@ -1155,6 +1225,9 @@ impl RdpClient {
                     reconnect_attempt = 0;
                     self.config.connector.desktop_size.width = width;
                     self.config.connector.desktop_size.height = height;
+                    if monitor_layout.is_some() {
+                        self.config.connector.monitor_layout = monitor_layout;
+                    }
                 }
                 Ok(RdpControlFlow::TerminatedGracefully(reason)) => {
                     if !self.send_output_event(RdpOutputEvent::Terminated(Ok(reason))).await {
@@ -2926,6 +2999,8 @@ enum RdpControlFlow {
     ReconnectWithNewSize {
         width: u16,
         height: u16,
+        /// The monitor layout to advertise on reconnection, when the request carried one.
+        monitor_layout: Option<ironrdp_pdu::gcc::ClientMonitorData>,
         reason: DisplayResizeFallbackReason,
     },
     TransportFailure(ironrdp_session::SessionError),
@@ -3388,48 +3463,63 @@ async fn active_session(
                     last_input = tokio::time::Instant::now();
 
                     match input_event {
-                    RdpInputEvent::Resize { width, height, scale_factor, physical_size } => {
-                        trace!(width, height, "Resize event");
-                        let width = u32::from(width);
-                        let height = u32::from(height);
-                        // TODO: Make adjust_display_size take and return width and height as u16.
-                        // From the function's doc comment, the width and height values must be less than or equal to 8192 pixels.
-                        // Therefore, we can remove unnecessary casts from u16 to u32 and back.
-                        let (width, height) = MonitorLayoutEntry::adjust_display_size(width, height);
-                        debug!(width, height, "Adjusted display size");
-                        let request = ResizeRequest {
-                            width: u16::try_from(width).expect("always in the range"),
-                            height: u16::try_from(height).expect("always in the range"),
-                            scale_factor,
-                            physical_size,
+                    resize_event @ (RdpInputEvent::Resize { .. } | RdpInputEvent::MonitorLayout(_)) => {
+                        let request = match resize_event {
+                            RdpInputEvent::Resize { width, height, scale_factor, physical_size } => {
+                                trace!(width, height, "Resize event");
+                                let width = u32::from(width);
+                                let height = u32::from(height);
+                                // TODO: Make adjust_display_size take and return width and height as u16.
+                                // From the function's doc comment, the width and height values must be less than or equal to 8192 pixels.
+                                // Therefore, we can remove unnecessary casts from u16 to u32 and back.
+                                let (width, height) = MonitorLayoutEntry::adjust_display_size(width, height);
+                                debug!(width, height, "Adjusted display size");
+                                ResizeRequest {
+                                    width: u16::try_from(width).expect("always in the range"),
+                                    height: u16::try_from(height).expect("always in the range"),
+                                    scale_factor,
+                                    physical_size,
+                                    layout: None,
+                                }
+                            }
+                            RdpInputEvent::MonitorLayout(layout) => {
+                                trace!(monitor_count = layout.monitors().len(), "Monitor layout event");
+                                ResizeRequest::from_layout(layout)
+                            }
+                            _ => unreachable!("only resize events reach this arm"),
                         };
                         if resize_queue.in_flight.is_some() || active_stage.display_control_ready() == Some(false) {
                             resize_queue.defer(request);
                             ActiveSessionIteration::outputs(Vec::new())
-                        } else if let Some(dvc_batch) = active_stage.prepare_resize(
-                            u32::from(request.width),
-                            u32::from(request.height),
-                            Some(request.scale_factor),
-                            request.physical_size,
-                        ) {
-                            resize_queue.mark_in_flight(request);
-                            let mut outputs = Vec::new();
-                            if let Some(messages) = active_stage
-                                .get_svc_processor_mut::<RailClient>()
-                                .map(|rail_client| rail_client.update_desktop_size(request.width, request.height))
-                            {
-                                let frame = active_stage.process_svc_processor_messages(messages)?;
-                                if !frame.is_empty() {
-                                    outputs.push(ActiveStageOutput::ResponseFrame(frame));
+                        } else if let Some(dvc_batch) = request.prepare(&mut active_stage) {
+                            match dvc_batch {
+                                Err(error) if request.layout.is_some() => {
+                                    warn!(%error, "Dropping a monitor layout the server cannot accept");
+                                    ActiveSessionIteration::outputs(Vec::new())
+                                }
+                                dvc_batch => {
+                                    let (width, height) = (request.width, request.height);
+                                    resize_queue.mark_in_flight(request);
+                                    let mut outputs = Vec::new();
+                                    if let Some(messages) = active_stage
+                                        .get_svc_processor_mut::<RailClient>()
+                                        .map(|rail_client| rail_client.update_desktop_size(width, height))
+                                    {
+                                        let frame = active_stage.process_svc_processor_messages(messages)?;
+                                        if !frame.is_empty() {
+                                            outputs.push(ActiveStageOutput::ResponseFrame(frame));
+                                        }
+                                    }
+                                    ActiveSessionIteration::with_outputs(dvc_batch?, outputs)
                                 }
                             }
-                            ActiveSessionIteration::with_outputs(dvc_batch?, outputs)
                         } else {
                             // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
                             debug!("Reconnecting with new size");
                             return Ok(RdpControlFlow::ReconnectWithNewSize {
                                 width: request.width,
                                 height: request.height,
+                                monitor_layout: request.client_monitor_data(),
                                 reason: DisplayResizeFallbackReason::DisplayControlUnavailable,
                             })
                         }
@@ -3710,6 +3800,7 @@ async fn active_session(
                 return Ok(RdpControlFlow::ReconnectWithNewSize {
                     width: request.width,
                     height: request.height,
+                    monitor_layout: request.client_monitor_data(),
                     reason,
                 });
                 }
@@ -4061,10 +4152,11 @@ async fn active_session(
                                     let request = resize_queue
                                         .pending
                                         .as_ref()
-                                        .map_or(in_flight.request, |pending| pending.request);
+                                        .map_or(&in_flight.request, |pending| &pending.request);
                                     return Ok(RdpControlFlow::ReconnectWithNewSize {
                                         width: request.width,
                                         height: request.height,
+                                        monitor_layout: request.client_monitor_data(),
                                         reason: DisplayResizeFallbackReason::ReactivationTimedOut,
                                     });
                                 }
@@ -4336,17 +4428,20 @@ async fn active_session(
         if resize_queue.in_flight.is_none()
             && let Some(pending) = resize_queue.pending.as_ref()
         {
-            let request = pending.request;
+            let request = pending.request.clone();
             match active_stage.display_control_ready() {
-                Some(true) => {
-                    let batch = active_stage
-                        .prepare_resize(
-                            u32::from(request.width),
-                            u32::from(request.height),
-                            Some(request.scale_factor),
-                            request.physical_size,
-                        )
-                        .ok_or_else(|| ironrdp_session::general_err!("Display Control became unavailable"))??;
+                Some(true) => 'pending_resize: {
+                    let batch = match request
+                        .prepare(&mut active_stage)
+                        .ok_or_else(|| ironrdp_session::general_err!("Display Control became unavailable"))?
+                    {
+                        Err(error) if request.layout.is_some() => {
+                            warn!(%error, "Dropping a monitor layout the server cannot accept");
+                            resize_queue.pending = None;
+                            break 'pending_resize;
+                        }
+                        batch => batch?,
+                    };
                     resize_queue.pending = None;
                     resize_queue.mark_in_flight(request);
                     let channel_id = batch.channel_id();
@@ -4407,6 +4502,7 @@ async fn active_session(
                     return Ok(RdpControlFlow::ReconnectWithNewSize {
                         width: request.width,
                         height: request.height,
+                        monitor_layout: request.client_monitor_data(),
                         reason: DisplayResizeFallbackReason::DisplayControlUnavailable,
                     });
                 }
@@ -4735,6 +4831,7 @@ mod tests {
             height,
             scale_factor: 100,
             physical_size: None,
+            layout: None,
         }
     }
 
@@ -4792,22 +4889,56 @@ mod tests {
         let mut queue = ResizeQueue::default();
         queue.mark_in_flight(first);
         let deadline = queue.deadline().expect("in-flight resize must have a deadline");
-        queue.defer(latest);
+        queue.defer(latest.clone());
 
         assert_eq!(
             queue.timed_out_request(deadline),
-            Some((latest, DisplayResizeFallbackReason::ReactivationTimedOut))
+            Some((latest.clone(), DisplayResizeFallbackReason::ReactivationTimedOut))
         );
         queue.completed();
         assert!(queue.in_flight.is_none());
-        assert_eq!(queue.pending.as_ref().map(|pending| pending.request), Some(latest));
+        assert_eq!(
+            queue.pending.as_ref().map(|pending| pending.request.clone()),
+            Some(latest)
+        );
+    }
+
+    #[test]
+    fn monitor_layout_requests_fall_back_to_the_matching_gcc_monitors() {
+        let layout = DisplayControlMonitorLayout::new(&[
+            MonitorLayoutEntry::new_primary(1920, 1080).unwrap(),
+            MonitorLayoutEntry::new_secondary(1080, 1920)
+                .unwrap()
+                .with_position(1920, -420)
+                .unwrap(),
+        ])
+        .unwrap();
+        let request = ResizeRequest::from_layout(layout);
+
+        assert_eq!((request.width, request.height), (3000, 1920));
+        assert_eq!(resize_request(1024, 768).client_monitor_data(), None);
+        let monitors = request
+            .client_monitor_data()
+            .expect("a layout request carries monitors")
+            .monitors;
+        assert_eq!(monitors.len(), 2);
+        assert_eq!(
+            (monitors[0].left, monitors[0].top, monitors[0].right, monitors[0].bottom),
+            (0, 0, 1919, 1079)
+        );
+        assert!(monitors[0].flags.contains(ironrdp_pdu::gcc::MonitorFlags::PRIMARY));
+        assert_eq!(
+            (monitors[1].left, monitors[1].top, monitors[1].right, monitors[1].bottom),
+            (1920, -420, 2999, 1499)
+        );
+        assert!(monitors[1].flags.is_empty());
     }
 
     #[test]
     fn resize_queue_times_out_while_waiting_for_display_control_capabilities() {
         let request = resize_request(1280, 720);
         let mut queue = ResizeQueue::default();
-        queue.defer(request);
+        queue.defer(request.clone());
         let deadline = queue.deadline().expect("pending resize must have a deadline");
 
         assert_eq!(queue.timed_out_request(deadline - Duration::from_millis(1)), None);
