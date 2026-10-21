@@ -11,15 +11,18 @@ pub(crate) fn extract_partial_image(
     region: InclusiveRectangle,
     buffer: &mut WriteBuf,
 ) -> InclusiveRectangle {
-    // PERF: needs actual benchmark to find a better heuristic
-    if region.height() > 64 || region.width() > 512 {
+    let prefer_contiguous_copy = 64 < region.height() || 512 < region.width();
+    // Widen only when copying, alpha processing, and uploading at most 25% extra pixels.
+    let acceptable_overdraw = u32::from(image.width()) * 4 <= u32::from(region.width()) * 5;
+
+    if prefer_contiguous_copy && acceptable_overdraw {
         extract_whole_rows(image, region, buffer)
     } else {
         extract_smallest_rectangle(image, region, buffer)
     }
 }
 
-// Faster for low-height and smaller images
+// Copies only the dirty pixels, one row at a time.
 fn extract_smallest_rectangle(
     image: &DecodedImage,
     region: InclusiveRectangle,
@@ -58,7 +61,7 @@ fn extract_smallest_rectangle(
     region
 }
 
-// Faster for high-height and bigger images
+// Copies contiguous rows, including pixels outside the dirty region.
 fn extract_whole_rows(image: &DecodedImage, region: InclusiveRectangle, buffer: &mut WriteBuf) -> InclusiveRectangle {
     let pixel_size = usize::from(image.pixel_format().bytes_per_pixel());
 

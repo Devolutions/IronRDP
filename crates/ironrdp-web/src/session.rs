@@ -44,7 +44,6 @@ use crate::canvas::Canvas;
 use crate::clipboard;
 use crate::clipboard::{ClipboardData, FileMetadata, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
 use crate::error::IronError;
-use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
 use crate::network_client::WasmNetworkClient;
 use crate::printer::{JsPrinterStreamCallbacks, WasmPrinter, WasmPrinterBackend, wasm_printer_pair};
@@ -980,8 +979,7 @@ impl iron_remote_desktop::Session for Session {
                             .context("Send frame to writer task")?;
                     }
                     ActiveStageOutput::GraphicsUpdate(region) => {
-                        let region = extract_partial_image(&image, region, &mut draw_buffer);
-                        gui.draw(draw_buffer.filled_mut(), region)
+                        gui.draw_image(&image, region, &mut draw_buffer)
                             .context("draw updated region")?;
                         draw_buffer.clear();
                     }
