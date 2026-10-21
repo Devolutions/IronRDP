@@ -210,7 +210,7 @@ impl ScardCall {
             }
             ScardCall::ConnectCall(_) => Box::new(ConnectReturn::new(return_code, ScardHandle::empty(), undefined)),
             ScardCall::ReconnectCall(_) => Box::new(ReconnectReturn::new(return_code, undefined)),
-            ScardCall::TransmitCall(_) => Box::new(TransmitReturn::new(return_code, None, Vec::new())),
+            ScardCall::TransmitCall(_) => Box::new(TransmitReturn::recv_probe(return_code, None, 0)),
             ScardCall::StatusCall(_) => Box::new(StatusReturn::names_probe(
                 return_code,
                 0,
@@ -221,11 +221,11 @@ impl ScardCall {
                 charset,
             )),
             ScardCall::StateCall(_) => Box::new(StateReturn::atr_probe(return_code, CardState::Unknown, undefined, 0)),
-            ScardCall::ControlCall(_) => Box::new(ControlReturn::new(return_code, Vec::new())),
-            ScardCall::GetAttribCall(_) => Box::new(GetAttribReturn::new(return_code, Vec::new())),
+            ScardCall::ControlCall(_) => Box::new(ControlReturn::out_probe(return_code, 0)),
+            ScardCall::GetAttribCall(_) => Box::new(GetAttribReturn::attr_probe(return_code, 0)),
             ScardCall::GetTransmitCountCall(_) => Box::new(GetTransmitCountReturn::new(return_code, 0)),
             ScardCall::GetDeviceTypeIdCall(_) => Box::new(GetDeviceTypeIdReturn::new(return_code, 0)),
-            ScardCall::ReadCacheCall(_) => Box::new(ReadCacheReturn::new(return_code, Vec::new())),
+            ScardCall::ReadCacheCall(_) => Box::new(ReadCacheReturn::data_probe(return_code, 0)),
             ScardCall::GetReaderIconCall(_) => Box::new(GetReaderIconReturn::new(return_code, Vec::new())),
             ScardCall::AccessStartedEventCall(_)
             | ScardCall::HCardAndDispositionCall(_)
@@ -1452,18 +1452,36 @@ impl GetStatusChangeReturn {
             reader_states,
         })
     }
+
+    /// Reader states put on the wire.
+    ///
+    /// MS-RDPESC 2.2.3 zeroes every field besides `ReturnCode` on failure. Like FreeRDP, the
+    /// states are kept on `SCARD_E_TIMEOUT`, which still reports the current reader states.
+    fn wire_reader_states(&self) -> &[ReaderStateCommonCall] {
+        if matches!(self.return_code, ReturnCode::Success | ReturnCode::Timeout) {
+            &self.reader_states
+        } else {
+            &[]
+        }
+    }
 }
 
 impl rpce::HeaderlessEncode for GetStatusChangeReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
-        let reader_states_len =
-            cast_length!("GetStatusChangeReturn", "reader_states", self.reader_states.len(), in: dst)?;
+        let reader_states = self.wire_reader_states();
+        let reader_states_len = cast_length!("GetStatusChangeReturn", "reader_states", reader_states.len(), in: dst)?;
+        if reader_states.is_empty() {
+            // cReaders = 0 and a NULL rgReaderStates pointer.
+            dst.write_u32(0);
+            dst.write_u32(0);
+            return Ok(());
+        }
         let mut index = 0;
         ndr::encode_ptr(Some(reader_states_len), &mut index, dst)?;
         dst.write_u32(reader_states_len);
-        for reader_state in &self.reader_states {
+        for reader_state in reader_states {
             reader_state.encode(dst)?;
         }
         Ok(())
@@ -1474,10 +1492,15 @@ impl rpce::HeaderlessEncode for GetStatusChangeReturn {
     }
 
     fn size(&self) -> usize {
+        let reader_states = self.wire_reader_states();
         self.return_code.size() // dst.write_u32(self.return_code.into());
         + ndr::ptr_size(true) // ndr::encode_ptr(Some(reader_states_len), &mut index, dst)?;
-        + 4 // dst.write_u32(reader_states_len);
-        + self.reader_states.iter().map(|_s| ReaderStateCommonCall::size()).sum::<usize>()
+        + if reader_states.is_empty() {
+            0
+        } else {
+            4 // dst.write_u32(reader_states_len);
+            + reader_states.len() * ReaderStateCommonCall::size()
+        }
     }
 }
 
@@ -2627,25 +2650,42 @@ impl GetReaderIconReturn {
     pub fn new(return_code: ReturnCode, data: Vec<u8>) -> rpce::Pdu<Self> {
         rpce::Pdu(Self { return_code, data })
     }
+
+    /// Icon bytes put on the wire: MS-RDPESC 2.2.3 zeroes every field besides `ReturnCode` on
+    /// failure.
+    fn wire_data(&self) -> &[u8] {
+        if self.return_code == ReturnCode::Success {
+            &self.data
+        } else {
+            &[]
+        }
+    }
 }
 
 impl rpce::HeaderlessEncode for GetReaderIconReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
+        let data = self.wire_data();
         // MS-RDPESC: cbDataLen range(0,4194304)
-        if self.data.len() > Self::MAX_DATA_LEN {
+        if data.len() > Self::MAX_DATA_LEN {
             return Err(invalid_field_err!(
                 "encode",
                 "GetReaderIconReturn cbDataLen out of range",
                 in: dst
             ));
         }
-        let data_len: u32 = cast_length!("GetReaderIconReturn", "data_len", self.data.len(), in: dst)?;
+        let data_len: u32 = cast_length!("GetReaderIconReturn", "data_len", data.len(), in: dst)?;
+        if data.is_empty() {
+            // cbDataLen = 0 and a NULL pbData pointer.
+            dst.write_u32(0);
+            dst.write_u32(0);
+            return Ok(());
+        }
         let mut index = 0;
         ndr::encode_ptr(Some(data_len), &mut index, dst)?;
         dst.write_u32(data_len);
-        dst.write_slice(&self.data);
+        dst.write_slice(data);
         Ok(())
     }
 
@@ -2654,10 +2694,15 @@ impl rpce::HeaderlessEncode for GetReaderIconReturn {
     }
 
     fn size(&self) -> usize {
+        let data = self.wire_data();
         size_of::<u32>() // dst.write_u32(self.return_code.into());
         + ndr::ptr_size(true) // ndr::encode_ptr(Some(data_len), &mut index, dst)?;
-        + size_of::<u32>() // dst.write_u32(data_len);
-        + self.data.len() // dst.write_slice(&self.data);
+        + if data.is_empty() {
+            0
+        } else {
+            size_of::<u32>() // dst.write_u32(data_len);
+            + data.len() // dst.write_slice(data);
+        }
     }
 }
 

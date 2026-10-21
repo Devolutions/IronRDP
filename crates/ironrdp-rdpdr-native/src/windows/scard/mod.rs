@@ -1327,7 +1327,14 @@ fn complete_connect(
 fn connect_failed(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode) -> SvcMessage {
     complete_connect(req, code, ScardHandle::empty(), CardProtocol::SCARD_PROTOCOL_UNDEFINED)
 }
+// The helpers below take raw WinSCard results: MS-RDPESC 2.2.3 zeroes every field besides
+// ReturnCode on failure, whatever WinSCard left in its out-parameters.
 fn complete_reconnect(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode, proto: CardProtocol) -> SvcMessage {
+    let proto = if code == ReturnCode::Success {
+        proto
+    } else {
+        CardProtocol::SCARD_PROTOCOL_UNDEFINED
+    };
     complete_rpce(req, Box::new(ReconnectReturn::new(code, proto)))
 }
 
@@ -1358,10 +1365,12 @@ fn attrib_ret(
 }
 
 fn complete_tx_count(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode, count: u32) -> SvcMessage {
+    let count = if code == ReturnCode::Success { count } else { 0 };
     complete_rpce(req, Box::new(GetTransmitCountReturn::new(code, count)))
 }
 
 fn complete_device_type(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode, id: u32) -> SvcMessage {
+    let id = if code == ReturnCode::Success { id } else { 0 };
     complete_rpce(req, Box::new(GetDeviceTypeIdReturn::new(code, id)))
 }
 
@@ -1411,6 +1420,8 @@ fn xmit_ret(
     data: Option<Vec<u8>>,
     recv_len: u32,
 ) -> SvcMessage {
+    // A failed call returns no pioRecvPci; recv_len stays as the SCARD_E_INSUFFICIENT_BUFFER size hint.
+    let pci = pci.filter(|_| code == ReturnCode::Success);
     let pdu = match data {
         Some(buf) => TransmitReturn::new(code, pci, buf),
         None => TransmitReturn::recv_probe(code, pci, recv_len),

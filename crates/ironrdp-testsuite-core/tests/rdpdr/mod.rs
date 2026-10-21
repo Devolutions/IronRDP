@@ -612,6 +612,133 @@ fn smartcard_error_response_rejects_calls_without_return_structure() {
 }
 
 #[test]
+fn smartcard_error_responses_zero_every_field_but_return_code() {
+    use ironrdp_rdpdr::pdu::esc::{
+        CardProtocol, ConnectCall, ConnectCommon, ControlCall, GetAttribCall, GetReaderIconCall, GetStatusChangeCall,
+        ReadCacheCall, ReadCacheCommon, ReconnectCall, SCardIORequest, ScardContext, ScardHandle, TransmitCall,
+    };
+
+    const SCARD_E_NO_SERVICE: u32 = 0x8010_001D;
+
+    let handle = ScardHandle::new(ScardContext::new(7), 9);
+    let calls = [
+        (
+            ScardIoCtlCode::ConnectW,
+            ScardCall::ConnectCall(ConnectCall {
+                reader: "Reader".to_owned(),
+                common: ConnectCommon {
+                    context: ScardContext::new(7),
+                    share_mode: 2,
+                    preferred_protocols: CardProtocol::SCARD_PROTOCOL_T1,
+                },
+            }),
+        ),
+        (
+            ScardIoCtlCode::Reconnect,
+            ScardCall::ReconnectCall(ReconnectCall {
+                handle,
+                share_mode: 2,
+                preferred_protocols: CardProtocol::SCARD_PROTOCOL_T1,
+                initialization: 0,
+            }),
+        ),
+        (
+            ScardIoCtlCode::Transmit,
+            ScardCall::TransmitCall(TransmitCall {
+                handle,
+                send_pci: SCardIORequest {
+                    protocol: CardProtocol::SCARD_PROTOCOL_T1,
+                    extra_bytes_length: 0,
+                    extra_bytes: Vec::new(),
+                },
+                send_length: 1,
+                send_buffer: vec![0],
+                recv_pci: None,
+                recv_buffer_is_null: false,
+                recv_length: 258,
+            }),
+        ),
+        (
+            ScardIoCtlCode::Control,
+            ScardCall::ControlCall(ControlCall {
+                handle,
+                control_code: 1,
+                in_buffer: Vec::new(),
+                out_buffer_is_null: false,
+                out_buffer_size: 64,
+            }),
+        ),
+        (
+            ScardIoCtlCode::GetAttrib,
+            ScardCall::GetAttribCall(GetAttribCall {
+                handle,
+                attr_id: 1,
+                attr_is_null: false,
+                attr_length: 64,
+            }),
+        ),
+        (
+            ScardIoCtlCode::ReadCacheW,
+            ScardCall::ReadCacheCall(ReadCacheCall {
+                lookup_name: "Cache".to_owned(),
+                common: ReadCacheCommon {
+                    context: ScardContext::new(7),
+                    card_uuid: vec![0; 16],
+                    freshness_counter: 0,
+                    data_is_null: false,
+                    data_len: 64,
+                },
+            }),
+        ),
+        (
+            ScardIoCtlCode::GetStatusChangeW,
+            ScardCall::GetStatusChangeCall(GetStatusChangeCall {
+                context: ScardContext::new(7),
+                timeout: 0,
+                states_ptr_length: 0,
+                states_ptr: 0,
+                states_length: 0,
+                states: Vec::new(),
+            }),
+        ),
+        (
+            ScardIoCtlCode::GetReaderIcon,
+            ScardCall::GetReaderIconCall(GetReaderIconCall {
+                context: ScardContext::new(7),
+                reader_name: "Reader".to_owned(),
+            }),
+        ),
+    ];
+
+    for (io_control_code, call) in calls {
+        let req = DeviceControlRequest {
+            header: DeviceIoRequest {
+                device_id: 1,
+                file_id: 0,
+                completion_id: 0x400,
+                major_function: MajorFunction::DeviceControl,
+                minor_function: MinorFunction::from(0),
+            },
+            output_buffer_length: 2048,
+            input_buffer_length: 0,
+            io_control_code,
+        };
+
+        let response = call.error_response(req, ReturnCode::NoService);
+
+        let encoded = encode_vec(&RdpdrPdu::DeviceControlResponse(response)).unwrap();
+        assert_eq!(ntstatus_at(&encoded, 12), NtStatus::SUCCESS, "{io_control_code:?}");
+        // The return structure starts after the 16-byte MS-RPCE headers.
+        assert_eq!(read_u32(&encoded[36..]), SCARD_E_NO_SERVICE, "{io_control_code:?}");
+        assert!(
+            encoded[40..].iter().all(|&byte| byte == 0),
+            "{io_control_code:?}: nonzero field in {:02x?}",
+            &encoded[40..]
+        );
+    }
+}
+
+#[test]
 fn noop_backend_reports_small_smartcard_output_buffer() {
     let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_smartcard(1);
 

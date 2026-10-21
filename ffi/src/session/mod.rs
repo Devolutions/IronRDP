@@ -134,7 +134,18 @@ pub mod ffi {
             let mut outputs = self
                 .0
                 .process(&mut image.0, action.0, payload, Some(crate::utils::monotonic_now()))?;
-            outputs.extend(self.poll_rdpdr_deferred_output()?);
+            // After DeactivateAll the frame would carry pre-reactivation channel IDs; after
+            // Terminate there is no session left. The next poll flushes them instead.
+            let session_continues = !outputs.iter().any(|output| {
+                matches!(
+                    output,
+                    ironrdp::session::ActiveStageOutput::DeactivateAll
+                        | ironrdp::session::ActiveStageOutput::Terminate(_)
+                )
+            });
+            if session_continues {
+                outputs.extend(self.poll_rdpdr_deferred_output()?);
+            }
             Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
         }
 
