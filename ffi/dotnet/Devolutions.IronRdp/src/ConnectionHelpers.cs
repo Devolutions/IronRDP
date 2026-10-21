@@ -65,9 +65,9 @@ internal static class ConnectionHelpers
             writeBuf.Clear();
             var written = credsspSequence.HandleProcessResult(clientState, writeBuf);
 
-            if (written.GetSize().IsSome())
+            if (written.Size.IsSome())
             {
-                var actualSize = (int)written.GetSize().Get();
+                var actualSize = (int)written.Size.Get();
                 var response = new byte[actualSize];
                 writeBuf.ReadIntoBuf(response);
                 await framed.Write(response);
@@ -109,14 +109,14 @@ internal static class ConnectionHelpers
             await PerformCredsspSteps(connector, serverName, writeBuf, framedSsl, serverPubKey);
         }
 
-        while (!connector.GetDynState().IsTerminal())
+        while (!connector.DynState.IsTerminal())
         {
             await Connection.SingleSequenceStep(connector, writeBuf, framedSsl);
         }
 
         ClientConnectorState state = connector.ConsumeAndCastToClientConnectorState();
 
-        if (state.GetEnumType() == ClientConnectorStateType.Connected)
+        if (state.EnumType == ClientConnectorStateType.Connected)
         {
             return state.GetConnectedResult();
         }

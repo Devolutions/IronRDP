@@ -9,7 +9,7 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
     use crate::pdu::ffi::WriteBuf;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ConnectionActivationSequence(
         pub Box<ironrdp::connector::connection_activation::ConnectionActivationSequence>,
     );

@@ -65,10 +65,10 @@ public static class Connection
         {
             if (state.IsSuspended())
             {
-                var request = state.GetNetworkRequestIfSuspended()!;
-                var protocol = request.GetProtocol();
-                var url = request.GetUrl();
-                var data = request.GetData();
+                var request = state.NetworkRequestIfSuspended!;
+                var protocol = request.Protocol;
+                var url = request.Url;
+                var data = request.Data;
 
                 if (protocol == NetworkRequestProtocol.Tcp)
                 {
@@ -96,7 +96,7 @@ public static class Connection
             {
                 try
                 {
-                    var clientState = state.GetClientStateIfCompleted();
+                    var clientState = state.ClientStateIfCompleted;
                     return clientState;
                 }
                 catch (IronRdpException ex)
@@ -135,13 +135,13 @@ public static class Connection
             written = sequence.StepNoInput(buf);
         }
 
-        if (written.GetWrittenType() == WrittenType.Nothing)
+        if (written.WrittenType == WrittenType.Nothing)
         {
             return;
         }
 
         // Will throw an exception if the size is not set.
-        var size = written.GetSize().Get();
+        var size = written.Size.Get();
 
         var response = new byte[size];
         buf.ReadIntoBuf(response);
@@ -177,7 +177,7 @@ public static class Utils
 {
     public static byte[] VecU8ToByte(VecU8 vecU8)
     {
-        var len = vecU8.GetSize();
+        var len = vecU8.Size;
         var buffer = new byte[len];
         vecU8.Fill(buffer);
         return buffer;

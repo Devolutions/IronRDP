@@ -230,7 +230,10 @@ jobs:
       - name: Binary cache
         uses: actions/cache@v5
         with:
-          path: ./.cargo/local_root/bin
+          path: |
+            ./.cargo/local_root/bin
+            ./.cargo/local_root/*.source
+            ./.cargo/local_root/*.version
           key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
 
       - name: Prepare runner
