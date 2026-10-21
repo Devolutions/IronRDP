@@ -141,6 +141,9 @@ impl DynamicVirtualChannel {
     }
 }
 
+/// Client-closed channels remembered while waiting for the server to acknowledge the close.
+const MAX_CLIENT_CLOSED_CHANNELS: usize = 64;
+
 /// DRDYNVC Static Virtual Channel (the Remote Desktop Protocol: Dynamic Virtual Channel Extension)
 ///
 /// It adds support for dynamic virtual channels (DVC).
@@ -379,6 +382,11 @@ impl DrdynvcClient {
         let tunnel = self.tunnel_channels.get(&channel_id).copied();
         let message = self.remove_channel(channel_id)?;
         self.client_closed.insert(channel_id, tunnel);
+        // A server may never acknowledge the close. Late data only races the Close PDU for a round
+        // trip, so forget the oldest closes rather than growing without bound.
+        while MAX_CLIENT_CLOSED_CHANNELS < self.client_closed.len() {
+            self.client_closed.pop_first();
+        }
         Some((message, tunnel))
     }
 

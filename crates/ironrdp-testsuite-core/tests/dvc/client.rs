@@ -628,3 +628,29 @@ fn client_close_of_a_tunneled_channel_reports_its_tunnel() {
     assert_eq!(tunnel, None);
     assert!(client.close_channel_batch(9).is_none());
 }
+
+#[test]
+fn client_closed_channels_are_forgotten_oldest_first() {
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    for channel_id in 1..=100 {
+        client
+            .attach_established_dynamic_channel(channel_id, RecordedDvc::default())
+            .expect("channel should attach");
+        client.close_channel(channel_id).expect("open channel should close");
+    }
+
+    let data = |channel_id| {
+        encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+            channel_id,
+            b"late".to_vec(),
+        ))))
+        .expect("DVC data should encode")
+    };
+
+    // Recent closes still absorb late data; the oldest are forgotten, which bounds the bookkeeping.
+    assert!(client.process(&data(100)).expect("late data is dropped").is_empty());
+    client
+        .process(&data(1))
+        .expect_err("a long-forgotten close no longer absorbs data");
+}
