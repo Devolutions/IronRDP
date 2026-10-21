@@ -499,6 +499,13 @@ pub trait PropertySetExt {
     /// Removes the `redirectprinters` property.
     fn clear_redirect_printers(&mut self);
 
+    /// Whether serial and parallel port redirection is requested (`redirectcomports`).
+    fn redirect_com_ports(&self) -> Option<bool>;
+    /// Sets the `redirectcomports` property.
+    fn set_redirect_com_ports(&mut self, value: bool);
+    /// Removes the `redirectcomports` property.
+    fn clear_redirect_com_ports(&mut self);
+
     /// RemoteApp application name (`remoteapplicationname`).
     fn remote_application_name(&self) -> Option<&str>;
     /// Sets the `remoteapplicationname` property.
@@ -983,6 +990,18 @@ impl PropertySetExt for PropertySet {
 
     fn clear_redirect_printers(&mut self) {
         self.remove("redirectprinters");
+    }
+
+    fn redirect_com_ports(&self) -> Option<bool> {
+        self.get::<bool>("redirectcomports")
+    }
+
+    fn set_redirect_com_ports(&mut self, value: bool) {
+        self.insert("redirectcomports", value);
+    }
+
+    fn clear_redirect_com_ports(&mut self) {
+        self.remove("redirectcomports");
     }
 
     fn remote_application_name(&self) -> Option<&str> {
