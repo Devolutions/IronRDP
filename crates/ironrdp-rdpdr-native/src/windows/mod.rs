@@ -17,5 +17,5 @@ mod volume;
 
 pub use backend::WindowsRdpdrBackend;
 pub use factory::{RedirectedDrive, RedirectedDriveError, WindowsRdpdrBackendFactory};
-pub use port::{LocalPort, PortSelection, WindowsPortRedirection, local_ports};
+pub use port::{PortSelection, WindowsPortRedirection};
 pub use printer::{RdpdrWorkerThreadGuard, RdpdrWorkerThreadGuardResult, RdpdrWorkerThreadHooks};

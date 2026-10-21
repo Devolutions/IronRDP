@@ -435,6 +435,11 @@ impl Capabilities {
     }
 
     /// Adds the serial and parallel port capability once.
+    ///
+    /// Unlike [`Self::add_smartcard`], this leaves SpecialTypeDeviceCap unchanged although
+    /// serial ports are announced before logon. MS-RDPEFS 2.2.2.7.1 names serial ports as
+    /// special devices, but mstsc does not count them there either, and Windows servers accept
+    /// pre-logon serial announces regardless.
     pub fn add_port(&mut self) {
         if !self
             .0

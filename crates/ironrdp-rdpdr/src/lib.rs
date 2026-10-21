@@ -461,13 +461,7 @@ impl Rdpdr {
             .into_iter()
             .zip(device_ids)
             .partition(|(device, _)| !announce_all_devices && device.device_type() == DeviceType::Serial);
-        let mut messages = Vec::new();
-        for batch in [other, serial] {
-            if !batch.is_empty() {
-                let (device_list, device_ids) = batch.into_iter().unzip();
-                messages.extend(self.announce_devices(device_list, device_ids)?);
-            }
-        }
+        let mut messages = self.announce_batches([other, serial])?;
 
         self.client_id_confirmed = true;
         self.post_logon_devices_announced = announce_all_devices;
@@ -504,8 +498,13 @@ impl Rdpdr {
             .into_iter()
             .zip(device_ids)
             .partition(|(device, _)| Self::is_pre_logon_device(device));
+        self.announce_batches([pre_logon, post_logon])
+    }
+
+    /// Announces each nonempty batch in a Device List Announce of its own, in order.
+    fn announce_batches(&mut self, batches: [Vec<(DeviceAnnounceHeader, u32)>; 2]) -> PduResult<Vec<SvcMessage>> {
         let mut messages = Vec::new();
-        for batch in [pre_logon, post_logon] {
+        for batch in batches {
             if !batch.is_empty() {
                 let (device_list, device_ids) = batch.into_iter().unzip();
                 messages.extend(self.announce_devices(device_list, device_ids)?);

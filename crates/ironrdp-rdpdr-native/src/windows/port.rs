@@ -58,6 +58,8 @@ use windows::core::{PCWSTR, PWSTR};
 const MAX_PORT_TRANSFER: usize = 64 * 1024;
 const MAX_PENDING_PORT_OPERATIONS: usize = 64;
 const MAX_OPEN_PORT_FILES: usize = 64;
+/// Stack reserved for each pending-request worker, which only waits on an event and stores the result.
+const WORKER_STACK_SIZE: usize = 64 * 1024;
 /// How long the driver has to complete a cancelled request before it is reported as cancelled.
 const CANCELLATION_TIMEOUT: Duration = Duration::from_secs(2);
 const STATUS_PENDING: NTSTATUS = NTSTATUS(0x0000_0103);
@@ -128,11 +130,10 @@ impl WindowsPortRedirection {
 
 /// A serial or parallel port present on this computer.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LocalPort {
-    /// Whether the port is serial or parallel.
-    pub kind: RdpdrPortKind,
+struct LocalPort {
+    kind: RdpdrPortKind,
     /// The DOS device name, such as `COM3` or `LPT1`.
-    pub name: String,
+    name: String,
 }
 
 /// Lists the serial and parallel ports on this computer.
@@ -142,7 +143,7 @@ pub struct LocalPort {
 /// nested remote session, are skipped. Unlike mstsc, which probes `COM1`..`COM32` and
 /// `LPT0`..`LPT9` by opening each one, the DOS device list is read without opening the
 /// ports, and there is no upper bound on the port number.
-pub fn local_ports() -> Vec<LocalPort> {
+fn local_ports() -> Vec<LocalPort> {
     let dos_devices = dos_device_names();
     let mut ports = Vec::new();
     for (kind, prefix) in [(RdpdrPortKind::Serial, "COM"), (RdpdrPortKind::Parallel, "LPT")] {
@@ -917,6 +918,7 @@ impl PortSession {
         let (sender, receiver) = mpsc::sync_channel::<Box<PortIo>>(1);
         let spawned = thread::Builder::new()
             .name("ironrdp-rdpdr-port".to_owned())
+            .stack_size(WORKER_STACK_SIZE)
             .spawn(move || {
                 tracing::dispatcher::with_default(&dispatch, || {
                     if let Ok(io) = receiver.recv() {

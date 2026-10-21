@@ -25,6 +25,21 @@ use super::efs::{
     IoCtlCode, MajorFunction, NtStatus,
 };
 
+/// Defines the MS-RDPESP control codes and their `ntddser.h` / `ntddpar.h` names from one table.
+macro_rules! port_ioctl_codes {
+    ($($name:ident = $value:literal),+ $(,)?) => {
+        $(pub const $name: Self = Self($value);)+
+
+        /// Returns the `ntddser.h` / `ntddpar.h` name of a code listed by MS-RDPESP.
+        pub fn name(self) -> Option<&'static str> {
+            match self {
+                $(Self::$name => Some(stringify!($name)),)+
+                _ => None,
+            }
+        }
+    };
+}
+
 /// A serial or parallel port I/O control code.
 ///
 /// [MS-RDPESP 2.2.2.6] lists the codes a port client can receive. Unknown codes
@@ -36,111 +51,56 @@ use super::efs::{
 pub struct PortIoCtlCode(pub u32);
 
 impl PortIoCtlCode {
-    pub const IOCTL_SERIAL_SET_BAUD_RATE: Self = Self(0x001B_0004);
-    pub const IOCTL_SERIAL_SET_QUEUE_SIZE: Self = Self(0x001B_0008);
-    pub const IOCTL_SERIAL_SET_LINE_CONTROL: Self = Self(0x001B_000C);
-    pub const IOCTL_SERIAL_SET_BREAK_ON: Self = Self(0x001B_0010);
-    pub const IOCTL_SERIAL_SET_BREAK_OFF: Self = Self(0x001B_0014);
-    pub const IOCTL_SERIAL_IMMEDIATE_CHAR: Self = Self(0x001B_0018);
-    pub const IOCTL_SERIAL_SET_TIMEOUTS: Self = Self(0x001B_001C);
-    pub const IOCTL_SERIAL_GET_TIMEOUTS: Self = Self(0x001B_0020);
-    pub const IOCTL_SERIAL_SET_DTR: Self = Self(0x001B_0024);
-    pub const IOCTL_SERIAL_CLR_DTR: Self = Self(0x001B_0028);
-    pub const IOCTL_SERIAL_RESET_DEVICE: Self = Self(0x001B_002C);
-    pub const IOCTL_SERIAL_SET_RTS: Self = Self(0x001B_0030);
-    pub const IOCTL_SERIAL_CLR_RTS: Self = Self(0x001B_0034);
-    pub const IOCTL_SERIAL_SET_XOFF: Self = Self(0x001B_0038);
-    pub const IOCTL_SERIAL_SET_XON: Self = Self(0x001B_003C);
-    pub const IOCTL_SERIAL_GET_WAIT_MASK: Self = Self(0x001B_0040);
-    pub const IOCTL_SERIAL_SET_WAIT_MASK: Self = Self(0x001B_0044);
-    pub const IOCTL_SERIAL_WAIT_ON_MASK: Self = Self(0x001B_0048);
-    pub const IOCTL_SERIAL_PURGE: Self = Self(0x001B_004C);
-    pub const IOCTL_SERIAL_GET_BAUD_RATE: Self = Self(0x001B_0050);
-    pub const IOCTL_SERIAL_GET_LINE_CONTROL: Self = Self(0x001B_0054);
-    pub const IOCTL_SERIAL_SET_CHARS: Self = Self(0x001B_0058);
-    pub const IOCTL_SERIAL_GET_CHARS: Self = Self(0x001B_005C);
-    pub const IOCTL_SERIAL_GET_HANDFLOW: Self = Self(0x001B_0060);
-    pub const IOCTL_SERIAL_SET_HANDFLOW: Self = Self(0x001B_0064);
-    pub const IOCTL_SERIAL_GET_MODEMSTATUS: Self = Self(0x001B_0068);
-    pub const IOCTL_SERIAL_GET_COMMSTATUS: Self = Self(0x001B_006C);
-    pub const IOCTL_SERIAL_XOFF_COUNTER: Self = Self(0x001B_0070);
-    pub const IOCTL_SERIAL_GET_PROPERTIES: Self = Self(0x001B_0074);
-    pub const IOCTL_SERIAL_GET_DTRRTS: Self = Self(0x001B_0078);
-    pub const IOCTL_SERIAL_LSRMST_INSERT: Self = Self(0x001B_007C);
-    pub const IOCTL_SERIAL_CONFIG_SIZE: Self = Self(0x001B_0080);
-    pub const IOCTL_SERIAL_GET_STATS: Self = Self(0x001B_008C);
-    pub const IOCTL_SERIAL_CLEAR_STATS: Self = Self(0x001B_0090);
-    pub const IOCTL_SERIAL_GET_MODEM_CONTROL: Self = Self(0x001B_0094);
-    pub const IOCTL_SERIAL_SET_MODEM_CONTROL: Self = Self(0x001B_0098);
-    pub const IOCTL_SERIAL_SET_FIFO_CONTROL: Self = Self(0x001B_009C);
-    pub const IOCTL_PAR_QUERY_INFORMATION: Self = Self(0x0016_0004);
-    pub const IOCTL_PAR_SET_INFORMATION: Self = Self(0x0016_0008);
-    pub const IOCTL_PAR_QUERY_DEVICE_ID: Self = Self(0x0016_000C);
-    pub const IOCTL_PAR_QUERY_DEVICE_ID_SIZE: Self = Self(0x0016_0010);
-    pub const IOCTL_IEEE1284_GET_MODE: Self = Self(0x0016_0014);
-    pub const IOCTL_IEEE1284_NEGOTIATE: Self = Self(0x0016_0018);
-    pub const IOCTL_PAR_SET_WRITE_ADDRESS: Self = Self(0x0016_001C);
-    pub const IOCTL_PAR_SET_READ_ADDRESS: Self = Self(0x0016_0020);
-    pub const IOCTL_PAR_GET_DEVICE_CAPS: Self = Self(0x0016_0024);
-    pub const IOCTL_PAR_GET_DEFAULT_MODES: Self = Self(0x0016_0028);
-    pub const IOCTL_PAR_QUERY_RAW_DEVICE_ID: Self = Self(0x0016_0030);
-    pub const IOCTL_PAR_IS_PORT_FREE: Self = Self(0x0016_0054);
-
-    /// Returns the `ntddser.h` / `ntddpar.h` name of a code listed by MS-RDPESP.
-    pub fn name(self) -> Option<&'static str> {
-        let name = match self {
-            Self::IOCTL_SERIAL_SET_BAUD_RATE => "IOCTL_SERIAL_SET_BAUD_RATE",
-            Self::IOCTL_SERIAL_SET_QUEUE_SIZE => "IOCTL_SERIAL_SET_QUEUE_SIZE",
-            Self::IOCTL_SERIAL_SET_LINE_CONTROL => "IOCTL_SERIAL_SET_LINE_CONTROL",
-            Self::IOCTL_SERIAL_SET_BREAK_ON => "IOCTL_SERIAL_SET_BREAK_ON",
-            Self::IOCTL_SERIAL_SET_BREAK_OFF => "IOCTL_SERIAL_SET_BREAK_OFF",
-            Self::IOCTL_SERIAL_IMMEDIATE_CHAR => "IOCTL_SERIAL_IMMEDIATE_CHAR",
-            Self::IOCTL_SERIAL_SET_TIMEOUTS => "IOCTL_SERIAL_SET_TIMEOUTS",
-            Self::IOCTL_SERIAL_GET_TIMEOUTS => "IOCTL_SERIAL_GET_TIMEOUTS",
-            Self::IOCTL_SERIAL_SET_DTR => "IOCTL_SERIAL_SET_DTR",
-            Self::IOCTL_SERIAL_CLR_DTR => "IOCTL_SERIAL_CLR_DTR",
-            Self::IOCTL_SERIAL_RESET_DEVICE => "IOCTL_SERIAL_RESET_DEVICE",
-            Self::IOCTL_SERIAL_SET_RTS => "IOCTL_SERIAL_SET_RTS",
-            Self::IOCTL_SERIAL_CLR_RTS => "IOCTL_SERIAL_CLR_RTS",
-            Self::IOCTL_SERIAL_SET_XOFF => "IOCTL_SERIAL_SET_XOFF",
-            Self::IOCTL_SERIAL_SET_XON => "IOCTL_SERIAL_SET_XON",
-            Self::IOCTL_SERIAL_GET_WAIT_MASK => "IOCTL_SERIAL_GET_WAIT_MASK",
-            Self::IOCTL_SERIAL_SET_WAIT_MASK => "IOCTL_SERIAL_SET_WAIT_MASK",
-            Self::IOCTL_SERIAL_WAIT_ON_MASK => "IOCTL_SERIAL_WAIT_ON_MASK",
-            Self::IOCTL_SERIAL_PURGE => "IOCTL_SERIAL_PURGE",
-            Self::IOCTL_SERIAL_GET_BAUD_RATE => "IOCTL_SERIAL_GET_BAUD_RATE",
-            Self::IOCTL_SERIAL_GET_LINE_CONTROL => "IOCTL_SERIAL_GET_LINE_CONTROL",
-            Self::IOCTL_SERIAL_SET_CHARS => "IOCTL_SERIAL_SET_CHARS",
-            Self::IOCTL_SERIAL_GET_CHARS => "IOCTL_SERIAL_GET_CHARS",
-            Self::IOCTL_SERIAL_GET_HANDFLOW => "IOCTL_SERIAL_GET_HANDFLOW",
-            Self::IOCTL_SERIAL_SET_HANDFLOW => "IOCTL_SERIAL_SET_HANDFLOW",
-            Self::IOCTL_SERIAL_GET_MODEMSTATUS => "IOCTL_SERIAL_GET_MODEMSTATUS",
-            Self::IOCTL_SERIAL_GET_COMMSTATUS => "IOCTL_SERIAL_GET_COMMSTATUS",
-            Self::IOCTL_SERIAL_XOFF_COUNTER => "IOCTL_SERIAL_XOFF_COUNTER",
-            Self::IOCTL_SERIAL_GET_PROPERTIES => "IOCTL_SERIAL_GET_PROPERTIES",
-            Self::IOCTL_SERIAL_GET_DTRRTS => "IOCTL_SERIAL_GET_DTRRTS",
-            Self::IOCTL_SERIAL_LSRMST_INSERT => "IOCTL_SERIAL_LSRMST_INSERT",
-            Self::IOCTL_SERIAL_CONFIG_SIZE => "IOCTL_SERIAL_CONFIG_SIZE",
-            Self::IOCTL_SERIAL_GET_STATS => "IOCTL_SERIAL_GET_STATS",
-            Self::IOCTL_SERIAL_CLEAR_STATS => "IOCTL_SERIAL_CLEAR_STATS",
-            Self::IOCTL_SERIAL_GET_MODEM_CONTROL => "IOCTL_SERIAL_GET_MODEM_CONTROL",
-            Self::IOCTL_SERIAL_SET_MODEM_CONTROL => "IOCTL_SERIAL_SET_MODEM_CONTROL",
-            Self::IOCTL_SERIAL_SET_FIFO_CONTROL => "IOCTL_SERIAL_SET_FIFO_CONTROL",
-            Self::IOCTL_PAR_QUERY_INFORMATION => "IOCTL_PAR_QUERY_INFORMATION",
-            Self::IOCTL_PAR_SET_INFORMATION => "IOCTL_PAR_SET_INFORMATION",
-            Self::IOCTL_PAR_QUERY_DEVICE_ID => "IOCTL_PAR_QUERY_DEVICE_ID",
-            Self::IOCTL_PAR_QUERY_DEVICE_ID_SIZE => "IOCTL_PAR_QUERY_DEVICE_ID_SIZE",
-            Self::IOCTL_IEEE1284_GET_MODE => "IOCTL_IEEE1284_GET_MODE",
-            Self::IOCTL_IEEE1284_NEGOTIATE => "IOCTL_IEEE1284_NEGOTIATE",
-            Self::IOCTL_PAR_SET_WRITE_ADDRESS => "IOCTL_PAR_SET_WRITE_ADDRESS",
-            Self::IOCTL_PAR_SET_READ_ADDRESS => "IOCTL_PAR_SET_READ_ADDRESS",
-            Self::IOCTL_PAR_GET_DEVICE_CAPS => "IOCTL_PAR_GET_DEVICE_CAPS",
-            Self::IOCTL_PAR_GET_DEFAULT_MODES => "IOCTL_PAR_GET_DEFAULT_MODES",
-            Self::IOCTL_PAR_QUERY_RAW_DEVICE_ID => "IOCTL_PAR_QUERY_RAW_DEVICE_ID",
-            Self::IOCTL_PAR_IS_PORT_FREE => "IOCTL_PAR_IS_PORT_FREE",
-            _ => return None,
-        };
-        Some(name)
+    port_ioctl_codes! {
+        IOCTL_SERIAL_SET_BAUD_RATE = 0x001B_0004,
+        IOCTL_SERIAL_SET_QUEUE_SIZE = 0x001B_0008,
+        IOCTL_SERIAL_SET_LINE_CONTROL = 0x001B_000C,
+        IOCTL_SERIAL_SET_BREAK_ON = 0x001B_0010,
+        IOCTL_SERIAL_SET_BREAK_OFF = 0x001B_0014,
+        IOCTL_SERIAL_IMMEDIATE_CHAR = 0x001B_0018,
+        IOCTL_SERIAL_SET_TIMEOUTS = 0x001B_001C,
+        IOCTL_SERIAL_GET_TIMEOUTS = 0x001B_0020,
+        IOCTL_SERIAL_SET_DTR = 0x001B_0024,
+        IOCTL_SERIAL_CLR_DTR = 0x001B_0028,
+        IOCTL_SERIAL_RESET_DEVICE = 0x001B_002C,
+        IOCTL_SERIAL_SET_RTS = 0x001B_0030,
+        IOCTL_SERIAL_CLR_RTS = 0x001B_0034,
+        IOCTL_SERIAL_SET_XOFF = 0x001B_0038,
+        IOCTL_SERIAL_SET_XON = 0x001B_003C,
+        IOCTL_SERIAL_GET_WAIT_MASK = 0x001B_0040,
+        IOCTL_SERIAL_SET_WAIT_MASK = 0x001B_0044,
+        IOCTL_SERIAL_WAIT_ON_MASK = 0x001B_0048,
+        IOCTL_SERIAL_PURGE = 0x001B_004C,
+        IOCTL_SERIAL_GET_BAUD_RATE = 0x001B_0050,
+        IOCTL_SERIAL_GET_LINE_CONTROL = 0x001B_0054,
+        IOCTL_SERIAL_SET_CHARS = 0x001B_0058,
+        IOCTL_SERIAL_GET_CHARS = 0x001B_005C,
+        IOCTL_SERIAL_GET_HANDFLOW = 0x001B_0060,
+        IOCTL_SERIAL_SET_HANDFLOW = 0x001B_0064,
+        IOCTL_SERIAL_GET_MODEMSTATUS = 0x001B_0068,
+        IOCTL_SERIAL_GET_COMMSTATUS = 0x001B_006C,
+        IOCTL_SERIAL_XOFF_COUNTER = 0x001B_0070,
+        IOCTL_SERIAL_GET_PROPERTIES = 0x001B_0074,
+        IOCTL_SERIAL_GET_DTRRTS = 0x001B_0078,
+        IOCTL_SERIAL_LSRMST_INSERT = 0x001B_007C,
+        IOCTL_SERIAL_CONFIG_SIZE = 0x001B_0080,
+        IOCTL_SERIAL_GET_STATS = 0x001B_008C,
+        IOCTL_SERIAL_CLEAR_STATS = 0x001B_0090,
+        IOCTL_SERIAL_GET_MODEM_CONTROL = 0x001B_0094,
+        IOCTL_SERIAL_SET_MODEM_CONTROL = 0x001B_0098,
+        IOCTL_SERIAL_SET_FIFO_CONTROL = 0x001B_009C,
+        IOCTL_PAR_QUERY_INFORMATION = 0x0016_0004,
+        IOCTL_PAR_SET_INFORMATION = 0x0016_0008,
+        IOCTL_PAR_QUERY_DEVICE_ID = 0x0016_000C,
+        IOCTL_PAR_QUERY_DEVICE_ID_SIZE = 0x0016_0010,
+        IOCTL_IEEE1284_GET_MODE = 0x0016_0014,
+        IOCTL_IEEE1284_NEGOTIATE = 0x0016_0018,
+        IOCTL_PAR_SET_WRITE_ADDRESS = 0x0016_001C,
+        IOCTL_PAR_SET_READ_ADDRESS = 0x0016_0020,
+        IOCTL_PAR_GET_DEVICE_CAPS = 0x0016_0024,
+        IOCTL_PAR_GET_DEFAULT_MODES = 0x0016_0028,
+        IOCTL_PAR_QUERY_RAW_DEVICE_ID = 0x0016_0030,
+        IOCTL_PAR_IS_PORT_FREE = 0x0016_0054,
     }
 
     /// Checks the buffer sizes and values the serial driver requires before the request
