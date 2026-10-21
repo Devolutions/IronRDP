@@ -30,6 +30,7 @@ use ironrdp_cliprdr::pdu::{
 };
 use ironrdp_cliprdr::{CliprdrClient, CliprdrServer};
 use ironrdp_cliprdr_native::WinClipboard;
+use ironrdp_cliprdr_native::windows_file_list::{is_directory, is_file_list_format};
 use ironrdp_core::{IntoOwned as _, impl_as_any};
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 use windows::Win32::Foundation::{HGLOBAL, HWND, LPARAM, WPARAM};
@@ -48,6 +49,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostThreadMessageW, TranslateMessage, WM_ACTIVATEAPP, WM_QUIT,
 };
 use windows::core::{BOOL, w};
+
+use super::TempDir;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -82,9 +85,7 @@ impl ServedFile {
     }
 
     fn is_directory(&self) -> bool {
-        self.descriptor
-            .attributes
-            .is_some_and(|attributes| attributes.contains(ClipboardFileAttributes::DIRECTORY))
+        is_directory(&self.descriptor)
     }
 
     fn size(&self) -> u64 {
@@ -508,27 +509,6 @@ fn run_session(
     }
 }
 
-/// Directory under the system temporary directory, removed on drop.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("ironrdp-cliprdr-live-{}", uuid::Uuid::new_v4()));
-        fs::create_dir(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 /// Pastes the clipboard into a folder the way a user does: Explorer opens a window on it, and the
 /// paste runs inside `explorer.exe` (through that window's own folder object). The window is closed
 /// once the expected files are there.
@@ -630,10 +610,6 @@ fn clipboard_has(format: u32) -> bool {
 fn registered_format(name: windows::core::PCWSTR) -> u32 {
     // SAFETY: `name` is a valid null-terminated string.
     unsafe { RegisterClipboardFormatW(name) }
-}
-
-fn is_file_list(format: &ClipboardFormat) -> bool {
-    format.name().map(ClipboardFormatName::value) == Some(ClipboardFormatName::FILE_LIST.value())
 }
 
 /// What an OLE consumer in another apartment reads from the clipboard: the file list, and a
@@ -888,7 +864,7 @@ fn fetch_local_files(harness: &Harness) -> Vec<(FileDescriptor, Vec<u8>)> {
     let file_list_format = harness.expect_event(|event| match event {
         ServerEvent::RemoteCopy(formats) => formats
             .iter()
-            .find(|format| is_file_list(format))
+            .find(|format| is_file_list_format(format))
             .map(|format| format.id()),
         _ => None,
     });
@@ -931,10 +907,7 @@ fn fetch_local_files(harness: &Harness) -> Vec<(FileDescriptor, Vec<u8>)> {
         .iter()
         .enumerate()
         .map(|(index, file)| {
-            let is_directory = file
-                .attributes
-                .is_some_and(|attributes| attributes.contains(ClipboardFileAttributes::DIRECTORY));
-            if is_directory {
+            if is_directory(file) {
                 return (file.clone(), Vec::new());
             }
 

@@ -179,8 +179,8 @@ impl RemoteDataObject {
         }
     }
 
-    /// Validates `format` against what this object offers and returns its `TYMED`.
-    fn check_format(&self, format: &FORMATETC) -> Result<u32, HRESULT> {
+    /// Validates `format` against what this object offers.
+    fn check_format(&self, format: &FORMATETC) -> Result<(), HRESULT> {
         // Explorer also asks with other aspects combined (e.g. DVASPECT_CONTENT | DVASPECT_THUMBNAIL).
         if format.dwAspect & DVASPECT_CONTENT.0 == 0 {
             return Err(DV_E_DVASPECT);
@@ -196,7 +196,7 @@ impl RemoteDataObject {
             return Err(DV_E_TYMED);
         }
 
-        Ok(offered.tymed)
+        Ok(())
     }
 }
 
@@ -246,7 +246,7 @@ impl IDataObject_Impl for RemoteDataObject_Impl {
         };
 
         let result = match self.check_format(format) {
-            Ok(_) => S_OK,
+            Ok(()) => S_OK,
             Err(error) => error,
         };
         trace!(format = format.cfFormat, tymed = format.tymed, %result, "Clipboard data queried");

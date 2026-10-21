@@ -1,4 +1,4 @@
-use core::cell::{Cell, UnsafeCell};
+use core::cell::{Cell, RefCell, UnsafeCell};
 use core::ffi::c_void;
 use core::ptr::with_exposed_provenance;
 use std::collections::HashSet;
@@ -97,18 +97,17 @@ impl WinClipboardImpl {
 
     /// Whether local files can be offered to the remote.
     fn can_send_files(&self) -> bool {
-        self.file_transfer
-            && self.channel_ready
-            && self
-                .transport
-                .capabilities()
-                .contains(ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED)
+        self.file_transfer_negotiated() && self.channel_ready
     }
 
     /// Whether remote files can be put on the local clipboard.
     fn can_receive_files(&self) -> bool {
+        self.file_transfer_negotiated() && self.ole_available
+    }
+
+    /// Whether file transfer is enabled here and was negotiated with the remote.
+    fn file_transfer_negotiated(&self) -> bool {
         self.file_transfer
-            && self.ole_available
             && self
                 .transport
                 .capabilities()
@@ -153,8 +152,8 @@ impl WinClipboardImpl {
         }
 
         // SAFETY: `on_format_data_response` is only called in a context of processing
-        // `WM_RENDERFORMAT` and `WM_RENDERALLFORMATS` messages, so we can safely assume that
-        // calling `ClipboardData::render` is safe.
+        // `WM_RENDERFORMAT` and `WM_RENDERALLFORMATS` messages, or with the clipboard opened by its
+        // owner, so we can safely assume that calling `ClipboardData::render` is safe.
         unsafe {
             render_format(requested_local_format, response.data())?;
         }
@@ -297,6 +296,23 @@ impl WinClipboardImpl {
         Ok(None)
     }
 
+    /// Renders a format whose `WM_RENDERFORMAT` arrived while a handler was busy, so that later
+    /// reads get the data even though that one went without.
+    fn render_late(&mut self, format: ClipboardFormatId) -> WinCliprdrResult<()> {
+        // Outside `WM_RENDERFORMAT`, data can only be set by the owner, with the clipboard open.
+        let _clipboard = OwnedOsClipboard::new(self.window)?;
+        // SAFETY: `GetClipboardOwner` is always safe to call
+        if self.window != unsafe { GetClipboardOwner()? } {
+            return Ok(());
+        }
+
+        if let Some(response) = self.get_remote_format_data(format)? {
+            Self::on_format_data_response(format, &response)?;
+        }
+
+        Ok(())
+    }
+
     fn on_render_all_formats(&mut self) -> WinCliprdrResult<Option<ClipboardMessage>> {
         // We need to be clipboard owner to be able to set all clipboard formats
         let _clipboard = match OwnedOsClipboard::new(self.window) {
@@ -411,6 +427,8 @@ impl WinClipboardImpl {
         self.channel_ready = false;
         self.transport.start_session();
         self.local_files.clear();
+        // Its files belong to the previous channel and can't be fetched anymore.
+        self.remove_remote_data_object();
     }
 
     fn on_ready(&mut self) -> WinCliprdrResult<Option<ClipboardMessage>> {
@@ -441,7 +459,11 @@ impl WinClipboardImpl {
     /// of the COM objects held, before OLE is uninitialized.
     fn shutdown(&mut self) {
         self.local_files.clear();
+        self.remove_remote_data_object();
+    }
 
+    /// Takes the data object for remote files off the clipboard, if it is still there.
+    fn remove_remote_data_object(&mut self) {
         if self.owns_ole_clipboard() {
             // SAFETY: OLE was initialized on this thread, as the data object was set.
             if let Err(error) = unsafe { OleSetClipboard(None) } {
@@ -626,6 +648,7 @@ pub(crate) struct ClipboardWindowState {
     missed_backend_events: Cell<u32>,
     missed_clipboard_update: Cell<bool>,
     missed_retry_timer: Cell<bool>,
+    missed_render_formats: RefCell<Vec<ClipboardFormatId>>,
     /// The clipboard was dropped while a handler was busy: the outermost one tears it down.
     teardown_requested: Cell<bool>,
     torn_down: Cell<bool>,
@@ -641,6 +664,7 @@ impl ClipboardWindowState {
             missed_backend_events: Cell::new(0),
             missed_clipboard_update: Cell::new(false),
             missed_retry_timer: Cell::new(false),
+            missed_render_formats: RefCell::new(Vec::new()),
             teardown_requested: Cell::new(false),
             torn_down: Cell::new(false),
         }
@@ -669,7 +693,12 @@ impl ClipboardWindowState {
             } else if self.missed_retry_timer.replace(false) {
                 ctx.handle_retry_timer();
             } else {
-                break;
+                let Some(format) = self.missed_render_formats.borrow_mut().pop() else {
+                    break;
+                };
+                if let Err(error) = ctx.render_late(format) {
+                    debug!(%error, ?format, "Failed to render clipboard data late");
+                }
             }
         }
 
@@ -793,8 +822,10 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
                 .with_impl(|ctx, _| ctx.handle_event(BackendEvent::RenderFormat(format)))
                 .is_none()
             {
-                // The data has to be set before returning, and it can't be fetched right now.
-                warn!(?format, "Clipboard data requested while busy; not rendered");
+                // The data has to be set before returning, and it can't be fetched right now: this
+                // request goes without, but it is rendered once the busy handler returns.
+                debug!(?format, "Clipboard data requested while busy; rendering it later");
+                state.missed_render_formats.borrow_mut().push(format);
             }
             LRESULT(0)
         }

@@ -2,38 +2,21 @@
 //! session: format filtering, file list building, and file contents requests.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use ironrdp_cliprdr::pdu::{
-    ClipboardFileAttributes, ClipboardFormat, ClipboardFormatId, ClipboardFormatName, FileContentsFlags,
-    FileContentsRequest, FileDescriptor,
+    Capabilities, ClipboardFileAttributes, ClipboardFormat, ClipboardFormatId, ClipboardFormatName,
+    ClipboardGeneralCapabilityFlags, ClipboardProtocolVersion, FileContentsFlags, FileContentsRequest, FileDescriptor,
 };
+use ironrdp_cliprdr::{CliprdrClient, CliprdrState};
+use ironrdp_cliprdr_native::StubClipboard;
 use ironrdp_cliprdr_native::windows_file_list::{
     LocalFileEntry, MAX_FILE_CONTENTS_CHUNK, build_local_file_list, decode_file_group_descriptor,
-    encode_file_group_descriptor, is_file_list_format, is_portable_format, is_sendable_descriptor, range_request_len,
-    read_file_contents,
+    encode_file_group_descriptor, is_directory, is_file_list_format, is_portable_format, is_sendable_descriptor,
+    range_request_len, read_file_contents,
 };
 
-/// Directory under the system temporary directory, removed on drop.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("ironrdp-cliprdr-{}", uuid::Uuid::new_v4()));
-        fs::create_dir(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+use super::TempDir;
 
 fn named(name: &'static str) -> ClipboardFormat {
     ClipboardFormat::new(ClipboardFormatId::new(0xC123)).with_name(ClipboardFormatName::new_static(name))
@@ -144,6 +127,73 @@ fn sendable_descriptors_match_cliprdr_validation() {
     ));
 }
 
+/// Descriptors at and around each limit `Cliprdr::initiate_file_copy` enforces.
+fn edge_descriptors() -> Vec<FileDescriptor> {
+    // Two UTF-16 code units, one char: where counting chars and code units disagree.
+    let astral = '\u{1F600}';
+
+    let mut descriptors = vec![
+        FileDescriptor::new(""),
+        FileDescriptor::new("a"),
+        FileDescriptor::new("C:\\secret.txt"),
+        FileDescriptor::new("C:relative.txt"),
+        FileDescriptor::new("\\\\server\\share"),
+        FileDescriptor::new("\\rooted.txt"),
+        FileDescriptor::new("/etc/passwd"),
+        FileDescriptor::new("file.txt").with_relative_path("D:\\dir"),
+        FileDescriptor::new("file.txt").with_relative_path("dir\\sub"),
+        FileDescriptor::new("file.txt").with_relative_path(""),
+    ];
+
+    for len in 257..=261 {
+        descriptors.push(FileDescriptor::new("a".repeat(len)));
+        descriptors.push(FileDescriptor::new(astral.to_string().repeat(len / 2)));
+        descriptors.push(FileDescriptor::new(format!("{}{}", astral, "a".repeat(len - 2))));
+        descriptors.push(FileDescriptor::new("b".repeat(len - 101)).with_relative_path("d".repeat(100)));
+        descriptors.push(FileDescriptor::new("b".repeat(len - 101)).with_relative_path(astral.to_string().repeat(50)));
+    }
+
+    descriptors
+}
+
+#[test]
+fn sendable_descriptors_are_kept_by_cliprdr() {
+    // Indexes of the files offered must match those of the list `Cliprdr` sends, so every
+    // descriptor the backend keeps must also be kept by `Cliprdr`, whatever was negotiated.
+    for flags in [
+        ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED,
+        ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED
+            | ClipboardGeneralCapabilityFlags::FILECLIP_NO_FILE_PATHS,
+    ] {
+        for descriptor in edge_descriptors().into_iter().filter(is_sendable_descriptor) {
+            let mut cliprdr = CliprdrClient::new(StubClipboard::new().backend_factory().build_cliprdr_backend());
+            *cliprdr.__test_state_mut() = CliprdrState::Ready;
+            // `Cliprdr` always negotiates long format names.
+            let flags = flags | ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES;
+            *cliprdr.__test_capabilities_mut() = Capabilities::new(ClipboardProtocolVersion::V2, flags);
+
+            let _ = cliprdr.initiate_file_copy(vec![descriptor.clone()]).unwrap();
+
+            let kept = cliprdr
+                .__test_local_file_list()
+                .as_ref()
+                .map_or(0, |list| list.files.len());
+            assert_eq!(kept, 1, "dropped by Cliprdr with {flags:?}: {descriptor:?}");
+
+            // And it fits the wire format.
+            assert!(encode_file_group_descriptor(&[descriptor]).is_some());
+        }
+    }
+
+    // The edge cases include both sides of each limit.
+    let descriptors = edge_descriptors();
+    let sendable = descriptors
+        .iter()
+        .filter(|descriptor| is_sendable_descriptor(descriptor))
+        .count();
+    assert!(0 < sendable && sendable < descriptors.len());
+}
+
 #[test]
 fn file_list_walks_directories_with_relative_paths() {
     let temp = TempDir::new();
@@ -161,10 +211,7 @@ fn file_list_walks_directories_with_relative_paths() {
     let listed = entries
         .iter()
         .map(|entry| {
-            let directory = entry
-                .descriptor
-                .attributes
-                .is_some_and(|attributes| attributes.contains(ClipboardFileAttributes::DIRECTORY));
+            let directory = is_directory(&entry.descriptor);
             (
                 entry.descriptor.relative_path.as_deref(),
                 entry.descriptor.name.as_str(),
