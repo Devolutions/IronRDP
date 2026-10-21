@@ -21,17 +21,6 @@ use tracing::{debug, trace, warn};
 
 use crate::rdp::RdpInputSender;
 
-/// What the session loop must send after applying an [`UrbdrcEvent`].
-pub(crate) enum UrbdrcOutput {
-    /// Messages for one channel. `tunnel` is set when they must travel on the multitransport tunnel
-    /// that a channel used before it was closed; otherwise they follow the channel's current routing.
-    Dvc {
-        batch: DvcMessageBatch,
-        tunnel: Option<SoftSyncTunnelType>,
-    },
-    Nothing,
-}
-
 /// Build the URBDRC listener, forwarding backend events to the session loop through `sender`.
 pub(crate) fn urbdrc_listener(config: &UsbRedirectionConfig, sender: RdpInputSender) -> UrbdrcListener {
     ironrdp_rdpeusb_native::urbdrc_listener(
@@ -45,13 +34,20 @@ pub(crate) fn urbdrc_listener(config: &UsbRedirectionConfig, sender: RdpInputSen
 }
 
 /// Apply a backend event to the URBDRC channels.
-pub(crate) fn process_urbdrc_event(active_stage: &mut ActiveStage, event: UrbdrcEvent) -> SessionResult<UrbdrcOutput> {
+///
+/// Returns the messages to send for one channel, if any. The tunnel is set when they must travel on
+/// the multitransport tunnel that a channel used before it was closed; otherwise they follow the
+/// channel's current routing.
+pub(crate) fn process_urbdrc_event(
+    active_stage: &mut ActiveStage,
+    event: UrbdrcEvent,
+) -> SessionResult<Option<(DvcMessageBatch, Option<SoftSyncTunnelType>)>> {
     let Some(event) = event.into_current() else {
         trace!("Dropping a USB redirection event from a closed device channel or an earlier connection");
-        return Ok(UrbdrcOutput::Nothing);
+        return Ok(None);
     };
     let Some(drdynvc) = active_stage.get_svc_processor_mut::<DrdynvcClient>() else {
-        return Ok(UrbdrcOutput::Nothing);
+        return Ok(None);
     };
 
     let (channel_id, message) = match event {
@@ -65,7 +61,7 @@ pub(crate) fn process_urbdrc_event(active_stage: &mut ActiveStage, event: Urbdrc
                     channel_id,
                     request_id, "Dropping a USB completion for a closed device channel"
                 );
-                return Ok(UrbdrcOutput::Nothing);
+                return Ok(None);
             };
             let device = channel.processor_mut();
             let message = match completion {
@@ -79,7 +75,7 @@ pub(crate) fn process_urbdrc_event(active_stage: &mut ActiveStage, event: Urbdrc
                 Err(error) => {
                     // The server cancelled the request, or retracted the device, in the meantime.
                     debug!(channel_id, request_id, %error, "Dropping a USB completion that is no longer pending");
-                    return Ok(UrbdrcOutput::Nothing);
+                    return Ok(None);
                 }
             }
         }
@@ -89,28 +85,25 @@ pub(crate) fn process_urbdrc_event(active_stage: &mut ActiveStage, event: Urbdrc
                     control_channel_id,
                     "Cannot announce a USB device: the URBDRC control channel is closed"
                 );
-                return Ok(UrbdrcOutput::Nothing);
+                return Ok(None);
             };
             match channel.processor().add_virtual_channel() {
                 Ok(message) => (control_channel_id, message),
                 Err(error) => {
                     warn!(%error, "Cannot announce a USB device");
-                    return Ok(UrbdrcOutput::Nothing);
+                    return Ok(None);
                 }
             }
         }
         UrbdrcEventKind::CloseChannel { channel_id } => {
-            return Ok(match drdynvc.close_channel_batch(channel_id) {
-                Some((batch, tunnel)) => UrbdrcOutput::Dvc { batch, tunnel },
-                None => UrbdrcOutput::Nothing,
-            });
+            return Ok(drdynvc.close_channel_batch(channel_id));
         }
     };
 
     let messages =
         encode_dvc_messages(channel_id, vec![message], ChannelFlags::empty()).map_err(SessionError::encode)?;
-    Ok(UrbdrcOutput::Dvc {
-        batch: DvcMessageBatch::try_new(channel_id, messages).map_err(SessionError::pdu)?,
-        tunnel: None,
-    })
+    Ok(Some((
+        DvcMessageBatch::try_new(channel_id, messages).map_err(SessionError::pdu)?,
+        None,
+    )))
 }

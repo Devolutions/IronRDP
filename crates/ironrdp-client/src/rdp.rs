@@ -651,6 +651,10 @@ impl RdpInputSender {
     /// Enqueues a USB redirection event independently of ordinary bounded input.
     ///
     /// Dropping a USB completion would leave the server-side driver waiting for its request forever.
+    ///
+    /// The queue stays bounded without a capacity: each completion answers a request this session
+    /// loop already read from the server, so a stalled loop reads no new requests and the queue holds
+    /// at most the requests in flight. The other events follow device plugs and channel closes.
     #[cfg(feature = "usb")]
     pub fn send_urbdrc(
         &self,
@@ -3740,15 +3744,10 @@ fn urbdrc_iteration(
     active_stage: &mut ActiveStage,
     event: ironrdp_rdpeusb_native::UrbdrcEvent,
 ) -> SessionResult<ActiveSessionIteration> {
-    use crate::urbdrc::UrbdrcOutput;
-
     Ok(match crate::urbdrc::process_urbdrc_event(active_stage, event)? {
-        UrbdrcOutput::Dvc { batch, tunnel: None } => ActiveSessionIteration::dvc(batch),
-        UrbdrcOutput::Dvc {
-            batch,
-            tunnel: Some(tunnel),
-        } => ActiveSessionIteration::tunnel(tunnel, (batch, Vec::new())),
-        UrbdrcOutput::Nothing => ActiveSessionIteration::outputs(Vec::new()),
+        Some((batch, None)) => ActiveSessionIteration::dvc(batch),
+        Some((batch, Some(tunnel))) => ActiveSessionIteration::tunnel(tunnel, (batch, Vec::new())),
+        None => ActiveSessionIteration::outputs(Vec::new()),
     })
 }
 
