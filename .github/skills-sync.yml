@@ -16,3 +16,5 @@ repositories:
       - tessl-skill-linting
       - test-oracle-reviewer
       - test-pruner
+      - test-writer
+      - test-reviewer
