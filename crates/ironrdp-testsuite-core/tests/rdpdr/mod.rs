@@ -641,6 +641,31 @@ fn printer_irp_is_ignored_before_announcement_acknowledgement() {
 }
 
 #[test]
+fn printer_irp_before_the_announcement_response_is_completed() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
+    let client_id = announce_client_id(&mut rdpdr, 12);
+    negotiate_printer_capability(&mut rdpdr);
+    rdpdr.process(&encoded_server_client_id_confirm(client_id)).unwrap();
+    assert_eq!(
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap())
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Windows can send the first IRP just before the response accepting the printer.
+    let responses = rdpdr
+        .process(&encoded_printer_device_io_request(MajorFunction::Read))
+        .unwrap();
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        ntstatus_at(&responses[0].encode_unframed_pdu().unwrap(), 12),
+        NtStatus::NOT_SUPPORTED
+    );
+}
+
+#[test]
 fn printer_irp_is_ignored_after_server_rejection() {
     let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
     acknowledge_printer(&mut rdpdr, NtStatus::NOT_SUPPORTED);
