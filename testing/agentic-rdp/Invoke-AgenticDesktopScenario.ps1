@@ -205,15 +205,16 @@ try {
         Invoke-Agent screenshot $screenshotPath | Out-Null
         $markerVisible = Test-ScreenshotCenterColor -Path $screenshotPath -Expected $markerColor
     } while (-not $markerVisible -and (Get-Date) -lt $deadline)
+
+    if (-not $markerVisible) {
+        throw "Marker page is not visible at the center of $screenshotPath"
+    }
 }
 finally {
     Restore-EdgeFirstRunPolicy -State $edgePolicy
 }
 
 Test-PngScreenshot -Path $screenshotPath -ExpectedWidth $expectedWidth -ExpectedHeight $expectedHeight
-if (-not $markerVisible) {
-    throw "Marker page is not visible at the center of $screenshotPath"
-}
 
 $finalStatus = Get-AgentStatus
 $result = [pscustomobject]@{
