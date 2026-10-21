@@ -2249,6 +2249,9 @@ impl ConfigBuilder {
             Ok(Some(AudioCaptureMode::Disabled)) => self.enable_audio_capture = Some(false),
             _ => {}
         }
+        if let Some(enabled) = ps.get::<i64>("ironrdp_egfx") {
+            self.graphics_pipeline = enabled != 0;
+        }
         #[cfg(feature = "camera")]
         if let Some(cameras) = ps.get::<&str>("camerastoredirect") {
             self.channels.cameras.apply_rdp_value(cameras);

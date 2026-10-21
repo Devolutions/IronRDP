@@ -30,6 +30,7 @@ Raw camera frames are encoded to H.264 unless the camera produces H.264 or MJPEG
 
 The optional `video` feature accepts MS-RDPEVOR video optimized remoting and MS-RDPEGT geometry tracking when an H.264 decoder is configured with `ConfigBuilder::with_h264_decoder`; without one, the client keeps declining these channels.
 On Windows the default decoder is the one shipped with Windows, through Media Foundation; the `openh264` feature switches the default to a decoder built from the bundled OpenH264 sources, which is the only default elsewhere.
+Windows servers only keep the video channels open when the graphics pipeline is enabled (`ConfigBuilder::with_graphics_pipeline`, or the `ironrdp_egfx:i:1` `.rdp` property).
 Decoded pictures are shown at their presentation time, scaled and clipped to the tracked geometry, and composited into the framebuffer like graphics pipeline updates.
 
 When the `gateway` feature is enabled and `Transport::Gateway` is selected, the client uses the MS-TSGU HTTPS WebSocket transport and falls back to legacy dual-channel HTTP when necessary.
