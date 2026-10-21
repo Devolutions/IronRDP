@@ -587,3 +587,46 @@ fn data_racing_a_client_close_is_dropped_until_the_server_acknowledges() {
         .process(&data)
         .expect_err("data for a channel that is fully closed is still an error");
 }
+
+#[test]
+fn client_close_of_a_tunneled_channel_reports_its_tunnel() {
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("tunneled channel should attach");
+    client
+        .attach_established_dynamic_channel(9, RecordedDvc::default())
+        .expect("TCP channel should attach");
+    client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+    let soft_sync = encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
+        SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, vec![7]),
+    ])))
+    .expect("Soft-Sync request should encode");
+    client
+        .process(&soft_sync)
+        .expect("Soft-Sync request should be accepted");
+
+    let (batch, tunnel) = client.close_channel_batch(7).expect("tunneled channel should close");
+    assert_eq!(tunnel, Some(SoftSyncTunnelType::RELIABLE_UDP));
+    assert_eq!(batch.channel_id(), 7);
+    assert!(matches!(
+        decode_client_pdu(&batch.messages()[0]),
+        DrdynvcClientPdu::Close(_)
+    ));
+
+    // Data the server sent on the tunnel before it received the Close is dropped.
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        7,
+        b"late".to_vec(),
+    ))))
+    .expect("DVC data should encode");
+    let late = client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &data)
+        .expect("late tunneled data for a closing channel should be dropped");
+    assert!(late.messages().is_empty());
+
+    let (_, tunnel) = client.close_channel_batch(9).expect("TCP channel should close");
+    assert_eq!(tunnel, None);
+    assert!(client.close_channel_batch(9).is_none());
+}

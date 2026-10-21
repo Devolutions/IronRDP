@@ -363,6 +363,20 @@ impl DrdynvcClient {
         Some(message)
     }
 
+    /// Closes a dynamic channel like [`Self::close_channel`], returning the Close PDU as a batch with
+    /// the Soft-Sync tunnel the channel was bound to.
+    ///
+    /// Once Soft-Sync moved a channel to a multitransport tunnel, its PDUs travel on that tunnel, so
+    /// the caller sends the batch there when a tunnel is returned, and over DRDYNVC otherwise.
+    pub fn close_channel_batch(
+        &mut self,
+        channel_id: DynamicChannelId,
+    ) -> Option<(DvcMessageBatch, Option<SoftSyncTunnelType>)> {
+        let tunnel = self.tunnel_channels.get(&channel_id).copied();
+        let message = self.close_channel(channel_id)?;
+        Some((DvcMessageBatch::new(channel_id, alloc::vec![message]), tunnel))
+    }
+
     /// Returns whether the client closed `channel_id` and the server has not acknowledged it yet.
     pub fn is_closing(&self, channel_id: DynamicChannelId) -> bool {
         self.client_closed.contains_key(&channel_id)
