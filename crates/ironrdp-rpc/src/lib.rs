@@ -1,8 +1,6 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
-//! Shared local RPC protocol and transport used by IronRDP local clients.
-
 pub mod ipc;
 pub mod transport;
 #[cfg(feature = "__test")]
