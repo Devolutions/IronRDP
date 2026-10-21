@@ -56,11 +56,16 @@ fn main() -> anyhow::Result<()> {
     #[cfg(windows)]
     let enable_smartcard = config.channels().rdpdr.smartcard;
     #[cfg(windows)]
+    let enable_clipboard = config.channels().clipboard == ironrdp::client::config::ClipboardType::Enable;
+    #[cfg(windows)]
     let drives = ironrdp_viewer::drives::ViewerDrives::from_rdpdr_config(&config.channels().rdpdr, named_drives);
     let client = RdpClient::new(config, output_event_sender);
     #[cfg(windows)]
     let (client, _drive_watcher) =
         attach_windows_rdpdr_backend(client, enable_smartcard, redirect_printers, &ports, &drives)?;
+    // Kept alive, on this thread, until the event loop returns.
+    #[cfg(windows)]
+    let (client, _clipboard) = attach_windows_clipboard(client, enable_clipboard)?;
     let input_event_sender = client.input_sender();
 
     let mut app =
@@ -165,6 +170,35 @@ fn run_rpc(cli: ViewerConfig) -> anyhow::Result<()> {
     event_loop_result?;
     server_result?;
     Ok(())
+}
+
+/// Creates the Windows clipboard backend on this thread, the winit one, when clipboard redirection
+/// is enabled.
+///
+/// The clipboard listens through a hidden window, so it needs a thread with a message loop,
+/// which the RDP thread is not; pasting remote files also needs OLE on a single-threaded
+/// apartment, initialized here before winit creates its window (winit's own `OleInitialize`
+/// then succeeds as a no-op).
+#[cfg(windows)]
+fn attach_windows_clipboard(
+    client: RdpClient,
+    enabled: bool,
+) -> anyhow::Result<(RdpClient, Option<ironrdp_cliprdr_native::WinClipboard>)> {
+    if !enabled {
+        return Ok((client, None));
+    }
+
+    // SAFETY: Called on the main thread before any COM use; it lasts for the process.
+    unsafe { windows::Win32::System::Ole::OleInitialize(None) }.context("unable to initialize OLE")?;
+
+    let clipboard = ironrdp_cliprdr_native::WinClipboard::with_file_transfer(
+        ironrdp_viewer::clipboard::ClientClipboardMessageProxy::new(client.input_sender()),
+        true,
+    )
+    .context("unable to initialize the Windows clipboard")?;
+    let client = client.with_cliprdr_backend_factory(clipboard.backend_factory());
+
+    Ok((client, Some(clipboard)))
 }
 
 /// Attaches the Windows RDPDR backend when drive, smartcard, printer or port redirection is enabled.

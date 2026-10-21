@@ -3588,6 +3588,7 @@ dependencies = [
  "inquire",
  "ironrdp",
  "ironrdp-cfg",
+ "ironrdp-cliprdr-native",
  "ironrdp-daemon",
  "ironrdp-propertyset",
  "ironrdp-rdpdr-native",
@@ -3604,6 +3605,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "whoami",
+ "windows",
  "winit",
 ]
 
