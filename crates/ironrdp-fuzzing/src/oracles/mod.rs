@@ -53,8 +53,8 @@ pub fn bulk_decompress_xcrush(data: &[u8]) {
 
 /// RDP 8.0 decompressor used by the dynamic virtual channels, checked against the
 /// graphics pipeline's ZGFX decoder on the same input. `ironrdp-bulk` also accepts
-/// RDP 8.0 Lite segments, so it may decode inputs the graphics decoder rejects, but never
-/// the other way around.
+/// RDP 8.0 Lite segments, so it may decode inputs the graphics decoder rejects. The other
+/// way around, it only rejects match-length prefixes that MS-RDPEGFX reserves.
 ///
 /// # Panics
 ///
@@ -62,7 +62,7 @@ pub fn bulk_decompress_xcrush(data: &[u8]) {
 /// `ironrdp-bulk` rejects or decodes to different bytes.
 #[expect(clippy::panic, reason = "panic is the libFuzzer bug-reporting mechanism")]
 pub fn bulk_decompress_rdp8(data: &[u8]) {
-    use ironrdp_bulk::rdp8::Rdp8Decompressor;
+    use ironrdp_bulk::rdp8::{Rdp8Decompressor, Rdp8Error};
     use ironrdp_graphics::zgfx::Decompressor;
 
     let mut reference = Vec::new();
@@ -78,6 +78,8 @@ pub fn bulk_decompress_rdp8(data: &[u8]) {
         match result {
             Ok(_) if output == reference => {}
             Ok(_) => panic!("RDP 8.0 decompressors disagree on the output"),
+            // The graphics decoder also accepts match-length prefixes that MS-RDPEGFX reserves.
+            Err(Rdp8Error::MatchLengthTooLarge) => {}
             Err(e) => panic!("ironrdp-bulk rejected input the graphics decoder accepts: {e}"),
         }
     }

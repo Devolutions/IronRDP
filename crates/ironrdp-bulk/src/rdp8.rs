@@ -71,7 +71,7 @@ pub enum Rdp8Error {
     },
     /// A match reaches further back than the history buffer.
     MatchDistanceOutOfRange(usize),
-    /// A match-length prefix is longer than any valid length.
+    /// A match-length prefix is longer than 14 one bits, which MS-RDPEGFX reserves.
     MatchLengthTooLarge,
     /// A segment decompresses past the per-segment limit: 8,192 bytes in RDP 8.0 Lite,
     /// 64 MiB otherwise.
@@ -186,9 +186,8 @@ impl Rdp8Decompressor {
                         })?;
                     rest = remaining;
 
-                    written = written
-                        .checked_add(self.decompress_segment(segment, output)?)
-                        .ok_or(Rdp8Error::MessageTooLarge)?;
+                    // A segment adds at most 64 MiB, and the total is checked after each one.
+                    written += self.decompress_segment(segment, output)?;
                     if written > MAX_DECOMPRESSED_TOTAL {
                         return Err(Rdp8Error::MessageTooLarge);
                     }
@@ -267,12 +266,9 @@ impl Rdp8Decompressor {
                     distance_bits,
                     distance_base,
                 } => {
-                    let distance = bits
-                        .read(distance_bits)?
-                        .checked_add(distance_base)
-                        .ok_or(Rdp8Error::MatchDistanceOutOfRange(usize::MAX))?;
-                    let distance =
-                        usize::try_from(distance).map_err(|_| Rdp8Error::MatchDistanceOutOfRange(usize::MAX))?;
+                    // At most 2^24 - 1 + 17,094,304, so neither the sum nor the conversion fails.
+                    let distance = usize::try_from(bits.read(distance_bits)? + distance_base)
+                        .expect("match distance fits in usize");
 
                     if distance == 0 {
                         self.copy_unencoded(&mut bits, remaining_budget, output)?
@@ -331,10 +327,10 @@ impl Rdp8Decompressor {
         }
 
         // The length is a run of N one bits and a zero bit, then N + 1 value bits:
-        // length = 2^(N + 1) + value, or 3 when N is 0.
-        // A conforming match is at most 65,535 bytes long, far below 2^30.
+        // length = 2^(N + 1) + value, or 3 when N is 0. MS-RDPEGFX 3.1.9.1.2.4 defines N up
+        // to 14 (lengths up to 65,535) and reserves longer prefixes.
         let prefix = bits.leading_ones();
-        if prefix >= 30 {
+        if prefix > 14 {
             return Err(Rdp8Error::MatchLengthTooLarge);
         }
         bits.read(prefix + 1)?;
@@ -342,7 +338,7 @@ impl Rdp8Decompressor {
             3
         } else {
             let value_bits = prefix + 1;
-            let value = usize::try_from(bits.read(value_bits)?).expect("30 bits fit in usize");
+            let value = usize::try_from(bits.read(value_bits)?).expect("15 bits fit in usize");
             (1usize << value_bits) + value
         };
 
@@ -769,6 +765,19 @@ mod tests {
             Err(Rdp8Error::SegmentTooLarge)
         );
         assert_eq!(decompress(&input).unwrap().len(), 8193);
+    }
+
+    #[test]
+    fn rejects_reserved_match_length_prefixes() {
+        // Literal "q", then a match at distance 1 whose length prefix has N one bits.
+        let with_prefix = |n: usize| {
+            let bits = format!("0 01110001 10001 00001 {}0 {}", "1".repeat(n), "0".repeat(n + 1));
+            single_compressed(PACKET_COMPR_TYPE_RDP8, &pack(&bits))
+        };
+
+        // N = 14 is the longest defined prefix: 2^15 bytes plus the literal.
+        assert_eq!(decompress(&with_prefix(14)).unwrap().len(), 32_769);
+        assert_eq!(decompress(&with_prefix(15)), Err(Rdp8Error::MatchLengthTooLarge));
     }
 
     #[test]

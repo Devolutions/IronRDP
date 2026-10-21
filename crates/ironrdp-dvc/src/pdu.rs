@@ -35,6 +35,19 @@ impl DrdynvcDataPdu {
             DrdynvcDataPdu::DataCompressed(pdu) => pdu.0.channel_id,
         }
     }
+
+    /// Decodes the data PDU that `header` announces. Data PDUs are the same in both directions.
+    fn decode(header: Header, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        match header.cmd {
+            Cmd::DataFirst => Ok(Self::DataFirst(DataFirstPdu::decode(header, src)?)),
+            Cmd::Data => Ok(Self::Data(DataPdu::decode(header, src)?)),
+            Cmd::DataFirstCompressed => Ok(Self::DataFirstCompressed(DataFirstCompressedPdu(DataFirstPdu::decode(
+                header, src,
+            )?))),
+            Cmd::DataCompressed => Ok(Self::DataCompressed(DataCompressedPdu(DataPdu::decode(header, src)?))),
+            _ => Err(unsupported_value_err!("Cmd", header.cmd.into(), in: src)),
+        }
+    }
 }
 
 impl Encode for DrdynvcDataPdu {
@@ -114,16 +127,9 @@ impl Decode<'_> for DrdynvcClientPdu {
         let header = Header::decode(src)?;
         match header.cmd {
             Cmd::Create => Ok(Self::Create(CreateResponsePdu::decode(header, src)?)),
-            Cmd::DataFirst => Ok(Self::Data(DrdynvcDataPdu::DataFirst(DataFirstPdu::decode(
-                header, src,
-            )?))),
-            Cmd::Data => Ok(Self::Data(DrdynvcDataPdu::Data(DataPdu::decode(header, src)?))),
-            Cmd::DataFirstCompressed => Ok(Self::Data(DrdynvcDataPdu::DataFirstCompressed(DataFirstCompressedPdu(
-                DataFirstPdu::decode(header, src)?,
-            )))),
-            Cmd::DataCompressed => Ok(Self::Data(DrdynvcDataPdu::DataCompressed(DataCompressedPdu(
-                DataPdu::decode(header, src)?,
-            )))),
+            Cmd::DataFirst | Cmd::Data | Cmd::DataFirstCompressed | Cmd::DataCompressed => {
+                Ok(Self::Data(DrdynvcDataPdu::decode(header, src)?))
+            }
             Cmd::Close => Ok(Self::Close(ClosePdu::decode(header, src)?)),
             Cmd::Capability => Ok(Self::Capabilities(CapabilitiesResponsePdu::decode(header, src)?)),
             Cmd::SoftSyncResponse => Ok(Self::SoftSyncResponse(SoftSyncResponsePdu::decode(header, src)?)),
@@ -180,16 +186,9 @@ impl Decode<'_> for DrdynvcServerPdu {
         let header = Header::decode(src)?;
         match header.cmd {
             Cmd::Create => Ok(Self::Create(CreateRequestPdu::decode(header, src)?)),
-            Cmd::DataFirst => Ok(Self::Data(DrdynvcDataPdu::DataFirst(DataFirstPdu::decode(
-                header, src,
-            )?))),
-            Cmd::Data => Ok(Self::Data(DrdynvcDataPdu::Data(DataPdu::decode(header, src)?))),
-            Cmd::DataFirstCompressed => Ok(Self::Data(DrdynvcDataPdu::DataFirstCompressed(DataFirstCompressedPdu(
-                DataFirstPdu::decode(header, src)?,
-            )))),
-            Cmd::DataCompressed => Ok(Self::Data(DrdynvcDataPdu::DataCompressed(DataCompressedPdu(
-                DataPdu::decode(header, src)?,
-            )))),
+            Cmd::DataFirst | Cmd::Data | Cmd::DataFirstCompressed | Cmd::DataCompressed => {
+                Ok(Self::Data(DrdynvcDataPdu::decode(header, src)?))
+            }
             Cmd::Close => Ok(Self::Close(ClosePdu::decode(header, src)?)),
             Cmd::Capability => Ok(Self::Capabilities(CapabilitiesRequestPdu::decode(header, src)?)),
             Cmd::SoftSyncRequest => Ok(Self::SoftSyncRequest(SoftSyncRequestPdu::decode(header, src)?)),
