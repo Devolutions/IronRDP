@@ -54,12 +54,14 @@ pub fn bulk_decompress_xcrush(data: &[u8]) {
 /// RDP 8.0 decompressor used by the dynamic virtual channels, checked against the
 /// graphics pipeline's ZGFX decoder on the same input. `ironrdp-bulk` also accepts
 /// RDP 8.0 Lite segments, so it may decode inputs the graphics decoder rejects. The other
-/// way around, it only rejects match-length prefixes that MS-RDPEGFX reserves.
+/// way around, it only rejects match-length prefixes that MS-RDPEGFX reserves. The RDP 8.0
+/// Lite profile, used by DVCs, must decode whatever it accepts exactly like the RDP 8.0 one.
 ///
 /// # Panics
 ///
 /// Panics (reporting the bug to libFuzzer) when the graphics decoder accepts an input that
-/// `ironrdp-bulk` rejects or decodes to different bytes.
+/// `ironrdp-bulk` rejects or decodes to different bytes, or when the Lite profile accepts an
+/// input that the RDP 8.0 profile rejects or decodes to different bytes.
 #[expect(clippy::panic, reason = "panic is the libFuzzer bug-reporting mechanism")]
 pub fn bulk_decompress_rdp8(data: &[u8]) {
     use ironrdp_bulk::rdp8::{Rdp8Decompressor, Rdp8Error};
@@ -71,8 +73,16 @@ pub fn bulk_decompress_rdp8(data: &[u8]) {
     let mut output = Vec::new();
     let result = Rdp8Decompressor::new().decompress(data, &mut output);
 
-    // The RDP 8.0 Lite profile only narrows the limits, so it has no reference to match.
-    let _ = Rdp8Decompressor::new_lite().decompress(data, &mut Vec::new());
+    // The RDP 8.0 Lite profile only narrows the limits of the RDP 8.0 one, and both start
+    // from a zeroed history, so whatever Lite accepts must decode identically there.
+    let mut lite_output = Vec::new();
+    if Rdp8Decompressor::new_lite().decompress(data, &mut lite_output).is_ok() {
+        match &result {
+            Ok(_) if lite_output == output => {}
+            Ok(_) => panic!("RDP 8.0 Lite and RDP 8.0 profiles disagree on the output"),
+            Err(e) => panic!("RDP 8.0 profile rejected input the Lite profile accepts: {e}"),
+        }
+    }
 
     if reference_result.is_ok() {
         match result {

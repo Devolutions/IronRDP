@@ -301,13 +301,31 @@ fn malformed_compressed_data_is_an_error() {
         .attach_established_dynamic_channel(3, RecordedDvc::default())
         .expect("recorded channel should attach");
 
-    // RDP_SEGMENTED_DATA with an unknown descriptor.
-    let pdu = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::DataCompressed(
-        DataCompressedPdu::new(3, vec![0x12, 0x26, 0x00]),
-    )))
-    .expect("DVC compressed data should encode");
+    let data_compressed = |data: Vec<u8>| {
+        encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::DataCompressed(
+            DataCompressedPdu::new(3, data),
+        )))
+        .expect("DVC compressed data should encode")
+    };
 
-    assert!(client.process(&pdu).is_err());
+    // RDP_SEGMENTED_DATA with an unknown descriptor.
+    assert!(client.process(&data_compressed(vec![0x12, 0x26, 0x00])).is_err());
+
+    // The history may be out of sync now, so even a valid compressed block is refused.
+    assert!(client.process(&data_compressed(vec![0xe0, 0x06, b'x'])).is_err());
+
+    // Uncompressed data does not use the history and still gets through.
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        3,
+        b"plain".to_vec(),
+    ))))
+    .expect("DVC data should encode");
+    client.process(&data).expect("uncompressed data should be processed");
+
+    let channel = client
+        .get_dvc_by_channel_id::<RecordedDvc>(3)
+        .expect("recorded channel should remain attached");
+    assert_eq!(channel.processor().received, vec![b"plain".to_vec()]);
 }
 
 #[test]

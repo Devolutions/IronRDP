@@ -14,6 +14,9 @@ pub(crate) struct CompleteData {
     /// MS-RDPEDYC 3.1.5.2.5: each channel has its own decompression context, created when
     /// the channel first receives compressed data.
     decompressor: Option<Rdp8Decompressor>,
+    /// Set once decompression fails. The history may have advanced partway through the bad
+    /// block, so it no longer matches the sender's and cannot decode anything after it.
+    decompression_failed: bool,
 }
 
 impl CompleteData {
@@ -22,6 +25,7 @@ impl CompleteData {
             total_size: 0,
             data: Vec::new(),
             decompressor: None,
+            decompression_failed: false,
         }
     }
 
@@ -44,11 +48,20 @@ impl CompleteData {
     }
 
     fn decompress(&mut self, compressed: &[u8]) -> DecodeResult<Vec<u8>> {
+        if self.decompression_failed {
+            return Err(invalid_field_err!(
+                "DVC compressed data",
+                "data",
+                "the channel's decompression history is out of sync after an earlier error"
+            ));
+        }
+
         let decompressor = self.decompressor.get_or_insert_with(Rdp8Decompressor::new_lite);
         let mut data = Vec::new();
-        decompressor
-            .decompress(compressed, &mut data)
-            .map_err(|e| other_err!("DVC compressed data", source: e))?;
+        if let Err(e) = decompressor.decompress(compressed, &mut data) {
+            self.decompression_failed = true;
+            return Err(other_err!("DVC compressed data", source: e));
+        }
         Ok(data)
     }
 

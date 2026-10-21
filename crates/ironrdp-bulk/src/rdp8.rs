@@ -410,6 +410,10 @@ fn read_array<const N: usize>(input: &mut &[u8]) -> Result<[u8; N], Rdp8Error> {
 }
 
 /// Reads bits most-significant first, up to `end` bits into `data`.
+///
+/// Separate from [`crate::bitstream::BitStreamReader`], which serves the MPPC, NCRUSH and
+/// XCRUSH hot paths: RDP 8.0 also needs a hard end-of-bits limit (the trailer byte),
+/// counting leading one bits, byte alignment and raw byte runs.
 struct BitReader<'a> {
     data: &'a [u8],
     position: usize,
