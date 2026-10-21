@@ -112,6 +112,12 @@ impl RedirectedDevice {
     {
         DeviceChannelListener {
             device: self.clone(),
+            state: Arc::new(spin::Mutex::new(DeviceState {
+                backend: None,
+                activation_depth: 0,
+                sink: None,
+                open_channels: 0,
+            })),
             factory: Box::new(factory),
             uplink,
         }
@@ -418,7 +424,8 @@ struct SinkStream {
 }
 
 struct SampleSinkInner {
-    channel_id: u32,
+    /// Channel of the latest Sample Request, which receives the samples.
+    channel_id: AtomicU32,
     version: ProtocolVersion,
     active: AtomicBool,
     streams: Vec<SinkStream>,
@@ -438,7 +445,7 @@ pub struct SampleSink {
 impl core::fmt::Debug for SampleSink {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SampleSink")
-            .field("channel_id", &self.inner.channel_id)
+            .field("channel_id", &self.inner.channel_id.load(Ordering::Relaxed))
             .field("active", &self.is_active())
             .finish_non_exhaustive()
     }
@@ -448,7 +455,7 @@ impl SampleSink {
     fn new(channel_id: u32, version: ProtocolVersion, streams: &[StartStreamInfo], uplink: SampleUplink) -> Self {
         Self {
             inner: Arc::new(SampleSinkInner {
-                channel_id,
+                channel_id: AtomicU32::new(channel_id),
                 version,
                 active: AtomicBool::new(true),
                 streams: streams
@@ -527,9 +534,10 @@ impl SampleSink {
             return SampleDelivery::NotRequested;
         }
         let message = DeviceMessage::new(self.inner.version, pdu);
-        let result = encode_dvc_messages(self.inner.channel_id, vec![Box::new(message)], ChannelFlags::empty())
+        let channel_id = self.inner.channel_id.load(Ordering::Acquire);
+        let result = encode_dvc_messages(channel_id, vec![Box::new(message)], ChannelFlags::empty())
             .map_err(|error| encode_err!(error))
-            .and_then(|messages| (self.inner.uplink)(self.inner.channel_id, messages));
+            .and_then(|messages| (self.inner.uplink)(channel_id, messages));
         match result {
             Ok(()) => SampleDelivery::Sent,
             Err(error) => {
@@ -551,48 +559,102 @@ impl SampleSink {
             .map_err(|_| ErrorCode::InvalidRequest)
     }
 
+    fn route_to(&self, channel_id: u32) {
+        self.inner.channel_id.store(channel_id, Ordering::Release);
+    }
+
     fn stop(&self) {
         self.inner.active.store(false, Ordering::Release);
     }
 }
 
-/// Per-device RDPECAM client processor.
+/// State of one redirected camera, shared by every channel the server opens for it.
+///
+/// Windows opens several channels with the device's name at once, activating the device on one
+/// and sending requests and Sample Requests on others, so activation and streaming belong to the
+/// device rather than to a channel.
+struct DeviceState<B> {
+    /// Created when the first channel opens and kept for the device's lifetime.
+    backend: Option<B>,
+    activation_depth: u32,
+    sink: Option<SampleSink>,
+    open_channels: u32,
+}
+
+impl<B> DeviceState<B>
+where
+    B: CameraBackend,
+{
+    /// Stops capture and releases the device once nothing uses it.
+    fn shutdown(&mut self) {
+        let active = self.activation_depth != 0;
+        if let Some(sink) = self.sink.take() {
+            sink.stop();
+            if let Some(backend) = self.backend.as_mut() {
+                backend.shutdown();
+            }
+        } else if active {
+            if let Some(backend) = self.backend.as_mut() {
+                backend.shutdown();
+            }
+        }
+        self.activation_depth = 0;
+    }
+}
+
+type SharedDevice<B> = Arc<spin::Mutex<DeviceState<B>>>;
+
+/// Per-channel RDPECAM client processor for one redirected camera.
 pub struct DeviceClient<B> {
     channel_name: String,
     session: Arc<SessionShared>,
     advertised: Arc<AtomicBool>,
-    backend: B,
+    device: SharedDevice<B>,
     uplink: SampleUplink,
     version: ProtocolVersion,
     channel_id: Option<u32>,
-    activation_depth: u32,
-    sink: Option<SampleSink>,
+    /// Activations requested on this channel, released when it closes.
+    activations: u32,
 }
 
 impl<B> DeviceClient<B>
 where
     B: CameraBackend,
 {
+    /// Creates a processor for a device served by a single channel.
+    ///
+    /// [`RedirectedDevice::listener`] shares one device between all the channels the server opens.
     pub fn new(device: &RedirectedDevice, backend: B, uplink: SampleUplink) -> Self {
+        let state = Arc::new(spin::Mutex::new(DeviceState {
+            backend: Some(backend),
+            activation_depth: 0,
+            sink: None,
+            open_channels: 0,
+        }));
+        Self::with_device(device, state, uplink)
+    }
+
+    fn with_device(device: &RedirectedDevice, state: SharedDevice<B>, uplink: SampleUplink) -> Self {
         Self {
             channel_name: device.descriptor.channel_name.clone(),
             session: Arc::clone(&device.session),
             advertised: Arc::clone(&device.advertised),
-            backend,
+            device: state,
             uplink,
             version: ProtocolVersion::V1,
             channel_id: None,
-            activation_depth: 0,
-            sink: None,
+            activations: 0,
         }
     }
 
+    /// Returns whether the device is activated, on any of its channels.
     pub fn is_activated(&self) -> bool {
-        self.activation_depth != 0
+        self.device.lock().activation_depth != 0
     }
 
+    /// Returns whether the device streams, on any of its channels.
     pub fn is_streaming(&self) -> bool {
-        self.sink.is_some()
+        self.device.lock().sink.is_some()
     }
 
     /// Protocol version used on this device channel.
@@ -600,23 +662,38 @@ where
         self.version
     }
 
-    pub fn backend(&self) -> &B {
-        &self.backend
-    }
-
-    pub fn backend_mut(&mut self) -> &mut B {
-        &mut self.backend
+    /// Runs `f` with the device's backend, if it was created.
+    ///
+    /// `f` must not use this device's processors: the device stays locked while it runs.
+    pub fn with_backend<R>(&self, f: impl FnOnce(&mut B) -> R) -> Option<R> {
+        self.device.lock().backend.as_mut().map(f)
     }
 
     /// Handles one server request. `None` means the response is sent later.
     fn respond(&mut self, request: DevicePdu) -> Option<DevicePdu> {
+        let device = Arc::clone(&self.device);
+        let mut state = device.lock();
+        let state = &mut *state;
+        let Some(backend) = state.backend.as_mut() else {
+            return Some(DevicePdu::ErrorResponse(ErrorCode::Unexpected));
+        };
         if matches!(request, DevicePdu::ActivateDeviceRequest) {
-            return Some(self.activate());
+            if state.activation_depth == u32::MAX {
+                return Some(DevicePdu::ErrorResponse(ErrorCode::InvalidRequest));
+            }
+            if state.activation_depth == 0 {
+                if let Err(error) = backend.activate() {
+                    return Some(DevicePdu::ErrorResponse(error));
+                }
+            }
+            state.activation_depth += 1;
+            self.activations += 1;
+            return Some(DevicePdu::SuccessResponse);
         }
         if request.min_version() > self.version {
             return Some(DevicePdu::ErrorResponse(ErrorCode::InvalidMessage));
         }
-        if self.activation_depth == 0 {
+        if state.activation_depth == 0 {
             if let DevicePdu::SampleRequest(stream_index) = request {
                 return Some(DevicePdu::SampleErrorResponse {
                     stream_index,
@@ -626,17 +703,34 @@ where
             return Some(DevicePdu::ErrorResponse(ErrorCode::NotInitialized));
         }
         let response = match request {
-            DevicePdu::DeactivateDeviceRequest => self.deactivate(),
-            DevicePdu::StreamListRequest => match self.backend.streams() {
+            DevicePdu::DeactivateDeviceRequest => {
+                // Deactivation stops the streams, as in the Windows client.
+                if let Some(sink) = &state.sink {
+                    if let Err(error) = backend.stop_streams() {
+                        return Some(DevicePdu::ErrorResponse(error));
+                    }
+                    sink.stop();
+                    state.sink = None;
+                }
+                if state.activation_depth == 1 {
+                    if let Err(error) = backend.deactivate() {
+                        return Some(DevicePdu::ErrorResponse(error));
+                    }
+                }
+                state.activation_depth -= 1;
+                self.activations = self.activations.saturating_sub(1);
+                DevicePdu::SuccessResponse
+            }
+            DevicePdu::StreamListRequest => match backend.streams() {
                 Ok(streams) if valid_stream_count(streams.len()) && streams.iter().all(stream_is_valid) => {
                     DevicePdu::StreamListResponse(streams)
                 }
                 Ok(_) => DevicePdu::ErrorResponse(ErrorCode::Unexpected),
                 Err(error) => DevicePdu::ErrorResponse(error),
             },
-            DevicePdu::MediaTypeListRequest(stream_index) => match self.validate_stream_index(stream_index) {
+            DevicePdu::MediaTypeListRequest(stream_index) => match validate_stream_index(backend, stream_index) {
                 Err(error) => DevicePdu::ErrorResponse(error),
-                Ok(()) => match self.backend.media_types(stream_index) {
+                Ok(()) => match backend.media_types(stream_index) {
                     Ok(media_types)
                         if valid_media_type_count(media_types.len()) && media_types.iter().all(media_type_is_valid) =>
                     {
@@ -646,9 +740,9 @@ where
                     Err(error) => DevicePdu::ErrorResponse(error),
                 },
             },
-            DevicePdu::CurrentMediaTypeRequest(stream_index) => match self.validate_stream_index(stream_index) {
+            DevicePdu::CurrentMediaTypeRequest(stream_index) => match validate_stream_index(backend, stream_index) {
                 Err(error) => DevicePdu::ErrorResponse(error),
-                Ok(()) => match self.backend.current_media_type(stream_index) {
+                Ok(()) => match backend.current_media_type(stream_index) {
                     Ok(media_type) if media_type_is_valid(&media_type) => {
                         DevicePdu::CurrentMediaTypeResponse(media_type)
                     }
@@ -656,10 +750,55 @@ where
                     Err(error) => DevicePdu::ErrorResponse(error),
                 },
             },
-            DevicePdu::StartStreamsRequest(streams) => self.start_streams(streams),
-            DevicePdu::StopStreamsRequest => self.stop_streams(),
-            DevicePdu::SampleRequest(stream_index) => return self.sample_request(stream_index),
-            DevicePdu::PropertyListRequest => match self.backend.properties() {
+            DevicePdu::StartStreamsRequest(streams) => {
+                let Some(channel_id) = self.channel_id else {
+                    return Some(DevicePdu::ErrorResponse(ErrorCode::Unexpected));
+                };
+                match start_streams(backend, &streams) {
+                    Err(error) => DevicePdu::ErrorResponse(error),
+                    Ok(()) => {
+                        let sink = SampleSink::new(channel_id, self.version, &streams, Arc::clone(&self.uplink));
+                        if let Err(error) = backend.start_streams(&streams, sink.clone()) {
+                            sink.stop();
+                            return Some(DevicePdu::ErrorResponse(error));
+                        }
+                        if let Some(previous) = state.sink.replace(sink) {
+                            previous.stop();
+                        }
+                        DevicePdu::SuccessResponse
+                    }
+                }
+            }
+            DevicePdu::StopStreamsRequest => {
+                if let Some(sink) = &state.sink {
+                    if let Err(error) = backend.stop_streams() {
+                        return Some(DevicePdu::ErrorResponse(error));
+                    }
+                    sink.stop();
+                    state.sink = None;
+                }
+                DevicePdu::SuccessResponse
+            }
+            DevicePdu::SampleRequest(stream_index) => {
+                let Some(sink) = &state.sink else {
+                    return Some(DevicePdu::SampleErrorResponse {
+                        stream_index,
+                        error: ErrorCode::InvalidRequest,
+                    });
+                };
+                // Samples answer on the channel that asked for them.
+                if let Some(channel_id) = self.channel_id {
+                    sink.route_to(channel_id);
+                }
+                return match sink.request(stream_index) {
+                    Ok(()) => {
+                        backend.sample_requested(stream_index);
+                        None
+                    }
+                    Err(error) => Some(DevicePdu::SampleErrorResponse { stream_index, error }),
+                };
+            }
+            DevicePdu::PropertyListRequest => match backend.properties() {
                 Ok(properties) if properties.len() <= MAX_PROPERTIES => DevicePdu::PropertyListResponse(properties),
                 Ok(_) => DevicePdu::ErrorResponse(ErrorCode::Unexpected),
                 Err(error) => DevicePdu::ErrorResponse(error),
@@ -667,9 +806,8 @@ where
             DevicePdu::PropertyValueRequest {
                 property_set,
                 property_id,
-            } => match self
-                .find_property(property_set, property_id)
-                .and_then(|_| self.backend.property_value(property_set, property_id))
+            } => match find_property(backend, property_set, property_id)
+                .and_then(|_| backend.property_value(property_set, property_id))
             {
                 Ok(value) => DevicePdu::PropertyValueResponse(value),
                 Err(error) => DevicePdu::ErrorResponse(error),
@@ -678,11 +816,11 @@ where
                 property_set,
                 property_id,
                 value,
-            } => match self.find_property(property_set, property_id).and_then(|property| {
+            } => match find_property(backend, property_set, property_id).and_then(|property| {
                 if !property.accepts(value) {
                     return Err(ErrorCode::InvalidRequest);
                 }
-                self.backend.set_property_value(property_set, property_id, value)
+                backend.set_property_value(property_set, property_id, value)
             }) {
                 Ok(()) => DevicePdu::SuccessResponse,
                 Err(error) => DevicePdu::ErrorResponse(error),
@@ -692,147 +830,79 @@ where
         Some(response)
     }
 
-    fn activate(&mut self) -> DevicePdu {
-        if self.activation_depth == u32::MAX {
-            return DevicePdu::ErrorResponse(ErrorCode::InvalidRequest);
+    /// Releases this channel's hold on the device.
+    fn release(&mut self) {
+        let mut state = self.device.lock();
+        state.activation_depth = state.activation_depth.saturating_sub(self.activations);
+        self.activations = 0;
+        if self.channel_id.is_some() {
+            state.open_channels = state.open_channels.saturating_sub(1);
         }
-        if self.activation_depth == 0 {
-            if let Err(error) = self.backend.activate() {
-                return DevicePdu::ErrorResponse(error);
-            }
+        if state.activation_depth == 0 || state.open_channels == 0 {
+            state.shutdown();
         }
-        self.activation_depth += 1;
-        DevicePdu::SuccessResponse
-    }
-
-    fn deactivate(&mut self) -> DevicePdu {
-        if let Some(sink) = &self.sink {
-            if let Err(error) = self.backend.stop_streams() {
-                return DevicePdu::ErrorResponse(error);
-            }
-            sink.stop();
-            self.sink = None;
-        }
-        if self.activation_depth == 1 {
-            if let Err(error) = self.backend.deactivate() {
-                return DevicePdu::ErrorResponse(error);
-            }
-        }
-        self.activation_depth -= 1;
-        DevicePdu::SuccessResponse
-    }
-
-    fn start_streams(&mut self, streams: Vec<StartStreamInfo>) -> DevicePdu {
-        let Some(channel_id) = self.channel_id else {
-            return DevicePdu::ErrorResponse(ErrorCode::Unexpected);
-        };
-        if !valid_stream_count(streams.len()) {
-            return DevicePdu::ErrorResponse(ErrorCode::InvalidRequest);
-        }
-        let available_streams = match self.backend.streams() {
-            Ok(available) if valid_stream_count(available.len()) && available.iter().all(stream_is_valid) => available,
-            Ok(_) => return DevicePdu::ErrorResponse(ErrorCode::Unexpected),
-            Err(error) => return DevicePdu::ErrorResponse(error),
-        };
-        for (index, stream) in streams.iter().enumerate() {
-            if streams[..index]
-                .iter()
-                .any(|previous| previous.stream_index == stream.stream_index)
-            {
-                return DevicePdu::ErrorResponse(ErrorCode::InvalidRequest);
-            }
-            if usize::from(stream.stream_index) >= available_streams.len() {
-                return DevicePdu::ErrorResponse(ErrorCode::InvalidStreamNumber);
-            }
-            let supported = match self.backend.media_types(stream.stream_index) {
-                Ok(supported) => supported,
-                Err(error) => return DevicePdu::ErrorResponse(error),
-            };
-            if !valid_media_type_count(supported.len())
-                || !supported.iter().all(media_type_is_valid)
-                || !supported.contains(&stream.media_type)
-            {
-                return DevicePdu::ErrorResponse(ErrorCode::InvalidMediaType);
-            }
-        }
-        let sink = SampleSink::new(channel_id, self.version, &streams, Arc::clone(&self.uplink));
-        if let Err(error) = self.backend.start_streams(&streams, sink.clone()) {
-            sink.stop();
-            return DevicePdu::ErrorResponse(error);
-        }
-        if let Some(previous) = self.sink.replace(sink) {
-            previous.stop();
-        }
-        DevicePdu::SuccessResponse
-    }
-
-    fn stop_streams(&mut self) -> DevicePdu {
-        let Some(sink) = &self.sink else {
-            return DevicePdu::SuccessResponse;
-        };
-        if let Err(error) = self.backend.stop_streams() {
-            return DevicePdu::ErrorResponse(error);
-        }
-        sink.stop();
-        self.sink = None;
-        DevicePdu::SuccessResponse
-    }
-
-    fn sample_request(&mut self, stream_index: u8) -> Option<DevicePdu> {
-        let Some(sink) = &self.sink else {
-            return Some(DevicePdu::SampleErrorResponse {
-                stream_index,
-                error: ErrorCode::InvalidRequest,
-            });
-        };
-        match sink.request(stream_index) {
-            Ok(()) => {
-                self.backend.sample_requested(stream_index);
-                None
-            }
-            Err(error) => Some(DevicePdu::SampleErrorResponse { stream_index, error }),
-        }
-    }
-
-    fn find_property(
-        &mut self,
-        property_set: PropertySet,
-        property_id: PropertyId,
-    ) -> Result<PropertyDescription, ErrorCode> {
-        if !property_set.is_known() {
-            return Err(ErrorCode::SetNotFound);
-        }
-        let properties = self.backend.properties()?;
-        properties
-            .into_iter()
-            .find(|property| property.property_set == property_set && property.property_id == property_id)
-            .ok_or(ErrorCode::ItemNotFound)
-    }
-
-    fn validate_stream_index(&mut self, stream_index: u8) -> Result<(), ErrorCode> {
-        let streams = self.backend.streams()?;
-        if !valid_stream_count(streams.len()) || !streams.iter().all(stream_is_valid) {
-            return Err(ErrorCode::Unexpected);
-        }
-        if usize::from(stream_index) >= streams.len() {
-            return Err(ErrorCode::InvalidStreamNumber);
-        }
-        Ok(())
-    }
-
-    fn shutdown(&mut self) {
-        if let Some(sink) = self.sink.take() {
-            sink.stop();
-            self.backend.shutdown();
-        } else if self.activation_depth != 0 {
-            self.backend.shutdown();
-        }
-        self.activation_depth = 0;
     }
 
     fn reply(&self, pdu: DevicePdu) -> Vec<DvcMessage> {
         vec![Box::new(DeviceMessage::new(self.version, pdu))]
     }
+}
+
+/// Validates a Start Streams Request against the streams and media types the backend offers.
+fn start_streams<B: CameraBackend>(backend: &mut B, streams: &[StartStreamInfo]) -> Result<(), ErrorCode> {
+    if !valid_stream_count(streams.len()) {
+        return Err(ErrorCode::InvalidRequest);
+    }
+    let available_streams = match backend.streams() {
+        Ok(available) if valid_stream_count(available.len()) && available.iter().all(stream_is_valid) => available,
+        Ok(_) => return Err(ErrorCode::Unexpected),
+        Err(error) => return Err(error),
+    };
+    for (index, stream) in streams.iter().enumerate() {
+        if streams[..index]
+            .iter()
+            .any(|previous| previous.stream_index == stream.stream_index)
+        {
+            return Err(ErrorCode::InvalidRequest);
+        }
+        if usize::from(stream.stream_index) >= available_streams.len() {
+            return Err(ErrorCode::InvalidStreamNumber);
+        }
+        let supported = backend.media_types(stream.stream_index)?;
+        if !valid_media_type_count(supported.len())
+            || !supported.iter().all(media_type_is_valid)
+            || !supported.contains(&stream.media_type)
+        {
+            return Err(ErrorCode::InvalidMediaType);
+        }
+    }
+    Ok(())
+}
+
+fn find_property<B: CameraBackend>(
+    backend: &mut B,
+    property_set: PropertySet,
+    property_id: PropertyId,
+) -> Result<PropertyDescription, ErrorCode> {
+    if !property_set.is_known() {
+        return Err(ErrorCode::SetNotFound);
+    }
+    let properties = backend.properties()?;
+    properties
+        .into_iter()
+        .find(|property| property.property_set == property_set && property.property_id == property_id)
+        .ok_or(ErrorCode::ItemNotFound)
+}
+
+fn validate_stream_index<B: CameraBackend>(backend: &mut B, stream_index: u8) -> Result<(), ErrorCode> {
+    let streams = backend.streams()?;
+    if !valid_stream_count(streams.len()) || !streams.iter().all(stream_is_valid) {
+        return Err(ErrorCode::Unexpected);
+    }
+    if usize::from(stream_index) >= streams.len() {
+        return Err(ErrorCode::InvalidStreamNumber);
+    }
+    Ok(())
 }
 
 impl<B> AsAny for DeviceClient<B>
@@ -863,16 +933,20 @@ where
                 "camera device was not negotiated and advertised"
             ));
         }
-        self.shutdown();
+        if self.channel_id.is_some() {
+            self.release();
+        }
         self.version = self.session.version();
         self.channel_id = Some(channel_id);
+        self.device.lock().open_channels += 1;
         debug!(channel_id, version = ?self.version, "Camera device channel started");
         Ok(Vec::new())
     }
 
     fn process(&mut self, channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         if !self.advertised.load(Ordering::Acquire) {
-            self.shutdown();
+            self.device.lock().shutdown();
+            self.activations = 0;
             let response = match decode::<DeviceMessage>(payload) {
                 Ok(request) if request.pdu.is_client_message() => return Ok(Vec::new()),
                 Ok(DeviceMessage {
@@ -898,10 +972,20 @@ where
                 warn!("Ignoring client-originated camera response PDU received from server");
                 return Ok(Vec::new());
             }
-            Ok(request) => match self.respond(request.pdu) {
-                Some(response) => response,
-                None => return Ok(Vec::new()),
-            },
+            Ok(request) => {
+                if matches!(request.pdu, DevicePdu::SampleRequest(_)) {
+                    trace!(channel_id, request = ?request.pdu, "Camera request");
+                } else {
+                    debug!(channel_id, request = ?request.pdu, "Camera request");
+                }
+                match self.respond(request.pdu) {
+                    Some(response) => {
+                        debug!(channel_id, ?response, "Camera response");
+                        response
+                    }
+                    None => return Ok(Vec::new()),
+                }
+            }
             Err(error) => {
                 warn!(%error, "Rejecting malformed camera device PDU");
                 DevicePdu::ErrorResponse(ErrorCode::InvalidMessage)
@@ -912,20 +996,22 @@ where
 
     fn close(&mut self, channel_id: u32) {
         if self.channel_id == Some(channel_id) {
-            self.shutdown();
+            self.release();
             self.channel_id = None;
-            debug!("Camera device channel closed");
+            debug!(channel_id, "Camera device channel closed");
         }
     }
 }
 
 impl<B> DvcClientProcessor for DeviceClient<B> where B: CameraBackend {}
 
-/// DVC listener that creates a client for an explicitly selected camera.
+/// DVC listener for an explicitly selected camera.
 ///
-/// A new backend is requested from the factory each time the server opens the device channel.
+/// Every channel the server opens with the device's name shares one device state and one backend,
+/// created by the factory when the first channel opens.
 pub struct DeviceChannelListener<B> {
     device: RedirectedDevice,
+    state: SharedDevice<B>,
     factory: Box<dyn FnMut() -> Option<B> + Send>,
     uplink: SampleUplink,
 }
@@ -942,10 +1028,15 @@ where
         if !self.device.advertised.load(Ordering::Acquire) {
             return None;
         }
-        let backend = (self.factory)()?;
-        Some(Box::new(DeviceClient::new(
+        {
+            let mut state = self.state.lock();
+            if state.backend.is_none() {
+                state.backend = Some((self.factory)()?);
+            }
+        }
+        Some(Box::new(DeviceClient::with_device(
             &self.device,
-            backend,
+            Arc::clone(&self.state),
             Arc::clone(&self.uplink),
         )))
     }

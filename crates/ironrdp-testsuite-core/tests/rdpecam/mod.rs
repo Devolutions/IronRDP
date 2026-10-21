@@ -271,7 +271,7 @@ fn device_state_machine_streams_only_after_activation_and_media_validation() {
         exchange(&mut client, 7, DevicePdu::ActivateDeviceRequest),
         Some(DevicePdu::SuccessResponse)
     );
-    assert_eq!(client.backend().activate_count, 1);
+    assert_eq!(client.with_backend(|backend| backend.activate_count).unwrap(), 1);
 
     assert_eq!(
         exchange(&mut client, 7, DevicePdu::StreamListRequest),
@@ -303,14 +303,14 @@ fn device_state_machine_streams_only_after_activation_and_media_validation() {
         exchange(&mut client, 7, DevicePdu::StartStreamsRequest(vec![start])),
         Some(DevicePdu::SuccessResponse)
     );
-    let first_sink = client.backend().sink.clone().unwrap();
+    let first_sink = client.with_backend(|backend| backend.sink.clone()).unwrap().unwrap();
     assert_eq!(
         exchange(&mut client, 7, DevicePdu::StartStreamsRequest(vec![start])),
         Some(DevicePdu::SuccessResponse)
     );
     assert!(!first_sink.is_active());
     assert!(client.is_streaming());
-    client.backend_mut().fail_next_start = true;
+    client.with_backend(|backend| backend.fail_next_start = true);
     assert_eq!(
         exchange(&mut client, 7, DevicePdu::StartStreamsRequest(vec![start])),
         Some(DevicePdu::ErrorResponse(ErrorCode::Unexpected))
@@ -318,14 +318,14 @@ fn device_state_machine_streams_only_after_activation_and_media_validation() {
     assert!(client.is_streaming());
 
     // A sample captured before the server asks for one is not sent.
-    let sink = client.backend().sink.clone().unwrap();
+    let sink = client.with_backend(|backend| backend.sink.clone()).unwrap().unwrap();
     assert!(sink.is_active());
     assert_eq!(sink.send_sample(0, vec![0x55; 12]), SampleDelivery::NotRequested);
     assert!(uplink.take().is_empty());
 
     // Sample Requests are answered asynchronously, once per request.
     assert_eq!(exchange(&mut client, 7, DevicePdu::SampleRequest(0)), None);
-    assert_eq!(client.backend().sample_requests, 1);
+    assert_eq!(client.with_backend(|backend| backend.sample_requests).unwrap(), 1);
     assert_eq!(sink.pending_requests(0), 1);
     assert_eq!(sink.send_sample(0, vec![0x55; 12]), SampleDelivery::Sent);
     assert_eq!(sink.send_sample(0, vec![0x55; 12]), SampleDelivery::NotRequested);
@@ -381,7 +381,68 @@ fn device_state_machine_streams_only_after_activation_and_media_validation() {
         Some(DevicePdu::SuccessResponse)
     );
     assert!(!client.is_activated());
-    assert_eq!(client.backend().deactivate_count, 1);
+    assert_eq!(client.with_backend(|backend| backend.deactivate_count).unwrap(), 1);
+}
+
+#[test]
+fn channels_of_one_device_share_activation_and_streams() {
+    let uplink = Uplink::new();
+    let device = negotiated_device(ProtocolVersion::V2);
+    let created = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&created);
+    let mut listener = device.listener(
+        move || {
+            counter.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+            Some(FakeCamera::new())
+        },
+        uplink.callback(),
+    );
+    let mut control = listener.create(20).unwrap();
+    let mut stream = listener.create(21).unwrap();
+    // Both channels drive one backend.
+    assert_eq!(created.load(core::sync::atomic::Ordering::SeqCst), 1);
+    control.start(20).unwrap();
+    stream.start(21).unwrap();
+
+    let send = |processor: &mut Box<dyn ironrdp_dvc::DvcClientProcessor>, channel_id, pdu| {
+        let encoded = encode_vec(&DeviceMessage::new(ProtocolVersion::V2, pdu)).unwrap();
+        let response = processor.process(channel_id, &encoded).unwrap();
+        (!response.is_empty()).then(|| decode_message::<DeviceMessage>(&response).pdu)
+    };
+    // Windows activates on one channel and streams on another.
+    assert_eq!(
+        send(&mut control, 20, DevicePdu::ActivateDeviceRequest),
+        Some(DevicePdu::SuccessResponse)
+    );
+    assert_eq!(
+        send(&mut stream, 21, DevicePdu::StreamListRequest),
+        Some(DevicePdu::StreamListResponse(vec![StreamDescription::color(
+            true, false
+        )]))
+    );
+    let start = StartStreamInfo {
+        stream_index: 0,
+        media_type: media_type(),
+    };
+    assert_eq!(
+        send(&mut stream, 21, DevicePdu::StartStreamsRequest(vec![start])),
+        Some(DevicePdu::SuccessResponse)
+    );
+    assert_eq!(send(&mut control, 20, DevicePdu::SampleRequest(0)), None);
+
+    // The sample answers on the channel that asked for it.
+    let client = stream.as_any().downcast_ref::<DeviceClient<FakeCamera>>().unwrap();
+    let sink = client.with_backend(|backend| backend.sink.clone()).unwrap().unwrap();
+    assert_eq!(sink.send_sample(0, vec![0x55; 12]), SampleDelivery::Sent);
+    assert_eq!(uplink.take()[0].0, 20);
+
+    // Closing the activating channel releases the device.
+    control.close(20);
+    assert!(!sink.is_active());
+    assert_eq!(
+        send(&mut stream, 21, DevicePdu::StreamListRequest),
+        Some(DevicePdu::ErrorResponse(ErrorCode::NotInitialized))
+    );
 }
 
 #[test]
@@ -408,7 +469,7 @@ fn compressed_media_types_are_streamed_with_picture_checks() {
         exchange(&mut client, 7, DevicePdu::StartStreamsRequest(vec![start])),
         Some(DevicePdu::SuccessResponse)
     );
-    let sink = client.backend().sink.clone().unwrap();
+    let sink = client.with_backend(|backend| backend.sink.clone()).unwrap().unwrap();
 
     assert_eq!(exchange(&mut client, 7, DevicePdu::SampleRequest(0)), None);
     assert_eq!(sink.send_sample(0, vec![0, 0, 0, 1, 0x67]), SampleDelivery::Rejected);
@@ -503,7 +564,7 @@ fn version_2_properties_are_listed_read_and_validated_before_writes() {
         Some(DevicePdu::SuccessResponse)
     );
     assert_eq!(
-        client.backend().brightness,
+        client.with_backend(|backend| backend.brightness).unwrap(),
         PropertyValue {
             mode: PropertyMode::MANUAL,
             value: 75,
@@ -548,7 +609,7 @@ fn malformed_device_message_is_rejected_without_backend_activation() {
         decode_message::<DeviceMessage>(&response).pdu,
         DevicePdu::ErrorResponse(ErrorCode::InvalidMessage)
     );
-    assert_eq!(client.backend().activate_count, 0);
+    assert_eq!(client.with_backend(|backend| backend.activate_count).unwrap(), 0);
 
     let response = encode_vec(&DeviceMessage::new(ProtocolVersion::V1, DevicePdu::SuccessResponse)).unwrap();
     assert!(client.process(7, &response).unwrap().is_empty());
@@ -600,7 +661,7 @@ fn post_removal_request_returns_protocol_error_without_aborting_processing() {
             error: ErrorCode::NotInitialized,
         })
     );
-    assert_eq!(client.backend().deactivate_count, 1);
+    assert_eq!(client.with_backend(|backend| backend.deactivate_count).unwrap(), 1);
 }
 
 #[test]
