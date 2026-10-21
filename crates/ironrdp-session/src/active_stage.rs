@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
 use ironrdp_core::{MonotonicInstant, ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
+use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout};
 use ironrdp_dvc::pdu::SoftSyncTunnelType;
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessageBatch, DynamicChannelMut, DynamicChannelRef};
 use ironrdp_egfx::client::GraphicsPipelineClient;
@@ -675,6 +676,52 @@ impl ActiveStage {
         Some(prepared.and_then(|batch| self.encode_dvc_batch_over_tcp(batch)))
     }
 
+    /// Returns the capabilities the server sent over the Display Control Virtual Channel, if any.
+    pub fn display_control_capabilities(&self) -> Option<DisplayControlCapabilities> {
+        self.get_dvc::<DisplayControlClient>()?
+            .processor()
+            .capabilities()
+            .cloned()
+    }
+
+    /// Prepares a complete monitor layout request for routing over TCP or a Soft-Sync tunnel.
+    ///
+    /// The layout carries every monitor with its position, orientation, physical size and scale
+    /// factors, and is adapted to the server capabilities with
+    /// [`DisplayControlMonitorLayout::fit_to_capabilities`] before it is encoded.
+    ///
+    /// If the Display Control Virtual Channel is not available, not yet connected, or has not
+    /// received its required server capabilities PDU, this method returns `None`.
+    pub fn prepare_monitor_layout(
+        &mut self,
+        layout: &DisplayControlMonitorLayout,
+    ) -> Option<SessionResult<DvcMessageBatch>> {
+        let Some(dvc) = self.get_dvc::<DisplayControlClient>() else {
+            debug!("Could not encode a monitor layout: Display Control Virtual Channel is not available");
+            return None;
+        };
+        let channel_id = dvc.channel_id();
+        let display_control = dvc.processor();
+        if !display_control.ready() {
+            debug!("Could not encode a monitor layout: Display Control capabilities have not been received");
+            return None;
+        }
+        let messages = match display_control.encode_monitor_layout(channel_id, layout) {
+            Ok(messages) => messages,
+            Err(error) => return Some(Err(SessionError::encode(error))),
+        };
+        Some(DvcMessageBatch::try_new(channel_id, messages).map_err(SessionError::pdu))
+    }
+
+    /// Fully encodes a complete monitor layout request for sending over the Display Control Virtual Channel.
+    ///
+    /// See [`Self::prepare_monitor_layout`]. Returns an error when Soft-Sync routes the channel
+    /// through a multitransport tunnel.
+    pub fn encode_monitor_layout(&mut self, layout: &DisplayControlMonitorLayout) -> Option<SessionResult<Vec<u8>>> {
+        let prepared = self.prepare_monitor_layout(layout)?;
+        Some(prepared.and_then(|batch| self.encode_dvc_batch_over_tcp(batch)))
+    }
+
     /// Returns whether the RDPEI channel is available and ready (SC_READY / CS_READY exchanged).
     ///
     /// `None` means no RDPEI client is configured. `Some(false)` means it is registered but not
@@ -1082,7 +1129,7 @@ mod tests {
 
     use super::*;
     use ironrdp_core::{Decode as _, encode_vec};
-    use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlPdu};
+    use ironrdp_displaycontrol::pdu::{DisplayControlPdu, MonitorLayoutEntry};
     use ironrdp_dvc::pdu::{
         ClosePdu, CreateRequestPdu, DataPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu,
     };
@@ -1420,6 +1467,28 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_prepared_batch(&pen, 2);
+    }
+
+    #[test]
+    fn monitor_layouts_are_prepared_once_capabilities_are_received() {
+        let mut stage = active_stage_with_ready_dvcs();
+        assert_eq!(
+            stage.display_control_capabilities(),
+            Some(DisplayControlCapabilities::new(1, 3840, 2400).unwrap())
+        );
+
+        let layout = DisplayControlMonitorLayout::new(&[
+            MonitorLayoutEntry::new_primary(1920, 1080).unwrap(),
+            MonitorLayoutEntry::new_secondary(1920, 1080)
+                .unwrap()
+                .with_position(1920, 0)
+                .unwrap(),
+        ])
+        .unwrap();
+        let batch = stage.prepare_monitor_layout(&layout).unwrap().unwrap();
+        assert_prepared_batch(&batch, 1);
+        let expected = stage.encode_dvc_messages(batch.into_messages()).unwrap();
+        assert_eq!(stage.encode_monitor_layout(&layout).unwrap().unwrap(), expected);
     }
 
     #[test]
