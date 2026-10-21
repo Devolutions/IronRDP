@@ -11,9 +11,9 @@ use ironrdp_pdu::utils::{CharacterSet, encoded_multistring_len};
 use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::pdu::efs::{DeviceControlRequest, DeviceControlResponse, NtStatus};
 use ironrdp_rdpdr::pdu::esc::{
-    CardProtocol, CardState, CardStateFlags, ConnectCall, ConnectReturn, ContextAndStringCall, ContextAndTwoStringCall,
-    ContextCall, ControlCall, ControlReturn, EstablishContextCall, EstablishContextReturn, GetAttribCall,
-    GetAttribReturn, GetDeviceTypeIdCall, GetDeviceTypeIdReturn, GetReaderIconCall, GetReaderIconReturn,
+    self, CardProtocol, CardState, CardStateFlags, ConnectCall, ConnectReturn, ContextAndStringCall,
+    ContextAndTwoStringCall, ContextCall, ControlCall, ControlReturn, EstablishContextCall, EstablishContextReturn,
+    GetAttribCall, GetAttribReturn, GetDeviceTypeIdCall, GetDeviceTypeIdReturn, GetReaderIconCall, GetReaderIconReturn,
     GetStatusChangeCall, GetStatusChangeReturn, GetTransmitCountCall, GetTransmitCountReturn, HCardAndDispositionCall,
     ListReaderGroupsCall, ListReadersCall, ListReadersReturn, LocateCardsAtrMask, LocateCardsByAtrCall,
     LocateCardsCall, LongReturn, ReadCacheCall, ReadCacheReturn, ReaderState, ReaderStateCommonCall, ReconnectCall,
@@ -245,7 +245,9 @@ impl ScardSession {
             ScardCall::GetReaderIconCall(c) => Ok(vec![self.get_reader_icon(req, c)]),
             ScardCall::ContextAndStringCall(c) => Ok(vec![self.context_and_string(req, ioctl, c)]),
             ScardCall::ContextAndTwoStringCall(c) => Ok(vec![self.context_and_two_string(req, ioctl, c)]),
-            other => Ok(vec![complete_rpce(req, unsupported(ioctl, other))]),
+            ScardCall::Unsupported => Ok(vec![SvcMessage::from(RdpdrPdu::DeviceControlResponse(
+                ScardCall::Unsupported.error_response(req, ReturnCode::UnsupportedFeature),
+            ))]),
         }
     }
 
@@ -1312,20 +1314,19 @@ fn buffer_too_small(req: DeviceControlRequest<ScardIoCtlCode>) -> SvcMessage {
 }
 
 fn complete_rpce(req: DeviceControlRequest<ScardIoCtlCode>, output: Box<dyn rpce::Encode>) -> SvcMessage {
-    let (status, buf) = if output.size() <= req.output_buffer_length as usize {
-        (NtStatus::SUCCESS, Some(output))
-    } else {
-        (NtStatus::BUFFER_TOO_SMALL, None)
-    };
-    SvcMessage::from(RdpdrPdu::DeviceControlResponse(DeviceControlResponse::new(
-        req, status, buf,
-    )))
+    SvcMessage::from(RdpdrPdu::DeviceControlResponse(esc::complete_call(req, output)))
 }
 
 fn complete_long(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode) -> SvcMessage {
     complete_rpce(req, Box::new(LongReturn::new(code)))
 }
 fn complete_establish(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode, ctx: ScardContext) -> SvcMessage {
+    // MS-RDPESC 2.2.3: all fields besides ReturnCode are zero on failure.
+    let ctx = if code == ReturnCode::Success {
+        ctx
+    } else {
+        ScardContext::empty()
+    };
     complete_rpce(req, Box::new(EstablishContextReturn::new(code, ctx)))
 }
 fn complete_gsc(
@@ -1341,6 +1342,12 @@ fn complete_connect(
     handle: ScardHandle,
     proto: CardProtocol,
 ) -> SvcMessage {
+    // MS-RDPESC 2.2.3: all fields besides ReturnCode are zero on failure.
+    let handle = if code == ReturnCode::Success {
+        handle
+    } else {
+        ScardHandle::empty()
+    };
     complete_rpce(req, Box::new(ConnectReturn::new(code, handle, proto)))
 }
 fn complete_reconnect(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode, proto: CardProtocol) -> SvcMessage {
@@ -1717,45 +1724,6 @@ fn reader_states_from_native(states: Vec<SCARD_READERSTATEW>) -> Vec<ReaderState
             atr: s.rgbAtr,
         })
         .collect()
-}
-
-fn unsupported(ioctl: ScardIoCtlCode, call: ScardCall) -> Box<dyn rpce::Encode> {
-    let code = ReturnCode::UnsupportedFeature;
-    let undef = CardProtocol::SCARD_PROTOCOL_UNDEFINED;
-    match call {
-        ScardCall::LocateCardsCall(_) | ScardCall::LocateCardsByAtrCall(_) => {
-            Box::new(GetStatusChangeReturn::new(code, Vec::new()))
-        }
-        ScardCall::ControlCall(_) => Box::new(ControlReturn::new(code, Vec::new())),
-        ScardCall::GetAttribCall(_) => Box::new(GetAttribReturn::new(code, Vec::new())),
-        ScardCall::GetTransmitCountCall(_) => Box::new(GetTransmitCountReturn::new(code, 0)),
-        ScardCall::GetDeviceTypeIdCall(_) => Box::new(GetDeviceTypeIdReturn::new(code, 0)),
-        ScardCall::ReadCacheCall(_) => Box::new(ReadCacheReturn::new(code, Vec::new())),
-        ScardCall::GetReaderIconCall(_) => Box::new(GetReaderIconReturn::new(code, Vec::new())),
-        ScardCall::EstablishContextCall(_) => Box::new(EstablishContextReturn::new(code, ScardContext::from_native(0))),
-        ScardCall::ListReaderGroupsCall(_) | ScardCall::ListReadersCall(_) => {
-            Box::new(ListReadersReturn::probe(code, 0, list_cs(ioctl)))
-        }
-        ScardCall::GetStatusChangeCall(_) => Box::new(GetStatusChangeReturn::new(code, Vec::new())),
-        ScardCall::ConnectCall(_) => Box::new(ConnectReturn::new(
-            code,
-            ScardHandle::from_native(ScardContext::from_native(0), 0),
-            undef,
-        )),
-        ScardCall::ReconnectCall(_) => Box::new(ReconnectReturn::new(code, undef)),
-        ScardCall::TransmitCall(_) => Box::new(TransmitReturn::new(code, None, Vec::new())),
-        ScardCall::StatusCall(_) => Box::new(StatusReturn::names_probe(
-            code,
-            0,
-            CardState::Unknown,
-            undef,
-            [0u8; 32],
-            0,
-            status_cs(ioctl),
-        )),
-        ScardCall::StateCall(_) => Box::new(StateReturn::atr_probe(code, CardState::Unknown, undef, 0)),
-        _ => Box::new(LongReturn::new(code)),
-    }
 }
 
 #[cfg(test)]

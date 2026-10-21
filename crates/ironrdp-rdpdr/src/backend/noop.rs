@@ -5,7 +5,7 @@ use ironrdp_svc::SvcMessage;
 use super::RdpdrBackend;
 use crate::pdu::RdpdrPdu;
 use crate::pdu::efs::{
-    DeviceControlRequest, DeviceControlResponse, DeviceIoRequest, DeviceIoResponse, DeviceWriteResponse, NtStatus,
+    DeviceControlRequest, DeviceIoRequest, DeviceIoResponse, DeviceWriteResponse, NtStatus,
     ServerDeviceAnnounceResponse,
 };
 use crate::pdu::esc::{ReturnCode, ScardCall, ScardIoCtlCode};
@@ -28,14 +28,7 @@ impl RdpdrBackend for NoopRdpdrBackend {
         req: DeviceControlRequest<ScardIoCtlCode>,
         call: ScardCall,
     ) -> PduResult<Vec<SvcMessage>> {
-        let output = call.error_return(req.io_control_code, ReturnCode::NoService);
-        let fits = u32::try_from(output.size()).is_ok_and(|size| size <= req.output_buffer_length);
-        let response = if fits {
-            DeviceControlResponse::new(req, NtStatus::SUCCESS, Some(output))
-        } else {
-            // The server retries with a larger output buffer (MS-RDPESC 3.2.5.2).
-            DeviceControlResponse::new(req, NtStatus::BUFFER_TOO_SMALL, None)
-        };
+        let response = call.error_response(req, ReturnCode::NoService);
         Ok(vec![SvcMessage::from(RdpdrPdu::DeviceControlResponse(response))])
     }
     fn handle_drive_io_request(&mut self, _req: crate::pdu::efs::ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>> {

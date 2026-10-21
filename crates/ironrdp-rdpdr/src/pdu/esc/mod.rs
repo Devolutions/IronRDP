@@ -15,7 +15,7 @@ use ironrdp_pdu::utils::{
 };
 use tracing::{error, warn};
 
-use super::efs::IoCtlCode;
+use super::efs::{DeviceControlRequest, DeviceControlResponse, IoCtlCode, NtStatus};
 use crate::pdu::esc::ndr::{Decode as _, Encode as _};
 
 /// [2.2.2] TS Server-Generated Structures
@@ -168,14 +168,27 @@ impl ScardCall {
         }
     }
 
-    /// Builds the IOCTL-specific `*_Return` structure for a call that failed with `return_code`.
+    /// Builds the completion for this call failing with `return_code`.
     ///
     /// Per [\[MS-RDPESC\]] section 3.1.4, smart card errors are carried in the `ReturnCode` of the
-    /// structure the server decodes for this IOCTL, while `IoStatus` stays `STATUS_SUCCESS`. All
-    /// other output fields are left empty.
+    /// structure the server decodes for this IOCTL, while `IoStatus` stays `STATUS_SUCCESS`; per
+    /// section 2.2.3, all other fields of that structure are zero. An IOCTL this crate does not
+    /// decode has no known return structure, so it is completed with `STATUS_UNSUCCESSFUL` and no
+    /// output instead.
     ///
     /// [\[MS-RDPESC\]]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/0428ca28-b4dc-46a3-97c3-01887fa44a90
-    pub fn error_return(&self, io_ctl_code: ScardIoCtlCode, return_code: ReturnCode) -> Box<dyn rpce::Encode> {
+    pub fn error_response(
+        &self,
+        req: DeviceControlRequest<ScardIoCtlCode>,
+        return_code: ReturnCode,
+    ) -> DeviceControlResponse {
+        match self.error_return(req.io_control_code, return_code) {
+            Some(output) => complete_call(req, output),
+            None => DeviceControlResponse::new(req, NtStatus::UNSUCCESSFUL, None),
+        }
+    }
+
+    fn error_return(&self, io_ctl_code: ScardIoCtlCode, return_code: ReturnCode) -> Option<Box<dyn rpce::Encode>> {
         let undefined = CardProtocol::SCARD_PROTOCOL_UNDEFINED;
         let charset = match io_ctl_code {
             ScardIoCtlCode::ListReadersA | ScardIoCtlCode::ListReaderGroupsA | ScardIoCtlCode::StatusA => {
@@ -184,9 +197,9 @@ impl ScardCall {
             _ => CharacterSet::Unicode,
         };
 
-        match self {
+        let output: Box<dyn rpce::Encode> = match self {
             ScardCall::EstablishContextCall(_) => {
-                Box::new(EstablishContextReturn::new(return_code, ScardContext::from_native(0)))
+                Box::new(EstablishContextReturn::new(return_code, ScardContext::empty()))
             }
             ScardCall::ListReaderGroupsCall(_) | ScardCall::ListReadersCall(_) => {
                 Box::new(ListReadersReturn::probe(return_code, 0, charset))
@@ -195,11 +208,7 @@ impl ScardCall {
             ScardCall::GetStatusChangeCall(_) | ScardCall::LocateCardsCall(_) | ScardCall::LocateCardsByAtrCall(_) => {
                 Box::new(GetStatusChangeReturn::new(return_code, Vec::new()))
             }
-            ScardCall::ConnectCall(_) => Box::new(ConnectReturn::new(
-                return_code,
-                ScardHandle::from_native(ScardContext::from_native(0), 0),
-                undefined,
-            )),
+            ScardCall::ConnectCall(_) => Box::new(ConnectReturn::new(return_code, ScardHandle::empty(), undefined)),
             ScardCall::ReconnectCall(_) => Box::new(ReconnectReturn::new(return_code, undefined)),
             ScardCall::TransmitCall(_) => Box::new(TransmitReturn::new(return_code, None, Vec::new())),
             ScardCall::StatusCall(_) => Box::new(StatusReturn::names_probe(
@@ -224,9 +233,33 @@ impl ScardCall {
             | ScardCall::ContextCall(_)
             | ScardCall::WriteCacheCall(_)
             | ScardCall::ContextAndStringCall(_)
-            | ScardCall::ContextAndTwoStringCall(_)
-            | ScardCall::Unsupported => Box::new(LongReturn::new(return_code)),
-        }
+            | ScardCall::ContextAndTwoStringCall(_) => Box::new(LongReturn::new(return_code)),
+            // Decoded as unsupported, but MS-RDPESC lists it with a Long_Return.
+            ScardCall::Unsupported if io_ctl_code == ScardIoCtlCode::ReleaseTartedEvent => {
+                Box::new(LongReturn::new(return_code))
+            }
+            ScardCall::Unsupported => return None,
+        };
+        Some(output)
+    }
+}
+
+/// Completes a smart card IOCTL with its encoded `*_Return` structure.
+///
+/// When the structure does not fit the server's output buffer, the IOCTL is completed with
+/// `STATUS_BUFFER_TOO_SMALL` and no output instead, so that the server retries with a larger
+/// buffer ([\[MS-RDPESC\]] section 3.2.5.2).
+///
+/// [\[MS-RDPESC\]]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/0428ca28-b4dc-46a3-97c3-01887fa44a90
+pub fn complete_call(
+    req: DeviceControlRequest<ScardIoCtlCode>,
+    output: Box<dyn rpce::Encode>,
+) -> DeviceControlResponse {
+    let fits = u32::try_from(output.size()).is_ok_and(|size| size <= req.output_buffer_length);
+    if fits {
+        DeviceControlResponse::new(req, NtStatus::SUCCESS, Some(output))
+    } else {
+        DeviceControlResponse::new(req, NtStatus::BUFFER_TOO_SMALL, None)
     }
 }
 
@@ -264,6 +297,11 @@ impl ScardContext {
         let mut bytes = [0u8; 16];
         bytes[..4].copy_from_slice(&value.to_le_bytes());
         Self { len: 4, bytes }
+    }
+
+    /// Creates an empty context (`cbContext` = 0, NULL `pbContext`).
+    pub fn empty() -> Self {
+        Self { len: 0, bytes: [0; 16] }
     }
 
     /// Creates a context from opaque wire bytes (`0..=16`).
@@ -1540,6 +1578,15 @@ impl ScardHandle {
         let mut bytes = [0u8; 16];
         bytes[..4].copy_from_slice(&value.to_le_bytes());
         Self { context, len: 4, bytes }
+    }
+
+    /// Creates an empty handle in an empty context (`cbHandle` = 0, NULL `pbHandle`).
+    pub fn empty() -> Self {
+        Self {
+            context: ScardContext::empty(),
+            len: 0,
+            bytes: [0; 16],
+        }
     }
 
     /// Creates a handle from opaque wire bytes (`0..=16`).

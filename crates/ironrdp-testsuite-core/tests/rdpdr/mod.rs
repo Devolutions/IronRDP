@@ -23,7 +23,7 @@ use ironrdp_rdpdr::pdu::efs::{
     ServerDriveQueryVolumeInformationRequest, ServerDriveSetInformationRequest, ServerDriveSetSecurityRequest,
     SharedAccess, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
 };
-use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
+use ironrdp_rdpdr::pdu::esc::{ReturnCode, ScardCall, ScardIoCtlCode};
 use ironrdp_rdpdr::server::{NoopRdpdrServerBackend, RdpdrServer, RdpdrServerBackend};
 use ironrdp_rdpdr::{NoopRdpdrBackend, Rdpdr, RdpdrBackend};
 
@@ -576,6 +576,30 @@ fn noop_backend_completes_smartcard_calls_with_no_service() {
     // OutputBuffer holds EstablishContext_Return after the 16-byte MS-RPCE headers.
     assert_eq!(read_u32_as_usize(&encoded[16..]), encoded.len() - 20);
     assert_eq!(read_u32(&encoded[36..]), SCARD_E_NO_SERVICE);
+    // MS-RDPESC 2.2.3: the context is zero (cbContext 0, NULL pbContext) on failure.
+    assert_eq!(&encoded[40..48], &[0; 8]);
+}
+
+#[test]
+fn smartcard_error_response_rejects_calls_without_return_structure() {
+    let req = DeviceControlRequest {
+        header: DeviceIoRequest {
+            device_id: 1,
+            file_id: 0,
+            completion_id: 0x300,
+            major_function: MajorFunction::DeviceControl,
+            minor_function: MinorFunction::from(0),
+        },
+        output_buffer_length: 2048,
+        input_buffer_length: 0,
+        io_control_code: ScardIoCtlCode::GetStatusChangeW,
+    };
+
+    let response = ScardCall::Unsupported.error_response(req, ReturnCode::NoService);
+
+    let encoded = encode_vec(&RdpdrPdu::DeviceControlResponse(response)).unwrap();
+    assert_eq!(ntstatus_at(&encoded, 12), NtStatus::UNSUCCESSFUL);
+    assert_eq!(read_u32(&encoded[16..]), 0); // OutputBufferLength
 }
 
 #[test]
