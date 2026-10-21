@@ -35,7 +35,7 @@ RPC mode enables it through the `redirectprinters` connect property.
 On Windows, pass `--camera <NAME>` (repeatable; `*` for every camera) to redirect local cameras, or set `camerastoredirect` in a `.rdp` file.
 Raw camera frames are encoded to H.264 unless `--camera-raw` is passed.
 
-Build with `--features openh264` to accept MS-RDPEVOR video optimized remoting, decoded with the bundled OpenH264 sources.
+MS-RDPEVOR video optimized remoting is decoded with the Windows H.264 decoder; build with `--features openh264` to use the bundled OpenH264 sources instead (required on other platforms).
 
 To open the basic console of a local Hyper-V VM with the current Windows account:
 

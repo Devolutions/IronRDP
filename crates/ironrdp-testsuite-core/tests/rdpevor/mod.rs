@@ -114,14 +114,64 @@ fn messages_match_the_specification_examples() {
 
 #[cfg(feature = "openh264-bundled")]
 #[test]
-fn specification_sample_is_decoded_and_placed_at_its_geometry() {
-    let mut presenter = VideoPresenter::new(
-        Box::new(|| {
-            let decoder: Box<dyn H264Decoder> = Box::new(ironrdp_egfx::decode::OpenH264Decoder::new().ok()?);
-            Some(decoder)
-        }),
-        Box::new(|| 1_000_000),
-    );
+fn specification_sample_is_decoded_with_openh264_and_placed_at_its_geometry() {
+    present_specification_sample(Box::new(|| {
+        let decoder: Box<dyn H264Decoder> = Box::new(ironrdp_egfx::decode::OpenH264Decoder::new().ok()?);
+        Some(decoder)
+    }));
+}
+
+#[cfg(windows)]
+#[test]
+fn specification_sample_is_decoded_with_media_foundation_and_placed_at_its_geometry() {
+    use ironrdp_egfx_native::{MediaFoundationH264Decoder, YuvMatrix};
+
+    // The decoder pads the 480x244 picture to whole macroblocks.
+    let mut decoder = MediaFoundationH264Decoder::new(YuvMatrix::Bt601Limited).unwrap();
+    let frame = decoder.decode(&VIDEO_DATA_EXAMPLE[40..]).unwrap();
+    assert_eq!((frame.width(), frame.height()), (480, 256));
+    assert_eq!(frame.data().len(), 480 * 256 * 4);
+    // A second key frame decodes on the same stream.
+    decoder.decode(&VIDEO_DATA_EXAMPLE[40..]).unwrap();
+
+    present_specification_sample(Box::new(|| {
+        let decoder: Box<dyn H264Decoder> = Box::new(MediaFoundationH264Decoder::new(YuvMatrix::Bt601Limited).ok()?);
+        Some(decoder)
+    }));
+}
+
+#[cfg(all(windows, feature = "openh264-bundled"))]
+#[test]
+fn media_foundation_and_openh264_agree_on_the_specification_sample() {
+    use ironrdp_egfx_native::{MediaFoundationH264Decoder, YuvMatrix};
+
+    let sample = &VIDEO_DATA_EXAMPLE[40..];
+    // OpenH264 converts with BT.709 full range.
+    let reference = ironrdp_egfx::decode::OpenH264Decoder::new()
+        .unwrap()
+        .decode(sample)
+        .unwrap();
+    let decoded = MediaFoundationH264Decoder::new(YuvMatrix::Bt709Full)
+        .unwrap()
+        .decode(sample)
+        .unwrap();
+    let row = |frame: &DecodedFrame, y: usize| {
+        let stride = usize::try_from(frame.width()).unwrap() * 4;
+        frame.data()[y * stride..][..480 * 4].to_vec()
+    };
+    let mut total = 0u64;
+    for y in 0..244 {
+        for (left, right) in row(&reference, y).iter().zip(row(&decoded, y)) {
+            total += u64::from(left.abs_diff(right));
+        }
+    }
+    let mean = total / (480 * 244 * 4);
+    assert!(mean <= 2, "mean channel difference {mean}");
+}
+
+#[cfg(any(windows, feature = "openh264-bundled"))]
+fn present_specification_sample(decoder_factory: ironrdp_rdpevor::DecoderFactory) {
+    let mut presenter = VideoPresenter::new(decoder_factory, Box::new(|| 1_000_000));
     assert!(presenter.start(&start_request()));
     // MS-RDPEGT 4.1 describes the geometry of this presentation.
     presenter.set_geometry(

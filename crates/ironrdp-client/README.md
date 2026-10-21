@@ -29,7 +29,7 @@ Capture uses Media Foundation and is only available on Windows; cameras attached
 Raw camera frames are encoded to H.264 unless the camera produces H.264 or MJPEG itself or `CameraConfig::encode_video` is off.
 
 The optional `video` feature accepts MS-RDPEVOR video optimized remoting and MS-RDPEGT geometry tracking when an H.264 decoder is configured with `ConfigBuilder::with_h264_decoder`; without one, the client keeps declining these channels.
-The `openh264` feature configures a decoder built from the bundled OpenH264 sources by default.
+On Windows the default decoder is the one shipped with Windows, through Media Foundation; the `openh264` feature switches the default to a decoder built from the bundled OpenH264 sources, which is the only default elsewhere.
 Decoded pictures are shown at their presentation time, scaled and clipped to the tracked geometry, and composited into the framebuffer like graphics pipeline updates.
 
 When the `gateway` feature is enabled and `Transport::Gateway` is selected, the client uses the MS-TSGU HTTPS WebSocket transport and falls back to legacy dual-channel HTTP when necessary.

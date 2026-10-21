@@ -2765,6 +2765,7 @@ dependencies = [
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-echo",
  "ironrdp-egfx",
+ "ironrdp-egfx-native",
  "ironrdp-graphics",
  "ironrdp-mstsgu",
  "ironrdp-pdu",
@@ -2969,6 +2970,15 @@ dependencies = [
  "openh264",
  "tracing",
  "yuv",
+]
+
+[[package]]
+name = "ironrdp-egfx-native"
+version = "0.0.0"
+dependencies = [
+ "ironrdp-egfx",
+ "tracing",
+ "windows",
 ]
 
 [[package]]
@@ -3453,6 +3463,7 @@ dependencies = [
  "ironrdp-dvc",
  "ironrdp-echo",
  "ironrdp-egfx",
+ "ironrdp-egfx-native",
  "ironrdp-error 0.2.0",
  "ironrdp-fuzzing",
  "ironrdp-graphics",

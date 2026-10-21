@@ -50,8 +50,8 @@ webauthn = ["dep:ironrdp-rdpewa", "dep:ironrdp-rdpewa-native", "dvc-com-plugin"]
 vmconnect = ["dep:ironrdp-vmconnect"]
 location = ["dep:ironrdp-rdpel"]
 # MS-RDPEVOR video optimized remoting with MS-RDPEGT geometry tracking. The channels are only
-# registered when an H.264 decoder is configured.
-video = ["dep:ironrdp-rdpevor", "dep:ironrdp-rdpegt"]
+# registered when an H.264 decoder is available: Media Foundation's on Windows by default.
+video = ["dep:ironrdp-rdpevor", "dep:ironrdp-rdpegt", "dep:ironrdp-egfx-native"]
 # Default H.264 decoder for video optimized remoting, built from the bundled OpenH264 sources.
 openh264 = ["video", "ironrdp-egfx/openh264-bundled"]
 # MS-RDPECAM camera redirection. Capture uses Media Foundation and is only available on Windows.
@@ -136,6 +136,7 @@ ironrdp-dvc-com-plugin = { path = "../ironrdp-dvc-com-plugin", version = "0.1", 
 ironrdp-rdpewa = { path = "../ironrdp-rdpewa", version = "0.1", optional = true }
 ironrdp-rdpewa-native = { path = "../ironrdp-rdpewa-native", version = "0.1", optional = true }
 ironrdp-rdpecam-native = { path = "../ironrdp-rdpecam-native", version = "0.0.0", optional = true }
+ironrdp-egfx-native = { path = "../ironrdp-egfx-native", version = "0.0.0", optional = true }
 
 [lints]
 workspace = true

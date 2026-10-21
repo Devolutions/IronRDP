@@ -42,6 +42,24 @@ impl H264DecoderFactory {
             }
         })
     }
+
+    /// Decoder transform shipped with Windows, through Media Foundation.
+    #[cfg(windows)]
+    pub fn media_foundation() -> Self {
+        use ironrdp_egfx_native::{MediaFoundationH264Decoder, YuvMatrix};
+
+        // MS-RDPEVOR video is converted from RGB with BT.601 (2.2.1.6).
+        Self::new(|| match MediaFoundationH264Decoder::new(YuvMatrix::Bt601Limited) {
+            Ok(decoder) => {
+                let decoder: Box<dyn H264Decoder> = Box::new(decoder);
+                Some(decoder)
+            }
+            Err(error) => {
+                warn!(%error, "Unable to create the Media Foundation H.264 decoder");
+                None
+            }
+        })
+    }
 }
 
 impl fmt::Debug for H264DecoderFactory {
@@ -55,15 +73,16 @@ impl fmt::Debug for H264DecoderFactory {
 pub struct VideoConfig {
     /// Decoder for the video stream. Without one, the video channels are declined.
     ///
-    /// Defaults to OpenH264 when the `openh264` feature is enabled.
+    /// Defaults to OpenH264 when the `openh264` feature is enabled, otherwise to the Media
+    /// Foundation decoder on Windows.
     pub decoder: Option<H264DecoderFactory>,
 }
 
 #[cfg_attr(
-    not(feature = "openh264"),
+    not(any(feature = "openh264", windows)),
     expect(
         clippy::derivable_impls,
-        reason = "the default decoder is feature-gated; the impl is only derivable without it"
+        reason = "the default decoder is platform- and feature-gated; the impl is only derivable without one"
     )
 )]
 impl Default for VideoConfig {
@@ -71,7 +90,9 @@ impl Default for VideoConfig {
         Self {
             #[cfg(feature = "openh264")]
             decoder: Some(H264DecoderFactory::openh264()),
-            #[cfg(not(feature = "openh264"))]
+            #[cfg(all(windows, not(feature = "openh264")))]
+            decoder: Some(H264DecoderFactory::media_foundation()),
+            #[cfg(not(any(feature = "openh264", windows)))]
             decoder: None,
         }
     }
@@ -83,6 +104,12 @@ pub(crate) fn attach(drdynvc: DrdynvcClient, config: &VideoConfig) -> DrdynvcCli
         debug!("No H.264 decoder; video optimized remoting is disabled");
         return drdynvc;
     };
+    // Accepting the channels makes the server send video here instead of graphics updates, so
+    // only accept them when a decoder can actually be created.
+    if (decoder.0)().is_none() {
+        warn!("The H.264 decoder is unavailable; video optimized remoting is disabled");
+        return drdynvc;
+    }
     let epoch = Instant::now();
     let presenter: SharedPresenter = Arc::new(Mutex::new(VideoPresenter::new(
         Box::new(move || (decoder.0)()),

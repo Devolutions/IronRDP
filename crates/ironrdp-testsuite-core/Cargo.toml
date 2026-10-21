@@ -80,5 +80,8 @@ rstest.workspace = true
 tokio = { version = "1", features = ["macros", "rt", "io-util", "sync", "test-util"] }
 tokio-rustls = "0.26"
 
+[target.'cfg(windows)'.dev-dependencies]
+ironrdp-egfx-native.path = "../ironrdp-egfx-native"
+
 [lints]
 workspace = true

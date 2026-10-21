@@ -116,6 +116,10 @@ Video capture dynamic channel client and backend boundary implemented as describ
 The crate performs no camera I/O and advertises only devices explicitly supplied by its caller.
 The Windows Media Foundation capture backend lives in [`crates/ironrdp-rdpecam-native`](./crates/ironrdp-rdpecam-native).
 
+#### [`crates/ironrdp-egfx-native`](./crates/ironrdp-egfx-native)
+
+Native H.264 decoders for the `ironrdp-egfx` decoder trait; on Windows, the Media Foundation decoder transform.
+
 #### [`crates/ironrdp-rdpegt`](./crates/ironrdp-rdpegt)
 
 Geometry tracking dynamic channel client and PDU codecs implemented as described in MS-RDPEGT.
