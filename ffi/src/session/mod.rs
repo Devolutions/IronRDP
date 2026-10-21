@@ -156,7 +156,7 @@ pub mod ffi {
         /// not call it concurrently with other methods of this `ActiveStage`.
         pub fn poll_rdpdr_deferred(&mut self) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
             let outputs = self.poll_rdpdr_deferred_output()?;
-            Ok(Box::new(ActiveStageOutputIterator(outputs.into_iter().collect())))
+            Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
         }
 
         pub fn process_fastpath_input(
@@ -327,20 +327,20 @@ pub mod ffi {
 
         fn poll_rdpdr_deferred_output(
             &mut self,
-        ) -> Result<Option<ironrdp::session::ActiveStageOutput>, Box<IronRdpError>> {
+        ) -> Result<Vec<ironrdp::session::ActiveStageOutput>, Box<IronRdpError>> {
             let Some(rdpdr) = self.0.get_svc_processor_mut::<ironrdp::rdpdr::Rdpdr>() else {
-                return Ok(None);
+                return Ok(Vec::new());
             };
 
             let messages = rdpdr.poll_deferred_messages()?;
             if messages.is_empty() {
-                return Ok(None);
+                return Ok(Vec::new());
             }
 
             let frame = self
                 .0
                 .process_svc_messages_by_name(&ironrdp::rdpdr::Rdpdr::NAME, messages)?;
-            Ok(Some(ironrdp::session::ActiveStageOutput::ResponseFrame(frame)))
+            Ok(vec![ironrdp::session::ActiveStageOutput::ResponseFrame(frame)])
         }
     }
 

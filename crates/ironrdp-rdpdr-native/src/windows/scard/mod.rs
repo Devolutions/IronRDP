@@ -323,7 +323,8 @@ impl ScardSession {
         // SAFETY: WinSCard context allocation.
         let code = map_status(unsafe { SCardEstablishContext(scope, None, None, &mut native) });
         if code != ReturnCode::Success {
-            return establish_failed(req, code);
+            // MS-RDPESC 2.2.3: all fields besides ReturnCode are zero on failure.
+            return complete_establish(req, code, ScardContext::empty());
         }
         self.contexts.insert(native, ());
         complete_establish(req, ReturnCode::Success, ScardContext::from_native(native))
@@ -1303,10 +1304,6 @@ fn complete_long(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode) ->
 }
 fn complete_establish(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode, ctx: ScardContext) -> SvcMessage {
     complete_rpce(req, Box::new(EstablishContextReturn::new(code, ctx)))
-}
-// MS-RDPESC 2.2.3: all fields besides ReturnCode are zero on failure.
-fn establish_failed(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode) -> SvcMessage {
-    complete_establish(req, code, ScardContext::empty())
 }
 fn complete_gsc(
     req: DeviceControlRequest<ScardIoCtlCode>,

@@ -182,26 +182,22 @@ impl ScardCall {
         req: DeviceControlRequest<ScardIoCtlCode>,
         return_code: ReturnCode,
     ) -> DeviceControlResponse {
-        match self.error_return(req.io_control_code, return_code) {
-            Some(output) => complete_call(req, output),
-            None => DeviceControlResponse::new(req, NtStatus::UNSUCCESSFUL, None),
-        }
-    }
-
-    fn error_return(&self, io_ctl_code: ScardIoCtlCode, return_code: ReturnCode) -> Option<Box<dyn rpce::Encode>> {
+        let io_ctl_code = req.io_control_code;
         let undefined = CardProtocol::SCARD_PROTOCOL_UNDEFINED;
-        let charset = match io_ctl_code {
-            ScardIoCtlCode::ListReadersA | ScardIoCtlCode::ListReaderGroupsA | ScardIoCtlCode::StatusA => {
-                CharacterSet::Ansi
-            }
-            _ => CharacterSet::Unicode,
-        };
 
         let output: Box<dyn rpce::Encode> = match self {
             ScardCall::EstablishContextCall(_) => {
                 Box::new(EstablishContextReturn::new(return_code, ScardContext::empty()))
             }
             ScardCall::ListReaderGroupsCall(_) | ScardCall::ListReadersCall(_) => {
+                let charset = if matches!(
+                    io_ctl_code,
+                    ScardIoCtlCode::ListReadersA | ScardIoCtlCode::ListReaderGroupsA
+                ) {
+                    CharacterSet::Ansi
+                } else {
+                    CharacterSet::Unicode
+                };
                 Box::new(ListReadersReturn::probe(return_code, 0, charset))
             }
             // LocateCards_Return has the same layout as GetStatusChange_Return.
@@ -211,15 +207,22 @@ impl ScardCall {
             ScardCall::ConnectCall(_) => Box::new(ConnectReturn::new(return_code, ScardHandle::empty(), undefined)),
             ScardCall::ReconnectCall(_) => Box::new(ReconnectReturn::new(return_code, undefined)),
             ScardCall::TransmitCall(_) => Box::new(TransmitReturn::recv_probe(return_code, None, 0)),
-            ScardCall::StatusCall(_) => Box::new(StatusReturn::names_probe(
-                return_code,
-                0,
-                CardState::Unknown,
-                undefined,
-                [0; 32],
-                0,
-                charset,
-            )),
+            ScardCall::StatusCall(_) => {
+                let charset = if io_ctl_code == ScardIoCtlCode::StatusA {
+                    CharacterSet::Ansi
+                } else {
+                    CharacterSet::Unicode
+                };
+                Box::new(StatusReturn::names_probe(
+                    return_code,
+                    0,
+                    CardState::Unknown,
+                    undefined,
+                    [0; 32],
+                    0,
+                    charset,
+                ))
+            }
             ScardCall::StateCall(_) => Box::new(StateReturn::atr_probe(return_code, CardState::Unknown, undefined, 0)),
             ScardCall::ControlCall(_) => Box::new(ControlReturn::out_probe(return_code, 0)),
             ScardCall::GetAttribCall(_) => Box::new(GetAttribReturn::attr_probe(return_code, 0)),
@@ -239,9 +242,9 @@ impl ScardCall {
                 Box::new(LongReturn::new(return_code))
             }
             // Unreachable today: every other `ScardIoCtlCode` decodes to a known call.
-            ScardCall::Unsupported => return None,
+            ScardCall::Unsupported => return DeviceControlResponse::new(req, NtStatus::UNSUCCESSFUL, None),
         };
-        Some(output)
+        complete_call(req, output)
     }
 }
 
