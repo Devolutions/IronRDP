@@ -134,7 +134,8 @@ function Set-EdgeFirstRunPolicy {
     $previous = $null
     try {
         if (Test-Path $policyPath) {
-            $previous = (Get-ItemProperty -Path $policyPath -Name 'HideFirstRunExperience' -ErrorAction SilentlyContinue).HideFirstRunExperience
+            # GetValue returns $null for a missing value instead of tripping StrictMode on property access.
+            $previous = (Get-Item -Path $policyPath).GetValue('HideFirstRunExperience', $null)
         }
         else {
             New-Item -Path $policyPath -Force | Out-Null
