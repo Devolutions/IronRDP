@@ -5,7 +5,9 @@ pub mod ffi {
     use std::collections::VecDeque;
 
     use super::image::ffi::DecodedImage;
-    use crate::clipboard::message::ffi::{ClipboardFormatId, ClipboardFormatIterator, FormatDataResponse};
+    use crate::clipboard::message::ffi::{
+        ClipboardFormatId, ClipboardFormatIterator, ClipboardMessage, FormatDataResponse,
+    };
     use crate::connector::activation::ffi::ConnectionActivationSequence;
     use crate::connector::result::ffi::ConnectionResult;
     use crate::dvc::dvc_pipe_proxy_message_queue::ffi::DvcPipeProxyMessage;
@@ -218,6 +220,57 @@ pub mod ffi {
                 .ok_or("clipboard svc processor not found in active stage")?;
 
             let result = clipboard.submit_format_data(data)?;
+
+            let frame = self.0.process_svc_processor_messages(result)?;
+
+            Ok(Box::new(VecU8(frame)))
+        }
+
+        /// Hands any message of the clipboard backend (e.g. `WinCliprdr`) to the clipboard
+        /// channel, file transfer messages included, and returns the frame to send.
+        ///
+        /// The frame is empty when there is nothing to send. A backend `Error` message is
+        /// returned as an error. Errors only concern that message: the session can go on.
+        pub fn submit_clipboard_message(
+            &mut self,
+            message: &ClipboardMessage,
+        ) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            use ironrdp::cliprdr::backend::ClipboardMessage as Message;
+
+            let clipboard = self
+                .0
+                .get_svc_processor_mut::<ironrdp::cliprdr::CliprdrClient>()
+                .ok_or("clipboard svc processor not found in active stage")?;
+
+            let result = match &message.0 {
+                Message::SendInitiateCopy(formats) => clipboard.initiate_copy(formats)?,
+                Message::SendInitiateFileCopy(files) => clipboard.initiate_file_copy(files.clone())?,
+                Message::SendFormatData(response) => clipboard.submit_format_data(response.clone())?,
+                Message::SendInitiatePaste(format) => clipboard.initiate_paste(*format)?,
+                Message::SendFileContentsRequest(request) => clipboard.request_file_contents(request.clone())?,
+                Message::SendFileContentsResponse(response) => clipboard.submit_file_contents(response.clone())?,
+                Message::Error(error) => {
+                    let error: &dyn ironrdp::cliprdr::backend::ClipboardError = error.as_ref();
+                    return Err(error.into());
+                }
+            };
+
+            let frame = self.0.process_svc_processor_messages(result)?;
+
+            Ok(Box::new(VecU8(frame)))
+        }
+
+        /// Expires clipboard locks and file transfers that timed out, returning the frame to send
+        /// (empty when there is nothing to send).
+        ///
+        /// Call it every few seconds while file transfer is enabled on the clipboard backend.
+        pub fn drive_clipboard_timeouts(&mut self) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            let clipboard = self
+                .0
+                .get_svc_processor_mut::<ironrdp::cliprdr::CliprdrClient>()
+                .ok_or("clipboard svc processor not found in active stage")?;
+
+            let result = clipboard.drive_timeouts()?;
 
             let frame = self.0.process_svc_processor_messages(result)?;
 

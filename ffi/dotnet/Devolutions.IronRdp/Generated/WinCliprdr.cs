@@ -29,6 +29,9 @@ public partial class WinCliprdr: IDisposable
         _inner = handle;
     }
 
+    /// <summary>
+    /// Creates the Windows clipboard backend without file transfer.
+    /// </summary>
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>WinCliprdr</c> allocated on Rust side.
@@ -38,6 +41,34 @@ public partial class WinCliprdr: IDisposable
         unsafe
         {
             Raw.ClipboardWindowsFfiResultBoxWinCliprdrBoxIronRdpError result = Raw.WinCliprdr.New();
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.WinCliprdr* retVal = result.Ok;
+            return new WinCliprdr(retVal);
+        }
+    }
+
+    /// <summary>
+    /// Creates the Windows clipboard backend, with clipboard file transfer enabled or not.
+    /// </summary>
+    /// <remarks>
+    /// With file transfer, the backend also produces `SendInitiateFileCopy`,
+    /// `SendFileContentsRequest` and `SendFileContentsResponse` messages: hand every message
+    /// to `ActiveStage::submit_clipboard_message`, and call
+    /// `ActiveStage::drive_clipboard_timeouts` every few seconds. Pasting remote files needs
+    /// this to be called on an STA thread with a message loop, such as the UI thread.
+    /// </remarks>
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>WinCliprdr</c> allocated on Rust side.
+    /// </returns>
+    public static WinCliprdr NewWithFileTransfer(bool fileTransfer)
+    {
+        unsafe
+        {
+            Raw.ClipboardWindowsFfiResultBoxWinCliprdrBoxIronRdpError result = Raw.WinCliprdr.NewWithFileTransfer(fileTransfer);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -91,6 +122,35 @@ public partial class WinCliprdr: IDisposable
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
             Raw.ClipboardMessage* retVal = result.Ok;
+            return new ClipboardMessage(retVal);
+        }
+    }
+
+    /// <summary>
+    /// Waits up to `timeout_ms` milliseconds for the next message; `None` if none came.
+    /// </summary>
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ClipboardMessage</c> allocated on Rust side.
+    /// </returns>
+    public ClipboardMessage NextClipboardMessageTimeout(uint timeoutMs)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("WinCliprdr");
+            }
+            Raw.ClipboardWindowsFfiResultOptBoxClipboardMessageBoxIronRdpError result = Raw.WinCliprdr.NextClipboardMessageTimeout(_inner, timeoutMs);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ClipboardMessage* retVal = result.Ok;
+            if (retVal == null)
+            {
+                return null;
+            }
             return new ClipboardMessage(retVal);
         }
     }

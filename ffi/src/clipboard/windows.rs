@@ -30,8 +30,20 @@ pub mod ffi {
     pub struct WinCliprdr(WinCliprdrInner);
 
     impl WinCliprdr {
+        /// Creates the Windows clipboard backend without file transfer.
         pub fn new() -> Result<Box<WinCliprdr>, Box<IronRdpError>> {
-            WinCliprdrInner::new().map(WinCliprdr).map(Box::new)
+            WinCliprdrInner::new(false).map(WinCliprdr).map(Box::new)
+        }
+
+        /// Creates the Windows clipboard backend, with clipboard file transfer enabled or not.
+        ///
+        /// With file transfer, the backend also produces `SendInitiateFileCopy`,
+        /// `SendFileContentsRequest` and `SendFileContentsResponse` messages: hand every message
+        /// to `ActiveStage::submit_clipboard_message`, and call
+        /// `ActiveStage::drive_clipboard_timeouts` every few seconds. Pasting remote files needs
+        /// this to be called on an STA thread with a message loop, such as the UI thread.
+        pub fn new_with_file_transfer(file_transfer: bool) -> Result<Box<WinCliprdr>, Box<IronRdpError>> {
+            WinCliprdrInner::new(file_transfer).map(WinCliprdr).map(Box::new)
         }
 
         pub fn next_clipboard_message(&self) -> Result<Option<Box<ClipboardMessage>>, Box<IronRdpError>> {
@@ -45,6 +57,18 @@ pub mod ffi {
                 .map(Box::new)
         }
 
+        /// Waits up to `timeout_ms` milliseconds for the next message; `None` if none came.
+        pub fn next_clipboard_message_timeout(
+            &self,
+            timeout_ms: u32,
+        ) -> Result<Option<Box<ClipboardMessage>>, Box<IronRdpError>> {
+            Ok(self
+                .0
+                .next_clipboard_message_timeout(timeout_ms)?
+                .map(ClipboardMessage)
+                .map(Box::new))
+        }
+
         pub fn backend_factory(&self) -> Result<Box<CliprdrBackendFactory>, Box<IronRdpError>> {
             self.0.backend_factory().map(Box::new)
         }
@@ -56,13 +80,22 @@ pub struct WinCliprdrInner;
 
 #[cfg(not(windows))]
 impl WinCliprdrInner {
-    fn new() -> Result<WinCliprdrInner, Box<IronRdpError>> {
+    fn new(_file_transfer: bool) -> Result<WinCliprdrInner, Box<IronRdpError>> {
         Err(WrongOSError::expected_platform("windows")
             .with_custom_message("WinCliprdr only support windows")
             .into())
     }
 
     fn next_clipboard_message(&self) -> Result<Option<ironrdp::cliprdr::backend::ClipboardMessage>, Box<IronRdpError>> {
+        Err(WrongOSError::expected_platform("windows")
+            .with_custom_message("WinCliprdr only support windows")
+            .into())
+    }
+
+    fn next_clipboard_message_timeout(
+        &self,
+        _timeout_ms: u32,
+    ) -> Result<Option<ironrdp::cliprdr::backend::ClipboardMessage>, Box<IronRdpError>> {
         Err(WrongOSError::expected_platform("windows")
             .with_custom_message("WinCliprdr only support windows")
             .into())
@@ -91,14 +124,14 @@ pub struct WinCliprdrInner {
 
 #[cfg(windows)]
 impl WinCliprdrInner {
-    fn new() -> Result<WinCliprdrInner, Box<IronRdpError>> {
+    fn new(file_transfer: bool) -> Result<WinCliprdrInner, Box<IronRdpError>> {
         let (sender, receiver) = std::sync::mpsc::channel();
 
         let proxy = crate::clipboard::FfiClipboardMessageProxy { sender };
 
-        // The bindings can't submit file stream messages to `Cliprdr` yet, so file transfer
-        // stays off rather than producing messages nobody routes.
-        let clipboard = ironrdp_cliprdr_native::WinClipboard::with_file_transfer(proxy, false)?;
+        // Off by default: embedders that don't route the file stream messages would leave the
+        // remote waiting on them.
+        let clipboard = ironrdp_cliprdr_native::WinClipboard::with_file_transfer(proxy, file_transfer)?;
 
         Ok(WinCliprdrInner { clipboard, receiver })
     }
@@ -108,6 +141,20 @@ impl WinCliprdrInner {
             Ok(msg) => Ok(Some(msg)),
             Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("clipboard message channel disconnected".into()),
+        }
+    }
+
+    fn next_clipboard_message_timeout(
+        &self,
+        timeout_ms: u32,
+    ) -> Result<Option<ironrdp::cliprdr::backend::ClipboardMessage>, Box<IronRdpError>> {
+        let timeout = core::time::Duration::from_millis(u64::from(timeout_ms));
+        match self.receiver.recv_timeout(timeout) {
+            Ok(msg) => Ok(Some(msg)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err("clipboard message channel disconnected".into())
+            }
         }
     }
 
