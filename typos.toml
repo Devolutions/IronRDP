@@ -78,4 +78,8 @@ extend-ignore-re = [
 
    # Commit hashes in CHANGELOG.md files.
    "\\b[0-9a-f]{7,40}\\b",
+
+   # Hex dumps in eight-digit uppercase groups, as in the protocol specification examples
+   # (MS-RDPEVOR and MS-RDPEGT fixtures in ironrdp-testsuite-core).
+   "\\b[0-9A-F]{8}\\b",
 ]
