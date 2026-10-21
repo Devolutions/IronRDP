@@ -13,6 +13,7 @@ use crate::pdu::efs::{
     PrinterIoRequest, ServerDeviceAnnounceResponse, ServerDriveIoRequest,
 };
 use crate::pdu::esc::{ScardCall, ScardIoCtlCode};
+use crate::pdu::esp::PortIoRequest;
 
 /// Device redirection backend interface.
 pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
@@ -126,6 +127,19 @@ pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
         ))])
     }
 
+    /// Handles a server-initiated IRP addressed to a serial or parallel port device.
+    ///
+    /// Ports see create, close, read, write, flush and device-control requests; other major
+    /// functions are completed by the SVC processor before the backend is called. Long-running
+    /// requests, such as reads waiting for data or `IOCTL_SERIAL_WAIT_ON_MASK`, may return an
+    /// empty vector and complete later via [`Self::poll_deferred_messages`]. A close MUST first
+    /// complete every request still pending on that file.
+    ///
+    /// The default completes every request with `STATUS_NOT_SUPPORTED`.
+    fn handle_port_io_request(&mut self, req: PortIoRequest) -> PduResult<Vec<SvcMessage>> {
+        Ok(vec![SvcMessage::from(req.failure_response(NtStatus::NOT_SUPPORTED))])
+    }
+
     /// Rejects an oversized printer write before its server-controlled payload is allocated.
     ///
     /// Stateful printer implementations should also poison or abort the target file handle so a
@@ -220,6 +234,86 @@ impl RdpdrPrinter {
     }
 }
 
+/// Kind of a redirected port.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RdpdrPortKind {
+    /// A serial (COM) port, announced as `RDPDR_DTYP_SERIAL`.
+    Serial,
+    /// A parallel (LPT) port, announced as `RDPDR_DTYP_PARALLEL`.
+    Parallel,
+}
+
+impl RdpdrPortKind {
+    /// Returns the announced RDPDR device type.
+    pub fn device_type(self) -> crate::pdu::efs::DeviceType {
+        match self {
+            Self::Serial => crate::pdu::efs::DeviceType::Serial,
+            Self::Parallel => crate::pdu::efs::DeviceType::Parallel,
+        }
+    }
+}
+
+/// Immutable serial or parallel port metadata announced for one RDPDR channel lifetime.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RdpdrPort {
+    device_id: u32,
+    kind: RdpdrPortKind,
+    name: String,
+}
+
+impl RdpdrPort {
+    /// Creates port metadata for an RDPDR announcement.
+    ///
+    /// `name` is the client-side DOS name, such as `COM1` or `LPT1`, and is sent as the
+    /// PreferredDosName. It must be 1 to 7 ASCII characters and must not contain any of
+    /// `< > " / \ | :` or control characters, which the server rejects.
+    pub fn new(device_id: u32, kind: RdpdrPortKind, name: String) -> Result<Self, InvalidPortName> {
+        // INVARIANT: 0 < name.len() <= 7, so the null-terminated name fits PreferredDosName.
+        let valid = !name.is_empty()
+            && name.len() <= 7
+            && name.bytes().all(|byte| {
+                byte.is_ascii_graphic() && !matches!(byte, b'<' | b'>' | b'"' | b'/' | b'\\' | b'|' | b':')
+            });
+        if !valid {
+            return Err(InvalidPortName);
+        }
+
+        Ok(Self { device_id, kind, name })
+    }
+
+    /// Returns the device identifier used in RDPDR requests.
+    pub fn device_id(&self) -> u32 {
+        self.device_id
+    }
+
+    /// Returns whether the port is serial or parallel.
+    pub fn kind(&self) -> RdpdrPortKind {
+        self.kind
+    }
+
+    /// Returns the DOS name announced to the server.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Splits the metadata into the RDPDR announcement fields.
+    pub fn into_parts(self) -> (u32, RdpdrPortKind, String) {
+        (self.device_id, self.kind, self.name)
+    }
+}
+
+/// A port name that cannot be sent as an RDPDR PreferredDosName.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvalidPortName;
+
+impl fmt::Display for InvalidPortName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("port name must be 1 to 7 printable ASCII characters without < > \" / \\ | :")
+    }
+}
+
+impl core::error::Error for InvalidPortName {}
+
 /// Per-connection product created by an [`RdpdrBackendFactory`].
 ///
 /// The initial list is announced during channel initialization.
@@ -229,6 +323,7 @@ pub struct RdpdrBackendProduct {
     initial_drives: Vec<RdpdrDrive>,
     drive_hotplug: bool,
     printer: Option<RdpdrPrinter>,
+    ports: Vec<RdpdrPort>,
 }
 
 impl RdpdrBackendProduct {
@@ -239,6 +334,7 @@ impl RdpdrBackendProduct {
             initial_drives,
             drive_hotplug: false,
             printer: None,
+            ports: Vec::new(),
         }
     }
 
@@ -269,6 +365,18 @@ impl RdpdrBackendProduct {
     /// Returns the configured printer, if any.
     pub fn printer(&self) -> Option<&RdpdrPrinter> {
         self.printer.as_ref()
+    }
+
+    /// Configures serial and parallel ports announced after the remote user logs on.
+    #[must_use]
+    pub fn with_ports(mut self, ports: Vec<RdpdrPort>) -> Self {
+        self.ports = ports;
+        self
+    }
+
+    /// Returns the configured serial and parallel ports.
+    pub fn ports(&self) -> &[RdpdrPort] {
+        &self.ports
     }
 
     /// Consumes the product into its backend and matching announcement metadata.

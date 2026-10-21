@@ -16,6 +16,7 @@ use pdu::efs::{
     VERSION_MINOR_12, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
+use pdu::esp::{PortIoRequest, SerialIoCtlInput};
 use pdu::{DeviceIoCompletion, PacketId, RdpdrPdu, SharedHeader};
 use tracing::{debug, trace, warn};
 
@@ -25,7 +26,8 @@ pub mod server;
 
 pub use self::backend::noop::NoopRdpdrBackend;
 pub use self::backend::{
-    RdpdrBackend, RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPrinter,
+    InvalidPortName, RdpdrBackend, RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive,
+    RdpdrPort, RdpdrPortKind, RdpdrPrinter,
 };
 use crate::pdu::efs::ServerDriveIoRequest;
 
@@ -56,6 +58,7 @@ pub struct Rdpdr {
     client_id: Option<u32>,
     server_capabilities_received: bool,
     printer_capability_negotiated: bool,
+    port_capability_negotiated: bool,
     client_id_confirmed: bool,
     /// Windows can send User Logged On before Client ID Confirm, for example when it
     /// re-announces the channel after logon; handle it once the client ID is confirmed.
@@ -86,6 +89,7 @@ impl Rdpdr {
             client_id: None,
             server_capabilities_received: false,
             printer_capability_negotiated: false,
+            port_capability_negotiated: false,
             client_id_confirmed: false,
             user_logged_on_pending: false,
             post_logon_devices_announced: false,
@@ -167,6 +171,20 @@ impl Rdpdr {
         self.device_list
             .add_printer_with_driver_and_network(device_id, print_name, driver_name, network);
         self.device_types.push((device_id, DeviceType::Print));
+        self
+    }
+
+    /// Adds port redirection capability and announces a serial or parallel port.
+    ///
+    /// Like printers, ports are announced after the remote user logs on, and only when the
+    /// server advertises the port capability. IRPs targeting this device are dispatched to
+    /// [`RdpdrBackend::handle_port_io_request`].
+    #[must_use]
+    pub fn with_port(mut self, port: RdpdrPort) -> Self {
+        let (device_id, kind, name) = port.into_parts();
+        self.capabilities.add_port();
+        self.device_list.add_port(device_id, kind.device_type(), name);
+        self.device_types.push((device_id, kind.device_type()));
         self
     }
 
@@ -360,6 +378,7 @@ impl Rdpdr {
 
         self.server_capabilities_received = false;
         self.printer_capability_negotiated = false;
+        self.port_capability_negotiated = false;
         self.client_id_confirmed = false;
         self.user_logged_on_pending = false;
         self.post_logon_devices_announced = false;
@@ -402,6 +421,7 @@ impl Rdpdr {
 
         self.server_capabilities_received = true;
         self.printer_capability_negotiated = req.supports_printer();
+        self.port_capability_negotiated = req.supports_port();
         let client_capability_response =
             RdpdrPdu::CoreCapability(CoreCapability::new_response(self.capabilities.clone_supported_by(&req)));
         trace!("sending {:?}", client_capability_response);
@@ -429,7 +449,7 @@ impl Rdpdr {
             .zip(self.device_types.iter().copied())
             .filter(|(device, (device_id, _))| {
                 !self.manually_announced_device_ids.contains(device_id)
-                    && (device.device_type() != DeviceType::Print || self.printer_capability_negotiated)
+                    && self.device_capability_negotiated(device)
                     && (announce_all_devices || Self::is_pre_logon_device(device))
             })
             .map(|(device, (device_id, _))| (device, device_id))
@@ -463,7 +483,7 @@ impl Rdpdr {
             .zip(self.device_types.iter().copied())
             .filter(|(device, (device_id, _))| {
                 !self.manually_announced_device_ids.contains(device_id)
-                    && (device.device_type() != DeviceType::Print || self.printer_capability_negotiated)
+                    && self.device_capability_negotiated(device)
                     && !Self::is_pre_logon_device(device)
             })
             .map(|(device, (device_id, _))| (device, device_id))
@@ -474,6 +494,15 @@ impl Rdpdr {
         }
 
         self.announce_devices(device_list, device_ids)
+    }
+
+    /// Printers and ports are only announced when the server advertised their capability set.
+    fn device_capability_negotiated(&self, device: &DeviceAnnounceHeader) -> bool {
+        match device.device_type() {
+            DeviceType::Print => self.printer_capability_negotiated,
+            DeviceType::Serial | DeviceType::Parallel => self.port_capability_negotiated,
+            DeviceType::Filesystem | DeviceType::Smartcard => true,
+        }
     }
 
     fn is_pre_logon_device(device: &DeviceAnnounceHeader) -> bool {
@@ -814,12 +843,79 @@ impl Rdpdr {
                     }
                 }
             }
-            _ => {
-                // This should never happen, as we only announce devices that we support.
-                warn!(?dev_io_req, "received packet for unsupported device type");
-                Ok(Vec::new())
-            }
+            DeviceType::Serial | DeviceType::Parallel => self.handle_port_io_request(dev_io_req, src),
         }
+    }
+
+    fn handle_port_io_request(
+        &mut self,
+        dev_io_req: DeviceIoRequest,
+        src: &mut ReadCursor<'_>,
+    ) -> PduResult<Vec<SvcMessage>> {
+        if self.rejected_device_ids.contains(&dev_io_req.device_id) {
+            warn!(
+                device_id = dev_io_req.device_id,
+                file_id = dev_io_req.file_id,
+                completion_id = dev_io_req.completion_id,
+                "Ignoring port IRP for a rejected device"
+            );
+            return Ok(Vec::new());
+        }
+        if !self.active_device_ids.contains(&dev_io_req.device_id) {
+            warn!(
+                device_id = dev_io_req.device_id,
+                file_id = dev_io_req.file_id,
+                completion_id = dev_io_req.completion_id,
+                "Ignoring port IRP before device announcement confirmation"
+            );
+            return Ok(Vec::new());
+        }
+
+        let req = PortIoRequest::decode_or_unsupported(dev_io_req, src).map_err(|e| decode_err!(e))?;
+        if !src.is_empty() {
+            return Err(pdu_other_err!("received port IRP with trailing RDPDR data"));
+        }
+        let req = match req {
+            Ok(req) => req,
+            Err(device_io_request) => {
+                // MS-RDPESP only describes create, close, read, write and device control for
+                // ports. Other requests are completed instead of tearing down the channel.
+                debug!(
+                    major = ?device_io_request.major_function,
+                    device_id = device_io_request.device_id,
+                    completion_id = device_io_request.completion_id,
+                    "Completing unsupported port IRP"
+                );
+                return Ok(vec![SvcMessage::from(DeviceIoCompletion::Padded(
+                    DeviceIoResponse::new(device_io_request, NtStatus::NOT_SUPPORTED),
+                ))]);
+            }
+        };
+
+        if let PortIoRequest::DeviceControl(control) = &req {
+            match SerialIoCtlInput::decode(control.request.io_control_code, &control.input_buffer) {
+                Ok(Some(input)) => debug!(
+                    ioctl = ?control.request.io_control_code,
+                    ?input,
+                    output_buffer_length = control.request.output_buffer_length,
+                    "Dispatching port device-control IRP"
+                ),
+                // The driver validates and fails short buffers, so they are forwarded as received.
+                Ok(None) | Err(_) => debug!(
+                    ioctl = ?control.request.io_control_code,
+                    input_buffer_length = control.input_buffer.len(),
+                    output_buffer_length = control.request.output_buffer_length,
+                    "Dispatching port device-control IRP"
+                ),
+            }
+        } else {
+            debug!(?req, "Dispatching port IRP");
+        }
+
+        self.backend
+            .as_mut()
+            .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
+            .handle_port_io_request(req)
     }
 
     /// Completes a filesystem IRP that is well-formed but asks for a function or information class
