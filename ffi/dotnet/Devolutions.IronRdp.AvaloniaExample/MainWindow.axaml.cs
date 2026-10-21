@@ -20,9 +20,12 @@ namespace Devolutions.IronRdp.AvaloniaExample;
 
 public partial class MainWindow : Window
 {
+    const int BytesPerPixel = 4;
+
     readonly InputDatabase? _inputDatabase = InputDatabase.New();
     ActiveStage? _activeStage;
     DecodedImage? _decodedImage;
+    byte[]? _frameBuffer;
     readonly object _stageLock = new();
     Framed<Stream>? _framed;
     WinCliprdr? _cliprdr;
@@ -235,62 +238,67 @@ public partial class MainWindow : Window
         _imageControl.SizeChanged += (sender, e) => { Resize(e.NewSize.Width, e.NewSize.Height); };
     }
 
-    private void Render()
+    private void Render(InclusiveRectangle damage)
     {
         Dispatcher.UIThread.Invoke(() =>
         {
             try
             {
-                int bufferSize, width, height;
-                byte[] buffer;
-                lock (_stageLock)
-                {
-                    bufferSize = (int)_decodedImage!.DataSize;
-                    buffer = new byte[bufferSize];
-                    _decodedImage.FillData(buffer);
-                    width = _decodedImage.Width;
-                    height = _decodedImage.Height;
-                }
-
                 if (_imageControl is not { Source: WriteableBitmap writableBitmap })
                 {
                     return;
                 }
 
-                var currentBitmapSize = writableBitmap.Size.Width * writableBitmap.Size.Height * 4;
-                if (Math.Abs(bufferSize - currentBitmapSize) > 1)
+                PixelSize size;
+                int stride, left, top, right, bottom;
+                bool resized;
+                byte[] frameBuffer;
+                lock (_stageLock)
                 {
-                    var newBitmap =
-                        new WriteableBitmap(new PixelSize(width, height),
-                            new Vector(96, 96), Avalonia.Platform.PixelFormat.Rgba8888, AlphaFormat.Opaque);
-                    _imageControl.Source = newBitmap;
-                    writableBitmap = newBitmap;
+                    var image = _decodedImage!;
+                    size = new PixelSize(image.Width, image.Height);
+                    stride = size.Width * BytesPerPixel;
+                    resized = writableBitmap.PixelSize != size || _frameBuffer?.Length != stride * size.Height;
+                    if (resized)
+                    {
+                        _frameBuffer = new byte[stride * size.Height];
+                    }
+
+                    frameBuffer = _frameBuffer!;
+                    var rect = resized
+                        ? InclusiveRectangle.New(0, 0, (ushort)(size.Width - 1), (ushort)(size.Height - 1))
+                        : damage;
+                    image.CopyRectInto(rect, frameBuffer, (nuint)stride);
+                    (left, top, right, bottom) = (rect.Left, rect.Top, rect.Right, rect.Bottom);
+                }
+
+                if (resized)
+                {
+                    writableBitmap = new WriteableBitmap(size, new Vector(96, 96),
+                        Avalonia.Platform.PixelFormat.Rgba8888, AlphaFormat.Opaque);
+                    _imageControl.Source = writableBitmap;
                 }
 
                 using (var bitmap = writableBitmap.Lock())
                 {
                     unsafe
                     {
-                        var bitmapSpan = new Span<byte>((void*)bitmap.Address,
-                            bitmap.Size.Width * bitmap.Size.Height * (bitmap.Format.BitsPerPixel / 8));
-                        bitmapSpan.Clear();
-                        var bufferSpan = new Span<byte>(buffer);
-                        if (bufferSize > bitmapSpan.Length)
+                        int rowLength = (right - left + 1) * BytesPerPixel;
+                        for (int y = top; y <= bottom; y++)
                         {
-                            throw new InvalidOperationException("buffer size does not match");
-                        }
-                        else
-                        {
-                            bufferSpan.CopyTo(bitmapSpan);
+                            var source = new ReadOnlySpan<byte>(frameBuffer, y * stride + left * BytesPerPixel, rowLength);
+                            var destination = new Span<byte>(
+                                (byte*)bitmap.Address + y * bitmap.RowBytes + left * BytesPerPixel, rowLength);
+                            source.CopyTo(destination);
                         }
                     }
                 }
 
-                _imageControl!.InvalidateVisual();
+                _imageControl.InvalidateVisual();
             }
-            catch
+            catch (Exception e)
             {
-                Trace.TraceError("error rendering");
+                Trace.TraceError("Error rendering: " + e.Message);
             }
         });
     }
@@ -527,7 +535,7 @@ public partial class MainWindow : Window
                 }
                 else if (output.EnumType == ActiveStageOutputType.GraphicsUpdate)
                 {
-                    Render();
+                    Render(output.GraphicsUpdate);
                 }
                 else if (output.EnumType == ActiveStageOutputType.DeactivateAll)
                 {
