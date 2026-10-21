@@ -101,7 +101,6 @@ ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7", optional = true } 
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9", optional = true }
 ironrdp-rdpeai = { path = "../ironrdp-rdpeai", version = "0.1", optional = true }
 ironrdp-rdpel = { path = "../ironrdp-rdpel", version = "0.0.0", optional = true }
-ironrdp-rdpecam = { path = "../ironrdp-rdpecam", version = "0.0.0", optional = true }
 
 # Optional backend crates (activated by features above)
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.7", optional = true }
@@ -127,6 +126,7 @@ x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 ironrdp-dvc-com-plugin = { path = "../ironrdp-dvc-com-plugin", version = "0.1", optional = true }
 ironrdp-rdpewa = { path = "../ironrdp-rdpewa", version = "0.1", optional = true }
 ironrdp-rdpewa-native = { path = "../ironrdp-rdpewa-native", version = "0.1", optional = true }
+ironrdp-rdpecam = { path = "../ironrdp-rdpecam", version = "0.0.0", optional = true }
 ironrdp-rdpecam-native = { path = "../ironrdp-rdpecam-native", version = "0.0.0", optional = true }
 
 [lints]
