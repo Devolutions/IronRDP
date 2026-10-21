@@ -1,9 +1,11 @@
 //! RDP 8.0 bulk decompression (MS-RDPEGFX 3.1.9.1).
 //!
-//! This is the algorithm FreeRDP calls ZGFX. The graphics pipeline uses it, and so do the
-//! dynamic virtual channel DYNVC_DATA_FIRST_COMPRESSED and DYNVC_DATA_COMPRESSED PDUs
-//! (MS-RDPEDYC 2.2.3.3 and 2.2.3.4), which tag their segments as RDP 8.0 Lite.
-//! Both variants use the same bitstream format and are decoded the same way.
+//! This is the algorithm FreeRDP calls ZGFX. The graphics pipeline uses it as is
+//! ([`Rdp8Decompressor::new`]). The dynamic virtual channel DYNVC_DATA_FIRST_COMPRESSED and
+//! DYNVC_DATA_COMPRESSED PDUs use RDP 8.0 Lite ([`Rdp8Decompressor::new_lite`]), which
+//! MS-RDPEDYC 2.2.3.3 defines as the same bitstream with an 8,192-byte history, at most
+//! 8,192 uncompressed bytes per segment, a single segment per message, and compression
+//! type 0x06.
 //!
 //! Input is an RDP_SEGMENTED_DATA structure (MS-RDPEGFX 2.2.5.1) holding one or more
 //! RDP8_BULK_ENCODED_DATA segments (MS-RDPEGFX 2.2.5.3).
@@ -13,8 +15,11 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
-/// Sliding window size: the maximum match distance (MS-RDPEGFX 3.1.9.1).
+/// RDP 8.0 sliding window size: the maximum match distance (MS-RDPEGFX 3.1.9.1).
 pub const RDP8_HISTORY_SIZE: usize = 2_500_000;
+
+/// RDP 8.0 Lite sliding window size and per-segment limit (MS-RDPEDYC 2.2.3.3).
+pub const RDP8_LITE_HISTORY_SIZE: usize = 8_192;
 
 /// Ceiling on the decompressed output of a single segment.
 ///
@@ -41,7 +46,8 @@ const PACKET_COMPRESSED: u8 = 0x20;
 pub enum Rdp8Error {
     /// The input ended before a complete structure could be read.
     UnexpectedEndOfInput,
-    /// The RDP_SEGMENTED_DATA descriptor is neither SINGLE nor MULTIPART.
+    /// The RDP_SEGMENTED_DATA descriptor is neither SINGLE nor MULTIPART, or is MULTIPART
+    /// in RDP 8.0 Lite, which allows a single segment only.
     InvalidSegmentedDescriptor(u8),
     /// The segment's compression type is neither RDP 8.0 nor RDP 8.0 Lite.
     UnsupportedCompressionType(u8),
@@ -67,7 +73,8 @@ pub enum Rdp8Error {
     MatchDistanceOutOfRange(usize),
     /// A match-length prefix is longer than any valid length.
     MatchLengthTooLarge,
-    /// A segment decompresses to more than 64 MiB.
+    /// A segment decompresses past the per-segment limit: 8,192 bytes in RDP 8.0 Lite,
+    /// 64 MiB otherwise.
     SegmentTooLarge,
     /// A multipart message decompresses to more than 256 MiB.
     MessageTooLarge,
@@ -104,10 +111,7 @@ impl fmt::Display for Rdp8Error {
                 write!(f, "match distance {distance} exceeds the history size")
             }
             Self::MatchLengthTooLarge => write!(f, "match length prefix is too long"),
-            Self::SegmentTooLarge => write!(
-                f,
-                "segment decompresses past the {MAX_DECOMPRESSED_PER_SEGMENT} byte ceiling"
-            ),
+            Self::SegmentTooLarge => write!(f, "segment decompresses past the per-segment limit"),
             Self::MessageTooLarge => write!(f, "message decompresses past the {MAX_DECOMPRESSED_TOTAL} byte ceiling"),
             Self::InvalidDecompressedSize { decompressed, declared } => write!(
                 f,
@@ -122,19 +126,39 @@ impl core::error::Error for Rdp8Error {}
 /// RDP 8.0 bulk decompressor.
 ///
 /// Holds the history shared by every message decoded with it, so a peer's compression
-/// context maps to exactly one decompressor. The history buffer takes
-/// [`RDP8_HISTORY_SIZE`] bytes.
+/// context maps to exactly one decompressor.
 pub struct Rdp8Decompressor {
+    /// Ring buffer of the most recent output. Its length is the maximum match distance.
     history: Vec<u8>,
     position: usize,
+    max_segment_size: usize,
+    allow_multipart: bool,
 }
 
 impl Rdp8Decompressor {
-    /// Creates a decompressor with an empty history.
+    /// Creates an RDP 8.0 decompressor, as used by the graphics pipeline.
+    ///
+    /// Its history takes [`RDP8_HISTORY_SIZE`] bytes.
     pub fn new() -> Self {
         Self {
             history: vec![0; RDP8_HISTORY_SIZE],
             position: 0,
+            max_segment_size: MAX_DECOMPRESSED_PER_SEGMENT,
+            allow_multipart: true,
+        }
+    }
+
+    /// Creates an RDP 8.0 Lite decompressor, as used by dynamic virtual channels.
+    ///
+    /// Its history takes [`RDP8_LITE_HISTORY_SIZE`] bytes. Matches reaching further back,
+    /// segments decompressing to more than [`RDP8_LITE_HISTORY_SIZE`] bytes and multipart
+    /// messages are rejected (MS-RDPEDYC 2.2.3.3).
+    pub fn new_lite() -> Self {
+        Self {
+            history: vec![0; RDP8_LITE_HISTORY_SIZE],
+            position: 0,
+            max_segment_size: RDP8_LITE_HISTORY_SIZE,
+            allow_multipart: false,
         }
     }
 
@@ -146,7 +170,7 @@ impl Rdp8Decompressor {
 
         match descriptor {
             SEGMENTED_SINGLE => self.decompress_segment(rest, output),
-            SEGMENTED_MULTIPART => {
+            SEGMENTED_MULTIPART if self.allow_multipart => {
                 let segment_count = usize::from(u16::from_le_bytes(read_array(&mut rest)?));
                 let declared = usize::try_from(u32::from_le_bytes(read_array(&mut rest)?))
                     .map_err(|_| Rdp8Error::MessageTooLarge)?;
@@ -196,7 +220,7 @@ impl Rdp8Decompressor {
         }
 
         if header & PACKET_COMPRESSED == 0 {
-            if data.len() > MAX_DECOMPRESSED_PER_SEGMENT {
+            if data.len() > self.max_segment_size {
                 return Err(Rdp8Error::SegmentTooLarge);
             }
             self.write_history(data);
@@ -227,7 +251,7 @@ impl Rdp8Decompressor {
                 .ok_or(Rdp8Error::TokenNotFound)?;
             bits.skip(token.prefix_len);
 
-            let remaining_budget = MAX_DECOMPRESSED_PER_SEGMENT - written;
+            let remaining_budget = self.max_segment_size - written;
             written += match token.kind {
                 TokenKind::NullLiteral => {
                     let value = bits.read(8)?;
@@ -258,7 +282,7 @@ impl Rdp8Decompressor {
                 }
             };
 
-            if written > MAX_DECOMPRESSED_PER_SEGMENT {
+            if written > self.max_segment_size {
                 return Err(Rdp8Error::SegmentTooLarge);
             }
         }
@@ -302,7 +326,7 @@ impl Rdp8Decompressor {
         remaining_budget: usize,
         output: &mut Vec<u8>,
     ) -> Result<usize, Rdp8Error> {
-        if distance > RDP8_HISTORY_SIZE {
+        if distance > self.history.len() {
             return Err(Rdp8Error::MatchDistanceOutOfRange(distance));
         }
 
@@ -327,7 +351,8 @@ impl Rdp8Decompressor {
         }
 
         output.reserve(length);
-        let mut source = (self.position + RDP8_HISTORY_SIZE - distance) % RDP8_HISTORY_SIZE;
+        let history_size = self.history.len();
+        let mut source = (self.position + history_size - distance) % history_size;
         for _ in 0..length {
             let value = self.history[source];
             self.history[self.position] = value;
@@ -335,7 +360,7 @@ impl Rdp8Decompressor {
             output.push(value);
 
             source += 1;
-            if source == RDP8_HISTORY_SIZE {
+            if source == history_size {
                 source = 0;
             }
         }
@@ -344,13 +369,14 @@ impl Rdp8Decompressor {
     }
 
     fn write_history(&mut self, mut data: &[u8]) {
-        if data.len() > RDP8_HISTORY_SIZE {
-            let skipped = data.len() - RDP8_HISTORY_SIZE;
-            self.advance(skipped % RDP8_HISTORY_SIZE);
+        let history_size = self.history.len();
+        if data.len() > history_size {
+            let skipped = data.len() - history_size;
+            self.advance(skipped % history_size);
             data = &data[skipped..];
         }
 
-        let to_end = RDP8_HISTORY_SIZE - self.position;
+        let to_end = history_size - self.position;
         if data.len() <= to_end {
             self.history[self.position..self.position + data.len()].copy_from_slice(data);
         } else {
@@ -362,7 +388,7 @@ impl Rdp8Decompressor {
     }
 
     fn advance(&mut self, count: usize) {
-        self.position = (self.position + count) % RDP8_HISTORY_SIZE;
+        self.position = (self.position + count) % self.history.len();
     }
 }
 
@@ -375,6 +401,7 @@ impl Default for Rdp8Decompressor {
 impl fmt::Debug for Rdp8Decompressor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Rdp8Decompressor")
+            .field("history_size", &self.history.len())
             .field("position", &self.position)
             .finish_non_exhaustive()
     }
@@ -561,6 +588,22 @@ mod tests {
         input
     }
 
+    /// Packs a string of '0' and '1' (spaces ignored) into a bitstream with its trailer byte.
+    fn pack(bits: &str) -> Vec<u8> {
+        let bits: Vec<bool> = bits.chars().filter(|c| *c != ' ').map(|c| c == '1').collect();
+        let mut bytes: Vec<u8> = bits
+            .chunks(8)
+            .map(|chunk| {
+                chunk
+                    .iter()
+                    .enumerate()
+                    .fold(0u8, |byte, (i, &bit)| byte | (u8::from(bit) << (7 - i)))
+            })
+            .collect();
+        bytes.push(u8::try_from((8 - bits.len() % 8) % 8).unwrap());
+        bytes
+    }
+
     fn decompress(input: &[u8]) -> Result<Vec<u8>, Rdp8Error> {
         let mut output = Vec::new();
         let written = Rdp8Decompressor::new().decompress(input, &mut output)?;
@@ -663,7 +706,7 @@ mod tests {
     /// the history left by the first.
     #[test]
     fn decodes_rdpedyc_samples_with_shared_history() {
-        let mut decompressor = Rdp8Decompressor::new();
+        let mut decompressor = Rdp8Decompressor::new_lite();
         let mut output = Vec::new();
 
         let first = [0xE0, 0x26, 0x38, 0xC4, 0x3F, 0xF4, 0x74, 0x01];
@@ -674,6 +717,69 @@ mod tests {
         let second = [0xE0, 0x26, 0x88, 0x7F, 0xE8, 0xF4, 0x02];
         assert_eq!(decompressor.decompress(&second, &mut output), Ok(1597));
         assert!(output.iter().all(|&b| b == b'q'));
+    }
+
+    // Match token 101100 has a 14-bit distance based at 5,792; a trailing 0 bit means length 3.
+    const MATCH_DISTANCE_8192: &str = "101100 00100101100000 0";
+    const MATCH_DISTANCE_8193: &str = "101100 00100101100001 0";
+
+    #[test]
+    fn lite_limits_match_distance_to_its_history() {
+        let input = single_compressed(PACKET_COMPR_TYPE_RDP8_LITE, &pack(MATCH_DISTANCE_8193));
+        assert_eq!(
+            Rdp8Decompressor::new_lite().decompress(&input, &mut Vec::new()),
+            Err(Rdp8Error::MatchDistanceOutOfRange(8193))
+        );
+        // The same match is within the RDP 8.0 history.
+        assert_eq!(decompress(&input).unwrap(), [0; 3]);
+    }
+
+    #[test]
+    fn lite_history_holds_the_last_8192_bytes() {
+        let mut decompressor = Rdp8Decompressor::new_lite();
+        let data: Vec<u8> = (0..15_000u32).map(|i| u8::try_from(i % 251).unwrap()).collect();
+        for chunk in data.chunks(5_000) {
+            let mut raw = vec![SEGMENTED_SINGLE, PACKET_COMPR_TYPE_RDP8_LITE];
+            raw.extend_from_slice(chunk);
+            decompressor.decompress(&raw, &mut Vec::new()).unwrap();
+        }
+
+        let mut output = Vec::new();
+        let input = single_compressed(PACKET_COMPR_TYPE_RDP8_LITE, &pack(MATCH_DISTANCE_8192));
+        decompressor.decompress(&input, &mut output).unwrap();
+        assert_eq!(output, data[data.len() - 8192..][..3]);
+    }
+
+    #[test]
+    fn lite_limits_segment_size() {
+        let mut raw = vec![SEGMENTED_SINGLE, PACKET_COMPR_TYPE_RDP8_LITE];
+        raw.extend_from_slice(&[0x55; 8192]);
+        assert_eq!(Rdp8Decompressor::new_lite().decompress(&raw, &mut Vec::new()), Ok(8192));
+        raw.push(0x55);
+        assert_eq!(
+            Rdp8Decompressor::new_lite().decompress(&raw, &mut Vec::new()),
+            Err(Rdp8Error::SegmentTooLarge)
+        );
+
+        // Literal "q", then a match at distance 1 with length 2^13: 8,193 bytes in all.
+        let expanding = pack("0 01110001  10001 00001  111111111111 0 0000000000000");
+        let input = single_compressed(PACKET_COMPR_TYPE_RDP8_LITE, &expanding);
+        assert_eq!(
+            Rdp8Decompressor::new_lite().decompress(&input, &mut Vec::new()),
+            Err(Rdp8Error::SegmentTooLarge)
+        );
+        assert_eq!(decompress(&input).unwrap().len(), 8193);
+    }
+
+    #[test]
+    fn lite_rejects_multipart() {
+        let mut input = vec![SEGMENTED_MULTIPART, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00];
+        input.extend_from_slice(&3u32.to_le_bytes());
+        input.extend_from_slice(&[PACKET_COMPR_TYPE_RDP8_LITE, b'a', b'b']);
+        assert_eq!(
+            Rdp8Decompressor::new_lite().decompress(&input, &mut Vec::new()),
+            Err(Rdp8Error::InvalidSegmentedDescriptor(SEGMENTED_MULTIPART))
+        );
     }
 
     #[test]

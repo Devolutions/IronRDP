@@ -52,10 +52,11 @@ XCRUSH has the largest sliding-window history of the bulk family (2 MB).
 
 ### `bulk_rdp8`
 
-Feeds random inputs to the RDP 8.0 bulk decompressor (`ironrdp-bulk`) that the
-dynamic virtual channels use for compressed data PDUs, and checks it against the
-graphics pipeline's ZGFX decoder: whatever the graphics decoder accepts, the
-bulk decompressor must decode to the same bytes.
+Feeds random inputs to the RDP 8.0 bulk decompressor (`ironrdp-bulk`) and checks
+it against the graphics pipeline's ZGFX decoder: whatever the graphics decoder
+accepts, the bulk decompressor must decode to the same bytes. The same input also
+runs through the RDP 8.0 Lite profile (8 KB history and segments) that the dynamic
+virtual channels use for compressed data PDUs.
 
 ### `bulk_round_trip`
 

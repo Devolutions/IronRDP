@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::cmp;
 
@@ -12,9 +11,9 @@ use crate::pdu::DrdynvcDataPdu;
 pub(crate) struct CompleteData {
     total_size: usize,
     data: Vec<u8>,
-    /// MS-RDPEDYC 3.1.5.2.5: each channel has its own decompression context. It holds a
-    /// 2.5 MB history, so it is only allocated once the channel receives compressed data.
-    decompressor: Option<Box<Rdp8Decompressor>>,
+    /// MS-RDPEDYC 3.1.5.2.5: each channel has its own decompression context, created when
+    /// the channel first receives compressed data.
+    decompressor: Option<Rdp8Decompressor>,
 }
 
 impl CompleteData {
@@ -45,7 +44,7 @@ impl CompleteData {
     }
 
     fn decompress(&mut self, compressed: &[u8]) -> DecodeResult<Vec<u8>> {
-        let decompressor = self.decompressor.get_or_insert_with(Box::default);
+        let decompressor = self.decompressor.get_or_insert_with(Rdp8Decompressor::new_lite);
         let mut data = Vec::new();
         decompressor
             .decompress(compressed, &mut data)
@@ -64,6 +63,15 @@ impl CompleteData {
 
         if total_data_size == data.len() {
             Ok(Some(data))
+        } else if data.len() > total_data_size {
+            self.total_size = 0;
+            self.data.clear();
+
+            Err(invalid_field_err!(
+                "DVC message",
+                "data",
+                "first block is longer than the message length"
+            ))
         } else {
             self.total_size = total_data_size;
             self.data = data;
@@ -94,10 +102,13 @@ impl CompleteData {
                         Ok(Some(self.data.drain(..).collect()))
                     }
                     cmp::Ordering::Greater => {
-                        error!("Actual DVC message size is grater than expected total DVC message size");
                         self.total_size = 0;
                         self.data.clear();
-                        Ok(None)
+                        Err(invalid_field_err!(
+                            "DVC message",
+                            "data",
+                            "blocks are longer than the message length"
+                        ))
                     }
                 }
             }

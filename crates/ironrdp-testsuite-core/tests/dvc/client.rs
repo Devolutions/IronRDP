@@ -2,8 +2,8 @@ use ironrdp_core::{Decode as _, ReadCursor, encode_vec, impl_as_any};
 use ironrdp_dvc::ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_dvc::pdu::{
     CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateRequestPdu, CreationStatus,
-    DataCompressedPdu, DataPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList,
-    SoftSyncRequestPdu, SoftSyncTunnelType,
+    DataCompressedPdu, DataFirstCompressedPdu, DataFirstPdu, DataPdu, DrdynvcClientPdu, DrdynvcDataPdu,
+    DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu, SoftSyncTunnelType,
 };
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessage, DvcMessageBatch, DvcProcessor};
 use ironrdp_svc::SvcMessage;
@@ -240,6 +240,57 @@ fn each_channel_has_its_own_decompression_history() {
     assert_eq!(received(3), vec![b"xyz".to_vec(), b"xyz".to_vec()]);
     // Channel 4 never saw "xyz", so the match reads its still-empty history.
     assert_eq!(received(4), vec![vec![0; 3]]);
+}
+
+#[test]
+fn compressed_first_block_longer_than_the_message_is_an_error() {
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    client
+        .attach_established_dynamic_channel(3, RecordedDvc::default())
+        .expect("recorded channel should attach");
+
+    // The MS-RDPEDYC 4.3.3 block decompresses to 1,595 bytes, more than the 100 declared.
+    let pdu = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirstCompressed(
+        DataFirstCompressedPdu::new(3, 100, vec![0xe0, 0x26, 0x38, 0xc4, 0x3f, 0xf4, 0x74, 0x01]),
+    )))
+    .expect("DVC compressed data should encode");
+
+    assert!(client.process(&pdu).is_err());
+}
+
+#[test]
+fn blocks_longer_than_the_message_are_an_error() {
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    client
+        .attach_established_dynamic_channel(3, RecordedDvc::default())
+        .expect("recorded channel should attach");
+
+    let data_first = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(DataFirstPdu::new(
+        3,
+        4,
+        b"ab".to_vec(),
+    ))))
+    .expect("DVC data should encode");
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        3,
+        b"cde".to_vec(),
+    ))))
+    .expect("DVC data should encode");
+
+    assert!(
+        client
+            .process(&data_first)
+            .expect("first block should be buffered")
+            .is_empty()
+    );
+    assert!(client.process(&data).is_err());
+
+    let channel = client
+        .get_dvc_by_channel_id::<RecordedDvc>(3)
+        .expect("recorded channel should remain attached");
+    assert!(channel.processor().received.is_empty());
 }
 
 #[test]

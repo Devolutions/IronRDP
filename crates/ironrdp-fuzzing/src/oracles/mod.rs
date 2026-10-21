@@ -71,6 +71,9 @@ pub fn bulk_decompress_rdp8(data: &[u8]) {
     let mut output = Vec::new();
     let result = Rdp8Decompressor::new().decompress(data, &mut output);
 
+    // The RDP 8.0 Lite profile only narrows the limits, so it has no reference to match.
+    let _ = Rdp8Decompressor::new_lite().decompress(data, &mut Vec::new());
+
     if reference_result.is_ok() {
         match result {
             Ok(_) if output == reference => {}

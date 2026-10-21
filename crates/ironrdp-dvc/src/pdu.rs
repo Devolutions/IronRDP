@@ -768,15 +768,21 @@ impl DataFirstPdu {
 
 /// 2.2.3.3 DVC Data First Compressed PDU (DYNVC_DATA_FIRST_COMPRESSED)
 ///
-/// Like [`DataFirstPdu`], but the data block is an RDP_SEGMENTED_DATA structure compressed
-/// with the RDP 8.0 bulk compressor, and the length counts uncompressed bytes. Only sent
-/// once both sides negotiated version 3.
+/// Like [`DataFirstPdu`], but the data block is compressed with RDP 8.0 Lite, and the length
+/// counts uncompressed bytes. Only sent once both sides negotiated version 3, over a
+/// reliable transport.
+///
+/// RDP 8.0 Lite is RDP 8.0 bulk compression (MS-RDPEGFX 3.1.9.1) restricted to an
+/// RDP_SEGMENTED_DATA structure holding a single segment of compression type
+/// `PACKET_COMPR_TYPE_RDP8_LITE` (0x06), at most 8,192 uncompressed bytes per segment, and an
+/// 8,192-byte history. The graphics pipeline's RDP 8.0 output does not meet these limits
+/// and is not a valid payload.
 #[derive(Debug, PartialEq)]
 pub struct DataFirstCompressedPdu(DataFirstPdu);
 
 impl DataFirstCompressedPdu {
     /// `total_length` is the *uncompressed* length of the whole message, and `data` is the
-    /// compressed first block.
+    /// first block, compressed with RDP 8.0 Lite as described on [`DataFirstCompressedPdu`].
     pub fn new(channel_id: DynamicChannelId, total_length: u32, data: Vec<u8>) -> Self {
         Self(DataFirstPdu {
             header: Header::new(channel_id, total_length, Cmd::DataFirstCompressed),
@@ -803,13 +809,15 @@ impl DataFirstCompressedPdu {
 
 /// 2.2.3.4 DVC Data Compressed PDU (DYNVC_DATA_COMPRESSED)
 ///
-/// Like [`DataPdu`], but the data block is an RDP_SEGMENTED_DATA structure compressed with
-/// the RDP 8.0 bulk compressor. Only sent once both sides negotiated version 3.
+/// Like [`DataPdu`], but the data block is compressed with RDP 8.0 Lite, as described on
+/// [`DataFirstCompressedPdu`]. Only sent once both sides negotiated version 3, over a
+/// reliable transport.
 #[derive(Debug, PartialEq)]
 pub struct DataCompressedPdu(DataPdu);
 
 impl DataCompressedPdu {
-    /// `data` is the compressed data block.
+    /// `data` is the data block, compressed with RDP 8.0 Lite as described on
+    /// [`DataFirstCompressedPdu`].
     pub fn new(channel_id: DynamicChannelId, data: Vec<u8>) -> Self {
         Self(DataPdu {
             header: Header::new(channel_id, 0, Cmd::DataCompressed),
