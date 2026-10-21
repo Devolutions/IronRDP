@@ -116,7 +116,11 @@ fn messages_match_the_specification_examples() {
 #[test]
 fn specification_sample_is_decoded_with_openh264_and_placed_at_its_geometry() {
     present_specification_sample(Box::new(|| {
-        let decoder: Box<dyn H264Decoder> = Box::new(ironrdp_egfx::decode::OpenH264Decoder::new().ok()?);
+        let decoder: Box<dyn H264Decoder> = Box::new(
+            ironrdp_egfx::decode::OpenH264Decoder::new()
+                .ok()?
+                .with_yuv_matrix(ironrdp_egfx::decode::YuvMatrix::Bt601Limited),
+        );
         Some(decoder)
     }));
 }
@@ -143,30 +147,38 @@ fn specification_sample_is_decoded_with_media_foundation_and_placed_at_its_geome
 #[cfg(all(windows, feature = "openh264-bundled"))]
 #[test]
 fn media_foundation_and_openh264_agree_on_the_specification_sample() {
+    use ironrdp_egfx::decode::OpenH264Decoder;
     use ironrdp_egfx_native::{MediaFoundationH264Decoder, YuvMatrix};
 
     let sample = &VIDEO_DATA_EXAMPLE[40..];
-    // OpenH264 converts with BT.709 full range.
-    let reference = ironrdp_egfx::decode::OpenH264Decoder::new()
-        .unwrap()
-        .decode(sample)
-        .unwrap();
-    let decoded = MediaFoundationH264Decoder::new(YuvMatrix::Bt709Full)
-        .unwrap()
-        .decode(sample)
-        .unwrap();
     let row = |frame: &DecodedFrame, y: usize| {
         let stride = usize::try_from(frame.width()).unwrap() * 4;
         frame.data()[y * stride..][..480 * 4].to_vec()
     };
-    let mut total = 0u64;
-    for y in 0..244 {
-        for (left, right) in row(&reference, y).iter().zip(row(&decoded, y)) {
-            total += u64::from(left.abs_diff(right));
+    let mean_difference = |left: &DecodedFrame, right: &DecodedFrame| {
+        let mut total = 0u64;
+        for y in 0..244 {
+            for (left, right) in row(left, y).iter().zip(row(right, y)) {
+                total += u64::from(left.abs_diff(right));
+            }
         }
+        total / (480 * 244 * 4)
+    };
+    let openh264 = |matrix| {
+        OpenH264Decoder::new()
+            .unwrap()
+            .with_yuv_matrix(matrix)
+            .decode(sample)
+            .unwrap()
+    };
+    let media_foundation = |matrix| MediaFoundationH264Decoder::new(matrix).unwrap().decode(sample).unwrap();
+
+    // The two conversions differ enough for a mismatch to show.
+    assert!(mean_difference(&openh264(YuvMatrix::Bt601Limited), &openh264(YuvMatrix::Bt709Full)) >= 4);
+    for matrix in [YuvMatrix::Bt601Limited, YuvMatrix::Bt709Full] {
+        let mean = mean_difference(&openh264(matrix), &media_foundation(matrix));
+        assert!(mean <= 2, "{matrix:?}: mean channel difference {mean}");
     }
-    let mean = total / (480 * 244 * 4);
-    assert!(mean <= 2, "mean channel difference {mean}");
 }
 
 #[cfg(any(windows, feature = "openh264-bundled"))]
@@ -642,4 +654,96 @@ fn late_pictures_ask_the_server_for_fewer_frames() {
         .unwrap();
     }
     assert!(harness.presenter().take_notifications().is_empty());
+}
+
+#[test]
+fn stop_presentation_ignores_its_unused_extra_data_length() {
+    let mut stop = bytes(STOP_FIXTURE);
+    // cbExtra is at bit offset 480 (MS-RDPEVOR 2.2.1.2) and only header fields are valid for Stop.
+    stop[60..64].copy_from_slice(&7u32.to_le_bytes());
+    let request = decode::<PresentationRequest>(&stop).unwrap();
+    assert_eq!(request.command, PresentationCommand::STOP);
+    assert_eq!(request.presentation_id, 3);
+    assert!(request.extra_data.is_empty());
+}
+
+#[test]
+fn a_missing_sample_waits_for_a_key_frame_and_retries_the_request() {
+    let harness = Harness::new();
+    let mut data = VideoDataClient::new(Arc::clone(&harness.presenter));
+    assert!(harness.presenter().start(&small_request()));
+    data.process(2, &packet(1, 1, 1, KEY, 0, &[0, 0, 1, 0x67])).unwrap();
+    // A repeated sample is ignored.
+    data.process(2, &packet(1, 1, 1, KEY, 0, &[0, 0, 1, 0x67])).unwrap();
+    assert_eq!(harness.decoded.load(Ordering::SeqCst), 1);
+    assert!(harness.presenter().take_notifications().is_empty());
+
+    // Sample 2 never arrives: sample 3 is not decoded and a key frame is requested.
+    data.process(2, &packet(3, 1, 1, DELTA, 666_666, &[0, 0, 1, 0x41]))
+        .unwrap();
+    assert_eq!(harness.decoded.load(Ordering::SeqCst), 1);
+    let network_error = ClientNotification {
+        presentation_id: 3,
+        notification: Notification::NetworkError,
+    };
+    assert_eq!(harness.presenter().take_notifications(), [network_error]);
+
+    // While waiting, the rate-limited request is repeated once the interval has passed.
+    data.process(2, &packet(4, 1, 1, DELTA, 999_999, &[0, 0, 1, 0x41]))
+        .unwrap();
+    assert!(harness.presenter().take_notifications().is_empty());
+    harness.advance(10_000_000);
+    data.process(2, &packet(5, 1, 1, DELTA, 1_333_332, &[0, 0, 1, 0x41]))
+        .unwrap();
+    assert_eq!(harness.presenter().take_notifications(), [network_error]);
+
+    data.process(2, &packet(6, 1, 1, KEY, 1_666_665, &[0, 0, 1, 0x67]))
+        .unwrap();
+    assert_eq!(harness.decoded.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn the_current_picture_follows_geometry_changes() {
+    let harness = Harness::new();
+    let mut data = VideoDataClient::new(Arc::clone(&harness.presenter));
+    assert!(harness.presenter().start(&small_request()));
+
+    // The picture arrives before its geometry and is shown once the geometry is known.
+    data.process(2, &packet(1, 1, 1, KEY, 0, &[0, 0, 1, 0x67])).unwrap();
+    assert!(harness.presenter().poll(1024, 768).is_empty());
+    harness.presenter().set_geometry(MAPPING_ID, Some(small_geometry()));
+    let shown = harness.presenter().poll(1024, 768);
+    assert!(!shown.is_empty());
+    assert!(harness.presenter().poll(1024, 768).is_empty());
+
+    // Moving the paused video composes the same picture at the new place.
+    let mut moved = small_geometry();
+    moved.top_level_rect.left += 100;
+    harness.presenter().set_geometry(MAPPING_ID, Some(moved));
+    let recomposed = harness.presenter().poll(1024, 768);
+    assert_eq!(recomposed.len(), shown.len());
+    assert_eq!(recomposed[0].region.left, shown[0].region.left + 100);
+    assert_eq!(recomposed[0].data, shown[0].data);
+    assert_eq!(harness.presenter().statistics(), (1, 0));
+}
+
+#[test]
+fn resynchronizing_the_clock_moves_queued_pictures_too() {
+    let harness = Harness::new();
+    let mut data = VideoDataClient::new(Arc::clone(&harness.presenter));
+    assert!(harness.presenter().start(&small_request()));
+    harness.presenter().set_geometry(MAPPING_ID, Some(small_geometry()));
+
+    // Three pictures 1.5 s apart arrive at once; the last is too far ahead and resynchronizes.
+    data.process(2, &packet(1, 1, 1, KEY, 0, &[0, 0, 1, 0x67])).unwrap();
+    data.process(2, &packet(2, 1, 1, DELTA, 15_000_000, &[0, 0, 1, 0x41]))
+        .unwrap();
+    data.process(2, &packet(3, 1, 1, DELTA, 30_000_000, &[0, 0, 1, 0x41]))
+        .unwrap();
+    assert_eq!(harness.decoded.load(Ordering::SeqCst), 3);
+
+    // The latest picture shows now instead of waiting behind the older queued one.
+    assert!(!harness.presenter().poll(1024, 768).is_empty());
+    assert_eq!(harness.presenter().statistics(), (1, 2));
+    assert_eq!(harness.presenter().next_deadline(), None);
 }

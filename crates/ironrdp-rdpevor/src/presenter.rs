@@ -53,6 +53,7 @@ pub struct VideoUpdate {
 
 struct PendingFrame {
     publish_at: u64,
+    timestamp: u64,
     frame: DecodedFrame,
 }
 
@@ -84,6 +85,14 @@ struct Presentation {
     frames: VecDeque<PendingFrame>,
     presented: u64,
     dropped: u64,
+    /// Number of the latest sample whose first packet arrived.
+    last_sample: Option<u32>,
+    /// Latest picture due, kept to compose it again when its geometry changes.
+    current: Option<DecodedFrame>,
+    /// Whether `current` was composed at least once.
+    current_shown: bool,
+    /// `current` must be composed on the next poll.
+    recompose: bool,
     /// Consecutive samples the decoder failed to decode.
     decode_failures: u32,
     /// Duration of the latest sample, in 100-ns units.
@@ -101,6 +110,18 @@ impl Presentation {
     fn assemble(&mut self, data: &VideoData<'_>) -> (Option<&'static str>, Option<Assembly>) {
         let mut loss = None;
         if data.current_packet_index == 1 {
+            match self.last_sample {
+                Some(last) if last == data.sample_number => {
+                    trace!(sample_number = data.sample_number, "Ignoring a repeated video sample");
+                    return (None, None);
+                }
+                // A whole sample is missing, or samples arrive out of order.
+                Some(last) if last.wrapping_add(1) != data.sample_number => {
+                    loss = Some("video sample missing or out of order");
+                }
+                _ => {}
+            }
+            self.last_sample = Some(data.sample_number);
             if self.assembly.take().is_some() {
                 loss = Some("video sample interrupted by a new sample");
             }
@@ -281,6 +302,10 @@ impl VideoPresenter {
             frames: VecDeque::new(),
             presented: 0,
             dropped: 0,
+            last_sample: None,
+            current: None,
+            current_shown: false,
+            recompose: false,
             decode_failures: 0,
             frame_duration: 0,
             late_drops: (0, 0),
@@ -314,6 +339,12 @@ impl VideoPresenter {
 
     /// Mirrors a geometry mapping change from the MS-RDPEGT channel. `None` clears the mapping.
     pub fn set_geometry(&mut self, mapping_id: u64, geometry: Option<MappedGeometry>) {
+        if let Some(presentation) = self.presentation.as_mut() {
+            // The current picture moves, resizes or uncovers with its geometry.
+            if presentation.mapping_id == mapping_id {
+                presentation.recompose = true;
+            }
+        }
         match geometry {
             Some(geometry) => {
                 if self.geometries.len() < MAX_GEOMETRIES || self.geometries.contains_key(&mapping_id) {
@@ -383,16 +414,32 @@ impl VideoPresenter {
             }
             due = presentation.frames.pop_front();
         }
-        let Some(due) = due else {
+        if let Some(due) = due {
+            if presentation.current.is_some() && !presentation.current_shown {
+                presentation.dropped += 1;
+            }
+            presentation.current = Some(due.frame);
+            presentation.current_shown = false;
+            presentation.recompose = true;
+        }
+        if !presentation.recompose {
+            return Vec::new();
+        }
+        let Some(frame) = presentation.current.as_ref() else {
             return Vec::new();
         };
         let Some(geometry) = self.geometries.get(&presentation.mapping_id) else {
+            // Composed once the mapping arrives.
             trace!(mapping_id = presentation.mapping_id, "Video geometry is not known yet");
-            presentation.dropped += 1;
             return Vec::new();
         };
-        presentation.presented += 1;
-        compose(presentation, &due.frame, geometry, desktop_width, desktop_height)
+        let updates = compose(presentation, frame, geometry, desktop_width, desktop_height);
+        presentation.recompose = false;
+        if !presentation.current_shown {
+            presentation.current_shown = true;
+            presentation.presented += 1;
+        }
+        updates
     }
 
     /// Notifications for the server, queued since the last call.
@@ -411,6 +458,8 @@ impl VideoPresenter {
                 sample_number = assembly.sample_number,
                 "Skipping a video sample until the next key frame"
             );
+            // A request the rate limit held back earlier goes out once the interval has passed.
+            self.request_key_frame(now);
             return;
         }
         presentation.awaiting_key_frame = false;
@@ -464,6 +513,10 @@ impl VideoPresenter {
             || now.saturating_add(AHEAD_RESYNC) < publish_at
         {
             presentation.origin = Some((now, timestamp));
+            // Queued pictures follow the new origin; earlier ones are due now.
+            for pending in &mut presentation.frames {
+                pending.publish_at = now.saturating_add(pending.timestamp.saturating_sub(timestamp));
+            }
             now
         } else {
             publish_at
@@ -472,7 +525,11 @@ impl VideoPresenter {
             presentation.frames.pop_front();
             presentation.drop_late_picture(now, &mut self.notifications);
         }
-        presentation.frames.push_back(PendingFrame { publish_at, frame });
+        presentation.frames.push_back(PendingFrame {
+            publish_at,
+            timestamp,
+            frame,
+        });
     }
 
     fn report_loss(&mut self, reason: &'static str) {

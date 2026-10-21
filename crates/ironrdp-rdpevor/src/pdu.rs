@@ -138,8 +138,13 @@ impl<'de> Decode<'de> for PresentationRequest {
         let video_subtype = src.read_array();
         let extra_len = usize::try_from(src.read_u32())
             .map_err(|_| invalid_field_err!("cbExtra", "extra data length overflows", in: src))?;
-        ensure_size!(in: src, size: extra_len);
-        let extra_data = src.read_slice(extra_len).to_vec();
+        // Only the header fields of a Stop request are valid (2.2.1.2), so its cbExtra is ignored.
+        let extra_data = if command == PresentationCommand::STOP {
+            Vec::new()
+        } else {
+            ensure_size!(in: src, size: extra_len);
+            src.read_slice(extra_len).to_vec()
+        };
         Ok(Self {
             presentation_id,
             version,

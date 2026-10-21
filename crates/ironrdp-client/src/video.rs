@@ -31,9 +31,12 @@ impl H264DecoderFactory {
     /// Software decoder built from the bundled OpenH264 sources.
     #[cfg(feature = "openh264")]
     pub fn openh264() -> Self {
-        Self::new(|| match ironrdp_egfx::decode::OpenH264Decoder::new() {
+        use ironrdp_egfx::decode::{OpenH264Decoder, YuvMatrix};
+
+        // MS-RDPEVOR video is converted from RGB with BT.601 (2.2.1.6).
+        Self::new(|| match OpenH264Decoder::new() {
             Ok(decoder) => {
-                let decoder: Box<dyn H264Decoder> = Box::new(decoder);
+                let decoder: Box<dyn H264Decoder> = Box::new(decoder.with_yuv_matrix(YuvMatrix::Bt601Limited));
                 Some(decoder)
             }
             Err(error) => {
@@ -155,15 +158,17 @@ pub(crate) fn deadline(active_stage: &ActiveStage) -> Option<tokio::time::Instan
 /// Composites the pictures due now into `image` and queues the server notifications.
 ///
 /// Notifications are only sent when the iteration has no other non-empty dynamic channel batch;
-/// otherwise they stay queued for a later iteration.
+/// otherwise they stay queued for a later iteration. Returns whether `dvc_batch` now holds them,
+/// in which case they must be routed for the control channel rather than for the request that
+/// produced the iteration.
 pub(crate) fn present(
     active_stage: &mut ActiveStage,
     image: &mut DecodedImage,
     outputs: &mut Vec<ActiveStageOutput>,
     dvc_batch: &mut Option<DvcMessageBatch>,
-) -> SessionResult<()> {
+) -> SessionResult<bool> {
     let Some(mut control) = active_stage.get_dvc_mut::<VideoControlClient>() else {
-        return Ok(());
+        return Ok(false);
     };
     let channel_id = control.channel_id();
     let updates = control
@@ -172,24 +177,28 @@ pub(crate) fn present(
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .poll(image.width(), image.height());
+    let mut installed = false;
     if dvc_batch.as_ref().is_none_or(|batch| batch.messages().is_empty()) {
         match control
             .processor_mut()
             .pending_messages()
             .and_then(|messages| DvcMessageBatch::try_new(channel_id, messages))
         {
-            Ok(batch) if !batch.messages().is_empty() => *dvc_batch = Some(batch),
+            Ok(batch) if !batch.messages().is_empty() => {
+                *dvc_batch = Some(batch);
+                installed = true;
+            }
             Ok(_) => {}
             Err(error) => warn!(%error, "Unable to send a video notification"),
         }
     }
     if updates.is_empty() {
-        return Ok(());
+        return Ok(installed);
     }
     let region =
         active_stage.composite_rgba32(image, updates.into_iter().map(|update| (update.region, update.data)))?;
     if let Some(region) = region {
         outputs.push(ActiveStageOutput::GraphicsUpdate(region));
     }
-    Ok(())
+    Ok(installed)
 }

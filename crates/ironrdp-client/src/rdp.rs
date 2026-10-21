@@ -3998,12 +3998,15 @@ async fn active_session(
         };
 
         #[cfg(feature = "video")]
-        crate::video::present(
+        if crate::video::present(
             &mut active_stage,
             &mut image,
             &mut iteration.outputs,
             &mut iteration.dvc_batch,
-        )?;
+        )? {
+            // A tunneled request's reply route does not apply to the video notifications.
+            iteration.reply_tunnel = None;
+        }
 
         if let Some(batch) = iteration.dvc_batch {
             let channel_id = batch.channel_id();

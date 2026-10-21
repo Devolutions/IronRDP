@@ -186,12 +186,21 @@ pub trait H264Decoder: Send {
 // OpenH264 Implementation
 // ============================================================================
 
+/// Matrix and range used to convert decoded YUV pictures to RGB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum YuvMatrix {
+    /// ITU-R BT.601 with limited range, as specified for MS-RDPEVOR video.
+    Bt601Limited,
+    /// ITU-R BT.709 with full range, as specified for MS-RDPEGFX AVC420 streams.
+    Bt709Full,
+}
+
 #[cfg(feature = "openh264")]
 mod openh264_impl {
     use openh264::formats::YUVSource;
     use tracing::warn;
 
-    use super::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
+    use super::{DecodedFrame, DecoderError, DecoderResult, H264Decoder, YuvMatrix};
 
     /// H.264 decoder backed by Cisco's OpenH264 library
     ///
@@ -212,6 +221,7 @@ mod openh264_impl {
     pub struct OpenH264Decoder {
         decoder: openh264::decoder::Decoder,
         annex_b_buffer: Vec<u8>,
+        matrix: YuvMatrix,
     }
 
     impl OpenH264Decoder {
@@ -227,7 +237,15 @@ mod openh264_impl {
             Ok(Self {
                 decoder,
                 annex_b_buffer: Vec::new(),
+                matrix: YuvMatrix::Bt709Full,
             })
+        }
+
+        /// Converts pictures with `matrix` instead of the BT.709 full range of MS-RDPEGFX.
+        #[must_use]
+        pub fn with_yuv_matrix(mut self, matrix: YuvMatrix) -> Self {
+            self.matrix = matrix;
+            self
         }
 
         /// Create a decoder using a dynamically loaded OpenH264 library
@@ -245,6 +263,7 @@ mod openh264_impl {
             Ok(Self {
                 decoder,
                 annex_b_buffer: Vec::new(),
+                matrix: YuvMatrix::Bt709Full,
             })
         }
     }
@@ -289,9 +308,13 @@ mod openh264_impl {
                 .ok_or_else(|| DecoderError::msg("frame dimensions too large for RGBA allocation"))?;
             let mut rgba = vec![0u8; rgba_size];
 
-            // MS-RDPEGFX AVC420 streams carry full-range BT.709 YUV420,
-            // but openh264's `write_rgba8` assumes limited-range BT.601,
-            // which distorts colors. Convert per [MS-RDPEGFX] 3.3.8.3.1.
+            // MS-RDPEGFX AVC420 streams carry full-range BT.709 YUV420 ([MS-RDPEGFX] 3.3.8.3.1),
+            // and MS-RDPEVOR video limited-range BT.601, so the matrix is chosen by the caller
+            // rather than taken from openh264's `write_rgba8`.
+            let (range, standard) = match self.matrix {
+                YuvMatrix::Bt601Limited => (yuv::YuvRange::Limited, yuv::YuvStandardMatrix::Bt601),
+                YuvMatrix::Bt709Full => (yuv::YuvRange::Full, yuv::YuvStandardMatrix::Bt709),
+            };
             let planar = yuv::YuvPlanarImage {
                 y_plane: yuv.y(),
                 y_stride,
@@ -302,14 +325,8 @@ mod openh264_impl {
                 width: w32,
                 height: h32,
             };
-            yuv::yuv420_to_rgba(
-                &planar,
-                &mut rgba,
-                rgba_stride,
-                yuv::YuvRange::Full,
-                yuv::YuvStandardMatrix::Bt709,
-            )
-            .map_err(|e| DecoderError::new("failed to convert YUV420 to RGBA", e))?;
+            yuv::yuv420_to_rgba(&planar, &mut rgba, rgba_stride, range, standard)
+                .map_err(|e| DecoderError::new("failed to convert YUV420 to RGBA", e))?;
 
             Ok(DecodedFrame::new(rgba, w32, h32))
         }

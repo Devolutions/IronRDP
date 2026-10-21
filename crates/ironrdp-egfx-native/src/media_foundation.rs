@@ -27,25 +27,15 @@ const START_TIMEOUT: Duration = Duration::from_secs(2);
 /// Spacing of the synthetic sample times, in 100-ns units (30 frames per second).
 const SAMPLE_DURATION: i64 = 333_333;
 
-/// Matrix used to convert decoded YUV pictures to RGB.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum YuvMatrix {
-    /// ITU-R BT.601 with limited range, as specified for MS-RDPEVOR video.
-    #[default]
-    Bt601Limited,
-    /// ITU-R BT.709 with full range.
-    Bt709Full,
-}
+pub use ironrdp_egfx::decode::YuvMatrix;
 
-impl YuvMatrix {
-    /// Luma scale and offset, then V-to-R, U-to-G, V-to-G and U-to-B factors, in 16.16 fixed point.
-    fn coefficients(self) -> (i32, i32, [i32; 4]) {
-        match self {
-            // 255/219, 1.596, 0.392, 0.813, 2.017
-            Self::Bt601Limited => (76_309, 16, [104_597, 25_675, 53_279, 132_201]),
-            // 1, 1.5748, 0.1873, 0.4681, 1.8556
-            Self::Bt709Full => (65_536, 0, [103_206, 12_276, 30_679, 121_609]),
-        }
+/// Luma scale and offset, then V-to-R, U-to-G, V-to-G and U-to-B factors, in 16.16 fixed point.
+fn coefficients(matrix: YuvMatrix) -> (i32, i32, [i32; 4]) {
+    match matrix {
+        // 255/219, 1.596, 0.392, 0.813, 2.017
+        YuvMatrix::Bt601Limited => (76_309, 16, [104_597, 25_675, 53_279, 132_201]),
+        // 1, 1.5748, 0.1873, 0.4681, 1.8556
+        YuvMatrix::Bt709Full => (65_536, 0, [103_206, 12_276, 30_679, 121_609]),
     }
 }
 
@@ -428,7 +418,7 @@ fn nv12_to_rgba(nv12: &[u8], width: usize, height: usize, stride: usize, matrix:
         return None;
     }
     let (luma, chroma) = nv12.split_at(luma_size);
-    let (scale, black, [v_to_r, u_to_g, v_to_g, u_to_b]) = matrix.coefficients();
+    let (scale, black, [v_to_r, u_to_g, v_to_g, u_to_b]) = coefficients(matrix);
     let mut rgba = Vec::with_capacity(width.checked_mul(height)?.checked_mul(4)?);
     for y in 0..height {
         let luma_row = &luma[y * stride..][..width];
