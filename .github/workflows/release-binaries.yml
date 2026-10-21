@@ -87,6 +87,94 @@ jobs:
             macos_deployment_target: '11.0'
 
     steps:
+      # Keep the runner's logical paths intact for checkout, caching, artifacts and post steps.
+      # Never repurpose an existing volume or initialize storage on a self-hosted machine.
+      - name: Prepare Windows Arm build storage
+        if: runner.os == 'Windows' && runner.arch == 'ARM64' && runner.environment == 'github-hosted'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'Arm64') {
+            throw 'runner architecture does not match the operating system'
+          }
+
+          $partitions = @(Get-Partition)
+          $volumes = @(Get-Volume)
+          $drives = @(Get-PSDrive -PSProvider FileSystem)
+          if (($partitions | Where-Object DriveLetter -eq 'D') -or
+              ($volumes | Where-Object DriveLetter -eq 'D') -or
+              ($drives | Where-Object Name -eq 'D')) {
+            Write-Host 'D: is already assigned; leaving storage and workspace unchanged'
+            return
+          }
+
+          $disks = @(Get-Disk | Where-Object {
+            $_.BusType -eq 'NVMe' -and $_.PartitionStyle -eq 'RAW' -and
+            -not $_.IsBoot -and -not $_.IsSystem -and
+            -not $_.IsOffline -and -not $_.IsReadOnly -and
+            $_.NumberOfPartitions -eq 0 -and $_.Size -ge 50GB -and
+            $_.Number -notin $partitions.DiskNumber
+          })
+          if ($disks.Count -ne 1) {
+            Write-Host "Found $($disks.Count) eligible raw NVMe disks; leaving storage and workspace unchanged"
+            return
+          }
+
+          $workspace = Get-Item -LiteralPath $env:GITHUB_WORKSPACE -Force
+          if (-not $workspace.PSIsContainer -or
+              ($workspace.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            Write-Host 'Workspace is not an ordinary directory; leaving storage unchanged'
+            return
+          }
+          $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $HOME '.cargo' }
+          if (Test-Path -LiteralPath $cargoHome) {
+            $cargoDirectory = Get-Item -LiteralPath $cargoHome -Force
+            if (-not $cargoDirectory.PSIsContainer -or
+                ($cargoDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+              Write-Host 'Cargo home is not an ordinary directory; leaving storage unchanged'
+              return
+            }
+          }
+
+          # Create ReFS format drive (Dev Drive) with developer-workload defaults. AV is delayed by default for 
+          # dev drive. Any errors end the job here with a message as the runner is now in an unknown state.  
+          $disk = $disks[0]
+          Write-Host "Initializing unused NVMe disk $($disk.Number) ($($disk.Size) bytes)"
+          $partition = Initialize-Disk -InputObject $disk -PartitionStyle GPT -PassThru |
+            New-Partition -UseMaximumSize -DriveLetter D
+          $volume = $partition | Format-Volume -DevDrive -FileSystem ReFS -NewFileSystemLabel 'Build' -Confirm:$false
+          if ($volume.FileSystem -ne 'ReFS' -or $volume.DriveLetter -ne 'D') {
+            throw 'new build volume is not ReFS on D:'
+          }
+
+          # Preserve files left by pre-job hooks, including hidden entries and links.
+          # Keep the original populated directory as a job-lifetime backup after copying.
+          Set-Location -LiteralPath $env:RUNNER_TEMP
+          [Environment]::CurrentDirectory = $env:RUNNER_TEMP
+          if (@(Get-ChildItem -LiteralPath $workspace.FullName -Force).Count -eq 0) {
+            Move-Item -LiteralPath $workspace.FullName -Destination 'D:\workspace'
+          } else {
+            robocopy $workspace.FullName 'D:\workspace' /E /COPY:DAT /DCOPY:DAT /SL /SJ /R:2 /W:1 /NP
+            if ($LASTEXITCODE -ge 8) { throw "workspace copy failed with robocopy exit code $LASTEXITCODE" }
+            $LASTEXITCODE = 0
+            Move-Item -LiteralPath $workspace.FullName -Destination "$($workspace.FullName).before-refs-$([guid]::NewGuid())"
+          }
+          New-Item -ItemType Junction -Path $workspace.FullName -Target 'D:\workspace' | Out-Null
+
+          # Give rust-cache the physical Cargo path: paths relative to the old C: workspace
+          # would otherwise traverse the junction's parents on D: when GNU tar saves/restores.
+          if (Test-Path -LiteralPath $cargoHome) {
+            Move-Item -LiteralPath $cargoHome -Destination 'D:\cargo-home'
+          } else {
+            New-Item -ItemType Directory -Path 'D:\cargo-home' | Out-Null
+          }
+          New-Item -ItemType Junction -Path $cargoHome -Target 'D:\cargo-home' | Out-Null
+          New-Item -ItemType Directory -Path 'D:\build-temp' | Out-Null
+          "CARGO_HOME=D:\cargo-home" >> $env:GITHUB_ENV
+          "TEMP=D:\build-temp" >> $env:GITHUB_ENV
+          "TMP=D:\build-temp" >> $env:GITHUB_ENV
+          Write-Host 'Workspace, Cargo source caches and compiler temporary files now use D: (ReFS)'
+
       - name: Checkout release tag
         uses: actions/checkout@v6
         with:
