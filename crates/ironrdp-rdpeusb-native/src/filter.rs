@@ -6,8 +6,8 @@
 //!   `id:VID:PID[#VID:PID...]`, `addr:BUS:ADDR[#BUS:ADDR...]`, `auto`, and `filter:CLASS[#CLASS...]`
 //!   or `filter:none`, separated by commas. Every number is hexadecimal, as in FreeRDP.
 //! - The `.rdp` file `usbdevicestoredirect` property, through [`UsbRedirectionConfig::parse_rdp`]:
-//!   semicolon-separated `*`, `USB\VID_xxxx&PID_yyyy[...]` device instance IDs, and `-` prefixed
-//!   exclusions. Device setup class GUIDs (`{...}`) cannot be resolved from USB descriptors and are
+//!   semicolon-separated `*`, `USB\VID_xxxx&PID_yyyy` hardware IDs, `USB\VID_xxxx&PID_yyyy\INSTANCE`
+//!   device instance IDs, and `-` prefixed exclusions. Device setup class GUIDs (`{...}`) cannot be resolved from USB descriptors and are
 //!   skipped.
 
 use core::fmt;
@@ -38,6 +38,11 @@ pub struct UsbDeviceIdentity {
     pub device_class: u8,
     /// `bInterfaceClass` of every interface of the active configuration.
     pub interface_classes: Vec<u8>,
+    /// Device instance ID in the Windows form, `USB\VID_xxxx&PID_yyyy\INSTANCE`, when known.
+    ///
+    /// On Windows this is the PnP device instance ID. Elsewhere it is derived from the serial number,
+    /// which Windows uses as the instance part for devices that have one.
+    pub instance_id: Option<String>,
 }
 
 impl UsbDeviceIdentity {
@@ -47,24 +52,30 @@ impl UsbDeviceIdentity {
 }
 
 /// A rule selecting local USB devices.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UsbDeviceMatch {
     /// Every device that is not in a class kept local.
     Any,
-    /// Devices with this vendor ID, and this product ID when present.
-    VidPid { vendor_id: u16, product_id: Option<u16> },
+    /// Every device of this model.
+    VidPid { vendor_id: u16, product_id: u16 },
+    /// The single device with this instance ID (see [`UsbDeviceIdentity::instance_id`]).
+    InstanceId(String),
     /// The device at this bus number and device address.
     BusAddress { bus_number: u8, address: u8 },
 }
 
 impl UsbDeviceMatch {
-    fn matches(self, device: &UsbDeviceIdentity) -> bool {
+    fn matches(&self, device: &UsbDeviceIdentity) -> bool {
         match self {
             Self::Any => true,
             Self::VidPid { vendor_id, product_id } => {
-                device.vendor_id == vendor_id && product_id.is_none_or(|product_id| device.product_id == product_id)
+                device.vendor_id == *vendor_id && device.product_id == *product_id
             }
-            Self::BusAddress { bus_number, address } => device.bus_number == bus_number && device.address == address,
+            Self::InstanceId(instance_id) => device
+                .instance_id
+                .as_deref()
+                .is_some_and(|device_instance_id| device_instance_id.eq_ignore_ascii_case(instance_id)),
+            Self::BusAddress { bus_number, address } => device.bus_number == *bus_number && device.address == *address,
         }
     }
 }
@@ -80,7 +91,7 @@ pub struct UsbRedirectionConfig {
     pub auto: bool,
     /// Base classes that [`UsbDeviceMatch::Any`] and [`Self::auto`] keep local.
     ///
-    /// Explicit VID/PID and address rules are not affected.
+    /// Explicit VID/PID, instance ID and address rules are not affected.
     pub local_classes: Vec<u8>,
 }
 
@@ -99,15 +110,6 @@ impl UsbRedirectionConfig {
     /// Whether this configuration can ever redirect a device.
     pub fn is_enabled(&self) -> bool {
         self.auto || !self.devices.is_empty()
-    }
-
-    /// Whether hotplug notifications are needed to apply this configuration.
-    pub fn needs_hotplug(&self) -> bool {
-        self.auto
-            || self
-                .devices
-                .iter()
-                .any(|rule| matches!(rule, UsbDeviceMatch::VidPid { .. }))
     }
 
     /// Whether a device present when the channel opens is redirected.
@@ -129,9 +131,9 @@ impl UsbRedirectionConfig {
         let kept_local = self.local_classes.iter().any(|class| device.has_class(*class));
         let explicitly_selected = self.devices.iter().any(|rule| match rule {
             UsbDeviceMatch::Any => false,
-            // Bus addresses are reassigned on every plug, so only VID/PID rules follow a device.
+            // Bus addresses are reassigned on every plug, so only identity rules follow a device.
             UsbDeviceMatch::BusAddress { .. } => !hotplug && rule.matches(device),
-            UsbDeviceMatch::VidPid { .. } => rule.matches(device),
+            UsbDeviceMatch::VidPid { .. } | UsbDeviceMatch::InstanceId(_) => rule.matches(device),
         });
         let selected_by_any = self.devices.contains(&UsbDeviceMatch::Any) || (hotplug && self.auto);
 
@@ -171,7 +173,7 @@ impl UsbRedirectionConfig {
                         } else {
                             UsbDeviceMatch::VidPid {
                                 vendor_id: parse_hex(first, item)?,
-                                product_id: Some(parse_hex(second, item)?),
+                                product_id: parse_hex(second, item)?,
                             }
                         };
                         config.devices.push(rule);
@@ -230,10 +232,16 @@ impl UsbRedirectionConfig {
     }
 }
 
-/// Parse `USB\VID_xxxx&PID_yyyy[&...][\instance]` into a VID/PID rule.
+/// Parse `USB\VID_xxxx&PID_yyyy[&...]` into a model rule, or `USB\VID_xxxx&PID_yyyy\INSTANCE` into
+/// a rule for that single device.
 fn parse_instance_id(entry: &str) -> Option<UsbDeviceMatch> {
-    let hardware_id = entry.split('\\').nth(1)?;
-    if !entry.get(..4)?.eq_ignore_ascii_case("USB\\") {
+    let mut parts = entry.split('\\');
+    if !parts.next()?.eq_ignore_ascii_case("USB") {
+        return None;
+    }
+    let hardware_id = parts.next()?;
+    let instance = parts.next();
+    if parts.next().is_some() || instance.is_some_and(str::is_empty) {
         return None;
     }
 
@@ -248,9 +256,13 @@ fn parse_instance_id(entry: &str) -> Option<UsbDeviceMatch> {
         }
     }
 
-    Some(UsbDeviceMatch::VidPid {
-        vendor_id: vendor_id?,
-        product_id,
+    // A vendor-only rule would select every device of that vendor, keyboards included, ahead of the
+    // local classes, so the product ID is required.
+    let (vendor_id, product_id) = (vendor_id?, product_id?);
+
+    Some(match instance {
+        Some(_) => UsbDeviceMatch::InstanceId(entry.to_owned()),
+        None => UsbDeviceMatch::VidPid { vendor_id, product_id },
     })
 }
 
@@ -303,6 +315,7 @@ mod tests {
             address: 4,
             device_class,
             interface_classes: interface_classes.to_vec(),
+            instance_id: None,
         }
     }
 
@@ -315,11 +328,11 @@ mod tests {
             [
                 UsbDeviceMatch::VidPid {
                     vendor_id: 0x046d,
-                    product_id: Some(0xc52b)
+                    product_id: 0xc52b
                 },
                 UsbDeviceMatch::VidPid {
                     vendor_id: 0x1050,
-                    product_id: Some(0x0407)
+                    product_id: 0x0407
                 },
                 UsbDeviceMatch::BusAddress {
                     bus_number: 1,
@@ -359,25 +372,44 @@ mod tests {
     #[test]
     fn parses_rdp_property() {
         let config = UsbRedirectionConfig::parse_rdp(
-            "USB\\VID_045E&PID_0040\\6&2C7FB8E&0&1; {36fc9e60-c465-11cf-8056-444553540000};-USB\\VID_1050&PID_0407",
+            r"USB\VID_045E&PID_0040\6&2C7FB8E&0&1; {36fc9e60-c465-11cf-8056-444553540000};USB\VID_2E8A&PID_000A;-USB\VID_1050&PID_0407",
         )
         .expect("valid property");
 
         assert_eq!(
             config.devices,
-            [UsbDeviceMatch::VidPid {
-                vendor_id: 0x045e,
-                product_id: Some(0x0040)
-            }]
+            [
+                UsbDeviceMatch::InstanceId(r"USB\VID_045E&PID_0040\6&2C7FB8E&0&1".to_owned()),
+                UsbDeviceMatch::VidPid {
+                    vendor_id: 0x2e8a,
+                    product_id: 0x000a
+                },
+            ]
         );
         assert_eq!(
             config.exclude,
             [UsbDeviceMatch::VidPid {
                 vendor_id: 0x1050,
-                product_id: Some(0x0407)
+                product_id: 0x0407
             }]
         );
         assert!(!config.auto);
+    }
+
+    #[test]
+    fn instance_ids_select_a_single_device() {
+        let config = UsbRedirectionConfig::parse_rdp(r"usb\vid_1234&pid_5678\SERIAL_A").expect("valid property");
+        let mut selected = device(0x1234, 0x5678, 0xff, &[0xff]);
+        selected.instance_id = Some(r"USB\VID_1234&PID_5678\SERIAL_A".to_owned());
+        let mut other = selected.clone();
+        other.instance_id = Some(r"USB\VID_1234&PID_5678\SERIAL_B".to_owned());
+
+        assert!(config.redirect_at_connect(&selected));
+        assert!(config.redirect_on_hotplug(&selected));
+        assert!(!config.redirect_at_connect(&other));
+        assert!(!config.redirect_on_hotplug(&other));
+        // Without a known instance ID the rule cannot be confirmed, so it selects nothing.
+        assert!(!config.redirect_at_connect(&device(0x1234, 0x5678, 0xff, &[0xff])));
     }
 
     #[test]
@@ -393,7 +425,15 @@ mod tests {
 
     #[test]
     fn rejects_malformed_rdp_entries() {
-        for value in ["USB\\VID_XYZ&PID_0001", "PCI\\VEN_8086&DEV_1234", "USB"] {
+        for value in [
+            r"USB\VID_XYZ&PID_0001",
+            r"PCI\VEN_8086&DEV_1234",
+            "USB",
+            // A vendor-only rule would reach every device of the vendor.
+            r"USB\VID_046D",
+            r"USB\VID_046D&PID_C52B\",
+            r"USB\VID_046D&PID_C52B\A\B",
+        ] {
             assert!(UsbRedirectionConfig::parse_rdp(value).is_err(), "{value}");
         }
     }
@@ -408,7 +448,7 @@ mod tests {
 
         config.exclude.push(UsbDeviceMatch::VidPid {
             vendor_id: 0x046d,
-            product_id: None,
+            product_id: 0xc52b,
         });
         assert!(!config.redirect_at_connect(&mouse));
     }
@@ -430,7 +470,6 @@ mod tests {
 
         assert!(config.redirect_at_connect(&board));
         assert!(!config.redirect_on_hotplug(&board));
-        assert!(!config.needs_hotplug());
     }
 
     #[test]

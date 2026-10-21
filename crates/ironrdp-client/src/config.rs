@@ -3245,16 +3245,15 @@ mod tests {
         let usb = builder.channels.usb.expect("USB redirection is enabled");
         assert_eq!(
             usb.devices,
-            [UsbDeviceMatch::VidPid {
-                vendor_id: 0x2e8a,
-                product_id: Some(0x000a),
-            }]
+            [UsbDeviceMatch::InstanceId(
+                r"USB\VID_2E8A&PID_000A\E66038B7135F2B2E".to_owned()
+            )]
         );
         assert_eq!(
             usb.exclude,
             [UsbDeviceMatch::VidPid {
                 vendor_id: 0x046d,
-                product_id: Some(0xc52b),
+                product_id: 0xc52b,
             }]
         );
     }
