@@ -170,11 +170,10 @@ fn monitor_layout_requires_adjacent_monitors() {
 }
 
 #[test]
-fn monitor_layout_desktop_size_and_area() {
+fn monitor_layout_desktop_size() {
     let layout =
         pdu::DisplayControlMonitorLayout::new(&[primary(1920, 1080), secondary(1080, 1920, 1920, -420)]).unwrap();
     assert_eq!(layout.desktop_size(), (3000, 1920));
-    assert_eq!(layout.area(), 2 * 1920 * 1080);
 }
 
 #[test]

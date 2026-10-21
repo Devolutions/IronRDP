@@ -410,11 +410,6 @@ impl DisplayControlMonitorLayout {
         Self::new(&monitors)
     }
 
-    /// Returns the total area, in square pixels, covered by the monitors of this layout.
-    pub fn area(&self) -> u64 {
-        layout_area(&self.monitors)
-    }
-
     /// Returns the size (width, height), in pixels, of the smallest rectangle containing every monitor.
     pub fn desktop_size(&self) -> (u32, u32) {
         let (left, top, right, bottom) = self.monitors.iter().map(MonitorLayoutEntry::bounds).fold(

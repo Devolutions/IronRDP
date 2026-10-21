@@ -1084,6 +1084,21 @@ struct DisplayLayout {
     device_scale_factor: u32,
 }
 
+impl DisplayLayout {
+    /// A desktop size request that leaves physical size, orientation and scale unspecified.
+    fn unscaled(desktop_width: u32, desktop_height: u32) -> Self {
+        Self {
+            desktop_width,
+            desktop_height,
+            physical_width: 0,
+            physical_height: 0,
+            orientation: 0,
+            desktop_scale_factor: 0,
+            device_scale_factor: 0,
+        }
+    }
+}
+
 const MAX_RDP_VIRTUAL_DESKTOP_DIMENSION: i64 = 32_766;
 const MIN_RDP_VIRTUAL_DESKTOP_DIMENSION: i64 = 200;
 
@@ -1504,15 +1519,7 @@ fn display_layout_from_renderer_size(width: i32, height: i32) -> Option<DisplayL
     let (Ok(desktop_width), Ok(desktop_height)) = (u32::try_from(width), u32::try_from(height)) else {
         return None;
     };
-    (desktop_width != 0 && desktop_height != 0).then_some(DisplayLayout {
-        desktop_width,
-        desktop_height,
-        physical_width: 0,
-        physical_height: 0,
-        orientation: 0,
-        desktop_scale_factor: 0,
-        device_scale_factor: 0,
-    })
+    (desktop_width != 0 && desktop_height != 0).then_some(DisplayLayout::unscaled(desktop_width, desktop_height))
 }
 
 fn native_shell_presentation_enabled(native_shell_integration: bool, native_shell: bool) -> bool {
@@ -11349,16 +11356,8 @@ impl Control {
                         "width and height must be non-zero",
                     )
                 } else {
-                    self.update_display_layout(DisplayLayout {
-                        desktop_width: u32::from(width),
-                        desktop_height: u32::from(height),
-                        physical_width: 0,
-                        physical_height: 0,
-                        orientation: 0,
-                        desktop_scale_factor: 0,
-                        device_scale_factor: 0,
-                    })
-                    .map_or_else(rpc_control_error, |_| ironrdp_agent::ipc::Response::ok())
+                    self.update_display_layout(DisplayLayout::unscaled(u32::from(width), u32::from(height)))
+                        .map_or_else(rpc_control_error, |_| ironrdp_agent::ipc::Response::ok())
                 };
                 let _ = response.send(response_value);
             }
@@ -12745,19 +12744,20 @@ impl Control {
         Ok(())
     }
 
-    /// Rolls back to the confirmed topology after the session dropped a requested layout its
-    /// Display Control capabilities cannot accept, so a later local change is sent again.
+    /// Rolls back to the confirmed topology, if any, after the session dropped a requested layout
+    /// its Display Control capabilities cannot accept.
+    ///
+    /// The rejected layout stays the last one sent, so display change notifications do not retry
+    /// it; any different local layout is sent again.
     fn monitor_layout_rejected(&self) {
         trace_host_call("Renderer::MonitorLayoutRejected");
-        self.last_multimon_layout.borrow_mut().take();
         let confirmed = self.active_monitor_topology.borrow().clone();
-        if let Some(confirmed) = confirmed {
+        if let Some(confirmed) = &confirmed {
             let mut settings = self.settings.borrow_mut();
             settings.desktop_width = confirmed.desktop_width;
             settings.desktop_height = confirmed.desktop_height;
-            drop(settings);
-            *self.configured_monitor_topology.borrow_mut() = Some(confirmed);
         }
+        *self.configured_monitor_topology.borrow_mut() = confirmed;
     }
 
     /// Schedules a multimonitor layout update after a local monitor topology or DPI change.
@@ -12800,15 +12800,7 @@ impl Control {
         if self.state.get() != ConnectionState::Connected {
             return Err(Error::from_hresult(E_FAIL));
         }
-        self.update_display_layout(DisplayLayout {
-            desktop_width: width,
-            desktop_height: height,
-            physical_width: 0,
-            physical_height: 0,
-            orientation: 0,
-            desktop_scale_factor: 0,
-            device_scale_factor: 0,
-        })?;
+        self.update_display_layout(DisplayLayout::unscaled(width, height))?;
         write_out(status, CONTROL_RECONNECT_STARTED)
     }
 
@@ -14186,15 +14178,10 @@ impl IDispatch_Impl for Control_Impl {
                     }
                 }
                 DISPID_MODERN_UPDATE_SESSION_DISPLAY_SETTINGS if arguments.len() == 2 => {
-                    self.update_display_layout(DisplayLayout {
-                        desktop_width: dispatch_variant_u32(&arguments[1])?,
-                        desktop_height: dispatch_variant_u32(&arguments[0])?,
-                        physical_width: 0,
-                        physical_height: 0,
-                        orientation: 0,
-                        desktop_scale_factor: 0,
-                        device_scale_factor: 0,
-                    })
+                    self.update_display_layout(DisplayLayout::unscaled(
+                        dispatch_variant_u32(&arguments[1])?,
+                        dispatch_variant_u32(&arguments[0])?,
+                    ))
                 }
                 DISPID_MODERN_ATTACH_EVENT | DISPID_MODERN_DETACH_EVENT if arguments.len() == 2 => {
                     let event_name = variant_string(&arguments[1], argument_error)?;
@@ -14278,15 +14265,7 @@ impl IRemoteDesktopClient_Impl for Control_Impl {
     }
 
     unsafe fn UpdateSessionDisplaySettings(&self, width: u32, height: u32) -> Result<()> {
-        self.update_display_layout(DisplayLayout {
-            desktop_width: width,
-            desktop_height: height,
-            physical_width: 0,
-            physical_height: 0,
-            orientation: 0,
-            desktop_scale_factor: 0,
-            device_scale_factor: 0,
-        })
+        self.update_display_layout(DisplayLayout::unscaled(width, height))
     }
 
     unsafe fn attachEvent(&self, event_name: Bstr, callback: *mut c_void) -> Result<()> {
@@ -14727,15 +14706,7 @@ impl IMsRdpClient9_Impl for Control_Impl {
         let desktop_width = u32::from(settings.desktop_width);
         let desktop_height = u32::from(settings.desktop_height);
         drop(settings);
-        self.update_display_layout(DisplayLayout {
-            desktop_width,
-            desktop_height,
-            physical_width: 0,
-            physical_height: 0,
-            orientation: 0,
-            desktop_scale_factor: 0,
-            device_scale_factor: 0,
-        })
+        self.update_display_layout(DisplayLayout::unscaled(desktop_width, desktop_height))
     }
 
     unsafe fn UpdateSessionDisplaySettings(
@@ -21748,13 +21719,23 @@ try {
             (3000, 1920)
         );
 
-        // A layout the session drops rolls back to the confirmed topology and can be sent again.
+        // A layout the session drops rolls back to the confirmed topology. The identical layout
+        // is not retried, while any other local layout is sent.
         control.monitor_layout_rejected();
         assert_ne!(control.configured_monitor_topology.borrow().as_ref(), Some(&changed));
         control
             .send_multimon_display_layout(changed, None, None, false)
-            .expect("a rejected layout can be requested again");
+            .expect("an unchanged rejected layout is accepted");
+        assert!(receiver.try_recv().is_err());
+        control
+            .send_multimon_display_layout(two_monitor_topology(MonitorAttributes::default()), None, None, false)
+            .expect("another layout is accepted");
         assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::MonitorLayout(_))));
+
+        // Without a confirmed topology, a rejection leaves nothing configured.
+        control.active_monitor_topology.borrow_mut().take();
+        control.monitor_layout_rejected();
+        assert!(control.configured_monitor_topology.borrow().is_none());
     }
 
     #[test]

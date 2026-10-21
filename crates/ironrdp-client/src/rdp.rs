@@ -680,8 +680,8 @@ impl ResizeRequest {
     /// A layout request advertises its monitors in the GCC Client Monitor Data block, which holds
     /// at most [`MONITOR_COUNT_MAX`] monitors: a larger layout is reduced with
     /// [`DisplayControlMonitorLayout::fit_to_capabilities`]. When no valid reduced layout exists,
-    /// the reconnection advertises no monitor data, like a plain resize: the server then creates
-    /// a single monitor of the requested desktop size. Advertising no monitor data on a plain
+    /// or the layout spans more than 32,766 pixels, the reconnection advertises no monitor data,
+    /// like a plain resize: the server then creates a single monitor of the desktop size. Advertising no monitor data on a plain
     /// resize also means the next connection never pairs the new desktop size with a stale topology.
     fn reconnect_with_new_size(&self, reason: DisplayResizeFallbackReason) -> RdpControlFlow {
         let layout = self.layout.as_ref().and_then(|layout| {
@@ -701,14 +701,28 @@ impl ResizeRequest {
                 })
                 .ok()
         });
-
-        let (width, height) = layout.as_ref().map_or((self.width, self.height), |layout| {
+        // MS-RDPBCGR 2.2.1.3.6: the advertised monitors span at most 32,766 pixels each way.
+        let layout = layout.filter(|layout| {
             let (width, height) = layout.desktop_size();
-            (
-                u16::try_from(width).unwrap_or(u16::MAX),
-                u16::try_from(height).unwrap_or(u16::MAX),
-            )
+            let fits = width <= MAX_VIRTUAL_DESKTOP_DIMENSION && height <= MAX_VIRTUAL_DESKTOP_DIMENSION;
+            if !fits {
+                warn!(
+                    width,
+                    height, "Reconnecting without monitor data: the layout exceeds the virtual desktop limit"
+                );
+            }
+            fits
         });
+
+        let (width, height) = match &layout {
+            Some(layout) => layout.desktop_size(),
+            // Without monitor data the server creates a single monitor of the desktop size.
+            None => MonitorLayoutEntry::adjust_display_size(u32::from(self.width), u32::from(self.height)),
+        };
+        let (width, height) = (
+            u16::try_from(width).unwrap_or(u16::MAX),
+            u16::try_from(height).unwrap_or(u16::MAX),
+        );
         let monitor_layout = layout.map(|layout| ClientMonitorData {
             monitors: layout
                 .monitors()
@@ -748,6 +762,9 @@ struct TimedResizeRequest {
 }
 
 const DISPLAY_CONTROL_READY_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The largest virtual desktop width or height the GCC Client Monitor Data block may describe.
+const MAX_VIRTUAL_DESKTOP_DIMENSION: u32 = 32_766;
 
 #[derive(Default)]
 struct ResizeQueue {
@@ -1278,7 +1295,24 @@ impl RdpClient {
                     reconnect_attempt = 0;
                     self.config.connector.desktop_size.width = width;
                     self.config.connector.desktop_size.height = height;
-                    self.config.connector.monitor_layout = monitor_layout;
+                    // A plain resize keeps advertising a single configured monitor, resized; several
+                    // configured monitors no longer describe the new desktop and are dropped.
+                    self.config.connector.monitor_layout = monitor_layout.or_else(|| {
+                        self.config
+                            .connector
+                            .monitor_layout
+                            .as_ref()
+                            .filter(|monitor_layout| monitor_layout.monitors.len() == 1)
+                            .map(|_| ClientMonitorData {
+                                monitors: vec![Monitor {
+                                    left: 0,
+                                    top: 0,
+                                    right: i32::from(width).saturating_sub(1),
+                                    bottom: i32::from(height).saturating_sub(1),
+                                    flags: MonitorFlags::PRIMARY,
+                                }],
+                            })
+                    });
                 }
                 Ok(RdpControlFlow::TerminatedGracefully(reason)) => {
                     if !self.send_output_event(RdpOutputEvent::Terminated(Ok(reason))).await {
@@ -1458,6 +1492,23 @@ async fn send_cancellable_output_event(
     close_receiver: &mut watch::Receiver<bool>,
 ) -> Result<bool, mpsc::error::SendError<RdpOutputEvent>> {
     output_event_sender.send_cancellable(event, close_receiver).await
+}
+
+/// Reports a monitor layout dropped because it does not fit the server's Display Control capabilities.
+///
+/// Returns `false` when the output channel is closed and the session must end.
+async fn report_rejected_monitor_layout(
+    output_event_sender: &crate::output_channel::OutputEventSender,
+    close_receiver: &mut watch::Receiver<bool>,
+    error: &SessionError,
+) -> SessionResult<bool> {
+    warn!(%error, "Dropping a monitor layout the server cannot accept");
+    send_active_output_event(
+        output_event_sender,
+        RdpOutputEvent::MonitorLayoutRejected,
+        close_receiver,
+    )
+    .await
 }
 
 async fn send_active_output_event(
@@ -3546,14 +3597,7 @@ async fn active_session(
                         } else if let Some(dvc_batch) = request.prepare(&mut active_stage) {
                             match dvc_batch {
                                 Err(error) if request.layout.is_some() => {
-                                    warn!(%error, "Dropping a monitor layout the server cannot accept");
-                                    if !send_active_output_event(
-                                        output_event_sender,
-                                        RdpOutputEvent::MonitorLayoutRejected,
-                                        close_receiver,
-                                    )
-                                    .await?
-                                    {
+                                    if !report_rejected_monitor_layout(output_event_sender, close_receiver, &error).await? {
                                         return Ok(RdpControlFlow::TerminatedGracefully(
                                             GracefulDisconnectReason::UserInitiated,
                                         ));
@@ -4485,15 +4529,8 @@ async fn active_session(
                         .ok_or_else(|| ironrdp_session::general_err!("Display Control became unavailable"))?
                     {
                         Err(error) if request.layout.is_some() => {
-                            warn!(%error, "Dropping a monitor layout the server cannot accept");
                             resize_queue.pending = None;
-                            if !send_active_output_event(
-                                output_event_sender,
-                                RdpOutputEvent::MonitorLayoutRejected,
-                                close_receiver,
-                            )
-                            .await?
-                            {
+                            if !report_rejected_monitor_layout(output_event_sender, close_receiver, &error).await? {
                                 return Ok(RdpControlFlow::TerminatedGracefully(
                                     GracefulDisconnectReason::UserInitiated,
                                 ));
@@ -5001,6 +5038,33 @@ mod tests {
             panic!("expected a reconnection");
         };
         assert!(monitor_layout.is_none());
+    }
+
+    #[test]
+    fn monitor_layout_fallback_respects_the_virtual_desktop_limit() {
+        let monitors = (0..5)
+            .map(|index| {
+                let entry = if index == 0 {
+                    MonitorLayoutEntry::new_primary(8192, 200).unwrap()
+                } else {
+                    MonitorLayoutEntry::new_secondary(8192, 200).unwrap()
+                };
+                entry.with_position(index * 8192, 0).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let request = ResizeRequest::from_layout(DisplayControlMonitorLayout::new(&monitors).unwrap());
+
+        let RdpControlFlow::ReconnectWithNewSize {
+            width,
+            height,
+            monitor_layout,
+            ..
+        } = request.reconnect_with_new_size(DisplayResizeFallbackReason::DisplayControlUnavailable)
+        else {
+            panic!("expected a reconnection");
+        };
+        assert!(monitor_layout.is_none());
+        assert_eq!((width, height), (8192, 200));
     }
 
     #[test]
