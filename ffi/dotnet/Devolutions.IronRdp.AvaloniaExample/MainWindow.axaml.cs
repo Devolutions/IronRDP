@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     readonly InputDatabase? _inputDatabase = InputDatabase.New();
     ActiveStage? _activeStage;
     DecodedImage? _decodedImage;
+    readonly object _stageLock = new();
     Framed<Stream>? _framed;
     WinCliprdr? _cliprdr;
     private readonly RendererModel _renderModel;
@@ -60,7 +61,7 @@ public partial class MainWindow : Window
     {
         if (_activeStage != null)
         {
-            var output = _activeStage.EncodedResize((uint)updatedWidth, (uint)updatedHeight);
+            var output = WithStageLock(() => _activeStage.EncodedResize((uint)updatedWidth, (uint)updatedHeight));
             if (output == null)
             {
                 return;
@@ -240,11 +241,17 @@ public partial class MainWindow : Window
         {
             try
             {
-                var data = _decodedImage!.GetData();
-                var bufferSize = (int)data.GetSize();
-
-                var buffer = new byte[bufferSize];
-                data.Fill(buffer);
+                int bufferSize, width, height;
+                byte[] buffer;
+                lock (_stageLock)
+                {
+                    var data = _decodedImage!.GetData();
+                    bufferSize = (int)data.GetSize();
+                    buffer = new byte[bufferSize];
+                    data.Fill(buffer);
+                    width = _decodedImage.GetWidth();
+                    height = _decodedImage.GetHeight();
+                }
 
                 if (_imageControl is not { Source: WriteableBitmap writableBitmap })
                 {
@@ -255,7 +262,7 @@ public partial class MainWindow : Window
                 if (Math.Abs(bufferSize - currentBitmapSize) > 1)
                 {
                     var newBitmap =
-                        new WriteableBitmap(new PixelSize(_decodedImage.GetWidth(), _decodedImage.GetHeight()),
+                        new WriteableBitmap(new PixelSize(width, height),
                             new Vector(96, 96), Avalonia.Platform.PixelFormat.Rgba8888, AlphaFormat.Opaque);
                     _imageControl.Source = newBitmap;
                     writableBitmap = newBitmap;
@@ -300,7 +307,7 @@ public partial class MainWindow : Window
                 while (keepLooping)
                 {
                     var (action, payload) = await _framed!.ReadPdu();
-                    var outputIterator = _activeStage!.Process(_decodedImage!, action, payload);
+                    var outputIterator = WithStageLock(() => _activeStage!.Process(_decodedImage!, action, payload));
                     keepLooping = await HandleActiveStageOutput(outputIterator);
                 }
 
@@ -332,17 +339,17 @@ public partial class MainWindow : Window
                 if (messageType == ClipboardMessageType.SendFormatData)
                 {
                     var formatData = message.GetSendFormatData()!;
-                    frame = _activeStage!.SubmitClipboardFormatData(formatData);
+                    frame = WithStageLock(() => _activeStage!.SubmitClipboardFormatData(formatData));
                 }
                 else if (messageType == ClipboardMessageType.SendInitiateCopy)
                 {
                     var initiateCopy = message.GetSendInitiateCopy()!;
-                    frame = _activeStage!.InitiateClipboardCopy(initiateCopy);
+                    frame = WithStageLock(() => _activeStage!.InitiateClipboardCopy(initiateCopy));
                 }
                 else if (messageType == ClipboardMessageType.SendInitiatePaste)
                 {
                     var initiatePaste = message.GetSendInitiatePaste()!;
-                    frame = _activeStage!.InitiateClipboardPaste(initiatePaste);
+                    frame = WithStageLock(() => _activeStage!.InitiateClipboardPaste(initiatePaste));
                 }
                 else
                 {
@@ -398,8 +405,7 @@ public partial class MainWindow : Window
 
         var buttonOperation = MouseButton.New(buttonType).AsOperationMouseButtonPressed();
         var fastpath = _inputDatabase!.Apply(buttonOperation);
-        var output = _activeStage!.ProcessFastpathInput(_decodedImage!, fastpath);
-        var _ = HandleActiveStageOutput(output);
+        SendFastpath(fastpath);
     }
 
     private void OnPointerMoved(object sender, PointerEventArgs e)
@@ -414,8 +420,7 @@ public partial class MainWindow : Window
         var y = (ushort)position.Y;
         var mouseMovedEvent = MousePosition.New(x, y).AsMoveOperation();
         var fastpath = _inputDatabase!.Apply(mouseMovedEvent);
-        var output = _activeStage.ProcessFastpathInput(_decodedImage, fastpath);
-        var _ = HandleActiveStageOutput(output);
+        SendFastpath(fastpath);
     }
 
     private void OnPointerReleased(object sender, PointerReleasedEventArgs e)
@@ -440,8 +445,7 @@ public partial class MainWindow : Window
 
         var buttonOperation = MouseButton.New(buttonType).AsOperationMouseButtonReleased();
         var fastpath = _inputDatabase!.Apply(buttonOperation);
-        var output = _activeStage!.ProcessFastpathInput(_decodedImage!, fastpath);
-        var _ = HandleActiveStageOutput(output);
+        SendFastpath(fastpath);
     }
 
     private void OnKeyDown(object? sender, KeyEventArgs? e)
@@ -462,8 +466,7 @@ public partial class MainWindow : Window
 
         var keyOperation = Scancode.FromU16(keycode.Value).AsOperationKeyPressed();
         var fastpath = _inputDatabase!.Apply(keyOperation);
-        var output = _activeStage.ProcessFastpathInput(_decodedImage, fastpath);
-        var _ = HandleActiveStageOutput(output);
+        SendFastpath(fastpath);
     }
 
     private void OnKeyUp(object? sender, KeyEventArgs? e)
@@ -484,8 +487,21 @@ public partial class MainWindow : Window
 
         var keyOperation = Scancode.FromU16(keycode.Value).AsOperationKeyReleased();
         var fastpath = _inputDatabase!.Apply(keyOperation);
-        var output = _activeStage.ProcessFastpathInput(_decodedImage, fastpath);
+        SendFastpath(fastpath);
+    }
+
+    private void SendFastpath(FastPathInputEventIterator fastpath)
+    {
+        var output = WithStageLock(() => _activeStage!.ProcessFastpathInput(_decodedImage!, fastpath));
         var _ = HandleActiveStageOutput(output);
+    }
+
+    private T WithStageLock<T>(Func<T> call)
+    {
+        lock (_stageLock)
+        {
+            return call();
+        }
     }
 
     private async Task<bool> HandleActiveStageOutput(ActiveStageOutputIterator outputIterator)
@@ -516,7 +532,7 @@ public partial class MainWindow : Window
                 }
                 else if (output.GetEnumType() == ActiveStageOutputType.DeactivateAll)
                 {
-                    var activationSequence = _activeStage!.CreateConnectionActivation();
+                    var activationSequence = WithStageLock(() => _activeStage!.CreateConnectionActivation());
                     var writeBuf = WriteBuf.New();
                     while (true)
                     {
@@ -535,20 +551,23 @@ public partial class MainWindow : Window
                         var staticChannelChunkSize = finalized.GetStaticChannelChunkSize();
                         var windowSupportLevel = finalized.GetWindowSupportLevel();
 
-                        _decodedImage = DecodedImage.New(PixelFormat.RgbA32, desktopSize.GetWidth(),
-                            desktopSize.GetHeight());
+                        lock (_stageLock)
+                        {
+                            _decodedImage = DecodedImage.New(PixelFormat.RgbA32, desktopSize.GetWidth(),
+                                desktopSize.GetHeight());
 
-                        _activeStage!.Reactivate(
-                            ioChannelId,
-                            userChannelId,
-                            shareId,
-                            enableServerPointer,
-                            pointerSoftwareRendering,
-                            staticChannelChunkSize,
-                            windowSupportLevel
-                        );
+                            _activeStage!.Reactivate(
+                                ioChannelId,
+                                userChannelId,
+                                shareId,
+                                enableServerPointer,
+                                pointerSoftwareRendering,
+                                staticChannelChunkSize,
+                                windowSupportLevel
+                            );
 
-                        _activeStage.SetEnableServerPointer(enableServerPointer);
+                            _activeStage.SetEnableServerPointer(enableServerPointer);
+                        }
 
                         break;
                     }
@@ -580,7 +599,7 @@ public partial class MainWindow : Window
 
     public void OnDisconnectClick(object? sender, RoutedEventArgs e)
     {
-        var output = this._activeStage!.GracefulShutdown();
+        var output = WithStageLock(() => this._activeStage!.GracefulShutdown());
 
         HandleActiveStageOutput(output).ContinueWith(t =>
         {

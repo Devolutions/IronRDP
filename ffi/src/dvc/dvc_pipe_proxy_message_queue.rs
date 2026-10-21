@@ -13,6 +13,7 @@ pub mod ffi {
     pub struct DvcPipeProxyMessage(pub DvcPipeProxyMessageInner);
 
     impl DvcPipeProxyMessage {
+        #[diplomat::attr(auto, getter = "channel_id")]
         pub fn get_channel_id(&self) -> u32 {
             self.0.0
         }
@@ -43,6 +44,7 @@ pub mod ffi {
             Ok(message)
         }
 
+        #[diplomat::attr(auto, getter = "sink")]
         pub fn get_sink(&self) -> Box<DvcPipeProxyMessageSink> {
             Box::new(DvcPipeProxyMessageSink(self.0.tx.clone()))
         }

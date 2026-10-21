@@ -14,6 +14,7 @@ pub mod ffi {
     }
 
     impl Written {
+        #[diplomat::attr(auto, getter = "written_type")]
         pub fn get_written_type(&self) -> WrittenType {
             match &self.0 {
                 ironrdp::connector::Written::Size(_) => WrittenType::Size,
@@ -21,6 +22,7 @@ pub mod ffi {
             }
         }
 
+        #[diplomat::attr(auto, getter = "size")]
         pub fn get_size(&self) -> Box<OptionalUsize> {
             match &self.0 {
                 ironrdp::connector::Written::Size(size) => Box::new(OptionalUsize(Some(size.get()))),
@@ -33,6 +35,7 @@ pub mod ffi {
     pub struct ConnectionResult(pub Option<ironrdp::connector::ConnectionResult>);
 
     impl ConnectionResult {
+        #[diplomat::attr(auto, getter = "io_channel_id")]
         pub fn get_io_channel_id(&self) -> Result<u16, Box<IronRdpError>> {
             Ok(self
                 .0
@@ -41,6 +44,7 @@ pub mod ffi {
                 .io_channel_id)
         }
 
+        #[diplomat::attr(auto, getter = "user_channel_id")]
         pub fn get_user_channel_id(&self) -> Result<u16, Box<IronRdpError>> {
             Ok(self
                 .0
@@ -49,6 +53,7 @@ pub mod ffi {
                 .user_channel_id)
         }
 
+        #[diplomat::attr(auto, getter = "share_id")]
         pub fn get_share_id(&self) -> Result<u32, Box<IronRdpError>> {
             Ok(self
                 .0
@@ -57,6 +62,7 @@ pub mod ffi {
                 .share_id)
         }
 
+        #[diplomat::attr(auto, getter = "desktop_size")]
         pub fn get_desktop_size(&self) -> Result<Box<DesktopSize>, Box<IronRdpError>> {
             Ok(Box::new(DesktopSize(
                 self.0
@@ -66,6 +72,7 @@ pub mod ffi {
             )))
         }
 
+        #[diplomat::attr(auto, getter = "enable_server_pointer")]
         pub fn get_enable_server_pointer(&self) -> Result<bool, Box<IronRdpError>> {
             Ok(self
                 .0
@@ -74,6 +81,7 @@ pub mod ffi {
                 .enable_server_pointer)
         }
 
+        #[diplomat::attr(auto, getter = "pointer_software_rendering")]
         pub fn get_pointer_software_rendering(&self) -> Result<bool, Box<IronRdpError>> {
             Ok(self
                 .0

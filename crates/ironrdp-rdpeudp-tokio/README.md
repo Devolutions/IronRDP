@@ -8,9 +8,9 @@ Legacy RDP-UDP v1/v2 data transfer, lossy RDP-UDP-L, FEC, and DTLS are not imple
 
 This crate is the I/O layer for three sans-I/O pieces:
 
-- [`ironrdp-rdpeudp`](../ironrdp-rdpeudp): reliable UDP with congestion control
+- [`ironrdp-rdpeudp`](https://docs.rs/ironrdp-rdpeudp): reliable UDP with congestion control
 - `tokio-rustls`: encryption over the RDP-UDP byte stream
-- [`ironrdp-rdpemt`](../ironrdp-rdpemt): tunnel negotiation and data framing
+- [`ironrdp-rdpemt`](https://docs.rs/ironrdp-rdpemt): tunnel negotiation and data framing
 
 ## Architecture
 

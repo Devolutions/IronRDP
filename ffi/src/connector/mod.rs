@@ -232,6 +232,7 @@ pub mod ffi {
             Ok(connector.next_pdu_hint().map(PduHint).map(Box::new))
         }
 
+        #[diplomat::attr(auto, getter = "dyn_state")]
         pub fn get_dyn_state(&self) -> Result<Box<DynState<'_>>, Box<IronRdpError>> {
             let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
@@ -265,6 +266,7 @@ pub mod ffi {
     pub struct DynState<'a>(pub &'a dyn ironrdp::connector::State);
 
     impl<'a> DynState<'a> {
+        #[diplomat::attr(auto, getter = "name")]
         pub fn get_name(&'a self, writeable: &'a mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
             let name = self.0.name();
             write!(writeable, "{name}")?;

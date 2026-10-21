@@ -8,6 +8,7 @@ pub mod ffi {
     pub struct ClipboardMessage(pub ironrdp::cliprdr::backend::ClipboardMessage);
 
     impl ClipboardMessage {
+        #[diplomat::attr(auto, getter = "message_type")]
         pub fn get_message_type(&self) -> ClipboardMessageType {
             match &self.0 {
                 ironrdp::cliprdr::backend::ClipboardMessage::SendInitiateCopy(_) => {
@@ -30,6 +31,7 @@ pub mod ffi {
             }
         }
 
+        #[diplomat::attr(auto, getter = "send_initiate_copy")]
         pub fn get_send_initiate_copy(&self) -> Option<Box<ClipboardFormatIterator>> {
             match &self.0 {
                 ironrdp::cliprdr::backend::ClipboardMessage::SendInitiateCopy(val) => Some(val.clone()),
@@ -39,6 +41,7 @@ pub mod ffi {
             .map(Box::new)
         }
 
+        #[diplomat::attr(auto, getter = "send_format_data")]
         pub fn get_send_format_data(&self) -> Option<Box<FormatDataResponse>> {
             match &self.0 {
                 ironrdp::cliprdr::backend::ClipboardMessage::SendFormatData(val) => Some(val.clone()),
@@ -49,6 +52,7 @@ pub mod ffi {
             .map(Box::new)
         }
 
+        #[diplomat::attr(auto, getter = "send_initiate_paste")]
         pub fn get_send_initiate_paste(&self) -> Option<Box<ClipboardFormatId>> {
             match &self.0 {
                 ironrdp::cliprdr::backend::ClipboardMessage::SendInitiatePaste(val) => Some(*val),
@@ -58,6 +62,7 @@ pub mod ffi {
             .map(Box::new)
         }
 
+        #[diplomat::attr(auto, getter = "send_file_contents_request")]
         pub fn get_send_file_contents_request(&self) -> Option<Box<FfiFileContentsRequest>> {
             match &self.0 {
                 ironrdp::cliprdr::backend::ClipboardMessage::SendFileContentsRequest(val) => Some(val.clone()),
@@ -67,6 +72,7 @@ pub mod ffi {
             .map(Box::new)
         }
 
+        #[diplomat::attr(auto, getter = "send_file_contents_response")]
         pub fn get_send_file_contents_response(&self) -> Option<Box<FfiFileContentsResponse>> {
             match &self.0 {
                 ironrdp::cliprdr::backend::ClipboardMessage::SendFileContentsResponse(val) => Some(val.clone()),
@@ -76,6 +82,7 @@ pub mod ffi {
             .map(Box::new)
         }
 
+        #[diplomat::attr(auto, getter = "error")]
         pub fn get_error(&self) -> Option<Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::cliprdr::backend::ClipboardMessage::Error(e) => {

@@ -17,3 +17,6 @@ Do not mark implementation-only, test, or example dependencies.
 
 The marker records that a breaking dependency change can require a breaking crate release.
 Add or remove it as API exposure changes, and preserve a short condition or type note when it clarifies non-obvious exposure.
+
+Keep third-party dependencies out of `[workspace.dependencies]`, which is for workspace-internal crates, because release-plz cannot see that a dependant needs a version bump when no commit touches its files.
+Do not add new uses of `num-derive` or `num-traits`; they are being phased out.

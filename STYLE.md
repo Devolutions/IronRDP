@@ -381,6 +381,7 @@ Exception: no period for brief comments (e.g., `// VER`, `// RSV`, `// ATYP`)
 
 For `.md` and `.adoc` files, prefer a sentence-per-line format, don't wrap lines.
 If the line is too long, you want to split the sentence in two.
+Code comments and doc comments follow the same rule, except that a sentence wraps where it would exceed the line-length limit.
 
 **Rationale:** much easier to edit the text and read the diff, see [this link][asciidoctor-practices].
 

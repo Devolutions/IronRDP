@@ -223,10 +223,17 @@ that adds the winit/softbuffer GUI event loop, the clap CLI, the inquire prompts
 
 #### [`crates/ironrdp-daemon`](./crates/ironrdp-daemon)
 
-Internal reusable persistent RDP-session support. It provides local RPC daemon lifecycle and
+Reusable persistent RDP-session support. It provides local RPC daemon lifecycle and
 server handling, retained framebuffer, input and screenshot handling, session log buffering, NOW
 endpoint management, and durable NOW operations. Its RPC schema and transport dependency is
-[`ironrdp-rpc`](./crates/ironrdp-rpc); it is not published.
+[`ironrdp-rpc`](./crates/ironrdp-rpc).
+
+#### [`crates/ironrdp-rpc`](./crates/ironrdp-rpc)
+
+Shared local RPC protocol and transport: typed request/response schema, binary codecs, framed
+messages, Unix-domain-socket and Windows named-pipe transports. Used by `ironrdp-daemon` and its
+local clients (`ironrdp-agent`, `ironrdp-viewer`, `ironrdp-activex`); both endpoints must use
+compatible protocol versions.
 
 #### [`crates/ironrdp-web`](./crates/ironrdp-web)
 
