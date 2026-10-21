@@ -1,0 +1,31 @@
+[package]
+name = "ironrdp-rdpeusb-native"
+version = "0.1.0"
+readme = "README.md"
+description = "Native MS-RDPEUSB (URBDRC) USB device backend for IronRDP clients"
+edition.workspace = true
+rust-version = "1.94"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+futures-core = "0.3"
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.8" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
+ironrdp-rdpeusb = { path = "../ironrdp-rdpeusb", version = "0.1" } # public
+ironrdp-usb = { path = "../ironrdp-usb", version = "0.1" }
+nusb = { version = "0.2", features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+tracing = { version = "0.1", features = ["log"] }
+
+[lints]
+workspace = true
