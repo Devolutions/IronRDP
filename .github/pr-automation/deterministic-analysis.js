@@ -14,10 +14,11 @@ const DEPENDENCY_MANIFEST = /(?:^|\/)(?:Cargo\.toml|Cargo\.lock|package\.json|pa
 const INTENT_FILE = /(?:^|\/)(?:INTENT[^/]*|[^/]+\.intent[^/]*)\.md$/;
 const RUST_TEST_PATH = /(?:^|\/)tests\/|^crates\/ironrdp-testsuite-[^/]+\/|(?:^|\/)(?:[^/]+_)?tests?\.rs$/;
 const CSHARP_TEST_PATH = /(?:^|\/)(?:tests|[^/]*\.Tests)\//i;
-const RUST_TEST_MARKER = /#\[(?:[\w:]+::)?test\b|#\[cfg\(test\)\]|#\[rstest\b|\bproptest!|\bexpect!\[/;
+// `#[cfg(...)]` attributes are recognised separately, because their predicate needs parsing.
+const RUST_TEST_MARKER = /#\[(?:[\w:]+::)?test\b|#\[rstest\b|\bproptest!|\bexpect!\[/;
 const CSHARP_TEST_MARKER = /\[(?:Fact|Theory|Test|TestMethod|TestCase)\b/;
-// Attributes and macros that open a test region in the base revision of a source file.
-const RUST_TEST_REGION = /#\[cfg\(test\)\]|#\[(?:[\w:]+::)?test\b|#\[rstest\b|\bproptest!/g;
+// Test functions and macros whose body is a test region in the base revision of a source file.
+const RUST_TEST_FUNCTION = /#\[(?:[\w:]+::)?test\b|#\[rstest\b|\bproptest!/g;
 const CSHARP_TEST_REGION = /\[(?:Fact|Theory|Test|TestMethod|TestCase)\b/g;
 const SHA = /^[0-9a-f]{40}$/;
 
@@ -41,10 +42,10 @@ function isTestPathOrMarker(file) {
   const testPath = pathsOf(file).some((path) =>
     (path.endsWith(".rs") && RUST_TEST_PATH.test(path)) || (path.endsWith(".cs") && CSHARP_TEST_PATH.test(path)));
   if (testPath) return true;
-  const marker = file.filename.endsWith(".rs") ? RUST_TEST_MARKER
-    : file.filename.endsWith(".cs") ? CSHARP_TEST_MARKER
-      : null;
-  return marker !== null && changedPatchLines(file).some((line) => marker.test(line));
+  if (file.filename.endsWith(".rs")) {
+    return changedPatchLines(file).some((line) => RUST_TEST_MARKER.test(line) || testCfgAttributes(line).length > 0);
+  }
+  return file.filename.endsWith(".cs") && changedPatchLines(file).some((line) => CSHARP_TEST_MARKER.test(line));
 }
 
 // An edit inside an existing test can change no marker line, so it is located in the base revision.
@@ -52,11 +53,45 @@ function needsBaseRead(file) {
   return /\.(?:rs|cs)$/.test(basePathOf(file)) && file.status !== "added";
 }
 
+// A `cfg` predicate selects test code when it names `test` other than as `not(test)`, such as
+// `all(test, feature = "openh264-bundled")`. String values like `feature = "test"` do not count.
+function isTestPredicate(predicate) {
+  return /\btest\b/.test(predicate
+    .replace(/"(?:[^"\\]|\\.)*"/g, "\"\"")
+    .replace(/\bnot\s*\(\s*test\s*\)/g, ""));
+}
+
+// Offsets spanning each `#[cfg(<test predicate>)]` attribute in the text.
+function testCfgAttributes(text) {
+  const attributes = [];
+  for (const match of text.matchAll(/#\[\s*cfg\s*\(/g)) {
+    let depth = 1;
+    let index = match.index + match[0].length;
+    for (; index < text.length && depth > 0; index += 1) {
+      if (text[index] === "\"") {
+        for (index += 1; index < text.length && text[index] !== "\""; index += 1) {
+          if (text[index] === "\\") index += 1;
+        }
+      } else if (text[index] === "(") depth += 1;
+      else if (text[index] === ")") depth -= 1;
+    }
+    const close = /^\s*\]/.exec(text.slice(index, index + 64));
+    if (depth !== 0 || !close) continue;
+    if (isTestPredicate(text.slice(match.index + match[0].length, index - 1))) {
+      attributes.push({ start: match.index, end: index + close[0].length });
+    }
+  }
+  return attributes;
+}
+
 // Offsets of braces, brackets, parentheses, and semicolons outside comments and literals.
 function* structuralOffsets(text, from) {
   for (let index = from; index < text.length; index += 1) {
     const char = text[index];
     const next = text[index + 1];
+    const startsToken = !/\w/.test(text[index - 1] || "");
+    // Raw strings, including byte and C raw strings: `r#"..."#`, `br#"..."#`, `cr"..."`.
+    const raw = startsToken && /[bcr]/.test(char) ? /^[bc]?r(#*)"/.exec(text.slice(index, index + 260)) : null;
     if (char === "/" && next === "/") {
       index = text.indexOf("\n", index);
       if (index < 0) return;
@@ -64,33 +99,33 @@ function* structuralOffsets(text, from) {
       index = text.indexOf("*/", index + 2);
       if (index < 0) return;
       index += 1;
-    } else if (char === "r" && !/\w/.test(text[index - 1] || "") && /^r#*"/.test(text.slice(index, index + 130))) {
-      const hashes = /^r(#*)"/.exec(text.slice(index, index + 130))[1];
-      index = text.indexOf(`"${hashes}`, index + hashes.length + 2);
+    } else if (raw) {
+      index = text.indexOf(`"${raw[1]}`, index + raw[0].length);
       if (index < 0) return;
-      index += hashes.length;
+      index += raw[1].length;
     } else if (char === "\"") {
+      // Also ends `b"..."` and `c"..."`, whose prefix is skipped as an identifier character.
       for (index += 1; index < text.length && text[index] !== "\""; index += 1) {
         if (text[index] === "\\") index += 1;
       }
     } else if (char === "'") {
-      // A lifetime has no closing quote; an escaped character literal ends at the next quote.
+      // Character and byte literals such as `'{'`, `b'}'`, `'\''`, and `'😀'` close within a few
+      // code units; a lifetime such as `'a` never closes.
       if (next === "\\") index = Math.max(index, text.indexOf("'", index + 3));
       else if (text[index + 2] === "'") index += 2;
+      else if (text[index + 3] === "'" && !/[\w]/.test(next)) index += 3;
     } else if ("{};()[]".includes(char)) {
       yield index;
     }
   }
 }
 
-// Each region runs from a test attribute to the end of the item it annotates. When the item's end
-// cannot be found, the region runs to the end of the file so the change is still reviewed.
-function testRegions(text, pattern) {
+function lineIndex(text) {
   const lineStarts = [0];
   for (let index = text.indexOf("\n"); index >= 0; index = text.indexOf("\n", index + 1)) {
     lineStarts.push(index + 1);
   }
-  const lineAt = (offset) => {
+  return (offset) => {
     let low = 0;
     let high = lineStarts.length - 1;
     while (low < high) {
@@ -99,48 +134,65 @@ function testRegions(text, pattern) {
     }
     return low + 1;
   };
+}
+
+// The line ending the item that starts after `from`: its outermost closing brace, or its first
+// semicolon outside brackets and braces. An item whose end cannot be found runs to the end of the file.
+function itemEnd(text, from, lineAt) {
+  let depth = 0;
+  // Parentheses and brackets hide semicolons such as the one in `[u8; 4]`; an attribute's own
+  // closing bracket may be the first one seen, so the count never drops below zero.
+  let nesting = 0;
+  for (const offset of structuralOffsets(text, from)) {
+    const char = text[offset];
+    if (char === "(" || char === "[") nesting += 1;
+    else if (char === ")" || char === "]") nesting = Math.max(0, nesting - 1);
+    else if (char === "{") depth += 1;
+    else if (char === "}" && depth > 1) depth -= 1;
+    else if ((char === ";" && depth === 0 && nesting === 0) || (char === "}" && depth === 1)) return lineAt(offset);
+  }
+  return Infinity;
+}
+
+// An inline test module must be the last item in its file (`rust-style`, clippy's
+// `items_after_test_module`), so its region runs to the end of the file without matching braces.
+// An out-of-line `mod name;` covers only its declaration. Other test items, and test functions
+// before the first inline test module, end where their item ends.
+function rustTestRegions(text, lineAt) {
   const regions = [];
-  for (const match of text.matchAll(pattern)) {
-    let end = Infinity;
-    let depth = 0;
-    // Parentheses and brackets hide semicolons such as the one in `[u8; 4]`; the attribute's own
-    // closing bracket may be the first one seen, so the count never drops below zero.
-    let nesting = 0;
-    for (const offset of structuralOffsets(text, match.index + match[0].length)) {
-      const char = text[offset];
-      if (char === "(" || char === "[") {
-        nesting += 1;
-        continue;
-      }
-      if (char === ")" || char === "]") {
-        nesting = Math.max(0, nesting - 1);
-        continue;
-      }
-      if (char === "{") {
-        depth += 1;
-        continue;
-      }
-      if (char === "}" && depth > 1) {
-        depth -= 1;
-        continue;
-      }
-      // The first semicolon outside braces ends a braceless item; the outermost closing brace ends the rest.
-      if ((char === ";" && depth === 0 && nesting === 0) || (char === "}" && depth === 1)) {
-        end = lineAt(offset);
-        break;
-      }
+  let moduleStart = Infinity;
+  for (const attribute of testCfgAttributes(text)) {
+    const module = /^(?:\s|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/|#!?\[[^\]]*\])*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+\w+\s*([;{])/
+      .exec(text.slice(attribute.end, attribute.end + 4096));
+    const start = lineAt(attribute.start);
+    if (module?.[1] === "{") {
+      moduleStart = Math.min(moduleStart, attribute.start);
+      regions.push([start, Infinity]);
+    } else if (module) {
+      regions.push([start, lineAt(attribute.end + module[0].length - 1)]);
+    } else if (attribute.start < moduleStart) {
+      regions.push([start, itemEnd(text, attribute.end, lineAt)]);
     }
-    regions.push([lineAt(match.index), end]);
+  }
+  for (const match of text.matchAll(RUST_TEST_FUNCTION)) {
+    if (match.index > moduleStart) continue;
+    regions.push([lineAt(match.index), itemEnd(text, match.index + match[0].length, lineAt)]);
   }
   return regions;
 }
 
+function testRegions(text, path) {
+  const lineAt = lineIndex(text);
+  if (path.endsWith(".rs")) return rustTestRegions(text, lineAt);
+  return [...text.matchAll(CSHARP_TEST_REGION)]
+    .map((match) => [lineAt(match.index), itemEnd(text, match.index + match[0].length, lineAt)]);
+}
 // Removed lines carry their base line number; an added line sits between two base lines. The patch
 // is relative to the merge base, so every context and removed line must match the base file there;
 // a hunk that does not is located nowhere and selects the review.
 function touchesTestRegion(file, base) {
   if (typeof base !== "string") return true;
-  const regions = testRegions(base, basePathOf(file).endsWith(".rs") ? RUST_TEST_REGION : CSHARP_TEST_REGION);
+  const regions = testRegions(base, basePathOf(file));
   if (regions.length === 0) return false;
   if (!file.patch) return true;
   const baseLines = base.split("\n").map((text) => text.replace(/\r$/, ""));

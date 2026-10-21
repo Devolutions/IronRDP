@@ -50,7 +50,10 @@ Deterministic analysis also selects these optional specialists from the pull req
 - `dependency` runs when a `Cargo.toml`, `Cargo.lock`, `package.json`, `package-lock.json`, or `.csproj` file gains lines.
 - `rust-style` runs when a `.rs` file gains lines.
 
-A changed line inside an existing test also selects `test`: analysis reads each changed Rust or C# file at the pull request's merge base, which the patches are relative to, and selects `test` when a removed or inserted line falls between a test attribute and the end of the item it annotates, when a hunk's context or removed lines do not match that file, or when the merge base or file cannot be read.
+A changed line inside an existing test also selects `test`: analysis reads each changed Rust or C# file at the pull request's merge base, which the patches are relative to, and selects `test` when a removed or inserted line falls in a test region, when a hunk's context or removed lines do not match that file, or when the merge base or file cannot be read.
+A Rust test region starts at a `#[cfg(...)]` attribute whose predicate names `test` other than as `not(test)`, such as `all(test, feature = "...")`; the same attribute on a changed line is also a test marker.
+An inline test module's region runs to the end of its file, because the module must be the file's last item, and an out-of-line `mod name;` covers only its declaration.
+Test functions outside a test module, other test-gated items, and C# test methods end at their closing brace, found by a lexer that skips comments, character and byte literals, and plain, byte, C, and raw string literals.
 A renamed file matches the governed-path, intent-file, test-path, and manifest rules under both its old and new paths.
 
 `contract-review` joins with the first `CONTRACT*.md`, as one agent configuration, one prompt, and one path rule.

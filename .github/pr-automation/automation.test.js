@@ -2113,8 +2113,10 @@ test("edits inside existing tests select the test specialist from the base revis
   // the hunk's context reaches the module.
   assert.deepEqual(modified("@@ -1,5 +1,5 @@\n pub fn prod() -> u8 {\n-    1\n+    2\n }\n \n #[cfg(test)]"),
     ["rust-style"]);
-  // An insertion straight after the closing brace of the module is outside it.
-  assert.deepEqual(modified("@@ -14,1 +14,2 @@\n }\n+pub fn other() {}"), ["rust-style"]);
+  // An insertion after the module's closing brace still selects the review: an inline test module
+  // runs to the end of its file, because it must be the last item there (`rust-style`, clippy's
+  // `items_after_test_module`). This false positive only arises in a layout the repository forbids.
+  assert.deepEqual(modified("@@ -14,1 +14,2 @@\n }\n+pub fn other() {}"), ["test", "rust-style"]);
   // A function added beneath an unchanged `#[test]` is test code.
   assert.deepEqual(analyzeFiles([{
     filename: "src/codec.rs", status: "modified", additions: 1, deletions: 1,
@@ -2172,6 +2174,76 @@ test("edits inside existing tests select the test specialist from the base revis
   assert.deepEqual(cs("@@ -3,1 +3,1 @@\n-    public void Helper() { }\n+    public void Helper() { Run(); }"), []);
 });
 
+test("compound test predicates mark test code and `not(test)` does not", () => {
+  const added = (line) => analyzeFiles([{
+    filename: "src/lib.rs", status: "added", additions: 1, deletions: 0, patch: `@@ -0,0 +1,1 @@\n${line}`,
+  }], { labelerRules: {} }).reviewers;
+  assert.deepEqual(added("+#[cfg(all(test, feature = \"openh264-bundled\"))]"), ["test", "rust-style"]);
+  assert.deepEqual(added("+#[cfg(any(test, fuzzing))]"), ["test", "rust-style"]);
+  assert.deepEqual(added("+#[cfg(test)]"), ["test", "rust-style"]);
+  assert.deepEqual(added("+#[cfg(not(test))]"), ["rust-style"]);
+  assert.deepEqual(added("+#[cfg(feature = \"test\")]"), ["rust-style"]);
+  assert.deepEqual(added("+#[cfg(all(not(test), feature = \"std\"))]"), ["rust-style"]);
+
+  const module = (attribute) => [
+    "pub fn encode() {}", //                 1
+    "", //                                    2
+    attribute, //                             3
+    "mod tests {", //                         4
+    "    use super::encode;", //              5
+    "", //                                    6
+    "    #[test]", //                         7
+    "    fn encodes() { encode(); }", //      8
+    "}", //                                   9
+    "",
+  ].join("\n");
+  const importEdit = "@@ -5,1 +5,1 @@\n-    use super::encode;\n+    use super::{encode, decode};";
+  const modified = (base) => analyzeFiles([{
+    filename: "src/encode.rs", status: "modified", additions: 1, deletions: 1, patch: importEdit,
+  }], { labelerRules: {}, baseContents: new Map([["src/encode.rs", base]]) }).reviewers;
+  // An import inside a module gated on a compound test predicate is test code.
+  assert.deepEqual(modified(module("#[cfg(all(test, feature = \"openh264-bundled\"))]")), ["test", "rust-style"]);
+  // The same edit in a module compiled only outside tests is not.
+  assert.deepEqual(modified(module("#[cfg(not(test))]").replace("    #[test]\n", "    // no tests\n")),
+    ["rust-style"]);
+});
+
+test("literals cannot end a test region early", () => {
+  const edit = (base, patch) => analyzeFiles([{
+    filename: "src/parse.rs", status: "modified", additions: 1, deletions: 1, patch,
+  }], { labelerRules: {}, baseContents: new Map([["src/parse.rs", base]]) }).reviewers;
+  const assertion = "@@ -6,1 +6,1 @@\n-    assert_eq!(parse(input), 1);\n+    assert_eq!(parse(input), 2);";
+
+  // Inside a test module, the region runs to the end of the file whatever the literals contain.
+  assert.deepEqual(edit([
+    "#[cfg(test)]", //                        1
+    "mod tests {", //                         2
+    "    use super::*;", //                   3
+    "    #[test]", //                         4
+    "    fn parses() { let input = br#\"a \" }} \"#;", // 5
+    "    assert_eq!(parse(input), 1);", //    6
+    "    }", //                               7
+    "}", //                                   8
+    "",
+  ].join("\n"), assertion), ["test", "rust-style"]);
+
+  // A standalone test function is brace-matched, so the lexer has to skip every literal form.
+  const standalone = [
+    "pub fn prod() {}", //                    1
+    "", //                                    2
+    "#[test]", //                             3
+    "fn parses() {", //                       4
+    "    let input = br#\"a \" }} \"#; let c = cr\"}\"; let b = b'}'; let s = b\"}\"; let x = c\"}\";", // 5
+    "    assert_eq!(parse(input), 1);", //    6
+    "}", //                                   7
+    "", //                                    8
+    "pub fn after() {}", //                   9
+    "",
+  ].join("\n");
+  assert.deepEqual(edit(standalone, assertion), ["test", "rust-style"]);
+  // The function still ends at its own closing brace.
+  assert.deepEqual(edit(standalone, "@@ -9,1 +9,1 @@\n-pub fn after() {}\n+pub fn after() { prod(); }"), ["rust-style"]);
+});
 test("base revisions are read only when needed and unreadable ones fail toward review", async () => {
   const files = [{ filename: "src/lib.rs", status: "modified", additions: 1, deletions: 1, patch: "@@ -1 +1 @@\n-a\n+b" }];
   let resolved = 0;
