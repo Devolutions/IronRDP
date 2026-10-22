@@ -16,6 +16,7 @@ use pdu::efs::{
     VERSION_MINOR_12, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
+use pdu::esp::PortIoRequest;
 use pdu::{DeviceIoCompletion, PacketId, RdpdrPdu, SharedHeader};
 use tracing::{debug, trace, warn};
 
@@ -25,7 +26,8 @@ pub mod server;
 
 pub use self::backend::noop::NoopRdpdrBackend;
 pub use self::backend::{
-    RdpdrBackend, RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPrinter,
+    InvalidPortName, RdpdrBackend, RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive,
+    RdpdrPort, RdpdrPortKind, RdpdrPrinter,
 };
 use crate::pdu::efs::ServerDriveIoRequest;
 
@@ -56,6 +58,7 @@ pub struct Rdpdr {
     client_id: Option<u32>,
     server_capabilities_received: bool,
     printer_capability_negotiated: bool,
+    port_capability_negotiated: bool,
     client_id_confirmed: bool,
     /// Windows can send User Logged On before Client ID Confirm, for example when it
     /// re-announces the channel after logon; handle it once the client ID is confirmed.
@@ -86,6 +89,7 @@ impl Rdpdr {
             client_id: None,
             server_capabilities_received: false,
             printer_capability_negotiated: false,
+            port_capability_negotiated: false,
             client_id_confirmed: false,
             user_logged_on_pending: false,
             post_logon_devices_announced: false,
@@ -167,6 +171,21 @@ impl Rdpdr {
         self.device_list
             .add_printer_with_driver_and_network(device_id, print_name, driver_name, network);
         self.device_types.push((device_id, DeviceType::Print));
+        self
+    }
+
+    /// Adds port redirection capability and announces a serial or parallel port.
+    ///
+    /// Ports are only announced when the server advertises the port capability. Serial ports
+    /// are announced at Client ID Confirm, after the smart cards and in their own PDU, and
+    /// parallel ports after the remote user logs on, as mstsc does. IRPs targeting this device
+    /// are dispatched to [`RdpdrBackend::handle_port_io_request`].
+    #[must_use]
+    pub fn with_port(mut self, port: RdpdrPort) -> Self {
+        let (device_id, kind, name) = port.into_parts();
+        self.capabilities.add_port();
+        self.device_list.add_port(device_id, kind.device_type(), name);
+        self.device_types.push((device_id, kind.device_type()));
         self
     }
 
@@ -360,6 +379,7 @@ impl Rdpdr {
 
         self.server_capabilities_received = false;
         self.printer_capability_negotiated = false;
+        self.port_capability_negotiated = false;
         self.client_id_confirmed = false;
         self.user_logged_on_pending = false;
         self.post_logon_devices_announced = false;
@@ -402,6 +422,7 @@ impl Rdpdr {
 
         self.server_capabilities_received = true;
         self.printer_capability_negotiated = req.supports_printer();
+        self.port_capability_negotiated = req.supports_port();
         let client_capability_response =
             RdpdrPdu::CoreCapability(CoreCapability::new_response(self.capabilities.clone_supported_by(&req)));
         trace!("sending {:?}", client_capability_response);
@@ -429,17 +450,18 @@ impl Rdpdr {
             .zip(self.device_types.iter().copied())
             .filter(|(device, (device_id, _))| {
                 !self.manually_announced_device_ids.contains(device_id)
-                    && (device.device_type() != DeviceType::Print || self.printer_capability_negotiated)
+                    && self.device_capability_negotiated(device)
                     && (announce_all_devices || Self::is_pre_logon_device(device))
             })
             .map(|(device, (device_id, _))| (device, device_id))
             .unzip();
 
-        let mut messages = if device_list.is_empty() {
-            Vec::new()
-        } else {
-            self.announce_devices(device_list, device_ids)?
-        };
+        // Like mstsc, serial ports follow the smart cards in a Device List Announce of their own.
+        let (serial, other): (Vec<_>, Vec<_>) = device_list
+            .into_iter()
+            .zip(device_ids)
+            .partition(|(device, _)| !announce_all_devices && device.device_type() == DeviceType::Serial);
+        let mut messages = self.announce_batches([other, serial])?;
 
         self.client_id_confirmed = true;
         self.post_logon_devices_announced = announce_all_devices;
@@ -463,21 +485,54 @@ impl Rdpdr {
             .zip(self.device_types.iter().copied())
             .filter(|(device, (device_id, _))| {
                 !self.manually_announced_device_ids.contains(device_id)
-                    && (device.device_type() != DeviceType::Print || self.printer_capability_negotiated)
-                    && !Self::is_pre_logon_device(device)
+                    && self.device_capability_negotiated(device)
+                    // A pre-logon device is announced here when Client ID Confirm came before
+                    // the server capability that enables it, as mstsc does for serial ports.
+                    && (!Self::is_pre_logon_device(device) || !self.device_announced(*device_id))
             })
             .map(|(device, (device_id, _))| (device, device_id))
             .unzip();
 
-        if device_list.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        self.announce_devices(device_list, device_ids)
+        // Late pre-logon devices go in their own announce, ahead of the post-logon batch.
+        let (pre_logon, post_logon): (Vec<_>, Vec<_>) = device_list
+            .into_iter()
+            .zip(device_ids)
+            .partition(|(device, _)| Self::is_pre_logon_device(device));
+        self.announce_batches([pre_logon, post_logon])
     }
 
+    /// Announces each nonempty batch in a Device List Announce of its own, in order.
+    fn announce_batches(&mut self, batches: [Vec<(DeviceAnnounceHeader, u32)>; 2]) -> PduResult<Vec<SvcMessage>> {
+        let mut messages = Vec::new();
+        for batch in batches {
+            if !batch.is_empty() {
+                let (device_list, device_ids) = batch.into_iter().unzip();
+                messages.extend(self.announce_devices(device_list, device_ids)?);
+            }
+        }
+        Ok(messages)
+    }
+
+    /// Whether the device was announced in the current initialization sequence.
+    fn device_announced(&self, device_id: u32) -> bool {
+        self.pending_device_announcements.contains(&device_id)
+            || self.active_device_ids.contains(&device_id)
+            || self.rejected_device_ids.contains(&device_id)
+    }
+
+    /// Printers and ports are only announced when the server advertised their capability set.
+    fn device_capability_negotiated(&self, device: &DeviceAnnounceHeader) -> bool {
+        match device.device_type() {
+            DeviceType::Print => self.printer_capability_negotiated,
+            DeviceType::Serial | DeviceType::Parallel => self.port_capability_negotiated,
+            DeviceType::Filesystem | DeviceType::Smartcard => true,
+        }
+    }
+
+    /// Smart cards and serial ports are announced before logon, as mstsc does. Parallel ports
+    /// go with drives and printers once the user has logged on.
     fn is_pre_logon_device(device: &DeviceAnnounceHeader) -> bool {
-        matches!(device.device_type(), DeviceType::Smartcard)
+        matches!(device.device_type(), DeviceType::Smartcard | DeviceType::Serial)
     }
 
     fn enable_drive_capability(&mut self) {
@@ -585,8 +640,9 @@ impl Rdpdr {
     /// A device awaiting its announcement response counts as announced. Windows can send the first
     /// IRP for a device just before the response accepting it, and an unanswered IRP stalls the
     /// server for about 30 seconds. A later rejection removes the drive from the backend, which
-    /// cancels its pending IRPs; printer creates still wait for acceptance, because a rejected
-    /// printer's job would not be released. FreeRDP likewise serves every announced device until
+    /// cancels its pending IRPs, and a port backend releases a rejected port's files when it sees
+    /// the response; printer creates still wait for acceptance, because a rejected printer's job
+    /// would not be released. FreeRDP likewise serves every announced device until
     /// rejected.
     fn device_is_announced(&self, device_id: u32) -> bool {
         self.active_device_ids.contains(&device_id) || self.pending_device_announcements.contains(&device_id)
@@ -814,12 +870,71 @@ impl Rdpdr {
                     }
                 }
             }
-            _ => {
-                // This should never happen, as we only announce devices that we support.
-                warn!(?dev_io_req, "received packet for unsupported device type");
-                Ok(Vec::new())
-            }
+            DeviceType::Serial | DeviceType::Parallel => self.handle_port_io_request(dev_io_req, src),
         }
+    }
+
+    fn handle_port_io_request(
+        &mut self,
+        dev_io_req: DeviceIoRequest,
+        src: &mut ReadCursor<'_>,
+    ) -> PduResult<Vec<SvcMessage>> {
+        if self.rejected_device_ids.contains(&dev_io_req.device_id) {
+            warn!(
+                device_id = dev_io_req.device_id,
+                file_id = dev_io_req.file_id,
+                completion_id = dev_io_req.completion_id,
+                "Ignoring port IRP for a rejected device"
+            );
+            return Ok(Vec::new());
+        }
+        if !self.device_is_announced(dev_io_req.device_id) {
+            warn!(
+                device_id = dev_io_req.device_id,
+                file_id = dev_io_req.file_id,
+                completion_id = dev_io_req.completion_id,
+                "Ignoring port IRP for a device that was not announced"
+            );
+            return Ok(Vec::new());
+        }
+
+        let req = PortIoRequest::decode_or_unsupported(dev_io_req, src).map_err(|e| decode_err!(e))?;
+        if !src.is_empty() {
+            return Err(pdu_other_err!("received port IRP with trailing RDPDR data"));
+        }
+        let req = match req {
+            Ok(req) => req,
+            Err(rejection) => {
+                // MS-RDPESP only describes create, close, read, write and device control for
+                // ports. Other requests are completed instead of tearing down the channel.
+                debug!(
+                    major = ?rejection.device_io_request.major_function,
+                    device_id = rejection.device_io_request.device_id,
+                    completion_id = rejection.device_io_request.completion_id,
+                    status = ?rejection.io_status,
+                    "Completing rejected port IRP"
+                );
+                return Ok(vec![SvcMessage::from(DeviceIoCompletion::Padded(
+                    DeviceIoResponse::new(rejection.device_io_request, rejection.io_status),
+                ))]);
+            }
+        };
+
+        if let PortIoRequest::DeviceControl(control) = &req {
+            debug!(
+                ioctl = ?control.request.io_control_code,
+                input_buffer_length = control.input_buffer.len(),
+                output_buffer_length = control.request.output_buffer_length,
+                "Dispatching port device-control IRP"
+            );
+        } else {
+            debug!(?req, "Dispatching port IRP");
+        }
+
+        self.backend
+            .as_mut()
+            .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
+            .handle_port_io_request(req)
     }
 
     /// Completes a filesystem IRP that is well-formed but asks for a function or information class

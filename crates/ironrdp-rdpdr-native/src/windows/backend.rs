@@ -5,10 +5,11 @@ use ironrdp_core::impl_as_any;
 use ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_rdpdr::RdpdrBackend;
 use ironrdp_rdpdr::pdu::efs::{
-    AnyIoCtlCode, DecodedDeviceControlRequest, DeviceControlRequest, PrinterIoRequest, ServerDeviceAnnounceResponse,
-    ServerDriveIoRequest,
+    AnyIoCtlCode, DecodedDeviceControlRequest, DeviceControlRequest, NtStatus, PrinterIoRequest,
+    ServerDeviceAnnounceResponse, ServerDriveIoRequest,
 };
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
+use ironrdp_rdpdr::pdu::esp::PortIoRequest;
 use ironrdp_svc::SvcMessage;
 
 use super::factory::RedirectedDrive;
@@ -16,6 +17,7 @@ use super::file_table::FileTable;
 use super::handles::{FileHandle, RootDirectory};
 use super::path::RelativePath;
 use super::pending::DeferredOperations;
+use super::port::PortSession;
 use super::printer::{PrinterWorker, RdpdrWorkerThreadHooks};
 use super::scard::ScardSession;
 use super::status::from_open_directory;
@@ -38,6 +40,7 @@ pub struct WindowsRdpdrBackend {
     configured_printer: Option<ironrdp_rdpdr::RdpdrPrinter>,
     printer_worker: Option<Mutex<PrinterWorker>>,
     worker_thread_hooks: Option<RdpdrWorkerThreadHooks>,
+    ports: PortSession,
 }
 
 impl WindowsRdpdrBackend {
@@ -64,7 +67,14 @@ impl WindowsRdpdrBackend {
             configured_printer,
             printer_worker: None,
             worker_thread_hooks,
+            ports: PortSession::default(),
         }
+    }
+
+    /// Configures the serial and parallel ports announced with this backend.
+    pub(super) fn with_ports(mut self, ports: Vec<ironrdp_rdpdr::RdpdrPort>) -> Self {
+        self.ports = PortSession::new(ports, self.worker_thread_hooks);
+        self
     }
 
     #[cfg(test)]
@@ -169,6 +179,7 @@ impl RdpdrBackend for WindowsRdpdrBackend {
     fn reset(&mut self) -> PduResult<()> {
         self.deferred_operations.reset();
         self.scard.reset();
+        self.ports.reset();
         self.open_files.clear();
         self.roots.clear();
         if let Some(worker) = &mut self.printer_worker {
@@ -184,7 +195,10 @@ impl RdpdrBackend for WindowsRdpdrBackend {
         self.activate_drive(device_id)
     }
 
-    fn handle_server_device_announce_response(&mut self, _pdu: ServerDeviceAnnounceResponse) -> PduResult<()> {
+    fn handle_server_device_announce_response(&mut self, pdu: ServerDeviceAnnounceResponse) -> PduResult<()> {
+        if pdu.result_code != NtStatus::SUCCESS {
+            self.ports.release_device(pdu.device_id);
+        }
         Ok(())
     }
 
@@ -263,9 +277,14 @@ impl RdpdrBackend for WindowsRdpdrBackend {
             .reject_write(req))
     }
 
+    fn handle_port_io_request(&mut self, req: PortIoRequest) -> PduResult<Vec<SvcMessage>> {
+        Ok(self.ports.handle(req))
+    }
+
     fn poll_deferred_messages(&mut self) -> PduResult<Vec<SvcMessage>> {
         let mut messages = self.deferred_operations.poll();
         messages.extend(self.scard.poll());
+        messages.extend(self.ports.poll());
         if let Some(worker) = &mut self.printer_worker {
             messages.extend(
                 worker

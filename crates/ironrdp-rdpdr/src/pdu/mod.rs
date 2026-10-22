@@ -19,6 +19,7 @@ use self::efs::{
 
 pub mod efs;
 pub mod esc;
+pub mod esp;
 
 /// All available RDPDR PDUs.
 pub enum RdpdrPdu {
@@ -374,7 +375,16 @@ pub(crate) enum DeviceIoCompletion {
     ///
     /// [2.2.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/1c412a84-0776-4984-b35c-3f0445fcae65
     Bare(DeviceIoResponse),
+    /// A Device I/O Response followed by five zero bytes, for a request kind whose own
+    /// response layout is not implemented. Five bytes cover the fixed part of every
+    /// MS-RDPEFS completion body (a 32-bit length and a padding byte, or five bytes of
+    /// padding), so a receiver that parses the body for the request kind reads an empty one.
+    Padded(DeviceIoResponse),
     SetVolumeInformation(ClientDriveSetVolumeInformationResponse),
+}
+
+impl DeviceIoCompletion {
+    const PADDED_BODY_SIZE: usize = 4 /* Length */ + 1 /* Padding */;
 }
 
 impl Encode for DeviceIoCompletion {
@@ -386,13 +396,19 @@ impl Encode for DeviceIoCompletion {
         .encode(dst)?;
         match self {
             Self::Bare(response) => response.encode(dst),
+            Self::Padded(response) => {
+                response.encode(dst)?;
+                ensure_size!(in: dst, size: Self::PADDED_BODY_SIZE);
+                dst.write_array([0; Self::PADDED_BODY_SIZE]);
+                Ok(())
+            }
             Self::SetVolumeInformation(response) => response.encode(dst),
         }
     }
 
     fn name(&self) -> &'static str {
         match self {
-            Self::Bare(_) => "DR_DEVICE_IOCOMPLETION",
+            Self::Bare(_) | Self::Padded(_) => "DR_DEVICE_IOCOMPLETION",
             Self::SetVolumeInformation(response) => response.name(),
         }
     }
@@ -401,6 +417,7 @@ impl Encode for DeviceIoCompletion {
         SharedHeader::SIZE
             + match self {
                 Self::Bare(response) => response.size(),
+                Self::Padded(response) => response.size() + Self::PADDED_BODY_SIZE,
                 Self::SetVolumeInformation(response) => response.size(),
             }
     }

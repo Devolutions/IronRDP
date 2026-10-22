@@ -496,6 +496,85 @@ ClearTextPassword:s:test-pass
 }
 
 #[test]
+fn port_redirection_follows_the_cli_and_redirectcomports() {
+    use ironrdp_viewer::cli::{PortChoice, PortOptions};
+
+    let rdp = "full address:s:rdp.example.com
+username:s:test-user
+ClearTextPassword:s:test-pass
+";
+
+    assert!(!parse_viewer_config_from_rdp(rdp, &[]).ports().is_enabled());
+    assert!(
+        !parse_viewer_config_from_rdp(
+            &format!(
+                "{rdp}redirectcomports:i:0
+"
+            ),
+            &[]
+        )
+        .ports()
+        .is_enabled()
+    );
+
+    let all = parse_viewer_config_from_rdp(
+        &format!(
+            "{rdp}redirectcomports:i:1
+"
+        ),
+        &[],
+    );
+    assert_eq!(
+        all.ports(),
+        &PortOptions {
+            serial: PortChoice::All,
+            parallel: PortChoice::All,
+        }
+    );
+    let config = all.into_config().expect("failed to build client config");
+    assert!(config.channels().rdpdr.enabled);
+    assert!(config.channels().rdpdr.ports);
+
+    // The file's channel disable wins over its own port selection.
+    let disabled = parse_viewer_config_from_rdp(
+        &format!(
+            "{rdp}redirectcomports:i:1
+ironrdp_rdpdr:i:0
+"
+        ),
+        &[],
+    );
+    assert!(!disabled.ports().is_enabled());
+    assert!(
+        !disabled
+            .into_config()
+            .expect("failed to build client config")
+            .channels()
+            .rdpdr
+            .enabled
+    );
+
+    // Explicit CLI ports replace the file's all-ports selection.
+    let named = parse_viewer_config_from_rdp(
+        &format!(
+            "{rdp}redirectcomports:i:0
+"
+        ),
+        &["--serial", "COM3", "--serial", "com4", "--parallel", "all"],
+    );
+    assert_eq!(
+        named.ports(),
+        &PortOptions {
+            serial: PortChoice::Named(vec!["COM3".to_owned(), "com4".to_owned()]),
+            parallel: PortChoice::All,
+        }
+    );
+    let config = named.into_config().expect("failed to build client config");
+    assert!(config.channels().rdpdr.ports);
+    assert_eq!(config.properties().redirect_com_ports(), Some(true));
+}
+
+#[test]
 fn audiomode_two_disables_audio_playback() {
     let config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:2\n",

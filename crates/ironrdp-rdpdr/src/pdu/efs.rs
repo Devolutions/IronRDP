@@ -293,6 +293,15 @@ impl CoreCapability {
             .any(|capability| capability.header.cap_type == CapabilityType::Printer)
     }
 
+    /// Whether the capability set includes [`PORT_CAPS_SET`] (MS-RDPEFS 2.2.2.7.3).
+    ///
+    /// [`PORT_CAPS_SET`]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
+    pub fn supports_port(&self) -> bool {
+        self.capabilities
+            .iter()
+            .any(|capability| capability.header.cap_type == CapabilityType::Port)
+    }
+
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(ctx: self.name(), in: dst, size: self.size());
         dst.write_u16(cast_length!(
@@ -425,6 +434,22 @@ impl Capabilities {
         self.push(CapabilityMessage::new_printer());
     }
 
+    /// Adds the serial and parallel port capability once.
+    ///
+    /// Unlike [`Self::add_smartcard`], this leaves SpecialTypeDeviceCap unchanged although
+    /// serial ports are announced before logon. MS-RDPEFS 2.2.2.7.1 names serial ports as
+    /// special devices, but mstsc does not count them there either, and Windows servers accept
+    /// pre-logon serial announces regardless.
+    pub fn add_port(&mut self) {
+        if !self
+            .0
+            .iter()
+            .any(|capability| capability.header.cap_type == CapabilityType::Port)
+        {
+            self.push(CapabilityMessage::new_port());
+        }
+    }
+
     fn add_general(&mut self, special_type_device_cap: u32) {
         self.push(CapabilityMessage::new_general(special_type_device_cap));
     }
@@ -523,6 +548,16 @@ impl CapabilityMessage {
         }
     }
 
+    /// Creates a new [`PORT_CAPS_SET`] (MS-RDPEFS 2.2.2.7.3).
+    ///
+    /// [`PORT_CAPS_SET`]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
+    pub fn new_port() -> Self {
+        Self {
+            header: CapabilityHeader::new_port(),
+            capability_data: CapabilityData::Port,
+        }
+    }
+
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         self.header.encode(dst)?;
@@ -597,6 +632,14 @@ impl CapabilityHeader {
         }
     }
 
+    fn new_port() -> Self {
+        Self {
+            cap_type: CapabilityType::Port,
+            length: u16::try_from(Self::SIZE).expect("value fits into u16"),
+            version: PORT_CAPABILITY_VERSION_01,
+        }
+    }
+
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::SIZE);
         let cap_type: CapabilityType = src.read_u16().try_into()?;
@@ -664,6 +707,10 @@ pub const DRIVE_CAPABILITY_VERSION_02: u32 = 0x0000_0002;
 /// Windows hosts accept v1 and v2 here; v1 is the lowest-common-denominator
 /// and has no additional body, which is the usual choice for virtual printers.
 pub const PRINTER_CAPABILITY_VERSION_01: u32 = 0x0000_0001;
+/// PORT_CAPABILITY_VERSION_01
+///
+/// The port capability set has no body beyond its header.
+pub const PORT_CAPABILITY_VERSION_01: u32 = 0x0000_0001;
 
 /// [MS-RDPEPC 2.2.2.3] RDPDR_PRINTER_ANNOUNCE flag: ASCII encoding for names.
 ///
@@ -1120,6 +1167,14 @@ impl Devices {
         ));
     }
 
+    /// Announces a serial or parallel port under its client-side DOS name, such as `COM1` or `LPT1`.
+    ///
+    /// `device_type` MUST be [`DeviceType::Serial`] or [`DeviceType::Parallel`].
+    pub fn add_port(&mut self, device_id: u32, device_type: DeviceType, dos_name: String) {
+        debug_assert!(matches!(device_type, DeviceType::Serial | DeviceType::Parallel));
+        self.push(DeviceAnnounceHeader::new_port(device_id, device_type, dos_name));
+    }
+
     pub fn remove_device(&mut self, device_id: u32) -> Option<u32> {
         self.remove(device_id)
     }
@@ -1328,6 +1383,22 @@ impl DeviceAnnounceHeader {
             // redirected printer.
             preferred_dos_name: PreferredDosName("PRN1".to_owned()),
             device_data,
+        }
+    }
+
+    /// Construct a port announce as described by [MS-RDPESP 2.2.2.1].
+    ///
+    /// `dos_name` is the client-side port name, such as `COM1` or `LPT1`. Ports carry no
+    /// device data, so the name is only sent in the 7-character PreferredDosName field and
+    /// longer names are truncated.
+    ///
+    /// [MS-RDPESP 2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesp/
+    fn new_port(device_id: u32, device_type: DeviceType, dos_name: String) -> Self {
+        Self {
+            device_type,
+            device_id,
+            preferred_dos_name: PreferredDosName(dos_name),
+            device_data: Vec::new(),
         }
     }
 
@@ -1598,6 +1669,8 @@ impl NtStatus {
     pub const DELETE_PENDING: Self = Self(0xC000_0056);
     /// STATUS_MEDIA_WRITE_PROTECTED
     pub const MEDIA_WRITE_PROTECTED: Self = Self(0xC000_00A2);
+    /// STATUS_INSUFFICIENT_RESOURCES
+    pub const INSUFFICIENT_RESOURCES: Self = Self(0xC000_009A);
 }
 
 impl Debug for NtStatus {
@@ -1629,6 +1702,7 @@ impl Debug for NtStatus {
             NtStatus::CANCELLED => write!(f, "STATUS_CANCELLED"),
             NtStatus::DELETE_PENDING => write!(f, "STATUS_DELETE_PENDING"),
             NtStatus::MEDIA_WRITE_PROTECTED => write!(f, "STATUS_MEDIA_WRITE_PROTECTED"),
+            NtStatus::INSUFFICIENT_RESOURCES => write!(f, "STATUS_INSUFFICIENT_RESOURCES"),
             _ => write!(f, "NtStatus({:#010X})", self.0),
         }
     }
@@ -1947,6 +2021,21 @@ impl DeviceControlResponse {
                 completion_id: req.header.completion_id,
                 io_status,
             },
+            output_buffer,
+        }
+    }
+
+    /// Completes a device-control request with output bytes produced outside this crate,
+    /// such as the buffer a local driver returned. An empty buffer encodes as no output.
+    pub fn with_raw_output(device_io_request: DeviceIoRequest, io_status: NtStatus, output: Vec<u8>) -> Self {
+        let output_buffer: Option<Box<dyn rpce::Encode>> = if output.is_empty() {
+            None
+        } else {
+            Some(Box::new(RawOutputBuffer(output)))
+        };
+
+        Self {
+            device_io_reply: DeviceIoResponse::new(device_io_request, io_status),
             output_buffer,
         }
     }

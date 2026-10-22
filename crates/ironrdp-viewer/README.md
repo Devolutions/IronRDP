@@ -32,6 +32,10 @@ The `.rdp` `redirectprinters` property does not enable it, because mstsc writes 
 Jobs are sent to the local queue as `RAW` data, so the remote host needs a printer driver with the same name as the local queue's driver; Easy Print/XPS is not supported.
 RPC mode enables it through the `redirectprinters` connect property.
 
+On Windows, pass `--serial COM3` or `--parallel LPT1` (repeatable, or `all`) to redirect local serial and parallel ports; `redirectcomports:i:1` in a `.rdp` file redirects all of them.
+The ports present when the session connects are announced under their local names, such as `COM3`, which Windows servers use for the port inside the session.
+A redirected port is held open locally only while a remote application has it open.
+
 On Windows, pass `--camera <NAME>` (repeatable; `*` for every camera) to redirect local cameras, or set `camerastoredirect` in a `.rdp` file.
 Raw camera frames are encoded to H.264 unless `--camera-raw` is passed.
 

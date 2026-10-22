@@ -448,6 +448,12 @@ pub struct RdpdrConfig {
     /// Enable smart-card redirection within RDPDR.
     #[cfg(feature = "smartcard")]
     pub smartcard: bool,
+
+    /// Announce the serial and parallel ports the RDPDR backend factory provides.
+    ///
+    /// Mirrors the `.rdp` `redirectcomports` property. Which local ports exist and are
+    /// selected is up to the factory; this only gates their announcement.
+    pub ports: bool,
 }
 
 #[cfg(feature = "rdpdr")]
@@ -457,6 +463,7 @@ impl Default for RdpdrConfig {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: true,
+            ports: true,
         }
     }
 }
@@ -1497,6 +1504,15 @@ impl ConfigBuilder {
         self
     }
 
+    /// Enable or disable serial and parallel port redirection within RDPDR (`redirectcomports`).
+    #[cfg(feature = "rdpdr")]
+    #[must_use]
+    pub fn with_ports(mut self, enabled: bool) -> Self {
+        self.channels.rdpdr.ports = enabled;
+        self.properties.set_redirect_com_ports(enabled);
+        self
+    }
+
     /// Enable or disable smart-card redirection within RDPDR.
     #[cfg(feature = "smartcard")]
     #[must_use]
@@ -2390,6 +2406,10 @@ impl ConfigBuilder {
         #[cfg(feature = "smartcard")]
         if let Some(enabled) = ps.enable_smartcard() {
             self.channels.rdpdr.smartcard = enabled;
+        }
+        #[cfg(feature = "rdpdr")]
+        if let Some(enabled) = ps.redirect_com_ports() {
+            self.channels.rdpdr.ports = enabled;
         }
         #[cfg(feature = "qoi")]
         if let Some(enabled) = ps.enable_qoi() {

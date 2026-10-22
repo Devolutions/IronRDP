@@ -1557,6 +1557,7 @@ struct CompatibilitySettings {
     redirect_drives: bool,
     redirect_dynamic_drives: bool,
     redirect_printers: bool,
+    redirect_ports: bool,
     redirect_smart_cards: bool,
     disable_rdpdr: bool,
     drive_catalog: Rc<RefCell<DriveCatalog>>,
@@ -1640,6 +1641,7 @@ impl Default for CompatibilitySettings {
             redirect_drives: false,
             redirect_dynamic_drives: false,
             redirect_printers: false,
+            redirect_ports: false,
             redirect_smart_cards: false,
             disable_rdpdr: false,
             drive_catalog: Rc::new(RefCell::new(DriveCatalog::new())),
@@ -2700,7 +2702,6 @@ advanced_put_not_implemented!(
     (7, advanced_put_plugin_dlls, Bstr),
     (93, advanced_put_bitmap_persistence, i32),
     (95, advanced_put_minutes_to_idle_timeout, i32),
-    (118, advanced_put_redirect_ports, i16),
     (150, advanced_put_redirect_devices, i16),
     (161, advanced_put_pcb, Bstr),
     (173, advanced_put_video_playback_mode, u32),
@@ -2711,7 +2712,6 @@ advanced_put_not_implemented!(
 advanced_get_not_implemented!(
     (94, advanced_get_bitmap_persistence, i32),
     (96, advanced_get_minutes_to_idle_timeout, i32),
-    (119, advanced_get_redirect_ports, i16),
     (151, advanced_get_redirect_devices, i16),
     (174, advanced_get_video_playback_mode, u32),
     (176, advanced_get_enable_super_pan, i16),
@@ -3378,6 +3378,34 @@ unsafe extern "system" fn advanced_get_redirect_printers(this: *mut c_void, valu
     write_out(
         value,
         if object.settings.borrow().redirect_printers {
+            VARIANT_TRUE.0
+        } else {
+            VARIANT_FALSE.0
+        },
+    )
+    .map_or_else(|error| error.code(), |_| S_OK)
+}
+
+unsafe extern "system" fn advanced_put_redirect_ports(this: *mut c_void, value: i16) -> HRESULT {
+    let value = match normalize_variant_bool(value) {
+        Ok(value) => value == VARIANT_TRUE.0,
+        Err(error) => return error.code(),
+    };
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
+    }
+    settings.redirect_ports = value;
+    mark_compatibility_persistence_dirty(&settings);
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_redirect_ports(this: *mut c_void, value: *mut i16) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    write_out(
+        value,
+        if object.settings.borrow().redirect_ports {
             VARIANT_TRUE.0
         } else {
             VARIANT_FALSE.0
@@ -8438,6 +8466,7 @@ fn active_x_property_snapshot(settings: &Settings, compatibility: &Compatibility
     properties.insert("redirectclipboard", compatibility.redirect_clipboard);
     properties.insert("redirectwebauthn", compatibility.redirect_webauthn);
     properties.insert("redirectprinters", compatibility.redirect_printers);
+    properties.insert("redirectcomports", compatibility.redirect_ports);
     properties.insert("ironrdp_smartcard", compatibility.redirect_smart_cards);
     properties.insert("compression", compatibility.compression.unwrap_or(true));
     properties
@@ -8487,6 +8516,7 @@ fn is_boolean_modern_property(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
         "redirectclipboard"
+            | "redirectcomports"
             | "enablecredsspsupport"
             | "compression"
             | "administrative session"
@@ -8525,6 +8555,7 @@ fn validate_modern_rdp_property(name: &str, value: &Value) -> Result<()> {
             _ => Err(Error::from_hresult(E_INVALIDARG)),
         },
         "redirectclipboard"
+        | "redirectcomports"
         | "enablecredsspsupport"
         | "compression"
         | "administrative session"
@@ -8710,6 +8741,9 @@ impl Control {
             }
             "redirectclipboard" => {
                 self.compatibility.borrow_mut().redirect_clipboard = value.as_int().unwrap_or_default() != 0;
+            }
+            "redirectcomports" => {
+                self.compatibility.borrow_mut().redirect_ports = value.as_int().unwrap_or_default() != 0;
             }
             "enablecredsspsupport" => {
                 self.compatibility.borrow_mut().enable_credssp = Some(value.as_int().unwrap_or_default() != 0);
@@ -11827,6 +11861,8 @@ impl Control {
         let warn_about_clipboard = clipboard && compatibility.warn_about_clipboard_redirection;
         let redirect_dynamic_drives = !compatibility.disable_rdpdr && compatibility.redirect_dynamic_drives;
         let redirect_printers = !compatibility.disable_rdpdr && compatibility.redirect_printers;
+        // Like mstsc's RedirectPorts, this redirects every local serial and parallel port.
+        let redirect_ports = !compatibility.disable_rdpdr && compatibility.redirect_ports;
         let (configured_drives, initial_drive_ids) = if compatibility.disable_rdpdr {
             (Vec::new(), Vec::new())
         } else {
@@ -11839,6 +11875,7 @@ impl Control {
         let rdpdr_factory = if initial_drive_ids.is_empty()
             && !redirect_dynamic_drives
             && !redirect_printers
+            && !redirect_ports
             && !redirect_smart_cards
         {
             None
@@ -11851,6 +11888,9 @@ impl Control {
                 .map_err(|error| Error::new(E_FAIL, format!("invalid redirected-drive configuration: {error}")))?
                 .with_dynamic_drives(redirect_dynamic_drives)
                 .with_default_printer(redirect_printers)
+                .with_port_redirection(ironrdp_rdpdr_native::WindowsPortRedirection::from_enabled(
+                    redirect_ports,
+                ))
                 .with_worker_thread_hooks(ironrdp_rdpdr_native::RdpdrWorkerThreadHooks::new(
                     acquire_activex_printer_worker_guard,
                 ))
@@ -19805,6 +19845,19 @@ mod tests {
         assert!(settings.borrow().redirect_printers);
         settings.borrow_mut().connection_settings_sealed = false;
 
+        let mut redirect_ports = VARIANT_TRUE.0;
+        assert_eq!(unsafe { advanced_get_redirect_ports(this, &mut redirect_ports) }, S_OK);
+        assert_eq!(redirect_ports, VARIANT_FALSE.0);
+        assert_eq!(unsafe { advanced_put_redirect_ports(this, VARIANT_TRUE.0) }, S_OK);
+        assert_eq!(unsafe { advanced_get_redirect_ports(this, &mut redirect_ports) }, S_OK);
+        assert_eq!(redirect_ports, VARIANT_TRUE.0);
+        assert_eq!(unsafe { advanced_put_redirect_ports(this, 1) }, E_INVALIDARG);
+        assert_eq!(unsafe { advanced_get_redirect_ports(this, ptr::null_mut()) }, E_POINTER);
+        settings.borrow_mut().connection_settings_sealed = true;
+        assert_eq!(unsafe { advanced_put_redirect_ports(this, VARIANT_FALSE.0) }, E_FAIL);
+        assert!(settings.borrow().redirect_ports);
+        settings.borrow_mut().connection_settings_sealed = false;
+
         assert_eq!(unsafe { advanced_put_redirect_smart_cards(this, VARIANT_TRUE.0) }, S_OK);
         let mut redirect_smart_cards = VARIANT_FALSE.0;
         assert_eq!(
@@ -22126,6 +22179,51 @@ try {
         assert_eq!(size_of::<IRemoteDesktopClientSettings_Vtbl>(), 11 * pointer_size);
         assert_eq!(size_of::<IRemoteDesktopClientActions_Vtbl>(), 11 * pointer_size);
         assert_eq!(size_of::<IRemoteDesktopClientTouchPointer_Vtbl>(), 13 * pointer_size);
+    }
+
+    #[test]
+    fn modern_settings_apply_and_retrieve_port_redirection() {
+        let control = Control::new();
+        control
+            .apply_modern_property_set(
+                ironrdp_rdpfile::parse(
+                    "redirectcomports:i:1
+",
+                )
+                .properties,
+            )
+            .expect("apply port redirection");
+        assert!(control.compatibility.borrow().redirect_ports);
+        assert_eq!(
+            control
+                .modern_rdp_property("RedirectComPorts")
+                .expect("retrieve port redirection")
+                .as_int(),
+            Some(1)
+        );
+        assert!(
+            control
+                .modern_property_snapshot()
+                .iter()
+                .any(|(name, value)| { name.as_ref() == "redirectcomports" && value.as_int() == Some(1) })
+        );
+
+        control
+            .set_modern_rdp_property("RedirectComPorts".to_owned(), Value::Int(0))
+            .expect("disable port redirection");
+        assert!(!control.compatibility.borrow().redirect_ports);
+        assert_eq!(
+            control
+                .modern_rdp_property("redirectcomports")
+                .expect("retrieve port redirection")
+                .as_int(),
+            Some(0)
+        );
+        assert!(
+            control
+                .set_modern_rdp_property("redirectcomports".to_owned(), Value::Str("yes".to_owned()))
+                .is_err()
+        );
     }
 
     #[test]

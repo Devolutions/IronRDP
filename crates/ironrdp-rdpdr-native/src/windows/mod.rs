@@ -8,6 +8,7 @@ mod handles;
 mod locks;
 mod path;
 mod pending;
+mod port;
 mod printer;
 mod scard;
 mod security;
@@ -16,4 +17,5 @@ mod volume;
 
 pub use backend::WindowsRdpdrBackend;
 pub use factory::{RedirectedDrive, RedirectedDriveError, WindowsRdpdrBackendFactory};
+pub use port::{PortSelection, WindowsPortRedirection};
 pub use printer::{RdpdrWorkerThreadGuard, RdpdrWorkerThreadGuardResult, RdpdrWorkerThreadHooks};

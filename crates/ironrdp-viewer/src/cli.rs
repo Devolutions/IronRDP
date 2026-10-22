@@ -298,6 +298,61 @@ struct Args {
     /// default. Ignored on other platforms.
     #[clap(long)]
     printer: bool,
+
+    /// Redirect a local serial port, such as `COM3` (repeatable); `all` redirects every serial port.
+    ///
+    /// Without this or `--parallel`, the `.rdp` `redirectcomports:i:1` property redirects every
+    /// serial and parallel port. Ignored on other platforms.
+    #[clap(long, value_name = "PORT")]
+    serial: Vec<String>,
+
+    /// Redirect a local parallel port, such as `LPT1` (repeatable); `all` redirects every parallel port.
+    ///
+    /// Ignored on other platforms.
+    #[clap(long, value_name = "PORT")]
+    parallel: Vec<String>,
+}
+
+/// Which local ports of one kind to redirect.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum PortChoice {
+    /// No port of this kind.
+    #[default]
+    None,
+    /// Every port of this kind present when the session starts.
+    All,
+    /// The named ports, such as `COM3` or `LPT1`.
+    Named(Vec<String>),
+}
+
+impl PortChoice {
+    fn from_args(values: Vec<String>) -> Self {
+        if values.is_empty() {
+            Self::None
+        } else if values.iter().any(|value| value.eq_ignore_ascii_case("all")) {
+            Self::All
+        } else {
+            Self::Named(values)
+        }
+    }
+
+    fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
+/// Serial and parallel ports to redirect.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PortOptions {
+    pub serial: PortChoice,
+    pub parallel: PortChoice,
+}
+
+impl PortOptions {
+    /// Whether any port is requested.
+    pub fn is_enabled(&self) -> bool {
+        !self.serial.is_none() || !self.parallel.is_none()
+    }
 }
 
 /// Result of parsing CLI args + loading the `.rdp` file: a configured [`ConfigBuilder`] plus the
@@ -314,6 +369,7 @@ pub struct ViewerConfig {
     rpc: bool,
     rpc_endpoint: Option<String>,
     redirect_printers: bool,
+    ports: PortOptions,
 }
 
 impl ViewerConfig {
@@ -330,7 +386,7 @@ impl ViewerConfig {
         Self::from_args(Args::try_parse_from(args)?)
     }
 
-    fn from_args(args: Args) -> anyhow::Result<Self> {
+    fn from_args(mut args: Args) -> anyhow::Result<Self> {
         let mut properties = ironrdp_propertyset::PropertySet::new();
 
         if let Some(rdp_file) = &args.rdp_file {
@@ -358,12 +414,28 @@ impl ViewerConfig {
                 rpc: true,
                 rpc_endpoint: args.rpc_endpoint,
                 redirect_printers: false,
+                ports: PortOptions::default(),
             });
         }
 
         // Printer redirection requires the explicit CLI flag: mstsc writes `redirectprinters:i:1` by
         // default, so the file property alone would announce the local printer without the user asking.
         let redirect_printers = args.printer;
+        // Unlike printers, mstsc only writes `redirectcomports:i:1` when the user selected ports.
+        let mut ports = PortOptions {
+            serial: PortChoice::from_args(core::mem::take(&mut args.serial)),
+            parallel: PortChoice::from_args(core::mem::take(&mut args.parallel)),
+        };
+        // Explicit CLI ports take precedence; the file-derived selection honors `ironrdp_rdpdr:i:0`.
+        if !ports.is_enabled()
+            && properties.redirect_com_ports() == Some(true)
+            && properties.enable_rdpdr() != Some(false)
+        {
+            ports = PortOptions {
+                serial: PortChoice::All,
+                parallel: PortChoice::All,
+            };
+        }
 
         // The library overlays everything expressible as a `.rdp` property: destination, credentials,
         // transport, channels, desktop size, audio, DVC proxies, etc.
@@ -387,6 +459,9 @@ impl ViewerConfig {
         if redirect_printers {
             builder = builder.with_rdpdr(true);
         }
+        if ports.is_enabled() {
+            builder = builder.with_rdpdr(true).with_ports(true);
+        }
 
         Ok(Self {
             builder,
@@ -395,6 +470,7 @@ impl ViewerConfig {
             rpc: false,
             rpc_endpoint: None,
             redirect_printers,
+            ports,
         })
     }
 
@@ -419,6 +495,11 @@ impl ViewerConfig {
     /// Whether the session should redirect the local default printer.
     pub fn redirect_printers(&self) -> bool {
         self.redirect_printers
+    }
+
+    /// Serial and parallel ports the session should redirect.
+    pub fn ports(&self) -> &PortOptions {
+        &self.ports
     }
 
     /// Whether the viewer should host the local RPC server.

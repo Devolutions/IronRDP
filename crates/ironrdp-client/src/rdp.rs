@@ -43,7 +43,8 @@ use ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu;
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 #[cfg(feature = "rdpdr")]
 pub use ironrdp_rdpdr::backend::{
-    RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPrinter,
+    RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPort, RdpdrPortKind,
+    RdpdrPrinter,
 };
 use ironrdp_rdpei::RdpeiClient;
 use ironrdp_rdpei::pdu::TouchEventPdu;
@@ -1545,6 +1546,7 @@ type RdpdrFactoryRef<'a> = core::marker::PhantomData<&'a ()>;
 struct RdpdrDevicePolicy {
     drives: bool,
     printers: bool,
+    ports: bool,
 }
 #[cfg(not(feature = "rdpdr"))]
 #[derive(Clone, Copy, Debug)]
@@ -1555,6 +1557,7 @@ impl RdpdrDevicePolicy {
     const ALLOW_ALL: Self = Self {
         drives: true,
         printers: true,
+        ports: true,
     };
     #[cfg(not(feature = "rdpdr"))]
     const ALLOW_ALL: Self = Self;
@@ -1566,6 +1569,8 @@ const HTTP_TUNNEL_REDIR_DISABLE_ALL: u32 = 0x4000_0000;
 const HTTP_TUNNEL_REDIR_DISABLE_DRIVE: u32 = 0x0000_0001;
 #[cfg(all(feature = "gateway", feature = "rdpdr"))]
 const HTTP_TUNNEL_REDIR_DISABLE_PRINTER: u32 = 0x0000_0002;
+#[cfg(all(feature = "gateway", feature = "rdpdr"))]
+const HTTP_TUNNEL_REDIR_DISABLE_PORT: u32 = 0x0000_0004;
 #[cfg(all(feature = "gateway", feature = "clipboard"))]
 const HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD: u32 = 0x0000_0008;
 
@@ -1594,6 +1599,11 @@ impl GatewayRedirectionPolicy {
     #[cfg(feature = "rdpdr")]
     fn disables_printer(self) -> bool {
         self.disables(HTTP_TUNNEL_REDIR_DISABLE_PRINTER)
+    }
+
+    #[cfg(feature = "rdpdr")]
+    fn disables_port(self) -> bool {
+        self.disables(HTTP_TUNNEL_REDIR_DISABLE_PORT)
     }
 
     #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
@@ -1648,6 +1658,11 @@ fn build_rdpdr_channel(
         .map_err(|error| ironrdp_connector::custom_err!("build RDPDR backend", RdpdrBackendBuildError(error)))?;
     let drive_hotplug = policy.drives && product.drive_hotplug();
     let printer = product.printer().filter(|_| policy.printers).cloned();
+    let ports = if policy.ports && config.ports {
+        product.ports().to_vec()
+    } else {
+        Vec::new()
+    };
     let (backend, initial_drives) = product.into_parts();
     // Gateway drive and printer restrictions do not apply to smartcard redirection, which shares RDPDR.
     let initial_drives = if policy.drives { initial_drives } else { Vec::new() };
@@ -1673,7 +1688,24 @@ fn build_rdpdr_channel(
         }
     }
 
-    if initial_drives.is_empty() && !smartcard && !drive_hotplug && printer.is_none() {
+    for (index, port) in ports.iter().enumerate() {
+        let device_id = port.device_id();
+        let collides = initial_drives.iter().any(|drive| drive.device_id() == device_id)
+            || (smartcard && device_id == 0)
+            || printer.as_ref().is_some_and(|printer| printer.device_id() == device_id)
+            || ports[..index].iter().any(|previous| previous.device_id() == device_id);
+        if collides {
+            return Err(ironrdp_connector::custom_err!(
+                "build RDPDR channel",
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "RDPDR port device ID is already configured"
+                )
+            ));
+        }
+    }
+
+    if initial_drives.is_empty() && !smartcard && !drive_hotplug && printer.is_none() && ports.is_empty() {
         return Ok(None);
     }
 
@@ -1693,6 +1725,9 @@ fn build_rdpdr_channel(
     if let Some(printer) = printer {
         let (device_id, name, driver_name, network) = printer.into_parts();
         rdpdr_channel = rdpdr_channel.with_printer_driver_and_network(device_id, name, driver_name, network);
+    }
+    for port in ports {
+        rdpdr_channel = rdpdr_channel.with_port(port);
     }
 
     #[cfg(feature = "smartcard")]
@@ -2484,6 +2519,7 @@ async fn connect_gateway(
     let rdpdr_policy = RdpdrDevicePolicy {
         drives: !gateway_redirection_policy.disables_drive(),
         printers: !gateway_redirection_policy.disables_printer(),
+        ports: !gateway_redirection_policy.disables_port(),
     };
     #[cfg(feature = "rdpdr")]
     let rdpdr_factory = {
@@ -2505,6 +2541,12 @@ async fn connect_gateway(
                     debug!(
                         ?redirection_flags,
                         "Suppressing RDPDR printer redirection due to gateway device-redirection policy"
+                    );
+                }
+                if !rdpdr_policy.ports {
+                    debug!(
+                        ?redirection_flags,
+                        "Suppressing RDPDR port redirection due to gateway device-redirection policy"
                     );
                 }
             }
@@ -4901,6 +4943,7 @@ mod tests {
         initial_drives: Vec<RdpdrDrive>,
         drive_hotplug: bool,
         printer: Option<RdpdrPrinter>,
+        ports: Vec<RdpdrPort>,
     }
 
     #[cfg(feature = "rdpdr")]
@@ -4911,7 +4954,13 @@ mod tests {
                 initial_drives,
                 drive_hotplug: false,
                 printer: None,
+                ports: Vec::new(),
             }
+        }
+
+        fn with_port(mut self, port: RdpdrPort) -> Self {
+            self.ports.push(port);
+            self
         }
 
         fn with_drive_hotplug(mut self) -> Self {
@@ -4935,7 +4984,7 @@ mod tests {
             if let Some(printer) = &self.printer {
                 product = product.with_printer(printer.clone());
             }
-            Ok(product)
+            Ok(product.with_ports(self.ports.clone()))
         }
     }
 
@@ -5011,6 +5060,12 @@ mod tests {
         assert!(!disable_printer.disables_clipboard());
         assert!(!disable_printer.disables_drive());
         assert!(disable_printer.disables_printer());
+        assert!(!disable_printer.disables_port());
+
+        let disable_port = GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_PORT));
+        assert!(disable_port.disables_port());
+        assert!(!disable_port.disables_drive());
+        assert!(!disable_port.disables_printer());
 
         let disable_all = GatewayRedirectionPolicy::from_flags(Some(
             HTTP_TUNNEL_REDIR_DISABLE_ALL | HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD,
@@ -5018,6 +5073,7 @@ mod tests {
         assert!(disable_all.disables_clipboard());
         assert!(disable_all.disables_drive());
         assert!(disable_all.disables_printer());
+        assert!(disable_all.disables_port());
         assert!(disable_all.disables_all());
     }
 
@@ -5256,6 +5312,7 @@ mod tests {
             enabled: false,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            ports: true,
         };
 
         assert!(
@@ -5276,6 +5333,7 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            ports: true,
         };
 
         assert!(
@@ -5296,6 +5354,7 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            ports: true,
         };
 
         let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
@@ -5365,6 +5424,7 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            ports: true,
         };
 
         assert!(build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL).is_err());
@@ -5378,6 +5438,7 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            ports: true,
         };
 
         let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
@@ -5403,7 +5464,45 @@ mod tests {
     const DRIVES_RESTRICTED: RdpdrDevicePolicy = RdpdrDevicePolicy {
         drives: false,
         printers: true,
+        ports: true,
     };
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn port_products_are_gated_by_config_gateway_policy_and_device_ids() {
+        let com3 = || RdpdrPort::new(7, RdpdrPortKind::Serial, "COM3".to_owned()).expect("valid port name");
+        let config = |ports| crate::config::RdpdrConfig {
+            enabled: true,
+            #[cfg(feature = "smartcard")]
+            smartcard: false,
+            ports,
+        };
+
+        let factory = CountingRdpdrFactory::new(Vec::new()).with_port(com3());
+        assert!(
+            build_rdpdr_channel(Some(&factory), &config(true), RdpdrDevicePolicy::ALLOW_ALL)
+                .expect("port-only RDPDR should build")
+                .is_some()
+        );
+        assert!(
+            build_rdpdr_channel(Some(&factory), &config(false), RdpdrDevicePolicy::ALLOW_ALL)
+                .expect("disabled ports should not fail")
+                .is_none()
+        );
+        let ports_restricted = RdpdrDevicePolicy {
+            drives: true,
+            printers: true,
+            ports: false,
+        };
+        assert!(
+            build_rdpdr_channel(Some(&factory), &config(true), ports_restricted)
+                .expect("port-restricted RDPDR should not fail")
+                .is_none()
+        );
+
+        let colliding = CountingRdpdrFactory::new(vec![RdpdrDrive::new(7, "fixtures".to_owned())]).with_port(com3());
+        assert!(build_rdpdr_channel(Some(&colliding), &config(true), RdpdrDevicePolicy::ALLOW_ALL).is_err());
+    }
 
     #[cfg(feature = "rdpdr")]
     #[test]
@@ -5417,10 +5516,12 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            ports: true,
         };
         let policy = RdpdrDevicePolicy {
             drives: true,
             printers: false,
+            ports: true,
         };
 
         assert!(
@@ -5439,6 +5540,7 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            ports: true,
         };
 
         assert!(
@@ -5456,6 +5558,7 @@ mod tests {
         let config = crate::config::RdpdrConfig {
             enabled: true,
             smartcard: true,
+            ports: true,
         };
 
         let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, DRIVES_RESTRICTED)
@@ -5549,6 +5652,7 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            ports: true,
         };
 
         let first = build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
@@ -5583,6 +5687,7 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            ports: true,
         };
         let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
             .expect("RDPDR channel should build")
