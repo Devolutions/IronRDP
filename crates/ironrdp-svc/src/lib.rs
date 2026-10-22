@@ -157,6 +157,11 @@ impl StaticVirtualChannel {
         self.channel_processor.compression_condition()
     }
 
+    /// Returns the channel options sent in the GCC Client Network Data block.
+    pub fn channel_options(&self) -> ChannelOptions {
+        self.channel_processor.channel_options()
+    }
+
     pub fn start(&mut self) -> PduResult<Vec<SvcMessage>> {
         self.channel_processor.start()
     }
@@ -462,7 +467,6 @@ impl ChunkProcessor {
         let mut chunks = Vec::new();
 
         let total_len = encoded_pdu.filled_len();
-        let is_chunked = total_len > max_chunk_len;
         let mut chunk_start_index: usize = 0;
         let mut chunk_end_index = core::cmp::min(total_len, max_chunk_len);
         loop {
@@ -485,10 +489,12 @@ impl ChunkProcessor {
                 if last {
                     flags |= ChannelFlags::LAST;
                 }
-                if is_chunked {
-                    flags |= ChannelFlags::SHOW_PROTOCOL;
-                }
 
+                // CHANNEL_FLAG_SHOW_PROTOCOL only comes from the message, which carries it when the
+                // channel was defined with CHANNEL_OPTION_SHOW_PROTOCOL, as FreeRDP does. MS-RDPBCGR
+                // 3.1.5.2.1 asks for it on every chunked PDU, but the flag also makes the server pass
+                // the Channel PDU Header to the endpoint, and Windows then drops multi-chunk RDPDR
+                // PDUs such as printer announcements with cached configuration.
                 flags |= message.flags;
 
                 ChannelPduHeader {

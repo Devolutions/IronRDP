@@ -9,6 +9,7 @@ pub mod known_certificates;
 pub mod logbuf;
 pub mod now;
 pub mod operations;
+pub mod printer_cache;
 
 mod ipc {
     pub(crate) use ironrdp_rpc::ipc::*;

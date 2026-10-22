@@ -2688,7 +2688,9 @@ fn property_description(key: &str) -> Option<&'static str> {
         "compression" => "enable bulk data compression (0/1)",
         "audiomode" => "remote audio mode (0 = play on client, 1 = play on server, 2 = disabled)",
         "redirectclipboard" => "enable clipboard redirection (0/1)",
-        "redirectprinters" => "redirect the local default Windows printer (0/1, Windows only)",
+        "redirectprinters" => {
+            "redirect the local default Windows printer; settings persist per server (0/1, Windows only)"
+        }
         "redirectcomports" => "redirect every local serial (COM) and parallel (LPT) port (0/1, Windows only)",
         "enablecredsspsupport" => "enable CredSSP/NLA authentication (0/1)",
         "alternate shell" => "program to launch on connect instead of the desktop shell",

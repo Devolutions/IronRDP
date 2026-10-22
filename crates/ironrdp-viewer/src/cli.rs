@@ -291,13 +291,33 @@ struct Args {
     #[clap(long)]
     smartcard: bool,
 
-    /// Redirect the local default Windows printer.
+    /// Redirect the local default Windows printer (same as `redirectprinters:i:1`).
     ///
-    /// The remote host must have a printer driver with the same name as the local queue's driver.
-    /// The `.rdp` `redirectprinters` property does not enable this, because mstsc writes it by
-    /// default. Ignored on other platforms.
-    #[clap(long)]
+    /// The remote host needs a printer driver with the announced name, which is the local
+    /// queue's driver unless a `--printer-queue <queue>,<driver>` entry overrides it. Ignored on
+    /// other platforms.
+    #[clap(long, conflicts_with = "printer_all")]
     printer: bool,
+
+    /// Redirect every local Windows printer queue and printer connection.
+    ///
+    /// `--printer-queue` entries then only override drivers. Ignored on other platforms.
+    #[clap(long)]
+    printer_all: bool,
+
+    /// Redirect the named local printer queue, optionally announcing another driver.
+    ///
+    /// The format is `<queue>[,<driver>]`, like FreeRDP `/printer`. Windows printer names cannot
+    /// contain commas. Repeat the option for several queues. With `--printer` or `--printer-all`,
+    /// entries only override drivers and must name one. Ignored on other platforms.
+    #[clap(long, value_name = "QUEUE[,DRIVER]")]
+    printer_queue: Vec<String>,
+
+    /// Mark the named redirected queue as the remote default printer.
+    ///
+    /// Defaults to the local default queue when it is redirected.
+    #[clap(long, value_name = "QUEUE")]
+    printer_default: Option<String>,
 
     /// Redirect a local directory as a drive named NAME (repeatable).
     ///
@@ -409,6 +429,80 @@ impl PortOptions {
     }
 }
 
+/// Local printers selected on the command line or through `redirectprinters`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrinterOptions {
+    /// Queues to redirect.
+    pub selection: PrinterSelection,
+    /// `(queue, driver)` overrides, in command-line order.
+    pub drivers: Vec<(String, String)>,
+    /// Queue marked as the remote default printer.
+    pub default_queue: Option<String>,
+}
+
+/// Which local printer queues are redirected.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum PrinterSelection {
+    /// The local default queue.
+    #[default]
+    Default,
+    /// Every local queue and printer connection.
+    All,
+    /// The listed queues.
+    Named(Vec<String>),
+}
+
+impl PrinterOptions {
+    fn from_args(args: &Args, redirect_from_file: bool) -> anyhow::Result<Option<Self>> {
+        // `--printer` and `--printer-all` select the queues; `--printer-queue` entries then only
+        // override drivers.
+        let overrides_only = args.printer || args.printer_all;
+        let mut queues = Vec::with_capacity(args.printer_queue.len());
+        let mut drivers = Vec::new();
+        for spec in &args.printer_queue {
+            let (queue, driver) = match spec.split_once(',') {
+                Some((queue, driver)) => (queue.trim(), Some(driver.trim())),
+                None => (spec.trim(), None),
+            };
+            anyhow::ensure!(!queue.is_empty(), "--printer-queue needs a queue name: {spec}");
+            anyhow::ensure!(
+                driver.is_some() || !overrides_only,
+                "--printer-queue needs <queue>,<driver> with --printer or --printer-all: {spec}"
+            );
+            if let Some(driver) = driver {
+                anyhow::ensure!(
+                    !driver.is_empty() && !driver.contains(','),
+                    "--printer-queue expects <queue>[,<driver>]: {spec}"
+                );
+                drivers.push((queue.to_owned(), driver.to_owned()));
+            }
+            queues.push(queue.to_owned());
+        }
+
+        let selection = if args.printer_all {
+            PrinterSelection::All
+        } else if args.printer {
+            PrinterSelection::Default
+        } else if !queues.is_empty() {
+            PrinterSelection::Named(queues)
+        } else if redirect_from_file {
+            PrinterSelection::Default
+        } else {
+            anyhow::ensure!(
+                args.printer_default.is_none(),
+                "--printer-default needs --printer, --printer-all, or --printer-queue"
+            );
+            return Ok(None);
+        };
+
+        Ok(Some(Self {
+            selection,
+            drivers,
+            default_queue: args.printer_default.clone(),
+        }))
+    }
+}
+
 /// Result of parsing CLI args + loading the `.rdp` file: a configured [`ConfigBuilder`] plus the
 /// CLI-only settings that cannot live on the builder.
 ///
@@ -422,7 +516,7 @@ pub struct ViewerConfig {
     dump_rdp: Option<PathBuf>,
     rpc: bool,
     rpc_endpoint: Option<String>,
-    redirect_printers: bool,
+    printers: Option<PrinterOptions>,
     named_drives: Vec<NamedDrive>,
     ports: PortOptions,
 }
@@ -467,21 +561,33 @@ impl ViewerConfig {
                     "--rpc cannot be combined with drive options; pass drivestoredirect in the connect properties"
                 );
             }
+            if args.printer || args.printer_all || !args.printer_queue.is_empty() || args.printer_default.is_some() {
+                anyhow::bail!(
+                    "--rpc cannot be combined with printer options; pass redirectprinters in the connect properties"
+                );
+            }
+            if !args.serial.is_empty() || !args.parallel.is_empty() {
+                anyhow::bail!(
+                    "--rpc cannot be combined with port options; pass redirectcomports in the connect properties"
+                );
+            }
             return Ok(Self {
                 builder: ConfigBuilder::new(),
                 log_file,
                 dump_rdp: None,
                 rpc: true,
                 rpc_endpoint: args.rpc_endpoint,
-                redirect_printers: false,
+                printers: None,
                 named_drives: Vec::new(),
                 ports: PortOptions::default(),
             });
         }
 
-        // Printer redirection requires the explicit CLI flag: mstsc writes `redirectprinters:i:1` by
-        // default, so the file property alone would announce the local printer without the user asking.
-        let redirect_printers = args.printer;
+        // Same rule as the daemon: `redirectprinters:i:1` redirects the default printer unless
+        // `ironrdp_rdpdr:i:0` disables device redirection. CLI printer options always apply.
+        let redirect_printers_from_file =
+            properties.redirect_printers().unwrap_or(false) && properties.enable_rdpdr() != Some(false);
+        let printers = PrinterOptions::from_args(&args, redirect_printers_from_file)?;
         // Unlike printers, mstsc only writes `redirectcomports:i:1` when the user selected ports.
         let mut ports = PortOptions {
             serial: PortChoice::from_args(core::mem::take(&mut args.serial)),
@@ -541,8 +647,8 @@ impl ViewerConfig {
         } else {
             builder.with_smartcard(false)
         };
-        if redirect_printers {
-            builder = builder.with_rdpdr(true);
+        if printers.is_some() {
+            builder = builder.with_rdpdr(true).with_printers(true);
         }
         if let Some(drive_redirection) = drive_redirection {
             builder = builder.with_drive_redirection(drive_redirection);
@@ -560,7 +666,7 @@ impl ViewerConfig {
             dump_rdp,
             rpc: false,
             rpc_endpoint: None,
-            redirect_printers,
+            printers,
             named_drives,
             ports,
         })
@@ -584,9 +690,14 @@ impl ViewerConfig {
         self.dump_rdp.as_deref()
     }
 
-    /// Whether the session should redirect the local default printer.
+    /// Whether the session redirects local printers.
     pub fn redirect_printers(&self) -> bool {
-        self.redirect_printers
+        self.printers.is_some()
+    }
+
+    /// Local printers the session redirects, if any.
+    pub fn printers(&self) -> Option<&PrinterOptions> {
+        self.printers.as_ref()
     }
 
     /// Local directories requested as named drives (`--drive`, `--home-drive`).

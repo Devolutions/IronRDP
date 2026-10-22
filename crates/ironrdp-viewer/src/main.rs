@@ -27,7 +27,7 @@ fn main() -> anyhow::Result<()> {
 
     let dump_rdp = cli.dump_rdp().map(ToOwned::to_owned);
     #[cfg(windows)]
-    let redirect_printers = cli.redirect_printers();
+    let printers = cli.printers().cloned();
     let named_drives = cli.named_drives().to_vec();
     #[cfg(windows)]
     let ports = cli.ports().clone();
@@ -58,11 +58,13 @@ fn main() -> anyhow::Result<()> {
     #[cfg(windows)]
     let enable_clipboard = config.channels().clipboard == ironrdp::client::config::ClipboardType::Enable;
     #[cfg(windows)]
+    let server = config.destination().to_string();
+    #[cfg(windows)]
     let drives = ironrdp_viewer::drives::ViewerDrives::from_rdpdr_config(&config.channels().rdpdr, named_drives);
     let client = RdpClient::new(config, output_event_sender);
     #[cfg(windows)]
     let (client, _drive_watcher) =
-        attach_windows_rdpdr_backend(client, enable_smartcard, redirect_printers, &ports, &drives)?;
+        attach_windows_rdpdr_backend(client, enable_smartcard, printers.as_ref(), &ports, &drives, &server)?;
     // Kept alive, on this thread, until the event loop returns.
     #[cfg(windows)]
     let (client, _clipboard) = attach_windows_clipboard(client, enable_clipboard)?;
@@ -203,22 +205,24 @@ fn attach_windows_clipboard(
 
 /// Attaches the Windows RDPDR backend when drive, smartcard, printer or port redirection is enabled.
 ///
-/// Printer redirection announces the current default queue; when there is none, the session
-/// continues without a printer. Ports are enumerated when the session connects, and requested
-/// ports that are not present are skipped. With dynamic drives, the returned watcher announces
-/// drives connected during the session until it is dropped.
+/// Printer redirection announces the selected queues; when none exists, the session continues
+/// without a printer. Server printer settings persist per server in
+/// [`ironrdp_daemon::printer_cache::directory`]. Ports are enumerated when the session connects,
+/// and requested ports that are not present are skipped. With dynamic drives, the returned
+/// watcher announces drives connected during the session until it is dropped.
 #[cfg(windows)]
 fn attach_windows_rdpdr_backend(
     client: RdpClient,
     enable_smartcard: bool,
-    redirect_printers: bool,
+    printers: Option<&ironrdp_viewer::cli::PrinterOptions>,
     ports: &ironrdp_viewer::cli::PortOptions,
     drives: &ironrdp_viewer::drives::ViewerDrives,
+    server: &str,
 ) -> anyhow::Result<(RdpClient, Option<ironrdp_rdpdr_native::LogicalDriveWatcher>)> {
     use ironrdp_rdpdr_native::{PortSelection, WindowsPortRedirection};
     use ironrdp_viewer::cli::PortChoice;
 
-    if !enable_smartcard && !redirect_printers && !ports.is_enabled() && drives.is_empty() {
+    if !enable_smartcard && printers.is_none() && !ports.is_enabled() && drives.is_empty() {
         return Ok((client, None));
     }
 
@@ -232,12 +236,30 @@ fn attach_windows_rdpdr_backend(
         .context("invalid rdpdr configuration")?;
     let factory = factory
         .with_smartcard(enable_smartcard)
-        .with_default_printer(redirect_printers)
+        .with_printer_redirection(printers.map(windows_printer_redirection).unwrap_or_default())
         .with_port_redirection(WindowsPortRedirection {
             serial: selection(&ports.serial),
             parallel: selection(&ports.parallel),
         });
-    Ok((client.with_rdpdr_backend_factory(Box::new(factory)), drive_watcher))
+    let factory = ironrdp_daemon::printer_cache::with_store(factory, server);
+    return Ok((client.with_rdpdr_backend_factory(Box::new(factory)), drive_watcher));
+
+    fn windows_printer_redirection(
+        options: &ironrdp_viewer::cli::PrinterOptions,
+    ) -> ironrdp_rdpdr_native::WindowsPrinterRedirection {
+        use ironrdp_rdpdr_native::{WindowsPrinterRedirection, WindowsPrinterSelection};
+        use ironrdp_viewer::cli::PrinterSelection;
+
+        let selection = match &options.selection {
+            PrinterSelection::Default => WindowsPrinterSelection::Default,
+            PrinterSelection::All => WindowsPrinterSelection::All,
+            PrinterSelection::Named(queues) => WindowsPrinterSelection::Named(queues.clone()),
+        };
+        options.drivers.iter().fold(
+            WindowsPrinterRedirection::new(selection).with_default_queue(options.default_queue.clone()),
+            |printers, (queue, driver)| printers.with_driver(queue.clone(), driver.clone()),
+        )
+    }
 }
 
 fn setup_logging(log_file: Option<&str>) -> anyhow::Result<()> {

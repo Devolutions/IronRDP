@@ -23,4 +23,7 @@ pub use logical_drives::{
     LogicalDriveWatcher,
 };
 pub use port::{PortSelection, WindowsPortRedirection};
-pub use printer::{RdpdrWorkerThreadGuard, RdpdrWorkerThreadGuardResult, RdpdrWorkerThreadHooks};
+pub use printer::{
+    RdpdrWorkerThreadGuard, RdpdrWorkerThreadGuardResult, RdpdrWorkerThreadHooks, WindowsPrinterRedirection,
+    WindowsPrinterSelection,
+};

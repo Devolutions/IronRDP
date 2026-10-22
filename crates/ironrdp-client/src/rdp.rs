@@ -1674,7 +1674,19 @@ fn build_rdpdr_channel(
         .build_rdpdr_backend()
         .map_err(|error| ironrdp_connector::custom_err!("build RDPDR backend", RdpdrBackendBuildError(error)))?;
     let drive_hotplug = policy.drives && product.drive_hotplug();
-    let printer = product.printer().filter(|_| policy.printers).cloned();
+    let mut printers = if policy.printers && config.printers {
+        product.printers().to_vec()
+    } else {
+        Vec::new()
+    };
+    // Keep a lone printer the session default, as before multi-printer products. With several
+    // printers, the factory decides; MS-RDPEPC 2.2.2.1 allows at most one default.
+    if let [only] = printers.as_mut_slice()
+        && !only.is_default()
+    {
+        *only = only.clone().with_default(true);
+    }
+    let printer_cache_store = product.printer_cache_store().cloned();
     let ports = if policy.ports && config.ports {
         product.ports().to_vec()
     } else {
@@ -1689,12 +1701,15 @@ fn build_rdpdr_channel(
     #[cfg(not(feature = "smartcard"))]
     let smartcard = false;
 
-    if let Some(printer) = &printer {
+    for (index, printer) in printers.iter().enumerate() {
         let collides_with_drive = initial_drives
             .iter()
             .any(|drive| drive.device_id() == printer.device_id());
         let collides_with_smartcard = smartcard && printer.device_id() == 0;
-        if collides_with_drive || collides_with_smartcard {
+        let collides_with_printer = printers[..index]
+            .iter()
+            .any(|previous| previous.device_id() == printer.device_id());
+        if collides_with_drive || collides_with_smartcard || collides_with_printer {
             return Err(ironrdp_connector::custom_err!(
                 "build RDPDR channel",
                 io::Error::new(
@@ -1709,7 +1724,7 @@ fn build_rdpdr_channel(
         let device_id = port.device_id();
         let collides = initial_drives.iter().any(|drive| drive.device_id() == device_id)
             || (smartcard && device_id == 0)
-            || printer.as_ref().is_some_and(|printer| printer.device_id() == device_id)
+            || printers.iter().any(|printer| printer.device_id() == device_id)
             || ports[..index].iter().any(|previous| previous.device_id() == device_id);
         if collides {
             return Err(ironrdp_connector::custom_err!(
@@ -1722,7 +1737,7 @@ fn build_rdpdr_channel(
         }
     }
 
-    if initial_drives.is_empty() && !smartcard && !drive_hotplug && printer.is_none() && ports.is_empty() {
+    if initial_drives.is_empty() && !smartcard && !drive_hotplug && printers.is_empty() && ports.is_empty() {
         return Ok(None);
     }
 
@@ -1739,9 +1754,11 @@ fn build_rdpdr_channel(
     if !initial_drives.is_empty() || drive_hotplug {
         rdpdr_channel = rdpdr_channel.with_drives(Some(initial_drives));
     }
-    if let Some(printer) = printer {
-        let (device_id, name, driver_name, network) = printer.into_parts();
-        rdpdr_channel = rdpdr_channel.with_printer_driver_and_network(device_id, name, driver_name, network);
+    if let Some(store) = printer_cache_store.filter(|_| !printers.is_empty()) {
+        rdpdr_channel = rdpdr_channel.with_printer_cache_store(store);
+    }
+    for printer in printers {
+        rdpdr_channel = rdpdr_channel.with_redirected_printer(printer);
     }
     for port in ports {
         rdpdr_channel = rdpdr_channel.with_port(port);
@@ -5005,7 +5022,7 @@ mod tests {
         builds: AtomicUsize,
         initial_drives: Vec<RdpdrDrive>,
         drive_hotplug: bool,
-        printer: Option<RdpdrPrinter>,
+        printers: Vec<RdpdrPrinter>,
         ports: Vec<RdpdrPort>,
     }
 
@@ -5016,7 +5033,7 @@ mod tests {
                 builds: AtomicUsize::new(0),
                 initial_drives,
                 drive_hotplug: false,
-                printer: None,
+                printers: Vec::new(),
                 ports: Vec::new(),
             }
         }
@@ -5032,7 +5049,7 @@ mod tests {
         }
 
         fn with_printer(mut self, printer: RdpdrPrinter) -> Self {
-            self.printer = Some(printer);
+            self.printers.push(printer);
             self
         }
     }
@@ -5041,13 +5058,12 @@ mod tests {
     impl RdpdrBackendFactory for CountingRdpdrFactory {
         fn build_rdpdr_backend(&self) -> RdpdrBackendFactoryResult<RdpdrBackendProduct> {
             let instance = self.builds.fetch_add(1, Ordering::SeqCst) + 1;
-            let mut product =
+            Ok(
                 RdpdrBackendProduct::new(Box::new(TestRdpdrBackend::new(instance)), self.initial_drives.clone())
-                    .with_drive_hotplug(self.drive_hotplug);
-            if let Some(printer) = &self.printer {
-                product = product.with_printer(printer.clone());
-            }
-            Ok(product.with_ports(self.ports.clone()))
+                    .with_drive_hotplug(self.drive_hotplug)
+                    .with_printers(self.printers.clone())
+                    .with_ports(self.ports.clone()),
+            )
         }
     }
 
@@ -5377,6 +5393,7 @@ mod tests {
             smartcard: false,
             drives: Default::default(),
             ports: true,
+            printers: true,
         };
 
         assert!(
@@ -5399,6 +5416,7 @@ mod tests {
             smartcard: false,
             drives: Default::default(),
             ports: true,
+            printers: true,
         };
 
         assert!(
@@ -5421,6 +5439,7 @@ mod tests {
             smartcard: false,
             drives: Default::default(),
             ports: true,
+            printers: true,
         };
 
         let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
@@ -5481,6 +5500,143 @@ mod tests {
     }
 
     #[cfg(feature = "rdpdr")]
+    fn announce_rdpdr_printers(rdpdr: &mut ironrdp_rdpdr::Rdpdr) -> Vec<u8> {
+        let client_id = 0x1234_5678;
+        for pdu in [
+            RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+                version_major: 1,
+                version_minor: VERSION_MINOR_12,
+                client_id,
+                kind: VersionAndIdPduKind::ServerAnnounceRequest,
+            }),
+            RdpdrPdu::CoreCapability(CoreCapability {
+                capabilities: vec![CapabilityMessage::new_general(0), CapabilityMessage::new_printer()],
+                kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
+            }),
+            RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+                version_major: 1,
+                version_minor: VERSION_MINOR_12,
+                client_id,
+                kind: VersionAndIdPduKind::ServerClientIdConfirm,
+            }),
+        ] {
+            rdpdr
+                .process(&encode_vec(&pdu).expect("encode server PDU"))
+                .expect("process server PDU");
+        }
+        let announcements = rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+            .expect("process user logged on");
+        assert_eq!(announcements.len(), 1);
+        announcements[0]
+            .encode_unframed_pdu()
+            .expect("encode printer announcement")
+    }
+
+    /// Returns `(device ID, flags)` for each printer in a device-list announcement.
+    #[cfg(feature = "rdpdr")]
+    fn announced_printer_flags(wire: &[u8]) -> Vec<(u32, u32)> {
+        let read_u32 = |offset: usize| u32::from_le_bytes(wire[offset..offset + 4].try_into().unwrap());
+        let count = read_u32(4);
+        let mut offset = 8;
+        let mut printers = Vec::new();
+        for _ in 0..count {
+            let device_data_length = usize::try_from(read_u32(offset + 16)).unwrap();
+            printers.push((read_u32(offset + 4), read_u32(offset + 20)));
+            offset += 20 + device_data_length;
+        }
+        printers
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn rdpdr_announces_several_printers_with_a_single_default() {
+        let factory = CountingRdpdrFactory::new(Vec::new())
+            .with_printer(RdpdrPrinter::new(41, "First".to_owned(), "Driver".to_owned()).with_network(false))
+            .with_printer(
+                RdpdrPrinter::new(42, "Second".to_owned(), "Driver".to_owned())
+                    .with_network(false)
+                    .with_default(true),
+            )
+            .with_printer(
+                RdpdrPrinter::new(43, "Third".to_owned(), "Driver".to_owned())
+                    .with_network(false)
+                    .with_default(true),
+            );
+        let config = crate::config::RdpdrConfig {
+            enabled: true,
+            #[cfg(feature = "smartcard")]
+            smartcard: false,
+            ports: true,
+            printers: true,
+            drives: Default::default(),
+        };
+
+        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
+            .expect("printer product should build")
+            .expect("printers keep the RDPDR channel attached");
+        let wire = announce_rdpdr_printers(&mut rdpdr);
+
+        assert_eq!(
+            announced_printer_flags(&wire),
+            vec![
+                (41, 0),
+                (42, ironrdp_rdpdr::pdu::efs::RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER),
+                (43, 0),
+            ]
+        );
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn rdpdr_does_not_promote_a_default_among_several_printers() {
+        let factory = CountingRdpdrFactory::new(Vec::new())
+            .with_printer(RdpdrPrinter::new(41, "First".to_owned(), "Driver".to_owned()).with_network(false))
+            .with_printer(RdpdrPrinter::new(42, "Second".to_owned(), "Driver".to_owned()).with_network(false));
+        let config = crate::config::RdpdrConfig {
+            enabled: true,
+            #[cfg(feature = "smartcard")]
+            smartcard: false,
+            ports: true,
+            printers: true,
+            drives: Default::default(),
+        };
+
+        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
+            .expect("printer product should build")
+            .expect("printers keep the RDPDR channel attached");
+
+        assert_eq!(
+            announced_printer_flags(&announce_rdpdr_printers(&mut rdpdr)),
+            vec![(41, 0), (42, 0)]
+        );
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn rdpdr_config_without_printers_omits_printer_only_channel() {
+        let factory = CountingRdpdrFactory::new(Vec::new()).with_printer(RdpdrPrinter::new(
+            42,
+            "Office Printer".to_owned(),
+            "Office Driver".to_owned(),
+        ));
+        let config = crate::config::RdpdrConfig {
+            enabled: true,
+            #[cfg(feature = "smartcard")]
+            smartcard: false,
+            ports: true,
+            printers: false,
+            drives: Default::default(),
+        };
+
+        assert!(
+            build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
+                .expect("printer-disabled RDPDR should not fail")
+                .is_none()
+        );
+    }
+
+    #[cfg(feature = "rdpdr")]
     #[test]
     fn rdpdr_rejects_duplicate_printer_and_drive_device_ids() {
         let factory = CountingRdpdrFactory::new(vec![RdpdrDrive::new(42, "drive".to_owned())]).with_printer(
@@ -5492,6 +5648,7 @@ mod tests {
             smartcard: false,
             drives: Default::default(),
             ports: true,
+            printers: true,
         };
 
         assert!(build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL).is_err());
@@ -5507,6 +5664,7 @@ mod tests {
             smartcard: false,
             drives: Default::default(),
             ports: true,
+            printers: true,
         };
 
         let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
@@ -5545,6 +5703,7 @@ mod tests {
             smartcard: false,
             drives: Default::default(),
             ports,
+            printers: true,
         };
 
         let factory = CountingRdpdrFactory::new(Vec::new()).with_port(com3());
@@ -5587,6 +5746,7 @@ mod tests {
             smartcard: false,
             drives: Default::default(),
             ports: true,
+            printers: true,
         };
         let policy = RdpdrDevicePolicy {
             drives: true,
@@ -5612,6 +5772,7 @@ mod tests {
             smartcard: false,
             drives: Default::default(),
             ports: true,
+            printers: true,
         };
 
         assert!(
@@ -5631,6 +5792,7 @@ mod tests {
             smartcard: true,
             drives: Default::default(),
             ports: true,
+            printers: true,
         };
 
         let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, DRIVES_RESTRICTED)
@@ -5726,6 +5888,7 @@ mod tests {
             smartcard: false,
             drives: Default::default(),
             ports: true,
+            printers: true,
         };
 
         let first = build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
@@ -5762,6 +5925,7 @@ mod tests {
             smartcard: false,
             drives: Default::default(),
             ports: true,
+            printers: true,
         };
         let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
             .expect("RDPDR channel should build")

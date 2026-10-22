@@ -1,7 +1,7 @@
 use ironrdp_bulk::BulkCompressor;
 use ironrdp_core::{Decode as _, MonotonicInstant, ReadCursor, WriteBuf, decode};
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelMut, DynamicChannelRef};
-use ironrdp_pdu::gcc::{ChannelName, Monitor};
+use ironrdp_pdu::gcc::{ChannelName, ChannelOptions, Monitor};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndicationCtx};
 use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectRspPdu};
 use ironrdp_pdu::rdp::client_info::CompressionType;
@@ -14,7 +14,8 @@ use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, Se
 use ironrdp_pdu::rdp::session_info::{InfoData, SaveSessionInfoPdu, ServerAutoReconnect};
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{
-    StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages, client_encode_svc_messages_with_max_chunk_len,
+    ChannelFlags, StaticChannelSet, StaticVirtualChannel, SvcMessage, SvcProcessor, SvcProcessorMessages,
+    client_encode_svc_messages_with_max_chunk_len,
 };
 use tracing::debug;
 
@@ -172,6 +173,7 @@ impl Processor {
             channel_id,
             self.user_channel_id,
             self.static_channels.maximum_chunk_size(),
+            self.static_channels.get_by_channel_id(channel_id),
         )
     }
 
@@ -191,6 +193,7 @@ impl Processor {
             channel_id,
             self.user_channel_id,
             self.static_channels.maximum_chunk_size(),
+            self.static_channels.get_by_channel_id(channel_id),
         )
     }
 
@@ -250,8 +253,14 @@ impl Processor {
             let maximum_chunk_size = self.static_channels.maximum_chunk_size();
             if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
                 let response_pdus = svc.process(data_ctx.user_data).map_err(SessionError::pdu)?;
-                process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id, maximum_chunk_size)
-                    .map(|data| vec![ProcessorOutput::ResponseFrame(data)])
+                process_svc_messages(
+                    response_pdus,
+                    channel_id,
+                    data_ctx.initiator_id,
+                    maximum_chunk_size,
+                    Some(&*svc),
+                )
+                .map(|data| vec![ProcessorOutput::ResponseFrame(data)])
             } else {
                 Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
             }
@@ -585,13 +594,25 @@ fn is_logon_complete(session_info: &SaveSessionInfoPdu) -> bool {
 /// This includes chunkifying the messages, adding MCS, x224, and tpkt headers, and encoding them into a buffer.
 /// The messages returned here are ready to be sent to the server.
 ///
+/// Messages of a channel defined with `CHANNEL_OPTION_SHOW_PROTOCOL` carry
+/// `CHANNEL_FLAG_SHOW_PROTOCOL`, like FreeRDP's client.
+///
 /// The caller is responsible for ensuring that the `channel_id` corresponds to the correct channel.
 fn process_svc_messages(
     messages: Vec<SvcMessage>,
     channel_id: u16,
     initiator_id: u16,
     maximum_chunk_size: usize,
+    channel: Option<&StaticVirtualChannel>,
 ) -> SessionResult<Vec<u8>> {
+    let messages = if channel.is_some_and(|channel| channel.channel_options().contains(ChannelOptions::SHOW_PROTOCOL)) {
+        messages
+            .into_iter()
+            .map(|message| message.with_flags(ChannelFlags::SHOW_PROTOCOL))
+            .collect()
+    } else {
+        messages
+    };
     client_encode_svc_messages_with_max_chunk_len(messages, channel_id, initiator_id, maximum_chunk_size)
         .map_err(SessionError::encode)
 }

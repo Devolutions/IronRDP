@@ -1050,6 +1050,8 @@ impl Daemon {
         // `ConfigBuilder::build` strips every secret property, so the live bag carries no secrets.
         let live_seed = config.properties().clone();
         let destination = config.destination().to_string();
+        #[cfg(windows)]
+        let printer_cache_server = destination.clone();
         let rail_enabled = live_seed.remote_application_mode().unwrap_or(false);
         let initial_rail_execute = if rail_enabled {
             live_seed
@@ -1065,7 +1067,10 @@ impl Daemon {
         let client = RdpClient::new(config, output_tx);
         #[cfg(windows)]
         let client = match rdpdr_factory {
-            Some(factory) => client.with_rdpdr_backend_factory(Box::new(factory)),
+            Some(factory) => client.with_rdpdr_backend_factory(Box::new(crate::printer_cache::with_store(
+                factory,
+                &printer_cache_server,
+            ))),
             None => client,
         };
         let input_tx = client.input_sender();

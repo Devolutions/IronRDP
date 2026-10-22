@@ -430,8 +430,15 @@ impl Capabilities {
         }
     }
 
+    /// Adds the printer capability set unless it is already present.
     pub fn add_printer(&mut self) {
-        self.push(CapabilityMessage::new_printer());
+        if !self
+            .0
+            .iter()
+            .any(|capability| capability.header.cap_type == CapabilityType::Printer)
+        {
+            self.push(CapabilityMessage::new_printer());
+        }
     }
 
     /// Adds the serial and parallel port capability once.
@@ -724,6 +731,9 @@ pub const RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER: u32 = 0x0000_0004;
 pub const RDPDR_PRINTER_ANNOUNCE_FLAG_TSPRINTER: u32 = 0x0000_0008;
 /// [MS-RDPEPC 2.2.2.3] RDPDR_PRINTER_ANNOUNCE flag: the server should expect XPS output.
 pub const RDPDR_PRINTER_ANNOUNCE_FLAG_XPSFORMAT: u32 = 0x0000_0010;
+
+/// Highest `PRN<n>` port number that fits the 7-character preferred DOS name.
+const MAX_PRINTER_PORT_NUMBER: u32 = 9999;
 
 /// Default server-side printer driver announced for PostScript virtual printers.
 ///
@@ -1142,29 +1152,100 @@ impl Devices {
     /// See [`DeviceAnnounceHeader::new_printer`] for the rationale.
     /// Callers needing a different driver should use
     /// [`DeviceAnnounceHeader::new_printer_with_driver`].
-    pub fn add_printer(&mut self, device_id: u32, print_name: String) {
-        self.add_printer_with_driver(device_id, print_name, DEFAULT_PRINTER_DRIVER_NAME.to_owned());
+    ///
+    /// Returns `false`, without adding the printer, when no `PRN<n>` port name is left; see
+    /// [`Self::add_printer_announce`].
+    pub fn add_printer(&mut self, device_id: u32, print_name: String) -> bool {
+        self.add_printer_with_driver(device_id, print_name, DEFAULT_PRINTER_DRIVER_NAME.to_owned())
     }
 
     /// Announce a virtual printer device with an explicit server-side driver.
-    pub fn add_printer_with_driver(&mut self, device_id: u32, print_name: String, driver_name: String) {
-        self.add_printer_with_driver_and_network(device_id, print_name, driver_name, true);
+    ///
+    /// Returns `false`, without adding the printer, when no `PRN<n>` port name is left.
+    pub fn add_printer_with_driver(&mut self, device_id: u32, print_name: String, driver_name: String) -> bool {
+        self.add_printer_with_driver_and_network(device_id, print_name, driver_name, true)
     }
 
     /// Announce a printer with an explicit driver and network-queue classification.
+    ///
+    /// Returns `false`, without adding the printer, when no `PRN<n>` port name is left.
     pub fn add_printer_with_driver_and_network(
         &mut self,
         device_id: u32,
         print_name: String,
         driver_name: String,
         network: bool,
-    ) {
-        self.push(DeviceAnnounceHeader::new_printer_with_driver_and_network(
+    ) -> bool {
+        let flags = RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER
+            | if network {
+                RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER
+            } else {
+                0
+            };
+        self.add_printer_announce(device_id, flags, &driver_name, &print_name, &[])
+    }
+
+    /// Announce a printer with explicit flags and cached configuration.
+    ///
+    /// The printer gets the lowest `PRN<n>` port number not used by another configured printer.
+    /// Returns `false`, without adding the printer, when `PRN1` to `PRN9999` are all taken.
+    #[must_use]
+    pub fn add_printer_announce(
+        &mut self,
+        device_id: u32,
+        flags: u32,
+        driver_name: &str,
+        print_name: &str,
+        cached_config_data: &[u8],
+    ) -> bool {
+        let Some(port_number) = self.next_printer_port_number() else {
+            return false;
+        };
+        self.push(DeviceAnnounceHeader::new_printer_announce(
             device_id,
-            print_name,
+            port_number,
+            flags,
             driver_name,
-            network,
+            print_name,
+            cached_config_data,
         ));
+        true
+    }
+
+    /// Replaces the announce of an already configured device, keeping its position.
+    ///
+    /// Returns `false` when no device uses the same device ID.
+    pub fn replace_device(&mut self, device: DeviceAnnounceHeader) -> bool {
+        match self
+            .0
+            .iter_mut()
+            .find(|existing| existing.device_id == device.device_id)
+        {
+            Some(existing) => {
+                *existing = device;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Returns the announce of a configured device.
+    pub fn device(&self, device_id: u32) -> Option<&DeviceAnnounceHeader> {
+        self.0.iter().find(|device| device.device_id == device_id)
+    }
+
+    fn next_printer_port_number(&self) -> Option<u32> {
+        // One pass over the devices; index 0 stands for the unused `PRN0`.
+        let mut used = vec![false; usize::try_from(MAX_PRINTER_PORT_NUMBER).ok()? + 1];
+        for port_number in self.0.iter().filter_map(DeviceAnnounceHeader::printer_port_number) {
+            if let Some(slot) = usize::try_from(port_number).ok().and_then(|index| used.get_mut(index)) {
+                *slot = true;
+            }
+        }
+        used.iter()
+            .skip(1)
+            .position(|used| !used)
+            .and_then(|index| u32::try_from(index + 1).ok())
     }
 
     /// Announces a serial or parallel port under its client-side DOS name, such as `COM1` or `LPT1`.
@@ -1307,28 +1388,7 @@ impl DeviceAnnounceHeader {
         driver_name: String,
         network: bool,
     ) -> Self {
-        // [MS-RDPEPC 2.2.2.3] RDPDR_PRINTER_ANNOUNCE device_data layout:
-        //   Flags            u32 LE
-        //   CodePage         u32 LE   (reserved; MUST be ignored)
-        //   PnPNameLen       u32 LE   (bytes, includes trailing UTF-16 NUL)
-        //   DriverNameLen    u32 LE   (bytes, includes trailing UTF-16 NUL)
-        //   PrintNameLen     u32 LE   (bytes, includes trailing UTF-16 NUL)
-        //   CachedFieldsLen  u32 LE
-        //   PnPName          UTF-16LE, NUL-terminated
-        //   DriverName       UTF-16LE, NUL-terminated
-        //   PrintName        UTF-16LE, NUL-terminated
-        //   CachedFields     opaque bytes
-        //
-        // FreeRDP leaves PnPName empty for this PostScript path and lets the
-        // server resolve the queue from DriverName + PrintName. Matching that
-        // behavior avoids exercising server-side PnP-name edge cases.
-        //
-        // [2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepc/2057a02f-57d5-47db-9a32-e337ac3f50e9
-
-        let driver_name_bytes = utf16le_with_nul(&driver_name);
-        let print_name_bytes = utf16le_with_nul(&print_name);
-
-        // [MS-RDPEPC 2.2.2.3] Flags. Mark the single configured queue as the
+        // [MS-RDPEPC 2.2.2.1] Flags. Mark the single configured queue as the
         // session default and preserve its network classification. We intentionally leave the others off:
         //  - XPSFORMAT (0x10): advertises *client* XPS-consumption support;
         //    our driver is PostScript so this is irrelevant and could nudge
@@ -1342,9 +1402,59 @@ impl DeviceAnnounceHeader {
             } else {
                 0
             };
+
+        Self::new_printer_announce(device_id, 1, flags, &driver_name, &print_name, &[])
+    }
+
+    /// Construct a printer announce with explicit flags, port number, and cached configuration.
+    ///
+    /// `port_number` selects the `PRN<n>` preferred DOS name; [MS-RDPEPC 2.2.2.1] requires `PRN`
+    /// followed by digits, so each announced printer needs its own number. `flags` is the
+    /// `RDPDR_PRINTER_ANNOUNCE_FLAG_*` combination, and `cached_config_data` is the opaque
+    /// `CachedPrinterConfigData` the server previously sent for this printer.
+    ///
+    /// `DriverName` is always encoded as Unicode, so [`RDPDR_PRINTER_ANNOUNCE_FLAG_ASCII`] is
+    /// cleared from `flags`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `port_number` is 0 or above 9999, or if a name or the cached data exceeds
+    /// `u32::MAX` encoded bytes.
+    pub fn new_printer_announce(
+        device_id: u32,
+        port_number: u32,
+        flags: u32,
+        driver_name: &str,
+        print_name: &str,
+        cached_config_data: &[u8],
+    ) -> Self {
+        // [MS-RDPEPC 2.2.2.1] RDPDR_PRINTER_ANNOUNCE device_data layout:
+        //   Flags            u32 LE
+        //   CodePage         u32 LE   (reserved; MUST be ignored)
+        //   PnPNameLen       u32 LE   (bytes, includes trailing UTF-16 NUL)
+        //   DriverNameLen    u32 LE   (bytes, includes trailing UTF-16 NUL)
+        //   PrintNameLen     u32 LE   (bytes, includes trailing UTF-16 NUL)
+        //   CachedFieldsLen  u32 LE
+        //   PnPName          UTF-16LE, NUL-terminated
+        //   DriverName       UTF-16LE, NUL-terminated
+        //   PrintName        UTF-16LE, NUL-terminated
+        //   CachedFields     opaque bytes
+        //
+        // FreeRDP leaves PnPName empty and lets the server resolve the queue from
+        // DriverName + PrintName. Matching that behavior avoids exercising server-side
+        // PnP-name edge cases.
+        //
+        // [2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepc/2057a02f-57d5-47db-9a32-e337ac3f50e9
+        assert!(
+            (1..=MAX_PRINTER_PORT_NUMBER).contains(&port_number),
+            "printer port number must fit the PRN<n> DOS name"
+        );
+
+        let flags = flags & !RDPDR_PRINTER_ANNOUNCE_FLAG_ASCII;
+        let driver_name_bytes = utf16le_with_nul(driver_name);
+        let print_name_bytes = utf16le_with_nul(print_name);
         let code_page: u32 = 0;
         let pnp_name_len: u32 = 0;
-        let cached_fields_len: u32 = 0;
 
         let mut device_data = Vec::with_capacity(
             4 /* Flags */
@@ -1354,7 +1464,8 @@ impl DeviceAnnounceHeader {
                 + 4 /* PrintNameLen */
                 + 4 /* CachedFieldsLen */
                 + driver_name_bytes.len()
-                + print_name_bytes.len(),
+                + print_name_bytes.len()
+                + cached_config_data.len(),
         );
         device_data.extend_from_slice(&flags.to_le_bytes());
         device_data.extend_from_slice(&code_page.to_le_bytes());
@@ -1369,9 +1480,14 @@ impl DeviceAnnounceHeader {
                 .expect("PrintName length fits in u32")
                 .to_le_bytes(),
         );
-        device_data.extend_from_slice(&cached_fields_len.to_le_bytes());
+        device_data.extend_from_slice(
+            &u32::try_from(cached_config_data.len())
+                .expect("CachedFields length fits in u32")
+                .to_le_bytes(),
+        );
         device_data.extend_from_slice(&driver_name_bytes);
         device_data.extend_from_slice(&print_name_bytes);
+        device_data.extend_from_slice(cached_config_data);
 
         Self {
             device_type: DeviceType::Print,
@@ -1379,9 +1495,8 @@ impl DeviceAnnounceHeader {
             // Per spec: when DeviceDataLength is non-zero PreferredDosName
             // is ignored, but it still needs a value that wouldn't trip
             // the character validator (forbidden: < > " / \ |; colon only
-            // at end). "PRN1" is the conventional choice for the first
-            // redirected printer.
-            preferred_dos_name: PreferredDosName("PRN1".to_owned()),
+            // at end). [MS-RDPEPC 2.2.2.1] requires "PRN" followed by digits.
+            preferred_dos_name: PreferredDosName(format!("PRN{port_number}")),
             device_data,
         }
     }
@@ -1400,6 +1515,14 @@ impl DeviceAnnounceHeader {
             preferred_dos_name: PreferredDosName(dos_name),
             device_data: Vec::new(),
         }
+    }
+
+    /// Returns the `PRN<n>` port number of a printer announce.
+    pub(crate) fn printer_port_number(&self) -> Option<u32> {
+        if self.device_type != DeviceType::Print {
+            return None;
+        }
+        self.preferred_dos_name.0.strip_prefix("PRN")?.parse().ok()
     }
 
     pub(crate) fn device_type(&self) -> DeviceType {

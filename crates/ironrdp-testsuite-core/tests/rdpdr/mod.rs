@@ -27,6 +27,8 @@ use ironrdp_rdpdr::pdu::esc::{ReturnCode, ScardCall, ScardIoCtlCode};
 use ironrdp_rdpdr::server::{NoopRdpdrServerBackend, RdpdrServer, RdpdrServerBackend};
 use ironrdp_rdpdr::{NoopRdpdrBackend, Rdpdr, RdpdrBackend};
 
+mod printer;
+
 /// Encodes via a plain `Vec<u8>` buffer for the server-side types in this file, which have
 /// their own inherent `encode`/`size` rather than implementing the crate-wide `Encode` trait
 /// (their `decode` takes caller-supplied context `encode_vec` above has no way to provide).
@@ -497,7 +499,7 @@ fn version_and_id_pdu_decode_client_announce_reply_tags_the_reply_not_the_confir
 #[test]
 fn devices_add_printer_appends_printer_entry() {
     let mut devices = Devices::new();
-    devices.add_printer(9, "Lobby Printer".to_owned());
+    assert!(devices.add_printer(9, "Lobby Printer".to_owned()));
 
     assert_eq!(devices.for_device_type(9).unwrap(), DeviceType::Print);
 }
@@ -947,11 +949,11 @@ fn printer_write_rejects_oversized_length_before_allocating_payload() {
 }
 
 #[test]
-fn printer_cache_pdu_is_ignored_before_decode() {
+fn printer_cache_pdu_with_an_unknown_event_fails_the_channel() {
     let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
-    let pdu = [0x72, 0x44, 0x43, 0x50, 1, 2, 3, 4]; // RDPDR + PAKID_PRN_CACHE_DATA + ignored body
+    let pdu = [0x72, 0x44, 0x43, 0x50, 1, 2, 3, 4]; // RDPDR + PAKID_PRN_CACHE_DATA + unknown EventId
 
-    assert!(rdpdr.process(&pdu).unwrap().is_empty());
+    assert!(rdpdr.process(&pdu).is_err());
 }
 
 fn acknowledged_drive() -> Rdpdr {
