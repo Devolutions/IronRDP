@@ -38,12 +38,16 @@ It performs the NTLM RPC association exchange, signs outgoing TS Proxy requests,
 Its packet-integrity state is owned by the session and fail-closed; TLS certificate validation and HTTP channel authentication remain separate gateway security layers.
 The stream applies TS Proxy redirection restrictions before starting RDP device channels.
 
-The live stream reserves a 1 GiB IN body, the maximum [MS-RPCH] allows, and returns errors on exhausted send credit, unsupported RTS sequences or channel lifetime/recycling transitions.
+The live stream reserves a 1 GiB IN body, the maximum [MS-RPCH] allows.
+It opens a successor IN channel before the default one runs out and follows OUT_R1 and OUT_R2 recycling when the proxy requests it, with the same HTTP authentication and certificate policy as the original channels.
+Only RPC PDUs count against the flow-control windows; RTS PDUs do not.
+Cookies set on any channel response are sent on later channel requests so a load balancer keeps the virtual connection on one proxy.
+The IN channel response is watched for the whole session; an `RPC Error` status ends the stream with the gateway's error code.
+Unexpected RTS sequences, a rejected replacement channel or a buffered-data overflow while waiting for send credit end the stream with an error.
 It does not negotiate TS Proxy administrative messaging, so it never issues `TsProxyMakeTunnelCall` and receives no service, consent or reauthentication messages.
 It closes the TS Proxy context and tunnel on graceful shutdown; an I/O or integrity error poisons the session, while dropping the stream closes its sockets without a close handshake.
-The HTTP channel setup does not retain load-balancer cookies or monitor IN-channel error responses after setup.
 There is no automatic HTTP/WebSocket-to-RPCH fallback.
-A session through one Windows RD Gateway has been tested and reached the remote desktop; channel recycling and long-lived sessions have not been tested against a real gateway.
+A session through one Windows RD Gateway has been tested and reached the remote desktop; channel recycling has been tested only against the loopback proxy, not a real gateway.
 
 [MS-RPCH]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpch/c0f4c9c5-1a61-4d10-b8e2-005378d1d212
 

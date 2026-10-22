@@ -12,8 +12,8 @@ use std::io;
 use std::time::Instant;
 
 use hyper::body::Bytes;
-use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
-use tokio::sync::mpsc;
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf, WriteHalf};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::PollSender;
@@ -33,14 +33,17 @@ use crate::rpc::tsgu::{
 use crate::rpc::{
     PTYPE_FAULT, PTYPE_RESPONSE, PTYPE_RTS, RPC_AUTH_LEVEL_PACKET_INTEGRITY, RPC_AUTH_TYPE_WINNT,
     RPC_NTLM_VERIFIER_LENGTH, RpcAuthenticatedResponseReassembler, RpcAuthenticationInfo, RpcFragmentSizes,
-    RpcNtlmAuth, RpcPresentationContext, RpcSyntaxIdentifier, RpchFlowControl, RpchPingSchedule, RpchV2Settings,
-    RpchV2Setup, RpchV2State, RtsCookie, RtsDestination, decode_rpc_authenticated_fragment,
-    decode_rpc_bind_ack_with_ntlm_auth, decode_rpc_fault_for_context, decode_rts_flow_control_ack, encode_rpc_auth_3,
-    encode_rpc_bind_with_ntlm_auth, encode_rts_flow_control_ack_with_destination, encode_rts_ping,
-    prepare_rpc_authenticated_request_fragments,
+    RpcNtlmAuth, RpcPresentationContext, RpcSyntaxIdentifier, RpchFlowControl, RpchInChannelRecycleState,
+    RpchOutChannelRecycleState, RpchPingSchedule, RpchV2Settings, RpchV2Setup, RpchV2State, RtsCookie, RtsDestination,
+    decode_rpc_authenticated_fragment, decode_rpc_bind_ack_with_ntlm_auth, decode_rpc_fault_for_context,
+    decode_rts_flow_control_ack, decode_rts_in_recycle_a4, decode_rts_out_recycle_a2, decode_rts_out_recycle_a6,
+    decode_rts_out_recycle_a10, decode_rts_out_recycle_r2_a6, decode_rts_out_recycle_r2_b3, encode_rpc_auth_3,
+    encode_rpc_bind_with_ntlm_auth, encode_rts_flow_control_ack_with_destination, encode_rts_out_recycle_a11,
+    encode_rts_ping, prepare_rpc_authenticated_request_fragments,
 };
 use crate::rpc_transport::{
-    RpchInRequest, RpchRequestHead, drain_body, read_rpch_response_head, write_rpch_request_head,
+    RpchCookieJar, RpchInRequest, RpchRequestHead, RpchResponseHead, drain_body, read_rpch_response_head,
+    write_rpch_request_head,
 };
 use crate::{Error, GwConnectTarget, GwErrorKind, GwRpchRedirectionFlags, GwSmartCardCredentials};
 
@@ -50,7 +53,10 @@ const CHANNEL_IN_CONTENT_LENGTH: u32 = 128 * 1024;
 const SESSION_IN_CONTENT_LENGTH: u32 = 1024 * 1024 * 1024;
 const MAX_RESPONSE_STUB_SIZE: usize = 32 * 1024;
 const MAX_AUTH_ROUNDS: usize = 8;
+/// IN body kept free for RTS PDUs, such as IN_R1/A5 and flow-control acknowledgements, sent before a recycle completes.
 const IN_RECYCLE_RESERVE: u32 = 1024;
+/// Target data received while a write waits for send window; exceeding it fails the session instead of growing memory.
+const MAX_BUFFERED_DATA: usize = 1024 * 1024;
 /// RPC proxy backend for the TS Proxy interface: the MS-TSGU 2.1 port 3388 endpoint on the gateway itself.
 ///
 /// The RPC proxy resolves the backend name on the gateway, so `localhost` names the local TS Proxy endpoint
@@ -64,14 +70,20 @@ pub(crate) struct RpchHttpCredentials {
     pub(crate) smart_card: Option<GwSmartCardCredentials>,
 }
 
-trait RpchStreamProvider<Out, In>: Send {
+pub(crate) trait RpchStreamProvider<Out, In>: Send {
     fn open_in(&mut self) -> impl Future<Output = Result<In, Error>> + Send;
     fn open_out(&mut self) -> impl Future<Output = Result<Out, Error>> + Send;
 }
 
 struct RpchSession<Out, In, Provider> {
     out: OutChannel,
-    input: RpchInRequest<In>,
+    input: RpchInRequest<WriteHalf<In>>,
+    in_monitor: InMonitor,
+    in_successor: Option<(RpchInRequest<WriteHalf<In>>, InMonitor)>,
+    out_successor: Option<OutSuccessor<Out>>,
+    in_content_length: u32,
+    out_auth_rounds: usize,
+    cookies: RpchCookieJar,
     provider: Provider,
     setup: RpchV2Setup,
     gateway_host: String,
@@ -95,9 +107,69 @@ struct RpchSession<Out, In, Provider> {
     channel_context: Option<NonNullRpcContextHandle>,
     data: VecDeque<Bytes>,
     failed: bool,
-    _out: PhantomData<fn() -> Out>,
 }
 
+struct OutSuccessor<Out> {
+    channel: OutChannel,
+    writer: WriteHalf<Out>,
+    head: Option<oneshot::Receiver<Result<Vec<String>, Error>>>,
+}
+
+/// Watches the read half of an accepted IN channel, where the proxy writes only error responses.
+///
+/// [MS-RPCH] 2.1.2.1.3 and 3.2.2.5.11.
+struct InMonitor {
+    failure: Option<oneshot::Receiver<Error>>,
+    task: JoinHandle<()>,
+}
+
+impl InMonitor {
+    fn spawn<R>(mut read: R) -> Self
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+    {
+        let (sender, failure) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let error = match read_rpch_response_head(&mut read).await {
+                Ok(response) => in_channel_response_error(&response),
+                Err(error) => Error::new("rpch IN channel closed", GwErrorKind::Connect).with_source(error),
+            };
+            let _ = sender.send(error);
+        });
+        Self {
+            failure: Some(failure),
+            task,
+        }
+    }
+
+    /// Resolves when the proxy fails the IN channel; pending forever once a failure was reported.
+    async fn failed(&mut self) -> Error {
+        let Some(failure) = self.failure.as_mut() else {
+            return core::future::pending().await;
+        };
+        let result = failure.await;
+        self.failure = None;
+        result.unwrap_or_else(|_| Error::new("rpch IN monitor stopped", GwErrorKind::Connect))
+    }
+}
+
+impl Drop for InMonitor {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn in_channel_response_error(response: &RpchResponseHead) -> Error {
+    match response.rpc_error() {
+        Some(code) => Error::new("rpch IN channel failed", GwErrorKind::GatewayCode(code)),
+        None => Error::new("rpch IN channel failed", GwErrorKind::HttpStatus(response.status)),
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal constructor shared by the stream and tests"
+)]
 async fn rpch_connect<Out, In, Provider>(
     out_stream: Out,
     in_stream: In,
@@ -106,29 +178,43 @@ async fn rpch_connect<Out, In, Provider>(
     target: &str,
     credentials: RpchHttpCredentials,
     settings: RpchV2Settings,
+    in_content_length: u32,
 ) -> Result<RpchSession<Out, In, Provider>, Error>
 where
     Out: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     In: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     Provider: RpchStreamProvider<Out, In>,
 {
-    let (channel, setup, session_id) = open_rpch_channels(
+    let OpenedChannels {
+        channel,
+        setup,
+        session_id,
+        cookies,
+        out_auth_rounds,
+    } = open_rpch_channels(
         out_stream,
         in_stream,
         gateway_host,
         target,
         &credentials,
         settings,
-        SESSION_IN_CONTENT_LENGTH,
+        in_content_length,
     )
     .await?;
+    let (input, in_read) = channel.input.split()?;
     let ping = setup
         .ping_schedule(Duration::ZERO, Duration::ZERO)
         .map_err(|error| custom_err!("create rpch ping schedule", error))?;
     let rpc_auth = RpcNtlmAuth::new(&credentials.username, &credentials.password)?;
     let mut session = RpchSession::<Out, In, Provider> {
         out: channel.out,
-        input: channel.input,
+        input,
+        in_monitor: InMonitor::spawn(in_read),
+        in_successor: None,
+        out_successor: None,
+        in_content_length,
+        out_auth_rounds,
+        cookies,
         provider,
         setup,
         gateway_host: gateway_host.to_owned(),
@@ -157,10 +243,18 @@ where
         channel_context: None,
         data: VecDeque::new(),
         failed: false,
-        _out: PhantomData,
     };
     session.bind().await?;
     Ok(session)
+}
+
+struct OpenedChannels<Out, In> {
+    channel: RpchChannel<Out, In>,
+    setup: RpchV2Setup,
+    session_id: String,
+    cookies: RpchCookieJar,
+    /// `401` rounds the OUT channel needed; successor OUT channels repeat them with the same credentials.
+    out_auth_rounds: usize,
 }
 
 async fn open_rpch_channels<Out, In>(
@@ -171,7 +265,7 @@ async fn open_rpch_channels<Out, In>(
     credentials: &RpchHttpCredentials,
     settings: RpchV2Settings,
     in_content_length: u32,
-) -> Result<(RpchChannel<Out, In>, RpchV2Setup, String), Error>
+) -> Result<OpenedChannels<Out, In>, Error>
 where
     Out: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     In: AsyncRead + AsyncWrite + Send + Unpin + 'static,
@@ -197,6 +291,7 @@ where
         .map_err(|error| custom_err!("encode rpch CONN/B1", error))?;
 
     let session_id = virtual_connection_id.to_string();
+    let mut cookies = RpchCookieJar::default();
     let mut input = open_in_channel(
         in_stream,
         gateway_host,
@@ -204,11 +299,20 @@ where
         &session_id,
         credentials,
         in_content_length,
+        &mut cookies,
     )
     .await?;
 
-    let (out_stream, out_response) =
-        open_out_channel(out_stream, gateway_host, target, &session_id, credentials, &out_body).await?;
+    let (out_stream, out_response, out_auth_rounds) = open_out_channel(
+        out_stream,
+        gateway_host,
+        target,
+        &session_id,
+        credentials,
+        &out_body,
+        &mut cookies,
+    )
+    .await?;
     setup
         .accept_out_response(out_response.status)
         .map_err(|error| custom_err!("accept rpch OUT response", error))?;
@@ -233,8 +337,8 @@ where
     let timeout = setup
         .in_channel_ping_timeout()
         .ok_or_else(|| Error::new("missing rpch connection timeout", GwErrorKind::Connect))?;
-    Ok((
-        RpchChannel {
+    Ok(OpenedChannels {
+        channel: RpchChannel {
             out,
             input,
             flow_control,
@@ -243,7 +347,9 @@ where
         },
         setup,
         session_id,
-    ))
+        cookies,
+        out_auth_rounds,
+    })
 }
 
 pub(crate) struct RpchChannel<Out, In> {
@@ -268,7 +374,7 @@ where
     ) -> Result<Self, Error> {
         let settings = RpchV2Settings::new(128 * 1024, 256 * 1024, 0)
             .map_err(|error| custom_err!("rpch channel settings", error))?;
-        let (channel, _, _) = open_rpch_channels(
+        let opened = open_rpch_channels(
             out,
             input,
             host,
@@ -278,7 +384,7 @@ where
             CHANNEL_IN_CONTENT_LENGTH,
         )
         .await?;
-        Ok(channel)
+        Ok(opened.channel)
     }
 
     pub(crate) fn send_available_window(&self) -> u32 {
@@ -363,6 +469,7 @@ async fn open_in_channel<S>(
     session_id: &str,
     credentials: &RpchHttpCredentials,
     content_length: u32,
+    cookies: &mut RpchCookieJar,
 ) -> Result<RpchInRequest<S>, Error>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -376,6 +483,7 @@ where
         target,
         content_length,
         Some(session_id),
+        cookies.header(),
         None,
         false,
     )
@@ -383,6 +491,8 @@ where
 
     for _ in 0..MAX_AUTH_ROUNDS {
         let response = input.receive_response().await?;
+        cookies.update(&response.set_cookies)?;
+        input.set_cookie(cookies.header());
         log::debug!(
             "RPCH IN response; status={} body_reserved={}",
             response.status,
@@ -434,7 +544,8 @@ async fn open_out_channel<S>(
     session_id: &str,
     credentials: &RpchHttpCredentials,
     body: &[u8],
-) -> Result<(S, crate::rpc_transport::RpchResponseHead), Error>
+    cookies: &mut RpchCookieJar,
+) -> Result<(S, RpchResponseHead, usize), Error>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -445,7 +556,8 @@ where
     let mut authorization = None;
     let mut use_basic = false;
 
-    for _ in 0..MAX_AUTH_ROUNDS {
+    for round in 0..MAX_AUTH_ROUNDS {
+        let cookie = cookies.header();
         write_rpch_request_head(
             &mut stream,
             RpchRequestHead {
@@ -454,7 +566,7 @@ where
                 target,
                 content_length,
                 authorization: authorization.as_deref(),
-                cookie: None,
+                cookie: cookie.as_deref(),
                 session_id: Some(session_id),
                 expect_continue: false,
             },
@@ -471,6 +583,7 @@ where
 
         let response = read_rpch_response_head(&mut stream).await?;
         log::debug!("RPCH OUT response; status={}", response.status);
+        cookies.update(&response.set_cookies)?;
         match response.status {
             401 => {
                 let length = response.content_length.ok_or_else(|| {
@@ -492,7 +605,7 @@ where
             }
             _ => {
                 finish_http_auth(&mut auth, &response.www_authenticate).await?;
-                return Ok((stream, response));
+                return Ok((stream, response, round));
             }
         }
     }
@@ -681,25 +794,47 @@ where
             if let Some(data) = self.data.pop_front() {
                 return Ok(data);
             }
-            let pdu = self.out.read_pdu().await?;
+            let pdu = self.read_out_pdu().await?;
             if self.handle_out_pdu(pdu).await?.is_some() {
                 return Err(Error::new("unexpected tsproxy response", GwErrorKind::Decode));
             }
         }
     }
 
+    /// Reads the next OUT channel PDU while watching the IN channels and a successor OUT response for failures.
+    ///
+    /// Cancel-safe: every awaited source is a channel receiver.
+    async fn read_out_pdu(&mut self) -> Result<Vec<u8>, Error> {
+        loop {
+            let Self {
+                out,
+                in_monitor,
+                in_successor,
+                out_successor,
+                ..
+            } = self;
+            let successor_cookies = tokio::select! {
+                pdu = out.read_pdu() => return pdu,
+                error = in_monitor.failed() => return Err(error),
+                error = successor_in_failed(in_successor) => return Err(error),
+                head = successor_out_head(out_successor) => head?,
+            };
+            self.cookies.update(&successor_cookies)?;
+        }
+    }
+
     async fn handle_out_pdu(&mut self, mut pdu: Vec<u8>) -> Result<Option<(u32, Vec<u8>)>, Error> {
         let pdu_len = pdu.len();
+        // Only RPC PDUs count against the receive window ([MS-RPCH] 3.2.1.1.4).
+        if pdu.get(2).copied() == Some(PTYPE_RTS) {
+            self.handle_rts_pdu(&pdu).await?;
+            return Ok(None);
+        }
         self.flow_control
             .received_rpc_pdu(pdu_len)
             .map_err(|error| custom_err!("account rpch receive window", error))?;
 
         match pdu.get(2).copied() {
-            Some(PTYPE_RTS) => {
-                self.handle_rts_pdu(&pdu).await?;
-                self.consume_out_pdu(pdu_len).await?;
-                Ok(None)
-            }
             // Servers report verification and dispatch failures with unauthenticated faults; surface the
             // status, then fail closed like any other fault.
             Some(PTYPE_FAULT) if pdu.get(10..12) == Some(&[0, 0]) => {
@@ -739,7 +874,7 @@ where
 
     async fn send_ping(&mut self, now: Duration) -> Result<(), Error> {
         let pdu = encode_rts_ping().map_err(|error| custom_err!("encode rpch ping", error))?;
-        self.write_in(&pdu).await?;
+        self.write_rts(&pdu).await?;
         self.ping.record_send(now);
         Ok(())
     }
@@ -758,8 +893,14 @@ where
         let initial_token = self.rpc_auth.initial_token()?;
         let bind = encode_rpc_bind_with_ntlm_auth(call_id, self.fragment_sizes, 0, &contexts, &initial_token)
             .map_err(|error| custom_err!("encode authenticated tsgu bind", error))?;
-        self.write_in(&bind).await?;
-        let response = self.out.read_pdu().await?;
+        self.write_rpc(&bind).await?;
+        let response = loop {
+            let pdu = self.read_out_pdu().await?;
+            if pdu.get(2).copied() != Some(PTYPE_RTS) {
+                break pdu;
+            }
+            self.handle_rts_pdu(&pdu).await?;
+        };
         self.flow_control
             .received_rpc_pdu(response.len())
             .map_err(|error| custom_err!("account tsgu bind response", error))?;
@@ -777,7 +918,7 @@ where
         let continuation_token = self.rpc_auth.continue_token(&response_token)?;
         let auth_3 = encode_rpc_auth_3(call_id, self.fragment_sizes, &continuation_token)
             .map_err(|error| custom_err!("encode tsgu rpc_auth_3", error))?;
-        self.write_in(&auth_3).await?;
+        self.write_rpc(&auth_3).await?;
         self.consume_out_pdu(response.len()).await
     }
 
@@ -794,7 +935,7 @@ where
         let call_id = self.next_call_id();
         self.send_call(call_id, opnum, stub).await?;
         loop {
-            let pdu = self.out.read_pdu().await?;
+            let pdu = self.read_out_pdu().await?;
             if let Some((response_call_id, response)) = self.handle_out_pdu(pdu).await? {
                 if response_call_id != call_id {
                     return Err(Error::new("unexpected tsproxy response call ID", GwErrorKind::Decode));
@@ -854,7 +995,7 @@ where
                 .send_sequence_number
                 .checked_add(1)
                 .ok_or_else(|| Error::new("rpc send sequence exhausted", GwErrorKind::Connect))?;
-            self.write_in(&fragment).await?;
+            self.write_rpc(&fragment).await?;
         }
         Ok(())
     }
@@ -889,20 +1030,105 @@ where
         }
     }
 
+    /// Applies one RTS PDU from the OUT channel.
+    ///
+    /// Recycle PDUs are recognised by the state that expects them, so an RTS PDU no state expects fails the
+    /// virtual connection ([MS-RPCH] 3.2.2.5.5 through 3.2.2.5.11).
     async fn handle_rts_pdu(&mut self, pdu: &[u8]) -> Result<(), Error> {
         if is_rts_ping(pdu) {
             return Ok(());
         }
-        match decode_rts_flow_control_ack(pdu) {
-            Ok(ack) => {
-                let _ = self
-                    .flow_control
-                    .receive_flow_control_ack(ack)
-                    .map_err(|error| custom_err!("apply rpch flow-control ack", error))?;
+        if let Ok(ack) = decode_rts_flow_control_ack(pdu) {
+            self.flow_control
+                .receive_flow_control_ack(ack)
+                .map_err(|error| custom_err!("apply rpch flow-control ack", error))?;
+            return Ok(());
+        }
+
+        let (in_state, out_state) = {
+            let recycle = self.recycling()?;
+            (recycle.in_state(), recycle.out_state())
+        };
+        if in_state == RpchInChannelRecycleState::AwaitingA4 && decode_rts_in_recycle_a4(pdu).is_ok() {
+            return self.finish_in_recycling(pdu).await;
+        }
+        match out_state {
+            RpchOutChannelRecycleState::Open if decode_rts_out_recycle_a2(pdu).is_ok() => {
+                self.start_out_recycling(pdu).await
+            }
+            RpchOutChannelRecycleState::AwaitingA6 if decode_rts_out_recycle_a6(pdu).is_ok() => {
+                let a7 = self
+                    .recycling()?
+                    .receive_out_recycle_a6(pdu)
+                    .map_err(|error| custom_err!("accept rpch OUT_R1/A6", error))?;
+                self.write_rts(&a7).await
+            }
+            RpchOutChannelRecycleState::AwaitingA6 if decode_rts_out_recycle_r2_a6(pdu).is_ok() => {
+                let (a7, c1) = self
+                    .recycling()?
+                    .receive_out_recycle_r2_a6(pdu)
+                    .map_err(|error| custom_err!("accept rpch OUT_R2/A6", error))?;
+                self.write_rts(&a7).await?;
+                let successor = self.out_successor_mut()?;
+                write_out_successor(&mut successor.writer, &c1).await
+            }
+            RpchOutChannelRecycleState::AwaitingA10 if decode_rts_out_recycle_a10(pdu).is_ok() => {
+                let a11 = self
+                    .recycling()?
+                    .receive_out_recycle_a10(pdu)
+                    .map_err(|error| custom_err!("accept rpch OUT_R1/A10", error))?;
+                let mut successor = self.take_out_successor()?;
+                write_out_successor(&mut successor.writer, &a11).await?;
+                self.switch_out_channel(successor);
+                let Self {
+                    setup, flow_control, ..
+                } = self;
+                setup
+                    .channel_recycling()
+                    .map_err(|error| custom_err!("finish rpch OUT recycling", error))?
+                    .finish_out_recycling(flow_control)
+                    .map_err(|error| custom_err!("finish rpch OUT recycling", error))
+            }
+            RpchOutChannelRecycleState::AwaitingB3 if decode_rts_out_recycle_r2_b3(pdu).is_ok() => {
+                let Self {
+                    setup, flow_control, ..
+                } = self;
+                setup
+                    .channel_recycling()
+                    .map_err(|error| custom_err!("accept rpch OUT_R2/B3", error))?
+                    .receive_out_recycle_b3(pdu, flow_control)
+                    .map_err(|error| custom_err!("accept rpch OUT_R2/B3", error))?;
+                let successor = self.take_out_successor()?;
+                self.switch_out_channel(successor);
                 Ok(())
             }
-            Err(_) => self.recycle_out_channel(pdu).await,
+            _ => Err(Error::new("unexpected rpch RTS pdu", GwErrorKind::Decode)),
         }
+    }
+
+    fn recycling(&mut self) -> Result<crate::rpc::RpchV2ChannelRecycle<'_>, Error> {
+        self.setup
+            .channel_recycling()
+            .map_err(|error| custom_err!("rpch channel recycling", error))
+    }
+
+    fn out_successor_mut(&mut self) -> Result<&mut OutSuccessor<Out>, Error> {
+        self.out_successor
+            .as_mut()
+            .ok_or_else(|| Error::new("missing rpch successor OUT channel", GwErrorKind::Connect))
+    }
+
+    fn take_out_successor(&mut self) -> Result<OutSuccessor<Out>, Error> {
+        self.out_successor
+            .take()
+            .ok_or_else(|| Error::new("missing rpch successor OUT channel", GwErrorKind::Connect))
+    }
+
+    /// Makes the successor the default OUT channel; dropping the predecessor closes it and ignores its later bytes.
+    fn switch_out_channel(&mut self, successor: OutSuccessor<Out>) {
+        // A successor whose response head is still unread reports a rejected head through its PDU reader.
+        self.out = successor.channel;
+        log::debug!("RPCH OUT channel recycled");
     }
 
     async fn consume_out_pdu(&mut self, pdu_len: usize) -> Result<(), Error> {
@@ -911,7 +1137,7 @@ where
             .consumed_rpc_pdu(pdu_len)
             .map_err(|error| custom_err!("release rpch receive window", error))?
         {
-            self.write_in(
+            self.write_rts(
                 &encode_rts_flow_control_ack_with_destination(ack, RtsDestination::OutProxy)
                     .map_err(|error| custom_err!("encode rpch flow-control ack", error))?,
             )
@@ -920,13 +1146,53 @@ where
         Ok(())
     }
 
-    async fn write_in(&mut self, pdu: &[u8]) -> Result<(), Error> {
+    /// Writes an RTS PDU on the default IN channel; RTS PDUs do not count against the send window.
+    async fn write_rts(&mut self, pdu: &[u8]) -> Result<(), Error> {
         let length = u32::try_from(pdu.len()).map_err(|_| Error::new("rpch IN pdu length", GwErrorKind::Encode))?;
-        if length
+        if length > self.input.remaining() {
+            return Err(Error::new("rpch IN body exhausted", GwErrorKind::Connect));
+        }
+        let result = write_in_pdu(&mut self.input, pdu).await;
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+
+    /// Writes an RPC PDU on the default IN channel once the send window and IN body allow it.
+    ///
+    /// While waiting, OUT channel PDUs are processed so flow-control acknowledgements and recycle PDUs arrive.
+    /// IN recycling starts when a quarter of the IN body remains or the PDU would not fit
+    /// ([MS-RPCH] 3.2.2.4.2 and 3.2.2.5.12).
+    async fn write_rpc(&mut self, pdu: &[u8]) -> Result<(), Error> {
+        let length = u32::try_from(pdu.len()).map_err(|_| Error::new("rpch IN pdu length", GwErrorKind::Encode))?;
+        let required = length
             .checked_add(IN_RECYCLE_RESERVE)
-            .is_none_or(|required| required > self.input.remaining())
-        {
-            self.recycle_in_channel().await?;
+            .ok_or_else(|| Error::new("rpch IN pdu length", GwErrorKind::Encode))?;
+        if required > self.in_content_length {
+            return Err(Error::new("rpch IN pdu exceeds channel lifetime", GwErrorKind::Encode));
+        }
+        loop {
+            let remaining = self.input.remaining();
+            if self.in_successor.is_none()
+                && self.recycling()?.in_state() == RpchInChannelRecycleState::Open
+                && (remaining < self.in_content_length / 4 || required > remaining)
+            {
+                self.start_in_recycling().await?;
+            }
+            if required <= self.input.remaining() && self.flow_control.send_available_window() > length {
+                break;
+            }
+            let out_pdu = self.read_out_pdu().await?;
+            if self.handle_out_pdu(out_pdu).await?.is_some() {
+                return Err(Error::new("unexpected tsproxy response", GwErrorKind::Decode));
+            }
+            if self.data.iter().map(Bytes::len).sum::<usize>() > MAX_BUFFERED_DATA {
+                return Err(Error::new(
+                    "rpch receive buffer exceeded while waiting for send window",
+                    GwErrorKind::Connect,
+                ));
+            }
         }
         self.flow_control
             .sent_rpc_pdu(pdu.len())
@@ -935,97 +1201,166 @@ where
         if result.is_err() {
             self.failed = true;
         }
-        result?;
+        result
+    }
+
+    /// Opens a successor IN channel and sends IN_R1/A1 on it ([MS-RPCH] 3.2.2.5.12).
+    async fn start_in_recycling(&mut self) -> Result<(), Error> {
+        let stream = self.provider.open_in().await?;
+        let successor = open_in_channel(
+            stream,
+            &self.gateway_host,
+            &self.target,
+            &self.session_id,
+            &self.credentials,
+            self.in_content_length,
+            &mut self.cookies,
+        )
+        .await?;
+        let (mut successor, read) = successor.split()?;
+        let monitor = InMonitor::spawn(read);
+        let a1 = self
+            .recycling()?
+            .start_in_recycling(RtsCookie::new(*Uuid::new_v4().as_bytes()))
+            .map_err(|error| custom_err!("encode rpch IN_R1/A1", error))?;
+        write_in_pdu(&mut successor, &a1).await?;
+        self.in_successor = Some((successor, monitor));
+        log::debug!("RPCH IN channel recycling started");
         Ok(())
     }
 
-    async fn recycle_in_channel(&mut self) -> Result<(), Error> {
+    /// Accepts IN_R1/A4, sends IN_R1/A5 on the predecessor, and makes the successor the default IN channel.
+    ///
+    /// [MS-RPCH] 3.2.2.5.5.
+    async fn finish_in_recycling(&mut self, a4: &[u8]) -> Result<(), Error> {
+        let a5 = self
+            .recycling()?
+            .receive_in_recycle_a4(a4)
+            .map_err(|error| custom_err!("accept rpch IN_R1/A4", error))?;
+        self.write_rts(&a5).await?;
+        let (input, monitor) = self
+            .in_successor
+            .take()
+            .ok_or_else(|| Error::new("missing rpch successor IN channel", GwErrorKind::Connect))?;
+        // Dropping the predecessor stops its monitor; a close from the retired proxy is not a failure.
+        self.input = input;
+        self.in_monitor = monitor;
         let Self {
-            out,
-            input,
-            provider,
             setup,
-            gateway_host,
-            target,
-            session_id,
-            credentials,
             flow_control,
             ping,
             ..
         } = self;
-        let successor_stream = provider.open_in().await?;
-        let mut successor = open_in_channel(
-            successor_stream,
-            gateway_host,
-            target,
-            session_id,
-            credentials,
-            SESSION_IN_CONTENT_LENGTH,
-        )
-        .await?;
-        let successor_cookie = RtsCookie::new(*Uuid::new_v4().as_bytes());
-        let mut recycle = setup
+        setup
             .channel_recycling()
-            .map_err(|error| custom_err!("start rpch IN recycling", error))?;
-        let a1 = recycle
-            .start_in_recycling(successor_cookie)
-            .map_err(|error| custom_err!("encode rpch IN_R1/A1", error))?;
-        write_in_pdu(&mut successor, &a1).await?;
-        let a4 = out.read_pdu().await?;
-        let a5 = recycle
-            .receive_in_recycle_a4(&a4)
-            .map_err(|error| custom_err!("decode rpch IN_R1/A4", error))?;
-        write_in_pdu(input, &a5).await?;
-        *input = successor;
-        recycle
+            .map_err(|error| custom_err!("finish rpch IN recycling", error))?
             .finish_in_recycling(flow_control, ping)
-            .map_err(|error| custom_err!("finish rpch IN recycling", error))
+            .map_err(|error| custom_err!("finish rpch IN recycling", error))?;
+        log::debug!("RPCH IN channel recycled");
+        Ok(())
     }
 
-    async fn recycle_out_channel(&mut self, a2: &[u8]) -> Result<(), Error> {
-        let Self {
-            out,
-            input,
-            provider,
-            setup,
-            gateway_host,
-            target,
-            session_id,
-            credentials,
-            flow_control,
-            ..
-        } = self;
-        let successor_stream = provider.open_out().await?;
-        let successor_cookie = RtsCookie::new(*Uuid::new_v4().as_bytes());
-        let mut recycle = setup
-            .channel_recycling()
-            .map_err(|error| custom_err!("start rpch OUT recycling", error))?;
-        let a3 = recycle
-            .receive_out_recycle_a2(a2, successor_cookie)
-            .map_err(|error| custom_err!("decode rpch OUT_R1/A2", error))?;
-        let (successor_stream, response) =
-            open_out_channel(successor_stream, gateway_host, target, session_id, credentials, &a3).await?;
-        if response.status != 200 {
-            return Err(Error::new(
-                "rpch OUT replacement rejected",
-                GwErrorKind::HttpStatus(response.status),
-            ));
+    /// Accepts OUT_R1/A2 or OUT_R2/A2 and opens the successor OUT channel with OUT_R1/A3 ([MS-RPCH] 3.2.2.5.6).
+    async fn start_out_recycling(&mut self, a2: &[u8]) -> Result<(), Error> {
+        let stream = self.provider.open_out().await?;
+        let a3 = self
+            .recycling()?
+            .receive_out_recycle_a2(a2, RtsCookie::new(*Uuid::new_v4().as_bytes()))
+            .map_err(|error| custom_err!("accept rpch OUT_R1/A2", error))?;
+        let successor = self.open_successor_out(stream, &a3).await?;
+        self.out_successor = Some(successor);
+        log::debug!("RPCH OUT channel recycling started");
+        Ok(())
+    }
+
+    /// Sends the successor OUT channel request, repeating the authentication legs the first OUT channel needed.
+    ///
+    /// The request body is OUT_R1/A3 followed by the 24-byte OUT_R1/A11 or OUT_R2/C1 sent later.
+    /// Rejected legs carry a complete body so the connection can be reused.
+    /// The final response is read asynchronously, because the proxy may send it only after OUT_R1/A11 or OUT_R2/C1.
+    async fn open_successor_out(&mut self, mut stream: Out, a3: &[u8]) -> Result<OutSuccessor<Out>, Error> {
+        let trailer = encode_rts_out_recycle_a11().map_err(|error| custom_err!("encode rpch OUT_R1/A11", error))?;
+        let content_length = u32::try_from(a3.len() + trailer.len())
+            .map_err(|_| Error::new("rpch OUT_R1/A3 length", GwErrorKind::Encode))?;
+        let spn = http_spn(&self.gateway_host)?;
+        let mut auth = None;
+        let mut authorization: Option<String> = None;
+        let mut use_basic = false;
+
+        for round in 0..=self.out_auth_rounds {
+            let cookie = self.cookies.header();
+            write_rpch_request_head(
+                &mut stream,
+                RpchRequestHead {
+                    method: "RPC_OUT_DATA",
+                    host: &self.gateway_host,
+                    target: &self.target,
+                    content_length,
+                    authorization: authorization.as_deref(),
+                    cookie: cookie.as_deref(),
+                    session_id: Some(&self.session_id),
+                    expect_continue: false,
+                },
+            )
+            .await?;
+            let last = round == self.out_auth_rounds;
+            let body = if last {
+                a3.to_vec()
+            } else {
+                [a3, trailer.as_slice()].concat()
+            };
+            stream
+                .write_all(&body)
+                .await
+                .map_err(|error| custom_err!("write rpch OUT_R1/A3", error))?;
+            stream
+                .flush()
+                .await
+                .map_err(|error| custom_err!("flush rpch OUT_R1/A3", error))?;
+            if last {
+                break;
+            }
+
+            let response = read_rpch_response_head(&mut stream).await?;
+            if response.status != 401 {
+                return Err(Error::new(
+                    "rpch successor OUT authentication diverged",
+                    GwErrorKind::HttpStatus(response.status),
+                ));
+            }
+            let length = response.content_length.ok_or_else(|| {
+                Error::new(
+                    "rpch authentication response missing content length",
+                    GwErrorKind::Decode,
+                )
+            })?;
+            drain_body(&mut stream, length).await?;
+            self.cookies.update(&response.set_cookies)?;
+            if use_basic {
+                return Err(Error::new(
+                    "rpch successor OUT basic authentication",
+                    GwErrorKind::HttpStatus(401),
+                ));
+            }
+            authorization = Some(
+                step_http_auth(
+                    &mut auth,
+                    &self.credentials,
+                    &spn,
+                    &response.www_authenticate,
+                    &mut use_basic,
+                )
+                .await?,
+            );
         }
-        let a6 = out.read_pdu().await?;
-        let a7 = recycle
-            .receive_out_recycle_a6(&a6)
-            .map_err(|error| custom_err!("decode rpch OUT_R1/A6", error))?;
-        write_in_pdu(input, &a7).await?;
-        let mut successor = OutChannel::new(successor_stream, response.content_length)?;
-        let a10 = successor.read_pdu().await?;
-        let a11 = recycle
-            .receive_out_recycle_a10(&a10)
-            .map_err(|error| custom_err!("decode rpch OUT_R1/A10", error))?;
-        write_in_pdu(input, &a11).await?;
-        *out = successor;
-        recycle
-            .finish_out_recycling(flow_control)
-            .map_err(|error| custom_err!("finish rpch OUT recycling", error))
+
+        let (read, writer) = tokio::io::split(stream);
+        let (channel, head) = OutChannel::successor(read);
+        Ok(OutSuccessor {
+            channel,
+            writer,
+            head: Some(head),
+        })
     }
 
     fn next_call_id(&mut self) -> u32 {
@@ -1034,45 +1369,86 @@ where
     }
 }
 
-struct UnsupportedChannelRecycling;
+async fn successor_in_failed<In>(successor: &mut Option<(RpchInRequest<WriteHalf<In>>, InMonitor)>) -> Error {
+    match successor {
+        Some((_, monitor)) => monitor.failed().await,
+        None => core::future::pending().await,
+    }
+}
 
-impl<'out, 'input>
-    RpchStreamProvider<
-        Box<dyn crate::packet_io::GatewayIo + Send + 'out>,
-        Box<dyn crate::packet_io::GatewayIo + Send + 'input>,
-    > for UnsupportedChannelRecycling
+/// Resolves with the cookies of an accepted successor OUT response, or its failure.
+async fn successor_out_head<Out>(successor: &mut Option<OutSuccessor<Out>>) -> Result<Vec<String>, Error> {
+    let Some(head) = successor.as_mut().and_then(|successor| successor.head.as_mut()) else {
+        return core::future::pending().await;
+    };
+    let result = head.await;
+    if let Some(successor) = successor.as_mut() {
+        successor.head = None;
+    }
+    result.unwrap_or_else(|_| Err(Error::new("rpch successor OUT reader stopped", GwErrorKind::Connect)))
+}
+
+async fn write_out_successor<Out>(writer: &mut WriteHalf<Out>, pdu: &[u8]) -> Result<(), Error>
+where
+    Out: AsyncWrite,
 {
-    async fn open_in(&mut self) -> Result<Box<dyn crate::packet_io::GatewayIo + Send + 'input>, Error> {
-        Err(Error::new(
-            "rpch IN channel recycling is unavailable",
-            GwErrorKind::UnsupportedFeature,
-        ))
+    writer
+        .write_all(pdu)
+        .await
+        .map_err(|error| custom_err!("write rpch successor OUT channel", error))?;
+    writer
+        .flush()
+        .await
+        .map_err(|error| custom_err!("flush rpch successor OUT channel", error))
+}
+
+/// Opens TLS connections to the gateway for successor IN and OUT channels.
+struct GatewayChannelProvider {
+    endpoint: String,
+    certificate_validation: ironrdp_tls::CertificateValidation,
+    certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
+}
+
+impl GatewayChannelProvider {
+    async fn open(&self) -> Result<crate::packet_io::GatewayStream, Error> {
+        let (stream, _) = crate::packet_io::open_rpch_gateway_stream(
+            &self.endpoint,
+            self.certificate_validation,
+            self.certificate_validation_callback.clone(),
+        )
+        .await?;
+        Ok(stream)
+    }
+}
+
+impl RpchStreamProvider<crate::packet_io::GatewayStream, crate::packet_io::GatewayStream> for GatewayChannelProvider {
+    async fn open_in(&mut self) -> Result<crate::packet_io::GatewayStream, Error> {
+        self.open().await
     }
 
-    async fn open_out(&mut self) -> Result<Box<dyn crate::packet_io::GatewayIo + Send + 'out>, Error> {
-        Err(Error::new(
-            "rpch OUT channel recycling is unavailable",
-            GwErrorKind::UnsupportedFeature,
-        ))
+    async fn open_out(&mut self) -> Result<crate::packet_io::GatewayStream, Error> {
+        self.open().await
     }
 }
 
 enum StreamCommand {
-    Write(Bytes, tokio::sync::oneshot::Sender<Result<(), String>>),
-    Shutdown(tokio::sync::oneshot::Sender<Result<(), String>>),
+    Write(Bytes, oneshot::Sender<Result<(), String>>),
+    Shutdown(oneshot::Sender<Result<(), String>>),
 }
 
 /// Authenticated TS Proxy channel exposed as an asynchronous RDP byte stream.
 ///
 /// RPC packet integrity is established internally with NTLM. TLS/HTTP authentication remains a
-/// separate gateway security layer. The bounded channel lifetime is not recycled; a server RTS
-/// recycle request or exhausted IN body terminates the stream explicitly.
+/// separate gateway security layer. IN channels are recycled before their lifetime is exhausted and
+/// OUT channels are recycled when the proxy requests it ([MS-RPCH] 3.2.2.5.5 through 3.2.2.5.12).
+/// An RTS PDU that no recycle state expects, a rejected replacement channel, or an IN channel
+/// error response terminates the stream.
 pub struct RpchStream {
     commands: PollSender<StreamCommand>,
     received: mpsc::Receiver<Result<Bytes, String>>,
     read_buffer: Option<Bytes>,
-    pending_write: Option<(usize, tokio::sync::oneshot::Receiver<Result<(), String>>)>,
-    shutdown: Option<tokio::sync::oneshot::Receiver<Result<(), String>>>,
+    pending_write: Option<(usize, oneshot::Receiver<Result<(), String>>)>,
+    shutdown: Option<oneshot::Receiver<Result<(), String>>>,
     actor: JoinHandle<()>,
     redirection_flags: GwRpchRedirectionFlags,
 }
@@ -1081,7 +1457,7 @@ impl RpchStream {
     /// Opens an authenticated MS-RPCH tunnel and returns its local TCP address.
     ///
     /// RPC packet integrity is always negotiated and verified independently of TLS and HTTP
-    /// authentication. Smart-card RPC authentication and channel recycling are not supported.
+    /// authentication. Smart-card RPC authentication is not supported.
     pub async fn connect_with_port_and_certificate_validation(
         target: &GwConnectTarget,
         client_name: &str,
@@ -1107,10 +1483,24 @@ impl RpchStream {
         let (out, input, client_addr) = crate::packet_io::open_rpch_gateway_channels(
             &target.gw_endpoint,
             certificate_validation,
-            certificate_validation_callback,
+            certificate_validation_callback.clone(),
         )
         .await?;
-        let stream = Self::connect(out, input, target, client_name, server_port).await?;
+        let provider = GatewayChannelProvider {
+            endpoint: target.gw_endpoint.clone(),
+            certificate_validation,
+            certificate_validation_callback,
+        };
+        let stream = Self::connect(
+            out,
+            input,
+            provider,
+            target,
+            client_name,
+            server_port,
+            SESSION_IN_CONTENT_LENGTH,
+        )
+        .await?;
         Ok((stream, client_addr))
     }
 
@@ -1119,26 +1509,25 @@ impl RpchStream {
         self.redirection_flags
     }
 
-    pub(crate) async fn connect(
-        out: crate::packet_io::GatewayStream,
-        input: crate::packet_io::GatewayStream,
+    pub(crate) async fn connect<Out, In, Provider>(
+        out: Out,
+        input: In,
+        provider: Provider,
         target: &GwConnectTarget,
         client_name: &str,
         port: u16,
-    ) -> Result<Self, Error> {
+        in_content_length: u32,
+    ) -> Result<Self, Error>
+    where
+        Out: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+        In: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+        Provider: RpchStreamProvider<Out, In> + Send + 'static,
+    {
         let settings = RpchV2Settings::default();
-        let mut session: RpchSession<
-            crate::packet_io::GatewayStream,
-            crate::packet_io::GatewayStream,
-            UnsupportedChannelRecycling,
-        > = rpch_connect::<
-            crate::packet_io::GatewayStream,
-            crate::packet_io::GatewayStream,
-            UnsupportedChannelRecycling,
-        >(
+        let mut session = rpch_connect(
             out,
             input,
-            UnsupportedChannelRecycling,
+            provider,
             &target.gw_endpoint,
             TSPROXY_RPC_BACKEND,
             RpchHttpCredentials {
@@ -1147,6 +1536,7 @@ impl RpchStream {
                 smart_card: None,
             },
             settings,
+            in_content_length,
         )
         .await?;
         session.open_tunnel(client_name, &target.server, port).await?;
@@ -1233,7 +1623,7 @@ impl AsyncWrite for RpchStream {
         match self.commands.poll_reserve(cx) {
             Poll::Ready(Ok(())) => {
                 let count = buf.len().min(16 * 1024);
-                let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+                let (response_tx, response_rx) = oneshot::channel();
                 if self
                     .commands
                     .send_item(StreamCommand::Write(Bytes::copy_from_slice(&buf[..count]), response_tx))
@@ -1268,7 +1658,7 @@ impl AsyncWrite for RpchStream {
         if self.shutdown.is_none() {
             match self.commands.poll_reserve(cx) {
                 Poll::Ready(Ok(())) => {
-                    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+                    let (response_tx, response_rx) = oneshot::channel();
                     if self.commands.send_item(StreamCommand::Shutdown(response_tx)).is_err() {
                         return Poll::Ready(Err(io::Error::new(
                             io::ErrorKind::BrokenPipe,
@@ -1295,14 +1685,16 @@ impl AsyncWrite for RpchStream {
     }
 }
 
-type GatewayRpchSession =
-    RpchSession<crate::packet_io::GatewayStream, crate::packet_io::GatewayStream, UnsupportedChannelRecycling>;
-
-async fn run_rpch_stream(
-    mut session: GatewayRpchSession,
+async fn run_rpch_stream<Out, In, Provider>(
+    mut session: RpchSession<Out, In, Provider>,
     mut commands: mpsc::Receiver<StreamCommand>,
     received: mpsc::Sender<Result<Bytes, String>>,
-) -> Result<(), Error> {
+) -> Result<(), Error>
+where
+    Out: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    In: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    Provider: RpchStreamProvider<Out, In>,
+{
     let started = Instant::now();
     let interval = (session.connection_timeout / 2).max(Duration::from_secs(1));
     let mut keepalive = tokio::time::interval(interval);
@@ -1335,7 +1727,7 @@ async fn run_rpch_stream(
                     None => return Ok(()),
                 }
             }
-            pdu = session.out.read_pdu() => {
+            pdu = session.read_out_pdu() => {
                 let pdu = pdu?;
                 if session.handle_out_pdu(pdu).await?.is_some() {
                     return Err(Error::new("unexpected tsproxy response", GwErrorKind::Decode));
@@ -1352,8 +1744,8 @@ async fn run_rpch_stream(
     }
 }
 
-async fn send_queued_stream_data(
-    session: &mut GatewayRpchSession,
+async fn send_queued_stream_data<Out, In, Provider>(
+    session: &mut RpchSession<Out, In, Provider>,
     received: mpsc::Sender<Result<Bytes, String>>,
 ) -> Result<(), Error> {
     while let Some(data) = session.data.pop_front() {
@@ -1369,7 +1761,7 @@ async fn send_queued_stream_data(
 
 async fn write_in_pdu<S>(input: &mut RpchInRequest<S>, pdu: &[u8]) -> Result<(), Error>
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    S: AsyncWrite + Unpin,
 {
     input.write_body(pdu).await?;
     input.flush().await
@@ -1382,7 +1774,57 @@ fn is_rts_ping(pdu: &[u8]) -> bool {
 struct OutChannel {
     receiver: mpsc::Receiver<Result<Vec<u8>, Error>>,
     reader: JoinHandle<()>,
-    remaining: u32,
+}
+
+/// Accepts an OUT channel response body length in the range [MS-RPCH] 2.1.2.1.4 allows.
+fn validate_out_content_length(content_length: Option<u32>) -> Result<u32, Error> {
+    content_length
+        .filter(|length| (128 * 1024..=2 * 1024 * 1024 * 1024).contains(length))
+        .ok_or_else(|| Error::new("invalid rpch OUT content length", GwErrorKind::Decode))
+}
+
+async fn read_out_pdus<S>(stream: &mut S, mut remaining: u32, sender: &mpsc::Sender<Result<Vec<u8>, Error>>)
+where
+    S: AsyncRead + Unpin,
+{
+    while remaining >= 16 {
+        let mut header = [0; 16];
+        if let Err(error) = stream.read_exact(&mut header).await {
+            let _ = sender.send(Err(custom_err!("read rpch pdu header", error))).await;
+            return;
+        }
+        let common = match crate::rpc::RpcCommonHeader::decode_prefix(&header) {
+            Ok(header) => header,
+            Err(error) => {
+                let _ = sender
+                    .send(Err(
+                        Error::new("validate rpch pdu header", GwErrorKind::Decode).with_source(error)
+                    ))
+                    .await;
+                return;
+            }
+        };
+        let length = usize::from(common.fragment_length());
+        if remaining < u32::from(common.fragment_length()) {
+            let _ = sender
+                .send(Err(Error::new("rpch pdu exceeds OUT body", GwErrorKind::Decode)))
+                .await;
+            return;
+        }
+        let mut pdu = header.to_vec();
+        pdu.resize(length, 0);
+        if let Err(error) = stream.read_exact(&mut pdu[header.len()..]).await {
+            let _ = sender.send(Err(custom_err!("read rpch pdu body", error))).await;
+            return;
+        }
+        remaining -= u32::from(common.fragment_length());
+        if sender.send(Ok(pdu)).await.is_err() {
+            return;
+        }
+    }
+    let _ = sender
+        .send(Err(Error::new("rpch OUT body exhausted", GwErrorKind::Connect)))
+        .await;
 }
 
 impl OutChannel {
@@ -1390,59 +1832,51 @@ impl OutChannel {
     where
         S: AsyncRead + Send + Unpin + 'static,
     {
-        let remaining = content_length
-            .filter(|length| (128 * 1024..=2 * 1024 * 1024 * 1024).contains(length))
-            .ok_or_else(|| Error::new("invalid rpch OUT content length", GwErrorKind::Decode))?;
+        let remaining = validate_out_content_length(content_length)?;
         let (sender, receiver) = mpsc::channel(2);
+        let reader = tokio::spawn(async move { read_out_pdus(&mut stream, remaining, &sender).await });
+        Ok(Self { receiver, reader })
+    }
+
+    /// Reads a successor OUT channel whose response head arrives after the request body completes.
+    ///
+    /// The head result, carrying the response cookies, is reported separately so the recycle can fail early.
+    fn successor<S>(mut stream: S) -> (Self, oneshot::Receiver<Result<Vec<String>, Error>>)
+    where
+        S: AsyncRead + Send + Unpin + 'static,
+    {
+        let (sender, receiver) = mpsc::channel(2);
+        let (head_sender, head) = oneshot::channel();
         let reader = tokio::spawn(async move {
-            let mut remaining = remaining;
-            while remaining >= 16 {
-                let mut header = [0; 16];
-                if let Err(error) = stream.read_exact(&mut header).await {
-                    let _ = sender.send(Err(custom_err!("read rpch pdu header", error))).await;
-                    return;
+            let accepted = read_rpch_response_head(&mut stream).await.and_then(|response| {
+                if response.status != 200 {
+                    return Err(Error::new(
+                        "rpch successor OUT channel rejected",
+                        GwErrorKind::HttpStatus(response.status),
+                    ));
                 }
-                let common = match crate::rpc::RpcCommonHeader::decode_prefix(&header) {
-                    Ok(header) => header,
-                    Err(error) => {
-                        let _ = sender
-                            .send(Err(
-                                Error::new("validate rpch pdu header", GwErrorKind::Decode).with_source(error)
-                            ))
-                            .await;
-                        return;
-                    }
-                };
-                let length = usize::from(common.fragment_length());
-                if remaining < u32::from(common.fragment_length()) {
+                Ok((
+                    validate_out_content_length(response.content_length)?,
+                    response.set_cookies,
+                ))
+            });
+            match accepted {
+                Ok((remaining, cookies)) => {
+                    let _ = head_sender.send(Ok(cookies));
+                    read_out_pdus(&mut stream, remaining, &sender).await;
+                }
+                Err(error) => {
                     let _ = sender
-                        .send(Err(Error::new("rpch pdu exceeds OUT body", GwErrorKind::Decode)))
+                        .send(Err(Error::new(
+                            "rpch successor OUT channel failed",
+                            GwErrorKind::Connect,
+                        )))
                         .await;
-                    return;
-                }
-                let mut pdu = header.to_vec();
-                pdu.resize(length, 0);
-                if let Err(error) = stream.read_exact(&mut pdu[header.len()..]).await {
-                    let _ = sender.send(Err(custom_err!("read rpch pdu body", error))).await;
-                    return;
-                }
-                remaining -= u32::from(common.fragment_length());
-                if sender.send(Ok(pdu)).await.is_err() {
-                    return;
+                    let _ = head_sender.send(Err(error));
                 }
             }
-            let _ = sender
-                .send(Err(Error::new(
-                    "rpch OUT body exhausted",
-                    GwErrorKind::UnsupportedFeature,
-                )))
-                .await;
         });
-        Ok(Self {
-            receiver,
-            reader,
-            remaining,
-        })
+        (Self { receiver, reader }, head)
     }
 
     async fn read_pdu(&mut self) -> Result<Vec<u8>, Error> {
@@ -1464,50 +1898,88 @@ mod tests {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 
     use super::*;
-    use crate::mock_rpch::{MockRpchScenario, mock_rpch_proxy};
+    use crate::mock_rpch::{MockRpchConnector, MockRpchScenario, mock_rpch_proxy};
 
     #[tokio::test]
     async fn rpch_out_requires_bounded_http_content_length() {
         for length in [None, Some(0), Some(131071), Some(2147483649)] {
-            assert!(OutChannel::new(tokio::io::empty(), length).is_err());
+            assert!(validate_out_content_length(length).is_err());
         }
         for length in [131072, 2147483648] {
-            let channel = OutChannel::new(tokio::io::empty(), Some(length)).expect("valid OUT body length");
-            assert_eq!(channel.remaining, length);
+            assert_eq!(
+                validate_out_content_length(Some(length)).expect("valid OUT body length"),
+                length
+            );
         }
     }
 
-    struct NoRecycle;
+    /// Smallest IN body the mock accepts, so a few kilobytes of traffic trigger IN channel recycling.
+    const TEST_IN_CONTENT_LENGTH: u32 = 128 * 1024;
 
-    impl RpchStreamProvider<DuplexStream, DuplexStream> for NoRecycle {
+    struct MockProvider(MockRpchConnector);
+
+    impl RpchStreamProvider<DuplexStream, DuplexStream> for MockProvider {
         async fn open_in(&mut self) -> Result<DuplexStream, Error> {
-            Err(Error::new("unexpected IN channel recycle", GwErrorKind::Connect))
+            self.0
+                .connect_in()
+                .ok_or_else(|| Error::new("mock proxy stopped", GwErrorKind::Connect))
         }
 
         async fn open_out(&mut self) -> Result<DuplexStream, Error> {
-            Err(Error::new("unexpected OUT channel recycle", GwErrorKind::Connect))
+            self.0
+                .connect_out()
+                .ok_or_else(|| Error::new("mock proxy stopped", GwErrorKind::Connect))
         }
+    }
+
+    impl RpchStreamProvider<Box<DuplexStream>, Box<DuplexStream>> for MockProvider {
+        async fn open_in(&mut self) -> Result<Box<DuplexStream>, Error> {
+            RpchStreamProvider::<DuplexStream, DuplexStream>::open_in(self)
+                .await
+                .map(Box::new)
+        }
+
+        async fn open_out(&mut self) -> Result<Box<DuplexStream>, Error> {
+            RpchStreamProvider::<DuplexStream, DuplexStream>::open_out(self)
+                .await
+                .map(Box::new)
+        }
+    }
+
+    fn test_credentials() -> RpchHttpCredentials {
+        RpchHttpCredentials {
+            username: "CONTOSO\\alice".to_owned(),
+            password: "secret".to_owned(),
+            smart_card: None,
+        }
+    }
+
+    async fn connect_session(
+        scenario: MockRpchScenario,
+    ) -> (
+        Result<RpchSession<DuplexStream, DuplexStream, MockProvider>, Error>,
+        JoinHandle<()>,
+    ) {
+        let (out, input, connector, proxy) = mock_rpch_proxy(scenario);
+        let session = rpch_connect(
+            out,
+            input,
+            MockProvider(connector),
+            "rdg.contoso.com",
+            TSPROXY_RPC_BACKEND,
+            test_credentials(),
+            RpchV2Settings::new(128 * 1024, 256 * 1024, 0).expect("valid test settings"),
+            TEST_IN_CONTENT_LENGTH,
+        )
+        .await;
+        (session, proxy)
     }
 
     async fn open_session(
         scenario: MockRpchScenario,
-    ) -> (RpchSession<DuplexStream, DuplexStream, NoRecycle>, JoinHandle<()>) {
-        let (out, input, proxy) = mock_rpch_proxy(scenario);
-        let mut session = rpch_connect(
-            out,
-            input,
-            NoRecycle,
-            "rdg.contoso.com",
-            TSPROXY_RPC_BACKEND,
-            RpchHttpCredentials {
-                username: "CONTOSO\\alice".to_owned(),
-                password: "secret".to_owned(),
-                smart_card: None,
-            },
-            RpchV2Settings::new(128 * 1024, 256 * 1024, 0).expect("valid test settings"),
-        )
-        .await
-        .expect("rpch connect");
+    ) -> (RpchSession<DuplexStream, DuplexStream, MockProvider>, JoinHandle<()>) {
+        let (session, proxy) = connect_session(scenario).await;
+        let mut session = session.expect("rpch connect");
         session
             .open_tunnel("test-client", "rdp.contoso.com", 3389)
             .await
@@ -1516,7 +1988,7 @@ mod tests {
     }
 
     async fn open_stream(scenario: MockRpchScenario) -> (RpchStream, JoinHandle<()>) {
-        let (out, input, proxy) = mock_rpch_proxy(scenario);
+        let (out, input, connector, proxy) = mock_rpch_proxy(scenario);
         let target = GwConnectTarget {
             gw_endpoint: "rdg.contoso.com".to_owned(),
             gw_user: "CONTOSO\\alice".to_owned(),
@@ -1524,9 +1996,17 @@ mod tests {
             smart_card: None,
             server: "rdp.contoso.com".to_owned(),
         };
-        let stream = RpchStream::connect(Box::new(out), Box::new(input), &target, "test-client", 3389)
-            .await
-            .expect("authenticated RPCH stream");
+        let stream = RpchStream::connect(
+            Box::new(out),
+            Box::new(input),
+            MockProvider(connector),
+            &target,
+            "test-client",
+            3389,
+            TEST_IN_CONTENT_LENGTH,
+        )
+        .await
+        .expect("authenticated RPCH stream");
         (stream, proxy)
     }
 
@@ -1544,22 +2024,8 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_session_poisoned_auth_context_rejects_later_requests() {
-        let (out, input, proxy) = mock_rpch_proxy(MockRpchScenario::TamperedResponse);
-        let mut session = rpch_connect(
-            out,
-            input,
-            NoRecycle,
-            "rdg.contoso.com",
-            TSPROXY_RPC_BACKEND,
-            RpchHttpCredentials {
-                username: "CONTOSO\\alice".to_owned(),
-                password: "secret".to_owned(),
-                smart_card: None,
-            },
-            RpchV2Settings::new(128 * 1024, 256 * 1024, 0).expect("valid test settings"),
-        )
-        .await
-        .expect("rpch connect");
+        let (session, proxy) = connect_session(MockRpchScenario::TamperedResponse).await;
+        let mut session = session.expect("rpch connect");
 
         assert!(
             session
@@ -1614,24 +2080,9 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_session_rejects_invalid_out_fragment_length() {
-        let (out, input, proxy) = mock_rpch_proxy(MockRpchScenario::InvalidOutFragmentLength);
-        let error = match rpch_connect(
-            out,
-            input,
-            NoRecycle,
-            "rdg.contoso.com",
-            TSPROXY_RPC_BACKEND,
-            RpchHttpCredentials {
-                username: "CONTOSO\\alice".to_owned(),
-                password: "secret".to_owned(),
-                smart_card: None,
-            },
-            RpchV2Settings::new(128 * 1024, 256 * 1024, 0).expect("valid test settings"),
-        )
-        .await
-        {
-            Ok(_) => panic!("invalid fragment length must fail"),
-            Err(error) => error,
+        let (session, proxy) = connect_session(MockRpchScenario::InvalidOutFragmentLength).await;
+        let Err(error) = session else {
+            panic!("invalid fragment length must fail");
         };
         assert!(matches!(error.kind(), GwErrorKind::Decode));
         proxy.abort();
@@ -1703,5 +2154,92 @@ mod tests {
                 .expect("proxy observes stream shutdown")
                 .is_ok()
         );
+    }
+
+    async fn echo(session: &mut RpchSession<DuplexStream, DuplexStream, MockProvider>, data: &[u8]) {
+        session
+            .send_to_server(Bytes::copy_from_slice(data))
+            .await
+            .expect("send target data");
+        let mut received = Vec::new();
+        while received.len() < data.len() {
+            received.extend_from_slice(&session.read_data().await.expect("read target data"));
+        }
+        assert_eq!(received, data);
+    }
+
+    #[tokio::test]
+    async fn rpch_session_recycles_in_channel_without_losing_data() {
+        let (mut session, proxy) = open_session(MockRpchScenario::RecycleIn).await;
+        let chunk = vec![0x5a; 2 * 1024];
+        // Enough traffic to cross the quarter-remaining threshold of a 128 KiB IN body at least once.
+        for round in 0..64u8 {
+            let mut data = chunk.clone();
+            data[0] = round;
+            echo(&mut session, &data).await;
+        }
+        assert_eq!(
+            session.recycling().expect("recycle state").in_state(),
+            RpchInChannelRecycleState::Open
+        );
+        assert!(session.in_successor.is_none());
+        session.close().await.expect("close after IN recycling");
+        // The proxy finishes once the default IN channel closes.
+        drop(session);
+        proxy.await.expect("proxy observed IN recycling");
+    }
+
+    #[tokio::test]
+    async fn rpch_session_follows_out_r1_recycling() {
+        let (mut session, proxy) = open_session(MockRpchScenario::RecycleOutR1).await;
+        echo(&mut session, b"across-out-r1").await;
+        assert_eq!(
+            session.recycling().expect("recycle state").out_state(),
+            RpchOutChannelRecycleState::Open
+        );
+        assert!(session.out_successor.is_none());
+        echo(&mut session, b"after-out-r1").await;
+        session.close().await.expect("close after OUT recycling");
+        proxy.abort();
+    }
+
+    #[tokio::test]
+    async fn rpch_session_follows_out_r2_recycling() {
+        let (mut session, proxy) = open_session(MockRpchScenario::RecycleOutR2).await;
+        echo(&mut session, b"across-out-r2").await;
+        assert_eq!(
+            session.recycling().expect("recycle state").out_state(),
+            RpchOutChannelRecycleState::Open
+        );
+        assert!(session.out_successor.is_none());
+        echo(&mut session, b"after-out-r2").await;
+        session.close().await.expect("close after OUT recycling");
+        proxy.abort();
+    }
+
+    #[tokio::test]
+    async fn rpch_stream_carries_data_across_out_recycling() {
+        let (mut stream, proxy) = open_stream(MockRpchScenario::RecycleOutR1).await;
+        stream.write_all(b"recycled").await.expect("write across recycle");
+        let mut response = [0; 8];
+        stream.read_exact(&mut response).await.expect("read across recycle");
+        assert_eq!(&response, b"recycled");
+        stream.shutdown().await.expect("close TS Proxy contexts");
+        proxy.abort();
+    }
+
+    #[tokio::test]
+    async fn rpch_session_surfaces_in_channel_rpc_error() {
+        const RPC_S_SERVER_UNAVAILABLE: u32 = 0x6ba;
+        let (mut session, proxy) = open_session(MockRpchScenario::InHttpError(RPC_S_SERVER_UNAVAILABLE)).await;
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            session.send_to_server(Bytes::from_static(b"rejected")),
+        )
+        .await
+        .expect("IN failure is observed")
+        .expect_err("IN channel error fails the call");
+        assert!(matches!(error.kind(), GwErrorKind::GatewayCode(code) if *code == RPC_S_SERVER_UNAVAILABLE));
+        proxy.abort();
     }
 }

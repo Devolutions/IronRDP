@@ -1,11 +1,13 @@
 //! Raw HTTP/1 framing for legacy RPC-over-HTTP gateway channels.
 
-use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadHalf, WriteHalf};
 
 use crate::{Error, GwErrorKind};
 
 const MAX_RESPONSE_HEADERS: usize = 16 * 1024;
 const MAX_AUTH_RESPONSE_BODY: u32 = 16 * 1024;
+const MAX_COOKIES: usize = 16;
+const MAX_COOKIE_HEADER: usize = 4 * 1024;
 
 /// The TS Proxy RPC interface UUID advertised in `Pragma: ResourceTypeUuid`.
 ///
@@ -20,9 +22,66 @@ const MAX_IN_CONTENT_LENGTH: u32 = 2 * 1024 * 1024 * 1024;
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RpchResponseHead {
     pub(crate) status: u16,
+    pub(crate) reason: String,
     pub(crate) content_length: Option<u32>,
     pub(crate) content_type: Option<String>,
     pub(crate) www_authenticate: Vec<String>,
+    /// `name=value` pairs from `Set-Cookie` headers, without attributes.
+    pub(crate) set_cookies: Vec<String>,
+}
+
+impl RpchResponseHead {
+    /// Returns the RPC-Error code carried by an RPC proxy error response.
+    ///
+    /// [MS-RPCH] 2.1.2.1.3 and 3.2.2.5.11.
+    pub(crate) fn rpc_error(&self) -> Option<u32> {
+        let code = self.reason.strip_prefix("RPC Error: ")?;
+        let code = code.split_once(',').map_or(code, |(code, _)| code).trim();
+        u32::from_str_radix(code, 16).ok()
+    }
+}
+
+/// Cookies a proxy or load balancer set on earlier channel responses.
+///
+/// Every later IN, OUT, and successor channel request returns them, so a load balancer keeps routing
+/// the virtual connection to the same RPC proxy.
+/// Cookie attributes such as domain and expiry are not interpreted; the jar lives for one virtual connection
+/// to one gateway endpoint.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RpchCookieJar {
+    cookies: Vec<(String, String)>,
+}
+
+impl RpchCookieJar {
+    /// Records `Set-Cookie` pairs from a response, replacing values of cookies with the same name.
+    pub(crate) fn update(&mut self, set_cookies: &[String]) -> Result<(), Error> {
+        for cookie in set_cookies {
+            let (name, value) = cookie
+                .split_once('=')
+                .ok_or_else(|| Error::new("malformed rpch Set-Cookie", GwErrorKind::Decode))?;
+            match self.cookies.iter_mut().find(|(existing, _)| existing == name) {
+                Some((_, existing)) => value.clone_into(existing),
+                None => self.cookies.push((name.to_owned(), value.to_owned())),
+            }
+        }
+        if self.cookies.len() > MAX_COOKIES || self.header().is_some_and(|header| header.len() > MAX_COOKIE_HEADER) {
+            return Err(Error::new("rpch cookies exceed limit", GwErrorKind::Decode));
+        }
+        Ok(())
+    }
+
+    /// Returns the `Cookie` request header value, if any cookie was set.
+    pub(crate) fn header(&self) -> Option<String> {
+        if self.cookies.is_empty() {
+            return None;
+        }
+        let pairs: Vec<String> = self
+            .cookies
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect();
+        Some(pairs.join("; "))
+    }
 }
 
 /// Parameters for an RPCH IN or OUT channel request head.
@@ -52,6 +111,7 @@ pub(crate) struct RpchInRequest<S> {
     target: String,
     content_length: u32,
     session_id: Option<String>,
+    cookie: Option<String>,
     remaining: u32,
     body_reserved: bool,
     body_authorized: bool,
@@ -64,12 +124,14 @@ where
     /// Opens the IN channel without sending its streaming body.
     ///
     /// `reserve_body` selects between an empty authentication leg and the full streaming request.
+    #[expect(clippy::too_many_arguments, reason = "each argument is one IN channel request header input")]
     pub(crate) async fn open(
         stream: S,
         host: &str,
         target: &str,
         content_length: u32,
         session_id: Option<&str>,
+        cookie: Option<String>,
         authorization: Option<&str>,
         reserve_body: bool,
     ) -> Result<Self, Error> {
@@ -79,6 +141,7 @@ where
             target: target.to_owned(),
             content_length,
             session_id: session_id.map(str::to_owned),
+            cookie,
             remaining: 0,
             body_reserved: false,
             body_authorized: false,
@@ -117,6 +180,11 @@ where
         Ok(response)
     }
 
+    /// Sets the `Cookie` header value sent with later request heads.
+    pub(crate) fn set_cookie(&mut self, cookie: Option<String>) {
+        self.cookie = cookie;
+    }
+
     /// Sends the next request head after an authentication response.
     ///
     /// The request body remains blocked until the proxy returns `100 Continue` to a reserving head.
@@ -134,7 +202,7 @@ where
                 target: &self.target,
                 content_length,
                 authorization,
-                cookie: None,
+                cookie: self.cookie.as_deref(),
                 session_id: self.session_id.as_deref(),
                 expect_continue: reserve_body,
             },
@@ -145,7 +213,43 @@ where
 
         Ok(self)
     }
+}
 
+impl<S> RpchInRequest<S>
+where
+    S: AsyncRead + AsyncWrite,
+{
+    /// Splits an accepted IN request into its body writer and the read half of the connection.
+    ///
+    /// The proxy writes nothing on an accepted IN channel, so any bytes on the read half are an error response.
+    ///
+    /// [MS-RPCH] 2.1.2.1.3 and 3.2.2.5.11.
+    pub(crate) fn split(self) -> Result<(RpchInRequest<WriteHalf<S>>, ReadHalf<S>), Error> {
+        if !self.body_authorized {
+            return Err(Error::new("rpch IN split before authentication", GwErrorKind::Connect));
+        }
+        let (read, write) = tokio::io::split(self.stream);
+        Ok((
+            RpchInRequest {
+                stream: write,
+                host: self.host,
+                target: self.target,
+                content_length: self.content_length,
+                session_id: self.session_id,
+                cookie: self.cookie,
+                remaining: self.remaining,
+                body_reserved: self.body_reserved,
+                body_authorized: self.body_authorized,
+            },
+            read,
+        ))
+    }
+}
+
+impl<S> RpchInRequest<S>
+where
+    S: AsyncWrite + Unpin,
+{
     /// Writes bytes into the committed streaming body.
     pub(crate) async fn write_body(&mut self, bytes: &[u8]) -> Result<(), Error> {
         if !self.body_authorized {
@@ -348,16 +452,14 @@ fn parse_rpch_response_head(bytes: &[u8]) -> Result<RpchResponseHead, Error> {
     let status_line = lines
         .next()
         .ok_or_else(|| Error::new("missing rpch response status", GwErrorKind::Decode))?;
-    let mut status = status_line.split_ascii_whitespace();
-    let version = status
-        .next()
-        .ok_or_else(|| Error::new("missing rpch HTTP version", GwErrorKind::Decode))?;
+    let (version, rest) = status_line
+        .split_once(' ')
+        .ok_or_else(|| Error::new("missing rpch response status", GwErrorKind::Decode))?;
     if !matches!(version, "HTTP/1.0" | "HTTP/1.1") {
         return Err(Error::new("invalid rpch HTTP version", GwErrorKind::Decode));
     }
-    let status = status
-        .next()
-        .ok_or_else(|| Error::new("missing rpch response status", GwErrorKind::Decode))?
+    let (status, reason) = rest.split_once(' ').unwrap_or((rest, ""));
+    let status: u16 = status
         .parse()
         .map_err(|error| custom_err!("parse rpch response status", error))?;
     if !(100..=599).contains(&status) {
@@ -367,6 +469,7 @@ fn parse_rpch_response_head(bytes: &[u8]) -> Result<RpchResponseHead, Error> {
     let mut content_length = None;
     let mut content_type = None;
     let mut www_authenticate = Vec::new();
+    let mut set_cookies = Vec::new();
     let mut has_transfer_encoding = false;
     for line in lines {
         if line.is_empty() {
@@ -392,6 +495,12 @@ fn parse_rpch_response_head(bytes: &[u8]) -> Result<RpchResponseHead, Error> {
             content_type = Some(value.to_owned());
         } else if name.eq_ignore_ascii_case("WWW-Authenticate") {
             www_authenticate.push(value.to_owned());
+        } else if name.eq_ignore_ascii_case("Set-Cookie") {
+            let pair = value.split_once(';').map_or(value, |(pair, _)| pair).trim();
+            if !pair.contains('=') || !is_valid_header_value(pair) || pair.contains(';') {
+                return Err(Error::new("malformed rpch Set-Cookie", GwErrorKind::Decode));
+            }
+            set_cookies.push(pair.to_owned());
         } else if name.eq_ignore_ascii_case("Transfer-Encoding") {
             has_transfer_encoding = true;
         }
@@ -406,8 +515,10 @@ fn parse_rpch_response_head(bytes: &[u8]) -> Result<RpchResponseHead, Error> {
 
     Ok(RpchResponseHead {
         status,
+        reason: reason.trim().to_owned(),
         content_length,
         content_type,
         www_authenticate,
+        set_cookies,
     })
 }

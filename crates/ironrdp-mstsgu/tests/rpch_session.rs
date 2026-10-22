@@ -115,6 +115,17 @@ mod packet_io {
             crate::GwErrorKind::Connect,
         ))
     }
+
+    pub(crate) async fn open_rpch_gateway_stream(
+        _endpoint: &str,
+        _certificate_validation: ironrdp_tls::CertificateValidation,
+        _certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
+    ) -> Result<(GatewayStream, core::net::SocketAddr), crate::Error> {
+        Err(crate::Error::new(
+            "unexpected network RPCH connection",
+            crate::GwErrorKind::Connect,
+        ))
+    }
 }
 #[path = "../src/rpch.rs"]
 #[expect(

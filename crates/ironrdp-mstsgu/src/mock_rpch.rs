@@ -4,7 +4,10 @@ use sspi::{
     AuthIdentity, AuthIdentityBuffers, BufferType, CredentialUse, DataRepresentation, Ntlm, SecurityBuffer,
     SecurityBufferRef, ServerRequestFlags, Sspi as _, SspiImpl as _, Username,
 };
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
+use std::collections::VecDeque;
+
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, DuplexStream};
+use tokio::sync::mpsc;
 
 use crate::rpc::tsgu::{
     TSPROXY_AUTHORIZE_TUNNEL_OPNUM, TSPROXY_CLOSE_CHANNEL_OPNUM, TSPROXY_CLOSE_TUNNEL_OPNUM,
@@ -32,7 +35,42 @@ pub(crate) enum MockRpchScenario {
     FragmentedReceivePipePdu,
     InvalidOutFragmentLength,
     BasicAuthentication,
+    /// The client recycles its IN channel once its bounded IN body runs low.
+    RecycleIn,
+    /// The proxy recycles the OUT channel with the OUT_R1 sequence on the first send.
+    RecycleOutR1,
+    /// The proxy recycles the OUT channel with the OUT_R2 sequence on the first send.
+    RecycleOutR2,
+    /// The proxy fails the IN channel with an RPC-Error response on the first send.
+    InHttpError(u32),
 }
+
+/// Load-balancer cookie the mock sets on the first response; every later request must return it.
+const LB_COOKIE: &str = "RpchLb=node1";
+const STREAM_BUFFER: usize = 256 * 1024;
+
+/// Opens additional IN and OUT connections to a running mock proxy, as channel recycling does.
+pub(crate) struct MockRpchConnector {
+    in_connections: mpsc::UnboundedSender<DuplexStream>,
+    out_connections: mpsc::UnboundedSender<DuplexStream>,
+}
+
+impl MockRpchConnector {
+    pub(crate) fn connect_in(&self) -> Option<DuplexStream> {
+        let (client, server) = tokio::io::duplex(STREAM_BUFFER);
+        self.in_connections.send(server).ok()?;
+        Some(client)
+    }
+
+    pub(crate) fn connect_out(&self) -> Option<DuplexStream> {
+        let (client, server) = tokio::io::duplex(STREAM_BUFFER);
+        self.out_connections.send(server).ok()?;
+        Some(client)
+    }
+}
+
+/// A PDU read from an IN connection, or `None` once that connection closed.
+type InEvent = (usize, Option<Vec<u8>>);
 
 struct MockRpcSecurity {
     ntlm: Ntlm,
@@ -145,16 +183,58 @@ impl MockRpcSecurity {
     }
 }
 
-pub(crate) fn mock_rpch_proxy(scenario: MockRpchScenario) -> (DuplexStream, DuplexStream, tokio::task::JoinHandle<()>) {
-    let (out_client, out_server) = tokio::io::duplex(256 * 1024);
-    let (in_client, in_server) = tokio::io::duplex(256 * 1024);
-    let task = tokio::spawn(run_proxy(out_server, in_server, scenario));
-    (out_client, in_client, task)
+pub(crate) fn mock_rpch_proxy(
+    scenario: MockRpchScenario,
+) -> (
+    DuplexStream,
+    DuplexStream,
+    MockRpchConnector,
+    tokio::task::JoinHandle<()>,
+) {
+    let (out_client, out_server) = tokio::io::duplex(STREAM_BUFFER);
+    let (in_client, in_server) = tokio::io::duplex(STREAM_BUFFER);
+    let (in_connections, in_accept) = mpsc::unbounded_channel();
+    let (out_connections, out_accept) = mpsc::unbounded_channel();
+    let task = tokio::spawn(run_proxy(out_server, in_server, in_accept, out_accept, scenario));
+    (
+        out_client,
+        in_client,
+        MockRpchConnector {
+            in_connections,
+            out_connections,
+        },
+        task,
+    )
 }
 
-async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: MockRpchScenario) {
+fn spawn_in_reader<R>(id: usize, mut read: R, events: mpsc::UnboundedSender<InEvent>)
+where
+    R: AsyncRead + Send + Unpin + 'static,
+{
+    tokio::spawn(async move {
+        loop {
+            let pdu = read_pdu(&mut read).await;
+            let closed = pdu.is_none();
+            if events.send((id, pdu)).is_err() || closed {
+                return;
+            }
+        }
+    });
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scripted proxy keeps every scenario's sequence in one place"
+)]
+async fn run_proxy(
+    mut out: DuplexStream,
+    mut input: DuplexStream,
+    mut in_accept: mpsc::UnboundedReceiver<DuplexStream>,
+    mut out_accept: mpsc::UnboundedReceiver<DuplexStream>,
+    scenario: MockRpchScenario,
+) {
     let requires_basic_auth = matches!(scenario, MockRpchScenario::BasicAuthentication);
-    if !begin_in_channel(&mut input, requires_basic_auth).await {
+    if !begin_in_channel(&mut input, requires_basic_auth, false).await {
         return;
     }
     if !accept_out_channel(&mut out, requires_basic_auth).await {
@@ -169,7 +249,7 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
     {
         return;
     }
-    let Some(in_cookie) = complete_in_channel(&mut input).await else {
+    let Some(mut in_cookie) = complete_in_channel(&mut input).await else {
         return;
     };
     if matches!(scenario, MockRpchScenario::InvalidOutFragmentLength) {
@@ -187,26 +267,95 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
         return;
     }
 
+    let (in_read, mut in_write) = tokio::io::split(input);
+    let (events_sender, mut events) = mpsc::unbounded_channel();
+    spawn_in_reader(0, in_read, events_sender.clone());
+    let mut active_in = 0;
+    let mut next_in = 1;
+    let mut successor_in: Option<(usize, RtsCookie)> = None;
+    let mut deferred = VecDeque::new();
+    let mut ready: VecDeque<InEvent> = VecDeque::new();
+    let mut in_recycled = false;
+    let mut out_recycled = false;
+
     let receive_pipe_result = match scenario {
         MockRpchScenario::ReceivePipeError(result) => Some(result),
         _ => None,
     };
     let mut receive_pipe_call_id = None;
     let mut receive_pipe_started = false;
+    // Only RPC PDUs count against the receive window ([MS-RPCH] 3.2.1.1.4).
     let mut bytes_received = 0u32;
     let mut rpc_security = MockRpcSecurity::new();
 
     loop {
-        let Some(mut pdu) = read_pdu(&mut input).await else {
-            return;
+        let (id, pdu) = match ready.pop_front() {
+            Some(event) => event,
+            None => tokio::select! {
+                event = events.recv() => match event {
+                    Some(event) => event,
+                    None => return,
+                },
+                Some(mut stream) = in_accept.recv() => {
+                    let events = events_sender.clone();
+                    let id = next_in;
+                    next_in += 1;
+                    tokio::spawn(async move {
+                        if begin_in_channel(&mut stream, false, true).await {
+                            spawn_in_reader(id, stream, events);
+                        }
+                    });
+                    continue;
+                }
+            },
         };
-        let Ok(length) = u32::try_from(pdu.len()) else {
-            return;
+        let Some(mut pdu) = pdu else {
+            if id == active_in {
+                return;
+            }
+            continue;
         };
-        bytes_received = match bytes_received.checked_add(length) {
-            Some(bytes_received) => bytes_received,
-            None => return,
-        };
+
+        if id != active_in {
+            match successor_in {
+                None if is_in_recycle_a1(&pdu) => {
+                    let Some(cookie) = pdu.get(72..88).and_then(|cookie| cookie.try_into().ok()) else {
+                        return;
+                    };
+                    successor_in = Some((id, RtsCookie::new(cookie)));
+                    if write_all(&mut out, &rts_in_recycle_a4(PEER_RECEIVE_WINDOW, 120_000))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Some((successor, _)) if successor == id => deferred.push_back((id, Some(pdu))),
+                _ => return,
+            }
+            continue;
+        }
+        if let Some((successor, cookie)) = successor_in {
+            if is_in_recycle_a5(&pdu, cookie) {
+                active_in = successor;
+                in_cookie = cookie;
+                bytes_received = 0;
+                successor_in = None;
+                in_recycled = true;
+                ready.extend(deferred.drain(..));
+                continue;
+            }
+        }
+
+        if pdu.get(2).copied() != Some(PTYPE_RTS) {
+            let Ok(length) = u32::try_from(pdu.len()) else {
+                return;
+            };
+            bytes_received = match bytes_received.checked_add(length) {
+                Some(bytes_received) => bytes_received,
+                None => return,
+            };
+        }
 
         match pdu.get(2).copied() {
             Some(PTYPE_BIND) => {
@@ -322,6 +471,25 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
                         let Some(data) = send_to_server_data(&body) else {
                             return;
                         };
+                        if let MockRpchScenario::InHttpError(code) = scenario {
+                            let response = format!("HTTP/1.1 503 RPC Error: {code:x}\r\nContent-Length: 0\r\n\r\n");
+                            let _ = in_write.write_all(response.as_bytes()).await;
+                            continue;
+                        }
+                        let r2 = match scenario {
+                            MockRpchScenario::RecycleOutR1 => Some(false),
+                            MockRpchScenario::RecycleOutR2 => Some(true),
+                            _ => None,
+                        };
+                        if let Some(r2) = r2.filter(|_| !out_recycled) {
+                            out_recycled = true;
+                            let Some(successor) =
+                                recycle_out_channel(&mut out, &mut out_accept, &mut events, active_in, r2).await
+                            else {
+                                return;
+                            };
+                            out = successor;
+                        }
                         let Ok(ack) = encode_rts_flow_control_ack(RtsFlowControlAck::new(
                             bytes_received,
                             PEER_RECEIVE_WINDOW,
@@ -374,6 +542,10 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
                         }
                     }
                     TSPROXY_CLOSE_CHANNEL_OPNUM | TSPROXY_CLOSE_TUNNEL_OPNUM => {
+                        // The scripted recycle scenarios must have run before the client closes.
+                        if matches!(scenario, MockRpchScenario::RecycleIn) && !in_recycled {
+                            return;
+                        }
                         let response = [0u8; 24];
                         if write_response(&mut out, &mut rpc_security, request_call_id, &response)
                             .await
@@ -391,20 +563,145 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
     }
 }
 
-async fn begin_in_channel(input: &mut DuplexStream, requires_basic_auth: bool) -> bool {
+/// Runs the proxy side of OUT channel recycling ([MS-RPCH] 3.2.2.5.6 through 3.2.2.5.10).
+///
+/// Returns the successor OUT connection once it is the default OUT channel.
+async fn recycle_out_channel(
+    predecessor: &mut DuplexStream,
+    out_accept: &mut mpsc::UnboundedReceiver<DuplexStream>,
+    events: &mut mpsc::UnboundedReceiver<InEvent>,
+    active_in: usize,
+    r2: bool,
+) -> Option<DuplexStream> {
+    const RTS_FLAG_RECYCLE_CHANNEL: u16 = 0x0004;
+    const RTS_FLAG_OUT_CHANNEL: u16 = 0x0010;
+    const RTS_FLAG_EOF: u16 = 0x0020;
+
+    let destination_client = [13u32.to_le_bytes(), 0u32.to_le_bytes()].concat();
+    let ance = 10u32.to_le_bytes();
+    write_all(
+        predecessor,
+        &rts_pdu_with_flags(RTS_FLAG_RECYCLE_CHANNEL, &destination_client, 1),
+    )
+    .await
+    .ok()?;
+
+    let mut successor = out_accept.recv().await?;
+    let request = read_request_head(&mut successor).await?;
+    if !request.starts_with("RPC_OUT_DATA /rpc/rpcproxy.dll?localhost:3388 ")
+        || request_content_length(&request) != Some(120)
+        || !request_has_cookie(&request)
+    {
+        return None;
+    }
+    let mut a3 = [0; 96];
+    successor.read_exact(&mut a3).await.ok()?;
+    write_all(
+        &mut successor,
+        b"HTTP/1.1 200 OK\r\nContent-Type: application/rpc\r\nContent-Length: 1073741824\r\n\r\n",
+    )
+    .await
+    .ok()?;
+
+    let (a6, a7_flags, a7_count) = if r2 {
+        (
+            rts_pdu_with_flags(0, &[destination_client.as_slice(), &ance].concat(), 2),
+            RTS_FLAG_OUT_CHANNEL,
+            3,
+        )
+    } else {
+        let commands = [
+            destination_client.as_slice(),
+            &6u32.to_le_bytes(),
+            &1u32.to_le_bytes(),
+            &2u32.to_le_bytes(),
+            &120_000u32.to_le_bytes(),
+        ]
+        .concat();
+        (
+            rts_pdu_with_flags(RTS_FLAG_OUT_CHANNEL, &commands, 3),
+            RTS_FLAG_OUT_CHANNEL,
+            2,
+        )
+    };
+    write_all(predecessor, &a6).await.ok()?;
+    loop {
+        let (id, pdu) = events.recv().await?;
+        let pdu = pdu?;
+        if id != active_in || pdu.get(2).copied() != Some(PTYPE_RTS) {
+            return None;
+        }
+        if rts_flags(&pdu) == Some(a7_flags) && rts_command_count(&pdu) == Some(a7_count) {
+            break;
+        }
+    }
+
+    let mut trailer = [0; 24];
+    if r2 {
+        successor.read_exact(&mut trailer).await.ok()?;
+        write_all(predecessor, &rts_pdu_with_flags(RTS_FLAG_EOF, &ance, 1))
+            .await
+            .ok()?;
+    } else {
+        write_all(predecessor, &rts_pdu_with_flags(0, &ance, 1)).await.ok()?;
+        successor.read_exact(&mut trailer).await.ok()?;
+    }
+    Some(successor)
+}
+
+fn rts_flags(pdu: &[u8]) -> Option<u16> {
+    pdu.get(16..18)?.try_into().ok().map(u16::from_le_bytes)
+}
+
+fn rts_command_count(pdu: &[u8]) -> Option<u16> {
+    pdu.get(18..20)?.try_into().ok().map(u16::from_le_bytes)
+}
+
+fn is_in_recycle_a1(pdu: &[u8]) -> bool {
+    pdu.get(2).copied() == Some(PTYPE_RTS) && rts_flags(pdu) == Some(0x0004) && rts_command_count(pdu) == Some(4)
+}
+
+fn is_in_recycle_a5(pdu: &[u8], successor: RtsCookie) -> bool {
+    pdu.get(2).copied() == Some(PTYPE_RTS)
+        && rts_flags(pdu) == Some(0)
+        && rts_command_count(pdu) == Some(1)
+        && pdu.get(20..24) == Some(3u32.to_le_bytes().as_slice())
+        && pdu.get(24..40) == Some(successor.as_bytes().as_slice())
+}
+
+fn rts_in_recycle_a4(receive_window_size: u32, connection_timeout: u32) -> Vec<u8> {
+    rts_pdu(
+        &[
+            [13, 0, 0, 0].as_slice(),
+            0u32.to_le_bytes().as_slice(),
+            [6, 0, 0, 0].as_slice(),
+            1u32.to_le_bytes().as_slice(),
+            [0, 0, 0, 0].as_slice(),
+            receive_window_size.to_le_bytes().as_slice(),
+            [2, 0, 0, 0].as_slice(),
+            connection_timeout.to_le_bytes().as_slice(),
+        ]
+        .concat(),
+        4,
+    )
+}
+
+async fn begin_in_channel(input: &mut DuplexStream, requires_basic_auth: bool, probe_has_cookie: bool) -> bool {
     // The first leg is an empty authentication probe; the next one reserves the streaming body.
     let Some(request) = read_request_head(input).await else {
         return false;
     };
-    if !valid_in_request(&request, false, false) {
+    if !valid_in_request(&request, false, false) || request_has_cookie(&request) != probe_has_cookie {
         return false;
     }
-    let probe_response: &[u8] = if requires_basic_auth {
-        b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nWWW-Authenticate: Basic\r\n\r\n"
+    let probe_response = if requires_basic_auth {
+        format!(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nWWW-Authenticate: Basic\r\nSet-Cookie: {LB_COOKIE}; Path=/; HttpOnly\r\n\r\n"
+        )
     } else {
-        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+        format!("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nSet-Cookie: {LB_COOKIE}; Path=/; HttpOnly\r\n\r\n")
     };
-    if write_all(input, probe_response).await.is_err() {
+    if write_all(input, probe_response.as_bytes()).await.is_err() {
         return false;
     }
 
@@ -412,6 +709,7 @@ async fn begin_in_channel(input: &mut DuplexStream, requires_basic_auth: bool) -
         return false;
     };
     valid_in_request(&request, true, requires_basic_auth)
+        && request_has_cookie(&request)
         && write_all(input, b"HTTP/1.1 100 Continue\r\n\r\n").await.is_ok()
 }
 
@@ -452,7 +750,7 @@ async fn read_out_body(out: &mut DuplexStream) -> bool {
     out.read_exact(&mut conn_a1).await.is_ok()
 }
 
-async fn read_request_head(stream: &mut DuplexStream) -> Option<String> {
+async fn read_request_head<S: AsyncRead + Unpin>(stream: &mut S) -> Option<String> {
     String::from_utf8(read_http_head(stream).await?).ok()
 }
 
@@ -487,9 +785,14 @@ fn valid_out_request(request: &str, has_basic_auth: bool) -> bool {
     request.starts_with("RPC_OUT_DATA /rpc/rpcproxy.dll?localhost:3388 ")
         && request_content_length(request) == Some(76)
         && request_has_basic_auth(request) == has_basic_auth
+        && request_has_cookie(request)
 }
 
-async fn read_http_head(stream: &mut DuplexStream) -> Option<Vec<u8>> {
+fn request_has_cookie(request: &str) -> bool {
+    request.split("\r\n").any(|line| line == format!("Cookie: {LB_COOKIE}"))
+}
+
+async fn read_http_head<S: AsyncRead + Unpin>(stream: &mut S) -> Option<Vec<u8>> {
     let mut head = Vec::with_capacity(256);
     let mut byte = [0; 1];
     loop {
@@ -504,7 +807,7 @@ async fn read_http_head(stream: &mut DuplexStream) -> Option<Vec<u8>> {
     }
 }
 
-async fn read_pdu(stream: &mut DuplexStream) -> Option<Vec<u8>> {
+async fn read_pdu<S: AsyncRead + Unpin>(stream: &mut S) -> Option<Vec<u8>> {
     let mut header = [0; 16];
     stream.read_exact(&mut header).await.ok()?;
     let length = usize::from(u16::from_le_bytes(header[8..10].try_into().ok()?));
@@ -555,7 +858,7 @@ fn call_id(pdu: &[u8]) -> u32 {
     u32::from_le_bytes(pdu[12..16].try_into().expect("complete DCE/RPC header"))
 }
 
-async fn write_all(stream: &mut DuplexStream, bytes: &[u8]) -> tokio::io::Result<()> {
+async fn write_all<S: AsyncWrite + Unpin>(stream: &mut S, bytes: &[u8]) -> tokio::io::Result<()> {
     stream.write_all(bytes).await
 }
 
@@ -657,11 +960,15 @@ fn rts_conn_c2(receive_window_size: u32, connection_timeout: u32) -> Vec<u8> {
 }
 
 fn rts_pdu(commands: &[u8], command_count: u16) -> Vec<u8> {
+    rts_pdu_with_flags(0, commands, command_count)
+}
+
+fn rts_pdu_with_flags(flags: u16, commands: &[u8], command_count: u16) -> Vec<u8> {
     let mut pdu = vec![5, 0, PTYPE_RTS, 3, 0x10, 0, 0, 0];
     pdu.extend_from_slice(&u16::try_from(20 + commands.len()).expect("test RTS fits").to_le_bytes());
     pdu.extend_from_slice(&0u16.to_le_bytes());
     pdu.extend_from_slice(&0u32.to_le_bytes());
-    pdu.extend_from_slice(&0u16.to_le_bytes());
+    pdu.extend_from_slice(&flags.to_le_bytes());
     pdu.extend_from_slice(&command_count.to_le_bytes());
     pdu.extend_from_slice(commands);
     pdu

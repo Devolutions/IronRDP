@@ -508,8 +508,8 @@ pub enum Transport {
 
     /// Connect via an RDS gateway using authenticated RPC over HTTP (MS-RPCH).
     ///
-    /// This opt-in path does not fall back to unsigned RPC. Finite RPCH channel lifetimes are
-    /// reported as errors because channel recycling is not supported.
+    /// This opt-in path does not fall back to unsigned RPC. IN and OUT channels are recycled
+    /// before their finite lifetimes end.
     #[cfg(feature = "gateway")]
     GatewayRpch(GatewayConfig),
 
@@ -561,8 +561,8 @@ pub enum TransportKind {
 
     /// Connect through an RDS gateway using authenticated RPC over HTTP (MS-RPCH).
     ///
-    /// This path is selected only explicitly and does not fall back to unsigned RPC. Finite
-    /// RPCH channel lifetimes are reported as errors because channel recycling is not supported.
+    /// This path is selected only explicitly and does not fall back to unsigned RPC. IN and OUT
+    /// channels are recycled before their finite lifetimes end.
     #[cfg(feature = "gateway")]
     GatewayRpch {
         /// Gateway endpoint address (e.g., `"rdg.contoso.com:443"`).
@@ -1339,7 +1339,7 @@ impl ConfigBuilder {
                     ironrdp_cfg::GatewayUsageMethod::UseAlways
                 });
                 if matches!(transport, TransportKind::GatewayRpch { .. }) {
-                    self.properties.insert("ironrdp_gatewayrpch", 1_i64);
+                    self.properties.insert("ironrdp_gatewayrpch", 1i64);
                 } else {
                     self.properties.remove("ironrdp_gatewayrpch");
                 }
@@ -2788,13 +2788,13 @@ mod tests {
     fn rpch_gateway_property_opt_in() {
         let mut properties = ironrdp_propertyset::PropertySet::new();
         properties.insert("gatewayhostname", "gateway.example:443");
-        properties.insert("gatewayusagemethod", 1_i64);
+        properties.insert("gatewayusagemethod", 1i64);
         let legacy = complete_builder()
             .with_property_set(&properties)
             .expect("valid gateway properties");
         assert!(matches!(legacy.transport, TransportKind::Gateway { .. }));
 
-        properties.insert("ironrdp_gatewayrpch", 1_i64);
+        properties.insert("ironrdp_gatewayrpch", 1i64);
         let rpch = complete_builder()
             .with_property_set(&properties)
             .expect("valid RPCH gateway properties");
@@ -2803,7 +2803,7 @@ mod tests {
             TransportKind::GatewayRpch { ref endpoint, prefer_direct: false } if endpoint == "gateway.example:443"
         ));
 
-        properties.insert("ironrdp_gatewayrpch", 2_i64);
+        properties.insert("ironrdp_gatewayrpch", 2i64);
         assert!(complete_builder().with_property_set(&properties).is_err());
     }
 

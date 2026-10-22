@@ -49,6 +49,10 @@ macro_rules! custom_err {
 }
 
 #[path = "../src/rpc_transport.rs"]
+#[expect(
+    dead_code,
+    reason = "session-only IN channel helpers are exercised by the rpch_session target"
+)]
 mod rpc_transport;
 
 use rpc_transport::{RpchRequestHead, drain_body, read_rpch_response_head, write_rpch_request_head};
@@ -285,6 +289,7 @@ async fn in_authentication_waits_for_continue_before_the_body() {
         128 * 1024,
         None,
         None,
+        None,
         false,
     )
     .await
@@ -323,6 +328,7 @@ async fn in_authentication_rejects_continue_for_empty_leg() {
         128 * 1024,
         None,
         None,
+        None,
         false,
     )
     .await
@@ -352,6 +358,7 @@ async fn in_authentication_response_requires_a_bounded_body() {
             "gateway.example",
             "target.example:3389",
             128 * 1024,
+            None,
             None,
             None,
             false,
@@ -390,6 +397,7 @@ async fn in_authentication_response_drains_body_at_limit() {
         "gateway.example",
         "target.example:3389",
         128 * 1024,
+        None,
         None,
         None,
         true,
@@ -494,4 +502,59 @@ async fn read_head(stream: &mut tokio::io::DuplexStream) -> String {
         }
         assert!(head.len() <= 16 * 1024, "request head exceeds limit");
     }
+}
+
+#[tokio::test]
+async fn response_head_keeps_rpc_error_and_cookie_pairs() {
+    let (mut client, mut server) = tokio::io::duplex(4096);
+    server
+        .write_all(
+            b"HTTP/1.1 503 RPC Error: 6ba, EEInfo: AAAA\r\nContent-Length: 0\r\n\
+              Set-Cookie: RpchLb=node1; Path=/; HttpOnly\r\nSet-Cookie: Affinity=a\r\n\r\n",
+        )
+        .await
+        .expect("write response");
+    let response = read_rpch_response_head(&mut client).await.expect("read response head");
+    assert_eq!(response.status, 503);
+    assert_eq!(response.rpc_error(), Some(0x6ba));
+    assert_eq!(response.set_cookies, ["RpchLb=node1", "Affinity=a"]);
+}
+
+#[tokio::test]
+async fn response_head_without_rpc_error_reason_has_no_code() {
+    let (mut client, mut server) = tokio::io::duplex(4096);
+    server
+        .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+        .await
+        .expect("write response");
+    let response = read_rpch_response_head(&mut client).await.expect("read response head");
+    assert_eq!(response.rpc_error(), None);
+}
+
+#[tokio::test]
+async fn response_head_rejects_cookie_without_value() {
+    let (mut client, mut server) = tokio::io::duplex(4096);
+    server
+        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nSet-Cookie: invalid\r\n\r\n")
+        .await
+        .expect("write response");
+    let error = read_rpch_response_head(&mut client)
+        .await
+        .expect_err("cookie without a value is malformed");
+    assert_eq!(error.kind().to_string(), "decode");
+}
+
+#[test]
+fn cookie_jar_replaces_by_name_and_bounds_its_size() {
+    let mut jar = rpc_transport::RpchCookieJar::default();
+    assert_eq!(jar.header(), None);
+    jar.update(&["a=1".to_owned(), "b=2".to_owned()])
+        .expect("store cookies");
+    jar.update(&["a=3".to_owned()]).expect("replace cookie");
+    assert_eq!(jar.header().as_deref(), Some("a=3; b=2"));
+
+    let many: Vec<String> = (0..17).map(|index| format!("c{index}=v")).collect();
+    assert!(rpc_transport::RpchCookieJar::default().update(&many).is_err());
+    let large = format!("big={}", "x".repeat(4096));
+    assert!(rpc_transport::RpchCookieJar::default().update(&[large]).is_err());
 }

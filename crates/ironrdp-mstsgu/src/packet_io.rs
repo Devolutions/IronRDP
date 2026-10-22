@@ -331,36 +331,35 @@ pub(crate) async fn open_rpch_gateway_channels(
     certificate_validation: CertificateValidation,
     certificate_validation_callback: Option<CertificateValidationCallback>,
 ) -> Result<(GatewayStream, GatewayStream, core::net::SocketAddr), Error> {
-    let gateway = parse_gateway_endpoint(endpoint)?;
-    let gw_host = gateway.host.clone();
-    let proxy = proxy_from_environment(&gateway)?;
-
-    let (out, client_addr) = open_gateway_tcp(&gateway, proxy.as_ref()).await?;
-    let out = upgrade_gateway_tls(
-        out,
-        &gw_host,
+    let (out, client_addr) = open_rpch_gateway_stream(
         endpoint,
         certificate_validation,
         certificate_validation_callback.clone(),
     )
     .await?;
+    let (input, _) =
+        open_rpch_gateway_stream(endpoint, certificate_validation, certificate_validation_callback).await?;
+    Ok((out, input, client_addr))
+}
 
-    let in_gateway = GatewayEndpoint {
-        host: gateway.host,
-        port: gateway.port,
-        endpoint: gateway.endpoint,
-    };
-    let (input, _) = open_gateway_tcp(&in_gateway, proxy.as_ref()).await?;
-    let input = upgrade_gateway_tls(
-        input,
-        &gw_host,
+/// Opens one TLS connection to the gateway for an RPCH IN or OUT channel.
+pub(crate) async fn open_rpch_gateway_stream(
+    endpoint: &str,
+    certificate_validation: CertificateValidation,
+    certificate_validation_callback: Option<CertificateValidationCallback>,
+) -> Result<(GatewayStream, core::net::SocketAddr), Error> {
+    let gateway = parse_gateway_endpoint(endpoint)?;
+    let proxy = proxy_from_environment(&gateway)?;
+    let (stream, client_addr) = open_gateway_tcp(&gateway, proxy.as_ref()).await?;
+    let stream = upgrade_gateway_tls(
+        stream,
+        &gateway.host,
         endpoint,
         certificate_validation,
         certificate_validation_callback,
     )
     .await?;
-
-    Ok((out, input, client_addr))
+    Ok((stream, client_addr))
 }
 
 pub(crate) async fn upgrade_gateway_tls(
