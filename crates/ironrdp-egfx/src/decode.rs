@@ -317,6 +317,10 @@ pub trait H264Decoder: Send {
     /// specifies, and AVC444 recombines two of them, so a decoder implementing this serves
     /// every AVC mode regardless of the matrix [`H264Decoder::decode`] converts with.
     /// Implementations must also return `true` from [`H264Decoder::supports_yuv420`].
+    ///
+    /// The returned picture must be the one `data` carries, not an earlier one held back:
+    /// AVC444 sends its two views as consecutive pictures of one stream and pairs each
+    /// call's result with the sub-stream it passed in.
     fn decode_yuv420(&mut self, data: &[u8]) -> DecoderResult<Yuv420Frame> {
         let _ = data;
         Err(DecoderError::msg("this decoder does not return YUV 4:2:0 planes"))
@@ -423,10 +427,9 @@ mod openh264_impl {
                 matrix: YuvMatrix::Bt709Full,
             })
         }
-    }
 
-    impl H264Decoder for OpenH264Decoder {
-        fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
+        /// Decodes `data`, an Annex B byte stream or AVC-format NAL units, to OpenH264's picture.
+        fn decode_picture(&mut self, data: &[u8]) -> DecoderResult<openh264::decoder::DecodedYUV<'_>> {
             let annex_b = if crate::pdu::is_avc_format(data) {
                 crate::pdu::avc_to_annex_b_into(data, &mut self.annex_b_buffer);
                 &self.annex_b_buffer
@@ -434,11 +437,17 @@ mod openh264_impl {
                 data
             };
 
-            let yuv = self
-                .decoder
+            self.decoder
                 .decode(annex_b)
                 .map_err(|e| DecoderError::new("OpenH264 decode failed", e))?
-                .ok_or_else(|| DecoderError::msg("OpenH264 returned no picture"))?;
+                .ok_or_else(|| DecoderError::msg("OpenH264 returned no picture"))
+        }
+    }
+
+    impl H264Decoder for OpenH264Decoder {
+        fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
+            let matrix = self.matrix;
+            let yuv = self.decode_picture(data)?;
 
             let (width, height) = YUVSource::dimensions(&yuv);
             let (y_stride, u_stride, v_stride) = YUVSource::strides(&yuv);
@@ -468,7 +477,7 @@ mod openh264_impl {
             // MS-RDPEGFX AVC420 streams carry full-range BT.709 YUV420 ([MS-RDPEGFX] 3.3.8.3.1),
             // and MS-RDPEVOR video limited-range BT.601, so the matrix is chosen by the caller
             // rather than taken from openh264's `write_rgba8`.
-            let (range, standard) = match self.matrix {
+            let (range, standard) = match matrix {
                 YuvMatrix::Bt601Limited => (yuv::YuvRange::Limited, yuv::YuvStandardMatrix::Bt601),
                 YuvMatrix::Bt709Full => (yuv::YuvRange::Full, yuv::YuvStandardMatrix::Bt709),
             };
@@ -489,18 +498,7 @@ mod openh264_impl {
         }
 
         fn decode_yuv420(&mut self, data: &[u8]) -> DecoderResult<Yuv420Frame> {
-            let annex_b = if crate::pdu::is_avc_format(data) {
-                crate::pdu::avc_to_annex_b_into(data, &mut self.annex_b_buffer);
-                &self.annex_b_buffer
-            } else {
-                data
-            };
-
-            let yuv = self
-                .decoder
-                .decode(annex_b)
-                .map_err(|e| DecoderError::new("OpenH264 decode failed", e))?
-                .ok_or_else(|| DecoderError::msg("OpenH264 returned no picture"))?;
+            let yuv = self.decode_picture(data)?;
 
             let (width, height) = YUVSource::dimensions(&yuv);
             let (y_stride, u_stride, v_stride) = YUVSource::strides(&yuv);

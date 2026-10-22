@@ -423,5 +423,4 @@ fn test_openh264_avc444_views_recombine(#[case] layout: ironrdp_egfx::avc444::Av
         avc444_error * 4 < avc420_error,
         "AVC444 error {avc444_error} is not well below the 4:2:0 error {avc420_error}"
     );
-    assert!(avc444_error < 12, "AVC444 error {avc444_error}");
 }

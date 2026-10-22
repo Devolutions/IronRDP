@@ -53,6 +53,7 @@
 //! [3.3.5.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/90aba3e3-d4a8-4af1-b1bb-a94e2313bbf0
 //! [3.3.5.12]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/e3c80bff-3e4e-4e65-b7c2-c2cd6b1fb4f5
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 
 use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
@@ -68,7 +69,7 @@ use tracing::{debug, trace, warn};
 use crate::CHANNEL_NAME;
 use crate::avc444::{Avc444Layout, Yuv444Frame};
 use crate::compositor::{Compositor, OutputUpdate};
-use crate::decode::{DecodedFrame, DecoderResult, H264Decoder};
+use crate::decode::H264Decoder;
 use crate::pdu::{
     Avc420BitmapStream, Avc444BitmapStream, CacheImportReplyPdu, CacheToSurfacePdu, CapabilitiesAdvertisePdu,
     CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV103Flags, CapabilitiesV104Flags,
@@ -1135,8 +1136,14 @@ impl GraphicsPipelineClient {
             return Ok(());
         };
 
-        let frame = decode_avc420_picture(decoder.as_mut(), stream.data)
-            .map_err(|e| pdu_other_err!("H.264 decode", source: e))?;
+        // A decoder returning YUV planes is converted with the transform MS-RDPEGFX
+        // specifies, whatever matrix it would convert with itself.
+        let frame = if decoder.supports_yuv420() {
+            decoder.decode_yuv420(stream.data).map(|picture| picture.to_rgba())
+        } else {
+            decoder.decode(stream.data)
+        }
+        .map_err(|e| pdu_other_err!("H.264 decode", source: e))?;
 
         // MS-RDPEGFX 2.2.1.4.1: RDPGFX_RECT16 right/bottom are exclusive (one-past-end),
         // so dimensions are right-left / bottom-top despite the parsed type's name.
@@ -1261,9 +1268,11 @@ impl GraphicsPipelineClient {
     fn decode_avc444(&mut self, codec_id: Codec1Type, surface_id: u16, bitmap_data: &[u8]) -> PduResult<()> {
         let mut cursor = ReadCursor::new(bitmap_data);
         let stream = Avc444BitmapStream::decode(&mut cursor).map_err(|e| decode_err!(e))?;
-        let Some(decoder) = self.h264_decoder.as_mut() else {
-            return Ok(());
-        };
+        // The caller forwards AVC444 to the handler unless a YUV decoder is present.
+        let decoder = self
+            .h264_decoder
+            .as_mut()
+            .ok_or_else(|| pdu_other_err!("no H.264 decoder for AVC444"))?;
         let layout = if codec_id == Codec1Type::Avc444 {
             Avc444Layout::V1
         } else {
@@ -1297,17 +1306,17 @@ impl GraphicsPipelineClient {
         // The combined picture lives as long as the surface, so it is charged to the
         // compositor's budget, and only for a surface the compositor accepted, whose
         // dimensions it has bounded.
-        if !self.avc444_frames.contains_key(&surface_id) {
-            if !self
-                .compositor
-                .reserve_for_surface(surface_id, Yuv444Frame::allocation_size(width, height))
-            {
-                return Err(pdu_other_err!("AVC444 picture exceeds the compositor budget"));
+        let frame = match self.avc444_frames.entry(surface_id) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                if !self
+                    .compositor
+                    .reserve_for_surface(surface_id, Yuv444Frame::allocation_size(width, height))
+                {
+                    return Err(pdu_other_err!("AVC444 picture exceeds the compositor budget"));
+                }
+                entry.insert(Yuv444Frame::new(width, height))
             }
-            self.avc444_frames.insert(surface_id, Yuv444Frame::new(width, height));
-        }
-        let Some(frame) = self.avc444_frames.get_mut(&surface_id) else {
-            return Ok(());
         };
         if let (Some(main), Some(view)) = (main, &main_view) {
             frame.apply_main_view(view, &main.rectangles);
@@ -1537,18 +1546,6 @@ impl DvcProcessor for GraphicsPipelineClient {
 }
 
 impl DvcClientProcessor for GraphicsPipelineClient {}
-
-/// Decode an AVC420 picture to RGBA.
-///
-/// A decoder returning YUV planes is converted with the transform MS-RDPEGFX specifies,
-/// whatever matrix it would convert with itself.
-fn decode_avc420_picture(decoder: &mut dyn H264Decoder, data: &[u8]) -> DecoderResult<DecodedFrame> {
-    if decoder.supports_yuv420() {
-        decoder.decode_yuv420(data).map(|picture| picture.to_rgba())
-    } else {
-        decoder.decode(data)
-    }
-}
 
 // ============================================================================
 // Frame Cropping
@@ -2927,7 +2924,7 @@ mod tests {
     }
 
     impl H264Decoder for CoordinateDecoder {
-        fn decode(&mut self, _data: &[u8]) -> DecoderResult<DecodedFrame> {
+        fn decode(&mut self, _data: &[u8]) -> crate::decode::DecoderResult<crate::decode::DecodedFrame> {
             let (w, h) = (self.width, self.height);
             let mut data = Vec::with_capacity(usize::try_from(w * h * 4).unwrap_or(0));
             for y in 0..h {
@@ -2937,7 +2934,7 @@ mod tests {
                     data.extend_from_slice(&[px, py, 0, 0xFF]);
                 }
             }
-            Ok(DecodedFrame::new(data, w, h))
+            Ok(crate::decode::DecodedFrame::new(data, w, h))
         }
     }
 

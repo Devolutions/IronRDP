@@ -278,6 +278,85 @@ fn views_recombine_into_the_original_picture(#[case] layout: Avc444Layout) {
 }
 
 // oracle: spec MS-RDPEGFX §3.3.8.3.1
+/// Forward transform of MS-RDPEGFX 3.3.8.3.1, written from the specification's matrix.
+fn spec_yuv(pixel: &[u8]) -> [u8; 3] {
+    let [r, g, b] = [pixel[0], pixel[1], pixel[2]].map(i32::from);
+    let clamp = |value: i32| u8::try_from(value.clamp(0, 255)).expect("clamped to a byte");
+    [
+        clamp((54 * r + 183 * g + 18 * b) >> 8),
+        clamp(((-29 * r - 99 * g + 128 * b) >> 8) + 128),
+        clamp(((128 * r - 116 * g - 12 * b) >> 8) + 128),
+    ]
+}
+
+/// Each auxiliary view sample is the 4:4:4 sample the specification's B4 to B9 formulas place
+/// there. The picture is three macroblocks wide, so the AVC444v2 halves start at an odd macroblock.
+// oracle: spec MS-RDPEGFX §3.3.8.3.2
+// oracle: spec MS-RDPEGFX §3.3.8.3.3
+#[rstest]
+#[case::avc444(Avc444Layout::V1)]
+#[case::avc444v2(Avc444Layout::V2)]
+fn auxiliary_views_follow_the_specification_layout(#[case] layout: Avc444Layout) {
+    const W: usize = 48;
+    const H: usize = 32;
+    let mut rgba = Vec::with_capacity(W * H * 4);
+    for i in 0..W * H {
+        // Distinct, irregular colors, so a misplaced sample shows.
+        let seed = u32::try_from(i).expect("index fits in u32").wrapping_mul(2_654_435_761);
+        let [r, g, b, _] = seed.to_le_bytes();
+        rgba.extend_from_slice(&[r, g, b, 0xFF]);
+    }
+    let yuv = |x: usize, y: usize| spec_yuv(&rgba[(y * W + x) * 4..]);
+    let (u444, v444) = (|x, y| yuv(x, y)[1], |x, y| yuv(x, y)[2]);
+
+    let picture = Yuv444Frame::from_rgba(&rgba, 48, 32).expect("picture");
+    let (main, aux) = picture.split(layout).expect("views");
+    for y in 0..H {
+        let luma = main.luma_row(y).expect("main luma row");
+        assert!((0..W).all(|x| luma[x] == yuv(x, y)[0]), "B1 row {y}");
+    }
+
+    let luma = |row| aux.luma_row(row).expect("auxiliary luma row");
+    let (u, v) = (
+        |row| aux.u_row(row).expect("auxiliary U row"),
+        |row| aux.v_row(row).expect("auxiliary V row"),
+    );
+    match layout {
+        Avc444Layout::V1 => {
+            for macroblock in (0..H).step_by(16) {
+                for y in 0..8 {
+                    for x in 0..W {
+                        assert_eq!(luma(macroblock + y)[x], u444(x, macroblock + 2 * y + 1), "B4");
+                        assert_eq!(luma(macroblock + 8 + y)[x], v444(x, macroblock + 2 * y + 1), "B5");
+                    }
+                }
+            }
+            for y in 0..H / 2 {
+                for x in 0..W / 2 {
+                    assert_eq!(u(y)[x], u444(2 * x + 1, 2 * y), "B6");
+                    assert_eq!(v(y)[x], v444(2 * x + 1, 2 * y), "B7");
+                }
+            }
+        }
+        Avc444Layout::V2 => {
+            for y in 0..H {
+                for x in 0..W / 2 {
+                    assert_eq!(luma(y)[x], u444(2 * x + 1, y), "B4");
+                    assert_eq!(luma(y)[W / 2 + x], v444(2 * x + 1, y), "B5");
+                }
+            }
+            for y in 0..H / 2 {
+                for x in 0..W / 4 {
+                    assert_eq!(u(y)[x], u444(4 * x, 2 * y + 1), "B6");
+                    assert_eq!(u(y)[W / 4 + x], v444(4 * x, 2 * y + 1), "B7");
+                    assert_eq!(v(y)[x], u444(4 * x + 2, 2 * y + 1), "B8");
+                    assert_eq!(v(y)[W / 4 + x], v444(4 * x + 2, 2 * y + 1), "B9");
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn a_converted_picture_reads_back_unchanged() {
     let original = checkerboard(0);
@@ -492,7 +571,7 @@ fn an_update_only_paints_its_region_rectangles(#[case] layout: Avc444Layout) {
 
 // oracle: spec MS-RDPEGFX §2.2.3.3
 #[test]
-fn avc444_without_a_yuv_decoder_is_left_to_the_handler() {
+fn a_decoder_without_yuv_planes_advertises_no_avc444() {
     /// A decoder that only returns RGBA.
     struct RgbaDecoder;
     impl H264Decoder for RgbaDecoder {

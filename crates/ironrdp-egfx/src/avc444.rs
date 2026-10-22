@@ -237,10 +237,16 @@ impl Yuv444Frame {
         let mut aux_v = vec![0; half_stride * half_rows];
         match layout {
             Avc444Layout::V1 => {
-                // B4 and B5: odd U rows, then odd V rows, eight of each per macroblock.
+                // B4 and B5: in each macroblock row, auxiliary luma rows 0 to 7 carry the odd U
+                // rows and rows 8 to 15 the odd V rows.
                 for aux_row in 0..self.rows {
-                    let (source, row) = v1_source_row(aux_row);
-                    let plane = if source == Plane::U { &self.u } else { &self.v };
+                    let macroblock = aux_row - aux_row % MACROBLOCK;
+                    let within = aux_row % MACROBLOCK;
+                    let (plane, row) = if within < MACROBLOCK / 2 {
+                        (&self.u, macroblock + 2 * within + 1)
+                    } else {
+                        (&self.v, macroblock + 2 * (within - MACROBLOCK / 2) + 1)
+                    };
                     aux_y[aux_row * self.stride..][..self.stride]
                         .copy_from_slice(&plane[row * self.stride..][..self.stride]);
                 }
@@ -287,9 +293,10 @@ impl Yuv444Frame {
         for row in area.top..area.bottom {
             let line = row * self.stride;
             if row % 2 == 1 {
-                // B4 and B5: the whole odd row comes from one auxiliary luma row.
-                let aux_row = v1_aux_row(row);
-                let (Some(u), Some(v)) = (view.luma_row(aux_row.0), view.luma_row(aux_row.1)) else {
+                // B4 and B5: the whole odd row comes from one auxiliary luma row, U from the first
+                // half of its macroblock row and V from the second.
+                let u_row = row - row % MACROBLOCK + (row % MACROBLOCK) / 2;
+                let (Some(u), Some(v)) = (view.luma_row(u_row), view.luma_row(u_row + MACROBLOCK / 2)) else {
                     continue;
                 };
                 let right = area.right.min(u.len());
@@ -389,30 +396,6 @@ struct Area {
     top: usize,
     right: usize,
     bottom: usize,
-}
-
-#[derive(PartialEq, Eq)]
-enum Plane {
-    U,
-    V,
-}
-
-/// The chroma plane and row an AVC444 auxiliary luma row carries (B4 and B5).
-fn v1_source_row(aux_row: usize) -> (Plane, usize) {
-    let macroblock = aux_row - aux_row % MACROBLOCK;
-    let within = aux_row % MACROBLOCK;
-    if within < MACROBLOCK / 2 {
-        (Plane::U, macroblock + 2 * within + 1)
-    } else {
-        (Plane::V, macroblock + 2 * (within - MACROBLOCK / 2) + 1)
-    }
-}
-
-/// The AVC444 auxiliary luma rows carrying odd chroma row `row` of U and of V (B4 and B5).
-fn v1_aux_row(row: usize) -> (usize, usize) {
-    let macroblock = row - row % MACROBLOCK;
-    let u = macroblock + (row % MACROBLOCK) / 2;
-    (u, u + MACROBLOCK / 2)
 }
 
 /// The view width W of [MS-RDPEGFX] 3.3.8.3.3, which places V after U in AVC444v2 auxiliary rows.
