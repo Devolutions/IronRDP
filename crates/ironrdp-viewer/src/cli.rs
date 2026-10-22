@@ -583,10 +583,11 @@ impl ViewerConfig {
                 dump_rdp: None,
                 rpc: false,
                 rpc_endpoint: None,
-                redirect_printers: false,
+                printers: None,
                 named_drives: Vec::new(),
                 ports: PortOptions::default(),
                 list_usb_devices: true,
+                list_audio_devices: false,
             });
         }
 
