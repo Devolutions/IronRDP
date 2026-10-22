@@ -314,6 +314,21 @@ impl ActiveStage {
         Ok(region)
     }
 
+    /// Composites RGBA pixels rendered outside the session, such as client-side video, into
+    /// `image` and records their damage like a graphics pipeline update.
+    ///
+    /// Each update is a region with exclusive right and bottom edges and its tightly packed RGBA
+    /// rows. Updates outside the image are dropped. Returns the union of the changed regions.
+    pub fn composite_rgba32(
+        &mut self,
+        image: &mut DecodedImage,
+        updates: impl IntoIterator<Item = (ExclusiveRectangle, Vec<u8>)>,
+    ) -> SessionResult<Option<InclusiveRectangle>> {
+        let (region, damage_regions) = composite_graphics_updates(image, updates)?;
+        self.damage_regions.extend(damage_regions);
+        Ok(region)
+    }
+
     /// After a graphics output reset, widens the first graphics update to the whole image so
     /// the caller repaints everything the reset cleared.
     fn widen_to_full_refresh(&mut self, image: &DecodedImage, stage_outputs: &mut [ActiveStageOutput]) {

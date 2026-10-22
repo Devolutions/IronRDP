@@ -2765,6 +2765,7 @@ dependencies = [
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-echo",
  "ironrdp-egfx",
+ "ironrdp-egfx-native",
  "ironrdp-graphics",
  "ironrdp-mstsgu",
  "ironrdp-pdu",
@@ -2775,10 +2776,12 @@ dependencies = [
  "ironrdp-rdpeai",
  "ironrdp-rdpecam",
  "ironrdp-rdpecam-native",
+ "ironrdp-rdpegt",
  "ironrdp-rdpei",
  "ironrdp-rdpel",
  "ironrdp-rdpeudp",
  "ironrdp-rdpeudp-tokio",
+ "ironrdp-rdpevor",
  "ironrdp-rdpewa",
  "ironrdp-rdpewa-native",
  "ironrdp-rdpsnd",
@@ -2967,6 +2970,15 @@ dependencies = [
  "openh264",
  "tracing",
  "yuv",
+]
+
+[[package]]
+name = "ironrdp-egfx-native"
+version = "0.0.0"
+dependencies = [
+ "ironrdp-egfx",
+ "tracing",
+ "windows",
 ]
 
 [[package]]
@@ -3178,6 +3190,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpegt"
+version = "0.0.0"
+dependencies = [
+ "ironrdp-core 0.2.1",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "tracing",
+]
+
+[[package]]
 name = "ironrdp-rdpei"
 version = "0.1.0"
 dependencies = [
@@ -3249,6 +3271,19 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-str",
  "ironrdp-usb",
+]
+
+[[package]]
+name = "ironrdp-rdpevor"
+version = "0.0.0"
+dependencies = [
+ "ironrdp-core 0.2.1",
+ "ironrdp-dvc",
+ "ironrdp-egfx",
+ "ironrdp-pdu",
+ "ironrdp-rdpegt",
+ "ironrdp-svc",
+ "tracing",
 ]
 
 [[package]]
@@ -3428,6 +3463,7 @@ dependencies = [
  "ironrdp-dvc",
  "ironrdp-echo",
  "ironrdp-egfx",
+ "ironrdp-egfx-native",
  "ironrdp-error 0.2.0",
  "ironrdp-fuzzing",
  "ironrdp-graphics",
@@ -3438,11 +3474,13 @@ dependencies = [
  "ironrdp-rdpdr",
  "ironrdp-rdpeai",
  "ironrdp-rdpecam",
+ "ironrdp-rdpegt",
  "ironrdp-rdpei",
  "ironrdp-rdpel",
  "ironrdp-rdpemt",
  "ironrdp-rdpeudp",
  "ironrdp-rdpeusb",
+ "ironrdp-rdpevor",
  "ironrdp-rdpfile",
  "ironrdp-rdpsnd",
  "ironrdp-server",

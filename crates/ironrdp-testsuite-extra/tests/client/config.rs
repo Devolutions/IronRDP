@@ -748,6 +748,37 @@ fn graphics_pipeline_is_opt_in() {
         .build()
         .expect("graphics pipeline config");
     assert!(config.connector().support_dyn_vc_gfx_protocol);
+
+    for (value, enabled) in [(1i64, true), (0, false)] {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.insert("ironrdp_egfx", value);
+        let config = complete_builder()
+            .with_property_set(&properties)
+            .expect("valid graphics pipeline property")
+            .build()
+            .expect("graphics pipeline property config");
+        assert_eq!(config.connector().support_dyn_vc_gfx_protocol, enabled);
+    }
+}
+
+#[test]
+fn video_playback_mode_zero_declines_video() {
+    let decoder = || Some(ironrdp_client::video::H264DecoderFactory::new(|| None));
+    let config = complete_builder()
+        .with_h264_decoder(decoder())
+        .build()
+        .expect("video config");
+    assert!(config.channels().video.decoder.is_some());
+
+    let mut properties = ironrdp_propertyset::PropertySet::new();
+    properties.insert("videoplaybackmode", 0i64);
+    let config = complete_builder()
+        .with_h264_decoder(decoder())
+        .with_property_set(&properties)
+        .expect("valid video playback property")
+        .build()
+        .expect("video playback property config");
+    assert!(config.channels().video.decoder.is_none());
 }
 
 #[test]

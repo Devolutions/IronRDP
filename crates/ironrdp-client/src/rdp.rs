@@ -2004,6 +2004,12 @@ fn build_connector(
         attach_dvc(&mut drdynvc, &config.properties);
     }
 
+    // MS-RDPEVOR video optimized remoting and MS-RDPEGT geometry tracking.
+    #[cfg(feature = "video")]
+    {
+        drdynvc = crate::video::attach(drdynvc, &config.channels.video);
+    }
+
     // MS-RDPECAM camera redirection.
     #[cfg(all(windows, feature = "camera"))]
     {
@@ -3169,6 +3175,14 @@ impl ActiveSessionIteration {
     }
 }
 
+/// Completes at `deadline`, or never without one.
+async fn sleep_until_deadline(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => core::future::pending().await,
+    }
+}
+
 #[cfg(feature = "rdpdr")]
 fn poll_deferred_rdpdr_output(active_stage: &mut ActiveStage) -> SessionResult<Option<ActiveStageOutput>> {
     let messages = match active_stage.get_svc_processor_mut::<ironrdp_rdpdr::Rdpdr>() {
@@ -3379,6 +3393,10 @@ async fn active_session(
     let disconnect_reason = 'outer: loop {
         let resize_deadline = resize_queue.deadline();
         let input_batch_deadline = input_batcher.deadline();
+        #[cfg(feature = "video")]
+        let video_deadline = crate::video::deadline(&active_stage);
+        #[cfg(not(feature = "video"))]
+        let video_deadline: Option<tokio::time::Instant> = None;
         let mut malformed_bitmap_redraw_queued = false;
         let clipboard_event = async {
             #[cfg(feature = "clipboard")]
@@ -3944,12 +3962,11 @@ async fn active_session(
                     };
                     ActiveSessionIteration::outputs(outputs)
                 }
-                _ = async {
-                    match input_batch_deadline {
-                        Some(deadline) => tokio::time::sleep_until(deadline).await,
-                        None => core::future::pending().await,
-                    }
-                } => {
+                _ = sleep_until_deadline(video_deadline) => {
+                    // Due video pictures are composited below.
+                    ActiveSessionIteration::outputs(Vec::new())
+                }
+                _ = sleep_until_deadline(input_batch_deadline) => {
                     ActiveSessionIteration::outputs(match input_batcher.flush(tokio::time::Instant::now()) {
                         Some(events) => active_stage.process_fastpath_input(&mut image, &events)?,
                         None => Vec::new(),
@@ -3979,6 +3996,17 @@ async fn active_session(
                 }
             }
         };
+
+        #[cfg(feature = "video")]
+        if crate::video::present(
+            &mut active_stage,
+            &mut image,
+            &mut iteration.outputs,
+            &mut iteration.dvc_batch,
+        )? {
+            // A tunneled request's reply route does not apply to the video notifications.
+            iteration.reply_tunnel = None;
+        }
 
         if let Some(batch) = iteration.dvc_batch {
             let channel_id = batch.channel_id();

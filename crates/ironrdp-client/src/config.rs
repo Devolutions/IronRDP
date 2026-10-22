@@ -391,6 +391,11 @@ pub struct ChannelConfig {
     /// MS-RDPECAM camera redirection (`camerastoredirect`). No camera is redirected by default.
     #[cfg(feature = "camera")]
     pub cameras: crate::camera::CameraConfig,
+
+    /// MS-RDPEVOR video optimized remoting, enabled when an H.264 decoder is available (by default
+    /// on Windows or with the `openh264` feature) unless `videoplaybackmode:i:0` turns it off.
+    #[cfg(feature = "video")]
+    pub video: crate::video::VideoConfig,
 }
 
 #[cfg_attr(
@@ -427,6 +432,8 @@ impl Default for ChannelConfig {
             location: false,
             #[cfg(feature = "camera")]
             cameras: crate::camera::CameraConfig::default(),
+            #[cfg(feature = "video")]
+            video: crate::video::VideoConfig::default(),
         }
     }
 }
@@ -1544,6 +1551,16 @@ impl ConfigBuilder {
         self
     }
 
+    /// Set the H.264 decoder used for MS-RDPEVOR video optimized remoting.
+    ///
+    /// `None` declines the video channels.
+    #[cfg(feature = "video")]
+    #[must_use]
+    pub fn with_h264_decoder(mut self, decoder: Option<crate::video::H264DecoderFactory>) -> Self {
+        self.channels.video.decoder = decoder;
+        self
+    }
+
     /// Cameras currently selected for redirection, e.g. from a `.rdp` file.
     #[cfg(feature = "camera")]
     pub fn cameras(&self) -> &crate::camera::CameraConfig {
@@ -2232,6 +2249,13 @@ impl ConfigBuilder {
             Ok(Some(AudioCaptureMode::CaptureFromClient)) => self.enable_audio_capture = Some(true),
             Ok(Some(AudioCaptureMode::Disabled)) => self.enable_audio_capture = Some(false),
             _ => {}
+        }
+        if let Some(enabled) = ps.get::<i64>("ironrdp_egfx") {
+            self.graphics_pipeline = enabled != 0;
+        }
+        #[cfg(feature = "video")]
+        if ps.get::<i64>("videoplaybackmode") == Some(0) {
+            self.channels.video.decoder = None;
         }
         #[cfg(feature = "camera")]
         if let Some(cameras) = ps.get::<&str>("camerastoredirect") {
