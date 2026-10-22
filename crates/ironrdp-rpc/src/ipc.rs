@@ -93,9 +93,9 @@ pub const MAX_TOUCH_FRAMES: usize = 64;
 
 /// Maximum contacts in one MS-RDPEI pen frame accepted over RPC.
 ///
-/// Clients currently construct [`ironrdp_rdpei::RdpeiClient::default`], which advertises V200 with
-/// empty `CS_READY` feature flags. Until multi-pen negotiation is plumbed through, only a single
-/// pen contact with `deviceId == 0` is accepted ([MS-RDPEI] 3.1.1.1).
+/// The session enables multipen injection only when the server supports it, and RPC callers cannot
+/// see that negotiation, so only a single pen contact with `deviceId == 0` is accepted
+/// ([MS-RDPEI] 2.2.3.7.1.1).
 pub const MAX_PEN_CONTACTS: usize = 1;
 
 /// Maximum pen frames in one [`Request::Pen`] PDU accepted over RPC.

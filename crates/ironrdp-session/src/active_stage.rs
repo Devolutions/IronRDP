@@ -757,6 +757,13 @@ impl ActiveStage {
             .is_some_and(|dvc| dvc.processor().ready() && !dvc.processor().is_suspended())
     }
 
+    /// What the RDPEI channel accepts right now; nothing when it is missing or closed.
+    pub fn rdpei_input_state(&self) -> ironrdp_rdpei::RdpeiInputState {
+        self.get_dvc::<RdpeiClient>()
+            .map(|dvc| dvc.processor().input_state())
+            .unwrap_or_default()
+    }
+
     /// Prepares a touch event for routing over TCP or a Soft-Sync tunnel.
     ///
     /// Returns `None` when the channel is unavailable.
