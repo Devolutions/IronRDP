@@ -160,17 +160,8 @@ impl RdpeaiClient {
         }
 
         debug!(server_formats = ?server.formats, "AUDIO_INPUT server formats");
-        let negotiated: Vec<AudioFormat> = self
-            .handler
-            .choose_formats(&server.formats)
-            .into_iter()
-            .filter(|chosen| {
-                server
-                    .formats
-                    .iter()
-                    .any(|server_fmt| chosen.matches_for_negotiation(server_fmt))
-            })
-            .collect();
+        let negotiated =
+            ironrdp_rdpsnd::pdu::retain_offered(self.handler.choose_formats(&server.formats), &server.formats);
 
         if negotiated.is_empty() {
             warn!(server_formats = server.formats.len(), "No common AUDIO_INPUT formats");

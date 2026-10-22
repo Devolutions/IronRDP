@@ -12,6 +12,9 @@ use tracing::{debug, info, warn};
 /// How often a stream thread checks for device changes.
 pub(crate) const DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
+/// Delay before a stream thread retries a device that failed to open.
+pub(crate) const DEVICE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Direction of an audio device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {

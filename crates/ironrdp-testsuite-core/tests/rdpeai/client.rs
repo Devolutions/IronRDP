@@ -273,6 +273,7 @@ fn open_rejects_oversized_frames_per_packet() {
     }
 }
 
+// oracle: spec MS-RDPEAI §3.2.5.3.1
 #[test]
 fn out_of_sequence_version_is_ignored() {
     let fmt = pcm_format(1, 16000, 16);

@@ -47,9 +47,6 @@ const MAX_SAMPLE_RATE: u32 = 192_000;
 const RING_LATENCY_MULTIPLE: u32 = 4;
 const MIN_RING_DURATION: Duration = Duration::from_secs(2);
 
-/// Delay before retrying a device that failed to open.
-const DEVICE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
-
 /// Playback settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaybackConfig {
@@ -586,7 +583,7 @@ fn run_stream(
                 warn!(device = %selector, "Audio output device not found; retrying");
                 reported_failure = true;
             }
-            thread::park_timeout(DEVICE_RETRY_INTERVAL);
+            thread::park_timeout(device::DEVICE_RETRY_INTERVAL);
             continue;
         };
         let device_id = device::device_id(&device);
@@ -598,7 +595,7 @@ fn run_stream(
                     warn!(error = %e.report().with_locations(), "Failed to open the audio output device; retrying");
                     reported_failure = true;
                 }
-                thread::park_timeout(DEVICE_RETRY_INTERVAL);
+                thread::park_timeout(device::DEVICE_RETRY_INTERVAL);
                 continue;
             }
         };

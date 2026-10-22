@@ -294,20 +294,7 @@ impl AudioOutputClient {
 
         // Windows is confused by formats it did not offer (e.g.: Opus), so the handler only
         // picks among the server's formats; wFormatNo indexes the list kept here.
-        let formats: Vec<AudioFormat> = self
-            .handler
-            .choose_formats(server_formats)
-            .into_iter()
-            .filter(|chosen| {
-                let offered = server_formats
-                    .iter()
-                    .any(|server_format| chosen.matches_for_negotiation(server_format));
-                if !offered {
-                    warn!(format = ?chosen, "Dropping a chosen format the server did not offer");
-                }
-                offered
-            })
-            .collect();
+        let formats = pdu::retain_offered(self.handler.choose_formats(server_formats), server_formats);
         debug!(
             channel = self.channel_name,
             ?formats,

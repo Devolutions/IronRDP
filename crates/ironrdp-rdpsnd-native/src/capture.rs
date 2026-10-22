@@ -390,7 +390,7 @@ fn run_capture(
                     return;
                 }
                 warn!(%error, "Failed to reopen the audio input device; retrying");
-                thread::park_timeout(device::DEVICE_POLL_INTERVAL * 2);
+                thread::park_timeout(device::DEVICE_RETRY_INTERVAL);
                 continue;
             }
         };
