@@ -35,7 +35,7 @@ use tracing::{debug, trace, warn};
 use windows::Win32::Foundation::{
     DATA_S_SAMEFORMATETC, DV_E_DVASPECT, DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_FAIL, E_NOTIMPL, E_OUTOFMEMORY,
     E_POINTER, FILETIME, OLE_E_ADVISENOTSUPPORTED, S_FALSE, S_OK, STG_E_ACCESSDENIED, STG_E_INVALIDFUNCTION,
-    STG_E_INVALIDPOINTER, STG_E_READFAULT, STG_E_SEEKERROR,
+    STG_E_INVALIDPOINTER, STG_E_MEDIUMFULL, STG_E_READFAULT, STG_E_SEEKERROR,
 };
 use windows::Win32::System::Com::Marshal::CoMarshalInterThreadInterfaceInStream;
 use windows::Win32::System::Com::StructuredStorage::CoGetInterfaceAndReleaseStream;
@@ -736,12 +736,7 @@ impl IStream_Impl for RemoteFileStream_Impl {
             }
             total_read += u64::try_from(read).unwrap_or(u64::MAX);
 
-            let mut written = 0u32;
-            let read = u32::try_from(read).unwrap_or(u32::MAX);
-            // SAFETY: `buffer` holds `read` initialized bytes.
-            let write_result = unsafe { target.Write(buffer.as_ptr().cast::<c_void>(), read, Some(&raw mut written)) };
-            total_written += u64::from(written);
-            if let Err(error) = write_result.ok() {
+            if let Err(error) = write_all(target, &buffer[..read], &mut total_written) {
                 break Err(error);
             }
 
@@ -816,6 +811,30 @@ impl IStream_Impl for RemoteFileStream_Impl {
     fn Clone(&self) -> windows::core::Result<IStream> {
         Err(E_NOTIMPL.into())
     }
+}
+
+/// Writes all of `data` to `target`, counting what was written into `total_written`.
+///
+/// A stream may write less than asked and still succeed: what is left is written again, and a
+/// stream that takes nothing is full.
+fn write_all(target: &IStream, mut data: &[u8], total_written: &mut u64) -> windows::core::Result<()> {
+    while !data.is_empty() {
+        let mut written = 0u32;
+        let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+        // SAFETY: `data` holds at least `len` initialized bytes.
+        let result = unsafe { target.Write(data.as_ptr().cast::<c_void>(), len, Some(&raw mut written)) };
+        *total_written += u64::from(written);
+        result.ok()?;
+
+        if written == 0 {
+            return Err(STG_E_MEDIUMFULL.into());
+        }
+        data = data
+            .get(usize::try_from(written).unwrap_or(usize::MAX)..)
+            .unwrap_or(&[]);
+    }
+
+    Ok(())
 }
 
 fn hglobal_medium(data: &[u8]) -> windows::core::Result<STGMEDIUM> {

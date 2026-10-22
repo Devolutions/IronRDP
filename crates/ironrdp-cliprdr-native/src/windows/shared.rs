@@ -80,6 +80,12 @@ impl ClipboardShared {
         self.lock_waiters().clear();
     }
 
+    /// Invalidates everything handed out, for good: the clipboard is going away, and streams or
+    /// data objects that outlive it fail instead of waiting for answers.
+    pub(crate) fn close(&self) {
+        self.start_session();
+    }
+
     pub(crate) fn release_locks(&self, clip_data_ids: impl IntoIterator<Item = u32>) {
         self.lock_released_locks().extend(clip_data_ids);
     }

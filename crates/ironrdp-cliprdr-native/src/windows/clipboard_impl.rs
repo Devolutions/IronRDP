@@ -495,6 +495,8 @@ impl WinClipboardImpl {
     fn shutdown(&mut self) {
         self.local_files.clear();
         self.remove_remote_data_object();
+        // Applications may still hold the data object or its streams.
+        self.transport.close();
 
         if let Some(cookie) = self.mta_usage.take() {
             // SAFETY: Balances `CoIncrementMTAUsage` in `new`.

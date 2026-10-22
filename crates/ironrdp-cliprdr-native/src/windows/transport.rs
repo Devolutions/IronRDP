@@ -35,7 +35,9 @@ pub(crate) struct RemoteFileList {
 #[derive(Debug)]
 pub(crate) struct RemoteTransport {
     shared: Arc<ClipboardShared>,
-    backend_rx: mpsc::Receiver<BackendEvent>,
+    /// `None` once closed: data objects handed out may outlive the clipboard, and must not keep
+    /// the backend's channel open after nothing drains it anymore.
+    backend_rx: RefCell<Option<mpsc::Receiver<BackendEvent>>>,
     deferred: RefCell<VecDeque<BackendEvent>>,
     /// Answers still due for pastes whose wait gave up.
     late_answers: Cell<u32>,
@@ -45,7 +47,7 @@ impl RemoteTransport {
     pub(crate) fn new(shared: Arc<ClipboardShared>, backend_rx: mpsc::Receiver<BackendEvent>) -> Self {
         Self {
             shared,
-            backend_rx,
+            backend_rx: RefCell::new(Some(backend_rx)),
             deferred: RefCell::new(VecDeque::new()),
             late_answers: Cell::new(0),
         }
@@ -62,7 +64,15 @@ impl RemoteTransport {
     /// Next event to handle from the window procedure: queued ones first, in arrival order.
     pub(crate) fn next_event(&self) -> Option<BackendEvent> {
         let deferred = self.deferred.borrow_mut().pop_front();
-        deferred.or_else(|| self.backend_rx.try_recv().ok())
+        deferred.or_else(|| self.backend_rx.borrow().as_ref()?.try_recv().ok())
+    }
+
+    /// Disconnects the backend's channel, so that the backend never waits for room in it once
+    /// the clipboard is gone, and invalidates whatever the clipboard handed out.
+    pub(crate) fn close(&self) {
+        self.backend_rx.borrow_mut().take();
+        self.deferred.borrow_mut().clear();
+        self.shared.close();
     }
 
     /// Forgets the answers due in the previous channel.
@@ -96,12 +106,18 @@ impl RemoteTransport {
         self.send(ClipboardMessage::SendInitiatePaste(remote_format));
 
         self.wait_for_answer(|answer| match answer {
-            BackendEvent::RemoteFileList { files, clip_data_id } => Ok(RemoteFileList {
-                files,
-                clip_data_id,
-                generation,
-                session,
-            }),
+            // `Cliprdr` attaches the lock current when the answer arrives: after a newer remote
+            // format list, that lock is the newer clipboard's, not this list's.
+            BackendEvent::RemoteFileList { files, clip_data_id }
+                if self.shared.generation() == generation && self.shared.session() == session =>
+            {
+                Ok(RemoteFileList {
+                    files,
+                    clip_data_id,
+                    generation,
+                    session,
+                })
+            }
             _ => Err(WinCliprdrError::ClipboardData),
         })?
     }
@@ -117,7 +133,12 @@ impl RemoteTransport {
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
 
-            let event = match self.backend_rx.recv_timeout(remaining) {
+            let received = match self.backend_rx.borrow().as_ref() {
+                Some(backend_rx) => backend_rx.recv_timeout(remaining),
+                None => return Err(WinCliprdrError::ClipboardData),
+            };
+
+            let event = match received {
                 Ok(event) => event,
                 Err(error) => {
                     warn!(%error, "No answer from the remote clipboard");

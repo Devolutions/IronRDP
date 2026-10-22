@@ -646,6 +646,14 @@ impl<R: Role> Cliprdr<R> {
         FormatList::new_unicode(formats, self.are_long_format_names_enabled())
     }
 
+    /// Whether the clipboard channel finished its initialization.
+    ///
+    /// Only [`Self::initiate_copy`] and [`Self::request_file_contents`] (which answers with a
+    /// failure) accept being called before.
+    pub fn is_ready(&self) -> bool {
+        self.state == CliprdrState::Ready
+    }
+
     /// Returns an error if the clipboard channel is not in Ready state.
     fn require_ready(&self, method: &'static str) -> PduResult<()> {
         if self.state != CliprdrState::Ready {
