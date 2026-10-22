@@ -1702,6 +1702,7 @@ dependencies = [
  "ironrdp-core 0.2.1",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-rdcleanpath",
+ "ironrdp-rdpdr-native",
  "ironrdp-vmconnect",
  "sspi",
  "thiserror 2.0.21",

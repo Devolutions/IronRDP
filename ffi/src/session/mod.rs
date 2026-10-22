@@ -131,9 +131,31 @@ pub mod ffi {
         ) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
             // The .NET host calls this right after reading each frame, so the call time stands in
             // for the arrival time.
-            let outputs = self
+            let mut outputs = self
                 .0
                 .process(&mut image.0, action.0, payload, Some(crate::utils::monotonic_now()))?;
+            // After DeactivateAll the frame would carry pre-reactivation channel IDs; after
+            // Terminate there is no session left. The next poll flushes them instead.
+            let session_continues = !outputs.iter().any(|output| {
+                matches!(
+                    output,
+                    ironrdp::session::ActiveStageOutput::DeactivateAll
+                        | ironrdp::session::ActiveStageOutput::Terminate(_)
+                )
+            });
+            if session_continues {
+                outputs.extend(self.poll_rdpdr_deferred_output()?);
+            }
+            Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
+        }
+
+        /// Collects RDPDR completions that finished asynchronously (e.g. smartcard waits).
+        ///
+        /// [`Self::process`] already collects them after each frame. Also call this on a short
+        /// timer (e.g. every 50 ms) so that they reach the server while it sends no frames. Do
+        /// not call it concurrently with other methods of this `ActiveStage`.
+        pub fn poll_rdpdr_deferred(&mut self) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
+            let outputs = self.poll_rdpdr_deferred_output()?;
             Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
         }
 
@@ -301,6 +323,24 @@ pub mod ffi {
         #[diplomat::attr(auto, setter = "enable_server_pointer")]
         pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {
             self.0.set_enable_server_pointer(enable_server_pointer);
+        }
+
+        fn poll_rdpdr_deferred_output(
+            &mut self,
+        ) -> Result<Vec<ironrdp::session::ActiveStageOutput>, Box<IronRdpError>> {
+            let Some(rdpdr) = self.0.get_svc_processor_mut::<ironrdp::rdpdr::Rdpdr>() else {
+                return Ok(Vec::new());
+            };
+
+            let messages = rdpdr.poll_deferred_messages()?;
+            if messages.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let frame = self
+                .0
+                .process_svc_messages_by_name(&ironrdp::rdpdr::Rdpdr::NAME, messages)?;
+            Ok(vec![ironrdp::session::ActiveStageOutput::ResponseFrame(frame)])
         }
     }
 

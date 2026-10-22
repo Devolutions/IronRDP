@@ -33,6 +33,17 @@ public partial struct ActiveStage
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_process", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError Process(ActiveStage* self, DecodedImage* image, Action* action, byte* payload, nuint payloadSz);
 
+    /// <summary>
+    /// Collects RDPDR completions that finished asynchronously (e.g. smartcard waits).
+    /// </summary>
+    /// <remarks>
+    /// [`Self::process`] already collects them after each frame. Also call this on a short
+    /// timer (e.g. every 50 ms) so that they reach the server while it sends no frames. Do
+    /// not call it concurrently with other methods of this `ActiveStage`.
+    /// </remarks>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_poll_rdpdr_deferred", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError PollRdpdrDeferred(ActiveStage* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_process_fastpath_input", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError ProcessFastpathInput(ActiveStage* self, DecodedImage* image, FastPathInputEventIterator* fastpathInput);
 
