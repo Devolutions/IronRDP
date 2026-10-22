@@ -539,7 +539,6 @@ ClearTextPassword:s:test-pass
             r"\\print\Lobby",
             "--printer-default",
             "Office",
-            "--printer-fallback-driver",
         ],
     );
     assert_eq!(
@@ -548,7 +547,6 @@ ClearTextPassword:s:test-pass
             selection: PrinterSelection::Named(vec!["Office".to_owned(), r"\\print\Lobby".to_owned()]),
             drivers: vec![("Office".to_owned(), "HP Universal Printing PCL 6".to_owned())],
             default_queue: Some("Office".to_owned()),
-            fallback_driver: Some("MS Publisher Imagesetter".to_owned()),
         })
     );
 
@@ -574,7 +572,6 @@ ClearTextPassword:s:test-pass
         &["--printer-all"],
         &["--printer-queue", "Office"],
         &["--printer-default", "Office"],
-        &["--printer-fallback-driver"],
     ] {
         let args = ["ironrdp-viewer", "--rpc"].into_iter().chain(flags.iter().copied());
         assert!(ViewerConfig::parse_from(args).is_err(), "{flags:?}");

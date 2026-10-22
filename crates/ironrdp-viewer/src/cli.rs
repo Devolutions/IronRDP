@@ -319,12 +319,6 @@ struct Args {
     #[clap(long, value_name = "QUEUE")]
     printer_default: Option<String>,
 
-    /// Announce this driver again when the server rejects a printer announcement.
-    ///
-    /// Without a value, uses `MS Publisher Imagesetter`, a PostScript driver that ships with
-    /// Windows; only PostScript-capable local printers can print its output.
-    #[clap(long, value_name = "DRIVER", num_args = 0..=1, default_missing_value = "MS Publisher Imagesetter")]
-    printer_fallback_driver: Option<String>,
     /// Redirect a local directory as a drive named NAME (repeatable).
     ///
     /// PATH may be a volume root (`E:\`) or a directory on one. Windows only.
@@ -444,8 +438,6 @@ pub struct PrinterOptions {
     pub drivers: Vec<(String, String)>,
     /// Queue marked as the remote default printer.
     pub default_queue: Option<String>,
-    /// Driver announced again after a rejected printer announcement.
-    pub fallback_driver: Option<String>,
 }
 
 /// Which local printer queues are redirected.
@@ -497,8 +489,8 @@ impl PrinterOptions {
             PrinterSelection::Default
         } else {
             anyhow::ensure!(
-                args.printer_default.is_none() && args.printer_fallback_driver.is_none(),
-                "--printer-default and --printer-fallback-driver need --printer, --printer-all, or --printer-queue"
+                args.printer_default.is_none(),
+                "--printer-default needs --printer, --printer-all, or --printer-queue"
             );
             return Ok(None);
         };
@@ -507,7 +499,6 @@ impl PrinterOptions {
             selection,
             drivers,
             default_queue: args.printer_default.clone(),
-            fallback_driver: args.printer_fallback_driver.clone(),
         }))
     }
 }
@@ -570,12 +561,7 @@ impl ViewerConfig {
                     "--rpc cannot be combined with drive options; pass drivestoredirect in the connect properties"
                 );
             }
-            if args.printer
-                || args.printer_all
-                || !args.printer_queue.is_empty()
-                || args.printer_default.is_some()
-                || args.printer_fallback_driver.is_some()
-            {
+            if args.printer || args.printer_all || !args.printer_queue.is_empty() || args.printer_default.is_some() {
                 anyhow::bail!(
                     "--rpc cannot be combined with printer options; pass redirectprinters in the connect properties"
                 );

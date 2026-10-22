@@ -43,7 +43,6 @@ Pass `--printer-all` to redirect every local queue and printer connection, or `-
 With `--printer` or `--printer-all`, `--printer-queue` entries only override drivers and must name one.
 `--printer-default <queue>` picks the remote default printer; otherwise it is the local default queue.
 Jobs are sent to the local queue as `RAW` data, so the remote host needs a printer driver with the announced name, which is the local queue's driver unless `--printer-queue` overrides it.
-`--printer-fallback-driver [<driver>]` announces a second driver if the host rejects a printer; without a value it uses `MS Publisher Imagesetter`, which only suits PostScript printers.
 Printing preferences changed on the server are saved per server under `%APPDATA%\ironrdp-agent\printer-cache` (or `IRONRDP_AGENT_PRINTER_CACHE`) and restored on the next connection.
 Easy Print/XPS is not supported.
 

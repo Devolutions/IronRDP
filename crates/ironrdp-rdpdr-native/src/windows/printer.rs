@@ -81,7 +81,6 @@ pub struct WindowsPrinterRedirection {
     selection: Option<WindowsPrinterSelection>,
     driver_overrides: Vec<(String, String)>,
     default_queue: Option<String>,
-    fallback_driver: Option<String>,
     cache_store: Option<Arc<dyn RdpdrPrinterCacheStore>>,
 }
 
@@ -91,7 +90,6 @@ impl fmt::Debug for WindowsPrinterRedirection {
             .field("selection", &self.selection)
             .field("driver_overrides", &self.driver_overrides)
             .field("default_queue", &self.default_queue)
-            .field("fallback_driver", &self.fallback_driver)
             .field("cache_store", &self.cache_store.is_some())
             .finish()
     }
@@ -138,18 +136,6 @@ impl WindowsPrinterRedirection {
     #[must_use]
     pub fn with_default_queue(mut self, queue_name: Option<String>) -> Self {
         self.default_queue = queue_name;
-        self
-    }
-
-    /// Announces `driver_name` once more when the server rejects a printer announcement.
-    ///
-    /// [`DEFAULT_PRINTER_DRIVER_NAME`] (`MS Publisher Imagesetter`) ships with Windows, but it
-    /// produces PostScript, which only PostScript-capable local printers can print.
-    ///
-    /// [`DEFAULT_PRINTER_DRIVER_NAME`]: ironrdp_rdpdr::pdu::efs::DEFAULT_PRINTER_DRIVER_NAME
-    #[must_use]
-    pub fn with_fallback_driver(mut self, driver_name: Option<String>) -> Self {
-        self.fallback_driver = driver_name;
         self
     }
 
@@ -217,15 +203,9 @@ impl WindowsPrinterRedirection {
                 .find(|(name, _)| name.eq_ignore_ascii_case(&queue.name))
                 .map(|(_, driver)| driver.clone());
             let explicit_driver = override_driver.is_some();
-            let driver_name = match override_driver.or(queue.driver_name) {
-                Some(driver_name) => driver_name,
-                None => match &self.fallback_driver {
-                    Some(fallback) => fallback.clone(),
-                    None => {
-                        warn!(printer = %queue.name, "Skipping printer without a driver name");
-                        continue;
-                    }
-                },
+            let Some(driver_name) = override_driver.or(queue.driver_name) else {
+                warn!(printer = %queue.name, "Skipping printer without a driver name");
+                continue;
             };
             if let Err(error) = validate_printer_name(&queue.name).and_then(|()| validate_printer_name(&driver_name)) {
                 warn!(%error, printer = %queue.name, "Skipping printer that cannot be redirected");
@@ -237,8 +217,7 @@ impl WindowsPrinterRedirection {
                 RdpdrPrinter::new(device_id, queue.name, driver_name)
                     .with_network(queue.network)
                     .with_default(is_default)
-                    .with_explicit_driver(explicit_driver)
-                    .with_fallback_driver_name(self.fallback_driver.clone()),
+                    .with_explicit_driver(explicit_driver),
             );
         }
         Ok(printers)
@@ -1343,7 +1322,6 @@ mod tests {
     fn all_printer_discovery_reads_local_queues() {
         let mut next_device_id = 100;
         let printers = WindowsPrinterRedirection::new(WindowsPrinterSelection::All)
-            .with_fallback_driver(Some("Fallback Driver".to_owned()))
             .discover(|| {
                 next_device_id += 1;
                 Some(next_device_id)
@@ -1355,7 +1333,6 @@ mod tests {
             assert!(!printer.name().is_empty());
             assert!(!printer.driver_name().is_empty());
             assert!(!printer.explicit_driver());
-            assert_eq!(printer.fallback_driver_name(), Some("Fallback Driver"));
         }
     }
 

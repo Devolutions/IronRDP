@@ -64,7 +64,6 @@ pub struct Rdpdr {
     client_id: Option<u32>,
     server_capabilities_received: bool,
     printer_capability_negotiated: bool,
-    device_remove_negotiated: bool,
     port_capability_negotiated: bool,
     client_id_confirmed: bool,
     /// Windows can send User Logged On before Client ID Confirm, for example when it
@@ -90,8 +89,6 @@ struct RedirectedPrinter {
     server_name: String,
     /// Driver in the current announcement, which the server's cached configuration belongs to.
     announced_driver: String,
-    /// Whether the fallback driver was announced in this initialization sequence.
-    fallback_attempted: bool,
 }
 
 #[derive(Clone)]
@@ -119,7 +116,6 @@ impl Rdpdr {
             client_id: None,
             server_capabilities_received: false,
             printer_capability_negotiated: false,
-            device_remove_negotiated: false,
             port_capability_negotiated: false,
             client_id_confirmed: false,
             user_logged_on_pending: false,
@@ -213,8 +209,8 @@ impl Rdpdr {
     /// Adds printer redirection capability and announces `printer` after the user logs on.
     ///
     /// The announcement carries the printer's default flag, network flag, and cached
-    /// configuration. When a cache store is attached, its entry for the printer name is applied
-    /// with [`RdpdrPrinter::with_cache_entry`]. [MS-RDPEPC 2.2.2.1] allows one default printer, so
+    /// configuration. When a cache store is attached, its entry for the local queue name is
+    /// applied with [`RdpdrPrinter::with_cache_entry`]. [MS-RDPEPC 2.2.2.1] allows one default printer, so
     /// the default flag is dropped from a printer added after another default printer. A printer
     /// is skipped with a warning when all `PRN1` to `PRN9999` port names are taken.
     ///
@@ -228,13 +224,13 @@ impl Rdpdr {
             );
             printer = printer.with_default(false);
         }
-        let (driver_name, cached_config_data) = self.printer_announcement(&printer, None);
+        let announced = self.announced_printer(&printer);
         if !self.device_list.add_printer_announce(
             printer.device_id(),
             printer_announce_flags(&printer),
-            &driver_name,
-            printer.name(),
-            &cached_config_data,
+            announced.driver_name(),
+            announced.announced_name(),
+            announced.cached_config_data(),
         ) {
             warn!(
                 device_id = printer.device_id(),
@@ -245,9 +241,8 @@ impl Rdpdr {
         self.capabilities.add_printer();
         self.device_types.push((printer.device_id(), DeviceType::Print));
         self.printers.push(RedirectedPrinter {
-            server_name: printer.name().to_owned(),
-            announced_driver: driver_name,
-            fallback_attempted: false,
+            server_name: announced.announced_name().to_owned(),
+            announced_driver: announced.driver_name().to_owned(),
             printer,
         });
         self
@@ -271,41 +266,25 @@ impl Rdpdr {
     /// Persists `PAKID_PRN_CACHE_DATA` messages in `store` and replays its entries in printer
     /// announcements ([MS-RDPEPC 3.1.1.1]).
     ///
-    /// Printers added before or after this call use the store. Entries are keyed by the printer
-    /// name announced to the server.
+    /// Printers added before or after this call use the store. Entries are keyed by the local
+    /// printer queue name.
     ///
     /// [MS-RDPEPC 3.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepc/
     #[must_use]
     pub fn with_printer_cache_store(mut self, store: std::sync::Arc<dyn RdpdrPrinterCacheStore>) -> Self {
         self.printer_cache_store = Some(PrinterCacheStore(store));
         for index in 0..self.printers.len() {
-            self.reencode_printer(index, None);
+            self.reencode_printer(index);
         }
         self
     }
 
-    /// Returns the driver and cached configuration to announce for `printer`.
-    ///
-    /// A fallback driver is announced with cached configuration only when that configuration was
-    /// produced for the fallback driver, because it is driver-specific ([MS-RDPEPC 3.1.1.1]).
-    fn printer_announcement(&self, printer: &RdpdrPrinter, fallback_driver: Option<&str>) -> (String, Vec<u8>) {
-        if let Some(fallback_driver) = fallback_driver {
-            let cached_config_data = self
-                .printer_cache_store
-                .as_ref()
-                .and_then(|store| store.0.load(printer.name()).ok().flatten())
-                .filter(|entry| entry.config_driver_name.as_deref() == Some(fallback_driver))
-                .map(|entry| entry.config_data)
-                .unwrap_or_default();
-            return (fallback_driver.to_owned(), cached_config_data);
-        }
+    /// Returns `printer` with the cache store's entry for it applied.
+    fn announced_printer(&self, printer: &RdpdrPrinter) -> RdpdrPrinter {
         let Some(store) = &self.printer_cache_store else {
-            return (
-                printer.driver_name().to_owned(),
-                printer.cached_config_data().to_owned(),
-            );
+            return printer.clone();
         };
-        let announced = match store.0.load(printer.name()) {
+        match store.0.load(printer.name()) {
             Ok(Some(entry)) => {
                 debug!(
                     device_id = printer.device_id(),
@@ -319,16 +298,11 @@ impl Rdpdr {
                 warn!(%error, device_id = printer.device_id(), "Failed to load cached printer configuration");
                 printer.clone()
             }
-        };
-        (
-            announced.driver_name().to_owned(),
-            announced.cached_config_data().to_owned(),
-        )
+        }
     }
 
-    /// Rebuilds the configured announcement of `self.printers[index]` from the current cache
-    /// store, or with `fallback_driver` and no cached configuration.
-    fn reencode_printer(&mut self, index: usize, fallback_driver: Option<&str>) {
+    /// Rebuilds the configured announcement of `self.printers[index]` from the current cache store.
+    fn reencode_printer(&mut self, index: usize) {
         let printer = self.printers[index].printer.clone();
         let Some(port_number) = self
             .device_list
@@ -337,21 +311,21 @@ impl Rdpdr {
         else {
             return;
         };
-        let (driver_name, cached_config_data) = self.printer_announcement(&printer, fallback_driver);
+        let announced = self.announced_printer(&printer);
         let replaced = self
             .device_list
             .replace_device(DeviceAnnounceHeader::new_printer_announce(
                 printer.device_id(),
                 port_number,
                 printer_announce_flags(&printer),
-                &driver_name,
-                printer.name(),
-                &cached_config_data,
+                announced.driver_name(),
+                announced.announced_name(),
+                announced.cached_config_data(),
             ));
         debug_assert!(replaced, "configured printer has an announcement");
         let redirected = &mut self.printers[index];
-        redirected.server_name = printer.name().to_owned();
-        redirected.announced_driver = driver_name;
+        redirected.server_name = announced.announced_name().to_owned();
+        redirected.announced_driver = announced.driver_name().to_owned();
     }
 
     /// Builds a raw drive announcement for integrations that manage their own
@@ -544,7 +518,6 @@ impl Rdpdr {
 
         self.server_capabilities_received = false;
         self.printer_capability_negotiated = false;
-        self.device_remove_negotiated = false;
         self.port_capability_negotiated = false;
         self.client_id_confirmed = false;
         self.user_logged_on_pending = false;
@@ -555,8 +528,7 @@ impl Rdpdr {
         self.rejected_device_ids.clear();
         // Cache events may have changed the store since the last announcement.
         for index in 0..self.printers.len() {
-            self.reencode_printer(index, None);
-            self.printers[index].fallback_attempted = false;
+            self.reencode_printer(index);
         }
 
         let client_id = if req.version_minor < VERSION_MINOR_12 {
@@ -593,7 +565,6 @@ impl Rdpdr {
 
         self.server_capabilities_received = true;
         self.printer_capability_negotiated = req.supports_printer();
-        self.device_remove_negotiated = req.supports_device_remove();
         self.port_capability_negotiated = req.supports_port();
         let client_capability_response =
             RdpdrPdu::CoreCapability(CoreCapability::new_response(self.capabilities.clone_supported_by(&req)));
@@ -762,51 +733,10 @@ impl Rdpdr {
             .for_device_type(device_id)
             .map_err(|e| decode_err!(e))?;
         let accepted = pdu.result_code == NtStatus::SUCCESS;
-        let result_code = pdu.result_code;
         self.backend
             .as_mut()
             .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
             .handle_server_device_announce_response(pdu)?;
-
-        // Reusing the DeviceId needs DR_DEVICELIST_REMOVE first, which the server must allow.
-        if !accepted
-            && device_type == DeviceType::Print
-            && self.device_remove_negotiated
-            && let Some(index) = self
-                .printers
-                .iter()
-                .position(|redirected| redirected.printer.device_id() == device_id)
-            && !self.printers[index].fallback_attempted
-            && let Some(fallback) = self.printers[index]
-                .printer
-                .fallback_driver_name()
-                .map(ToOwned::to_owned)
-        {
-            // MS-RDPEPC <1>: a server without the matching driver cannot redirect the printer.
-            // Announce it once more with the generic driver the embedder chose. MS-RDPEFS
-            // 3.2.5.1.9 only allows devices that were not announced before, and 3.2.5.2.2 lets the
-            // server accept a reused DeviceId after DR_DEVICELIST_REMOVE, so remove the rejected
-            // device first, as for rejected drives.
-            warn!(
-                device_id,
-                ?result_code,
-                fallback_driver = %fallback,
-                "Server rejected printer announcement; retrying with the fallback driver"
-            );
-            self.printers[index].fallback_attempted = true;
-            self.pending_device_announcements.retain(|id| *id != device_id);
-            self.reencode_printer(index, Some(&fallback));
-            let device = self
-                .device_list
-                .device(device_id)
-                .cloned()
-                .ok_or_else(|| pdu_other_err!("printer disappeared from the RDPDR device list"))?;
-            let mut messages = vec![SvcMessage::from(RdpdrPdu::ClientDeviceListRemove(
-                ClientDeviceListRemove::remove_device(device_id),
-            ))];
-            messages.extend(self.announce_devices(vec![device], vec![device_id])?);
-            return Ok(messages);
-        }
 
         if accepted {
             self.pending_device_announcements.retain(|id| *id != device_id);
@@ -1206,9 +1136,10 @@ impl Rdpdr {
 
     /// Persists a `PAKID_PRN_CACHE_DATA` message ([MS-RDPEPC 3.2.5.1.3] to 3.2.5.1.6).
     ///
-    /// Entries stay keyed by the announced printer name. A rename event only changes the name
-    /// later messages use for the printer: this client does not rename the local queue, so the
-    /// next announcement uses the original name again. Store failures and oversized blobs are
+    /// Entries are keyed by the local queue name and record the name the server gave the
+    /// printer, which the next announcement uses. For a rename event, that recorded name is the
+    /// client's redirected printer queue: the local Windows queue keeps its name, so a server
+    /// cannot rename printers on the client machine. Store failures and oversized blobs are
     /// logged; they never close the channel.
     ///
     /// [MS-RDPEPC 3.2.5.1.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepc/
@@ -1247,12 +1178,14 @@ impl Rdpdr {
         };
         let redirected = &mut self.printers[index];
         let printer_name = redirected.printer.name().to_owned();
+        // The server name to record; the local queue name needs no record.
+        let recorded_name = |server_name: &str| (server_name != printer_name).then(|| server_name.to_owned());
 
         let result = match &pdu {
             PrinterCacheData::Add(pdu) if pdu.config_data.len() <= MAX_PRINTER_CACHE_DATA_BYTES => {
                 let driver_name = (!pdu.driver_name.is_empty()).then(|| pdu.driver_name.clone());
                 // The server queue now uses the manually installed driver and name, so later
-                // messages in this session refer to it.
+                // messages refer to it, and the next connection announces it (MS-RDPEPC 3.2.5.1.3).
                 if let Some(driver_name) = &driver_name {
                     redirected.announced_driver.clone_from(driver_name);
                 }
@@ -1260,6 +1193,7 @@ impl Rdpdr {
                 store.0.save(
                     &printer_name,
                     &RdpdrPrinterCacheEntry {
+                        printer_name: recorded_name(&pdu.printer_name),
                         config_driver_name: Some(
                             driver_name
                                 .clone()
@@ -1283,6 +1217,7 @@ impl Rdpdr {
                     {
                         entry.driver_name = None;
                     }
+                    entry.printer_name = recorded_name(&redirected.server_name);
                     entry.config_data.clone_from(&pdu.config_data);
                     entry.config_driver_name = Some(redirected.announced_driver.clone());
                     store.0.save(&printer_name, &entry)
@@ -1297,9 +1232,17 @@ impl Rdpdr {
                 return;
             }
             PrinterCacheData::Delete(_) => store.0.delete(&printer_name),
+            PrinterCacheData::Rename(pdu) if pdu.new_printer_name.is_empty() => {
+                warn!(printer = %pdu.old_printer_name, "Ignoring a rename to an empty printer name");
+                return;
+            }
             PrinterCacheData::Rename(pdu) => {
                 redirected.server_name.clone_from(&pdu.new_printer_name);
-                Ok(())
+                store.0.load(&printer_name).and_then(|entry| {
+                    let mut entry = entry.unwrap_or_default();
+                    entry.printer_name = recorded_name(&pdu.new_printer_name);
+                    store.0.save(&printer_name, &entry)
+                })
             }
         };
         match result {
@@ -1339,25 +1282,20 @@ impl SvcProcessor for Rdpdr {
         let mut src = ReadCursor::new(payload);
         let header = SharedHeader::decode(&mut src).map_err(|e| decode_err!(e))?;
         match header.packet_id {
-            // Printer cache data only carries optional settings, so a malformed message is
-            // dropped instead of closing the channel.
+            // A malformed message fails the channel, as for other RDPDR packets (MS-RDPEFS 3.1.5.2).
             PacketId::PrnCacheData => {
-                match PrinterCacheData::decode_body(&mut src) {
-                    Ok(pdu) => self.handle_printer_cache_data(pdu),
-                    Err(error) => warn!(%error, "Ignoring malformed printer cache data"),
-                }
+                let pdu = PrinterCacheData::decode_body(&mut src).map_err(|e| decode_err!(e))?;
+                self.handle_printer_cache_data(pdu);
                 return Ok(vec![]);
             }
             PacketId::PrnUsingXps => {
                 // [MS-RDPEPC 3.2.5.1.2] Only printers announced with XPSFORMAT can be switched to
                 // XPS mode, and this client never sets that flag.
-                match PrinterUsingXps::decode_body(&mut src) {
-                    Ok(pdu) => warn!(
-                        printer_id = pdu.printer_id,
-                        "Ignoring XPS mode request for a printer announced without XPS support"
-                    ),
-                    Err(error) => warn!(%error, "Ignoring malformed XPS mode request"),
-                }
+                let pdu = PrinterUsingXps::decode_body(&mut src).map_err(|e| decode_err!(e))?;
+                warn!(
+                    printer_id = pdu.printer_id,
+                    "Ignoring XPS mode request for a printer announced without XPS support"
+                );
                 return Ok(vec![]);
             }
             _ => {}

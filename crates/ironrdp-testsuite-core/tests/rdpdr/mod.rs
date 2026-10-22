@@ -949,11 +949,11 @@ fn printer_write_rejects_oversized_length_before_allocating_payload() {
 }
 
 #[test]
-fn printer_cache_pdu_is_ignored_before_decode() {
+fn printer_cache_pdu_with_an_unknown_event_fails_the_channel() {
     let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
-    let pdu = [0x72, 0x44, 0x43, 0x50, 1, 2, 3, 4]; // RDPDR + PAKID_PRN_CACHE_DATA + ignored body
+    let pdu = [0x72, 0x44, 0x43, 0x50, 1, 2, 3, 4]; // RDPDR + PAKID_PRN_CACHE_DATA + unknown EventId
 
-    assert!(rdpdr.process(&pdu).unwrap().is_empty());
+    assert!(rdpdr.process(&pdu).is_err());
 }
 
 fn acknowledged_drive() -> Rdpdr {

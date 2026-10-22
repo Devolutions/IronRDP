@@ -628,10 +628,11 @@ pub fn channel_process(input: &[u8]) {
         .with_smartcard(1)
         .with_drives(None)
         .with_printer_cache_store(std::sync::Arc::new(ironrdp_rdpdr::InMemoryRdpdrPrinterCacheStore::new()))
-        .with_redirected_printer(
-            ironrdp_rdpdr::RdpdrPrinter::new(2, "Printer".to_owned(), "Driver".to_owned())
-                .with_fallback_driver_name(Some("Fallback".to_owned())),
-        );
+        .with_redirected_printer(ironrdp_rdpdr::RdpdrPrinter::new(
+            2,
+            "Printer".to_owned(),
+            "Driver".to_owned(),
+        ));
 
     let _ = rdpdr.process(input);
 }

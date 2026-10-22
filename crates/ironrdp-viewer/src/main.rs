@@ -256,9 +256,7 @@ fn attach_windows_rdpdr_backend(
             PrinterSelection::Named(queues) => WindowsPrinterSelection::Named(queues.clone()),
         };
         options.drivers.iter().fold(
-            WindowsPrinterRedirection::new(selection)
-                .with_default_queue(options.default_queue.clone())
-                .with_fallback_driver(options.fallback_driver.clone()),
+            WindowsPrinterRedirection::new(selection).with_default_queue(options.default_queue.clone()),
             |printers, (queue, driver)| printers.with_driver(queue.clone(), driver.clone()),
         )
     }

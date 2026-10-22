@@ -195,7 +195,7 @@ pub struct RdpdrPrinter {
     network: bool,
     default: bool,
     explicit_driver: bool,
-    fallback_driver_name: Option<String>,
+    server_name: Option<String>,
     cached_config_data: Vec<u8>,
 }
 
@@ -212,7 +212,7 @@ impl RdpdrPrinter {
             network: true,
             default: false,
             explicit_driver: false,
-            fallback_driver_name: None,
+            server_name: None,
             cached_config_data: Vec::new(),
         }
     }
@@ -242,13 +242,6 @@ impl RdpdrPrinter {
         self
     }
 
-    /// Configures a driver to announce once more if the server rejects the first announcement.
-    #[must_use]
-    pub fn with_fallback_driver_name(mut self, driver_name: Option<String>) -> Self {
-        self.fallback_driver_name = driver_name;
-        self
-    }
-
     /// Sets the opaque `CachedPrinterConfigData` sent with the announcement.
     #[must_use]
     pub fn with_cached_config_data(mut self, data: Vec<u8>) -> Self {
@@ -261,9 +254,17 @@ impl RdpdrPrinter {
         self.device_id
     }
 
-    /// Returns the local printer queue name announced to the server.
+    /// Returns the local printer queue name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns the printer name announced to the server.
+    ///
+    /// This is the local queue name unless a cache entry records a name the server gave the
+    /// printer; see [`RdpdrPrinterCacheEntry::printer_name`].
+    pub fn announced_name(&self) -> &str {
+        self.server_name.as_deref().unwrap_or(&self.name)
     }
 
     /// Returns the Windows printer driver name requested on the server.
@@ -286,11 +287,6 @@ impl RdpdrPrinter {
         self.explicit_driver
     }
 
-    /// Returns the driver announced after a rejected first announcement, if any.
-    pub fn fallback_driver_name(&self) -> Option<&str> {
-        self.fallback_driver_name.as_deref()
-    }
-
     /// Returns the opaque `CachedPrinterConfigData` sent with the announcement.
     pub fn cached_config_data(&self) -> &[u8] {
         &self.cached_config_data
@@ -298,7 +294,8 @@ impl RdpdrPrinter {
 
     /// Applies a cache entry previously saved for this printer.
     ///
-    /// The cached driver replaces the driver name unless it is explicit. The cached configuration
+    /// The cached printer name replaces the announced name, and the cached driver replaces the
+    /// driver name unless it is explicit. The cached configuration
     /// is driver-specific ([MS-RDPEPC 3.1.1.1]): when it belongs to another driver than the one
     /// announced, the printer announces no configuration, and configuration set with
     /// [`Self::with_cached_config_data`] is dropped as well when the cached driver replaced the
@@ -307,6 +304,9 @@ impl RdpdrPrinter {
     /// [MS-RDPEPC 3.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepc/
     #[must_use]
     pub fn with_cache_entry(mut self, entry: RdpdrPrinterCacheEntry) -> Self {
+        if entry.printer_name.is_some() {
+            self.server_name = entry.printer_name;
+        }
         if let Some(driver_name) = entry.driver_name
             && !self.explicit_driver
         {
@@ -325,7 +325,7 @@ impl RdpdrPrinter {
 
     /// Splits the metadata into the RDPDR announcement fields.
     ///
-    /// Default, fallback-driver, and cached-configuration metadata is not part of the tuple; use
+    /// Default, server-name, and cached-configuration metadata is not part of the tuple; use
     /// [`Rdpdr::with_redirected_printer`] to announce it.
     pub fn into_parts(self) -> (u32, String, String, bool) {
         (self.device_id, self.name, self.driver_name, self.network)
@@ -418,6 +418,9 @@ impl core::error::Error for InvalidPortName {}
 /// in the next announcement of the printer so server-side printing preferences persist.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RdpdrPrinterCacheEntry {
+    /// Name the server gave the printer, from a rename event or a queue a user installed
+    /// manually on the redirected port; announced instead of the local queue name.
+    pub printer_name: Option<String>,
     /// Server driver of a queue that a user installed manually on the redirected port.
     pub driver_name: Option<String>,
     /// Driver that `config_data` was produced for; `None` applies it to any driver.
@@ -431,8 +434,8 @@ pub type RdpdrPrinterCacheResult<T> = Result<T, Box<dyn core::error::Error + Sen
 
 /// Persistent store for printer cache data, supplied by the embedder.
 ///
-/// Entries are keyed by the printer name announced to the server; rename events do not move
-/// them, because the client keeps announcing the local queue name. Embedders decide the scope,
+/// Entries are keyed by the local printer queue name, which stays the same when the server
+/// renames the printer; the entry records the new name instead. Embedders decide the scope,
 /// for example one store per server host as [MS-RDPEPC 3.2.5.1.3] suggests. The channel logs
 /// store errors and continues, so a failing store only loses cached settings.
 ///

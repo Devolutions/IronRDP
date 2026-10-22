@@ -41,10 +41,9 @@ Each printer announces its local driver name, which is what mstsc and FreeRDP se
 
 Without Easy Print, a Windows host can redirect a printer only when it has a driver with the exact announced name (MS-RDPEPC <1>).
 mstsc avoids the problem with Easy Print, and FreeRDP uses `MS Publisher Imagesetter` only for its CUPS backend.
-A host that lacks the driver logs event 1111, which the client never sees, and may still accept the device announcement.
-`with_fallback_driver` announces a second driver when the host does reject the announcement.
-`MS Publisher Imagesetter` ships with Windows, but it renders PostScript, so it only helps PostScript-capable local printers.
-For other printers, pick a driver the host has, such as a vendor universal driver, with `with_driver`.
+A Windows 11 host that lacks the driver still accepts the device announcement: it logs event 1111, which the client never sees, and creates no queue, so the client cannot detect the problem and retry with another driver.
+Pick a driver the host has, such as a vendor universal driver, with `with_driver`.
+`MS Publisher Imagesetter` ships with Windows, but it renders PostScript, so it only suits PostScript-capable local printers.
 
 ### Datatype
 
