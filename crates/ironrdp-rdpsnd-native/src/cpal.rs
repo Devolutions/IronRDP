@@ -32,6 +32,14 @@ pub const DEFAULT_PLAYBACK_LATENCY: Duration = Duration::from_millis(100);
 /// Smallest latency target accepted; below this, ordinary scheduling jitter starves the device.
 const MIN_PLAYBACK_LATENCY: Duration = Duration::from_millis(20);
 
+/// Largest latency target accepted.
+const MAX_PLAYBACK_LATENCY: Duration = Duration::from_secs(2);
+
+/// Playback parameters accepted from the server, which bound every buffer sized from them.
+const MAX_CHANNELS: u16 = 8;
+const MIN_SAMPLE_RATE: u32 = 4_000;
+const MAX_SAMPLE_RATE: u32 = 192_000;
+
 /// Ring buffer capacity in multiples of the latency target, with a floor of [`MIN_RING_DURATION`].
 const RING_LATENCY_MULTIPLE: u32 = 4;
 const MIN_RING_DURATION: Duration = Duration::from_secs(2);
@@ -124,6 +132,12 @@ enum Decoder {
 
 impl Decoder {
     fn new(format: &AudioFormat) -> RdpsndNativeResult<Self> {
+        if !has_playable_layout(format) {
+            return Err(RdpsndNativeError::new(
+                "channel count or sample rate out of range",
+                RdpsndNativeErrorKind::UnsupportedFormat,
+            ));
+        }
         match format.format {
             #[cfg(feature = "opus")]
             WaveFormat::OPUS => {
@@ -156,6 +170,9 @@ impl Decoder {
 
     /// Returns whether `format` can be decoded.
     fn supports(format: &AudioFormat) -> bool {
+        if !has_playable_layout(format) {
+            return false;
+        }
         match format.format {
             #[cfg(feature = "opus")]
             WaveFormat::OPUS => matches!(format.n_channels, 1 | 2),
@@ -309,7 +326,7 @@ impl RdpsndBackend {
 
     pub fn with_config(config: PlaybackConfig) -> Self {
         let mut config = config;
-        config.latency = config.latency.max(MIN_PLAYBACK_LATENCY);
+        config.latency = config.latency.clamp(MIN_PLAYBACK_LATENCY, MAX_PLAYBACK_LATENCY);
         Self {
             config,
             stream: None,
@@ -325,8 +342,17 @@ impl RdpsndBackend {
         let sample_rate = format.n_samples_per_sec;
 
         let ring_duration = (self.config.latency * RING_LATENCY_MULTIPLE).max(MIN_RING_DURATION);
-        let ring_frames = frames_in(ring_duration, sample_rate);
-        let (producer, consumer) = HeapRb::<i16>::new(ring_frames * channels).split();
+        // INVARIANT: `Decoder::new` bounded the channel count and the sample rate, and the latency
+        // is clamped, so the ring holds at most 8 s at 192 kHz on 8 channels.
+        let ring_samples = frames_in(ring_duration, sample_rate)
+            .checked_mul(channels)
+            .ok_or_else(|| {
+                RdpsndNativeError::new(
+                    "playback buffer size overflow",
+                    RdpsndNativeErrorKind::UnsupportedFormat,
+                )
+            })?;
+        let (producer, consumer) = HeapRb::<i16>::new(ring_samples).split();
         let mut playout = Playout {
             consumer,
             controller: PlayoutController::new(sample_rate, self.config.latency),
@@ -400,6 +426,38 @@ fn fallback_formats() -> Vec<AudioFormat> {
     ]
 }
 
+/// Returns whether `format` has a channel count and sample rate playback accepts.
+fn has_playable_layout(format: &AudioFormat) -> bool {
+    (1..=MAX_CHANNELS).contains(&format.n_channels)
+        && (MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&format.n_samples_per_sec)
+}
+
+/// Returns whether the output device can open a 16-bit stream at the decoded layout of `format`.
+///
+/// WASAPI streams convert the rate and channel layout to the device's mix format, so every layout
+/// opens there. Other hosts are asked for their supported configurations; when that fails, the
+/// format is accepted and an open failure is reported later.
+fn device_accepts(configs: Option<&[cpal::SupportedStreamConfigRange]>, format: &AudioFormat) -> bool {
+    let Some(configs) = configs else {
+        return true;
+    };
+    configs.iter().any(|range| {
+        range.sample_format() == SampleFormat::I16
+            && range.channels() == format.n_channels
+            && range.min_sample_rate() <= format.n_samples_per_sec
+            && format.n_samples_per_sec <= range.max_sample_rate()
+    })
+}
+
+/// Supported configurations of the selected output device, or `None` when every layout opens.
+fn device_configs(selector: &DeviceSelector) -> Option<Vec<cpal::SupportedStreamConfigRange>> {
+    if cpal::default_host().id() == cpal::HostId::Wasapi {
+        return None;
+    }
+    let device = device::open_device(selector, Direction::Output)?;
+    device.supported_output_configs().ok().map(|configs| configs.collect())
+}
+
 fn frames_in(duration: Duration, sample_rate: u32) -> usize {
     let frames = duration.as_micros() * u128::from(sample_rate) / 1_000_000;
     usize::try_from(frames).unwrap_or(usize::MAX).max(1)
@@ -424,11 +482,12 @@ impl RdpsndClientHandler for RdpsndBackend {
 
     fn choose_formats(&self, server_formats: &[AudioFormat]) -> Vec<AudioFormat> {
         // Windows lists its formats from most to least preferred and then picks among the client's
-        // according to the quality mode and the measured bandwidth, so every decodable format is
-        // advertised, in the server's order.
+        // according to the quality mode and the measured bandwidth, so every format the device can
+        // play is advertised, in the server's order.
+        let configs = device_configs(&self.config.device);
         let chosen: Vec<AudioFormat> = server_formats
             .iter()
-            .filter(|format| Decoder::supports(format))
+            .filter(|format| Decoder::supports(format) && device_accepts(configs.as_deref(), format))
             .cloned()
             .collect();
         debug!(

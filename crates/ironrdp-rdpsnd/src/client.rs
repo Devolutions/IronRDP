@@ -34,6 +34,14 @@ pub const LOSSY_DVC_CHANNEL_NAME: &str = "AUDIO_PLAYBACK_LOSSY_DVC";
 /// Size of the signature that starts every `AUDIO_FRAGDATA` structure.
 const FRAGDATA_SIGNATURE_SIZE: usize = 8;
 
+/// Largest `AUDIO_FRAGDATA` structure, as `wTotalSize` is a 16-bit field.
+const MAX_FRAGDATA_SIZE: usize = 0xFFFF;
+
+/// Most fragments retained for one UDP sample.
+///
+/// Senders split samples at the path MTU, so a full 64 KiB sample spans about fifty fragments.
+const MAX_FRAGMENTS: usize = 1024;
+
 /// Monotonic clock used to measure how long the client held a wave block before confirming it.
 pub type Clock = Box<dyn Fn() -> Duration + Send>;
 
@@ -140,6 +148,69 @@ struct PendingUdpWave {
     block_no: u8,
     fragments: BTreeMap<u16, Vec<u8>>,
     last: Option<UdpWaveLastPdu<'static>>,
+    /// Bytes held in `fragments` and `last`.
+    ///
+    /// INVARIANT: `retained <= MAX_FRAGDATA_SIZE`.
+    retained: usize,
+}
+
+impl PendingUdpWave {
+    fn new(block_no: u8) -> Self {
+        Self {
+            block_no,
+            ..Self::default()
+        }
+    }
+
+    /// Stores a fragment, or returns `false` when the sample would exceed the protocol's bounds.
+    fn insert(&mut self, frag_no: u16, data: &[u8]) -> bool {
+        let replaced = self.fragments.get(&frag_no).map_or(0, Vec::len);
+        let retained = self.retained - replaced + data.len();
+        if MAX_FRAGDATA_SIZE < retained || (replaced == 0 && MAX_FRAGMENTS <= self.fragments.len()) {
+            return false;
+        }
+        self.retained = retained;
+        self.fragments.insert(frag_no, data.to_vec());
+        true
+    }
+
+    /// Stores the final fragment, or returns `false` when the sample would exceed the protocol's bounds.
+    fn set_last(&mut self, last: UdpWaveLastPdu<'_>) -> bool {
+        let replaced = self.last.as_ref().map_or(0, |last| last.data.len());
+        let retained = self.retained - replaced + last.data.len();
+        if MAX_FRAGDATA_SIZE < retained {
+            return false;
+        }
+        self.retained = retained;
+        self.last = Some(UdpWaveLastPdu {
+            data: Cow::Owned(last.data.into_owned()),
+            ..last
+        });
+        true
+    }
+}
+
+/// Returns whether block number `block_no` comes after `reference`, with 8-bit wraparound.
+fn is_later_block(block_no: u8, reference: u8) -> bool {
+    let distance = i8::from_ne_bytes([block_no.wrapping_sub(reference)]);
+    0 < distance
+}
+
+/// Computes the `AUDIO_FRAGDATA` signature of `audio` ([MS-RDPEA] 3.3.5.2.1.3): the first eight
+/// bytes of the SHA-1 hash of the Crypt Key seed, the block number, three zero bytes and the data.
+///
+/// [MS-RDPEA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/bea2d5cf-e3b9-4419-92e5-0e074ff9bc5b
+fn fragdata_signature(seed: &[u8; 32], block_no: u8, audio: &[u8]) -> [u8; FRAGDATA_SIGNATURE_SIZE] {
+    use sha1::Digest as _;
+
+    let hash = sha1::Sha1::new()
+        .chain_update(seed)
+        .chain_update([block_no, 0, 0, 0])
+        .chain_update(audio)
+        .finalize();
+    let mut signature = [0; FRAGDATA_SIGNATURE_SIZE];
+    signature.copy_from_slice(&hash[..FRAGDATA_SIGNATURE_SIZE]);
+    signature
 }
 
 /// Audio output client protocol state, independent of the channel that carries it.
@@ -154,6 +225,12 @@ struct AudioOutputClient {
     client_formats: Vec<AudioFormat>,
     pending_wave: Option<PendingWave>,
     pending_udp_wave: Option<PendingUdpWave>,
+    /// Block number of the last UDP sample completed, so stale fragments are ignored.
+    last_udp_block: Option<u8>,
+    /// Seed from the Crypt Key PDU, all zeros when the server sends none ([MS-RDPEA] 3.3.5.2.1.3).
+    ///
+    /// [MS-RDPEA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/bea2d5cf-e3b9-4419-92e5-0e074ff9bc5b
+    crypt_key_seed: [u8; 32],
     clock: Option<Clock>,
     /// Port advertised in `wDGramPort` for audio data over UDP, or zero.
     datagram_port: u16,
@@ -184,6 +261,8 @@ impl AudioOutputClient {
             client_formats: Vec::new(),
             pending_wave: None,
             pending_udp_wave: None,
+            last_udp_block: None,
+            crypt_key_seed: [0; 32],
             clock: None,
             datagram_port: 0,
             channel_name: "RDPSND",
@@ -201,6 +280,8 @@ impl AudioOutputClient {
         self.client_formats.clear();
         self.pending_wave = None;
         self.pending_udp_wave = None;
+        self.last_udp_block = None;
+        self.crypt_key_seed = [0; 32];
     }
 
     fn version(&self) -> PduResult<pdu::Version> {
@@ -459,8 +540,12 @@ impl AudioOutputClient {
                     pdu::ServerAudioOutputPdu::AudioFormat(af) => {
                         return self.begin_format_negotiation(af);
                     }
-                    // Unsupported optional PDUs: keep the channel alive.
-                    pdu::ServerAudioOutputPdu::CryptKey(_) | pdu::ServerAudioOutputPdu::WaveEncrypt(_) => {
+                    pdu::ServerAudioOutputPdu::CryptKey(pdu) => {
+                        // The seed authenticates audio received over UDP.
+                        self.crypt_key_seed = pdu.seed;
+                    }
+                    // Unsupported optional PDU: keep the channel alive.
+                    pdu::ServerAudioOutputPdu::WaveEncrypt(_) => {
                         warn!(?pdu, "Ignoring unsupported RDPSND PDU");
                     }
                 }
@@ -496,36 +581,57 @@ impl AudioOutputClient {
                 Ok(vec![])
             }
             ServerAudioDatagram::UdpWave(fragment) => {
-                let pending = self.udp_wave_for(fragment.block_no);
-                pending.fragments.insert(fragment.frag_no, fragment.data.into_owned());
+                let Some(pending) = self.udp_wave_for(fragment.block_no) else {
+                    return Ok(vec![]);
+                };
+                if !pending.insert(fragment.frag_no, &fragment.data) {
+                    warn!(
+                        block_no = fragment.block_no,
+                        "UDP wave exceeds its size bounds; dropping sample"
+                    );
+                    self.pending_udp_wave = None;
+                    return Ok(vec![]);
+                }
                 Ok(self.try_finish_udp_wave(arrival))
             }
             ServerAudioDatagram::UdpWaveLast(last) => {
-                let pending = self.udp_wave_for(last.block_no);
-                pending.last = Some(UdpWaveLastPdu {
-                    data: Cow::Owned(last.data.into_owned()),
-                    ..last
-                });
+                let block_no = last.block_no;
+                let Some(pending) = self.udp_wave_for(block_no) else {
+                    return Ok(vec![]);
+                };
+                if !pending.set_last(last) {
+                    warn!(block_no, "UDP wave exceeds its size bounds; dropping sample");
+                    self.pending_udp_wave = None;
+                    return Ok(vec![]);
+                }
                 Ok(self.try_finish_udp_wave(arrival))
             }
         }
     }
 
-    /// Returns the reassembly state for `block_no`, abandoning any other block.
-    fn udp_wave_for(&mut self, block_no: u8) -> &mut PendingUdpWave {
-        let pending = self.pending_udp_wave.get_or_insert_with(|| PendingUdpWave {
-            block_no,
-            ..PendingUdpWave::default()
-        });
-        if pending.block_no != block_no {
-            // MS-RDPEA 3.2.5.2.1.1: a sample for a later block abandons the incomplete one.
-            trace!(abandoned = pending.block_no, block_no, "Abandoning incomplete UDP wave");
-            *pending = PendingUdpWave {
-                block_no,
-                ..PendingUdpWave::default()
-            };
+    /// Returns the reassembly state for `block_no`, or `None` for a fragment of an older block.
+    ///
+    /// MS-RDPEA 3.2.5.2.1.1: a sample for a later block abandons the incomplete one, and fragments of
+    /// earlier blocks are discarded.
+    fn udp_wave_for(&mut self, block_no: u8) -> Option<&mut PendingUdpWave> {
+        let stale = match (&self.pending_udp_wave, self.last_udp_block) {
+            (Some(pending), _) if pending.block_no == block_no => false,
+            (Some(pending), _) => !is_later_block(block_no, pending.block_no),
+            (None, Some(completed)) => !is_later_block(block_no, completed),
+            (None, None) => false,
+        };
+        if stale {
+            trace!(block_no, "Ignoring a fragment of an earlier UDP wave");
+            return None;
         }
-        pending
+        let pending = self
+            .pending_udp_wave
+            .get_or_insert_with(|| PendingUdpWave::new(block_no));
+        if pending.block_no != block_no {
+            trace!(abandoned = pending.block_no, block_no, "Abandoning incomplete UDP wave");
+            *pending = PendingUdpWave::new(block_no);
+        }
+        Some(pending)
     }
 
     fn try_finish_udp_wave(&mut self, arrival: Option<Duration>) -> Vec<ClientAudioOutputPdu> {
@@ -542,32 +648,40 @@ impl AudioOutputClient {
             .keys()
             .enumerate()
             .all(|(expected, frag_no)| usize::from(*frag_no) == expected);
-        let size = pending.fragments.values().map(Vec::len).sum::<usize>() + last.data.len();
-        if !contiguous || size < usize::from(last.total_size) {
+        if !contiguous || pending.retained < usize::from(last.total_size) {
             return Vec::new();
         }
 
         let pending = self.pending_udp_wave.take().expect("checked above");
+        self.last_udp_block = Some(pending.block_no);
         let last = pending.last.expect("checked above");
-        if size != usize::from(last.total_size) {
+        if pending.retained != usize::from(last.total_size) {
             warn!(
-                size,
+                size = pending.retained,
                 total_size = last.total_size,
                 "UDP wave size mismatch; dropping sample"
             );
             return Vec::new();
         }
 
-        let mut fragdata = Vec::with_capacity(size);
+        let mut fragdata = Vec::with_capacity(pending.retained);
         for fragment in pending.fragments.into_values() {
             fragdata.extend_from_slice(&fragment);
         }
         fragdata.extend_from_slice(&last.data);
-        // AUDIO_FRAGDATA starts with a signature; the server already proved its identity over the
-        // virtual channel, so only the audio data that follows is used.
-        let audio = fragdata
-            .get(FRAGDATA_SIGNATURE_SIZE..)
-            .map(|audio| Cow::Owned(audio.to_vec()));
+        let Some((signature, audio)) = fragdata.split_at_checked(FRAGDATA_SIGNATURE_SIZE) else {
+            warn!(
+                block_no = last.block_no,
+                "UDP wave is shorter than its signature; dropping sample"
+            );
+            return Vec::new();
+        };
+        // The UDP socket is not authenticated like the virtual channel, so every sample must carry
+        // the signature derived from the Crypt Key seed.
+        if *signature != fragdata_signature(&self.crypt_key_seed, last.block_no, audio) {
+            warn!(block_no = last.block_no, "UDP wave signature mismatch; dropping sample");
+            return Vec::new();
+        }
 
         self.play_and_confirm(
             true,
@@ -578,7 +692,7 @@ impl AudioOutputClient {
                 block_no: last.block_no,
                 audio_timestamp: u32::from(last.timestamp),
             },
-            audio,
+            Some(Cow::Owned(audio.to_vec())),
         )
     }
 }

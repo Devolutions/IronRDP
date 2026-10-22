@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use ironrdp_core::{decode, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor, encode_dvc_messages};
-use ironrdp_pdu::{PduResult, decode_err};
+use ironrdp_pdu::{PduResult, decode_err, encode_err, pdu_other_err};
 use ironrdp_rdpsnd::pdu::AudioFormat;
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::{debug, info, trace, warn};
@@ -270,7 +270,15 @@ impl RdpeaiClient {
             )))]);
         };
 
-        if !self.handler.set_format(&encode_fmt, packet_size) {
+        if self.handler.set_format(&encode_fmt, packet_size) {
+            // Data PDUs reach the server through the uplink queue. Queuing the confirmation there too
+            // keeps it behind the packets encoded in the old format, which the server would
+            // otherwise decode with the new one.
+            match self.queue_behind_data(RdpeaiPdu::FormatChange(FormatChangePdu::new(change.new_format))) {
+                Ok(()) => return Ok(Vec::new()),
+                Err(error) => warn!(%error, "Failed to queue the FormatChange confirmation; replying directly"),
+            }
+        } else {
             warn!(index = change.new_format, "Capture backend rejected format change");
             // Still confirm so the server does not hang Opened with no timeout.
             self.stop_capture();
@@ -279,6 +287,20 @@ impl RdpeaiClient {
         Ok(vec![Box::new(RdpeaiPdu::FormatChange(FormatChangePdu::new(
             change.new_format,
         )))])
+    }
+
+    /// Sends `pdu` through the uplink, after the capture packets already queued there.
+    fn queue_behind_data(&self, pdu: RdpeaiPdu) -> PduResult<()> {
+        let channel_id = self
+            .channel_id
+            .ok_or_else(|| pdu_other_err!("AUDIO_INPUT channel not started"))?;
+        let messages: Vec<DvcMessage> = vec![Box::new(pdu)];
+        let svc = encode_dvc_messages(channel_id, messages, ChannelFlags::empty()).map_err(|e| encode_err!(e))?;
+        let mut uplink = self
+            .uplink
+            .lock()
+            .map_err(|_| pdu_other_err!("AUDIO_INPUT uplink lock poisoned"))?;
+        uplink(channel_id, svc)
     }
 
     fn stop_capture(&mut self) {

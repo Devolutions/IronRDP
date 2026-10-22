@@ -54,6 +54,31 @@ fn underrun_plays_what_is_left_then_rebuffers() {
 }
 
 #[test]
+fn short_sound_plays_once_the_buffer_stops_growing() {
+    let mut controller = controller();
+
+    // A complete 50 ms sound never reaches the 100 ms target.
+    assert_eq!(settle(&mut controller, 2_400, 10), Period::Silence);
+    // After 100 ms without new audio, it plays anyway.
+    assert_eq!(
+        controller.next_period(2_400, PERIOD),
+        Period::Play {
+            skip: 0,
+            consume: PERIOD - 2
+        }
+    );
+}
+
+#[test]
+fn growing_buffer_keeps_waiting_for_the_target() {
+    let mut controller = controller();
+
+    for level in (480..4_800).step_by(240) {
+        assert_eq!(controller.next_period(level, PERIOD), Period::Silence);
+    }
+}
+
+#[test]
 fn steady_level_within_tolerance_plays_one_period() {
     let mut controller = controller();
 

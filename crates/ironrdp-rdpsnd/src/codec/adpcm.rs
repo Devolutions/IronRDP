@@ -358,6 +358,7 @@ impl MsAdpcm {
     pub(super) fn encode_block(&mut self, frames: &[i16], out: &mut Vec<u8>) {
         let channels = self.channels;
         debug_assert_eq!(frames.len(), self.frames_per_block * channels);
+        let block_start = out.len();
 
         // Pick, per channel, the predictor that reconstructs this block with the least distortion.
         let mut chosen = Vec::with_capacity(channels);
@@ -420,6 +421,8 @@ impl MsAdpcm {
         if let Some(high) = high {
             out.push(high << 4);
         }
+        // A block carrying fewer samples than it can hold is still `nBlockAlign` bytes long.
+        out.resize(block_start + self.block_align, 0);
     }
 }
 

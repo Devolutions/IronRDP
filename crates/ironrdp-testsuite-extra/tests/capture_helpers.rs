@@ -134,6 +134,8 @@ fn capture_refuses_an_encode_format_with_other_rate_or_channels() {
     assert_eq!(result, OpenReplyPdu::E_FAIL);
 }
 
+// WASAPI opens every layout, so the device does not filter the formats on Windows.
+#[cfg(windows)]
 #[test]
 fn playback_advertises_decodable_formats_in_server_order() {
     use ironrdp_rdpsnd::client::RdpsndClientHandler as _;
@@ -168,4 +170,24 @@ fn playback_advertises_decodable_formats_in_server_order() {
             codec::mulaw_format(2, 22_050),
         ]
     );
+}
+
+#[test]
+fn playback_refuses_extreme_channel_counts_and_rates() {
+    use ironrdp_rdpsnd::client::RdpsndClientHandler as _;
+    use ironrdp_rdpsnd_native::cpal::RdpsndBackend;
+
+    let pcm = |channels: u16, rate: u32| AudioFormat {
+        format: WaveFormat::PCM,
+        n_channels: channels,
+        n_samples_per_sec: rate,
+        n_avg_bytes_per_sec: rate.saturating_mul(u32::from(channels) * 2),
+        n_block_align: channels.saturating_mul(2),
+        bits_per_sample: 16,
+        data: None,
+    };
+    let server = vec![pcm(9, 48_000), pcm(2, 3_999), pcm(2, 192_001), pcm(u16::MAX, u32::MAX)];
+
+    // Each of these would size the playback buffer from a server-chosen value.
+    assert!(RdpsndBackend::new().choose_formats(&server).is_empty());
 }

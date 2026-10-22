@@ -45,12 +45,22 @@ const PAYLOAD_ADTS: u16 = 1;
 /// MPEG-4 audio object type of AAC-LC.
 const AAC_LC_OBJECT_TYPE: u16 = 2;
 
+/// Highest sample rate the Media Foundation AAC decoder outputs.
+const MAX_SAMPLE_RATE: u32 = 48_000;
+
 /// MPEG-4 sampling frequency table, indexed by `samplingFrequencyIndex`.
 const SAMPLING_FREQUENCIES: [u32; 12] = [
     96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000,
 ];
 
 type Reply = mpsc::SyncSender<Result<Vec<i16>, String>>;
+
+/// Channel count and sample rate the decoder must output.
+#[derive(Debug, Clone, Copy)]
+struct PcmLayout {
+    channels: u16,
+    sample_rate: u32,
+}
 
 /// How the decoder input type is described to Media Foundation.
 enum InputType {
@@ -77,6 +87,8 @@ impl AacDecoder {
     pub(crate) fn supports(format: &AudioFormat) -> bool {
         format.format == WaveFormat::AAC_MS
             && matches!(format.n_channels, 1 | 2)
+            // The decoder does not output rates above 48 kHz.
+            && format.n_samples_per_sec <= MAX_SAMPLE_RATE
             && (has_wave_info(format) || frequency_index(format.n_samples_per_sec).is_some())
             && media_foundation_available()
     }
@@ -127,7 +139,13 @@ impl AacDecoder {
         let (ready, started) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
             .name("rdpsnd-aac".to_owned())
-            .spawn(move || run_worker(&input, &ready, &receiver))
+            .spawn({
+                let output = PcmLayout {
+                    channels: self.format.n_channels,
+                    sample_rate: self.format.n_samples_per_sec,
+                };
+                move || run_worker(&input, output, &ready, &receiver)
+            })
             .map_err(|e| {
                 RdpsndNativeError::new("spawning the AAC decoder", RdpsndNativeErrorKind::Decoder).with_source(e)
             })?;
@@ -256,6 +274,7 @@ fn heaacwaveinfo(payload_type: u16) -> Vec<u8> {
 
 fn run_worker(
     input: &InputType,
+    output: PcmLayout,
     ready: &mpsc::SyncSender<Result<(), windows::core::Error>>,
     commands: &mpsc::Receiver<(Vec<u8>, Reply)>,
 ) {
@@ -266,7 +285,7 @@ fn run_worker(
             return;
         }
     };
-    let mut transform = match Transform::create(input) {
+    let mut transform = match Transform::create(input, output) {
         Ok(transform) => transform,
         Err(error) => {
             let _ = ready.send(Err(error));
@@ -310,11 +329,12 @@ impl Drop for MediaFoundationThread {
 /// The decoder transform. Lives on the worker thread only.
 struct Transform {
     transform: IMFTransform,
+    output: PcmLayout,
     sample_time: i64,
 }
 
 impl Transform {
-    fn create(input_type: &InputType) -> windows::core::Result<Self> {
+    fn create(input_type: &InputType, output: PcmLayout) -> windows::core::Result<Self> {
         // SAFETY: COM is initialized on the worker thread.
         let transform: IMFTransform = unsafe { CoCreateInstance(&CLSID_MSAACDecMFT, None, CLSCTX_INPROC_SERVER) }?;
 
@@ -350,13 +370,14 @@ impl Transform {
         // SAFETY: valid transform and media type.
         unsafe { transform.SetInputType(0, &input, 0) }?;
 
-        select_pcm_output(&transform)?;
+        select_pcm_output(&transform, output)?;
         // SAFETY: valid, configured transform.
         unsafe { transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0) }?;
         // SAFETY: as above.
         unsafe { transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0) }?;
         Ok(Self {
             transform,
+            output,
             sample_time: 0,
         })
     }
@@ -431,7 +452,9 @@ impl Transform {
                 Err(error) if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(()),
                 Err(error) if error.code() == MF_E_TRANSFORM_STREAM_CHANGE => {
                     warn!("AAC decoder output format changed");
-                    select_pcm_output(&self.transform)?;
+                    // A stream turning out to be HE-AAC doubles the rate or adds a channel; the
+                    // playback stream was opened for the advertised layout, so that fails here.
+                    select_pcm_output(&self.transform, self.output)?;
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -448,14 +471,20 @@ impl Transform {
     }
 }
 
-/// Selects the 16-bit PCM output type.
-fn select_pcm_output(transform: &IMFTransform) -> windows::core::Result<()> {
+/// Selects the 16-bit PCM output type with the `output` channel count and sample rate.
+///
+/// Fails when the decoder only offers another layout, which the playback stream could not play.
+fn select_pcm_output(transform: &IMFTransform, output: PcmLayout) -> windows::core::Result<()> {
     for index in 0u32.. {
         // SAFETY: valid transform; enumeration ends with an error.
         let candidate: IMFMediaType = unsafe { transform.GetOutputAvailableType(0, index) }?;
         // SAFETY: valid media type and static keys.
         let is_pcm16 = unsafe { candidate.GetGUID(&MF_MT_SUBTYPE) }? == MFAudioFormat_PCM
-            && unsafe { candidate.GetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE) }.is_ok_and(|bits| bits == 16);
+            && unsafe { candidate.GetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE) }.is_ok_and(|bits| bits == 16)
+            && unsafe { candidate.GetUINT32(&MF_MT_AUDIO_NUM_CHANNELS) }
+                .is_ok_and(|channels| channels == u32::from(output.channels))
+            && unsafe { candidate.GetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND) }
+                .is_ok_and(|rate| rate == output.sample_rate);
         if is_pcm16 {
             // SAFETY: valid transform and media type.
             return unsafe { transform.SetOutputType(0, &candidate, 0) };

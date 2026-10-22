@@ -234,19 +234,13 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
             return false;
         };
 
-        let capture_format = if same_rate_and_channels(&capture_format, encode_format) {
-            capture_format
+        let restart = !same_rate_and_channels(&capture_format, encode_format);
+        let capture_format = if restart {
+            // Capture at the new rate and channel count so the confirmation is honest.
+            pcm_format(encode_format.n_channels, encode_format.n_samples_per_sec, 16)
         } else {
-            // Restart capture at the new rate and channel count so the confirmation is honest.
-            let restarted = pcm_format(encode_format.n_channels, encode_format.n_samples_per_sec, 16);
-            if let Err(error) = self.start_stream(&restarted) {
-                warn!(%error, "AUDIO_INPUT capture restart for FormatChange failed");
-                return false;
-            }
-            self.open_capture_format = Some(restarted.clone());
-            restarted
+            capture_format
         };
-
         let encoder = match encoder_for(&capture_format, encode_format) {
             Ok(encoder) => encoder,
             Err(reason) => {
@@ -254,13 +248,29 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
                 return false;
             }
         };
-        let Ok(mut guard) = self.sink_state.lock() else {
-            return false;
-        };
-        let Some(state) = guard.as_mut() else {
-            return false;
-        };
-        state.encoder = encoder;
+
+        if restart {
+            // Stop the old stream before switching, so none of its samples meet the new encoder.
+            self.stop_worker();
+        }
+        {
+            let Ok(mut guard) = self.sink_state.lock() else {
+                return false;
+            };
+            let Some(state) = guard.as_mut() else {
+                return false;
+            };
+            // Leftover samples of the old format must not start a packet of the new one.
+            state.buffer.clear();
+            state.encoder = encoder;
+        }
+        if restart {
+            if let Err(error) = self.start_stream(&capture_format) {
+                warn!(%error, "AUDIO_INPUT capture restart for FormatChange failed");
+                return false;
+            }
+            self.open_capture_format = Some(capture_format);
+        }
         debug!(?encode_format, "AUDIO_INPUT capture encoding changed");
         true
     }
@@ -470,45 +480,36 @@ fn build_input_stream(
 }
 
 fn push_samples(sink_state: &Arc<Mutex<Option<SinkState>>>, samples: impl ExactSizeIterator<Item = i16>) {
-    let (mut sink, packets) = {
-        let Ok(mut guard) = sink_state.lock() else {
-            return;
-        };
-        let Some(state) = guard.as_mut() else {
-            return;
-        };
-        state.buffer.reserve(samples.len().saturating_mul(2));
-        for sample in samples {
-            state.buffer.extend_from_slice(&sample.to_le_bytes());
-        }
-        let mut packets = take_capture_packets(&mut state.buffer, state.packet_size);
-        if let Some(encoder) = state.encoder.as_mut() {
-            packets = packets
-                .into_iter()
-                .filter_map(|packet| {
-                    let pcm: Vec<i16> = packet
-                        .chunks_exact(2)
-                        .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
-                        .collect();
-                    let mut encoded = Vec::new();
-                    encoder.encode(&pcm, &mut encoded);
-                    // A packet shorter than one block leaves nothing to send until the next one.
-                    (!encoded.is_empty()).then_some(encoded)
-                })
-                .collect();
-        }
-        // Move sink out so the uplink encode runs without holding sink_state.
-        let sink = core::mem::replace(&mut state.sink, Box::new(|_| {}));
-        (sink, packets)
+    // The packets are encoded and handed to the sink under the lock, so a format change, which takes
+    // the same lock, separates the packets of the old encoding from those of the new one. The sink
+    // only queues the packets for the session loop and never blocks.
+    let Ok(mut guard) = sink_state.lock() else {
+        return;
     };
-
-    for packet in packets {
-        sink(packet);
+    let Some(state) = guard.as_mut() else {
+        return;
+    };
+    state.buffer.reserve(samples.len().saturating_mul(2));
+    for sample in samples {
+        state.buffer.extend_from_slice(&sample.to_le_bytes());
     }
-
-    if let Ok(mut guard) = sink_state.lock() {
-        if let Some(state) = guard.as_mut() {
-            state.sink = sink;
-        }
+    for packet in take_capture_packets(&mut state.buffer, state.packet_size) {
+        let packet = match state.encoder.as_mut() {
+            None => packet,
+            Some(encoder) => {
+                let pcm: Vec<i16> = packet
+                    .chunks_exact(2)
+                    .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
+                    .collect();
+                let mut wave_data = Vec::new();
+                encoder.encode(&pcm, &mut wave_data);
+                // A packet shorter than one block leaves nothing to send until the next one.
+                if wave_data.is_empty() {
+                    continue;
+                }
+                wave_data
+            }
+        };
+        (state.sink)(packet);
     }
 }

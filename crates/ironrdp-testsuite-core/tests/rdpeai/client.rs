@@ -1,5 +1,5 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ironrdp_core::{decode, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
@@ -48,6 +48,36 @@ fn decode_dvc(msg: &ironrdp_dvc::DvcMessage) -> RdpeaiPdu {
 
 fn client_with(handler: MockCapture) -> RdpeaiClient {
     RdpeaiClient::new(Box::new(handler), Box::new(|_, _| Ok(())))
+}
+
+type Uplinked = Arc<Mutex<Vec<ironrdp_svc::SvcMessage>>>;
+
+/// Builds a client whose uplink records the messages it carries.
+fn client_with_uplink(handler: MockCapture) -> (RdpeaiClient, Uplinked) {
+    let uplinked = Uplinked::default();
+    let recorder = Arc::clone(&uplinked);
+    let client = RdpeaiClient::new(
+        Box::new(handler),
+        Box::new(move |_, messages| {
+            recorder.lock().unwrap().extend(messages);
+            Ok(())
+        }),
+    );
+    (client, uplinked)
+}
+
+/// Decodes the AUDIO_INPUT PDU carried by an uplinked DRDYNVC data message.
+fn decode_uplinked(message: &ironrdp_svc::SvcMessage) -> RdpeaiPdu {
+    use ironrdp_core::{Decode as _, ReadCursor};
+    use ironrdp_dvc::pdu::{DrdynvcClientPdu, DrdynvcDataPdu};
+
+    let encoded = message.encode_unframed_pdu().expect("encode uplinked message");
+    let DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(data)) =
+        DrdynvcClientPdu::decode(&mut ReadCursor::new(&encoded)).expect("decode DRDYNVC")
+    else {
+        panic!("expected DVC data");
+    };
+    decode(data.data()).expect("decode AUDIO_INPUT PDU")
 }
 
 fn process_encoded(client: &mut RdpeaiClient, channel_id: u32, pdu: RdpeaiPdu) -> Vec<ironrdp_dvc::DvcMessage> {
@@ -131,7 +161,7 @@ fn format_change_to_other_index_is_confirmed() {
     let fmt_a = pcm_format(1, 16000, 16);
     let fmt_b = pcm_format(1, 48000, 16);
     let set_format_calls = Arc::new(AtomicUsize::new(0));
-    let mut client = client_with(MockCapture {
+    let (mut client, uplinked) = client_with_uplink(MockCapture {
         formats: vec![fmt_a.clone(), fmt_b.clone()],
         open_calls: Arc::new(AtomicUsize::new(0)),
         open_result: OpenReplyPdu::S_OK,
@@ -157,9 +187,15 @@ fn format_change_to_other_index_is_confirmed() {
     );
 
     let out = process_encoded(&mut client, 3, RdpeaiPdu::FormatChange(FormatChangePdu::new(1)));
-    assert_eq!(out.len(), 1);
+
+    // The confirmation goes through the uplink, behind the capture packets already queued there.
+    assert!(out.is_empty());
     assert_eq!(set_format_calls.load(Ordering::Relaxed), 1);
-    match decode_dvc(&out[0]) {
+    let uplinked = uplinked.lock().unwrap();
+    let [confirmation] = uplinked.as_slice() else {
+        panic!("expected one uplinked message, got {}", uplinked.len());
+    };
+    match decode_uplinked(confirmation) {
         RdpeaiPdu::FormatChange(change) => assert_eq!(change.new_format, 1),
         other => panic!("expected FormatChange confirm, got {other:?}"),
     }
@@ -241,7 +277,7 @@ fn out_of_sequence_version_is_ignored() {
     let fmt = pcm_format(1, 16000, 16);
     let open_calls = Arc::new(AtomicUsize::new(0));
     let set_format_calls = Arc::new(AtomicUsize::new(0));
-    let mut client = client_with(MockCapture {
+    let (mut client, uplinked) = client_with_uplink(MockCapture {
         formats: vec![fmt.clone()],
         open_calls: Arc::clone(&open_calls),
         open_result: OpenReplyPdu::S_OK,
@@ -271,7 +307,8 @@ fn out_of_sequence_version_is_ignored() {
 
     // Still opened: FormatChange should reach the backend rather than idle-ack only.
     let change_out = process_encoded(&mut client, 1, RdpeaiPdu::FormatChange(FormatChangePdu::new(0)));
-    assert_eq!(change_out.len(), 1);
+    assert!(change_out.is_empty());
     assert_eq!(set_format_calls.load(Ordering::Relaxed), 1);
-    assert!(matches!(decode_dvc(&change_out[0]), RdpeaiPdu::FormatChange(_)));
+    let uplinked = uplinked.lock().unwrap();
+    assert!(matches!(decode_uplinked(&uplinked[0]), RdpeaiPdu::FormatChange(_)));
 }

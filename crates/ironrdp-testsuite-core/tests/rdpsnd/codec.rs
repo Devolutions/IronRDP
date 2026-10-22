@@ -166,6 +166,27 @@ fn encoder_buffers_partial_blocks(#[case] format: AudioFormat) {
 }
 
 #[test]
+fn ms_adpcm_blocks_with_spare_room_are_padded_to_block_align() {
+    // Four samples per block in a 16-byte block: the header and one code byte, then padding.
+    let mut format = codec::ms_adpcm_format(1, 8000, 16);
+    format.data.as_mut().unwrap()[..2].copy_from_slice(&4u16.to_le_bytes());
+    let pcm = [100, -200, 300, -400, 500, -600, 700, -800];
+
+    let mut encoded = Vec::new();
+    AudioEncoder::new(&format).unwrap().encode(&pcm, &mut encoded);
+    let mut decoded = Vec::new();
+    AudioDecoder::new(&format)
+        .unwrap()
+        .decode(&encoded, &mut decoded)
+        .unwrap();
+
+    assert_eq!(encoded.len(), 32);
+    assert_eq!(decoded.len(), pcm.len());
+    // The two header samples of each block are exact.
+    assert_eq!([decoded[0], decoded[1], decoded[4], decoded[5]], [100, -200, 500, -600]);
+}
+
+#[test]
 fn ms_adpcm_rejects_unknown_predictor() {
     let format = codec::ms_adpcm_format(1, 8000, 32);
     let mut block = vec![0u8; 32];

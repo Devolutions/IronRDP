@@ -426,25 +426,30 @@ fn udp_wave_last_round_trip() {
     assert_eq!(encode_vec(&pdu).unwrap(), wire);
 }
 
-const SIGNATURE: [u8; 8] = [0x5A; 8];
+/// `AUDIO_FRAGDATA` signatures computed independently with Python's `hashlib`: the first eight bytes
+/// of SHA-1 over the Crypt Key seed, the block number, three zero bytes and the audio data.
+const SIGNATURE_BLOCK_3: [u8; 8] = [0x9F, 0x90, 0xCE, 0x73, 0x06, 0x20, 0x4E, 0x96]; // zero seed, audio 0..40
+const SIGNATURE_BLOCK_1: [u8; 8] = [0xC8, 0x57, 0x42, 0x3D, 0x83, 0x0E, 0xEE, 0x05]; // zero seed, [1; 20]
+const SIGNATURE_BLOCK_2: [u8; 8] = [0x6B, 0x12, 0xA2, 0x94, 0xA4, 0xC6, 0x45, 0x27]; // zero seed, [2; 20]
+const SIGNATURE_BLOCK_200: [u8; 8] = [0xAB, 0x03, 0xC6, 0x77, 0x27, 0x43, 0xEC, 0x5D]; // zero seed, [3; 20]
+const SIGNATURE_SEEDED: [u8; 8] = [0x5E, 0xBB, 0x1C, 0x46, 0x4B, 0x5E, 0x6D, 0x5D]; // seed [0xAB; 32], block 4, [7; 16]
 
-/// Splits a sample into the UDP Wave fragments and the UDP Wave Last PDU of block `block_no`.
-fn fragment(audio: &[u8], fragment_size: usize, block_no: u8, timestamp: u16) -> (Vec<Vec<u8>>, Vec<u8>) {
-    let mut fragdata = SIGNATURE.to_vec();
+/// Splits a signed sample into the UDP Wave fragments and the UDP Wave Last PDU of block `block_no`.
+fn fragment(
+    signature: [u8; 8],
+    audio: &[u8],
+    fragment_size: usize,
+    block_no: u8,
+    timestamp: u16,
+) -> (Vec<Vec<u8>>, Vec<u8>) {
+    let mut fragdata = signature.to_vec();
     fragdata.extend_from_slice(audio);
     let mut chunks: Vec<&[u8]> = fragdata.chunks(fragment_size).collect();
     let last = chunks.pop().unwrap();
     let fragments = chunks
         .iter()
         .enumerate()
-        .map(|(frag_no, data)| {
-            encode_vec(&pdu::UdpWavePdu {
-                block_no,
-                frag_no: u16::try_from(frag_no).unwrap(),
-                data: Cow::Borrowed(data),
-            })
-            .unwrap()
-        })
+        .map(|(frag_no, data)| udp_wave(block_no, u16::try_from(frag_no).unwrap(), data))
         .collect();
     let last = encode_vec(&pdu::UdpWaveLastPdu {
         total_size: u16::try_from(fragdata.len()).unwrap(),
@@ -455,6 +460,15 @@ fn fragment(audio: &[u8], fragment_size: usize, block_no: u8, timestamp: u16) ->
     })
     .unwrap();
     (fragments, last)
+}
+
+fn udp_wave(block_no: u8, frag_no: u16, data: &[u8]) -> Vec<u8> {
+    encode_vec(&pdu::UdpWavePdu {
+        block_no,
+        frag_no,
+        data: Cow::Borrowed(data),
+    })
+    .unwrap()
 }
 
 fn udp_client(waves: &Waves) -> Rdpsnd {
@@ -470,6 +484,14 @@ fn udp_client(waves: &Waves) -> Rdpsnd {
     assert_eq!(advertised.dgram_port, 4321);
     client.process(&training()).unwrap();
     client
+}
+
+fn deliver(client: &mut Rdpsnd, (fragments, last): &(Vec<Vec<u8>>, Vec<u8>)) -> Vec<pdu::ClientAudioOutputPdu> {
+    let mut replies = Vec::new();
+    for datagram in fragments.iter().chain([last]) {
+        replies.extend(client.process_datagram(datagram).unwrap());
+    }
+    replies
 }
 
 #[test]
@@ -492,7 +514,7 @@ fn udp_wave_fragments_reassemble_in_any_order() {
     let waves = Waves::default();
     let mut client = udp_client(&waves);
     let audio: Vec<u8> = (0..40).collect();
-    let (fragments, last) = fragment(&audio, 12, 3, 0x2000);
+    let (fragments, last) = fragment(SIGNATURE_BLOCK_3, &audio, 12, 3, 0x2000);
     assert_eq!(fragments.len(), 3);
 
     // The last PDU and the fragments arrive out of order; nothing plays until all are in.
@@ -510,20 +532,104 @@ fn udp_wave_fragments_reassemble_in_any_order() {
 }
 
 #[test]
+fn udp_wave_signature_uses_the_crypt_key_seed() {
+    let waves = Waves::default();
+    let mut client = udp_client(&waves);
+    let crypt_key = encode_vec(&pdu::ServerAudioOutputPdu::CryptKey(pdu::CryptKeyPdu {
+        seed: [0xAB; 32],
+    }))
+    .unwrap();
+    client.process(&crypt_key).unwrap();
+
+    let replies = deliver(&mut client, &fragment(SIGNATURE_SEEDED, &[7; 16], 10, 4, 0));
+
+    assert_eq!(replies.len(), 1);
+    assert_eq!(waves.lock().unwrap().as_slice(), [(pcm(22050, 1), vec![7; 16])]);
+}
+
+#[test]
+fn udp_wave_with_a_wrong_signature_is_dropped() {
+    let waves = Waves::default();
+    let mut client = udp_client(&waves);
+
+    // The signature of a different block does not authenticate this one.
+    let replies = deliver(&mut client, &fragment(SIGNATURE_BLOCK_1, &[2; 20], 10, 2, 0));
+
+    assert!(
+        replies.is_empty(),
+        "an unauthenticated sample is neither played nor confirmed"
+    );
+    assert!(waves.lock().unwrap().is_empty());
+}
+
+#[test]
 fn udp_wave_for_a_later_block_abandons_the_incomplete_one() {
     let waves = Waves::default();
     let mut client = udp_client(&waves);
-    let (first_fragments, _) = fragment(&[1; 20], 10, 1, 0);
-    let (second_fragments, second_last) = fragment(&[2; 20], 10, 2, 0);
+    let (first_fragments, _) = fragment(SIGNATURE_BLOCK_1, &[1; 20], 10, 1, 0);
+    let second = fragment(SIGNATURE_BLOCK_2, &[2; 20], 10, 2, 0);
 
     client.process_datagram(&first_fragments[0]).unwrap();
-    for datagram in second_fragments.iter().chain([&second_last]) {
-        client.process_datagram(datagram).unwrap();
-    }
-    // A straggler from the abandoned block starts a new, incomplete sample.
+    deliver(&mut client, &second);
+    // A straggler from the abandoned block is ignored.
     assert!(client.process_datagram(&first_fragments[1]).unwrap().is_empty());
 
     assert_eq!(waves.lock().unwrap().as_slice(), [(pcm(22050, 1), vec![2; 20])]);
+}
+
+#[test]
+fn stale_udp_fragment_does_not_disturb_the_current_block() {
+    let waves = Waves::default();
+    let mut client = udp_client(&waves);
+    let (first_fragments, _) = fragment(SIGNATURE_BLOCK_1, &[1; 20], 10, 1, 0);
+    let (second_fragments, second_last) = fragment(SIGNATURE_BLOCK_2, &[2; 20], 10, 2, 0);
+
+    client.process_datagram(&first_fragments[0]).unwrap();
+    client.process_datagram(&second_fragments[0]).unwrap();
+    // A delayed fragment of block 1 arrives in the middle of block 2.
+    client.process_datagram(&first_fragments[1]).unwrap();
+    client.process_datagram(&second_fragments[1]).unwrap();
+    client.process_datagram(&second_last).unwrap();
+
+    assert_eq!(waves.lock().unwrap().as_slice(), [(pcm(22050, 1), vec![2; 20])]);
+}
+
+#[test]
+fn udp_block_numbers_wrap_around() {
+    let waves = Waves::default();
+    let mut client = udp_client(&waves);
+    let (old_fragments, _) = fragment(SIGNATURE_BLOCK_200, &[3; 20], 10, 200, 0);
+    let wrapped = fragment(SIGNATURE_BLOCK_2, &[2; 20], 10, 2, 0);
+
+    client.process_datagram(&old_fragments[0]).unwrap();
+    // Block 2 follows block 200 across the 8-bit wraparound.
+    assert_eq!(deliver(&mut client, &wrapped).len(), 1);
+
+    assert_eq!(waves.lock().unwrap().as_slice(), [(pcm(22050, 1), vec![2; 20])]);
+}
+
+#[test]
+fn oversized_udp_wave_is_dropped_without_completing() {
+    let waves = Waves::default();
+    let mut client = udp_client(&waves);
+    let chunk = vec![0u8; 1400];
+
+    // Forty-eight 1400-byte fragments exceed the 65,535 bytes wTotalSize can describe.
+    for frag_no in 0..48 {
+        client.process_datagram(&udp_wave(9, frag_no, &chunk)).unwrap();
+    }
+    // The sample was abandoned, so a final fragment cannot complete it.
+    let last = encode_vec(&pdu::UdpWaveLastPdu {
+        total_size: 0xFFFF,
+        timestamp: 0,
+        format_no: 0,
+        block_no: 9,
+        data: Cow::Borrowed(&chunk[..1]),
+    })
+    .unwrap();
+
+    assert!(client.process_datagram(&last).unwrap().is_empty());
+    assert!(waves.lock().unwrap().is_empty());
 }
 
 #[test]

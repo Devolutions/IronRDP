@@ -3326,6 +3326,7 @@ dependencies = [
  "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "sha1 0.11.0",
  "tracing",
  "visibility",
 ]

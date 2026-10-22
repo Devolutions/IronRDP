@@ -27,6 +27,7 @@ __test = ["dep:visibility"]
 
 [dependencies]
 bitflags = "2.11"
+sha1 = "0.11"
 tracing = { version = "0.1", features = ["log"] }
 ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.8" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public

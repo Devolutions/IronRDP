@@ -4,7 +4,8 @@
 //! a steady rate on its own clock. [`PlayoutController`] decides, for every device period, how many
 //! buffered frames to play so that the buffer settles at a latency target:
 //!
-//! - it builds up the target before playing, and again after an underrun;
+//! - it builds up the target before playing, and again after an underrun, but starts anyway once
+//!   the buffer has stopped growing for as long as the target, so a short sound is not held back;
 //! - it absorbs clock drift by playing 0.5% more or fewer frames than the period needs while the
 //!   smoothed buffer level stays outside a tolerance band around the target;
 //! - it discards a backlog far above the target at once, so a network stall does not leave audio
@@ -59,6 +60,10 @@ pub struct PlayoutController {
     state: State,
     /// Smoothed buffer level, in frames scaled by `2^LEVEL_FRACTION_BITS`.
     level: u64,
+    /// While buffering: the level seen in the previous period, and how long it has not changed, in
+    /// frames.
+    buffering_level: usize,
+    buffering_stalled: usize,
 }
 
 impl PlayoutController {
@@ -81,6 +86,8 @@ impl PlayoutController {
             ceiling: target + tolerance + backlog,
             state: State::Buffering,
             level: 0,
+            buffering_level: 0,
+            buffering_stalled: 0,
         }
     }
 
@@ -101,8 +108,20 @@ impl PlayoutController {
     pub fn next_period(&mut self, buffered: usize, requested: usize) -> Period {
         if self.state == State::Buffering {
             if buffered < self.target.max(requested) {
-                return Period::Silence;
+                // A sound shorter than the target never fills the buffer: play what arrived once
+                // nothing more has come for as long as the target.
+                if buffered != 0 && buffered == self.buffering_level {
+                    self.buffering_stalled = self.buffering_stalled.saturating_add(requested);
+                } else {
+                    self.buffering_stalled = 0;
+                }
+                self.buffering_level = buffered;
+                if buffered == 0 || self.buffering_stalled < self.target {
+                    return Period::Silence;
+                }
             }
+            self.buffering_level = 0;
+            self.buffering_stalled = 0;
             self.state = State::Playing;
             self.level = scaled(buffered);
             self.ceiling = self.resync_level.max(buffered + self.tolerance);
