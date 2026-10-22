@@ -382,6 +382,8 @@ pub trait GraphicsPipelineHandler: Send {
 enum ClientState {
     /// Waiting for server `CapabilitiesConfirm`
     WaitingForConfirm,
+    /// Ignoring in-flight graphics until the protocol reset is confirmed.
+    Resetting,
     /// Channel is active, processing frames
     Active,
     /// Channel has been closed
@@ -469,6 +471,50 @@ impl GraphicsPipelineClient {
         self.negotiated_caps.as_ref()
     }
 
+    /// Request an in-channel protocol reset with the negotiated capabilities.
+    ///
+    /// [MS-RDPEGFX 3.3.5.19] "Processing an RDPGFX_CAPS_CONFIRM_PDU message" permits this for V10.3-V10.7.
+    /// Returns `None` before negotiation, while resetting, after closure, or for unsupported versions.
+    /// Send the returned PDU on this graphics channel before processing more input; if sending fails, recreate the channel.
+    /// Graphics state is cleared immediately, and incoming graphics are ignored until the advertised capabilities are confirmed.
+    /// This does not reset other virtual channels or guarantee a particular codec or keyframe.
+    ///
+    /// [MS-RDPEGFX 3.3.5.19]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/a720af02-0a47-44e2-a934-dc8534062b44
+    #[must_use]
+    pub fn request_protocol_reset(&mut self) -> Option<GfxPdu> {
+        if !self.is_active() {
+            return None;
+        }
+        let caps = self.negotiated_caps.as_ref()?;
+        if !matches!(
+            caps,
+            CapabilitySet::V10_3 { .. }
+                | CapabilitySet::V10_4 { .. }
+                | CapabilitySet::V10_5 { .. }
+                | CapabilitySet::V10_6 { .. }
+                | CapabilitySet::V10_6Err { .. }
+                | CapabilitySet::V10_7 { .. }
+        ) {
+            return None;
+        }
+        let pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(core::slice::from_ref(caps)));
+        self.state = ClientState::Resetting;
+        self.surfaces.clear();
+        self.compositor = Compositor::default();
+        self.pending_output_reset = None;
+        // UNTESTED: ClearCodec and Progressive caches must restart; check cached tiles across protocol resets.
+        self.clearcodec_decoder = None;
+        self.planar_decoder = BitmapStreamDecoder::default();
+        self.progressive_decoder = ProgressiveDecoder::new();
+        if let Some(decoder) = self.h264_decoder.as_mut() {
+            decoder.reset();
+        }
+        self.current_frame_id = None;
+        self.total_frames_decoded = 0;
+        // ZGFX history still decodes packets already in flight before confirmation.
+        Some(pdu)
+    }
+
     /// Get codec capabilities determined from negotiation
     #[must_use]
     pub fn codec_capabilities(&self) -> &CodecCapabilities {
@@ -519,6 +565,9 @@ impl GraphicsPipelineClient {
     // ========================================================================
 
     fn handle_pdu(&mut self, pdu: GfxPdu) -> PduResult<Vec<DvcMessage>> {
+        if self.state == ClientState::Resetting && !matches!(pdu, GfxPdu::CapabilitiesConfirm(_)) {
+            return Ok(Vec::new());
+        }
         match pdu {
             GfxPdu::CapabilitiesConfirm(confirm) => {
                 self.handle_capabilities_confirm(confirm.0);
@@ -661,6 +710,15 @@ impl GraphicsPipelineClient {
     }
 
     fn handle_capabilities_confirm(&mut self, cap: RawCapabilitySet) {
+        if self.state == ClientState::Resetting {
+            match cap.parsed() {
+                Ok(Some(ref typed)) if Some(typed) == self.negotiated_caps.as_ref() => {}
+                _ => {
+                    warn!("Ignoring graphics reset confirmation that differs from the advertised capabilities");
+                    return;
+                }
+            }
+        }
         // Server confirms a single capability set. If we cannot interpret it
         // (unknown version, or malformed body), we still transition to Active
         // to avoid hanging the session, but we keep `negotiated_caps` empty
