@@ -21,7 +21,7 @@ use cpal::{SampleFormat, StreamConfig};
 use ironrdp_rdpsnd::client::RdpsndClientHandler;
 use ironrdp_rdpsnd::codec::AudioDecoder;
 use ironrdp_rdpsnd::pdu::{AudioFormat, AudioFormatFlags, PitchPdu, VolumePdu, WaveFormat};
-use ironrdp_rdpsnd::playout::{Period, PlayoutController, stretch};
+use ironrdp_rdpsnd::playout::{self, Period, PlayoutController, stretch};
 use ringbuf::traits::{Consumer as _, Observer as _, Producer as _, Split as _};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tracing::{debug, error, info, trace, warn};
@@ -247,8 +247,8 @@ impl Playout {
     ///
     /// Runs on the real-time audio thread: it never blocks or logs, and allocates only if a period
     /// is longer than the scratch space reserved up front.
-    // UNTESTED: this path must not block, log or allocate per period, or the device glitches.
-    // Check that every call here stays lock-free (ring buffer, atomics) when changing it.
+    // INVARIANT: this path does not block, log or allocate per period, or the device glitches.
+    // UNTESTED: no test checks it; keep every call here lock-free (ring buffer, atomics).
     fn fill(&mut self, data: &mut [i16]) {
         let channels = self.channels;
         let requested = data.len() / channels;
@@ -457,8 +457,7 @@ fn device_configs(selector: &DeviceSelector) -> Option<Vec<cpal::SupportedStream
 }
 
 fn frames_in(duration: Duration, sample_rate: u32) -> usize {
-    let frames = duration.as_micros() * u128::from(sample_rate) / 1_000_000;
-    usize::try_from(frames).unwrap_or(usize::MAX).max(1)
+    playout::frames_in(duration, sample_rate).max(1)
 }
 
 impl Drop for RdpsndBackend {
@@ -483,11 +482,22 @@ impl RdpsndClientHandler for RdpsndBackend {
         // according to the quality mode and the measured bandwidth, so every format the device can
         // play is advertised, in the server's order.
         let configs = device_configs(&self.config.device);
-        let chosen: Vec<AudioFormat> = server_formats
+        let decodable: Vec<AudioFormat> = server_formats
             .iter()
-            .filter(|format| Decoder::supports(format) && device_accepts(configs.as_deref(), format))
+            .filter(|format| Decoder::supports(format))
             .cloned()
             .collect();
+        let mut chosen: Vec<AudioFormat> = decodable
+            .iter()
+            .filter(|format| device_accepts(configs.as_deref(), format))
+            .cloned()
+            .collect();
+        if chosen.is_empty() && !decodable.is_empty() {
+            // A host that lists no matching 16-bit layout may still open one; advertising nothing
+            // would end audio redirection outright.
+            warn!("No offered format matches the output device's listed layouts; advertising all decodable ones");
+            chosen = decodable;
+        }
         debug!(
             offered = server_formats.len(),
             chosen = chosen.len(),
@@ -559,8 +569,8 @@ impl RdpsndClientHandler for RdpsndBackend {
         if let Some(stream) = self.stream.take() {
             stream.shared.ended.store(true, Ordering::Relaxed);
             stream.thread.thread().unpark();
-            if let Err(err) = stream.thread.join() {
-                error!(?err, "Failed to join the playback thread");
+            if let Err(error) = stream.thread.join() {
+                error!(?error, "Failed to join the playback thread");
             }
         }
     }
@@ -624,9 +634,9 @@ fn run_stream(
         #[cfg(windows)]
         {
             shared.session_volume.store(session_volume.is_some(), Ordering::Relaxed);
-            // UNTESTED: the session level stays untouched until the server sends a volume, as Windows
-            // keeps the user's per-application level across runs. Keep `volume_received` gating
-            // every `SessionVolume::set` call.
+            // INVARIANT: the session level stays untouched until the server sends a volume, as Windows
+            // keeps the user's per-application level across runs.
+            // UNTESTED: no test checks it; keep `volume_received` gating every `SessionVolume::set` call.
             if shared.volume_received.load(Ordering::Relaxed) {
                 apply_session_volume(&session_volume);
             }

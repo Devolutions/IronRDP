@@ -79,11 +79,16 @@ enum InputType {
     },
 }
 
+/// The worker thread that owns the transform, and the channel feeding it.
+struct Worker {
+    commands: mpsc::Sender<(Vec<u8>, Reply)>,
+    thread: JoinHandle<()>,
+}
+
 /// AAC decoder backed by Media Foundation, started on the first frame.
 pub(crate) struct AacDecoder {
     format: AudioFormat,
-    commands: Option<mpsc::Sender<(Vec<u8>, Reply)>>,
-    worker: Option<JoinHandle<()>>,
+    worker: Option<Worker>,
 }
 
 impl AacDecoder {
@@ -106,7 +111,6 @@ impl AacDecoder {
         }
         Ok(Self {
             format: format.clone(),
-            commands: None,
             worker: None,
         })
     }
@@ -157,8 +161,10 @@ impl AacDecoder {
 
         match started.recv() {
             Ok(Ok(())) => {
-                self.commands = Some(commands);
-                self.worker = Some(worker);
+                self.worker = Some(Worker {
+                    commands,
+                    thread: worker,
+                });
                 Ok(())
             }
             Ok(Err(error)) => {
@@ -183,12 +189,9 @@ impl AacDecoder {
         if self.worker.is_none() {
             self.start(data)?;
         }
+        let worker = self.worker.as_ref().expect("started above");
         let (reply, response) = mpsc::sync_channel(1);
-        let sent = self
-            .commands
-            .as_ref()
-            .is_some_and(|commands| commands.send((data.to_vec(), reply)).is_ok());
-        if !sent {
+        if worker.commands.send((data.to_vec(), reply)).is_err() {
             return Err(RdpsndNativeError::new(
                 "the AAC decoder stopped",
                 RdpsndNativeErrorKind::Decoder,
@@ -213,10 +216,10 @@ impl AacDecoder {
 
 impl Drop for AacDecoder {
     fn drop(&mut self) {
-        // Closing the command channel ends the worker loop.
-        self.commands = None;
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+        if let Some(Worker { commands, thread }) = self.worker.take() {
+            // Closing the command channel ends the worker loop.
+            drop(commands);
+            let _ = thread.join();
         }
     }
 }

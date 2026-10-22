@@ -26,11 +26,12 @@ pub trait RdpeaiCaptureHandler: Send {
 
     /// Chooses the encoding formats to offer in reply to the server's Sound Formats PDU.
     ///
-    /// Every returned format must be one the server offered; the order states the client's
-    /// preference, and Open and Format Change PDUs index the returned list. The default keeps the
-    /// [`supported_formats`](Self::supported_formats) entries the server also offered, in that order.
+    /// The order states the client's preference. The client keeps only the returned formats the
+    /// server offered, and Open and Format Change PDUs index that list. The default returns
+    /// [`supported_formats`](Self::supported_formats).
     fn choose_formats(&self, server_formats: &[AudioFormat]) -> Vec<AudioFormat> {
-        ironrdp_rdpsnd::pdu::formats_in_common(self.supported_formats(), server_formats)
+        let _ = server_formats;
+        self.supported_formats().to_vec()
     }
 
     /// Open capture for `capture_format` and begin delivering fixed-size packets to `sink`.

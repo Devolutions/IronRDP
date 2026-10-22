@@ -264,25 +264,10 @@ impl AudioFormat {
     }
 }
 
-/// Returns the `client` formats that match one of the `server` formats, in `client` order.
+/// Keeps the `chosen` formats that match one of the `server` formats, in `chosen` order.
 ///
-/// Matching uses [`AudioFormat::matches_for_negotiation`].
-pub fn formats_in_common(client: &[AudioFormat], server: &[AudioFormat]) -> Vec<AudioFormat> {
-    client
-        .iter()
-        .filter(|client_format| {
-            server
-                .iter()
-                .any(|server_format| client_format.matches_for_negotiation(server_format))
-        })
-        .cloned()
-        .collect()
-}
-
-/// Keeps the `chosen` formats that match one of the `server` formats, logging any other.
-///
-/// Handlers are trusted to choose among the server's formats ([MS-RDPEA] 2.2.2.2); this guard
-/// keeps a handler breaking that contract from advertising a format the server never offered.
+/// Only formats the server offered may be advertised ([MS-RDPEA] 2.2.2.2). Matching uses
+/// [`AudioFormat::matches_for_negotiation`].
 ///
 /// [MS-RDPEA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/bea2d5cf-e3b9-4419-92e5-0e074ff9bc5b
 pub fn retain_offered(chosen: Vec<AudioFormat>, server: &[AudioFormat]) -> Vec<AudioFormat> {
@@ -293,7 +278,7 @@ pub fn retain_offered(chosen: Vec<AudioFormat>, server: &[AudioFormat]) -> Vec<A
                 .iter()
                 .any(|server_format| chosen.matches_for_negotiation(server_format));
             if !offered {
-                tracing::warn!(format = ?chosen, "Dropping a chosen format the server did not offer");
+                tracing::debug!(format = ?chosen, "Not advertising a format the server did not offer");
             }
             offered
         })

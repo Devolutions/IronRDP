@@ -102,7 +102,7 @@ fn check_egfx_surface_state() {
     check!(egfx_surface_state);
 }
 
-// oracle: mutant codec panics on the seed formats
+// oracle: spec crates/ironrdp-fuzzing/src/oracles/mod.rs §rdpsnd_codec_decode (no panic for any accepted format; seeds built from the FFmpeg vectors in crates/ironrdp-testsuite-core/test_data/audio)
 #[test]
 fn check_rdpsnd_codec_decode() {
     check!(rdpsnd_codec_decode);

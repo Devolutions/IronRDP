@@ -385,3 +385,36 @@ fn format_change_confirmation_follows_already_queued_data() {
         "the confirmation must follow the queued data, got {uplinked:?}"
     );
 }
+
+// oracle: spec MS-RDPEAI §3.2.5.1.5 (the client replies with formats it supports among those the server sent)
+#[test]
+fn negotiated_formats_keep_client_order_and_only_offered_formats() {
+    let mono_16k = pcm_format(1, 16000, 16);
+    let mono_48k = pcm_format(1, 48000, 16);
+    let stereo_44k = pcm_format(2, 44100, 16);
+    let mut client = client_with(MockCapture {
+        formats: vec![mono_48k.clone(), stereo_44k, mono_16k.clone()],
+        open_calls: Arc::new(AtomicUsize::new(0)),
+        open_result: OpenReplyPdu::S_OK,
+        set_format_ok: true,
+        set_format_calls: Arc::new(AtomicUsize::new(0)),
+    });
+    client.start(3).unwrap();
+    let _ = process_encoded(&mut client, 3, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
+
+    let replies = process_encoded(
+        &mut client,
+        3,
+        RdpeaiPdu::Formats(FormatsPdu::server(vec![
+            mono_16k.clone(),
+            pcm_format(2, 8000, 16),
+            mono_48k.clone(),
+        ])),
+    );
+
+    let RdpeaiPdu::Formats(reply) = decode_dvc(&replies[1]) else {
+        panic!("expected the client Sound Formats PDU");
+    };
+    // Client preference order, limited to what the server offered.
+    assert_eq!(reply.formats, vec![mono_48k, mono_16k]);
+}

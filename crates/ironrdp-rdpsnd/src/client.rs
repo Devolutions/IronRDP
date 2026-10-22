@@ -54,13 +54,14 @@ pub trait RdpsndClientHandler: Send + core::fmt::Debug {
 
     /// Chooses the formats to advertise in reply to the server's format list.
     ///
-    /// Every returned format must be one the server offered ([MS-RDPEA] 2.2.2.2); the order states
-    /// the client's preference, and Wave PDUs index the returned list. The default keeps the
-    /// [`get_formats`](Self::get_formats) entries the server also offered, in that order.
+    /// The order states the client's preference. The client keeps only the returned formats the
+    /// server offered ([MS-RDPEA] 2.2.2.2), and Wave PDUs index that list. The default returns
+    /// [`get_formats`](Self::get_formats).
     ///
     /// [MS-RDPEA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/bea2d5cf-e3b9-4419-92e5-0e074ff9bc5b
     fn choose_formats(&self, server_formats: &[AudioFormat]) -> Vec<AudioFormat> {
-        pdu::formats_in_common(self.get_formats(), server_formats)
+        let _ = server_formats;
+        self.get_formats().to_vec()
     }
 
     /// Play a wave block for the given negotiated format.
@@ -154,14 +155,26 @@ impl PendingUdpWave {
         }
     }
 
-    /// Stores a fragment, or returns `false` when the sample would exceed the protocol's bounds.
-    fn insert(&mut self, frag_no: u16, data: &[u8]) -> bool {
-        let replaced = self.fragments.get(&frag_no).map_or(0, Vec::len);
-        let retained = self.retained - replaced + data.len();
-        if MAX_FRAGDATA_SIZE < retained || (replaced == 0 && MAX_FRAGMENTS <= self.fragments.len()) {
+    /// Accounts for replacing `replaced` retained bytes with `added` ones, or returns `false` when
+    /// the sample would exceed `MAX_FRAGDATA_SIZE`.
+    fn try_retain(&mut self, replaced: usize, added: usize) -> bool {
+        let retained = self.retained - replaced + added;
+        if MAX_FRAGDATA_SIZE < retained {
             return false;
         }
         self.retained = retained;
+        true
+    }
+
+    /// Stores a fragment, or returns `false` when the sample would exceed the protocol's bounds.
+    fn insert(&mut self, frag_no: u16, data: &[u8]) -> bool {
+        let replaced = self.fragments.get(&frag_no).map(Vec::len);
+        if replaced.is_none() && MAX_FRAGMENTS <= self.fragments.len() {
+            return false;
+        }
+        if !self.try_retain(replaced.unwrap_or(0), data.len()) {
+            return false;
+        }
         self.fragments.insert(frag_no, data.to_vec());
         true
     }
@@ -169,11 +182,9 @@ impl PendingUdpWave {
     /// Stores the final fragment, or returns `false` when the sample would exceed the protocol's bounds.
     fn set_last(&mut self, last: UdpWaveLastPdu<'_>) -> bool {
         let replaced = self.last.as_ref().map_or(0, |last| last.data.len());
-        let retained = self.retained - replaced + last.data.len();
-        if MAX_FRAGDATA_SIZE < retained {
+        if !self.try_retain(replaced, last.data.len()) {
             return false;
         }
-        self.retained = retained;
         self.last = Some(UdpWaveLastPdu {
             data: Cow::Owned(last.data.into_owned()),
             ..last
@@ -323,12 +334,23 @@ impl AudioOutputClient {
         }))
     }
 
-    /// Plays one complete audio sample and builds its Wave Confirm PDU when `confirm` is set.
+    /// Hands one complete audio sample to the handler.
+    fn play(&mut self, format_no: u16, audio_timestamp: u32, data: Cow<'_, [u8]>) {
+        match self.client_formats.get(usize::from(format_no)) {
+            Some(format) => self.handler.wave(format, audio_timestamp, data),
+            None => warn!(
+                format_no,
+                n_formats = self.client_formats.len(),
+                "Ignoring wave with out-of-range format_no"
+            ),
+        }
+    }
+
+    /// Plays one complete audio sample, when there is one, and builds its Wave Confirm PDU.
     ///
     /// `arrival` is when the last byte of the sample was received.
     fn play_and_confirm(
         &mut self,
-        confirm: bool,
         arrival: Option<Duration>,
         wave: ReceivedWave,
         data: Option<Cow<'_, [u8]>>,
@@ -340,18 +362,7 @@ impl AudioOutputClient {
             audio_timestamp,
         } = wave;
         if let Some(data) = data {
-            match self.client_formats.get(usize::from(format_no)) {
-                Some(format) => self.handler.wave(format, audio_timestamp, data),
-                None => warn!(
-                    format_no,
-                    n_formats = self.client_formats.len(),
-                    "Ignoring wave with out-of-range format_no"
-                ),
-            }
-        }
-
-        if !confirm {
-            return Vec::new();
+            self.play(format_no, audio_timestamp, data);
         }
 
         // MS-RDPEA 3.2.5.2.1.6: wTimeStamp is the server's timestamp plus the time between receiving
@@ -390,7 +401,6 @@ impl AudioOutputClient {
     /// Complete a pre-v8 Wave transfer from WaveInfo + bare Wave payload bytes.
     fn finish_pending_wave(
         &mut self,
-        confirm: bool,
         arrival: Option<Duration>,
         wave_payload: &[u8],
     ) -> PduResult<Vec<ClientAudioOutputPdu>> {
@@ -422,7 +432,6 @@ impl AudioOutputClient {
         };
 
         Ok(self.play_and_confirm(
-            confirm,
             arrival,
             ReceivedWave {
                 format_no: pending.format_no,
@@ -436,13 +445,12 @@ impl AudioOutputClient {
 
     /// Processes one PDU received on the static channel or on `AUDIO_PLAYBACK_DVC`.
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<ClientAudioOutputPdu>> {
-        let confirm = true;
         let arrival = self.now();
 
         // Pre-v8 Wave data has no RDPSND header (MS-RDPEA §2.2.3.4).
         if self.state == RdpsndState::ExpectingWave {
             debug!(len = payload.len(), "Completing pending WaveInfo with Wave payload");
-            return self.finish_pending_wave(confirm, arrival, payload);
+            return self.finish_pending_wave(arrival, payload);
         }
 
         let pdu = match pdu::ServerAudioOutputPdu::decode(&mut ReadCursor::new(payload)) {
@@ -490,13 +498,12 @@ impl AudioOutputClient {
                         // SNDPROLOG (4) + WaveInfo body; trailing bytes mean a concatenated Wave payload.
                         let header_and_info = 4usize.checked_add(pdu.size()).expect("header_and_info never overflows");
                         if payload.len() > header_and_info {
-                            return self.finish_pending_wave(confirm, arrival, &payload[header_and_info..]);
+                            return self.finish_pending_wave(arrival, &payload[header_and_info..]);
                         }
                         return Ok(vec![]);
                     }
                     pdu::ServerAudioOutputPdu::Wave2(pdu) => {
                         return Ok(self.play_and_confirm(
-                            confirm,
                             arrival,
                             ReceivedWave {
                                 format_no: pdu.format_no,
@@ -549,23 +556,15 @@ impl AudioOutputClient {
     ///
     /// [MS-RDPEA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/bea2d5cf-e3b9-4419-92e5-0e074ff9bc5b
     fn process_lossy(&mut self, payload: &[u8]) -> PduResult<Vec<ClientAudioOutputPdu>> {
-        let arrival = self.now();
         if self.state != RdpsndState::Ready {
             debug!(state = ?self.state, "Ignoring lossy-channel data outside the Ready state");
             return Ok(vec![]);
         }
         match pdu::ServerAudioOutputPdu::decode(&mut ReadCursor::new(payload)) {
-            Ok(pdu::ServerAudioOutputPdu::Wave2(pdu)) => Ok(self.play_and_confirm(
-                false,
-                arrival,
-                ReceivedWave {
-                    format_no: pdu.format_no,
-                    timestamp: pdu.timestamp,
-                    block_no: pdu.block_no,
-                    audio_timestamp: pdu.audio_timestamp,
-                },
-                Some(pdu.data),
-            )),
+            Ok(pdu::ServerAudioOutputPdu::Wave2(pdu)) => {
+                self.play(pdu.format_no, pdu.audio_timestamp, pdu.data);
+                Ok(vec![])
+            }
             Ok(pdu) => {
                 debug!(?pdu, "Ignoring a non-wave PDU on the lossy channel");
                 Ok(vec![])
@@ -708,7 +707,6 @@ impl AudioOutputClient {
         }
 
         self.play_and_confirm(
-            true,
             arrival,
             ReceivedWave {
                 format_no: last.format_no,

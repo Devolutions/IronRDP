@@ -66,16 +66,19 @@ pub struct PlayoutController {
     buffering_stalled: usize,
 }
 
+/// Number of frames `duration` spans at `sample_rate` frames per second, saturating.
+pub fn frames_in(duration: Duration, sample_rate: u32) -> usize {
+    let frames = duration.as_micros() * u128::from(sample_rate) / 1_000_000;
+    usize::try_from(frames).unwrap_or(usize::MAX)
+}
+
 impl PlayoutController {
     /// Creates a controller for a device running at `sample_rate` frames per second.
     ///
     /// `target` is the buffered audio to keep ahead of the device; it trades latency for
     /// resilience to network jitter.
     pub fn new(sample_rate: u32, target: Duration) -> Self {
-        let frames = |duration: Duration| {
-            let frames = duration.as_micros() * u128::from(sample_rate) / 1_000_000;
-            usize::try_from(frames).unwrap_or(usize::MAX)
-        };
+        let frames = |duration: Duration| frames_in(duration, sample_rate);
         let target = frames(target).max(1);
         let tolerance = (target / 4).max(frames(Duration::from_millis(10)));
         let backlog = target.max(frames(Duration::from_millis(200)));
