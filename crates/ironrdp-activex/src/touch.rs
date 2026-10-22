@@ -6,21 +6,13 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use ironrdp_rdpei::pdu::{TouchContact, TouchContactFlags, TouchEventPdu, TouchFrame};
-
-/// Lifetime phase of a tracked contact relative to the RDPEI FSM.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ContactPhase {
-    /// In range, not pressed.
-    Hovering,
-    /// Pressed (in contact).
-    Engaged,
-}
+use ironrdp_rdpei::contact::{self, ContactSample, ContactState};
+use ironrdp_rdpei::pdu::{TouchContact, TouchEventPdu, TouchFrame};
 
 #[derive(Debug, Clone)]
 struct TrackedContact {
     contact_id: u8,
-    phase: ContactPhase,
+    phase: ContactState,
     x: i32,
     y: i32,
     started_at: Instant,
@@ -56,6 +48,7 @@ impl TouchContactTracker {
         Self::default()
     }
 
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn has_active_contacts(&self) -> bool {
         !self.by_pointer.is_empty()
@@ -72,16 +65,26 @@ impl TouchContactTracker {
     /// Builds a touch event for the given samples, advancing the local FSM.
     ///
     /// Returns `None` when no legal contact transitions are produced (for example
-    /// an untracked cancel). Callers must reserve send capacity before invoking
-    /// this method so a full queue cannot drop a transition that already mutated
-    /// the tracker.
+    /// an untracked cancel). Callers must keep the event until the session
+    /// accepts it: the tracker already moved past it.
     pub(crate) fn process_samples(&mut self, samples: &[TouchSample]) -> Option<TouchEventPdu> {
         let mut contacts = Vec::with_capacity(samples.len());
         let mut finished = Vec::new();
 
         for sample in samples {
             let prev = self.by_pointer.get(&sample.pointer_id).cloned();
-            let Some((next_phase, flags)) = map_contact_flags(prev.as_ref().map(|c| c.phase), sample) else {
+            // A placeholder position is usable only for a contact the server already knows.
+            if sample.preserve_position && prev.is_none() {
+                continue;
+            }
+            let Some(transition) = contact::transition(
+                prev.as_ref().map(|c| c.phase),
+                ContactSample {
+                    in_range: sample.in_range,
+                    in_contact: sample.in_contact,
+                    canceled: sample.canceled,
+                },
+            ) else {
                 continue;
             };
 
@@ -89,14 +92,14 @@ impl TouchContactTracker {
                 Some(c) => c.contact_id,
                 None => self.allocate_contact_id(),
             };
-            let (x, y) = if sample.preserve_position {
-                prev.as_ref().map(|c| (c.x, c.y)).unwrap_or((sample.x, sample.y))
-            } else {
-                (sample.x, sample.y)
+            // A lift or cancel is sent where the finger last touched; it moves only after the transition.
+            let (x, y) = match prev.as_ref() {
+                Some(c) if sample.preserve_position || transition.keeps_position() => (c.x, c.y),
+                _ => (sample.x, sample.y),
             };
             let started_at = prev.as_ref().map(|c| c.started_at).unwrap_or_else(Instant::now);
 
-            let mut contact = TouchContact::new(contact_id, x, y, flags);
+            let mut contact = TouchContact::new(contact_id, x, y, transition.flags);
             if let Some(orientation) = sample.orientation {
                 contact = contact.with_orientation(orientation);
             }
@@ -109,7 +112,7 @@ impl TouchContactTracker {
             }
             contacts.push(contact);
 
-            match next_phase {
+            match transition.next {
                 None => {
                     finished.push(sample.pointer_id);
                 }
@@ -149,13 +152,12 @@ impl TouchContactTracker {
 
         let mut contacts = Vec::with_capacity(self.by_pointer.len());
         for (_, tracked) in self.by_pointer.drain() {
-            let flags = match tracked.phase {
-                // Hovering → out of range: UPDATE (no INRANGE).
-                ContactPhase::Hovering => TouchContactFlags::UPDATE,
-                // Engaged → out of range: UP (no INRANGE).
-                ContactPhase::Engaged => TouchContactFlags::UP,
-            };
-            contacts.push(TouchContact::new(tracked.contact_id, tracked.x, tracked.y, flags));
+            contacts.push(TouchContact::new(
+                tracked.contact_id,
+                tracked.x,
+                tracked.y,
+                contact::release_flags(tracked.phase),
+            ));
         }
 
         Some(TouchEventPdu::new(0, vec![TouchFrame::new(0, contacts)]))
@@ -178,60 +180,10 @@ impl TouchContactTracker {
     }
 }
 
-/// Maps previous phase + sample onto `(next_phase, flags)`.
-///
-/// `next_phase == None` means the contact leaves the tracker (out of range).
-fn map_contact_flags(
-    prev: Option<ContactPhase>,
-    sample: &TouchSample,
-) -> Option<(Option<ContactPhase>, TouchContactFlags)> {
-    if sample.canceled {
-        return match prev {
-            Some(ContactPhase::Hovering) => Some((None, TouchContactFlags::UPDATE | TouchContactFlags::CANCELED)),
-            Some(ContactPhase::Engaged) => Some((None, TouchContactFlags::UP | TouchContactFlags::CANCELED)),
-            // Ignore cancels for contacts we never advertised — avoids ID leaks.
-            None => None,
-        };
-    }
-
-    let in_range = sample.in_range;
-    let in_contact = sample.in_contact && in_range;
-
-    match (prev, in_range, in_contact) {
-        // → Engaged
-        (None | Some(ContactPhase::Hovering), true, true) => Some((
-            Some(ContactPhase::Engaged),
-            TouchContactFlags::DOWN | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT,
-        )),
-        (Some(ContactPhase::Engaged), true, true) => Some((
-            Some(ContactPhase::Engaged),
-            TouchContactFlags::UPDATE | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT,
-        )),
-        // Engaged lift → hover (still in range)
-        (Some(ContactPhase::Engaged), true, false) => Some((
-            Some(ContactPhase::Hovering),
-            TouchContactFlags::UP | TouchContactFlags::INRANGE,
-        )),
-        // Engaged lift → out of range
-        (Some(ContactPhase::Engaged), false, _) => Some((None, TouchContactFlags::UP)),
-        // → / stay Hovering
-        (None, true, false) => Some((
-            Some(ContactPhase::Hovering),
-            TouchContactFlags::UPDATE | TouchContactFlags::INRANGE,
-        )),
-        (Some(ContactPhase::Hovering), true, false) => Some((
-            Some(ContactPhase::Hovering),
-            TouchContactFlags::UPDATE | TouchContactFlags::INRANGE,
-        )),
-        // Hovering leave range → out of range (UPDATE without INRANGE)
-        (Some(ContactPhase::Hovering), false, _) => Some((None, TouchContactFlags::UPDATE)),
-        // Still out of range
-        (None, false, _) => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use ironrdp_rdpei::pdu::TouchContactFlags;
+
     use super::*;
 
     fn sample(pointer_id: u32, x: i32, y: i32, in_range: bool, in_contact: bool) -> TouchSample {

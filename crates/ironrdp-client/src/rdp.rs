@@ -46,8 +46,8 @@ pub use ironrdp_rdpdr::backend::{
     RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPort, RdpdrPortKind,
     RdpdrPrinter,
 };
-use ironrdp_rdpei::RdpeiClient;
-use ironrdp_rdpei::pdu::TouchEventPdu;
+use ironrdp_rdpei::pdu::{CsReadyFlags, RdpInputProtocolVersion, TouchEventPdu};
+use ironrdp_rdpei::{RdpeiClient, RdpeiInputState};
 #[cfg(feature = "location")]
 use ironrdp_rdpel::client::LocationClient;
 use ironrdp_session::image::DecodedImage;
@@ -108,6 +108,11 @@ pub enum RailExecuteFailureReason {
     /// The active stage could not encode the queued RAIL messages.
     MessageProcessingFailed,
 }
+
+/// `maxTouchContacts` advertised in the RDPEI `CS_READY` PDU ([MS-RDPEI] 2.2.3.2 "RDPINPUT_CS_READY_PDU").
+///
+/// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
+pub const RDPEI_MAX_TOUCH_CONTACTS: u16 = 10;
 
 #[derive(Debug)]
 pub enum RdpOutputEvent {
@@ -202,6 +207,15 @@ pub enum RdpOutputEvent {
     },
     /// A cookie-based reconnect has completed successfully.
     AutoReconnected,
+    /// The MS-RDPEI input channel started or stopped accepting touch or pen frames, or the server
+    /// suspended or resumed input.
+    ///
+    /// Sent when the state changes and once at the start of every active session.
+    /// Front-ends emulate the mouse for input the channel does not accept, and hold RDPEI frames while
+    /// input is suspended ([MS-RDPEI] 3.3.5.4 "Processing an RDPINPUT_SUSPEND_INPUT_PDU message").
+    ///
+    /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
+    RdpeiInputState(RdpeiInputState),
     Terminated(SessionResult<GracefulDisconnectReason>),
 }
 
@@ -1858,7 +1872,11 @@ fn build_connector(
     let mut drdynvc = ironrdp_dvc::DrdynvcClient::new()
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
         .with_dynamic_channel(EchoClient::new())
-        .with_dynamic_channel(RdpeiClient::default())
+        .with_dynamic_channel(RdpeiClient::new(
+            RDPEI_MAX_TOUCH_CONTACTS,
+            CsReadyFlags::ENABLE_MULTIPEN_INJECTION,
+            RdpInputProtocolVersion::V300,
+        ))
         .with_dynamic_channel(GraphicsPipelineClient::new(Box::new(EgfxHandler), None));
 
     #[cfg(feature = "location")]
@@ -3444,6 +3462,8 @@ async fn active_session(
     #[cfg(not(feature = "clipboard"))]
     let _ = clipboard_event_receiver;
 
+    let mut rdpei_input_state = None;
+
     let disconnect_reason = 'outer: loop {
         let resize_deadline = resize_queue.deadline();
         let input_batch_deadline = input_batcher.deadline();
@@ -4558,6 +4578,23 @@ async fn active_session(
                     debug!(?request, "Auto-detect");
                 }
                 ActiveStageOutput::Terminate(reason) => break 'outer reason,
+            }
+        }
+
+        let current_rdpei_input_state = active_stage.rdpei_input_state();
+        if rdpei_input_state != Some(current_rdpei_input_state) {
+            rdpei_input_state = Some(current_rdpei_input_state);
+            debug!(state = ?current_rdpei_input_state, "RDPEI input state changed");
+            if !send_active_output_event(
+                output_event_sender,
+                RdpOutputEvent::RdpeiInputState(current_rdpei_input_state),
+                close_receiver,
+            )
+            .await?
+            {
+                return Ok(RdpControlFlow::TerminatedGracefully(
+                    GracefulDisconnectReason::UserInitiated,
+                ));
             }
         }
 
