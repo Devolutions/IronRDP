@@ -451,6 +451,7 @@ fn device_accepts(configs: Option<&[cpal::SupportedStreamConfigRange]>, format: 
 
 /// Supported configurations of the selected output device, or `None` when every layout opens.
 fn device_configs(selector: &DeviceSelector) -> Option<Vec<cpal::SupportedStreamConfigRange>> {
+    #[cfg(windows)]
     if cpal::default_host().id() == cpal::HostId::Wasapi {
         return None;
     }
