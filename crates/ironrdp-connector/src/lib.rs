@@ -322,6 +322,10 @@ pub struct Config {
     ///
     /// [`RdpVersion::V5_PLUS`](gcc::RdpVersion::V5_PLUS) keeps the previous behavior.
     ///
+    /// Use [`RdpVersion::V5_PLUS`](gcc::RdpVersion::V5_PLUS) or later: the connector always sends the optional
+    /// core data fields (`postBeta2ColorDepth` onward), which RDP 4.0 clients never sent, so announcing
+    /// [`RdpVersion::V4`](gcc::RdpVersion::V4) would describe a client that couldn't have sent this block.
+    ///
     /// [\[MS-RDPBCGR\] 2.2.7.1.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b3bc76ae-9ee5-454f-b197-ede845ca69cc
     pub rdp_version: gcc::RdpVersion,
 }
