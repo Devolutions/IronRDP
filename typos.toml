@@ -37,6 +37,8 @@ COSE = "COSE"
 cose = "cose"
 # Microsoft's spelling of the IMsTscAdvancedSettings::BitmapPeristence ActiveX property.
 Peristence = "Peristence"
+# Windows notification icon callback messages (`NIN_SELECT`, `NIN_BALLOONUSERCLICK`).
+NIN = "NIN"
 
 [default.extend-identifiers]
 # COM FORMATETC target-device field.
