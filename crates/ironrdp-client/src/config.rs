@@ -464,6 +464,12 @@ pub struct RdpdrConfig {
     /// Mirrors the `.rdp` `redirectcomports` property. Which local ports exist and are
     /// selected is up to the factory; this only gates their announcement.
     pub ports: bool,
+
+    /// Allow printers from the RDPDR backend product to be announced.
+    ///
+    /// Mirrors the `.rdp` `redirectprinters` property. The backend factory still decides which
+    /// printers exist; this only lets the connection drop them.
+    pub printers: bool,
 }
 
 #[cfg(feature = "rdpdr")]
@@ -475,6 +481,7 @@ impl Default for RdpdrConfig {
             smartcard: true,
             drives: DriveRedirection::default(),
             ports: true,
+            printers: true,
         }
     }
 }
@@ -1533,6 +1540,15 @@ impl ConfigBuilder {
         self
     }
 
+    /// Allow or drop printers announced by the RDPDR backend product (`redirectprinters`).
+    #[cfg(feature = "rdpdr")]
+    #[must_use]
+    pub fn with_printers(mut self, enabled: bool) -> Self {
+        self.channels.rdpdr.printers = enabled;
+        self.properties.set_redirect_printers(enabled);
+        self
+    }
+
     /// Enable or disable smart-card redirection within RDPDR.
     #[cfg(feature = "smartcard")]
     #[must_use]
@@ -2434,6 +2450,10 @@ impl ConfigBuilder {
         #[cfg(feature = "rdpdr")]
         if let Some(enabled) = ps.redirect_com_ports() {
             self.channels.rdpdr.ports = enabled;
+        }
+        #[cfg(feature = "rdpdr")]
+        if let Some(enabled) = ps.redirect_printers() {
+            self.channels.rdpdr.printers = enabled;
         }
         #[cfg(feature = "qoi")]
         if let Some(enabled) = ps.enable_qoi() {

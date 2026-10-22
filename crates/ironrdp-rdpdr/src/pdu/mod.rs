@@ -18,6 +18,7 @@ use self::efs::{
 };
 
 pub mod efs;
+pub mod epc;
 pub mod esc;
 pub mod esp;
 

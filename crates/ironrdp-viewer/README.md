@@ -37,10 +37,15 @@ An explicit `redirectdrives:i:0` disables drive redirection even when `drivestor
 On Windows, pass `--smartcard` (or set `ironrdp_smartcard:i:1` in a `.rdp` file) to redirect local smart cards through WinSCard.
 RPC mode (`--rpc`) enables smartcard the same way via agent connect properties (`ironrdp_smartcard` / sandbox `SmartCardRedirection`).
 
-On Windows, pass `--printer` to redirect the current default printer.
-The `.rdp` `redirectprinters` property does not enable it, because mstsc writes `redirectprinters:i:1` by default.
-Jobs are sent to the local queue as `RAW` data, so the remote host needs a printer driver with the same name as the local queue's driver; Easy Print/XPS is not supported.
-RPC mode enables it through the `redirectprinters` connect property.
+On Windows, pass `--printer` (or set `redirectprinters:i:1` in a `.rdp` file) to redirect the current default printer.
+`ironrdp_rdpdr:i:0` overrides the file property, as in RPC mode, where the `redirectprinters` connect property does the same.
+Pass `--printer-all` to redirect every local queue and printer connection, or `--printer-queue <queue>[,<driver>]` once per queue to redirect a named subset.
+With `--printer` or `--printer-all`, `--printer-queue` entries only override drivers and must name one.
+`--printer-default <queue>` picks the remote default printer; otherwise it is the local default queue.
+Jobs are sent to the local queue as `RAW` data, so the remote host needs a printer driver with the announced name, which is the local queue's driver unless `--printer-queue` overrides it.
+`--printer-fallback-driver [<driver>]` announces a second driver if the host rejects a printer; without a value it uses `MS Publisher Imagesetter`, which only suits PostScript printers.
+Printing preferences changed on the server are saved per server under `%APPDATA%\ironrdp-agent\printer-cache` (or `IRONRDP_AGENT_PRINTER_CACHE`) and restored on the next connection.
+Easy Print/XPS is not supported.
 
 On Windows, pass `--serial COM3` or `--parallel LPT1` (repeatable, or `all`) to redirect local serial and parallel ports; `redirectcomports:i:1` in a `.rdp` file redirects all of them.
 The ports present when the session connects are announced under their local names, such as `COM3`, which Windows servers use for the port inside the session.

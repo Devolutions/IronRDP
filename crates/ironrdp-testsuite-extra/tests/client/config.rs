@@ -13,7 +13,7 @@ use ironrdp_client::config::{
 use ironrdp_client::config::{MissingField, TransportKind};
 use ironrdp_pdu::gcc::{ClientMonitorData, Monitor, MonitorFlags};
 use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
-use ironrdp_viewer::cli::{ViewerConfig, parse_config_from};
+use ironrdp_viewer::cli::{PrinterOptions, PrinterSelection, ViewerConfig, parse_config_from};
 use uuid::Uuid;
 
 struct TempRdpFile {
@@ -462,7 +462,7 @@ fn redirectclipboard_zero_disables_clipboard_for_default_mode() {
 }
 
 #[test]
-fn printer_redirection_requires_the_cli_flag() {
+fn printer_redirection_follows_redirectprinters_like_the_daemon() {
     let rdp = "full address:s:rdp.example.com
 username:s:test-user
 ClearTextPassword:s:test-pass
@@ -470,29 +470,117 @@ ClearTextPassword:s:test-pass
 
     assert!(!parse_viewer_config_from_rdp(rdp, &[]).redirect_printers());
 
-    // mstsc writes `redirectprinters:i:1` by default, so the file property alone must not redirect.
-    let stock = format!(
-        "{rdp}redirectprinters:i:1
+    // The daemon honors `redirectprinters:i:1`; the viewer does the same for the default printer.
+    let stock = parse_viewer_config_from_rdp(
+        &format!(
+            "{rdp}redirectprinters:i:1
 "
+        ),
+        &[],
     );
-    assert!(!parse_viewer_config_from_rdp(&stock, &[]).redirect_printers());
+    assert_eq!(
+        stock.printers().map(|printers| &printers.selection),
+        Some(&PrinterSelection::Default)
+    );
+    let channels = stock.into_config().expect("failed to build client config");
+    assert!(channels.channels().rdpdr.enabled);
+    assert!(channels.channels().rdpdr.printers);
+
+    // `ironrdp_rdpdr:i:0` takes precedence over the file property, as in the daemon.
+    assert!(
+        !parse_viewer_config_from_rdp(
+            &format!(
+                "{rdp}redirectprinters:i:1
+ironrdp_rdpdr:i:0
+"
+            ),
+            &[],
+        )
+        .redirect_printers()
+    );
+
+    // `redirectprinters:i:0` keeps printers off in the client configuration too.
+    let disabled = parse_config_from_rdp(
+        &format!(
+            "{rdp}redirectprinters:i:0
+"
+        ),
+        &[],
+    );
+    assert!(!disabled.channels().rdpdr.printers);
 
     let viewer = parse_viewer_config_from_rdp(
         &format!(
             "{rdp}ironrdp_rdpdr:i:0
+redirectprinters:i:0
 "
         ),
         &["--printer"],
     );
     assert!(viewer.redirect_printers());
-    assert!(
-        viewer
-            .into_config()
-            .expect("failed to build client config")
-            .channels()
-            .rdpdr
-            .enabled
+    let config = viewer.into_config().expect("failed to build client config");
+    assert!(config.channels().rdpdr.enabled);
+    assert!(config.channels().rdpdr.printers);
+}
+
+#[test]
+fn printer_queue_options_select_named_printers_and_drivers() {
+    let rdp = "full address:s:rdp.example.com
+username:s:test-user
+ClearTextPassword:s:test-pass
+";
+
+    let viewer = parse_viewer_config_from_rdp(
+        rdp,
+        &[
+            "--printer-queue",
+            "Office,HP Universal Printing PCL 6",
+            "--printer-queue",
+            r"\\print\Lobby",
+            "--printer-default",
+            "Office",
+            "--printer-fallback-driver",
+        ],
     );
+    assert_eq!(
+        viewer.printers(),
+        Some(&PrinterOptions {
+            selection: PrinterSelection::Named(vec!["Office".to_owned(), r"\\print\Lobby".to_owned()]),
+            drivers: vec![("Office".to_owned(), "HP Universal Printing PCL 6".to_owned())],
+            default_queue: Some("Office".to_owned()),
+            fallback_driver: Some("MS Publisher Imagesetter".to_owned()),
+        })
+    );
+
+    let all = parse_viewer_config_from_rdp(rdp, &["--printer-all", "--printer-queue", "Office,Generic / Text Only"]);
+    assert_eq!(
+        all.printers()
+            .map(|printers| (&printers.selection, printers.drivers.len())),
+        Some((&PrinterSelection::All, 1))
+    );
+
+    // `--printer` keeps the default selection; entries only override drivers.
+    let default = parse_viewer_config_from_rdp(rdp, &["--printer", "--printer-queue", "Office,Generic / Text Only"]);
+    assert_eq!(
+        default
+            .printers()
+            .map(|printers| (&printers.selection, printers.drivers.len())),
+        Some((&PrinterSelection::Default, 1))
+    );
+
+    let rdp_file = TempRdpFile::new(rdp);
+    for invalid in [
+        &["--printer-default", "Office"][..],
+        &["--printer-queue", "Office,"],
+        &["--printer-all", "--printer-queue", "Office"],
+        &["--printer", "--printer-queue", "Office"],
+        &["--printer", "--printer-all"],
+    ] {
+        assert!(
+            ViewerConfig::parse_from(viewer_args(&rdp_file, invalid)).is_err(),
+            "{invalid:?} must be rejected"
+        );
+    }
 }
 
 const DRIVE_TEST_RDP: &str = "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\n";

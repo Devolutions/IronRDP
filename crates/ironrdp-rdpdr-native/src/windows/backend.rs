@@ -37,7 +37,7 @@ pub struct WindowsRdpdrBackend {
     pub(super) open_files: FileTable<OpenFile>,
     deferred_operations: DeferredOperations,
     scard: ScardSession,
-    configured_printer: Option<ironrdp_rdpdr::RdpdrPrinter>,
+    configured_printers: Vec<ironrdp_rdpdr::RdpdrPrinter>,
     printer_worker: Option<Mutex<PrinterWorker>>,
     worker_thread_hooks: Option<RdpdrWorkerThreadHooks>,
     ports: PortSession,
@@ -50,12 +50,12 @@ impl WindowsRdpdrBackend {
     }
 
     pub(crate) fn from_drives(drives: Vec<RedirectedDrive>) -> Self {
-        Self::from_configuration(drives, None, None)
+        Self::from_configuration(drives, Vec::new(), None)
     }
 
     pub(super) fn from_configuration(
         drives: Vec<RedirectedDrive>,
-        configured_printer: Option<ironrdp_rdpdr::RdpdrPrinter>,
+        configured_printers: Vec<ironrdp_rdpdr::RdpdrPrinter>,
         worker_thread_hooks: Option<RdpdrWorkerThreadHooks>,
     ) -> Self {
         Self {
@@ -64,7 +64,7 @@ impl WindowsRdpdrBackend {
             open_files: FileTable::new(DEFAULT_MAX_OPEN_FILES),
             deferred_operations: DeferredOperations::new(),
             scard: ScardSession::new(),
-            configured_printer,
+            configured_printers,
             printer_worker: None,
             worker_thread_hooks,
             ports: PortSession::default(),
@@ -135,6 +135,26 @@ impl WindowsRdpdrBackend {
             .map_err(|_| ironrdp_rdpdr::pdu::efs::NtStatus::UNSUCCESSFUL)?;
         self.deferred_operations
             .schedule_waiting_lock(request, ranges, exclusive, handle)
+    }
+
+    /// Returns the printer worker, starting it on the first printer IRP.
+    fn printer_worker(&mut self) -> PduResult<&mut PrinterWorker> {
+        if self.printer_worker.is_none() {
+            if self.configured_printers.is_empty() {
+                return Err(pdu_other_err!(
+                    "printer IRP reached an unconfigured Windows RDPDR backend"
+                ));
+            }
+            self.printer_worker = Some(Mutex::new(PrinterWorker::new(
+                self.configured_printers.clone(),
+                self.worker_thread_hooks,
+            )?));
+        }
+        self.printer_worker
+            .as_mut()
+            .expect("printer worker was initialized")
+            .get_mut()
+            .map_err(|_| pdu_other_err!("Windows printer worker lock is poisoned"))
     }
 
     pub(super) fn cancel_deferred_file_operations(&mut self, device_id: u32, file_id: u32) -> Vec<SvcMessage> {
@@ -245,36 +265,11 @@ impl RdpdrBackend for WindowsRdpdrBackend {
     }
 
     fn handle_printer_io_request(&mut self, req: PrinterIoRequest) -> PduResult<Vec<SvcMessage>> {
-        if self.printer_worker.is_none() {
-            let printer = self
-                .configured_printer
-                .clone()
-                .ok_or_else(|| pdu_other_err!("printer IRP reached an unconfigured Windows RDPDR backend"))?;
-            self.printer_worker = Some(Mutex::new(PrinterWorker::new(printer, self.worker_thread_hooks)?));
-        }
-        self.printer_worker
-            .as_mut()
-            .expect("printer worker was initialized")
-            .get_mut()
-            .map_err(|_| pdu_other_err!("Windows printer worker lock is poisoned"))?
-            .handle(req)
+        self.printer_worker()?.handle(req)
     }
 
     fn reject_printer_write(&mut self, req: ironrdp_rdpdr::pdu::efs::DeviceIoRequest) -> PduResult<Vec<SvcMessage>> {
-        if self.printer_worker.is_none() {
-            let printer = self
-                .configured_printer
-                .clone()
-                .ok_or_else(|| pdu_other_err!("printer write reached an unconfigured Windows RDPDR backend"))?;
-            self.printer_worker = Some(Mutex::new(PrinterWorker::new(printer, self.worker_thread_hooks)?));
-        }
-        Ok(self
-            .printer_worker
-            .as_mut()
-            .expect("printer worker was initialized")
-            .get_mut()
-            .map_err(|_| pdu_other_err!("Windows printer worker lock is poisoned"))?
-            .reject_write(req))
+        Ok(self.printer_worker()?.reject_write(req))
     }
 
     fn handle_port_io_request(&mut self, req: PortIoRequest) -> PduResult<Vec<SvcMessage>> {
