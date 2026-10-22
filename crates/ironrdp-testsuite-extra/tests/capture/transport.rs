@@ -6,7 +6,7 @@ fn temporary_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("ironrdp-capture-{name}-{}.pcapng", std::process::id()))
 }
 
-fn capture(frames: impl IntoIterator<Item = Vec<u8>>, key_log: Option<&str>) -> Vec<u8> {
+pub(super) fn capture(frames: impl IntoIterator<Item = Vec<u8>>, key_log: Option<&str>) -> Vec<u8> {
     let mut output = block(
         0x0a0d_0d0a,
         [
@@ -41,7 +41,7 @@ fn capture(frames: impl IntoIterator<Item = Vec<u8>>, key_log: Option<&str>) -> 
     output
 }
 
-fn block(kind: u32, body: impl AsRef<[u8]>) -> Vec<u8> {
+pub(super) fn block(kind: u32, body: impl AsRef<[u8]>) -> Vec<u8> {
     let body = body.as_ref();
     let length = u32::try_from(body.len() + 12).expect("block length fits u32");
     let mut output = Vec::new();

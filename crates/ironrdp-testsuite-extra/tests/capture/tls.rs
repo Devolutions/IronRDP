@@ -215,7 +215,7 @@ fn hello(kind: u8, random: [u8; 32], suite: Option<u16>) -> Vec<u8> {
     body
 }
 
-fn handshake_record(kind: u8, body: &[u8]) -> Vec<u8> {
+pub(super) fn handshake_record(kind: u8, body: &[u8]) -> Vec<u8> {
     let length = u32::try_from(body.len()).expect("TLS handshake fits u32");
     let mut handshake = vec![kind, 0, 0, 0];
     handshake[1..4].copy_from_slice(&length.to_be_bytes()[1..]);
@@ -227,7 +227,7 @@ fn change_cipher_spec() -> Vec<u8> {
     tls_record(20, &[1])
 }
 
-fn tls_record(content_type: u8, body: &[u8]) -> Vec<u8> {
+pub(super) fn tls_record(content_type: u8, body: &[u8]) -> Vec<u8> {
     let length = u16::try_from(body.len()).expect("TLS record fits u16");
     let mut record = vec![content_type];
     record.extend(TLS_VERSION_1_2.to_be_bytes());
@@ -279,7 +279,7 @@ fn encrypt_tls13_record(key: &([u8; 16], [u8; 12]), sequence: u64, content: &[u8
     tls_record(23, &plaintext)
 }
 
-fn tls12_keys(
+pub(super) fn tls12_keys(
     master: &[u8; 48],
     client_random: &[u8; 32],
     server_random: &[u8; 32],
@@ -317,7 +317,7 @@ fn hmac_sha256(key: &[u8], input: &[u8]) -> Vec<u8> {
     hmac.finalize().into_bytes().to_vec()
 }
 
-fn encrypt_tls12_record(key: &[u8; 16], fixed_iv: [u8; 4], sequence: u64, plaintext: &[u8]) -> Vec<u8> {
+pub(super) fn encrypt_tls12_record(key: &[u8; 16], fixed_iv: [u8; 4], sequence: u64, plaintext: &[u8]) -> Vec<u8> {
     let explicit = [7; 8];
     let mut nonce = [0; 12];
     nonce[..4].copy_from_slice(&fixed_iv);
@@ -341,6 +341,6 @@ fn encrypt_tls12_record(key: &[u8; 16], fixed_iv: [u8; 4], sequence: u64, plaint
     tls_record(23, &body)
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(super) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

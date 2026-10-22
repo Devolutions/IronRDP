@@ -333,7 +333,11 @@ Offline pcapng capture decoding, TCP flow reassembly, TLS decryption, and RD Gat
 
 #### [`crates/ironrdp-capture-replay`](./crates/ironrdp-capture-replay)
 
-Offline direct-TCP RDP capture analysis that routes recovered plaintext and exports payload-free replay diagnostics with rendered framebuffer snapshots.
+Offline direct-TCP RDP capture analysis that routes recovered plaintext and records payload-free replay diagnostics.
+
+#### [`crates/ironrdp-capture-export`](./crates/ironrdp-capture-export)
+
+Binary tool that writes rendered replay frames and diagnostics from offline RDP captures.
 
 #### [`fuzz`](./fuzz)
 
