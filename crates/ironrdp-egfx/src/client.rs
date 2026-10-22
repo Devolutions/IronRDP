@@ -1496,6 +1496,13 @@ impl DvcProcessor for GraphicsPipelineClient {
     }
 
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+        if let Some(decoder) = self.h264_decoder.as_mut()
+            && !decoder.wait_until_ready()
+        {
+            warn!("The H.264 decoder is unavailable; advertising no AVC capability set");
+            self.h264_decoder = None;
+        }
+
         // Keep only the sets this client can honor: AVC420 needs a decoder, and AVC444
         // needs one returning the YUV planes the two views are combined from.
         let avc420 = self.h264_decoder.is_some();
@@ -1512,6 +1519,7 @@ impl DvcProcessor for GraphicsPipelineClient {
                 (avc420 || !codecs.avc420) && (avc444 || !codecs.avc444)
             })
             .collect();
+        debug!(avc420, avc444, "Advertising EGFX capabilities");
         if caps.is_empty() {
             debug!(
                 avc420,

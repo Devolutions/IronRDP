@@ -1146,6 +1146,50 @@ fn the_h264_decoder_factory_is_shared_and_replaceable() {
     assert!(config.channels().h264_decoder.is_none());
 }
 
+/// A decoder that only reports YUV support, for checking what the background start forwards.
+struct YuvDecoder;
+
+impl ironrdp_egfx::decode::H264Decoder for YuvDecoder {
+    fn decode(&mut self, _data: &[u8]) -> ironrdp_egfx::decode::DecoderResult<ironrdp_egfx::decode::DecodedFrame> {
+        Err(ironrdp_egfx::decode::DecoderError::msg("not a real decoder"))
+    }
+
+    fn supports_yuv420(&self) -> bool {
+        true
+    }
+}
+
+// oracle: mutant the background start blocking its caller or losing the created decoder
+#[test]
+fn a_decoder_started_in_background_is_ready_later() {
+    let slow = H264DecoderFactory::new(|| {
+        std::thread::sleep(core::time::Duration::from_secs(2));
+        Some(Box::new(YuvDecoder))
+    });
+    let started = std::time::Instant::now();
+    let mut decoder = slow.create_in_background();
+    assert!(
+        started.elapsed() < core::time::Duration::from_secs(1),
+        "creating the decoder returned at once"
+    );
+    assert!(
+        !decoder.supports_yuv420(),
+        "nothing is advertised before the decoder is ready"
+    );
+
+    assert!(decoder.wait_until_ready());
+    assert!(decoder.supports_yuv420());
+}
+
+// oracle: mutant an unavailable backend reported as ready
+#[test]
+fn an_unavailable_decoder_is_not_ready() {
+    let mut decoder = null_decoder().expect("factory").create_in_background();
+    assert!(!decoder.wait_until_ready());
+    assert!(!decoder.supports_yuv420());
+    assert!(decoder.decode(&[0, 0, 0, 1]).is_err());
+}
+
 // oracle: reference mstsc videoplaybackmode:i:0
 #[test]
 fn video_playback_mode_zero_declines_video() {

@@ -5,11 +5,17 @@
 //! [MS-RDPEVOR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpevor/
 
 use core::fmt;
-use std::sync::Arc;
+use core::time::Duration;
+use std::sync::{Arc, mpsc};
 
-use ironrdp_egfx::decode::H264Decoder;
-#[cfg(any(feature = "openh264", windows))]
+use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decoder, Yuv420Frame};
 use tracing::warn;
+
+/// Longest time [`H264Decoder::wait_until_ready`] waits for a decoder started in the background.
+///
+/// Longer than the Media Foundation decoder's own start limit, so it only bounds factories
+/// that never return.
+const BACKGROUND_START_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Creates an H.264 decoder for the graphics pipeline and for each video presentation.
 ///
@@ -65,13 +71,96 @@ impl H264DecoderFactory {
     pub fn create(&self) -> Option<Box<dyn H264Decoder>> {
         (self.0)()
     }
+
+    /// Starts creating a decoder on another thread and returns at once.
+    ///
+    /// The returned decoder finishes starting in [`H264Decoder::wait_until_ready`], which
+    /// reports `false` when the backend is unavailable, so the graphics pipeline can create it
+    /// before connecting without delaying the connection.
+    pub fn create_in_background(&self) -> Box<dyn H264Decoder> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let factory = self.clone();
+        let started = std::thread::Builder::new()
+            .name("h264-decoder-start".to_owned())
+            .spawn(move || {
+                let _ = sender.send(factory.create());
+            });
+        let state = match started {
+            Ok(_) => BackgroundState::Starting(receiver),
+            Err(error) => {
+                warn!(%error, "Unable to start creating the H.264 decoder");
+                BackgroundState::Unavailable
+            }
+        };
+        Box::new(BackgroundDecoder { state })
+    }
+}
+
+/// A decoder another thread is still creating.
+struct BackgroundDecoder {
+    state: BackgroundState,
+}
+
+enum BackgroundState {
+    Starting(mpsc::Receiver<Option<Box<dyn H264Decoder>>>),
+    Ready(Box<dyn H264Decoder>),
+    Unavailable,
+}
+
+impl BackgroundDecoder {
+    fn ready(&mut self) -> DecoderResult<&mut Box<dyn H264Decoder>> {
+        match &mut self.state {
+            BackgroundState::Ready(decoder) => Ok(decoder),
+            _ => Err(DecoderError::msg("the H.264 decoder is not ready")),
+        }
+    }
+}
+
+impl H264Decoder for BackgroundDecoder {
+    fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
+        self.ready()?.decode(data)
+    }
+
+    fn decode_yuv420(&mut self, data: &[u8]) -> DecoderResult<Yuv420Frame> {
+        self.ready()?.decode_yuv420(data)
+    }
+
+    fn supports_yuv420(&self) -> bool {
+        matches!(&self.state, BackgroundState::Ready(decoder) if decoder.supports_yuv420())
+    }
+
+    fn wait_until_ready(&mut self) -> bool {
+        if let BackgroundState::Starting(receiver) = &self.state {
+            self.state = match receiver.recv_timeout(BACKGROUND_START_TIMEOUT) {
+                Ok(Some(mut decoder)) => {
+                    if decoder.wait_until_ready() {
+                        BackgroundState::Ready(decoder)
+                    } else {
+                        BackgroundState::Unavailable
+                    }
+                }
+                Ok(_) => BackgroundState::Unavailable,
+                Err(_) => {
+                    warn!("The H.264 decoder did not start in time");
+                    BackgroundState::Unavailable
+                }
+            };
+        }
+        matches!(self.state, BackgroundState::Ready(_))
+    }
+
+    fn reset(&mut self) {
+        if let BackgroundState::Ready(decoder) = &mut self.state {
+            decoder.reset();
+        }
+    }
 }
 
 /// Boxes the decoder `create` returns, or logs why `backend` is unavailable.
 #[cfg(any(feature = "openh264", windows))]
 fn create_or_warn<D: H264Decoder + 'static>(
     backend: &str,
-    create: impl FnOnce() -> ironrdp_egfx::decode::DecoderResult<D>,
+    create: impl FnOnce() -> DecoderResult<D>,
 ) -> Option<Box<dyn H264Decoder>> {
     match create() {
         Ok(decoder) => Some(Box::new(decoder)),

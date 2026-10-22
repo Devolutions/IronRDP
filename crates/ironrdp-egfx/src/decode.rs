@@ -333,6 +333,16 @@ pub trait H264Decoder: Send {
         false
     }
 
+    /// Finishes starting the decoder, and reports whether it can decode.
+    ///
+    /// The graphics pipeline calls this when its channel opens, before it advertises its
+    /// capabilities and before any other method, and advertises no AVC capability set when
+    /// it returns `false`. A decoder that starts in the background, so creating it does not
+    /// delay the connection, waits for that here.
+    fn wait_until_ready(&mut self) -> bool {
+        true
+    }
+
     /// Reset the decoder state
     ///
     /// Called when surfaces are reset (e.g., on `ResetGraphics`).

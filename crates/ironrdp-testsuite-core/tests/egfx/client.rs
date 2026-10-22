@@ -598,6 +598,31 @@ fn client_advertises_avc444_with_a_yuv_decoder() {
     );
 }
 
+// oracle: spec MS-RDPEGFX §2.2.3.3
+#[test]
+fn client_advertises_no_avc_when_the_decoder_never_becomes_ready() {
+    struct FailedStart;
+    impl H264Decoder for FailedStart {
+        fn decode(&mut self, _data: &[u8]) -> DecoderResult<DecodedFrame> {
+            Ok(DecodedFrame::new(vec![0; 16 * 16 * 4], 16, 16))
+        }
+
+        fn supports_yuv420(&self) -> bool {
+            true
+        }
+
+        fn wait_until_ready(&mut self) -> bool {
+            false
+        }
+    }
+
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), Some(Box::new(FailedStart)));
+    let messages = client.start(0).expect("start should succeed");
+    let caps_pdu = decode_caps_from_message(&messages[0]);
+    let versions: Vec<_> = caps_pdu.0.iter().map(|cap| cap.version).collect();
+    assert_eq!(versions, [CapabilityVersion::V8]);
+}
+
 // oracle: spec MS-RDPEGFX §2.2.3.10
 #[test]
 fn client_keeps_handler_caps_that_disable_avc_without_decoder() {
