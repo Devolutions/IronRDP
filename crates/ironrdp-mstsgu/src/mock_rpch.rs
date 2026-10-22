@@ -1,14 +1,21 @@
 //! In-process RPC proxy used only by the RPCH session orchestration tests.
 
+use sspi::{
+    AuthIdentity, AuthIdentityBuffers, BufferType, CredentialUse, DataRepresentation, Ntlm, SecurityBuffer,
+    SecurityBufferRef, ServerRequestFlags, Sspi as _, SspiImpl as _, Username,
+};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 
 use crate::rpc::tsgu::{
-    TSPROXY_AUTHORIZE_TUNNEL_OPNUM, TSPROXY_CREATE_CHANNEL_OPNUM, TSPROXY_CREATE_TUNNEL_OPNUM,
-    TSPROXY_MAKE_TUNNEL_CALL_OPNUM, TSPROXY_SEND_TO_SERVER_OPNUM, TSPROXY_SETUP_RECEIVE_PIPE_OPNUM,
+    TSPROXY_AUTHORIZE_TUNNEL_OPNUM, TSPROXY_CLOSE_CHANNEL_OPNUM, TSPROXY_CLOSE_TUNNEL_OPNUM,
+    TSPROXY_CREATE_CHANNEL_OPNUM, TSPROXY_CREATE_TUNNEL_OPNUM, TSPROXY_MAKE_TUNNEL_CALL_OPNUM,
+    TSPROXY_SEND_TO_SERVER_OPNUM, TSPROXY_SETUP_RECEIVE_PIPE_OPNUM,
 };
 use crate::rpc::{
-    PFC_FIRST_FRAG, PFC_LAST_FRAG, PTYPE_BIND, PTYPE_REQUEST, PTYPE_RTS, RpcResponse, RtsCookie, RtsFlowControlAck,
-    encode_rpc_response, encode_rpc_response_fragment, encode_rts_flow_control_ack,
+    PFC_FIRST_FRAG, PFC_LAST_FRAG, PFC_SUPPORT_HEADER_SIGN, PTYPE_BIND, PTYPE_REQUEST, PTYPE_RPC_AUTH_3, PTYPE_RTS,
+    RPC_AUTH_LEVEL_PACKET_INTEGRITY, RPC_AUTH_TYPE_WINNT, RPC_COMMON_HEADER_SIZE, RPC_NTLM_VERIFIER_LENGTH,
+    RPC_SECURITY_TRAILER_SIZE, RpcAuthenticationInfo, RtsCookie, RtsFlowControlAck, decode_rpc_authenticated_fragment,
+    encode_rts_flow_control_ack, prepare_rpc_authenticated_pdu,
 };
 
 const HTTP_HEAD_LIMIT: usize = 16 * 1024;
@@ -22,6 +29,9 @@ pub(crate) enum MockRpchScenario {
     Message(MockTunnelMessage),
     MessageBeforeCreateChannel(MockTunnelMessage),
     ReceivePipeError(u32),
+    TamperedResponse,
+    TamperedReceivePipeResponse,
+    FragmentedReceivePipePdu,
     InvalidOutFragmentLength,
     BasicAuthentication,
 }
@@ -30,6 +40,117 @@ pub(crate) enum MockRpchScenario {
 pub(crate) enum MockTunnelMessage {
     Service(&'static str),
     Reauthenticate(u64),
+}
+
+struct MockRpcSecurity {
+    ntlm: Ntlm,
+    credentials: Option<AuthIdentityBuffers>,
+    receive_sequence: u32,
+    send_sequence: u32,
+    authentication: RpcAuthenticationInfo,
+}
+
+impl MockRpcSecurity {
+    fn new() -> Self {
+        let mut ntlm = Ntlm::new();
+        let identity = AuthIdentity {
+            username: Username::parse("CONTOSO\\alice").expect("valid test account"),
+            password: "secret".to_owned().into(),
+        };
+        let credentials = ntlm
+            .acquire_credentials_handle()
+            .with_credential_use(CredentialUse::Inbound)
+            .with_auth_data(&identity)
+            .execute(&mut ntlm)
+            .expect("acquire proxy NTLM credentials")
+            .credentials_handle;
+        Self {
+            ntlm,
+            credentials,
+            receive_sequence: 0,
+            send_sequence: 0,
+            authentication: RpcAuthenticationInfo {
+                auth_type: RPC_AUTH_TYPE_WINNT,
+                auth_level: RPC_AUTH_LEVEL_PACKET_INTEGRITY,
+                auth_context_id: 1,
+                verifier_length: RPC_NTLM_VERIFIER_LENGTH,
+            },
+        }
+    }
+
+    fn accept_token(&mut self, token: &[u8]) -> Option<(Vec<u8>, sspi::SecurityStatus)> {
+        let mut input = [SecurityBuffer::new(token.to_vec(), BufferType::Token)];
+        let mut output = [SecurityBuffer::new(Vec::new(), BufferType::Token)];
+        let builder = self
+            .ntlm
+            .accept_security_context()
+            .with_credentials_handle(&mut self.credentials)
+            .with_context_requirements(
+                ServerRequestFlags::INTEGRITY
+                    | ServerRequestFlags::REPLAY_DETECT
+                    | ServerRequestFlags::SEQUENCE_DETECT
+                    | ServerRequestFlags::ALLOCATE_MEMORY,
+            )
+            .with_target_data_representation(DataRepresentation::Native)
+            .with_input(&mut input)
+            .with_output(&mut output);
+        let result = self
+            .ntlm
+            .accept_security_context_impl(builder)
+            .ok()?
+            .resolve_to_result()
+            .ok()?;
+        Some((output[0].buffer.clone(), result.status))
+    }
+
+    fn verify_request(&mut self, pdu: &mut [u8]) -> Option<Vec<u8>> {
+        let (header, trailer) = {
+            let fragment = decode_rpc_authenticated_fragment(pdu, u16::MAX).ok()?;
+            (fragment.header(), fragment.security_trailer())
+        };
+        if trailer.auth_type != self.authentication.auth_type
+            || trailer.auth_level != self.authentication.auth_level
+            || trailer.auth_context_id != self.authentication.auth_context_id
+            || header.auth_length() != self.authentication.verifier_length
+        {
+            return None;
+        }
+        let verifier_offset = pdu.len().checked_sub(usize::from(header.auth_length()))?;
+        let (data, signature) = pdu.split_at_mut(verifier_offset);
+        self.ntlm
+            .verify_signature(
+                &mut [
+                    SecurityBufferRef::token_buf(signature),
+                    SecurityBufferRef::data_buf(&mut data[..verifier_offset]),
+                ],
+                self.receive_sequence,
+            )
+            .ok()?;
+        self.receive_sequence = self.receive_sequence.checked_add(1)?;
+        let verified = decode_rpc_authenticated_fragment(pdu, u16::MAX)
+            .ok()?
+            .verify_with(|_, _| Ok::<(), core::convert::Infallible>(()))
+            .ok()?;
+        Some(verified.body().to_vec())
+    }
+
+    fn signed_response(&mut self, call_id: u32, flags: u8, stub: &[u8]) -> Result<Vec<u8>, crate::rpc::RpcPduError> {
+        let mut body = Vec::with_capacity(8 + stub.len());
+        body.extend_from_slice(&u32::try_from(stub.len()).unwrap_or(u32::MAX).to_le_bytes());
+        body.extend_from_slice(&0u16.to_le_bytes());
+        body.extend_from_slice(&[0, 0]);
+        body.extend_from_slice(stub);
+        let mut pdu =
+            prepare_rpc_authenticated_pdu(crate::rpc::PTYPE_RESPONSE, flags, call_id, &body, self.authentication)?
+                .finish(&[0; 16])?;
+        sign_server_fragment(&mut self.ntlm, &mut pdu, self.send_sequence);
+        self.send_sequence = self.send_sequence.checked_add(1).expect("test sequence fits");
+        Ok(pdu)
+    }
+
+    fn bind_ack(call_id: u32, type2_token: &[u8]) -> Vec<u8> {
+        encode_authenticated_token_pdu(crate::rpc::PTYPE_BIND_ACK, call_id, bind_ack_body(), type2_token)
+    }
 }
 
 pub(crate) fn mock_rpch_proxy(scenario: MockRpchScenario) -> (DuplexStream, DuplexStream, tokio::task::JoinHandle<()>) {
@@ -85,10 +206,12 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
     let message_before_create_channel = matches!(scenario, MockRpchScenario::MessageBeforeCreateChannel(_));
     let mut tunnel_message_call_id = None;
     let mut receive_pipe_call_id = None;
+    let mut receive_pipe_started = false;
     let mut bytes_received = 0u32;
+    let mut rpc_security = MockRpcSecurity::new();
 
     loop {
-        let Some(pdu) = read_pdu(&mut input).await else {
+        let Some(mut pdu) = read_pdu(&mut input).await else {
             return;
         };
         let Ok(length) = u32::try_from(pdu.len()) else {
@@ -101,13 +224,41 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
 
         match pdu.get(2).copied() {
             Some(PTYPE_BIND) => {
-                if write_all(&mut out, &bind_ack(call_id(&pdu))).await.is_err() {
+                let Some(type1_token) = auth_token(&pdu) else {
+                    return;
+                };
+                let Some((type2_token, status)) = rpc_security.accept_token(&type1_token) else {
+                    return;
+                };
+                if status != sspi::SecurityStatus::ContinueNeeded {
+                    return;
+                }
+                let bind_ack = MockRpcSecurity::bind_ack(call_id(&pdu), &type2_token);
+                if write_all(&mut out, &bind_ack).await.is_err() {
                     return;
                 }
             }
+            Some(PTYPE_RPC_AUTH_3) => {
+                let Some(type3_token) = auth_token(&pdu) else {
+                    return;
+                };
+                let Some((_, status)) = rpc_security.accept_token(&type3_token) else {
+                    return;
+                };
+                if status != sspi::SecurityStatus::CompleteNeeded {
+                    return;
+                }
+                rpc_security
+                    .ntlm
+                    .complete_auth_token(&mut [])
+                    .expect("complete server NTLM context");
+            }
             Some(PTYPE_REQUEST) => {
-                let Some(opnum) = pdu
-                    .get(22..24)
+                let Some(body) = rpc_security.verify_request(&mut pdu) else {
+                    return;
+                };
+                let Some(opnum) = body
+                    .get(6..8)
                     .and_then(|bytes| bytes.try_into().ok())
                     .map(u16::from_le_bytes)
                 else {
@@ -117,16 +268,21 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
                 if opnum == TSPROXY_SETUP_RECEIVE_PIPE_OPNUM {
                     receive_pipe_call_id = Some(request_call_id);
                     if let Some(result) = receive_pipe_result {
-                        if write_response(&mut out, request_call_id, &result.to_le_bytes())
+                        if write_response(&mut out, &mut rpc_security, request_call_id, &result.to_le_bytes())
                             .await
                             .is_err()
                         {
                             return;
                         }
                     } else if let (Some(message), Some(call_id)) = (message.take(), tunnel_message_call_id)
-                        && write_fragmented_response(&mut out, call_id, &tunnel_message_response(message))
-                            .await
-                            .is_err()
+                        && write_fragmented_response(
+                            &mut out,
+                            &mut rpc_security,
+                            call_id,
+                            &tunnel_message_response(message),
+                        )
+                        .await
+                        .is_err()
                     {
                         return;
                     }
@@ -135,8 +291,23 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
 
                 match opnum {
                     TSPROXY_CREATE_TUNNEL_OPNUM => {
+                        if matches!(scenario, MockRpchScenario::TamperedResponse) {
+                            let Ok(mut response) = rpc_security.signed_response(
+                                request_call_id,
+                                PFC_FIRST_FRAG | PFC_LAST_FRAG,
+                                &create_tunnel_response(&TUNNEL_CONTEXT, 7),
+                            ) else {
+                                return;
+                            };
+                            *response.last_mut().expect("response verifier") ^= 1;
+                            if write_all(&mut out, &response).await.is_err() {
+                                return;
+                            }
+                            continue;
+                        }
                         if write_fragmented_response(
                             &mut out,
+                            &mut rpc_security,
                             request_call_id,
                             &create_tunnel_response(&TUNNEL_CONTEXT, 7),
                         )
@@ -147,9 +318,14 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
                         }
                     }
                     TSPROXY_AUTHORIZE_TUNNEL_OPNUM => {
-                        if write_response(&mut out, request_call_id, &authorize_tunnel_response())
-                            .await
-                            .is_err()
+                        if write_response(
+                            &mut out,
+                            &mut rpc_security,
+                            request_call_id,
+                            &authorize_tunnel_response(),
+                        )
+                        .await
+                        .is_err()
                         {
                             return;
                         }
@@ -162,23 +338,33 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
                     TSPROXY_CREATE_CHANNEL_OPNUM => {
                         if message_before_create_channel {
                             if let (Some(message), Some(call_id)) = (message.take(), tunnel_message_call_id) {
-                                if write_response(&mut out, call_id, &tunnel_message_response(message))
-                                    .await
-                                    .is_err()
+                                if write_response(
+                                    &mut out,
+                                    &mut rpc_security,
+                                    call_id,
+                                    &tunnel_message_response(message),
+                                )
+                                .await
+                                .is_err()
                                 {
                                     return;
                                 }
                             }
                         }
-                        if write_response(&mut out, request_call_id, &create_channel_response(&CHANNEL_CONTEXT, 3))
-                            .await
-                            .is_err()
+                        if write_response(
+                            &mut out,
+                            &mut rpc_security,
+                            request_call_id,
+                            &create_channel_response(&CHANNEL_CONTEXT, 3),
+                        )
+                        .await
+                        .is_err()
                         {
                             return;
                         }
                     }
                     TSPROXY_SEND_TO_SERVER_OPNUM => {
-                        let Some(data) = send_to_server_data(&pdu) else {
+                        let Some(data) = send_to_server_data(&body) else {
                             return;
                         };
                         let Ok(ack) = encode_rts_flow_control_ack(RtsFlowControlAck::new(
@@ -189,12 +375,54 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
                             return;
                         };
                         if write_all(&mut out, &ack).await.is_err()
-                            || write_response(&mut out, request_call_id, &0u32.to_le_bytes())
+                            || write_response(&mut out, &mut rpc_security, request_call_id, &0u32.to_le_bytes())
                                 .await
                                 .is_err()
-                            || write_response(&mut out, receive_pipe_call_id.unwrap_or(request_call_id), data)
-                                .await
-                                .is_err()
+                        {
+                            return;
+                        }
+                        if matches!(scenario, MockRpchScenario::TamperedReceivePipeResponse) {
+                            let Ok(mut response) = rpc_security.signed_response(
+                                receive_pipe_call_id.unwrap_or(request_call_id),
+                                PFC_FIRST_FRAG | PFC_LAST_FRAG,
+                                data,
+                            ) else {
+                                return;
+                            };
+                            *response.last_mut().expect("response verifier") ^= 1;
+                            if write_all(&mut out, &response).await.is_err() {
+                                return;
+                            }
+                        } else {
+                            let flags = if receive_pipe_started {
+                                0
+                            } else {
+                                receive_pipe_started = true;
+                                PFC_FIRST_FRAG
+                            };
+                            let response = match rpc_security.signed_response(
+                                receive_pipe_call_id.unwrap_or(request_call_id),
+                                flags,
+                                data,
+                            ) {
+                                Ok(response) => response,
+                                Err(_) => return,
+                            };
+                            let write_result = if matches!(scenario, MockRpchScenario::FragmentedReceivePipePdu) {
+                                write_fragmented_transport_pdu(&mut out, &response).await
+                            } else {
+                                write_all(&mut out, &response).await
+                            };
+                            if write_result.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    TSPROXY_CLOSE_CHANNEL_OPNUM | TSPROXY_CLOSE_TUNNEL_OPNUM => {
+                        let response = [0u8; 24];
+                        if write_response(&mut out, &mut rpc_security, request_call_id, &response)
+                            .await
+                            .is_err()
                         {
                             return;
                         }
@@ -335,37 +563,38 @@ async fn read_pdu(stream: &mut DuplexStream) -> Option<Vec<u8>> {
     Some(pdu)
 }
 
-async fn write_response(stream: &mut DuplexStream, call_id: u32, stub: &[u8]) -> tokio::io::Result<()> {
-    write_all(stream, &encode_rpc_response(call_id, stub).expect("test response fits")).await
+async fn write_response(
+    stream: &mut DuplexStream,
+    security: &mut MockRpcSecurity,
+    call_id: u32,
+    stub: &[u8],
+) -> tokio::io::Result<()> {
+    let response = security
+        .signed_response(call_id, PFC_FIRST_FRAG | PFC_LAST_FRAG, stub)
+        .expect("test response fits");
+    write_all(stream, &response).await
 }
 
-async fn write_fragmented_response(stream: &mut DuplexStream, call_id: u32, stub: &[u8]) -> tokio::io::Result<()> {
+async fn write_fragmented_response(
+    stream: &mut DuplexStream,
+    security: &mut MockRpcSecurity,
+    call_id: u32,
+    stub: &[u8],
+) -> tokio::io::Result<()> {
     let split_at = stub.len() / 2;
-    let first = encode_rpc_response_fragment(RpcResponse {
-        call_id,
-        pfc_flags: PFC_FIRST_FRAG,
-        alloc_hint: u32::try_from(stub.len()).expect("test response fits"),
-        cancel_count: 0,
-        reserved: 0,
-        stub: &stub[..split_at],
-    })
-    .expect("test response fits");
-    let second = encode_rpc_response_fragment(RpcResponse {
-        call_id,
-        pfc_flags: PFC_LAST_FRAG,
-        alloc_hint: u32::try_from(stub.len() - split_at).expect("test response fits"),
-        cancel_count: 0,
-        reserved: 0,
-        stub: &stub[split_at..],
-    })
-    .expect("test response fits");
+    let first = security
+        .signed_response(call_id, PFC_FIRST_FRAG, &stub[..split_at])
+        .expect("test response fits");
+    let second = security
+        .signed_response(call_id, PFC_LAST_FRAG, &stub[split_at..])
+        .expect("test response fits");
     write_all(stream, &first).await?;
     write_all(stream, &second).await
 }
 
-fn send_to_server_data(pdu: &[u8]) -> Option<&[u8]> {
-    let buffer_length = usize::try_from(u32::from_be_bytes(pdu.get(52..56)?.try_into().ok()?)).ok()?;
-    pdu.get(56..56usize.checked_add(buffer_length)?)
+fn send_to_server_data(body: &[u8]) -> Option<&[u8]> {
+    let buffer_length = usize::try_from(u32::from_be_bytes(body.get(36..40)?.try_into().ok()?)).ok()?;
+    body.get(40..40usize.checked_add(buffer_length)?)
 }
 
 fn call_id(pdu: &[u8]) -> u32 {
@@ -376,7 +605,15 @@ async fn write_all(stream: &mut DuplexStream, bytes: &[u8]) -> tokio::io::Result
     stream.write_all(bytes).await
 }
 
-fn bind_ack(call_id: u32) -> Vec<u8> {
+async fn write_fragmented_transport_pdu(stream: &mut DuplexStream, bytes: &[u8]) -> tokio::io::Result<()> {
+    for chunk in bytes.chunks(3) {
+        stream.write_all(chunk).await?;
+        tokio::task::yield_now().await;
+    }
+    Ok(())
+}
+
+fn bind_ack_body() -> Vec<u8> {
     let mut body = Vec::new();
     body.extend_from_slice(&0x2000u16.to_le_bytes());
     body.extend_from_slice(&0x2000u16.to_le_bytes());
@@ -390,16 +627,57 @@ fn bind_ack(call_id: u32) -> Vec<u8> {
     ]);
     body.extend_from_slice(&2u32.to_le_bytes());
 
-    let mut pdu = vec![5, 0, 12, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0];
-    pdu.extend_from_slice(
-        &u16::try_from(16 + body.len())
-            .expect("test bind acknowledgement fits")
-            .to_le_bytes(),
-    );
-    pdu.extend_from_slice(&0u16.to_le_bytes());
+    body
+}
+
+fn encode_authenticated_token_pdu(ptype: u8, call_id: u32, mut body: Vec<u8>, token: &[u8]) -> Vec<u8> {
+    let padding = (16 - body.len() % 16) % 16;
+    body.resize(body.len() + padding, 0);
+    let fragment_length = RPC_COMMON_HEADER_SIZE + body.len() + RPC_SECURITY_TRAILER_SIZE + token.len();
+    let mut pdu = vec![
+        5,
+        0,
+        ptype,
+        PFC_FIRST_FRAG | PFC_LAST_FRAG | PFC_SUPPORT_HEADER_SIGN,
+        0x10,
+        0,
+        0,
+        0,
+    ];
+    pdu.extend_from_slice(&u16::try_from(fragment_length).expect("test PDU fits").to_le_bytes());
+    pdu.extend_from_slice(&u16::try_from(token.len()).expect("test token fits").to_le_bytes());
     pdu.extend_from_slice(&call_id.to_le_bytes());
     pdu.extend_from_slice(&body);
+    pdu.extend_from_slice(&[
+        RPC_AUTH_TYPE_WINNT,
+        RPC_AUTH_LEVEL_PACKET_INTEGRITY,
+        u8::try_from(padding).expect("test padding fits"),
+        0,
+    ]);
+    pdu.extend_from_slice(&1u32.to_le_bytes());
+    pdu.extend_from_slice(token);
     pdu
+}
+
+fn auth_token(pdu: &[u8]) -> Option<Vec<u8>> {
+    let parsed = decode_rpc_authenticated_fragment(pdu, u16::MAX).ok()?;
+    (parsed.security_trailer().auth_type == RPC_AUTH_TYPE_WINNT).then(|| parsed.verifier().to_vec())
+}
+
+fn sign_server_fragment(server: &mut Ntlm, fragment: &mut [u8], sequence_number: u32) {
+    let header = crate::rpc::RpcCommonHeader::decode(fragment).expect("RPC response header");
+    let verifier_offset = fragment.len() - usize::from(header.auth_length());
+    let (data, verifier) = fragment.split_at_mut(verifier_offset);
+    server
+        .make_signature(
+            0,
+            &mut [
+                SecurityBufferRef::token_buf(verifier),
+                SecurityBufferRef::data_buf(&mut data[..verifier_offset]),
+            ],
+            sequence_number,
+        )
+        .expect("sign mock RPC response");
 }
 
 fn rts_conn_a3(connection_timeout: u32) -> Vec<u8> {

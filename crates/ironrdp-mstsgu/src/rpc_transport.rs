@@ -289,7 +289,7 @@ fn is_valid_header_value(value: &str) -> bool {
     !value.is_empty() && !value.bytes().any(|byte| byte.is_ascii_control())
 }
 
-fn is_valid_target(target: &str) -> bool {
+pub(crate) fn is_valid_target(target: &str) -> bool {
     let Some((server, port)) = target.rsplit_once(':') else {
         return false;
     };
@@ -342,7 +342,7 @@ fn parse_rpch_response_head(bytes: &[u8]) -> Result<RpchResponseHead, Error> {
     let version = status
         .next()
         .ok_or_else(|| Error::new("missing rpch HTTP version", GwErrorKind::Decode))?;
-    if !version.starts_with("HTTP/") {
+    if !matches!(version, "HTTP/1.0" | "HTTP/1.1") {
         return Err(Error::new("invalid rpch HTTP version", GwErrorKind::Decode));
     }
     let status = status
@@ -350,6 +350,9 @@ fn parse_rpch_response_head(bytes: &[u8]) -> Result<RpchResponseHead, Error> {
         .ok_or_else(|| Error::new("missing rpch response status", GwErrorKind::Decode))?
         .parse()
         .map_err(|error| custom_err!("parse rpch response status", error))?;
+    if !(100..=599).contains(&status) {
+        return Err(Error::new("invalid rpch response status", GwErrorKind::Decode));
+    }
 
     let mut content_length = None;
     let mut content_type = None;

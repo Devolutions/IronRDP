@@ -35,7 +35,7 @@ pub(crate) trait GatewayIo: AsyncRead + AsyncWrite + Unpin {}
 
 impl<T: AsyncRead + AsyncWrite + Unpin + ?Sized> GatewayIo for T {}
 
-type GatewayStream = Box<dyn GatewayIo + Send>;
+pub(crate) type GatewayStream = Box<dyn GatewayIo + Send + 'static>;
 type RdgBody = BoxBody<Bytes, Infallible>;
 
 const MAX_AUTH_RESPONSE_SIZE: usize = 16 * 1024;
@@ -97,10 +97,10 @@ impl fmt::Debug for ProxyConfig {
     }
 }
 
-struct GatewayEndpoint {
-    host: String,
+pub(crate) struct GatewayEndpoint {
+    pub(crate) host: String,
     port: u16,
-    endpoint: String,
+    pub(crate) endpoint: String,
 }
 
 struct BufferedGatewayStream {
@@ -326,7 +326,44 @@ pub(crate) async fn open_gateway_transport(
     .await
 }
 
-async fn upgrade_gateway_tls(
+pub(crate) async fn open_rpch_gateway_channels(
+    endpoint: &str,
+    certificate_validation: CertificateValidation,
+    certificate_validation_callback: Option<CertificateValidationCallback>,
+) -> Result<(GatewayStream, GatewayStream, core::net::SocketAddr), Error> {
+    let gateway = parse_gateway_endpoint(endpoint)?;
+    let gw_host = gateway.host.clone();
+    let proxy = proxy_from_environment(&gateway)?;
+
+    let (out, client_addr) = open_gateway_tcp(&gateway, proxy.as_ref()).await?;
+    let out = upgrade_gateway_tls(
+        out,
+        &gw_host,
+        endpoint,
+        certificate_validation,
+        certificate_validation_callback.clone(),
+    )
+    .await?;
+
+    let in_gateway = GatewayEndpoint {
+        host: gateway.host,
+        port: gateway.port,
+        endpoint: gateway.endpoint,
+    };
+    let (input, _) = open_gateway_tcp(&in_gateway, proxy.as_ref()).await?;
+    let input = upgrade_gateway_tls(
+        input,
+        &gw_host,
+        endpoint,
+        certificate_validation,
+        certificate_validation_callback,
+    )
+    .await?;
+
+    Ok((out, input, client_addr))
+}
+
+pub(crate) async fn upgrade_gateway_tls(
     stream: GatewayStream,
     gw_host: &str,
     gw_endpoint: &str,
@@ -352,7 +389,7 @@ async fn upgrade_gateway_tls(
     Ok(Box::new(stream))
 }
 
-fn parse_gateway_endpoint(endpoint: &str) -> Result<GatewayEndpoint, Error> {
+pub(crate) fn parse_gateway_endpoint(endpoint: &str) -> Result<GatewayEndpoint, Error> {
     if endpoint.contains('@') {
         return Err(Error::new("connect", GwErrorKind::InvalidGwTarget));
     }
@@ -411,7 +448,7 @@ pub(crate) fn gateway_endpoint_summary(endpoint: &str) -> Result<String, Error> 
     parse_gateway_endpoint(endpoint).map(|gateway| gateway.endpoint)
 }
 
-async fn open_gateway_tcp(
+pub(crate) async fn open_gateway_tcp(
     gateway: &GatewayEndpoint,
     proxy: Option<&ProxyConfig>,
 ) -> Result<(GatewayStream, core::net::SocketAddr), Error> {
@@ -607,7 +644,7 @@ fn validate_http_connect_response(response: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-fn proxy_from_environment(gateway: &GatewayEndpoint) -> Result<Option<ProxyConfig>, Error> {
+pub(crate) fn proxy_from_environment(gateway: &GatewayEndpoint) -> Result<Option<ProxyConfig>, Error> {
     proxy_from_values(
         &gateway.host,
         gateway.port,

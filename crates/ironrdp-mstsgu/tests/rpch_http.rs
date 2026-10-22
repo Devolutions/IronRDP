@@ -54,6 +54,20 @@ mod rpc_transport;
 use rpc_transport::{RpchRequestHead, drain_body, read_rpch_response_head, write_rpch_request_head};
 
 #[tokio::test]
+async fn response_head_rejects_invalid_http_versions_and_status_codes() {
+    for response in [
+        b"HTTP/2 200 OK\r\n\r\n".as_slice(),
+        b"HTTP/invalid 200 OK\r\n\r\n",
+        b"HTTP/1.1 99 Invalid\r\n\r\n",
+        b"HTTP/1.1 600 Invalid\r\n\r\n",
+    ] {
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        server.write_all(response).await.expect("response head");
+        assert!(read_rpch_response_head(&mut client).await.is_err());
+    }
+}
+
+#[tokio::test]
 async fn request_head_contains_rpch_routing_and_authentication_fields() {
     let (mut client, mut server) = tokio::io::duplex(4096);
     let write = tokio::spawn(async move {

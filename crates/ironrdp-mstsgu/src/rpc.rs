@@ -1,10 +1,9 @@
 //! DCE/RPC common-header, fragment, NTLM association, and RPCH v2 setup codecs.
 //!
-//! This module frames connection-oriented DCE/RPC PDUs and the initial RPC-over-HTTP v2 RTS exchange.
-//! It is not a live RPC-over-HTTP transport.
-//! The staged TsProxy NDR control codecs do not provide a live RPC-over-HTTP transport.
-//! Caller-owned packet-integrity framing is available, but authentication-provider processing and the RPCH client
-//! belong in later work.
+//! This module provides connection-oriented DCE/RPC and RPC-over-HTTP v2 codecs, plus client-side NTLM
+//! association and packet-integrity primitives.
+//! The separately selected [`crate::RpchClient`] provides the live HTTPS channel transport.
+//! Callers still own association sequencing, TS Proxy calls, and verification of received fragments.
 //!
 //! [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 //! [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
@@ -14,7 +13,8 @@ use core::{fmt, time::Duration};
 
 use sspi::{
     AuthIdentity, AuthIdentityBuffers, BufferType, ClientRequestFlags, CredentialUse, DataRepresentation,
-    InitializeSecurityContextResult, Ntlm, SecurityBuffer, SecurityStatus, Sspi as _, SspiImpl as _, Username,
+    InitializeSecurityContextResult, Ntlm, SecurityBuffer, SecurityBufferRef, SecurityStatus, Sspi as _, SspiImpl as _,
+    Username,
 };
 use uuid::Uuid;
 
@@ -70,6 +70,10 @@ pub const PFC_SUPPORT_HEADER_SIGN: u8 = 0x04;
 ///
 /// [MS-RPCE] 2.2.2.12.
 pub const RPC_AUTH_LEVEL_PACKET_INTEGRITY: u8 = 5;
+/// NTLM RPC authentication service (`RPC_C_AUTHN_WINNT`).
+pub const RPC_AUTH_TYPE_WINNT: u8 = 10;
+/// NTLM message-signature size used by packet-integrity authentication.
+pub const RPC_NTLM_VERIFIER_LENGTH: u16 = 16;
 
 /// DCE/RPC security-trailer size.
 ///
@@ -125,7 +129,6 @@ pub const DEFAULT_FRAGMENT_SIZE: u16 = 0x10b8;
 pub const MAX_PENDING_RPC_FRAGMENTS: usize = 16;
 
 const MAXIMUM_RESPONSE_ALLOC_HINT: usize = 0x7fff_ffff;
-const RPC_AUTH_TYPE_WINNT: u8 = 0x0a;
 const RPC_AUTH_CONTEXT_ID: u32 = 1;
 const RTS_HEADER_SIZE: usize = RPC_COMMON_HEADER_SIZE + 4 /* flags and command count */;
 const RTS_PFC_FLAGS: u8 = PFC_FIRST_FRAG | PFC_LAST_FRAG;
@@ -147,6 +150,7 @@ const RTS_COMMAND_DESTINATION: u32 = 13;
 const RTS_COMMAND_ANCE: u32 = 10;
 const RTS_DESTINATION_FD_CLIENT: u32 = 0;
 const RTS_DESTINATION_FD_SERVER: u32 = 2;
+const RTS_DESTINATION_FD_OUT_PROXY: u32 = 3;
 const RTS_MIN_RECEIVE_WINDOW_SIZE: u32 = 8 * 1024;
 const RTS_MAX_RECEIVE_WINDOW_SIZE: u32 = 256 * 1024;
 const RTS_MIN_CONNECTION_TIMEOUT: u32 = 120_000;
@@ -670,6 +674,7 @@ enum RpcNtlmAuthState {
     Initial,
     AwaitingChallenge,
     Established,
+    Failed,
 }
 
 impl RpcNtlmAuth {
@@ -729,6 +734,148 @@ impl RpcNtlmAuth {
     /// Whether the Type-3 token has completed this NTLM association.
     pub fn is_complete(&self) -> bool {
         self.state == RpcNtlmAuthState::Established
+    }
+
+    /// Signs one complete NTLM-authenticated DCE/RPC fragment in place.
+    ///
+    /// `authentication` must match the security trailer, and `sequence_number` is
+    /// managed by the caller for the lifetime of the RPC association.
+    /// When header signing was negotiated, the common header, padded body, and security trailer are signed.
+    /// Otherwise only the padded body is signed, as required by [MS-RPCE] 3.3.1.5.2.2.
+    pub fn sign_fragment(
+        &mut self,
+        fragment: &mut [u8],
+        authentication: RpcAuthenticationInfo,
+        sequence_number: u32,
+        supports_header_signing: bool,
+    ) -> Result<(), Error> {
+        if !self.is_complete() {
+            return Err(Error::new("rpc ntlm context is not established", GwErrorKind::Connect));
+        }
+        if authentication.auth_type != RPC_AUTH_TYPE_WINNT
+            || authentication.auth_level != RPC_AUTH_LEVEL_PACKET_INTEGRITY
+            || authentication.verifier_length != RPC_NTLM_VERIFIER_LENGTH
+        {
+            return Err(Error::new(
+                "invalid rpc ntlm authentication parameters",
+                GwErrorKind::Connect,
+            ));
+        }
+
+        let security_trailer_offset = {
+            let parsed = decode_rpc_authenticated_fragment(fragment, u16::MAX)
+                .map_err(|error| Error::custom("validate rpc ntlm fragment", error))?;
+            let header = parsed.header();
+            let trailer = parsed.security_trailer();
+            if usize::from(header.fragment_length()) != fragment.len()
+                || trailer.auth_type != authentication.auth_type
+                || trailer.auth_level != authentication.auth_level
+                || trailer.auth_context_id != authentication.auth_context_id
+                || header.auth_length() != authentication.verifier_length
+            {
+                return Err(Error::new(
+                    "rpc ntlm fragment authentication mismatch",
+                    GwErrorKind::Decode,
+                ));
+            }
+            fragment
+                .len()
+                .checked_sub(usize::from(header.auth_length()) + RPC_SECURITY_TRAILER_SIZE)
+                .ok_or_else(|| Error::new("invalid rpc ntlm signature offset", GwErrorKind::Decode))?
+        };
+
+        let verifier_offset = security_trailer_offset + RPC_SECURITY_TRAILER_SIZE;
+        let data_start = if supports_header_signing {
+            0
+        } else {
+            RPC_COMMON_HEADER_SIZE
+        };
+        let (signed_data, verifier) = fragment.split_at_mut(verifier_offset);
+        let data_end = if supports_header_signing {
+            verifier_offset
+        } else {
+            security_trailer_offset
+        };
+        let mut buffers = [
+            SecurityBufferRef::token_buf(verifier),
+            SecurityBufferRef::data_buf(&mut signed_data[data_start..data_end]),
+        ];
+        if let Err(error) = self.ntlm.make_signature(0, &mut buffers, sequence_number) {
+            self.state = RpcNtlmAuthState::Failed;
+            return Err(Error::custom("sign rpc ntlm fragment", error));
+        }
+        Ok(())
+    }
+
+    /// Verifies one complete NTLM-authenticated DCE/RPC fragment in place.
+    ///
+    /// `authentication` must match the security trailer, and `sequence_number` is
+    /// managed by the caller for the lifetime of the RPC association.
+    /// When header signing was negotiated, the common header, padded body, and security trailer are verified.
+    /// Otherwise only the padded body is verified, as required by [MS-RPCE] 3.3.1.5.2.2.
+    pub fn verify_fragment(
+        &mut self,
+        fragment: &mut [u8],
+        authentication: RpcAuthenticationInfo,
+        sequence_number: u32,
+        supports_header_signing: bool,
+    ) -> Result<(), Error> {
+        if !self.is_complete() {
+            return Err(Error::new("rpc ntlm context is not established", GwErrorKind::Connect));
+        }
+        if authentication.auth_type != RPC_AUTH_TYPE_WINNT
+            || authentication.auth_level != RPC_AUTH_LEVEL_PACKET_INTEGRITY
+            || authentication.verifier_length != RPC_NTLM_VERIFIER_LENGTH
+        {
+            return Err(Error::new(
+                "invalid rpc ntlm authentication parameters",
+                GwErrorKind::Connect,
+            ));
+        }
+
+        let security_trailer_offset = {
+            let parsed = decode_rpc_authenticated_fragment(fragment, u16::MAX)
+                .map_err(|error| Error::custom("validate rpc ntlm fragment", error))?;
+            let header = parsed.header();
+            let trailer = parsed.security_trailer();
+            if usize::from(header.fragment_length()) != fragment.len()
+                || trailer.auth_type != authentication.auth_type
+                || trailer.auth_level != authentication.auth_level
+                || trailer.auth_context_id != authentication.auth_context_id
+                || header.auth_length() != authentication.verifier_length
+            {
+                return Err(Error::new(
+                    "rpc ntlm fragment authentication mismatch",
+                    GwErrorKind::Decode,
+                ));
+            }
+            fragment
+                .len()
+                .checked_sub(usize::from(header.auth_length()) + RPC_SECURITY_TRAILER_SIZE)
+                .ok_or_else(|| Error::new("invalid rpc ntlm signature offset", GwErrorKind::Decode))?
+        };
+
+        let verifier_offset = security_trailer_offset + RPC_SECURITY_TRAILER_SIZE;
+        let data_start = if supports_header_signing {
+            0
+        } else {
+            RPC_COMMON_HEADER_SIZE
+        };
+        let (signed_data, verifier) = fragment.split_at_mut(verifier_offset);
+        let data_end = if supports_header_signing {
+            verifier_offset
+        } else {
+            security_trailer_offset
+        };
+        let mut buffers = [
+            SecurityBufferRef::token_buf(verifier),
+            SecurityBufferRef::data_buf(&mut signed_data[data_start..data_end]),
+        ];
+        if let Err(error) = self.ntlm.verify_signature(&mut buffers, sequence_number) {
+            self.state = RpcNtlmAuthState::Failed;
+            return Err(Error::custom("verify rpc ntlm fragment", error));
+        }
+        Ok(())
     }
 
     fn next_token(&mut self, input: Option<&[u8]>) -> Result<Vec<u8>, Error> {
@@ -888,7 +1035,7 @@ impl RpcCommonHeader {
     ///
     /// This is used by stream transports to validate a fragment length before
     /// buffering the whole PDU.
-    fn decode_prefix(source: &[u8]) -> Result<Self, RpcPduError> {
+    pub(crate) fn decode_prefix(source: &[u8]) -> Result<Self, RpcPduError> {
         let header = source.get(..RPC_COMMON_HEADER_SIZE).ok_or(RpcPduError::Truncated {
             actual: source.len(),
             required: RPC_COMMON_HEADER_SIZE,
@@ -2496,9 +2643,12 @@ fn decode_syntax_identifier(source: &[u8]) -> Result<RpcSyntaxIdentifier, RpcPdu
     ))
 }
 
-#[expect(
-    dead_code,
-    reason = "the control codecs are staged before an RPC transport consumes them"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "some TS Proxy control codecs are not wired into the live client path"
+    )
 )]
 pub(crate) mod tsgu {
     use core::fmt;
@@ -5203,6 +5353,59 @@ pub struct RtsFlowControlAck {
     channel_cookie: RtsCookie,
 }
 
+/// The destination-aware form of an RPCH flow-control acknowledgement.
+///
+/// [MS-RPCH] 2.2.4.51.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RtsFlowControlAckWithDestination {
+    destination: RtsDestination,
+    acknowledgement: RtsFlowControlAck,
+}
+
+/// A destination used by an RPCH RTS forwarding command.
+///
+/// [MS-RPCH] 2.2.3.3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RtsDestination {
+    Client,
+    InProxy,
+    Server,
+    OutProxy,
+}
+
+impl RtsDestination {
+    const fn from_wire_value(value: u32) -> Option<Self> {
+        match value {
+            RTS_DESTINATION_FD_CLIENT => Some(Self::Client),
+            1 => Some(Self::InProxy),
+            RTS_DESTINATION_FD_SERVER => Some(Self::Server),
+            RTS_DESTINATION_FD_OUT_PROXY => Some(Self::OutProxy),
+            _ => None,
+        }
+    }
+
+    const fn wire_value(self) -> u32 {
+        match self {
+            Self::Client => RTS_DESTINATION_FD_CLIENT,
+            Self::InProxy => 1,
+            Self::Server => RTS_DESTINATION_FD_SERVER,
+            Self::OutProxy => RTS_DESTINATION_FD_OUT_PROXY,
+        }
+    }
+}
+
+impl RtsFlowControlAckWithDestination {
+    /// Forwarding destination carried by this RTS PDU.
+    pub const fn destination(self) -> RtsDestination {
+        self.destination
+    }
+
+    /// Flow-control information carried by this RTS PDU.
+    pub const fn acknowledgement(self) -> RtsFlowControlAck {
+        self.acknowledgement
+    }
+}
+
 impl RtsFlowControlAck {
     /// Creates a flow-control acknowledgement.
     pub const fn new(bytes_received: u32, available_window: u32, channel_cookie: RtsCookie) -> Self {
@@ -5740,10 +5943,78 @@ pub fn encode_rts_flow_control_ack(ack: RtsFlowControlAck) -> Result<Vec<u8>, Rp
     encode_rts_pdu(RTS_FLAG_OTHER_CMD, 1, commands)
 }
 
+/// Encodes a destination-aware RPCH flow-control acknowledgement.
+///
+/// [MS-RPCH] 2.2.4.51.
+pub fn encode_rts_flow_control_ack_with_destination(
+    ack: RtsFlowControlAck,
+    destination: RtsDestination,
+) -> Result<Vec<u8>, RpcPduError> {
+    let mut commands = Vec::with_capacity(
+        4 /* destination command */
+            + 4 /* destination */
+            + 4 /* flow-control ack command */
+            + 4 /* bytes received */
+            + 4 /* available window */
+            + RtsCookie::SIZE, /* channel cookie */
+    );
+    encode_rts_u32_command(&mut commands, RTS_COMMAND_DESTINATION, destination.wire_value());
+    commands.extend_from_slice(&RTS_COMMAND_FLOW_CONTROL_ACK.to_le_bytes());
+    commands.extend_from_slice(&ack.bytes_received.to_le_bytes());
+    commands.extend_from_slice(&ack.available_window.to_le_bytes());
+    commands.extend_from_slice(ack.channel_cookie.as_bytes());
+    encode_rts_pdu(RTS_FLAG_OTHER_CMD, 2, commands)
+}
+
+/// Decodes a destination-aware RPCH flow-control acknowledgement.
+///
+/// [MS-RPCH] 2.2.4.51.
+pub fn decode_rts_flow_control_ack_with_destination(
+    source: &[u8],
+) -> Result<RtsFlowControlAckWithDestination, RpcPduError> {
+    let body = decode_rts_pdu(source, RTS_FLAG_OTHER_CMD, 2, 36)?;
+    let destination_value = decode_rts_u32_command(body, 0, RTS_COMMAND_DESTINATION)?;
+    let destination =
+        RtsDestination::from_wire_value(destination_value).ok_or(RpcPduError::UnexpectedRtsDestination {
+            expected: RTS_DESTINATION_FD_OUT_PROXY,
+            actual: destination_value,
+        })?;
+    if read_u32(body, 8)? != RTS_COMMAND_FLOW_CONTROL_ACK {
+        return Err(RpcPduError::UnexpectedRtsCommandType {
+            expected: RTS_COMMAND_FLOW_CONTROL_ACK,
+            actual: read_u32(body, 8)?,
+        });
+    }
+
+    let channel_cookie = body
+        .get(20..20 + RtsCookie::SIZE)
+        .ok_or(RpcPduError::Truncated {
+            actual: body.len(),
+            required: 20 + RtsCookie::SIZE,
+        })?
+        .try_into()
+        .map(RtsCookie::new)
+        .map_err(|_| RpcPduError::LengthOverflow)?;
+    Ok(RtsFlowControlAckWithDestination {
+        destination,
+        acknowledgement: RtsFlowControlAck::new(read_u32(body, 12)?, read_u32(body, 16)?, channel_cookie),
+    })
+}
+
 /// Decodes an RPCH flow-control acknowledgement.
 ///
 /// [MS-RPCH] 2.2.4.50.
 pub fn decode_rts_flow_control_ack(source: &[u8]) -> Result<RtsFlowControlAck, RpcPduError> {
+    if let Ok(ack) = decode_rts_flow_control_ack_with_destination(source) {
+        if ack.destination == RtsDestination::Client {
+            return Ok(ack.acknowledgement);
+        }
+        return Err(RpcPduError::UnexpectedRtsDestination {
+            expected: RTS_DESTINATION_FD_CLIENT,
+            actual: ack.destination.wire_value(),
+        });
+    }
+
     let body = decode_rts_pdu(source, RTS_FLAG_OTHER_CMD, 1, 28)?;
     let command_type = read_u32(body, 0)?;
     if command_type != RTS_COMMAND_FLOW_CONTROL_ACK {
