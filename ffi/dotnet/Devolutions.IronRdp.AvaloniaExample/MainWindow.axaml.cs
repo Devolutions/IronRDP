@@ -20,6 +20,7 @@ namespace Devolutions.IronRdp.AvaloniaExample;
 
 public partial class MainWindow : Window
 {
+    static readonly TimeSpan ClipboardTimeoutsInterval = TimeSpan.FromSeconds(5);
     static readonly TimeSpan RdpdrDeferredPollInterval = TimeSpan.FromMilliseconds(50);
 
     readonly InputDatabase? _inputDatabase = InputDatabase.New();
@@ -130,7 +131,8 @@ public partial class MainWindow : Window
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            _cliprdr = WinCliprdr.New();
+            // Created on the UI thread: pasting remote files needs its single-threaded apartment.
+            _cliprdr = WinCliprdr.NewWithFileTransfer(true);
 
             if (_cliprdr != null)
             {
@@ -346,45 +348,52 @@ public partial class MainWindow : Window
     {
         Task.Run(async () =>
         {
-            while (true)
+            var sinceTimeouts = Stopwatch.StartNew();
+
+            while (_cliprdr != null)
             {
-                if (_cliprdr == null)
+                // Wakes up at least every second, to expire clipboard locks and file transfers.
+                var message = _cliprdr.NextClipboardMessageTimeout(1000);
+
+                if (message != null)
                 {
-                    continue;
+                    Trace.TraceInformation("Clipboard message type: " + message.GetMessageType());
+                    await SubmitClipboardFrame(() => _activeStage!.SubmitClipboardMessage(message));
                 }
 
-                var message = _cliprdr.NextClipboardMessageBlocking();
-
-                VecU8 frame;
-                var messageType = message.GetMessageType();
-                Trace.TraceInformation("Clipboard message type: " + messageType);
-                if (messageType == ClipboardMessageType.SendFormatData)
+                if (sinceTimeouts.Elapsed >= ClipboardTimeoutsInterval)
                 {
-                    var formatData = message.GetSendFormatData()!;
-                    frame = WithStageLock(() => _activeStage!.SubmitClipboardFormatData(formatData));
+                    sinceTimeouts.Restart();
+                    await SubmitClipboardFrame(() => _activeStage!.DriveClipboardTimeouts());
                 }
-                else if (messageType == ClipboardMessageType.SendInitiateCopy)
-                {
-                    var initiateCopy = message.GetSendInitiateCopy()!;
-                    frame = WithStageLock(() => _activeStage!.InitiateClipboardCopy(initiateCopy));
-                }
-                else if (messageType == ClipboardMessageType.SendInitiatePaste)
-                {
-                    var initiatePaste = message.GetSendInitiatePaste()!;
-                    frame = WithStageLock(() => _activeStage!.InitiateClipboardPaste(initiatePaste));
-                }
-                else
-                {
-                    Console.WriteLine("Error in clipboard");
-                    break;
-                }
-
-                var toWriteBack = new byte[frame.GetSize()];
-                frame.Fill(toWriteBack);
-
-                await _framed!.Write(toWriteBack);
             }
         });
+    }
+
+    private async Task SubmitClipboardFrame(Func<VecU8> submit)
+    {
+        VecU8 frame;
+        try
+        {
+            frame = WithStageLock(submit);
+        }
+        catch (IronRdpException e)
+        {
+            // Only this clipboard operation failed: the session goes on.
+            Trace.TraceError("Clipboard error: " + e.Message);
+            return;
+        }
+
+        var size = (int)frame.GetSize();
+        if (size == 0)
+        {
+            return;
+        }
+
+        var toWriteBack = new byte[size];
+        frame.Fill(toWriteBack);
+
+        await _framed!.Write(toWriteBack);
     }
 
     private static Config BuildConfig(string username, string password, string? domain, int width, int height)

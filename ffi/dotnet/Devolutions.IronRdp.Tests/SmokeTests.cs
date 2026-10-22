@@ -126,6 +126,16 @@ internal static class SmokeTests
             True(!string.IsNullOrEmpty(state.Name), "state has a name");
             True(!state.IsTerminal(), "state is not terminal");
         });
+
+        if (OperatingSystem.IsWindows())
+        {
+            yield return ("windows clipboard with file transfer starts idle", () =>
+            {
+                var clipboard = WinCliprdr.NewWithFileTransfer(true);
+                True(clipboard.BackendFactory() != null, "backend factory");
+                True(clipboard.NextClipboardMessageTimeout(10) == null, "no message before a session");
+            });
+        }
     }
 
     private static Config TlsConfig()

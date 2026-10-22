@@ -980,7 +980,10 @@ impl RdpClient {
                     {
                         use crate::clipboard::ClientClipboardMessageProxy;
                         use ironrdp_cliprdr_native::WinClipboard;
-                        match WinClipboard::new(ClientClipboardMessageProxy::new(self.input_event_sender.clone())) {
+                        match WinClipboard::with_file_transfer(
+                            ClientClipboardMessageProxy::new(self.input_event_sender.clone()),
+                            true,
+                        ) {
                             Ok(win_cb) => {
                                 cliprdr_factory = Some(win_cb.backend_factory());
                                 _win_clipboard = Some(win_cb);
@@ -4713,6 +4716,20 @@ fn process_clipboard_message(
         warn!("Clipboard event received, but Cliprdr is not available");
         return Ok(Vec::new());
     };
+
+    // Messages the backend queued for the previous channel can reach a new one before it is ready
+    // (the input queue outlives reconnections): they are dropped rather than ending the session.
+    let needs_ready = matches!(
+        event,
+        ClipboardMessage::SendInitiateFileCopy(_)
+            | ClipboardMessage::SendFormatData(_)
+            | ClipboardMessage::SendInitiatePaste(_)
+            | ClipboardMessage::SendFileContentsResponse(_)
+    );
+    if needs_ready && !cliprdr_client.is_ready() {
+        warn!("Dropping a clipboard message sent before the channel is ready");
+        return Ok(Vec::new());
+    }
 
     let svc_messages = match event {
         ClipboardMessage::SendInitiateCopy(formats) => Some(

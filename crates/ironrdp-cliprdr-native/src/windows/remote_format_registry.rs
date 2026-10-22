@@ -54,30 +54,8 @@ impl RemoteClipboardFormatRegistry {
 
         let format_name = remote_format.name()?;
 
-        // Make null-terminated UTF-16 format representation
-        let format_name_utf16 = format_name
-            .value()
-            .encode_utf16()
-            .chain(core::iter::once(0))
-            .collect::<Vec<_>>();
-
-        let format_name_pcwstr = PCWSTR::from_raw(format_name_utf16.as_ptr());
-
-        // SAFETY: `RegisterClipboardFormatW` is always safe to call.
-        let raw_format_id = unsafe { RegisterClipboardFormatW(format_name_pcwstr) };
-
-        let mapped_format_id = ClipboardFormatId::new(raw_format_id);
-
-        if mapped_format_id.value() == 0 {
-            let error_code = get_last_winapi_error().0;
-            error!(
-                "Failed to register clipboard format `{}`, Error code: {}",
-                format_name.value(),
-                error_code
-            );
-            // Error is not critical, format could be skipped
-            return None;
-        }
+        // Error is not critical, format could be skipped
+        let mapped_format_id = register_format_name(format_name.value())?;
 
         // save mapping for future use
         self.remote_to_local.insert(remote_format.id(), mapped_format_id);
@@ -110,4 +88,28 @@ fn is_private_format_id(format: ClipboardFormatId) -> bool {
     let gdi_range = (CF_GDIOBJFIRST..=CF_GDIOBJLAST).contains(&id);
 
     private_range || gdi_range
+}
+
+/// Registers a clipboard format by name on the local machine, returning its local id.
+///
+/// Registering an already registered name returns the existing id.
+pub(crate) fn register_format_name(name: &str) -> Option<ClipboardFormatId> {
+    // Make null-terminated UTF-16 format representation
+    let format_name_utf16 = name.encode_utf16().chain(core::iter::once(0)).collect::<Vec<_>>();
+
+    let format_name_pcwstr = PCWSTR::from_raw(format_name_utf16.as_ptr());
+
+    // SAFETY: `RegisterClipboardFormatW` is always safe to call.
+    let raw_format_id = unsafe { RegisterClipboardFormatW(format_name_pcwstr) };
+
+    if raw_format_id == 0 {
+        let error_code = get_last_winapi_error().0;
+        error!(
+            "Failed to register clipboard format `{}`, Error code: {}",
+            name, error_code
+        );
+        return None;
+    }
+
+    Some(ClipboardFormatId::new(raw_format_id))
 }

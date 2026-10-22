@@ -271,6 +271,71 @@ public partial class ActiveStage: IDisposable
         }
     }
 
+    /// <summary>
+    /// Hands any message of the clipboard backend (e.g. `WinCliprdr`) to the clipboard
+    /// channel, file transfer messages included, and returns the frame to send.
+    /// </summary>
+    /// <remarks>
+    /// The frame is empty when there is nothing to send. A backend `Error` message is
+    /// returned as an error. Errors only concern that message: the session can go on.
+    /// </remarks>
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8 SubmitClipboardMessage(ClipboardMessage message)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.ClipboardMessage* messageRaw;
+            messageRaw = message.AsFFI();
+            if (messageRaw == null)
+            {
+                throw new ObjectDisposedException("ClipboardMessage");
+            }
+            Raw.SessionFfiResultBoxVecU8BoxIronRdpError result = Raw.ActiveStage.SubmitClipboardMessage(_inner, messageRaw);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.VecU8* retVal = result.Ok;
+            return new VecU8(retVal);
+        }
+    }
+
+    /// <summary>
+    /// Expires clipboard locks and file transfers that timed out, returning the frame to send
+    /// (empty when there is nothing to send).
+    /// </summary>
+    /// <remarks>
+    /// Call it every few seconds while file transfer is enabled on the clipboard backend.
+    /// </remarks>
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8 DriveClipboardTimeouts()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.SessionFfiResultBoxVecU8BoxIronRdpError result = Raw.ActiveStage.DriveClipboardTimeouts(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.VecU8* retVal = result.Ok;
+            return new VecU8(retVal);
+        }
+    }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>VecU8</c> allocated on Rust side.

@@ -16,14 +16,36 @@ public partial struct WinCliprdr
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
+    /// <summary>
+    /// Creates the Windows clipboard backend without file transfer.
+    /// </summary>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WinCliprdr_new", ExactSpelling = true)]
     public static unsafe extern ClipboardWindowsFfiResultBoxWinCliprdrBoxIronRdpError New();
+
+    /// <summary>
+    /// Creates the Windows clipboard backend, with clipboard file transfer enabled or not.
+    /// </summary>
+    /// <remarks>
+    /// With file transfer, the backend also produces `SendInitiateFileCopy`,
+    /// `SendFileContentsRequest` and `SendFileContentsResponse` messages: hand every message
+    /// to `ActiveStage::submit_clipboard_message`, and call
+    /// `ActiveStage::drive_clipboard_timeouts` every few seconds. Pasting remote files needs
+    /// this to be called on an STA thread with a message loop, such as the UI thread.
+    /// </remarks>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WinCliprdr_new_with_file_transfer", ExactSpelling = true)]
+    public static unsafe extern ClipboardWindowsFfiResultBoxWinCliprdrBoxIronRdpError NewWithFileTransfer([MarshalAs(UnmanagedType.U1)] bool fileTransfer);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WinCliprdr_next_clipboard_message", ExactSpelling = true)]
     public static unsafe extern ClipboardWindowsFfiResultOptBoxClipboardMessageBoxIronRdpError NextClipboardMessage(WinCliprdr* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WinCliprdr_next_clipboard_message_blocking", ExactSpelling = true)]
     public static unsafe extern ClipboardWindowsFfiResultBoxClipboardMessageBoxIronRdpError NextClipboardMessageBlocking(WinCliprdr* self);
+
+    /// <summary>
+    /// Waits up to `timeout_ms` milliseconds for the next message; `None` if none came.
+    /// </summary>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WinCliprdr_next_clipboard_message_timeout", ExactSpelling = true)]
+    public static unsafe extern ClipboardWindowsFfiResultOptBoxClipboardMessageBoxIronRdpError NextClipboardMessageTimeout(WinCliprdr* self, uint timeoutMs);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WinCliprdr_backend_factory", ExactSpelling = true)]
     public static unsafe extern ClipboardWindowsFfiResultBoxCliprdrBackendFactoryBoxIronRdpError BackendFactory(WinCliprdr* self);

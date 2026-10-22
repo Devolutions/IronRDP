@@ -12898,12 +12898,13 @@ impl Control {
             return Err(Error::from_hresult(E_UNEXPECTED));
         }
 
-        let backend = WinClipboard::new(ActiveXClipboardMessageProxy { input_sender }).map_err(|error| {
-            Error::new(
-                E_FAIL,
-                format!("unable to initialize Windows clipboard redirection: {error}"),
-            )
-        })?;
+        let backend =
+            WinClipboard::with_file_transfer(ActiveXClipboardMessageProxy { input_sender }, true).map_err(|error| {
+                Error::new(
+                    E_FAIL,
+                    format!("unable to initialize Windows clipboard redirection: {error}"),
+                )
+            })?;
         let factory = backend.backend_factory();
         *self.clipboard_backend.borrow_mut() = Some(backend);
         trace_host_call("ActiveXClipboard::Started");

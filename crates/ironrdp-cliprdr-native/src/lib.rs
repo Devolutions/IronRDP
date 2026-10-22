@@ -12,6 +12,8 @@
 
 #[cfg(windows)]
 mod windows;
+#[cfg(all(windows, feature = "__test"))]
+pub use crate::windows::file_list as windows_file_list;
 #[cfg(windows)]
 pub use crate::windows::{HWND, WinClipboard, WinCliprdrError, WinCliprdrResult};
 
