@@ -399,6 +399,17 @@ struct Args {
     /// On Windows, only devices bound to the WinUSB driver can be redirected.
     #[clap(long, value_name = "RULES")]
     usb: Vec<String>,
+
+    /// Launch a RemoteApp program instead of a full desktop (`remoteapplicationprogram`).
+    ///
+    /// PROGRAM is a published alias such as `||notepad` or a path on the server. Each server
+    /// window opens as its own local window.
+    #[clap(long, value_name = "PROGRAM")]
+    remote_app: Option<String>,
+
+    /// Working directory of the RemoteApp program (`shell working directory`).
+    #[clap(long, value_name = "DIR", requires = "remote_app")]
+    remote_app_dir: Option<String>,
 }
 
 /// A local directory redirected as a named drive (`--drive NAME,PATH`).
@@ -618,6 +629,9 @@ impl ViewerConfig {
             if args.rdp_file.is_some() || dump_rdp.is_some() {
                 anyhow::bail!("--rpc cannot be combined with --rdp-file or --dump-rdp");
             }
+            if args.remote_app.is_some() {
+                anyhow::bail!("--rpc cannot be combined with --remote-app");
+            }
             if !args.drives.is_empty() || args.all_drives || args.home_drive || args.dynamic_drives {
                 anyhow::bail!(
                     "--rpc cannot be combined with drive options; pass drivestoredirect in the connect properties"
@@ -691,6 +705,14 @@ impl ViewerConfig {
             });
         }
         let cli_drives = args.all_drives || args.dynamic_drives || !named_drives.is_empty();
+
+        if let Some(program) = args.remote_app.take() {
+            properties.set_remote_application_mode(true);
+            properties.set_remote_application_program(program);
+        }
+        if let Some(directory) = args.remote_app_dir.take() {
+            properties.set_shell_working_directory(directory);
+        }
 
         // The library overlays everything expressible as a `.rdp` property: destination, credentials,
         // transport, channels, desktop size, audio, DVC proxies, etc.

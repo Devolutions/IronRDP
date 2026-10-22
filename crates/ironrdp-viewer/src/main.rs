@@ -57,6 +57,7 @@ fn main() -> anyhow::Result<()> {
     let event_loop = EventLoop::<RdpOutputEvent>::with_user_event().build()?;
     let event_loop_proxy = event_loop.create_proxy();
     let (output_event_sender, mut output_event_receiver) = output_channel(64);
+    let remote_app = config.connector().remote_application_mode;
     let initial_window_size = PhysicalSize::new(
         u32::from(config.connector().desktop_size.width),
         u32::from(config.connector().desktop_size.height),
@@ -79,8 +80,8 @@ fn main() -> anyhow::Result<()> {
     let (client, _clipboard) = attach_windows_clipboard(client, enable_clipboard)?;
     let input_event_sender = client.input_sender();
 
-    let mut app =
-        App::new(&event_loop, &input_event_sender, initial_window_size).context("unable to initialize App")?;
+    let mut app = App::new(&event_loop, &input_event_sender, initial_window_size, remote_app)
+        .context("unable to initialize App")?;
 
     let rt = runtime::Builder::new_multi_thread()
         .enable_all()
