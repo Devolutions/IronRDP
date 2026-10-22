@@ -64,12 +64,14 @@ impl DvcChannelListener for UrbdrcListener {
             self.device_man.control_channel_assigned(channel_id);
             Some(Box::new(UrbdrcControlClient::new(callback)))
         } else {
+            // Take the device first, so that a channel without one does not use up an interface ID.
+            let backend = self.device_man.take_device_for_channel(channel_id)?;
             let udev_iface = self.iface_man.alloc()?;
             #[expect(clippy::as_conversions)]
-            self.device_man.take_device_for_channel(channel_id).map(|backend| {
+            Some(
                 Box::new(UrbdrcDeviceClient::new(udev_iface, backend).expect("invalid interface id"))
-                    as Box<dyn DvcClientProcessor>
-            })
+                    as Box<dyn DvcClientProcessor>,
+            )
         }
     }
 }

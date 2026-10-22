@@ -62,7 +62,7 @@ impl OpenedDevice {
     /// This blocks while the OS opens the device. RDPEUSB redirects whole devices, so a device with an
     /// interface that cannot be claimed is not redirected. On Windows, this is the case for every
     /// interface whose function driver is not WinUSB.
-    pub(crate) fn open(info: &nusb::DeviceInfo) -> Result<Self, OpenError> {
+    pub(crate) fn open(info: &nusb::DeviceInfo, identity: &UsbDeviceIdentity) -> Result<Self, OpenError> {
         let device = info
             .open()
             .wait()
@@ -96,7 +96,6 @@ impl OpenedDevice {
         }
 
         let descriptor = device.device_descriptor();
-        let identity = identity(info);
 
         Ok(Self {
             id: info.id(),
@@ -319,7 +318,12 @@ enum Command {
         reservation: Reservation,
     },
     Cancel(RequestId),
-    ControlDone(RequestId),
+    /// A spawned request finished. The worker completes it, so that a cancellation and a new
+    /// request reusing the ID are both ordered after its removal from the running requests.
+    ControlDone {
+        request_id: RequestId,
+        completion: CompletionData,
+    },
 }
 
 /// [`UrbdrcDeviceBackend`] for a device opened with nusb.
@@ -593,20 +597,21 @@ impl Worker {
                 Command::Cancel(request_id) => {
                     if let Some((control, envelope)) = self.controls.remove(&request_id) {
                         // nusb cannot cancel a submitted control transfer, which keeps running on the
-                        // device until it completes or times out. The server's request completes now.
-                        if !control.is_finished() {
-                            control.abort();
-                            self.reply
-                                .complete(request_id, urb::failure_completion(envelope, usbd_status::CANCELED));
-                        }
+                        // device until it completes or times out. The server's request completes now,
+                        // and a result already on its way is dropped when it arrives.
+                        control.abort();
+                        self.reply
+                            .complete(request_id, urb::failure_completion(envelope, usbd_status::CANCELED));
                     } else {
                         for endpoint in self.endpoints.values() {
                             let _ = endpoint.commands.send(EndpointCommand::Cancel(request_id));
                         }
                     }
                 }
-                Command::ControlDone(request_id) => {
-                    self.controls.remove(&request_id);
+                Command::ControlDone { request_id, completion } => {
+                    if self.controls.remove(&request_id).is_some() {
+                        self.reply.complete(request_id, completion);
+                    }
                 }
             }
         }
@@ -640,10 +645,9 @@ impl Worker {
                     language_id,
                 } => {
                     let device = self.device.clone();
-                    let reply = self.reply.clone();
                     let length = usize::from(setup.length);
                     self.spawn(request_id, envelope, reservation, async move {
-                        let completion = match device
+                        match device
                             .get_descriptor(descriptor_type, descriptor_index, language_id, timeout)
                             .await
                         {
@@ -652,8 +656,7 @@ impl Worker {
                                 urb::transfer_completion(envelope, descriptor, 0)
                             }
                             Err(error) => urb::failure_completion(envelope, descriptor_error_status(error)),
-                        };
-                        reply.complete(request_id, completion);
+                        }
                     });
                     None
                 }
@@ -731,7 +734,6 @@ impl Worker {
                 match interface {
                     Ok(interface) => {
                         let device = self.device.clone();
-                        let reply = self.reply.clone();
                         self.spawn(request_id, envelope, reservation, async move {
                             let vendor_code = device
                                 .get_descriptor(
@@ -743,7 +745,7 @@ impl Worker {
                                 .await
                                 .ok()
                                 .and_then(|descriptor| urb::ms_os_vendor_code(&descriptor));
-                            let completion = match vendor_code {
+                            match vendor_code {
                                 Some(request) => {
                                     control(
                                         &interface,
@@ -755,8 +757,7 @@ impl Worker {
                                     .await
                                 }
                                 None => urb::failure_completion(envelope, usbd_status::STALL_PID),
-                            };
-                            reply.complete(request_id, completion);
+                            }
                         });
                         None
                     }
@@ -807,14 +808,14 @@ impl Worker {
         request_id: RequestId,
         envelope: Envelope,
         reservation: Reservation,
-        future: impl Future<Output = ()> + Send + 'static,
+        future: impl Future<Output = CompletionData> + Send + 'static,
     ) {
         let commands = self.commands.clone();
         let task = tokio::spawn(async move {
             let _reservation = reservation;
-            future.await;
+            let completion = future.await;
             if let Some(commands) = commands.upgrade() {
-                let _ = commands.send(Command::ControlDone(request_id));
+                let _ = commands.send(Command::ControlDone { request_id, completion });
             }
         });
         self.controls.insert(request_id, (task.abort_handle(), envelope));
@@ -837,10 +838,8 @@ impl Worker {
             return;
         };
 
-        let reply = self.reply.clone();
         self.spawn(request_id, envelope, reservation, async move {
-            let completion = control(&interface, envelope, setup, data, timeout).await;
-            reply.complete(request_id, completion);
+            control(&interface, envelope, setup, data, timeout).await
         });
     }
 
@@ -1182,6 +1181,10 @@ struct InFlight {
     /// The server cancelled this request: complete it with whatever the cancellation left, and
     /// never submit it again.
     cancelled: bool,
+    /// Data moved before nusb cancelled the transfer along with another one, while the rest of the
+    /// transfer runs again: the bytes an IN transfer received, or the count an OUT transfer wrote.
+    received: Vec<u8>,
+    written: usize,
     _reservation: Reservation,
 }
 
@@ -1199,8 +1202,8 @@ struct EndpointQueue {
 /// Serve the transfers of one bulk or interrupt endpoint.
 ///
 /// nusb can only cancel every transfer of an endpoint at once. When the server cancels one request,
-/// the other transfers that were cancelled along with it, without moving any data, are submitted
-/// again in their original order.
+/// the other transfers that were cancelled along with it resume where they stopped, submitted again
+/// in their original order.
 async fn run_endpoint<T: BulkOrInterrupt, D: EndpointDirection>(
     mut endpoint: Endpoint<T, D>,
     mut commands: mpsc::UnboundedReceiver<EndpointCommand>,
@@ -1259,27 +1262,21 @@ async fn run_endpoint<T: BulkOrInterrupt, D: EndpointDirection>(
                 }
             },
             completion = endpoint.next_complete(), if pending => {
-                let Some(entry) = queue.in_flight.pop_front() else {
+                let Some(mut entry) = queue.in_flight.pop_front() else {
                     continue;
                 };
                 let cancelled = completion.status == Err(TransferError::Cancelled);
-                if cancelled && queue.draining && !entry.cancelled && completion.actual_len == 0 {
-                    // Nothing moved, so the transfer runs again as if it had never been cancelled. nusb
-                    // returns an OUT buffer with its whole payload.
-                    let buffer = if D::DIR == nusb::transfer::Direction::In {
-                        in_buffer_length(&endpoint, entry.length).map(Buffer::new)
-                    } else {
-                        Some(completion.buffer)
-                    };
-                    match buffer {
-                        Some(buffer) => queue.retry.push_back((entry, buffer)),
-                        None => reply.complete(
+                if cancelled && queue.draining && !entry.cancelled {
+                    match resume::<D>(endpoint.max_packet_size(), &mut entry, completion) {
+                        Resume::Submit(buffer) => queue.retry.push_back((entry, buffer)),
+                        Resume::Finished(completion) => complete_transfer::<D>(&reply, entry, completion),
+                        Resume::Invalid => reply.complete(
                             entry.request_id,
                             urb::failure_completion(entry.envelope, usbd_status::INVALID_PARAMETER),
                         ),
                     }
                 } else {
-                    complete_transfer::<D>(&reply, &entry, completion);
+                    complete_transfer::<D>(&reply, entry, completion);
                 }
 
                 if queue.draining && queue.in_flight.is_empty() {
@@ -1318,7 +1315,7 @@ fn submit<T: BulkOrInterrupt, D: EndpointDirection>(
             reply.complete(request_id, urb::transfer_completion(envelope, Vec::new(), 0));
             return;
         }
-        let Some(buffer_length) = in_buffer_length(endpoint, length) else {
+        let Some(buffer_length) = in_buffer_length(endpoint.max_packet_size(), length) else {
             reply.complete(
                 request_id,
                 urb::failure_completion(envelope, usbd_status::INVALID_PARAMETER),
@@ -1336,8 +1333,61 @@ fn submit<T: BulkOrInterrupt, D: EndpointDirection>(
         envelope,
         length,
         cancelled: false,
+        received: Vec::new(),
+        written: 0,
         _reservation: reservation,
     });
+}
+
+enum Resume {
+    /// Submit this buffer for the rest of the transfer.
+    Submit(Buffer),
+    /// The transfer already finished: complete it.
+    Finished(Completion),
+    Invalid,
+}
+
+/// Resume a transfer that nusb cancelled only because it cancels a whole endpoint at once.
+///
+/// The data that moved is kept and the rest of the transfer is submitted again, as if it had never
+/// been cancelled. An IN transfer that received a short packet or filled its buffer, or an OUT
+/// transfer that wrote everything, finished instead.
+fn resume<D: EndpointDirection>(max_packet_size: usize, entry: &mut InFlight, completion: Completion) -> Resume {
+    let finished = |buffer| {
+        Resume::Finished(Completion {
+            buffer,
+            actual_len: 0,
+            status: Ok(()),
+        })
+    };
+    let length = usize::try_from(entry.length).unwrap_or(usize::MAX);
+
+    if D::DIR == nusb::transfer::Direction::In {
+        let short = !completion.actual_len.is_multiple_of(max_packet_size.max(1));
+        entry.received.extend(completion.buffer.into_vec());
+        let remaining = length.saturating_sub(entry.received.len());
+        if short || remaining == 0 {
+            return finished(Buffer::new(0));
+        }
+        match u32::try_from(remaining)
+            .ok()
+            .and_then(|remaining| in_buffer_length(max_packet_size, remaining))
+        {
+            Some(buffer_length) => Resume::Submit(Buffer::new(buffer_length)),
+            None => Resume::Invalid,
+        }
+    } else {
+        // nusb returns an OUT buffer with its whole payload.
+        let mut data = completion.buffer.into_vec();
+        let written = completion.actual_len.min(data.len());
+        data.drain(..written);
+        entry.written = entry.written.saturating_add(written);
+        if data.is_empty() {
+            finished(Buffer::new(0))
+        } else {
+            Resume::Submit(Buffer::from(data))
+        }
+    }
 }
 
 /// nusb requires IN transfers to be a multiple of the maximum packet size.
@@ -1346,12 +1396,12 @@ fn submit<T: BulkOrInterrupt, D: EndpointDirection>(
 /// overrun a buffer of the requested length, so data beyond it terminates the device channel (see
 /// [`transfer_completion`]). Returns `None` for a length above [`urb::MAX_TRANSFER_LENGTH`], which
 /// [`urb::translate_in`] already rejects.
-fn in_buffer_length<T: BulkOrInterrupt, D: EndpointDirection>(endpoint: &Endpoint<T, D>, length: u32) -> Option<usize> {
+fn in_buffer_length(max_packet_size: usize, length: u32) -> Option<usize> {
     if urb::MAX_TRANSFER_LENGTH < length {
         return None;
     }
     let length = usize::try_from(length).ok()?;
-    let max_packet_size = endpoint.max_packet_size().max(1);
+    let max_packet_size = max_packet_size.max(1);
     length.div_ceil(max_packet_size).checked_mul(max_packet_size)
 }
 
@@ -1369,7 +1419,7 @@ async fn cancel_all<T: BulkOrInterrupt, D: EndpointDirection>(
         let Some(entry) = queue.in_flight.pop_front() else {
             continue;
         };
-        complete_transfer::<D>(reply, &entry, completion);
+        complete_transfer::<D>(reply, entry, completion);
     }
     queue.in_flight.clear();
     queue.draining = false;
@@ -1390,23 +1440,24 @@ async fn cancel_all<T: BulkOrInterrupt, D: EndpointDirection>(
 }
 
 /// Complete a bulk or interrupt transfer, or terminate the device channel on an IN overrun.
-fn complete_transfer<D: EndpointDirection>(reply: &Reply, entry: &InFlight, completion: Completion) {
+fn complete_transfer<D: EndpointDirection>(reply: &Reply, entry: InFlight, completion: Completion) {
+    let request_id = entry.request_id;
     match transfer_completion::<D>(entry, completion) {
-        Some(completion) => reply.complete(entry.request_id, completion),
+        Some(completion) => reply.complete(request_id, completion),
         None => reply.terminate(),
     }
 }
 
 /// Returns `None` when an IN transfer received more data than the server asked for.
-fn transfer_completion<D: EndpointDirection>(entry: &InFlight, completion: Completion) -> Option<CompletionData> {
-    // Data that moved before a cancellation is reported as a short transfer rather than lost.
-    let status = match completion.status {
-        Err(TransferError::Cancelled) if completion.actual_len != 0 => Ok(()),
-        status => status,
-    };
-    Some(match status {
+///
+/// A cancelled transfer completes as cancelled, even when some data moved: the server cancelled it,
+/// or aborted its pipe. Transfers cancelled only along with another one resume instead (see
+/// [`resume`]).
+fn transfer_completion<D: EndpointDirection>(mut entry: InFlight, completion: Completion) -> Option<CompletionData> {
+    Some(match completion.status {
         Ok(()) if D::DIR == nusb::transfer::Direction::In => {
-            let data = completion.buffer.into_vec();
+            let mut data = core::mem::take(&mut entry.received);
+            data.extend(completion.buffer.into_vec());
             if usize::try_from(entry.length).is_ok_and(|length| length < data.len()) {
                 // The buffer was rounded up to whole packets and the device filled more than the server
                 // asked for. MS-RDPEUSB 3.3.5.3.6 requires terminating the device channel in this case.
@@ -1423,7 +1474,7 @@ fn transfer_completion<D: EndpointDirection>(entry: &InFlight, completion: Compl
         Ok(()) => urb::transfer_completion(
             entry.envelope,
             Vec::new(),
-            u32::try_from(completion.actual_len).unwrap_or(u32::MAX),
+            u32::try_from(entry.written.saturating_add(completion.actual_len)).unwrap_or(u32::MAX),
         ),
         Err(error) => urb::failure_completion(entry.envelope, transfer_error_status(error)),
     })
@@ -1474,6 +1525,8 @@ mod tests {
             },
             length,
             cancelled: true,
+            received: Vec::new(),
+            written: 0,
             _reservation: budget(0).reserve(0).expect("zero bytes always fit"),
         }
     }
@@ -1500,28 +1553,84 @@ mod tests {
 
     #[test]
     fn cancelled_transfers_still_complete() {
-        // Cancelled before any data moved: the server sees the cancellation.
-        let Some(CompletionData::TransferIn(cancelled)) =
-            transfer_completion::<In>(&in_flight(64), completion(&[], Err(TransferError::Cancelled)))
-        else {
-            panic!("expected a transfer-in completion");
-        };
-        assert_eq!(cancelled.ts_urb_result.header.usbd_status, usbd_status::CANCELED);
+        // The server sees the cancellation, even when some data moved before it.
+        for data in [&[][..], &[1, 2, 3]] {
+            let Some(CompletionData::TransferIn(cancelled)) =
+                transfer_completion::<In>(in_flight(64), completion(data, Err(TransferError::Cancelled)))
+            else {
+                panic!("expected a transfer-in completion");
+            };
+            assert_eq!(cancelled.ts_urb_result.header.usbd_status, usbd_status::CANCELED);
+        }
+    }
 
-        // Cancelled after some data moved: the data is not lost.
-        let Some(CompletionData::TransferIn(short)) =
-            transfer_completion::<In>(&in_flight(64), completion(&[1, 2, 3], Err(TransferError::Cancelled)))
+    #[test]
+    fn collateral_in_cancellation_resumes() {
+        let mut entry = in_flight(256);
+
+        // Whole packets moved: the rest of the transfer runs again.
+        let Resume::Submit(buffer) = resume::<In>(64, &mut entry, completion(&[1; 64], Err(TransferError::Cancelled)))
+        else {
+            panic!("expected the transfer to resume");
+        };
+        assert_eq!(buffer.requested_len(), 192);
+
+        // The resumed transfer completes with all of the data.
+        let Some(CompletionData::TransferIn(done)) = transfer_completion::<In>(entry, completion(&[2; 100], Ok(())))
         else {
             panic!("expected a transfer-in completion");
         };
-        assert_eq!(short.ts_urb_result.header.usbd_status, usbd_status::SUCCESS);
-        assert_eq!(short.output_buffer, [1, 2, 3]);
+        assert_eq!(done.ts_urb_result.header.usbd_status, usbd_status::SUCCESS);
+        assert_eq!(done.output_buffer.len(), 164);
+        assert_eq!(done.output_buffer.first(), Some(&1));
+        assert_eq!(done.output_buffer.last(), Some(&2));
+
+        // A short packet ended the transfer before the cancellation.
+        let mut entry = in_flight(256);
+        let Resume::Finished(finished) =
+            resume::<In>(64, &mut entry, completion(&[3; 10], Err(TransferError::Cancelled)))
+        else {
+            panic!("expected the transfer to finish");
+        };
+        let Some(CompletionData::TransferIn(done)) = transfer_completion::<In>(entry, finished) else {
+            panic!("expected a transfer-in completion");
+        };
+        assert_eq!(done.ts_urb_result.header.usbd_status, usbd_status::SUCCESS);
+        assert_eq!(done.output_buffer, [3; 10]);
+    }
+
+    #[test]
+    fn collateral_out_cancellation_resumes() {
+        let mut entry = in_flight(6);
+        entry.envelope = Envelope::Out;
+
+        // nusb returns the whole payload, of which the first bytes were written.
+        let partial = Completion {
+            buffer: Buffer::from(vec![1, 2, 3, 4, 5, 6]),
+            actual_len: 4,
+            status: Err(TransferError::Cancelled),
+        };
+        let Resume::Submit(buffer) = resume::<Out>(64, &mut entry, partial) else {
+            panic!("expected the transfer to resume");
+        };
+        assert_eq!(buffer.into_vec(), [5, 6]);
+
+        let rest = Completion {
+            buffer: Buffer::from(vec![5, 6]),
+            actual_len: 2,
+            status: Ok(()),
+        };
+        let Some(CompletionData::TransferOut(done)) = transfer_completion::<Out>(entry, rest) else {
+            panic!("expected a transfer-out completion");
+        };
+        assert_eq!(done.ts_urb_result.header.usbd_status, usbd_status::SUCCESS);
+        assert_eq!(done.output_buffer_size, 6);
     }
 
     #[test]
     fn overrun_terminates_instead_of_completing() {
-        assert!(transfer_completion::<In>(&in_flight(2), completion(&[1, 2, 3], Ok(()))).is_none());
-        assert!(transfer_completion::<In>(&in_flight(3), completion(&[1, 2, 3], Ok(()))).is_some());
+        assert!(transfer_completion::<In>(in_flight(2), completion(&[1, 2, 3], Ok(()))).is_none());
+        assert!(transfer_completion::<In>(in_flight(3), completion(&[1, 2, 3], Ok(()))).is_some());
     }
 
     #[test]

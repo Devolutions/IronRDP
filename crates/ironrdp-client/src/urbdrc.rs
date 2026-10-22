@@ -73,8 +73,7 @@ pub(crate) fn process_urbdrc_event(
             match message {
                 Ok(message) => (channel_id, message),
                 Err(error) => {
-                    // The server retracted the device in the meantime, or a cancelled control request
-                    // finished as its cancellation was being reported.
+                    // The server retracted the device in the meantime.
                     debug!(channel_id, request_id, %error, "Dropping a USB completion that is no longer pending");
                     return Ok(None);
                 }
@@ -92,6 +91,10 @@ pub(crate) fn process_urbdrc_event(
                 return Ok(None);
             };
             // On every early return, dropping the announcement releases the device.
+            if announcement.is_unplugged() {
+                debug!("Not announcing a USB device unplugged before its announcement");
+                return Ok(None);
+            }
             match channel.processor().add_virtual_channel() {
                 Ok(message) => {
                     announcement.sent();
