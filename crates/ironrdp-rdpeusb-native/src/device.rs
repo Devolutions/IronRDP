@@ -43,6 +43,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, trace, warn};
 
 use crate::filter::UsbDeviceIdentity;
+use crate::manager::{DeviceKey, RedirectableDevice};
 use crate::urb::{self, ControlRoute, Envelope, PipeOperation, UsbRequest, usbd_status};
 use crate::{EventOrigin, UrbdrcEventKind, UrbdrcEventSink};
 
@@ -123,14 +124,7 @@ impl OpenedDevice {
                         .map(|(_, class_codes)| UsbInterfaceInfo { class_codes })
                         .collect(),
                 }),
-                speed: match device.speed() {
-                    Some(nusb::Speed::Low) => UsbConnectionSpeed::Low,
-                    Some(nusb::Speed::Full) => UsbConnectionSpeed::Full,
-                    Some(nusb::Speed::High) => UsbConnectionSpeed::High,
-                    Some(nusb::Speed::Super) => UsbConnectionSpeed::Super,
-                    Some(nusb::Speed::SuperPlus) => UsbConnectionSpeed::SuperPlus,
-                    _ => UsbConnectionSpeed::Unknown,
-                },
+                speed: connection_speed(device.speed()),
                 // Isochronous transfers are rejected (see `urb::isochronous_rejection`).
                 isochronous: false,
             },
@@ -146,9 +140,84 @@ impl OpenedDevice {
             interfaces,
         })
     }
+}
 
-    pub(crate) fn vendor_product(&self) -> (u16, u16) {
+impl RedirectableDevice for OpenedDevice {
+    fn key(&self) -> DeviceKey {
+        DeviceKey::Nusb(self.id)
+    }
+
+    fn vendor_product(&self) -> (u16, u16) {
         (self.info.descriptor.vendor_id, self.info.descriptor.product_id)
+    }
+
+    fn start(
+        self: Box<Self>,
+        reply: Reply,
+        events_token: Arc<()>,
+        on_close: Box<dyn FnOnce() + Send>,
+    ) -> Box<dyn UrbdrcDeviceBackend> {
+        Box::new(NusbDeviceBackend::start(*self, reply, events_token, on_close))
+    }
+}
+
+/// Describe a device from its enumeration data alone, without opening it.
+///
+/// For backends that cannot read the descriptors of a device before redirecting it. The device is
+/// assumed to have a single configuration.
+#[cfg(windows)]
+pub(crate) fn describe(
+    info: &nusb::DeviceInfo,
+    identity: &UsbDeviceIdentity,
+    isochronous: bool,
+) -> (DeviceInfo, String) {
+    let device_info = DeviceInfo {
+        location: UsbDeviceLocation {
+            bus_number: identity.bus_number,
+            address: identity.address,
+            port_numbers: info.port_chain().to_vec(),
+        },
+        descriptor: UsbDeviceDescriptorInfo {
+            vendor_id: info.vendor_id(),
+            product_id: info.product_id(),
+            device_version: info.device_version(),
+            usb_version: BcdVersion::from_raw(info.usb_version()),
+            class_codes: UsbClassCodes {
+                class_code: info.class(),
+                sub_class_code: info.subclass(),
+                protocol_code: info.protocol(),
+            },
+            num_configurations: 1,
+        },
+        active_config: Some(UsbConfigInfo {
+            interfaces: info
+                .interfaces()
+                .map(|interface| UsbInterfaceInfo {
+                    class_codes: UsbClassCodes {
+                        class_code: interface.class(),
+                        sub_class_code: interface.subclass(),
+                        protocol_code: interface.protocol(),
+                    },
+                })
+                .collect(),
+        }),
+        speed: connection_speed(info.speed()),
+        isochronous,
+    };
+    let description = info
+        .product_string()
+        .map_or_else(|| String::from("USB Device"), str::to_owned);
+    (device_info, description)
+}
+
+fn connection_speed(speed: Option<nusb::Speed>) -> UsbConnectionSpeed {
+    match speed {
+        Some(nusb::Speed::Low) => UsbConnectionSpeed::Low,
+        Some(nusb::Speed::Full) => UsbConnectionSpeed::Full,
+        Some(nusb::Speed::High) => UsbConnectionSpeed::High,
+        Some(nusb::Speed::Super) => UsbConnectionSpeed::Super,
+        Some(nusb::Speed::SuperPlus) => UsbConnectionSpeed::SuperPlus,
+        _ => UsbConnectionSpeed::Unknown,
     }
 }
 
@@ -278,7 +347,7 @@ impl Reply {
         self.events.token.ptr_eq(&other.events.token)
     }
 
-    fn complete(&self, request_id: RequestId, completion: CompletionData) {
+    pub(crate) fn complete(&self, request_id: RequestId, completion: CompletionData) {
         self.events.send(UrbdrcEventKind::Completion {
             channel_id: self.channel_id,
             request_id,
@@ -295,18 +364,24 @@ impl Reply {
 }
 
 /// Remaining bytes of transfer buffers a device may hold, shared by its in-flight requests.
-struct TransferBudget {
+pub(crate) struct TransferBudget {
     available: AtomicUsize,
 }
 
 /// Bytes taken from a [`TransferBudget`], given back when the request completes.
-struct Reservation {
+pub(crate) struct Reservation {
     budget: Arc<TransferBudget>,
     bytes: usize,
 }
 
 impl TransferBudget {
-    fn reserve(self: &Arc<Self>, bytes: usize) -> Option<Reservation> {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            available: AtomicUsize::new(urb::MAX_IN_FLIGHT_BYTES),
+        })
+    }
+
+    pub(crate) fn reserve(self: &Arc<Self>, bytes: usize) -> Option<Reservation> {
         self.available
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |available| {
                 available.checked_sub(bytes)
@@ -391,7 +466,7 @@ pub(crate) struct NusbDeviceBackend {
 }
 
 /// Runs the wrapped callback when dropped.
-struct OnClose(Option<Box<dyn FnOnce() + Send>>);
+pub(crate) struct OnClose(pub(crate) Option<Box<dyn FnOnce() + Send>>);
 
 impl Drop for OnClose {
     fn drop(&mut self) {
@@ -456,9 +531,7 @@ impl NusbDeviceBackend {
             location,
             started: Instant::now(),
             commands,
-            budget: Arc::new(TransferBudget {
-                available: AtomicUsize::new(urb::MAX_IN_FLIGHT_BYTES),
-            }),
+            budget: TransferBudget::new(),
             reply,
             _events_token: events_token,
         }

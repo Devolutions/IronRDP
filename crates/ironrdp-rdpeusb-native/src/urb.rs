@@ -45,12 +45,12 @@ pub(crate) mod usbd_status {
 }
 
 /// `S_OK`.
-const S_OK: HResult = 0;
+pub(crate) const S_OK: HResult = 0;
 /// `HRESULT_FROM_WIN32(ERROR_GEN_FAILURE)`.
 ///
 /// A failed URB must also fail the IRP on the server, otherwise class drivers such as usbstor never
 /// run their stall recovery. This matches the FreeRDP URBDRC client.
-const HRESULT_GEN_FAILURE: HResult = 0x8007_001f;
+pub(crate) const HRESULT_GEN_FAILURE: HResult = 0x8007_001f;
 /// `HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED)`.
 const HRESULT_NOT_SUPPORTED: HResult = 0x8007_0032;
 
@@ -685,14 +685,14 @@ fn interface_result(
     })
 }
 
-fn result(usbd_status: UsbdStatus, payload: Option<TsUrbResultPayload>) -> TsUrbResult<TsUrbResultPayload> {
+pub(crate) fn result(usbd_status: UsbdStatus, payload: Option<TsUrbResultPayload>) -> TsUrbResult<TsUrbResultPayload> {
     TsUrbResult {
         header: TsUrbResultHeader { usbd_status },
         payload,
     }
 }
 
-fn hresult(usbd_status: UsbdStatus) -> HResult {
+pub(crate) fn hresult(usbd_status: UsbdStatus) -> HResult {
     if usbd_status::is_error(usbd_status) {
         HRESULT_GEN_FAILURE
     } else {

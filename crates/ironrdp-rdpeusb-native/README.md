@@ -1,6 +1,6 @@
 # IronRDP RDPEUSB native backend
 
-Host USB device backend for the [MS-RDPEUSB] (URBDRC) client in `ironrdp-rdpeusb`, built on [nusb].
+Host USB device backend for the [MS-RDPEUSB] (URBDRC) client in `ironrdp-rdpeusb`, built on [nusb], and on Windows on the in-box RemoteFX USB redirection drivers when policy allows it.
 
 `urbdrc_listener` returns the DVC listener to register on the DRDYNVC client.
 The backend runs USB I/O on its own threads and reports through `UrbdrcEvent`s, which the session loop applies to the channels it owns: pending completions, `ADD_VIRTUAL_CHANNEL` for hotplugged devices, and channel closes for unplugged or retracted devices.
@@ -23,16 +23,38 @@ Device setup class GUIDs in `usbdevicestoredirect` cannot be matched from USB de
 RDPEUSB redirects whole devices, so a device is only offered to the server when every interface of its active configuration can be claimed.
 What can be claimed depends on the platform, because nusb uses the generic user-mode USB API of each OS.
 
-- **Windows**: only devices whose function driver is **WinUSB** can be redirected, or composite devices (`usbccgp`) whose interfaces all use WinUSB.
+- **Windows, with RemoteFX USB redirection allowed**: any device can be redirected, through the drivers mstsc uses (see [below](#windows-remotefx-usb-redirection)).
+- **Windows, otherwise**: only devices whose function driver is **WinUSB** can be redirected, or composite devices (`usbccgp`) whose interfaces all use WinUSB.
   Devices with WinUSB firmware descriptors (Microsoft OS descriptors), such as many development boards, DFU and ADB/fastboot interfaces, work out of the box.
   Other devices need their driver replaced with WinUSB first, for example with [Zadig], which requires administrator rights and makes the device unusable locally until the original driver is restored.
   Devices owned by Windows class drivers are not reachable: HID (keyboards, mice, security keys), mass storage, smart card readers, printers, audio, cameras, USB serial and Bluetooth.
-  mstsc reaches those through the RemoteFX USB filter driver (`tsusbflt`), which this backend does not use.
 - **Linux**: kernel drivers are detached from the claimed interfaces, so most devices can be redirected; the user needs write access to `/dev/bus/usb`, usually through a udev rule.
   The kernel driver is reattached when the redirection ends.
 - **macOS**: devices claimed by a kernel or system extension are not reachable, which covers most class devices.
 
+## Windows RemoteFX USB redirection
+
+Windows ships the drivers mstsc redirects USB devices with: a filter on every USB hub (`TsUsbFlt`) and a generic redirection driver (`TsUsbGD`).
+A process claims devices through the filter, which has them re-enumerated with the generic driver in place of their own; the generic driver then takes the server's `TS_URB`s as they are and submits them to the USB stack.
+This reaches every device, including class devices, and supports isochronous transfers and the cancellation of single requests.
+Their control interface is undocumented: this backend follows the behavior of the Windows 11 drivers.
+It was tested by redirecting a YubiKey 5 to Windows Server 2025, whose OTP, FIDO and CCID interfaces all enumerated in the session.
+
+The `fUsbRedirectionEnableMode` policy decides who may claim devices: 0 (the default) nobody, 1 elevated administrators, 2 every user.
+It is set by the Group Policy "Allow RDP redirection of other supported RemoteFX USB devices from this computer" (Computer Configuration > Administrative Templates > Windows Components > Remote Desktop Services > Remote Desktop Connection Client > RemoteFX USB Device Redirection), and takes effect after a restart.
+When the current process may not claim devices, the nusb backend is used.
+
+- The redirection rules select devices before they are claimed, from their descriptors; `ADD_DEVICE` is built from the same descriptors.
+- Only devices plugged directly into a filtered hub can be claimed; the filter itself refuses hubs and some keyboards and mice.
+- Keystrokes from a redirected keyboard interface, such as a security key's OTP, reach the server's console rather than the RDP session, as with mstsc.
+- The server offers USB redirection only with the RD Session Host role installed and Plug and Play redirection allowed (`fDisablePNPRedir` unset or 0); a server in remote administration mode does not.
+- A claimed device is unusable locally until it is released: when its device channel closes, when the server retracts it (it is then not claimed again during the connection), or when the connection ends.
+- Claimed devices are looked for every 500 ms and newly plugged devices every 2 s.
+- No-ack isochronous OUT transfers that fail are not followed by a pipe reset, unlike mstsc.
+
 ## Limitations
+
+These apply to the nusb backend.
 
 - Isochronous transfers (audio and video streaming) are rejected per packet with `USBD_STATUS_NOT_SUPPORTED`, and no-ack isochronous OUT transfers are dropped.
 - The active configuration cannot be changed: WinUSB does not allow it, and on other platforms it would invalidate every claimed interface.

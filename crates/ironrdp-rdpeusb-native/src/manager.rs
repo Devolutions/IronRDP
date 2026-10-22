@@ -16,7 +16,7 @@ use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
 use tracing::{debug, info, warn};
 
-use crate::device::{self, NusbDeviceBackend, OpenedDevice, Reply};
+use crate::device::{self, OpenedDevice, Reply};
 use crate::filter::{UsbDeviceIdentity, UsbRedirectionConfig};
 use crate::{EventOrigin, UrbdrcEventKind, UrbdrcEventSink};
 
@@ -24,19 +24,48 @@ use crate::{EventOrigin, UrbdrcEventKind, UrbdrcEventSink};
 const HOTPLUG_OPEN_ATTEMPTS: u32 = 5;
 const HOTPLUG_OPEN_DELAY: Duration = Duration::from_millis(400);
 
-/// URBDRC device manager backed by nusb.
+/// Identifies a local device across discovery, announcement and redirection.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum DeviceKey {
+    Nusb(nusb::DeviceId),
+    /// A device claimed through the RemoteFX USB redirection drivers, by its proprietary ID.
+    #[cfg(windows)]
+    TsUsb(String),
+}
+
+/// A local device opened for redirection, waiting for its device channel.
+pub(crate) trait RedirectableDevice: Send {
+    fn key(&self) -> DeviceKey;
+
+    fn vendor_product(&self) -> (u16, u16);
+
+    /// Serve the device on the device channel `reply` completes requests on.
+    ///
+    /// `events_token` keeps the channel's events current. `on_close` runs once the device is
+    /// released, so that it can be offered again.
+    fn start(
+        self: Box<Self>,
+        reply: Reply,
+        events_token: Arc<()>,
+        on_close: Box<dyn FnOnce() + Send>,
+    ) -> Box<dyn UrbdrcDeviceBackend>;
+}
+
+/// URBDRC device manager.
 ///
-/// Devices are opened before they are announced to the server, so that a device the client cannot
-/// claim is never offered. The manager hands them out, in announcement order, as the server creates
-/// one device DVC per `ADD_VIRTUAL_CHANNEL`.
+/// On Windows, devices are claimed through the RemoteFX USB redirection drivers when the policy
+/// allows it; otherwise, and on other platforms, they are opened with nusb. Devices are opened before
+/// they are announced to the server, so that a device the client cannot claim is never offered. The
+/// manager hands them out, in announcement order, as the server creates one device DVC per
+/// `ADD_VIRTUAL_CHANNEL`.
 pub(crate) struct NusbDeviceManager {
     shared: Arc<Shared>,
     /// Keeps the manager's events current; they are dropped once the connection is torn down.
     _events_token: Arc<()>,
 }
 
-struct Shared {
-    config: UsbRedirectionConfig,
+pub(crate) struct Shared {
+    pub(crate) config: UsbRedirectionConfig,
     events: EventOrigin,
     state: Mutex<State>,
 }
@@ -45,9 +74,9 @@ struct Shared {
 struct State {
     control_channel_id: Option<u32>,
     /// Opened devices announced with `ADD_VIRTUAL_CHANNEL`, waiting for their DVC.
-    pending: PendingQueue<nusb::DeviceId, OpenedDevice>,
+    pending: PendingQueue<DeviceKey, Box<dyn RedirectableDevice>>,
     /// Devices announced or redirected, with their device DVC once it exists.
-    redirected: HashMap<nusb::DeviceId, Option<Reply>>,
+    redirected: HashMap<DeviceKey, Option<Reply>>,
     /// Stops the discovery thread.
     discovery: Option<oneshot::Sender<()>>,
 }
@@ -78,7 +107,7 @@ impl<K, T> Default for PendingQueue<K, T> {
     }
 }
 
-impl<K: Copy + PartialEq, T> PendingQueue<K, T> {
+impl<K: Clone + PartialEq, T> PendingQueue<K, T> {
     /// Queue a device, returning its announcement.
     fn push(&mut self, key: K, device: T) -> u64 {
         let announcement = self.next_announcement;
@@ -97,8 +126,8 @@ impl<K: Copy + PartialEq, T> PendingQueue<K, T> {
     }
 
     /// Release an unplugged device, keeping its place.
-    fn unplug(&mut self, key: K) {
-        for slot in self.slots.iter_mut().filter(|slot| slot.key == key) {
+    fn unplug(&mut self, key: &K) {
+        for slot in self.slots.iter_mut().filter(|slot| slot.key == *key) {
             slot.device = None;
         }
     }
@@ -178,7 +207,7 @@ impl DeviceManagerBackend for NusbDeviceManager {
             };
             let events_token = Arc::new(());
             let reply = Reply::new(channel_id, &events_token, Arc::clone(self.shared.events.sink()));
-            state.redirected.insert(device.id, Some(reply.clone()));
+            state.redirected.insert(device.key(), Some(reply.clone()));
             (device, reply, events_token)
         };
 
@@ -190,7 +219,7 @@ impl DeviceManagerBackend for NusbDeviceManager {
             "Redirecting USB device"
         );
 
-        let id = device.id;
+        let key = device.key();
         let shared = Arc::downgrade(&self.shared);
         let closed = reply.clone();
         let on_close = Box::new(move || {
@@ -198,21 +227,16 @@ impl DeviceManagerBackend for NusbDeviceManager {
                 let mut state = shared.state();
                 if state
                     .redirected
-                    .get(&id)
+                    .get(&key)
                     .and_then(Option::as_ref)
                     .is_some_and(|current| current.same_channel(&closed))
                 {
-                    state.redirected.remove(&id);
+                    state.redirected.remove(&key);
                 }
             }
         });
 
-        Some(Box::new(NusbDeviceBackend::start(
-            device,
-            reply,
-            events_token,
-            on_close,
-        )))
+        Some(device.start(reply, events_token, on_close))
     }
 }
 
@@ -234,6 +258,14 @@ fn open(info: &nusb::DeviceInfo, identity: &UsbDeviceIdentity) -> Option<OpenedD
 /// Start the thread that announces the present devices and then follows hotplug, returning the
 /// handle that stops it.
 fn start_discovery(shared: &Arc<Shared>) -> Option<oneshot::Sender<()>> {
+    #[cfg(windows)]
+    if let Some(stop) = crate::tsusb::start_discovery(shared) {
+        return Some(stop);
+    }
+    start_nusb_discovery(shared)
+}
+
+fn start_nusb_discovery(shared: &Arc<Shared>) -> Option<oneshot::Sender<()>> {
     // Subscribe before enumerating, so that a device plugged in meanwhile is not missed. Watch even
     // when no rule follows new devices: unplugging a redirected device must close its channel, and
     // `redirect_on_hotplug` already ignores rules that apply at connection only.
@@ -289,7 +321,7 @@ fn announce_present_devices(shared: &Arc<Shared>) {
         let identity = device::identity(&info);
         if shared.config.redirect_at_connect(&identity)
             && let Some(device) = open(&info, &identity)
-            && announce(shared, device)
+            && announce(shared, Box::new(device))
         {
             count = count.saturating_add(1);
         }
@@ -297,21 +329,26 @@ fn announce_present_devices(shared: &Arc<Shared>) {
     debug!(count, "Announced USB devices present at connection");
 }
 
+/// Whether a device is announced or redirected.
+pub(crate) fn is_redirected(shared: &Shared, key: &DeviceKey) -> bool {
+    shared.state().redirected.contains_key(key)
+}
+
 /// Queue an opened device for the next device channel and ask the session to request one.
 ///
 /// Returns `false` when the device is already announced or redirected.
-fn announce(shared: &Arc<Shared>, device: OpenedDevice) -> bool {
-    let id = device.id;
+pub(crate) fn announce(shared: &Arc<Shared>, device: Box<dyn RedirectableDevice>) -> bool {
+    let key = device.key();
     let (control_channel_id, announcement) = {
         let mut state = shared.state();
-        if state.redirected.contains_key(&device.id) {
+        if state.redirected.contains_key(&key) {
             return false;
         }
         let Some(control_channel_id) = state.control_channel_id else {
             return false;
         };
-        state.redirected.insert(id, None);
-        let announcement = state.pending.push(id, device);
+        state.redirected.insert(key.clone(), None);
+        let announcement = state.pending.push(key, device);
         (control_channel_id, announcement)
     };
     let announcement = Announcement {
@@ -367,8 +404,8 @@ impl Drop for Announcement {
         let released = {
             let mut state = shared.state();
             let released = state.pending.withdraw(announcement);
-            if let Some((id, _)) = &released {
-                state.redirected.remove(id);
+            if let Some((key, _)) = &released {
+                state.redirected.remove(key);
             }
             released
         };
@@ -407,17 +444,22 @@ async fn run_hotplug(mut watch: nusb::hotplug::HotplugWatch, mut stopped: onesho
                 if let Some(task) = opening.remove(&id) {
                     task.abort();
                 }
-                let channel = {
-                    let mut state = shared.state();
-                    state.pending.unplug(id);
-                    state.redirected.remove(&id).flatten()
-                };
-                if let Some(channel) = channel {
-                    debug!(channel_id = channel.channel_id(), "Redirected USB device was unplugged");
-                    channel.terminate();
-                }
+                unplugged(&shared, &DeviceKey::Nusb(id));
             }
         }
+    }
+}
+
+/// Stop redirecting a device that is gone, closing its device channel.
+pub(crate) fn unplugged(shared: &Shared, key: &DeviceKey) {
+    let channel = {
+        let mut state = shared.state();
+        state.pending.unplug(key);
+        state.redirected.remove(key).flatten()
+    };
+    if let Some(channel) = channel {
+        debug!(channel_id = channel.channel_id(), "Redirected USB device was unplugged");
+        channel.terminate();
     }
 }
 
@@ -431,7 +473,7 @@ async fn open_hotplugged(info: nusb::DeviceInfo, identity: UsbDeviceIdentity, sh
             return;
         };
         // Already claimed, for example by the enumeration at connection time.
-        if shared.state().redirected.contains_key(&info.id()) {
+        if is_redirected(&shared, &DeviceKey::Nusb(info.id())) {
             return;
         }
         let device = if attempt == HOTPLUG_OPEN_ATTEMPTS {
@@ -440,7 +482,7 @@ async fn open_hotplugged(info: nusb::DeviceInfo, identity: UsbDeviceIdentity, sh
             OpenedDevice::open(&info, &identity).ok()
         };
         if let Some(device) = device {
-            announce(&shared, device);
+            announce(&shared, Box::new(device));
             return;
         }
     }
@@ -456,7 +498,7 @@ mod tests {
         let first = queue.push(1, "first");
         let second = queue.push(2, "second");
 
-        queue.unplug(1);
+        queue.unplug(&1);
         assert!(queue.is_unplugged(first));
         assert!(!queue.is_unplugged(second));
 
@@ -471,7 +513,7 @@ mod tests {
         let mut queue = PendingQueue::default();
         let first = queue.push(1, "first");
         let second = queue.push(1, "replugged");
-        queue.unplug(1);
+        queue.unplug(&1);
         let third = queue.push(1, "plugged again");
 
         // An unplugged device was already released; the others are returned to be released.

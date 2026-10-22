@@ -11,6 +11,9 @@ mod filter;
 mod manager;
 mod urb;
 
+#[cfg(windows)]
+mod tsusb;
+
 pub use device::OpenError;
 pub use filter::{DEFAULT_LOCAL_CLASSES, UsbDeviceIdentity, UsbDeviceMatch, UsbFilterParseError, UsbRedirectionConfig};
 pub use manager::Announcement;
