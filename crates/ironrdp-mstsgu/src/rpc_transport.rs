@@ -124,7 +124,10 @@ where
     /// Opens the IN channel without sending its streaming body.
     ///
     /// `reserve_body` selects between an empty authentication leg and the full streaming request.
-    #[expect(clippy::too_many_arguments, reason = "each argument is one IN channel request header input")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is one IN channel request header input"
+    )]
     pub(crate) async fn open(
         stream: S,
         host: &str,

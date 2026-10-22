@@ -509,14 +509,14 @@ async fn response_head_keeps_rpc_error_and_cookie_pairs() {
     let (mut client, mut server) = tokio::io::duplex(4096);
     server
         .write_all(
-            b"HTTP/1.1 503 RPC Error: 6ba, EEInfo: AAAA\r\nContent-Length: 0\r\n\
+            b"HTTP/1.1 503 RPC Error: 6bf, EEInfo: AAAA\r\nContent-Length: 0\r\n\
               Set-Cookie: RpchLb=node1; Path=/; HttpOnly\r\nSet-Cookie: Affinity=a\r\n\r\n",
         )
         .await
         .expect("write response");
     let response = read_rpch_response_head(&mut client).await.expect("read response head");
     assert_eq!(response.status, 503);
-    assert_eq!(response.rpc_error(), Some(0x6ba));
+    assert_eq!(response.rpc_error(), Some(0x6bf));
     assert_eq!(response.set_cookies, ["RpchLb=node1", "Affinity=a"]);
 }
 
