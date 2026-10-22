@@ -59,7 +59,7 @@ fn websocket_payloads(stream: &PacketStream, masked: bool) -> Result<PacketStrea
             .windows(4)
             .position(|window| window == b"\r\n\r\n")
             .map(|position| position + 4)
-            .ok_or(CaptureError::UnsupportedTransport)?;
+            .ok_or_else(|| CaptureError::GatewayFraming("missing HTTP head terminator".to_owned()))?;
         // Interim responses such as NTLM 401 challenges carry an error body.
         if !masked {
             head_end += content_length(&bytes[head_start..head_end]);
@@ -97,7 +97,7 @@ fn websocket_payloads(stream: &PacketStream, masked: bool) -> Result<PacketStrea
             0x9 | 0xA => {}
             // Close ends the tunnel.
             0x8 => break,
-            _ => return Err(CaptureError::UnsupportedTransport),
+            _ => return Err(CaptureError::GatewayFraming("unsupported websocket opcode".to_owned())),
         }
     }
 

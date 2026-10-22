@@ -272,6 +272,7 @@ fn websocket_frame(data: &[u8], mask: Option<[u8; 4]>) -> Vec<u8> {
 }
 
 #[test]
+// oracle: scaffold
 fn appends_external_nss_key_log() {
     let capture_path = temporary_path("external-key-log");
     write_capture(&capture_path, &x224_connection(0xe0), &x224_connection(0xd0));
@@ -289,6 +290,7 @@ fn appends_external_nss_key_log() {
 }
 
 #[test]
+// oracle: reference
 fn decrypts_resumed_tls12_with_external_key_log() {
     let capture_path = temporary_path("decrypt-external-key-log");
     let (client_stream, server_stream, key_log) = tls12_streams(Tls12Session {
@@ -314,6 +316,7 @@ fn decrypts_resumed_tls12_with_external_key_log() {
 }
 
 #[test]
+// oracle: regression
 fn decrypts_gateway_tunnel_with_external_key_log() {
     let capture_path = temporary_path("gateway-external-key-log");
     let (inner_client, inner_server, inner_key_log) = tls12_streams(Tls12Session {
@@ -356,6 +359,7 @@ fn decrypts_gateway_tunnel_with_external_key_log() {
 }
 
 #[test]
+// oracle: regression
 fn reports_invalid_key_log_file() {
     let capture_path = temporary_path("invalid-key-log");
     let key_log_path = capture_path.with_extension("log");
