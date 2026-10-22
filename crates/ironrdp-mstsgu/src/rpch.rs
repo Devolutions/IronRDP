@@ -11,7 +11,9 @@ use std::collections::VecDeque;
 use std::io;
 use std::time::Instant;
 
+use futures_util::future::BoxFuture;
 use hyper::body::Bytes;
+use log::warn;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf, WriteHalf};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -21,14 +23,16 @@ use uuid::Uuid;
 
 use crate::http_auth::{AuthStep, GatewayHttpAuth, basic_authorization, run_http_auth};
 use crate::rpc::tsgu::{
-    NDR32_TRANSFER_SYNTAX_ID, NDR32_TRANSFER_SYNTAX_VERSION, NonNullRpcContextHandle, TSPROXY_AUTHORIZE_TUNNEL_OPNUM,
+    NDR32_TRANSFER_SYNTAX_ID, NDR32_TRANSFER_SYNTAX_VERSION, NonNullRpcContextHandle, TSG_CLIENT_CAPABILITIES,
+    TSG_MESSAGING_CAP_REAUTH, TSG_MESSAGING_CAP_SERVICE_MSG, TSPROXY_AUTHORIZE_TUNNEL_OPNUM,
     TSPROXY_CLOSE_CHANNEL_OPNUM, TSPROXY_CLOSE_TUNNEL_OPNUM, TSPROXY_CREATE_CHANNEL_OPNUM, TSPROXY_CREATE_TUNNEL_OPNUM,
-    TSPROXY_RPC_INTERFACE_ID, TSPROXY_RPC_INTERFACE_VERSION, TSPROXY_SEND_TO_SERVER_OPNUM,
-    TSPROXY_SETUP_RECEIVE_PIPE_OPNUM, TsProxyAuthorizeTunnelRequest, TsProxyCloseContextRequest,
-    TsProxyCreateChannelRequest, TsProxyCreateTunnelRequest, TsProxySendToServerRequest,
-    TsProxySetupReceivePipeRequest, decode_tsgu_authorize_tunnel_response, decode_tsgu_close_context_response,
-    decode_tsgu_create_channel_response, decode_tsgu_create_tunnel_response, decode_tsgu_send_to_server_response,
-    decode_tsgu_setup_receive_pipe_final_response,
+    TSPROXY_MAKE_TUNNEL_CALL_OPNUM, TSPROXY_RPC_INTERFACE_ID, TSPROXY_RPC_INTERFACE_VERSION,
+    TSPROXY_SEND_TO_SERVER_OPNUM, TSPROXY_SETUP_RECEIVE_PIPE_OPNUM, TsProxyAuthorizeTunnelRequest,
+    TsProxyCloseContextRequest, TsProxyCreateChannelRequest, TsProxyCreateTunnelRequest, TsProxyCreateTunnelResponse,
+    TsProxyMakeTunnelCallRequest, TsProxySendToServerRequest, TsProxySetupReceivePipeRequest, TsProxyTunnelMessage,
+    decode_tsgu_authorize_tunnel_response, decode_tsgu_cancel_tunnel_call_response, decode_tsgu_close_context_response,
+    decode_tsgu_create_channel_response, decode_tsgu_create_tunnel_response, decode_tsgu_make_tunnel_call_response,
+    decode_tsgu_send_to_server_response, decode_tsgu_setup_receive_pipe_final_response,
 };
 use crate::rpc::{
     PTYPE_FAULT, PTYPE_RESPONSE, PTYPE_RTS, RPC_AUTH_LEVEL_PACKET_INTEGRITY, RPC_AUTH_TYPE_WINNT,
@@ -73,6 +77,44 @@ pub(crate) struct RpchHttpCredentials {
 pub(crate) trait RpchStreamProvider<Out, In>: Send {
     fn open_in(&mut self) -> impl Future<Output = Result<In, Error>> + Send;
     fn open_out(&mut self) -> impl Future<Output = Result<Out, Error>> + Send;
+    /// Opens the OUT and IN streams of a separate virtual connection that answers a reauthentication request.
+    ///
+    /// The returned future owns its inputs so it can run outside the session.
+    fn open_reauthentication(&mut self) -> BoxFuture<'static, Result<(Out, In), Error>>;
+}
+
+/// Provider for virtual connections that never open successor or reauthentication channels.
+struct NoSuccessorChannels;
+
+impl<Out: Send + 'static, In: Send + 'static> RpchStreamProvider<Out, In> for NoSuccessorChannels {
+    async fn open_in(&mut self) -> Result<In, Error> {
+        Err(Error::new(
+            "rpch connection has no successor channels",
+            GwErrorKind::UnsupportedFeature,
+        ))
+    }
+
+    async fn open_out(&mut self) -> Result<Out, Error> {
+        Err(Error::new(
+            "rpch connection has no successor channels",
+            GwErrorKind::UnsupportedFeature,
+        ))
+    }
+
+    fn open_reauthentication(&mut self) -> BoxFuture<'static, Result<(Out, In), Error>> {
+        Box::pin(core::future::ready(Err(Error::new(
+            "rpch connection cannot reauthenticate",
+            GwErrorKind::UnsupportedFeature,
+        ))))
+    }
+}
+
+/// TS Proxy channel parameters, kept to repeat them on a reauthentication connection.
+#[derive(Clone)]
+struct TunnelTarget {
+    client_name: String,
+    resource: String,
+    port: u16,
 }
 
 struct RpchSession<Out, In, Provider> {
@@ -105,6 +147,16 @@ struct RpchSession<Out, In, Provider> {
     receive_pipe_call_id: Option<u32>,
     tunnel_context: Option<NonNullRpcContextHandle>,
     channel_context: Option<NonNullRpcContextHandle>,
+    tunnel_target: Option<TunnelTarget>,
+    /// Capabilities the server returned in `TsProxyCreateTunnel`.
+    capabilities: u32,
+    /// Keeps one `TsProxyMakeTunnelCall` pending while the server delivers administrative messages.
+    messaging: bool,
+    message_call_id: Option<u32>,
+    /// Tunnel context from a reauthentication message that has not started its connection yet.
+    pending_reauth: Option<u64>,
+    /// Set once close starts, so responses that tear-down provokes are expected rather than failures.
+    closing: bool,
     data: VecDeque<Bytes>,
     failed: bool,
 }
@@ -241,6 +293,12 @@ where
         receive_pipe_call_id: None,
         tunnel_context: None,
         channel_context: None,
+        tunnel_target: None,
+        capabilities: 0,
+        messaging: false,
+        message_call_id: None,
+        pending_reauth: None,
+        closing: false,
         data: VecDeque::new(),
         failed: false,
     };
@@ -697,7 +755,57 @@ where
     Provider: RpchStreamProvider<Out, In>,
 {
     async fn open_tunnel(&mut self, client_name: &str, resource: &str, port: u16) -> Result<(), Error> {
-        let request = TsProxyCreateTunnelRequest::new(3)
+        let target = TunnelTarget {
+            client_name: client_name.to_owned(),
+            resource: resource.to_owned(),
+            port,
+        };
+        let tunnel = self
+            .create_tunnel(TsProxyCreateTunnelRequest::new(TSG_CLIENT_CAPABILITIES), &target)
+            .await?;
+        self.capabilities = tunnel.capabilities;
+        log::debug!("RPCH tunnel created; capabilities=0x{:x}", self.capabilities);
+        if let TsProxyTunnelMessage::Consent { text, .. } = &tunnel.message {
+            // Consent is accepted without prompting, matching the HTTP transport's default consent handling.
+            warn!("RD Gateway consent message accepted: {text}");
+        }
+
+        // A pending TsProxyMakeTunnelCall carries administrative and reauthentication messages
+        // ([MS-TSGU] 3.2.6.1.3 and 3.6.5.1).
+        self.messaging = self.capabilities & TSG_MESSAGING_CAP_SERVICE_MSG != 0;
+        self.request_tunnel_message().await?;
+        self.create_channel(&target).await?;
+        self.tunnel_target = Some(target);
+
+        let channel_context = self
+            .channel_context
+            .ok_or_else(|| Error::new("rpch channel missing", GwErrorKind::Connect))?;
+        let request = TsProxySetupReceivePipeRequest::new(channel_context).encode();
+        let call_id = self.next_call_id();
+        self.send_call(call_id, TSPROXY_SETUP_RECEIVE_PIPE_OPNUM, &request)
+            .await?;
+        self.receive_pipe_call_id = Some(call_id);
+        Ok(())
+    }
+
+    /// Answers a reauthentication message on this separate virtual connection ([MS-TSGU] 3.6.4).
+    ///
+    /// The new tunnel names the original one, then is authorized and given a channel; it carries no data.
+    async fn reauthenticate_tunnel(&mut self, tunnel_context: u64, target: &TunnelTarget) -> Result<(), Error> {
+        self.create_tunnel(
+            TsProxyCreateTunnelRequest::reauthenticate(TSG_CLIENT_CAPABILITIES, tunnel_context),
+            target,
+        )
+        .await?;
+        self.create_channel(target).await
+    }
+
+    async fn create_tunnel(
+        &mut self,
+        request: TsProxyCreateTunnelRequest,
+        target: &TunnelTarget,
+    ) -> Result<TsProxyCreateTunnelResponse, Error> {
+        let request = request
             .encode()
             .map_err(|error| custom_err!("encode create tunnel", error))?;
         let response = self.call(TSPROXY_CREATE_TUNNEL_OPNUM, &request).await?;
@@ -705,7 +813,7 @@ where
             .map_err(|error| custom_err!("decode create tunnel", error))?;
         self.tunnel_context = Some(tunnel.tunnel_context);
 
-        let request = TsProxyAuthorizeTunnelRequest::new(tunnel.tunnel_context, client_name, &[])
+        let request = TsProxyAuthorizeTunnelRequest::new(tunnel.tunnel_context, &target.client_name, &[])
             .encode()
             .map_err(|error| custom_err!("encode authorize tunnel", error))?;
         let response = self.call(TSPROXY_AUTHORIZE_TUNNEL_OPNUM, &request).await?;
@@ -720,23 +828,93 @@ where
             clipboard_disabled: authorization.redirection_flags.clipboard_disabled,
             pnp_disabled: authorization.redirection_flags.pnp_disabled,
         };
+        Ok(tunnel)
+    }
 
-        // Administrative messages require TSG_MESSAGING_CAP_SERVICE_MSG, which this client does not
-        // negotiate, so TsProxyMakeTunnelCall is not issued ([MS-TSGU] 3.2.6.1.3 and 3.6.5.1).
-        let request = TsProxyCreateChannelRequest::new(tunnel.tunnel_context, resource, port)
+    async fn create_channel(&mut self, target: &TunnelTarget) -> Result<(), Error> {
+        let tunnel_context = self
+            .tunnel_context
+            .ok_or_else(|| Error::new("rpch channel before tunnel", GwErrorKind::Connect))?;
+        let request = TsProxyCreateChannelRequest::new(tunnel_context, &target.resource, target.port)
             .encode()
             .map_err(|error| custom_err!("encode create channel", error))?;
         let response = self.call(TSPROXY_CREATE_CHANNEL_OPNUM, &request).await?;
         let channel = decode_tsgu_create_channel_response(&response)
             .map_err(|error| custom_err!("decode create channel", error))?;
         self.channel_context = Some(channel.channel_context);
-
-        let request = TsProxySetupReceivePipeRequest::new(channel.channel_context).encode();
-        let call_id = self.next_call_id();
-        self.send_call(call_id, TSPROXY_SETUP_RECEIVE_PIPE_OPNUM, &request)
-            .await?;
-        self.receive_pipe_call_id = Some(call_id);
         Ok(())
+    }
+
+    /// Issues the next `TsProxyMakeTunnelCall` when messaging is negotiated and none is pending.
+    async fn request_tunnel_message(&mut self) -> Result<(), Error> {
+        if !self.messaging || self.closing || self.message_call_id.is_some() {
+            return Ok(());
+        }
+        let tunnel_context = self
+            .tunnel_context
+            .ok_or_else(|| Error::new("rpch message call before tunnel", GwErrorKind::Connect))?;
+        let request = TsProxyMakeTunnelCallRequest::new(tunnel_context).encode();
+        let call_id = self.next_call_id();
+        self.send_call(call_id, TSPROXY_MAKE_TUNNEL_CALL_OPNUM, &request)
+            .await?;
+        self.message_call_id = Some(call_id);
+        Ok(())
+    }
+
+    /// Applies a completed `TsProxyMakeTunnelCall`; a failed call only stops messaging.
+    fn handle_tunnel_message(&mut self, stub: &[u8]) {
+        match decode_tsgu_make_tunnel_call_response(stub) {
+            Ok(TsProxyTunnelMessage::None) => {}
+            Ok(TsProxyTunnelMessage::Service { text, .. }) => warn!("RD Gateway service message: {text}"),
+            Ok(TsProxyTunnelMessage::Consent { text, .. }) => {
+                warn!("RD Gateway consent message accepted: {text}");
+            }
+            Ok(TsProxyTunnelMessage::Reauthenticate { tunnel_context }) => {
+                if self.capabilities & TSG_MESSAGING_CAP_REAUTH == 0 {
+                    warn!("RD Gateway requested reauthentication without negotiating it");
+                } else {
+                    self.pending_reauth = Some(tunnel_context);
+                }
+            }
+            Err(error) => {
+                if !self.closing {
+                    warn!("RD Gateway message call failed; administrative messages are disabled: {error}");
+                }
+                self.messaging = false;
+            }
+        }
+    }
+
+    /// Spawns the reauthentication connection for `tunnel_context` ([MS-TSGU] 3.6.4).
+    ///
+    /// The gateway enforces reauthentication by closing the tunnel, so this session keeps running whatever
+    /// the outcome.
+    fn spawn_reauthentication(&mut self, tunnel_context: u64) -> Result<ReauthTask, Error> {
+        let target = self
+            .tunnel_target
+            .clone()
+            .ok_or_else(|| Error::new("rpch reauthentication before channel", GwErrorKind::Connect))?;
+        let channels = self.provider.open_reauthentication();
+        let gateway_host = self.gateway_host.clone();
+        let backend = self.target.clone();
+        let credentials = self.credentials.clone();
+        let in_content_length = self.in_content_length;
+        Ok(ReauthTask(tokio::spawn(async move {
+            let (out, input) = channels.await?;
+            let mut session = rpch_connect(
+                out,
+                input,
+                NoSuccessorChannels,
+                &gateway_host,
+                &backend,
+                credentials,
+                RpchV2Settings::default(),
+                in_content_length,
+            )
+            .await?;
+            session.reauthenticate_tunnel(tunnel_context, &target).await?;
+            session.close().await
+        })))
     }
 
     async fn send_to_server(&mut self, data: Bytes) -> Result<(), Error> {
@@ -756,7 +934,9 @@ where
         }
     }
 
+    /// Closes the channel and tunnel in the order of [MS-TSGU] 3.6.5, cancelling a pending message call between them.
     async fn close(&mut self) -> Result<(), Error> {
+        self.closing = true;
         if let Some(channel_context) = self.channel_context.take() {
             let response = self
                 .call(
@@ -766,6 +946,17 @@ where
                 .await?;
             decode_tsgu_close_context_response(&response)
                 .map_err(|error| custom_err!("decode close-channel response", error))?;
+        }
+        if let (Some(_), Some(tunnel_context)) = (self.message_call_id, self.tunnel_context) {
+            let response = self
+                .call(
+                    TSPROXY_MAKE_TUNNEL_CALL_OPNUM,
+                    &TsProxyMakeTunnelCallRequest::cancel_pending(tunnel_context).encode(),
+                )
+                .await?;
+            if let Err(error) = decode_tsgu_cancel_tunnel_call_response(&response) {
+                warn!("RD Gateway rejected message call cancellation: {error}");
+            }
         }
         if let Some(tunnel_context) = self.tunnel_context.take() {
             let response = self
@@ -848,7 +1039,17 @@ where
             Some(PTYPE_FAULT | PTYPE_RESPONSE) => {
                 let fragment = self.verify_rpc_fragment(&mut pdu)?;
                 if fragment.header().ptype() == PTYPE_FAULT {
-                    return Err(Error::new("rpc fault on receive pipe", GwErrorKind::Connect));
+                    // A failed message call only ends messaging; any other fault fails the session.
+                    if self.message_call_id != Some(fragment.header().call_id()) {
+                        return Err(Error::new("rpc fault on receive pipe", GwErrorKind::Connect));
+                    }
+                    self.message_call_id = None;
+                    self.messaging = false;
+                    if !self.closing {
+                        warn!("RD Gateway faulted the message call; administrative messages are disabled");
+                    }
+                    self.consume_out_pdu(pdu_len).await?;
+                    return Ok(None);
                 }
                 let response = fragment
                     .decode_response_fragment_for_context(0)
@@ -862,7 +1063,14 @@ where
                     .push_for_context(fragment, 0)
                     .map_err(|error| custom_err!("reassemble tsproxy response", error))?;
                 self.consume_out_pdu(pdu_len).await?;
-                Ok(response.map(|response| (response.call_id, response.stub)))
+                match response {
+                    Some(response) if self.message_call_id == Some(response.call_id) => {
+                        self.message_call_id = None;
+                        self.handle_tunnel_message(&response.stub);
+                        Ok(None)
+                    }
+                    response => Ok(response.map(|response| (response.call_id, response.stub))),
+                }
             }
             _ => Err(Error::new("unexpected rpch OUT pdu", GwErrorKind::Decode)),
         }
@@ -953,6 +1161,11 @@ where
         if response.is_last_fragment() && response.stub.len() == 4 {
             let result = decode_tsgu_setup_receive_pipe_final_response(response.stub)
                 .map_err(|error| custom_err!("decode receive-pipe terminal result", error))?;
+            if self.closing {
+                // Closing the channel ends the receive pipe ([MS-TSGU] 3.2.6.3.1).
+                self.receive_pipe_call_id = None;
+                return self.consume_out_pdu(pdu_len).await;
+            }
             return Err(Error::new(
                 if result == 0 {
                     "receive pipe closed"
@@ -1429,6 +1642,44 @@ impl RpchStreamProvider<crate::packet_io::GatewayStream, crate::packet_io::Gatew
     async fn open_out(&mut self) -> Result<crate::packet_io::GatewayStream, Error> {
         self.open().await
     }
+
+    fn open_reauthentication(
+        &mut self,
+    ) -> BoxFuture<'static, Result<(crate::packet_io::GatewayStream, crate::packet_io::GatewayStream), Error>> {
+        let endpoint = self.endpoint.clone();
+        let certificate_validation = self.certificate_validation;
+        let certificate_validation_callback = self.certificate_validation_callback.clone();
+        Box::pin(async move {
+            let (out, input, _) = crate::packet_io::open_rpch_gateway_channels(
+                &endpoint,
+                certificate_validation,
+                certificate_validation_callback,
+            )
+            .await?;
+            Ok((out, input))
+        })
+    }
+}
+
+/// Reauthentication connection running beside the session; aborted with it.
+struct ReauthTask(JoinHandle<Result<(), Error>>);
+
+impl Drop for ReauthTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Resolves when the running reauthentication connection ends; pending forever when none runs.
+///
+/// Cancel-safe: it only polls the task handle.
+async fn reauthentication_finished(task: &mut Option<ReauthTask>) -> Result<(), Error> {
+    let Some(ReauthTask(handle)) = task.as_mut() else {
+        return core::future::pending().await;
+    };
+    let result = handle.await;
+    *task = None;
+    result.unwrap_or_else(|error| Err(custom_err!("rpch reauthentication task", error)))
 }
 
 enum StreamCommand {
@@ -1700,9 +1951,34 @@ where
     let mut keepalive = tokio::time::interval(interval);
     keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
     keepalive.tick().await;
+    let mut reauthentication = None;
 
     loop {
+        if let Some(tunnel_context) = session.pending_reauth.take() {
+            if reauthentication.is_some() {
+                warn!("RD Gateway reauthentication already in progress; ignoring repeated request");
+            } else {
+                reauthentication = Some(session.spawn_reauthentication(tunnel_context)?);
+            }
+        }
+        session.request_tunnel_message().await?;
+
+        // Inbound data is delivered from its own branch so a reader that stops reading never stalls writes or
+        // shutdown; the OUT channel is not read while data waits, which bounds the buffered data.
+        let delivering = !session.data.is_empty();
         tokio::select! {
+            result = reauthentication_finished(&mut reauthentication) => {
+                match result {
+                    Ok(()) => warn!("RD Gateway reauthentication completed"),
+                    Err(error) => warn!("RD Gateway reauthentication failed: {error}"),
+                }
+            }
+            permit = received.reserve(), if delivering => {
+                let permit = permit.map_err(|_| Error::new("rpch stream reader closed", GwErrorKind::Connect))?;
+                if let Some(data) = session.data.pop_front() {
+                    permit.send(Ok(data));
+                }
+            }
             command = commands.recv() => {
                 match command {
                     Some(StreamCommand::Write(bytes, response)) => {
@@ -1713,7 +1989,6 @@ where
                         };
                         let _ = response.send(response_result);
                         result?;
-                        send_queued_stream_data(&mut session, received.clone()).await?;
                     }
                     Some(StreamCommand::Shutdown(response)) => {
                         let result = session.close().await;
@@ -1727,12 +2002,10 @@ where
                     None => return Ok(()),
                 }
             }
-            pdu = session.read_out_pdu() => {
-                let pdu = pdu?;
-                if session.handle_out_pdu(pdu).await?.is_some() {
+            pdu = session.read_out_pdu(), if !delivering => {
+                if session.handle_out_pdu(pdu?).await?.is_some() {
                     return Err(Error::new("unexpected tsproxy response", GwErrorKind::Decode));
                 }
-                send_queued_stream_data(&mut session, received.clone()).await?;
             }
             _ = keepalive.tick() => {
                 let now = started.elapsed();
@@ -1742,21 +2015,6 @@ where
             }
         }
     }
-}
-
-async fn send_queued_stream_data<Out, In, Provider>(
-    session: &mut RpchSession<Out, In, Provider>,
-    received: mpsc::Sender<Result<Bytes, String>>,
-) -> Result<(), Error> {
-    while let Some(data) = session.data.pop_front() {
-        received
-            .clone()
-            .reserve_owned()
-            .await
-            .map_err(|_| Error::new("rpch stream reader closed", GwErrorKind::Connect))?
-            .send(Ok(data));
-    }
-    Ok(())
 }
 
 async fn write_in_pdu<S>(input: &mut RpchInRequest<S>, pdu: &[u8]) -> Result<(), Error>
@@ -1898,7 +2156,9 @@ mod tests {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 
     use super::*;
-    use crate::mock_rpch::{MockRpchConnector, MockRpchScenario, mock_rpch_proxy};
+    use crate::mock_rpch::{
+        MockRpchConnector, MockRpchScenario, REAUTH_TUNNEL_CONTEXT, mock_rpch_proxy, mock_rpch_reauth_proxy,
+    };
 
     #[tokio::test]
     async fn rpch_out_requires_bounded_http_content_length() {
@@ -1916,7 +2176,19 @@ mod tests {
     /// Smallest IN body the mock accepts, so a few kilobytes of traffic trigger IN channel recycling.
     const TEST_IN_CONTENT_LENGTH: u32 = 128 * 1024;
 
-    struct MockProvider(MockRpchConnector);
+    /// Mock proxy connector plus, for reauthentication tests, where reauthentication proxies report.
+    struct MockProvider(MockRpchConnector, Option<mpsc::UnboundedSender<u64>>);
+
+    impl MockProvider {
+        fn open_reauthentication_proxy(&self) -> BoxFuture<'static, Result<(DuplexStream, DuplexStream), Error>> {
+            let report = self.1.clone();
+            Box::pin(async move {
+                let report = report.ok_or_else(|| Error::new("unexpected reauthentication", GwErrorKind::Connect))?;
+                let (out, input, _, _) = mock_rpch_reauth_proxy(report);
+                Ok((out, input))
+            })
+        }
+    }
 
     impl RpchStreamProvider<DuplexStream, DuplexStream> for MockProvider {
         async fn open_in(&mut self) -> Result<DuplexStream, Error> {
@@ -1929,6 +2201,10 @@ mod tests {
             self.0
                 .connect_out()
                 .ok_or_else(|| Error::new("mock proxy stopped", GwErrorKind::Connect))
+        }
+
+        fn open_reauthentication(&mut self) -> BoxFuture<'static, Result<(DuplexStream, DuplexStream), Error>> {
+            self.open_reauthentication_proxy()
         }
     }
 
@@ -1943,6 +2219,16 @@ mod tests {
             RpchStreamProvider::<DuplexStream, DuplexStream>::open_out(self)
                 .await
                 .map(Box::new)
+        }
+
+        fn open_reauthentication(
+            &mut self,
+        ) -> BoxFuture<'static, Result<(Box<DuplexStream>, Box<DuplexStream>), Error>> {
+            let channels = self.open_reauthentication_proxy();
+            Box::pin(async move {
+                let (out, input) = channels.await?;
+                Ok((Box::new(out), Box::new(input)))
+            })
         }
     }
 
@@ -1964,7 +2250,7 @@ mod tests {
         let session = rpch_connect(
             out,
             input,
-            MockProvider(connector),
+            MockProvider(connector, None),
             "rdg.contoso.com",
             TSPROXY_RPC_BACKEND,
             test_credentials(),
@@ -1988,6 +2274,13 @@ mod tests {
     }
 
     async fn open_stream(scenario: MockRpchScenario) -> (RpchStream, JoinHandle<()>) {
+        open_stream_reporting_reauth(scenario, None).await
+    }
+
+    async fn open_stream_reporting_reauth(
+        scenario: MockRpchScenario,
+        reauth_report: Option<mpsc::UnboundedSender<u64>>,
+    ) -> (RpchStream, JoinHandle<()>) {
         let (out, input, connector, proxy) = mock_rpch_proxy(scenario);
         let target = GwConnectTarget {
             gw_endpoint: "rdg.contoso.com".to_owned(),
@@ -1999,7 +2292,7 @@ mod tests {
         let stream = RpchStream::connect(
             Box::new(out),
             Box::new(input),
-            MockProvider(connector),
+            MockProvider(connector, reauth_report),
             &target,
             "test-client",
             3389,
@@ -2156,6 +2449,29 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn rpch_stream_writes_and_shuts_down_while_inbound_data_is_unread() {
+        let (mut stream, proxy) = open_stream(MockRpchScenario::Echo).await;
+        let mut expected = Vec::new();
+        for index in 0..20u8 {
+            let chunk = [b'a' + index; 4];
+            tokio::time::timeout(Duration::from_secs(1), stream.write_all(&chunk))
+                .await
+                .expect("write completes while echoed data is unread")
+                .expect("write chunk");
+            expected.extend_from_slice(&chunk);
+        }
+
+        let mut response = vec![0; expected.len()];
+        stream.read_exact(&mut response).await.expect("read echoed data");
+        assert_eq!(response, expected);
+        tokio::time::timeout(Duration::from_secs(1), stream.shutdown())
+            .await
+            .expect("shutdown completes")
+            .expect("close TS Proxy contexts");
+        proxy.abort();
+    }
+
     async fn echo(session: &mut RpchSession<DuplexStream, DuplexStream, MockProvider>, data: &[u8]) {
         session
             .send_to_server(Bytes::copy_from_slice(data))
@@ -2240,6 +2556,59 @@ mod tests {
         .expect("IN failure is observed")
         .expect_err("IN channel error fails the call");
         assert!(matches!(error.kind(), GwErrorKind::GatewayCode(code) if *code == RPC_S_SERVER_UNAVAILABLE));
+        proxy.abort();
+    }
+
+    #[tokio::test]
+    async fn rpch_session_negotiates_messaging_and_cancels_pending_call_on_close() {
+        let (mut session, proxy) = open_session(MockRpchScenario::Messaging).await;
+        assert_eq!(session.capabilities, TSG_CLIENT_CAPABILITIES);
+        assert!(session.messaging);
+        // The service message answered the first message call while the channel was created.
+        assert!(session.message_call_id.is_none());
+        echo(&mut session, b"with-messaging").await;
+
+        session.request_tunnel_message().await.expect("issue message call");
+        assert!(session.message_call_id.is_some());
+        // The proxy only closes the tunnel once the pending message call was cancelled.
+        session.close().await.expect("close with pending message call");
+        assert!(session.message_call_id.is_none());
+        assert!(!session.messaging);
+        drop(session);
+        proxy.await.expect("proxy observed close");
+    }
+
+    #[tokio::test]
+    async fn rpch_stream_carries_data_and_shuts_down_with_messaging() {
+        let (mut stream, proxy) = open_stream(MockRpchScenario::Messaging).await;
+        stream.write_all(b"messaging").await.expect("write with messaging");
+        let mut response = [0; 9];
+        stream.read_exact(&mut response).await.expect("read with messaging");
+        assert_eq!(&response, b"messaging");
+        stream.shutdown().await.expect("close with pending message call");
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), proxy)
+                .await
+                .expect("proxy observes stream shutdown")
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn rpch_stream_answers_reauthentication_on_a_separate_connection() {
+        let (report, mut reauthenticated) = mpsc::unbounded_channel();
+        let (mut stream, proxy) = open_stream_reporting_reauth(MockRpchScenario::Reauth, Some(report)).await;
+        let tunnel_context = tokio::time::timeout(Duration::from_secs(5), reauthenticated.recv())
+            .await
+            .expect("reauthentication connection completes")
+            .expect("reauthentication proxy reports");
+        assert_eq!(tunnel_context, REAUTH_TUNNEL_CONTEXT);
+
+        stream.write_all(b"after-reauth").await.expect("write after reauth");
+        let mut response = [0; 12];
+        stream.read_exact(&mut response).await.expect("read after reauth");
+        assert_eq!(&response, b"after-reauth");
+        stream.shutdown().await.expect("close after reauth");
         proxy.abort();
     }
 }

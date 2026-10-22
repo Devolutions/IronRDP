@@ -44,10 +44,14 @@ Only RPC PDUs count against the flow-control windows; RTS PDUs do not.
 Cookies set on any channel response are sent on later channel requests so a load balancer keeps the virtual connection on one proxy.
 The IN channel response is watched for the whole session; an `RPC Error` status ends the stream with the gateway's error code.
 Unexpected RTS sequences, a rejected replacement channel or a buffered-data overflow while waiting for send credit end the stream with an error.
-It does not negotiate TS Proxy administrative messaging, so it never issues `TsProxyMakeTunnelCall` and receives no service, consent or reauthentication messages.
-It closes the TS Proxy context and tunnel on graceful shutdown; an I/O or integrity error poisons the session, while dropping the stream closes its sockets without a close handshake.
+It negotiates TS Proxy administrative messaging and keeps one `TsProxyMakeTunnelCall` pending to receive service, consent and reauthentication messages.
+Consent messages are accepted and service messages are logged.
+A reauthentication message is answered on a separate authenticated virtual connection that sends the reauthentication tunnel context, while the data path stays open.
+A failed message call disables messaging without ending the session.
+It closes the TS Proxy channel, cancels the pending message call and closes the tunnel on graceful shutdown; an I/O or integrity error poisons the session, while dropping the stream closes its sockets without a close handshake.
 There is no automatic HTTP/WebSocket-to-RPCH fallback.
-A session through one Windows RD Gateway has been tested and reached the remote desktop; channel recycling has been tested only against the loopback proxy, not a real gateway.
+A session through one Windows RD Gateway has been tested: it negotiated messaging, reached the remote desktop and disconnected cleanly.
+Channel recycling, message delivery and reauthentication have been tested only against the loopback proxy, not a real gateway.
 
 [MS-RPCH]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpch/c0f4c9c5-1a61-4d10-b8e2-005378d1d212
 

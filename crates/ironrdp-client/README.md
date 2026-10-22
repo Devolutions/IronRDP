@@ -38,9 +38,10 @@ When the `gateway` feature is enabled, `Transport::Gateway` uses the MS-TSGU HTT
 It handles `HTTP_REAUTH_MESSAGE` through a short-lived background reauthentication transport without disrupting the active data transport.
 Select `TransportKind::GatewayRpch` explicitly to use the authenticated MS-RPCH v2 and TS Proxy stream.
 RPCH verifies RPC packet integrity independently of TLS and HTTP authentication; the legacy gateway selection remains the default, and neither transport falls back to unsigned RPC.
-The RPCH stream recycles IN and OUT channels, keeps load-balancer cookies and watches the IN channel for gateway errors; it does not negotiate gateway service, consent or reauthentication messages.
+The RPCH stream recycles IN and OUT channels, keeps load-balancer cookies and watches the IN channel for gateway errors.
+It accepts gateway consent messages, logs service messages and answers reauthentication on a separate authenticated connection.
 Gateway UDP/DTLS remains unsupported.
-An RPCH session through one Windows RD Gateway has been tested, but channel recycling has been tested only against a loopback proxy.
+An RPCH session through one Windows RD Gateway has been tested, but channel recycling, gateway messages and reauthentication have been tested only against a loopback proxy.
 
 For the end-user RDP client binary, see [`ironrdp-viewer`](../ironrdp-viewer).
 

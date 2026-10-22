@@ -11,8 +11,8 @@ use tokio::sync::mpsc;
 
 use crate::rpc::tsgu::{
     TSPROXY_AUTHORIZE_TUNNEL_OPNUM, TSPROXY_CLOSE_CHANNEL_OPNUM, TSPROXY_CLOSE_TUNNEL_OPNUM,
-    TSPROXY_CREATE_CHANNEL_OPNUM, TSPROXY_CREATE_TUNNEL_OPNUM, TSPROXY_SEND_TO_SERVER_OPNUM,
-    TSPROXY_SETUP_RECEIVE_PIPE_OPNUM,
+    TSPROXY_CREATE_CHANNEL_OPNUM, TSPROXY_CREATE_TUNNEL_OPNUM, TSPROXY_MAKE_TUNNEL_CALL_OPNUM,
+    TSPROXY_SEND_TO_SERVER_OPNUM, TSPROXY_SETUP_RECEIVE_PIPE_OPNUM,
 };
 use crate::rpc::{
     PFC_FIRST_FRAG, PFC_LAST_FRAG, PFC_SUPPORT_HEADER_SIGN, PTYPE_BIND, PTYPE_REQUEST, PTYPE_RPC_AUTH_3, PTYPE_RTS,
@@ -43,7 +43,26 @@ pub(crate) enum MockRpchScenario {
     RecycleOutR2,
     /// The proxy fails the IN channel with an RPC-Error response on the first send.
     InHttpError(u32),
+    /// The proxy negotiates consent and service messages, sends a consent message with the tunnel, answers the
+    /// first message call with a service message and keeps the next one pending until the client cancels it.
+    Messaging,
+    /// The proxy negotiates reauthentication, answers the first message call with a reauthentication message and
+    /// keeps the next one pending until the client cancels it.
+    Reauth,
+    /// The reauthentication connection: the proxy requires a reauthentication tunnel naming [`REAUTH_TUNNEL_CONTEXT`]
+    /// and reports it once the client closes that tunnel.
+    ReauthConnection,
 }
+
+/// Tunnel context the [`MockRpchScenario::Reauth`] proxy names in its reauthentication message.
+pub(crate) const REAUTH_TUNNEL_CONTEXT: u64 = 0x1122_3344_5566_7788;
+const CONSENT_MESSAGE: &str = "Accept the gateway policy";
+const SERVICE_MESSAGE: &str = "Maintenance tonight";
+const TSG_PACKET_TYPE_REAUTH: u32 = 0x0000_5250;
+const TSG_TUNNEL_CALL_ASYNC_MSG_REQUEST: u32 = 1;
+const TSG_TUNNEL_CANCEL_ASYNC_MSG_REQUEST: u32 = 2;
+/// HRESULT_FROM_WIN32(ERROR_CANCELLED), returned for the message call the client cancelled.
+const CANCELLED_HRESULT: u32 = 0x8007_04c7;
 
 /// Load-balancer cookie the mock sets on the first response; every later request must return it.
 const LB_COOKIE: &str = "RpchLb=node1";
@@ -183,19 +202,36 @@ impl MockRpcSecurity {
     }
 }
 
-pub(crate) fn mock_rpch_proxy(
-    scenario: MockRpchScenario,
-) -> (
+type MockProxy = (
     DuplexStream,
     DuplexStream,
     MockRpchConnector,
     tokio::task::JoinHandle<()>,
-) {
+);
+
+pub(crate) fn mock_rpch_proxy(scenario: MockRpchScenario) -> MockProxy {
+    spawn_proxy(scenario, None)
+}
+
+/// Starts the [`MockRpchScenario::ReauthConnection`] proxy, which sends the tunnel context it was asked to
+/// reauthenticate to `report` once the client closes the reauthentication tunnel.
+pub(crate) fn mock_rpch_reauth_proxy(report: mpsc::UnboundedSender<u64>) -> MockProxy {
+    spawn_proxy(MockRpchScenario::ReauthConnection, Some(report))
+}
+
+fn spawn_proxy(scenario: MockRpchScenario, reauth_report: Option<mpsc::UnboundedSender<u64>>) -> MockProxy {
     let (out_client, out_server) = tokio::io::duplex(STREAM_BUFFER);
     let (in_client, in_server) = tokio::io::duplex(STREAM_BUFFER);
     let (in_connections, in_accept) = mpsc::unbounded_channel();
     let (out_connections, out_accept) = mpsc::unbounded_channel();
-    let task = tokio::spawn(run_proxy(out_server, in_server, in_accept, out_accept, scenario));
+    let task = tokio::spawn(run_proxy(
+        out_server,
+        in_server,
+        in_accept,
+        out_accept,
+        scenario,
+        reauth_report,
+    ));
     (
         out_client,
         in_client,
@@ -232,6 +268,7 @@ async fn run_proxy(
     mut in_accept: mpsc::UnboundedReceiver<DuplexStream>,
     mut out_accept: mpsc::UnboundedReceiver<DuplexStream>,
     scenario: MockRpchScenario,
+    reauth_report: Option<mpsc::UnboundedSender<u64>>,
 ) {
     let requires_basic_auth = matches!(scenario, MockRpchScenario::BasicAuthentication);
     if !begin_in_channel(&mut input, requires_basic_auth, false).await {
@@ -287,6 +324,11 @@ async fn run_proxy(
     // Only RPC PDUs count against the receive window ([MS-RPCH] 3.2.1.1.4).
     let mut bytes_received = 0u32;
     let mut rpc_security = MockRpcSecurity::new();
+    let messaging = matches!(scenario, MockRpchScenario::Messaging | MockRpchScenario::Reauth);
+    let mut message_calls = 0u32;
+    let mut pending_message_call = None;
+    let mut message_call_cancelled = false;
+    let mut reauth_tunnel_context = None;
 
     loop {
         let (id, pdu) = match ready.pop_front() {
@@ -400,7 +442,13 @@ async fn run_proxy(
                     return;
                 };
                 let request_call_id = call_id(&pdu);
+                let Some(stub) = body.get(8..) else {
+                    return;
+                };
                 if opnum == TSPROXY_SETUP_RECEIVE_PIPE_OPNUM {
+                    if matches!(scenario, MockRpchScenario::ReauthConnection) {
+                        return;
+                    }
                     receive_pipe_call_id = Some(request_call_id);
                     if let Some(result) = receive_pipe_result {
                         if write_response(&mut out, &mut rpc_security, request_call_id, &result.to_le_bytes())
@@ -415,11 +463,27 @@ async fn run_proxy(
 
                 match opnum {
                     TSPROXY_CREATE_TUNNEL_OPNUM => {
+                        let reauth = (stub.get(..4) == Some(TSG_PACKET_TYPE_REAUTH.to_le_bytes().as_slice()))
+                            .then(|| stub.get(16..24)?.try_into().ok().map(u64::from_le_bytes))
+                            .flatten();
+                        if matches!(scenario, MockRpchScenario::ReauthConnection) != reauth.is_some() {
+                            return;
+                        }
+                        reauth_tunnel_context = reauth;
+                        let response = if messaging {
+                            // The client must advertise every messaging capability it handles.
+                            if stub.get(stub.len().saturating_sub(4)..) != Some(0x1fu32.to_le_bytes().as_slice()) {
+                                return;
+                            }
+                            create_tunnel_caps_response(&TUNNEL_CONTEXT, 7)
+                        } else {
+                            create_tunnel_response(&TUNNEL_CONTEXT, 7)
+                        };
                         if matches!(scenario, MockRpchScenario::TamperedResponse) {
                             let Ok(mut response) = rpc_security.signed_response(
                                 request_call_id,
                                 PFC_FIRST_FRAG | PFC_LAST_FRAG,
-                                &create_tunnel_response(&TUNNEL_CONTEXT, 7),
+                                &response,
                             ) else {
                                 return;
                             };
@@ -429,16 +493,60 @@ async fn run_proxy(
                             }
                             continue;
                         }
-                        if write_fragmented_response(
-                            &mut out,
-                            &mut rpc_security,
-                            request_call_id,
-                            &create_tunnel_response(&TUNNEL_CONTEXT, 7),
-                        )
-                        .await
-                        .is_err()
+                        if write_fragmented_response(&mut out, &mut rpc_security, request_call_id, &response)
+                            .await
+                            .is_err()
                         {
                             return;
+                        }
+                    }
+                    TSPROXY_MAKE_TUNNEL_CALL_OPNUM => {
+                        let Some(proc_id) = stub.get(20..24).and_then(|bytes| bytes.try_into().ok()) else {
+                            return;
+                        };
+                        if !messaging {
+                            return;
+                        }
+                        match u32::from_le_bytes(proc_id) {
+                            TSG_TUNNEL_CALL_ASYNC_MSG_REQUEST => {
+                                if pending_message_call.is_some() {
+                                    return;
+                                }
+                                message_calls += 1;
+                                if message_calls > 1 {
+                                    pending_message_call = Some(request_call_id);
+                                    continue;
+                                }
+                                let message = if matches!(scenario, MockRpchScenario::Reauth) {
+                                    reauth_message_response(REAUTH_TUNNEL_CONTEXT)
+                                } else {
+                                    service_message_response(SERVICE_MESSAGE)
+                                };
+                                if write_response(&mut out, &mut rpc_security, request_call_id, &message)
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                            TSG_TUNNEL_CANCEL_ASYNC_MSG_REQUEST => {
+                                let Some(pending) = pending_message_call.take() else {
+                                    return;
+                                };
+                                message_call_cancelled = true;
+                                let cancelled = [0u32.to_le_bytes(), CANCELLED_HRESULT.to_le_bytes()].concat();
+                                let accepted = [0u32.to_le_bytes(), 0u32.to_le_bytes()].concat();
+                                if write_response(&mut out, &mut rpc_security, pending, &cancelled)
+                                    .await
+                                    .is_err()
+                                    || write_response(&mut out, &mut rpc_security, request_call_id, &accepted)
+                                        .await
+                                        .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                            _ => return,
                         }
                     }
                     TSPROXY_AUTHORIZE_TUNNEL_OPNUM => {
@@ -545,6 +653,15 @@ async fn run_proxy(
                         // The scripted recycle scenarios must have run before the client closes.
                         if matches!(scenario, MockRpchScenario::RecycleIn) && !in_recycled {
                             return;
+                        }
+                        // A pending message call must be cancelled before the tunnel closes ([MS-TSGU] 3.6.5).
+                        if opnum == TSPROXY_CLOSE_TUNNEL_OPNUM {
+                            if pending_message_call.is_some() || (messaging && !message_call_cancelled) {
+                                return;
+                            }
+                            if let (Some(report), Some(tunnel_context)) = (&reauth_report, reauth_tunnel_context) {
+                                let _ = report.send(tunnel_context);
+                            }
                         }
                         let response = [0u8; 24];
                         if write_response(&mut out, &mut rpc_security, request_call_id, &response)
@@ -1002,6 +1119,102 @@ fn create_tunnel_response(tunnel_context: &[u8; 20], tunnel_id: u32) -> Vec<u8> 
         tunnel_context,
         tunnel_id.to_le_bytes().as_slice(),
         0u32.to_le_bytes().as_slice(),
+    ]
+    .concat()
+}
+
+/// `TSG_PACKET_CAPS_RESPONSE` negotiating every messaging capability and carrying [`CONSENT_MESSAGE`]
+/// ([MS-TSGU] 2.2.9.2.1.6).
+fn create_tunnel_caps_response(tunnel_context: &[u8; 20], tunnel_id: u32) -> Vec<u8> {
+    const TSG_PACKET_TYPE_CAPS_RESPONSE: u32 = 0x0000_4350;
+    const TSG_ASYNC_MESSAGE_CONSENT: u32 = 1;
+    [
+        0x0002_0000u32.to_le_bytes().as_slice(),
+        TSG_PACKET_TYPE_CAPS_RESPONSE.to_le_bytes().as_slice(),
+        TSG_PACKET_TYPE_CAPS_RESPONSE.to_le_bytes().as_slice(),
+        0x0002_0004u32.to_le_bytes().as_slice(),
+        0u32.to_le_bytes().as_slice(),
+        0u32.to_le_bytes().as_slice(),
+        0u32.to_le_bytes().as_slice(),
+        &[0x5a; 16],
+        0x0002_0008u32.to_le_bytes().as_slice(),
+        1u32.to_le_bytes().as_slice(),
+        TSG_ASYNC_MESSAGE_CONSENT.to_le_bytes().as_slice(),
+        1u32.to_le_bytes().as_slice(),
+        TSG_ASYNC_MESSAGE_CONSENT.to_le_bytes().as_slice(),
+        0x0002_000cu32.to_le_bytes().as_slice(),
+        0x5452u16.to_le_bytes().as_slice(),
+        0x5643u16.to_le_bytes().as_slice(),
+        0x0002_0010u32.to_le_bytes().as_slice(),
+        1u32.to_le_bytes().as_slice(),
+        1u16.to_le_bytes().as_slice(),
+        1u16.to_le_bytes().as_slice(),
+        0u16.to_le_bytes().as_slice(),
+        0u16.to_le_bytes().as_slice(),
+        1u32.to_le_bytes().as_slice(),
+        1u32.to_le_bytes().as_slice(),
+        1u32.to_le_bytes().as_slice(),
+        0x1fu32.to_le_bytes().as_slice(),
+        &string_message(CONSENT_MESSAGE, 0x0002_0014),
+        tunnel_context,
+        tunnel_id.to_le_bytes().as_slice(),
+        0u32.to_le_bytes().as_slice(),
+    ]
+    .concat()
+}
+
+/// `TSG_PACKET_STRING_MESSAGE` referent and its deferred, 4-byte padded string ([MS-TSGU] 2.2.9.2.1.9.1.1).
+fn string_message(text: &str, referent: u32) -> Vec<u8> {
+    let units: Vec<u16> = text.encode_utf16().chain([0]).collect();
+    let count = u32::try_from(units.len()).expect("test message fits");
+    let mut output = [
+        1u32.to_le_bytes(),
+        0u32.to_le_bytes(),
+        count.to_le_bytes(),
+        referent.to_le_bytes(),
+        count.to_le_bytes(),
+    ]
+    .concat();
+    output.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));
+    output.resize(output.len().next_multiple_of(4), 0);
+    output
+}
+
+/// `TsProxyMakeTunnelCall` response header for a present message of `message_type` ([MS-TSGU] 2.2.9.2.1.9).
+fn message_response_header(message_type: u32) -> Vec<u8> {
+    const TSG_PACKET_TYPE_MESSAGE_PACKET: u32 = 0x0000_4750;
+    [
+        0x0002_0000u32.to_le_bytes(),
+        TSG_PACKET_TYPE_MESSAGE_PACKET.to_le_bytes(),
+        TSG_PACKET_TYPE_MESSAGE_PACKET.to_le_bytes(),
+        0x0002_0004u32.to_le_bytes(),
+        1u32.to_le_bytes(),
+        message_type.to_le_bytes(),
+        1u32.to_le_bytes(),
+        message_type.to_le_bytes(),
+        0x0002_0008u32.to_le_bytes(),
+    ]
+    .concat()
+}
+
+fn service_message_response(text: &str) -> Vec<u8> {
+    const TSG_ASYNC_MESSAGE_SERVICE: u32 = 2;
+    [
+        message_response_header(TSG_ASYNC_MESSAGE_SERVICE),
+        string_message(text, 0x0002_000c),
+        0u32.to_le_bytes().to_vec(),
+    ]
+    .concat()
+}
+
+/// A reauthentication message; its 8-byte aligned `TSG_PACKET_REAUTH_MESSAGE` follows 4 bytes of padding.
+fn reauth_message_response(tunnel_context: u64) -> Vec<u8> {
+    const TSG_ASYNC_MESSAGE_REAUTH: u32 = 3;
+    [
+        message_response_header(TSG_ASYNC_MESSAGE_REAUTH),
+        0u32.to_le_bytes().to_vec(),
+        tunnel_context.to_le_bytes().to_vec(),
+        0u32.to_le_bytes().to_vec(),
     ]
     .concat()
 }

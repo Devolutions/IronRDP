@@ -2683,10 +2683,6 @@ pub(crate) mod tsgu {
     /// `TsProxyAuthorizeTunnel` operation number.
     pub(crate) const TSPROXY_AUTHORIZE_TUNNEL_OPNUM: u16 = 2;
     /// `TsProxyMakeTunnelCall` operation number.
-    #[expect(
-        dead_code,
-        reason = "administrative messaging is not negotiated, so the session never issues TsProxyMakeTunnelCall"
-    )]
     pub(crate) const TSPROXY_MAKE_TUNNEL_CALL_OPNUM: u16 = 3;
     /// `TsProxyCreateChannel` operation number.
     pub(crate) const TSPROXY_CREATE_CHANNEL_OPNUM: u16 = 4;
@@ -2706,6 +2702,8 @@ pub(crate) mod tsgu {
     const TSG_PACKET_TYPE_QUARREQUEST: u32 = 0x0000_5152;
     const TSG_PACKET_TYPE_RESPONSE: u32 = 0x0000_5052;
     const TSG_PACKET_TYPE_QUARENC_RESPONSE: u32 = 0x0000_4552;
+    const TSG_PACKET_TYPE_CAPS_RESPONSE: u32 = 0x0000_4350;
+    const TSG_PACKET_TYPE_REAUTH: u32 = 0x0000_5250;
     const TSG_PACKET_TYPE_MSGREQUEST: u32 = 0x0000_4752;
     const TSG_PACKET_TYPE_MESSAGE: u32 = 0x0000_4750;
     const TSG_TUNNEL_CALL_ASYNC_MSG_REQUEST: u32 = 1;
@@ -2716,7 +2714,19 @@ pub(crate) mod tsgu {
     const TSG_CAPABILITY_TYPE_NAP: u32 = 1;
     const TSG_NAP_CAPABILITY_QUAR_SOH: u32 = 0x0000_0001;
     const TSG_NAP_CAPABILITY_IDLE_TIMEOUT: u32 = 0x0000_0002;
-    const SUPPORTED_CAPABILITIES: u32 = TSG_NAP_CAPABILITY_QUAR_SOH | TSG_NAP_CAPABILITY_IDLE_TIMEOUT;
+    /// The RDG server presents a consent message in its `TsProxyCreateTunnel` response.
+    pub(crate) const TSG_MESSAGING_CAP_CONSENT_SIGN: u32 = 0x0000_0004;
+    /// The RDG server delivers administrative messages through `TsProxyMakeTunnelCall`.
+    pub(crate) const TSG_MESSAGING_CAP_SERVICE_MSG: u32 = 0x0000_0008;
+    /// The RDG server requests reauthentication through `TsProxyMakeTunnelCall`.
+    pub(crate) const TSG_MESSAGING_CAP_REAUTH: u32 = 0x0000_0010;
+    /// Capabilities the RPCH client advertises in `TsProxyCreateTunnel` ([MS-TSGU] 2.2.5.2.20 through 2.2.5.2.23).
+    pub(crate) const TSG_CLIENT_CAPABILITIES: u32 = TSG_NAP_CAPABILITY_QUAR_SOH
+        | TSG_NAP_CAPABILITY_IDLE_TIMEOUT
+        | TSG_MESSAGING_CAP_CONSENT_SIGN
+        | TSG_MESSAGING_CAP_SERVICE_MSG
+        | TSG_MESSAGING_CAP_REAUTH;
+    const SUPPORTED_CAPABILITIES: u32 = TSG_CLIENT_CAPABILITIES;
     const TSG_PROTOCOL_VERSION: u16 = 1;
     const E_PROXY_QUARANTINE_ACCESSDENIED: u32 = 0x8007_59ed;
     const MAX_CAPABILITIES: usize = 32;
@@ -2910,26 +2920,52 @@ pub(crate) mod tsgu {
 
     /// NDR32 `TsProxyCreateTunnel` request stub.
     ///
-    /// [MS-TSGU] 2.2.9.2.1.2 and 3.2.6.1.1.
+    /// [MS-TSGU] 2.2.9.2.1.2, 2.2.9.2.1.11 and 3.2.6.1.1.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub(crate) struct TsProxyCreateTunnelRequest {
         capabilities: u32,
+        reauth_tunnel_context: Option<u64>,
     }
 
     impl TsProxyCreateTunnelRequest {
         pub(crate) const fn new(capabilities: u32) -> Self {
-            Self { capabilities }
+            Self {
+                capabilities,
+                reauth_tunnel_context: None,
+            }
+        }
+
+        /// Opens the tunnel of a reauthentication connection for the tunnel the server named in its
+        /// reauthentication message ([MS-TSGU] 3.6.4).
+        pub(crate) const fn reauthenticate(capabilities: u32, tunnel_context: u64) -> Self {
+            Self {
+                capabilities,
+                reauth_tunnel_context: Some(tunnel_context),
+            }
         }
 
         pub(crate) fn encode(self) -> Result<Vec<u8>, RpcStubError> {
             validate_capabilities(self.capabilities)?;
-            let mut output = Vec::with_capacity(48);
-            output.extend_from_slice(&TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes()); // packetId
-            output.extend_from_slice(&TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes()); // union switch
-            encode_ndr_pointer(&mut output, 0); // packetVersionCaps
+            let mut output = Vec::with_capacity(64);
+            if let Some(tunnel_context) = self.reauth_tunnel_context {
+                output.extend_from_slice(&TSG_PACKET_TYPE_REAUTH.to_le_bytes()); // packetId
+                output.extend_from_slice(&TSG_PACKET_TYPE_REAUTH.to_le_bytes()); // union switch
+                encode_ndr_pointer(&mut output, 0); // packetReauth
+                // TSG_PACKET_REAUTH starts with an unsigned __int64, so its referent is 8-byte aligned.
+                output.extend_from_slice(&0u32.to_le_bytes()); // NDR alignment
+                output.extend_from_slice(&tunnel_context.to_le_bytes()); // tunnelContext
+                output.extend_from_slice(&TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes()); // packetId
+                output.extend_from_slice(&TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes()); // union switch
+                encode_ndr_pointer(&mut output, 1); // packetVersionCaps
+            } else {
+                output.extend_from_slice(&TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes()); // packetId
+                output.extend_from_slice(&TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes()); // union switch
+                encode_ndr_pointer(&mut output, 0); // packetVersionCaps
+            }
+            let caps_referent = if self.reauth_tunnel_context.is_some() { 2 } else { 1 };
             output.extend_from_slice(&TSG_COMPONENT_ID.to_le_bytes()); // componentId
             output.extend_from_slice(&TSG_PACKET_TYPE_VERSIONCAPS_ID.to_le_bytes()); // packetId
-            encode_ndr_pointer(&mut output, 1); // TSGCaps
+            encode_ndr_pointer(&mut output, caps_referent); // TSGCaps
             output.extend_from_slice(&1u32.to_le_bytes()); // numCapabilities
             output.extend_from_slice(&1u16.to_le_bytes()); // majorVersion
             output.extend_from_slice(&1u16.to_le_bytes()); // minorVersion
@@ -3254,18 +3290,21 @@ pub(crate) mod tsgu {
         read_u32(source, 0)
     }
 
-    /// Decoded non-messaging `TsProxyCreateTunnel` response values.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    /// Decoded `TsProxyCreateTunnel` response values.
+    #[derive(Clone, Debug, PartialEq, Eq)]
     pub(crate) struct TsProxyCreateTunnelResponse {
         pub(crate) tunnel_context: NonNullRpcContextHandle,
         pub(crate) tunnel_id: u32,
         pub(crate) nonce: Uuid,
         pub(crate) capabilities: u32,
+        /// Consent message from a `TSG_PACKET_CAPS_RESPONSE`, or [`TsProxyTunnelMessage::None`].
+        pub(crate) message: TsProxyTunnelMessage,
     }
 
-    /// Decodes a non-messaging `TsProxyCreateTunnel` response stub.
+    /// Decodes a `TsProxyCreateTunnel` response stub.
     ///
-    /// Consent-signing `TSG_PACKET_CAPS_RESPONSE` stubs are deliberately excluded.
+    /// Accepts `TSG_PACKET_QUARENC_RESPONSE` and, when consent signing is negotiated,
+    /// `TSG_PACKET_CAPS_RESPONSE` ([MS-TSGU] 2.2.9.2.1.5 and 2.2.9.2.1.6).
     pub(crate) fn decode_tsgu_create_tunnel_response(
         source: &[u8],
     ) -> Result<TsProxyCreateTunnelResponse, RpcStubError> {
@@ -3273,7 +3312,7 @@ pub(crate) mod tsgu {
             4 /* TSGPacketResponse */ + RpcContextHandle::SIZE /* tunnelContext */ + 4 /* tunnelId */ + 4 /* HRESULT */;
         validate_hresult(read_trailing_hresult(source, MINIMUM_RESPONSE_SIZE)?)?;
 
-        const FIXED_SIZE: usize = 4 /* TSGPacketResponse */
+        const QUARENC_FIXED_SIZE: usize = 4 /* TSGPacketResponse */
             + 4 /* packetId */
             + 4 /* union switch */
             + 4 /* packetQuarEncResponse */
@@ -3282,12 +3321,31 @@ pub(crate) mod tsgu {
             + 4 /* certChainData */
             + 16 /* nonce */
             + 4; /* versionCaps */
-        let fixed = source.get(..FIXED_SIZE).ok_or(RpcStubError::ResponseLength {
+        const CAPS_FIXED_SIZE: usize = QUARENC_FIXED_SIZE
+            + 4 /* msgID */
+            + 4 /* msgType */
+            + 4 /* isMsgPresent */
+            + 4 /* messagePacket union switch */
+            + 4; /* messagePacket pointer */
+        let caps_response = read_u32(source, 4)? == TSG_PACKET_TYPE_CAPS_RESPONSE;
+        let fixed_size = if caps_response {
+            CAPS_FIXED_SIZE
+        } else {
+            QUARENC_FIXED_SIZE
+        };
+        let fixed = source.get(..fixed_size).ok_or(RpcStubError::ResponseLength {
             actual: source.len(),
-            expected: FIXED_SIZE,
+            expected: fixed_size,
         })?;
         require_ndr_pointer(read_u32(fixed, 0)?)?;
-        validate_packet(fixed, TSG_PACKET_TYPE_QUARENC_RESPONSE)?;
+        validate_packet(
+            fixed,
+            if caps_response {
+                TSG_PACKET_TYPE_CAPS_RESPONSE
+            } else {
+                TSG_PACKET_TYPE_QUARENC_RESPONSE
+            },
+        )?;
         require_ndr_pointer(read_u32(fixed, 12)?)?;
         let flags = read_u32(fixed, 16)?;
         if flags != 0 {
@@ -3305,8 +3363,29 @@ pub(crate) mod tsgu {
         }
         let nonce = Uuid::from_bytes_le(fixed[28..44].try_into().map_err(|_| RpcStubError::LengthOverflow)?);
         require_ndr_pointer(read_u32(fixed, 44)?)?;
+        let consent = if caps_response {
+            let message_type = read_u32(fixed, 52)?;
+            if !matches!(message_type, TSG_ASYNC_MESSAGE_CONSENT | TSG_ASYNC_MESSAGE_SERVICE) {
+                return Err(RpcStubError::InvalidMessageType { actual: message_type });
+            }
+            let message_present = decode_ndr_boolean(fixed, 56)?;
+            let message_switch = read_u32(fixed, 60)?;
+            if message_switch != message_type {
+                return Err(RpcStubError::UnexpectedMessageSwitch {
+                    expected: message_type,
+                    actual: message_switch,
+                });
+            }
+            let message_pointer = read_u32(fixed, 64)?;
+            if message_present {
+                require_ndr_pointer(message_pointer)?;
+            }
+            Some((message_type, message_present, message_pointer != 0))
+        } else {
+            None
+        };
 
-        let mut offset = FIXED_SIZE;
+        let mut offset = fixed_size;
         if certificate_chain_pointer != 0 {
             let (certificate, next_offset) = decode_ndr_utf16_string(source, offset, certificate_chain_len)?;
             if !certificate.is_empty() && certificate.contains('\0') {
@@ -3399,6 +3478,17 @@ pub(crate) mod tsgu {
             offset = offset.checked_add(12).ok_or(RpcStubError::LengthOverflow)?;
         }
 
+        let mut message = TsProxyTunnelMessage::None;
+        if let Some((message_type, message_present, message_pointer_present)) = consent {
+            if message_pointer_present {
+                let (decoded, next_offset) = decode_string_message(source, offset, message_type)?;
+                offset = next_offset;
+                if message_present {
+                    message = decoded;
+                }
+            }
+        }
+
         const TRAILER_SIZE: usize = RpcContextHandle::SIZE /* tunnelContext */ + 4 /* tunnelId */ + 4 /* HRESULT */;
         let response_size = offset.checked_add(TRAILER_SIZE).ok_or(RpcStubError::LengthOverflow)?;
         if source.len() != response_size {
@@ -3416,6 +3506,7 @@ pub(crate) mod tsgu {
             tunnel_id,
             nonce,
             capabilities,
+            message,
         })
     }
 
@@ -3632,90 +3723,99 @@ pub(crate) mod tsgu {
                 Ok(TsProxyTunnelMessage::Reauthenticate { tunnel_context })
             }
             TSG_ASYNC_MESSAGE_CONSENT | TSG_ASYNC_MESSAGE_SERVICE => {
-                const STRING_FIXED_SIZE: usize = 4 /* isDisplayMandatory */
-                    + 4 /* isConsentMandatory */
-                    + 4 /* msgBytes */
-                    + 4; /* msgBuffer */
-                let string_start = FIXED_SIZE;
-                let string_end = string_start
-                    .checked_add(STRING_FIXED_SIZE)
+                let (message, message_end) = decode_string_message(source, FIXED_SIZE, message_type)?;
+                let response_size = message_end
+                    .checked_add(4 /* HRESULT */)
                     .ok_or(RpcStubError::LengthOverflow)?;
-                let string_fixed = source
-                    .get(string_start..string_end)
-                    .ok_or(RpcStubError::ResponseLength {
-                        actual: source.len(),
-                        expected: string_end,
-                    })?;
-                let display_mandatory = decode_ndr_boolean(string_fixed, 0)?;
-                let consent_mandatory = decode_ndr_boolean(string_fixed, 4)?;
-                let message_chars =
-                    usize::try_from(read_u32(string_fixed, 8)?).map_err(|_| RpcStubError::LengthOverflow)?;
-                if message_chars > MAX_MESSAGE_CHARS {
-                    return Err(RpcStubError::MessageTooLong { actual: message_chars });
-                }
-                let message_pointer = read_u32(string_fixed, 12)?;
-                if message_chars != 0 {
-                    require_ndr_pointer(message_pointer)?;
-                }
-
-                let (message_bytes, response_size) = if message_pointer == 0 {
-                    (&[][..], string_end.checked_add(4).ok_or(RpcStubError::LengthOverflow)?)
-                } else {
-                    let array_count =
-                        usize::try_from(read_u32(source, string_end)?).map_err(|_| RpcStubError::LengthOverflow)?;
-                    if array_count != message_chars {
-                        return Err(RpcStubError::InvalidNdrArrayLength {
-                            actual: u32::try_from(array_count).map_err(|_| RpcStubError::LengthOverflow)?,
-                            expected: u32::try_from(message_chars).map_err(|_| RpcStubError::LengthOverflow)?,
-                        });
-                    }
-                    let message_start = string_end.checked_add(4).ok_or(RpcStubError::LengthOverflow)?;
-                    let message_len = message_chars.checked_mul(2).ok_or(RpcStubError::LengthOverflow)?;
-                    let message_end = message_start
-                        .checked_add(message_len)
-                        .ok_or(RpcStubError::LengthOverflow)?;
-                    let response_size = padded_to_ndr(message_end, 4)?
-                        .checked_add(4 /* HRESULT */)
-                        .ok_or(RpcStubError::LengthOverflow)?;
-                    let message_bytes = source
-                        .get(message_start..message_end)
-                        .ok_or(RpcStubError::ResponseLength {
-                            actual: source.len(),
-                            expected: message_end,
-                        })?;
-                    (message_bytes, response_size)
-                };
                 if source.len() != response_size {
                     return Err(RpcStubError::ResponseLength {
                         actual: source.len(),
                         expected: response_size,
                     });
                 }
-                if message_chars != 0 && message_bytes[message_bytes.len() - 2..] != [0, 0] {
-                    return Err(RpcStubError::UnterminatedNdrString);
-                }
-                let message_units: Vec<u16> = message_bytes
-                    .chunks_exact(2)
-                    .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
-                    .collect();
-                let text = String::from_utf16(&message_units[..message_units.len().saturating_sub(1)])
-                    .map_err(|_| RpcStubError::InvalidUtf16)?;
-
-                Ok(if message_type == TSG_ASYNC_MESSAGE_CONSENT {
-                    TsProxyTunnelMessage::Consent {
-                        display_mandatory,
-                        consent_mandatory,
-                        text,
-                    }
-                } else {
-                    TsProxyTunnelMessage::Service {
-                        display_mandatory,
-                        text,
-                    }
-                })
+                Ok(message)
             }
             actual => Err(RpcStubError::InvalidMessageType { actual }),
         }
+    }
+
+    /// Decodes a `TSG_PACKET_STRING_MESSAGE` referent and its deferred string at `start`.
+    ///
+    /// Returns the message and the 4-byte aligned offset after its deferred data ([MS-TSGU] 2.2.9.2.1.9.1.1).
+    fn decode_string_message(
+        source: &[u8],
+        start: usize,
+        message_type: u32,
+    ) -> Result<(TsProxyTunnelMessage, usize), RpcStubError> {
+        const STRING_FIXED_SIZE: usize = 4 /* isDisplayMandatory */
+            + 4 /* isConsentMandatory */
+            + 4 /* msgBytes */
+            + 4; /* msgBuffer */
+        let string_end = start
+            .checked_add(STRING_FIXED_SIZE)
+            .ok_or(RpcStubError::LengthOverflow)?;
+        let string_fixed = source.get(start..string_end).ok_or(RpcStubError::ResponseLength {
+            actual: source.len(),
+            expected: string_end,
+        })?;
+        let display_mandatory = decode_ndr_boolean(string_fixed, 0)?;
+        let consent_mandatory = decode_ndr_boolean(string_fixed, 4)?;
+        let message_chars = usize::try_from(read_u32(string_fixed, 8)?).map_err(|_| RpcStubError::LengthOverflow)?;
+        if message_chars > MAX_MESSAGE_CHARS {
+            return Err(RpcStubError::MessageTooLong { actual: message_chars });
+        }
+        let message_pointer = read_u32(string_fixed, 12)?;
+        if message_chars != 0 {
+            require_ndr_pointer(message_pointer)?;
+        }
+
+        let (message_bytes, end) = if message_pointer == 0 {
+            (&[][..], string_end)
+        } else {
+            let array_count =
+                usize::try_from(read_u32(source, string_end)?).map_err(|_| RpcStubError::LengthOverflow)?;
+            if array_count != message_chars {
+                return Err(RpcStubError::InvalidNdrArrayLength {
+                    actual: u32::try_from(array_count).map_err(|_| RpcStubError::LengthOverflow)?,
+                    expected: u32::try_from(message_chars).map_err(|_| RpcStubError::LengthOverflow)?,
+                });
+            }
+            let message_start = string_end.checked_add(4).ok_or(RpcStubError::LengthOverflow)?;
+            let message_len = message_chars.checked_mul(2).ok_or(RpcStubError::LengthOverflow)?;
+            let message_end = message_start
+                .checked_add(message_len)
+                .ok_or(RpcStubError::LengthOverflow)?;
+            let message_bytes = source
+                .get(message_start..message_end)
+                .ok_or(RpcStubError::ResponseLength {
+                    actual: source.len(),
+                    expected: message_end,
+                })?;
+            (message_bytes, padded_to_ndr(message_end, 4)?)
+        };
+        if message_chars != 0 && message_bytes[message_bytes.len() - 2..] != [0, 0] {
+            return Err(RpcStubError::UnterminatedNdrString);
+        }
+        let message_units: Vec<u16> = message_bytes
+            .chunks_exact(2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+            .collect();
+        let text = String::from_utf16(&message_units[..message_units.len().saturating_sub(1)])
+            .map_err(|_| RpcStubError::InvalidUtf16)?;
+
+        let message = if message_type == TSG_ASYNC_MESSAGE_CONSENT {
+            TsProxyTunnelMessage::Consent {
+                display_mandatory,
+                consent_mandatory,
+                text,
+            }
+        } else {
+            TsProxyTunnelMessage::Service {
+                display_mandatory,
+                text,
+            }
+        };
+        Ok((message, end))
     }
 
     /// Validates the null response and HRESULT from a cancelled message request.
@@ -4046,8 +4146,8 @@ pub(crate) mod tsgu {
                 Err(RpcStubError::EmbeddedNulInMachineName)
             );
             assert_eq!(
-                TsProxyCreateTunnelRequest::new(0x0000_0004).encode(),
-                Err(RpcStubError::UnsupportedCapabilities { actual: 0x0000_0004 })
+                TsProxyCreateTunnelRequest::new(0x0000_0020).encode(),
+                Err(RpcStubError::UnsupportedCapabilities { actual: 0x0000_0020 })
             );
             assert_eq!(
                 TsProxyAuthorizeTunnelRequest::new(context, "host", &[0; MAX_STATEMENT_OF_HEALTH_SIZE + 1]).encode(),
@@ -4080,17 +4180,8 @@ pub(crate) mod tsgu {
                     tunnel_id: 42,
                     nonce: Uuid::from_u128(0x00112233_4455_6677_8899_aabbccddeeff),
                     capabilities: 3,
+                    message: TsProxyTunnelMessage::None,
                 }
-            );
-
-            let mut caps_response = response;
-            caps_response[4..8].copy_from_slice(&0x0000_4350u32.to_le_bytes());
-            assert_eq!(
-                decode_tsgu_create_tunnel_response(&caps_response),
-                Err(RpcStubError::UnexpectedPacketId {
-                    expected: TSG_PACKET_TYPE_QUARENC_RESPONSE,
-                    actual: 0x0000_4350,
-                })
             );
 
             let mut zero_capabilities = create_tunnel_response();
@@ -4107,7 +4198,115 @@ pub(crate) mod tsgu {
                     tunnel_id: 42,
                     nonce: Uuid::from_u128(0x00112233_4455_6677_8899_aabbccddeeff),
                     capabilities: 0,
+                    message: TsProxyTunnelMessage::None,
                 }
+            );
+        }
+
+        #[test]
+        fn create_tunnel_response_decodes_consent_caps_response() {
+            // oracle: MS-TSGU 2.2.9.2.1.6 TSG_PACKET_CAPS_RESPONSE and 2.2.9.2.1.9.1.1 TSG_PACKET_STRING_MESSAGE
+            // with NDR deferred-pointer order: certificate chain, version caps, capability array, message.
+            let nonce = Uuid::from_u128(0x00112233_4455_6677_8899_aabbccddeeff);
+            let text: Vec<u8> = "OK?\0".encode_utf16().flat_map(u16::to_le_bytes).collect();
+            let response = [
+                NDR_REFERENT_ID.to_le_bytes().as_slice(),
+                &0x0000_4350u32.to_le_bytes(), // TSG_PACKET_TYPE_CAPS_RESPONSE
+                &0x0000_4350u32.to_le_bytes(),
+                &(NDR_REFERENT_ID + 4).to_le_bytes(),
+                &0u32.to_le_bytes(), // flags
+                &0u32.to_le_bytes(), // certChainLen
+                &0u32.to_le_bytes(), // certChainData
+                &nonce.to_bytes_le(),
+                &(NDR_REFERENT_ID + 8).to_le_bytes(), // versionCaps
+                &7u32.to_le_bytes(),                  // msgID
+                &TSG_ASYNC_MESSAGE_CONSENT.to_le_bytes(),
+                &1u32.to_le_bytes(), // isMsgPresent
+                &TSG_ASYNC_MESSAGE_CONSENT.to_le_bytes(),
+                &(NDR_REFERENT_ID + 12).to_le_bytes(), // consentMessage
+                &TSG_COMPONENT_ID.to_le_bytes(),
+                &TSG_PACKET_TYPE_VERSIONCAPS_ID.to_le_bytes(),
+                &(NDR_REFERENT_ID + 16).to_le_bytes(),
+                &1u32.to_le_bytes(),
+                &1u16.to_le_bytes(),
+                &1u16.to_le_bytes(),
+                &0u16.to_le_bytes(),
+                &0u16.to_le_bytes(),
+                &1u32.to_le_bytes(),
+                &TSG_CAPABILITY_TYPE_NAP.to_le_bytes(),
+                &TSG_CAPABILITY_TYPE_NAP.to_le_bytes(),
+                &0x1fu32.to_le_bytes(),
+                &1u32.to_le_bytes(), // isDisplayMandatory
+                &0u32.to_le_bytes(), // isConsentMandatory
+                &4u32.to_le_bytes(), // msgBytes
+                &(NDR_REFERENT_ID + 20).to_le_bytes(),
+                &4u32.to_le_bytes(), // conformant array size
+                &text,
+                &CONTEXT,
+                &42u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
+            ]
+            .concat();
+            let decoded = decode_tsgu_create_tunnel_response(&response).expect("valid caps response");
+            assert_eq!(decoded.capabilities, 0x1f);
+            assert_eq!(decoded.tunnel_id, 42);
+            assert_eq!(
+                decoded.message,
+                TsProxyTunnelMessage::Consent {
+                    display_mandatory: true,
+                    consent_mandatory: false,
+                    text: "OK?".to_owned(),
+                }
+            );
+
+            let mut reauth_type = response.clone();
+            reauth_type[52..56].copy_from_slice(&TSG_ASYNC_MESSAGE_REAUTH.to_le_bytes());
+            assert_eq!(
+                decode_tsgu_create_tunnel_response(&reauth_type),
+                Err(RpcStubError::InvalidMessageType {
+                    actual: TSG_ASYNC_MESSAGE_REAUTH
+                })
+            );
+
+            let mut truncated = response;
+            truncated.truncate(truncated.len() - 4 - 4 - 20 - 2);
+            truncated.extend_from_slice(&CONTEXT);
+            truncated.extend_from_slice(&42u32.to_le_bytes());
+            truncated.extend_from_slice(&0u32.to_le_bytes());
+            assert!(decode_tsgu_create_tunnel_response(&truncated).is_err());
+        }
+
+        #[test]
+        fn create_tunnel_reauth_request_encodes_reauth_packet() {
+            // oracle: MS-TSGU 2.2.9.2.1.11 TSG_PACKET_REAUTH, whose unsigned __int64 member aligns its referent to 8.
+            let request = TsProxyCreateTunnelRequest::reauthenticate(0x1f, 0x0102_0304_0506_0708)
+                .encode()
+                .expect("valid request");
+            assert_eq!(
+                request,
+                [
+                    0x0000_5250u32.to_le_bytes().as_slice(), // packetId
+                    &0x0000_5250u32.to_le_bytes(),           // union switch
+                    &NDR_REFERENT_ID.to_le_bytes(),          // packetReauth
+                    &0u32.to_le_bytes(),                     // 8-byte alignment
+                    &0x0102_0304_0506_0708u64.to_le_bytes(), // tunnelContext
+                    &TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes(),
+                    &TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes(),
+                    &(NDR_REFERENT_ID + 4).to_le_bytes(), // packetVersionCaps
+                    &TSG_COMPONENT_ID.to_le_bytes(),
+                    &TSG_PACKET_TYPE_VERSIONCAPS_ID.to_le_bytes(),
+                    &(NDR_REFERENT_ID + 8).to_le_bytes(), // TSGCaps
+                    &1u32.to_le_bytes(),                  // numCapabilities
+                    &1u16.to_le_bytes(),
+                    &1u16.to_le_bytes(),
+                    &0u16.to_le_bytes(),
+                    &0u16.to_le_bytes(),
+                    &1u32.to_le_bytes(), // conformant array size
+                    &TSG_CAPABILITY_TYPE_NAP.to_le_bytes(),
+                    &TSG_CAPABILITY_TYPE_NAP.to_le_bytes(),
+                    &0x1fu32.to_le_bytes(),
+                ]
+                .concat()
             );
         }
 
@@ -4144,10 +4343,10 @@ pub(crate) mod tsgu {
             );
 
             let mut response = create_tunnel_response();
-            response[80..84].copy_from_slice(&0x0000_0004u32.to_le_bytes());
+            response[80..84].copy_from_slice(&0x0000_0020u32.to_le_bytes());
             assert_eq!(
                 decode_tsgu_create_tunnel_response(&response),
-                Err(RpcStubError::UnsupportedCapabilities { actual: 0x0000_0004 })
+                Err(RpcStubError::UnsupportedCapabilities { actual: 0x0000_0020 })
             );
 
             let mut response = create_tunnel_response();
