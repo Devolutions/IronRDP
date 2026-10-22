@@ -53,6 +53,10 @@ A redirected port is held open locally only while a remote application has it op
 On Windows, pass `--camera <NAME>` (repeatable; `*` for every camera) to redirect local cameras, or set `camerastoredirect` in a `.rdp` file.
 Raw camera frames are encoded to H.264 unless `--camera-raw` is passed.
 
+Audio plays on the system default output device, followed when it changes; `--audio-output-device` selects another one by ID or name (`--list-audio-devices` shows the choices).
+`--microphone` redirects the default input device, or the one `--audio-input-device` selects.
+`--audio-latency <MS>` sets how much audio is buffered ahead of the speakers (100 ms by default); raise it on networks with high jitter.
+
 MS-RDPEVOR video optimized remoting is decoded with the Windows H.264 decoder; build with `--features openh264` to use the bundled OpenH264 sources instead (required on other platforms).
 
 To open the basic console of a local Hyper-V VM with the current Windows account:
@@ -109,6 +113,11 @@ Currently supported properties:
 - `ironrdp_vmconnect_basic:i:<0|1>`
 - `ironrdp_vmconnect_current_user:i:<0|1>` (Windows current-account host authentication)
 - `audiomode:i:<0|1|2>`
+- `audiocapturemode:i:<0|1>`
+- `audioqualitymode:i:<0|1|2>`
+- `ironrdp_audiooutputdevice:s:<ID or name>`
+- `ironrdp_audioinputdevice:s:<ID or name>`
+- `ironrdp_audiolatency:i:<milliseconds>`
 - `desktopwidth:i:<value>`
 - `desktopheight:i:<value>`
 - `desktopscalefactor:i:<value>`

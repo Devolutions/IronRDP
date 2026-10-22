@@ -19,10 +19,10 @@ use ironrdp_connector::{ConnectionResult, ConnectorResult};
 use ironrdp_core::WriteBuf;
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout, MonitorLayoutEntry};
+#[cfg(all(windows, feature = "dvc-com-plugin"))]
+use ironrdp_dvc::DvcChannelListener as _;
 use ironrdp_dvc::DvcMessageBatch;
 use ironrdp_dvc::pdu::SoftSyncTunnelType;
-#[cfg(any(all(windows, feature = "dvc-com-plugin"), feature = "sound"))]
-use ironrdp_dvc::{DvcChannelListener, DvcClientProcessor, DynamicChannelId};
 use ironrdp_echo::client::EchoClient;
 use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
 use ironrdp_graphics::image_processing::PixelFormat;
@@ -78,8 +78,6 @@ use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
 use ironrdp_rdpewa::{RdpewaClient, RdpewaClientListener};
 #[cfg(all(windows, feature = "webauthn"))]
 use ironrdp_rdpewa_native::{WindowsRdpewaBackend, WindowsRdpewaSessionState};
-#[cfg(feature = "sound")]
-use ironrdp_rdpsnd_native::{RdpeaiCaptureBackend, cpal};
 
 use crate::config::{Config, RDCleanPathConfig, Transport};
 use crate::rail::{RailClient, RailControlEvent, RailEvent, RailInputEvent};
@@ -1794,46 +1792,6 @@ fn rdpsnd_backend_kind(audio_playback: bool, rdpdr_attached: bool) -> Option<Rdp
     }
 }
 
-/// Listener that hands out a fresh [`ironrdp_rdpeai::client::RdpeaiClient`] on every
-/// `DVC Create Request` for the AUDIO_INPUT channel.
-///
-/// Windows opens and closes the AUDIO_INPUT (MS-RDPEAI) dynamic virtual channel repeatedly
-/// over the lifetime of a session, as applications on the remote side grab and release the
-/// microphone. Registering this channel via `with_dynamic_channel` (the `OnceListener` path)
-/// hands out its `RdpeaiClient` exactly once: after the first Close, `OnceListener::create`
-/// keeps returning `None`, so the client answers every later Create Request with
-/// `NO_LISTENER` and the microphone silently stops working for the rest of the session.
-/// `with_listener` + this factory recreates the processor (and the underlying capture
-/// backend/cpal stream) on every open, matching how the RDPEWA listener above is wired.
-#[cfg(feature = "sound")]
-struct RdpeaiListener {
-    sender: RdpInputSender,
-}
-
-#[cfg(feature = "sound")]
-impl DvcChannelListener for RdpeaiListener {
-    fn channel_name(&self) -> &str {
-        ironrdp_rdpeai::CHANNEL_NAME
-    }
-
-    fn create(&mut self, _channel_id: DynamicChannelId) -> Option<Box<dyn DvcClientProcessor>> {
-        let sender = self.sender.clone();
-        Some(Box::new(ironrdp_rdpeai::client::RdpeaiClient::new(
-            Box::new(RdpeaiCaptureBackend::new()),
-            Box::new(move |channel_id, messages| {
-                sender
-                    .try_send(RdpInputEvent::SendDvcMessages { channel_id, messages })
-                    .map_err(|_| pdu_other_err!("send AUDIO_INPUT messages to the event loop"))?;
-                Ok(())
-            }),
-        )))
-    }
-
-    fn is_available(&self) -> bool {
-        true
-    }
-}
-
 #[cfg(feature = "udp")]
 fn reliable_udp_multitransport_flags(enabled: bool) -> Option<ironrdp_pdu::gcc::MultiTransportFlags> {
     enabled.then_some(
@@ -2096,9 +2054,19 @@ fn build_connector(
     // AUDIO_INPUT (MS-RDPEAI) microphone capture DVC.
     #[cfg(feature = "sound")]
     if config.channels.audio_capture {
-        drdynvc = drdynvc.with_listener(RdpeaiListener {
+        drdynvc = drdynvc.with_listener(crate::audio::AudioInputListener {
             sender: input_sender.clone(),
+            config: config.channels.audio.clone(),
         });
+    }
+
+    // Audio output: one backend for the static RDPSND channel and the AUDIO_PLAYBACK_DVC channels.
+    #[cfg(feature = "sound")]
+    let playback = (config.channels.sound && config.connector.enable_audio_playback)
+        .then(|| crate::audio::SharedPlayback::new(&config.channels.audio));
+    #[cfg(feature = "sound")]
+    if let Some(playback) = &playback {
+        drdynvc = crate::audio::attach_playback(drdynvc, playback, config.audio_quality_mode.into_rdpsnd());
     }
 
     // Clone the connector config so we can apply runtime overrides before handing it to the
@@ -2205,9 +2173,12 @@ fn build_connector(
             match kind {
                 #[cfg(feature = "sound")]
                 RdpsndBackendKind::Playback => {
+                    let playback =
+                        playback.unwrap_or_else(|| crate::audio::SharedPlayback::new(&config.channels.audio));
                     connector = connector.with_static_channel(
-                        ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new()))
-                            .with_quality_mode(config.audio_quality_mode.into_rdpsnd()),
+                        ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(playback))
+                            .with_quality_mode(config.audio_quality_mode.into_rdpsnd())
+                            .with_clock(crate::audio::clock()),
                     );
                 }
                 #[cfg(feature = "rdpdr")]
