@@ -21,10 +21,10 @@ The classifier and all reviewers use `glm5.3`.
 The pipeline performs these stages:
 
 1. Prepare a SHA-bound changed-file manifest, diff, pull request context, and read-only head tree.
-2. Classify risk, scope, legitimacy, overlap with another pull request, protocol relevance, and useful specialist reviewers.
+2. Classify risk, scope, legitimacy, overlap with another pull request, and protocol relevance.
 3. Apply workflow-controlled routing rules and persist the canonical review plan in the `AI classification` check.
 4. Run selected specialists as parallel matrix jobs, at most three at once.
-5. Validate each specialist result, then aggregate the results in the canonical order `protocol`, `skeptical`, `code-compressor`.
+5. Validate each specialist result, then aggregate the results in the canonical order `protocol`, `skeptical`, `intent-drift`, `intent-review`, `test`, `dependency`, `code-compressor`, `rust-style`.
 6. Run the general reviewer as an independent reviewer and verifier.
 7. Validate its candidate dispositions, findings, locations, and provenance.
 8. Report every stage outcome, failure reason, and metric back to the caller.
@@ -42,12 +42,31 @@ A stage that cannot read the resolved list treats every selected reviewer as man
 Workflow routing selects the code-compressor for every eligible review.
 Protocol-related changes always require the protocol specialist.
 Medium- and high-risk changes always require the skeptical specialist.
+Deterministic analysis also selects these optional specialists from the pull request's file list and patches, mirroring the `code-review` skill:
+
+- `intent-drift` runs when a changed path is governed by an intent file on `master` or added by the pull request, following the `intent-files` placement rule.
+- `intent-review` runs when the pull request adds or modifies an `INTENT*.md` or `*.intent*.md` file.
+- `test` runs when a changed, non-removed Rust or C# file holds tests, as described below.
+- `dependency` runs when a `Cargo.toml`, `Cargo.lock`, `package.json`, `package-lock.json`, or `.csproj` file gains lines.
+- `rust-style` runs when a `.rs` file gains lines.
+
+A changed Rust or C# file that is not removed selects `test` when it is on a test path, or when its content at the pull request's merge base, which the patches are relative to, or at the pull request's head contains a test marker.
+A marker in the added lines decides without reading either revision; otherwise the merge base is read first, then the head, each fetched once into the trusted checkout and only scanned as text.
+Markers are matched over the whole text, so attributes may span lines: in Rust, `#[test]`, `#[<path>::test]`, `#[rstest]`, `#[case(`, `proptest!`, `expect![`, and `#[cfg(...)]` whose predicate names `test` other than as `not(test)`; in C#, `[Fact]`, `[Theory]`, `[Test]`, `[TestMethod]`, `[TestCase]`, and `[InlineData`.
+A `#[cfg(` predicate is scanned for at most 4 KiB, and one still open at that bound or at the end of the text counts as a marker, which keeps the scan linear.
+The rule is deliberately coarse: a production-only edit in a file that also holds tests selects `test`, because locating edits inside tests kept missing lexical forms.
+An unresolvable merge base, a head that cannot be fetched, or an unreadable file also selects `test`.
+A renamed file matches the governed-path, intent-file, test-path, and manifest rules under both its old and new paths.
+
+`contract-review` joins with the first `CONTRACT*.md`, as one agent configuration, one prompt, and one path rule.
+Each specialist loads its skill and the skills it invokes as methodology from the trusted workflow checkout, so a test fails when a configured file is missing.
 Model output cannot select parallelism.
-Three simultaneous reviewer requests is a provider allocation, not a reviewer cap: a larger selection runs in further batches.
+Three simultaneous reviewer requests is a provider allocation, not a reviewer cap: a larger selection runs in further batches, in canonical order.
 
 Specialists use one bounded candidate schema.
 Each candidate binds to the expected head SHA, a configured reviewer ID, a changed path, an optional added-line range, a severity, a question flag, and a unique finding ID.
 Protocol candidates also carry structured protocol references.
+The `protocol`, `skeptical`, and `code-compressor` specialists report at most 20 findings and the conditional specialists at most 10, so the maximum-shaped general review stays within the runtime's 1 MiB model message limit.
 Schema line and pull-request numbers stop at the signed 32-bit GitHub API integer maximum, while validators retain safe-integer checks.
 One specialist never receives another specialist's output.
 The validated aggregate of all selected specialists is bounded to 1 MiB, which accommodates every maximum schema-valid specialist result.
@@ -118,6 +137,7 @@ Examples include:
 [protocol]
 [skeptical]
 [code-compressor]
+[rust-style]
 [protocol + skeptical]
 [general]
 ```
