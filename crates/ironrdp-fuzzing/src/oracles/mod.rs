@@ -226,6 +226,7 @@ pub fn pdu_decode(data: &[u8]) {
 
     let _ = decode::<ironrdp_rdpsnd::pdu::ServerAudioOutputPdu<'_>>(data);
     let _ = decode::<ironrdp_rdpsnd::pdu::ClientAudioOutputPdu>(data);
+    let _ = decode::<ironrdp_rdpsnd::pdu::ServerAudioDatagram<'_>>(data);
 
     let _ = decode::<GfxPdu>(data);
     let _ = decode::<CacheToSurfacePdu>(data);

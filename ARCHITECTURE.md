@@ -100,7 +100,7 @@ RDPDR channel implementation.
 
 #### [`crates/ironrdp-rdpsnd`](./crates/ironrdp-rdpsnd)
 
-RDPSND static channel for audio output implemented as described in MS-RDPEA.
+Audio output channels (the static RDPSND channel and the AUDIO_PLAYBACK_DVC dynamic channels), wave codecs and a jitter-buffer policy, implemented as described in MS-RDPEA.
 
 #### [`crates/ironrdp-egfx`](./crates/ironrdp-egfx)
 

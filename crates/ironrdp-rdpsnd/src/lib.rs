@@ -4,4 +4,5 @@
 pub mod client;
 pub mod codec;
 pub mod pdu;
+pub mod playout;
 pub mod server;
