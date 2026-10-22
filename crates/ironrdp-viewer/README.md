@@ -24,6 +24,16 @@ You can provide the hostname and credentials through environment variables inste
 RDP_HOSTNAME=<HOSTNAME> RDP_USERNAME=<USERNAME> RDP_PASSWORD=<PASSWORD> ironrdp-viewer
 ```
 
+On Windows, the viewer redirects local drives:
+
+- `--drives` redirects every drive, including drives connected later (`drivestoredirect:s:*`).
+- `--dynamic-drives` redirects drives connected during the session, such as USB sticks (`DynamicDrives`).
+- `--drive <NAME>,<PATH>` redirects a directory as a drive named `NAME`; repeat it for more drives.
+- `--home-drive` redirects the user profile directory as a drive named `home`.
+
+The `.rdp` `drivestoredirect` property selects drives with the mstsc syntax (`C:\;E:\;DynamicDrives`), and the legacy `redirectdrives:i:1` selects every drive when `drivestoredirect` is empty.
+An explicit `redirectdrives:i:0` disables drive redirection even when `drivestoredirect` lists drives, and unsupported `drivestoredirect` entries (such as folder paths) are reported as warnings.
+
 On Windows, pass `--smartcard` (or set `ironrdp_smartcard:i:1` in a `.rdp` file) to redirect local smart cards through WinSCard.
 RPC mode (`--rpc`) enables smartcard the same way via agent connect properties (`ironrdp_smartcard` / sandbox `SmartCardRedirection`).
 
@@ -88,6 +98,8 @@ Currently supported properties:
 - `alternate shell:s:<value>`
 - `shell working directory:s:<value>`
 - `redirectclipboard:i:<0|1>`
+- `drivestoredirect:s:<value>` (Windows drive redirection)
+- `redirectdrives:i:<0|1>` (Windows drive redirection)
 - `ironrdp_smartcard:i:<0|1>` (Windows WinSCard smartcard redirection)
 - `ironrdp_vmconnect:s:<VM_ID>`
 - `ironrdp_vmconnect_basic:i:<0|1>`

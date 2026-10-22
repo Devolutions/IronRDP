@@ -11,6 +11,10 @@ use ironrdp_propertyset::PropertySet;
 use ironrdp_rail::pdu::ExecutePdu;
 use url::Url;
 
+/// Local drive selection, as configured with [`ConfigBuilder::with_drive_redirection`].
+#[cfg(feature = "rdpdr")]
+pub use ironrdp_cfg::DriveRedirection;
+
 /// RDP-UDP protocol version, as offered with [`ConfigBuilder::with_udp_offer_version`].
 #[cfg(feature = "udp")]
 pub use ironrdp_rdpeudp::pdu::UdpVersion;
@@ -449,6 +453,12 @@ pub struct RdpdrConfig {
     #[cfg(feature = "smartcard")]
     pub smartcard: bool,
 
+    /// Local drives requested for redirection.
+    ///
+    /// The client does not enumerate drives itself: frontends read this selection to configure
+    /// their native RDPDR backend factory.
+    pub drives: DriveRedirection,
+
     /// Announce the serial and parallel ports the RDPDR backend factory provides.
     ///
     /// Mirrors the `.rdp` `redirectcomports` property. Which local ports exist and are
@@ -463,6 +473,7 @@ impl Default for RdpdrConfig {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: true,
+            drives: DriveRedirection::default(),
             ports: true,
         }
     }
@@ -1504,6 +1515,15 @@ impl ConfigBuilder {
         self
     }
 
+    /// Selects the local drives to redirect (`drivestoredirect`).
+    #[cfg(feature = "rdpdr")]
+    #[must_use]
+    pub fn with_drive_redirection(mut self, drives: DriveRedirection) -> Self {
+        self.channels.rdpdr.drives = drives;
+        self.properties.set_drive_redirection(drives);
+        self
+    }
+
     /// Enable or disable serial and parallel port redirection within RDPDR (`redirectcomports`).
     #[cfg(feature = "rdpdr")]
     #[must_use]
@@ -2402,6 +2422,10 @@ impl ConfigBuilder {
         #[cfg(feature = "rdpdr")]
         if let Some(enabled) = ps.enable_rdpdr() {
             self.channels.rdpdr.enabled = enabled;
+        }
+        #[cfg(feature = "rdpdr")]
+        if let Some(drives) = ps.drive_redirection() {
+            self.channels.rdpdr.drives = drives;
         }
         #[cfg(feature = "smartcard")]
         if let Some(enabled) = ps.enable_smartcard() {

@@ -18,6 +18,8 @@ pub use nix::{backend, printer};
 mod windows;
 #[cfg(windows)]
 pub use windows::{
-    PortSelection, RdpdrWorkerThreadGuard, RdpdrWorkerThreadGuardResult, RdpdrWorkerThreadHooks, RedirectedDrive,
-    RedirectedDriveError, WindowsPortRedirection, WindowsRdpdrBackend, WindowsRdpdrBackendFactory,
+    FIRST_NAMED_DRIVE_DEVICE_ID, LogicalDrive, LogicalDriveChange, LogicalDriveSelection, LogicalDriveSet,
+    LogicalDriveWatcher, PortSelection, RdpdrWorkerThreadGuard, RdpdrWorkerThreadGuardResult, RdpdrWorkerThreadHooks,
+    RedirectedDrive, RedirectedDriveError, RedirectedDriveFactoryError, WindowsPortRedirection, WindowsRdpdrBackend,
+    WindowsRdpdrBackendFactory,
 };

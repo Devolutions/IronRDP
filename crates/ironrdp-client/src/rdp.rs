@@ -3252,6 +3252,15 @@ fn process_rdpdr_drive_change(
         warn!(device_id, "Ignoring dynamic drive change because RDPDR is disabled");
         return Ok(Vec::new());
     };
+    // A channel built without drive capability (smartcard-only, or drives forbidden by gateway
+    // policy) must not gain it from a drive event queued before server negotiation.
+    if name.is_some() && !rdpdr.drive_hotplug_available() {
+        warn!(
+            device_id,
+            "Ignoring dynamic drive because drive redirection is unavailable"
+        );
+        return Ok(Vec::new());
+    }
     let messages = match name {
         Some(name) => rdpdr.add_dynamic_drive(device_id, name),
         None => rdpdr.remove_drive(device_id),
@@ -5312,6 +5321,7 @@ mod tests {
             enabled: false,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            drives: Default::default(),
             ports: true,
         };
 
@@ -5333,6 +5343,7 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            drives: Default::default(),
             ports: true,
         };
 
@@ -5354,6 +5365,7 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            drives: Default::default(),
             ports: true,
         };
 
@@ -5424,6 +5436,7 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            drives: Default::default(),
             ports: true,
         };
 
@@ -5438,6 +5451,7 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            drives: Default::default(),
             ports: true,
         };
 
@@ -5475,6 +5489,7 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            drives: Default::default(),
             ports,
         };
 
@@ -5516,6 +5531,7 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            drives: Default::default(),
             ports: true,
         };
         let policy = RdpdrDevicePolicy {
@@ -5540,6 +5556,7 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            drives: Default::default(),
             ports: true,
         };
 
@@ -5558,6 +5575,7 @@ mod tests {
         let config = crate::config::RdpdrConfig {
             enabled: true,
             smartcard: true,
+            drives: Default::default(),
             ports: true,
         };
 
@@ -5652,6 +5670,7 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            drives: Default::default(),
             ports: true,
         };
 
@@ -5687,6 +5706,7 @@ mod tests {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: false,
+            drives: Default::default(),
             ports: true,
         };
         let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, RdpdrDevicePolicy::ALLOW_ALL)
@@ -5846,6 +5866,43 @@ mod tests {
             poll_deferred_rdpdr_output(&mut active_stage)
                 .expect("polling an empty backend should succeed")
                 .is_none()
+        );
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn dynamic_drives_do_not_enable_drive_capability() {
+        let backend = TestRdpdrBackend::new(0);
+        let dynamic_drive_count = Arc::clone(&backend.dynamic_drive_count);
+        let mut static_channels = StaticChannelSet::new();
+        assert!(
+            static_channels
+                .insert(ironrdp_rdpdr::Rdpdr::new(Box::new(backend), "test".to_owned()))
+                .is_none()
+        );
+        let mut active_stage = ActiveStageBuilder {
+            static_channels,
+            user_channel_id: 1001,
+            io_channel_id: 1003,
+            message_channel_id: None,
+            share_id: 0,
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+
+        assert!(
+            process_rdpdr_drive_change(&mut active_stage, 7, Some("E:".to_owned()))
+                .expect("a rejected dynamic drive is not an error")
+                .is_empty()
+        );
+        assert_eq!(dynamic_drive_count.load(Ordering::SeqCst), 0);
+        assert!(
+            !active_stage
+                .get_svc_processor::<ironrdp_rdpdr::Rdpdr>()
+                .expect("RDPDR channel")
+                .drive_hotplug_available()
         );
     }
 

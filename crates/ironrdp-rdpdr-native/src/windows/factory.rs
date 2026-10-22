@@ -10,6 +10,8 @@ use ironrdp_rdpdr::{
 use tracing::warn;
 
 use super::backend::WindowsRdpdrBackend;
+use super::handles::RootDirectory;
+use super::logical_drives::{LogicalDrive, LogicalDriveSelection, LogicalDriveSet};
 use super::port::{WindowsPortRedirection, resolve_ports};
 use super::printer::{RdpdrWorkerThreadHooks, discover_default_printer};
 
@@ -28,7 +30,11 @@ pub struct RedirectedDrive {
 }
 
 impl RedirectedDrive {
-    /// Creates a drive definition for one full logical Windows volume.
+    /// Creates a drive definition for a logical Windows volume (`C:\`) or a directory on one.
+    ///
+    /// The root must be an absolute, normalized drive-letter path: relative, `..`, verbatim
+    /// (`\\?\`), device, and UNC paths are rejected. The root is opened only when the drive is
+    /// announced, without following reparse points.
     pub fn new(
         device_id: u32,
         display_name: impl Into<String>,
@@ -46,11 +52,15 @@ impl RedirectedDrive {
         if display_name.contains('\0') {
             return Err(RedirectedDriveError::EmbeddedNul);
         }
+        let root_path = root_path.into();
+        if RootDirectory::open(&root_path).is_err() {
+            return Err(RedirectedDriveError::InvalidRootPath);
+        }
 
         Ok(Self {
             device_id,
             display_name,
-            root_path: root_path.into(),
+            root_path,
             read_only,
         })
     }
@@ -85,6 +95,8 @@ pub enum RedirectedDriveError {
     EmptyDisplayName,
     /// An embedded NUL would truncate the RDPDR Unicode device name.
     EmbeddedNul,
+    /// The root is not an absolute, normalized path on a logical volume.
+    InvalidRootPath,
 }
 
 impl fmt::Display for RedirectedDriveError {
@@ -93,6 +105,9 @@ impl fmt::Display for RedirectedDriveError {
             Self::ReservedDeviceId => f.write_str("device ID zero is reserved for RDPDR"),
             Self::EmptyDisplayName => f.write_str("redirected drive display name must not be empty"),
             Self::EmbeddedNul => f.write_str("redirected drive display name must not contain NUL"),
+            Self::InvalidRootPath => {
+                f.write_str("redirected drive root must be an absolute path on a logical volume (C:\\dir)")
+            }
         }
     }
 }
@@ -111,6 +126,7 @@ impl core::error::Error for RedirectedDriveError {}
 pub struct WindowsRdpdrBackendFactory {
     drives: Vec<RedirectedDrive>,
     initial_drive_ids: Vec<u32>,
+    logical_drives: Option<LogicalDriveSelection>,
     dynamic_drives: bool,
     smartcard: bool,
     default_printer: bool,
@@ -126,6 +142,7 @@ impl WindowsRdpdrBackendFactory {
         Self {
             drives: vec![drive],
             initial_drive_ids: vec![device_id],
+            logical_drives: None,
             dynamic_drives: false,
             smartcard: false,
             default_printer: false,
@@ -167,12 +184,45 @@ impl WindowsRdpdrBackendFactory {
         Ok(Self {
             drives,
             initial_drive_ids,
+            logical_drives: None,
             dynamic_drives: false,
             smartcard: false,
             default_printer: false,
             worker_thread_hooks: None,
             ports: WindowsPortRedirection::default(),
         })
+    }
+
+    /// Registers every drive letter and announces the selected letters mapped at each connection.
+    ///
+    /// Drive letters use the device IDs `1..=26` (see [`LogicalDrive::device_id`]), which must not
+    /// already be configured, and announce the names `A:` to `Z:`, which configured drives must
+    /// not use (see [`LogicalDrive::is_drive_letter_name`]). Share `selection` with a
+    /// [`LogicalDriveWatcher`](super::LogicalDriveWatcher) to redirect drives connected later.
+    pub fn with_logical_drives(
+        mut self,
+        selection: LogicalDriveSelection,
+    ) -> Result<Self, RedirectedDriveFactoryError> {
+        for drive in LogicalDriveSet::ALL.iter() {
+            if self
+                .drives
+                .iter()
+                .any(|configured| configured.device_id() == drive.device_id())
+            {
+                return Err(RedirectedDriveFactoryError::DuplicateDeviceId(drive.device_id()));
+            }
+        }
+        if let Some(configured) = self
+            .drives
+            .iter()
+            .find(|configured| LogicalDrive::is_drive_letter_name(configured.display_name()))
+        {
+            return Err(RedirectedDriveFactoryError::ReservedDriveName(configured.device_id()));
+        }
+        self.drives
+            .extend(LogicalDriveSet::ALL.iter().map(LogicalDrive::redirected_drive));
+        self.logical_drives = Some(selection);
+        Ok(self)
     }
 
     /// Keeps RDPDR drive capability available for later logical-volume hotplug.
@@ -239,8 +289,16 @@ impl WindowsRdpdrBackendFactory {
     }
 
     /// Returns the initial `(device_id, name)` pair for `Rdpdr::with_drives`.
+    ///
+    /// With [`Self::with_logical_drives`], this includes the selected letters mapped now, without
+    /// probing their volumes.
     #[must_use]
     pub fn initial_drives(&self) -> Vec<(u32, String)> {
+        let logical_drives = self
+            .logical_drives
+            .as_ref()
+            .map(LogicalDriveSelection::mapped)
+            .unwrap_or_default();
         self.initial_drive_ids
             .iter()
             .map(|device_id| {
@@ -251,6 +309,11 @@ impl WindowsRdpdrBackendFactory {
                     .expect("initial RDPDR drive IDs are validated when the factory is created");
                 (drive.device_id, drive.display_name.clone())
             })
+            .chain(
+                logical_drives
+                    .iter()
+                    .map(|drive| (drive.device_id(), drive.display_name())),
+            )
             .collect()
     }
 
@@ -346,6 +409,8 @@ pub enum RedirectedDriveFactoryError {
     RepeatedInitialSelection(u32),
     /// An initial drive ID has no matching configured logical volume.
     UnconfiguredInitialSelection(u32),
+    /// A configured drive uses a drive-letter name while drive letters are also redirected.
+    ReservedDriveName(u32),
 }
 
 impl fmt::Display for RedirectedDriveFactoryError {
@@ -356,6 +421,10 @@ impl fmt::Display for RedirectedDriveFactoryError {
             Self::UnconfiguredInitialSelection(device_id) => {
                 write!(f, "initial RDPDR device ID {device_id} is not configured")
             }
+            Self::ReservedDriveName(device_id) => write!(
+                f,
+                "RDPDR drive {device_id} uses a drive-letter name reserved for redirected drive letters"
+            ),
         }
     }
 }
@@ -476,6 +545,80 @@ mod tests {
 
         assert!(product.drive_hotplug());
         assert!(product.initial_drives().is_empty());
+    }
+
+    #[test]
+    fn factory_announces_present_logical_drives() {
+        let system_drive = std::env::var("SystemDrive").expect("SystemDrive is set on Windows");
+        let system_drive = LogicalDrive::from_letter(system_drive.chars().next().expect("nonempty system drive"))
+            .expect("system drive is a letter");
+        let factory = WindowsRdpdrBackendFactory::from_drives(vec![
+            RedirectedDrive::new(27, "home", r"C:\Users", false).expect("valid named drive"),
+        ])
+        .expect("valid drive configuration")
+        .with_logical_drives(LogicalDriveSelection::new([system_drive].into_iter().collect()))
+        .expect("drive letters do not collide");
+
+        assert_eq!(
+            factory.initial_drives(),
+            vec![
+                (27, "home".to_owned()),
+                (system_drive.device_id(), system_drive.display_name())
+            ]
+        );
+        let unannounced = LogicalDrive::from_letter(if system_drive.letter() == 'Z' { 'Y' } else { 'Z' })
+            .expect("valid drive letter");
+        factory
+            .build()
+            .add_drive(unannounced.device_id())
+            .expect("every drive letter can be activated dynamically");
+    }
+
+    #[test]
+    fn logical_drives_reject_colliding_device_ids() {
+        let result = WindowsRdpdrBackendFactory::from_drives(vec![
+            RedirectedDrive::new(3, "Data", r"D:\", false).expect("valid data drive"),
+        ])
+        .expect("valid drive configuration")
+        .with_logical_drives(LogicalDriveSelection::default());
+
+        assert!(matches!(result, Err(RedirectedDriveFactoryError::DuplicateDeviceId(3))));
+    }
+
+    #[test]
+    fn logical_drives_reject_drive_letter_names() {
+        let named = |name| {
+            WindowsRdpdrBackendFactory::from_drives(vec![
+                RedirectedDrive::new(27, name, r"C:\Windows", false).expect("valid named drive"),
+            ])
+            .expect("valid drive configuration")
+        };
+
+        assert!(matches!(
+            named("c:").with_logical_drives(LogicalDriveSelection::default()),
+            Err(RedirectedDriveFactoryError::ReservedDriveName(27))
+        ));
+        assert!(
+            named("Windows")
+                .with_logical_drives(LogicalDriveSelection::default())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn redirected_drives_reject_invalid_roots() {
+        for root in [
+            r"relative\dir",
+            r"C:\Users\..\Windows",
+            r"\\?\C:\Users",
+            r"\\server\share",
+        ] {
+            assert_eq!(
+                RedirectedDrive::new(27, "Data", root, false),
+                Err(RedirectedDriveError::InvalidRootPath),
+                "{root}"
+            );
+        }
     }
 
     #[test]

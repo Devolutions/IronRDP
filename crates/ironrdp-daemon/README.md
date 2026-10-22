@@ -16,4 +16,11 @@ Smartcard is also honored from connect/overlay property `ironrdp_smartcard`:
 - connect-time `ironrdp_smartcard:i:1` can enable smartcard-only without a startup flag
 - connect-time `ironrdp_smartcard:i:0` disables smartcard for that session
 
+Connect properties `drivestoredirect` and `redirectdrives` select drive letters with the mstsc
+syntax, as in `.rdp` files. With `*` or `DynamicDrives`, the session also announces drives
+connected while it runs. Configured volumes use device IDs from `27`, because `1` to `26` belong to
+drive letters.
+A configured volume named like a drive letter (`C` or `C:`) cannot be combined with redirected drive
+letters, because both would show the same name in the session.
+
 Smartcard-only sessions use an empty drive list with device ID `0` reserved for the smartcard device.

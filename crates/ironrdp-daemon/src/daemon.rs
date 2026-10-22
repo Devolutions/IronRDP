@@ -37,7 +37,9 @@ use tracing::{debug, error, info, trace, warn};
 use std::collections::BTreeSet;
 
 #[cfg(windows)]
-use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackendFactory};
+use ironrdp_rdpdr_native::{
+    FIRST_NAMED_DRIVE_DEVICE_ID, LogicalDriveWatcher, RedirectedDrive, WindowsRdpdrBackendFactory,
+};
 
 use crate::ipc::{
     ClipboardFileEntry, ConnState, KeyFilter, KeyInput, MAX_CLIPBOARD_FILE_BYTES, MAX_CLIPBOARD_FILE_LIST_ENTRIES,
@@ -367,6 +369,9 @@ struct Session {
     clipboard_file_notify: Arc<tokio::sync::Notify>,
     now_endpoint: Arc<NowEndpoint>,
     operations: OperationManager,
+    /// Announces drives connected during the session (`DynamicDrives`) until the session ends.
+    #[cfg(windows)]
+    _drive_watcher: Option<LogicalDriveWatcher>,
 }
 
 /// Converts a [`std::time::SystemTime`] to a Windows FILETIME (100-nanosecond intervals since
@@ -970,6 +975,32 @@ impl Daemon {
                 );
             }
         };
+        if let Some(value) = properties.drives_to_redirect() {
+            for entry in ironrdp_cfg::DriveRedirection::unrecognized_entries(value) {
+                warn!(entry, "Ignoring unsupported drivestoredirect entry");
+            }
+        }
+        // Like printers, an explicit `ironrdp_rdpdr:i:0` disables `drivestoredirect`.
+        #[cfg(windows)]
+        let drive_redirection = properties
+            .drive_redirection()
+            .filter(|_| properties.enable_rdpdr() != Some(false))
+            .unwrap_or_default();
+        #[cfg(windows)]
+        let (rdpdr_factory, drive_selection) =
+            match crate::drives::logical_drive_factory(rdpdr_factory, drive_redirection) {
+                Ok(factory) => factory,
+                Err(error) => {
+                    return Response::typed_error(
+                        crate::ipc::AgentErrorCategory::Internal,
+                        format!("invalid rdpdr configuration: {error:#}"),
+                    );
+                }
+            };
+        #[cfg(not(windows))]
+        if properties.drive_redirection().is_some_and(|drives| !drives.is_empty()) {
+            warn!("Ignoring drive redirection request; it is only available on Windows");
+        }
         #[cfg(windows)]
         let builder = if rdpdr_factory.is_some() {
             builder.with_rdpdr(true).with_smartcard(smartcard)
@@ -1038,6 +1069,12 @@ impl Daemon {
             None => client,
         };
         let input_tx = client.input_sender();
+        #[cfg(windows)]
+        let drive_watcher = drive_selection.and_then(|selection| {
+            crate::drives::watch_logical_drives(selection, input_tx.clone())
+                .inspect_err(|error| warn!(%error, "Drive hotplug is unavailable; redirecting only the drives present at connect"))
+                .ok()
+        });
         let clipboard_file_notify = Arc::new(tokio::sync::Notify::new());
         // State left over from an abruptly-ended previous session is meaningless against this
         // new one, and the remote file list plus its lock id are actively dangerous to keep: a
@@ -1130,6 +1167,8 @@ impl Daemon {
             clipboard_file_notify,
             operations: OperationManager::new(Arc::clone(&now_endpoint)),
             now_endpoint,
+            #[cfg(windows)]
+            _drive_watcher: drive_watcher,
         });
 
         Response::ok()
@@ -2478,8 +2517,10 @@ fn rdpdr_backend_factory(
                 anyhow::bail!("rdpdr volume roots must be unique");
             }
 
-            let device_id =
-                u32::try_from(index + 1).map_err(|_| anyhow::anyhow!("too many rdpdr drive configurations"))?;
+            let device_id = u32::try_from(index)
+                .ok()
+                .and_then(|index| index.checked_add(FIRST_NAMED_DRIVE_DEVICE_ID))
+                .ok_or_else(|| anyhow::anyhow!("too many rdpdr drive configurations"))?;
             RedirectedDrive::new(device_id, &drive.display_name, &drive.root_path, false)
                 .map_err(|error| anyhow::anyhow!("invalid rdpdr drive configuration: {error}"))
         })
@@ -2791,6 +2832,8 @@ mod tests {
             clipboard_file_notify: Arc::new(tokio::sync::Notify::new()),
             operations: OperationManager::new(Arc::clone(&now_endpoint)),
             now_endpoint,
+            #[cfg(windows)]
+            _drive_watcher: None,
         });
         (daemon, input_rx, live, rail_notify)
     }
