@@ -2728,6 +2728,7 @@ fn property_description(key: &str) -> Option<&'static str> {
         "ironrdp_fakeeventsinterval" => "interval in minutes between synthetic keep-alive input events",
         "ironrdp_rdcleanpathtoken" => "RDCleanPath authentication token (secret)",
         "ironrdp_rdcleanpathurl" => "RDCleanPath proxy URL",
+        "ironrdp_gatewayrpch" => "use authenticated RPC over HTTP for the RD gateway instead of HTTP/WebSocket (0/1)",
         "ironrdp_serverpointer" => "render the server-side pointer instead of a client-drawn pointer (0/1)",
         _ => return None,
     };

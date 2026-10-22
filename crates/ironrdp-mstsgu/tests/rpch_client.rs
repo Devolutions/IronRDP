@@ -318,18 +318,17 @@ async fn live_channel(peer_window: u32) -> (RpchClient, ServerStream, ServerStre
         let head = read_head(&mut input).await;
         assert!(head.starts_with("RPC_IN_DATA /rpc/rpcproxy.dll?backend:3388 HTTP/1.1\r\n"));
         assert!(head.contains(&format!("Host: localhost:{port}\r\n")));
-        assert!(head.contains("Content-Length: 131072\r\n"));
-        assert!(head.contains("Expect: 100-continue\r\n"));
+        assert!(head.contains("Content-Length: 0\r\n"));
+        assert!(!head.contains("Expect:"));
         assert!(!head.contains("Authorization:"));
         input
             .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 6\r\nWWW-Authenticate: Basic\r\n\r\ndenied")
             .await
             .expect("IN challenge");
-        assert!(
-            read_head(&mut input)
-                .await
-                .contains("Authorization: Basic dXNlcjpwYXNz\r\n")
-        );
+        let head = read_head(&mut input).await;
+        assert!(head.contains("Authorization: Basic dXNlcjpwYXNz\r\n"));
+        assert!(head.contains("Content-Length: 131072\r\n"));
+        assert!(head.contains("Expect: 100-continue\r\n"));
         input
             .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
             .await

@@ -423,6 +423,11 @@ impl GatewayHttpAuth {
         format!("{} {}", self.scheme, STANDARD.encode(token))
     }
 
+    /// Returns whether the last generated token completed the security context.
+    pub(crate) const fn is_complete(&self) -> bool {
+        self.complete
+    }
+
     fn initialize(&mut self, input: Option<&[u8]>) -> Result<Vec<u8>, Error> {
         let mut input_token = [SecurityBuffer::new(
             input.map(<[u8]>::to_vec).unwrap_or_default(),

@@ -259,8 +259,8 @@ async fn in_authentication_waits_for_continue_before_the_body() {
     let (client, mut server) = tokio::io::duplex(4096);
     let server_task = tokio::spawn(async move {
         let request = read_head(&mut server).await;
-        assert!(request.contains("Content-Length: 131072"));
-        assert!(request.contains("Expect: 100-continue"));
+        assert!(request.contains("Content-Length: 0\r\n"));
+        assert!(!request.contains("Expect:"));
         server
             .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 4\r\n\r\ndeny")
             .await
@@ -278,21 +278,61 @@ async fn in_authentication_waits_for_continue_before_the_body() {
         assert_eq!(body, *b"B1!!");
     });
 
-    let mut request =
-        rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", 128 * 1024, None)
-            .await
-            .expect("open authentication probe");
+    let mut request = rpc_transport::RpchInRequest::open(
+        client,
+        "gateway.example",
+        "target.example:3389",
+        128 * 1024,
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("open authentication probe");
+    assert!(!request.body_reserved());
     assert!(request.write_body(b"B1!!").await.is_err());
     assert_eq!(request.receive_response().await.expect("read challenge").status, 401);
     request = request
-        .retry(Some("NTLM token"))
+        .retry(Some("NTLM token"), true)
         .await
         .expect("retry authenticated request");
+    assert!(request.body_reserved());
     assert_eq!(request.receive_response().await.expect("read continue").status, 100);
     request.write_body(b"B1!!").await.expect("write body");
     assert_eq!(request.remaining(), 128 * 1024 - 4);
     assert!(request.write_body(&vec![0; 128 * 1024]).await.is_err());
     request.flush().await.expect("flush body");
+    server_task.await.expect("join server");
+}
+
+#[tokio::test]
+async fn in_authentication_rejects_continue_for_empty_leg() {
+    let (client, mut server) = tokio::io::duplex(4096);
+    let server_task = tokio::spawn(async move {
+        let _ = read_head(&mut server).await;
+        server
+            .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
+            .await
+            .expect("write continue response");
+    });
+
+    let mut request = rpc_transport::RpchInRequest::open(
+        client,
+        "gateway.example",
+        "target.example:3389",
+        128 * 1024,
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("open authentication probe");
+    let error = request
+        .receive_response()
+        .await
+        .expect_err("reject continue without reserved body");
+    assert_eq!(error.kind().to_string(), "decode");
+    assert!(request.write_body(b"B1!!").await.is_err());
     server_task.await.expect("join server");
 }
 
@@ -307,10 +347,17 @@ async fn in_authentication_response_requires_a_bounded_body() {
             server.write_all(response).await.expect("write authentication response");
         });
 
-        let mut request =
-            rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", 128 * 1024, None)
-                .await
-                .expect("open authentication probe");
+        let mut request = rpc_transport::RpchInRequest::open(
+            client,
+            "gateway.example",
+            "target.example:3389",
+            128 * 1024,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("open authentication probe");
         let error = request
             .receive_response()
             .await
@@ -338,10 +385,17 @@ async fn in_authentication_response_drains_body_at_limit() {
             .expect("write following response");
     });
 
-    let mut request =
-        rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", 128 * 1024, None)
-            .await
-            .expect("open authentication probe");
+    let mut request = rpc_transport::RpchInRequest::open(
+        client,
+        "gateway.example",
+        "target.example:3389",
+        128 * 1024,
+        None,
+        None,
+        true,
+    )
+    .await
+    .expect("open authentication probe");
     assert_eq!(request.receive_response().await.expect("read challenge").status, 401);
     assert_eq!(
         request

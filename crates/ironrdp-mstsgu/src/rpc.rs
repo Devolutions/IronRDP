@@ -66,6 +66,11 @@ pub const PFC_LAST_FRAG: u8 = 0x02;
 ///
 /// For other PDU types, this bit is `PFC_PENDING_CANCEL`.
 pub const PFC_SUPPORT_HEADER_SIGN: u8 = 0x04;
+/// Concurrent multiplexing support on bind-related PDUs ([C706] 12.6.3.1).
+///
+/// TS Proxy keeps `TsProxySetupReceivePipe` outstanding while issuing other calls, which a
+/// non-multiplexed association rejects with `nca_s_proto_error`.
+pub const PFC_CONC_MPX: u8 = 0x10;
 /// Packet-integrity authentication level.
 ///
 /// [MS-RPCE] 2.2.2.12.
@@ -397,7 +402,7 @@ impl fmt::Display for RpcPduError {
             }
             Self::EmptyAuthenticationToken => f.write_str("empty rpc authentication token"),
             Self::UnalignedSecurityTrailer { offset } => {
-                write!(f, "rpc security trailer at offset {offset} is not 16-byte aligned")
+                write!(f, "rpc security trailer at offset {offset} is not 4-byte aligned")
             }
             Self::AuthenticationVerifierLength { expected, actual } => {
                 write!(
@@ -1433,7 +1438,8 @@ pub fn decode_rpc_authenticated_fragment(
             auth_length: header.auth_length(),
         });
     }
-    if !(security_trailer_offset - RPC_COMMON_HEADER_SIZE).is_multiple_of(16) {
+    // [C706] 12.6.3 requires only 4-byte alignment; Windows pads response stubs relative to the stub start.
+    if !(security_trailer_offset - RPC_COMMON_HEADER_SIZE).is_multiple_of(4) {
         return Err(RpcPduError::UnalignedSecurityTrailer {
             offset: security_trailer_offset,
         });
@@ -1837,6 +1843,7 @@ pub fn prepare_rpc_authenticated_bind(
     let body = encode_rpc_bind_body(fragment_sizes, association_group_id, presentation_contexts)?;
     let pfc_flags = PFC_FIRST_FRAG
         | PFC_LAST_FRAG
+        | PFC_CONC_MPX
         | if supports_header_signing {
             PFC_SUPPORT_HEADER_SIGN
         } else {
@@ -2453,7 +2460,7 @@ fn encode_authenticated_pdu(ptype: u8, call_id: u32, mut body: Vec<u8>, token: &
     );
     let header = RpcCommonHeader::encode(
         ptype,
-        PFC_FIRST_FRAG | PFC_LAST_FRAG | PFC_SUPPORT_HEADER_SIGN,
+        PFC_FIRST_FRAG | PFC_LAST_FRAG | PFC_CONC_MPX | PFC_SUPPORT_HEADER_SIGN,
         call_id,
         body.len(),
         auth_length,
@@ -2674,6 +2681,10 @@ pub(crate) mod tsgu {
     /// `TsProxyAuthorizeTunnel` operation number.
     pub(crate) const TSPROXY_AUTHORIZE_TUNNEL_OPNUM: u16 = 2;
     /// `TsProxyMakeTunnelCall` operation number.
+    #[expect(
+        dead_code,
+        reason = "administrative messaging is not negotiated, so the session never issues TsProxyMakeTunnelCall"
+    )]
     pub(crate) const TSPROXY_MAKE_TUNNEL_CALL_OPNUM: u16 = 3;
     /// `TsProxyCreateChannel` operation number.
     pub(crate) const TSPROXY_CREATE_CHANNEL_OPNUM: u16 = 4;

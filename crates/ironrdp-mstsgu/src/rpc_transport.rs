@@ -42,14 +42,18 @@ pub(crate) struct RpchRequestHead<'a> {
 
 /// An RPCH IN request whose streaming body is authorized after authentication.
 ///
-/// The initial request reserves the full body length but uses `Expect: 100-continue`.
-/// This lets the caller authenticate without sending bytes from the RPCH stream.
+/// Intermediate authentication legs send `Content-Length: 0`, because proxies may wait for a
+/// reserved body before answering with the next challenge.
+/// The leg that reserves the full body uses `Expect: 100-continue`, so no RPCH stream bytes are
+/// sent until the proxy accepts the request.
 pub(crate) struct RpchInRequest<S> {
     stream: S,
     host: String,
     target: String,
     content_length: u32,
+    session_id: Option<String>,
     remaining: u32,
+    body_reserved: bool,
     body_authorized: bool,
 }
 
@@ -58,36 +62,33 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     /// Opens the IN channel without sending its streaming body.
+    ///
+    /// `reserve_body` selects between an empty authentication leg and the full streaming request.
     pub(crate) async fn open(
-        mut stream: S,
+        stream: S,
         host: &str,
         target: &str,
         content_length: u32,
+        session_id: Option<&str>,
         authorization: Option<&str>,
+        reserve_body: bool,
     ) -> Result<Self, Error> {
-        write_rpch_request_head(
-            &mut stream,
-            RpchRequestHead {
-                method: "RPC_IN_DATA",
-                host,
-                target,
-                content_length,
-                authorization,
-                cookie: None,
-                session_id: None,
-                expect_continue: true,
-            },
-        )
-        .await?;
-
-        Ok(Self {
+        let request = Self {
             stream,
             host: host.to_owned(),
             target: target.to_owned(),
             content_length,
-            remaining: content_length,
+            session_id: session_id.map(str::to_owned),
+            remaining: 0,
+            body_reserved: false,
             body_authorized: false,
-        })
+        };
+        request.retry(authorization, reserve_body).await
+    }
+
+    /// Returns whether the current request head reserves the streaming body.
+    pub(crate) const fn body_reserved(&self) -> bool {
+        self.body_reserved
     }
 
     /// Reads the response to the current request head.
@@ -95,7 +96,8 @@ where
     /// Bounded authentication challenge bodies are drained before a retry can reuse the connection.
     pub(crate) async fn receive_response(&mut self) -> Result<RpchResponseHead, Error> {
         let response = read_rpch_response_head(&mut self.stream).await?;
-        if response.status == 401 {
+        // Challenges and final responses to empty legs are complete; drain them so the connection can be reused.
+        if response.status == 401 || (!self.body_reserved && response.status >= 200) {
             let length = response.content_length.ok_or_else(|| {
                 Error::new(
                     "rpch authentication response missing content length",
@@ -104,34 +106,42 @@ where
             })?;
             drain_body(&mut self.stream, length).await?;
         } else if response.status == 100 {
+            if !self.body_reserved {
+                return Err(Error::new(
+                    "rpch IN continue without reserved body",
+                    GwErrorKind::Decode,
+                ));
+            }
             self.body_authorized = true;
         }
         Ok(response)
     }
 
-    /// Retries the request head after an authentication challenge.
+    /// Sends the next request head after an authentication response.
     ///
-    /// The request body remains blocked until the proxy returns `100 Continue`.
-    pub(crate) async fn retry(mut self, authorization: Option<&str>) -> Result<Self, Error> {
+    /// The request body remains blocked until the proxy returns `100 Continue` to a reserving head.
+    pub(crate) async fn retry(mut self, authorization: Option<&str>, reserve_body: bool) -> Result<Self, Error> {
         if self.body_authorized {
             return Err(Error::new("rpch IN retry after body", GwErrorKind::Connect));
         }
 
+        let content_length = if reserve_body { self.content_length } else { 0 };
         write_rpch_request_head(
             &mut self.stream,
             RpchRequestHead {
                 method: "RPC_IN_DATA",
                 host: &self.host,
                 target: &self.target,
-                content_length: self.content_length,
+                content_length,
                 authorization,
                 cookie: None,
-                session_id: None,
-                expect_continue: true,
+                session_id: self.session_id.as_deref(),
+                expect_continue: reserve_body,
             },
         )
         .await?;
-        self.remaining = self.content_length;
+        self.body_reserved = reserve_body;
+        self.remaining = content_length;
 
         Ok(self)
     }

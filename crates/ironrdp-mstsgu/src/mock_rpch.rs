@@ -8,8 +8,8 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 
 use crate::rpc::tsgu::{
     TSPROXY_AUTHORIZE_TUNNEL_OPNUM, TSPROXY_CLOSE_CHANNEL_OPNUM, TSPROXY_CLOSE_TUNNEL_OPNUM,
-    TSPROXY_CREATE_CHANNEL_OPNUM, TSPROXY_CREATE_TUNNEL_OPNUM, TSPROXY_MAKE_TUNNEL_CALL_OPNUM,
-    TSPROXY_SEND_TO_SERVER_OPNUM, TSPROXY_SETUP_RECEIVE_PIPE_OPNUM,
+    TSPROXY_CREATE_CHANNEL_OPNUM, TSPROXY_CREATE_TUNNEL_OPNUM, TSPROXY_SEND_TO_SERVER_OPNUM,
+    TSPROXY_SETUP_RECEIVE_PIPE_OPNUM,
 };
 use crate::rpc::{
     PFC_FIRST_FRAG, PFC_LAST_FRAG, PFC_SUPPORT_HEADER_SIGN, PTYPE_BIND, PTYPE_REQUEST, PTYPE_RPC_AUTH_3, PTYPE_RTS,
@@ -26,20 +26,12 @@ const CHANNEL_CONTEXT: [u8; 20] = [0xbb; 20];
 #[derive(Clone, Copy)]
 pub(crate) enum MockRpchScenario {
     Echo,
-    Message(MockTunnelMessage),
-    MessageBeforeCreateChannel(MockTunnelMessage),
     ReceivePipeError(u32),
     TamperedResponse,
     TamperedReceivePipeResponse,
     FragmentedReceivePipePdu,
     InvalidOutFragmentLength,
     BasicAuthentication,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum MockTunnelMessage {
-    Service(&'static str),
-    Reauthenticate(u64),
 }
 
 struct MockRpcSecurity {
@@ -199,12 +191,6 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
         MockRpchScenario::ReceivePipeError(result) => Some(result),
         _ => None,
     };
-    let mut message = match scenario {
-        MockRpchScenario::Message(message) | MockRpchScenario::MessageBeforeCreateChannel(message) => Some(message),
-        _ => None,
-    };
-    let message_before_create_channel = matches!(scenario, MockRpchScenario::MessageBeforeCreateChannel(_));
-    let mut tunnel_message_call_id = None;
     let mut receive_pipe_call_id = None;
     let mut receive_pipe_started = false;
     let mut bytes_received = 0u32;
@@ -274,17 +260,6 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
                         {
                             return;
                         }
-                    } else if let (Some(message), Some(call_id)) = (message.take(), tunnel_message_call_id)
-                        && write_fragmented_response(
-                            &mut out,
-                            &mut rpc_security,
-                            call_id,
-                            &tunnel_message_response(message),
-                        )
-                        .await
-                        .is_err()
-                    {
-                        return;
                     }
                     continue;
                 }
@@ -330,27 +305,7 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
                             return;
                         }
                     }
-                    TSPROXY_MAKE_TUNNEL_CALL_OPNUM => {
-                        if message.is_some() {
-                            tunnel_message_call_id = Some(request_call_id);
-                        }
-                    }
                     TSPROXY_CREATE_CHANNEL_OPNUM => {
-                        if message_before_create_channel {
-                            if let (Some(message), Some(call_id)) = (message.take(), tunnel_message_call_id) {
-                                if write_response(
-                                    &mut out,
-                                    &mut rpc_security,
-                                    call_id,
-                                    &tunnel_message_response(message),
-                                )
-                                .await
-                                .is_err()
-                                {
-                                    return;
-                                }
-                            }
-                        }
                         if write_response(
                             &mut out,
                             &mut rpc_security,
@@ -437,36 +392,27 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
 }
 
 async fn begin_in_channel(input: &mut DuplexStream, requires_basic_auth: bool) -> bool {
+    // The first leg is an empty authentication probe; the next one reserves the streaming body.
     let Some(request) = read_request_head(input).await else {
         return false;
     };
-    if !valid_in_request(&request, false) {
+    if !valid_in_request(&request, false, false) {
         return false;
     }
-    if write_all(
-        input,
-        if requires_basic_auth {
-            b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nWWW-Authenticate: Basic\r\n\r\n"
-        } else {
-            b"HTTP/1.1 100 Continue\r\n\r\n"
-        },
-    )
-    .await
-    .is_err()
-    {
+    let probe_response: &[u8] = if requires_basic_auth {
+        b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nWWW-Authenticate: Basic\r\n\r\n"
+    } else {
+        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+    };
+    if write_all(input, probe_response).await.is_err() {
         return false;
     }
 
-    if requires_basic_auth {
-        let Some(request) = read_request_head(input).await else {
-            return false;
-        };
-        if !valid_in_request(&request, true) || write_all(input, b"HTTP/1.1 100 Continue\r\n\r\n").await.is_err() {
-            return false;
-        }
-    }
-
-    true
+    let Some(request) = read_request_head(input).await else {
+        return false;
+    };
+    valid_in_request(&request, true, requires_basic_auth)
+        && write_all(input, b"HTTP/1.1 100 Continue\r\n\r\n").await.is_ok()
 }
 
 async fn complete_in_channel(input: &mut DuplexStream) -> Option<RtsCookie> {
@@ -525,14 +471,22 @@ fn request_has_basic_auth(request: &str) -> bool {
         .any(|line| line == "Authorization: Basic Q09OVE9TT1xhbGljZTpzZWNyZXQ=")
 }
 
-fn valid_in_request(request: &str, has_basic_auth: bool) -> bool {
-    request_content_length(request).is_some_and(|length| length >= 128 * 1024)
-        && request.contains("Expect: 100-continue")
+fn valid_in_request(request: &str, reserves_body: bool, has_basic_auth: bool) -> bool {
+    let valid_length = if reserves_body {
+        request_content_length(request).is_some_and(|length| length >= 128 * 1024)
+    } else {
+        request_content_length(request) == Some(0)
+    };
+    request.starts_with("RPC_IN_DATA /rpc/rpcproxy.dll?localhost:3388 ")
+        && valid_length
+        && request.contains("Expect: 100-continue") == reserves_body
         && request_has_basic_auth(request) == has_basic_auth
 }
 
 fn valid_out_request(request: &str, has_basic_auth: bool) -> bool {
-    request_content_length(request) == Some(76) && request_has_basic_auth(request) == has_basic_auth
+    request.starts_with("RPC_OUT_DATA /rpc/rpcproxy.dll?localhost:3388 ")
+        && request_content_length(request) == Some(76)
+        && request_has_basic_auth(request) == has_basic_auth
 }
 
 async fn read_http_head(stream: &mut DuplexStream) -> Option<Vec<u8>> {
@@ -775,56 +729,4 @@ fn create_channel_response(channel_context: &[u8; 20], channel_id: u32) -> Vec<u
         0u32.to_le_bytes().as_slice(),
     ]
     .concat()
-}
-
-fn tunnel_message_response(message: MockTunnelMessage) -> Vec<u8> {
-    match message {
-        MockTunnelMessage::Service(text) => service_message_response(text),
-        MockTunnelMessage::Reauthenticate(tunnel_context) => reauthenticate_message_response(tunnel_context),
-    }
-}
-
-fn service_message_response(text: &str) -> Vec<u8> {
-    let mut text: Vec<u8> = text.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
-    let text_length = u32::try_from(text.len() / 2).expect("test message fits");
-    let mut response = [
-        0x0002_0000u32.to_le_bytes().as_slice(),
-        0x0000_4750u32.to_le_bytes().as_slice(),
-        0x0000_4750u32.to_le_bytes().as_slice(),
-        0x0002_0004u32.to_le_bytes().as_slice(),
-        1u32.to_le_bytes().as_slice(),
-        2u32.to_le_bytes().as_slice(),
-        1u32.to_le_bytes().as_slice(),
-        2u32.to_le_bytes().as_slice(),
-        0x0002_0008u32.to_le_bytes().as_slice(),
-        1u32.to_le_bytes().as_slice(),
-        0u32.to_le_bytes().as_slice(),
-        text_length.to_le_bytes().as_slice(),
-        0x0002_000cu32.to_le_bytes().as_slice(),
-        text_length.to_le_bytes().as_slice(),
-    ]
-    .concat();
-    response.append(&mut text);
-    response.resize((response.len() + 3) & !3, 0);
-    response.extend_from_slice(&0u32.to_le_bytes());
-    response
-}
-
-fn reauthenticate_message_response(tunnel_context: u64) -> Vec<u8> {
-    let mut response = [
-        0x0002_0000u32.to_le_bytes().as_slice(),
-        0x0000_4750u32.to_le_bytes().as_slice(),
-        0x0000_4750u32.to_le_bytes().as_slice(),
-        0x0002_0004u32.to_le_bytes().as_slice(),
-        1u32.to_le_bytes().as_slice(),
-        3u32.to_le_bytes().as_slice(),
-        1u32.to_le_bytes().as_slice(),
-        3u32.to_le_bytes().as_slice(),
-        0x0002_0008u32.to_le_bytes().as_slice(),
-    ]
-    .concat();
-    response.resize((response.len() + 7) & !7, 0);
-    response.extend_from_slice(&tunnel_context.to_le_bytes());
-    response.extend_from_slice(&0u32.to_le_bytes());
-    response
 }

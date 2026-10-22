@@ -23,12 +23,11 @@ use crate::http_auth::{AuthStep, GatewayHttpAuth, basic_authorization, run_http_
 use crate::rpc::tsgu::{
     NDR32_TRANSFER_SYNTAX_ID, NDR32_TRANSFER_SYNTAX_VERSION, NonNullRpcContextHandle, TSPROXY_AUTHORIZE_TUNNEL_OPNUM,
     TSPROXY_CLOSE_CHANNEL_OPNUM, TSPROXY_CLOSE_TUNNEL_OPNUM, TSPROXY_CREATE_CHANNEL_OPNUM, TSPROXY_CREATE_TUNNEL_OPNUM,
-    TSPROXY_MAKE_TUNNEL_CALL_OPNUM, TSPROXY_RPC_INTERFACE_ID, TSPROXY_RPC_INTERFACE_VERSION,
-    TSPROXY_SEND_TO_SERVER_OPNUM, TSPROXY_SETUP_RECEIVE_PIPE_OPNUM, TsProxyAuthorizeTunnelRequest,
-    TsProxyCloseContextRequest, TsProxyCreateChannelRequest, TsProxyCreateTunnelRequest, TsProxyMakeTunnelCallRequest,
-    TsProxySendToServerRequest, TsProxySetupReceivePipeRequest, TsProxyTunnelMessage,
-    decode_tsgu_authorize_tunnel_response, decode_tsgu_close_context_response, decode_tsgu_create_channel_response,
-    decode_tsgu_create_tunnel_response, decode_tsgu_make_tunnel_call_response, decode_tsgu_send_to_server_response,
+    TSPROXY_RPC_INTERFACE_ID, TSPROXY_RPC_INTERFACE_VERSION, TSPROXY_SEND_TO_SERVER_OPNUM,
+    TSPROXY_SETUP_RECEIVE_PIPE_OPNUM, TsProxyAuthorizeTunnelRequest, TsProxyCloseContextRequest,
+    TsProxyCreateChannelRequest, TsProxyCreateTunnelRequest, TsProxySendToServerRequest,
+    TsProxySetupReceivePipeRequest, decode_tsgu_authorize_tunnel_response, decode_tsgu_close_context_response,
+    decode_tsgu_create_channel_response, decode_tsgu_create_tunnel_response, decode_tsgu_send_to_server_response,
     decode_tsgu_setup_receive_pipe_final_response,
 };
 use crate::rpc::{
@@ -36,19 +35,27 @@ use crate::rpc::{
     RPC_NTLM_VERIFIER_LENGTH, RpcAuthenticatedResponseReassembler, RpcAuthenticationInfo, RpcFragmentSizes,
     RpcNtlmAuth, RpcPresentationContext, RpcSyntaxIdentifier, RpchFlowControl, RpchPingSchedule, RpchV2Settings,
     RpchV2Setup, RpchV2State, RtsCookie, RtsDestination, decode_rpc_authenticated_fragment,
-    decode_rpc_bind_ack_with_ntlm_auth, decode_rts_flow_control_ack, encode_rpc_auth_3, encode_rpc_bind_with_ntlm_auth,
-    encode_rts_flow_control_ack_with_destination, encode_rts_ping, prepare_rpc_authenticated_request_fragments,
+    decode_rpc_bind_ack_with_ntlm_auth, decode_rpc_fault_for_context, decode_rts_flow_control_ack, encode_rpc_auth_3,
+    encode_rpc_bind_with_ntlm_auth, encode_rts_flow_control_ack_with_destination, encode_rts_ping,
+    prepare_rpc_authenticated_request_fragments,
 };
 use crate::rpc_transport::{
     RpchInRequest, RpchRequestHead, drain_body, read_rpch_response_head, write_rpch_request_head,
 };
 use crate::{Error, GwConnectTarget, GwErrorKind, GwRpchRedirectionFlags, GwSmartCardCredentials};
 
-const IN_CONTENT_LENGTH: u32 = 128 * 1024;
+/// IN body reserved by the low-level channel, which does not recycle and stops at this limit.
+const CHANNEL_IN_CONTENT_LENGTH: u32 = 128 * 1024;
+/// IN body reserved by TS Proxy sessions; it matches the default channel lifetime, as deployed proxies expect.
+const SESSION_IN_CONTENT_LENGTH: u32 = 1024 * 1024 * 1024;
 const MAX_RESPONSE_STUB_SIZE: usize = 32 * 1024;
-const MAX_TUNNEL_MESSAGE_STUB_SIZE: usize = 256 * 1024;
 const MAX_AUTH_ROUNDS: usize = 8;
 const IN_RECYCLE_RESERVE: u32 = 1024;
+/// RPC proxy backend for the TS Proxy interface: the MS-TSGU 2.1 port 3388 endpoint on the gateway itself.
+///
+/// The RPC proxy resolves the backend name on the gateway, so `localhost` names the local TS Proxy endpoint
+/// regardless of the external gateway host name, not the RDP target.
+const TSPROXY_RPC_BACKEND: &str = "localhost:3388";
 
 #[derive(Clone)]
 pub(crate) struct RpchHttpCredentials {
@@ -82,14 +89,11 @@ struct RpchSession<Out, In, Provider> {
     send_sequence_number: u32,
     receive_sequence_number: u32,
     responses: RpcAuthenticatedResponseReassembler,
-    tunnel_message_responses: RpcAuthenticatedResponseReassembler,
     call_id: u32,
-    tunnel_message_call_id: Option<u32>,
     receive_pipe_call_id: Option<u32>,
     tunnel_context: Option<NonNullRpcContextHandle>,
     channel_context: Option<NonNullRpcContextHandle>,
     data: VecDeque<Bytes>,
-    messages: VecDeque<TsProxyTunnelMessage>,
     failed: bool,
     _out: PhantomData<fn() -> Out>,
 }
@@ -108,8 +112,16 @@ where
     In: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     Provider: RpchStreamProvider<Out, In>,
 {
-    let (channel, setup, session_id) =
-        open_rpch_channels(out_stream, in_stream, gateway_host, target, &credentials, settings).await?;
+    let (channel, setup, session_id) = open_rpch_channels(
+        out_stream,
+        in_stream,
+        gateway_host,
+        target,
+        &credentials,
+        settings,
+        SESSION_IN_CONTENT_LENGTH,
+    )
+    .await?;
     let ping = setup
         .ping_schedule(Duration::ZERO, Duration::ZERO)
         .map_err(|error| custom_err!("create rpch ping schedule", error))?;
@@ -139,14 +151,11 @@ where
         send_sequence_number: 0,
         receive_sequence_number: 0,
         responses: RpcAuthenticatedResponseReassembler::new(MAX_RESPONSE_STUB_SIZE),
-        tunnel_message_responses: RpcAuthenticatedResponseReassembler::new(MAX_TUNNEL_MESSAGE_STUB_SIZE),
         call_id: 0,
-        tunnel_message_call_id: None,
         receive_pipe_call_id: None,
         tunnel_context: None,
         channel_context: None,
         data: VecDeque::new(),
-        messages: VecDeque::new(),
         failed: false,
         _out: PhantomData,
     };
@@ -161,15 +170,18 @@ async fn open_rpch_channels<Out, In>(
     target: &str,
     credentials: &RpchHttpCredentials,
     settings: RpchV2Settings,
+    in_content_length: u32,
 ) -> Result<(RpchChannel<Out, In>, RpchV2Setup, String), Error>
 where
     Out: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     In: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let association_group_id = Uuid::new_v4();
+    // The session UUID pragma carries the virtual connection cookie on both channels, as deployed proxies expect.
+    let virtual_connection_id = Uuid::new_v4();
     let mut setup = RpchV2Setup::new(
         settings,
-        RtsCookie::new(*Uuid::new_v4().as_bytes()),
+        RtsCookie::new(virtual_connection_id.to_bytes_le()),
         RtsCookie::new(*Uuid::new_v4().as_bytes()),
         RtsCookie::new(*Uuid::new_v4().as_bytes()),
         RtsCookie::new(association_group_id.to_bytes_le()),
@@ -184,9 +196,17 @@ where
         .in_request_initial_pdu()
         .map_err(|error| custom_err!("encode rpch CONN/B1", error))?;
 
-    let mut input = open_in_channel(in_stream, gateway_host, target, credentials, IN_CONTENT_LENGTH).await?;
+    let session_id = virtual_connection_id.to_string();
+    let mut input = open_in_channel(
+        in_stream,
+        gateway_host,
+        target,
+        &session_id,
+        credentials,
+        in_content_length,
+    )
+    .await?;
 
-    let session_id = association_group_id.to_string();
     let (out_stream, out_response) =
         open_out_channel(out_stream, gateway_host, target, &session_id, credentials, &out_body).await?;
     setup
@@ -204,6 +224,7 @@ where
         setup
             .receive_out_pdu(&pdu)
             .map_err(|error| custom_err!("decode rpch setup pdu", error))?;
+        log::debug!("RPCH setup PDU received; state={:?}", setup.state());
     }
 
     let flow_control = setup
@@ -247,7 +268,16 @@ where
     ) -> Result<Self, Error> {
         let settings = RpchV2Settings::new(128 * 1024, 256 * 1024, 0)
             .map_err(|error| custom_err!("rpch channel settings", error))?;
-        let (channel, _, _) = open_rpch_channels(out, input, host, target, &credentials, settings).await?;
+        let (channel, _, _) = open_rpch_channels(
+            out,
+            input,
+            host,
+            target,
+            &credentials,
+            settings,
+            CHANNEL_IN_CONTENT_LENGTH,
+        )
+        .await?;
         Ok(channel)
     }
 
@@ -330,6 +360,7 @@ async fn open_in_channel<S>(
     stream: S,
     gateway_host: &str,
     target: &str,
+    session_id: &str,
     credentials: &RpchHttpCredentials,
     content_length: u32,
 ) -> Result<RpchInRequest<S>, Error>
@@ -337,24 +368,48 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let spn = http_spn(gateway_host)?;
-    let mut auth = None;
+    let mut auth: Option<GatewayHttpAuth> = None;
     let mut use_basic = false;
-    let mut input = RpchInRequest::open(stream, gateway_host, target, content_length, None).await?;
+    let mut input = RpchInRequest::open(
+        stream,
+        gateway_host,
+        target,
+        content_length,
+        Some(session_id),
+        None,
+        false,
+    )
+    .await?;
 
     for _ in 0..MAX_AUTH_ROUNDS {
         let response = input.receive_response().await?;
+        log::debug!(
+            "RPCH IN response; status={} body_reserved={}",
+            response.status,
+            input.body_reserved()
+        );
         match response.status {
             401 => {
                 if use_basic {
                     return Err(Error::new("rpch IN basic authentication", GwErrorKind::HttpStatus(401)));
                 }
+                // A token answering a server challenge is the final client leg for NTLM, including when
+                // SPNEGO still expects the server's mechListMIC.
+                let answers_challenge = auth.is_some();
                 let authorization =
                     step_http_auth(&mut auth, credentials, &spn, &response.www_authenticate, &mut use_basic).await?;
-                input = input.retry(Some(&authorization)).await?;
+                let reserve_body =
+                    use_basic || answers_challenge || auth.as_ref().is_some_and(GatewayHttpAuth::is_complete);
+                input = input.retry(Some(&authorization), reserve_body).await?;
             }
             100 => {
                 finish_http_auth(&mut auth, &response.www_authenticate).await?;
                 return Ok(input);
+            }
+            // An empty authentication leg completed; reserve the body on the authenticated connection.
+            200 if !input.body_reserved() => {
+                finish_http_auth(&mut auth, &response.www_authenticate).await?;
+                input = input.retry(None, true).await?;
             }
             200 => {
                 return Err(Error::new(
@@ -415,6 +470,7 @@ where
             .map_err(|error| custom_err!("flush rpch CONN/A1", error))?;
 
         let response = read_rpch_response_head(&mut stream).await?;
+        log::debug!("RPCH OUT response; status={}", response.status);
         match response.status {
             401 => {
                 let length = response.content_length.ok_or_else(|| {
@@ -552,8 +608,8 @@ where
             pnp_disabled: authorization.redirection_flags.pnp_disabled,
         };
 
-        self.queue_tunnel_message_call(tunnel.tunnel_context).await?;
-
+        // Administrative messages require TSG_MESSAGING_CAP_SERVICE_MSG, which this client does not
+        // negotiate, so TsProxyMakeTunnelCall is not issued ([MS-TSGU] 3.2.6.1.3 and 3.6.5.1).
         let request = TsProxyCreateChannelRequest::new(tunnel.tunnel_context, resource, port)
             .encode()
             .map_err(|error| custom_err!("encode create channel", error))?;
@@ -611,7 +667,7 @@ where
         Ok(())
     }
 
-    async fn read_data(&mut self) -> Result<RpchRead, Error> {
+    async fn read_data(&mut self) -> Result<Bytes, Error> {
         self.ensure_active()?;
         let result = self.read_data_inner().await;
         if result.is_err() {
@@ -620,23 +676,14 @@ where
         result
     }
 
-    async fn read_data_inner(&mut self) -> Result<RpchRead, Error> {
-        if let Some(message) = self.messages.pop_front() {
-            return Ok(RpchRead::Message(message));
-        }
-        if let Some(data) = self.data.pop_front() {
-            return Ok(RpchRead::Data(data));
-        }
+    async fn read_data_inner(&mut self) -> Result<Bytes, Error> {
         loop {
+            if let Some(data) = self.data.pop_front() {
+                return Ok(data);
+            }
             let pdu = self.out.read_pdu().await?;
             if self.handle_out_pdu(pdu).await?.is_some() {
                 return Err(Error::new("unexpected tsproxy response", GwErrorKind::Decode));
-            }
-            if let Some(message) = self.messages.pop_front() {
-                return Ok(RpchRead::Message(message));
-            }
-            if let Some(data) = self.data.pop_front() {
-                return Ok(RpchRead::Data(data));
             }
         }
     }
@@ -653,6 +700,16 @@ where
                 self.consume_out_pdu(pdu_len).await?;
                 Ok(None)
             }
+            // Servers report verification and dispatch failures with unauthenticated faults; surface the
+            // status, then fail closed like any other fault.
+            Some(PTYPE_FAULT) if pdu.get(10..12) == Some(&[0, 0]) => {
+                let fault = decode_rpc_fault_for_context(&pdu, self.fragment_sizes.max_recv(), 0)
+                    .map_err(|error| custom_err!("decode unauthenticated rpc fault", error))?;
+                Err(Error::new(
+                    "unauthenticated rpc fault",
+                    GwErrorKind::GatewayCode(fault.status),
+                ))
+            }
             Some(PTYPE_FAULT | PTYPE_RESPONSE) => {
                 let fragment = self.verify_rpc_fragment(&mut pdu)?;
                 if fragment.header().ptype() == PTYPE_FAULT {
@@ -661,10 +718,6 @@ where
                 let response = fragment
                     .decode_response_fragment_for_context(0)
                     .map_err(|error| custom_err!("decode rpch response", error))?;
-                if self.tunnel_message_call_id == Some(response.call_id) {
-                    self.handle_tunnel_message_response(pdu_len, fragment).await?;
-                    return Ok(None);
-                }
                 if self.receive_pipe_call_id == Some(response.call_id) {
                     self.queue_receive_pipe_response(pdu_len, response).await?;
                     return Ok(None);
@@ -751,32 +804,6 @@ where
         }
     }
 
-    async fn handle_tunnel_message_response(
-        &mut self,
-        pdu_len: usize,
-        fragment: crate::rpc::RpcVerifiedAuthenticatedFragment<'_>,
-    ) -> Result<(), Error> {
-        let response = self
-            .tunnel_message_responses
-            .push_for_context(fragment, 0)
-            .map_err(|error| custom_err!("reassemble tunnel message", error))?;
-        self.consume_out_pdu(pdu_len).await?;
-        let Some(response) = response else {
-            return Ok(());
-        };
-
-        let message = decode_tsgu_make_tunnel_call_response(&response.stub)
-            .map_err(|error| custom_err!("decode tunnel message", error))?;
-        self.tunnel_message_call_id = None;
-        if let Some(tunnel_context) = self.tunnel_context {
-            self.queue_tunnel_message_call(tunnel_context).await?;
-        }
-        if !matches!(message, TsProxyTunnelMessage::None) {
-            self.messages.push_back(message);
-        }
-        Ok(())
-    }
-
     async fn queue_receive_pipe_response(
         &mut self,
         pdu_len: usize,
@@ -800,18 +827,6 @@ where
         }
         self.data.push_back(Bytes::copy_from_slice(response.stub));
         self.consume_out_pdu(pdu_len).await
-    }
-
-    async fn queue_tunnel_message_call(&mut self, tunnel_context: NonNullRpcContextHandle) -> Result<(), Error> {
-        let call_id = self.next_call_id();
-        self.send_call(
-            call_id,
-            TSPROXY_MAKE_TUNNEL_CALL_OPNUM,
-            &TsProxyMakeTunnelCallRequest::new(tunnel_context).encode(),
-        )
-        .await?;
-        self.tunnel_message_call_id = Some(call_id);
-        Ok(())
     }
 
     async fn send_call(&mut self, call_id: u32, opnum: u16, stub: &[u8]) -> Result<(), Error> {
@@ -932,14 +947,22 @@ where
             setup,
             gateway_host,
             target,
+            session_id,
             credentials,
             flow_control,
             ping,
             ..
         } = self;
         let successor_stream = provider.open_in().await?;
-        let mut successor =
-            open_in_channel(successor_stream, gateway_host, target, credentials, IN_CONTENT_LENGTH).await?;
+        let mut successor = open_in_channel(
+            successor_stream,
+            gateway_host,
+            target,
+            session_id,
+            credentials,
+            SESSION_IN_CONTENT_LENGTH,
+        )
+        .await?;
         let successor_cookie = RtsCookie::new(*Uuid::new_v4().as_bytes());
         let mut recycle = setup
             .channel_recycling()
@@ -1103,8 +1126,7 @@ impl RpchStream {
         client_name: &str,
         port: u16,
     ) -> Result<Self, Error> {
-        let settings = RpchV2Settings::new(128 * 1024, 256 * 1024, 0)
-            .map_err(|error| custom_err!("rpch channel settings", error))?;
+        let settings = RpchV2Settings::default();
         let mut session: RpchSession<
             crate::packet_io::GatewayStream,
             crate::packet_io::GatewayStream,
@@ -1118,7 +1140,7 @@ impl RpchStream {
             input,
             UnsupportedChannelRecycling,
             &target.gw_endpoint,
-            &target.server,
+            TSPROXY_RPC_BACKEND,
             RpchHttpCredentials {
                 username: target.gw_user.clone(),
                 password: target.gw_pass.clone(),
@@ -1334,24 +1356,6 @@ async fn send_queued_stream_data(
     session: &mut GatewayRpchSession,
     received: mpsc::Sender<Result<Bytes, String>>,
 ) -> Result<(), Error> {
-    while let Some(message) = session.messages.pop_front() {
-        match message {
-            TsProxyTunnelMessage::None => {}
-            TsProxyTunnelMessage::Service { text, .. } => log::warn!("RD Gateway service message: {text}"),
-            TsProxyTunnelMessage::Consent { .. } => {
-                return Err(Error::new(
-                    "rpch consent message requires an application callback",
-                    GwErrorKind::UnsupportedFeature,
-                ));
-            }
-            TsProxyTunnelMessage::Reauthenticate { .. } => {
-                return Err(Error::new(
-                    "rpch HTTP reauthentication is unsupported",
-                    GwErrorKind::UnsupportedFeature,
-                ));
-            }
-        }
-    }
     while let Some(data) = session.data.pop_front() {
         received
             .clone()
@@ -1373,12 +1377,6 @@ where
 
 fn is_rts_ping(pdu: &[u8]) -> bool {
     encode_rts_ping().is_ok_and(|ping| pdu == ping)
-}
-
-#[derive(Debug)]
-enum RpchRead {
-    Data(Bytes),
-    Message(TsProxyTunnelMessage),
 }
 
 struct OutChannel {
@@ -1466,7 +1464,7 @@ mod tests {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 
     use super::*;
-    use crate::mock_rpch::{MockRpchScenario, MockTunnelMessage, mock_rpch_proxy};
+    use crate::mock_rpch::{MockRpchScenario, mock_rpch_proxy};
 
     #[tokio::test]
     async fn rpch_out_requires_bounded_http_content_length() {
@@ -1500,7 +1498,7 @@ mod tests {
             input,
             NoRecycle,
             "rdg.contoso.com",
-            "rdp.contoso.com:3389",
+            TSPROXY_RPC_BACKEND,
             RpchHttpCredentials {
                 username: "CONTOSO\\alice".to_owned(),
                 password: "secret".to_owned(),
@@ -1524,7 +1522,7 @@ mod tests {
             gw_user: "CONTOSO\\alice".to_owned(),
             gw_pass: "secret".to_owned(),
             smart_card: None,
-            server: "rdp.contoso.com:3389".to_owned(),
+            server: "rdp.contoso.com".to_owned(),
         };
         let stream = RpchStream::connect(Box::new(out), Box::new(input), &target, "test-client", 3389)
             .await
@@ -1539,10 +1537,8 @@ mod tests {
             .send_to_server(Bytes::from_static(b"hello-rdp"))
             .await
             .expect("send target data");
-        match session.read_data().await.expect("read target data") {
-            RpchRead::Data(data) => assert_eq!(&*data, b"hello-rdp"),
-            event => panic!("expected target data, got {event:?}"),
-        }
+        let data = session.read_data().await.expect("read target data");
+        assert_eq!(&*data, b"hello-rdp");
         proxy.abort();
     }
 
@@ -1554,7 +1550,7 @@ mod tests {
             input,
             NoRecycle,
             "rdg.contoso.com",
-            "rdp.contoso.com:3389",
+            TSPROXY_RPC_BACKEND,
             RpchHttpCredentials {
                 username: "CONTOSO\\alice".to_owned(),
                 password: "secret".to_owned(),
@@ -1583,60 +1579,7 @@ mod tests {
             .send_to_server(Bytes::from_static(b"authenticated"))
             .await
             .expect("send target data");
-        assert!(matches!(session.read_data().await, Ok(RpchRead::Data(_))));
-        proxy.abort();
-    }
-
-    #[tokio::test]
-    async fn rpch_session_surfaces_service_messages() {
-        let (mut session, proxy) = open_session(MockRpchScenario::Message(MockTunnelMessage::Service(
-            "scheduled maintenance",
-        )))
-        .await;
-        match session.read_data().await.expect("read service message") {
-            RpchRead::Message(TsProxyTunnelMessage::Service {
-                display_mandatory,
-                text,
-            }) => {
-                assert!(display_mandatory);
-                assert_eq!(text, "scheduled maintenance");
-            }
-            event => panic!("expected service message, got {event:?}"),
-        }
-        proxy.abort();
-    }
-
-    #[tokio::test]
-    async fn rpch_session_surfaces_reauthentication_messages_without_authentication() {
-        let (mut session, proxy) = open_session(MockRpchScenario::Message(MockTunnelMessage::Reauthenticate(
-            0x0123_4567_89ab_cdef,
-        )))
-        .await;
-        match session.read_data().await.expect("read reauthentication message") {
-            RpchRead::Message(TsProxyTunnelMessage::Reauthenticate { tunnel_context }) => {
-                assert_eq!(tunnel_context, 0x0123_4567_89ab_cdef);
-            }
-            event => panic!("expected reauthentication message, got {event:?}"),
-        }
-        proxy.abort();
-    }
-
-    #[tokio::test]
-    async fn rpch_session_queues_tunnel_messages_before_control_responses() {
-        let (mut session, proxy) = open_session(MockRpchScenario::MessageBeforeCreateChannel(
-            MockTunnelMessage::Service("scheduled maintenance"),
-        ))
-        .await;
-        match session.read_data().await.expect("read queued service message") {
-            RpchRead::Message(TsProxyTunnelMessage::Service {
-                display_mandatory,
-                text,
-            }) => {
-                assert!(display_mandatory);
-                assert_eq!(text, "scheduled maintenance");
-            }
-            event => panic!("expected service message, got {event:?}"),
-        }
+        session.read_data().await.expect("read target data");
         proxy.abort();
     }
 
@@ -1660,11 +1603,7 @@ mod tests {
         let data = vec![0; 2 * 1024];
         let data = Bytes::from(data);
         session.send_to_server(data.clone()).await.expect("send target data");
-        let read = session.read_data().await;
-        assert!(
-            matches!(read, Ok(RpchRead::Data(_))),
-            "expected target data, got {read:?}"
-        );
+        session.read_data().await.expect("read target data");
         assert_eq!(session.flow_control.send_available_window(), 8 * 1024);
         session
             .send_to_server(data)
@@ -1681,7 +1620,7 @@ mod tests {
             input,
             NoRecycle,
             "rdg.contoso.com",
-            "rdp.contoso.com:3389",
+            TSPROXY_RPC_BACKEND,
             RpchHttpCredentials {
                 username: "CONTOSO\\alice".to_owned(),
                 password: "secret".to_owned(),

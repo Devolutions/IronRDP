@@ -38,9 +38,13 @@ It performs the NTLM RPC association exchange, signs outgoing TS Proxy requests,
 Its packet-integrity state is owned by the session and fail-closed; TLS certificate validation and HTTP channel authentication remain separate gateway security layers.
 The stream applies TS Proxy redirection restrictions before starting RDP device channels.
 
-The live stream uses a 128 KiB IN body for setup and traffic, and returns errors on exhausted send credit, unsupported RTS sequences, HTTP reauthentication, consent messages or channel lifetime/recycling transitions.
+The live stream reserves a 1 GiB IN body, the maximum [MS-RPCH] allows, and returns errors on exhausted send credit, unsupported RTS sequences or channel lifetime/recycling transitions.
+It does not negotiate TS Proxy administrative messaging, so it never issues `TsProxyMakeTunnelCall` and receives no service, consent or reauthentication messages.
 It closes the TS Proxy context and tunnel on graceful shutdown; an I/O or integrity error poisons the session, while dropping the stream closes its sockets without a close handshake.
 The HTTP channel setup does not retain load-balancer cookies or monitor IN-channel error responses after setup.
-There is no automatic HTTP/WebSocket-to-RPCH fallback, and interoperability with a real RD Gateway has not been verified.
+There is no automatic HTTP/WebSocket-to-RPCH fallback.
+A session through one Windows RD Gateway has been tested and reached the remote desktop; channel recycling and long-lived sessions have not been tested against a real gateway.
+
+[MS-RPCH]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpch/c0f4c9c5-1a61-4d10-b8e2-005378d1d212
 
 [MS-TSGU]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsgu/0007d661-a86d-4e8f-89f7-7f77f8824188
