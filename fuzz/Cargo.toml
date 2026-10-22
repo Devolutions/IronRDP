@@ -200,3 +200,10 @@ path = "fuzz_targets/egfx_surface_state.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "rdpsnd_codec_decode"
+path = "fuzz_targets/rdpsnd_codec_decode.rs"
+test = false
+doc = false
+bench = false

@@ -101,3 +101,8 @@ fn check_egfx_zgfx_decompress() {
 fn check_egfx_surface_state() {
     check!(egfx_surface_state);
 }
+
+#[test]
+fn check_rdpsnd_codec_decode() {
+    check!(rdpsnd_codec_decode);
+}

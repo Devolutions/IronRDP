@@ -1,4 +1,5 @@
 mod client;
+mod codec;
 mod server;
 
 use std::borrow::Cow;
