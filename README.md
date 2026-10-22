@@ -158,6 +158,7 @@ They are under _Computer Configuration → Administrative Templates → Windows 
 - [Teleport] for remote desktop web access
 - [Lamco RDP Server], a Wayland-native RDP server for Linux desktop sharing
 - [MacRDP], a native RDP server for macOS
+- [ClawTank], an open-source RDP server for macOS with H.264 graphics, virtual displays and an MCP server for agents
 - [`qemu-rdp`][qemu-rdp], an RDP server for QEMU displays
 - A growing set of community projects building RDP servers and clients on the crate suite
 
@@ -203,6 +204,7 @@ Licensed under either [MIT] or [Apache-2.0] at your option.
 [Teleport]: https://goteleport.com/
 [Lamco RDP Server]: https://lamco.ai/products/lamco-rdp-server/
 [MacRDP]: https://github.com/clintcan/macrdp
+[ClawTank]: https://github.com/HMAKT99/ClawTank
 [qemu-rdp]: https://gitlab.com/marcandre.lureau/qemu-display
 [Debian stable-backports]: https://packages.debian.org/search?suite=all&arch=any&searchon=names&keywords=rust
 [Fedora stable]: https://packages.fedoraproject.org/pkgs/rust/rust/
