@@ -479,7 +479,7 @@ impl GraphicsPipelineClient {
     /// Calling this method clears graphics state immediately; discarding the returned PDU stalls graphics until channel recreation.
     /// Incoming graphics are ignored until the advertised version is confirmed; changed capability flags are accepted.
     /// A malformed or unadvertised reset confirmation makes `process()` fail; recreate the channel on that error.
-    /// The last output extent remains usable until a new `ResetGraphics` arrives, but surfaces and cached pixels are discarded.
+    /// Surfaces and cached pixels are discarded; the last output extent remains until a post-confirmation `ResetGraphics` arrives.
     /// A previously confirmed `V10_6Err` is echoed for compatibility with peers using that alternate V10.6 value.
     /// The ACK count restarts for Windows interoperability, despite the connection-wide wording in
     /// [MS-RDPEGFX 2.2.2.13] "RDPGFX_FRAME_ACKNOWLEDGE_PDU".
@@ -572,6 +572,7 @@ impl GraphicsPipelineClient {
     // ========================================================================
 
     fn handle_pdu(&mut self, pdu: GfxPdu) -> PduResult<Vec<DvcMessage>> {
+        // MS-RDPEGFX 3.3.5.19 ignores all pre-confirmation server messages, including ResetGraphics.
         if self.state == ClientState::Resetting && !matches!(pdu, GfxPdu::CapabilitiesConfirm(_)) {
             return Ok(Vec::new());
         }
