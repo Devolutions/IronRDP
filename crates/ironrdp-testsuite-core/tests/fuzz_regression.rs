@@ -102,6 +102,7 @@ fn check_egfx_surface_state() {
     check!(egfx_surface_state);
 }
 
+// oracle: mutant codec panics on the seed formats
 #[test]
 fn check_rdpsnd_codec_decode() {
     check!(rdpsnd_codec_decode);

@@ -13,7 +13,8 @@ The client processors share one protocol core and drive an `RdpsndClientHandler`
 formats to advertise from the server's list and plays the wave data:
 
 - `Rdpsnd` serves the static channel, including the pre-v8 WaveInfo / bare Wave two-message path and
-  the legacy UDP datagrams (`SNDUDPWAVE` / `SNDUDPWAVELAST`) for a caller-owned socket.
+  the legacy UDP datagrams (`SNDUDPWAVE` / `SNDUDPWAVELAST`, signature-checked) for a caller-owned
+  socket. Wave Encrypt PDUs are not decrypted.
 - `RdpsndDvcState` serves both dynamic channels: Windows negotiates on `AUDIO_PLAYBACK_DVC` and sends
   AAC wave data on `AUDIO_PLAYBACK_LOSSY_DVC`, so the two channels share the negotiated state.
 - Wave Confirm PDUs report the server timestamp plus the time the client held the block plus the

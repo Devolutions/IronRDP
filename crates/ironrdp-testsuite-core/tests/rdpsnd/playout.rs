@@ -20,11 +20,13 @@ fn settle(controller: &mut PlayoutController, level: usize, periods: usize) -> P
     period
 }
 
+// oracle: mutant latency target converted with the wrong unit
 #[test]
 fn target_is_converted_to_frames() {
     assert_eq!(controller().target(), 4_800);
 }
 
+// oracle: mutant playback starting before the latency target is buffered
 #[test]
 fn buffers_until_the_target_is_reached() {
     let mut controller = controller();
@@ -41,6 +43,7 @@ fn buffers_until_the_target_is_reached() {
     assert!(!controller.is_buffering());
 }
 
+// oracle: mutant underrun not draining the buffer or not rebuffering
 #[test]
 fn underrun_plays_what_is_left_then_rebuffers() {
     let mut controller = controller();
@@ -53,6 +56,7 @@ fn underrun_plays_what_is_left_then_rebuffers() {
     assert!(matches!(controller.next_period(4_800, PERIOD), Period::Play { .. }));
 }
 
+// oracle: mutant short sounds held back until more audio arrives
 #[test]
 fn short_sound_plays_once_the_buffer_stops_growing() {
     let mut controller = controller();
@@ -69,6 +73,7 @@ fn short_sound_plays_once_the_buffer_stops_growing() {
     );
 }
 
+// oracle: mutant the stall timeout firing while audio still arrives
 #[test]
 fn growing_buffer_keeps_waiting_for_the_target() {
     let mut controller = controller();
@@ -78,6 +83,7 @@ fn growing_buffer_keeps_waiting_for_the_target() {
     }
 }
 
+// oracle: mutant drift correction inside the tolerance band
 #[test]
 fn steady_level_within_tolerance_plays_one_period() {
     let mut controller = controller();
@@ -94,6 +100,7 @@ fn steady_level_within_tolerance_plays_one_period() {
     );
 }
 
+// oracle: mutant drift corrected in the wrong direction or by the wrong amount
 #[rstest]
 #[case::server_clock_faster(6_400, PERIOD + 2)]
 #[case::server_clock_slower(3_200, PERIOD - 2)]
@@ -106,6 +113,7 @@ fn persistent_drift_is_corrected_by_half_a_percent(#[case] level: usize, #[case]
     assert_eq!(period, Period::Play { skip: 0, consume });
 }
 
+// oracle: mutant one burst triggering drift correction
 #[test]
 fn short_burst_is_smoothed_out() {
     let mut controller = controller();
@@ -121,6 +129,7 @@ fn short_burst_is_smoothed_out() {
     );
 }
 
+// oracle: mutant backlog not cut back to the target
 #[test]
 fn large_backlog_is_discarded_down_to_the_target() {
     let mut controller = controller();
@@ -146,6 +155,7 @@ fn large_backlog_is_discarded_down_to_the_target() {
     );
 }
 
+// oracle: mutant audio buffered while the device opens being discarded
 #[test]
 fn backlog_present_at_start_is_played_and_drained() {
     let mut controller = controller();
@@ -173,6 +183,7 @@ fn backlog_present_at_start_is_played_and_drained() {
     ));
 }
 
+// oracle: reference linear interpolation, hand-derived
 #[test]
 fn stretch_copies_equal_lengths() {
     let input = [1, -1, 2, -2, 3, -3];
@@ -183,6 +194,7 @@ fn stretch_copies_equal_lengths() {
     assert_eq!(output, input);
 }
 
+// oracle: reference linear interpolation, hand-derived
 #[test]
 fn stretch_interpolates_extra_frames() {
     let input = [0, 100, 200];
@@ -193,6 +205,7 @@ fn stretch_interpolates_extra_frames() {
     assert_eq!(output, [0, 50, 100, 150, 200]);
 }
 
+// oracle: reference linear interpolation, hand-derived
 #[test]
 fn stretch_drops_frames_evenly() {
     let input = [0, 10, 20, 30, 40, 50, 60];
@@ -203,6 +216,7 @@ fn stretch_drops_frames_evenly() {
     assert_eq!(output, [0, 20, 40, 60]);
 }
 
+// oracle: reference linear interpolation, hand-derived
 #[test]
 fn stretch_keeps_channels_apart() {
     let input = [0, 1000, 100, 900];
@@ -213,6 +227,7 @@ fn stretch_keeps_channels_apart() {
     assert_eq!(output, [0, 1000, 50, 950, 100, 900]);
 }
 
+// oracle: mutant stale samples left in the output
 #[test]
 fn stretch_of_nothing_is_silence() {
     let mut output = [7; 4];
@@ -220,4 +235,32 @@ fn stretch_of_nothing_is_silence() {
     stretch(&[], 2, &mut output);
 
     assert_eq!(output, [0; 4]);
+}
+
+// oracle: mutant periods that take more frames than are buffered, or correct drift by more than 0.5%
+#[test]
+fn periods_stay_within_the_buffer_and_the_drift_correction_bound() {
+    use proptest::prelude::*;
+
+    proptest!(|(
+        target_ms in 20u64..500,
+        periods in proptest::collection::vec((0usize..60_000, 1usize..4_800), 1..200),
+    )| {
+        let mut controller = PlayoutController::new(RATE, Duration::from_millis(target_ms));
+        for (buffered, requested) in periods {
+            let correction = (requested / 200).max(1);
+            match controller.next_period(buffered, requested) {
+                Period::Silence => {}
+                Period::Underrun { consume } => {
+                    prop_assert_eq!(consume, buffered);
+                    prop_assert!(consume < requested);
+                }
+                Period::Play { skip, consume } => {
+                    prop_assert!(skip + consume <= buffered);
+                    prop_assert!(requested - correction.min(requested) <= consume);
+                    prop_assert!(consume <= requested + correction);
+                }
+            }
+        }
+    });
 }

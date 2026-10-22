@@ -128,6 +128,7 @@ impl RdpsndClientHandler for TimedBackend {
 // Wave Confirm timing
 // ============================================================================
 
+// oracle: spec MS-RDPEA §3.2.5.2.1.6 (timestamp plus the time until the sample is emitted)
 #[rstest]
 #[case::no_delay(0xA116, 0, 0, 0xA116)]
 #[case::playback_latency_only(0xA116, 0, 120, 0xA116 + 120)]
@@ -157,6 +158,7 @@ fn wave_confirm_reports_hold_time_and_playback_latency(
     assert_eq!(confirm.block_no, 9);
 }
 
+// oracle: spec MS-RDPEA §3.2.5.2.1.6
 #[test]
 fn wave_confirm_without_clock_reports_playback_latency() {
     let mut backend = TimedBackend::new(vec![pcm(44100, 2)]);
@@ -198,6 +200,7 @@ impl RdpsndClientHandler for ChoosingBackend {
     fn close(&mut self) {}
 }
 
+// oracle: spec MS-RDPEA §2.2.2.2 (sndFormats must appear in the server's list)
 #[test]
 fn chosen_formats_are_advertised_in_handler_order_and_limited_to_offered_ones() {
     let adpcm = codec::ms_adpcm_format(2, 22050, 2048);
@@ -221,6 +224,7 @@ fn chosen_formats_are_advertised_in_handler_order_and_limited_to_offered_ones() 
 // Dynamic channels
 // ============================================================================
 
+// oracle: spec MS-RDPEA §2.1 and §3.2.5.1
 #[test]
 fn dvc_client_negotiates_and_confirms_on_its_channel() {
     let backend = TimedBackend::new(vec![pcm(48000, 2)]);
@@ -254,6 +258,7 @@ fn dvc_client_negotiates_and_confirms_on_its_channel() {
     assert_eq!(waves.lock().unwrap().as_slice(), [(pcm(48000, 2), vec![1, 2, 3, 4])]);
 }
 
+// oracle: mutant formats of a closed channel reused by its successor
 #[test]
 fn reopened_dvc_client_waits_for_a_new_negotiation() {
     let backend = TimedBackend::new(vec![pcm(48000, 2)]);
@@ -270,6 +275,7 @@ fn reopened_dvc_client_waits_for_a_new_negotiation() {
     assert!(waves.lock().unwrap().is_empty());
 }
 
+// oracle: reference Windows Server 2025 (26100) live capture: AAC Wave2 PDUs on AUDIO_PLAYBACK_LOSSY_DVC index the AUDIO_PLAYBACK_DVC formats
 #[test]
 fn lossy_channel_plays_formats_negotiated_on_the_reliable_channel() {
     let backend = TimedBackend::new(vec![pcm(48000, 2), pcm(44100, 2)]);
@@ -293,6 +299,7 @@ fn lossy_channel_plays_formats_negotiated_on_the_reliable_channel() {
     assert_eq!(waves.lock().unwrap().as_slice(), [(pcm(44100, 2), vec![9; 4])]);
 }
 
+// oracle: reference Windows Server 2025 (26100) live capture: the lossy channel reopens without renegotiation
 #[test]
 fn reopening_the_lossy_channel_keeps_the_negotiation() {
     let backend = TimedBackend::new(vec![pcm(48000, 2)]);
@@ -316,11 +323,41 @@ fn reopening_the_lossy_channel_keeps_the_negotiation() {
     assert_eq!(wave_confirm(decode_dvc(&replies[0])).block_no, 2);
 }
 
+// oracle: reference Windows Server 2025 (26100) live capture: formats are negotiated on AUDIO_PLAYBACK_DVC only
+#[test]
+fn lossy_channel_cannot_renegotiate_or_play_before_negotiation() {
+    let backend = TimedBackend::new(vec![pcm(48000, 2), pcm(44100, 2)]);
+    let waves = Arc::clone(&backend.waves);
+    let state = RdpsndDvcState::new(Box::new(backend));
+    let mut reliable = state.channel();
+    let mut lossy = state.lossy_channel();
+    reliable.start(5).unwrap();
+    lossy.start(6).unwrap();
+
+    // Before the negotiation, wave data on the lossy channel is dropped without changing state.
+    assert!(lossy.process(6, &wave2(1, 1, 0, &[1; 4])).unwrap().is_empty());
+    reliable
+        .process(5, &server_formats(vec![pcm(48000, 2), pcm(44100, 2)]))
+        .unwrap();
+    reliable.process(5, &training()).unwrap();
+    // A format list on the lossy channel does not replace the negotiated one.
+    assert!(
+        lossy
+            .process(6, &server_formats(vec![pcm(44100, 2)]))
+            .unwrap()
+            .is_empty()
+    );
+    lossy.process(6, &wave2(2, 2, 1, &[2; 4])).unwrap();
+
+    assert_eq!(waves.lock().unwrap().as_slice(), [(pcm(44100, 2), vec![2; 4])]);
+}
+
 fn decode_drdynvc(message: &SvcMessage) -> DrdynvcClientPdu {
     let encoded = message.encode_unframed_pdu().unwrap();
     DrdynvcClientPdu::decode(&mut ReadCursor::new(&encoded)).unwrap()
 }
 
+// oracle: mutant audio channel declined or answered off the tunnel it was created on
 #[test]
 fn audio_playback_dvc_opens_on_the_udp_tunnel() {
     let mut drdynvc =
@@ -377,6 +414,7 @@ fn audio_playback_dvc_opens_on_the_udp_tunnel() {
 // UDP
 // ============================================================================
 
+// oracle: spec MS-RDPEA §2.2.3.6
 #[rstest]
 #[case::short_fragment_number(0x7F, &[0x0A, 0x05, 0x7F, 0xAA])]
 #[case::long_fragment_number(0x0180, &[0x0A, 0x05, 0x81, 0x80, 0xAA])]
@@ -392,6 +430,7 @@ fn udp_wave_fragment_number_encoding(#[case] frag_no: u16, #[case] wire: &[u8]) 
     assert_eq!(decode::<pdu::UdpWavePdu<'_>>(wire).unwrap(), pdu);
 }
 
+// oracle: spec MS-RDPEA §2.2.3.6
 #[test]
 fn udp_wave_rejects_fragment_number_beyond_15_bits() {
     let pdu = pdu::UdpWavePdu {
@@ -403,6 +442,7 @@ fn udp_wave_rejects_fragment_number_beyond_15_bits() {
     assert!(encode_vec(&pdu).is_err());
 }
 
+// oracle: spec MS-RDPEA §2.2.3.7
 #[test]
 fn udp_wave_last_round_trip() {
     let wire = [
@@ -494,6 +534,7 @@ fn deliver(client: &mut Rdpsnd, (fragments, last): &(Vec<Vec<u8>>, Vec<u8>)) -> 
     replies
 }
 
+// oracle: spec MS-RDPEA §3.2.5.1.1.5
 #[test]
 fn udp_training_is_confirmed() {
     let mut client = udp_client(&Waves::default());
@@ -509,6 +550,7 @@ fn udp_training_is_confirmed() {
     ));
 }
 
+// oracle: spec MS-RDPEA §3.2.5.2.1.5
 #[test]
 fn udp_wave_fragments_reassemble_in_any_order() {
     let waves = Waves::default();
@@ -531,6 +573,7 @@ fn udp_wave_fragments_reassemble_in_any_order() {
     assert_eq!(waves.lock().unwrap().as_slice(), [(pcm(22050, 1), audio)]);
 }
 
+// oracle: spec MS-RDPEA §3.3.5.2.1.3 (signature computed with Python hashlib)
 #[test]
 fn udp_wave_signature_uses_the_crypt_key_seed() {
     let waves = Waves::default();
@@ -547,6 +590,7 @@ fn udp_wave_signature_uses_the_crypt_key_seed() {
     assert_eq!(waves.lock().unwrap().as_slice(), [(pcm(22050, 1), vec![7; 16])]);
 }
 
+// oracle: spec MS-RDPEA §3.3.5.2.1.3
 #[test]
 fn udp_wave_with_a_wrong_signature_is_dropped() {
     let waves = Waves::default();
@@ -562,6 +606,7 @@ fn udp_wave_with_a_wrong_signature_is_dropped() {
     assert!(waves.lock().unwrap().is_empty());
 }
 
+// oracle: spec MS-RDPEA §3.2.5.2.1.1
 #[test]
 fn udp_wave_for_a_later_block_abandons_the_incomplete_one() {
     let waves = Waves::default();
@@ -577,6 +622,7 @@ fn udp_wave_for_a_later_block_abandons_the_incomplete_one() {
     assert_eq!(waves.lock().unwrap().as_slice(), [(pcm(22050, 1), vec![2; 20])]);
 }
 
+// oracle: spec MS-RDPEA §3.2.5.2.1.1
 #[test]
 fn stale_udp_fragment_does_not_disturb_the_current_block() {
     let waves = Waves::default();
@@ -594,6 +640,7 @@ fn stale_udp_fragment_does_not_disturb_the_current_block() {
     assert_eq!(waves.lock().unwrap().as_slice(), [(pcm(22050, 1), vec![2; 20])]);
 }
 
+// oracle: spec MS-RDPEA §3.2.5.2.1.1 (cBlockNo is an 8-bit counter)
 #[test]
 fn udp_block_numbers_wrap_around() {
     let waves = Waves::default();
@@ -608,6 +655,7 @@ fn udp_block_numbers_wrap_around() {
     assert_eq!(waves.lock().unwrap().as_slice(), [(pcm(22050, 1), vec![2; 20])]);
 }
 
+// oracle: spec MS-RDPEA §2.2.3.7 (wTotalSize is 16 bits)
 #[test]
 fn oversized_udp_wave_is_dropped_without_completing() {
     let waves = Waves::default();
@@ -632,6 +680,33 @@ fn oversized_udp_wave_is_dropped_without_completing() {
     assert!(waves.lock().unwrap().is_empty());
 }
 
+// oracle: spec MS-RDPEA §2.2.3.6 (UDP Wave PDUs only when both versions are at least 5)
+#[test]
+fn udp_wave_before_version_5_is_ignored() {
+    let waves = Waves::default();
+    let backend = TimedBackend {
+        waves: Arc::clone(&waves),
+        ..TimedBackend::new(vec![pcm(22050, 1)])
+    };
+    let mut client = Rdpsnd::new(Box::new(backend)).with_datagram_port(4321);
+    let formats = encode_vec(&pdu::ServerAudioOutputPdu::AudioFormat(pdu::ServerAudioFormatPdu {
+        version: pdu::Version::V2,
+        formats: vec![pcm(22050, 1)],
+    }))
+    .unwrap();
+    client.process(&formats).unwrap();
+    client.process(&training()).unwrap();
+
+    let replies = deliver(
+        &mut client,
+        &fragment(SIGNATURE_BLOCK_3, &(0..40).collect::<Vec<u8>>(), 12, 3, 0),
+    );
+
+    assert!(replies.is_empty());
+    assert!(waves.lock().unwrap().is_empty());
+}
+
+// oracle: spec MS-RDPEA §3.1.5 (malformed packets are ignored)
 #[test]
 fn malformed_datagram_is_ignored() {
     let mut client = udp_client(&Waves::default());

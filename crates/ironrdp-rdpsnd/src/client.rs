@@ -455,8 +455,9 @@ impl AudioOutputClient {
         ))
     }
 
-    /// Processes one PDU; `confirm` is cleared on a channel whose wave blocks are not confirmed.
-    fn process(&mut self, payload: &[u8], confirm: bool) -> PduResult<Vec<ClientAudioOutputPdu>> {
+    /// Processes one PDU received on the static channel or on `AUDIO_PLAYBACK_DVC`.
+    fn process(&mut self, payload: &[u8]) -> PduResult<Vec<ClientAudioOutputPdu>> {
+        let confirm = true;
         let arrival = self.now();
 
         // Pre-v8 Wave data has no RDPSND header (MS-RDPEA §2.2.3.4).
@@ -560,6 +561,43 @@ impl AudioOutputClient {
         Ok(msg)
     }
 
+    /// Processes one PDU received on `AUDIO_PLAYBACK_LOSSY_DVC`.
+    ///
+    /// Windows negotiates on `AUDIO_PLAYBACK_DVC` and sends only Wave2 PDUs on this channel, so
+    /// anything else, or wave data arriving before the negotiation completed, is ignored rather than
+    /// allowed to disturb the shared negotiation. The waves are not confirmed ([MS-RDPEA]
+    /// 3.2.5.2.1.6).
+    ///
+    /// [MS-RDPEA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/bea2d5cf-e3b9-4419-92e5-0e074ff9bc5b
+    fn process_lossy(&mut self, payload: &[u8]) -> PduResult<Vec<ClientAudioOutputPdu>> {
+        let arrival = self.now();
+        if self.state != RdpsndState::Ready {
+            debug!(state = ?self.state, "Ignoring lossy-channel data outside the Ready state");
+            return Ok(vec![]);
+        }
+        match pdu::ServerAudioOutputPdu::decode(&mut ReadCursor::new(payload)) {
+            Ok(pdu::ServerAudioOutputPdu::Wave2(pdu)) => Ok(self.play_and_confirm(
+                false,
+                arrival,
+                ReceivedWave {
+                    format_no: pdu.format_no,
+                    timestamp: pdu.timestamp,
+                    block_no: pdu.block_no,
+                    audio_timestamp: pdu.audio_timestamp,
+                },
+                Some(pdu.data),
+            )),
+            Ok(pdu) => {
+                debug!(?pdu, "Ignoring a non-wave PDU on the lossy channel");
+                Ok(vec![])
+            }
+            Err(error) => {
+                error!(?error, "Ignoring malformed RDPSND PDU");
+                Ok(vec![])
+            }
+        }
+    }
+
     fn process_datagram(&mut self, datagram: &[u8]) -> PduResult<Vec<ClientAudioOutputPdu>> {
         let arrival = self.now();
 
@@ -578,6 +616,13 @@ impl AudioOutputClient {
             ServerAudioDatagram::Prolog(pdu) => {
                 // Wave Encrypt data needs the Crypt Key based decryption, which is not implemented.
                 warn!(?pdu, "Ignoring unsupported RDPSND datagram");
+                Ok(vec![])
+            }
+            ServerAudioDatagram::UdpWave(_) | ServerAudioDatagram::UdpWaveLast(_)
+                if self.version().map_or(true, |version| version < pdu::Version::V5) =>
+            {
+                // MS-RDPEA 2.2.3.6: UDP Wave PDUs exist only when both sides are at version 5 or later.
+                debug!("Ignoring a UDP wave datagram before a version 5 negotiation");
                 Ok(vec![])
             }
             ServerAudioDatagram::UdpWave(fragment) => {
@@ -740,6 +785,10 @@ impl Rdpsnd {
     /// The caller owns the UDP socket and passes every received datagram to
     /// [`process_datagram`](Self::process_datagram). Windows servers from Windows Vista on
     /// ignore this port and use the dynamic virtual channels instead.
+    ///
+    /// UDP Wave samples are played once their signature checks out. Wave Encrypt PDUs are ignored:
+    /// MS-RDPEA 3.3.5.2.1.3 derives their RC4 key from a hash that includes the data being
+    /// encrypted, which a receiver cannot compute before decrypting.
     #[must_use]
     pub fn with_datagram_port(mut self, port: u16) -> Self {
         self.inner.datagram_port = port;
@@ -806,12 +855,7 @@ impl SvcProcessor for Rdpsnd {
     }
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        Ok(self
-            .inner
-            .process(payload, true)?
-            .into_iter()
-            .map(SvcMessage::from)
-            .collect())
+        Ok(self.inner.process(payload)?.into_iter().map(SvcMessage::from).collect())
     }
 }
 
@@ -920,13 +964,13 @@ impl DvcProcessor for RdpsndDvc {
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        Ok(self
-            .state
-            .lock()
-            .process(payload, !self.lossy)?
-            .into_iter()
-            .map(|pdu| -> DvcMessage { Box::new(pdu) })
-            .collect())
+        let mut state = self.state.lock();
+        let replies = if self.lossy {
+            state.process_lossy(payload)?
+        } else {
+            state.process(payload)?
+        };
+        Ok(replies.into_iter().map(|pdu| -> DvcMessage { Box::new(pdu) }).collect())
     }
 
     fn close(&mut self, channel_id: u32) {

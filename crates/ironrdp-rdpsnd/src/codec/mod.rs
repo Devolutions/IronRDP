@@ -108,33 +108,21 @@ impl Codec {
 #[derive(Debug, Clone)]
 pub struct AudioDecoder {
     codec: Codec,
-    channels: u16,
-    sample_rate: u32,
 }
 
 impl AudioDecoder {
     /// Builds a decoder for `format`.
+    ///
+    /// The decoded PCM has the channel count and sample rate of `format`.
     pub fn new(format: &AudioFormat) -> Result<Self, CodecError> {
         Ok(Self {
             codec: Codec::new(format)?,
-            channels: format.n_channels,
-            sample_rate: format.n_samples_per_sec,
         })
     }
 
     /// Returns whether a decoder can be built for `format`.
     pub fn supports(format: &AudioFormat) -> bool {
         Codec::new(format).is_ok()
-    }
-
-    /// Channel count of the decoded PCM.
-    pub fn channels(&self) -> u16 {
-        self.channels
-    }
-
-    /// Sample rate of the decoded PCM, in frames per second.
-    pub fn sample_rate(&self) -> u32 {
-        self.sample_rate
     }
 
     /// Decodes `data` and appends the interleaved samples to `out`.

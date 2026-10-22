@@ -29,12 +29,16 @@ use windows::Win32::System::Com::{
 
 use crate::error::{RdpsndNativeError, RdpsndNativeErrorKind, RdpsndNativeResult};
 
-/// Smallest output buffer offered to the transform, enough for one 2048-frame stereo HE-AAC frame.
-const MIN_OUTPUT_BUFFER: u32 = 2048 * 2 * 2;
+/// Smallest output buffer offered to the transform, enough for one HE-AAC frame.
+const MIN_OUTPUT_BUFFER: u32 = 2048 /* frames */ * 2 /* channels */ * 2 /* bytes per sample */;
 
 /// Size of the `HEAACWAVEINFO` fields that follow `WAVEFORMATEX` (payload type, profile, structure
 /// type and reserved fields), before the `AudioSpecificConfig`.
-const HEAACWAVEINFO_SIZE: usize = 12;
+const HEAACWAVEINFO_SIZE: usize = 2 /* wPayloadType */
+    + 2 /* wAudioProfileLevelIndication */
+    + 2 /* wStructType */
+    + 2 /* wReserved1 */
+    + 4 /* dwReserved2 */;
 
 /// `HEAACWAVEINFO.wPayloadType` for raw AAC frames.
 const PAYLOAD_RAW: u16 = 0;
@@ -429,7 +433,8 @@ impl Transform {
         loop {
             // SAFETY: valid transform.
             let info = unsafe { self.transform.GetOutputStreamInfo(0) }?;
-            let provides_samples = info.dwFlags & flag_bits(MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0) != 0;
+            let provides_samples_flag = u32::from_ne_bytes(MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0.to_ne_bytes());
+            let provides_samples = info.dwFlags & provides_samples_flag != 0;
             let output_sample = if provides_samples {
                 None
             } else {
@@ -520,8 +525,4 @@ fn sample_bytes(sample: &IMFSample) -> windows::core::Result<Vec<u8>> {
     // SAFETY: balances the successful `Lock`.
     unsafe { buffer.Unlock() }?;
     data.ok_or_else(windows::core::Error::empty)
-}
-
-fn flag_bits(flag: i32) -> u32 {
-    u32::from_ne_bytes(flag.to_ne_bytes())
 }

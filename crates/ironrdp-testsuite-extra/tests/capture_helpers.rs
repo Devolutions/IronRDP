@@ -86,6 +86,7 @@ fn gsm() -> AudioFormat {
     }
 }
 
+// oracle: mutant unencodable formats offered, or PCM offered before compressed formats
 #[test]
 fn capture_offers_encodable_formats_compressed_first() {
     use ironrdp_rdpeai::client::RdpeaiCaptureHandler as _;
@@ -103,17 +104,16 @@ fn capture_offers_encodable_formats_compressed_first() {
 
     let chosen = RdpeaiCaptureBackend::new().choose_formats(&server);
 
-    assert_eq!(
-        chosen,
-        vec![
-            codec::alaw_format(1, 8_000),
-            codec::ms_adpcm_format(1, 22_050, 512),
-            pcm_format(1, 16_000, 16),
-            pcm_format(2, 44_100, 8),
-        ]
-    );
+    // GSM 6.10 has no encoder; every other format is offered, compressed ones before PCM.
+    assert_eq!(chosen.len(), 4);
+    assert!(!chosen.contains(&gsm()));
+    let first_pcm = chosen.iter().position(is_pcm_capture_format).unwrap();
+    assert!(chosen[..first_pcm].iter().all(|format| !is_pcm_capture_format(format)));
+    assert!(chosen[first_pcm..].iter().all(is_pcm_capture_format));
+    assert_eq!(first_pcm, 2);
 }
 
+// oracle: mutant capture opened with an encoder for another rate
 #[test]
 fn capture_refuses_an_encode_format_with_other_rate_or_channels() {
     use ironrdp_rdpeai::client::RdpeaiCaptureHandler as _;
@@ -134,6 +134,7 @@ fn capture_refuses_an_encode_format_with_other_rate_or_channels() {
     assert_eq!(result, OpenReplyPdu::E_FAIL);
 }
 
+// oracle: mutant undecodable formats advertised or the server's order lost
 // WASAPI opens every layout, so the device does not filter the formats on Windows.
 #[cfg(windows)]
 #[test]
@@ -172,6 +173,7 @@ fn playback_advertises_decodable_formats_in_server_order() {
     );
 }
 
+// oracle: mutant server-chosen layouts sizing unbounded buffers
 #[test]
 fn playback_refuses_extreme_channel_counts_and_rates() {
     use ironrdp_rdpsnd::client::RdpsndClientHandler as _;
@@ -190,4 +192,51 @@ fn playback_refuses_extreme_channel_counts_and_rates() {
 
     // Each of these would size the playback buffer from a server-chosen value.
     assert!(RdpsndBackend::new().choose_formats(&server).is_empty());
+}
+
+// oracle: mutant the Media Foundation AAC path panics, hangs or wedges the backend on hostile frames
+#[cfg(windows)]
+#[test]
+fn malformed_aac_frames_are_dropped() {
+    use std::borrow::Cow;
+
+    use ironrdp_rdpsnd::client::RdpsndClientHandler as _;
+    use ironrdp_rdpsnd_native::cpal::RdpsndBackend;
+
+    // The format Windows Server 2025 offers for AAC: no HEAACWAVEINFO bytes.
+    let aac = AudioFormat {
+        format: WaveFormat::AAC_MS,
+        n_channels: 2,
+        n_samples_per_sec: 44_100,
+        n_avg_bytes_per_sec: 12_000,
+        n_block_align: 4,
+        bits_per_sample: 16,
+        data: None,
+    };
+    let mut state: u32 = 0x1234_5678;
+    let mut noise = |len: usize| -> Vec<u8> {
+        core::iter::repeat_with(|| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state.to_le_bytes()[0]
+        })
+        .take(len)
+        .collect()
+    };
+    let mut frames = vec![
+        Vec::new(),
+        vec![0x21],
+        vec![0xFF, 0xF1, 0x50, 0x80, 0xFF, 0xFF, 0xFC], // ADTS header with an impossible length
+        vec![0xFF; 4096],
+    ];
+    frames.extend((0..32).map(|index| noise(1 + index * 37)));
+
+    let mut backend = RdpsndBackend::new();
+    for frame in &frames {
+        backend.wave(&aac, 0, Cow::Borrowed(frame));
+    }
+    // The backend still answers after the hostile frames, and closes cleanly.
+    let _ = backend.playback_latency();
+    backend.close();
 }

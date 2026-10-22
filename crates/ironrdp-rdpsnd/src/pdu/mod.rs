@@ -1237,7 +1237,7 @@ impl UdpWavePdu<'_> {
 
 impl Encode for UdpWavePdu<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        if self.frag_no > Self::MAX_FRAG_NO {
+        if Self::MAX_FRAG_NO < self.frag_no {
             return Err(other_err!("UdpWavePdu", "cFragNo does not fit in 15 bits"));
         }
         ensure_size!(in: dst, size: self.size());

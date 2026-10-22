@@ -1,7 +1,10 @@
 //! CPAL playback backend for RDPSND.
 //!
-//! Wave blocks are decoded on the thread that delivers them (decoding costs well under a
-//! millisecond per block) and queued as 16-bit PCM in a lock-free ring buffer. The device callback
+//! Wave blocks are decoded on the thread that delivers them, so the latency reported for the Wave
+//! Confirm PDU includes them, and queued as 16-bit PCM in a lock-free ring buffer. Decoding is
+//! cheap: a 20 ms block of 44.1 kHz stereo ADPCM decodes in about 10 µs and G.711 in about 1.5 µs
+//! (optimized build on a laptop CPU), and Opus and AAC decode one frame per call (AAC on a Media
+//! Foundation worker thread). The device callback
 //! drains it under a [`PlayoutController`], which keeps the configured latency buffered, rebuffers
 //! after underruns, absorbs clock drift and discards backlogs. A dedicated thread owns the CPAL
 //! stream, because CPAL streams are not `Send`, and reopens it when the device disappears or, when
@@ -43,9 +46,6 @@ const MAX_SAMPLE_RATE: u32 = 192_000;
 /// Ring buffer capacity in multiples of the latency target, with a floor of [`MIN_RING_DURATION`].
 const RING_LATENCY_MULTIPLE: u32 = 4;
 const MIN_RING_DURATION: Duration = Duration::from_secs(2);
-
-/// How often the stream thread checks for device changes.
-const DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Delay before retrying a device that failed to open.
 const DEVICE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -636,39 +636,31 @@ fn run_stream(
         }
 
         let (mut skipped_frames, mut underruns) = (0, 0);
-        loop {
-            thread::park_timeout(DEVICE_POLL_INTERVAL);
-            if shared.ended.load(Ordering::Relaxed) {
-                break;
-            }
-            let (skipped_now, underruns_now) = (
-                shared.skipped_frames.load(Ordering::Relaxed),
-                shared.underruns.load(Ordering::Relaxed),
-            );
-            if skipped_now != skipped_frames || underruns_now != underruns {
-                debug!(
-                    skipped_frames = skipped_now - skipped_frames,
-                    underruns = underruns_now - underruns,
-                    "Playback buffer corrections"
+        device::watch_device(
+            selector,
+            Direction::Output,
+            device_id.as_deref(),
+            &shared.ended,
+            &shared.device_lost,
+            || {
+                let (skipped_now, underruns_now) = (
+                    shared.skipped_frames.load(Ordering::Relaxed),
+                    shared.underruns.load(Ordering::Relaxed),
                 );
-                (skipped_frames, underruns) = (skipped_now, underruns_now);
-            }
-            if shared.volume_changed.swap(false, Ordering::Relaxed) {
-                #[cfg(windows)]
-                apply_session_volume(&session_volume);
-            }
-            if shared.device_lost.swap(false, Ordering::Relaxed) {
-                info!(device = ?device_id, "Audio output device lost; reopening");
-                break;
-            }
-            if selector.is_default() {
-                let default_id = device::default_device_id(Direction::Output);
-                if default_id.is_some() && default_id != device_id {
-                    info!(from = ?device_id, to = ?default_id, "Default audio output device changed");
-                    break;
+                if skipped_now != skipped_frames || underruns_now != underruns {
+                    debug!(
+                        skipped_frames = skipped_now - skipped_frames,
+                        underruns = underruns_now - underruns,
+                        "Playback buffer corrections"
+                    );
+                    (skipped_frames, underruns) = (skipped_now, underruns_now);
                 }
-            }
-        }
+                if shared.volume_changed.swap(false, Ordering::Relaxed) {
+                    #[cfg(windows)]
+                    apply_session_volume(&session_volume);
+                }
+            },
+        );
 
         drop(stream);
     }

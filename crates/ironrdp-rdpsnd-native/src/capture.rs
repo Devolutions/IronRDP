@@ -19,9 +19,6 @@ use crate::device::{self, DeviceSelector, Direction};
 /// Keep this short so a slow/hung device does not stall the whole RDP session.
 const STREAM_START_TIMEOUT: Duration = Duration::from_millis(250);
 
-/// How often the capture thread checks for device changes.
-const DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(500);
-
 /// `KSDATAFORMAT_SUBTYPE_PCM` (`{00000001-0000-0010-8000-00aa00389b71}`).
 ///
 /// Layout is the on-wire GUID bytes used in `WAVEFORMATEXTENSIBLE.SubFormat`.
@@ -62,6 +59,8 @@ struct SinkState {
     buffer: Vec<u8>,
     /// Encoder for the negotiated format; `None` sends the captured PCM as is.
     encoder: Option<AudioEncoder>,
+    /// Samples of the packet being encoded, reused across packets.
+    pcm: Vec<i16>,
 }
 
 impl Default for RdpeaiCaptureBackend {
@@ -209,6 +208,7 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
                 packet_size,
                 buffer,
                 encoder,
+                pcm: Vec::new(),
             });
         }
 
@@ -282,12 +282,12 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
     }
 }
 
+/// Result of a capture setup check, with the reason for a refusal.
+type CaptureResult<T> = Result<T, &'static str>;
+
 /// Builds the encoder from captured 16-bit PCM to `encode_format`, or `None` when the capture
 /// format can be sent unchanged.
-fn encoder_for(
-    capture_format: &AudioFormat,
-    encode_format: &AudioFormat,
-) -> Result<Option<AudioEncoder>, &'static str> {
+fn encoder_for(capture_format: &AudioFormat, encode_format: &AudioFormat) -> CaptureResult<Option<AudioEncoder>> {
     if !(is_pcm_capture_format(capture_format) && capture_format.bits_per_sample == 16) {
         return Err("capture format is not 16-bit PCM");
     }
@@ -390,7 +390,7 @@ fn run_capture(
                     return;
                 }
                 warn!(%error, "Failed to reopen the audio input device; retrying");
-                thread::park_timeout(DEVICE_POLL_INTERVAL * 2);
+                thread::park_timeout(device::DEVICE_POLL_INTERVAL * 2);
                 continue;
             }
         };
@@ -399,23 +399,14 @@ fn run_capture(
         }
         info!(device = ?device_id, "AUDIO_INPUT capture stream running");
 
-        loop {
-            thread::park_timeout(DEVICE_POLL_INTERVAL);
-            if ended.load(Ordering::Relaxed) {
-                break;
-            }
-            if device_lost.swap(false, Ordering::Relaxed) {
-                info!(device = ?device_id, "Audio input device lost; reopening");
-                break;
-            }
-            if selector.is_default() {
-                let default_id = device::default_device_id(Direction::Input);
-                if default_id.is_some() && default_id != device_id {
-                    info!(from = ?device_id, to = ?default_id, "Default audio input device changed");
-                    break;
-                }
-            }
-        }
+        device::watch_device(
+            selector,
+            Direction::Input,
+            device_id.as_deref(),
+            ended,
+            &device_lost,
+            || {},
+        );
         drop(stream);
     }
     debug!("AUDIO_INPUT capture stream stopped");
@@ -482,7 +473,12 @@ fn build_input_stream(
 fn push_samples(sink_state: &Arc<Mutex<Option<SinkState>>>, samples: impl ExactSizeIterator<Item = i16>) {
     // The packets are encoded and handed to the sink under the lock, so a format change, which takes
     // the same lock, separates the packets of the old encoding from those of the new one. The sink
-    // only queues the packets for the session loop and never blocks.
+    // only queues the packets for the session loop (a non-blocking `try_send`).
+    //
+    // Unlike playback, this callback allocates: each packet leaves as an owned buffer for the uplink.
+    // A packet is one `FramesPerPacket` chunk (tens of milliseconds) and ADPCM or G.711 encoding of
+    // it is a single pass, and an overrun here only drops input samples rather than glitching what
+    // the user hears.
     let Ok(mut guard) = sink_state.lock() else {
         return;
     };
@@ -497,12 +493,14 @@ fn push_samples(sink_state: &Arc<Mutex<Option<SinkState>>>, samples: impl ExactS
         let packet = match state.encoder.as_mut() {
             None => packet,
             Some(encoder) => {
-                let pcm: Vec<i16> = packet
-                    .chunks_exact(2)
-                    .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
-                    .collect();
-                let mut wave_data = Vec::new();
-                encoder.encode(&pcm, &mut wave_data);
+                state.pcm.clear();
+                state.pcm.extend(
+                    packet
+                        .chunks_exact(2)
+                        .map(|sample| i16::from_le_bytes([sample[0], sample[1]])),
+                );
+                let mut wave_data = Vec::with_capacity(packet.len());
+                encoder.encode(&state.pcm, &mut wave_data);
                 // A packet shorter than one block leaves nothing to send until the next one.
                 if wave_data.is_empty() {
                     continue;

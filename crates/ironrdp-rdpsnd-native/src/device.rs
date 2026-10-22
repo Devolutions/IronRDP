@@ -2,9 +2,15 @@
 
 use core::fmt;
 use core::str::FromStr as _;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
+use std::thread;
 
 use cpal::traits::{DeviceTrait as _, HostTrait as _};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
+
+/// How often a stream thread checks for device changes.
+pub(crate) const DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Direction of an audio device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +131,39 @@ pub(crate) fn open_device(selector: &DeviceSelector, direction: Direction) -> Op
                 .or_else(|| names.iter().position(|name| name.contains(&wanted)));
             debug!(%name, matched = ?index.map(|index| &names[index]), "Resolved audio device by name");
             index.map(|index| devices[index].clone())
+        }
+    }
+}
+
+/// Parks a stream thread until its stream has to stop: when `ended` is set, when `lost` reports
+/// that the device disappeared, or, for a stream following the system default, when the default
+/// device changes.
+///
+/// `on_wake` runs on every wake-up that does not end the stream, for the caller's periodic work.
+pub(crate) fn watch_device(
+    selector: &DeviceSelector,
+    direction: Direction,
+    device_id: Option<&str>,
+    ended: &AtomicBool,
+    lost: &AtomicBool,
+    mut on_wake: impl FnMut(),
+) {
+    loop {
+        thread::park_timeout(DEVICE_POLL_INTERVAL);
+        if ended.load(Ordering::Relaxed) {
+            return;
+        }
+        on_wake();
+        if lost.swap(false, Ordering::Relaxed) {
+            info!(?direction, device = ?device_id, "Audio device lost; reopening");
+            return;
+        }
+        if selector.is_default() {
+            let default_id = default_device_id(direction);
+            if default_id.is_some() && default_id.as_deref() != device_id {
+                info!(?direction, from = ?device_id, to = ?default_id, "Default audio device changed");
+                return;
+            }
         }
     }
 }
