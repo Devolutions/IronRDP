@@ -42,3 +42,37 @@ publish_no_verify = true
 [[package]]
 name = "ironrdp-cliprdr-native"
 publish_no_verify = true
+
+# These crates have never been published, and they build only against unreleased changes in the crates they depend on.
+# Trusted publishing cannot create a crate, so release-plz would fail on each of them and stop before releasing the rest.
+# Once their dependencies are released, publish each crate manually once, then remove its entry.
+[[package]]
+name = "ironrdp-rdpeudp"
+release = false
+[[package]]
+name = "ironrdp-rdpemt"
+release = false
+[[package]]
+name = "ironrdp-rdpeudp-tokio"
+release = false
+[[package]]
+name = "ironrdp-rdpeai"
+release = false
+[[package]]
+name = "ironrdp-rdpewa"
+release = false
+[[package]]
+name = "ironrdp-rdpewa-native"
+release = false
+[[package]]
+name = "ironrdp-rdpeusb"
+release = false
+[[package]]
+name = "ironrdp-rpc"
+release = false
+[[package]]
+name = "ironrdp-vmconnect"
+release = false
+[[package]]
+name = "ironrdp-daemon"
+release = false
