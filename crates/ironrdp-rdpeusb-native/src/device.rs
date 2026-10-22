@@ -1363,8 +1363,12 @@ fn resume<D: EndpointDirection>(max_packet_size: usize, entry: &mut InFlight, co
     let length = usize::try_from(entry.length).unwrap_or(usize::MAX);
 
     if D::DIR == nusb::transfer::Direction::In {
+        if completion.actual_len == 0 && entry.received.is_empty() {
+            // Nothing moved: nusb keeps the requested length, so the same buffer runs again.
+            return Resume::Submit(completion.buffer);
+        }
         let short = !completion.actual_len.is_multiple_of(max_packet_size.max(1));
-        entry.received.extend(completion.buffer.into_vec());
+        entry.received.extend_from_slice(&completion.buffer);
         let remaining = length.saturating_sub(entry.received.len());
         if short || remaining == 0 {
             return finished(Buffer::new(0));
@@ -1456,8 +1460,14 @@ fn complete_transfer<D: EndpointDirection>(reply: &Reply, entry: InFlight, compl
 fn transfer_completion<D: EndpointDirection>(mut entry: InFlight, completion: Completion) -> Option<CompletionData> {
     Some(match completion.status {
         Ok(()) if D::DIR == nusb::transfer::Direction::In => {
-            let mut data = core::mem::take(&mut entry.received);
-            data.extend(completion.buffer.into_vec());
+            // Reuse nusb's buffer unless the transfer resumed after a cancellation.
+            let data = if entry.received.is_empty() {
+                completion.buffer.into_vec()
+            } else {
+                let mut data = core::mem::take(&mut entry.received);
+                data.extend_from_slice(&completion.buffer);
+                data
+            };
             if usize::try_from(entry.length).is_ok_and(|length| length < data.len()) {
                 // The buffer was rounded up to whole packets and the device filled more than the server
                 // asked for. MS-RDPEUSB 3.3.5.3.6 requires terminating the device channel in this case.
@@ -1567,6 +1577,18 @@ mod tests {
     #[test]
     fn collateral_in_cancellation_resumes() {
         let mut entry = in_flight(256);
+
+        // Nothing moved: the same buffer runs again.
+        let untouched = Completion {
+            buffer: Buffer::new(256),
+            actual_len: 0,
+            status: Err(TransferError::Cancelled),
+        };
+        let Resume::Submit(buffer) = resume::<In>(64, &mut entry, untouched) else {
+            panic!("expected the transfer to resume");
+        };
+        assert_eq!(buffer.requested_len(), 256);
+        assert!(entry.received.is_empty());
 
         // Whole packets moved: the rest of the transfer runs again.
         let Resume::Submit(buffer) = resume::<In>(64, &mut entry, completion(&[1; 64], Err(TransferError::Cancelled)))

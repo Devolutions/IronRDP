@@ -13,6 +13,7 @@ use ironrdp_rdpeusb::client::{DeviceManagerBackend, UrbdrcDeviceBackend};
 use nusb::MaybeFuture as _;
 use nusb::hotplug::HotplugEvent;
 use tokio::sync::oneshot;
+use tokio::task::AbortHandle;
 use tracing::{debug, info, warn};
 
 use crate::device::{self, NusbDeviceBackend, OpenedDevice};
@@ -367,6 +368,8 @@ impl Drop for Announcement {
 }
 
 async fn run_hotplug(mut watch: nusb::hotplug::HotplugWatch, mut stopped: oneshot::Receiver<()>, shared: Weak<Shared>) {
+    // Devices being opened, whose attempts stop once they are unplugged.
+    let mut opening: HashMap<nusb::DeviceId, AbortHandle> = HashMap::new();
     loop {
         let event = tokio::select! {
             _ = &mut stopped => break,
@@ -381,10 +384,18 @@ async fn run_hotplug(mut watch: nusb::hotplug::HotplugWatch, mut stopped: onesho
                 let identity = device::identity(&info);
                 if shared.config.redirect_on_hotplug(&identity) {
                     // Retried apart, so that unplugged devices are still followed meanwhile.
-                    tokio::spawn(open_hotplugged(info, identity, Arc::downgrade(&shared)));
+                    opening.retain(|_, task| !task.is_finished());
+                    let id = info.id();
+                    let task = tokio::spawn(open_hotplugged(info, identity, Arc::downgrade(&shared)));
+                    if let Some(previous) = opening.insert(id, task.abort_handle()) {
+                        previous.abort();
+                    }
                 }
             }
             HotplugEvent::Disconnected(id) => {
+                if let Some(task) = opening.remove(&id) {
+                    task.abort();
+                }
                 let channel_id = {
                     let mut state = shared.state();
                     state.pending.unplug(id);
@@ -408,6 +419,10 @@ async fn open_hotplugged(info: nusb::DeviceInfo, identity: UsbDeviceIdentity, sh
         let Some(shared) = shared.upgrade() else {
             return;
         };
+        // Already claimed, for example by the enumeration at connection time.
+        if shared.state().redirected.contains_key(&info.id()) {
+            return;
+        }
         let device = if attempt == HOTPLUG_OPEN_ATTEMPTS {
             open(&info, &identity)
         } else {
