@@ -23,7 +23,11 @@ use windows::Win32::System::Com::{
 /// and the caller is blocked meanwhile.
 const DECODE_TIMEOUT: Duration = Duration::from_secs(1);
 /// Longest time creating the decoder waits for Media Foundation to start.
-const START_TIMEOUT: Duration = Duration::from_secs(2);
+///
+/// Starting COM, Media Foundation and the transform cold can take seconds on a loaded machine.
+/// The graphics pipeline creates its decoder once per connection and loses H.264 for the whole
+/// session when this expires, so it allows for that rather than for the usual start.
+const START_TIMEOUT: Duration = Duration::from_secs(10);
 /// Spacing of the synthetic sample times, in 100-ns units (30 frames per second).
 const SAMPLE_DURATION: i64 = 333_333;
 
