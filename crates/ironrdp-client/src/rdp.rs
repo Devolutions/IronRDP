@@ -80,7 +80,7 @@ use ironrdp_rdpewa::{RdpewaClient, RdpewaClientListener};
 use ironrdp_rdpewa_native::{WindowsRdpewaBackend, WindowsRdpewaSessionState};
 
 use crate::config::{Config, RDCleanPathConfig, Transport};
-use crate::rail::{RailClient, RailControlEvent, RailEvent, RailInputEvent};
+use crate::rail::{RailClient, RailControlEvent, RailEvent, RailInputEvent, RailSvcMessages};
 use ironrdp_rail::pdu::{ExecutePdu, ExecuteResultPdu};
 
 // ── Public event types ────────────────────────────────────────────────────────
@@ -492,6 +492,8 @@ pub enum RdpInputEvent {
     RailExecute(ExecutePdu),
     /// Queues a client-originated RAIL input event.
     Rail(RailInputEvent),
+    /// Reports changed local system parameters over the RAIL static channel.
+    RailSystemParameters(Vec<ironrdp_rail::pdu::ClientSystemParameter>),
 }
 
 /// Maximum number of ordinary input events retained while the session is unable to process them.
@@ -2123,18 +2125,26 @@ fn build_connector(
 
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
     let audio_playback = connector_config.enable_audio_playback;
-    let rail_client = connector_config.remote_application_mode.then(|| {
+    let rail_client = if connector_config.remote_application_mode {
         let rail_client = RailClient::new(
             connector_config.client_build,
             connector_config.desktop_size.width,
             connector_config.desktop_size.height,
         );
-        if let Some(flags) = config.rail_client_status_flags {
+        let mut rail_client = if let Some(flags) = config.rail_client_status_flags {
             rail_client.with_client_status_flags(flags)
         } else {
             rail_client
+        };
+        if let Some(parameters) = config.rail_system_parameters.clone() {
+            rail_client = rail_client
+                .with_system_parameters(parameters)
+                .map_err(|error| ironrdp_connector::custom_err!("RAIL system parameters", error))?;
         }
-    });
+        Some(rail_client)
+    } else {
+        None
+    };
 
     let mut connector =
         ironrdp_connector::ClientConnector::new(connector_config, client_addr).with_static_channel(drdynvc);
@@ -3246,6 +3256,37 @@ async fn sleep_until_deadline(deadline: Option<tokio::time::Instant>) {
     }
 }
 
+/// Runs a request against the RAIL channel processor and turns its messages into session outputs.
+///
+/// Failures and a session without RAIL are logged with `request` and produce no output.
+fn rail_request_outputs(
+    active_stage: &mut ActiveStage,
+    request: &'static str,
+    send: impl FnOnce(&mut RailClient) -> ironrdp_pdu::PduResult<RailSvcMessages>,
+) -> Vec<ActiveStageOutput> {
+    let Some(rail_client) = active_stage.get_svc_processor_mut::<RailClient>() else {
+        warn!(request, "Unable to send RAIL request because RAIL is disabled");
+        return Vec::new();
+    };
+    let messages = match send(rail_client) {
+        Ok(messages) => messages,
+        Err(error) => {
+            warn!(%error, request, "Unable to queue RAIL request");
+            return Vec::new();
+        }
+    };
+    match active_stage.process_svc_processor_messages(messages) {
+        Ok(frame) => (!frame.is_empty())
+            .then_some(ActiveStageOutput::ResponseFrame(frame))
+            .into_iter()
+            .collect(),
+        Err(error) => {
+            warn!(%error, request, "Unable to process RAIL request");
+            Vec::new()
+        }
+    }
+}
+
 #[cfg(feature = "rdpdr")]
 fn poll_deferred_rdpdr_output(active_stage: &mut ActiveStage) -> SessionResult<Option<ActiveStageOutput>> {
     let messages = match active_stage.get_svc_processor_mut::<ironrdp_rdpdr::Rdpdr>() {
@@ -3936,35 +3977,18 @@ async fn active_session(
                         };
                         ActiveSessionIteration::outputs(outputs)
                     }
-                    RdpInputEvent::Rail(event) => {
-                        let messages = match active_stage.get_svc_processor_mut::<RailClient>() {
-                            Some(rail_client) => match rail_client.queue_input(event) {
-                                Ok(messages) => Some(messages),
-                                Err(error) => {
-                                    warn!(%error, "Unable to queue RAIL input");
-                                    None
-                                }
-                            },
-                            None => {
-                                warn!("Unable to queue RAIL input because RAIL is disabled");
-                                None
-                            }
-                        };
-                        let outputs = match messages {
-                            Some(messages) => match active_stage.process_svc_processor_messages(messages) {
-                                Ok(frame) => (!frame.is_empty())
-                                    .then_some(ActiveStageOutput::ResponseFrame(frame))
-                                    .into_iter()
-                                    .collect(),
-                                Err(error) => {
-                                    warn!(%error, "Unable to process RAIL input");
-                                    Vec::new()
-                                }
-                            },
-                            None => Vec::new(),
-                        };
-                        ActiveSessionIteration::outputs(outputs)
+                    RdpInputEvent::RailSystemParameters(parameters) => {
+                        ActiveSessionIteration::outputs(rail_request_outputs(
+                            &mut active_stage,
+                            "RAIL system parameters",
+                            |rail_client| rail_client.update_system_parameters(parameters),
+                        ))
                     }
+                    RdpInputEvent::Rail(event) => ActiveSessionIteration::outputs(rail_request_outputs(
+                        &mut active_stage,
+                        "RAIL input",
+                        |rail_client| rail_client.queue_input(event),
+                    )),
                     }
                 }
                 _ = cleanup_interval.tick() => {

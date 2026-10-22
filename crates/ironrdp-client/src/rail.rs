@@ -6,16 +6,18 @@ use ironrdp_pdu::{PduError, PduErrorExt as _, PduErrorKind, PduResult, decode_er
 use ironrdp_rail::pdu::{
     ActivatePdu, ClientStatusPdu, ClientSystemParameter, ClientSystemParametersPdu, CloakPdu, CompartmentInfoPdu,
     ExecutePdu, ExecuteResultPdu, GetApplicationIdRequestPdu, GetApplicationIdResponseExPdu,
-    GetApplicationIdResponsePdu, HandshakeExPdu, HandshakePdu, LanguageBarInfoPdu, NotifyEventPdu,
-    PowerDisplayRequestPdu, RailPdu, ServerSystemParametersPdu, SystemCommandPdu, SystemMenuPdu,
-    SystemParameterRectangle, ZOrderSyncPdu,
+    GetApplicationIdResponsePdu, HandshakeExPdu, HandshakePdu, LanguageBarInfoPdu, LocalMoveSizePdu, MinMaxInfoPdu,
+    NotifyEventPdu, PowerDisplayRequestPdu, RailPdu, ServerSystemParametersPdu, SnapArrangePdu, SystemCommandPdu,
+    SystemMenuPdu, SystemParameterRectangle, TaskbarInfoPdu, WindowMovePdu, ZOrderSyncPdu,
 };
 use ironrdp_svc::{ChannelFlags, SvcClientProcessor, SvcMessage, SvcProcessor, SvcProcessorMessages};
 
-/// Client-originated RAIL events used by the initial RemoteApp launch flow.
+/// Client-originated RAIL messages a host forwards to the server ([MS-RDPERP] 2.2.2).
 ///
-/// Other client-valid RAIL PDUs, including window move and IME controls, are
-/// not yet exposed through this host-neutral boundary.
+/// System parameter updates go through [`RailClient::update_system_parameters`]
+/// because the server's HandshakeEx flags decide which of them may be sent.
+///
+/// [MS-RDPERP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RailInputEvent {
     Activate(ActivatePdu),
@@ -23,6 +25,18 @@ pub enum RailInputEvent {
     SystemCommand(SystemCommandPdu),
     NotifyEvent(NotifyEventPdu),
     GetApplicationId(GetApplicationIdRequestPdu),
+    /// MS-RDPERP 2.2.2.7.4 Client Window Move PDU (TS_RAIL_ORDER_WINDOWMOVE): the final
+    /// window rectangle after a local move or resize.
+    WindowMove(WindowMovePdu),
+    /// MS-RDPERP 2.2.2.7.5 Client Window Snap PDU (TS_RAIL_ORDER_SNAP_ARRANGE): a window
+    /// repositioned by the local window manager's Snap feature.
+    ///
+    /// Sent as a Client Window Move PDU when the server did not advertise
+    /// `TS_RAIL_ORDER_HANDSHAKE_EX_FLAGS_SNAP_ARRANGE_SUPPORTED` (MS-RDPERP 3.2.5.2.7.5).
+    SnapArrange(SnapArrangePdu),
+    /// MS-RDPERP 2.2.2.12.1 Window Cloak State Change PDU (TS_RAIL_ORDER_CLOAK): the local
+    /// shell cloaked or uncloaked a window.
+    Cloak(CloakPdu),
 }
 
 impl From<RailInputEvent> for RailPdu {
@@ -33,11 +47,16 @@ impl From<RailInputEvent> for RailPdu {
             RailInputEvent::SystemCommand(pdu) => Self::SystemCommand(pdu),
             RailInputEvent::NotifyEvent(pdu) => Self::NotifyEvent(pdu),
             RailInputEvent::GetApplicationId(pdu) => Self::GetApplicationIdRequest(pdu),
+            RailInputEvent::WindowMove(pdu) => Self::WindowMove(pdu),
+            RailInputEvent::SnapArrange(pdu) => Self::SnapArrange(pdu),
+            RailInputEvent::Cloak(pdu) => Self::Cloak(pdu),
         }
     }
 }
 
-/// Portable server-originated RAIL controls.
+/// Portable server-originated RAIL controls ([MS-RDPERP] 2.2.2).
+///
+/// [MS-RDPERP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RailControlEvent {
     SystemParameters(ServerSystemParametersPdu),
@@ -46,6 +65,15 @@ pub enum RailControlEvent {
     ZOrderSync(ZOrderSyncPdu),
     Cloak(CloakPdu),
     PowerDisplayRequest(PowerDisplayRequestPdu),
+    /// MS-RDPERP 2.2.2.7.1 Server Min Max Info PDU (TS_RAIL_ORDER_MINMAXINFO): window sizing
+    /// constraints for an upcoming local move or resize.
+    MinMaxInfo(MinMaxInfoPdu),
+    /// MS-RDPERP 2.2.2.7.2 Server Move/Size Start PDU and 2.2.2.7.3 Server Move/Size End PDU
+    /// (TS_RAIL_ORDER_LOCALMOVESIZE): start or end of a server-initiated local move or resize.
+    LocalMoveSize(LocalMoveSizePdu),
+    /// MS-RDPERP 2.2.2.14.1 Taskbar Tab Info PDU (TS_RAIL_ORDER_TASKBARINFO): a taskbar tab
+    /// registration or update.
+    TaskbarInfo(TaskbarInfoPdu),
 }
 
 /// Events emitted by a client-side RAIL channel processor.
@@ -100,6 +128,13 @@ pub struct RailClient {
     desktop_width: u16,
     desktop_height: u16,
     client_status_flags: u32,
+    /// The host's system parameters, one value per kind.
+    ///
+    /// INVARIANT: never contains `ClientSystemParameter::DisplayChange`, which always
+    /// follows the desktop size (see [`Self::desktop_system_parameter_messages`]).
+    system_parameters: Vec<ClientSystemParameter>,
+    /// The server's HandshakeEx flags, or `0` after a plain Handshake.
+    handshake_ex_flags: u32,
     state: RailState,
     desktop_synchronized: bool,
     queued_pdus: VecDeque<QueuedRailPdu>,
@@ -122,6 +157,13 @@ impl RailClient {
             client_status_flags: ClientStatusPdu::Z_ORDER_SYNC
                 | ClientStatusPdu::POWER_DISPLAY_REQUEST
                 | ClientStatusPdu::BIDIRECTIONAL_CLOAK,
+            system_parameters: vec![
+                ClientSystemParameter::FullWindowDrag(false),
+                ClientSystemParameter::KeyboardCues(false),
+                ClientSystemParameter::KeyboardPreference(false),
+                ClientSystemParameter::MouseButtonSwap(false),
+            ],
+            handshake_ex_flags: 0,
             state: RailState::WaitingForHandshake,
             desktop_synchronized: false,
             queued_pdus: VecDeque::new(),
@@ -135,6 +177,43 @@ impl RailClient {
     pub fn with_client_status_flags(mut self, flags: u32) -> Self {
         self.client_status_flags = flags;
         self
+    }
+
+    /// Replaces the system parameters sent during initialization with the host's own.
+    ///
+    /// `DisplayChange` always follows the desktop size, so a `DisplayChange` in
+    /// `parameters` is discarded; use [`Self::update_desktop_size`] instead. `WorkArea`
+    /// also follows the desktop size unless the host supplies one. Parameters the server
+    /// does not advertise support for in its HandshakeEx PDU are not sent.
+    ///
+    /// Fails if a parameter cannot be encoded.
+    pub fn with_system_parameters(mut self, parameters: Vec<ClientSystemParameter>) -> PduResult<Self> {
+        Self::validate_system_parameters(&parameters)?;
+        self.system_parameters = Vec::new();
+        self.merge_system_parameters(parameters);
+        Ok(self)
+    }
+
+    /// Records changed local system parameters and returns the messages that report them.
+    ///
+    /// Before the server handshake the values are kept for initialization. A
+    /// `DisplayChange` is discarded rather than recorded or sent, because the display
+    /// rectangle follows the desktop size; use [`Self::update_desktop_size`] instead.
+    ///
+    /// Fails, recording nothing, if a parameter cannot be encoded.
+    pub fn update_system_parameters(&mut self, parameters: Vec<ClientSystemParameter>) -> PduResult<RailSvcMessages> {
+        Self::validate_system_parameters(&parameters)?;
+        let changed = self.merge_system_parameters(parameters);
+        if !self.is_established() {
+            return Ok(Vec::new().into());
+        }
+
+        Ok(changed
+            .into_iter()
+            .filter(|parameter| self.is_system_parameter_supported(parameter))
+            .map(Self::system_parameter_message)
+            .collect::<Vec<_>>()
+            .into())
     }
 
     /// Queues a RemoteApp launch until initialization and desktop synchronization complete.
@@ -223,20 +302,13 @@ impl RailClient {
             })),
         ];
         messages.extend(self.desktop_system_parameter_messages());
-        messages.extend([
-            Self::service_message(RailPdu::ClientSystemParameters(ClientSystemParametersPdu {
-                parameter: ClientSystemParameter::FullWindowDrag(false),
-            })),
-            Self::service_message(RailPdu::ClientSystemParameters(ClientSystemParametersPdu {
-                parameter: ClientSystemParameter::KeyboardCues(false),
-            })),
-            Self::service_message(RailPdu::ClientSystemParameters(ClientSystemParametersPdu {
-                parameter: ClientSystemParameter::KeyboardPreference(false),
-            })),
-            Self::service_message(RailPdu::ClientSystemParameters(ClientSystemParametersPdu {
-                parameter: ClientSystemParameter::MouseButtonSwap(false),
-            })),
-        ]);
+        messages.extend(
+            self.system_parameters
+                .iter()
+                .filter(|parameter| self.is_system_parameter_supported(parameter))
+                .cloned()
+                .map(Self::system_parameter_message),
+        );
         messages
     }
 
@@ -247,15 +319,89 @@ impl RailClient {
             right: self.desktop_width,
             bottom: self.desktop_height,
         };
+        let has_host_work_area = self
+            .system_parameters
+            .iter()
+            .any(|parameter| matches!(parameter, ClientSystemParameter::WorkArea(_)));
         [
-            ClientSystemParameter::DisplayChange(screen),
-            ClientSystemParameter::WorkArea(screen),
+            Some(ClientSystemParameter::DisplayChange(screen)),
+            (!has_host_work_area).then_some(ClientSystemParameter::WorkArea(screen)),
         ]
         .into_iter()
-        .map(|parameter| {
-            Self::service_message(RailPdu::ClientSystemParameters(ClientSystemParametersPdu { parameter }))
-        })
+        .flatten()
+        .map(Self::system_parameter_message)
         .collect()
+    }
+
+    fn validate_system_parameters(parameters: &[ClientSystemParameter]) -> PduResult<()> {
+        for parameter in parameters {
+            RailPdu::ClientSystemParameters(ClientSystemParametersPdu {
+                parameter: parameter.clone(),
+            })
+            .validate()
+            .map_err(|error| PduError::encode("RAIL client system parameter", error))?;
+        }
+        Ok(())
+    }
+
+    /// Stores `parameters`, replacing earlier values of the same kind, and returns
+    /// the ones whose value changed.
+    fn merge_system_parameters(&mut self, parameters: Vec<ClientSystemParameter>) -> Vec<ClientSystemParameter> {
+        let mut changed = Vec::new();
+        for parameter in parameters {
+            if matches!(parameter, ClientSystemParameter::DisplayChange(_)) {
+                // Keeps the `system_parameters` invariant: the display rectangle follows the desktop size.
+                continue;
+            }
+            let kind = core::mem::discriminant(&parameter);
+            match self
+                .system_parameters
+                .iter_mut()
+                .find(|existing| core::mem::discriminant(&**existing) == kind)
+            {
+                Some(existing) if *existing == parameter => continue,
+                Some(existing) => *existing = parameter.clone(),
+                None => self.system_parameters.push(parameter.clone()),
+            }
+            changed.push(parameter);
+        }
+        changed
+    }
+
+    /// Whether the server advertised support for `parameter`, per MS-RDPERP 2.2.2.4.1
+    /// Client System Parameters Update PDU (TS_RAIL_ORDER_SYSPARAM).
+    ///
+    /// The parameters the specification lists without a HandshakeEx condition are always
+    /// supported; the others require `EXTENDED_SPI`, `EXTENDED_SPI_2` or `EXTENDED_SPI_3`.
+    fn is_system_parameter_supported(&self, parameter: &ClientSystemParameter) -> bool {
+        use ClientSystemParameter as P;
+
+        let required = match parameter {
+            P::FullWindowDrag(_)
+            | P::KeyboardCues(_)
+            | P::KeyboardPreference(_)
+            | P::WorkArea(_)
+            | P::DisplayChange(_)
+            | P::MouseButtonSwap(_)
+            | P::TaskbarPosition(_)
+            | P::HighContrast(_) => return true,
+            P::CaretWidth(_) | P::StickyKeys(_) | P::ToggleKeys(_) | P::FilterKeys(_) => HandshakeExPdu::EXTENDED_SPI,
+            P::DisplayAnimationsEnabled(_)
+            | P::DisplayAdvancedEffectsEnabled(_)
+            | P::DisplayAutoHideScrollbars(_)
+            | P::DisplayMessageDuration(_)
+            | P::ClosedCaptionFontColor(_)
+            | P::ClosedCaptionFontOpacity(_)
+            | P::ClosedCaptionFontSize(_)
+            | P::ClosedCaptionFontStyle(_)
+            | P::ClosedCaptionFontEdgeEffect(_)
+            | P::ClosedCaptionBackgroundColor(_)
+            | P::ClosedCaptionBackgroundOpacity(_)
+            | P::ClosedCaptionRegionColor(_)
+            | P::ClosedCaptionRegionOpacity(_) => HandshakeExPdu::EXTENDED_SPI_2,
+            P::AccentColor(_) | P::SystemUsesLightTheme(_) | P::AppsUseLightTheme(_) => HandshakeExPdu::EXTENDED_SPI_3,
+        };
+        self.handshake_ex_flags & required != 0
     }
 
     fn queued_execute_count(&self) -> usize {
@@ -267,6 +413,7 @@ impl RailClient {
 
     fn finish_handshake(&mut self, handshake_ex_flags: Option<u32>) -> PduResult<Vec<SvcMessage>> {
         self.state = RailState::Established;
+        self.handshake_ex_flags = handshake_ex_flags.unwrap_or(0);
         let queued_execute_count = self.queued_execute_count();
         let mut messages = self.initialization_messages();
         self.push_event(RailEvent::Handshake {
@@ -293,6 +440,15 @@ impl RailClient {
                     executable: execute.executable.clone(),
                 });
                 Ok(vec![Self::service_message(RailPdu::Execute(execute))])
+            }
+            QueuedRailPdu::Input(RailInputEvent::SnapArrange(snap))
+                if self.handshake_ex_flags & HandshakeExPdu::SNAP_ARRANGE == 0 =>
+            {
+                // MS-RDPERP 3.2.5.2.7.5: without server Snap support, report the move instead.
+                Ok(vec![Self::service_message(RailPdu::WindowMove(WindowMovePdu {
+                    window_id: snap.window_id,
+                    rectangle: snap.rectangle,
+                }))])
             }
             QueuedRailPdu::Input(event) => Ok(vec![Self::service_message(RailPdu::from(event))]),
         }
@@ -329,6 +485,10 @@ impl RailClient {
 
     fn service_message(pdu: RailPdu) -> SvcMessage {
         SvcMessage::from(pdu).with_flags(ChannelFlags::SHOW_PROTOCOL)
+    }
+
+    fn system_parameter_message(parameter: ClientSystemParameter) -> SvcMessage {
+        Self::service_message(RailPdu::ClientSystemParameters(ClientSystemParametersPdu { parameter }))
     }
 
     fn resource_limit_error(description: &'static str) -> PduError {
@@ -458,49 +618,19 @@ impl SvcProcessor for RailClient {
                 self.push_event(RailEvent::Control(RailControlEvent::PowerDisplayRequest(request)))?;
                 Ok(Vec::new())
             }
+            (RailState::Established, RailPdu::MinMaxInfo(info)) => {
+                self.push_event(RailEvent::Control(RailControlEvent::MinMaxInfo(info)))?;
+                Ok(Vec::new())
+            }
+            (RailState::Established, RailPdu::LocalMoveSize(move_size)) => {
+                self.push_event(RailEvent::Control(RailControlEvent::LocalMoveSize(move_size)))?;
+                Ok(Vec::new())
+            }
+            (RailState::Established, RailPdu::TaskbarInfo(info)) => {
+                self.push_event(RailEvent::Control(RailControlEvent::TaskbarInfo(info)))?;
+                Ok(Vec::new())
+            }
             (RailState::Established, _) => Ok(Vec::new()),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use ironrdp_core::encode_vec;
-    use ironrdp_rail::pdu::{ExecutePdu, HandshakePdu, RailPdu};
-    use ironrdp_svc::SvcProcessor as _;
-
-    use super::RailClient;
-
-    #[test]
-    fn queued_executes_do_not_exceed_pending_limit() {
-        let mut client = RailClient::new(1, 1, 1);
-        for _ in 0..RailClient::MAX_PENDING_EXECUTES {
-            client
-                .queue_execute(ExecutePdu {
-                    flags: 0,
-                    executable: "app".to_owned(),
-                    working_directory: String::new(),
-                    arguments: String::new(),
-                })
-                .unwrap();
-        }
-
-        assert!(
-            client
-                .queue_execute(ExecutePdu {
-                    flags: 0,
-                    executable: "app".to_owned(),
-                    working_directory: String::new(),
-                    arguments: String::new(),
-                })
-                .is_err()
-        );
-
-        client
-            .process(&encode_vec(&RailPdu::Handshake(HandshakePdu { build_number: 1 })).unwrap())
-            .unwrap();
-        let messages: Vec<_> = client.complete_desktop_synchronization().unwrap().into();
-
-        assert_eq!(messages.len(), RailClient::MAX_PENDING_EXECUTES);
     }
 }

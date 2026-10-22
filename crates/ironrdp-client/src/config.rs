@@ -122,6 +122,7 @@ pub struct Config {
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
     pub(crate) audio_quality_mode: AudioQualityMode,
     pub(crate) rail_client_status_flags: Option<u32>,
+    pub(crate) rail_system_parameters: Option<Vec<ironrdp_rail::pdu::ClientSystemParameter>>,
     /// Initial RemoteApp launch queued after the RAIL handshake.
     pub(crate) rail_initial_execute: Option<ExecutePdu>,
 
@@ -317,6 +318,7 @@ impl fmt::Debug for Config {
         #[cfg(any(feature = "sound", feature = "rdpdr"))]
         s.field("audio_quality_mode", &self.audio_quality_mode);
         s.field("rail_client_status_flags", &self.rail_client_status_flags);
+        s.field("rail_system_parameters", &self.rail_system_parameters);
         #[cfg(feature = "dvc-pipe-proxy")]
         s.field("dvc_pipe_proxies", &self.dvc_pipe_proxies);
         #[cfg(all(windows, feature = "dvc-com-plugin"))]
@@ -831,6 +833,7 @@ pub struct ConfigBuilder {
     remote_application_program: Option<String>,
     rail_support_level: Option<ironrdp_pdu::rdp::capability_sets::RailSupportLevel>,
     rail_client_status_flags: Option<u32>,
+    rail_system_parameters: Option<Vec<ironrdp_rail::pdu::ClientSystemParameter>>,
 
     transport: TransportKind,
     #[cfg(feature = "udp")]
@@ -1161,6 +1164,14 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_rail_client_status_flags(mut self, flags: u32) -> Self {
         self.rail_client_status_flags = Some(flags);
+        self
+    }
+
+    /// Overrides the RAIL client system parameters sent during channel initialization,
+    /// typically with the local desktop's values.
+    #[must_use]
+    pub fn with_rail_system_parameters(mut self, parameters: Vec<ironrdp_rail::pdu::ClientSystemParameter>) -> Self {
+        self.rail_system_parameters = Some(parameters);
         self
     }
 
@@ -2187,6 +2198,7 @@ impl ConfigBuilder {
             #[cfg(any(feature = "sound", feature = "rdpdr"))]
             audio_quality_mode: self.audio_quality_mode.unwrap_or_default(),
             rail_client_status_flags: self.rail_client_status_flags,
+            rail_system_parameters: self.rail_system_parameters,
             rail_initial_execute,
             #[cfg(feature = "dvc-pipe-proxy")]
             dvc_pipe_proxies: self.dvc_pipe_proxies,
