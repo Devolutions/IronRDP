@@ -5011,7 +5011,7 @@ impl RtsOutRecycleA6 {
 pub enum RpchInChannelRecycleState {
     /// The default IN channel is open.
     Open,
-    /// IN_R1/A1 was produced and IN_R1/A4 is expected.
+    /// IN_R1/A1 was produced and IN_R1/A4 or IN_R2/A4 is expected.
     AwaitingA4,
     /// IN_R1/A5 was produced and must be sent before the channel is reopened.
     AwaitingA5,
@@ -5383,11 +5383,11 @@ impl RpchV2ChannelRecycle<'_> {
         Ok(pdu)
     }
 
-    /// Accepts IN_R1/A4 and returns IN_R1/A5 for the predecessor IN channel.
+    /// Accepts IN_R1/A4 or IN_R2/A4 and returns IN_R1/A5 for the predecessor IN channel.
     ///
     /// The returned PDU must be sent after predecessor-channel PDUs have drained.
     ///
-    /// [MS-RPCH] 2.2.4.13, 2.2.4.14, and 3.2.2.5.5.
+    /// [MS-RPCH] 2.2.4.13, 2.2.4.14, 2.2.4.21, and 3.2.2.5.5.
     pub fn receive_in_recycle_a4(&mut self, pdu: &[u8]) -> Result<Vec<u8>, RpchChannelRecycleError> {
         if self.setup.recycle_in_state != RpchInChannelRecycleState::AwaitingA4 {
             return self.fail(RpchChannelRecycleError::InvalidInState {
@@ -5396,9 +5396,13 @@ impl RpchV2ChannelRecycle<'_> {
             });
         }
 
-        let a4 = match decode_rts_in_recycle_a4(pdu) {
-            Ok(a4) => a4,
-            Err(error) => return self.fail(error.into()),
+        let a4 = if decode_rts_in_recycle_r2_a4(pdu).is_ok() {
+            None
+        } else {
+            match decode_rts_in_recycle_a4(pdu) {
+                Ok(a4) => Some(a4),
+                Err(error) => return self.fail(error.into()),
+            }
         };
         let successor_channel_cookie = match self.setup.successor_in_channel_cookie {
             Some(cookie) => cookie,
@@ -5411,8 +5415,11 @@ impl RpchV2ChannelRecycle<'_> {
         };
         let a5 = encode_rts_in_recycle_a5(successor_channel_cookie)?;
         self.setup.in_channel_cookie = successor_channel_cookie;
-        self.setup.in_channel_ping_timeout = Some(a4.connection_timeout);
-        self.setup.peer_receive_window_size = Some(a4.receive_window_size);
+        // IN_R2/A4 carries no new window or timeout, so the existing values remain in force.
+        if let Some(a4) = a4 {
+            self.setup.in_channel_ping_timeout = Some(a4.connection_timeout);
+            self.setup.peer_receive_window_size = Some(a4.receive_window_size);
+        }
         self.setup.successor_in_channel_cookie = None;
         self.setup.recycle_in_state = RpchInChannelRecycleState::AwaitingA5;
         Ok(a5)
@@ -6421,6 +6428,19 @@ pub fn decode_rts_in_recycle_a4(source: &[u8]) -> Result<RtsInRecycleA4, RpcPduE
         receive_window_size,
         connection_timeout,
     })
+}
+
+/// Decodes and validates [MS-RPCH] 2.2.4.21, "IN_R2/A4 RTS PDU".
+pub(crate) fn decode_rts_in_recycle_r2_a4(source: &[u8]) -> Result<(), RpcPduError> {
+    let body = decode_rts_pdu(source, RTS_FLAG_NONE, 1, 8)?;
+    let destination = decode_rts_u32_command(body, 0, RTS_COMMAND_DESTINATION)?;
+    if destination != RTS_DESTINATION_FD_CLIENT {
+        return Err(RpcPduError::UnexpectedRtsDestination {
+            expected: RTS_DESTINATION_FD_CLIENT,
+            actual: destination,
+        });
+    }
+    Ok(())
 }
 
 fn encode_rts_pdu(flags: u16, command_count: u16, commands: Vec<u8>) -> Result<Vec<u8>, RpcPduError> {

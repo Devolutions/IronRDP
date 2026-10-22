@@ -1262,7 +1262,9 @@ where
             let recycle = self.recycling()?;
             (recycle.in_state(), recycle.out_state())
         };
-        if in_state == RpchInChannelRecycleState::AwaitingA4 && decode_rts_in_recycle_a4(pdu).is_ok() {
+        if in_state == RpchInChannelRecycleState::AwaitingA4
+            && (decode_rts_in_recycle_a4(pdu).is_ok() || crate::rpc::decode_rts_in_recycle_r2_a4(pdu).is_ok())
+        {
             return self.finish_in_recycling(pdu).await;
         }
         match out_state {
@@ -2503,6 +2505,18 @@ mod tests {
         // The proxy finishes once the default IN channel closes.
         drop(session);
         proxy.await.expect("proxy observed IN recycling");
+    }
+
+    #[tokio::test]
+    async fn rpch_session_recycles_in_r2_without_losing_data() {
+        // oracle: spec MS-RPCH §2.2.4.21 and §3.2.2.5.5.
+        let (mut session, proxy) = open_session(MockRpchScenario::RecycleInR2).await;
+        for round in 0..64u8 {
+            echo(&mut session, &[round; 2 * 1024]).await;
+        }
+        session.close().await.expect("close after IN_R2 recycling");
+        drop(session);
+        proxy.await.expect("proxy observed IN_R2 recycling");
     }
 
     #[tokio::test]

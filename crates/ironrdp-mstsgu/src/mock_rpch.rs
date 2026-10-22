@@ -37,6 +37,7 @@ pub(crate) enum MockRpchScenario {
     BasicAuthentication,
     /// The client recycles its IN channel once its bounded IN body runs low.
     RecycleIn,
+    RecycleInR2,
     /// The proxy recycles the OUT channel with the OUT_R1 sequence on the first send.
     RecycleOutR1,
     /// The proxy recycles the OUT channel with the OUT_R2 sequence on the first send.
@@ -365,10 +366,15 @@ async fn run_proxy(
                         return;
                     };
                     successor_in = Some((id, RtsCookie::new(cookie)));
-                    if write_all(&mut out, &rts_in_recycle_a4(PEER_RECEIVE_WINDOW, 120_000))
-                        .await
-                        .is_err()
-                    {
+                    // oracle: spec MS-RPCH §2.2.4.21: IN_R2/A4 contains only Destination(FDClient).
+                    let response = if matches!(scenario, MockRpchScenario::RecycleInR2) {
+                        vec![
+                            5, 0, 20, 3, 16, 0, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 13, 0, 0, 0, 0, 0, 0, 0,
+                        ]
+                    } else {
+                        rts_in_recycle_a4(PEER_RECEIVE_WINDOW, 120_000)
+                    };
+                    if write_all(&mut out, &response).await.is_err() {
                         return;
                     }
                 }
@@ -651,7 +657,9 @@ async fn run_proxy(
                     }
                     TSPROXY_CLOSE_CHANNEL_OPNUM | TSPROXY_CLOSE_TUNNEL_OPNUM => {
                         // The scripted recycle scenarios must have run before the client closes.
-                        if matches!(scenario, MockRpchScenario::RecycleIn) && !in_recycled {
+                        if matches!(scenario, MockRpchScenario::RecycleIn | MockRpchScenario::RecycleInR2)
+                            && !in_recycled
+                        {
                             return;
                         }
                         // A pending message call must be cancelled before the tunnel closes ([MS-TSGU] 3.6.5).
