@@ -41,15 +41,10 @@ impl H264DecoderFactory {
         use ironrdp_egfx::decode::{OpenH264Decoder, YuvMatrix};
 
         // MS-RDPEVOR video is converted from RGB with BT.601 (2.2.1.6).
-        Self::new(|| match OpenH264Decoder::new() {
-            Ok(decoder) => {
-                let decoder: Box<dyn H264Decoder> = Box::new(decoder.with_yuv_matrix(YuvMatrix::Bt601Limited));
-                Some(decoder)
-            }
-            Err(error) => {
-                warn!(%error, "Unable to create the OpenH264 decoder");
-                None
-            }
+        Self::new(|| {
+            create_or_warn("OpenH264", || {
+                OpenH264Decoder::new().map(|decoder| decoder.with_yuv_matrix(YuvMatrix::Bt601Limited))
+            })
         })
     }
 
@@ -59,21 +54,31 @@ impl H264DecoderFactory {
         use ironrdp_egfx_native::{MediaFoundationH264Decoder, YuvMatrix};
 
         // MS-RDPEVOR video is converted from RGB with BT.601 (2.2.1.6).
-        Self::new(|| match MediaFoundationH264Decoder::new(YuvMatrix::Bt601Limited) {
-            Ok(decoder) => {
-                let decoder: Box<dyn H264Decoder> = Box::new(decoder);
-                Some(decoder)
-            }
-            Err(error) => {
-                warn!(%error, "Unable to create the Media Foundation H.264 decoder");
-                None
-            }
+        Self::new(|| {
+            create_or_warn("Media Foundation", || {
+                MediaFoundationH264Decoder::new(YuvMatrix::Bt601Limited)
+            })
         })
     }
 
     /// Creates a decoder, or `None` when the backend is unavailable.
     pub fn create(&self) -> Option<Box<dyn H264Decoder>> {
         (self.0)()
+    }
+}
+
+/// Boxes the decoder `create` returns, or logs why `backend` is unavailable.
+#[cfg(any(feature = "openh264", windows))]
+fn create_or_warn<D: H264Decoder + 'static>(
+    backend: &str,
+    create: impl FnOnce() -> ironrdp_egfx::decode::DecoderResult<D>,
+) -> Option<Box<dyn H264Decoder>> {
+    match create() {
+        Ok(decoder) => Some(Box::new(decoder)),
+        Err(error) => {
+            warn!(%error, backend, "Unable to create the H.264 decoder");
+            None
+        }
     }
 }
 

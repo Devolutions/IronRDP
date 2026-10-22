@@ -213,7 +213,7 @@ impl Compositor {
         } else {
             MAX_BITMAP_CACHE_BYTES
         };
-        if cached_bytes > cap {
+        if cap < cached_bytes {
             debug!(
                 cached_bytes,
                 cap, "bitmap cache exceeds the MS-RDPEGFX cap; dropping it on reset"
@@ -254,7 +254,7 @@ impl Compositor {
     }
 
     /// Release a charge taken by [`Self::charge`].
-    fn release(&mut self, len: usize) {
+    pub(crate) fn release(&mut self, len: usize) {
         // Saturating rather than wrapping: an accounting slip must not underflow
         // into a huge budget that disables the limit entirely.
         self.allocated_bytes = self.allocated_bytes.saturating_sub(len);
@@ -264,14 +264,9 @@ impl Compositor {
     ///
     /// Refused when the compositor holds no canvas for the surface (it was too large or over budget)
     /// or the reservation would exceed the budget. A reset releases every reservation, so the owner
-    /// drops these buffers then; otherwise it returns the bytes with [`Self::release_reserved`].
+    /// drops these buffers then; otherwise it returns the bytes with [`Self::release`].
     pub(crate) fn reserve_for_surface(&mut self, id: u16, len: usize) -> bool {
         self.surfaces.contains_key(&id) && self.charge(len)
-    }
-
-    /// Return bytes taken by [`Self::reserve_for_surface`].
-    pub(crate) fn release_reserved(&mut self, len: usize) {
-        self.release(len);
     }
 
     /// Handle `CreateSurface`: allocate a zeroed RGBA8888 canvas.
@@ -1244,6 +1239,29 @@ mod tests {
 
         c.reset(1920, 1080);
         assert!(c.cache.is_empty(), "a cache over the cap does not survive the reset");
+        assert_eq!(c.allocated_bytes, 0);
+    }
+
+    /// A server confirming a 16 MB cache drops a larger one on reset.
+    // oracle: spec MS-RDPEGFX §3.3.1.4
+    #[test]
+    fn reset_drops_a_cache_over_the_small_cache_cap() {
+        const EDGE: u16 = 2048; // 16 MiB per surface, and per full-surface tile
+        let mut c = Compositor::default();
+        c.reset(1920, 1080);
+        c.create_surface(1, EDGE, EDGE);
+        for slot in 0..2 {
+            c.surface_to_cache(1, slot, &rect(0, 0, EDGE, EDGE));
+        }
+        let cached: usize = c.cache.values().map(|tile| tile.data.len()).sum();
+        assert!(SMALL_BITMAP_CACHE_BYTES < cached && cached < MAX_BITMAP_CACHE_BYTES);
+
+        c.reset(1920, 1080);
+        assert_eq!(c.cache.len(), 2, "a 32 MiB cache is within the 100 MB cap");
+
+        c.set_small_bitmap_cache(true);
+        c.reset(1920, 1080);
+        assert!(c.cache.is_empty(), "a 32 MiB cache exceeds the 16 MB cap");
         assert_eq!(c.allocated_bytes, 0);
     }
 

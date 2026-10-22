@@ -360,6 +360,7 @@ fn test_decode_uses_bt709_chroma_matrix() {
 /// The main and auxiliary views of a picture go through one OpenH264 encoder and one decoder,
 /// as MS-RDPEGFX 2.2.4.5 requires, and recombine into a picture closer to the original than
 /// the main view alone.
+// oracle: spec MS-RDPEGFX §2.2.4.5
 #[rstest::rstest]
 #[case::avc444(ironrdp_egfx::avc444::Avc444Layout::V1)]
 #[case::avc444v2(ironrdp_egfx::avc444::Avc444Layout::V2)]

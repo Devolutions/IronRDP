@@ -256,6 +256,7 @@ fn bytes(message: &DvcMessage) -> Vec<u8> {
 // Tests
 // ============================================================================
 
+// oracle: spec MS-RDPEGFX §3.3.8.3.2
 #[rstest]
 #[case::avc444(Avc444Layout::V1)]
 #[case::avc444v2(Avc444Layout::V2)]
@@ -276,6 +277,7 @@ fn views_recombine_into_the_original_picture(#[case] layout: Avc444Layout) {
     assert!(max_difference(&subsampled, &original) > 50);
 }
 
+// oracle: spec MS-RDPEGFX §3.3.8.3.1
 #[test]
 fn a_converted_picture_reads_back_unchanged() {
     let original = checkerboard(0);
@@ -284,6 +286,7 @@ fn a_converted_picture_reads_back_unchanged() {
     assert!(difference <= TOLERANCE, "difference {difference}");
 }
 
+// oracle: spec MS-RDPEGFX §3.3.8.3.2
 #[rstest]
 #[case::avc444(Avc444Layout::V1)]
 #[case::avc444v2(Avc444Layout::V2)]
@@ -318,6 +321,7 @@ fn a_main_view_keeps_luma_outside_its_rectangles(#[case] layout: Avc444Layout) {
     assert!(max_difference(pixel(1), &[200; 3]) <= TOLERANCE, "{:?}", pixel(1));
 }
 
+// oracle: mutant the AVC444 picture allocated outside the compositor budget
 #[test]
 fn avc444_on_a_surface_the_compositor_refused_is_dropped() {
     use ironrdp_egfx::pdu::{
@@ -377,6 +381,7 @@ fn avc444_on_a_surface_the_compositor_refused_is_dropped() {
     assert_eq!(client.dropped_updates(), 1);
 }
 
+// oracle: mutant AVC444 sets dropped or not negotiated with a YUV decoder
 #[test]
 fn the_client_negotiates_avc444_with_a_yuv_decoder() {
     let session = Session::new();
@@ -392,6 +397,7 @@ fn the_client_negotiates_avc444_with_a_yuv_decoder() {
     assert!(session.server.supports_avc444());
 }
 
+// oracle: spec MS-RDPEGFX §2.2.4.5
 #[rstest]
 #[case::avc444(Avc444Layout::V1)]
 #[case::avc444v2(Avc444Layout::V2)]
@@ -413,6 +419,7 @@ fn luma_and_chroma_round_trip_through_the_server(#[case] layout: Avc444Layout) {
     assert!(difference <= TOLERANCE, "difference {difference}");
 }
 
+// oracle: spec MS-RDPEGFX §2.2.4.6
 #[test]
 fn a_chroma_update_completes_an_earlier_luma_update() {
     let layout = Avc444Layout::V2;
@@ -432,6 +439,7 @@ fn a_chroma_update_completes_an_earlier_luma_update() {
     assert!(max_difference(&session.canvas, &original) <= TOLERANCE);
 }
 
+// oracle: spec MS-RDPEGFX §3.3.8.3.2
 #[rstest]
 #[case::avc444(Avc444Layout::V1)]
 #[case::avc444v2(Avc444Layout::V2)]
@@ -482,6 +490,7 @@ fn an_update_only_paints_its_region_rectangles(#[case] layout: Avc444Layout) {
     }
 }
 
+// oracle: spec MS-RDPEGFX §2.2.3.3
 #[test]
 fn avc444_without_a_yuv_decoder_is_left_to_the_handler() {
     /// A decoder that only returns RGBA.

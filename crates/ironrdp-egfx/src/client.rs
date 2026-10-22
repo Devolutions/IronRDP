@@ -901,7 +901,7 @@ impl GraphicsPipelineClient {
 
     fn release_avc444_frame(&mut self, surface_id: u16) {
         if let Some(frame) = self.avc444_frames.remove(&surface_id) {
-            self.compositor.release_reserved(frame.allocated_bytes());
+            self.compositor.release(frame.allocated_bytes());
         }
     }
 
@@ -993,7 +993,7 @@ impl GraphicsPipelineClient {
                     .as_ref()
                     .is_some_and(|decoder| decoder.supports_yuv420())
                 {
-                    debug!("No H.264 decoder returning YUV planes, forwarding AVC444 to handler");
+                    trace!("No H.264 decoder returning YUV planes, forwarding AVC444 to handler");
                     self.handler.on_unhandled_pdu(&GfxPdu::WireToSurface1(pdu));
                     return Ok(());
                 }

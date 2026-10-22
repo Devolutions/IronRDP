@@ -1071,6 +1071,7 @@ fn null_decoder() -> Option<H264DecoderFactory> {
     Some(H264DecoderFactory::new(|| None))
 }
 
+// oracle: mutant the graphics pipeline default ignoring the decoder or the opt-outs
 #[test]
 fn graphics_pipeline_follows_the_h264_decoder() {
     let config = complete_builder().build().expect("default config");
@@ -1108,6 +1109,7 @@ fn graphics_pipeline_follows_the_h264_decoder() {
     }
 }
 
+// oracle: mutant the configured factory dropped or not called
 #[test]
 fn the_h264_decoder_factory_is_shared_and_replaceable() {
     let config = complete_builder().build().expect("default config");
@@ -1144,6 +1146,7 @@ fn the_h264_decoder_factory_is_shared_and_replaceable() {
     assert!(config.channels().h264_decoder.is_none());
 }
 
+// oracle: reference mstsc videoplaybackmode:i:0
 #[test]
 fn video_playback_mode_zero_declines_video() {
     let config = complete_builder()

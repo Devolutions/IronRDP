@@ -112,7 +112,10 @@ impl Yuv444Frame {
 
     /// Bytes [`Self::new`] allocates for a `width` by `height` picture.
     pub fn allocation_size(width: u16, height: u16) -> usize {
-        3 * usize::from(width).next_multiple_of(MACROBLOCK) * usize::from(height).next_multiple_of(MACROBLOCK)
+        let plane = usize::from(width).next_multiple_of(MACROBLOCK) * usize::from(height).next_multiple_of(MACROBLOCK);
+        plane // Y
+            + plane // U
+            + plane // V
     }
 
     /// Bytes this picture holds.
