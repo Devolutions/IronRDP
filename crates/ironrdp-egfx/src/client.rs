@@ -477,9 +477,11 @@ impl GraphicsPipelineClient {
     /// Returns `None` before negotiation, while resetting, after closure, or for unsupported versions.
     /// Send the returned PDU on this graphics channel before processing more input; if sending fails, recreate the channel.
     /// Graphics state is cleared immediately, and incoming graphics are ignored until the advertised capabilities are confirmed.
+    /// The decoded-frame count remains connection-wide, as required by [MS-RDPEGFX 2.2.2.13] "RDPGFX_FRAME_ACKNOWLEDGE_PDU".
     /// This does not reset other virtual channels or guarantee a particular codec or keyframe.
     ///
     /// [MS-RDPEGFX 3.3.5.19]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/a720af02-0a47-44e2-a934-dc8534062b44
+    /// [MS-RDPEGFX 2.2.2.13]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/0241e258-77ef-4a58-b426-5039ed6296ce
     #[must_use]
     pub fn request_protocol_reset(&mut self) -> Option<GfxPdu> {
         if !self.is_active() {
@@ -510,7 +512,6 @@ impl GraphicsPipelineClient {
             decoder.reset();
         }
         self.current_frame_id = None;
-        self.total_frames_decoded = 0;
         // ZGFX history still decodes packets already in flight before confirmation.
         Some(pdu)
     }

@@ -190,7 +190,7 @@ fn client_keeps_avc_caps_with_decoder() {
     assert_eq!(caps_pdu.0[1].version, CapabilityVersion::V8);
 }
 
-// oracle: spec MS-RDPEGFX §3.3.5.19 and §2.2.2.19.
+// oracle: spec MS-RDPEGFX §3.3.5.19, §2.2.2.19, and the connection-wide counter in §2.2.2.13.
 #[test]
 fn protocol_reset_ignores_old_graphics_until_confirmation() {
     let mut compressor = Compressor::new();
@@ -220,7 +220,7 @@ fn protocol_reset_ignores_old_graphics_until_confirmation() {
     assert_eq!(advertise.0[0].parsed().unwrap(), Some(caps));
     assert!(!client.is_active());
     assert!(client.get_surface(7).is_none());
-    assert_eq!(client.total_frames_decoded(), 0);
+    assert_eq!(client.total_frames_decoded(), 1);
     assert!(client.request_protocol_reset().is_none());
     client.process(0, &encode(&create)).unwrap();
     assert!(client.get_surface(7).is_none());
@@ -237,7 +237,7 @@ fn protocol_reset_ignores_old_graphics_until_confirmation() {
         panic!("fresh frames must be acknowledged after confirmation");
     };
     assert_eq!(ack.frame_id, 42);
-    assert_eq!(ack.total_frames_decoded, 1);
+    assert_eq!(ack.total_frames_decoded, 2);
     client.close(0);
     assert!(client.request_protocol_reset().is_none());
 }
