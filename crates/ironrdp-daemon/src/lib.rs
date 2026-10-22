@@ -3,6 +3,8 @@
 
 mod clipboard;
 pub mod daemon;
+#[cfg(windows)]
+pub mod drives;
 pub mod known_certificates;
 pub mod logbuf;
 pub mod now;

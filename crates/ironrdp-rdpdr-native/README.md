@@ -19,4 +19,6 @@ The Windows implementation is intentionally layered so protocol code remains
 platform independent in `ironrdp-rdpdr`.
 
 `WindowsRdpdrBackendFactory` configures zero or more `RedirectedDrive`s and optional default-printer discovery.
-Multi-drive registry management remains outside this native backend.
+A redirected drive root is a volume root (`C:\`) or a directory on one, opened without following reparse points.
+`WindowsRdpdrBackendFactory::with_logical_drives` registers the drive letters (device IDs `1` to `26`) and announces the selected letters mapped when each connection starts, without probing their volumes.
+`LogicalDriveWatcher` reports volumes mounted and removed during a session, from `WM_DEVICECHANGE` broadcasts and a `GetLogicalDrives` poll for network drives; hosts forward its changes as dynamic drive announcements and removals.

@@ -11,4 +11,6 @@
 
 pub mod app;
 pub mod cli;
+#[cfg(windows)]
+pub mod drives;
 mod keymap;

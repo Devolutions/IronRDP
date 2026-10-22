@@ -7,8 +7,8 @@ use anyhow::Context as _;
 use clap::Parser;
 use clap::clap_derive::ValueEnum;
 use ironrdp::client::config::{
-    ClipboardType as ResolvedClipboardType, Config, ConfigBuilder, Destination, DvcProxyInfo, MissingField,
-    TransportKind, VmConnectMode,
+    ClipboardType as ResolvedClipboardType, Config, ConfigBuilder, Destination, DriveRedirection, DvcProxyInfo,
+    MissingField, TransportKind, VmConnectMode,
 };
 use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, client_codecs_capabilities};
 use ironrdp_cfg::PropertySetExt as _;
@@ -299,6 +299,30 @@ struct Args {
     #[clap(long)]
     printer: bool,
 
+    /// Redirect a local directory as a drive named NAME (repeatable).
+    ///
+    /// PATH may be a volume root (`E:\`) or a directory on one. Windows only.
+    #[clap(long = "drive", value_name = "NAME,PATH")]
+    drives: Vec<NamedDrive>,
+
+    /// Redirect every local drive, including drives connected later (`drivestoredirect:s:*`).
+    ///
+    /// Windows only.
+    #[clap(long = "drives")]
+    all_drives: bool,
+
+    /// Redirect the user profile directory as a drive named `home`.
+    ///
+    /// Windows only.
+    #[clap(long)]
+    home_drive: bool,
+
+    /// Redirect drives connected during the session, such as USB sticks (`DynamicDrives`).
+    ///
+    /// Windows only.
+    #[clap(long)]
+    dynamic_drives: bool,
+
     /// Redirect a local serial port, such as `COM3` (repeatable); `all` redirects every serial port.
     ///
     /// Without this or `--parallel`, the `.rdp` `redirectcomports:i:1` property redirects every
@@ -311,6 +335,36 @@ struct Args {
     /// Ignored on other platforms.
     #[clap(long, value_name = "PORT")]
     parallel: Vec<String>,
+}
+
+/// A local directory redirected as a named drive (`--drive NAME,PATH`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamedDrive {
+    /// Drive name shown in the session.
+    pub name: String,
+    /// Local directory exposed as the drive root.
+    pub path: PathBuf,
+}
+
+impl core::str::FromStr for NamedDrive {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (name, path) = s
+            .split_once(',')
+            .context("missing ',' delimiter in drive specification (expected NAME,PATH)")?;
+        let name = name.trim();
+        if name.is_empty() || name.contains('\0') {
+            anyhow::bail!("drive name must be nonempty and must not contain NUL");
+        }
+        if path.is_empty() {
+            anyhow::bail!("drive path must not be empty");
+        }
+        Ok(Self {
+            name: name.to_owned(),
+            path: PathBuf::from(path),
+        })
+    }
 }
 
 /// Which local ports of one kind to redirect.
@@ -369,6 +423,7 @@ pub struct ViewerConfig {
     rpc: bool,
     rpc_endpoint: Option<String>,
     redirect_printers: bool,
+    named_drives: Vec<NamedDrive>,
     ports: PortOptions,
 }
 
@@ -407,6 +462,11 @@ impl ViewerConfig {
             if args.rdp_file.is_some() || dump_rdp.is_some() {
                 anyhow::bail!("--rpc cannot be combined with --rdp-file or --dump-rdp");
             }
+            if !args.drives.is_empty() || args.all_drives || args.home_drive || args.dynamic_drives {
+                anyhow::bail!(
+                    "--rpc cannot be combined with drive options; pass drivestoredirect in the connect properties"
+                );
+            }
             return Ok(Self {
                 builder: ConfigBuilder::new(),
                 log_file,
@@ -414,6 +474,7 @@ impl ViewerConfig {
                 rpc: true,
                 rpc_endpoint: args.rpc_endpoint,
                 redirect_printers: false,
+                named_drives: Vec::new(),
                 ports: PortOptions::default(),
             });
         }
@@ -437,6 +498,30 @@ impl ViewerConfig {
             };
         }
 
+        if let Some(value) = properties.drives_to_redirect() {
+            for entry in DriveRedirection::unrecognized_entries(value) {
+                eprintln!("Warning: ignoring unsupported drivestoredirect entry {entry:?}");
+            }
+        }
+        // `--drives` and `--dynamic-drives` override the `.rdp` drive selection; named drives
+        // (`--drive`, `--home-drive`) have no standard `.rdp` representation.
+        let drive_redirection = match (args.all_drives, args.dynamic_drives) {
+            (true, _) => Some(DriveRedirection::all()),
+            (false, true) => Some(properties.drive_redirection().unwrap_or_default().with_dynamic(true)),
+            (false, false) => properties.drive_redirection(),
+        };
+        let mut named_drives = args.drives.clone();
+        if args.home_drive {
+            let home = std::env::var_os("USERPROFILE")
+                .or_else(|| std::env::var_os("HOME"))
+                .context("--home-drive requires USERPROFILE or HOME")?;
+            named_drives.push(NamedDrive {
+                name: "home".to_owned(),
+                path: PathBuf::from(home),
+            });
+        }
+        let cli_drives = args.all_drives || args.dynamic_drives || !named_drives.is_empty();
+
         // The library overlays everything expressible as a `.rdp` property: destination, credentials,
         // transport, channels, desktop size, audio, DVC proxies, etc.
         let builder = ConfigBuilder::from_property_set(&properties)?;
@@ -459,6 +544,12 @@ impl ViewerConfig {
         if redirect_printers {
             builder = builder.with_rdpdr(true);
         }
+        if let Some(drive_redirection) = drive_redirection {
+            builder = builder.with_drive_redirection(drive_redirection);
+        }
+        if cli_drives {
+            builder = builder.with_rdpdr(true);
+        }
         if ports.is_enabled() {
             builder = builder.with_rdpdr(true).with_ports(true);
         }
@@ -470,6 +561,7 @@ impl ViewerConfig {
             rpc: false,
             rpc_endpoint: None,
             redirect_printers,
+            named_drives,
             ports,
         })
     }
@@ -495,6 +587,11 @@ impl ViewerConfig {
     /// Whether the session should redirect the local default printer.
     pub fn redirect_printers(&self) -> bool {
         self.redirect_printers
+    }
+
+    /// Local directories requested as named drives (`--drive`, `--home-drive`).
+    pub fn named_drives(&self) -> &[NamedDrive] {
+        &self.named_drives
     }
 
     /// Serial and parallel ports the session should redirect.

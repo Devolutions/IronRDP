@@ -7,7 +7,7 @@ use std::sync::Arc;
 use ironrdp_cfg::GatewayCredentialsSource;
 use ironrdp_cfg::PropertySetExt as _;
 use ironrdp_client::config::{
-    AudioQualityMode, ClipboardType, ConfigBuilder, Destination, Transport, UdpVersion, VmConnectMode,
+    AudioQualityMode, ClipboardType, ConfigBuilder, Destination, DriveRedirection, Transport, UdpVersion, VmConnectMode,
 };
 #[cfg(windows)]
 use ironrdp_client::config::{MissingField, TransportKind};
@@ -493,6 +493,152 @@ ClearTextPassword:s:test-pass
             .rdpdr
             .enabled
     );
+}
+
+const DRIVE_TEST_RDP: &str = "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\n";
+
+#[test]
+fn rdp_file_selects_drives_to_redirect() {
+    let config = parse_config_from_rdp(
+        &format!("{DRIVE_TEST_RDP}drivestoredirect:s:C:\\;e:\\;DynamicDrives\nredirectdrives:i:1\n"),
+        &[],
+    );
+
+    let drives = config.channels().rdpdr.drives;
+    assert!(!drives.redirects_all());
+    assert!(drives.redirects_dynamic());
+    assert_eq!(drives.letters().collect::<String>(), "CE");
+}
+
+#[test]
+fn legacy_redirect_drives_selects_every_drive() {
+    let config = parse_config_from_rdp(
+        &format!("{DRIVE_TEST_RDP}drivestoredirect:s:\nredirectdrives:i:1\n"),
+        &[],
+    );
+    assert_eq!(config.channels().rdpdr.drives, DriveRedirection::all());
+
+    let config = parse_config_from_rdp(&format!("{DRIVE_TEST_RDP}drivestoredirect:s:\n"), &[]);
+    assert!(config.channels().rdpdr.drives.is_empty());
+}
+
+#[test]
+fn drive_cli_flags_override_the_rdp_file() {
+    let rdp = format!("{DRIVE_TEST_RDP}drivestoredirect:s:C:\\\n");
+
+    let config = parse_config_from_rdp(&rdp, &["--drives"]);
+    assert_eq!(config.channels().rdpdr.drives, DriveRedirection::all());
+    assert_eq!(config.properties().drives_to_redirect(), Some("*"));
+
+    let config = parse_config_from_rdp(&rdp, &["--dynamic-drives"]);
+    let drives = config.channels().rdpdr.drives;
+    assert!(drives.redirects_dynamic());
+    assert_eq!(drives.letters().collect::<String>(), "C");
+    assert_eq!(config.properties().drives_to_redirect(), Some(r"C:\;DynamicDrives"));
+
+    let config = parse_config_from_rdp(&format!("{DRIVE_TEST_RDP}ironrdp_rdpdr:i:0\n"), &["--dynamic-drives"]);
+    assert!(config.channels().rdpdr.enabled);
+}
+
+#[test]
+fn named_drive_cli_options_are_collected() {
+    let viewer = parse_viewer_config_from_rdp(
+        DRIVE_TEST_RDP,
+        &[
+            "--drive",
+            r"Data,D:\data,2026",
+            "--drive",
+            r"tmp,C:\Temp",
+            "--home-drive",
+        ],
+    );
+
+    let drives = viewer.named_drives();
+    assert_eq!(drives.len(), 3);
+    assert_eq!(drives[0].name, "Data");
+    assert_eq!(drives[0].path, PathBuf::from(r"D:\data,2026"));
+    assert_eq!(drives[1].name, "tmp");
+    assert_eq!(drives[2].name, "home");
+    assert!(!drives[2].path.as_os_str().is_empty());
+    assert!(viewer.into_config().expect("valid config").channels().rdpdr.enabled);
+
+    for invalid in ["Data", r",C:\", "Data,"] {
+        assert!(
+            ViewerConfig::parse_from(["ironrdp-viewer", "--drive", invalid]).is_err(),
+            "{invalid}"
+        );
+    }
+
+    // RPC hosts take drive selection from connect properties, so drive flags are rejected.
+    for flags in [
+        &["--drives"][..],
+        &["--dynamic-drives"],
+        &["--home-drive"],
+        &["--drive", r"Data,C:\"],
+    ] {
+        let args = ["ironrdp-viewer", "--rpc"].into_iter().chain(flags.iter().copied());
+        assert!(ViewerConfig::parse_from(args).is_err(), "{flags:?}");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn named_drives_are_validated_before_connecting() {
+    use ironrdp_client::rdp::RdpInputSender;
+    use ironrdp_viewer::cli::NamedDrive;
+    use ironrdp_viewer::drives::ViewerDrives;
+
+    let (input_sender, _input_receiver) = RdpInputSender::channel(1);
+    let windows_directory = PathBuf::from(std::env::var("SystemRoot").expect("SystemRoot is set on Windows"));
+    let drive = |name: &str, path: &std::path::Path| NamedDrive {
+        name: name.to_owned(),
+        path: path.to_owned(),
+    };
+    let factory_with = |selection: DriveRedirection, drives: Vec<NamedDrive>| {
+        ViewerDrives::new(selection, drives).backend_factory(&input_sender)
+    };
+    let factory = |drives: Vec<NamedDrive>| factory_with(DriveRedirection::default(), drives);
+
+    let (valid, watcher) = factory(vec![drive("Data", &windows_directory)]).expect("valid named drive");
+    assert_eq!(valid.initial_drives(), vec![(27, "Data".to_owned())]);
+    assert!(watcher.is_none());
+
+    let rejected = [
+        // Names are case-insensitive.
+        vec![
+            drive("Data", &windows_directory),
+            drive("data", &windows_directory.join("System32")),
+        ],
+        // A root may be redirected only once.
+        vec![drive("One", &windows_directory), drive("Two", &windows_directory)],
+        // Missing directories, files, and network shares cannot be drive roots.
+        vec![drive("Missing", &windows_directory.join("ironrdp-missing-directory"))],
+        vec![drive("File", &windows_directory.join("notepad.exe"))],
+        vec![drive(
+            "Share",
+            std::path::Path::new(r"\\localhost\ironrdp-missing-share"),
+        )],
+    ];
+    for drives in rejected {
+        let names = drives.iter().map(|drive| drive.name.clone()).collect::<Vec<_>>();
+        assert!(factory(drives).is_err(), "{names:?}");
+    }
+
+    // Drive-letter names belong to logical drives once drive letters are redirected.
+    assert!(factory(vec![drive("C:", &windows_directory)]).is_ok());
+    assert!(factory_with(DriveRedirection::parse("D"), vec![drive("C:", &windows_directory)]).is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn rdpdr_disabled_in_the_rdp_file_drops_drive_letters() {
+    let config = parse_config_from_rdp(
+        &format!("{DRIVE_TEST_RDP}ironrdp_rdpdr:i:0\ndrivestoredirect:s:*\n"),
+        &[],
+    );
+    let rdpdr = &config.channels().rdpdr;
+    assert!(!rdpdr.enabled);
+    assert!(ironrdp_viewer::drives::ViewerDrives::from_rdpdr_config(rdpdr, Vec::new()).is_empty());
 }
 
 #[test]
