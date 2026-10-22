@@ -30,6 +30,7 @@ ironrdp-connector = { path = "../ironrdp-connector", version = "0.10" }
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
 ironrdp-daemon = { path = "../ironrdp-daemon", version = "0.1" }
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.8" }
+ironrdp-egfx = { path = "../ironrdp-egfx", version = "0.3" }
 ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
 ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" }
@@ -50,6 +51,7 @@ windows = { version = "0.62", features = [
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Devices_Properties",
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Media_KernelStreaming",
     "Win32_Security_Credentials",
@@ -61,6 +63,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Performance",
     "Win32_System_Registry",
     "Win32_System_Variant",
+    "Win32_UI_Accessibility",
     "Win32_UI_Controls",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
@@ -72,6 +75,7 @@ windows-core = "0.62"
 
 [target.'cfg(windows)'.dev-dependencies]
 proptest.workspace = true
+rstest.workspace = true
 
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3.0"
