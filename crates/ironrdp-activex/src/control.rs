@@ -4,7 +4,7 @@ use core::mem::ManuallyDrop;
 use core::ptr;
 use core::slice;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -140,7 +140,7 @@ use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     BS_PUSHBUTTON, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows, GA_ROOT, GA_ROOTOWNER,
     GWL_EXSTYLE, GWL_STYLE, GWLP_HWNDPARENT, GWLP_USERDATA, GetAncestor, GetClassNameW, GetClientRect, GetCursorPos,
-    GetDlgItem, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
+    GetDlgItem, GetForegroundWindow, GetMessageExtraInfo, GetParent, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
     GetWindowThreadProcessId, HMENU, HWND_MESSAGE, IsIconic, IsWindow, IsWindowVisible, KillTimer, PT_PEN, PT_TOUCH,
     PostMessageW, RegisterClassW, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SW_HIDE,
     SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOZORDER,
@@ -198,6 +198,11 @@ const NATIVE_MSTSC_LAYOUT_TIMER_ID: usize = 0x4952_4451;
 const NATIVE_MSTSC_LAYOUT_POLL_MILLISECONDS: u32 = 100;
 const PROJECTED_RAIL_INPUT_RETRY_TIMER_ID: usize = 0x4952_4452;
 const PROJECTED_RAIL_INPUT_RETRY_MILLISECONDS: u32 = 25;
+/// Retries RDPEI events that found the session input queue full.
+const RDPEI_INPUT_RETRY_TIMER_ID: usize = 0x4952_4456;
+const RDPEI_INPUT_RETRY_MILLISECONDS: u32 = 10;
+/// RDPEI events kept while the session input queue is full; the oldest are dropped beyond this.
+const MAX_PENDING_RDPEI_EVENTS: usize = 256;
 const ACTIVEX_DVC_PLUGIN_PATHS_PROPERTY: &str = "IronRdpDvcPluginPaths";
 const ACTIVEX_ENABLE_TLS_PROPERTY: &str = "IronRdpEnableTls";
 const ACTIVEX_AUTOLOGON_PROPERTY: &str = "IronRdpAutoLogon";
@@ -8293,6 +8298,10 @@ pub(crate) struct Control {
     pen_tracker: RefCell<PenContactTracker>,
     /// What the server's RDPEI channel accepts; touch and pen fall back to mouse emulation otherwise.
     rdpei_input_state: Cell<RdpeiInputState>,
+    /// RDPEI events built while the session input queue was full, sent before any newer input.
+    pending_rdpei_events: RefCell<VecDeque<RdpInputEvent>>,
+    /// Route chosen for each touch or pen pointer when it appeared, kept until it leaves.
+    pointer_routes: RefCell<HashMap<u32, PointerRoute>>,
     sinks: Rc<RefCell<BTreeMap<u32, EventSink>>>,
     modern_callbacks: RefCell<BTreeMap<&'static str, Vec<IDispatch>>>,
     modern_properties: RefCell<PropertySet>,
@@ -8339,6 +8348,15 @@ pub(crate) struct Control {
     rpc_transport: RefCell<Option<ActiveXTransport>>,
     rpc_kerberos_config: RefCell<Option<ironrdp_connector::credssp::KerberosConfig>>,
     rpc_log_directive: RefCell<Option<String>>,
+}
+
+/// Where the input of one touch or pen pointer goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointerRoute {
+    /// RDPEI touch or pen frames.
+    Rdpei,
+    /// Mouse messages that `DefWindowProc` synthesizes.
+    Mouse,
 }
 
 /// Converts a `QueryPerformanceCounter` value to microseconds.
@@ -8688,6 +8706,8 @@ impl Control {
             touch_tracker: RefCell::new(TouchContactTracker::new()),
             pen_tracker: RefCell::new(PenContactTracker::new()),
             rdpei_input_state: Cell::new(RdpeiInputState::default()),
+            pending_rdpei_events: RefCell::new(VecDeque::new()),
+            pointer_routes: RefCell::new(HashMap::new()),
             sinks: Rc::new(RefCell::new(BTreeMap::new())),
             modern_callbacks: RefCell::new(BTreeMap::new()),
             modern_properties: RefCell::new(PropertySet::new()),
@@ -12647,6 +12667,8 @@ impl Control {
         *self.touch_tracker.borrow_mut() = TouchContactTracker::new();
         self.pen_tracker.borrow_mut().reset(false);
         self.rdpei_input_state.set(RdpeiInputState::default());
+        self.pending_rdpei_events.borrow_mut().clear();
+        self.pointer_routes.borrow_mut().clear();
         self.state.set(ConnectionState::Connecting);
         self.fire_event(DISPID_ON_CONNECTING, &[]);
         if self.state.get() == ConnectionState::Connecting {
@@ -13577,45 +13599,79 @@ impl Control {
         }
     }
 
-    /// Reserves input-queue capacity, then commits tracker transitions and sends.
-    ///
-    /// Capacity is reserved before mutating the tracker so a full queue cannot
-    /// desynchronize local contact state from the server.
+    /// Commits tracker transitions and sends the resulting touch event.
     fn send_touch_event_with<F>(&self, build: F)
     where
         F: FnOnce(&mut TouchContactTracker) -> Option<TouchEventPdu>,
     {
-        let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
+        if self.input_sender.borrow().is_none() {
             return;
-        };
-        let Ok(permit) = sender.try_reserve() else {
-            tracing::warn!("Unable to enqueue ActiveX RDPEI touch event for the RDP session");
-            return;
-        };
-        if let Some(event) = build(&mut self.touch_tracker.borrow_mut()) {
-            permit.send(RdpInputEvent::Touch(event));
         }
+        let event = build(&mut self.touch_tracker.borrow_mut());
+        self.send_rdpei_event(event.map(RdpInputEvent::Touch));
+    }
+
+    /// Queues an RDPEI event behind any that are still pending, then sends what the input queue accepts.
+    ///
+    /// Events that find the queue full stay pending and a timer retries them, so a lift or release is not
+    /// lost and the server does not keep a contact down.
+    fn send_rdpei_event(&self, event: Option<RdpInputEvent>) {
+        let mut pending = self.pending_rdpei_events.borrow_mut();
+        pending.extend(event);
+        if MAX_PENDING_RDPEI_EVENTS < pending.len() {
+            tracing::warn!("Dropping the oldest pending ActiveX RDPEI event");
+            pending.pop_front();
+        }
+        let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
+            pending.clear();
+            return;
+        };
+        while let Some(event) = pending.pop_front() {
+            match sender.try_send(event) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(event)) => {
+                    pending.push_front(event);
+                    break;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    pending.clear();
+                    break;
+                }
+            }
+        }
+
+        let window = self.activex_window.get();
+        if !pending.is_empty() && !window.is_invalid() {
+            unsafe {
+                SetTimer(
+                    Some(window),
+                    RDPEI_INPUT_RETRY_TIMER_ID,
+                    RDPEI_INPUT_RETRY_MILLISECONDS,
+                    None,
+                );
+            }
+        }
+    }
+
+    fn retry_pending_rdpei_events(&self, window: HWND) {
+        let _ = unsafe { KillTimer(Some(window), RDPEI_INPUT_RETRY_TIMER_ID) };
+        self.send_rdpei_event(None);
     }
 
     fn release_touch_contacts(&self) {
         self.send_touch_event_with(|tracker| tracker.release_all());
     }
 
-    /// Reserves input-queue capacity, then commits pen tracker transitions and sends.
+    /// Commits pen tracker transitions and sends the resulting pen event.
     fn send_pen_event_with<F>(&self, build: F)
     where
         F: FnOnce(&mut PenContactTracker) -> Option<PenEventPdu>,
     {
-        let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
+        if self.input_sender.borrow().is_none() {
             return;
-        };
-        let Ok(permit) = sender.try_reserve() else {
-            tracing::warn!("Unable to enqueue ActiveX RDPEI pen event for the RDP session");
-            return;
-        };
-        if let Some(event) = build(&mut self.pen_tracker.borrow_mut()) {
-            permit.send(RdpInputEvent::Pen(event));
         }
+        let event = build(&mut self.pen_tracker.borrow_mut());
+        self.send_rdpei_event(event.map(RdpInputEvent::Pen));
     }
 
     fn release_pen_contacts(&self) {
@@ -13644,14 +13700,30 @@ impl Control {
         Some((i32::from(position.x), i32::from(position.y)))
     }
 
+    /// Whether the mouse message being handled was synthesized from touch or pen input sent over RDPEI.
+    ///
+    /// A physical mouse keeps working while a pen hovers, and input that falls back to mouse emulation is
+    /// still delivered.
     fn suppress_mouse_for_touch(&self) -> bool {
-        self.touch_tracker.borrow().has_active_contacts() || self.pen_tracker.borrow().has_active_contacts()
+        // `MI_WP_SIGNATURE` in the message extra info marks mouse input promoted from touch or pen.
+        const MI_WP_SIGNATURE: isize = 0xFF51_5700;
+        const SIGNATURE_MASK: isize = 0xFFFF_FF00;
+
+        let promoted = unsafe { GetMessageExtraInfo() }.0 & SIGNATURE_MASK == MI_WP_SIGNATURE;
+        promoted
+            && self
+                .pointer_routes
+                .borrow()
+                .values()
+                .any(|route| *route == PointerRoute::Rdpei)
     }
 
     /// Sends touch and pen over RDPEI.
     ///
     /// Returns false for input the RDPEI channel does not accept, so `DefWindowProc` turns it into mouse
     /// messages, which is what mstsc does before logon or against servers without RDPEI.
+    /// Each pointer keeps the route it started on until it leaves, because consuming only part of a
+    /// pointer sequence leaves the emulated mouse in an undefined state.
     fn handle_pointer_message(&self, window: HWND, message: u32, wparam: WPARAM, _lparam: LPARAM) -> bool {
         let pointer_id = (wparam.0 & 0xffff) as u32;
 
@@ -13660,10 +13732,35 @@ impl Control {
             return false;
         }
         let rdpei = self.rdpei_input_state.get();
-        match info.pointerType {
-            PT_TOUCH if rdpei.touch => self.handle_touch_pointer(window, message, pointer_id),
-            PT_PEN if rdpei.pen => self.handle_pen_pointer(window, message, pointer_id),
-            _ => false,
+        let accepted = match info.pointerType {
+            PT_TOUCH => rdpei.touch,
+            PT_PEN => rdpei.pen,
+            _ => return false,
+        };
+        let leaving = (info.pointerFlags & POINTER_FLAG_INRANGE).0 == 0
+            || (info.pointerFlags & POINTER_FLAG_CANCELED).0 != 0
+            || matches!(message, WM_POINTERLEAVE | WM_POINTERCAPTURECHANGED);
+        let route = {
+            let mut routes = self.pointer_routes.borrow_mut();
+            let route = *routes.entry(pointer_id).or_insert(if accepted {
+                PointerRoute::Rdpei
+            } else {
+                PointerRoute::Mouse
+            });
+            if leaving {
+                routes.remove(&pointer_id);
+            }
+            route
+        };
+
+        match (route, accepted) {
+            (PointerRoute::Mouse, _) => false,
+            // The channel stopped accepting this pointer mid-sequence; the server dropped its contact.
+            (PointerRoute::Rdpei, false) => true,
+            (PointerRoute::Rdpei, true) if info.pointerType == PT_TOUCH => {
+                self.handle_touch_pointer(window, message, pointer_id)
+            }
+            (PointerRoute::Rdpei, true) => self.handle_pen_pointer(window, message, pointer_id),
         }
     }
 
@@ -13822,10 +13919,12 @@ impl Control {
             } else {
                 None
             };
+            let lifted = (flags & POINTER_FLAG_UP).0 != 0;
             let (x, y, preserve_position) = match mapped {
                 Some((x, y)) => (x, y, false),
-                // Outside the rendered desktop only terminal transitions are sent, at the last tracked position.
-                None if !in_range || canceled => (0, 0, true),
+                // Outside the rendered desktop only lifts and terminal transitions are sent, at the last
+                // tracked position.
+                None if lifted || !in_range || canceled => (0, 0, true),
                 None => continue,
             };
 
@@ -13865,9 +13964,8 @@ impl Control {
             tracing::debug!(?error, "Unable to focus ActiveX rendering window for pen input");
         }
 
+        // Pen input is read per pointer, so `SkipPointerFrameMessages` would drop other pens of the same frame.
         self.send_pen_event_with(|tracker| tracker.process_samples(&samples, now_us));
-
-        let _ = unsafe { SkipPointerFrameMessages(pointer_id) };
         true
     }
 
@@ -14140,6 +14238,10 @@ impl Control {
                 }
                 self.renderer_geometry_changed();
                 false
+            }
+            WM_TIMER if wparam.0 == RDPEI_INPUT_RETRY_TIMER_ID => {
+                self.retry_pending_rdpei_events(window);
+                true
             }
             WM_TIMER if wparam.0 == DISPLAY_RESIZE_TIMER_ID => {
                 self.apply_pending_display_resize(window);

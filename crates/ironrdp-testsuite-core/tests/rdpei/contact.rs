@@ -181,14 +181,18 @@ fn cancel_all_cancels_at_the_last_position() {
     let mut builder = TouchFrameBuilder::new(10);
     builder.push(1, TouchPhase::Started, 4, 5, Some(2_000), 0);
     builder.take_event(0).expect("down");
-    let event = builder.cancel_all(1_000).expect("cancel");
+    builder.cancel_all(1_000);
+    assert!(builder.has_pending_frames());
+    let event = builder.take_event(1_000).expect("cancel");
     let contact = &event.frames[0].contacts[0];
     assert_eq!(
         contact.contact_flags,
         TouchContactFlags::UP | TouchContactFlags::CANCELED
     );
     assert_eq!((contact.x, contact.y), (4, 5));
-    assert!(builder.cancel_all(2_000).is_none());
+    builder.cancel_all(2_000);
+    assert!(!builder.has_pending_frames());
+    assert!(builder.take_event(2_000).is_none());
 }
 
 // oracle: spec MS-RDPEI §2.2.3.3.1.1

@@ -48,6 +48,7 @@ impl TouchContactTracker {
         Self::default()
     }
 
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn has_active_contacts(&self) -> bool {
         !self.by_pointer.is_empty()

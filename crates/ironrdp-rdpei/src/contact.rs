@@ -163,6 +163,12 @@ impl TouchFrameBuilder {
         !self.tracked.is_empty()
     }
 
+    /// Whether frames wait for [`TouchFrameBuilder::take_event`].
+    #[must_use]
+    pub fn has_pending_frames(&self) -> bool {
+        self.current_timestamp_us.is_some() || !self.frames.is_empty()
+    }
+
     /// Adds one toolkit event, in desktop coordinates.
     ///
     /// `external_id` identifies the touch point for the toolkit, `pressure` is normalized to 0..=1024, and
@@ -246,8 +252,11 @@ impl TouchFrameBuilder {
         Some(TouchEventPdu::new(encode_time, core::mem::take(&mut self.frames)))
     }
 
-    /// Cancels every contact, for example when the window loses focus, and takes the pending frames.
-    pub fn cancel_all(&mut self, now_us: u64) -> Option<TouchEventPdu> {
+    /// Cancels every contact, for example when the window loses focus.
+    ///
+    /// The cancellations wait with the other pending frames for [`TouchFrameBuilder::take_event`], so a full
+    /// input queue does not lose them.
+    pub fn cancel_all(&mut self, now_us: u64) {
         let touches: Vec<(u64, i32, i32)> = self
             .tracked
             .iter()
@@ -256,7 +265,6 @@ impl TouchFrameBuilder {
         for (external_id, x, y) in touches {
             self.push(external_id, TouchPhase::Canceled, x, y, None, now_us);
         }
-        self.take_event(now_us)
     }
 
     /// Forgets every contact and pending frame without sending anything, for when the channel closed.

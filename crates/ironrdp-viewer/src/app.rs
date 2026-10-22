@@ -61,6 +61,8 @@ pub struct RpcApp {
     touch_frames: TouchFrameBuilder,
     /// The touch point that drives the emulated mouse.
     mouse_touch: Option<u64>,
+    /// Emulated mouse input from touch that waits for room in the session input queue.
+    pending_touch_mouse: Vec<ironrdp::input::Operation>,
     /// Origin of the touch frame timestamps.
     touch_epoch: Instant,
 }
@@ -128,6 +130,7 @@ impl RpcApp {
             rdpei_input_state: RdpeiInputState::default(),
             touch_frames: TouchFrameBuilder::new(RDPEI_MAX_TOUCH_CONTACTS),
             mouse_touch: None,
+            pending_touch_mouse: Vec::new(),
             touch_epoch: Instant::now(),
         })
     }
@@ -167,7 +170,9 @@ impl RpcApp {
             event::TouchPhase::Cancelled => TouchPhase::Canceled,
         };
 
-        if matches!(self.input_target, InputTarget::Direct(_)) && self.rdpei_input_state.touch {
+        // A touch point that started on the emulated mouse stays there, so its button is released.
+        let rdpei = matches!(self.input_target, InputTarget::Direct(_)) && self.rdpei_input_state.touch;
+        if rdpei && self.mouse_touch != Some(touch.id) {
             #[expect(clippy::as_conversions, reason = "casting a normalized f64 force to u32")]
             let pressure = touch.force.map(|force| (force.normalized() * 1024.0).round() as u32);
             let timestamp_us = self.touch_timestamp_us();
@@ -183,26 +188,34 @@ impl RpcApp {
         }
 
         let operations = touch_mouse_operations(&mut self.mouse_touch, touch.id, phase, position);
-        apply_and_send_fast_path_events(&self.input_target, &mut self.input_database, operations);
+        self.pending_touch_mouse.extend(operations);
+        self.send_touch_mouse();
+    }
+
+    /// Sends the emulated mouse input from touch, keeping it while the session input queue is full.
+    fn send_touch_mouse(&mut self) {
+        if !self.pending_touch_mouse.is_empty()
+            && apply_and_send_fast_path_events(
+                &self.input_target,
+                &mut self.input_database,
+                self.pending_touch_mouse.iter().cloned(),
+            )
+        {
+            self.pending_touch_mouse.clear();
+        }
     }
 
     /// Lifts every touch contact and the emulated mouse button, for when the window loses focus.
     fn release_touch(&mut self) {
         let now_us = self.touch_timestamp_us();
-        if let Some(event) = self.touch_frames.cancel_all(now_us)
-            && let InputTarget::Direct(input_event_sender) = &self.input_target
-            && input_event_sender.try_send(RdpInputEvent::Touch(event)).is_err()
-        {
-            warn!("Unable to enqueue the touch release for the RDP session");
-        }
+        self.touch_frames.cancel_all(now_us);
+        self.send_touch_frames();
         if self.mouse_touch.take().is_some() {
-            apply_and_send_fast_path_events(
-                &self.input_target,
-                &mut self.input_database,
-                core::iter::once(ironrdp::input::Operation::MouseButtonReleased(
+            self.pending_touch_mouse
+                .push(ironrdp::input::Operation::MouseButtonReleased(
                     ironrdp::input::MouseButton::Left,
-                )),
-            );
+                ));
+            self.send_touch_mouse();
         }
     }
 
@@ -295,6 +308,21 @@ impl RpcApp {
     }
     fn on_about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.send_touch_frames();
+        self.send_touch_mouse();
+        // Touch input that found the session input queue full is retried shortly, since draining the queue
+        // does not wake the event loop.
+        let touch_retry = (self.touch_frames.has_pending_frames() || !self.pending_touch_mouse.is_empty())
+            .then(|| Instant::now() + Duration::from_millis(10));
+        self.schedule_resize(event_loop);
+        match (touch_retry, self.resize_timeout) {
+            (Some(retry), Some(resize)) => event_loop.set_control_flow(ControlFlow::WaitUntil(retry.min(resize))),
+            (Some(retry), None) => event_loop.set_control_flow(ControlFlow::WaitUntil(retry)),
+            (None, Some(_)) => {}
+            (None, None) => event_loop.set_control_flow(ControlFlow::Wait),
+        }
+    }
+
+    fn schedule_resize(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(timeout) = self.resize_timeout {
             if let Some(timeout) = timeout.checked_duration_since(Instant::now()) {
                 event_loop.set_control_flow(ControlFlow::wait_duration(timeout));
@@ -847,23 +875,28 @@ fn is_touch_or_pen_mouse_message() -> bool {
     false
 }
 
+/// Returns false when the session input queue is full and nothing was applied.
 fn apply_and_send_fast_path_events(
     input_target: &InputTarget,
     input_database: &mut ironrdp::input::Database,
     operations: impl IntoIterator<Item = ironrdp::input::Operation>,
-) {
+) -> bool {
     match input_target {
         InputTarget::Direct(input_event_sender) => {
-            let Ok(permit) = input_event_sender.try_reserve() else {
-                return;
+            let permit = match input_event_sender.try_reserve() {
+                Ok(permit) => permit,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(())) => return false,
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(())) => return true,
             };
             let input_events = input_database.apply(operations);
             if !input_events.is_empty() {
                 permit.send(RdpInputEvent::FastPath(input_events));
             }
+            true
         }
         InputTarget::Rpc(daemon) => {
             let _ = daemon.input_operations(operations);
+            true
         }
     }
 }
