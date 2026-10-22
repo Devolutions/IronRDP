@@ -7,6 +7,7 @@ use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlMoni
 use ironrdp_dvc::pdu::SoftSyncTunnelType;
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessageBatch, DynamicChannelMut, DynamicChannelRef};
 use ironrdp_egfx::client::GraphicsPipelineClient;
+use ironrdp_egfx::compositor::WindowUpdate;
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle, Rectangle as _};
@@ -251,8 +252,12 @@ impl ActiveStage {
                 // Soft-Sync tunnel, see `process_dvc_tunnel`), so the compositor is drained here
                 // rather than in the Action::FastPath arm, which runs on every fast-path frame
                 // (the highest-frequency path in a session).
-                if let Some(region) = self.drain_graphics_pipeline(image)? {
+                let (region, window_updates) = self.drain_graphics_pipeline(image)?;
+                if let Some(region) = region {
                     stage_outputs.push(ActiveStageOutput::GraphicsUpdate(region));
+                }
+                if !window_updates.is_empty() {
+                    stage_outputs.push(ActiveStageOutput::WindowSurfaceUpdates(window_updates));
                 }
 
                 (stage_outputs, processor_updates)
@@ -296,13 +301,17 @@ impl ActiveStage {
     /// Drains the client-side EGFX compositor: follows a pending `ResetGraphics`, composites
     /// each completed-frame output region into `image` and records its damage.
     ///
-    /// Returns the union of the changed regions, or `None` when nothing was pending.
-    fn drain_graphics_pipeline(&mut self, image: &mut DecodedImage) -> SessionResult<Option<InclusiveRectangle>> {
-        let (output_reset, graphics_updates) = self
+    /// Returns the union of the changed output regions, or `None` when nothing was pending,
+    /// and the RemoteApp window regions, which are not part of `image`.
+    fn drain_graphics_pipeline(
+        &mut self,
+        image: &mut DecodedImage,
+    ) -> SessionResult<(Option<InclusiveRectangle>, Vec<WindowUpdate>)> {
+        let (output_reset, graphics_updates, window_updates) = self
             .get_dvc_mut::<GraphicsPipelineClient>()
             .map(|mut gfx| {
                 let gfx = gfx.processor_mut();
-                (gfx.take_output_reset(), gfx.drain_output())
+                (gfx.take_output_reset(), gfx.drain_output(), gfx.drain_window_updates())
             })
             .unwrap_or_default();
         if let Some((width, height)) = output_reset {
@@ -312,7 +321,7 @@ impl ActiveStage {
         let (region, damage_regions) =
             composite_graphics_updates(image, graphics_updates.into_iter().map(|u| (u.region, u.data)))?;
         self.damage_regions.extend(damage_regions);
-        Ok(region)
+        Ok((region, window_updates))
     }
 
     /// Composites RGBA pixels rendered outside the session, such as client-side video, into
@@ -622,8 +631,12 @@ impl ActiveStage {
             .process_tunnel(tunnel_type, payload)
             .map_err(SessionError::pdu)?;
         let mut stage_outputs = Vec::new();
-        if let Some(region) = self.drain_graphics_pipeline(image)? {
+        let (region, window_updates) = self.drain_graphics_pipeline(image)?;
+        if let Some(region) = region {
             stage_outputs.push(ActiveStageOutput::GraphicsUpdate(region));
+        }
+        if !window_updates.is_empty() {
+            stage_outputs.push(ActiveStageOutput::WindowSurfaceUpdates(window_updates));
         }
         self.widen_to_full_refresh(image, &mut stage_outputs);
         Ok((batch, stage_outputs))
@@ -910,6 +923,16 @@ pub enum ActiveStageOutput {
     ///
     /// [MS-RDPERP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp
     WindowingOrders(Vec<WindowingOrder>),
+    /// RemoteApp window pixels from graphics pipeline surfaces mapped to RAIL windows
+    /// with [2.2.2.20] RDPGFX_MAP_SURFACE_TO_WINDOW_PDU or
+    /// [2.2.2.23] RDPGFX_MAP_SURFACE_TO_SCALED_WINDOW_PDU.
+    ///
+    /// These surfaces are not part of the session image; the consumer paints each
+    /// region into the window it names.
+    ///
+    /// [2.2.2.20]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/2ec1357c-ee65-4d9b-89f3-8fc49348c92a
+    /// [2.2.2.23]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/22fc0ec7-38ce-4d9d-ad6d-93a0e9f3c38c
+    WindowSurfaceUpdates(Vec<WindowUpdate>),
     Terminate(GracefulDisconnectReason),
     /// Server Save Session Info notification ([MS-RDPBCGR] 2.2.10.1).
     ///

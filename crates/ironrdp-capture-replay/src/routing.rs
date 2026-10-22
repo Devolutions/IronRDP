@@ -903,6 +903,9 @@ impl ReplayEgfxChannel {
             .client
             .take_output_reset()
             .map(|(width, height)| (u32::from(width), u32::from(height)));
+        // Replay renders the graphics output only. RemoteApp window pixels are drained
+        // and dropped so they stop counting against the compositor's memory budget.
+        let _ = self.client.drain_window_updates();
         (reset, self.client.drain_output())
     }
 
@@ -1056,8 +1059,9 @@ mod tests {
     use ironrdp_dvc::pdu::{CreateRequestPdu, DataPdu, DrdynvcDataPdu};
     use ironrdp_egfx::pdu::{
         Avc420Region, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitySet as EgfxCapabilitySet, Codec1Type,
-        Codec2Type, CreateSurfacePdu, EndFramePdu, MapSurfaceToOutputPdu, PixelFormat as EgfxPixelFormat,
-        ResetGraphicsPdu, StartFramePdu, Timestamp, WireToSurface1Pdu, WireToSurface2Pdu, encode_avc420_bitmap_stream,
+        Codec2Type, CreateSurfacePdu, EndFramePdu, MapSurfaceToOutputPdu, MapSurfaceToWindowPdu,
+        PixelFormat as EgfxPixelFormat, ResetGraphicsPdu, StartFramePdu, Timestamp, WireToSurface1Pdu,
+        WireToSurface2Pdu, encode_avc420_bitmap_stream,
     };
     use ironrdp_graphics::zgfx::wrap_uncompressed;
     use ironrdp_pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
@@ -1422,6 +1426,111 @@ mod tests {
                 .get_dvc_by_channel_id_mut::<OpaqueDynamicChannel>(channel_id)
                 .is_some()
         );
+    }
+
+    // oracle: scaffold (replay renders the graphics output only, so it must not keep window
+    // updates charged against the compositor budget)
+    #[test]
+    fn replay_drains_window_updates_while_rendering_the_output() {
+        let mut router = ReplayRouter::new(activation()).unwrap();
+        let mut frames = Vec::new();
+        let channel_id = 43;
+        let start_frame = |frame_id| {
+            GfxPdu::StartFrame(StartFramePdu {
+                timestamp: Timestamp {
+                    milliseconds: 0,
+                    seconds: 0,
+                    minutes: 0,
+                    hours: 0,
+                },
+                frame_id,
+            })
+        };
+        let pixel = |surface_id, bitmap_data| {
+            GfxPdu::WireToSurface1(WireToSurface1Pdu {
+                surface_id,
+                codec_id: Codec1Type::Uncompressed,
+                pixel_format: EgfxPixelFormat::XRgb,
+                destination_rectangle: ExclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 1,
+                    bottom: 1,
+                },
+                bitmap_data,
+            })
+        };
+        let surface = |surface_id| {
+            GfxPdu::CreateSurface(CreateSurfacePdu {
+                surface_id,
+                width: 1,
+                height: 1,
+                pixel_format: EgfxPixelFormat::XRgb,
+            })
+        };
+        let pdus = [
+            GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&EgfxCapabilitySet::V8 {
+                flags: CapabilitiesV8Flags::empty(),
+            })),
+            GfxPdu::ResetGraphics(ResetGraphicsPdu {
+                width: 1,
+                height: 1,
+                monitors: Vec::new(),
+            }),
+            surface(7),
+            GfxPdu::MapSurfaceToWindow(MapSurfaceToWindowPdu {
+                surface_id: 7,
+                window_id: 0x42,
+                mapped_width: 1,
+                mapped_height: 1,
+            }),
+            surface(8),
+            GfxPdu::MapSurfaceToOutput(MapSurfaceToOutputPdu {
+                surface_id: 8,
+                output_origin_x: 0,
+                output_origin_y: 0,
+            }),
+            start_frame(9),
+            pixel(7, vec![0x33, 0x22, 0x11, 0xff]),
+            pixel(8, vec![0x66, 0x55, 0x44, 0xff]),
+            GfxPdu::EndFrame(EndFramePdu { frame_id: 9 }),
+        ];
+        let mut server = vec![
+            (1, demand_active()),
+            (2, font_map()),
+            (3, static_message(1_005, create(channel_id, ironrdp_egfx::CHANNEL_NAME))),
+        ];
+        server.extend(
+            pdus.into_iter()
+                .zip(4..)
+                .map(|(pdu, packet)| (packet, static_message(1_005, egfx_data(channel_id, pdu)))),
+        );
+
+        router
+            .route_plaintext_with_frame_sink(
+                &Plaintext {
+                    client: Vec::new(),
+                    server,
+                },
+                &mut |frame| {
+                    frames.push(frame);
+                    Ok::<_, ()>(())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].pixels, [0x44, 0x55, 0x66, 0xff]);
+        let pending_window_updates = router
+            .stage
+            .get_svc_processor_mut::<DrdynvcClient>()
+            .and_then(|drdynvc| {
+                drdynvc
+                    .get_dvc_by_channel_id_mut::<ReplayEgfxChannel>(channel_id)
+                    .map(|mut channel| channel.processor_mut().client.drain_window_updates().len())
+            })
+            .expect("the EGFX channel is open");
+        assert_eq!(pending_window_updates, 0);
     }
 
     #[test]
