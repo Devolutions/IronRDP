@@ -7,8 +7,11 @@
 //! the `clipDataId` of the lock `Cliprdr` placed on the remote clipboard, so a paste keeps
 //! working after the remote clipboard changes, until that lock is released.
 //!
-//! The objects are not agile: OLE calls them on the thread that called `OleSetClipboard`,
-//! which is the thread owning the clipboard window and the [`RemoteTransport`].
+//! The data object is not agile: OLE calls it on the thread that called `OleSetClipboard`,
+//! which is the thread owning the clipboard window and the [`RemoteTransport`]. The file
+//! streams it hands out live in the process's multithreaded apartment instead, when it has
+//! one: COM then calls them on its own worker threads, so a reader waiting for remote data
+//! never holds up the clipboard thread, which is usually the application's UI thread.
 
 #![expect(
     clippy::inline_always,
@@ -19,10 +22,14 @@
 use core::cell::RefCell;
 use core::ffi::c_void;
 use core::mem::ManuallyDrop;
+use core::time::Duration;
+use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 
 use ironrdp_cliprdr::pdu::{
-    ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsFlags, FileContentsRequest, FileDescriptor,
+    ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsFlags, FileContentsRequest, FileContentsResponse,
+    FileDescriptor,
 };
 use tracing::{debug, trace, warn};
 use windows::Win32::Foundation::{
@@ -30,25 +37,32 @@ use windows::Win32::Foundation::{
     E_POINTER, FILETIME, OLE_E_ADVISENOTSUPPORTED, S_FALSE, S_OK, STG_E_ACCESSDENIED, STG_E_INVALIDFUNCTION,
     STG_E_INVALIDPOINTER, STG_E_READFAULT, STG_E_SEEKERROR,
 };
+use windows::Win32::System::Com::Marshal::CoMarshalInterThreadInterfaceInStream;
+use windows::Win32::System::Com::StructuredStorage::CoGetInterfaceAndReleaseStream;
 use windows::Win32::System::Com::{
-    CoTaskMemAlloc, DATADIR_GET, DVASPECT_CONTENT, FORMATETC, IAdviseSink, IDataObject, IDataObject_Impl,
-    IEnumFORMATETC, IEnumSTATDATA, ISequentialStream_Impl, IStream, IStream_Impl, LOCKTYPE, STATFLAG, STATFLAG_NONAME,
-    STATSTG, STGC, STGM_READ, STGMEDIUM, STGMEDIUM_0, STGTY_STREAM, STREAM_SEEK, STREAM_SEEK_CUR, STREAM_SEEK_END,
-    STREAM_SEEK_SET, TYMED_HGLOBAL, TYMED_ISTREAM,
+    COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemAlloc, CoUninitialize, DATADIR_GET, DVASPECT_CONTENT, FORMATETC,
+    IAdviseSink, IDataObject, IDataObject_Impl, IEnumFORMATETC, IEnumSTATDATA, ISequentialStream_Impl, IStream,
+    IStream_Impl, LOCKTYPE, STATFLAG, STATFLAG_NONAME, STATSTG, STGC, STGM_READ, STGMEDIUM, STGMEDIUM_0, STGTY_STREAM,
+    STREAM_SEEK, STREAM_SEEK_CUR, STREAM_SEEK_END, STREAM_SEEK_SET, TYMED_HGLOBAL, TYMED_ISTREAM,
 };
 use windows::Win32::UI::Shell::SHCreateStdEnumFmtEtc;
-use windows::core::{BOOL, HRESULT, PWSTR, Ref, implement};
+use windows::core::{BOOL, HRESULT, Interface as _, PWSTR, Ref, implement};
 
 use crate::windows::WinCliprdrError;
 use crate::windows::file_list::{
     HUGE_FILE_POSITION, MAX_FILE_CONTENTS_CHUNK, encode_file_group_descriptor, is_directory, range_request_len,
 };
+use crate::windows::shared::ClipboardShared;
 use crate::windows::transport::{RemoteFileList, RemoteTransport};
 use crate::windows::utils::{GlobalMemoryBuffer, format_etc};
 
-/// Bytes fetched ahead when a stream reader asks for less, to save round trips on readers
-/// that read in small pieces.
-const READ_AHEAD: u32 = 256 * 1024;
+/// Range requests a stream keeps in flight ahead of its reader.
+const PIPELINE_DEPTH: usize = 4;
+
+/// How long a stream waits for a response. `Cliprdr` answers a request it got no response
+/// for with a failure after its own transfer timeout (60 seconds by default): this is only a
+/// backstop for a channel that stopped altogether.
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(90);
 
 const DROPEFFECT_COPY: u32 = 1;
 
@@ -70,18 +84,21 @@ pub(crate) struct RemoteDataObject {
     /// Other remote formats, fetched as `HGLOBAL`s: (local id, remote id).
     passthrough: Vec<(u16, ClipboardFormatId)>,
     formats: Vec<FORMATETC>,
-    file_list: RefCell<Option<Rc<RemoteFileList>>>,
+    file_list: RefCell<Option<Arc<RemoteFileList>>>,
+    /// Whether the process's multithreaded apartment is kept alive for the file streams.
+    mta_available: bool,
 }
 
 impl RemoteDataObject {
+    /// `generation` is the one of the remote format list this object offers.
     pub(crate) fn new(
         transport: Rc<RemoteTransport>,
+        generation: u64,
         format_ids: FileFormatIds,
         remote_file_list_format: ClipboardFormatId,
         passthrough: Vec<(u16, ClipboardFormatId)>,
+        mta_available: bool,
     ) -> Self {
-        let generation = transport.generation();
-
         let mut formats = vec![
             format_etc(format_ids.file_descriptor, -1, TYMED_HGLOBAL.0),
             format_etc(format_ids.file_contents, -1, TYMED_ISTREAM.0),
@@ -101,15 +118,20 @@ impl RemoteDataObject {
             passthrough,
             formats,
             file_list: RefCell::new(None),
+            mta_available,
         }
     }
 
-    fn file_list(&self) -> windows::core::Result<Rc<RemoteFileList>> {
+    fn is_current(&self) -> bool {
+        self.transport.shared().generation() == self.generation
+    }
+
+    fn file_list(&self) -> windows::core::Result<Arc<RemoteFileList>> {
         if let Some(file_list) = self.file_list.borrow().as_ref() {
-            return Ok(Rc::clone(file_list));
+            return Ok(Arc::clone(file_list));
         }
 
-        if self.transport.generation() != self.generation {
+        if !self.is_current() {
             // The remote clipboard changed before anybody asked for this list.
             return Err(DV_E_FORMATETC.into());
         }
@@ -128,8 +150,8 @@ impl RemoteDataObject {
             "Received remote file list for paste"
         );
 
-        let file_list = Rc::new(file_list);
-        *self.file_list.borrow_mut() = Some(Rc::clone(&file_list));
+        let file_list = Arc::new(file_list);
+        *self.file_list.borrow_mut() = Some(Arc::clone(&file_list));
         Ok(file_list)
     }
 
@@ -142,18 +164,18 @@ impl RemoteDataObject {
             return Err(DV_E_LINDEX.into());
         }
 
-        let stream: IStream = RemoteFileStream {
-            transport: Rc::clone(&self.transport),
-            file_list: Rc::clone(&file_list),
+        let stream = RemoteFileStream::new(
+            Arc::clone(self.transport.shared()),
+            Arc::clone(&file_list),
             lindex,
-            state: RefCell::new(StreamState {
-                position: 0,
-                size: descriptor.file_size,
-                buffer: Vec::new(),
-                buffer_start: 0,
-            }),
-        }
-        .into();
+            descriptor.file_size,
+        );
+
+        let stream = if self.mta_available {
+            serve_from_mta(stream)?
+        } else {
+            stream.into()
+        };
 
         Ok(STGMEDIUM {
             tymed: TYMED_ISTREAM.0.cast_unsigned(),
@@ -165,7 +187,7 @@ impl RemoteDataObject {
     }
 
     fn passthrough_data(&self, remote_format: ClipboardFormatId) -> windows::core::Result<STGMEDIUM> {
-        if self.transport.generation() != self.generation {
+        if !self.is_current() {
             return Err(DV_E_FORMATETC.into());
         }
 
@@ -198,6 +220,51 @@ impl RemoteDataObject {
 
         Ok(())
     }
+}
+
+/// The stream `CoMarshalInterThreadInterfaceInStream` returns.
+struct MarshaledStream(IStream);
+
+// SAFETY: That stream is made to carry an interface pointer to another thread of the process.
+unsafe impl Send for MarshaledStream {}
+
+/// Creates `stream`'s COM object in the multithreaded apartment and returns a proxy to it for
+/// the calling thread.
+///
+/// A COM object belongs to the apartment of the thread that first marshals it. The data object
+/// is in the clipboard thread's apartment, so a stream it handed out directly would be called
+/// through that thread's message loop, which then waits for every chunk the reader asks for.
+/// Marshaled out of the multithreaded apartment, the stream is called on COM's worker threads,
+/// and what the reader is handed (the proxy, marshaled again) still leads there.
+fn serve_from_mta(stream: RemoteFileStream) -> windows::core::Result<IStream> {
+    let marshaled = std::thread::Builder::new()
+        .name("cliprdr-file-stream".to_owned())
+        .spawn(move || -> windows::core::Result<MarshaledStream> {
+            // SAFETY: Paired with `CoUninitialize` below. The apartment outlives this thread: the
+            // clipboard holds a `CoIncrementMTAUsage` cookie for as long as it offers files.
+            unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok()?;
+
+            let stream: IStream = stream.into();
+            // SAFETY: `stream` is a live interface pointer of the IID passed along.
+            let marshaled = unsafe { CoMarshalInterThreadInterfaceInStream(&IStream::IID, &stream) };
+            drop(stream);
+
+            // SAFETY: This thread initialized COM above.
+            unsafe { CoUninitialize() };
+
+            marshaled.map(MarshaledStream)
+        })
+        .map_err(|error| {
+            warn!(%error, "Failed to start a thread for a remote file stream");
+            windows::core::Error::from(E_OUTOFMEMORY)
+        })?
+        .join()
+        .map_err(|_| windows::core::Error::from(E_FAIL))??;
+
+    // `CoGetInterfaceAndReleaseStream` releases the marshaling stream itself, success or not.
+    let marshaled = ManuallyDrop::new(marshaled.0);
+    // SAFETY: `marshaled` holds an `IStream` marshaled for another thread of this process.
+    unsafe { CoGetInterfaceAndReleaseStream::<_, IStream>(&*marshaled) }
 }
 
 impl IDataObject_Impl for RemoteDataObject_Impl {
@@ -300,38 +367,71 @@ impl IDataObject_Impl for RemoteDataObject_Impl {
     }
 }
 
+type ResponseReceiver = mpsc::Receiver<FileContentsResponse<'static>>;
+
+/// What a range request brought, or will.
+#[derive(Debug)]
+enum ChunkData {
+    Pending(ResponseReceiver),
+    Ready(Vec<u8>),
+}
+
+/// One `RANGE` request: `len` bytes from `start`.
+#[derive(Debug)]
+struct Chunk {
+    start: u64,
+    len: u32,
+    data: ChunkData,
+}
+
+impl Chunk {
+    fn end(&self) -> u64 {
+        self.start.saturating_add(u64::from(self.len))
+    }
+}
+
 #[derive(Debug)]
 struct StreamState {
     position: u64,
     size: Option<u64>,
-    /// Bytes received for `buffer_start..buffer_start + buffer.len()`.
-    buffer: Vec<u8>,
-    buffer_start: u64,
-}
-
-impl StreamState {
-    fn buffered_at(&self, position: u64) -> &[u8] {
-        let Some(offset) = position.checked_sub(self.buffer_start) else {
-            return &[];
-        };
-
-        usize::try_from(offset)
-            .ok()
-            .and_then(|offset| self.buffer.get(offset..))
-            .unwrap_or(&[])
-    }
+    /// Requests in flight, or answered and not read yet, back to back from the first one.
+    chunks: VecDeque<Chunk>,
+    /// Bytes asked per request; drops to what the remote serves when it serves less.
+    chunk_len: u32,
 }
 
 /// Read-only stream over one remote file, `lindex` in the remote file list.
+///
+/// Reads are served from requests sent ahead of the reader, [`PIPELINE_DEPTH`] at a time, so
+/// that the remote always has the next chunk to send. Responses come straight from the
+/// `CLIPRDR` backend through [`ClipboardShared`], so the stream works on any thread.
 #[implement(IStream, Agile = false)]
 struct RemoteFileStream {
-    transport: Rc<RemoteTransport>,
-    file_list: Rc<RemoteFileList>,
+    shared: Arc<ClipboardShared>,
+    file_list: Arc<RemoteFileList>,
     lindex: i32,
-    state: RefCell<StreamState>,
+    state: Mutex<StreamState>,
 }
 
 impl RemoteFileStream {
+    fn new(shared: Arc<ClipboardShared>, file_list: Arc<RemoteFileList>, lindex: i32, size: Option<u64>) -> Self {
+        Self {
+            shared,
+            file_list,
+            lindex,
+            state: Mutex::new(StreamState {
+                position: 0,
+                size,
+                chunks: VecDeque::new(),
+                chunk_len: MAX_FILE_CONTENTS_CHUNK,
+            }),
+        }
+    }
+
+    fn lock_state(&self) -> MutexGuard<'_, StreamState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn descriptor(&self) -> Option<&FileDescriptor> {
         usize::try_from(self.lindex)
             .ok()
@@ -344,24 +444,30 @@ impl RemoteFileStream {
     /// across remote clipboard changes until `Cliprdr` releases it. Without a lock, they are
     /// checked against the current remote clipboard, so they only make sense until it changes.
     fn can_request(&self) -> bool {
-        if self.transport.session() != self.file_list.session {
+        if self.shared.session() != self.file_list.session {
             return false;
         }
 
         match self.file_list.clip_data_id {
-            Some(clip_data_id) => !self.transport.is_lock_released(clip_data_id),
-            None => self.transport.generation() == self.file_list.generation,
+            Some(clip_data_id) => !self.shared.is_lock_released(clip_data_id),
+            None => self.shared.generation() == self.file_list.generation,
         }
     }
 
-    fn request(&self, flags: FileContentsFlags, position: u64, requested_size: u32) -> Result<Vec<u8>, HRESULT> {
+    /// Sends a request, returning where its response will arrive.
+    fn request(
+        &self,
+        flags: FileContentsFlags,
+        position: u64,
+        requested_size: u32,
+    ) -> Result<ResponseReceiver, HRESULT> {
         if !self.can_request() {
             debug!(lindex = self.lindex, "Remote file is no longer available");
             return Err(STG_E_READFAULT);
         }
 
         let huge_file_support = self
-            .transport
+            .shared
             .capabilities()
             .contains(ClipboardGeneralCapabilityFlags::HUGE_FILE_SUPPORT_ENABLED);
         if !huge_file_support && HUGE_FILE_POSITION <= position {
@@ -372,82 +478,171 @@ impl RemoteFileStream {
             return Err(STG_E_READFAULT);
         }
 
-        let request = FileContentsRequest {
-            // Assigned by the transport.
+        Ok(self.shared.request_file_contents(FileContentsRequest {
+            // Assigned by `ClipboardShared`.
             stream_id: 0,
             index: self.lindex,
             flags,
             position,
             requested_size,
             data_id: self.file_list.clip_data_id,
-        };
+        }))
+    }
 
-        match self.transport.fetch_file_contents(request) {
-            Ok(response) => Ok(response.data().to_vec()),
+    fn receive(&self, receiver: &ResponseReceiver, position: u64) -> Result<Vec<u8>, HRESULT> {
+        match receiver.recv_timeout(RESPONSE_TIMEOUT) {
+            Ok(response) if !response.is_error() => Ok(response.data().to_vec()),
+            Ok(_) => {
+                warn!(lindex = self.lindex, position, "The remote failed to read the file");
+                Err(STG_E_READFAULT)
+            }
             Err(error) => {
-                warn!(%error, lindex = self.lindex, position, "Failed to read remote file");
+                warn!(%error, lindex = self.lindex, position, "No file contents from the remote");
                 Err(STG_E_READFAULT)
             }
         }
     }
 
     fn size(&self) -> Result<u64, HRESULT> {
-        if let Some(size) = self.state.borrow().size {
+        if let Some(size) = self.lock_state().size {
             return Ok(size);
         }
 
-        let data = self.request(FileContentsFlags::SIZE, 0, 8)?;
+        let receiver = self.request(FileContentsFlags::SIZE, 0, 8)?;
+        let data = self.receive(&receiver, 0)?;
         let size = <[u8; 8]>::try_from(data.as_slice())
             .map(u64::from_le_bytes)
             .map_err(|_| STG_E_READFAULT)?;
 
-        self.state.borrow_mut().size = Some(size);
+        self.lock_state().size = Some(size);
         Ok(size)
+    }
+
+    /// Requests the chunks following the last one, up to the pipeline depth or the end of the
+    /// file. Without a known size, the end is only found by reading it, so one at a time.
+    fn fill_pipeline(&self, state: &mut StreamState) -> Result<(), HRESULT> {
+        let depth = if state.size.is_some() { PIPELINE_DEPTH } else { 1 };
+
+        while state.chunks.len() < depth {
+            let start = state.chunks.back().map_or(state.position, Chunk::end);
+            let len = range_request_len(start, state.size, state.chunk_len);
+            if len == 0 {
+                break;
+            }
+
+            let receiver = self.request(FileContentsFlags::RANGE, start, len)?;
+            state.chunks.push_back(Chunk {
+                start,
+                len,
+                data: ChunkData::Pending(receiver),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Waits for the first chunk's data, shrinking the chunk to what the remote sent.
+    ///
+    /// Returns `false` at the end of a file whose size wasn't advertised.
+    fn receive_front(&self, state: &mut StreamState) -> Result<bool, HRESULT> {
+        let Some(chunk) = state.chunks.front_mut() else {
+            return Ok(false);
+        };
+
+        let ChunkData::Pending(receiver) = &chunk.data else {
+            return Ok(true);
+        };
+
+        let mut data = self.receive(receiver, chunk.start)?;
+        data.truncate(usize::try_from(chunk.len).unwrap_or(usize::MAX));
+        let served = u32::try_from(data.len()).unwrap_or(u32::MAX);
+        let start = chunk.start;
+        let requested = chunk.len;
+        chunk.len = served;
+        chunk.data = ChunkData::Ready(data);
+
+        if served == requested {
+            return Ok(true);
+        }
+
+        if served == 0 {
+            if state.size.is_none() {
+                return Ok(false);
+            }
+
+            warn!(
+                lindex = self.lindex,
+                position = start,
+                "The remote sent no data before the end of the file"
+            );
+            return Err(STG_E_READFAULT);
+        }
+
+        // The remote serves less than asked: the requests after this one would leave a gap,
+        // and the next ones ask for what it serves.
+        trace!(lindex = self.lindex, served, requested, "Short remote file read");
+        state.chunk_len = served;
+        state.chunks.truncate(1);
+        Ok(true)
     }
 
     /// Fills `out` from the current position, returning the byte count and the failure that
     /// stopped it, if any. Without a failure, fewer bytes than `out` holds means end of file.
     fn read_into(&self, out: &mut [u8]) -> (usize, Option<HRESULT>) {
+        let mut state = self.lock_state();
         let mut filled = 0;
 
-        while let Some(remaining_out) = out.get_mut(filled..).filter(|rest| !rest.is_empty()) {
-            let (position, size) = {
-                let mut state = self.state.borrow_mut();
-                let position = state.position;
+        while filled < out.len() {
+            let position = state.position;
 
-                let buffered = state.buffered_at(position);
-                if !buffered.is_empty() {
-                    let count = buffered.len().min(remaining_out.len());
-                    remaining_out[..count].copy_from_slice(&buffered[..count]);
-                    filled += count;
-                    state.position = position.saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
-                    continue;
+            let covered = state
+                .chunks
+                .front()
+                .is_some_and(|chunk| chunk.start <= position && position < chunk.end());
+            if !covered {
+                // First read, or after a seek: the requests start over from the position.
+                state.chunks.clear();
+            }
+
+            if let Err(error) = self.fill_pipeline(&mut state) {
+                // What was already requested can still be read.
+                if state.chunks.is_empty() {
+                    return (filled, Some(error));
                 }
-
-                (position, state.size)
-            };
-
-            let wanted = u32::try_from(remaining_out.len()).unwrap_or(u32::MAX).max(READ_AHEAD);
-            let len = range_request_len(position, size, wanted);
-            if len == 0 {
-                break;
             }
 
-            let data = match self.request(FileContentsFlags::RANGE, position, len) {
-                Ok(data) => data,
-                // Never a short successful read: a reader would take it for the end of the file.
-                Err(error) => return (filled, Some(error)),
-            };
-
-            if data.is_empty() {
-                // End of a file whose size wasn't advertised.
-                break;
+            match self.receive_front(&mut state) {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(error) => {
+                    // A later read asks again.
+                    state.chunks.clear();
+                    return (filled, Some(error));
+                }
             }
 
-            let mut state = self.state.borrow_mut();
-            state.buffer = data;
-            state.buffer.truncate(usize::try_from(len).unwrap_or(usize::MAX));
-            state.buffer_start = position;
+            let Some(chunk) = state.chunks.front() else {
+                break;
+            };
+            let ChunkData::Ready(data) = &chunk.data else {
+                break;
+            };
+
+            // A short read may have left `position` past the chunk: it is then filled anew.
+            let offset = position.saturating_sub(chunk.start);
+            let available = usize::try_from(offset)
+                .ok()
+                .and_then(|offset| data.get(offset..))
+                .unwrap_or(&[]);
+            let count = available.len().min(out.len() - filled);
+            out[filled..filled + count].copy_from_slice(&available[..count]);
+            filled += count;
+
+            let chunk_end = chunk.end();
+            state.position = position.saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
+            if chunk_end <= state.position {
+                state.chunks.pop_front();
+            }
         }
 
         (filled, None)
@@ -495,13 +690,13 @@ impl IStream_Impl for RemoteFileStream_Impl {
         );
         let base = match dworigin {
             STREAM_SEEK_SET => 0,
-            STREAM_SEEK_CUR => self.state.borrow().position,
+            STREAM_SEEK_CUR => self.lock_state().position,
             STREAM_SEEK_END => self.size()?,
             _ => return Err(STG_E_INVALIDFUNCTION.into()),
         };
 
         let position = base.checked_add_signed(dlibmove).ok_or(STG_E_SEEKERROR)?;
-        self.state.borrow_mut().position = position;
+        self.lock_state().position = position;
 
         if !plibnewposition.is_null() {
             // SAFETY: `plibnewposition` is either null or valid for writes.

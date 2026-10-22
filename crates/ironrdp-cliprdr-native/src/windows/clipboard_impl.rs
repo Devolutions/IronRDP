@@ -4,16 +4,16 @@ use core::ptr::with_exposed_provenance;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 
-use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
+use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_cliprdr::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, FormatDataRequest,
     FormatDataResponse,
 };
 use tracing::{debug, error, warn};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, S_OK, WPARAM};
-use windows::Win32::System::Com::IDataObject;
+use windows::Win32::System::Com::{CO_MTA_USAGE_COOKIE, CoDecrementMTAUsage, CoIncrementMTAUsage, IDataObject};
 use windows::Win32::System::DataExchange::{
     GetClipboardOwner, IsClipboardFormatAvailable, RemoveClipboardFormatListener,
 };
@@ -34,6 +34,7 @@ use crate::windows::file_list::{
 use crate::windows::local_files::{LocalFileSource, LocalFiles, VirtualFiles, hglobal_data};
 use crate::windows::os_clipboard::OwnedOsClipboard;
 use crate::windows::remote_format_registry::{RemoteClipboardFormatRegistry, register_format_name};
+use crate::windows::shared::ClipboardShared;
 use crate::windows::transport::RemoteTransport;
 use crate::windows::utils::render_format;
 use crate::windows::{BackendEvent, WM_CLIPRDR_BACKEND_EVENT, WM_CLIPRDR_RELEASE, WinCliprdrError, WinCliprdrResult};
@@ -68,21 +69,36 @@ pub(crate) struct WinClipboardImpl {
     local_files: LocalFiles,
     /// Data object put on the clipboard for remote files.
     remote_data_object: Option<IDataObject>,
+    /// Keeps the multithreaded apartment, where remote file streams live, while OLE is in use.
+    mta_usage: Option<CO_MTA_USAGE_COOKIE>,
 }
 
 impl WinClipboardImpl {
     pub(crate) fn new(
         window: HWND,
-        message_proxy: impl ClipboardMessageProxy + 'static,
+        shared: Arc<ClipboardShared>,
         backend_rx: mpsc::Receiver<BackendEvent>,
         file_transfer: bool,
         ole_available: bool,
     ) -> Self {
         let file_format_ids = file_format_ids();
 
+        let mta_usage = if ole_available {
+            // SAFETY: Plain call; balanced by `CoDecrementMTAUsage` in `shutdown`.
+            match unsafe { CoIncrementMTAUsage() } {
+                Ok(cookie) => Some(cookie),
+                Err(error) => {
+                    warn!(%error, "Failed to initialize the multithreaded apartment");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Self {
             window,
-            transport: Rc::new(RemoteTransport::new(Box::new(message_proxy), backend_rx)),
+            transport: Rc::new(RemoteTransport::new(shared, backend_rx)),
             file_transfer,
             ole_available,
             file_format_ids,
@@ -93,6 +109,7 @@ impl WinClipboardImpl {
             channel_ready: false,
             local_files: LocalFiles::default(),
             remote_data_object: None,
+            mta_usage,
         }
     }
 
@@ -111,6 +128,7 @@ impl WinClipboardImpl {
         self.file_transfer
             && self
                 .transport
+                .shared()
                 .capabilities()
                 .contains(ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED)
     }
@@ -228,6 +246,7 @@ impl WinClipboardImpl {
         // Without it, the remote can't read past 4 GiB: larger files are left out of the offer.
         let huge_files = self
             .transport
+            .shared()
             .capabilities()
             .contains(ClipboardGeneralCapabilityFlags::HUGE_FILE_SUPPORT_ENABLED);
 
@@ -354,10 +373,11 @@ impl WinClipboardImpl {
         Ok(None)
     }
 
-    fn on_remote_format_list(&mut self, formats: &[ClipboardFormat]) -> WinCliprdrResult<Option<ClipboardMessage>> {
-        // Whatever was fetched by format id belongs to the previous remote clipboard.
-        self.transport.next_generation();
-
+    fn on_remote_format_list(
+        &mut self,
+        formats: &[ClipboardFormat],
+        generation: u64,
+    ) -> WinCliprdrResult<Option<ClipboardMessage>> {
         self.available_formats_on_remote.clear();
 
         // Clear previous format mapping
@@ -379,7 +399,7 @@ impl WinClipboardImpl {
 
         if let (Some(remote_file_list_format), Some(ids)) = (remote_file_list_format, self.file_format_ids) {
             if self.can_receive_files() {
-                return self.offer_remote_files(remote_file_list_format.id(), ids, &local_format_ids);
+                return self.offer_remote_files(remote_file_list_format.id(), ids, &local_format_ids, generation);
             }
         }
 
@@ -408,6 +428,7 @@ impl WinClipboardImpl {
         remote_file_list_format: ClipboardFormatId,
         ids: FileFormatIds,
         local_format_ids: &HashSet<ClipboardFormatId>,
+        generation: u64,
     ) -> WinCliprdrResult<Option<ClipboardMessage>> {
         let passthrough = local_format_ids
             .iter()
@@ -418,8 +439,15 @@ impl WinClipboardImpl {
             })
             .collect();
 
-        let data_object: IDataObject =
-            RemoteDataObject::new(Rc::clone(&self.transport), ids, remote_file_list_format, passthrough).into();
+        let data_object: IDataObject = RemoteDataObject::new(
+            Rc::clone(&self.transport),
+            generation,
+            ids,
+            remote_file_list_format,
+            passthrough,
+            self.mta_usage.is_some(),
+        )
+        .into();
 
         // SAFETY: OLE was initialized on this thread (`can_receive_files`).
         unsafe { OleSetClipboard(&data_object)? };
@@ -467,6 +495,13 @@ impl WinClipboardImpl {
     fn shutdown(&mut self) {
         self.local_files.clear();
         self.remove_remote_data_object();
+
+        if let Some(cookie) = self.mta_usage.take() {
+            // SAFETY: Balances `CoIncrementMTAUsage` in `new`.
+            if let Err(error) = unsafe { CoDecrementMTAUsage(cookie) } {
+                debug!(%error, "Failed to release the multithreaded apartment");
+            }
+        }
     }
 
     /// Takes the data object for remote files off the clipboard, if it is still there.
@@ -489,11 +524,7 @@ impl WinClipboardImpl {
                 self.transport.drop_late_answer();
                 Ok(None)
             }
-            BackendEvent::FileContentsResponse(_) => {
-                // Out-of-order message, ignore it.
-                Ok(None)
-            }
-            BackendEvent::RemoteFormatList(formats) => self.on_remote_format_list(formats),
+            BackendEvent::RemoteFormatList(formats, generation) => self.on_remote_format_list(formats, *generation),
 
             BackendEvent::ClipboardUpdated | BackendEvent::RemoteRequestsFormatList => self.on_clipboard_update(),
             BackendEvent::RenderFormat(format) => self.on_render_format(*format),
@@ -505,7 +536,6 @@ impl WinClipboardImpl {
             }
             BackendEvent::DowngradedCapabilities(flags) => {
                 debug!(?flags, "Clipboard capabilities negotiated");
-                self.transport.set_capabilities(*flags);
                 Ok(None)
             }
             BackendEvent::Ready => self.on_ready(),
@@ -523,10 +553,6 @@ impl WinClipboardImpl {
             }
             BackendEvent::Unlock(data_id) => {
                 self.local_files.unlock(data_id.0);
-                Ok(None)
-            }
-            BackendEvent::OutgoingLocksCleared(data_ids) => {
-                self.transport.release_locks(data_ids.iter().map(|data_id| data_id.0));
                 Ok(None)
             }
         };

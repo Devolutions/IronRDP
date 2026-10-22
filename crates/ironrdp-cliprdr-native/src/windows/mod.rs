@@ -13,16 +13,17 @@ pub(crate) mod file_list;
 mod local_files;
 mod os_clipboard;
 mod remote_format_registry;
+mod shared;
 mod transport;
 mod utils;
 
 use std::rc::Rc;
-use std::sync::mpsc as mpsc_sync;
+use std::sync::{Arc, mpsc as mpsc_sync};
 
 use ironrdp_cliprdr::backend::{ClipboardMessageProxy, CliprdrBackend, CliprdrBackendFactory};
 use ironrdp_cliprdr::pdu::{
-    ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse,
-    FileDescriptor, FormatDataRequest, FormatDataResponse, LockDataId,
+    ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileDescriptor,
+    FormatDataRequest, FormatDataResponse, LockDataId,
 };
 use tracing::{debug, warn};
 pub use windows::Win32::Foundation::HWND;
@@ -41,6 +42,7 @@ use windows::core::{Error, s};
 
 use self::clipboard_impl::{ClipboardWindowState, WinClipboardImpl, clipboard_subproc, release};
 use self::cliprdr_backend::WinCliprdrBackend;
+use self::shared::ClipboardShared;
 
 const BACKEND_CHANNEL_SIZE: usize = 8;
 const WM_CLIPRDR_BACKEND_EVENT: u32 = WM_USER;
@@ -133,7 +135,8 @@ pub(crate) enum BackendEvent {
     SessionStarted,
     DowngradedCapabilities(ClipboardGeneralCapabilityFlags),
     Ready,
-    RemoteFormatList(Vec<ClipboardFormat>),
+    /// The remote format list, with the generation it starts.
+    RemoteFormatList(Vec<ClipboardFormat>, u64),
     FormatDataRequest(FormatDataRequest),
     FormatDataResponse(FormatDataResponse<'static>),
     RemoteRequestsFormatList,
@@ -144,10 +147,8 @@ pub(crate) enum BackendEvent {
         clip_data_id: Option<u32>,
     },
     FileContentsRequest(FileContentsRequest),
-    FileContentsResponse(FileContentsResponse<'static>),
     Lock(LockDataId),
     Unlock(LockDataId),
-    OutgoingLocksCleared(Vec<LockDataId>),
 }
 
 /// Windows RDP client clipboard implementation.
@@ -176,11 +177,11 @@ pub(crate) enum BackendEvent {
 /// [`ClipboardMessage::SendFileContentsResponse`] to `Cliprdr`, and drive
 /// `Cliprdr::drive_timeouts`.
 ///
-/// Like rendering a delay-rendered format, reading a remote file blocks the clipboard thread:
-/// each read the pasting application makes waits for one `FileContentsRequest` round trip (up to
-/// 1 MiB, 30 seconds at most). The thread goes back to its message loop between reads, so the
-/// window stays responsive on a fast link, but on a slow one it pauses for each chunk while a
-/// large file is pasted.
+/// Remote files are read without the clipboard thread: their streams live in the process's
+/// multithreaded apartment, so the pasting application's reads run on COM worker threads, with
+/// several chunks requested ahead. Only fetching the file list waits on the clipboard thread,
+/// once per paste. This also initializes the multithreaded apartment for the clipboard's
+/// lifetime.
 ///
 /// [MS-RDPECLIP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/fb9b7e0b-6db4-41c2-b83c-f889c1ee7688
 /// [`ClipboardMessage::SendInitiateFileCopy`]: ironrdp_cliprdr::backend::ClipboardMessage::SendInitiateFileCopy
@@ -190,6 +191,7 @@ pub struct WinClipboard {
     window: HWND,
     backend_tx: mpsc_sync::SyncSender<BackendEvent>,
     file_transfer: bool,
+    shared: Arc<ClipboardShared>,
     /// Shared with the window subclass; `None` once dropped.
     state: Option<Rc<ClipboardWindowState>>,
     /// The thread that created the window, which owns it, its subclass and OLE.
@@ -280,9 +282,11 @@ impl WinClipboard {
 
         let ole_initialized = file_transfer && init_ole();
 
+        let shared = Arc::new(ClipboardShared::new(Box::new(message_proxy)));
+
         let state = Rc::new(ClipboardWindowState::new(WinClipboardImpl::new(
             window,
-            message_proxy,
+            Arc::clone(&shared),
             backend_rx,
             file_transfer,
             ole_initialized,
@@ -315,6 +319,7 @@ impl WinClipboard {
             window,
             backend_tx,
             file_transfer,
+            shared,
             state: Some(state),
             // SAFETY: Always safe to call.
             thread_id: unsafe { GetCurrentThreadId() },
@@ -328,6 +333,7 @@ impl WinClipboard {
             tx: self.backend_tx.clone(),
             window: self.window,
             file_transfer: self.file_transfer,
+            shared: Arc::clone(&self.shared),
         })
     }
 }
@@ -399,6 +405,7 @@ struct WinCliprdrBackendFactory {
     tx: mpsc_sync::SyncSender<BackendEvent>,
     window: HWND,
     file_transfer: bool,
+    shared: Arc<ClipboardShared>,
 }
 
 // SAFETY: window handle is thread safe for PostMessageW usage
@@ -406,6 +413,11 @@ unsafe impl Send for WinCliprdrBackendFactory {}
 
 impl CliprdrBackendFactory for WinCliprdrBackendFactory {
     fn build_cliprdr_backend(&self) -> Box<dyn CliprdrBackend> {
-        Box::new(WinCliprdrBackend::new(self.window, self.tx.clone(), self.file_transfer))
+        Box::new(WinCliprdrBackend::new(
+            self.window,
+            self.tx.clone(),
+            self.file_transfer,
+            Arc::clone(&self.shared),
+        ))
     }
 }

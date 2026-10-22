@@ -19,8 +19,9 @@ With file transfer enabled (`WinClipboard::with_file_transfer`; `WinClipboard::n
   Each stream reads its file through `RANGE` requests carrying the `clipDataId` of the lock `Cliprdr` took when the remote advertised the files, so a paste keeps working after the remote clipboard changes, until that lock is released.
   This needs OLE, so it is only enabled when the thread is a single-threaded apartment.
 
-Like rendering a delay-rendered format, a stream read blocks the clipboard thread for one round trip (up to 1 MiB, 30 seconds at most).
-The thread goes back to its message loop between reads, so the window stays responsive on a fast link, but pauses for each chunk on a slow one while a large file is pasted.
+The streams live in the process's multithreaded apartment, so the pasting application reads them on COM worker threads, never through the clipboard thread: a large paste does not stall the window, input or rendering.
+Each stream keeps four 1 MiB `RANGE` requests in flight ahead of the reader.
+Only fetching the file list, once per paste, waits on the clipboard thread, like rendering a delay-rendered format.
 The embedder must route the file stream `ClipboardMessage`s to `Cliprdr` and drive `Cliprdr::drive_timeouts`.
 
 Pure logic tests run with `cargo test -p ironrdp-testsuite-extra cliprdr_native::windows`.
