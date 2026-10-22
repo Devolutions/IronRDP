@@ -9,6 +9,7 @@ use super::transport::{confirm, read, request};
 const TLS_VERSION_1_2: u16 = 0x0303;
 
 #[test]
+// oracle: spec
 fn reports_standard_security_for_direct_rdp_without_tls() {
     let capture = read(
         "standard-security",
@@ -24,6 +25,7 @@ fn reports_standard_security_for_direct_rdp_without_tls() {
 }
 
 #[test]
+// oracle: reference
 fn rejects_tls_without_matching_key_log_entry() {
     let client_hello = hello(1, [1; 32], None);
     let server_hello = hello(2, [3; 32], Some(0x009c));
@@ -53,6 +55,7 @@ fn rejects_tls_without_matching_key_log_entry() {
 }
 
 #[test]
+// oracle: regression
 fn ignores_a_truncated_trailing_tls_record() {
     let client_hello = hello(1, [1; 32], None);
     let server_hello = hello(2, [3; 32], Some(0x009c));
@@ -87,7 +90,7 @@ fn ignores_a_truncated_trailing_tls_record() {
 }
 
 #[test]
-// oracle: self-derived
+// oracle: reference
 fn decrypts_tls13_handshake_and_application_records() {
     let client_random = [1; 32];
     let secrets = [
@@ -150,7 +153,7 @@ fn decrypts_tls13_handshake_and_application_records() {
 }
 
 #[test]
-// oracle: self-derived
+// oracle: reference
 fn decrypts_tls12_application_data() {
     let client_random = [1; 32];
     let server_random = [3; 32];

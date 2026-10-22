@@ -403,6 +403,7 @@ fn reassemble(segments: Vec<Segment>, origin: u32) -> Result<PacketStream, Captu
 
     let mut bytes = data.clone();
     let mut stream = vec![(packet, data)];
+    // INVARIANT: segments are sorted by non-decreasing sequence number, so each sequence is at least start_sequence.
     for (packet, sequence, data) in segments {
         let data_end = sequence
             .checked_add(u32::try_from(data.len()).map_err(|_| CaptureError::MissingTcpFlow)?)
@@ -413,6 +414,7 @@ fn reassemble(segments: Vec<Segment>, origin: u32) -> Result<PacketStream, Captu
         if stream_end < sequence {
             return Err(CaptureError::MissingTcpFlow);
         }
+        // The sequence ordering invariant above guarantees this subtraction does not underflow.
         let offset = usize::try_from(sequence - start_sequence).map_err(|_| CaptureError::MissingTcpFlow)?;
         let overlap = usize::try_from(stream_end - sequence)
             .map_err(|_| CaptureError::MissingTcpFlow)?
@@ -420,7 +422,7 @@ fn reassemble(segments: Vec<Segment>, origin: u32) -> Result<PacketStream, Captu
         if bytes[offset..offset + overlap] != data[..overlap] {
             return Err(CaptureError::MissingTcpFlow);
         }
-        if data_end > stream_end {
+        if stream_end < data_end {
             let data = data[overlap..].to_vec();
             bytes.extend_from_slice(&data);
             if let Some((previous_packet, previous_data)) = stream.last_mut()
