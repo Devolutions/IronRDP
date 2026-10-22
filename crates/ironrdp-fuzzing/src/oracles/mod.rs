@@ -315,7 +315,7 @@ pub fn pdu_round_trip(data: &[u8]) {
     use ironrdp_pdu::rdp::headers::ShareControlHeader;
     use ironrdp_pdu::rdp::{self, ClientInfoPdu, multitransport, server_error_info, server_license, vc};
     use ironrdp_pdu::x224::X224;
-    use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
+    use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands, window};
 
     // Connection-time PDUs
     pdu_round_trip_one!(data, X224<ConnectionRequest>);
@@ -354,6 +354,7 @@ pub fn pdu_round_trip(data: &[u8]) {
 
     // Surface commands
     pdu_round_trip_one!(data, surface_commands::SurfaceCommand<'_>);
+    pdu_round_trip_one!(data, window::WindowingOrder);
     pdu_round_trip_one!(data, surface_commands::SurfaceBitsPdu<'_>);
     pdu_round_trip_one!(data, surface_commands::FrameMarkerPdu);
     pdu_round_trip_one!(data, surface_commands::ExtendedBitmapDataPdu<'_>);
