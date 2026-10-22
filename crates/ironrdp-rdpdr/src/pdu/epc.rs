@@ -205,11 +205,13 @@ impl Encode for PrinterCacheData {
                 let mut port_dos_name = [0u8; 8];
                 port_dos_name[..pdu.port_dos_name.len()].copy_from_slice(pdu.port_dos_name.as_bytes());
                 dst.write_slice(&port_dos_name);
-                write_length(dst, "PnPNameLen", unicode_len(&pdu.pnp_name))?;
+                write_length(dst, "PnPNameLen", optional_unicode_len(&pdu.pnp_name))?;
                 write_length(dst, "DriverNameLen", unicode_len(&pdu.driver_name))?;
                 write_length(dst, "PrintNameLen", unicode_len(&pdu.printer_name))?;
                 write_length(dst, "CachedFieldsLen", pdu.config_data.len())?;
-                write_unicode(dst, &pdu.pnp_name)?;
+                if !pdu.pnp_name.is_empty() {
+                    write_unicode(dst, &pdu.pnp_name)?;
+                }
                 write_unicode(dst, &pdu.driver_name)?;
                 write_unicode(dst, &pdu.printer_name)?;
                 dst.write_slice(&pdu.config_data);
@@ -244,7 +246,7 @@ impl Encode for PrinterCacheData {
             + match self {
                 Self::Add(pdu) => {
                     Self::ADD_FIXED_PART_SIZE
-                        + unicode_len(&pdu.pnp_name)
+                        + optional_unicode_len(&pdu.pnp_name)
                         + unicode_len(&pdu.driver_name)
                         + unicode_len(&pdu.printer_name)
                         + pdu.config_data.len()
@@ -358,6 +360,11 @@ fn read_unicode(src: &mut ReadCursor<'_>, length: usize) -> DecodeResult<String>
 
 fn unicode_len(value: &str) -> usize {
     encoded_str_len(value, CharacterSet::Unicode, true)
+}
+
+/// Length of a string that is omitted entirely when empty, like `PnPName` (MS-RDPEPC 2.2.2.1).
+fn optional_unicode_len(value: &str) -> usize {
+    if value.is_empty() { 0 } else { unicode_len(value) }
 }
 
 fn write_length(dst: &mut WriteCursor<'_>, field: &'static str, length: usize) -> EncodeResult<()> {

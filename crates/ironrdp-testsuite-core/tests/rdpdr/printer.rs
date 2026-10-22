@@ -512,7 +512,7 @@ fn printers_join_parallel_ports_after_logon_while_serial_ports_go_first() {
     let serial = confirm[0].encode_unframed_pdu().unwrap();
     assert_eq!(read_u32(&serial[4..]), 1);
     assert_eq!(read_u32(&serial[12..]), 0x4000_0000);
-    assert_eq!(&serial[16..24], b"COM3    ");
+    assert_eq!(&serial[16..24], b"COM3\0\0\0\0");
 
     // The printer and the parallel port share the post-logon announcement, each with its own name.
     let logon = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
@@ -527,7 +527,180 @@ fn printers_join_parallel_ports_after_logon_while_serial_ports_go_first() {
     );
     let encoded = logon[0].encode_unframed_pdu().unwrap();
     let printer_data_len = read_u32_as_usize(&encoded[24..]);
-    assert_eq!(&encoded[16..24], b"PRN1    ");
+    assert_eq!(&encoded[16..24], b"PRN1\0\0\0\0");
     let parallel = 28 + printer_data_len;
-    assert_eq!(&encoded[parallel + 8..parallel + 16], b"LPT1    ");
+    assert_eq!(&encoded[parallel + 8..parallel + 16], b"LPT1\0\0\0\0");
+}
+
+/// Server capability request whose General Capability Set may withhold `RDPDR_DEVICE_REMOVE_PDUS`.
+fn encoded_printer_server_capability(device_remove: bool) -> Vec<u8> {
+    let mut encoded = encode_vec(&RdpdrPdu::CoreCapability(ironrdp_rdpdr::pdu::efs::CoreCapability {
+        capabilities: vec![
+            ironrdp_rdpdr::pdu::efs::CapabilityMessage::new_general(0),
+            ironrdp_rdpdr::pdu::efs::CapabilityMessage::new_printer(),
+        ],
+        kind: ironrdp_rdpdr::pdu::efs::CoreCapabilityKind::ServerCoreCapabilityRequest,
+    }))
+    .unwrap();
+    // RDPDR header (4), numCapabilities and padding (4), capability header (8), osType (4),
+    // osVersion (4), protocol major and minor (4), ioCode1 (4), ioCode2 (4), then extendedPDU.
+    const EXTENDED_PDU_OFFSET: usize = 36;
+    if !device_remove {
+        encoded[EXTENDED_PDU_OFFSET] &= !0x01;
+    }
+    encoded
+}
+
+#[test]
+fn rejected_printer_is_not_retried_without_device_remove_pdus() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_redirected_printer(
+        RdpdrPrinter::new(42, "Office".to_owned(), "Missing Driver".to_owned())
+            .with_fallback_driver_name(Some("MS Publisher Imagesetter".to_owned())),
+    );
+    let client_id = announce_client_id(&mut rdpdr, 12);
+    rdpdr.process(&encoded_printer_server_capability(false)).unwrap();
+    assert!(
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap())
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Reusing the DeviceId would need DR_DEVICELIST_REMOVE, which this server does not allow.
+    assert!(
+        rdpdr
+            .process(&device_reply(42, NtStatus::UNSUCCESSFUL))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn fallback_announcement_replays_configuration_saved_for_the_fallback_driver() {
+    let store = Arc::new(InMemoryRdpdrPrinterCacheStore::new());
+    let shared_store: Arc<dyn RdpdrPrinterCacheStore> = Arc::<InMemoryRdpdrPrinterCacheStore>::clone(&store);
+    store
+        .save(
+            "Office",
+            &RdpdrPrinterCacheEntry {
+                driver_name: None,
+                config_driver_name: Some("MS Publisher Imagesetter".to_owned()),
+                config_data: vec![7, 7, 7],
+            },
+        )
+        .unwrap();
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned())
+        .with_printer_cache_store(shared_store)
+        .with_redirected_printer(
+            RdpdrPrinter::new(42, "Office".to_owned(), "Missing Driver".to_owned())
+                .with_fallback_driver_name(Some("MS Publisher Imagesetter".to_owned())),
+        );
+
+    // The configuration belongs to the fallback driver, so the first announcement omits it.
+    let first = announced_printers(&announce_after_logon(&mut rdpdr));
+    assert!(first[0].cached_fields.is_empty());
+
+    let retry = rdpdr.process(&device_reply(42, NtStatus::UNSUCCESSFUL)).unwrap();
+    let retried = announced_printers(&retry[1]);
+    assert_eq!(retried[0].driver_name, "MS Publisher Imagesetter");
+    assert_eq!(retried[0].cached_fields, [7, 7, 7]);
+}
+
+#[test]
+fn add_cache_data_for_a_renamed_queue_matches_the_redirected_port() {
+    let store = Arc::new(InMemoryRdpdrPrinterCacheStore::new());
+    let shared_store: Arc<dyn RdpdrPrinterCacheStore> = Arc::<InMemoryRdpdrPrinterCacheStore>::clone(&store);
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned())
+        .with_printer_cache_store(shared_store)
+        .with_redirected_printer(RdpdrPrinter::new(42, "Office".to_owned(), "Local Driver".to_owned()));
+    announce_after_logon(&mut rdpdr);
+    assert!(rdpdr.process(&device_reply(42, NtStatus::SUCCESS)).unwrap().is_empty());
+
+    // A user installed a queue named "Manual" with another driver on the printer's PRN1 port.
+    for pdu in [
+        PrinterCacheData::Add(AddPrinterCacheData {
+            port_dos_name: "PRN1".to_owned(),
+            pnp_name: String::new(),
+            driver_name: "Server Driver".to_owned(),
+            printer_name: "Manual".to_owned(),
+            config_data: vec![1],
+        }),
+        // Later messages use the manual queue's name.
+        PrinterCacheData::Update(UpdatePrinterCacheData {
+            printer_name: "Manual".to_owned(),
+            config_data: vec![2],
+        }),
+    ] {
+        rdpdr.process(&encode_vec(&pdu).unwrap()).unwrap();
+    }
+
+    assert_eq!(
+        store.load("Office").unwrap(),
+        Some(RdpdrPrinterCacheEntry {
+            driver_name: Some("Server Driver".to_owned()),
+            config_driver_name: Some("Server Driver".to_owned()),
+            config_data: vec![2],
+        })
+    );
+}
+
+#[test]
+fn update_drops_a_cached_driver_the_session_does_not_announce() {
+    let store = Arc::new(InMemoryRdpdrPrinterCacheStore::new());
+    let shared_store: Arc<dyn RdpdrPrinterCacheStore> = Arc::<InMemoryRdpdrPrinterCacheStore>::clone(&store);
+    store
+        .save(
+            "Office",
+            &RdpdrPrinterCacheEntry {
+                driver_name: Some("Driver A".to_owned()),
+                config_driver_name: Some("Driver A".to_owned()),
+                config_data: vec![1],
+            },
+        )
+        .unwrap();
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned())
+        .with_printer_cache_store(shared_store)
+        .with_redirected_printer(
+            RdpdrPrinter::new(42, "Office".to_owned(), "Driver B".to_owned()).with_explicit_driver(true),
+        );
+    announce_after_logon(&mut rdpdr);
+    assert!(rdpdr.process(&device_reply(42, NtStatus::SUCCESS)).unwrap().is_empty());
+
+    let update = PrinterCacheData::Update(UpdatePrinterCacheData {
+        printer_name: "Office".to_owned(),
+        config_data: vec![2],
+    });
+    rdpdr.process(&encode_vec(&update).unwrap()).unwrap();
+
+    assert_eq!(
+        store.load("Office").unwrap(),
+        Some(RdpdrPrinterCacheEntry {
+            driver_name: None,
+            config_driver_name: Some("Driver B".to_owned()),
+            config_data: vec![2],
+        })
+    );
+}
+
+#[test]
+fn add_cache_data_omits_an_empty_pnp_name() {
+    let add = PrinterCacheData::Add(AddPrinterCacheData {
+        port_dos_name: "PRN1".to_owned(),
+        pnp_name: String::new(),
+        driver_name: "D".to_owned(),
+        printer_name: "P".to_owned(),
+        config_data: Vec::new(),
+    });
+    let encoded = encode_vec(&add).unwrap();
+
+    // Header (4), EventId (4), PortDosName (8), then PnPNameLen.
+    assert_eq!(read_u32(&encoded[16..]), 0);
+    assert_eq!(decode::<PrinterCacheData>(&encoded).unwrap(), add);
 }

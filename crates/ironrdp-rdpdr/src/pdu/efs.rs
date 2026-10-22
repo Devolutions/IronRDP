@@ -302,6 +302,18 @@ impl CoreCapability {
             .any(|capability| capability.header.cap_type == CapabilityType::Port)
     }
 
+    /// Whether the General Capability Set allows Client Drive Device List Remove PDUs
+    /// (`RDPDR_DEVICE_REMOVE_PDUS`, MS-RDPEFS 2.2.2.7.1).
+    pub fn supports_device_remove(&self) -> bool {
+        self.capabilities.iter().any(|capability| {
+            matches!(
+                &capability.capability_data,
+                CapabilityData::General(general)
+                    if general.extended_pdu.contains(ExtendedPdu::RDPDR_DEVICE_REMOVE_PDUS)
+            )
+        })
+    }
+
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(ctx: self.name(), in: dst, size: self.size());
         dst.write_u16(cast_length!(

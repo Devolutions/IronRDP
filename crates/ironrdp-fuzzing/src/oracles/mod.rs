@@ -218,6 +218,8 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<ironrdp_cliprdr::pdu::FileContentsResponse<'_>>(data);
 
     let _ = decode::<ironrdp_rdpdr::pdu::RdpdrPdu>(data);
+    let _ = decode::<ironrdp_rdpdr::pdu::epc::PrinterCacheData>(data);
+    let _ = decode::<ironrdp_rdpdr::pdu::epc::PrinterUsingXps>(data);
 
     let _ = decode::<ironrdp_displaycontrol::pdu::DisplayControlPdu>(data);
     let _ = decode::<ironrdp_rdpel::pdu::LocationPdu>(data);
@@ -380,6 +382,8 @@ pub fn pdu_round_trip(data: &[u8]) {
 
     // RDPDR
     pdu_round_trip_one!(data, ironrdp_rdpdr::pdu::RdpdrPdu);
+    pdu_round_trip_one!(data, ironrdp_rdpdr::pdu::epc::PrinterCacheData);
+    pdu_round_trip_one!(data, ironrdp_rdpdr::pdu::epc::PrinterUsingXps);
 
     // Display control
     pdu_round_trip_one!(data, ironrdp_displaycontrol::pdu::DisplayControlPdu);
@@ -618,9 +622,16 @@ pub fn cliprdr_format(input: &[u8]) {
 pub fn channel_process(input: &[u8]) {
     use ironrdp_svc::SvcProcessor as _;
 
+    // A printer with a cache store lets printer cache-data PDUs reach the store; an add event
+    // for its `PRN1` port matches without knowing the printer name.
     let mut rdpdr = ironrdp_rdpdr::Rdpdr::new(Box::new(ironrdp_rdpdr::NoopRdpdrBackend), "Backend".to_owned())
         .with_smartcard(1)
-        .with_drives(None);
+        .with_drives(None)
+        .with_printer_cache_store(std::sync::Arc::new(ironrdp_rdpdr::InMemoryRdpdrPrinterCacheStore::new()))
+        .with_redirected_printer(
+            ironrdp_rdpdr::RdpdrPrinter::new(2, "Printer".to_owned(), "Driver".to_owned())
+                .with_fallback_driver_name(Some("Fallback".to_owned())),
+        );
 
     let _ = rdpdr.process(input);
 }

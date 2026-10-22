@@ -570,6 +570,21 @@ impl ViewerConfig {
                     "--rpc cannot be combined with drive options; pass drivestoredirect in the connect properties"
                 );
             }
+            if args.printer
+                || args.printer_all
+                || !args.printer_queue.is_empty()
+                || args.printer_default.is_some()
+                || args.printer_fallback_driver.is_some()
+            {
+                anyhow::bail!(
+                    "--rpc cannot be combined with printer options; pass redirectprinters in the connect properties"
+                );
+            }
+            if !args.serial.is_empty() || !args.parallel.is_empty() {
+                anyhow::bail!(
+                    "--rpc cannot be combined with port options; pass redirectcomports in the connect properties"
+                );
+            }
             return Ok(Self {
                 builder: ConfigBuilder::new(),
                 log_file,

@@ -64,6 +64,7 @@ pub struct Rdpdr {
     client_id: Option<u32>,
     server_capabilities_received: bool,
     printer_capability_negotiated: bool,
+    device_remove_negotiated: bool,
     port_capability_negotiated: bool,
     client_id_confirmed: bool,
     /// Windows can send User Logged On before Client ID Confirm, for example when it
@@ -118,6 +119,7 @@ impl Rdpdr {
             client_id: None,
             server_capabilities_received: false,
             printer_capability_negotiated: false,
+            device_remove_negotiated: false,
             port_capability_negotiated: false,
             client_id_confirmed: false,
             user_logged_on_pending: false,
@@ -284,11 +286,18 @@ impl Rdpdr {
 
     /// Returns the driver and cached configuration to announce for `printer`.
     ///
-    /// A fallback driver is announced without cached configuration, because that configuration
-    /// belongs to another driver ([MS-RDPEPC 3.1.1.1]).
+    /// A fallback driver is announced with cached configuration only when that configuration was
+    /// produced for the fallback driver, because it is driver-specific ([MS-RDPEPC 3.1.1.1]).
     fn printer_announcement(&self, printer: &RdpdrPrinter, fallback_driver: Option<&str>) -> (String, Vec<u8>) {
         if let Some(fallback_driver) = fallback_driver {
-            return (fallback_driver.to_owned(), Vec::new());
+            let cached_config_data = self
+                .printer_cache_store
+                .as_ref()
+                .and_then(|store| store.0.load(printer.name()).ok().flatten())
+                .filter(|entry| entry.config_driver_name.as_deref() == Some(fallback_driver))
+                .map(|entry| entry.config_data)
+                .unwrap_or_default();
+            return (fallback_driver.to_owned(), cached_config_data);
         }
         let Some(store) = &self.printer_cache_store else {
             return (
@@ -535,6 +544,7 @@ impl Rdpdr {
 
         self.server_capabilities_received = false;
         self.printer_capability_negotiated = false;
+        self.device_remove_negotiated = false;
         self.port_capability_negotiated = false;
         self.client_id_confirmed = false;
         self.user_logged_on_pending = false;
@@ -583,6 +593,7 @@ impl Rdpdr {
 
         self.server_capabilities_received = true;
         self.printer_capability_negotiated = req.supports_printer();
+        self.device_remove_negotiated = req.supports_device_remove();
         self.port_capability_negotiated = req.supports_port();
         let client_capability_response =
             RdpdrPdu::CoreCapability(CoreCapability::new_response(self.capabilities.clone_supported_by(&req)));
@@ -757,8 +768,10 @@ impl Rdpdr {
             .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
             .handle_server_device_announce_response(pdu)?;
 
+        // Reusing the DeviceId needs DR_DEVICELIST_REMOVE first, which the server must allow.
         if !accepted
             && device_type == DeviceType::Print
+            && self.device_remove_negotiated
             && let Some(index) = self
                 .printers
                 .iter()
@@ -1207,10 +1220,24 @@ impl Rdpdr {
             );
             return;
         };
+        // An add event names the queue a user created on the redirected port, which may differ
+        // from the announced printer name (MS-RDPEPC 3.2.5.1.3), so it also matches by port.
+        let port_dos_name = match &pdu {
+            PrinterCacheData::Add(add) => Some(add.port_dos_name.as_str()),
+            _ => None,
+        };
         let Some(index) = self
             .printers
             .iter()
             .position(|redirected| redirected.server_name == pdu.printer_name())
+            .or_else(|| {
+                let port_dos_name = port_dos_name?;
+                self.printers.iter().position(|redirected| {
+                    self.device_list
+                        .device(redirected.printer.device_id())
+                        .is_some_and(|device| device.preferred_dos_name().eq_ignore_ascii_case(port_dos_name))
+                })
+            })
         else {
             warn!(
                 printer = pdu.printer_name(),
@@ -1224,11 +1251,12 @@ impl Rdpdr {
         let result = match &pdu {
             PrinterCacheData::Add(pdu) if pdu.config_data.len() <= MAX_PRINTER_CACHE_DATA_BYTES => {
                 let driver_name = (!pdu.driver_name.is_empty()).then(|| pdu.driver_name.clone());
-                // The server queue now uses the manually installed driver, so later updates in
-                // this session carry configuration for it.
+                // The server queue now uses the manually installed driver and name, so later
+                // messages in this session refer to it.
                 if let Some(driver_name) = &driver_name {
                     redirected.announced_driver.clone_from(driver_name);
                 }
+                redirected.server_name.clone_from(&pdu.printer_name);
                 store.0.save(
                     &printer_name,
                     &RdpdrPrinterCacheEntry {
@@ -1244,11 +1272,19 @@ impl Rdpdr {
             }
             PrinterCacheData::Update(pdu) if pdu.config_data.len() <= MAX_PRINTER_CACHE_DATA_BYTES => {
                 store.0.load(&printer_name).and_then(|entry| {
-                    let entry = RdpdrPrinterCacheEntry {
-                        config_data: pdu.config_data.clone(),
-                        config_driver_name: Some(redirected.announced_driver.clone()),
-                        ..entry.unwrap_or_default()
-                    };
+                    let mut entry = entry.unwrap_or_default();
+                    // A driver saved from an add event that the session no longer announces (an
+                    // explicit override, for example) would pair the new configuration with the
+                    // wrong driver on the next connection.
+                    if entry
+                        .driver_name
+                        .as_ref()
+                        .is_some_and(|driver_name| *driver_name != redirected.announced_driver)
+                    {
+                        entry.driver_name = None;
+                    }
+                    entry.config_data.clone_from(&pdu.config_data);
+                    entry.config_driver_name = Some(redirected.announced_driver.clone());
                     store.0.save(&printer_name, &entry)
                 })
             }

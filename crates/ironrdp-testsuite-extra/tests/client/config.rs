@@ -568,6 +568,18 @@ ClearTextPassword:s:test-pass
         Some((&PrinterSelection::Default, 1))
     );
 
+    // RPC hosts take printer selection from connect properties, so printer flags are rejected.
+    for flags in [
+        &["--printer"][..],
+        &["--printer-all"],
+        &["--printer-queue", "Office"],
+        &["--printer-default", "Office"],
+        &["--printer-fallback-driver"],
+    ] {
+        let args = ["ironrdp-viewer", "--rpc"].into_iter().chain(flags.iter().copied());
+        assert!(ViewerConfig::parse_from(args).is_err(), "{flags:?}");
+    }
+
     let rdp_file = TempRdpFile::new(rdp);
     for invalid in [
         &["--printer-default", "Office"][..],
@@ -806,6 +818,12 @@ ironrdp_rdpdr:i:0
     let config = named.into_config().expect("failed to build client config");
     assert!(config.channels().rdpdr.ports);
     assert_eq!(config.properties().redirect_com_ports(), Some(true));
+
+    // RPC hosts take port selection from connect properties, so port flags are rejected.
+    for flags in [&["--serial", "COM3"][..], &["--parallel", "all"]] {
+        let args = ["ironrdp-viewer", "--rpc"].into_iter().chain(flags.iter().copied());
+        assert!(ViewerConfig::parse_from(args).is_err(), "{flags:?}");
+    }
 }
 
 #[test]
