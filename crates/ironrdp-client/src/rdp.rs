@@ -1839,10 +1839,24 @@ fn build_connector(
 
     // The client-side compositor (ironrdp-egfx) holds the surface pixel state and
     // the session drains it into the framebuffer, so the graphics pipeline's
-    // per-command notification callbacks are unused here. Without an H.264 decoder
-    // the client advertises only the non-AVC capability sets it can actually decode.
+    // per-command notification callbacks are unused here. The graphics pipeline
+    // advertises the AVC capability sets only when the H.264 decoder can be created,
+    // and AVC444 only when it returns YUV planes.
     struct EgfxHandler;
     impl GraphicsPipelineHandler for EgfxHandler {}
+
+    let h264_decoder = config
+        .channels
+        .h264_decoder
+        .as_ref()
+        .and_then(crate::h264::H264DecoderFactory::create);
+    if config.connector.support_dyn_vc_gfx_protocol {
+        debug!(
+            h264 = h264_decoder.is_some(),
+            yuv420 = h264_decoder.as_ref().is_some_and(|decoder| decoder.supports_yuv420()),
+            "Graphics pipeline enabled"
+        );
+    }
 
     let mut drdynvc = ironrdp_dvc::DrdynvcClient::new()
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
@@ -1852,7 +1866,7 @@ fn build_connector(
             CsReadyFlags::ENABLE_MULTIPEN_INJECTION,
             RdpInputProtocolVersion::V300,
         ))
-        .with_dynamic_channel(GraphicsPipelineClient::new(Box::new(EgfxHandler), None));
+        .with_dynamic_channel(GraphicsPipelineClient::new(Box::new(EgfxHandler), h264_decoder));
 
     #[cfg(feature = "location")]
     if config.channels.location {
@@ -2038,7 +2052,7 @@ fn build_connector(
     // MS-RDPEVOR video optimized remoting and MS-RDPEGT geometry tracking.
     #[cfg(feature = "video")]
     {
-        drdynvc = crate::video::attach(drdynvc, &config.channels.video);
+        drdynvc = crate::video::attach(drdynvc, &config.channels.video, config.channels.h264_decoder.as_ref());
     }
 
     // MS-RDPECAM camera redirection.

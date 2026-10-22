@@ -11,6 +11,7 @@ use ironrdp_client::config::{
 };
 #[cfg(windows)]
 use ironrdp_client::config::{MissingField, TransportKind};
+use ironrdp_client::h264::H264DecoderFactory;
 use ironrdp_pdu::gcc::{ClientMonitorData, Monitor, MonitorFlags};
 use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
 use ironrdp_viewer::cli::{PrinterOptions, PrinterSelection, ViewerConfig, parse_config_from};
@@ -1066,47 +1067,103 @@ fn udp_offer_defaults_to_version_3_and_can_be_lowered() {
     }
 }
 
-#[test]
-fn graphics_pipeline_is_opt_in() {
-    let config = complete_builder().build().expect("default config");
-    assert!(!config.connector().support_dyn_vc_gfx_protocol);
+fn null_decoder() -> Option<H264DecoderFactory> {
+    Some(H264DecoderFactory::new(|| None))
+}
 
-    let config = complete_builder()
-        .with_graphics_pipeline(true)
-        .build()
-        .expect("graphics pipeline config");
-    assert!(config.connector().support_dyn_vc_gfx_protocol);
+#[test]
+fn graphics_pipeline_follows_the_h264_decoder() {
+    let config = complete_builder().build().expect("default config");
+    assert_eq!(
+        config.connector().support_dyn_vc_gfx_protocol,
+        H264DecoderFactory::platform_default().is_some()
+    );
+
+    for (decoder, explicit, enabled) in [
+        (null_decoder(), None, true),
+        (None, None, false),
+        (null_decoder(), Some(false), false),
+        (None, Some(true), true),
+    ] {
+        let mut builder = complete_builder().with_h264_decoder(decoder);
+        if let Some(explicit) = explicit {
+            builder = builder.with_graphics_pipeline(explicit);
+        }
+        let config = builder.build().expect("graphics pipeline config");
+        assert_eq!(config.connector().support_dyn_vc_gfx_protocol, enabled);
+    }
 
     for (value, enabled) in [(1i64, true), (0, false)] {
         let mut properties = ironrdp_propertyset::PropertySet::new();
         properties.insert("ironrdp_egfx", value);
-        let config = complete_builder()
-            .with_property_set(&properties)
-            .expect("valid graphics pipeline property")
-            .build()
-            .expect("graphics pipeline property config");
-        assert_eq!(config.connector().support_dyn_vc_gfx_protocol, enabled);
+        for decoder in [null_decoder(), None] {
+            let config = complete_builder()
+                .with_h264_decoder(decoder)
+                .with_property_set(&properties)
+                .expect("valid graphics pipeline property")
+                .build()
+                .expect("graphics pipeline property config");
+            assert_eq!(config.connector().support_dyn_vc_gfx_protocol, enabled);
+        }
     }
 }
 
 #[test]
-fn video_playback_mode_zero_declines_video() {
-    let decoder = || Some(ironrdp_client::video::H264DecoderFactory::new(|| None));
+fn the_h264_decoder_factory_is_shared_and_replaceable() {
+    let config = complete_builder().build().expect("default config");
+    assert_eq!(
+        config.channels().h264_decoder.is_some(),
+        H264DecoderFactory::platform_default().is_some()
+    );
+    #[cfg(windows)]
+    assert!(
+        config.channels().h264_decoder.is_some(),
+        "Media Foundation is the Windows default"
+    );
+
+    let created = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+    let factory = {
+        let created = Arc::clone(&created);
+        H264DecoderFactory::new(move || {
+            created.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            None
+        })
+    };
     let config = complete_builder()
-        .with_h264_decoder(decoder())
+        .with_h264_decoder(Some(factory))
+        .build()
+        .expect("config with a decoder");
+    let decoder = config.channels().h264_decoder.as_ref().expect("the decoder is kept");
+    assert!(decoder.create().is_none());
+    assert_eq!(created.load(core::sync::atomic::Ordering::Relaxed), 1);
+
+    let config = complete_builder()
+        .with_h264_decoder(None)
+        .build()
+        .expect("config without a decoder");
+    assert!(config.channels().h264_decoder.is_none());
+}
+
+#[test]
+fn video_playback_mode_zero_declines_video() {
+    let config = complete_builder()
+        .with_h264_decoder(null_decoder())
         .build()
         .expect("video config");
-    assert!(config.channels().video.decoder.is_some());
+    assert!(config.channels().video.enabled);
 
     let mut properties = ironrdp_propertyset::PropertySet::new();
     properties.insert("videoplaybackmode", 0i64);
     let config = complete_builder()
-        .with_h264_decoder(decoder())
+        .with_h264_decoder(null_decoder())
         .with_property_set(&properties)
         .expect("valid video playback property")
         .build()
         .expect("video playback property config");
-    assert!(config.channels().video.decoder.is_none());
+    assert!(!config.channels().video.enabled);
+    // The graphics pipeline keeps the decoder.
+    assert!(config.channels().h264_decoder.is_some());
+    assert!(config.connector().support_dyn_vc_gfx_protocol);
 }
 
 #[test]
@@ -1116,12 +1173,18 @@ fn udp_and_graphics_pipeline_cli_flags_reach_the_config() {
     let config = parse_config_from_rdp(rdp, &[]);
     assert!(!config.udp_transport_enabled());
     assert_eq!(config.udp_offer_version(), UdpVersion::V3);
-    assert!(!config.connector().support_dyn_vc_gfx_protocol);
+    assert_eq!(
+        config.connector().support_dyn_vc_gfx_protocol,
+        H264DecoderFactory::platform_default().is_some()
+    );
 
     let config = parse_config_from_rdp(rdp, &["--udp", "--udp-offer", "2", "--egfx"]);
     assert!(config.udp_transport_enabled());
     assert_eq!(config.udp_offer_version(), UdpVersion::V2);
     assert!(config.connector().support_dyn_vc_gfx_protocol);
+
+    let config = parse_config_from_rdp(rdp, &["--egfx=false"]);
+    assert!(!config.connector().support_dyn_vc_gfx_protocol);
 
     let config = parse_config_from_rdp(rdp, &["--udp", "--udp-offer", "1"]);
     assert_eq!(config.udp_offer_version(), UdpVersion::V1);

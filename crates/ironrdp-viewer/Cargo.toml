@@ -26,7 +26,7 @@ rustls = ["ironrdp/rustls"]
 native-tls = ["ironrdp/native-tls"]
 qoi = ["ironrdp/qoi"]
 qoiz = ["ironrdp/qoiz"]
-# Decode MS-RDPEVOR video with the bundled OpenH264 sources.
+# Decode H.264 graphics and MS-RDPEVOR video with the bundled OpenH264 sources.
 openh264 = ["ironrdp/client-openh264"]
 
 [dependencies]

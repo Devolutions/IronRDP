@@ -720,9 +720,10 @@ The first update after activation, `ResetGraphics`, or an extent change covers t
 Each paint composes the black letterbox areas and scaled frame into a retained client-size memory backbuffer, then copies the clipped result to the visible window so the intermediate clear is not exposed.
 Consumers that do not opt into dirty-region delivery keep receiving complete `RdpOutputEvent::Image` snapshots.
 
-Every connection registers the `Microsoft::Windows::RDS::Graphics` dynamic virtual channel.
-The ActiveX path supplies no H.264 decoder, so its EGFX capability advertisement is limited to `RDPGFX_CAPSET_VERSION8` with `RDPGFX_CAPS_FLAG_SMALL_CACHE`; AVC420, AVC444, and AVC444v2 are not advertised.
-The selected V8 path composes ClearCodec, Planar, uncompressed, and RemoteFX Progressive surface updates, including surface IDs, mappings, cache operations, frame ordering, and acknowledgements, into the same retained GDI framebuffer used by legacy bitmap updates.
+Every connection advertises the graphics pipeline and registers the `Microsoft::Windows::RDS::Graphics` dynamic virtual channel.
+H.264 is decoded by the Media Foundation decoder shipped with Windows, so the EGFX capability advertisement offers versions 10.7 down to 10 (AVC444 and AVC444v2), 8.1 (AVC420) and 8, all with `RDPGFX_CAPS_FLAG_SMALL_CACHE`.
+Windows editions without that decoder, such as N editions without the Media Feature Pack, advertise version 8 only.
+The negotiated path composes AVC420, AVC444, AVC444v2, ClearCodec, Planar, uncompressed, and RemoteFX Progressive surface updates, including surface IDs, mappings, cache operations, frame ordering, and acknowledgements, into the same retained GDI framebuffer used by legacy bitmap updates.
 This does not advertise the legacy RemoteFX bitmap codec from the Confirm Active capability set, enable lossy bitmap compression, or implement GPU presentation.
 `ResetGraphics` resizes the software output only when each dimension fits the protocol's 32,766-pixel limit and the complete output fits the 256 MiB compositor budget; malformed or oversized resets are rejected before allocating the session framebuffer.
 GDI remains the presentation fallback for every negotiated graphics path, and `RedirectDirectX` remains explicitly unsupported with `E_NOTIMPL`.
