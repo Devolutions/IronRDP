@@ -1,15 +1,21 @@
 //! ActiveX pen → MS-RDPEI pen contact tracking.
 //!
-//! Maps Win32 `WM_POINTER*` pen samples onto RDPEI pen frames ([MS-RDPEI] 2.2.3.7 / 3.1.1.1).
+//! Maps Win32 `WM_POINTER*` pen samples onto RDPEI pen frames ([MS-RDPEI] 2.2.3.7 "RDPINPUT_PEN_EVENT_PDU"
+//! and 3.1.1.1 "Touch Contact State Transitions").
 //! Every digitizer sample becomes one pen frame, so a coalesced `WM_POINTERUPDATE` and its history
 //! become one PDU with one frame per sample, timed by the digitizer.
+//!
+//! [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
 
 use std::collections::HashMap;
 
 use ironrdp_rdpei::contact::{self, ContactSample, ContactState};
 use ironrdp_rdpei::pdu::{PenContact, PenContactDataFlags, PenContactFlags, PenEventPdu, PenFlags, PenFrame};
 
-/// Pens the server injects at once when multipen injection is negotiated ([MS-RDPEI] 2.2.3.1).
+/// Pens the server injects at once when multipen injection is negotiated ([MS-RDPEI] 2.2.3.1
+/// "RDPINPUT_SC_READY_PDU").
+///
+/// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
 const MAX_MULTIPEN_DEVICES: u8 = 4;
 
 /// Win32 `POINTER_PEN_INFO::penFlags` values (`PEN_FLAG_*`).
@@ -120,8 +126,7 @@ impl PenContactTracker {
     ///
     /// Each sample becomes its own frame.
     /// Returns `None` when no sample produces a contact transition.
-    /// Callers must reserve send capacity first: a full queue must not drop a transition that already
-    /// changed the tracker.
+    /// Callers must keep the event until the session accepts it: the tracker already moved past it.
     pub(crate) fn process_samples(&mut self, samples: &[PenSample], now_us: u64) -> Option<PenEventPdu> {
         let mut frames = Vec::with_capacity(samples.len());
         let mut oldest_us = None;
@@ -147,8 +152,9 @@ impl PenContactTracker {
                     None => continue,
                 },
             };
-            let (x, y) = match (sample.preserve_position, tracked) {
-                (true, Some(pen)) => (pen.last.x, pen.last.y),
+            // A lift or cancel is sent where the pen last touched; it moves only after the transition.
+            let (x, y) = match tracked {
+                Some(pen) if sample.preserve_position || transition.keeps_position() => (pen.last.x, pen.last.y),
                 _ => (sample.x, sample.y),
             };
 
@@ -245,6 +251,8 @@ fn encode_time_ms(oldest_us: u64, now_us: u64) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     fn sample(pointer_id: u32, x: i32, in_range: bool, in_contact: bool, timestamp_us: u64) -> PenSample {
@@ -272,6 +280,7 @@ mod tests {
             .collect()
     }
 
+    // oracle: spec MS-RDPEI §3.1.1.1
     #[test]
     fn hover_down_draw_lift_leave() {
         let mut tracker = PenContactTracker::new();
@@ -297,6 +306,67 @@ mod tests {
         assert!(!tracker.has_active_contacts());
     }
 
+    // oracle: spec MS-RDPEI §3.1.1.1
+    #[test]
+    fn lift_and_cancel_keep_the_last_engaged_position() {
+        let mut tracker = PenContactTracker::new();
+        let samples = [
+            sample(5, 10, true, true, 0),
+            sample(5, 20, true, true, 1_000),
+            sample(5, 25, true, false, 2_000),
+            sample(5, 30, true, false, 3_000),
+        ];
+        let pdu = tracker.process_samples(&samples, 3_000).expect("pdu");
+        let xs: Vec<_> = pdu.frames.iter().map(|frame| frame.contacts[0].x).collect();
+        assert_eq!(xs, [10, 20, 20, 30]);
+
+        tracker
+            .process_samples(&[sample(5, 40, true, true, 4_000)], 4_000)
+            .expect("down");
+        let mut cancel = sample(5, 45, false, false, 5_000);
+        cancel.canceled = true;
+        let pdu = tracker.process_samples(&[cancel], 5_000).expect("cancel");
+        assert_eq!(pdu.frames[0].contacts[0].x, 40);
+    }
+
+    fn arbitrary_sample() -> impl Strategy<Value = PenSample> {
+        (0u32..6, any::<i16>(), any::<bool>(), any::<bool>(), any::<bool>()).prop_map(
+            |(pointer_id, x, in_range, in_contact, canceled)| PenSample {
+                canceled,
+                ..sample(pointer_id, i32::from(x), in_range, in_contact, 0)
+            },
+        )
+    }
+
+    // oracle: spec MS-RDPEI §2.2.3.7.1.1
+    proptest! {
+        #[test]
+        fn frames_carry_legal_flags_and_device_ids(
+            multipen in any::<bool>(),
+            samples in proptest::collection::vec(arbitrary_sample(), 1..64),
+        ) {
+            let mut tracker = PenContactTracker::new();
+            tracker.reset(multipen);
+            let limit = if multipen { MAX_MULTIPEN_DEVICES } else { 1 };
+            for sample in samples {
+                let Some(pdu) = tracker.process_samples(&[sample], 0) else {
+                    continue;
+                };
+                for frame in &pdu.frames {
+                    let mut device_ids: Vec<_> = frame.contacts.iter().map(|contact| contact.device_id).collect();
+                    device_ids.sort_unstable();
+                    device_ids.dedup();
+                    prop_assert_eq!(device_ids.len(), frame.contacts.len());
+                    for contact in &frame.contacts {
+                        prop_assert!(contact.contact_flags.is_legal(), "{:?}", contact.contact_flags);
+                        prop_assert!(contact.device_id < limit);
+                    }
+                }
+            }
+        }
+    }
+
+    // oracle: spec MS-RDPEI §2.2.3.7
     #[test]
     fn history_becomes_one_frame_per_sample_with_digitizer_offsets() {
         let mut tracker = PenContactTracker::new();
@@ -319,6 +389,7 @@ mod tests {
         assert_eq!(xs, [1, 2, 3]);
     }
 
+    // oracle: spec MS-RDPEI §2.2.3.7.1.1
     #[test]
     fn optional_fields_set_field_flags() {
         let mut tracker = PenContactTracker::new();
@@ -342,6 +413,7 @@ mod tests {
         );
     }
 
+    // oracle: reference winuser.h PEN_FLAG_* and PEN_MASK_* values, spec MS-RDPEI §2.2.3.7.1.1 field ranges
     #[test]
     fn win32_values_map_flags_and_clamp_ranges() {
         let (flags, pressure, rotation, tilt_x, tilt_y) = PenSample::win32_values(
@@ -361,6 +433,7 @@ mod tests {
         assert_eq!((pressure, rotation, tilt_x, tilt_y), (None, None, None, None));
     }
 
+    // oracle: spec MS-RDPEI §2.2.3.7.1.1
     #[test]
     fn second_pen_is_dropped_without_multipen() {
         let mut tracker = PenContactTracker::new();
@@ -370,6 +443,7 @@ mod tests {
         assert!(tracker.process_samples(&[sample(2, 0, true, true, 1)], 1).is_none());
     }
 
+    // oracle: spec MS-RDPEI §2.2.3.1
     #[test]
     fn multipen_assigns_device_ids_and_restates_other_pens() {
         let mut tracker = PenContactTracker::new();
@@ -401,6 +475,7 @@ mod tests {
         );
     }
 
+    // oracle: spec MS-RDPEI §3.1.1.1
     #[test]
     fn cancel_and_release_end_tracking() {
         let mut tracker = PenContactTracker::new();

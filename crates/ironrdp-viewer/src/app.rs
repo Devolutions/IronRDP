@@ -25,6 +25,9 @@ use winit::window::{CursorIcon, CustomCursor, Window, WindowAttributes};
 
 use crate::keymap::{is_modifier, map_key_code};
 
+/// Emulated mouse operations kept while the session input queue is full; beyond this, moves are dropped.
+const MAX_PENDING_TOUCH_MOUSE: usize = 256;
+
 type WindowSurface = (Arc<Window>, softbuffer::Surface<DisplayHandle<'static>, Arc<Window>>);
 
 /// Events delivered from the viewer-hosted RPC server to the window.
@@ -144,6 +147,9 @@ impl RpcApp {
         let InputTarget::Direct(input_event_sender) = &self.input_target else {
             return;
         };
+        if !self.touch_frames.has_pending_frames() {
+            return;
+        }
         // Frames stay pending while the queue is full, so no contact transition is lost.
         let Ok(permit) = input_event_sender.try_reserve() else {
             return;
@@ -189,6 +195,15 @@ impl RpcApp {
 
         let operations = touch_mouse_operations(&mut self.mouse_touch, touch.id, phase, position);
         self.pending_touch_mouse.extend(operations);
+        // While the queue stays full, only the oldest pointer moves are dropped; button changes are kept.
+        if MAX_PENDING_TOUCH_MOUSE < self.pending_touch_mouse.len()
+            && let Some(index) = self
+                .pending_touch_mouse
+                .iter()
+                .position(|operation| matches!(operation, ironrdp::input::Operation::MouseMove(_)))
+        {
+            self.pending_touch_mouse.remove(index);
+        }
         self.send_touch_mouse();
     }
 

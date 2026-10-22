@@ -50,6 +50,24 @@ impl ContactTransition {
     pub fn pen_flags(self) -> PenContactFlags {
         PenContactFlags::from_bits_truncate(self.flags.bits())
     }
+
+    /// Whether this sample takes the contact out of the engaged state.
+    ///
+    /// Such a contact is sent at its last engaged position, because the position may change only after
+    /// the transition ([MS-RDPEI] 3.1.1.1 "Touch Contact State Transitions").
+    ///
+    /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
+    #[must_use]
+    pub fn keeps_position(self) -> bool {
+        self.flags.contains(TouchContactFlags::UP)
+    }
+}
+
+/// Whether a contact with these flags stays in its state, so that dropping it loses only movement.
+#[must_use]
+pub fn is_steady(flags: TouchContactFlags) -> bool {
+    flags == TouchContactFlags::UPDATE | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT
+        || flags == TouchContactFlags::UPDATE | TouchContactFlags::INRANGE
 }
 
 /// Advances a contact by one local sample.
@@ -157,12 +175,6 @@ impl TouchFrameBuilder {
         }
     }
 
-    /// Whether any contact touches the surface.
-    #[must_use]
-    pub fn has_contacts(&self) -> bool {
-        !self.tracked.is_empty()
-    }
-
     /// Whether frames wait for [`TouchFrameBuilder::take_event`].
     #[must_use]
     pub fn has_pending_frames(&self) -> bool {
@@ -213,6 +225,10 @@ impl TouchFrameBuilder {
         }
         self.current_timestamp_us.get_or_insert(timestamp_us);
 
+        let (x, y) = match index {
+            Some(index) if transition.keeps_position() => (self.tracked[index].x, self.tracked[index].y),
+            _ => (x, y),
+        };
         let pressure = pressure.map(|pressure| pressure.min(1024));
         let mut contact = TouchContact::new(contact_id, x, y, transition.flags);
         if let Some(pressure) = pressure {

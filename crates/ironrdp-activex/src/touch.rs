@@ -65,9 +65,8 @@ impl TouchContactTracker {
     /// Builds a touch event for the given samples, advancing the local FSM.
     ///
     /// Returns `None` when no legal contact transitions are produced (for example
-    /// an untracked cancel). Callers must reserve send capacity before invoking
-    /// this method so a full queue cannot drop a transition that already mutated
-    /// the tracker.
+    /// an untracked cancel). Callers must keep the event until the session
+    /// accepts it: the tracker already moved past it.
     pub(crate) fn process_samples(&mut self, samples: &[TouchSample]) -> Option<TouchEventPdu> {
         let mut contacts = Vec::with_capacity(samples.len());
         let mut finished = Vec::new();
@@ -89,10 +88,10 @@ impl TouchContactTracker {
                 Some(c) => c.contact_id,
                 None => self.allocate_contact_id(),
             };
-            let (x, y) = if sample.preserve_position {
-                prev.as_ref().map(|c| (c.x, c.y)).unwrap_or((sample.x, sample.y))
-            } else {
-                (sample.x, sample.y)
+            // A lift or cancel is sent where the finger last touched; it moves only after the transition.
+            let (x, y) = match prev.as_ref() {
+                Some(c) if sample.preserve_position || transition.keeps_position() => (c.x, c.y),
+                _ => (sample.x, sample.y),
             };
             let started_at = prev.as_ref().map(|c| c.started_at).unwrap_or_else(Instant::now);
 

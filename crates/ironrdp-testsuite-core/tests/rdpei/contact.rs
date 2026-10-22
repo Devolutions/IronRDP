@@ -1,4 +1,4 @@
-use ironrdp_rdpei::contact::{ContactSample, ContactState, TouchFrameBuilder, TouchPhase, transition};
+use ironrdp_rdpei::contact::{ContactSample, ContactState, TouchFrameBuilder, TouchPhase, is_steady, transition};
 use ironrdp_rdpei::pdu::{TouchContactFlags, TouchEventPdu};
 use proptest::prelude::*;
 
@@ -71,6 +71,7 @@ proptest! {
             if let Some(next) = transition(state, sample(in_range, in_contact, canceled)) {
                 prop_assert!(next.flags.is_legal(), "{:?}", next.flags);
                 prop_assert!(next.pen_flags().is_legal());
+                prop_assert_eq!(next.keeps_position(), state == Some(ContactState::Engaged) && next.next != Some(ContactState::Engaged));
                 state = next.next;
             }
         }
@@ -139,7 +140,38 @@ fn events_between_takes_form_one_frame_that_restates_unchanged_contacts() {
             (1, TouchContactFlags::UP | TouchContactFlags::CANCELED)
         ]]
     );
-    assert!(!builder.has_contacts());
+    builder.cancel_all(11_000);
+    assert!(builder.take_event(11_000).is_none());
+}
+
+// oracle: spec MS-RDPEI §3.1.1.1
+#[test]
+fn a_lift_is_sent_at_the_last_engaged_position() {
+    let mut builder = TouchFrameBuilder::new(10);
+    builder.push(1, TouchPhase::Started, 10, 20, None, 0);
+    builder.push(2, TouchPhase::Started, 50, 60, None, 0);
+    builder.take_event(0).expect("downs");
+    builder.push(1, TouchPhase::Ended, 15, 25, None, 1_000);
+    builder.push(2, TouchPhase::Canceled, 55, 65, None, 1_000);
+    let event = builder.take_event(1_000).expect("lifts");
+    let mut positions: Vec<_> = event.frames[0]
+        .contacts
+        .iter()
+        .map(|contact| (contact.contact_id, contact.x, contact.y))
+        .collect();
+    positions.sort_unstable();
+    assert_eq!(positions, [(0, 10, 20), (1, 50, 60)]);
+}
+
+// oracle: spec MS-RDPEI §3.1.1.1
+#[test]
+fn only_updates_that_keep_the_state_are_steady() {
+    assert!(is_steady(MOVE));
+    assert!(is_steady(TouchContactFlags::UPDATE | TouchContactFlags::INRANGE));
+    assert!(!is_steady(DOWN));
+    assert!(!is_steady(TouchContactFlags::UP | TouchContactFlags::INRANGE));
+    assert!(!is_steady(TouchContactFlags::UPDATE));
+    assert!(!is_steady(TouchContactFlags::UPDATE | TouchContactFlags::CANCELED));
 }
 
 // oracle: spec MS-RDPEI §2.2.3.3.1

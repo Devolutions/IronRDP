@@ -201,7 +201,7 @@ const PROJECTED_RAIL_INPUT_RETRY_MILLISECONDS: u32 = 25;
 /// Retries RDPEI events that found the session input queue full.
 const RDPEI_INPUT_RETRY_TIMER_ID: usize = 0x4952_4456;
 const RDPEI_INPUT_RETRY_MILLISECONDS: u32 = 10;
-/// RDPEI events kept while the session input queue is full; the oldest are dropped beyond this.
+/// RDPEI events kept while the session input queue is full; beyond this, movement-only events are dropped.
 const MAX_PENDING_RDPEI_EVENTS: usize = 256;
 const ACTIVEX_DVC_PLUGIN_PATHS_PROPERTY: &str = "IronRdpDvcPluginPaths";
 const ACTIVEX_ENABLE_TLS_PROPERTY: &str = "IronRdpEnableTls";
@@ -8350,6 +8350,22 @@ pub(crate) struct Control {
     rpc_log_directive: RefCell<Option<String>>,
 }
 
+/// Whether every contact of a touch or pen event keeps its state, so that dropping the event loses only
+/// movement.
+fn is_steady_rdpei_event(event: &RdpInputEvent) -> bool {
+    match event {
+        RdpInputEvent::Touch(event) => event
+            .frames
+            .iter()
+            .flat_map(|frame| &frame.contacts)
+            .all(|contact| ironrdp_rdpei::contact::is_steady(contact.contact_flags)),
+        RdpInputEvent::Pen(event) => event.frames.iter().flat_map(|frame| &frame.contacts).all(|contact| {
+            ironrdp_rdpei::contact::is_steady(TouchContactFlags::from_bits_truncate(contact.contact_flags.bits()))
+        }),
+        _ => false,
+    }
+}
+
 /// Where the input of one touch or pen pointer goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PointerRoute {
@@ -13600,15 +13616,27 @@ impl Control {
     }
 
     /// Commits tracker transitions and sends the resulting touch event.
-    fn send_touch_event_with<F>(&self, build: F)
-    where
-        F: FnOnce(&mut TouchContactTracker) -> Option<TouchEventPdu>,
-    {
+    fn send_touch_event_with(&self, build: impl FnOnce(&mut TouchContactTracker) -> Option<TouchEventPdu>) {
+        self.send_tracker_event(&self.touch_tracker, build, RdpInputEvent::Touch);
+    }
+
+    /// Commits pen tracker transitions and sends the resulting pen event.
+    fn send_pen_event_with(&self, build: impl FnOnce(&mut PenContactTracker) -> Option<PenEventPdu>) {
+        self.send_tracker_event(&self.pen_tracker, build, RdpInputEvent::Pen);
+    }
+
+    /// Advances a tracker only while a session is attached, so its state matches what the server saw.
+    fn send_tracker_event<T, P>(
+        &self,
+        tracker: &RefCell<T>,
+        build: impl FnOnce(&mut T) -> Option<P>,
+        wrap: fn(P) -> RdpInputEvent,
+    ) {
         if self.input_sender.borrow().is_none() {
             return;
         }
-        let event = build(&mut self.touch_tracker.borrow_mut());
-        self.send_rdpei_event(event.map(RdpInputEvent::Touch));
+        let event = build(&mut tracker.borrow_mut());
+        self.send_rdpei_event(event.map(wrap));
     }
 
     /// Queues an RDPEI event behind any that are still pending, then sends what the input queue accepts.
@@ -13618,9 +13646,13 @@ impl Control {
     fn send_rdpei_event(&self, event: Option<RdpInputEvent>) {
         let mut pending = self.pending_rdpei_events.borrow_mut();
         pending.extend(event);
-        if MAX_PENDING_RDPEI_EVENTS < pending.len() {
-            tracing::warn!("Dropping the oldest pending ActiveX RDPEI event");
-            pending.pop_front();
+        // Only an event in which every contact keeps its state may go: it carries movement, never a down,
+        // lift or cancel, so the server still sees every contact transition.
+        if MAX_PENDING_RDPEI_EVENTS < pending.len()
+            && let Some(index) = pending.iter().position(is_steady_rdpei_event)
+        {
+            tracing::warn!("Dropping a pending ActiveX RDPEI movement event");
+            pending.remove(index);
         }
         let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
             pending.clear();
@@ -13662,18 +13694,6 @@ impl Control {
         self.send_touch_event_with(|tracker| tracker.release_all());
     }
 
-    /// Commits pen tracker transitions and sends the resulting pen event.
-    fn send_pen_event_with<F>(&self, build: F)
-    where
-        F: FnOnce(&mut PenContactTracker) -> Option<PenEventPdu>,
-    {
-        if self.input_sender.borrow().is_none() {
-            return;
-        }
-        let event = build(&mut self.pen_tracker.borrow_mut());
-        self.send_rdpei_event(event.map(RdpInputEvent::Pen));
-    }
-
     fn release_pen_contacts(&self) {
         let now_us = performance_counter_now_us();
         self.send_pen_event_with(|tracker| tracker.release_all(now_us));
@@ -13685,13 +13705,20 @@ impl Control {
             return;
         }
         tracing::debug!(?state, "ActiveX RDPEI input state changed");
-        // The server dropped the contacts with the channel state, so the trackers forget them unsent.
+        // The server dropped the contacts with the channel state, so the trackers and pending events forget
+        // them unsent.
+        let reset_pen = !state.pen || previous.multipen != state.multipen;
         if !state.touch {
             *self.touch_tracker.borrow_mut() = TouchContactTracker::new();
         }
-        if !state.pen || previous.multipen != state.multipen {
+        if reset_pen {
             self.pen_tracker.borrow_mut().reset(state.multipen);
         }
+        self.pending_rdpei_events.borrow_mut().retain(|event| match event {
+            RdpInputEvent::Touch(_) => state.touch,
+            RdpInputEvent::Pen(_) => !reset_pen,
+            _ => true,
+        });
     }
 
     /// Maps client-area coordinates onto the remote desktop (signed RDPEI space).
@@ -26622,5 +26649,35 @@ try {
         drop(unsafe { IMsRdpCameraRedirConfigCollection::from_raw(first) });
         drop(unsafe { IMsRdpCameraRedirConfigCollection::from_raw(second) });
         assert_eq!(size_of::<IMsRdpCameraRedirConfig_Vtbl>(), 10 * size_of::<usize>());
+    }
+
+    // oracle: spec MS-RDPEI §3.1.1.1
+    #[test]
+    fn only_movement_events_may_be_dropped_from_the_pending_queue() {
+        let touch = |flags| {
+            RdpInputEvent::Touch(TouchEventPdu::new(
+                0,
+                vec![TouchFrame::new(0, vec![TouchContact::new(0, 0, 0, flags)])],
+            ))
+        };
+        let pen = |flags| {
+            RdpInputEvent::Pen(PenEventPdu::new(
+                0,
+                vec![PenFrame::new(0, vec![PenContact::new(0, 0, 0, flags)])],
+            ))
+        };
+        let moving = TouchContactFlags::UPDATE | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT;
+        assert!(is_steady_rdpei_event(&touch(moving)));
+        assert!(!is_steady_rdpei_event(&touch(
+            TouchContactFlags::DOWN | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT
+        )));
+        assert!(!is_steady_rdpei_event(&touch(TouchContactFlags::UP)));
+        assert!(is_steady_rdpei_event(&pen(
+            PenContactFlags::UPDATE | PenContactFlags::INRANGE
+        )));
+        assert!(!is_steady_rdpei_event(&pen(
+            PenContactFlags::UP | PenContactFlags::INRANGE
+        )));
+        assert!(!is_steady_rdpei_event(&RdpInputEvent::Close));
     }
 }

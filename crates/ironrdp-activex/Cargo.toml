@@ -70,6 +70,9 @@ windows = { version = "0.62", features = [
 ] }
 windows-core = "0.62"
 
+[target.'cfg(windows)'.dev-dependencies]
+proptest.workspace = true
+
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3.0"
 
