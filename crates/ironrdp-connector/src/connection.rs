@@ -2248,9 +2248,9 @@ mod tests {
         assert!(!client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
     }
 
-    #[test]
-    fn gcc_blocks_announce_the_configured_rdp_version() {
-        let mut config = Config {
+    /// A plain client [`Config`] for tests to change what they look at.
+    fn test_config() -> Config {
+        Config {
             desktop_size: DesktopSize {
                 width: 1_920,
                 height: 1_080,
@@ -2300,7 +2300,12 @@ mod tests {
             multitransport_flags: None,
             support_dyn_vc_gfx_protocol: false,
             rdp_version: gcc::RdpVersion::V5_PLUS,
-        };
+        }
+    }
+
+    #[test]
+    fn gcc_blocks_announce_the_configured_rdp_version() {
+        let mut config = test_config();
 
         let blocks = create_gcc_blocks(
             &config,

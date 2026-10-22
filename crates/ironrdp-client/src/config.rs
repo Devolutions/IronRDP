@@ -1055,7 +1055,7 @@ impl ConfigBuilder {
 
     /// Set the RDP version announced in the GCC Client Core Data block.
     ///
-    /// The default is [`RdpVersion::V5_PLUS`](ironrdp_pdu::gcc::RdpVersion::V5_PLUS).
+    /// The default is [`RdpVersion::V5_PLUS`](ironrdp_pdu::gcc::RdpVersion::V5_PLUS), and it should not be lower.
     /// See [`ironrdp_connector::Config::rdp_version`].
     #[must_use]
     pub fn with_rdp_version(mut self, rdp_version: ironrdp_pdu::gcc::RdpVersion) -> Self {
