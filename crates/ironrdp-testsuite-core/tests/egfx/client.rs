@@ -6,12 +6,13 @@ use ironrdp_egfx::pdu::{
     CacheToSurfacePdu, CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitiesV10Flags,
     CapabilitiesV81Flags, CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitySet,
     CapabilityVersion, Codec1Type, Color, CreateSurfacePdu, DeleteSurfacePdu, EndFramePdu, GfxPdu,
-    MapSurfaceToOutputPdu, PixelFormat, Point, RawCapabilitySet, ResetGraphicsPdu, SolidFillPdu, StartFramePdu,
-    SurfaceToCachePdu, Timestamp, WireToSurface1Pdu,
+    MapSurfaceToOutputPdu, MapSurfaceToScaledWindowPdu, MapSurfaceToWindowPdu, PixelFormat, Point, RawCapabilitySet,
+    ResetGraphicsPdu, SolidFillPdu, StartFramePdu, SurfaceToCachePdu, Timestamp, WireToSurface1Pdu,
 };
 use ironrdp_graphics::clearcodec::ClearCodecEncoder;
 use ironrdp_graphics::zgfx::{CompressionMode, Compressor, compress_and_wrap_egfx, wrap_uncompressed};
 use ironrdp_pdu::geometry::ExclusiveRectangle;
+use proptest::prelude::*;
 use rstest::rstest;
 
 // ============================================================================
@@ -1177,4 +1178,278 @@ fn client_close_transitions_to_inactive() {
 
     client.close(0);
     assert!(!client.is_active(), "client should not be active after close");
+}
+
+// ============================================================================
+// Tests: RemoteApp window mapping (MS-RDPEGFX 2.2.2.20, 2.2.2.23)
+// ============================================================================
+
+const FILL_COLOR: Color = Color {
+    b: 0x33,
+    g: 0x22,
+    r: 0x11,
+    xa: 0,
+};
+const FILL_RGBA: [u8; 4] = [0x11, 0x22, 0x33, 0xFF];
+
+fn fill_frame(client: &mut GraphicsPipelineClient, surface_id: u16, rectangle: ExclusiveRectangle) {
+    for pdu in [
+        GfxPdu::StartFrame(StartFramePdu {
+            timestamp: Timestamp {
+                milliseconds: 0,
+                seconds: 0,
+                minutes: 0,
+                hours: 0,
+            },
+            frame_id: 1,
+        }),
+        GfxPdu::SolidFill(SolidFillPdu {
+            surface_id,
+            fill_pixel: FILL_COLOR,
+            rectangles: vec![rectangle],
+        }),
+        GfxPdu::EndFrame(EndFramePdu { frame_id: 1 }),
+    ] {
+        client.process(0, &encode_for_process(&pdu)).expect("frame PDU");
+    }
+}
+
+/// Applies a mapping PDU, commits the frame and discards what the mapping itself exposed.
+fn map_and_settle(client: &mut GraphicsPipelineClient, map: GfxPdu) {
+    client.process(0, &encode_for_process(&map)).expect("map surface");
+    client
+        .process(0, &encode_for_process(&GfxPdu::EndFrame(EndFramePdu { frame_id: 0 })))
+        .expect("end frame");
+    let _ = client.drain_window_updates();
+    let _ = client.drain_output();
+}
+
+/// A client with an `output_width` by `output_height` graphics output and one surface.
+///
+/// `ResetGraphics` deletes every surface, so the surface is created after it.
+fn client_with_output(
+    (output_width, output_height): (u32, u32),
+    surface_id: u16,
+    (width, height): (u16, u16),
+) -> GraphicsPipelineClient {
+    let mut client = setup_active_client_with_surface(None, surface_id, width, height);
+    for pdu in [
+        GfxPdu::ResetGraphics(ResetGraphicsPdu {
+            width: output_width,
+            height: output_height,
+            monitors: vec![],
+        }),
+        GfxPdu::CreateSurface(CreateSurfacePdu {
+            surface_id,
+            width,
+            height,
+            pixel_format: PixelFormat::XRgb,
+        }),
+    ] {
+        client.process(0, &encode_for_process(&pdu)).expect("output setup");
+    }
+    client
+}
+
+fn map_to_output(surface_id: u16) -> GfxPdu {
+    GfxPdu::MapSurfaceToOutput(MapSurfaceToOutputPdu {
+        surface_id,
+        output_origin_x: 0,
+        output_origin_y: 0,
+    })
+}
+
+fn map_to_window(surface_id: u16, window_id: u64, (mapped_width, mapped_height): (u32, u32)) -> GfxPdu {
+    GfxPdu::MapSurfaceToWindow(MapSurfaceToWindowPdu {
+        surface_id,
+        window_id,
+        mapped_width,
+        mapped_height,
+    })
+}
+
+// oracle: spec MS-RDPEGFX §3.3.5.20 (the surface's top-left mappedWidth x mappedHeight area is presented in the window)
+#[test]
+fn window_mapped_surface_paints_its_window_instead_of_the_output() {
+    let mut client = setup_active_client_with_surface(None, 1, 8, 4);
+    map_and_settle(&mut client, map_to_window(1, 0x42, (4, 2)));
+
+    fill_frame(&mut client, 1, rect(0, 0, 8, 4));
+
+    assert!(client.drain_output().is_empty());
+    let updates = client.drain_window_updates();
+    assert_eq!(updates.len(), 1);
+    let update = &updates[0];
+    assert_eq!(update.window_id, 0x42);
+    assert_eq!((update.width, update.height), (4, 2));
+    // Only the mapped top-left 4x2 area reaches the window.
+    assert_eq!(update.region, rect(0, 0, 4, 2));
+    assert_eq!(update.data, FILL_RGBA.repeat(8));
+    assert!(client.drain_window_updates().is_empty(), "draining empties the queue");
+}
+
+// oracle: mutant output mapping left in force after a window remap
+#[test]
+fn remapping_an_output_surface_to_a_window_stops_painting_the_output() {
+    let mut client = client_with_output((8, 4), 1, (8, 4));
+    map_and_settle(&mut client, map_to_output(1));
+    map_and_settle(&mut client, map_to_window(1, 7, (8, 4)));
+
+    fill_frame(&mut client, 1, rect(0, 0, 8, 4));
+
+    assert!(client.drain_output().is_empty());
+    assert_eq!(client.drain_window_updates().len(), 1);
+}
+
+// oracle: mutant window mapping left in force after an output remap
+#[test]
+fn remapping_a_window_surface_to_the_output_stops_painting_the_window() {
+    let mut client = client_with_output((8, 4), 1, (8, 4));
+    map_and_settle(&mut client, map_to_window(1, 7, (8, 4)));
+    map_and_settle(&mut client, map_to_output(1));
+
+    fill_frame(&mut client, 1, rect(0, 0, 8, 4));
+
+    assert!(client.drain_window_updates().is_empty());
+    assert_eq!(client.drain_output().len(), 1);
+}
+
+// oracle: spec MS-RDPEGFX §3.3.5.23 (the mapped area is presented at targetWidth x targetHeight)
+#[test]
+fn scaled_window_mapping_scales_dirty_regions_to_the_target_size() {
+    let mut client = setup_active_client_with_surface(None, 1, 2, 2);
+    map_and_settle(
+        &mut client,
+        GfxPdu::MapSurfaceToScaledWindow(MapSurfaceToScaledWindowPdu {
+            surface_id: 1,
+            window_id: 7,
+            mapped_width: 2,
+            mapped_height: 2,
+            target_width: 4,
+            target_height: 4,
+        }),
+    );
+
+    fill_frame(&mut client, 1, rect(1, 1, 2, 2));
+
+    let updates = client.drain_window_updates();
+    assert_eq!(updates.len(), 1);
+    assert_eq!((updates[0].width, updates[0].height), (4, 4));
+    // oracle: mutant nearest-neighbor edge mapping (the spec does not fix the sampler)
+    // Source pixel (1, 1) covers target pixels (2..4, 2..4) at a 2x scale.
+    assert_eq!(updates[0].region, rect(2, 2, 4, 4));
+    assert_eq!(updates[0].data, FILL_RGBA.repeat(4));
+}
+
+// oracle: reference FreeRDP/FreeRDP@16a7c2ec2fd0:libfreerdp/gdi/gfx.c (gdi_MapSurfaceToWindow refuses a mapped area larger than the surface)
+#[test]
+fn window_mapping_larger_than_the_surface_is_ignored() {
+    let mut client = setup_active_client_with_surface(None, 1, 4, 4);
+    map_and_settle(&mut client, map_to_window(1, 7, (8, 8)));
+
+    fill_frame(&mut client, 1, rect(0, 0, 4, 4));
+
+    assert!(client.drain_window_updates().is_empty());
+    assert!(client.drain_output().is_empty());
+}
+
+// oracle: reference FreeRDP/FreeRDP@16a7c2ec2fd0:libfreerdp/gdi/gfx.c (gdi_MapSurfaceToWindow refuses an oversized mapping without touching the surface's existing mapping)
+#[test]
+fn rejected_window_mapping_keeps_the_previous_window() {
+    let mut client = setup_active_client_with_surface(None, 1, 4, 4);
+    map_and_settle(&mut client, map_to_window(1, 7, (4, 4)));
+    map_and_settle(&mut client, map_to_window(1, 8, (8, 8)));
+
+    fill_frame(&mut client, 1, rect(0, 0, 4, 4));
+
+    let updates = client.drain_window_updates();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].window_id, 7);
+}
+
+// oracle: reference FreeRDP/FreeRDP@16a7c2ec2fd0:libfreerdp/gdi/gfx.c (gdi_MapSurfaceToWindow refuses an oversized mapping without touching the surface's existing mapping)
+#[test]
+fn rejected_window_mapping_keeps_the_output_mapping() {
+    let mut client = client_with_output((4, 4), 1, (4, 4));
+    map_and_settle(&mut client, map_to_output(1));
+    map_and_settle(&mut client, map_to_window(1, 8, (8, 8)));
+
+    fill_frame(&mut client, 1, rect(0, 0, 4, 4));
+
+    assert!(client.drain_window_updates().is_empty());
+    assert_eq!(client.drain_output().len(), 1);
+}
+
+// oracle: mutant empty or oversized target sizes reach the scaling arithmetic
+#[rstest]
+#[case::empty_target((0, 4))]
+#[case::target_past_max_output_dim((32_767, 4))]
+#[case::target_past_u16((70_000, 4))]
+fn window_mapping_with_an_unpresentable_target_is_ignored(#[case] (target_width, target_height): (u32, u32)) {
+    let mut client = setup_active_client_with_surface(None, 1, 4, 4);
+    map_and_settle(
+        &mut client,
+        GfxPdu::MapSurfaceToScaledWindow(MapSurfaceToScaledWindowPdu {
+            surface_id: 1,
+            window_id: 7,
+            mapped_width: 4,
+            mapped_height: 4,
+            target_width,
+            target_height,
+        }),
+    );
+
+    fill_frame(&mut client, 1, rect(0, 0, 4, 4));
+
+    assert!(client.drain_window_updates().is_empty());
+}
+
+// oracle: spec MS-RDPEGFX §3.3.5.23 (window content is targetWidth x targetHeight, so every
+// region lies inside it; window-mapped surfaces never reach the graphics output)
+proptest! {
+    #[test]
+    fn window_updates_stay_inside_the_target_and_off_the_output(
+        (surface_width, surface_height, mapped_width, mapped_height) in (1u16..=16, 1u16..=16)
+            .prop_flat_map(|(width, height)| (Just(width), Just(height), 1u16..=width, 1u16..=height)),
+        target_width in 1u16..=40,
+        target_height in 1u16..=40,
+        fill in (0u16..20, 0u16..20, 0u16..20, 0u16..20),
+    ) {
+        let mut client = client_with_output((64, 64), 1, (surface_width, surface_height));
+        map_and_settle(
+            &mut client,
+            GfxPdu::MapSurfaceToScaledWindow(MapSurfaceToScaledWindowPdu {
+                surface_id: 1,
+                window_id: 7,
+                mapped_width: u32::from(mapped_width),
+                mapped_height: u32::from(mapped_height),
+                target_width: u32::from(target_width),
+                target_height: u32::from(target_height),
+            }),
+        );
+
+        let (left, top) = (fill.0.min(fill.2), fill.1.min(fill.3));
+        let (right, bottom) = (fill.0.max(fill.2), fill.1.max(fill.3));
+        fill_frame(&mut client, 1, rect(left, top, right, bottom));
+
+        prop_assert!(client.drain_output().is_empty());
+        for update in client.drain_window_updates() {
+            prop_assert_eq!((update.width, update.height), (target_width, target_height));
+            let region = update.region;
+            prop_assert!(region.left < region.right && region.top < region.bottom);
+            prop_assert!(region.right <= target_width && region.bottom <= target_height);
+            let area = usize::from(region.right - region.left) * usize::from(region.bottom - region.top);
+            prop_assert_eq!(update.data.len(), area * 4);
+        }
+        prop_assert!(client.drain_window_updates().is_empty());
+    }
+}
+
+fn rect(left: u16, top: u16, right: u16, bottom: u16) -> ExclusiveRectangle {
+    ExclusiveRectangle {
+        left,
+        top,
+        right,
+        bottom,
+    }
 }
