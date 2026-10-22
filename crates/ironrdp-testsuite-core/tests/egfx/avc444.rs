@@ -88,15 +88,19 @@ fn pack(view: &Yuv420Frame) -> Vec<u8> {
 /// differs enough in both U and V that the reverse chroma filter of MS-RDPEGFX 3.3.8.3.2 applies
 /// rather than keeping the subsampled value.
 fn checkerboard(seed: usize) -> Vec<u8> {
+    checkerboard_of(seed, usize::from(WIDTH), usize::from(HEIGHT))
+}
+
+fn checkerboard_of(seed: usize, width: usize, height: usize) -> Vec<u8> {
     const PAIRS: [[[u8; 3]; 2]; 4] = [
         [[220, 30, 40], [20, 70, 230]],
         [[30, 200, 40], [200, 40, 220]],
         [[240, 220, 30], [20, 150, 170]],
         [[250, 120, 20], [40, 90, 250]],
     ];
-    let mut rgba = Vec::with_capacity(usize::from(WIDTH) * usize::from(HEIGHT) * 4);
-    for y in 0..usize::from(HEIGHT) {
-        for x in 0..usize::from(WIDTH) {
+    let mut rgba = Vec::with_capacity(width * height * 4);
+    for y in 0..height {
+        for x in 0..width {
             let pair = PAIRS[(x / 8 + y / 8 + seed) % PAIRS.len()];
             rgba.extend_from_slice(&pair[(x + y) % 2]);
             rgba.push(0xFF);
@@ -277,7 +281,6 @@ fn views_recombine_into_the_original_picture(#[case] layout: Avc444Layout) {
     assert!(max_difference(&subsampled, &original) > 50);
 }
 
-// oracle: spec MS-RDPEGFX §3.3.8.3.1
 /// Forward transform of MS-RDPEGFX 3.3.8.3.1, written from the specification's matrix.
 fn spec_yuv(pixel: &[u8]) -> [u8; 3] {
     let [r, g, b] = [pixel[0], pixel[1], pixel[2]].map(i32::from);
@@ -357,6 +360,110 @@ fn auxiliary_views_follow_the_specification_layout(#[case] layout: Avc444Layout)
     }
 }
 
+/// Views packed straight from the specification's B1 to B9 formulas, with each 2x2 chroma
+/// average in the main view, recombine into the original picture.
+// oracle: spec MS-RDPEGFX §3.3.8.3.2
+// oracle: spec MS-RDPEGFX §3.3.8.3.3
+#[rstest]
+#[case::avc444(Avc444Layout::V1)]
+#[case::avc444v2(Avc444Layout::V2)]
+fn views_packed_from_the_specification_recombine(#[case] layout: Avc444Layout) {
+    const W: usize = 48;
+    const H: usize = 32;
+    let original = checkerboard_of(0, W, H);
+    let yuv: Vec<[u8; 3]> = original.chunks_exact(4).map(spec_yuv).collect();
+    let at = |x: usize, y: usize| yuv[y * W + x];
+    let (u444, v444) = (|x, y| at(x, y)[1], |x, y| at(x, y)[2]);
+    let average = |plane: usize, x: usize, y: usize| {
+        let sum: u32 = [(0, 0), (1, 0), (0, 1), (1, 1)]
+            .iter()
+            .map(|(dx, dy)| u32::from(at(2 * x + dx, 2 * y + dy)[plane]))
+            .sum();
+        u8::try_from((sum + 2) / 4).expect("average of bytes")
+    };
+
+    let (half_w, half_h) = (W / 2, H / 2);
+    let main_y: Vec<u8> = (0..H)
+        .flat_map(|y| (0..W).map(move |x| (x, y)))
+        .map(|(x, y)| at(x, y)[0])
+        .collect();
+    let main_u: Vec<u8> = (0..half_h)
+        .flat_map(|y| (0..half_w).map(move |x| (x, y)))
+        .map(|(x, y)| average(1, x, y))
+        .collect();
+    let main_v: Vec<u8> = (0..half_h)
+        .flat_map(|y| (0..half_w).map(move |x| (x, y)))
+        .map(|(x, y)| average(2, x, y))
+        .collect();
+
+    let (mut aux_y, mut aux_u, mut aux_v) = (vec![0; W * H], vec![0; half_w * half_h], vec![0; half_w * half_h]);
+    match layout {
+        Avc444Layout::V1 => {
+            for macroblock in (0..H).step_by(16) {
+                for y in 0..8 {
+                    for x in 0..W {
+                        aux_y[(macroblock + y) * W + x] = u444(x, macroblock + 2 * y + 1);
+                        aux_y[(macroblock + 8 + y) * W + x] = v444(x, macroblock + 2 * y + 1);
+                    }
+                }
+            }
+            for y in 0..half_h {
+                for x in 0..half_w {
+                    aux_u[y * half_w + x] = u444(2 * x + 1, 2 * y);
+                    aux_v[y * half_w + x] = v444(2 * x + 1, 2 * y);
+                }
+            }
+        }
+        Avc444Layout::V2 => {
+            for y in 0..H {
+                for x in 0..half_w {
+                    aux_y[y * W + x] = u444(2 * x + 1, y);
+                    aux_y[y * W + half_w + x] = v444(2 * x + 1, y);
+                }
+            }
+            for y in 0..half_h {
+                for x in 0..W / 4 {
+                    aux_u[y * half_w + x] = u444(4 * x, 2 * y + 1);
+                    aux_u[y * half_w + W / 4 + x] = v444(4 * x, 2 * y + 1);
+                    aux_v[y * half_w + x] = u444(4 * x + 2, 2 * y + 1);
+                    aux_v[y * half_w + W / 4 + x] = v444(4 * x + 2, 2 * y + 1);
+                }
+            }
+        }
+    }
+
+    let (w16, h16) = (u16::try_from(W).expect("width"), u16::try_from(H).expect("height"));
+    let main = Yuv420Frame::new(w16, h16, main_y, W, main_u, main_v, half_w).expect("main view");
+    let aux = Yuv420Frame::new(w16, h16, aux_y, W, aux_u, aux_v, half_w).expect("auxiliary view");
+    let everything = ExclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: w16,
+        bottom: h16,
+    };
+    let mut combined = Yuv444Frame::new(w16, h16);
+    combined.apply_main_view(&main, core::slice::from_ref(&everything));
+    combined.apply_auxiliary_view(layout, &aux, core::slice::from_ref(&everything));
+
+    let difference = max_difference(&combined.to_rgba(&everything), &original);
+    assert!(difference <= TOLERANCE, "difference {difference}");
+}
+
+/// The bytes a picture is charged for match the bytes it holds, across macroblock edges.
+// oracle: mutant allocation_size and allocated_bytes disagreeing, leaking or over-crediting the budget
+#[test]
+fn a_picture_holds_exactly_its_allocation_size() {
+    let sizes = (0..=33).flat_map(|w| (0..=33).map(move |h| (w, h)));
+    for (width, height) in sizes.chain([(u16::MAX, 1), (1, u16::MAX)]) {
+        assert_eq!(
+            Yuv444Frame::new(width, height).allocated_bytes(),
+            Yuv444Frame::allocation_size(width, height),
+            "{width}x{height}"
+        );
+    }
+}
+
+// oracle: property round-trip
 #[test]
 fn a_converted_picture_reads_back_unchanged() {
     let original = checkerboard(0);

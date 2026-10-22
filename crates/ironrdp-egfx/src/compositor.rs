@@ -216,7 +216,7 @@ impl Compositor {
         if cap < cached_bytes {
             debug!(
                 cached_bytes,
-                cap, "bitmap cache exceeds the MS-RDPEGFX cap; dropping it on reset"
+                cap, "Bitmap cache exceeds the MS-RDPEGFX cap; dropping it on reset"
             );
             self.cache.clear();
             self.allocated_bytes = 0;
