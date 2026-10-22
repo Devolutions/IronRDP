@@ -476,8 +476,13 @@ impl GraphicsPipelineClient {
     /// [MS-RDPEGFX 3.3.5.19] "Processing an RDPGFX_CAPS_CONFIRM_PDU message" permits this for V10.3-V10.7.
     /// Returns `None` before negotiation, while resetting, after closure, or for unsupported versions.
     /// Send the returned PDU on this graphics channel before processing more input; if sending fails, recreate the channel.
-    /// Graphics state is cleared immediately, and incoming graphics are ignored until the advertised capabilities are confirmed.
-    /// The decoded-frame count remains connection-wide, as required by [MS-RDPEGFX 2.2.2.13] "RDPGFX_FRAME_ACKNOWLEDGE_PDU".
+    /// Calling this method clears graphics state immediately; discarding the returned PDU stalls graphics until channel recreation.
+    /// Incoming graphics are ignored until the advertised version is confirmed; changed capability flags are accepted.
+    /// A malformed or unadvertised reset confirmation makes `process()` fail; recreate the channel on that error.
+    /// The last output extent remains usable until a new `ResetGraphics` arrives, but surfaces and cached pixels are discarded.
+    /// A previously confirmed `V10_6Err` is echoed for compatibility with peers using that alternate V10.6 value.
+    /// The ACK count restarts for Windows interoperability, despite the connection-wide wording in
+    /// [MS-RDPEGFX 2.2.2.13] "RDPGFX_FRAME_ACKNOWLEDGE_PDU".
     /// This does not reset other virtual channels or guarantee a particular codec or keyframe.
     ///
     /// [MS-RDPEGFX 3.3.5.19]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/a720af02-0a47-44e2-a934-dc8534062b44
@@ -502,9 +507,8 @@ impl GraphicsPipelineClient {
         let pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(core::slice::from_ref(caps)));
         self.state = ClientState::Resetting;
         self.surfaces.clear();
-        self.compositor = Compositor::default();
-        self.pending_output_reset = None;
-        // UNTESTED: ClearCodec and Progressive caches must restart; check cached tiles across protocol resets.
+        self.compositor.reset_protocol();
+        // A full channel reset restarts codec contexts, unlike the output-only ResetGraphics PDU.
         self.clearcodec_decoder = None;
         self.planar_decoder = BitmapStreamDecoder::default();
         self.progressive_decoder = ProgressiveDecoder::new();
@@ -512,6 +516,8 @@ impl GraphicsPipelineClient {
             decoder.reset();
         }
         self.current_frame_id = None;
+        // Windows restarts its sent-frame count and rejects ACK counts greater than that value.
+        self.total_frames_decoded = 0;
         // ZGFX history still decodes packets already in flight before confirmation.
         Some(pdu)
     }
@@ -528,7 +534,7 @@ impl GraphicsPipelineClient {
         self.surfaces.get(&surface_id)
     }
 
-    /// Get the total number of frames decoded
+    /// Get the number of frames decoded since channel creation or the last protocol reset.
     #[must_use]
     pub fn total_frames_decoded(&self) -> u32 {
         self.total_frames_decoded
@@ -571,7 +577,7 @@ impl GraphicsPipelineClient {
         }
         match pdu {
             GfxPdu::CapabilitiesConfirm(confirm) => {
-                self.handle_capabilities_confirm(confirm.0);
+                self.handle_capabilities_confirm(confirm.0)?;
                 Ok(vec![])
             }
             GfxPdu::ResetGraphics(reset) => {
@@ -710,15 +716,13 @@ impl GraphicsPipelineClient {
         }
     }
 
-    fn handle_capabilities_confirm(&mut self, cap: RawCapabilitySet) {
-        if self.state == ClientState::Resetting {
-            match cap.parsed() {
-                Ok(Some(ref typed)) if Some(typed) == self.negotiated_caps.as_ref() => {}
-                _ => {
-                    warn!("Ignoring graphics reset confirmation that differs from the advertised capabilities");
-                    return;
-                }
-            }
+    fn handle_capabilities_confirm(&mut self, cap: RawCapabilitySet) -> PduResult<()> {
+        if self.state == ClientState::Resetting
+            && Some(cap.version) != self.negotiated_caps.as_ref().map(CapabilitySet::version)
+        {
+            return Err(pdu_other_err!(
+                "server confirmed an unadvertised graphics reset version"
+            ));
         }
         // Server confirms a single capability set. If we cannot interpret it
         // (unknown version, or malformed body), we still transition to Active
@@ -733,12 +737,13 @@ impl GraphicsPipelineClient {
                     "Server confirmed an unknown EGFX capability version; proceeding with defaults"
                 );
                 self.state = ClientState::Active;
-                return;
+                return Ok(());
             }
+            Err(e) if self.state == ClientState::Resetting => return Err(decode_err!(e)),
             Err(e) => {
                 warn!(error = %e, "Failed to parse server's EGFX capabilities confirmation");
                 self.state = ClientState::Active;
-                return;
+                return Ok(());
             }
         };
 
@@ -753,6 +758,7 @@ impl GraphicsPipelineClient {
         );
 
         self.handler.on_capabilities_confirmed(cap);
+        Ok(())
     }
 
     fn handle_reset_graphics(&mut self, width: u32, height: u32) -> PduResult<()> {
@@ -2626,6 +2632,71 @@ mod tests {
         let updates = updates.lock().unwrap();
         assert_eq!(updates.len(), 1, "UPGRADE must retain its first-pass tile");
         assert_eq!(&updates[0].3[..4], &[128, 128, 128, 255]);
+    }
+
+    // Oracle: spec MS-RDPEGFX §3.2.5.18 and §3.3.5.19 restart both codec contexts and retained tiles.
+    #[test]
+    fn protocol_reset_discards_progressive_context_and_tiles() {
+        use crate::pdu::{CapabilitiesConfirmPdu, Codec2Type, CreateSurfacePdu};
+
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let mut client = GraphicsPipelineClient::new(
+            Box::new(CapturingHandler {
+                updates: Arc::clone(&updates),
+                unhandled: Arc::new(Mutex::new(0)),
+            }),
+            None,
+        );
+        let process = |client: &mut GraphicsPipelineClient, pdu: &GfxPdu| {
+            let bytes = ironrdp_core::encode_vec(pdu).unwrap();
+            client.process(0, &zgfx::wrap_uncompressed(&bytes)).unwrap();
+        };
+        let confirm = GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V10_7 {
+            flags: CapabilitiesV107Flags::empty(),
+        }));
+        let create = GfxPdu::CreateSurface(CreateSurfacePdu {
+            surface_id: 1,
+            width: 64,
+            height: 64,
+            pixel_format: PixelFormat::XRgb,
+        });
+        let wire = |bitmap_data| {
+            GfxPdu::WireToSurface2(WireToSurface2Pdu {
+                surface_id: 1,
+                codec_id: Codec2Type::RemoteFxProgressive,
+                codec_context_id: 7,
+                pixel_format: PixelFormat::XRgb,
+                bitmap_data,
+            })
+        };
+        let seed = wire(progressive_tile_stream(0, 0, 64, 64));
+        let upgrade = wire(progressive_upgrade_stream());
+        for pdu in [&confirm, &create, &seed, &upgrade] {
+            process(&mut client, pdu);
+        }
+        assert_eq!(client.dropped_updates(), 0);
+        assert_eq!(updates.lock().unwrap().len(), 2);
+        updates.lock().unwrap().clear();
+        assert!(client.request_protocol_reset().is_some());
+        for pdu in [&confirm, &create, &upgrade] {
+            process(&mut client, pdu);
+        }
+        assert_eq!(
+            client.dropped_updates(),
+            1,
+            "the previous codec context must no longer exist"
+        );
+        process(&mut client, &wire(progressive_context_stream(true)));
+        process(&mut client, &upgrade);
+        assert!(
+            updates.lock().unwrap().is_empty(),
+            "a fresh context must not inherit the previous tile"
+        );
+        for pdu in [&seed, &upgrade] {
+            process(&mut client, pdu);
+        }
+        assert_eq!(client.dropped_updates(), 1, "a fresh tile must allow refinements again");
+        assert_eq!(updates.lock().unwrap().len(), 2);
     }
 
     #[test]
