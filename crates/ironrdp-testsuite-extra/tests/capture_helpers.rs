@@ -73,3 +73,99 @@ fn extensible_non_pcm_subtype_is_rejected() {
     };
     assert!(!is_pcm_capture_format(&fmt));
 }
+
+fn gsm() -> AudioFormat {
+    AudioFormat {
+        format: WaveFormat::GSM610,
+        n_channels: 1,
+        n_samples_per_sec: 8_000,
+        n_avg_bytes_per_sec: 1_625,
+        n_block_align: 65,
+        bits_per_sample: 0,
+        data: Some(vec![0x40, 0x01]),
+    }
+}
+
+#[test]
+fn capture_offers_encodable_formats_compressed_first() {
+    use ironrdp_rdpeai::client::RdpeaiCaptureHandler as _;
+    use ironrdp_rdpeai::pdu::pcm_format;
+    use ironrdp_rdpsnd::codec;
+    use ironrdp_rdpsnd_native::RdpeaiCaptureBackend;
+
+    let server = vec![
+        pcm_format(1, 16_000, 16),
+        gsm(),
+        codec::alaw_format(1, 8_000),
+        codec::ms_adpcm_format(1, 22_050, 512),
+        pcm_format(2, 44_100, 8),
+    ];
+
+    let chosen = RdpeaiCaptureBackend::new().choose_formats(&server);
+
+    assert_eq!(
+        chosen,
+        vec![
+            codec::alaw_format(1, 8_000),
+            codec::ms_adpcm_format(1, 22_050, 512),
+            pcm_format(1, 16_000, 16),
+            pcm_format(2, 44_100, 8),
+        ]
+    );
+}
+
+#[test]
+fn capture_refuses_an_encode_format_with_other_rate_or_channels() {
+    use ironrdp_rdpeai::client::RdpeaiCaptureHandler as _;
+    use ironrdp_rdpeai::pdu::{OpenReplyPdu, pcm_format};
+    use ironrdp_rdpsnd::codec;
+    use ironrdp_rdpsnd_native::RdpeaiCaptureBackend;
+
+    let mut backend = RdpeaiCaptureBackend::new();
+
+    // Refused before any device is opened.
+    let result = backend.open(
+        &pcm_format(1, 16_000, 16),
+        &codec::alaw_format(1, 8_000),
+        640,
+        Box::new(|_| {}),
+    );
+
+    assert_eq!(result, OpenReplyPdu::E_FAIL);
+}
+
+#[test]
+fn playback_advertises_decodable_formats_in_server_order() {
+    use ironrdp_rdpsnd::client::RdpsndClientHandler as _;
+    use ironrdp_rdpsnd::codec;
+    use ironrdp_rdpsnd_native::cpal::RdpsndBackend;
+
+    let pcm = AudioFormat {
+        format: WaveFormat::PCM,
+        n_channels: 2,
+        n_samples_per_sec: 44_100,
+        n_avg_bytes_per_sec: 176_400,
+        n_block_align: 4,
+        bits_per_sample: 16,
+        data: None,
+    };
+    let server = vec![
+        codec::ms_adpcm_format(2, 44_100, 2048),
+        gsm(),
+        pcm.clone(),
+        codec::ima_adpcm_format(1, 22_050, 512),
+        codec::mulaw_format(2, 22_050),
+    ];
+
+    let chosen = RdpsndBackend::new().choose_formats(&server);
+
+    assert_eq!(
+        chosen,
+        vec![
+            codec::ms_adpcm_format(2, 44_100, 2048),
+            pcm,
+            codec::ima_adpcm_format(1, 22_050, 512),
+            codec::mulaw_format(2, 22_050),
+        ]
+    );
+}

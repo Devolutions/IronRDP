@@ -3335,8 +3335,8 @@ name = "ironrdp-rdpsnd-native"
 version = "0.7.0"
 dependencies = [
  "anyhow",
- "bytemuck",
  "cpal",
+ "ironrdp-core 0.2.1",
  "ironrdp-error 0.2.0",
  "ironrdp-rdpeai",
  "ironrdp-rdpsnd",
@@ -3344,6 +3344,7 @@ dependencies = [
  "ringbuf",
  "tracing",
  "tracing-subscriber",
+ "windows",
 ]
 
 [[package]]
@@ -3532,6 +3533,7 @@ dependencies = [
  "ironrdp-rail",
  "ironrdp-rdpdr",
  "ironrdp-rdpdr-native",
+ "ironrdp-rdpeai",
  "ironrdp-rdpemt",
  "ironrdp-rdpeudp",
  "ironrdp-rdpeudp-tokio",

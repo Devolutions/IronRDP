@@ -24,6 +24,23 @@ pub trait RdpeaiCaptureHandler: Send {
     /// Formats this backend can negotiate as encoding formats, in preferred order.
     fn supported_formats(&self) -> &[AudioFormat];
 
+    /// Chooses the encoding formats to offer in reply to the server's Sound Formats PDU.
+    ///
+    /// Every returned format must be one the server offered; the order states the client's
+    /// preference, and Open and Format Change PDUs index the returned list. The default keeps the
+    /// [`supported_formats`](Self::supported_formats) entries the server also offered, in that order.
+    fn choose_formats(&self, server_formats: &[AudioFormat]) -> Vec<AudioFormat> {
+        self.supported_formats()
+            .iter()
+            .filter(|client_fmt| {
+                server_formats
+                    .iter()
+                    .any(|server_fmt| client_fmt.matches_for_negotiation(server_fmt))
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Open capture for `capture_format` and begin delivering fixed-size packets to `sink`.
     ///
     /// `encode_format` is the negotiated encoding format selected by Open `initialFormat`.
@@ -150,25 +167,21 @@ impl RdpeaiClient {
             self.stop_capture();
         }
 
-        let supported = self.handler.supported_formats();
-        // Preserve client preference order among formats the server also offered.
-        let negotiated: Vec<AudioFormat> = supported
-            .iter()
-            .filter(|client_fmt| {
+        debug!(server_formats = ?server.formats, "AUDIO_INPUT server formats");
+        let negotiated: Vec<AudioFormat> = self
+            .handler
+            .choose_formats(&server.formats)
+            .into_iter()
+            .filter(|chosen| {
                 server
                     .formats
                     .iter()
-                    .any(|server_fmt| client_fmt.matches_for_negotiation(server_fmt))
+                    .any(|server_fmt| chosen.matches_for_negotiation(server_fmt))
             })
-            .cloned()
             .collect();
 
         if negotiated.is_empty() {
-            warn!(
-                server_formats = server.formats.len(),
-                client_formats = supported.len(),
-                "No common AUDIO_INPUT formats"
-            );
+            warn!(server_formats = server.formats.len(), "No common AUDIO_INPUT formats");
         } else {
             info!(count = negotiated.len(), "AUDIO_INPUT formats negotiated");
         }

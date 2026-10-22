@@ -42,6 +42,7 @@ ironrdp-pdu.path = "../ironrdp-pdu"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rail.path = "../ironrdp-rail"
 ironrdp-rdpdr.path = "../ironrdp-rdpdr"
+ironrdp-rdpeai.path = "../ironrdp-rdpeai"
 ironrdp-rdpemt = { path = "../ironrdp-rdpemt", features = ["std"] }
 ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", features = ["std"] }
 ironrdp-rdpeudp-tokio.path = "../ironrdp-rdpeudp-tokio"
