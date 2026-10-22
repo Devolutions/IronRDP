@@ -584,6 +584,7 @@ impl ViewerConfig {
                 rpc: false,
                 rpc_endpoint: None,
                 redirect_printers: false,
+                named_drives: Vec::new(),
                 ports: PortOptions::default(),
                 list_usb_devices: true,
             });
