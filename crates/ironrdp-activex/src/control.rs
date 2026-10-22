@@ -203,6 +203,9 @@ const RDPEI_INPUT_RETRY_TIMER_ID: usize = 0x4952_4456;
 const RDPEI_INPUT_RETRY_MILLISECONDS: u32 = 10;
 /// RDPEI events kept while the session input queue is full; beyond this, movement-only events are dropped.
 const MAX_PENDING_RDPEI_EVENTS: usize = 256;
+/// Pending RDPEI events beyond which everything pending is dropped and the trackers start over, which only
+/// a long suspension or a stalled session reaches.
+const MAX_PENDING_RDPEI_TRANSITIONS: usize = 4 * MAX_PENDING_RDPEI_EVENTS;
 const ACTIVEX_DVC_PLUGIN_PATHS_PROPERTY: &str = "IronRdpDvcPluginPaths";
 const ACTIVEX_ENABLE_TLS_PROPERTY: &str = "IronRdpEnableTls";
 const ACTIVEX_AUTOLOGON_PROPERTY: &str = "IronRdpAutoLogon";
@@ -8351,7 +8354,7 @@ pub(crate) struct Control {
 }
 
 /// Whether every contact of a touch or pen event keeps its state, so that dropping the event loses only
-/// movement.
+/// movement, as defined by [`ironrdp_rdpei::contact::is_steady`].
 fn is_steady_rdpei_event(event: &RdpInputEvent) -> bool {
     match event {
         RdpInputEvent::Touch(event) => event
@@ -13657,6 +13660,18 @@ impl Control {
         {
             tracing::warn!("Dropping a pending ActiveX RDPEI movement event");
             pending.remove(index);
+        }
+        if MAX_PENDING_RDPEI_TRANSITIONS < pending.len() {
+            // UNTESTED: the server keeps the contacts these transitions would have ended, which it cancels
+            // when the trackers start new ones.
+            // Check that a long suspension with touch input does not leave stuck contacts after a resume.
+            tracing::warn!("Dropping all pending ActiveX RDPEI events");
+            pending.clear();
+            *self.touch_tracker.borrow_mut() = TouchContactTracker::new();
+            self.pen_tracker
+                .borrow_mut()
+                .reset(self.rdpei_input_state.get().multipen);
+            return;
         }
         // A suspended server keeps its contacts, so their transitions wait for the resume.
         if self.rdpei_input_state.get().suspended {
@@ -26697,6 +26712,32 @@ try {
         assert!(!is_steady_rdpei_event(&pen(
             PenContactFlags::UP | PenContactFlags::INRANGE
         )));
+        // Only touch and pen events are ever dropped from the queue.
         assert!(!is_steady_rdpei_event(&RdpInputEvent::Close));
+    }
+
+    // oracle: spec MS-RDPEI §3.1.1.1
+    #[test]
+    fn a_pending_event_with_any_transition_is_kept() {
+        let moving = TouchContactFlags::UPDATE | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT;
+        let mixed_contacts = RdpInputEvent::Touch(TouchEventPdu::new(
+            0,
+            vec![TouchFrame::new(
+                0,
+                vec![
+                    TouchContact::new(0, 0, 0, moving),
+                    TouchContact::new(1, 0, 0, TouchContactFlags::UP),
+                ],
+            )],
+        ));
+        assert!(!is_steady_rdpei_event(&mixed_contacts));
+        let mixed_frames = RdpInputEvent::Touch(TouchEventPdu::new(
+            0,
+            vec![
+                TouchFrame::new(0, vec![TouchContact::new(0, 0, 0, moving)]),
+                TouchFrame::new(0, vec![TouchContact::new(0, 0, 0, TouchContactFlags::UP)]),
+            ],
+        ));
+        assert!(!is_steady_rdpei_event(&mixed_frames));
     }
 }

@@ -109,7 +109,9 @@ pub enum RailExecuteFailureReason {
     MessageProcessingFailed,
 }
 
-/// `maxTouchContacts` advertised in the MS-RDPEI `CS_READY` PDU.
+/// `maxTouchContacts` advertised in the RDPEI `CS_READY` PDU ([MS-RDPEI] 2.2.3.2 "RDPINPUT_CS_READY_PDU").
+///
+/// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
 pub const RDPEI_MAX_TOUCH_CONTACTS: u16 = 10;
 
 #[derive(Debug)]
@@ -210,7 +212,9 @@ pub enum RdpOutputEvent {
     ///
     /// Sent when the state changes and once at the start of every active session.
     /// Front-ends emulate the mouse for input the channel does not accept, and hold RDPEI frames while
-    /// input is suspended.
+    /// input is suspended ([MS-RDPEI] 3.3.5.4 "Processing an RDPINPUT_SUSPEND_INPUT_PDU message").
+    ///
+    /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
     RdpeiInputState(RdpeiInputState),
     Terminated(SessionResult<GracefulDisconnectReason>),
 }

@@ -197,13 +197,15 @@ impl PenContactTracker {
             let frame_offset = self
                 .last_frame_us
                 .map_or(0, |last| sample.timestamp_us.saturating_sub(last));
-            self.last_frame_us = Some(sample.timestamp_us);
+            // The transaction ends once every pen is out of range, and the next one starts at offset 0.
+            self.last_frame_us = (!self.by_pointer.is_empty()).then_some(sample.timestamp_us);
             oldest_us.get_or_insert(sample.timestamp_us);
             frames.push(PenFrame::new(frame_offset, contacts));
         }
 
-        let oldest_us = oldest_us?;
-        Some(PenEventPdu::new(encode_time_ms(oldest_us, now_us), frames))
+        // `encodeTime` is the delay from the oldest frame's sample to encoding, in milliseconds.
+        let encode_time = u32::try_from(now_us.saturating_sub(oldest_us?) / 1000).unwrap_or(u32::MAX);
+        Some(PenEventPdu::new(encode_time, frames))
     }
 
     /// Takes every tracked pen out of range, for focus loss or capture change.
@@ -221,8 +223,7 @@ impl PenContactTracker {
             })
             .collect();
 
-        let frame_offset = self.last_frame_us.map_or(0, |last| now_us.saturating_sub(last));
-        self.last_frame_us = Some(now_us);
+        let frame_offset = self.last_frame_us.take().map_or(0, |last| now_us.saturating_sub(last));
         Some(PenEventPdu::new(0, vec![PenFrame::new(frame_offset, contacts)]))
     }
 
@@ -242,11 +243,6 @@ fn steady_contact(pen: &TrackedPen) -> PenContact {
         contact_flags: flags,
         ..pen.last.clone()
     }
-}
-
-/// `encodeTime`: milliseconds from the oldest frame's sample to encoding.
-fn encode_time_ms(oldest_us: u64, now_us: u64) -> u32 {
-    u32::try_from(now_us.saturating_sub(oldest_us) / 1000).unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]
@@ -500,5 +496,21 @@ mod tests {
         assert_eq!(pdu.frames[0].contacts[0].contact_flags, PenContactFlags::UPDATE);
         assert_eq!(pdu.frames[0].frame_offset, 1_000);
         assert!(tracker.release_all(4_000).is_none());
+    }
+
+    // oracle: spec MS-RDPEI §2.2.3.7.1
+    #[test]
+    fn a_new_transaction_starts_at_frame_offset_zero() {
+        let mut tracker = PenContactTracker::new();
+        tracker
+            .process_samples(&[sample(1, 0, true, true, 1_000)], 1_000)
+            .expect("down");
+        tracker
+            .process_samples(&[sample(1, 0, false, false, 2_000)], 2_000)
+            .expect("up");
+        let pdu = tracker
+            .process_samples(&[sample(1, 0, true, true, 90_000_000)], 90_000_000)
+            .expect("next down");
+        assert_eq!(pdu.frames[0].frame_offset, 0);
     }
 }

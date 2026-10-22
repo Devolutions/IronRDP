@@ -184,7 +184,7 @@ impl TouchFrameBuilder {
     #[must_use]
     pub fn new(max_contacts: u16) -> Self {
         Self {
-            max_contacts: usize::from(max_contacts).min(usize::from(u8::MAX) + 1),
+            max_contacts: usize::from(max_contacts),
             tracked: Vec::new(),
             frames: Vec::new(),
             current: Vec::new(),
@@ -339,7 +339,8 @@ impl TouchFrameBuilder {
         let frame_offset = self
             .last_frame_timestamp_us
             .map_or(0, |last| timestamp_us.saturating_sub(last));
-        self.last_frame_timestamp_us = Some(timestamp_us);
+        // The transaction ends once no contact is tracked, and the next one starts at offset 0.
+        self.last_frame_timestamp_us = (!self.tracked.is_empty()).then_some(timestamp_us);
         self.oldest_timestamp_us.get_or_insert(timestamp_us);
         self.frames.push(TouchFrame::new(frame_offset, contacts));
     }

@@ -1,5 +1,5 @@
 use ironrdp_rdpei::contact::{ContactSample, ContactState, TouchFrameBuilder, TouchPhase, is_steady, transition};
-use ironrdp_rdpei::pdu::{TouchContactFlags, TouchEventPdu};
+use ironrdp_rdpei::pdu::{PenContactFlags, TouchContactFlags, TouchEventPdu};
 use proptest::prelude::*;
 
 const DOWN: TouchContactFlags = TouchContactFlags::DOWN
@@ -198,7 +198,7 @@ fn contacts_beyond_the_advertised_maximum_are_dropped() {
     assert_eq!(event.frames[0].contacts.len(), 2);
 }
 
-// oracle: spec MS-RDPEI §3.1.1.1
+// oracle: mutant a move of an unknown contact entering as a hover update, which toolkits report for hovering pens
 #[test]
 fn moves_of_unknown_contacts_are_ignored() {
     let mut builder = TouchFrameBuilder::new(10);
@@ -234,4 +234,42 @@ fn pressure_is_clamped_to_1024() {
     builder.push(1, TouchPhase::Started, 0, 0, Some(2_000), 0);
     let event = builder.take_event(0).expect("down");
     assert_eq!(event.frames[0].contacts[0].fields.pressure, Some(1024));
+}
+
+// oracle: spec MS-RDPEI §2.2.3.3.1.1
+#[test]
+fn exactly_the_eight_spec_flag_sets_are_legal() {
+    use TouchContactFlags as F;
+
+    let legal = [
+        F::UP,
+        F::UP | F::CANCELED,
+        F::UPDATE,
+        F::UPDATE | F::CANCELED,
+        F::DOWN | F::INRANGE | F::INCONTACT,
+        F::UPDATE | F::INRANGE | F::INCONTACT,
+        F::UP | F::INRANGE,
+        F::UPDATE | F::INRANGE,
+    ];
+    for bits in 0..0x40 {
+        let flags = F::from_bits_truncate(bits);
+        assert_eq!(flags.is_legal(), legal.contains(&flags), "{flags:?}");
+        assert_eq!(
+            PenContactFlags::from_bits_truncate(bits).is_legal(),
+            legal.contains(&flags),
+            "{flags:?}"
+        );
+    }
+}
+
+// oracle: spec MS-RDPEI §2.2.3.3.1
+#[test]
+fn a_new_transaction_starts_at_frame_offset_zero() {
+    let mut builder = TouchFrameBuilder::new(10);
+    builder.push(1, TouchPhase::Started, 0, 0, None, 1_000);
+    builder.push(1, TouchPhase::Ended, 0, 0, None, 2_000);
+    builder.take_event(2_000).expect("tap");
+    builder.push(2, TouchPhase::Started, 0, 0, None, 90_000_000);
+    let event = builder.take_event(90_000_000).expect("next tap");
+    assert_eq!(event.frames[0].frame_offset, 0);
 }

@@ -357,10 +357,7 @@ impl RpcApp {
         let touch_pending = (self.touch_frames.has_pending_frames() && !self.rdpei_input_state.suspended)
             || !self.pending_touch_mouse.is_empty();
         let touch_retry = touch_pending.then(|| Instant::now() + Duration::from_millis(10));
-        let deadline = match (touch_retry, self.resize_deadline()) {
-            (Some(retry), Some(resize)) => Some(retry.min(resize)),
-            (retry, resize) => retry.or(resize),
-        };
+        let deadline = touch_retry.into_iter().chain(self.resize_deadline()).min();
         event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
 
