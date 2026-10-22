@@ -147,7 +147,8 @@ impl RpcApp {
         let InputTarget::Direct(input_event_sender) = &self.input_target else {
             return;
         };
-        if !self.touch_frames.has_pending_frames() {
+        // A suspended server keeps its contacts, so their frames wait for the resume.
+        if !self.touch_frames.has_pending_frames() || self.rdpei_input_state.suspended {
             return;
         }
         // Frames stay pending while the queue is full, so no contact transition is lost.
@@ -193,8 +194,34 @@ impl RpcApp {
             return;
         }
 
-        let operations = touch_mouse_operations(&mut self.mouse_touch, touch.id, phase, position);
-        self.pending_touch_mouse.extend(operations);
+        // The first touch point drives the left mouse button, the way Windows promotes touch to mouse.
+        // Moves without a touching point move the pointer, which follows a hovering pen.
+        {
+            use ironrdp::input::{MouseButton, Operation};
+
+            let operations: SmallVec<[Operation; 2]> = match (phase, self.mouse_touch) {
+                (TouchPhase::Started, None) => {
+                    self.mouse_touch = Some(touch.id);
+                    smallvec::smallvec![
+                        Operation::MouseMove(position),
+                        Operation::MouseButtonPressed(MouseButton::Left)
+                    ]
+                }
+                (TouchPhase::Moved, None) => smallvec::smallvec![Operation::MouseMove(position)],
+                (TouchPhase::Moved, Some(primary)) if primary == touch.id => {
+                    smallvec::smallvec![Operation::MouseMove(position)]
+                }
+                (TouchPhase::Ended | TouchPhase::Canceled, Some(primary)) if primary == touch.id => {
+                    self.mouse_touch = None;
+                    smallvec::smallvec![
+                        Operation::MouseMove(position),
+                        Operation::MouseButtonReleased(MouseButton::Left)
+                    ]
+                }
+                _ => SmallVec::new(),
+            };
+            self.pending_touch_mouse.extend(operations);
+        }
         // While the queue stays full, only the oldest pointer moves are dropped; button changes are kept.
         if MAX_PENDING_TOUCH_MOUSE < self.pending_touch_mouse.len()
             && let Some(index) = self
@@ -326,33 +353,26 @@ impl RpcApp {
         self.send_touch_mouse();
         // Touch input that found the session input queue full is retried shortly, since draining the queue
         // does not wake the event loop.
-        let touch_retry = (self.touch_frames.has_pending_frames() || !self.pending_touch_mouse.is_empty())
-            .then(|| Instant::now() + Duration::from_millis(10));
-        self.schedule_resize(event_loop);
-        match (touch_retry, self.resize_timeout) {
-            (Some(retry), Some(resize)) => event_loop.set_control_flow(ControlFlow::WaitUntil(retry.min(resize))),
-            (Some(retry), None) => event_loop.set_control_flow(ControlFlow::WaitUntil(retry)),
-            (None, Some(_)) => {}
-            (None, None) => event_loop.set_control_flow(ControlFlow::Wait),
-        }
+        // Frames held for a suspended server wait for the resume event, which wakes the loop.
+        let touch_pending = (self.touch_frames.has_pending_frames() && !self.rdpei_input_state.suspended)
+            || !self.pending_touch_mouse.is_empty();
+        let touch_retry = touch_pending.then(|| Instant::now() + Duration::from_millis(10));
+        let deadline = match (touch_retry, self.resize_deadline()) {
+            (Some(retry), Some(resize)) => Some(retry.min(resize)),
+            (retry, resize) => retry.or(resize),
+        };
+        event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
 
-    fn schedule_resize(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(timeout) = self.resize_timeout {
-            if let Some(timeout) = timeout.checked_duration_since(Instant::now()) {
-                event_loop.set_control_flow(ControlFlow::wait_duration(timeout));
-            } else {
-                self.resize_timeout = None;
-                self.send_resize_event();
-                if let Some(retry_timeout) = self.resize_timeout {
-                    event_loop.set_control_flow(ControlFlow::wait_duration(
-                        retry_timeout.saturating_duration_since(Instant::now()),
-                    ));
-                } else {
-                    event_loop.set_control_flow(ControlFlow::Wait);
-                }
-            }
+    /// Sends a resize that is due and returns when the next one is.
+    fn resize_deadline(&mut self) -> Option<Instant> {
+        let timeout = self.resize_timeout?;
+        if Instant::now() < timeout {
+            return Some(timeout);
         }
+        self.resize_timeout = None;
+        self.send_resize_event();
+        self.resize_timeout
     }
 
     fn on_resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -724,10 +744,12 @@ impl RpcApp {
             RdpOutputEvent::RdpeiInputState(state) => {
                 debug!(?state, "RDPEI input state changed");
                 // The server dropped the contacts with the channel state, so they are forgotten unsent.
+                // Suspension keeps them: their frames go out when the server resumes input.
                 if !state.touch {
                     self.touch_frames.reset();
                 }
                 self.rdpei_input_state = state;
+                self.send_touch_frames();
             }
             RdpOutputEvent::RailHandshake {
                 handshake_ex_flags,
@@ -833,38 +855,6 @@ fn desktop_position(
     ironrdp::input::MousePosition {
         x: scale(position.x, window_size.width, desktop_size.0),
         y: scale(position.y, window_size.height, desktop_size.1),
-    }
-}
-
-/// Emulates the left mouse button with the first touch point, the way Windows promotes touch to mouse.
-///
-/// Moves without a touching point move the pointer, which follows a hovering pen.
-fn touch_mouse_operations(
-    mouse_touch: &mut Option<u64>,
-    id: u64,
-    phase: TouchPhase,
-    position: ironrdp::input::MousePosition,
-) -> SmallVec<[ironrdp::input::Operation; 2]> {
-    use ironrdp::input::{MouseButton, Operation};
-
-    match (phase, *mouse_touch) {
-        (TouchPhase::Started, None) => {
-            *mouse_touch = Some(id);
-            smallvec::smallvec![
-                Operation::MouseMove(position),
-                Operation::MouseButtonPressed(MouseButton::Left)
-            ]
-        }
-        (TouchPhase::Moved, None) => smallvec::smallvec![Operation::MouseMove(position)],
-        (TouchPhase::Moved, Some(primary)) if primary == id => smallvec::smallvec![Operation::MouseMove(position)],
-        (TouchPhase::Ended | TouchPhase::Canceled, Some(primary)) if primary == id => {
-            *mouse_touch = None;
-            smallvec::smallvec![
-                Operation::MouseMove(position),
-                Operation::MouseButtonReleased(MouseButton::Left)
-            ]
-        }
-        _ => SmallVec::new(),
     }
 }
 

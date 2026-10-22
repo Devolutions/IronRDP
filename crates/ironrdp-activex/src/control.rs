@@ -149,8 +149,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENABLE, WM_KEYDOWN,
     WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
     WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN,
-    WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SHOWWINDOW, WM_SIZE,
-    WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_CHILD,
+    WM_POINTERENTER, WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SHOWWINDOW,
+    WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_CHILD,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 use windows::core::{s, w};
@@ -8359,9 +8359,11 @@ fn is_steady_rdpei_event(event: &RdpInputEvent) -> bool {
             .iter()
             .flat_map(|frame| &frame.contacts)
             .all(|contact| ironrdp_rdpei::contact::is_steady(contact.contact_flags)),
-        RdpInputEvent::Pen(event) => event.frames.iter().flat_map(|frame| &frame.contacts).all(|contact| {
-            ironrdp_rdpei::contact::is_steady(TouchContactFlags::from_bits_truncate(contact.contact_flags.bits()))
-        }),
+        RdpInputEvent::Pen(event) => event
+            .frames
+            .iter()
+            .flat_map(|frame| &frame.contacts)
+            .all(|contact| ironrdp_rdpei::contact::is_steady_pen(contact.contact_flags)),
         _ => false,
     }
 }
@@ -8377,19 +8379,21 @@ enum PointerRoute {
 
 /// Converts a `QueryPerformanceCounter` value to microseconds.
 fn performance_count_us(count: u64) -> u64 {
-    let mut frequency = 0i64;
-    if unsafe { QueryPerformanceFrequency(&mut frequency) }.is_err() || frequency <= 0 {
-        return 0;
-    }
-    u64::try_from(u128::from(count) * 1_000_000 / frequency as u128).unwrap_or(u64::MAX)
+    static FREQUENCY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+    // The counter frequency is fixed at boot, and the query cannot fail on Windows XP and later.
+    let frequency = *FREQUENCY.get_or_init(|| {
+        let mut frequency = 0i64;
+        let _ = unsafe { QueryPerformanceFrequency(&mut frequency) };
+        u64::try_from(frequency).unwrap_or(0).max(1)
+    });
+    u64::try_from(u128::from(count) * 1_000_000 / u128::from(frequency)).unwrap_or(u64::MAX)
 }
 
 fn performance_counter_now_us() -> u64 {
     let mut count = 0i64;
-    if unsafe { QueryPerformanceCounter(&mut count) }.is_err() {
-        return 0;
-    }
-    performance_count_us(u64::try_from(count).unwrap_or(0))
+    let _ = unsafe { QueryPerformanceCounter(&mut count) };
+    performance_count_us(count.unsigned_abs())
 }
 
 fn build_rpc_touch_event(
@@ -13654,6 +13658,10 @@ impl Control {
             tracing::warn!("Dropping a pending ActiveX RDPEI movement event");
             pending.remove(index);
         }
+        // A suspended server keeps its contacts, so their transitions wait for the resume.
+        if self.rdpei_input_state.get().suspended {
+            return;
+        }
         let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
             pending.clear();
             return;
@@ -13707,6 +13715,7 @@ impl Control {
         tracing::debug!(?state, "ActiveX RDPEI input state changed");
         // The server dropped the contacts with the channel state, so the trackers and pending events forget
         // them unsent.
+        // Suspension keeps them: it only pauses transmission.
         let reset_pen = !state.pen || previous.multipen != state.multipen;
         if !state.touch {
             *self.touch_tracker.borrow_mut() = TouchContactTracker::new();
@@ -13719,6 +13728,9 @@ impl Control {
             RdpInputEvent::Pen(_) => !reset_pen,
             _ => true,
         });
+        if previous.suspended && !state.suspended {
+            self.send_rdpei_event(None);
+        }
     }
 
     /// Maps client-area coordinates onto the remote desktop (signed RDPEI space).
@@ -13737,12 +13749,11 @@ impl Control {
         const SIGNATURE_MASK: isize = 0xFFFF_FF00;
 
         let promoted = unsafe { GetMessageExtraInfo() }.0 & SIGNATURE_MASK == MI_WP_SIGNATURE;
+        // A pointer on the mouse route produces promoted messages that have to pass.
+        let routes = self.pointer_routes.borrow();
         promoted
-            && self
-                .pointer_routes
-                .borrow()
-                .values()
-                .any(|route| *route == PointerRoute::Rdpei)
+            && routes.values().any(|route| *route == PointerRoute::Rdpei)
+            && !routes.values().any(|route| *route == PointerRoute::Mouse)
     }
 
     /// Sends touch and pen over RDPEI.
@@ -13820,24 +13831,26 @@ impl Control {
                 || message == WM_POINTERCAPTURECHANGED
                 || (message == WM_POINTERLEAVE && (ptr.pointerFlags & POINTER_FLAG_INCONTACT).0 == 0);
             let leaving = (ptr.pointerFlags & POINTER_FLAG_UP).0 != 0 || canceled;
+            // `SkipPointerFrameMessages` below drops the other pointers' messages, so their routes end here.
+            if leaving || (ptr.pointerFlags & POINTER_FLAG_INRANGE).0 == 0 {
+                self.pointer_routes.borrow_mut().remove(&ptr.pointerId);
+            }
 
             let Some((x, y)) = mapped else {
-                // Outside the rendered desktop: still emit terminal transitions, keeping
-                // the last tracked coordinates rather than inventing (0, 0).
-                if leaving {
-                    samples.push(TouchSample {
-                        pointer_id: ptr.pointerId,
-                        x: 0,
-                        y: 0,
-                        preserve_position: true,
-                        in_range: false,
-                        in_contact: false,
-                        canceled,
-                        orientation: None,
-                        pressure: None,
-                        contact_rect: None,
-                    });
-                }
+                // Outside the rendered desktop the contact stays in the frame at its last tracked position,
+                // and terminal transitions are still sent there.
+                samples.push(TouchSample {
+                    pointer_id: ptr.pointerId,
+                    x: 0,
+                    y: 0,
+                    preserve_position: true,
+                    in_range: !leaving && (ptr.pointerFlags & POINTER_FLAG_INRANGE).0 != 0,
+                    in_contact: !leaving && (ptr.pointerFlags & POINTER_FLAG_INCONTACT).0 != 0,
+                    canceled,
+                    orientation: None,
+                    pressure: None,
+                    contact_rect: None,
+                });
                 continue;
             };
 
@@ -13912,7 +13925,8 @@ impl Control {
     fn handle_pen_pointer(&self, window: HWND, message: u32, pointer_id: u32) -> bool {
         let mut latest = POINTER_PEN_INFO::default();
         if unsafe { GetPointerPenInfo(pointer_id, &mut latest) }.is_err() {
-            return false;
+            // The pointer is on the RDPEI route, so its messages stay consumed.
+            return true;
         }
 
         // History is newest first and only carries coalesced samples for updates.
@@ -14110,6 +14124,8 @@ impl Control {
     fn release_input(&self) {
         self.release_touch_contacts();
         self.release_pen_contacts();
+        // Pointers that leave while the window has no focus never report it.
+        self.pointer_routes.borrow_mut().clear();
         let fast_path = self.input_database.borrow_mut().release_all();
         if fast_path.is_empty() {
             return;
@@ -14315,9 +14331,12 @@ impl Control {
                 self.apply_input([operation]);
                 true
             }
-            WM_POINTERUPDATE | WM_POINTERDOWN | WM_POINTERUP | WM_POINTERLEAVE | WM_POINTERCAPTURECHANGED => {
-                self.handle_pointer_message(window, message, wparam, lparam)
-            }
+            WM_POINTERENTER
+            | WM_POINTERUPDATE
+            | WM_POINTERDOWN
+            | WM_POINTERUP
+            | WM_POINTERLEAVE
+            | WM_POINTERCAPTURECHANGED => self.handle_pointer_message(window, message, wparam, lparam),
             WM_MOUSEMOVE => {
                 if i32::from((lparam.0 >> 16) as i16) <= 4 {
                     self.expose_connection_bar();

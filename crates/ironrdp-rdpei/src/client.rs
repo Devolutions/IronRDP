@@ -10,14 +10,14 @@ use crate::pdu::{
     ScReadyFeatures, TouchEventPdu,
 };
 
-/// What the RDPEI channel accepts right now.
+/// What the RDPEI channel accepts.
 ///
 /// Front-ends use it to choose between RDPEI frames and mouse emulation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RdpeiInputState {
-    /// Touch frames are accepted.
+    /// The channel negotiated touch input.
     pub touch: bool,
-    /// Pen frames are accepted.
+    /// The channel negotiated pen input.
     pub pen: bool,
     /// Up to four pens may be injected at once, each with its own `deviceId`.
     ///
@@ -25,6 +25,13 @@ pub struct RdpeiInputState {
     ///
     /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
     pub multipen: bool,
+    /// The server paused input transmission.
+    ///
+    /// Suspension only pauses transmission, so front-ends keep their contacts and hold new frames until
+    /// the server resumes input ([MS-RDPEI] 3.3.5.4 "Processing an RDPINPUT_SUSPEND_INPUT_PDU message").
+    ///
+    /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
+    pub suspended: bool,
 }
 
 /// Client endpoint for the MS-RDPEI dynamic channel.
@@ -91,14 +98,15 @@ impl RdpeiClient {
             .is_some_and(RdpInputProtocolVersion::supports_pen)
     }
 
-    /// What the channel accepts right now.
+    /// What the channel accepts.
     #[must_use]
     pub fn input_state(&self) -> RdpeiInputState {
-        let accepting = self.ready && !self.suspended;
+        let pen = self.ready && self.pen_allowed();
         RdpeiInputState {
-            touch: accepting,
-            pen: accepting && self.pen_allowed(),
-            multipen: accepting && self.pen_allowed() && self.multipen,
+            touch: self.ready,
+            pen,
+            multipen: pen && self.multipen,
+            suspended: self.ready && self.suspended,
         }
     }
 

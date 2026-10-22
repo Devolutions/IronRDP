@@ -205,10 +205,12 @@ pub enum RdpOutputEvent {
     },
     /// A cookie-based reconnect has completed successfully.
     AutoReconnected,
-    /// The MS-RDPEI input channel started or stopped accepting touch or pen frames.
+    /// The MS-RDPEI input channel started or stopped accepting touch or pen frames, or the server
+    /// suspended or resumed input.
     ///
     /// Sent when the state changes and once at the start of every active session.
-    /// Front-ends emulate the mouse for input the channel does not accept.
+    /// Front-ends emulate the mouse for input the channel does not accept, and hold RDPEI frames while
+    /// input is suspended.
     RdpeiInputState(RdpeiInputState),
     Terminated(SessionResult<GracefulDisconnectReason>),
 }

@@ -73,6 +73,10 @@ impl TouchContactTracker {
 
         for sample in samples {
             let prev = self.by_pointer.get(&sample.pointer_id).cloned();
+            // A placeholder position is usable only for a contact the server already knows.
+            if sample.preserve_position && prev.is_none() {
+                continue;
+            }
             let Some(transition) = contact::transition(
                 prev.as_ref().map(|c| c.phase),
                 ContactSample {

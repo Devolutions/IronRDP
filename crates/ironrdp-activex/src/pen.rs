@@ -338,7 +338,7 @@ mod tests {
         )
     }
 
-    // oracle: spec MS-RDPEI §2.2.3.7.1.1
+    // oracle: spec MS-RDPEI §2.2.3.7.1.1 for flags and device IDs, §2.2.3.1 for the four-pen limit
     proptest! {
         #[test]
         fn frames_carry_legal_flags_and_device_ids(
@@ -347,7 +347,8 @@ mod tests {
         ) {
             let mut tracker = PenContactTracker::new();
             tracker.reset(multipen);
-            let limit = if multipen { MAX_MULTIPEN_DEVICES } else { 1 };
+            // Up to four pens with multipen injection, otherwise only device 0.
+            let limit = if multipen { 4 } else { 1 };
             for sample in samples {
                 let Some(pdu) = tracker.process_samples(&[sample], 0) else {
                     continue;

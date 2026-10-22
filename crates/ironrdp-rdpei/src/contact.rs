@@ -64,18 +64,32 @@ impl ContactTransition {
 }
 
 /// Whether a contact with these flags stays in its state, so that dropping it loses only movement.
+///
+/// These are the two legal flag sets that keep a contact hovering or engaged ([MS-RDPEI] 2.2.3.3.1.1
+/// "RDPINPUT_CONTACT_DATA").
+///
+/// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
 #[must_use]
 pub fn is_steady(flags: TouchContactFlags) -> bool {
     flags == TouchContactFlags::UPDATE | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT
         || flags == TouchContactFlags::UPDATE | TouchContactFlags::INRANGE
 }
 
-/// Advances a contact by one local sample.
+/// [`is_steady`] for pen contacts, which share the touch flag values and legal combinations.
+#[must_use]
+pub fn is_steady_pen(flags: PenContactFlags) -> bool {
+    is_steady(TouchContactFlags::from_bits_truncate(flags.bits()))
+}
+
+/// Advances a contact by one local sample, following the figure "Lifetime of a touch or pen contact" in
+/// [MS-RDPEI] 3.1.1.1 "Touch Contact State Transitions".
 ///
 /// `previous` is the state returned by the last transition of this contact, or `None` for a contact the
 /// server does not know about.
 /// Returns `None` when the sample produces no wire contact: a contact that stays out of range, or a cancel
 /// for a contact that was never sent.
+///
+/// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
 #[must_use]
 pub fn transition(previous: Option<ContactState>, sample: ContactSample) -> Option<ContactTransition> {
     use ContactState::{Engaged, Hovering};
@@ -111,6 +125,11 @@ pub fn transition(previous: Option<ContactState>, sample: ContactSample) -> Opti
 }
 
 /// Wire flags that take a tracked contact out of range, for example when the window loses focus.
+///
+/// A hovering contact leaves with `UPDATE` and an engaged one with `UP` ([MS-RDPEI] 3.1.1.1 "Touch Contact
+/// State Transitions").
+///
+/// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
 #[must_use]
 pub fn release_flags(state: ContactState) -> TouchContactFlags {
     match state {

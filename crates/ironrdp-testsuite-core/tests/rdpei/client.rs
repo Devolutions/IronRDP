@@ -46,6 +46,7 @@ fn multipen_is_enabled_when_the_server_supports_it() {
             touch: true,
             pen: true,
             multipen: true,
+            suspended: false,
         }
     );
     client
@@ -87,6 +88,7 @@ fn a_v200_server_gets_v200_and_pen_without_multipen() {
             touch: true,
             pen: true,
             multipen: false,
+            suspended: false,
         }
     );
 }
@@ -106,6 +108,7 @@ fn a_v100_server_accepts_touch_only() {
             touch: true,
             pen: false,
             multipen: false,
+            suspended: false,
         }
     );
 }
@@ -120,9 +123,11 @@ fn suspend_stops_and_resume_restarts_input() {
     )
     .expect("CS_READY");
     assert_eq!(send(&mut client, RdpeiPdu::SuspendInput), None);
-    assert_eq!(client.input_state(), RdpeiInputState::default());
+    let suspended = client.input_state();
+    assert!(suspended.suspended);
+    assert!(suspended.touch && suspended.pen, "suspension keeps the negotiation");
     assert_eq!(send(&mut client, RdpeiPdu::ResumeInput), None);
-    assert!(client.input_state().touch);
+    assert!(!client.input_state().suspended);
 }
 
 // oracle: spec MS-RDPEI §3.3.5.1
