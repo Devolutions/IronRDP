@@ -129,6 +129,10 @@ impl AudioDecoder {
     ///
     /// ADPCM data is split into blocks of `nBlockAlign` bytes; a shorter final block is decoded as
     /// far as it goes. On error, `out` keeps the samples of the blocks decoded before the failure.
+    ///
+    /// Each call must start on a block boundary: no state carries over between calls, because a
+    /// wave sample is a self-contained piece of encoded audio. Windows servers encode every sample
+    /// with the ACM codec, which emits whole blocks, so wave PDUs never split a block.
     pub fn decode(&mut self, data: &[u8], out: &mut Vec<i16>) -> Result<(), CodecError> {
         match &mut self.codec {
             Codec::Pcm8 => out.extend(data.iter().map(|sample| (i16::from(*sample) - 128) << 8)),

@@ -37,7 +37,9 @@ impl SessionVolume {
     /// Sets the session master volume, from 0.0 (silence) to 1.0 (full).
     ///
     /// The level is audio-tapered by Windows, matching the logarithmic `dwVolume` scale of
-    /// MS-RDPEA 2.2.2.2.
+    /// [MS-RDPEA] 2.2.2.2 "Client Audio Formats and Version PDU".
+    ///
+    /// [MS-RDPEA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/bea2d5cf-e3b9-4419-92e5-0e074ff9bc5b
     pub(crate) fn set(&self, level: f32) -> windows::core::Result<()> {
         // SAFETY: a null event context is allowed.
         unsafe { self.volume.SetMasterVolume(level.clamp(0.0, 1.0), core::ptr::null()) }

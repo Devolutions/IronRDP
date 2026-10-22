@@ -197,7 +197,7 @@ fn playback_refuses_extreme_channel_counts_and_rates() {
 // oracle: mutant the Media Foundation AAC path panics, hangs or wedges the backend on hostile frames
 #[cfg(windows)]
 #[test]
-fn malformed_aac_frames_are_dropped() {
+fn malformed_aac_frames_leave_the_backend_usable() {
     use std::borrow::Cow;
 
     use ironrdp_rdpsnd::client::RdpsndClientHandler as _;

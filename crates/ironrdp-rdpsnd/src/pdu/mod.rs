@@ -264,6 +264,21 @@ impl AudioFormat {
     }
 }
 
+/// Returns the `client` formats that match one of the `server` formats, in `client` order.
+///
+/// Matching uses [`AudioFormat::matches_for_negotiation`].
+pub fn formats_in_common(client: &[AudioFormat], server: &[AudioFormat]) -> Vec<AudioFormat> {
+    client
+        .iter()
+        .filter(|client_format| {
+            server
+                .iter()
+                .any(|server_format| client_format.matches_for_negotiation(server_format))
+        })
+        .cloned()
+        .collect()
+}
+
 impl Encode for AudioFormat {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
@@ -1223,15 +1238,6 @@ impl UdpWavePdu<'_> {
 
     fn frag_no_size(&self) -> usize {
         if self.frag_no < 0x80 { 1 } else { 2 }
-    }
-
-    /// Converts into an owned PDU that does not borrow the decoded buffer.
-    pub fn into_owned(self) -> UdpWavePdu<'static> {
-        UdpWavePdu {
-            block_no: self.block_no,
-            frag_no: self.frag_no,
-            data: Cow::Owned(self.data.into_owned()),
-        }
     }
 }
 

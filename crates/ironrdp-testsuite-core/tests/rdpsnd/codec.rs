@@ -105,7 +105,7 @@ fn g711_expansion_known_values(#[case] decoded: i16, #[case] expected: i16) {
     assert_eq!(decoded, expected);
 }
 
-// oracle: property idempotent
+// oracle: property round-trip
 #[test]
 fn g711_round_trip_is_idempotent() {
     for code in 0..=u8::MAX {
@@ -117,16 +117,16 @@ fn g711_round_trip_is_idempotent() {
     }
 }
 
-// oracle: property round-trip (SNR floors: FFmpeg 9.0.2 IMA encoder scores 11.6 and 12.7 dB on these signals)
-// The signals carry broadband noise and a tone near the Nyquist frequency, which first-order IMA
-// prediction tracks poorly: FFmpeg's own IMA encoder scores 11.6 dB (mono) and 12.7 dB (stereo).
+// oracle: reference FFmpeg 9.0.2 encoders on the same signals (SNR floors just below its scores)
+// The signals carry broadband noise and a tone near the Nyquist frequency. FFmpeg's encoders score
+// 11.6/12.7 dB (IMA mono/stereo), 18.4/23.5 dB (Microsoft ADPCM) and 37.1/37.4 dB (A-law/µ-law).
 #[rstest]
 #[case::ima_mono(codec::ima_adpcm_format(1, 8000, 256), MONO, 11.0)]
 #[case::ima_stereo(codec::ima_adpcm_format(2, 22050, 512), STEREO, 12.0)]
-#[case::ms_mono(codec::ms_adpcm_format(1, 8000, 256), MONO, 20.0)]
-#[case::ms_stereo(codec::ms_adpcm_format(2, 22050, 512), STEREO, 20.0)]
-#[case::alaw(codec::alaw_format(1, 8000), MONO, 30.0)]
-#[case::mulaw(codec::mulaw_format(1, 8000), MONO, 30.0)]
+#[case::ms_mono(codec::ms_adpcm_format(1, 8000, 256), MONO, 18.0)]
+#[case::ms_stereo(codec::ms_adpcm_format(2, 22050, 512), STEREO, 23.0)]
+#[case::alaw(codec::alaw_format(1, 8000), MONO, 36.0)]
+#[case::mulaw(codec::mulaw_format(1, 8000), MONO, 36.0)]
 fn encoder_round_trip(#[case] format: AudioFormat, #[case] signal: &[u8], #[case] minimum_snr_db: f64) {
     let pcm = samples(signal);
     let mut encoder = AudioEncoder::new(&format).unwrap();
@@ -246,4 +246,42 @@ fn truncated_final_block_decodes_complete_frames() {
 fn unsupported_formats_are_rejected(#[case] format: AudioFormat) {
     assert!(!AudioDecoder::supports(&format));
     assert!(!AudioEncoder::supports(&format));
+}
+
+// oracle: mutant codec state that depends on how the input is split into calls
+#[test]
+fn chunking_does_not_change_encoding_or_decoding() {
+    use proptest::prelude::*;
+
+    let formats = [
+        codec::ima_adpcm_format(1, 8000, 36),
+        codec::ima_adpcm_format(2, 8000, 72),
+        codec::ms_adpcm_format(1, 8000, 32),
+        codec::ms_adpcm_format(2, 8000, 64),
+        codec::alaw_format(2, 8000),
+    ];
+    proptest!(|(
+        format in proptest::sample::select(formats.to_vec()),
+        samples in proptest::collection::vec(any::<i16>(), 0..1_000),
+        chunk in 1usize..97,
+    )| {
+        let mut whole = Vec::new();
+        AudioEncoder::new(&format).unwrap().encode(&samples, &mut whole);
+        let mut encoder = AudioEncoder::new(&format).unwrap();
+        let mut split = Vec::new();
+        for part in samples.chunks(chunk) {
+            encoder.encode(part, &mut split);
+        }
+        prop_assert_eq!(&split, &whole);
+
+        let block = usize::from(format.n_block_align);
+        let mut at_once = Vec::new();
+        AudioDecoder::new(&format).unwrap().decode(&whole, &mut at_once).unwrap();
+        let mut decoder = AudioDecoder::new(&format).unwrap();
+        let mut block_by_block = Vec::new();
+        for part in whole.chunks(block) {
+            decoder.decode(part, &mut block_by_block).unwrap();
+        }
+        prop_assert_eq!(block_by_block, at_once);
+    });
 }

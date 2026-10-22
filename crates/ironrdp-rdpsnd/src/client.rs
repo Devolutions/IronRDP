@@ -60,15 +60,7 @@ pub trait RdpsndClientHandler: Send + core::fmt::Debug {
     ///
     /// [MS-RDPEA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/bea2d5cf-e3b9-4419-92e5-0e074ff9bc5b
     fn choose_formats(&self, server_formats: &[AudioFormat]) -> Vec<AudioFormat> {
-        self.get_formats()
-            .iter()
-            .filter(|client_format| {
-                server_formats
-                    .iter()
-                    .any(|server_format| client_format.matches_for_negotiation(server_format))
-            })
-            .cloned()
-            .collect()
+        pdu::formats_in_common(self.get_formats(), server_formats)
     }
 
     /// Play a wave block for the given negotiated format.
@@ -426,7 +418,7 @@ impl AudioOutputClient {
         // Wave payload is bPad[4] + remaining audio after the WaveInfo Data prefix.
         // Total wire length equals WaveInfo audio_length (`n`).
         let expected_len = usize::from(pending.audio_length);
-        let data = if wave_payload.len() >= expected_len {
+        let data = if expected_len <= wave_payload.len() {
             let remaining = &wave_payload[4..expected_len];
             let mut data = Vec::with_capacity(expected_len);
             data.extend_from_slice(&pending.data_prefix);

@@ -2173,8 +2173,10 @@ fn build_connector(
             match kind {
                 #[cfg(feature = "sound")]
                 RdpsndBackendKind::Playback => {
-                    let playback =
-                        playback.unwrap_or_else(|| crate::audio::SharedPlayback::new(&config.channels.audio));
+                    // INVARIANT: `audio_playback` is `config.channels.sound && connector.enable_audio_playback`,
+                    // the condition that created `playback`, so the static channel and the dynamic
+                    // channels drive the same backend.
+                    let playback = playback.expect("the shared playback backend exists when audio playback is enabled");
                     connector = connector.with_static_channel(
                         ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(playback))
                             .with_quality_mode(config.audio_quality_mode.into_rdpsnd())

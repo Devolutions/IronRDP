@@ -112,7 +112,8 @@ impl AacDecoder {
     }
 
     fn start(&mut self, first_frame: &[u8]) -> RdpsndNativeResult<()> {
-        let adts = is_adts(first_frame);
+        // ADTS frames start with a 12-bit syncword and a zero layer field.
+        let adts = matches!(first_frame, [0xFF, second, ..] if second & 0xF6 == 0xF0);
         let input = if has_wave_info(&self.format) {
             InputType::WaveFormat(encode_vec(&self.format).map_err(|e| {
                 RdpsndNativeError::new("encoding the AAC wave format", RdpsndNativeErrorKind::UnsupportedFormat)
@@ -253,11 +254,6 @@ fn has_wave_info(format: &AudioFormat) -> bool {
         .data
         .as_ref()
         .is_some_and(|data| HEAACWAVEINFO_SIZE <= data.len())
-}
-
-/// Returns whether `frame` starts with an ADTS header (12-bit syncword, layer 0).
-fn is_adts(frame: &[u8]) -> bool {
-    matches!(frame, [0xFF, second, ..] if second & 0xF6 == 0xF0)
 }
 
 fn frequency_index(sample_rate: u32) -> Option<u16> {
