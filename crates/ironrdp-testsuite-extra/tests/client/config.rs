@@ -964,6 +964,18 @@ fn udp_offer_defaults_to_version_3_and_can_be_lowered() {
 }
 
 #[test]
+fn rdp_version_defaults_to_5_plus_and_can_be_raised() {
+    let config = complete_builder().build().expect("default config");
+    assert_eq!(config.connector().rdp_version, ironrdp_pdu::gcc::RdpVersion::V5_PLUS);
+
+    let config = complete_builder()
+        .with_rdp_version(ironrdp_pdu::gcc::RdpVersion::V10_12)
+        .build()
+        .expect("config with an RDP version");
+    assert_eq!(config.connector().rdp_version, ironrdp_pdu::gcc::RdpVersion::V10_12);
+}
+
+#[test]
 fn graphics_pipeline_is_opt_in() {
     let config = complete_builder().build().expect("default config");
     assert!(!config.connector().support_dyn_vc_gfx_protocol);
