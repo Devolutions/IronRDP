@@ -53,7 +53,7 @@
 //! [3.3.5.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/90aba3e3-d4a8-4af1-b1bb-a94e2313bbf0
 //! [3.3.5.12]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/e3c80bff-3e4e-4e65-b7c2-c2cd6b1fb4f5
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
@@ -824,6 +824,7 @@ impl GraphicsPipelineClient {
 
         // Per spec, ResetGraphics implicitly destroys all surfaces
         self.surfaces.clear();
+        // The compositor reset below recomputes its budget without them.
         self.avc444_frames.clear();
         self.compositor.reset(width, height);
         self.pending_output_reset = output_size;
@@ -880,7 +881,7 @@ impl GraphicsPipelineClient {
         };
 
         debug!(surface_id, width, height, ?pixel_format, "Surface created");
-        self.avc444_frames.remove(&surface_id);
+        self.release_avc444_frame(surface_id);
         self.compositor.create_surface(surface_id, width, height);
         self.handler.on_surface_created(&surface);
         self.surfaces.insert(surface_id, surface);
@@ -888,13 +889,19 @@ impl GraphicsPipelineClient {
 
     fn handle_delete_surface(&mut self, surface_id: u16) {
         self.progressive_decoder.delete_surface(surface_id);
-        self.avc444_frames.remove(&surface_id);
+        self.release_avc444_frame(surface_id);
         if self.surfaces.remove(&surface_id).is_some() {
             self.compositor.delete_surface(surface_id);
             debug!(surface_id, "Surface deleted");
             self.handler.on_surface_deleted(surface_id);
         } else {
             warn!(surface_id, "DeleteSurface for unknown surface");
+        }
+    }
+
+    fn release_avc444_frame(&mut self, surface_id: u16) {
+        if let Some(frame) = self.avc444_frames.remove(&surface_id) {
+            self.compositor.release_reserved(frame.allocated_bytes());
         }
     }
 
@@ -1267,10 +1274,6 @@ impl GraphicsPipelineClient {
             .get(&surface_id)
             .map(|surface| (surface.width, surface.height))
             .ok_or_else(|| pdu_other_err!("unknown surface in WireToSurface1"))?;
-        let frame = self
-            .avc444_frames
-            .entry(surface_id)
-            .or_insert_with(|| Yuv444Frame::new(width, height));
 
         trace!(surface_id, ?codec_id, encoding = ?stream.encoding, "AVC444 update");
         let (main, auxiliary) = match stream.encoding {
@@ -1282,36 +1285,53 @@ impl GraphicsPipelineClient {
         // are one H.264 stream (MS-RDPEGFX 2.2.4.5), and a decoder that delays pictures would
         // pair a main view with the previous auxiliary view; the tests use a decoder that cannot
         // delay. Check a Windows server's AVC444 output with the decoder in use when changing this.
-        if let Some(main) = main {
-            let view = decoder
-                .decode_yuv420(main.data)
-                .map_err(|e| pdu_other_err!("H.264 decode", source: e))?;
-            frame.apply_main_view(&view, &main.rectangles);
+        let main_view = main
+            .map(|main| decoder.decode_yuv420(main.data))
+            .transpose()
+            .map_err(|e| pdu_other_err!("H.264 decode", source: e))?;
+        let auxiliary_view = auxiliary
+            .map(|auxiliary| decoder.decode_yuv420(auxiliary.data))
+            .transpose()
+            .map_err(|e| pdu_other_err!("H.264 decode", source: e))?;
+
+        // The combined picture lives as long as the surface, so it is charged to the
+        // compositor's budget, and only for a surface the compositor accepted, whose
+        // dimensions it has bounded.
+        if !self.avc444_frames.contains_key(&surface_id) {
+            if !self
+                .compositor
+                .reserve_for_surface(surface_id, Yuv444Frame::allocation_size(width, height))
+            {
+                return Err(pdu_other_err!("AVC444 picture exceeds the compositor budget"));
+            }
+            self.avc444_frames.insert(surface_id, Yuv444Frame::new(width, height));
         }
-        if let Some(auxiliary) = auxiliary {
-            let view = decoder
-                .decode_yuv420(auxiliary.data)
-                .map_err(|e| pdu_other_err!("H.264 decode", source: e))?;
-            frame.apply_auxiliary_view(layout, &view, &auxiliary.rectangles);
+        let Some(frame) = self.avc444_frames.get_mut(&surface_id) else {
+            return Ok(());
+        };
+        if let (Some(main), Some(view)) = (main, &main_view) {
+            frame.apply_main_view(view, &main.rectangles);
+        }
+        if let (Some(auxiliary), Some(view)) = (auxiliary, &auxiliary_view) {
+            frame.apply_auxiliary_view(layout, view, &auxiliary.rectangles);
         }
 
-        let mut painted: Vec<&ExclusiveRectangle> = Vec::new();
+        let mut painted = BTreeSet::new();
         for rect in main
             .into_iter()
             .chain(auxiliary)
             .flat_map(|stream| stream.rectangles.iter())
         {
-            if painted.contains(&rect) {
-                continue;
-            }
-            painted.push(rect);
             let clipped = ExclusiveRectangle {
                 left: rect.left,
                 top: rect.top,
                 right: rect.right.min(width),
                 bottom: rect.bottom.min(height),
             };
-            if !(clipped.left < clipped.right && clipped.top < clipped.bottom) {
+            let fresh = clipped.left < clipped.right
+                && clipped.top < clipped.bottom
+                && painted.insert((clipped.left, clipped.top, clipped.right, clipped.bottom));
+            if !fresh {
                 continue;
             }
             let update = BitmapUpdate {
@@ -2118,24 +2138,17 @@ mod tests {
         assert_eq!(rgba, vec![0xFF, 0x80, 0x00, 0xFF, 0x30, 0x20, 0x10, 0xFF]);
     }
 
-    /// Every capability set the default advertises must correspond to a codec
-    /// `handle_wire_to_surface1` can actually decode.
-    ///
-    /// The server picks one of the advertised sets and prefers the most capable,
-    /// so a set that implies AVC444 makes the server send `Avc444`/`Avc444v2`,
-    /// which fall through to `on_unhandled_pdu` and leave the screen blank.
+    /// The server prefers the most capable advertised set, so the default leads with
+    /// the version 10 sets that enable AVC444, which `decode_avc444` paints.
     #[test]
-    fn default_capabilities_do_not_advertise_avc444() {
-        for cap in TestHandler.capabilities() {
-            assert!(
-                !CodecCapabilities::from_capability_set(&cap).avc444,
-                "advertised set implies an AVC444 decoder that does not exist: {cap:?}"
-            );
-        }
+    fn default_capabilities_lead_with_avc444() {
+        let caps = TestHandler.capabilities();
+        assert!(matches!(caps.first(), Some(CapabilitySet::V10_7 { .. })));
+        assert!(CodecCapabilities::from_capability_set(&caps[0]).avc444);
     }
 
-    /// AVC420 must stay advertised: it is the H.264 flavour that does decode, and
-    /// dropping V10.x must not cost it.
+    /// AVC420 must stay advertised: it is the H.264 flavour a decoder without YUV
+    /// planes decodes, once the start-time filter drops the AVC444 sets.
     #[test]
     fn default_capabilities_still_advertise_avc420() {
         assert!(

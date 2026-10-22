@@ -125,14 +125,22 @@ fn full_rect() -> ExclusiveRectangle {
 }
 
 fn region(left: u16, right: u16) -> Avc420Region {
+    rect_region(left, 0, right, HEIGHT)
+}
+
+fn rect_region(left: u16, top: u16, right: u16, bottom: u16) -> Avc420Region {
     Avc420Region {
         left,
-        top: 0,
+        top,
         right,
-        bottom: HEIGHT,
+        bottom,
         quantization_parameter: 22,
         quality: 100,
     }
+}
+
+fn gray(level: u8) -> Vec<u8> {
+    [level, level, level, 0xFF].repeat(usize::from(WIDTH) * usize::from(HEIGHT))
 }
 
 // ============================================================================
@@ -266,6 +274,107 @@ fn views_recombine_into_the_original_picture(#[case] layout: Avc444Layout) {
     assert!(difference <= TOLERANCE, "difference {difference}");
     // The main view alone is the 4:2:0 picture, which loses the checkerboard's chroma.
     assert!(max_difference(&subsampled, &original) > 50);
+}
+
+#[test]
+fn a_converted_picture_reads_back_unchanged() {
+    let original = checkerboard(0);
+    let picture = Yuv444Frame::from_rgba(&original, WIDTH, HEIGHT).expect("picture");
+    let difference = max_difference(&picture.to_rgba(&full_rect()), &original);
+    assert!(difference <= TOLERANCE, "difference {difference}");
+}
+
+#[rstest]
+#[case::avc444(Avc444Layout::V1)]
+#[case::avc444v2(Avc444Layout::V2)]
+fn a_main_view_keeps_luma_outside_its_rectangles(#[case] layout: Avc444Layout) {
+    let mut session = Session::new();
+    let (main, auxiliary) = Yuv444Frame::from_rgba(&gray(100), WIDTH, HEIGHT)
+        .expect("picture")
+        .split(layout)
+        .expect("views");
+    let everything = [region(0, WIDTH)];
+    session.send(
+        layout,
+        Encoding::LUMA_AND_CHROMA,
+        (&main, &everything),
+        Some((&auxiliary, &everything)),
+    );
+
+    // The main rectangle and the auxiliary rectangle split the first 2x2 block.
+    let (main, auxiliary) = Yuv444Frame::from_rgba(&gray(200), WIDTH, HEIGHT)
+        .expect("picture")
+        .split(layout)
+        .expect("views");
+    session.send(
+        layout,
+        Encoding::LUMA_AND_CHROMA,
+        (&main, &[rect_region(1, 0, 2, 1)]),
+        Some((&auxiliary, &[rect_region(0, 0, 1, 1)])),
+    );
+
+    let pixel = |x: usize| &session.canvas[x * 4..x * 4 + 3];
+    assert!(max_difference(pixel(0), &[100; 3]) <= TOLERANCE, "{:?}", pixel(0));
+    assert!(max_difference(pixel(1), &[200; 3]) <= TOLERANCE, "{:?}", pixel(1));
+}
+
+#[test]
+fn avc444_on_a_surface_the_compositor_refused_is_dropped() {
+    use ironrdp_egfx::pdu::{
+        Avc420BitmapStream, Avc444BitmapStream, CapabilitiesConfirmPdu, CapabilitiesV107Flags, Codec1Type,
+        CreateSurfacePdu, GfxPdu, PixelFormat, QuantQuality, WireToSurface1Pdu,
+    };
+    use ironrdp_graphics::zgfx::wrap_uncompressed;
+
+    struct ClientSink;
+    impl ironrdp_egfx::client::GraphicsPipelineHandler for ClientSink {}
+    let send = |client: &mut GraphicsPipelineClient, pdu: &GfxPdu| {
+        let encoded = encode_vec(pdu).expect("encode PDU");
+        client.process(0, &wrap_uncompressed(&encoded))
+    };
+
+    let mut client = GraphicsPipelineClient::new(Box::new(ClientSink), Some(Box::new(PlaneDecoder)));
+    let confirm = CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V10_7 {
+        flags: CapabilitiesV107Flags::empty(),
+    });
+    send(&mut client, &GfxPdu::CapabilitiesConfirm(confirm)).expect("confirm");
+    // A 1 GiB canvas exceeds the compositor budget, so the surface has no pixels.
+    let create = CreateSurfacePdu {
+        surface_id: 1,
+        width: 16384,
+        height: 16384,
+        pixel_format: PixelFormat::XRgb,
+    };
+    send(&mut client, &GfxPdu::CreateSurface(create)).expect("create surface");
+
+    let (main, _) = Yuv444Frame::from_rgba(&gray(100), WIDTH, HEIGHT)
+        .expect("picture")
+        .split(Avc444Layout::V1)
+        .expect("views");
+    let data = pack(&main);
+    let rect = full_rect();
+    let stream = Avc444BitmapStream {
+        encoding: Encoding::LUMA,
+        stream1: Avc420BitmapStream {
+            rectangles: vec![rect.clone()],
+            quant_qual_vals: vec![QuantQuality {
+                quantization_parameter: 22,
+                progressive: false,
+                quality: 100,
+            }],
+            data: &data,
+        },
+        stream2: None,
+    };
+    let wire = WireToSurface1Pdu {
+        surface_id: 1,
+        codec_id: Codec1Type::Avc444,
+        pixel_format: PixelFormat::XRgb,
+        destination_rectangle: rect,
+        bitmap_data: encode_vec(&stream).expect("encode AVC444 stream"),
+    };
+    send(&mut client, &GfxPdu::WireToSurface1(wire)).expect("the session survives");
+    assert_eq!(client.dropped_updates(), 1);
 }
 
 #[test]

@@ -75,6 +75,9 @@ impl Yuv444Frame {
     /// Converts tightly packed RGBA pixels with the forward transform of [MS-RDPEGFX] 3.3.8.3.1
     /// ("Color Conversion").
     ///
+    /// Like a decoded picture, the even-row, even-column chroma samples hold their 2x2 block's
+    /// average, which [`Self::to_rgba`] reverses.
+    ///
     /// Returns `None` when `rgba` is shorter than `width * height * 4` bytes.
     ///
     /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
@@ -96,7 +99,25 @@ impl Yuv444Frame {
                 frame.v[line + col] = v;
             }
         }
+        for row in (0..frame.rows).step_by(2) {
+            for col in (0..frame.stride).step_by(2) {
+                let at = row * frame.stride + col;
+                let below = at + frame.stride;
+                frame.u[at] = average(frame.u[at], frame.u[at + 1], frame.u[below], frame.u[below + 1]);
+                frame.v[at] = average(frame.v[at], frame.v[at + 1], frame.v[below], frame.v[below + 1]);
+            }
+        }
         Some(frame)
+    }
+
+    /// Bytes [`Self::new`] allocates for a `width` by `height` picture.
+    pub fn allocation_size(width: u16, height: u16) -> usize {
+        3 * usize::from(width).next_multiple_of(MACROBLOCK) * usize::from(height).next_multiple_of(MACROBLOCK)
+    }
+
+    /// Bytes this picture holds.
+    pub fn allocated_bytes(&self) -> usize {
+        self.y.len() + self.u.len() + self.v.len()
     }
 
     /// Picture width in pixels.
@@ -112,12 +133,16 @@ impl Yuv444Frame {
     /// Takes luma and subsampled chroma from a main view, within `rects`.
     ///
     /// Inside the rectangles the picture becomes the 4:2:0 picture of the view until an
-    /// auxiliary view covers them, as for macroblocks in a received luma subframe.
+    /// auxiliary view covers them, as for macroblocks in a received luma subframe. Luma is
+    /// taken within the rectangles only; chroma for every 2x2 block they touch, since a
+    /// block shares its subsampled value.
     pub fn apply_main_view(&mut self, view: &Yuv420Frame, rects: &[ExclusiveRectangle]) {
         for rect in rects {
             let Some(area) = self.chroma_block_area(rect) else {
                 continue;
             };
+            let luma_rows = usize::from(rect.top)..usize::from(rect.bottom.min(self.height));
+            let luma_left = usize::from(rect.left);
             for row in area.top..area.bottom {
                 let (Some(luma), Some(u), Some(v)) = (view.luma_row(row), view.u_row(row / 2), view.v_row(row / 2))
                 else {
@@ -128,7 +153,10 @@ impl Yuv444Frame {
                 if right <= area.left {
                     break;
                 }
-                self.y[line + area.left..line + right].copy_from_slice(&luma[area.left..right]);
+                let luma_right = right.min(usize::from(rect.right));
+                if luma_rows.contains(&row) && luma_left < luma_right {
+                    self.y[line + luma_left..line + luma_right].copy_from_slice(&luma[luma_left..luma_right]);
+                }
                 for col in area.left..right {
                     self.u[line + col] = u[col / 2];
                     self.v[line + col] = v[col / 2];
@@ -187,7 +215,8 @@ impl Yuv444Frame {
     /// Splits the picture into its main and auxiliary views.
     ///
     /// Both views cover the padded picture. The main view carries the average of each 2x2
-    /// chroma block, which the reverse chroma filter undoes.
+    /// chroma block, held in its even-row, even-column sample, which the reverse chroma filter
+    /// undoes.
     pub fn split(&self, layout: Avc444Layout) -> DecoderResult<(Yuv420Frame, Yuv420Frame)> {
         let (half_stride, half_rows) = (self.stride / 2, self.rows / 2);
         let mut main_u = vec![0; half_stride * half_rows];
@@ -195,9 +224,8 @@ impl Yuv444Frame {
         for row in 0..half_rows {
             for col in 0..half_stride {
                 let at = 2 * row * self.stride + 2 * col;
-                let below = at + self.stride;
-                main_u[row * half_stride + col] = average(self.u[at], self.u[at + 1], self.u[below], self.u[below + 1]);
-                main_v[row * half_stride + col] = average(self.v[at], self.v[at + 1], self.v[below], self.v[below + 1]);
+                main_u[row * half_stride + col] = self.u[at];
+                main_v[row * half_stride + col] = self.v[at];
             }
         }
 

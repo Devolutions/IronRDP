@@ -260,6 +260,20 @@ impl Compositor {
         self.allocated_bytes = self.allocated_bytes.saturating_sub(len);
     }
 
+    /// Reserve `len` bytes for a buffer kept beside surface `id`, such as a codec's reference picture.
+    ///
+    /// Refused when the compositor holds no canvas for the surface (it was too large or over budget)
+    /// or the reservation would exceed the budget. A reset releases every reservation, so the owner
+    /// drops these buffers then; otherwise it returns the bytes with [`Self::release_reserved`].
+    pub(crate) fn reserve_for_surface(&mut self, id: u16, len: usize) -> bool {
+        self.surfaces.contains_key(&id) && self.charge(len)
+    }
+
+    /// Return bytes taken by [`Self::reserve_for_surface`].
+    pub(crate) fn release_reserved(&mut self, len: usize) {
+        self.release(len);
+    }
+
     /// Handle `CreateSurface`: allocate a zeroed RGBA8888 canvas.
     ///
     /// Surfaces beyond [`MAX_SURFACE_DIM`] on either edge are skipped rather than
