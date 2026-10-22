@@ -1,4 +1,5 @@
 mod avc;
+mod avc444;
 mod capabilities;
 mod client;
 #[cfg(feature = "openh264-bundled")]

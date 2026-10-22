@@ -1,7 +1,7 @@
 //! Client-side EGFX implementation
 //!
 //! This module provides client-side support for the Graphics Pipeline Extension
-//! ([MS-RDPEGFX]), including H.264 AVC420 decode, ClearCodec decode, and surface management.
+//! ([MS-RDPEGFX]), including H.264 AVC420 and AVC444 decode, ClearCodec decode, and surface management.
 //!
 //! # Protocol Compliance
 //!
@@ -66,14 +66,15 @@ use ironrdp_pdu::{PduResult, decode_cursor, decode_err, pdu_other_err};
 use tracing::{debug, trace, warn};
 
 use crate::CHANNEL_NAME;
+use crate::avc444::{Avc444Layout, Yuv444Frame};
 use crate::compositor::{Compositor, OutputUpdate};
-use crate::decode::H264Decoder;
+use crate::decode::{DecodedFrame, DecoderResult, H264Decoder};
 use crate::pdu::{
-    Avc420BitmapStream, CacheImportReplyPdu, CacheToSurfacePdu, CapabilitiesAdvertisePdu, CapabilitiesV8Flags,
-    CapabilitiesV81Flags, CapabilitiesV107Flags, CapabilitySet, Codec1Type, DeleteEncodingContextPdu,
-    EvictCacheEntryPdu, FrameAcknowledgePdu, GfxPdu, MapSurfaceToScaledOutputPdu, MapSurfaceToScaledWindowPdu,
-    MapSurfaceToWindowPdu, PixelFormat, QueueDepth, RawCapabilitySet, SolidFillPdu, SurfaceToCachePdu,
-    SurfaceToSurfacePdu, WireToSurface2Pdu,
+    Avc420BitmapStream, Avc444BitmapStream, CacheImportReplyPdu, CacheToSurfacePdu, CapabilitiesAdvertisePdu,
+    CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV103Flags, CapabilitiesV104Flags,
+    CapabilitiesV107Flags, CapabilitySet, Codec1Type, DeleteEncodingContextPdu, Encoding, EvictCacheEntryPdu,
+    FrameAcknowledgePdu, GfxPdu, MapSurfaceToScaledOutputPdu, MapSurfaceToScaledWindowPdu, MapSurfaceToWindowPdu,
+    PixelFormat, QueueDepth, RawCapabilitySet, SolidFillPdu, SurfaceToCachePdu, SurfaceToSurfacePdu, WireToSurface2Pdu,
 };
 
 /// Max capacity to keep for decompressed buffer when cleared.
@@ -120,9 +121,13 @@ pub struct CodecCapabilities {
     pub avc420: bool,
     /// AVC444 (H.264 4:4:4) is available
     pub avc444: bool,
-    /// Small cache mode
+    /// The bitmap cache is constrained to 16 MB instead of 100 MB ([MS-RDPEGFX] 3.3.1.4)
+    ///
+    /// Set by `SMALL_CACHE`, by `THINCLIENT` in versions 8 and 8.1, and by version 10.3.
+    ///
+    /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
     pub small_cache: bool,
-    /// Thin client mode
+    /// Thin client mode: `THINCLIENT` in versions 8 and 8.1, `AVC_THINCLIENT` from version 10.3
     pub thin_client: bool,
 }
 
@@ -133,19 +138,19 @@ impl CodecCapabilities {
             CapabilitySet::V8 { flags } => Self {
                 avc420: false,
                 avc444: false,
-                small_cache: flags.contains(CapabilitiesV8Flags::SMALL_CACHE),
+                small_cache: flags.intersects(CapabilitiesV8Flags::SMALL_CACHE | CapabilitiesV8Flags::THIN_CLIENT),
                 thin_client: flags.contains(CapabilitiesV8Flags::THIN_CLIENT),
             },
             CapabilitySet::V8_1 { flags } => Self {
                 avc420: flags.contains(CapabilitiesV81Flags::AVC420_ENABLED),
                 avc444: false,
-                small_cache: flags.contains(CapabilitiesV81Flags::SMALL_CACHE),
+                small_cache: flags.intersects(CapabilitiesV81Flags::SMALL_CACHE | CapabilitiesV81Flags::THIN_CLIENT),
                 thin_client: flags.contains(CapabilitiesV81Flags::THIN_CLIENT),
             },
             CapabilitySet::V10 { flags } | CapabilitySet::V10_2 { flags } => Self {
-                avc420: !flags.contains(crate::pdu::CapabilitiesV10Flags::AVC_DISABLED),
-                avc444: !flags.contains(crate::pdu::CapabilitiesV10Flags::AVC_DISABLED),
-                small_cache: flags.contains(crate::pdu::CapabilitiesV10Flags::SMALL_CACHE),
+                avc420: !flags.contains(CapabilitiesV10Flags::AVC_DISABLED),
+                avc444: !flags.contains(CapabilitiesV10Flags::AVC_DISABLED),
+                small_cache: flags.contains(CapabilitiesV10Flags::SMALL_CACHE),
                 thin_client: false,
             },
             CapabilitySet::V10_1 => Self {
@@ -155,19 +160,20 @@ impl CodecCapabilities {
                 thin_client: false,
             },
             CapabilitySet::V10_3 { flags } => Self {
-                avc420: !flags.contains(crate::pdu::CapabilitiesV103Flags::AVC_DISABLED),
-                avc444: !flags.contains(crate::pdu::CapabilitiesV103Flags::AVC_DISABLED),
-                small_cache: false,
-                thin_client: flags.contains(crate::pdu::CapabilitiesV103Flags::AVC_THIN_CLIENT),
+                avc420: !flags.contains(CapabilitiesV103Flags::AVC_DISABLED),
+                avc444: !flags.contains(CapabilitiesV103Flags::AVC_DISABLED),
+                // MS-RDPEGFX 3.3.1.4: version 10.3 always constrains the cache to 16 MB.
+                small_cache: true,
+                thin_client: flags.contains(CapabilitiesV103Flags::AVC_THIN_CLIENT),
             },
             CapabilitySet::V10_4 { flags }
             | CapabilitySet::V10_5 { flags }
             | CapabilitySet::V10_6 { flags }
             | CapabilitySet::V10_6Err { flags } => Self {
-                avc420: !flags.contains(crate::pdu::CapabilitiesV104Flags::AVC_DISABLED),
-                avc444: !flags.contains(crate::pdu::CapabilitiesV104Flags::AVC_DISABLED),
-                small_cache: flags.contains(crate::pdu::CapabilitiesV104Flags::SMALL_CACHE),
-                thin_client: flags.contains(crate::pdu::CapabilitiesV104Flags::AVC_THIN_CLIENT),
+                avc420: !flags.contains(CapabilitiesV104Flags::AVC_DISABLED),
+                avc444: !flags.contains(CapabilitiesV104Flags::AVC_DISABLED),
+                small_cache: flags.contains(CapabilitiesV104Flags::SMALL_CACHE),
+                thin_client: flags.contains(CapabilitiesV104Flags::AVC_THIN_CLIENT),
             },
             CapabilitySet::V10_7 { flags } => Self {
                 avc420: !flags.contains(CapabilitiesV107Flags::AVC_DISABLED),
@@ -223,25 +229,41 @@ pub struct BitmapUpdate {
 pub trait GraphicsPipelineHandler: Send {
     /// Returns the capability sets to advertise to the server
     ///
-    /// The default advertises V8.1 (AVC420) and V8 (no AVC) as fallback.
+    /// The default advertises every version from 10.7 down to 10 with AVC444, then V8.1
+    /// (AVC420) and V8 (no AVC) as fallback, all with a small cache.
     ///
-    /// V10.x is deliberately absent. Those versions signal AVC444 support
-    /// unless `AVC_DISABLED` is set, and [`GraphicsPipelineClient`] has no
-    /// AVC444 decoder: [`Codec1Type::Avc444`] and [`Codec1Type::Avc444v2`]
-    /// reach [`GraphicsPipelineHandler::on_unhandled_pdu`] instead of being
-    /// decoded. The server picks one of the advertised sets ([capability
-    /// negotiation]) and prefers the most capable, so offering AVC444 makes a
-    /// host that supports it send nothing the client can paint. Add V10.7 back
-    /// once AVC444 decodes.
-    ///
-    /// Note: AVC-capable versions are automatically filtered out at
-    /// advertisement time if no H.264 decoder is configured on the
-    /// [`GraphicsPipelineClient`]. If all returned sets require AVC
-    /// and no decoder is available, a V8-only fallback is used.
+    /// Sets the [`GraphicsPipelineClient`] cannot honor are filtered out at
+    /// advertisement time: without an H.264 decoder, every set that implies AVC; with
+    /// a decoder that does not return YUV planes ([`H264Decoder::supports_yuv420`]),
+    /// every set that implies AVC444, since the server picks the most capable
+    /// advertised set ([capability negotiation]) and would then send frames the client
+    /// cannot paint. If nothing is left, a V8-only fallback is used.
     ///
     /// [capability negotiation]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/31c6e2b1-335b-4a75-9454-bb2309958c21
     fn capabilities(&self) -> Vec<CapabilitySet> {
         vec![
+            CapabilitySet::V10_7 {
+                flags: CapabilitiesV107Flags::SMALL_CACHE,
+            },
+            CapabilitySet::V10_6 {
+                flags: CapabilitiesV104Flags::SMALL_CACHE,
+            },
+            CapabilitySet::V10_5 {
+                flags: CapabilitiesV104Flags::SMALL_CACHE,
+            },
+            CapabilitySet::V10_4 {
+                flags: CapabilitiesV104Flags::SMALL_CACHE,
+            },
+            CapabilitySet::V10_3 {
+                flags: CapabilitiesV103Flags::empty(),
+            },
+            CapabilitySet::V10_2 {
+                flags: CapabilitiesV10Flags::SMALL_CACHE,
+            },
+            CapabilitySet::V10_1,
+            CapabilitySet::V10 {
+                flags: CapabilitiesV10Flags::SMALL_CACHE,
+            },
             CapabilitySet::V8_1 {
                 flags: CapabilitiesV81Flags::AVC420_ENABLED | CapabilitiesV81Flags::SMALL_CACHE,
             },
@@ -397,12 +419,15 @@ enum ClientState {
 /// Client for the Graphics Pipeline Virtual Channel (EGFX)
 ///
 /// This client handles capability negotiation, surface tracking,
-/// H.264 AVC420 and RFX Progressive decode, and frame acknowledgment per [MS-RDPEGFX].
+/// H.264 AVC420, AVC444 and RFX Progressive decode, and frame acknowledgment per [MS-RDPEGFX].
 ///
 /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
 pub struct GraphicsPipelineClient {
     handler: Box<dyn GraphicsPipelineHandler>,
     h264_decoder: Option<Box<dyn H264Decoder>>,
+    /// Combined AVC444 picture of each surface, kept between updates so a luma-only or
+    /// chroma-only update combines with what earlier ones left.
+    avc444_frames: BTreeMap<u16, Yuv444Frame>,
     /// Built on first use via [`Self::decode_clearcodec`]. `None` means no ClearCodec
     /// frame has arrived yet, not that the codec is unsupported: keeping the ~1.37 MiB
     /// V-bar and glyph cache spine (see `ClearCodecDecoder::new`) unallocated saves that
@@ -438,6 +463,7 @@ impl GraphicsPipelineClient {
         Self {
             handler,
             h264_decoder,
+            avc444_frames: BTreeMap::new(),
             clearcodec_decoder: None,
             planar_decoder: BitmapStreamDecoder::default(),
             progressive_decoder: ProgressiveDecoder::new(),
@@ -776,12 +802,16 @@ impl GraphicsPipelineClient {
         };
 
         self.codec_caps = CodecCapabilities::from_capability_set(&cap);
+        self.compositor.set_small_bitmap_cache(self.codec_caps.small_cache);
         self.state = ClientState::Active;
         let cap = self.negotiated_caps.insert(cap);
 
         debug!(
+            version = cap.version().0,
             avc420 = self.codec_caps.avc420,
             avc444 = self.codec_caps.avc444,
+            small_cache = self.codec_caps.small_cache,
+            thin_client = self.codec_caps.thin_client,
             "EGFX capabilities confirmed"
         );
 
@@ -794,6 +824,7 @@ impl GraphicsPipelineClient {
 
         // Per spec, ResetGraphics implicitly destroys all surfaces
         self.surfaces.clear();
+        self.avc444_frames.clear();
         self.compositor.reset(width, height);
         self.pending_output_reset = output_size;
 
@@ -849,6 +880,7 @@ impl GraphicsPipelineClient {
         };
 
         debug!(surface_id, width, height, ?pixel_format, "Surface created");
+        self.avc444_frames.remove(&surface_id);
         self.compositor.create_surface(surface_id, width, height);
         self.handler.on_surface_created(&surface);
         self.surfaces.insert(surface_id, surface);
@@ -856,6 +888,7 @@ impl GraphicsPipelineClient {
 
     fn handle_delete_surface(&mut self, surface_id: u16) {
         self.progressive_decoder.delete_surface(surface_id);
+        self.avc444_frames.remove(&surface_id);
         if self.surfaces.remove(&surface_id).is_some() {
             self.compositor.delete_surface(surface_id);
             debug!(surface_id, "Surface deleted");
@@ -948,9 +981,16 @@ impl GraphicsPipelineClient {
             }
             Codec1Type::Planar => self.decode_planar(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data),
             Codec1Type::Avc444 | Codec1Type::Avc444v2 => {
-                debug!("AVC444 codec not yet implemented, forwarding to handler");
-                self.handler.on_unhandled_pdu(&GfxPdu::WireToSurface1(pdu));
-                return Ok(());
+                if !self
+                    .h264_decoder
+                    .as_ref()
+                    .is_some_and(|decoder| decoder.supports_yuv420())
+                {
+                    debug!("No H.264 decoder returning YUV planes, forwarding AVC444 to handler");
+                    self.handler.on_unhandled_pdu(&GfxPdu::WireToSurface1(pdu));
+                    return Ok(());
+                }
+                self.decode_avc444(pdu.codec_id, pdu.surface_id, &pdu.bitmap_data)
             }
             Codec1Type::Uncompressed => {
                 self.handle_uncompressed(pdu);
@@ -1088,8 +1128,7 @@ impl GraphicsPipelineClient {
             return Ok(());
         };
 
-        let frame = decoder
-            .decode(stream.data)
+        let frame = decode_avc420_picture(decoder.as_mut(), stream.data)
             .map_err(|e| pdu_other_err!("H.264 decode", source: e))?;
 
         // MS-RDPEGFX 2.2.1.4.1: RDPGFX_RECT16 right/bottom are exclusive (one-past-end),
@@ -1200,6 +1239,92 @@ impl GraphicsPipelineClient {
             // region's own top-left, not the frame origin.
             let data = copy_frame_region(frame.data(), frame.width(), &clipped);
             emit_avc420(clipped, data);
+        }
+        Ok(())
+    }
+
+    /// Decode an AVC444 or AVC444v2 update ([MS-RDPEGFX] 2.2.4.5 and 2.2.4.6).
+    ///
+    /// Both sub-streams go through the one H.264 decoder, in order, whatever their
+    /// rectangles, so the decoder sees the whole stream. Each view then updates the
+    /// surface's combined picture within its own `regionRects`, and those rectangles
+    /// are painted.
+    ///
+    /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
+    fn decode_avc444(&mut self, codec_id: Codec1Type, surface_id: u16, bitmap_data: &[u8]) -> PduResult<()> {
+        let mut cursor = ReadCursor::new(bitmap_data);
+        let stream = Avc444BitmapStream::decode(&mut cursor).map_err(|e| decode_err!(e))?;
+        let Some(decoder) = self.h264_decoder.as_mut() else {
+            return Ok(());
+        };
+        let layout = if codec_id == Codec1Type::Avc444 {
+            Avc444Layout::V1
+        } else {
+            Avc444Layout::V2
+        };
+        let (width, height) = self
+            .surfaces
+            .get(&surface_id)
+            .map(|surface| (surface.width, surface.height))
+            .ok_or_else(|| pdu_other_err!("unknown surface in WireToSurface1"))?;
+        let frame = self
+            .avc444_frames
+            .entry(surface_id)
+            .or_insert_with(|| Yuv444Frame::new(width, height));
+
+        trace!(surface_id, ?codec_id, encoding = ?stream.encoding, "AVC444 update");
+        let (main, auxiliary) = match stream.encoding {
+            Encoding::LUMA => (Some(&stream.stream1), None),
+            Encoding::CHROMA => (None, Some(&stream.stream1)),
+            _ => (Some(&stream.stream1), stream.stream2.as_ref()),
+        };
+        // UNTESTED: that the decoder returns each view for its own sub-stream. Both sub-streams
+        // are one H.264 stream (MS-RDPEGFX 2.2.4.5), and a decoder that delays pictures would
+        // pair a main view with the previous auxiliary view; the tests use a decoder that cannot
+        // delay. Check a Windows server's AVC444 output with the decoder in use when changing this.
+        if let Some(main) = main {
+            let view = decoder
+                .decode_yuv420(main.data)
+                .map_err(|e| pdu_other_err!("H.264 decode", source: e))?;
+            frame.apply_main_view(&view, &main.rectangles);
+        }
+        if let Some(auxiliary) = auxiliary {
+            let view = decoder
+                .decode_yuv420(auxiliary.data)
+                .map_err(|e| pdu_other_err!("H.264 decode", source: e))?;
+            frame.apply_auxiliary_view(layout, &view, &auxiliary.rectangles);
+        }
+
+        let mut painted: Vec<&ExclusiveRectangle> = Vec::new();
+        for rect in main
+            .into_iter()
+            .chain(auxiliary)
+            .flat_map(|stream| stream.rectangles.iter())
+        {
+            if painted.contains(&rect) {
+                continue;
+            }
+            painted.push(rect);
+            let clipped = ExclusiveRectangle {
+                left: rect.left,
+                top: rect.top,
+                right: rect.right.min(width),
+                bottom: rect.bottom.min(height),
+            };
+            if !(clipped.left < clipped.right && clipped.top < clipped.bottom) {
+                continue;
+            }
+            let update = BitmapUpdate {
+                surface_id,
+                data: frame.to_rgba(&clipped),
+                codec_id,
+                width: clipped.right - clipped.left,
+                height: clipped.bottom - clipped.top,
+                destination_rectangle: clipped,
+            };
+            self.compositor
+                .apply_bitmap(surface_id, &update.destination_rectangle, &update.data);
+            self.handler.on_bitmap_updated(&update);
         }
         Ok(())
     }
@@ -1342,28 +1467,31 @@ impl DvcProcessor for GraphicsPipelineClient {
     }
 
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        let caps = if self.h264_decoder.is_some() {
-            self.handler.capabilities()
-        } else {
-            // No H.264 decoder: filter out capability sets that imply AVC support.
-            // Only keep sets that work without a decoder (V8 without AVC flags).
-            let filtered: Vec<CapabilitySet> = self
-                .handler
-                .capabilities()
-                .into_iter()
-                .filter(|cap| !CodecCapabilities::from_capability_set(cap).avc420)
-                .collect();
-
-            if filtered.is_empty() {
-                // All handler caps required AVC; fall back to V8-only
-                debug!("No H.264 decoder and all capabilities require AVC; falling back to V8");
-                vec![CapabilitySet::V8 {
-                    flags: CapabilitiesV8Flags::SMALL_CACHE,
-                }]
-            } else {
-                filtered
-            }
-        };
+        // Keep only the sets this client can honor: AVC420 needs a decoder, and AVC444
+        // needs one returning the YUV planes the two views are combined from.
+        let avc420 = self.h264_decoder.is_some();
+        let avc444 = self
+            .h264_decoder
+            .as_ref()
+            .is_some_and(|decoder| decoder.supports_yuv420());
+        let mut caps: Vec<CapabilitySet> = self
+            .handler
+            .capabilities()
+            .into_iter()
+            .filter(|cap| {
+                let codecs = CodecCapabilities::from_capability_set(cap);
+                (avc420 || !codecs.avc420) && (avc444 || !codecs.avc444)
+            })
+            .collect();
+        if caps.is_empty() {
+            debug!(
+                avc420,
+                avc444, "No advertisable EGFX capability set; falling back to V8"
+            );
+            caps.push(CapabilitySet::V8 {
+                flags: CapabilitiesV8Flags::SMALL_CACHE,
+            });
+        }
 
         let pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&caps));
 
@@ -1389,6 +1517,18 @@ impl DvcProcessor for GraphicsPipelineClient {
 }
 
 impl DvcClientProcessor for GraphicsPipelineClient {}
+
+/// Decode an AVC420 picture to RGBA.
+///
+/// A decoder returning YUV planes is converted with the transform MS-RDPEGFX specifies,
+/// whatever matrix it would convert with itself.
+fn decode_avc420_picture(decoder: &mut dyn H264Decoder, data: &[u8]) -> DecoderResult<DecodedFrame> {
+    if decoder.supports_yuv420() {
+        decoder.decode_yuv420(data).map(|picture| picture.to_rgba())
+    } else {
+        decoder.decode(data)
+    }
+}
 
 // ============================================================================
 // Frame Cropping
@@ -2774,7 +2914,7 @@ mod tests {
     }
 
     impl H264Decoder for CoordinateDecoder {
-        fn decode(&mut self, _data: &[u8]) -> crate::decode::DecoderResult<crate::decode::DecodedFrame> {
+        fn decode(&mut self, _data: &[u8]) -> DecoderResult<DecodedFrame> {
             let (w, h) = (self.width, self.height);
             let mut data = Vec::with_capacity(usize::try_from(w * h * 4).unwrap_or(0));
             for y in 0..h {
@@ -2784,7 +2924,7 @@ mod tests {
                     data.extend_from_slice(&[px, py, 0, 0xFF]);
                 }
             }
-            Ok(crate::decode::DecodedFrame::new(data, w, h))
+            Ok(DecodedFrame::new(data, w, h))
         }
     }
 

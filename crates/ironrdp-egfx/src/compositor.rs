@@ -48,10 +48,11 @@ const MAX_OUTPUT_DIM: u16 = 32766;
 /// single-surface case (16384*16384*4) impossible to reach.
 const MAX_COMPOSITOR_BYTES: usize = 256 * 1024 * 1024;
 
-/// The largest bitmap cache a server may fill: MS-RDPEGFX 3.3.1.4 caps it at 100 MB, or 16 MB
-/// when the server confirms SMALL_CACHE or THINCLIENT. The compositor does not see the
-/// confirmed capabilities, so it applies the larger cap.
+/// The largest bitmap cache a server may fill: MS-RDPEGFX 3.3.1.4 caps it at 100 MB.
 const MAX_BITMAP_CACHE_BYTES: usize = 100 * 1024 * 1024;
+
+/// The bitmap cache cap when the server confirms SMALL_CACHE, THINCLIENT or version 10.3 (MS-RDPEGFX 3.3.1.4).
+const SMALL_BITMAP_CACHE_BYTES: usize = 16 * 1024 * 1024;
 
 /// A rectangular region of the graphics output whose pixels changed within a frame.
 ///
@@ -149,6 +150,8 @@ pub(crate) struct Compositor {
     frame: Vec<DirtyRegion>,
     /// Deltas from completed frames, awaiting drain.
     ready: Vec<OutputUpdate>,
+    /// Whether the confirmed capabilities constrain the bitmap cache to 16 MB.
+    small_bitmap_cache: bool,
 }
 
 impl Compositor {
@@ -205,17 +208,26 @@ impl Compositor {
         // after the reset. A server that filled the cache past the cap could otherwise hold
         // that room for the rest of the session, so such a cache is dropped with the surfaces.
         let cached_bytes: usize = self.cache.values().map(|tile| tile.data.len()).sum();
-        if cached_bytes > MAX_BITMAP_CACHE_BYTES {
+        let cap = if self.small_bitmap_cache {
+            SMALL_BITMAP_CACHE_BYTES
+        } else {
+            MAX_BITMAP_CACHE_BYTES
+        };
+        if cached_bytes > cap {
             debug!(
                 cached_bytes,
-                cap = MAX_BITMAP_CACHE_BYTES,
-                "bitmap cache exceeds the MS-RDPEGFX cap; dropping it on reset"
+                cap, "bitmap cache exceeds the MS-RDPEGFX cap; dropping it on reset"
             );
             self.cache.clear();
             self.allocated_bytes = 0;
         } else {
             self.allocated_bytes = cached_bytes;
         }
+    }
+
+    /// Apply the bitmap cache size the server confirmed (MS-RDPEGFX 3.3.1.4).
+    pub(crate) fn set_small_bitmap_cache(&mut self, small: bool) {
+        self.small_bitmap_cache = small;
     }
 
     /// Reserve `len` pixel bytes, or refuse if that would exceed the budget.

@@ -83,6 +83,145 @@ impl fmt::Debug for DecodedFrame {
 }
 
 // ============================================================================
+// Decoded YUV 4:2:0 Picture
+// ============================================================================
+
+/// Planes of a decoded YUV 4:2:0 picture
+///
+/// The chroma planes are half the luma plane's width and height, rounded up.
+/// AVC444 ([MS-RDPEGFX] 3.3.8.3.2, "YUV420p Stream Combination for YUV444 mode")
+/// recombines two such pictures, so it needs the planes rather than RGBA.
+///
+/// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
+#[derive(Clone)]
+#[non_exhaustive]
+pub struct Yuv420Frame {
+    /// INVARIANT: at least `luma_stride * height` bytes, and `width <= luma_stride`.
+    y: Vec<u8>,
+    /// INVARIANT: at least `chroma_stride * height.div_ceil(2)` bytes, and `width.div_ceil(2) <= chroma_stride`.
+    u: Vec<u8>,
+    /// INVARIANT: same size as `u`.
+    v: Vec<u8>,
+    luma_stride: usize,
+    chroma_stride: usize,
+    width: u16,
+    height: u16,
+}
+
+impl Yuv420Frame {
+    /// Wraps decoded planes with `luma_stride`-byte luma rows and `chroma_stride`-byte chroma rows.
+    ///
+    /// Fails when a stride is narrower than its plane or a plane is shorter than its rows.
+    pub fn new(
+        width: u16,
+        height: u16,
+        y: Vec<u8>,
+        luma_stride: usize,
+        u: Vec<u8>,
+        v: Vec<u8>,
+        chroma_stride: usize,
+    ) -> DecoderResult<Self> {
+        let chroma_width = usize::from(width.div_ceil(2));
+        let chroma_height = usize::from(height.div_ceil(2));
+        let luma_size = luma_stride.checked_mul(usize::from(height));
+        let chroma_size = chroma_stride.checked_mul(chroma_height);
+        let fits = |plane: &[u8], size: Option<usize>| size.is_some_and(|size| size <= plane.len());
+        if !(usize::from(width) <= luma_stride && chroma_width <= chroma_stride) {
+            return Err(DecoderError::msg("YUV 4:2:0 stride narrower than its plane"));
+        }
+        if !(fits(&y, luma_size) && fits(&u, chroma_size) && fits(&v, chroma_size)) {
+            return Err(DecoderError::msg("YUV 4:2:0 plane shorter than its rows"));
+        }
+        Ok(Self {
+            y,
+            u,
+            v,
+            luma_stride,
+            chroma_stride,
+            width,
+            height,
+        })
+    }
+
+    /// Picture width in pixels.
+    pub fn width(&self) -> u16 {
+        self.width
+    }
+
+    /// Picture height in pixels.
+    pub fn height(&self) -> u16 {
+        self.height
+    }
+
+    /// Luma row `row`, `width` bytes long, or `None` past the last row.
+    pub fn luma_row(&self, row: usize) -> Option<&[u8]> {
+        plane_row(
+            &self.y,
+            self.luma_stride,
+            usize::from(self.width),
+            usize::from(self.height),
+            row,
+        )
+    }
+
+    /// U row `row`, `width / 2` bytes long (rounded up), or `None` past the last row.
+    pub fn u_row(&self, row: usize) -> Option<&[u8]> {
+        plane_row(
+            &self.u,
+            self.chroma_stride,
+            usize::from(self.width.div_ceil(2)),
+            usize::from(self.height.div_ceil(2)),
+            row,
+        )
+    }
+
+    /// V row `row`, `width / 2` bytes long (rounded up), or `None` past the last row.
+    pub fn v_row(&self, row: usize) -> Option<&[u8]> {
+        plane_row(
+            &self.v,
+            self.chroma_stride,
+            usize::from(self.width.div_ceil(2)),
+            usize::from(self.height.div_ceil(2)),
+            row,
+        )
+    }
+
+    /// Converts the picture to RGBA with the full-range BT.709 transform of MS-RDPEGFX AVC420
+    /// streams ([MS-RDPEGFX] 3.3.8.3.1, "Color Conversion").
+    ///
+    /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
+    pub fn to_rgba(&self) -> DecodedFrame {
+        let (width, height) = (usize::from(self.width), usize::from(self.height));
+        let mut rgba = Vec::with_capacity(width * height * 4);
+        for row in 0..height {
+            let (Some(y), Some(u), Some(v)) = (self.luma_row(row), self.u_row(row / 2), self.v_row(row / 2)) else {
+                break;
+            };
+            for (col, &y) in y.iter().enumerate() {
+                rgba.extend_from_slice(&crate::avc444::yuv_to_rgba(y, u[col / 2], v[col / 2]));
+            }
+        }
+        DecodedFrame::new(rgba, u32::from(self.width), u32::from(self.height))
+    }
+}
+
+impl fmt::Debug for Yuv420Frame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Yuv420Frame")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
+}
+
+fn plane_row(plane: &[u8], stride: usize, width: usize, height: usize, row: usize) -> Option<&[u8]> {
+    if height <= row {
+        return None;
+    }
+    plane.get(row * stride..)?.get(..width)
+}
+
+// ============================================================================
 // Decoder Error
 // ============================================================================
 
@@ -172,6 +311,24 @@ pub trait H264Decoder: Send {
     /// macroblock alignment (16x16). The caller crops to fit.
     fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame>;
 
+    /// Decode H.264 NAL units like [`H264Decoder::decode`], into the planes of the picture.
+    ///
+    /// The graphics pipeline converts these itself with the color transform MS-RDPEGFX
+    /// specifies, and AVC444 recombines two of them, so a decoder implementing this serves
+    /// every AVC mode regardless of the matrix [`H264Decoder::decode`] converts with.
+    /// Implementations must also return `true` from [`H264Decoder::supports_yuv420`].
+    fn decode_yuv420(&mut self, data: &[u8]) -> DecoderResult<Yuv420Frame> {
+        let _ = data;
+        Err(DecoderError::msg("this decoder does not return YUV 4:2:0 planes"))
+    }
+
+    /// Whether [`H264Decoder::decode_yuv420`] is implemented.
+    ///
+    /// The graphics pipeline only advertises AVC444 for decoders that return `true`.
+    fn supports_yuv420(&self) -> bool {
+        false
+    }
+
     /// Reset the decoder state
     ///
     /// Called when surfaces are reset (e.g., on `ResetGraphics`).
@@ -200,7 +357,7 @@ mod openh264_impl {
     use openh264::formats::YUVSource;
     use tracing::warn;
 
-    use super::{DecodedFrame, DecoderError, DecoderResult, H264Decoder, YuvMatrix};
+    use super::{DecodedFrame, DecoderError, DecoderResult, H264Decoder, Yuv420Frame, YuvMatrix};
 
     /// H.264 decoder backed by Cisco's OpenH264 library
     ///
@@ -329,6 +486,43 @@ mod openh264_impl {
                 .map_err(|e| DecoderError::new("failed to convert YUV420 to RGBA", e))?;
 
             Ok(DecodedFrame::new(rgba, w32, h32))
+        }
+
+        fn decode_yuv420(&mut self, data: &[u8]) -> DecoderResult<Yuv420Frame> {
+            let annex_b = if crate::pdu::is_avc_format(data) {
+                crate::pdu::avc_to_annex_b_into(data, &mut self.annex_b_buffer);
+                &self.annex_b_buffer
+            } else {
+                data
+            };
+
+            let yuv = self
+                .decoder
+                .decode(annex_b)
+                .map_err(|e| DecoderError::new("OpenH264 decode failed", e))?
+                .ok_or_else(|| DecoderError::msg("OpenH264 returned no picture"))?;
+
+            let (width, height) = YUVSource::dimensions(&yuv);
+            let (y_stride, u_stride, v_stride) = YUVSource::strides(&yuv);
+            let (Ok(width), Ok(height)) = (u16::try_from(width), u16::try_from(height)) else {
+                return Err(DecoderError::msg("OpenH264 picture dimensions exceed 65535"));
+            };
+            if u_stride != v_stride {
+                return Err(DecoderError::msg("OpenH264 chroma planes have different strides"));
+            }
+            Yuv420Frame::new(
+                width,
+                height,
+                yuv.y().to_vec(),
+                y_stride,
+                yuv.u().to_vec(),
+                yuv.v().to_vec(),
+                u_stride,
+            )
+        }
+
+        fn supports_yuv420(&self) -> bool {
+            true
         }
 
         fn reset(&mut self) {
