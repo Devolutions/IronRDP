@@ -14,5 +14,8 @@ doctest = false
 ironrdp = { path = "../../crates/ironrdp", features = ["graphics", "pdu"] }
 rfx-decode-fixtures = { path = "../rfx-decode-fixtures" }
 
+[dev-dependencies]
+rstest.workspace = true
+
 [lints]
 workspace = true

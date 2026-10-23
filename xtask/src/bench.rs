@@ -32,7 +32,7 @@ pub fn rfx_decode(sh: &Shell, args: Vec<String>) -> anyhow::Result<()> {
 pub fn rfx_decode_wasm(sh: &Shell, simd: bool) -> anyhow::Result<()> {
     let _s = Section::new("BENCH-RFX-DECODE-WASM");
 
-    run_cmd_in!(sh, RFX_DECODE_WASM_PATH, "{NPM} ci")?;
+    run_cmd_in!(sh, RFX_DECODE_WASM_PATH, "{NPM} ci --include=dev")?;
 
     let mut build = cmd!(
         sh,

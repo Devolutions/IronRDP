@@ -34,14 +34,7 @@ impl Pattern {
     }
 
     pub fn from_u32(value: u32) -> Option<Self> {
-        match value {
-            0 => Some(Self::Desktop),
-            1 => Some(Self::Text),
-            2 => Some(Self::Gradient),
-            3 => Some(Self::Photo),
-            4 => Some(Self::Noise),
-            _ => None,
-        }
+        usize::try_from(value).ok().and_then(|i| Self::ALL.get(i)).copied()
     }
 }
 
@@ -64,19 +57,19 @@ pub fn render(pattern: Pattern, width: usize, height: usize) -> Vec<u8> {
     let mut buf = vec![0u8; width * height * BPP];
     let mut rng = Rng(0x1234_5678);
 
-    let mut pixel_fn: Box<dyn FnMut(usize, usize) -> [u8; 3]> = match pattern {
-        Pattern::Desktop => Box::new(|x, y| desktop_px(x, y, width, height)),
-        Pattern::Text => Box::new(text_px),
-        Pattern::Gradient => Box::new(|x, y| gradient_px(x, y, width, height)),
-        Pattern::Photo => Box::new(photo_px),
-        Pattern::Noise => Box::new(|_, _| {
-            let [r, g, b, _] = rng.next_u32().to_le_bytes();
-            [r, g, b]
-        }),
-    };
-
     for (i, px) in buf.chunks_exact_mut(BPP).enumerate() {
-        let [r, g, b] = pixel_fn(i % width, i / width);
+        let x = i % width;
+        let y = i / width;
+        let [r, g, b] = match pattern {
+            Pattern::Desktop => desktop_px(x, y, width, height),
+            Pattern::Text => text_px(x, y),
+            Pattern::Gradient => gradient_px(x, y, width, height),
+            Pattern::Photo => photo_px(x, y),
+            Pattern::Noise => {
+                let [r, g, b, _] = rng.next_u32().to_le_bytes();
+                [r, g, b]
+            }
+        };
         px.copy_from_slice(&[r, g, b, 0xff]);
     }
 
@@ -107,7 +100,7 @@ fn desktop_px(x: usize, y: usize, width: usize, height: usize) -> [u8; 3] {
     ];
 
     // Taskbar.
-    if y + TASKBAR_HEIGHT >= height {
+    if height <= y + TASKBAR_HEIGHT {
         return if y + TASKBAR_HEIGHT == height {
             [0x50, 0x50, 0x50]
         } else {
@@ -117,14 +110,14 @@ fn desktop_px(x: usize, y: usize, width: usize, height: usize) -> [u8; 3] {
 
     // Two overlapping windows with title bars, borders and a text region.
     for (i, window) in WINDOWS.iter().enumerate() {
-        if x >= window.x
+        if window.x <= x
             && x < (window.x + window.width).min(width)
-            && y >= window.y
+            && window.y <= y
             && y < (window.y + window.height).min(height)
         {
             let lx = x - window.x;
             let ly = y - window.y;
-            if ly < 2 || lx < 2 || lx + 2 >= window.width || ly + 2 >= window.height {
+            if ly < 2 || lx < 2 || window.width <= lx + 2 || window.height <= ly + 2 {
                 return [0x70, 0x70, 0x78]; // border
             }
             if ly < 32 {
@@ -152,12 +145,12 @@ fn channel(v: usize) -> u8 {
 fn text_px(x: usize, y: usize) -> [u8; 3] {
     let line = y / LINE_HEIGHT;
     let row = y % LINE_HEIGHT;
-    if row >= 9 {
+    if 9 <= row {
         return [0xff, 0xff, 0xff]; // leading between lines
     }
     let cell = x / GLYPH_WIDTH;
     let col = x % GLYPH_WIDTH;
-    if col >= 6 {
+    if 6 <= col {
         return [0xff, 0xff, 0xff]; // inter-character gap
     }
     // Deterministic per-glyph bitmap.

@@ -14,10 +14,8 @@ pub(super) const FORMAT: PixelFormat = PixelFormat::RgbA32;
 
 /// RFX bitstreams for one screen: `init` primes the decoder, and `frame` is decoded repeatedly.
 pub struct Fixture {
-    pub pattern: Pattern,
     pub width: u16,
     pub height: u16,
-    pub algorithm: EntropyAlgorithm,
     /// Stream prefix that establishes the decoder's context: the RFX header
     /// messages followed by a minimal first frame (one tile).
     /// This is decoded once, before any `frame`, as the server does when the session starts.
@@ -112,10 +110,8 @@ pub fn fixture(pattern: Pattern, width: u16, height: u16, algorithm: EntropyAlgo
     ]);
 
     Fixture {
-        pattern,
         width,
         height,
-        algorithm,
         wire_bytes: frame.len(),
         init,
         frame,

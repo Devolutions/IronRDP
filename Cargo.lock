@@ -5573,6 +5573,7 @@ name = "rfx-decode-fixtures"
 version = "0.0.0"
 dependencies = [
  "ironrdp",
+ "rstest",
 ]
 
 [[package]]
@@ -5581,6 +5582,7 @@ version = "0.0.0"
 dependencies = [
  "ironrdp",
  "rfx-decode-fixtures",
+ "rstest",
 ]
 
 [[package]]

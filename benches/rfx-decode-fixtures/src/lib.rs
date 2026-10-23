@@ -6,6 +6,10 @@
     clippy::missing_panics_doc,
     reason = "benchmark support code that panics on broken invariants"
 )]
+#![cfg_attr(
+    test,
+    expect(unused_crate_dependencies, reason = "rstest is used by integration tests")
+)]
 
 mod driver;
 mod fixture;

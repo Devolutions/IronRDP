@@ -30,13 +30,13 @@ ironrdp = { path = "../crates/ironrdp", features = [
     "__bench",
 ] }
 pico-args = "0.5"
-rfx-decode-fixtures = { path = "rfx-decode-fixtures" }
 tokio = { version = "1", features = ["sync", "fs", "time"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing = { version = "0.1", features = ["log"] }
 
 [dev-dependencies]
 criterion = "0.8"
+rfx-decode-fixtures = { path = "rfx-decode-fixtures" }
 
 [lints]
 workspace = true

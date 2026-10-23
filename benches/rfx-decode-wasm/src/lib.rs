@@ -106,17 +106,6 @@ pub extern "C" fn bench_decode_frame() -> u32 {
     })
 }
 
-/// Number of tiles in the benchmarked frame.
-#[unsafe(no_mangle)]
-pub extern "C" fn bench_tiles() -> u32 {
-    STATE.with_borrow(|state| {
-        state
-            .as_ref()
-            .and_then(|s| u32::try_from(s.fixture.tiles).ok())
-            .unwrap_or(0)
-    })
-}
-
 /// Whether this module was compiled with the wasm SIMD proposal enabled.
 #[unsafe(no_mangle)]
 pub extern "C" fn bench_has_simd128() -> u32 {
@@ -133,7 +122,7 @@ pub extern "C" fn bench_stage_setup(pattern: u32, stage: u32, rlgr3: u32) -> u32
     let Some(pattern) = Pattern::from_u32(pattern) else {
         return 0;
     };
-    if stage > STAGE_YCBCR {
+    if STAGE_YCBCR < stage {
         return 0;
     }
     let algorithm = entropy_algorithm(rlgr3);
@@ -144,13 +133,13 @@ pub extern "C" fn bench_stage_setup(pattern: u32, stage: u32, rlgr3: u32) -> u32
     // Replay the pipeline up to `stage` so its input is the real thing.
     let mut input = vec![0i16; TILE * TILE];
     let temp = vec![0i16; TILE * TILE];
-    if stage >= STAGE_SUBBAND {
+    if STAGE_SUBBAND <= stage {
         ironrdp::graphics::rlgr::decode(algorithm, &fixture.encoded[0], &mut input).expect("rlgr");
     }
-    if stage >= STAGE_QUANTIZATION {
+    if STAGE_QUANTIZATION <= stage {
         ironrdp::graphics::subband_reconstruction::decode(&mut input[LL3_OFFSET..]);
     }
-    if stage >= STAGE_DWT {
+    if STAGE_DWT <= stage {
         ironrdp::graphics::quantization::decode(&mut input, &fixture.quant);
     }
 
@@ -233,74 +222,101 @@ pub extern "C" fn bench_stage_run() -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
-    fn stage_batches_match_reference_and_repeat_after_prepare() {
-        for rlgr3 in [0, 1] {
-            let fixture = stage_fixture(Pattern::Text, entropy_algorithm(rlgr3));
-            let mut expected = vec![0i16; TILE * TILE];
-            let mut temp = vec![0i16; TILE * TILE];
-            for stage in STAGE_RLGR..=STAGE_YCBCR {
-                assert_eq!(
-                    bench_stage_setup(1, stage, rlgr3),
-                    u32::try_from(STAGE_BATCH_SIZE).expect("batch size fits")
-                );
-                match stage {
-                    STAGE_RLGR => {
-                        ironrdp::graphics::rlgr::decode(fixture.algorithm, &fixture.encoded[0], &mut expected)
-                            .expect("rlgr");
-                    }
-                    STAGE_SUBBAND => ironrdp::graphics::subband_reconstruction::decode(&mut expected[LL3_OFFSET..]),
-                    STAGE_QUANTIZATION => ironrdp::graphics::quantization::decode(&mut expected, &fixture.quant),
-                    STAGE_DWT => ironrdp::graphics::dwt::decode(&mut expected, &mut temp),
-                    _ => {}
+    // oracle: reference model from direct codec-stage calls, independent of the batched C-ABI driver.
+    #[rstest]
+    #[case::rlgr(STAGE_RLGR)]
+    #[case::subband(STAGE_SUBBAND)]
+    #[case::quantization(STAGE_QUANTIZATION)]
+    #[case::dwt(STAGE_DWT)]
+    fn stage_batches_match_reference_and_repeat_after_prepare(#[case] stage: u32, #[values(0, 1)] rlgr3: u32) {
+        let fixture = stage_fixture(Pattern::Text, entropy_algorithm(rlgr3));
+        let mut expected = vec![0i16; TILE * TILE];
+        let mut temp = vec![0i16; TILE * TILE];
+        for current in STAGE_RLGR..=stage {
+            match current {
+                STAGE_RLGR => {
+                    ironrdp::graphics::rlgr::decode(fixture.algorithm, &fixture.encoded[0], &mut expected)
+                        .expect("rlgr");
                 }
-
-                let planes = fixture.planes();
-                let mut expected_rgba = vec![0u8; TILE * TILE * 4];
-                ironrdp::graphics::color_conversion::ycbcr_to_rgba(
-                    ironrdp::graphics::color_conversion::YCbCrBuffer {
-                        y: &planes[0],
-                        cb: &planes[1],
-                        cr: &planes[2],
-                    },
-                    &mut expected_rgba,
-                )
-                .expect("ycbcr");
-
-                bench_stage_prepare();
-                let checksum = bench_stage_run();
-                for _ in 0..2 {
-                    STAGES.with_borrow(|state| {
-                        let state = state.as_ref().expect("initialized");
-                        if stage == STAGE_YCBCR {
-                            assert_eq!(state.rgba, expected_rgba);
-                        } else {
-                            for work in state.work.chunks_exact(TILE * TILE) {
-                                assert_eq!(work, expected, "stage {stage}, RLGR3={rlgr3}");
-                            }
-                        }
-                    });
-                    bench_stage_prepare();
-                    assert_eq!(bench_stage_run(), checksum);
-                }
+                STAGE_SUBBAND => ironrdp::graphics::subband_reconstruction::decode(&mut expected[LL3_OFFSET..]),
+                STAGE_QUANTIZATION => ironrdp::graphics::quantization::decode(&mut expected, &fixture.quant),
+                STAGE_DWT => ironrdp::graphics::dwt::decode(&mut expected, &mut temp),
+                _ => unreachable!("only component stages are tested here"),
             }
+        }
+
+        assert_eq!(
+            bench_stage_setup(1, stage, rlgr3),
+            u32::try_from(STAGE_BATCH_SIZE).expect("batch size fits")
+        );
+        bench_stage_prepare();
+        let checksum = bench_stage_run();
+        for _ in 0..2 {
+            STAGES.with_borrow(|state| {
+                let state = state.as_ref().expect("initialized");
+                for work in state.work.chunks_exact(TILE * TILE) {
+                    assert_eq!(work, expected);
+                }
+            });
+            bench_stage_prepare();
+            assert_eq!(bench_stage_run(), checksum);
         }
     }
 
-    #[test]
-    fn invalid_setup_clears_previous_workload() {
-        for (pattern, width, height) in [(5, 64, 64), (0, 0, 64), (0, 64, 0), (0, 32768, 64), (0, 64, 65536)] {
-            assert_ne!(bench_setup(0, 64, 64, 1), 0);
-            assert_eq!(bench_tiles(), 1);
-            assert_eq!(bench_setup(pattern, width, height, 1), 0);
-            assert_eq!(bench_tiles(), 0);
+    // oracle: reference model from direct color conversion of the fixture's decoded planes.
+    #[rstest]
+    fn ycbcr_batches_match_reference_and_repeat_after_prepare(#[values(0, 1)] rlgr3: u32) {
+        let planes = stage_fixture(Pattern::Text, entropy_algorithm(rlgr3)).planes();
+        let mut expected = vec![0u8; TILE * TILE * 4];
+        ironrdp::graphics::color_conversion::ycbcr_to_rgba(
+            ironrdp::graphics::color_conversion::YCbCrBuffer {
+                y: &planes[0],
+                cb: &planes[1],
+                cr: &planes[2],
+            },
+            &mut expected,
+        )
+        .expect("ycbcr");
+
+        assert_eq!(
+            bench_stage_setup(1, STAGE_YCBCR, rlgr3),
+            u32::try_from(STAGE_BATCH_SIZE).expect("batch size fits")
+        );
+        bench_stage_prepare();
+        let checksum = bench_stage_run();
+        for _ in 0..2 {
+            STAGES.with_borrow(|state| assert_eq!(state.as_ref().expect("initialized").rgba, expected));
+            bench_stage_prepare();
+            assert_eq!(bench_stage_run(), checksum);
         }
-        for (pattern, stage) in [(5, STAGE_RLGR), (0, STAGE_YCBCR + 1)] {
-            assert_ne!(bench_stage_setup(1, STAGE_RLGR, 1), 0);
-            assert_eq!(bench_stage_setup(pattern, stage, 1), 0);
-            STAGES.with_borrow(|state| assert!(state.is_none()));
-        }
+    }
+
+    // oracle: bench_setup's contract clears stale state on invalid pattern IDs or dimensions.
+    #[rstest]
+    #[case::invalid_pattern(5, 64, 64)]
+    #[case::empty_width(0, 0, 64)]
+    #[case::empty_height(0, 64, 0)]
+    #[case::width_exceeds_channel_limit(0, 32768, 64)]
+    #[case::height_exceeds_u16(0, 64, 65536)]
+    fn invalid_frame_setup_clears_previous_workload(#[case] pattern: u32, #[case] width: u32, #[case] height: u32) {
+        assert_ne!(bench_setup(0, 64, 64, 1), 0);
+        STATE.with_borrow(|state| assert!(state.is_some()));
+        assert_eq!(bench_setup(pattern, width, height, 1), 0);
+        STATE.with_borrow(|state| assert!(state.is_none()));
+    }
+
+    // oracle: bench_stage_setup's contract clears stale state on invalid pattern or stage IDs.
+    #[rstest]
+    #[case::invalid_pattern(5, STAGE_RLGR)]
+    #[case::invalid_stage(0, STAGE_YCBCR + 1)]
+    fn invalid_stage_setup_clears_previous_workload(#[case] pattern: u32, #[case] stage: u32) {
+        assert_ne!(bench_stage_setup(1, STAGE_RLGR, 1), 0);
+        STAGES.with_borrow(|state| assert!(state.is_some()));
+        assert_eq!(bench_stage_setup(pattern, stage, 1), 0);
+        STAGES.with_borrow(|state| assert!(state.is_none()));
     }
 }

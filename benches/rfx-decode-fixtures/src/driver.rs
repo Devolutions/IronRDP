@@ -52,7 +52,7 @@ impl Driver {
 
         let mut sum = u64::from(rect.left) ^ (u64::from(rect.bottom) << 16);
         for row in (usize::from(rect.top)..=usize::from(rect.bottom)).step_by(SAMPLE_ROW_STEP) {
-            // Indexing panics if the decoder reports a rectangle outside the image, which is a bug.
+            // INVARIANT: rect is within the image bounds.
             sum = sum.wrapping_mul(FNV_PRIME) ^ u64::from(data[row * stride + x_off]);
         }
         sum
