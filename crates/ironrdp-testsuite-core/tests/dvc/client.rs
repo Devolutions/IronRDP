@@ -549,8 +549,9 @@ fn tunnel_refuses_a_create_request_before_the_capabilities_exchange() {
     assert_eq!(client.tunnel_for_channel(16), Some(SoftSyncTunnelType::RELIABLE_UDP));
 }
 
+// oracle: spec MS-RDPEDYC section 3.2.5.2 - ignore a close for an already closed channel.
 #[test]
-fn data_racing_a_client_close_is_dropped_until_the_server_acknowledges() {
+fn data_and_server_close_racing_a_client_close_are_dropped() {
     let mut client = DrdynvcClient::new();
     exchange_capabilities(&mut client);
     client
@@ -573,12 +574,12 @@ fn data_racing_a_client_close_is_dropped_until_the_server_acknowledges() {
             .is_empty()
     );
 
-    // The server's Close acknowledges the client close and needs no response.
-    let acknowledgement = encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(7))).expect("Close should encode");
+    // A server Close sent before receiving the client's Close needs no response.
+    let server_close = encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(7))).expect("Close should encode");
     assert!(
         client
-            .process(&acknowledgement)
-            .expect("Close acknowledgement should be processed")
+            .process(&server_close)
+            .expect("racing Close should be processed")
             .is_empty()
     );
     client
@@ -629,11 +630,12 @@ fn client_close_of_a_tunneled_channel_reports_its_tunnel() {
     assert!(client.close_channel_batch(9).is_none());
 }
 
+// oracle: regression #2181 - channel IDs need not increase with the order of client closes.
 #[test]
-fn client_closed_channels_are_forgotten_oldest_first() {
+fn client_closed_channels_are_forgotten_in_close_order() {
     let mut client = DrdynvcClient::new();
     exchange_capabilities(&mut client);
-    for channel_id in 1..=100 {
+    for channel_id in (1..=100).rev() {
         client
             .attach_established_dynamic_channel(channel_id, RecordedDvc::default())
             .expect("channel should attach");
@@ -649,8 +651,33 @@ fn client_closed_channels_are_forgotten_oldest_first() {
     };
 
     // Recent closes still absorb late data; the oldest are forgotten, which bounds the bookkeeping.
-    assert!(client.process(&data(100)).expect("late data is dropped").is_empty());
+    assert!(client.process(&data(1)).expect("late data is dropped").is_empty());
     client
-        .process(&data(1))
+        .process(&data(100))
         .expect_err("a long-forgotten close no longer absorbs data");
+}
+
+// oracle: regression #2181 - restoring a closed channel must route data to its new processor.
+#[test]
+fn restored_channel_reuses_a_client_closed_id() {
+    let mut client = DrdynvcClient::new();
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("original channel should attach");
+    client.close_channel(7).expect("original channel should close");
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("replacement channel should attach");
+
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        7,
+        b"replacement data".to_vec(),
+    ))))
+    .expect("DVC data should encode");
+    client.process(&data).expect("replacement channel should receive data");
+
+    let channel = client
+        .get_dvc_by_channel_id::<RecordedDvc>(7)
+        .expect("replacement channel should remain attached");
+    assert_eq!(channel.processor().received, vec![b"replacement data".to_vec()]);
 }

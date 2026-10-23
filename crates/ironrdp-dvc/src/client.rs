@@ -1,6 +1,6 @@
 use alloc::boxed::Box;
-use alloc::collections::BTreeSet;
 use alloc::collections::btree_map::BTreeMap;
+use alloc::collections::{BTreeSet, VecDeque};
 use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
@@ -141,7 +141,7 @@ impl DynamicVirtualChannel {
     }
 }
 
-/// Client-closed channels remembered while waiting for the server to acknowledge the close.
+/// Recent client-closed channels remembered to tolerate data already sent by the server.
 const MAX_CLIENT_CLOSED_CHANNELS: usize = 64;
 
 /// DRDYNVC Static Virtual Channel (the Remote Desktop Protocol: Dynamic Virtual Channel Extension)
@@ -155,9 +155,8 @@ pub struct DrdynvcClient {
     tunnel_channels: BTreeMap<DynamicChannelId, SoftSyncTunnelType>,
     switched_tunnels: BTreeSet<SoftSyncTunnelType>,
     soft_sync_complete: bool,
-    /// Channels the client closed, with the tunnel they were bound to, until the server
-    /// acknowledges the close.
-    client_closed: BTreeMap<DynamicChannelId, Option<SoftSyncTunnelType>>,
+    /// Recent client-closed channels and their tunnels, ordered from oldest to newest close.
+    client_closed: VecDeque<(DynamicChannelId, Option<SoftSyncTunnelType>)>,
 }
 
 impl fmt::Debug for DrdynvcClient {
@@ -186,7 +185,7 @@ impl DrdynvcClient {
             tunnel_channels: BTreeMap::new(),
             switched_tunnels: BTreeSet::new(),
             soft_sync_complete: false,
-            client_closed: BTreeMap::new(),
+            client_closed: VecDeque::new(),
         }
     }
 
@@ -245,7 +244,9 @@ impl DrdynvcClient {
         T: DvcClientProcessor + 'static,
     {
         self.dynamic_channels
-            .attach_established_channel(channel_id, Box::new(channel))
+            .attach_established_channel(channel_id, Box::new(channel))?;
+        self.client_closed.retain(|(closed_id, _)| *closed_id != channel_id);
+        Ok(())
     }
 
     /// Bind a listener.
@@ -357,8 +358,8 @@ impl DrdynvcClient {
 
     /// Closes a dynamic channel on the client's initiative and returns the Close PDU to send.
     ///
-    /// Data the server sent before receiving the Close PDU is dropped until the server
-    /// acknowledges the close, instead of failing on a channel that no longer exists.
+    /// Recent closes are remembered to discard data the server sent before receiving the Close PDU.
+    /// The server does not acknowledge a client-initiated close.
     pub fn close_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
         self.client_close(channel_id).map(|(message, _)| message)
     }
@@ -376,16 +377,15 @@ impl DrdynvcClient {
         Some((DvcMessageBatch::new(channel_id, alloc::vec![message]), tunnel))
     }
 
-    /// Closes a channel on the client's initiative, remembering it until the server acknowledges the
-    /// close, and returns the Close PDU with the tunnel the channel was bound to.
+    /// Closes a channel on the client's initiative and returns its Close PDU and previous tunnel.
     fn client_close(&mut self, channel_id: DynamicChannelId) -> Option<(SvcMessage, Option<SoftSyncTunnelType>)> {
         let tunnel = self.tunnel_channels.get(&channel_id).copied();
         let message = self.remove_channel(channel_id)?;
-        self.client_closed.insert(channel_id, tunnel);
-        // A server may never acknowledge the close. Late data only races the Close PDU for a round
-        // trip, so forget the oldest closes rather than growing without bound.
-        while MAX_CLIENT_CLOSED_CHANNELS < self.client_closed.len() {
-            self.client_closed.pop_first();
+        self.client_closed.push_back((channel_id, tunnel));
+        // MS-RDPEDYC 3.2.5.2 specifies no server acknowledgement of a client-initiated close.
+        // Bound the history by forgetting the oldest close, regardless of the server's ID order.
+        if MAX_CLIENT_CLOSED_CHANNELS < self.client_closed.len() {
+            self.client_closed.pop_front();
         }
         Some((message, tunnel))
     }
@@ -458,7 +458,7 @@ impl DrdynvcClient {
         match pdu {
             DrdynvcServerPdu::Data(data) => {
                 let channel_id = data.channel_id();
-                if self.client_closed.get(&channel_id) == Some(&Some(tunnel_type)) {
+                if self.client_closed.contains(&(channel_id, Some(tunnel_type))) {
                     trace!(channel_id, "Dropping tunneled DVC data for a channel the client closed");
                     return Ok(DvcMessageBatch::new(channel_id, Vec::new()));
                 }
@@ -532,7 +532,7 @@ impl DrdynvcClient {
 
         if creation_status == CreationStatus::OK {
             // The server reused the ID of a channel the client closed, so its close is settled.
-            self.client_closed.remove(&channel_id);
+            self.client_closed.retain(|(closed_id, _)| *closed_id != channel_id);
         }
 
         let create_response = DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, creation_status));
@@ -552,11 +552,7 @@ impl DrdynvcClient {
     /// Closes a dynamic channel at the server's request. The Close response is only sent for a
     /// channel that was open.
     fn process_close(&mut self, channel_id: DynamicChannelId) -> Vec<SvcMessage> {
-        // The server acknowledging a close the client initiated needs no response.
-        if self.client_closed.remove(&channel_id).is_some() {
-            debug!(channel_id, "Server acknowledged the DVC close");
-            return Vec::new();
-        }
+        self.client_closed.retain(|(closed_id, _)| *closed_id != channel_id);
         let Some(close_response) = self.remove_channel(channel_id) else {
             return Vec::new();
         };
@@ -664,7 +660,7 @@ impl SvcProcessor for DrdynvcClient {
                 responses.extend(self.process_close(close.channel_id()));
             }
             DrdynvcServerPdu::Data(data) => {
-                if self.client_closed.get(&data.channel_id()) == Some(&None) {
+                if self.client_closed.contains(&(data.channel_id(), None)) {
                     trace!(
                         channel_id = data.channel_id(),
                         "Dropping DVC data for a channel the client closed"
