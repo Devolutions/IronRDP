@@ -1,6 +1,6 @@
 use alloc::boxed::Box;
-use alloc::collections::BTreeSet;
 use alloc::collections::btree_map::BTreeMap;
+use alloc::collections::{BTreeSet, VecDeque};
 use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
@@ -12,7 +12,7 @@ use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::PduResult;
 use pdu::gcc::ChannelName;
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::pdu::{
     CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
@@ -141,6 +141,9 @@ impl DynamicVirtualChannel {
     }
 }
 
+/// Recent client-closed channels remembered to tolerate data already sent by the server.
+const MAX_CLIENT_CLOSED_CHANNELS: usize = 64;
+
 /// DRDYNVC Static Virtual Channel (the Remote Desktop Protocol: Dynamic Virtual Channel Extension)
 ///
 /// It adds support for dynamic virtual channels (DVC).
@@ -152,6 +155,8 @@ pub struct DrdynvcClient {
     tunnel_channels: BTreeMap<DynamicChannelId, SoftSyncTunnelType>,
     switched_tunnels: BTreeSet<SoftSyncTunnelType>,
     soft_sync_complete: bool,
+    /// Recent client-closed channels and their tunnels, ordered from oldest to newest close.
+    client_closed: VecDeque<(DynamicChannelId, Option<SoftSyncTunnelType>)>,
 }
 
 impl fmt::Debug for DrdynvcClient {
@@ -180,6 +185,7 @@ impl DrdynvcClient {
             tunnel_channels: BTreeMap::new(),
             switched_tunnels: BTreeSet::new(),
             soft_sync_complete: false,
+            client_closed: VecDeque::new(),
         }
     }
 
@@ -238,7 +244,9 @@ impl DrdynvcClient {
         T: DvcClientProcessor + 'static,
     {
         self.dynamic_channels
-            .attach_established_channel(channel_id, Box::new(channel))
+            .attach_established_channel(channel_id, Box::new(channel))?;
+        self.client_closed.retain(|(closed_id, _)| *closed_id != channel_id);
+        Ok(())
     }
 
     /// Bind a listener.
@@ -348,7 +356,47 @@ impl DrdynvcClient {
         SvcMessage::from(caps_response)
     }
 
+    /// Closes a dynamic channel on the client's initiative and returns the Close PDU to send.
+    ///
+    /// Recent closes are remembered to discard data the server sent before receiving the Close PDU.
+    /// The server does not acknowledge a client-initiated close.
     pub fn close_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
+        self.client_close(channel_id).map(|(message, _)| message)
+    }
+
+    /// Closes a dynamic channel like [`Self::close_channel`], returning the Close PDU as a batch with
+    /// the Soft-Sync tunnel the channel was bound to.
+    ///
+    /// Once Soft-Sync moved a channel to a multitransport tunnel, its PDUs travel on that tunnel, so
+    /// the caller sends the batch there when a tunnel is returned, and over DRDYNVC otherwise.
+    pub fn close_channel_batch(
+        &mut self,
+        channel_id: DynamicChannelId,
+    ) -> Option<(DvcMessageBatch, Option<SoftSyncTunnelType>)> {
+        let (message, tunnel) = self.client_close(channel_id)?;
+        Some((DvcMessageBatch::new(channel_id, alloc::vec![message]), tunnel))
+    }
+
+    /// Closes a channel on the client's initiative and returns its Close PDU and previous tunnel.
+    fn client_close(&mut self, channel_id: DynamicChannelId) -> Option<(SvcMessage, Option<SoftSyncTunnelType>)> {
+        let tunnel = self.tunnel_channels.get(&channel_id).copied();
+        let message = self.remove_channel(channel_id)?;
+        self.remember_client_close(channel_id, tunnel);
+        Some((message, tunnel))
+    }
+
+    /// Remember a channel the client closed, so that data the server sent before seeing the close is
+    /// dropped instead of failing the connection.
+    fn remember_client_close(&mut self, channel_id: DynamicChannelId, tunnel: Option<SoftSyncTunnelType>) {
+        self.client_closed.push_back((channel_id, tunnel));
+        // MS-RDPEDYC 3.2.5.2 specifies no server acknowledgement of a client-initiated close.
+        // Bound the history by forgetting the oldest close, regardless of the server's ID order.
+        if MAX_CLIENT_CLOSED_CHANNELS < self.client_closed.len() {
+            self.client_closed.pop_front();
+        }
+    }
+
+    fn remove_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
         self.tunnel_channels.remove(&channel_id);
         self.dynamic_channels.remove_by_channel_id(channel_id)?;
         Some(SvcMessage::from(DrdynvcClientPdu::Close(ClosePdu::new(channel_id))))
@@ -416,6 +464,10 @@ impl DrdynvcClient {
         match pdu {
             DrdynvcServerPdu::Data(data) => {
                 let channel_id = data.channel_id();
+                if self.client_closed.contains(&(channel_id, Some(tunnel_type))) {
+                    trace!(channel_id, "Dropping tunneled DVC data for a channel the client closed");
+                    return Ok(DvcMessageBatch::new(channel_id, Vec::new()));
+                }
                 let selected_tunnel =
                     self.tunnel_channels.get(&channel_id).copied().ok_or_else(|| {
                         pdu_other_err!("received tunneled data for a channel not selected by Soft-Sync")
@@ -484,6 +536,11 @@ impl DrdynvcClient {
                 (CreationStatus::NO_LISTENER, Vec::new())
             };
 
+        if creation_status == CreationStatus::OK {
+            // The server reused the ID of a channel the client closed, so its close is settled.
+            self.client_closed.retain(|(closed_id, _)| *closed_id != channel_id);
+        }
+
         let create_response = DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, creation_status));
         debug!("Send DVC Create Response PDU: {create_response:?}");
         responses.push(SvcMessage::from(create_response));
@@ -501,7 +558,8 @@ impl DrdynvcClient {
     /// Closes a dynamic channel at the server's request. The Close response is only sent for a
     /// channel that was open.
     fn process_close(&mut self, channel_id: DynamicChannelId) -> Vec<SvcMessage> {
-        let Some(close_response) = self.close_channel(channel_id) else {
+        self.client_closed.retain(|(closed_id, _)| *closed_id != channel_id);
+        let Some(close_response) = self.remove_channel(channel_id) else {
             return Vec::new();
         };
         debug!(channel_id, "Send DVC Close Response PDU");
@@ -542,6 +600,10 @@ impl DrdynvcClient {
             for channel_id in list.channel_ids() {
                 if self.dynamic_channels.get_by_channel_id(*channel_id).is_some() {
                     tunnel_channels.insert(*channel_id, list.tunnel_type());
+                } else if self.client_closed.contains(&(*channel_id, None)) {
+                    // Closed by this client while the server was choosing tunnels: the server may
+                    // already send its data on the tunnel, and that data is dropped as well.
+                    self.remember_client_close(*channel_id, Some(list.tunnel_type()));
                 } else {
                     debug!(
                         channel_id,
@@ -608,6 +670,13 @@ impl SvcProcessor for DrdynvcClient {
                 responses.extend(self.process_close(close.channel_id()));
             }
             DrdynvcServerPdu::Data(data) => {
+                if self.client_closed.contains(&(data.channel_id(), None)) {
+                    trace!(
+                        channel_id = data.channel_id(),
+                        "Dropping DVC data for a channel the client closed"
+                    );
+                    return Ok(responses);
+                }
                 if self.tunnel_channels.contains_key(&data.channel_id()) {
                     return Err(pdu_other_err!("received TCP data for a channel selected by Soft-Sync"));
                 }

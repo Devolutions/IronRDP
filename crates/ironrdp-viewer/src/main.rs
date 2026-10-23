@@ -25,6 +25,10 @@ fn main() -> anyhow::Result<()> {
         return run_rpc(cli).context("RPC server");
     }
 
+    if cli.list_usb_devices() {
+        return ironrdp_viewer::cli::print_usb_devices();
+    }
+
     if cli.list_audio_devices() {
         print_audio_devices();
         return Ok(());

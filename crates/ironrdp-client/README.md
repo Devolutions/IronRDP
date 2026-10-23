@@ -44,6 +44,11 @@ Gateway UDP/DTLS remains unsupported.
 An RPCH session through one Windows RD Gateway has been tested, including IN-channel recycling with a reduced channel lifetime.
 Dedicated TCP-channel tests through that gateway also verified OUT-channel recycling, consent and service messages, and repeated reauthentication during a 1.25 GiB transfer.
 
+The optional `usb` feature redirects local USB devices over MS-RDPEUSB (URBDRC) with the nusb backend from [`ironrdp-rdpeusb-native`](../ironrdp-rdpeusb-native).
+Select devices with `ConfigBuilder::with_usb_redirection` or the `.rdp` `usbdevicestoredirect` property.
+On Windows, only devices bound to the WinUSB driver can be redirected; see that crate for the coverage limits on each platform.
+Through an RD Gateway, USB redirection follows the gateway's Plug and Play device-redirection policy.
+
 For the end-user RDP client binary, see [`ironrdp-viewer`](../ironrdp-viewer).
 
 This crate is part of the [IronRDP] project.

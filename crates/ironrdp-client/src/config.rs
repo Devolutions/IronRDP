@@ -418,6 +418,10 @@ pub struct ChannelConfig {
     #[cfg(feature = "video")]
     pub video: crate::video::VideoConfig,
 
+    /// Local USB devices to redirect over MS-RDPEUSB (URBDRC), or `None` to disable the channel.
+    #[cfg(feature = "usb")]
+    pub usb: Option<ironrdp_rdpeusb_native::UsbRedirectionConfig>,
+
     /// H.264 decoder for the graphics pipeline and video optimized remoting.
     ///
     /// Defaults to [`crate::h264::H264DecoderFactory::platform_default`]: Media Foundation's on
@@ -460,6 +464,8 @@ impl Default for ChannelConfig {
             cameras: crate::camera::CameraConfig::default(),
             #[cfg(feature = "video")]
             video: crate::video::VideoConfig::default(),
+            #[cfg(feature = "usb")]
+            usb: None,
             h264_decoder: crate::h264::H264DecoderFactory::platform_default(),
             egfx_persistent_cache: None,
         }
@@ -1757,6 +1763,17 @@ impl ConfigBuilder {
         &self.channels.cameras
     }
 
+    /// Select the local USB devices to redirect over MS-RDPEUSB, or disable USB redirection with `None`.
+    ///
+    /// This is not mirrored into the property set: FreeRDP-style `addr:` and `auto` rules have no
+    /// `usbdevicestoredirect` equivalent.
+    #[cfg(feature = "usb")]
+    #[must_use]
+    pub fn with_usb_redirection(mut self, usb: Option<ironrdp_rdpeusb_native::UsbRedirectionConfig>) -> Self {
+        self.channels.usb = usb;
+        self
+    }
+
     /// Parent HWND used for WebAuthn UI prompts (Windows only).
     #[cfg(all(windows, feature = "webauthn"))]
     #[must_use]
@@ -2644,6 +2661,13 @@ impl ConfigBuilder {
         #[cfg(feature = "qoiz")]
         if let Some(enabled) = ps.enable_qoiz() {
             self.channels.qoiz = enabled;
+        }
+
+        #[cfg(feature = "usb")]
+        if let Some(devices) = ps.usb_devices_to_redirect() {
+            let usb = ironrdp_rdpeusb_native::UsbRedirectionConfig::parse_rdp(devices)
+                .context("invalid usbdevicestoredirect property")?;
+            self.channels.usb = usb.is_enabled().then_some(usb);
         }
 
         #[cfg(feature = "dvc-pipe-proxy")]

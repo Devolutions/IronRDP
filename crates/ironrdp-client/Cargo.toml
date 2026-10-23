@@ -57,6 +57,8 @@ video = ["dep:ironrdp-rdpevor", "dep:ironrdp-rdpegt"]
 openh264 = ["ironrdp-egfx/openh264-bundled"]
 # MS-RDPECAM camera redirection. Capture uses Media Foundation and is only available on Windows.
 camera = ["dep:ironrdp-rdpecam", "dep:ironrdp-rdpecam-native"]
+# MS-RDPEUSB USB device redirection through nusb (WinUSB on Windows, usbfs on Linux, IOKit on macOS).
+usb = ["dep:ironrdp-rdpeusb", "dep:ironrdp-rdpeusb-native"]
 udp = [
     "dep:ironrdp-rdpeudp",
     "dep:ironrdp-rdpeudp-tokio",
@@ -77,6 +79,7 @@ all = [
     "camera",
     "video",
     "udp",
+    "usb",
 ]
 
 [dependencies]
@@ -110,12 +113,14 @@ ironrdp-rdpeai = { path = "../ironrdp-rdpeai", version = "0.1", optional = true 
 ironrdp-rdpel = { path = "../ironrdp-rdpel", version = "0.0.1", optional = true }
 ironrdp-rdpegt = { path = "../ironrdp-rdpegt", version = "0.0.0", optional = true }
 ironrdp-rdpevor = { path = "../ironrdp-rdpevor", version = "0.0.0", optional = true }
+ironrdp-rdpeusb = { path = "../ironrdp-rdpeusb", version = "0.1", optional = true }
 
 # Optional backend crates (activated by features above)
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.7", optional = true } # public
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.8", optional = true }
 ironrdp-mstsgu = { path = "../ironrdp-mstsgu", version = "0.0.2", optional = true }
 ironrdp-dvc-pipe-proxy = { path = "../ironrdp-dvc-pipe-proxy", version = "0.6", optional = true }
+ironrdp-rdpeusb-native = { path = "../ironrdp-rdpeusb-native", version = "0.1", optional = true } # public
 
 # Logging
 tracing = { version = "0.1", features = ["log"] }

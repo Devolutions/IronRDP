@@ -10,6 +10,7 @@ use ironrdp::client::config::{
     ClipboardType as ResolvedClipboardType, Config, ConfigBuilder, Destination, DriveRedirection, DvcProxyInfo,
     MissingField, TransportKind, VmConnectMode,
 };
+use ironrdp::client::usb::UsbRedirectionConfig;
 use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, client_codecs_capabilities};
 use ironrdp_cfg::PropertySetExt as _;
 use tap::prelude::*;
@@ -385,6 +386,19 @@ struct Args {
     /// Ignored on other platforms.
     #[clap(long, value_name = "PORT")]
     parallel: Vec<String>,
+
+    /// Redirect local USB devices over MS-RDPEUSB, using the FreeRDP `/usb` rule syntax.
+    ///
+    /// Comma-separated rules, with hexadecimal numbers: `id:VID:PID[#VID:PID...]` and
+    /// `addr:BUS:ADDR[#BUS:ADDR...]` select devices present at connection (VID/PID rules also follow
+    /// replugs), `auto` redirects devices plugged in during the session, and `filter:CLASS[#CLASS...]`
+    /// or `filter:none` replaces the device classes `auto` keeps local (audio, HID, mass storage, hub
+    /// and smart card by default). Repeatable; overrides the `.rdp` `usbdevicestoredirect` property.
+    /// `--usb list` prints the local devices and exits.
+    ///
+    /// On Windows, only devices bound to the WinUSB driver can be redirected.
+    #[clap(long, value_name = "RULES")]
+    usb: Vec<String>,
 }
 
 /// A local directory redirected as a named drive (`--drive NAME,PATH`).
@@ -549,6 +563,7 @@ pub struct ViewerConfig {
     printers: Option<PrinterOptions>,
     named_drives: Vec<NamedDrive>,
     ports: PortOptions,
+    list_usb_devices: bool,
     list_audio_devices: bool,
 }
 
@@ -567,6 +582,21 @@ impl ViewerConfig {
     }
 
     fn from_args(mut args: Args) -> anyhow::Result<Self> {
+        if args.usb.iter().any(|rules| rules == "list") {
+            return Ok(Self {
+                builder: ConfigBuilder::new(),
+                log_file: args.log_file,
+                dump_rdp: None,
+                rpc: false,
+                rpc_endpoint: None,
+                printers: None,
+                named_drives: Vec::new(),
+                ports: PortOptions::default(),
+                list_usb_devices: true,
+                list_audio_devices: false,
+            });
+        }
+
         let mut properties = ironrdp_propertyset::PropertySet::new();
 
         if let Some(rdp_file) = &args.rdp_file {
@@ -612,6 +642,7 @@ impl ViewerConfig {
                 printers: None,
                 named_drives: Vec::new(),
                 ports: PortOptions::default(),
+                list_usb_devices: false,
                 list_audio_devices: false,
             });
         }
@@ -672,9 +703,21 @@ impl ViewerConfig {
         // Opt-in only: the client feature default for smartcard is `true`, which must not silently
         // attach a WinSCard backend. Require CLI `--smartcard` or an explicit property.
         let enable_smartcard = args.smartcard || properties.enable_smartcard().unwrap_or(false);
+        let usb = if args.usb.is_empty() {
+            None
+        } else {
+            let mut usb = UsbRedirectionConfig::default();
+            for rules in &args.usb {
+                usb.merge(UsbRedirectionConfig::parse_cli(rules).with_context(|| format!("invalid --usb {rules}"))?);
+            }
+            Some(usb)
+        };
 
         // CLI arguments take precedence: apply them on top of the `.rdp`-derived builder.
         let mut builder = apply_cli_to_builder(builder, args, redirect_clipboard, redirect_webauthn);
+        if let Some(usb) = usb {
+            builder = builder.with_usb_redirection(Some(usb));
+        }
         builder = if enable_smartcard {
             builder.with_rdpdr(true).with_smartcard(true)
         } else {
@@ -702,6 +745,7 @@ impl ViewerConfig {
             printers,
             named_drives,
             ports,
+            list_usb_devices: false,
             list_audio_devices,
         })
     }
@@ -744,6 +788,11 @@ impl ViewerConfig {
         &self.ports
     }
 
+    /// Whether `--usb list` asked to print the local USB devices instead of connecting.
+    pub fn list_usb_devices(&self) -> bool {
+        self.list_usb_devices
+    }
+
     /// Whether the viewer should host the local RPC server.
     pub fn rpc_mode(&self) -> bool {
         self.rpc
@@ -758,6 +807,30 @@ impl ViewerConfig {
     pub fn rpc_endpoint(&self) -> Option<&str> {
         self.rpc_endpoint.as_deref()
     }
+}
+
+/// Print the local USB devices, with the values `--usb` rules match against.
+pub fn print_usb_devices() -> anyhow::Result<()> {
+    let devices = ironrdp::client::usb::local_devices().context("failed to list USB devices")?;
+
+    println!("{:<11} {:<7} {:<6} {:<10} DEVICE", "ID", "ADDR", "CLASS", "DRIVER");
+    for device in devices {
+        let identity = &device.identity;
+        let name = [device.manufacturer.as_deref(), device.product.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!(
+            "{:<11} {:<7} {:<6} {:<10} {name}",
+            format!("{:04x}:{:04x}", identity.vendor_id, identity.product_id),
+            format!("{:x}:{:x}", identity.bus_number, identity.address),
+            format!("{:02x}", identity.device_class),
+            device.driver.as_deref().unwrap_or("-"),
+        );
+    }
+
+    Ok(())
 }
 
 /// Apply CLI overrides on top of a builder that already reflects the `.rdp` file. Every flag that is

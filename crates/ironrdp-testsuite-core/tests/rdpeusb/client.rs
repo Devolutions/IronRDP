@@ -323,3 +323,153 @@ fn new_device_sequence() {
     };
     assert_eq!(add_device.usb_device, udev_iface);
 }
+
+// Ref: [Processing a Cancel Request Message][3.3.5.3.1]
+// [3.3.5.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/d5315234-d9ba-42dc-bc1b-b421c57a21ae
+#[test]
+fn cancelled_request_stays_pending_until_the_backend_completes_it() {
+    use ironrdp_rdpeusb::pdu::usb_dev::{CancelRequest, IoControl, RegisterRequestCallback};
+
+    let udev_iface = InterfaceId::try_from(4).expect("valid device interface id");
+    let completion_iface = InterfaceId::try_from(5).expect("valid completion interface id");
+    let backend = Box::new(NoopDeviceClientBackend::new(simple_device_info()));
+    let mut client = UrbdrcDeviceClient::new(udev_iface, backend).expect("device client should be created");
+
+    client
+        .process(
+            99,
+            &encode_pdu(&UrbdrcServerDevicePdu::IfaceRelease(InterfaceRelease {
+                iface_id: proxy_iface_id(InterfaceId::NOTIFY_CLIENT),
+                msg_id: 1,
+            })),
+        )
+        .expect("notification release should succeed");
+    client
+        .process(
+            99,
+            &encode_pdu(&UrbdrcServerDevicePdu::RegReqCb(RegisterRequestCallback {
+                msg_id: 2,
+                udev_iface,
+                request_completion: Some(completion_iface),
+            })),
+        )
+        .expect("request callback registration should succeed");
+
+    let pending = client
+        .process(
+            99,
+            &encode_pdu(&UrbdrcServerDevicePdu::IoCtl(IoControl {
+                msg_id: 3,
+                udev_iface,
+                ioctl_code: IoctlInternalUsb::GetPortStatus,
+                input_buffer: Vec::new(),
+                output_buffer_size: 4,
+                req_id: 42,
+            })),
+        )
+        .expect("IO control should be accepted");
+    assert!(pending.is_empty(), "the backend leaves the request pending");
+
+    let cancel = client
+        .process(
+            99,
+            &encode_pdu(&UrbdrcServerDevicePdu::CancelReq(CancelRequest {
+                msg_id: 4,
+                udev_iface,
+                req_id: 42,
+            })),
+        )
+        .expect("cancel request should be accepted");
+    assert!(cancel.is_empty());
+
+    // The backend reports the cancellation, which still reaches the server.
+    let completion = client
+        .io_ctl_completion(
+            42,
+            IoControlCompletionResult {
+                hresult: 0x8000_4004, /* E_ABORT */
+                information: 0,
+                output_buffer: Vec::new(),
+            },
+        )
+        .expect("a cancelled request is still pending until completed");
+    let UrbdrcClientDevicePdu::IoctlComp(completion) = decode_device_msg(&completion) else {
+        panic!("expected an IO control completion");
+    };
+    assert_eq!(completion.request_id, 42);
+
+    assert!(
+        client
+            .io_ctl_completion(
+                42,
+                IoControlCompletionResult {
+                    hresult: 0,
+                    information: 0,
+                    output_buffer: Vec::new(),
+                },
+            )
+            .is_err(),
+        "a request completes only once"
+    );
+}
+
+// Windows Server registers a request completion interface ID below 4, which coincides with the
+// default interfaces of the control channel. It is valid: the server allocates it in its own space.
+#[test]
+fn request_completion_interface_may_reuse_a_default_interface_id() {
+    use ironrdp_rdpeusb::pdu::usb_dev::{IoControl, RegisterRequestCallback};
+
+    let udev_iface = InterfaceId::try_from(4).expect("valid device interface id");
+    let backend = Box::new(NoopDeviceClientBackend::new(simple_device_info()));
+    let mut client = UrbdrcDeviceClient::new(udev_iface, backend).expect("device client should be created");
+
+    client
+        .process(
+            99,
+            &encode_pdu(&UrbdrcServerDevicePdu::IfaceRelease(InterfaceRelease {
+                iface_id: proxy_iface_id(InterfaceId::NOTIFY_CLIENT),
+                msg_id: 1,
+            })),
+        )
+        .expect("notification release should succeed");
+    client
+        .process(
+            99,
+            &encode_pdu(&UrbdrcServerDevicePdu::RegReqCb(RegisterRequestCallback {
+                msg_id: 2,
+                udev_iface,
+                request_completion: Some(InterfaceId::DEVICE_SINK),
+            })),
+        )
+        .expect("a request completion interface below 4 is accepted");
+
+    client
+        .process(
+            99,
+            &encode_pdu(&UrbdrcServerDevicePdu::IoCtl(IoControl {
+                msg_id: 3,
+                udev_iface,
+                ioctl_code: IoctlInternalUsb::GetPortStatus,
+                input_buffer: Vec::new(),
+                output_buffer_size: 4,
+                req_id: 7,
+            })),
+        )
+        .expect("IO control should be accepted");
+    let completion = client
+        .io_ctl_completion(
+            7,
+            IoControlCompletionResult {
+                hresult: 0,
+                information: 0,
+                output_buffer: Vec::new(),
+            },
+        )
+        .expect("the request is pending");
+
+    // The completion goes to the registered interface. Server-side decoding would route this
+    // interface ID to the device sink, so check the header itself: InterfaceId with the proxy mask.
+    let encoded = encode_vec(completion.as_ref()).expect("encode should succeed");
+    let interface = u32::from_le_bytes(encoded[..4].try_into().expect("four bytes"));
+    assert_eq!(interface, 0x4000_0001);
+}

@@ -2557,6 +2557,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-kit-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06d3a048d09fbb6597dbf7c69f40d14df4a49487db1487191618c893fc3b1c26"
+dependencies = [
+ "core-foundation-sys",
+ "mach2",
+]
+
+[[package]]
 name = "ipconfig"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2819,6 +2829,8 @@ dependencies = [
  "ironrdp-rdpel",
  "ironrdp-rdpeudp",
  "ironrdp-rdpeudp-tokio",
+ "ironrdp-rdpeusb",
+ "ironrdp-rdpeusb-native",
  "ironrdp-rdpevor",
  "ironrdp-rdpewa",
  "ironrdp-rdpewa-native",
@@ -3311,6 +3323,21 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-str",
  "ironrdp-usb",
+]
+
+[[package]]
+name = "ironrdp-rdpeusb-native"
+version = "0.1.0"
+dependencies = [
+ "futures-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-rdpeusb",
+ "ironrdp-usb",
+ "nusb",
+ "tokio",
+ "tracing",
+ "windows",
 ]
 
 [[package]]
@@ -4281,6 +4308,29 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "nusb"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03fba503685f5c3e9f6a11ff9711c16086ab6beacaa6ad3df9e217a91a8d4c82"
+dependencies = [
+ "core-foundation 0.10.1",
+ "core-foundation-sys",
+ "futures-core",
+ "io-kit-sys",
+ "js-sys",
+ "linux-raw-sys 0.12.1",
+ "log",
+ "once_cell",
+ "rustix 1.1.5",
+ "slab",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

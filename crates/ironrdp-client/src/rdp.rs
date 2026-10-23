@@ -512,6 +512,10 @@ pub enum RdpInputEvent {
     Rail(RailInputEvent),
     /// Reports changed local system parameters over the RAIL static channel.
     RailSystemParameters(Vec<ironrdp_rail::pdu::ClientSystemParameter>),
+
+    /// Applies the result of USB redirection work done off the session loop.
+    #[cfg(feature = "usb")]
+    Urbdrc(ironrdp_rdpeusb_native::UrbdrcEvent),
 }
 
 /// Maximum number of ordinary input events retained while the session is unable to process them.
@@ -524,9 +528,13 @@ pub const RDP_INPUT_EVENT_QUEUE_CAPACITY: usize = 128;
 #[derive(Clone, Debug)]
 pub struct RdpInputSender {
     input_sender: mpsc::Sender<RdpInputEvent>,
+    /// Unbounded queue for ordered protocol events that must not be dropped (clipboard, USB).
     #[cfg_attr(
-        not(feature = "clipboard"),
-        expect(dead_code, reason = "clipboard input is unavailable without the clipboard feature")
+        not(any(feature = "clipboard", feature = "usb")),
+        expect(
+            dead_code,
+            reason = "ordered events are unavailable without the clipboard or usb feature"
+        )
     )]
     clipboard_sender: mpsc::UnboundedSender<RdpInputEvent>,
     close_sender: watch::Sender<bool>,
@@ -638,6 +646,22 @@ impl RdpInputSender {
     #[cfg(feature = "clipboard")]
     pub fn send_clipboard(&self, message: ClipboardMessage) -> Result<(), mpsc::error::SendError<RdpInputEvent>> {
         self.clipboard_sender.send(RdpInputEvent::Clipboard(message))
+    }
+
+    /// Enqueues a USB redirection event independently of ordinary bounded input.
+    ///
+    /// Dropping a USB completion would leave the server-side driver waiting for its request forever.
+    ///
+    /// The queue stays bounded without a capacity: each completion answers a request this session
+    /// loop already read from the server, so a stalled loop reads no new requests and the queue holds
+    /// at most the requests in flight, which the backend caps per device (65536, zero-length requests
+    /// included). The other events follow device plugs and channel closes.
+    #[cfg(feature = "usb")]
+    pub fn send_urbdrc(
+        &self,
+        event: ironrdp_rdpeusb_native::UrbdrcEvent,
+    ) -> Result<(), mpsc::error::SendError<RdpInputEvent>> {
+        self.clipboard_sender.send(RdpInputEvent::Urbdrc(event))
     }
 
     /// Requests immediate session cancellation, bypassing the bounded input queue.
@@ -1677,7 +1701,7 @@ impl RdpdrDevicePolicy {
     const ALLOW_ALL: Self = Self;
 }
 
-#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr")))]
+#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr", feature = "usb")))]
 const HTTP_TUNNEL_REDIR_DISABLE_ALL: u32 = 0x4000_0000;
 #[cfg(all(feature = "gateway", feature = "rdpdr"))]
 const HTTP_TUNNEL_REDIR_DISABLE_DRIVE: u32 = 0x0000_0001;
@@ -1687,14 +1711,17 @@ const HTTP_TUNNEL_REDIR_DISABLE_PRINTER: u32 = 0x0000_0002;
 const HTTP_TUNNEL_REDIR_DISABLE_PORT: u32 = 0x0000_0004;
 #[cfg(all(feature = "gateway", feature = "clipboard"))]
 const HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD: u32 = 0x0000_0008;
+/// MS-TSGU `HTTP_TUNNEL_REDIR_DISABLE_PNP`, which also governs RemoteFX USB redirection.
+#[cfg(all(feature = "gateway", feature = "usb"))]
+const HTTP_TUNNEL_REDIR_DISABLE_PNP: u32 = 0x0000_0010;
 
-#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr")))]
+#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr", feature = "usb")))]
 #[derive(Clone, Copy)]
 struct GatewayRedirectionPolicy {
     flags: Option<u32>,
 }
 
-#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr")))]
+#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr", feature = "usb")))]
 impl GatewayRedirectionPolicy {
     fn from_flags(flags: Option<u32>) -> Self {
         Self { flags }
@@ -1724,6 +1751,10 @@ impl GatewayRedirectionPolicy {
         if flags.clipboard_disabled {
             mapped_flags |= HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD;
         }
+        #[cfg(feature = "usb")]
+        if flags.pnp_disabled {
+            mapped_flags |= HTTP_TUNNEL_REDIR_DISABLE_PNP;
+        }
         Self::from_flags(Some(mapped_flags))
     }
 
@@ -1747,12 +1778,17 @@ impl GatewayRedirectionPolicy {
         self.disables(HTTP_TUNNEL_REDIR_DISABLE_PORT)
     }
 
-    #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
+    #[cfg(feature = "usb")]
+    fn disables_usb(self) -> bool {
+        self.disables(HTTP_TUNNEL_REDIR_DISABLE_PNP)
+    }
+
+    #[cfg(any(feature = "clipboard", feature = "rdpdr", feature = "usb"))]
     fn flags(self) -> Option<u32> {
         self.flags
     }
 
-    #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
+    #[cfg(any(feature = "clipboard", feature = "rdpdr", feature = "usb"))]
     fn disables_all(self) -> bool {
         self.flags
             .is_some_and(|flags| flags & HTTP_TUNNEL_REDIR_DISABLE_ALL != 0)
@@ -1974,6 +2010,7 @@ fn build_connector(
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
     rdpdr_policy: RdpdrDevicePolicy,
+    usb_allowed: bool,
     enable_udp: bool,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
 ) -> ConnectorResult<ironrdp_connector::ClientConnector> {
@@ -1986,7 +2023,8 @@ fn build_connector(
         all(windows, feature = "dvc-com-plugin"),
         feature = "sound",
         all(windows, feature = "webauthn"),
-        all(windows, feature = "camera")
+        all(windows, feature = "camera"),
+        feature = "usb"
     )))]
     let _ = input_sender;
     #[cfg(not(feature = "clipboard"))]
@@ -1995,6 +2033,8 @@ fn build_connector(
     let _ = (rdpdr_factory, rdpdr_policy);
     #[cfg(not(all(windows, feature = "vmconnect")))]
     let _ = output_event_sender;
+    #[cfg(not(feature = "usb"))]
+    let _ = usb_allowed;
 
     // The client-side compositor (ironrdp-egfx) holds the surface pixel state and
     // the session drains it into the framebuffer, so the graphics pipeline's
@@ -2236,6 +2276,17 @@ fn build_connector(
             sender: input_sender.clone(),
             config: config.channels.audio.clone(),
         });
+    }
+
+    // URBDRC (MS-RDPEUSB) USB device redirection.
+    #[cfg(feature = "usb")]
+    if let Some(usb) = config
+        .channels
+        .usb
+        .as_ref()
+        .filter(|usb| usb_allowed && usb.is_enabled())
+    {
+        drdynvc = drdynvc.with_listener(crate::urbdrc::urbdrc_listener(usb, input_sender.clone()));
     }
 
     // Audio output: one backend for the static RDPSND channel and the AUDIO_PLAYBACK_DVC channels.
@@ -2593,6 +2644,7 @@ async fn connect_direct(
         cliprdr_factory,
         rdpdr_factory,
         RdpdrDevicePolicy::ALLOW_ALL,
+        true,
         enable_udp,
         auto_reconnect_cookie,
     )?;
@@ -2684,6 +2736,7 @@ async fn connect_named_pipe(
         cliprdr_factory,
         rdpdr_factory,
         RdpdrDevicePolicy::ALLOW_ALL,
+        true,
         false,
         auto_reconnect_cookie,
     )?;
@@ -2854,7 +2907,7 @@ where
         tunnel_policy,
     } = connection_info;
     let (input_sender, output_event_sender) = event_senders;
-    #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
+    #[cfg(any(feature = "clipboard", feature = "rdpdr", feature = "usb"))]
     let gateway_redirection_policy = match tunnel_policy {
         GatewayTunnelPolicy::Http(policy) => GatewayRedirectionPolicy::from_flags(policy.redirection_flags),
         GatewayTunnelPolicy::Rpch(flags) => GatewayRedirectionPolicy::from_rpch_flags(flags),
@@ -2913,7 +2966,20 @@ where
     };
     #[cfg(not(feature = "rdpdr"))]
     let rdpdr_policy = RdpdrDevicePolicy::ALLOW_ALL;
-    #[cfg(not(any(feature = "clipboard", feature = "rdpdr")))]
+    #[cfg(feature = "usb")]
+    let usb_allowed = {
+        let allowed = !gateway_redirection_policy.disables_usb();
+        if !allowed && config.channels.usb.is_some() {
+            debug!(
+                redirection_flags = ?gateway_redirection_policy.flags(),
+                "Suppressing URBDRC USB redirection due to gateway device-redirection policy"
+            );
+        }
+        allowed
+    };
+    #[cfg(not(feature = "usb"))]
+    let usb_allowed = true;
+    #[cfg(not(any(feature = "clipboard", feature = "rdpdr", feature = "usb")))]
     match tunnel_policy {
         GatewayTunnelPolicy::Http(_policy) => {}
         GatewayTunnelPolicy::Rpch(_flags) => {}
@@ -2928,6 +2994,7 @@ where
         cliprdr_factory,
         rdpdr_factory,
         rdpdr_policy,
+        usb_allowed,
         false,
         auto_reconnect_cookie,
     )?;
@@ -2986,6 +3053,7 @@ async fn connect_rdcleanpath_transport(
         cliprdr_factory,
         rdpdr_factory,
         RdpdrDevicePolicy::ALLOW_ALL,
+        true,
         false,
         auto_reconnect_cookie,
     )?;
@@ -3685,6 +3753,18 @@ fn poll_deferred_rdpdr_output(active_stage: &mut ActiveStage) -> SessionResult<O
     }
 }
 
+#[cfg(feature = "usb")]
+fn urbdrc_iteration(
+    active_stage: &mut ActiveStage,
+    event: ironrdp_rdpeusb_native::UrbdrcEvent,
+) -> SessionResult<ActiveSessionIteration> {
+    Ok(match crate::urbdrc::process_urbdrc_event(active_stage, event)? {
+        Some((batch, None)) => ActiveSessionIteration::dvc(batch),
+        Some((batch, Some(tunnel))) => ActiveSessionIteration::tunnel(tunnel, (batch, Vec::new())),
+        None => ActiveSessionIteration::outputs(Vec::new()),
+    })
+}
+
 #[cfg(feature = "rdpdr")]
 fn process_rdpdr_drive_change(
     active_stage: &mut ActiveStage,
@@ -3881,7 +3961,7 @@ async fn active_session(
             GracefulDisconnectReason::UserInitiated,
         ));
     }
-    #[cfg(not(feature = "clipboard"))]
+    #[cfg(not(any(feature = "clipboard", feature = "usb")))]
     let _ = clipboard_event_receiver;
 
     let mut rdpei_input_state = None;
@@ -3895,11 +3975,11 @@ async fn active_session(
         let video_deadline: Option<tokio::time::Instant> = None;
         let mut malformed_bitmap_redraw_queued = false;
         let clipboard_event = async {
-            #[cfg(feature = "clipboard")]
+            #[cfg(any(feature = "clipboard", feature = "usb"))]
             {
                 clipboard_event_receiver.recv().await
             }
-            #[cfg(not(feature = "clipboard"))]
+            #[cfg(not(any(feature = "clipboard", feature = "usb")))]
             {
                 core::future::pending::<Option<RdpInputEvent>>().await
             }
@@ -4074,14 +4154,21 @@ async fn active_session(
                     }
                 }
                 clipboard_event = clipboard_event => {
-                    #[cfg(feature = "clipboard")]
+                    #[cfg(any(feature = "clipboard", feature = "usb"))]
                     {
-                        let Some(RdpInputEvent::Clipboard(event)) = clipboard_event else {
-                            return Err(ironrdp_session::general_err!("clipboard event channel closed"));
-                        };
-                        ActiveSessionIteration::outputs(process_clipboard_message(&mut active_stage, event)?)
+                        match clipboard_event {
+                            #[cfg(feature = "clipboard")]
+                            Some(RdpInputEvent::Clipboard(event)) => {
+                                ActiveSessionIteration::outputs(process_clipboard_message(&mut active_stage, event)?)
+                            }
+                            #[cfg(feature = "usb")]
+                            Some(RdpInputEvent::Urbdrc(event)) => urbdrc_iteration(&mut active_stage, event)?,
+                            // Only clipboard and USB events are queued on this channel.
+                            Some(_) => ActiveSessionIteration::outputs(Vec::new()),
+                            None => return Err(ironrdp_session::general_err!("clipboard event channel closed")),
+                        }
                     }
-                    #[cfg(not(feature = "clipboard"))]
+                    #[cfg(not(any(feature = "clipboard", feature = "usb")))]
                     {
                         let _ = clipboard_event;
                         unreachable!("clipboard receive is pending without the clipboard feature")
@@ -4370,6 +4457,8 @@ async fn active_session(
                         "RAIL input",
                         |rail_client| rail_client.queue_input(event),
                     )),
+                    #[cfg(feature = "usb")]
+                    RdpInputEvent::Urbdrc(event) => urbdrc_iteration(&mut active_stage, event)?,
                     }
                 }
                 _ = cleanup_interval.tick() => {
@@ -5586,6 +5675,43 @@ mod tests {
         assert!(disable_all.disables_all());
     }
 
+    #[cfg(all(feature = "gateway", feature = "usb"))]
+    #[test]
+    fn gateway_redirection_policy_governs_usb_with_pnp() {
+        assert!(!GatewayRedirectionPolicy::from_flags(None).disables_usb());
+        assert!(!GatewayRedirectionPolicy::from_flags(Some(0x8000_0000)).disables_usb());
+        assert!(GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_PNP)).disables_usb());
+        assert!(GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_ALL)).disables_usb());
+    }
+
+    #[cfg(all(feature = "gateway", feature = "usb"))]
+    #[test]
+    fn rpch_gateway_policy_governs_usb_with_pnp() {
+        let rpch = |flags| GatewayRedirectionPolicy::from_rpch_flags(flags);
+        assert!(!rpch(ironrdp_mstsgu::GwRpchRedirectionFlags::default()).disables_usb());
+        assert!(
+            rpch(ironrdp_mstsgu::GwRpchRedirectionFlags {
+                pnp_disabled: true,
+                ..Default::default()
+            })
+            .disables_usb()
+        );
+        assert!(
+            rpch(ironrdp_mstsgu::GwRpchRedirectionFlags {
+                disable_all: true,
+                ..Default::default()
+            })
+            .disables_usb()
+        );
+        assert!(
+            !rpch(ironrdp_mstsgu::GwRpchRedirectionFlags {
+                printer_disabled: true,
+                ..Default::default()
+            })
+            .disables_usb()
+        );
+    }
+
     #[test]
     fn resize_queue_coalesces_later_requests_until_reactivation() {
         let first = resize_request(1024, 768);
@@ -6430,6 +6556,7 @@ mod tests {
             no_cliprdr_factory(),
             Some(&factory),
             RdpdrDevicePolicy::ALLOW_ALL,
+            true,
             false,
             None,
         )
@@ -6461,6 +6588,7 @@ mod tests {
             no_cliprdr_factory(),
             None,
             RdpdrDevicePolicy::ALLOW_ALL,
+            true,
             false,
             None,
         )
