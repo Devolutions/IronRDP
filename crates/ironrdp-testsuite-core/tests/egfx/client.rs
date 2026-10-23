@@ -3,13 +3,16 @@ use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_egfx::client::{BitmapUpdate, GraphicsPipelineClient, GraphicsPipelineHandler, Surface};
 use ironrdp_egfx::decode::{DecodedFrame, DecoderResult, H264Decoder};
 use ironrdp_egfx::pdu::{
-    CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitySet, CapabilityVersion,
-    Codec1Type, CreateSurfacePdu, DeleteSurfacePdu, EndFramePdu, GfxPdu, PixelFormat, ResetGraphicsPdu, StartFramePdu,
-    Timestamp, WireToSurface1Pdu,
+    CacheToSurfacePdu, CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitiesV10Flags,
+    CapabilitiesV81Flags, CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitySet,
+    CapabilityVersion, Codec1Type, Color, CreateSurfacePdu, DeleteSurfacePdu, EndFramePdu, GfxPdu,
+    MapSurfaceToOutputPdu, PixelFormat, Point, RawCapabilitySet, ResetGraphicsPdu, SolidFillPdu, StartFramePdu,
+    SurfaceToCachePdu, Timestamp, WireToSurface1Pdu,
 };
 use ironrdp_graphics::clearcodec::ClearCodecEncoder;
-use ironrdp_graphics::zgfx::wrap_uncompressed;
+use ironrdp_graphics::zgfx::{CompressionMode, Compressor, compress_and_wrap_egfx, wrap_uncompressed};
 use ironrdp_pdu::geometry::ExclusiveRectangle;
+use rstest::rstest;
 
 // ============================================================================
 // Test Handler
@@ -104,6 +107,21 @@ fn decode_caps_from_message(msg: &ironrdp_dvc::DvcMessage) -> CapabilitiesAdvert
     }
 }
 
+fn v107_confirm() -> GfxPdu {
+    GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V10_7 {
+        flags: CapabilitiesV107Flags::empty(),
+    }))
+}
+
+fn create_surface(surface_id: u16, width: u16, height: u16) -> GfxPdu {
+    GfxPdu::CreateSurface(CreateSurfacePdu {
+        surface_id,
+        width,
+        height,
+        pixel_format: PixelFormat::XRgb,
+    })
+}
+
 /// Create a client, send CapabilitiesConfirm V8 through process(), and create a surface.
 fn setup_active_client_with_surface(
     decoder: Option<Box<dyn H264Decoder>>,
@@ -185,6 +203,363 @@ fn client_keeps_avc_caps_with_decoder() {
     // cannot decode, and the server would then send only frames it discards.
     assert_eq!(caps_pdu.0[0].version, CapabilityVersion::V8_1);
     assert_eq!(caps_pdu.0[1].version, CapabilityVersion::V8);
+}
+
+// oracle: spec MS-RDPEGFX §3.3.5.19 and §2.2.2.19.
+#[test]
+fn protocol_reset_ignores_old_graphics_until_confirmation() {
+    let mut compressor = Compressor::new();
+    let mut encode =
+        |pdu: &GfxPdu| compress_and_wrap_egfx(&encode_pdu(pdu), &mut compressor, CompressionMode::Always).unwrap();
+    let caps = CapabilitySet::V10_7 {
+        flags: CapabilitiesV107Flags::SMALL_CACHE | CapabilitiesV107Flags::AVC_THIN_CLIENT,
+    };
+    let confirm = GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&caps));
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), Some(Box::new(MockH264Decoder)));
+    client.process(0, &encode(&confirm)).unwrap();
+    let create = create_surface(7, 16, 16);
+    client.process(0, &encode(&create)).unwrap();
+    let end = GfxPdu::EndFrame(EndFramePdu { frame_id: 42 });
+    client.process(0, &encode(&end)).unwrap();
+
+    assert!(client.request_protocol_reset().is_some());
+    assert!(!client.is_active());
+    assert!(client.get_surface(7).is_none());
+    client.process(0, &encode(&create)).unwrap();
+    assert!(client.get_surface(7).is_none());
+    assert!(client.process(0, &encode(&end)).unwrap().is_empty());
+
+    client.process(0, &encode(&confirm)).unwrap();
+    assert!(client.is_active());
+    client.process(0, &encode(&create)).unwrap();
+    assert!(client.get_surface(7).is_some());
+    let responses = client.process(0, &encode(&end)).unwrap();
+    assert_eq!(responses.len(), 1);
+    let response = encode_vec(responses[0].as_ref()).unwrap();
+    let GfxPdu::FrameAcknowledge(ack) = ironrdp_core::decode(&response).unwrap() else {
+        panic!("fresh frames must be acknowledged after confirmation");
+    };
+    assert_eq!(ack.frame_id, 42);
+}
+
+// oracle: spec MS-RDPEGFX §3.3.5.19 permits reset only after capability confirmation.
+#[test]
+fn protocol_reset_requires_initial_confirmation() {
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), None);
+    assert!(client.request_protocol_reset().is_none());
+}
+
+// oracle: mutant allowing reset requests after channel closure.
+#[test]
+fn protocol_reset_is_unavailable_after_close() {
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), None);
+    client.process(0, &encode_for_process(&v107_confirm())).unwrap();
+    client.close(0);
+    assert!(client.request_protocol_reset().is_none());
+}
+
+// oracle: reference Windows ACK capture and rejection predicate in
+// https://github.com/Devolutions/IronRDP/pull/2207#issuecomment-6352202047.
+#[test]
+fn protocol_reset_restarts_ack_count() {
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), None);
+    let confirm = v107_confirm();
+    let end = GfxPdu::EndFrame(EndFramePdu { frame_id: 42 });
+    for pdu in [&confirm, &end, &end] {
+        client.process(0, &encode_for_process(pdu)).unwrap();
+    }
+    assert_eq!(client.total_frames_decoded(), 2);
+    assert!(client.request_protocol_reset().is_some());
+    assert_eq!(client.total_frames_decoded(), 0);
+    client.process(0, &encode_for_process(&confirm)).unwrap();
+    let responses = client.process(0, &encode_for_process(&end)).unwrap();
+    assert_eq!(responses.len(), 1);
+    let response = encode_vec(responses[0].as_ref()).unwrap();
+    let GfxPdu::FrameAcknowledge(ack) = ironrdp_core::decode(&response).unwrap() else {
+        panic!("fresh frames must be acknowledged after confirmation");
+    };
+    assert_eq!(ack.total_frames_decoded, 1);
+}
+
+// oracle: spec MS-RDPEGFX §3.3.5.19 requires ignoring every server message until confirmation.
+#[test]
+fn protocol_reset_ignores_resize_until_confirmation() {
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), None);
+    let confirm = v107_confirm();
+    let initial = GfxPdu::ResetGraphics(ResetGraphicsPdu {
+        width: 16,
+        height: 16,
+        monitors: vec![],
+    });
+    for pdu in [&confirm, &initial] {
+        client.process(0, &encode_for_process(pdu)).unwrap();
+    }
+    assert_eq!(client.take_output_reset(), Some((16, 16)));
+    assert!(client.request_protocol_reset().is_some());
+
+    let resize = GfxPdu::ResetGraphics(ResetGraphicsPdu {
+        width: 32,
+        height: 16,
+        monitors: vec![],
+    });
+    client.process(0, &encode_for_process(&resize)).unwrap();
+    assert!(!client.is_active());
+    assert!(client.take_output_reset().is_none());
+
+    for pdu in [&confirm, &resize] {
+        client.process(0, &encode_for_process(pdu)).unwrap();
+    }
+    assert!(client.is_active());
+    assert_eq!(client.take_output_reset(), Some((32, 16)));
+}
+
+// oracle: spec MS-RDPEGFX §3.3.5.19 permits resets only with V10.3-V10.7.
+#[rstest]
+#[case::v8(CapabilitySet::V8 { flags: CapabilitiesV8Flags::empty() })]
+#[case::v8_1(CapabilitySet::V8_1 { flags: CapabilitiesV81Flags::empty() })]
+#[case::v10(CapabilitySet::V10 { flags: CapabilitiesV10Flags::empty() })]
+#[case::v10_1(CapabilitySet::V10_1)]
+#[case::v10_2(CapabilitySet::V10_2 { flags: CapabilitiesV10Flags::empty() })]
+fn protocol_reset_rejects_unsupported_capabilities(#[case] caps: CapabilitySet) {
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), None);
+    let confirm = GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&caps));
+    client.process(0, &encode_for_process(&confirm)).unwrap();
+    assert!(client.request_protocol_reset().is_none());
+    assert!(client.is_active());
+    assert_eq!(client.negotiated_capabilities(), Some(&caps));
+}
+
+// oracle: spec MS-RDPEGFX §3.3.5.19 permits resets with V10.3-V10.7.
+#[rstest]
+#[case::v10_3(CapabilitySet::V10_3 { flags: CapabilitiesV103Flags::empty() })]
+#[case::v10_4(CapabilitySet::V10_4 { flags: CapabilitiesV104Flags::empty() })]
+#[case::v10_5(CapabilitySet::V10_5 { flags: CapabilitiesV104Flags::empty() })]
+#[case::v10_6(CapabilitySet::V10_6 { flags: CapabilitiesV104Flags::empty() })]
+// oracle: mutant rejecting the alternate V10.6 version already confirmed by the peer.
+#[case::v10_6_err(CapabilitySet::V10_6Err { flags: CapabilitiesV104Flags::empty() })]
+#[case::v10_7(CapabilitySet::V10_7 { flags: CapabilitiesV107Flags::SMALL_CACHE | CapabilitiesV107Flags::AVC_THIN_CLIENT })]
+fn protocol_reset_readvertises_supported_capabilities(#[case] caps: CapabilitySet) {
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), None);
+    let confirm = GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&caps));
+    client.process(0, &encode_for_process(&confirm)).unwrap();
+    let Some(GfxPdu::CapabilitiesAdvertise(advertise)) = client.request_protocol_reset() else {
+        panic!("supported versions must re-advertise capabilities");
+    };
+    assert!(!client.is_active());
+    assert_eq!(advertise.0.len(), 1);
+    assert_eq!(advertise.0[0].parsed().unwrap(), Some(caps));
+}
+
+// oracle: mutant accepting an unadvertised or malformed reset confirmation.
+#[rstest]
+#[case::unknown_version(RawCapabilitySet::new(CapabilityVersion(0xffff_ffff), vec![0; 4]))]
+#[case::malformed(RawCapabilitySet::new(CapabilityVersion::V10_7, vec![0; 3]))]
+#[case::different_version(CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V10_3 { flags: CapabilitiesV103Flags::empty() }).0)]
+fn protocol_reset_rejects_unoffered_confirmation(#[case] invalid: RawCapabilitySet) {
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), None);
+    let confirm = v107_confirm();
+    client.process(0, &encode_for_process(&confirm)).unwrap();
+    assert!(client.request_protocol_reset().is_some());
+    let invalid = GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu(invalid));
+    assert!(client.process(0, &encode_for_process(&invalid)).is_err());
+}
+
+// oracle: regression https://github.com/Devolutions/IronRDP/pull/2207#discussion_r4354707352.
+#[test]
+fn protocol_reset_failed_confirmation_is_terminal() {
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), None);
+    let confirm = v107_confirm();
+    client.process(0, &encode_for_process(&confirm)).unwrap();
+    assert!(client.request_protocol_reset().is_some());
+    let malformed = GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu(RawCapabilitySet::new(
+        CapabilityVersion::V10_7,
+        vec![0; 3],
+    )));
+    assert!(client.process(0, &encode_for_process(&malformed)).is_err());
+    assert!(
+        client
+            .process(0, &encode_for_process(&create_surface(7, 16, 16)))
+            .is_err()
+    );
+    assert!(client.process(0, &encode_for_process(&confirm)).is_err());
+    assert!(!client.is_active());
+    assert!(client.request_protocol_reset().is_none());
+    assert!(client.get_surface(7).is_none());
+}
+
+// oracle: regression https://github.com/Devolutions/IronRDP/pull/2207#discussion_r4354707352.
+#[test]
+fn protocol_reset_truncated_confirmation_is_terminal() {
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), None);
+    let confirm = encode_for_process(&v107_confirm());
+    client.process(0, &confirm).unwrap();
+    assert!(client.request_protocol_reset().is_some());
+
+    let truncated = &confirm[..confirm.len() - 1];
+    assert!(client.process(0, truncated).is_err());
+    assert!(client.process(0, &confirm).is_err());
+    assert!(!client.is_active());
+}
+
+// oracle: spec MS-RDPEGFX §1.7 makes the server's confirmed flags authoritative.
+#[test]
+fn protocol_reset_accepts_changed_flags() {
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), Some(Box::new(MockH264Decoder)));
+    let confirm = v107_confirm();
+    client.process(0, &encode_for_process(&confirm)).unwrap();
+    assert!(client.codec_capabilities().avc420);
+    assert!(client.request_protocol_reset().is_some());
+
+    let changed = CapabilitySet::V10_7 {
+        flags: CapabilitiesV107Flags::AVC_DISABLED,
+    };
+    let confirm = GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&changed));
+    client.process(0, &encode_for_process(&confirm)).unwrap();
+    assert!(client.is_active());
+    assert_eq!(client.negotiated_capabilities(), Some(&changed));
+    assert!(!client.codec_capabilities().avc420);
+}
+
+// oracle: spec MS-RDPEGFX §3.3.5.19 discards cached pixels.
+// oracle: mutant clearing the pending output extent during protocol reset.
+#[test]
+fn protocol_reset_retains_output_extent_but_discards_pixels() {
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), None);
+    let confirm = v107_confirm();
+    let reset = GfxPdu::ResetGraphics(ResetGraphicsPdu {
+        width: 16,
+        height: 16,
+        monitors: vec![],
+    });
+    let create = create_surface(7, 16, 16);
+    let map = GfxPdu::MapSurfaceToOutput(MapSurfaceToOutputPdu {
+        surface_id: 7,
+        output_origin_x: 0,
+        output_origin_y: 0,
+    });
+    let rect = ExclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: 16,
+        bottom: 16,
+    };
+    let fill = GfxPdu::SolidFill(SolidFillPdu {
+        surface_id: 7,
+        fill_pixel: Color {
+            r: 255,
+            g: 0,
+            b: 0,
+            xa: 255,
+        },
+        rectangles: vec![rect.clone()],
+    });
+    let cache = GfxPdu::SurfaceToCache(SurfaceToCachePdu {
+        surface_id: 7,
+        cache_key: 1,
+        cache_slot: 0,
+        source_rectangle: rect,
+    });
+    let end = GfxPdu::EndFrame(EndFramePdu { frame_id: 1 });
+    for pdu in [&confirm, &reset, &create, &map, &fill, &cache, &end] {
+        client.process(0, &encode_for_process(pdu)).unwrap();
+    }
+    assert!(client.request_protocol_reset().is_some());
+    assert_eq!(client.take_output_reset(), Some((16, 16)));
+    assert!(client.drain_output().is_empty());
+
+    let restore = GfxPdu::CacheToSurface(CacheToSurfacePdu {
+        surface_id: 7,
+        cache_slot: 0,
+        destination_points: vec![Point { x: 0, y: 0 }],
+    });
+    for pdu in [&confirm, &create, &map, &restore, &end] {
+        client.process(0, &encode_for_process(pdu)).unwrap();
+    }
+    let output = client.drain_output();
+    assert!(!output.is_empty());
+    for update in output {
+        assert!(update.data.chunks_exact(4).all(|pixel| pixel[..3] != [255, 0, 0]));
+    }
+    assert!(client.take_output_reset().is_none());
+}
+
+// oracle: spec MS-RDPEGFX §3.3.5.19 requires the graphics decoder state to reset.
+#[test]
+fn protocol_reset_resets_h264_decoder() {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct Decoder(Arc<AtomicUsize>);
+    impl H264Decoder for Decoder {
+        fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
+            MockH264Decoder.decode(data)
+        }
+
+        fn reset(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let resets = Arc::new(AtomicUsize::new(0));
+    let mut client = GraphicsPipelineClient::new(
+        Box::new(TestHandler::new()),
+        Some(Box::new(Decoder(Arc::clone(&resets)))),
+    );
+    let confirm = v107_confirm();
+    client.process(0, &encode_for_process(&confirm)).unwrap();
+    assert!(client.request_protocol_reset().is_some());
+    assert_eq!(resets.load(Ordering::Relaxed), 1);
+    assert!(client.request_protocol_reset().is_none());
+    assert_eq!(resets.load(Ordering::Relaxed), 1);
+}
+
+// oracle: spec MS-RDPEGFX §3.3.5.19 resets channel state, including the glyph storage in §3.3.1.9.
+#[test]
+fn protocol_reset_discards_clearcodec_glyphs() {
+    use ironrdp_pdu::codecs::clearcodec::{FLAG_GLYPH_HIT, FLAG_GLYPH_INDEX};
+
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), None);
+    let confirm = v107_confirm();
+    let create = create_surface(1, 4, 4);
+    let wire = |bitmap_data| {
+        GfxPdu::WireToSurface1(WireToSurface1Pdu {
+            surface_id: 1,
+            codec_id: Codec1Type::ClearCodec,
+            pixel_format: PixelFormat::XRgb,
+            destination_rectangle: ExclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 4,
+                bottom: 4,
+            },
+            bitmap_data,
+        })
+    };
+    let pixels: Vec<u8> = (0..16).flat_map(|_| [0u8, 0, 255, 255]).collect();
+    let seed = wire(ClearCodecEncoder::new().encode(&pixels, 4, 4));
+    // GLYPH_HIT references glyph zero, populated by the first encoded bitmap.
+    let hit = wire(vec![FLAG_GLYPH_INDEX | FLAG_GLYPH_HIT, 0, 0, 0]);
+    for pdu in [&confirm, &create, &seed, &hit] {
+        client.process(0, &encode_for_process(pdu)).unwrap();
+    }
+    assert_eq!(client.dropped_updates(), 0);
+    assert!(client.request_protocol_reset().is_some());
+    for pdu in [&confirm, &create, &hit] {
+        client.process(0, &encode_for_process(pdu)).unwrap();
+    }
+    assert_eq!(
+        client.dropped_updates(),
+        1,
+        "a glyph from before reset must no longer resolve"
+    );
+    for pdu in [&seed, &hit] {
+        client.process(0, &encode_for_process(pdu)).unwrap();
+    }
+    assert_eq!(
+        client.dropped_updates(),
+        1,
+        "a fresh seed must make the glyph usable again"
+    );
 }
 
 // ============================================================================

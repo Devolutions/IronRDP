@@ -152,6 +152,15 @@ pub(crate) struct Compositor {
 }
 
 impl Compositor {
+    /// Discard channel pixels while retaining the last announced output extent.
+    pub(crate) fn reset_protocol(&mut self) {
+        *self = Self {
+            output_width: self.output_width,
+            output_height: self.output_height,
+            ..Self::default()
+        };
+    }
+
     pub(crate) fn materializable_output_size(width: u32, height: u32) -> Option<(u16, u16)> {
         let width = u16::try_from(width).ok()?;
         let height = u16::try_from(height).ok()?;

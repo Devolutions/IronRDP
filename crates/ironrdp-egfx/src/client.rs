@@ -382,9 +382,11 @@ pub trait GraphicsPipelineHandler: Send {
 enum ClientState {
     /// Waiting for server `CapabilitiesConfirm`
     WaitingForConfirm,
+    /// Ignoring in-flight graphics until the protocol reset is confirmed.
+    Resetting,
     /// Channel is active, processing frames
     Active,
-    /// Channel has been closed
+    /// Channel has been closed or a protocol reset has failed.
     Closed,
 }
 
@@ -469,6 +471,58 @@ impl GraphicsPipelineClient {
         self.negotiated_caps.as_ref()
     }
 
+    /// Request an in-channel protocol reset with the negotiated capabilities.
+    ///
+    /// [MS-RDPEGFX 3.3.5.19] "Processing an RDPGFX_CAPS_CONFIRM_PDU message" permits this for V10.3-V10.7.
+    /// Returns `None` before negotiation, while resetting, after closure, or for unsupported versions.
+    /// Send the returned PDU on this graphics channel before processing more input; if sending fails, recreate the channel.
+    /// Calling this method clears graphics state immediately; discarding the returned PDU stalls graphics until channel recreation.
+    /// Incoming graphics are ignored until the advertised version is confirmed; changed capability flags are accepted.
+    /// Any processing error while awaiting confirmation closes this client; subsequent `process()` calls fail.
+    /// Recreate the channel with a new client after such an error.
+    /// Surfaces and cached pixels are discarded; the last output extent remains until a post-confirmation `ResetGraphics` arrives.
+    /// A previously confirmed `V10_6Err` is echoed for compatibility with peers using that alternate V10.6 value.
+    /// The ACK count restarts for Windows interoperability, despite the connection-wide wording in
+    /// [MS-RDPEGFX 2.2.2.13] "RDPGFX_FRAME_ACKNOWLEDGE_PDU".
+    /// This does not reset other virtual channels or guarantee a particular codec or keyframe.
+    ///
+    /// [MS-RDPEGFX 3.3.5.19]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/a720af02-0a47-44e2-a934-dc8534062b44
+    /// [MS-RDPEGFX 2.2.2.13]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/0241e258-77ef-4a58-b426-5039ed6296ce
+    #[must_use]
+    pub fn request_protocol_reset(&mut self) -> Option<GfxPdu> {
+        if !self.is_active() {
+            return None;
+        }
+        let caps = self.negotiated_caps.as_ref()?;
+        if !matches!(
+            caps,
+            CapabilitySet::V10_3 { .. }
+                | CapabilitySet::V10_4 { .. }
+                | CapabilitySet::V10_5 { .. }
+                | CapabilitySet::V10_6 { .. }
+                | CapabilitySet::V10_6Err { .. }
+                | CapabilitySet::V10_7 { .. }
+        ) {
+            return None;
+        }
+        let pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(core::slice::from_ref(caps)));
+        self.state = ClientState::Resetting;
+        self.surfaces.clear();
+        self.compositor.reset_protocol();
+        // A full channel reset restarts codec contexts, unlike the output-only ResetGraphics PDU.
+        self.clearcodec_decoder = None;
+        self.planar_decoder = BitmapStreamDecoder::default();
+        self.progressive_decoder = ProgressiveDecoder::new();
+        if let Some(decoder) = self.h264_decoder.as_mut() {
+            decoder.reset();
+        }
+        self.current_frame_id = None;
+        // Windows restarts its sent-frame count and rejects ACK counts greater than that value.
+        self.total_frames_decoded = 0;
+        // ZGFX history still decodes packets already in flight before confirmation.
+        Some(pdu)
+    }
+
     /// Get codec capabilities determined from negotiation
     #[must_use]
     pub fn codec_capabilities(&self) -> &CodecCapabilities {
@@ -481,7 +535,7 @@ impl GraphicsPipelineClient {
         self.surfaces.get(&surface_id)
     }
 
-    /// Get the total number of frames decoded
+    /// Get the number of frames decoded since channel creation or the last protocol reset.
     #[must_use]
     pub fn total_frames_decoded(&self) -> u32 {
         self.total_frames_decoded
@@ -518,10 +572,40 @@ impl GraphicsPipelineClient {
     // PDU Handlers
     // ========================================================================
 
+    fn process_messages(&mut self, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+        self.decompressed_buffer.clear();
+        self.decompressed_buffer.shrink_to(MAX_DECOMPRESSED_BUFFER_CAPACITY);
+        self.decompressor
+            .decompress(payload, &mut self.decompressed_buffer)
+            .map_err(|e| decode_err!(e))?;
+
+        // Decode all PDUs before dispatch while the cursor borrows the buffer.
+        let mut pdus = Vec::new();
+        {
+            let mut cursor = ReadCursor::new(self.decompressed_buffer.as_slice());
+            while !cursor.is_empty() {
+                let pdu: GfxPdu = decode_cursor(&mut cursor).map_err(|e| decode_err!(e))?;
+                pdus.push(pdu);
+            }
+        }
+
+        let mut responses: Vec<DvcMessage> = Vec::new();
+        for pdu in pdus {
+            let pdu_responses = self.handle_pdu(pdu)?;
+            responses.extend(pdu_responses);
+        }
+
+        Ok(responses)
+    }
+
     fn handle_pdu(&mut self, pdu: GfxPdu) -> PduResult<Vec<DvcMessage>> {
+        // MS-RDPEGFX 3.3.5.19 ignores all pre-confirmation server messages, including ResetGraphics.
+        if self.state == ClientState::Resetting && !matches!(pdu, GfxPdu::CapabilitiesConfirm(_)) {
+            return Ok(Vec::new());
+        }
         match pdu {
             GfxPdu::CapabilitiesConfirm(confirm) => {
-                self.handle_capabilities_confirm(confirm.0);
+                self.handle_capabilities_confirm(confirm.0)?;
                 Ok(vec![])
             }
             GfxPdu::ResetGraphics(reset) => {
@@ -660,7 +744,14 @@ impl GraphicsPipelineClient {
         }
     }
 
-    fn handle_capabilities_confirm(&mut self, cap: RawCapabilitySet) {
+    fn handle_capabilities_confirm(&mut self, cap: RawCapabilitySet) -> PduResult<()> {
+        if self.state == ClientState::Resetting
+            && Some(cap.version) != self.negotiated_caps.as_ref().map(CapabilitySet::version)
+        {
+            return Err(pdu_other_err!(
+                "server confirmed an unadvertised graphics reset version"
+            ));
+        }
         // Server confirms a single capability set. If we cannot interpret it
         // (unknown version, or malformed body), we still transition to Active
         // to avoid hanging the session, but we keep `negotiated_caps` empty
@@ -674,12 +765,13 @@ impl GraphicsPipelineClient {
                     "Server confirmed an unknown EGFX capability version; proceeding with defaults"
                 );
                 self.state = ClientState::Active;
-                return;
+                return Ok(());
             }
+            Err(e) if self.state == ClientState::Resetting => return Err(decode_err!(e)),
             Err(e) => {
                 warn!(error = %e, "Failed to parse server's EGFX capabilities confirmation");
                 self.state = ClientState::Active;
-                return;
+                return Ok(());
             }
         };
 
@@ -694,6 +786,7 @@ impl GraphicsPipelineClient {
         );
 
         self.handler.on_capabilities_confirmed(cap);
+        Ok(())
     }
 
     fn handle_reset_graphics(&mut self, width: u32, height: u32) -> PduResult<()> {
@@ -1284,31 +1377,14 @@ impl DvcProcessor for GraphicsPipelineClient {
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        // ZGFX decompress
-        self.decompressed_buffer.clear();
-        self.decompressed_buffer.shrink_to(MAX_DECOMPRESSED_BUFFER_CAPACITY);
-        self.decompressor
-            .decompress(payload, &mut self.decompressed_buffer)
-            .map_err(|e| decode_err!(e))?;
-
-        // Decode all PDUs first (cursor borrows decompressed_buffer)
-        let mut pdus = Vec::new();
-        {
-            let mut cursor = ReadCursor::new(self.decompressed_buffer.as_slice());
-            while !cursor.is_empty() {
-                let pdu: GfxPdu = decode_cursor(&mut cursor).map_err(|e| decode_err!(e))?;
-                pdus.push(pdu);
+        if self.state == ClientState::Closed {
+            return Err(pdu_other_err!("graphics channel is closed; recreate the channel"));
+        }
+        self.process_messages(payload).inspect_err(|_| {
+            if self.state == ClientState::Resetting {
+                self.state = ClientState::Closed;
             }
-        }
-
-        // Process decoded PDUs
-        let mut responses: Vec<DvcMessage> = Vec::new();
-        for pdu in pdus {
-            let pdu_responses = self.handle_pdu(pdu)?;
-            responses.extend(pdu_responses);
-        }
-
-        Ok(responses)
+        })
     }
 }
 
@@ -2567,6 +2643,71 @@ mod tests {
         let updates = updates.lock().unwrap();
         assert_eq!(updates.len(), 1, "UPGRADE must retain its first-pass tile");
         assert_eq!(&updates[0].3[..4], &[128, 128, 128, 255]);
+    }
+
+    // oracle: spec MS-RDPEGFX §3.3.5.19 resets the codec and tile contexts in §3.3.1.1-3.3.1.2.
+    #[test]
+    fn protocol_reset_discards_progressive_context_and_tiles() {
+        use crate::pdu::{CapabilitiesConfirmPdu, Codec2Type, CreateSurfacePdu};
+
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let mut client = GraphicsPipelineClient::new(
+            Box::new(CapturingHandler {
+                updates: Arc::clone(&updates),
+                unhandled: Arc::new(Mutex::new(0)),
+            }),
+            None,
+        );
+        let process = |client: &mut GraphicsPipelineClient, pdu: &GfxPdu| {
+            let bytes = ironrdp_core::encode_vec(pdu).unwrap();
+            client.process(0, &zgfx::wrap_uncompressed(&bytes)).unwrap();
+        };
+        let confirm = GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V10_7 {
+            flags: CapabilitiesV107Flags::empty(),
+        }));
+        let create = GfxPdu::CreateSurface(CreateSurfacePdu {
+            surface_id: 1,
+            width: 64,
+            height: 64,
+            pixel_format: PixelFormat::XRgb,
+        });
+        let wire = |bitmap_data| {
+            GfxPdu::WireToSurface2(WireToSurface2Pdu {
+                surface_id: 1,
+                codec_id: Codec2Type::RemoteFxProgressive,
+                codec_context_id: 7,
+                pixel_format: PixelFormat::XRgb,
+                bitmap_data,
+            })
+        };
+        let seed = wire(progressive_tile_stream(0, 0, 64, 64));
+        let upgrade = wire(progressive_upgrade_stream());
+        for pdu in [&confirm, &create, &seed, &upgrade] {
+            process(&mut client, pdu);
+        }
+        assert_eq!(client.dropped_updates(), 0);
+        assert_eq!(updates.lock().unwrap().len(), 2);
+        updates.lock().unwrap().clear();
+        assert!(client.request_protocol_reset().is_some());
+        for pdu in [&confirm, &create, &upgrade] {
+            process(&mut client, pdu);
+        }
+        assert_eq!(
+            client.dropped_updates(),
+            1,
+            "the previous codec context must no longer exist"
+        );
+        process(&mut client, &wire(progressive_context_stream(true)));
+        process(&mut client, &upgrade);
+        assert!(
+            updates.lock().unwrap().is_empty(),
+            "a fresh context must not inherit the previous tile"
+        );
+        for pdu in [&seed, &upgrade] {
+            process(&mut client, pdu);
+        }
+        assert_eq!(client.dropped_updates(), 1, "a fresh tile must allow refinements again");
+        assert_eq!(updates.lock().unwrap().len(), 2);
     }
 
     #[test]
