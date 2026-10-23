@@ -48,7 +48,7 @@ pub mod ffi {
     use crate::utils::ffi::{BytesSlice, Position, VecU8};
 
     #[diplomat::attr(dotnet, manually_disposable)]
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ActiveStage(
         pub ironrdp::session::ActiveStage,
         pub ironrdp::connector::connection_activation::ConnectionActivationFactory,
@@ -63,10 +63,10 @@ pub mod ffi {
     );
 
     #[diplomat::attr(dotnet, manually_disposable)]
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ActiveStageOutputIterator(pub VecDeque<ironrdp::session::ActiveStageOutput>);
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct MonitorLayoutIterator(pub VecDeque<ironrdp::pdu::gcc::Monitor>);
 
     #[diplomat::opaque]
@@ -492,7 +492,7 @@ pub mod ffi {
         }
 
         #[diplomat::attr(auto, getter = "response_frame")]
-        pub fn get_response_frame(&self) -> Result<Box<BytesSlice<'_>>, Box<IronRdpError>> {
+        pub fn get_response_frame<'a>(&'a self) -> Result<Box<BytesSlice<'a>>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::ResponseFrame(frame) => Ok(Box::new(BytesSlice(frame))),
                 _ => Err(IncorrectEnumTypeError::on_variant("ResponseFrame")
@@ -537,7 +537,7 @@ pub mod ffi {
         }
 
         #[diplomat::attr(auto, getter = "windowing_orders")]
-        pub fn get_windowing_orders(&self) -> Result<Box<BytesSlice<'_>>, Box<IronRdpError>> {
+        pub fn get_windowing_orders<'a>(&'a self) -> Result<Box<BytesSlice<'a>>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::WindowingOrders(_) => match &self.1 {
                     Some(Ok(update)) => Ok(Box::new(BytesSlice(update))),

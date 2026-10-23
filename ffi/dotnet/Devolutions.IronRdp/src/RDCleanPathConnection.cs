@@ -111,9 +111,9 @@ public static class RDCleanPathConnection
 
             writeBuf.Clear();
             var written = connector.InitiateWithSecurityProtocol(HybridProtocol, writeBuf);
-            if (written.GetWrittenType() != WrittenType.Nothing)
+            if (written.WrittenType != WrittenType.Nothing)
             {
-                var size = (int)written.GetSize().Get();
+                var size = (int)written.Size.Get();
                 var x224Request = new byte[size];
                 writeBuf.ReadIntoBuf(x224Request);
                 await framedAfterHandshake.Write(x224Request);
@@ -160,13 +160,13 @@ public static class RDCleanPathConnection
         else
         {
             var written = connector.StepNoInput(writeBuf);
-            var firstPduSize = (int)written.GetSize().Get();
+            var firstPduSize = (int)written.Size.Get();
             var firstPdu = new byte[firstPduSize];
             writeBuf.ReadIntoBuf(firstPdu);
             rdCleanPathReq = RDCleanPathPdu.NewRequest(firstPdu, destination, authToken, pcb);
         }
         var reqBytes = rdCleanPathReq.ToDer();
-        var reqBytesArray = new byte[reqBytes.GetSize()];
+        var reqBytesArray = new byte[reqBytes.Size];
         reqBytes.Fill(reqBytesArray);
         await framed.Write(reqBytesArray);
 
@@ -174,7 +174,7 @@ public static class RDCleanPathConnection
         var respBytes = await framed.ReadByHint(new RDCleanPathHint());
         var rdCleanPathResp = RDCleanPathPdu.FromDer(respBytes);
 
-        var resultType = rdCleanPathResp.GetType();
+        var resultType = rdCleanPathResp.Type;
 
         if (resultType == RDCleanPathResultType.Response)
         {
@@ -192,15 +192,15 @@ public static class RDCleanPathConnection
 
             if (hasX224)
             {
-                var x224Response = rdCleanPathResp.GetX224Response();
-                var x224ResponseBytes = new byte[x224Response.GetSize()];
+                var x224Response = rdCleanPathResp.X224Response;
+                var x224ResponseBytes = new byte[x224Response.Size];
                 x224Response.Fill(x224ResponseBytes);
 
                 writeBuf.Clear();
                 connector.Step(x224ResponseBytes, writeBuf);
             }
 
-            var certChain = rdCleanPathResp.GetServerCertChain();
+            var certChain = rdCleanPathResp.ServerCertChain;
             if (certChain.IsEmpty())
             {
                 throw new IronRdpLibException(
@@ -216,7 +216,7 @@ public static class RDCleanPathConnection
                     "Failed to get first certificate from chain");
             }
 
-            var certBytes = new byte[firstCert.GetSize()];
+            var certBytes = new byte[firstCert.Size];
             firstCert.Fill(certBytes);
 
             var serverPublicKey = ExtractPublicKeyFromX509(certBytes);
@@ -227,8 +227,8 @@ public static class RDCleanPathConnection
         }
         else if (resultType == RDCleanPathResultType.GeneralError)
         {
-            var errorCode = rdCleanPathResp.GetErrorCode();
-            var errorMessage = rdCleanPathResp.GetErrorMessage();
+            var errorCode = rdCleanPathResp.ErrorCode;
+            var errorMessage = rdCleanPathResp.ErrorMessage;
             throw new IronRdpLibException(
                 IronRdpLibExceptionType.ConnectionFailed,
                 $"error from RDCleanPath (code {errorCode}): {errorMessage}");
@@ -277,7 +277,7 @@ public class RDCleanPathHint : IPduHint
 
         if (detection.IsDetected())
         {
-            var totalLength = (int)detection.GetTotalLength();
+            var totalLength = (int)detection.TotalLength;
             return (true, totalLength);
         }
 
