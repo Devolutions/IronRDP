@@ -738,6 +738,9 @@ impl RpcApp {
             RdpOutputEvent::AutoReconnected => {
                 info!("RDP session automatically reconnected");
             }
+            RdpOutputEvent::ServerRedirected { target } => {
+                info!(%target, "Server redirected the connection");
+            }
             RdpOutputEvent::RdpeiInputState(state) => {
                 debug!(?state, "RDPEI input state changed");
                 // The server dropped the contacts with the channel state, so they are forgotten unsent.

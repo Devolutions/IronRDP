@@ -1845,6 +1845,7 @@ mod tests {
                     password: String::new(),
                     domain: None,
                 },
+                password_cookie: None,
                 code_page: 0,
                 flags: ClientInfoFlags::UNICODE | ClientInfoFlags::COMPRESSION,
                 compression_type: CompressionType::K64,

@@ -38,6 +38,7 @@ use ironrdp_pdu::rdp::capability_sets::{
 pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
+use ironrdp_pdu::rdp::server_redirection::ServerRedirectionPdu;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
 use ironrdp_rdpdr as rdpdr;
@@ -181,6 +182,13 @@ pub struct ConnectionInfo {
     /// empty when the client sent none. It doesn't change the Monitor Layout PDU
     /// the acceptor sends, which still describes one monitor.
     pub client_monitors: Vec<ironrdp_pdu::gcc::Monitor>,
+    /// See [`ironrdp_acceptor::AcceptorResult::routing_token`].
+    pub routing_token: Option<String>,
+    /// The session the client asked to reconnect to in its GCC Client Cluster Data (MS-RDPBCGR 2.2.1.3.5), as a
+    /// client redirected by a Server Redirection PDU does.
+    pub redirected_session_id: Option<u32>,
+    /// See [`ironrdp_acceptor::AcceptorResult::password_cookie`].
+    pub password_cookie: Option<rdp::client_info::PasswordCookie>,
 }
 
 impl ConnectionInfo {
@@ -195,6 +203,9 @@ impl ConnectionInfo {
             ime_file_name,
             auto_reconnect: false,
             client_monitors: Vec::new(),
+            routing_token: None,
+            redirected_session_id: None,
+            password_cookie: None,
         }
     }
 }
@@ -1335,6 +1346,27 @@ impl ErrorInfoDisconnectHandle {
     }
 }
 
+/// Cloneable handle for redirecting the active client to another server with a Server Redirection PDU
+/// (MS-RDPBCGR 2.2.13.3.1) while [`RdpServer::run`] owns the server.
+#[derive(Clone)]
+pub struct ServerRedirectionHandle {
+    sender: mpsc::UnboundedSender<ServerEvent>,
+}
+
+impl ServerRedirectionHandle {
+    /// Send `redirection` to the client, then close the connection.
+    ///
+    /// The client reconnects to the target the PDU describes, as it would for an RD Connection Broker.
+    #[expect(
+        clippy::result_large_err,
+        reason = "SendError<ServerEvent> hands the whole event back on a closed channel; ServerEvent's size is \
+                  driven by its largest per-channel payload (RdpdrServerMessage), not by anything this method does"
+    )]
+    pub fn redirect(&self, redirection: ServerRedirectionPdu) -> Result<(), mpsc::error::SendError<ServerEvent>> {
+        self.sender.send(ServerEvent::Redirect(Box::new(redirection)))
+    }
+}
+
 pub enum ServerEvent {
     Quit(String),
     /// End this connection because an authenticated candidate is taking the
@@ -1366,6 +1398,9 @@ pub enum ServerEvent {
     /// Disconnect the active client with a `ServerSetErrorInfoPdu` carrying
     /// the given reason. See [`ErrorInfoDisconnectHandle::disconnect`].
     Disconnect(ErrorInfo),
+    /// Redirect the active client with a Server Redirection PDU, then close the connection.
+    /// See [`ServerRedirectionHandle::redirect`].
+    Redirect(Box<ServerRedirectionPdu>),
     Clipboard(ClipboardMessage),
     Rdpsnd(RdpsndServerMessage),
     Rdpdr(RdpdrServerMessage),
@@ -1398,6 +1433,7 @@ impl fmt::Debug for ServerEvent {
             Self::Quit(reason) => f.debug_tuple("Quit").field(reason).finish(),
             Self::EvictedByOtherConnection => f.write_str("EvictedByOtherConnection"),
             Self::Disconnect(error) => f.debug_tuple("Disconnect").field(error).finish(),
+            Self::Redirect(redirection) => f.debug_tuple("Redirect").field(redirection).finish(),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
             Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
             Self::Rdpdr(..) => f.write_str("Rdpdr(..)"),
@@ -1442,11 +1478,18 @@ enum PreemptRace<S> {
     Probed(Option<AuthenticatedConnection<S>>),
 }
 
+/// How long a redirected client has to close the connection before the server closes it.
+const REDIRECTION_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Debug, PartialEq)]
 enum RunState {
     Continue,
     Disconnect,
-    DeactivationReactivation { desktop_size: DesktopSize },
+    /// A Server Redirection PDU was sent: wait for the client to close the connection.
+    Redirected,
+    DeactivationReactivation {
+        desktop_size: DesktopSize,
+    },
 }
 
 /// Which transport a connection ended up on after
@@ -2280,6 +2323,13 @@ impl RdpServer {
     /// `ServerSetErrorInfo` PDU while [`Self::run`] owns this server.
     pub fn error_info_disconnect_handle(&self) -> ErrorInfoDisconnectHandle {
         ErrorInfoDisconnectHandle {
+            sender: self.ev_sender.clone(),
+        }
+    }
+
+    /// Returns a handle for redirecting the active client to another server while [`Self::run`] owns this server.
+    pub fn server_redirection_handle(&self) -> ServerRedirectionHandle {
+        ServerRedirectionHandle {
             sender: self.ev_sender.clone(),
         }
     }
@@ -3688,6 +3738,26 @@ impl RdpServer {
                         .map_err(|e| ServerError::io("send server set error info", e))?;
                     return Ok(RunState::Disconnect);
                 }
+                ServerEvent::Redirect(redirection) => {
+                    debug!(?redirection, "Got redirect event");
+                    let pdu = rdp::headers::ShareControlHeader {
+                        share_id: 0,
+                        pdu_source: user_channel_id,
+                        share_control_pdu: ShareControlPdu::ServerRedirect(*redirection),
+                    };
+                    let user_data = encode_vec(&pdu).map_err(ServerError::encode)?.into();
+                    let data = encode_vec(&X224(SendDataIndication {
+                        initiator_id: user_channel_id,
+                        channel_id: io_channel_id,
+                        user_data,
+                    }))
+                    .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| ServerError::io("send server redirection", e))?;
+                    return Ok(RunState::Redirected);
+                }
                 ServerEvent::GetLocalAddr(tx) => {
                     let _ = tx.send(self.local_addr);
                 }
@@ -5038,6 +5108,17 @@ impl RdpServer {
                     ime_file_name: result.ime_file_name.clone(),
                     auto_reconnect: is_auto_reconnect,
                     client_monitors: result.client_monitors,
+                    routing_token: result.routing_token.clone(),
+                    redirected_session_id: result
+                        .client_cluster_data
+                        .as_ref()
+                        .filter(|cluster| {
+                            cluster
+                                .flags
+                                .contains(ironrdp_pdu::gcc::RedirectionFlags::REDIRECTED_SESSION_FIELD_VALID)
+                        })
+                        .map(|cluster| cluster.redirected_session_id),
+                    password_cookie: result.password_cookie.clone(),
                 });
             });
         }
@@ -5733,6 +5814,17 @@ impl RdpServer {
                     continue;
                 }
                 RunState::Disconnect => {
+                    let final_framed = unsplit_tokio_framed(reader, writer);
+                    return Ok(final_framed);
+                }
+                RunState::Redirected => {
+                    // The client terminates the connection once it has processed the Server Redirection PDU
+                    // (MS-RDPBCGR 3.2.5.13.1). Closing it first can fail a write the client has in flight before it
+                    // reads the PDU, so whatever it still sends is discarded until it disconnects.
+                    let _ = Box::pin(tokio::time::timeout(REDIRECTION_CLOSE_TIMEOUT, async {
+                        while reader.read_pdu().await.is_ok() {}
+                    }))
+                    .await;
                     let final_framed = unsplit_tokio_framed(reader, writer);
                     return Ok(final_framed);
                 }

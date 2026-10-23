@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use ironrdp_core::{Encode, WriteBuf, decode, encode_vec};
 use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
+use ironrdp_pdu::rdp::server_redirection::ServerRedirectionPdu;
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{PduHint, gcc, mcs, nego, rdp};
@@ -195,6 +196,38 @@ impl ConnectionResult {
     }
 }
 
+/// How a client connection sequence ended.
+#[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the outcome is produced once per connection and moved straight to its consumer"
+)]
+pub enum ConnectionOutcome {
+    /// The connection is established and the session can start.
+    Connected(ConnectionResult),
+    /// The server sent a Server Redirection PDU ([MS-RDPBCGR] 3.2.5.13.1).
+    ///
+    /// The client must close this connection and connect to the target the PDU describes, sending its
+    /// load-balancing information as the routing token and its session ID in the Client Cluster Data.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    Redirected(Box<ServerRedirectionPdu>),
+}
+
+impl ConnectionOutcome {
+    /// Returns the connection result, or an error for a client that does not follow redirections.
+    pub fn into_connected(self) -> ConnectorResult<ConnectionResult> {
+        match self {
+            Self::Connected(result) => Ok(result),
+            Self::Redirected(redirection) => Err(reason_err!(
+                "Connect",
+                "server requested a redirection to session {}, which this client does not follow",
+                redirection.session_id
+            )),
+        }
+    }
+}
+
 #[derive(Default, Debug)]
 #[non_exhaustive]
 pub enum ClientConnectorState {
@@ -298,6 +331,26 @@ pub enum ClientConnectorState {
     Connected {
         result: ConnectionResult,
     },
+    /// The server sent a Server Redirection PDU instead of completing the connection.
+    ///
+    /// See [`ConnectionOutcome::Redirected`].
+    Redirected {
+        redirection: Box<ServerRedirectionPdu>,
+    },
+}
+
+impl ClientConnectorState {
+    /// Takes the outcome out of a terminal state, leaving [`Self::Consumed`].
+    pub fn take_outcome(&mut self) -> Option<ConnectionOutcome> {
+        match mem::take(self) {
+            Self::Connected { result } => Some(ConnectionOutcome::Connected(result)),
+            Self::Redirected { redirection } => Some(ConnectionOutcome::Redirected(redirection)),
+            other => {
+                *self = other;
+                None
+            }
+        }
+    }
 }
 
 impl State for ClientConnectorState {
@@ -323,11 +376,12 @@ impl State for ClientConnectorState {
                 connection_activation, ..
             } => connection_activation.state().name(),
             Self::Connected { .. } => "Connected",
+            Self::Redirected { .. } => "Redirected",
         }
     }
 
     fn is_terminal(&self) -> bool {
-        matches!(self, Self::Connected { .. })
+        matches!(self, Self::Connected { .. } | Self::Redirected { .. })
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
@@ -362,6 +416,8 @@ pub struct ClientConnector {
     ///
     /// Set via [`ClientConnector::with_auto_reconnect_cookie`].
     pub auto_reconnect_cookie: Option<ServerAutoReconnect>,
+    /// Password cookie from a Server Redirection PDU, sent in the Client Info PDU.
+    redirection_password_cookie: Option<Vec<u8>>,
     /// Start of the in-flight connect-time bandwidth measurement window.
     ///
     /// Set when the server's Bandwidth Measure Start arrives, and only when the
@@ -389,6 +445,7 @@ impl ClientConnector {
             response_flags: nego::ResponseFlags::empty(),
             server_multitransport_flags: None,
             auto_reconnect_cookie: None,
+            redirection_password_cookie: None,
             connect_time_bw_started_at: None,
             connect_time_bw_bytes: 0,
         }
@@ -417,6 +474,20 @@ impl ClientConnector {
     #[must_use]
     pub fn with_cluster_data(mut self, cluster_data: gcc::ClientClusterData) -> Self {
         self.cluster_data = Some(cluster_data);
+        self
+    }
+
+    /// Send the password cookie of a Server Redirection PDU in the Client Info PDU.
+    ///
+    /// [MS-RDPBCGR] 2.2.13.1 asks the client to pass the `Password` field of the Server Redirection Packet to the
+    /// target server.
+    /// The cookie replaces the configured password in the Client Info PDU only; the credentials still authenticate
+    /// CredSSP.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    #[must_use]
+    pub fn with_redirection_password_cookie(mut self, cookie: Vec<u8>) -> Self {
+        self.redirection_password_cookie = Some(cookie);
         self
     }
 
@@ -1070,7 +1141,7 @@ impl Sequence for ClientConnector {
             ClientConnectorState::ConnectionFinalization {
                 connection_activation, ..
             } => connection_activation.next_pdu_hint(),
-            ClientConnectorState::Connected { .. } => None,
+            ClientConnectorState::Connected { .. } | ClientConnectorState::Redirected { .. } => None,
         }
     }
 
@@ -1300,8 +1371,12 @@ impl Sequence for ClientConnector {
             } => {
                 debug!("Secure Settings Exchange");
 
-                let client_info =
-                    create_client_info_pdu(&self.config, &self.client_addr, self.auto_reconnect_cookie.as_ref());
+                let client_info = create_client_info_pdu(
+                    &self.config,
+                    &self.client_addr,
+                    self.auto_reconnect_cookie.as_ref(),
+                    self.redirection_password_cookie.as_deref(),
+                );
 
                 debug!(message = ?client_info, "Send");
 
@@ -1506,6 +1581,9 @@ impl Sequence for ClientConnector {
                             ConnectionActivationState::ConnectionFinalization { .. } => {
                                 ClientConnectorState::ConnectionFinalization { connection_activation }
                             }
+                            ConnectionActivationState::Redirected { redirection } => {
+                                ClientConnectorState::Redirected { redirection }
+                            }
                             _ => ClientConnectorState::CapabilitiesExchange { connection_activation },
                         },
                     )
@@ -1549,6 +1627,9 @@ impl Sequence for ClientConnector {
                         written,
                         ClientConnectorState::CapabilitiesExchange { connection_activation },
                     ),
+                    ConnectionActivationState::Redirected { redirection } => {
+                        (written, ClientConnectorState::Redirected { redirection })
+                    }
                     _ => return Err(general_err!("invalid state (this is a bug)")),
                 }
             }
@@ -1565,6 +1646,9 @@ impl Sequence for ClientConnector {
                     ClientConnectorState::ConnectionFinalization { connection_activation }
                 } else {
                     match connection_activation.connection_activation_state() {
+                        ConnectionActivationState::Redirected { redirection } => {
+                            ClientConnectorState::Redirected { redirection }
+                        }
                         ConnectionActivationState::Finalized {
                             desktop_size,
                             share_id,
@@ -1616,6 +1700,7 @@ impl Sequence for ClientConnector {
             //== Connected ==//
             // The client connector job is done.
             ClientConnectorState::Connected { .. } => return Err(general_err!("already connected")),
+            ClientConnectorState::Redirected { .. } => return Err(general_err!("already redirected")),
         };
 
         self.state = next_state;
@@ -1777,11 +1862,12 @@ fn create_client_info_pdu(
     config: &Config,
     client_addr: &SocketAddr,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
+    password_cookie: Option<&[u8]>,
 ) -> rdp::ClientInfoPdu {
     use ironrdp_pdu::rdp::ClientInfoPdu;
     use ironrdp_pdu::rdp::client_info::{
         AddressFamily, ClientAutoReconnect, ClientInfo, ClientInfoFlags, CompressionType, Credentials,
-        ExtendedClientInfo, ExtendedClientOptionalInfo,
+        ExtendedClientInfo, ExtendedClientOptionalInfo, PasswordCookie,
     };
     use ironrdp_pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
 
@@ -1842,6 +1928,10 @@ fn create_client_info_pdu(
             password: config.credentials.secret().to_owned(),
             domain: config.domain.clone(),
         },
+        // A smart card logon sends its PIN, never a redirection cookie.
+        password_cookie: password_cookie
+            .filter(|_| !flags.contains(ClientInfoFlags::PASSWORD_IS_SC_PIN))
+            .map(|cookie| PasswordCookie(cookie.to_vec())),
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
         flags,
         compression_type,
@@ -1936,7 +2026,7 @@ mod tests {
             support_dyn_vc_gfx_protocol: false,
         };
 
-        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
+        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None).client_info;
 
         assert!(client_info.flags.contains(ClientInfoFlags::RAIL));
         assert!(client_info.alternate_shell.is_empty());
@@ -1992,12 +2082,12 @@ mod tests {
             support_dyn_vc_gfx_protocol: false,
         };
 
-        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
+        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None).client_info;
         assert!(client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
         assert!(!client_info.flags.contains(ClientInfoFlags::NO_AUDIO_PLAYBACK));
 
         config.enable_audio_capture = false;
-        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
+        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None).client_info;
         assert!(!client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
     }
 

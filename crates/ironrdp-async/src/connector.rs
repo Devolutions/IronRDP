@@ -2,7 +2,7 @@ use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, Kerbe
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::{
-    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult, ServerName, State as _,
+    ClientConnector, ClientConnectorState, ConnectionOutcome, ConnectorError, ConnectorResult, ServerName, State as _,
     general_err,
 };
 use ironrdp_core::WriteBuf;
@@ -57,7 +57,7 @@ pub async fn connect_finalize<S, N>(
     server_name: ServerName,
     server_public_key: Vec<u8>,
     kerberos_config: Option<KerberosConfig>,
-) -> ConnectorResult<ConnectionResult>
+) -> ConnectorResult<ConnectionOutcome>
 where
     S: FramedRead + FramedWrite,
     N: NetworkClient,
@@ -100,7 +100,7 @@ pub async fn connect_finalize_with_multitransport<S, N, H>(
     server_public_key: Vec<u8>,
     kerberos_config: Option<KerberosConfig>,
     mut multitransport_handler: H,
-) -> ConnectorResult<ConnectionResult>
+) -> ConnectorResult<ConnectionOutcome>
 where
     S: FramedRead + FramedWrite,
     N: NetworkClient,
@@ -124,7 +124,7 @@ where
         .await?;
     }
 
-    let result = loop {
+    let outcome = loop {
         if connector.should_perform_multitransport() {
             let request = connector
                 .multitransport_request()
@@ -157,14 +157,19 @@ where
 
         single_sequence_step(framed, &mut connector, &mut buf).await?;
 
-        if let ClientConnectorState::Connected { result } = connector.state {
-            break result;
+        if let Some(outcome) = connector.state.take_outcome() {
+            break outcome;
         }
     };
 
-    info!("Connected with success");
+    match &outcome {
+        ConnectionOutcome::Connected(_) => info!("Connected with success"),
+        ConnectionOutcome::Redirected(redirection) => {
+            info!(session_id = redirection.session_id, "Server redirected the connection");
+        }
+    }
 
-    Ok(result)
+    Ok(outcome)
 }
 
 /// Sends the response for the connector's pending multitransport request.

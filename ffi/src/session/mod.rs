@@ -453,6 +453,8 @@ pub mod ffi {
         WindowingOrders = 12,
         AutoReconnectFailed = 13,
         MonitorLayout = 14,
+        /// The server sent a Server Redirection PDU; use `get_server_redirection()` to read the target.
+        ServerRedirection = 16,
     }
 
     impl ActiveStageOutput {
@@ -478,6 +480,7 @@ pub mod ffi {
                 }
                 ironrdp::session::ActiveStageOutput::AutoReconnectFailed => ActiveStageOutputType::AutoReconnectFailed,
                 ironrdp::session::ActiveStageOutput::MonitorLayout(_) => ActiveStageOutputType::MonitorLayout,
+                ironrdp::session::ActiveStageOutput::ServerRedirection(_) => ActiveStageOutputType::ServerRedirection,
             }
         }
 
@@ -547,6 +550,20 @@ pub mod ffi {
                     Ok(Box::new(MonitorLayoutIterator(monitors.clone().into())))
                 }
                 _ => Err(IncorrectEnumTypeError::on_variant("MonitorLayout")
+                    .of_enum("ActiveStageOutput")
+                    .into()),
+            }
+        }
+
+        #[diplomat::attr(auto, getter = "server_redirection")]
+        pub fn get_server_redirection(
+            &self,
+        ) -> Result<Box<crate::connector::result::ffi::ServerRedirection>, Box<IronRdpError>> {
+            match &self.0 {
+                ironrdp::session::ActiveStageOutput::ServerRedirection(redirection) => Ok(Box::new(
+                    crate::connector::result::ffi::ServerRedirection(redirection.as_ref().clone()),
+                )),
+                _ => Err(IncorrectEnumTypeError::on_variant("ServerRedirection")
                     .of_enum("ActiveStageOutput")
                     .into()),
             }

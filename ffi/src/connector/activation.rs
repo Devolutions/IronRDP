@@ -58,6 +58,7 @@ pub mod ffi {
         CapabilitiesExchange,
         ConnectionFinalization,
         Finalized,
+        Redirected,
     }
 
     impl ConnectionActivationState {
@@ -75,6 +76,9 @@ pub mod ffi {
                 } => ConnectionActivationStateType::ConnectionFinalization,
                 ironrdp::connector::connection_activation::ConnectionActivationState::Finalized { .. } => {
                     ConnectionActivationStateType::Finalized
+                }
+                ironrdp::connector::connection_activation::ConnectionActivationState::Redirected { .. } => {
+                    ConnectionActivationStateType::Redirected
                 }
             }
         }
@@ -95,6 +99,22 @@ pub mod ffi {
                     connection_finalization: connection_finalization.clone(),
                 })),
                 _ => Err(IncorrectEnumTypeError::on_variant("ConnectionFinalization")
+                    .of_enum("ConnectionActivationState")
+                    .into()),
+            }
+        }
+
+        #[diplomat::attr(auto, getter = "redirected")]
+        pub fn get_redirected(
+            &self,
+        ) -> Result<Box<crate::connector::result::ffi::ServerRedirection>, Box<IronRdpError>> {
+            match &self.state {
+                ironrdp::connector::connection_activation::ConnectionActivationState::Redirected { redirection } => {
+                    Ok(Box::new(crate::connector::result::ffi::ServerRedirection(
+                        redirection.as_ref().clone(),
+                    )))
+                }
+                _ => Err(IncorrectEnumTypeError::on_variant("Redirected")
                     .of_enum("ConnectionActivationState")
                     .into()),
             }

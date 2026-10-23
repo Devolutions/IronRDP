@@ -1162,6 +1162,9 @@ impl iron_remote_desktop::Session for Session {
                     ActiveStageOutput::AutoReconnectFailed => {
                         return Err(anyhow::Error::msg("automatic reconnect rejected by server").into());
                     }
+                    ActiveStageOutput::ServerRedirection(_) => {
+                        return Err(anyhow::Error::msg("server redirection is not supported by the web client").into());
+                    }
                     ActiveStageOutput::SaveSessionInfo { logon_complete: true } => {
                         debug!("RDP login complete");
                     }
@@ -1759,7 +1762,8 @@ async fn connect(
         server_public_key,
         kerberos_config,
     )
-    .await?;
+    .await?
+    .into_connected()?;
 
     let ws = framed.into_inner_no_leftover();
 

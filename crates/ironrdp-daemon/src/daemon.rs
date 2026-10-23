@@ -2386,6 +2386,10 @@ async fn consume_output(
                 warn!(%error, "Session terminated with an error");
                 rail_changed
             }
+            RdpOutputEvent::ServerRedirected { target } => {
+                info!(%target, "Session redirected by the server");
+                false
+            }
             // With software pointer rendering the cursor is composited into the `Image` frames
             // above; the remaining pointer events (default/hidden) carry no live state we track.
             _ => false,

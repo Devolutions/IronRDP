@@ -341,6 +341,7 @@ fn connect(
         server_public_key,
         None,
     )
+    .and_then(connector::ConnectionOutcome::into_connected)
     .context("finalize connection")?;
 
     Ok((connection_result, upgraded_framed))

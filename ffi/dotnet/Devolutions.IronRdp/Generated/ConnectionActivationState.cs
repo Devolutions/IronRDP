@@ -31,6 +31,14 @@ public partial class ConnectionActivationState: IDisposable
         }
     }
 
+    public ServerRedirection Redirected
+    {
+        get
+        {
+            return GetRedirected();
+        }
+    }
+
     public ConnectionActivationStateType Type
     {
         get
@@ -88,6 +96,28 @@ public partial class ConnectionActivationState: IDisposable
             }
             Raw.ConnectionActivationStateConnectionFinalization* retVal = result.Ok;
             return new ConnectionActivationStateConnectionFinalization(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ServerRedirection</c> allocated on Rust side.
+    /// </returns>
+    public ServerRedirection GetRedirected()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ConnectionActivationState");
+            }
+            Raw.ConnectorActivationFfiResultBoxServerRedirectionBoxIronRdpError result = Raw.ConnectionActivationState.GetRedirected(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ServerRedirection* retVal = result.Ok;
+            return new ServerRedirection(retVal);
         }
     }
 

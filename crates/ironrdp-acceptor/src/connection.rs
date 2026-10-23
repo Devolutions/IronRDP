@@ -9,6 +9,7 @@ use ironrdp_connector::{
 use ironrdp_core::{ReadCursor, WriteBuf, decode, decode_cursor};
 use ironrdp_pdu as pdu;
 use ironrdp_pdu::nego::SecurityProtocol;
+use ironrdp_pdu::rdp::client_info::PasswordCookie;
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{MAX_STATIC_CHANNELS, StaticChannelKey, StaticChannelSet, SvcServerProcessor};
 use pdu::rdp::capability_sets::CapabilitySet;
@@ -49,6 +50,9 @@ pub struct Acceptor {
     multitransport_flags: Option<gcc::MultiTransportFlags>,
     early_capability_flags: gcc::ClientEarlyCapabilityFlags,
     client_monitors: Vec<gcc::Monitor>,
+    routing_token: Option<String>,
+    client_cluster_data: Option<gcc::ClientClusterData>,
+    password_cookie: Option<PasswordCookie>,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
@@ -259,6 +263,19 @@ pub struct AcceptorResult {
     /// validation, but the server must still verify its security verifier
     /// against the reconnect random for the target session.
     pub auto_reconnect: Option<ClientAutoReconnect>,
+    /// Routing token the client sent in its X.224 Connection Request (MS-RDPBCGR 2.2.1.1), after the
+    /// `Cookie: msts=` prefix.
+    ///
+    /// A client redirected by a Server Redirection PDU sends the load-balancing information of that PDU here.
+    pub routing_token: Option<String>,
+    /// GCC Client Cluster Data (MS-RDPBCGR 2.2.1.3.5), when the client sent it.
+    ///
+    /// It carries the session a redirected client asks to reconnect to.
+    pub client_cluster_data: Option<gcc::ClientClusterData>,
+    /// Password cookie the client sent in its Client Info PDU instead of a password.
+    ///
+    /// A client redirected by a Server Redirection PDU passes the cookie of that PDU to the target server.
+    pub password_cookie: Option<PasswordCookie>,
 }
 
 impl Acceptor {
@@ -281,6 +298,9 @@ impl Acceptor {
             multitransport_flags: None,
             early_capability_flags: gcc::ClientEarlyCapabilityFlags::empty(),
             client_monitors: Vec::new(),
+            routing_token: None,
+            client_cluster_data: None,
+            password_cookie: None,
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation: Default::default(),
@@ -518,6 +538,9 @@ impl Acceptor {
             multitransport_flags: consumed.multitransport_flags,
             early_capability_flags: consumed.early_capability_flags,
             client_monitors: consumed.client_monitors,
+            routing_token: consumed.routing_token,
+            client_cluster_data: consumed.client_cluster_data,
+            password_cookie: consumed.password_cookie,
             server_capabilities: consumed.server_capabilities,
             static_channels,
             saved_for_reactivation,
@@ -719,6 +742,9 @@ impl Acceptor {
                 reactivation: self.reactivation,
                 credentials: self.credentials_for_result(),
                 auto_reconnect: self.received_auto_reconnect.take(),
+                routing_token: self.routing_token.clone(),
+                client_cluster_data: self.client_cluster_data.clone(),
+                password_cookie: self.password_cookie.clone(),
             }),
             previous_state => {
                 self.state = previous_state;
@@ -909,6 +935,11 @@ impl Sequence for Acceptor {
 
                 debug!(message = ?connection_request, "Received");
 
+                self.routing_token = match &connection_request.nego_data {
+                    Some(nego::NegoRequestData::RoutingToken(token)) => Some(token.0.clone()),
+                    _ => None,
+                };
+
                 (
                     Written::Nothing,
                     AcceptorState::InitiationSendConfirm {
@@ -1020,6 +1051,7 @@ impl Sequence for Acceptor {
                 self.early_capability_flags = early_capability.unwrap_or(gcc::ClientEarlyCapabilityFlags::empty());
                 let client_wants_message_channel = gcc_blocks.message_channel.is_some();
                 self.client_monitors = gcc_blocks.monitor.map_or_else(Vec::new, |data| data.monitors);
+                self.client_cluster_data.clone_from(&gcc_blocks.cluster);
                 self.keyboard_layout = gcc_blocks.core.keyboard_layout;
                 self.keyboard_type = gcc_blocks.core.keyboard_type;
                 self.ime_file_name.clone_from(&gcc_blocks.core.ime_file_name);
@@ -1224,6 +1256,8 @@ impl Sequence for Acceptor {
                     "Received Client Info PDU"
                 );
                 self.received_auto_reconnect = auto_reconnect;
+                self.password_cookie
+                    .clone_from(&client_info.client_info.password_cookie);
 
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;

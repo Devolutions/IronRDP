@@ -17,4 +17,5 @@ public enum ConnectionActivationStateType
     CapabilitiesExchange = 1,
     ConnectionFinalization = 2,
     Finalized = 3,
+    Redirected = 4,
 }

@@ -21,5 +21,6 @@ pub mod video;
 
 #[cfg(all(any(windows, target_os = "linux"), feature = "clipboard"))]
 mod clipboard;
+mod redirection;
 
 mod ws;
