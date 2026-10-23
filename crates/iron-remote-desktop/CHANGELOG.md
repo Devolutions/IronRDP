@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.7.1...iron-remote-desktop-v0.8.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- [**breaking**] Add the required `SessionBuilder::websocket_protocols` method, exposed to JavaScript as `webSocketProtocols`, to offer WebSocket subprotocols ([#1970](https://github.com/Devolutions/IronRDP/issues/1970)) ([860cf6ccb1](https://github.com/Devolutions/IronRDP/commit/860cf6ccb1359e15034cfbf402a308e3ad21b341))
+
+### <!-- 7 -->Build
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+
+
 ## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.7.0...iron-remote-desktop-v0.7.1)] - 2026-05-27
 
 ### <!-- 1 -->Features

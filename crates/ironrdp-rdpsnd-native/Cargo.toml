@@ -25,10 +25,10 @@ capture = ["dep:ironrdp-rdpeai"]
 
 [dependencies]
 cpal = "0.17"
-ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] }
+ironrdp-core = { path = "../ironrdp-core", version = "0.3", features = ["alloc"] }
 ironrdp-error = { path = "../ironrdp-error", version = "0.2", features = ["std"] } # public
 ironrdp-rdpeai = { path = "../ironrdp-rdpeai", version = "0.1", optional = true } # public
-ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9" } # public
+ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.10" } # public
 opus2 = { version = "0.4", optional = true, features = ["bundled"] }
 ringbuf = "0.5"
 tracing = { version = "0.1", features = ["log"] }

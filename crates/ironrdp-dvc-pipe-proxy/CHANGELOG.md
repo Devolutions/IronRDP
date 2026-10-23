@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-pipe-proxy-v0.5.0...ironrdp-dvc-pipe-proxy-v0.6.0)] - 2026-10-23
+
+### <!-- 4 -->Bug Fixes
+
+- Pass the proxy's own channel ID, instead of 0, to the write callback given to `DvcNamedPipeProxy::new` ([#2209](https://github.com/Devolutions/IronRDP/issues/2209)) ([10199db3b0](https://github.com/Devolutions/IronRDP/commit/10199db3b0aeca629adc02234ffdbb570bb77d43))
+
+- Accept a Windows pipe client that connects before the proxy starts waiting for it ([#1447](https://github.com/Devolutions/IronRDP/issues/1447)) ([079b48422b](https://github.com/Devolutions/IronRDP/commit/079b48422b0b78d37beb76994950a2a07c442a94))
+
+- Retry with backoff after a pipe connection error instead of stopping the proxy ([#1447](https://github.com/Devolutions/IronRDP/issues/1447)) ([079b48422b](https://github.com/Devolutions/IronRDP/commit/079b48422b0b78d37beb76994950a2a07c442a94))
+
+- Return an error from `DvcProcessor::start` when the proxy worker thread cannot start ([#1447](https://github.com/Devolutions/IronRDP/issues/1447)) ([079b48422b](https://github.com/Devolutions/IronRDP/commit/079b48422b0b78d37beb76994950a2a07c442a94))
+
+### <!-- 7 -->Build
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- [**breaking**] Update `ironrdp-dvc` public dependency to 0.9
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.10
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.9
+
+
+
 ## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-pipe-proxy-v0.4.1...ironrdp-dvc-pipe-proxy-v0.5.0)] - 2026-07-10
 
 ### <!-- 4 -->Bug Fixes

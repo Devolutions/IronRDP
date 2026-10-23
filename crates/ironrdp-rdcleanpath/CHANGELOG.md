@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdcleanpath-v0.2.2...ironrdp-rdcleanpath-v0.3.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- Add `RDCleanPathMessage` with explicit `VmConnectRequest` and `VmConnectResponse` variants for Hyper-V VMConnect ordering, where the proxy sends the PCB and performs TLS before the client runs CredSSP and X.224, along with `RDCleanPathPdu::into_message`, `RDCleanPathPdu::new_vmconnect_request` and `RDCleanPathPdu::new_vmconnect_response` ([#1505](https://github.com/Devolutions/IronRDP/issues/1505)) ([5c1816244e](https://github.com/Devolutions/IronRDP/commit/5c1816244e83187a04249e9d9c240d096cb78f55))
+
+### <!-- 7 -->Build
+
+- [**breaking**] Update the public `der` dependency to 0.8 ([#1449](https://github.com/Devolutions/IronRDP/issues/1449)) ([e1725e8c8a](https://github.com/Devolutions/IronRDP/commit/e1725e8c8a581b83835647b6ee563a5b3f6c7a1b))
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+
+
 ## [[0.2.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdcleanpath-v0.2.1...ironrdp-rdcleanpath-v0.2.2)] - 2026-06-05
 
 ## [[0.2.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdcleanpath-v0.2.0...ironrdp-rdcleanpath-v0.2.1)] - 2025-10-02

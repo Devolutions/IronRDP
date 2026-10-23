@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-tls-v0.2.2...ironrdp-tls-v0.3.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- Add `CertificateValidation` and `upgrade_with_certificate_validation` to opt into certificate-chain and server-name validation against the platform trust store, while `upgrade` keeps accepting any certificate ([#1520](https://github.com/Devolutions/IronRDP/issues/1520)) ([f1d53c78d3](https://github.com/Devolutions/IronRDP/commit/f1d53c78d390de1c6778773cdc859d59901466f0))
+
+- Add `upgrade_with_certificate_validation_callback`, `upgrade_with_certificate_validation_callback_for_endpoint` and `CertificateValidationCallback` so callers can accept a certificate that fails strict validation, for example by pinning it per endpoint; only the rustls backend supports them ([#1520](https://github.com/Devolutions/IronRDP/issues/1520)) ([f1d53c78d3](https://github.com/Devolutions/IronRDP/commit/f1d53c78d390de1c6778773cdc859d59901466f0)) ([#1775](https://github.com/Devolutions/IronRDP/issues/1775)) ([312d4466e7](https://github.com/Devolutions/IronRDP/commit/312d4466e7cae15d45c73a4ffcb4ae730d5e6a30))
+
+- Add the `rustls-verifier` feature and `rustls_client_config` to build a rustls client configuration with the same validation policy without selecting rustls as the stream backend ([#1811](https://github.com/Devolutions/IronRDP/issues/1811)) ([7292970955](https://github.com/Devolutions/IronRDP/commit/729297095564a9640183556078cf8726dd3afeed))
+
+### <!-- 7 -->Build
+
+- [**breaking**] Update the public `x509-cert` dependency to 0.3 ([#1449](https://github.com/Devolutions/IronRDP/issues/1449)) ([e1725e8c8a](https://github.com/Devolutions/IronRDP/commit/e1725e8c8a581b83835647b6ee563a5b3f6c7a1b))
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+
+
 ## [[0.2.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-tls-v0.2.1...ironrdp-tls-v0.2.2)] - 2026-07-10
 
 ### <!-- 1 -->Features
