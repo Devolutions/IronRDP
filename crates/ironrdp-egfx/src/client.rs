@@ -386,7 +386,7 @@ enum ClientState {
     Resetting,
     /// Channel is active, processing frames
     Active,
-    /// Channel has been closed
+    /// Channel has been closed or a protocol reset has failed.
     Closed,
 }
 
@@ -478,7 +478,8 @@ impl GraphicsPipelineClient {
     /// Send the returned PDU on this graphics channel before processing more input; if sending fails, recreate the channel.
     /// Calling this method clears graphics state immediately; discarding the returned PDU stalls graphics until channel recreation.
     /// Incoming graphics are ignored until the advertised version is confirmed; changed capability flags are accepted.
-    /// A malformed or unadvertised reset confirmation makes `process()` fail; recreate the channel on that error.
+    /// Any processing error while awaiting confirmation closes this client; subsequent `process()` calls fail.
+    /// Recreate the channel with a new client after such an error.
     /// Surfaces and cached pixels are discarded; the last output extent remains until a post-confirmation `ResetGraphics` arrives.
     /// A previously confirmed `V10_6Err` is echoed for compatibility with peers using that alternate V10.6 value.
     /// The ACK count restarts for Windows interoperability, despite the connection-wide wording in
@@ -570,6 +571,32 @@ impl GraphicsPipelineClient {
     // ========================================================================
     // PDU Handlers
     // ========================================================================
+
+    fn process_messages(&mut self, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+        self.decompressed_buffer.clear();
+        self.decompressed_buffer.shrink_to(MAX_DECOMPRESSED_BUFFER_CAPACITY);
+        self.decompressor
+            .decompress(payload, &mut self.decompressed_buffer)
+            .map_err(|e| decode_err!(e))?;
+
+        // Decode all PDUs before dispatch while the cursor borrows the buffer.
+        let mut pdus = Vec::new();
+        {
+            let mut cursor = ReadCursor::new(self.decompressed_buffer.as_slice());
+            while !cursor.is_empty() {
+                let pdu: GfxPdu = decode_cursor(&mut cursor).map_err(|e| decode_err!(e))?;
+                pdus.push(pdu);
+            }
+        }
+
+        let mut responses: Vec<DvcMessage> = Vec::new();
+        for pdu in pdus {
+            let pdu_responses = self.handle_pdu(pdu)?;
+            responses.extend(pdu_responses);
+        }
+
+        Ok(responses)
+    }
 
     fn handle_pdu(&mut self, pdu: GfxPdu) -> PduResult<Vec<DvcMessage>> {
         // MS-RDPEGFX 3.3.5.19 ignores all pre-confirmation server messages, including ResetGraphics.
@@ -1350,31 +1377,14 @@ impl DvcProcessor for GraphicsPipelineClient {
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        // ZGFX decompress
-        self.decompressed_buffer.clear();
-        self.decompressed_buffer.shrink_to(MAX_DECOMPRESSED_BUFFER_CAPACITY);
-        self.decompressor
-            .decompress(payload, &mut self.decompressed_buffer)
-            .map_err(|e| decode_err!(e))?;
-
-        // Decode all PDUs first (cursor borrows decompressed_buffer)
-        let mut pdus = Vec::new();
-        {
-            let mut cursor = ReadCursor::new(self.decompressed_buffer.as_slice());
-            while !cursor.is_empty() {
-                let pdu: GfxPdu = decode_cursor(&mut cursor).map_err(|e| decode_err!(e))?;
-                pdus.push(pdu);
+        if self.state == ClientState::Closed {
+            return Err(pdu_other_err!("graphics channel is closed; recreate the channel"));
+        }
+        self.process_messages(payload).inspect_err(|_| {
+            if self.state == ClientState::Resetting {
+                self.state = ClientState::Closed;
             }
-        }
-
-        // Process decoded PDUs
-        let mut responses: Vec<DvcMessage> = Vec::new();
-        for pdu in pdus {
-            let pdu_responses = self.handle_pdu(pdu)?;
-            responses.extend(pdu_responses);
-        }
-
-        Ok(responses)
+        })
     }
 }
 
@@ -2635,7 +2645,7 @@ mod tests {
         assert_eq!(&updates[0].3[..4], &[128, 128, 128, 255]);
     }
 
-    // Oracle: spec MS-RDPEGFX §3.2.5.18 and §3.3.5.19 restart both codec contexts and retained tiles.
+    // oracle: spec MS-RDPEGFX §3.3.5.19 resets the codec and tile contexts in §3.3.1.1-3.3.1.2.
     #[test]
     fn protocol_reset_discards_progressive_context_and_tiles() {
         use crate::pdu::{CapabilitiesConfirmPdu, Codec2Type, CreateSurfacePdu};
