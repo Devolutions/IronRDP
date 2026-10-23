@@ -179,6 +179,17 @@ impl Shared {
         // Every update is a single map operation, so the map stays consistent across a panic.
         self.in_flight.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// Take a request out of the in-flight map, returning whether it was there, and wake whoever
+    /// waits for the last request to return.
+    fn take_in_flight(&self, key: u64) -> bool {
+        let mut in_flight = self.in_flight();
+        let removed = in_flight.remove(&key).is_some();
+        if in_flight.is_empty() {
+            self.idle.notify_all();
+        }
+        removed
+    }
 }
 
 /// A device opened for overlapped I/O controls, completed on a dedicated thread.
@@ -275,7 +286,7 @@ impl AsyncDevice {
             Err(error) if error.code() == ERROR_IO_PENDING.to_hresult() => {}
             Err(error) => {
                 // A request rejected right away queues no completion packet: complete it here.
-                if self.shared.in_flight().remove(&key).is_some() {
+                if self.shared.take_in_flight(key) {
                     // SAFETY: the request was registered above and never reached the kernel, so this is
                     // the only reference left to it.
                     let pending = unsafe { Box::from_raw(raw) };
@@ -366,15 +377,7 @@ fn run_completions(shared: &Shared) {
         // SAFETY: every `OVERLAPPED` queued on this port is the first field of a `Pending` leaked by
         // `submit`, which the kernel returned along with ownership of it.
         let key = unsafe { (*raw).key };
-        let removed = {
-            let mut in_flight = shared.in_flight();
-            let removed = in_flight.remove(&key).is_some();
-            if in_flight.is_empty() {
-                shared.idle.notify_all();
-            }
-            removed
-        };
-        if !removed {
+        if !shared.take_in_flight(key) {
             continue;
         }
 

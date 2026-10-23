@@ -15,8 +15,8 @@ use ironrdp_rdpeusb::io::{
     RequestId, TransferInCompletionResult, TransferInPacket, TransferOutCompletionResult, TransferOutPacket,
     TsUrbInKind,
 };
-use ironrdp_rdpeusb::pdu::completion::ts_urb_result::TsUrbResultPayload;
-use ironrdp_rdpeusb::pdu::utils::{UsbdIsoPacketDesc, UsbdStatus};
+use ironrdp_rdpeusb::pdu::completion::ts_urb_result::{TsUrbIsochTransferResult, TsUrbResultPayload};
+use ironrdp_rdpeusb::pdu::utils::UsbdStatus;
 use tracing::{debug, warn};
 use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_OPERATION_ABORTED};
 use windows::core::{Error, GUID};
@@ -165,13 +165,16 @@ pub(crate) struct TsUsbDeviceBackend {
 impl TsUsbDeviceBackend {
     /// Submit a request, returning `false` when the device already holds too much data in flight.
     ///
-    /// `complete` turns the driver's result into the completion to send, if any.
+    /// `complete` turns the driver's result into the completion to send, if any. A request that is
+    /// not `cancellable` is not tracked for cancellation: the server never cancels a request without
+    /// a completion, and may reuse its ID while it runs.
     fn submit(
         &self,
         request_id: RequestId,
         code: u32,
         input: Vec<u8>,
         output: Vec<u8>,
+        cancellable: bool,
         complete: impl FnOnce(IoResult) -> Option<CompletionData> + Send + 'static,
     ) -> bool {
         let bytes = input
@@ -183,12 +186,20 @@ impl TsUsbDeviceBackend {
         };
 
         let key = self.io.next_key();
-        requests(&self.requests).insert(request_id, key);
+        if cancellable {
+            requests(&self.requests).insert(request_id, key);
+        }
         let in_flight = Arc::clone(&self.requests);
         let reply = self.reply.clone();
         self.io.submit(key, code, input, output, move |result| {
             let _reservation = reservation;
-            requests(&in_flight).remove(&request_id);
+            {
+                // Only this request's own entry: a later request may have reused its ID.
+                let mut in_flight = requests(&in_flight);
+                if in_flight.get(&request_id) == Some(&key) {
+                    in_flight.remove(&request_id);
+                }
+            }
             if let Some(completion) = complete(result) {
                 reply.complete(request_id, completion);
             }
@@ -264,7 +275,7 @@ impl UrbdrcDeviceBackend for TsUsbDeviceBackend {
             _ => return Ok(Some(urb::io_control(&request))),
         };
         let output = vec![0; usize::try_from(request.output_buffer_size).unwrap_or(0)];
-        let submitted = self.submit(request_id, code, request.input_buffer, output, |result| {
+        let submitted = self.submit(request_id, code, request.input_buffer, output, true, |result| {
             Some(CompletionData::IoControl(io_control_completion(result)))
         });
         Ok((!submitted).then(|| io_control_failure(urb::HRESULT_GEN_FAILURE)))
@@ -277,9 +288,14 @@ impl UrbdrcDeviceBackend for TsUsbDeviceBackend {
         request: InternalIoControlPacket,
     ) -> PduResult<Option<IoControlCompletionResult>> {
         let InternalIoControlPacket::QueryBusTime = request;
-        let submitted = self.submit(request_id, IOCTL_QUERY_BUS_TIME, Vec::new(), vec![0; 4], |result| {
-            Some(CompletionData::InternalIoControl(io_control_completion(result)))
-        });
+        let submitted = self.submit(
+            request_id,
+            IOCTL_QUERY_BUS_TIME,
+            Vec::new(),
+            vec![0; 4],
+            true,
+            |result| Some(CompletionData::InternalIoControl(io_control_completion(result))),
+        );
         Ok((!submitted).then(|| io_control_failure(urb::HRESULT_GEN_FAILURE)))
     }
 
@@ -306,14 +322,14 @@ impl UrbdrcDeviceBackend for TsUsbDeviceBackend {
         let output = vec![0; usize::try_from(request.output_buffer_size).unwrap_or(0)];
 
         let ts_urb = request.ts_urb;
-        let submitted = self.submit(request_id, IOCTL_SUBMIT_URB, input, output, move |result| {
+        let submitted = self.submit(request_id, IOCTL_SUBMIT_URB, input, output, true, move |result| {
             let IoResult {
                 status,
                 input,
                 mut output,
                 transferred,
             } = result;
-            let ts_urb_result = match status {
+            let mut ts_urb_result = match status {
                 Err(error) => {
                     return Some(CompletionData::TransferIn(transfer_in_failure(driver_status(
                         &input, &error,
@@ -329,16 +345,17 @@ impl UrbdrcDeviceBackend for TsUsbDeviceBackend {
                     }
                 },
             };
-            let output_buffer = match &ts_urb_result.payload {
-                Some(TsUrbResultPayload::Isoch(isoch)) => isochronous_data(&output, &isoch.iso_packet),
+            let output_buffer = match &mut ts_urb_result.payload {
+                Some(TsUrbResultPayload::Isoch(isoch)) => isochronous_data(&output, isoch),
                 _ => {
                     output.truncate(transferred);
                     output
                 }
             };
+            let hresult = urb::hresult(ts_urb_result.header.usbd_status);
             Some(CompletionData::TransferIn(TransferInCompletionResult {
                 ts_urb_result,
-                hresult: urb::S_OK,
+                hresult,
                 output_buffer,
             }))
         });
@@ -360,6 +377,7 @@ impl UrbdrcDeviceBackend for TsUsbDeviceBackend {
             IOCTL_SUBMIT_URB,
             input,
             request.output_buffer,
+            true,
             move |result| {
                 let IoResult {
                     status,
@@ -374,8 +392,8 @@ impl UrbdrcDeviceBackend for TsUsbDeviceBackend {
                         transfer_out_failure(usbd_status::REQUEST_FAILED)
                     }
                     Ok(Ok(ts_urb_result)) => TransferOutCompletionResult {
+                        hresult: urb::hresult(ts_urb_result.header.usbd_status),
                         ts_urb_result,
-                        hresult: urb::S_OK,
                         output_buffer_size: u32::try_from(transferred).unwrap_or(u32::MAX),
                     },
                 };
@@ -393,12 +411,19 @@ impl UrbdrcDeviceBackend for TsUsbDeviceBackend {
     ) -> PduResult<()> {
         let mut input = request.ts_urb.encode_ts_urb(request_id)?;
         input.resize(input.len().saturating_mul(2), 0);
-        let submitted = self.submit(request_id, IOCTL_SUBMIT_URB, input, request.output_buffer, |result| {
-            if let Err(error) = result.status {
-                debug!(%error, "USB isochronous write without acknowledgement failed");
-            }
-            None
-        });
+        let submitted = self.submit(
+            request_id,
+            IOCTL_SUBMIT_URB,
+            input,
+            request.output_buffer,
+            false,
+            |result| {
+                if let Err(error) = result.status {
+                    debug!(%error, "USB isochronous write without acknowledgement failed");
+                }
+                None
+            },
+        );
         if !submitted {
             debug!("Dropping a USB isochronous write: too much data in flight");
         }
@@ -433,15 +458,27 @@ fn driver_status(input: &[u8], error: &Error) -> UsbdStatus {
 }
 
 /// The data of an isochronous IN transfer: the bytes of every packet received, in packet order.
-fn isochronous_data(buffer: &[u8], packets: &[UsbdIsoPacketDesc]) -> Vec<u8> {
+///
+/// The server reads each successful packet's length from the data in turn, so a packet whose bytes
+/// are not in the buffer is reported as failed instead of being skipped.
+fn isochronous_data(buffer: &[u8], result: &mut TsUrbIsochTransferResult) -> Vec<u8> {
     let mut data = Vec::new();
-    for packet in packets.iter().filter(|packet| 0 <= packet.status && packet.length != 0) {
+    for packet in result
+        .iso_packet
+        .iter_mut()
+        .filter(|packet| 0 <= packet.status && packet.length != 0)
+    {
         let range = usize::try_from(packet.offset)
             .ok()
             .zip(usize::try_from(packet.length).ok())
             .and_then(|(offset, length)| Some(offset..offset.checked_add(length)?));
-        if let Some(bytes) = range.and_then(|range| buffer.get(range)) {
-            data.extend_from_slice(bytes);
+        match range.and_then(|range| buffer.get(range)) {
+            Some(bytes) => data.extend_from_slice(bytes),
+            None => {
+                packet.status = i32::from_ne_bytes(usbd_status::REQUEST_FAILED.to_ne_bytes());
+                packet.length = 0;
+                result.error_count = result.error_count.saturating_add(1);
+            }
         }
     }
     data
@@ -488,6 +525,8 @@ fn io_control_failure(hresult: u32) -> IoControlCompletionResult {
 
 #[cfg(test)]
 mod tests {
+    use ironrdp_rdpeusb::pdu::utils::UsbdIsoPacketDesc;
+
     use super::*;
 
     fn packet(offset: u32, length: u32, status: i32) -> UsbdIsoPacketDesc {
@@ -497,14 +536,32 @@ mod tests {
     #[test]
     fn isochronous_data_keeps_received_packets_in_order() {
         let buffer = [1, 2, 3, 4, 5, 6, 7, 8];
-        let packets = [
-            packet(0, 2, 0),
-            packet(2, 2, -1),
-            packet(4, 0, 0),
-            packet(6, 2, 0),
-            packet(7, 4, 0),
-        ];
-        assert_eq!(isochronous_data(&buffer, &packets), [1, 2, 7, 8]);
+        let mut result = TsUrbIsochTransferResult {
+            start_frame: 0,
+            error_count: 1,
+            iso_packet: vec![
+                packet(0, 2, 0),
+                packet(2, 2, -1),
+                packet(4, 0, 0),
+                packet(6, 2, 0),
+                packet(7, 4, 0),
+            ],
+        };
+        assert_eq!(isochronous_data(&buffer, &mut result), [1, 2, 7, 8]);
+
+        // The packet past the end of the buffer is reported as failed, so the data still matches the
+        // successful packets' lengths.
+        let last = result.iso_packet.last().expect("five packets");
+        assert!(last.status < 0);
+        assert_eq!(last.length, 0);
+        assert_eq!(result.error_count, 2);
+        let successful: u32 = result
+            .iso_packet
+            .iter()
+            .filter(|packet| 0 <= packet.status)
+            .map(|packet| packet.length)
+            .sum();
+        assert_eq!(successful, 4);
     }
 
     #[test]
