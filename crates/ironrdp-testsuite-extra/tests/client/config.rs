@@ -1493,3 +1493,55 @@ fn with_audio_capture_disabled_clears_channel() {
         Some(AudioCaptureMode::Disabled)
     );
 }
+
+// oracle: spec crates/ironrdp-rdpeusb-native/README.md §Device selection
+#[test]
+fn property_set_selects_usb_devices() {
+    use ironrdp_client::usb::UsbDeviceMatch;
+
+    let mut properties = ironrdp_propertyset::PropertySet::new();
+    properties.set_usb_devices_to_redirect(r"USB\VID_2E8A&PID_000A\E66038B7135F2B2E;-USB\VID_046D&PID_C52B");
+
+    let config = complete_builder()
+        .with_property_set(&properties)
+        .expect("valid USB property")
+        .build()
+        .expect("valid configuration");
+    let usb = config.channels().usb.as_ref().expect("USB redirection is enabled");
+    assert_eq!(
+        usb.devices,
+        [UsbDeviceMatch::InstanceId(
+            r"USB\VID_2E8A&PID_000A\E66038B7135F2B2E".to_owned()
+        )]
+    );
+    assert_eq!(
+        usb.exclude,
+        [UsbDeviceMatch::VidPid {
+            vendor_id: 0x046d,
+            product_id: 0xc52b,
+        }]
+    );
+}
+
+// oracle: spec crates/ironrdp-rdpeusb-native/README.md §Device selection
+#[test]
+fn property_set_without_usb_devices_disables_usb() {
+    let mut properties = ironrdp_propertyset::PropertySet::new();
+    properties.set_usb_devices_to_redirect("{36fc9e60-c465-11cf-8056-444553540000}");
+
+    let config = complete_builder()
+        .with_property_set(&properties)
+        .expect("valid USB property")
+        .build()
+        .expect("valid configuration");
+    assert!(config.channels().usb.is_none());
+}
+
+// oracle: spec crates/ironrdp-rdpeusb-native/README.md §Device selection
+#[test]
+fn property_set_rejects_invalid_usb_devices() {
+    let mut properties = ironrdp_propertyset::PropertySet::new();
+    properties.set_usb_devices_to_redirect(r"USB\VID_XYZ&PID_0001");
+
+    assert!(ConfigBuilder::from_property_set(&properties).is_err());
+}

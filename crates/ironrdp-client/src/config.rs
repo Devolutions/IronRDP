@@ -3229,48 +3229,4 @@ mod tests {
         assert!(!builder.channels.webauthn);
         assert!(!builder.properties.redirect_webauthn().unwrap());
     }
-
-    #[cfg(feature = "usb")]
-    #[test]
-    fn property_set_selects_usb_devices() {
-        use ironrdp_rdpeusb_native::UsbDeviceMatch;
-
-        let mut properties = ironrdp_propertyset::PropertySet::new();
-        properties.set_usb_devices_to_redirect(r"USB\VID_2E8A&PID_000A\E66038B7135F2B2E;-USB\VID_046D&PID_C52B");
-
-        let builder = ConfigBuilder::from_property_set(&properties).expect("valid USB property");
-        let usb = builder.channels.usb.expect("USB redirection is enabled");
-        assert_eq!(
-            usb.devices,
-            [UsbDeviceMatch::InstanceId(
-                r"USB\VID_2E8A&PID_000A\E66038B7135F2B2E".to_owned()
-            )]
-        );
-        assert_eq!(
-            usb.exclude,
-            [UsbDeviceMatch::VidPid {
-                vendor_id: 0x046d,
-                product_id: 0xc52b,
-            }]
-        );
-    }
-
-    #[cfg(feature = "usb")]
-    #[test]
-    fn property_set_without_usb_devices_disables_usb() {
-        let mut properties = ironrdp_propertyset::PropertySet::new();
-        properties.set_usb_devices_to_redirect("{36fc9e60-c465-11cf-8056-444553540000}");
-
-        let builder = ConfigBuilder::from_property_set(&properties).expect("valid USB property");
-        assert!(builder.channels.usb.is_none());
-    }
-
-    #[cfg(feature = "usb")]
-    #[test]
-    fn property_set_rejects_invalid_usb_devices() {
-        let mut properties = ironrdp_propertyset::PropertySet::new();
-        properties.set_usb_devices_to_redirect(r"USB\VID_XYZ&PID_0001");
-
-        assert!(ConfigBuilder::from_property_set(&properties).is_err());
-    }
 }
