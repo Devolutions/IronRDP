@@ -1,9 +1,13 @@
 use core::net::SocketAddr;
 use core::num::{NonZeroU16, NonZeroUsize};
+#[cfg(feature = "gateway")]
+use core::pin::Pin;
 #[cfg(feature = "rdpdr")]
 use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "location")]
 use core::sync::atomic::{AtomicU8, Ordering as LocationOrdering};
+#[cfg(feature = "gateway")]
+use core::task::{Context, Poll};
 use core::time::Duration;
 use std::io;
 use std::sync::Arc;
@@ -60,6 +64,8 @@ use ironrdp_svc::SvcMessage;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
 use smallvec::SmallVec;
+#[cfg(feature = "gateway")]
+use tokio::io::ReadBuf;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -1122,7 +1128,33 @@ impl RdpClient {
                 },
 
                 #[cfg(feature = "gateway")]
-                Transport::Gateway(gw) => {
+                Transport::Gateway(gw) | Transport::GatewayRpch(gw) => {
+                    let use_rpch = matches!(&self.config.transport, Transport::GatewayRpch(_));
+                    let gateway_connect = async {
+                        if use_rpch {
+                            connect_gateway_rpch(
+                                &self.config,
+                                gw,
+                                &self.input_event_sender,
+                                &self.output_event_sender,
+                                cliprdr_factory,
+                                rdpdr_factory,
+                                reconnect_cookie,
+                            )
+                            .await
+                        } else {
+                            connect_gateway(
+                                &self.config,
+                                gw,
+                                &self.input_event_sender,
+                                &self.output_event_sender,
+                                cliprdr_factory,
+                                rdpdr_factory,
+                                reconnect_cookie,
+                            )
+                            .await
+                        }
+                    };
                     let connect_result = if gw.prefer_direct {
                         Box::pin(connect_preferring_direct(
                             &mut self.close_receiver,
@@ -1134,33 +1166,11 @@ impl RdpClient {
                                 rdpdr_factory,
                                 reconnect_cookie,
                             ),
-                            || {
-                                connect_gateway(
-                                    &self.config,
-                                    gw,
-                                    &self.input_event_sender,
-                                    &self.output_event_sender,
-                                    cliprdr_factory,
-                                    rdpdr_factory,
-                                    reconnect_cookie,
-                                )
-                            },
+                            || gateway_connect,
                         ))
                         .await
                     } else {
-                        Box::pin(cancelable_operation(
-                            connect_gateway(
-                                &self.config,
-                                gw,
-                                &self.input_event_sender,
-                                &self.output_event_sender,
-                                cliprdr_factory,
-                                rdpdr_factory,
-                                reconnect_cookie,
-                            ),
-                            &mut self.close_receiver,
-                        ))
-                        .await
+                        Box::pin(cancelable_operation(gateway_connect, &mut self.close_receiver)).await
                     };
 
                     match connect_result {
@@ -1686,6 +1696,33 @@ struct GatewayRedirectionPolicy {
 impl GatewayRedirectionPolicy {
     fn from_flags(flags: Option<u32>) -> Self {
         Self { flags }
+    }
+
+    fn from_rpch_flags(flags: ironrdp_mstsgu::GwRpchRedirectionFlags) -> Self {
+        if flags.enable_all {
+            return Self::from_flags(None);
+        }
+        let mut mapped_flags = 0;
+        if flags.disable_all {
+            mapped_flags |= HTTP_TUNNEL_REDIR_DISABLE_ALL;
+        }
+        #[cfg(feature = "rdpdr")]
+        if flags.drive_disabled {
+            mapped_flags |= HTTP_TUNNEL_REDIR_DISABLE_DRIVE;
+        }
+        #[cfg(feature = "rdpdr")]
+        if flags.printer_disabled {
+            mapped_flags |= HTTP_TUNNEL_REDIR_DISABLE_PRINTER;
+        }
+        #[cfg(feature = "rdpdr")]
+        if flags.port_disabled {
+            mapped_flags |= HTTP_TUNNEL_REDIR_DISABLE_PORT;
+        }
+        #[cfg(feature = "clipboard")]
+        if flags.clipboard_disabled {
+            mapped_flags |= HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD;
+        }
+        Self::from_flags(Some(mapped_flags))
     }
 
     #[cfg(feature = "clipboard")]
@@ -2646,17 +2683,7 @@ async fn connect_gateway(
     rdpdr_factory: RdpdrFactoryRef<'_>,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
 ) -> ConnectorResult<ConnectOutput> {
-    use ironrdp_mstsgu::GwConnectTarget;
-
-    // Target resource host/port come from Config::destination and are forwarded in the
-    // MS-TSGU channel-create packet (enables non-3389 RDP and VMConnect port 2179).
-    let gw_target = GwConnectTarget {
-        gw_endpoint: gw.endpoint.clone(),
-        gw_user: gw.username.clone(),
-        gw_pass: gw.password.clone(),
-        smart_card: None,
-        server: config.destination.name().to_owned(),
-    };
+    let gw_target = gateway_connect_target(config, gw);
 
     let (gw_stream, client_addr) = ironrdp_mstsgu::GwClient::connect_with_port_and_certificate_validation(
         &gw_target,
@@ -2669,8 +2696,150 @@ async fn connect_gateway(
     .map_err(|e| ironrdp_connector::custom_err!("GW connect", e))?;
 
     let tunnel_policy = gw_stream.tunnel_policy().clone();
+    finish_gateway_connection(
+        config,
+        gw_stream,
+        GatewayConnectionInfo {
+            client_addr,
+            tunnel_policy: GatewayTunnelPolicy::Http(tunnel_policy),
+        },
+        (input_sender, output_event_sender),
+        cliprdr_factory,
+        rdpdr_factory,
+        auto_reconnect_cookie,
+    )
+    .await
+}
+
+#[cfg(feature = "gateway")]
+async fn connect_gateway_rpch(
+    config: &Config,
+    gw: &crate::config::GatewayConfig,
+    input_sender: &RdpInputSender,
+    output_event_sender: &crate::output_channel::OutputEventSender,
+    cliprdr_factory: CliprdrFactoryRef<'_>,
+    rdpdr_factory: RdpdrFactoryRef<'_>,
+    auto_reconnect_cookie: Option<&ServerAutoReconnect>,
+) -> ConnectorResult<ConnectOutput> {
+    let gw_target = gateway_connect_target(config, gw);
+    let (gw_stream, client_addr) = ironrdp_mstsgu::RpchStream::connect_with_port_and_certificate_validation(
+        &gw_target,
+        &config.connector.client_name,
+        config.destination.port(),
+        config.certificate_validation(),
+        config.certificate_validation_callback().cloned(),
+    )
+    .await
+    .map_err(|e| ironrdp_connector::custom_err!("RPCH gateway connect", e))?;
+    let redirection_flags = gw_stream.redirection_flags();
+    let gw_stream = SyncGatewayStream(std::sync::Mutex::new(gw_stream));
+    finish_gateway_connection(
+        config,
+        gw_stream,
+        GatewayConnectionInfo {
+            client_addr,
+            tunnel_policy: GatewayTunnelPolicy::Rpch(redirection_flags),
+        },
+        (input_sender, output_event_sender),
+        cliprdr_factory,
+        rdpdr_factory,
+        auto_reconnect_cookie,
+    )
+    .await
+}
+
+#[cfg(feature = "gateway")]
+fn gateway_connect_target(config: &Config, gw: &crate::config::GatewayConfig) -> ironrdp_mstsgu::GwConnectTarget {
+    ironrdp_mstsgu::GwConnectTarget {
+        gw_endpoint: gw.endpoint.clone(),
+        gw_user: gw.username.clone(),
+        gw_pass: gw.password.clone(),
+        smart_card: None,
+        server: config.destination.name().to_owned(),
+    }
+}
+
+#[cfg(feature = "gateway")]
+enum GatewayTunnelPolicy {
+    Http(ironrdp_mstsgu::GwTunnelPolicy),
+    Rpch(ironrdp_mstsgu::GwRpchRedirectionFlags),
+}
+
+#[cfg(feature = "gateway")]
+struct GatewayConnectionInfo {
+    client_addr: SocketAddr,
+    tunnel_policy: GatewayTunnelPolicy,
+}
+
+#[cfg(feature = "gateway")]
+struct SyncGatewayStream<S>(std::sync::Mutex<S>);
+
+#[cfg(feature = "gateway")]
+impl<S> SyncGatewayStream<S> {
+    fn get_mut(&mut self) -> io::Result<&mut S> {
+        self.0
+            .get_mut()
+            .map_err(|_| io::Error::other("gateway stream mutex poisoned"))
+    }
+}
+
+#[cfg(feature = "gateway")]
+impl<S: AsyncRead + Unpin> AsyncRead for SyncGatewayStream<S> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut().get_mut() {
+            Ok(stream) => Pin::new(stream).poll_read(cx, buf),
+            Err(error) => Poll::Ready(Err(error)),
+        }
+    }
+}
+
+#[cfg(feature = "gateway")]
+impl<S: AsyncWrite + Unpin> AsyncWrite for SyncGatewayStream<S> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        match self.get_mut().get_mut() {
+            Ok(stream) => Pin::new(stream).poll_write(cx, buf),
+            Err(error) => Poll::Ready(Err(error)),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut().get_mut() {
+            Ok(stream) => Pin::new(stream).poll_flush(cx),
+            Err(error) => Poll::Ready(Err(error)),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut().get_mut() {
+            Ok(stream) => Pin::new(stream).poll_shutdown(cx),
+            Err(error) => Poll::Ready(Err(error)),
+        }
+    }
+}
+
+#[cfg(feature = "gateway")]
+async fn finish_gateway_connection<S>(
+    config: &Config,
+    gw_stream: S,
+    connection_info: GatewayConnectionInfo,
+    event_senders: (&RdpInputSender, &crate::output_channel::OutputEventSender),
+    cliprdr_factory: CliprdrFactoryRef<'_>,
+    rdpdr_factory: RdpdrFactoryRef<'_>,
+    auto_reconnect_cookie: Option<&ServerAutoReconnect>,
+) -> ConnectorResult<ConnectOutput>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+{
+    let GatewayConnectionInfo {
+        client_addr,
+        tunnel_policy,
+    } = connection_info;
+    let (input_sender, output_event_sender) = event_senders;
     #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
-    let gateway_redirection_policy = GatewayRedirectionPolicy::from_flags(tunnel_policy.redirection_flags);
+    let gateway_redirection_policy = match tunnel_policy {
+        GatewayTunnelPolicy::Http(policy) => GatewayRedirectionPolicy::from_flags(policy.redirection_flags),
+        GatewayTunnelPolicy::Rpch(flags) => GatewayRedirectionPolicy::from_rpch_flags(flags),
+    };
     #[cfg(feature = "clipboard")]
     let cliprdr_factory = {
         if gateway_redirection_policy.disables_clipboard() && cliprdr_factory.is_some() {
@@ -2726,7 +2895,10 @@ async fn connect_gateway(
     #[cfg(not(feature = "rdpdr"))]
     let rdpdr_policy = RdpdrDevicePolicy::ALLOW_ALL;
     #[cfg(not(any(feature = "clipboard", feature = "rdpdr")))]
-    let _ = tunnel_policy;
+    match tunnel_policy {
+        GatewayTunnelPolicy::Http(_policy) => {}
+        GatewayTunnelPolicy::Rpch(_flags) => {}
+    }
 
     let framed = ironrdp_tokio::TokioFramed::new(gw_stream);
 
@@ -5304,6 +5476,40 @@ mod tests {
                     | ironrdp_pdu::gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP
             )
         );
+    }
+
+    // oracle: regression #2202 (RPCH printer restrictions must not disable other device classes).
+    #[cfg(all(feature = "gateway", feature = "rdpdr"))]
+    #[test]
+    fn rpch_gateway_printer_restriction_preserves_other_device_classes() {
+        let policy = GatewayRedirectionPolicy::from_rpch_flags(ironrdp_mstsgu::GwRpchRedirectionFlags {
+            printer_disabled: true,
+            ..Default::default()
+        });
+
+        assert!(policy.disables_printer());
+        assert!(!policy.disables_drive());
+        assert!(!policy.disables_port());
+        assert!(!policy.disables_all());
+        #[cfg(feature = "clipboard")]
+        assert!(!policy.disables_clipboard());
+    }
+
+    // oracle: regression #2202 (RPCH port restrictions must not disable other device classes).
+    #[cfg(all(feature = "gateway", feature = "rdpdr"))]
+    #[test]
+    fn rpch_gateway_port_restriction_preserves_other_device_classes() {
+        let policy = GatewayRedirectionPolicy::from_rpch_flags(ironrdp_mstsgu::GwRpchRedirectionFlags {
+            port_disabled: true,
+            ..Default::default()
+        });
+
+        assert!(policy.disables_port());
+        assert!(!policy.disables_drive());
+        assert!(!policy.disables_printer());
+        assert!(!policy.disables_all());
+        #[cfg(feature = "clipboard")]
+        assert!(!policy.disables_clipboard());
     }
 
     #[cfg(all(feature = "gateway", feature = "clipboard", feature = "rdpdr"))]

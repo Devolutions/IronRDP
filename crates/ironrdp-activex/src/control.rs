@@ -3631,6 +3631,7 @@ fn active_x_transport_from_client_transport(
         Transport::RDCleanPath(rdcleanpath) => Ok(ActiveXTransport::RDCleanPath(rdcleanpath.clone())),
         // Named-pipe RDP (e.g. Windows Sandbox) is agent/desktop-client only.
         Transport::NamedPipe { .. } => Err("Windows named-pipe transport is not supported by the ActiveX host"),
+        Transport::GatewayRpch(_) => Err("RPC-over-HTTP gateway transport is not supported by the ActiveX host"),
     }
 }
 
@@ -11617,6 +11618,9 @@ impl Control {
                 // Rejected by `active_x_transport_from_client_transport` before settings apply.
                 Transport::NamedPipe { .. } => {
                     unreachable!("NamedPipe must fail RPC connect before compatibility settings")
+                }
+                Transport::GatewayRpch(_) => {
+                    unreachable!("GatewayRpch must fail RPC connect before compatibility settings")
                 }
             }
         }

@@ -34,9 +34,15 @@ The optional `video` feature accepts MS-RDPEVOR video optimized remoting and MS-
 Windows servers only keep the video channels open when the graphics pipeline is enabled.
 Decoded pictures are shown at their presentation time, scaled and clipped to the tracked geometry, and composited into the framebuffer like graphics pipeline updates.
 
-When the `gateway` feature is enabled and `Transport::Gateway` is selected, the client uses the MS-TSGU HTTPS WebSocket transport and falls back to legacy dual-channel HTTP when necessary.
+When the `gateway` feature is enabled, `Transport::Gateway` uses the MS-TSGU HTTPS WebSocket transport and falls back to legacy dual-channel HTTP when necessary.
 It handles `HTTP_REAUTH_MESSAGE` through a short-lived background reauthentication transport without disrupting the active data transport.
-The gateway path does not provide a live RPC-over-HTTP (RPCH) transport or RDG-UDP/DTLS side channel.
+Select `TransportKind::GatewayRpch` explicitly to use the authenticated MS-RPCH v2 and TS Proxy stream.
+RPCH verifies RPC packet integrity independently of TLS and HTTP authentication; the legacy gateway selection remains the default, and neither transport falls back to unsigned RPC.
+The RPCH stream recycles IN and OUT channels, keeps load-balancer cookies and watches the IN channel for gateway errors.
+It accepts gateway consent messages, logs service messages and answers reauthentication on a separate authenticated connection.
+Gateway UDP/DTLS remains unsupported.
+An RPCH session through one Windows RD Gateway has been tested, including IN-channel recycling with a reduced channel lifetime.
+Dedicated TCP-channel tests through that gateway also verified OUT-channel recycling, consent and service messages, and repeated reauthentication during a 1.25 GiB transfer.
 
 For the end-user RDP client binary, see [`ironrdp-viewer`](../ironrdp-viewer).
 

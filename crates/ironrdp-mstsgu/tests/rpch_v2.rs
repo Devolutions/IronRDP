@@ -18,6 +18,48 @@ const ASSOCIATION_GROUP_ID: RtsCookie = RtsCookie::new([0x40; RtsCookie::SIZE]);
 const RECEIVE_WINDOW_SIZE: u32 = 128 * 1024;
 const CONNECTION_TIMEOUT: u32 = 120_000;
 const IN_RECYCLE_CONNECTION_TIMEOUT: u32 = 240_000;
+const IN_R2_A4: [u8; 28] = [
+    5, 0, 20, 3, 16, 0, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 13, 0, 0, 0, 0, 0, 0, 0,
+];
+
+#[test]
+fn in_r2_recycling_retains_the_negotiated_window_and_timeout() {
+    // oracle: spec MS-RPCH §2.2.4.21 and §3.2.2.5.5.
+    let successor = RtsCookie::new([0x50; RtsCookie::SIZE]);
+    let mut setup = opened_setup(0);
+    let mut flow_control = setup.flow_control().expect("flow control");
+    let mut ping = setup
+        .ping_schedule(Duration::ZERO, Duration::ZERO)
+        .expect("ping schedule");
+    let mut recycling = setup.channel_recycling().expect("recycling");
+    recycling.start_in_recycling(successor).expect("IN_R2/A1");
+    recycling.receive_in_recycle_a4(&IN_R2_A4).expect("IN_R2/A4");
+    assert_eq!(recycling.default_in_channel_cookie(), successor);
+    assert_eq!(recycling.peer_receive_window_size(), RECEIVE_WINDOW_SIZE);
+    recycling
+        .finish_in_recycling(&mut flow_control, &mut ping)
+        .expect("finish recycling");
+    assert_eq!(flow_control.send_available_window(), RECEIVE_WINDOW_SIZE);
+    assert!(!ping.ping_due(Duration::from_millis(u64::from(CONNECTION_TIMEOUT - 1))));
+    assert!(ping.ping_due(Duration::from_millis(u64::from(CONNECTION_TIMEOUT))));
+}
+
+#[test]
+fn in_r2_recycling_rejects_a_destination_other_than_the_client() {
+    // oracle: spec MS-RPCH §2.2.4.21: Destination MUST be FDClient (0).
+    let mut setup = opened_setup(0);
+    let mut recycling = setup.channel_recycling().expect("recycling");
+    recycling
+        .start_in_recycling(RtsCookie::new([0x50; RtsCookie::SIZE]))
+        .expect("IN_R2/A1");
+    let mut invalid = IN_R2_A4;
+    invalid[24] = 1;
+    assert!(matches!(
+        recycling.receive_in_recycle_a4(&invalid),
+        Err(ironrdp_mstsgu::rpc::RpchChannelRecycleError::Rts(_))
+    ));
+    assert_eq!(recycling.in_state(), RpchInChannelRecycleState::Failed);
+}
 
 #[test]
 fn conn_a1_and_conn_b1_encode_exact_rts_vectors() {

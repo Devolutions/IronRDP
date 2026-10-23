@@ -50,6 +50,10 @@ name = "rpch_session"
 path = "tests/rpch_session.rs"
 
 [[test]]
+name = "rpch_client"
+path = "tests/rpch_client.rs"
+
+[[test]]
 name = "tunnel_policy"
 path = "tests/tunnel_policy.rs"
 

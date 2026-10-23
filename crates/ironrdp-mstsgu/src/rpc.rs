@@ -1,10 +1,9 @@
 //! DCE/RPC common-header, fragment, NTLM association, and RPCH v2 setup codecs.
 //!
-//! This module frames connection-oriented DCE/RPC PDUs and the initial RPC-over-HTTP v2 RTS exchange.
-//! It is not a live RPC-over-HTTP transport.
-//! The staged TsProxy NDR control codecs do not provide a live RPC-over-HTTP transport.
-//! Caller-owned packet-integrity framing is available, but authentication-provider processing and the RPCH client
-//! belong in later work.
+//! This module provides connection-oriented DCE/RPC and RPC-over-HTTP v2 codecs, plus client-side NTLM
+//! association and packet-integrity primitives.
+//! The separately selected [`crate::RpchClient`] provides the live HTTPS channel transport.
+//! Callers still own association sequencing, TS Proxy calls, and verification of received fragments.
 //!
 //! [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 //! [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
@@ -14,7 +13,8 @@ use core::{fmt, time::Duration};
 
 use sspi::{
     AuthIdentity, AuthIdentityBuffers, BufferType, ClientRequestFlags, CredentialUse, DataRepresentation,
-    InitializeSecurityContextResult, Ntlm, SecurityBuffer, SecurityStatus, Sspi as _, SspiImpl as _, Username,
+    InitializeSecurityContextResult, Ntlm, SecurityBuffer, SecurityBufferRef, SecurityStatus, Sspi as _, SspiImpl as _,
+    Username,
 };
 use uuid::Uuid;
 
@@ -66,10 +66,19 @@ pub const PFC_LAST_FRAG: u8 = 0x02;
 ///
 /// For other PDU types, this bit is `PFC_PENDING_CANCEL`.
 pub const PFC_SUPPORT_HEADER_SIGN: u8 = 0x04;
+/// Concurrent multiplexing support on bind-related PDUs ([C706] 12.6.3.1).
+///
+/// TS Proxy keeps `TsProxySetupReceivePipe` outstanding while issuing other calls, which a
+/// non-multiplexed association rejects with `nca_s_proto_error`.
+pub const PFC_CONC_MPX: u8 = 0x10;
 /// Packet-integrity authentication level.
 ///
 /// [MS-RPCE] 2.2.2.12.
 pub const RPC_AUTH_LEVEL_PACKET_INTEGRITY: u8 = 5;
+/// NTLM RPC authentication service (`RPC_C_AUTHN_WINNT`).
+pub const RPC_AUTH_TYPE_WINNT: u8 = 10;
+/// NTLM message-signature size used by packet-integrity authentication.
+pub const RPC_NTLM_VERIFIER_LENGTH: u16 = 16;
 
 /// DCE/RPC security-trailer size.
 ///
@@ -125,7 +134,6 @@ pub const DEFAULT_FRAGMENT_SIZE: u16 = 0x10b8;
 pub const MAX_PENDING_RPC_FRAGMENTS: usize = 16;
 
 const MAXIMUM_RESPONSE_ALLOC_HINT: usize = 0x7fff_ffff;
-const RPC_AUTH_TYPE_WINNT: u8 = 0x0a;
 const RPC_AUTH_CONTEXT_ID: u32 = 1;
 const RTS_HEADER_SIZE: usize = RPC_COMMON_HEADER_SIZE + 4 /* flags and command count */;
 const RTS_PFC_FLAGS: u8 = PFC_FIRST_FRAG | PFC_LAST_FRAG;
@@ -134,6 +142,7 @@ const RTS_FLAG_PING: u16 = 0x0001;
 const RTS_FLAG_OTHER_CMD: u16 = 0x0002;
 const RTS_FLAG_RECYCLE_CHANNEL: u16 = 0x0004;
 const RTS_FLAG_OUT_CHANNEL: u16 = 0x0010;
+const RTS_FLAG_EOF: u16 = 0x0020;
 const RTS_VERSION: u32 = 1;
 const RTS_COMMAND_RECEIVE_WINDOW_SIZE: u32 = 0;
 const RTS_COMMAND_FLOW_CONTROL_ACK: u32 = 1;
@@ -142,11 +151,13 @@ const RTS_COMMAND_COOKIE: u32 = 3;
 const RTS_COMMAND_CHANNEL_LIFETIME: u32 = 4;
 const RTS_COMMAND_CLIENT_KEEPALIVE: u32 = 5;
 const RTS_COMMAND_VERSION: u32 = 6;
+const RTS_COMMAND_EMPTY: u32 = 7;
 const RTS_COMMAND_ASSOCIATION_GROUP_ID: u32 = 12;
 const RTS_COMMAND_DESTINATION: u32 = 13;
 const RTS_COMMAND_ANCE: u32 = 10;
 const RTS_DESTINATION_FD_CLIENT: u32 = 0;
 const RTS_DESTINATION_FD_SERVER: u32 = 2;
+const RTS_DESTINATION_FD_OUT_PROXY: u32 = 3;
 const RTS_MIN_RECEIVE_WINDOW_SIZE: u32 = 8 * 1024;
 const RTS_MAX_RECEIVE_WINDOW_SIZE: u32 = 256 * 1024;
 const RTS_MIN_CONNECTION_TIMEOUT: u32 = 120_000;
@@ -393,7 +404,7 @@ impl fmt::Display for RpcPduError {
             }
             Self::EmptyAuthenticationToken => f.write_str("empty rpc authentication token"),
             Self::UnalignedSecurityTrailer { offset } => {
-                write!(f, "rpc security trailer at offset {offset} is not 16-byte aligned")
+                write!(f, "rpc security trailer at offset {offset} is not 4-byte aligned")
             }
             Self::AuthenticationVerifierLength { expected, actual } => {
                 write!(
@@ -670,6 +681,7 @@ enum RpcNtlmAuthState {
     Initial,
     AwaitingChallenge,
     Established,
+    Failed,
 }
 
 impl RpcNtlmAuth {
@@ -729,6 +741,130 @@ impl RpcNtlmAuth {
     /// Whether the Type-3 token has completed this NTLM association.
     pub fn is_complete(&self) -> bool {
         self.state == RpcNtlmAuthState::Established
+    }
+
+    /// Signs one complete NTLM-authenticated DCE/RPC fragment in place.
+    ///
+    /// `authentication` must match the security trailer, and `sequence_number` is
+    /// managed by the caller for the lifetime of the RPC association.
+    /// When header signing was negotiated, the PDU header, padded body, and security trailer are signed.
+    /// Otherwise only the padded body is signed, as required by [MS-RPCE] 3.3.1.5.2.2.
+    /// Any error invalidates an established context, preventing further signing or verification.
+    pub fn sign_fragment(
+        &mut self,
+        fragment: &mut [u8],
+        authentication: RpcAuthenticationInfo,
+        sequence_number: u32,
+        supports_header_signing: bool,
+    ) -> Result<(), Error> {
+        if !self.is_complete() {
+            return Err(Error::new("rpc ntlm context is not established", GwErrorKind::Connect));
+        }
+        self.state = RpcNtlmAuthState::Failed;
+        let mut buffers = Self::signature_buffers(fragment, authentication, supports_header_signing)?;
+        if let Err(error) = self.ntlm.make_signature(0, &mut buffers, sequence_number) {
+            return Err(Error::custom("sign rpc ntlm fragment", error));
+        }
+        self.state = RpcNtlmAuthState::Established;
+        Ok(())
+    }
+
+    /// Verifies one complete NTLM-authenticated DCE/RPC fragment in place.
+    ///
+    /// `authentication` must match the security trailer, and `sequence_number` is
+    /// managed by the caller for the lifetime of the RPC association.
+    /// When header signing was negotiated, the PDU header, padded body, and security trailer are verified.
+    /// Otherwise only the padded body is verified, as required by [MS-RPCE] 3.3.1.5.2.2.
+    /// Any error invalidates an established context, preventing further signing or verification.
+    pub fn verify_fragment(
+        &mut self,
+        fragment: &mut [u8],
+        authentication: RpcAuthenticationInfo,
+        sequence_number: u32,
+        supports_header_signing: bool,
+    ) -> Result<(), Error> {
+        if !self.is_complete() {
+            return Err(Error::new("rpc ntlm context is not established", GwErrorKind::Connect));
+        }
+        self.state = RpcNtlmAuthState::Failed;
+        let mut buffers = Self::signature_buffers(fragment, authentication, supports_header_signing)?;
+        if let Err(error) = self.ntlm.verify_signature(&mut buffers, sequence_number) {
+            return Err(Error::custom("verify rpc ntlm fragment", error));
+        }
+        self.state = RpcNtlmAuthState::Established;
+        Ok(())
+    }
+
+    fn signature_buffers(
+        fragment: &mut [u8],
+        authentication: RpcAuthenticationInfo,
+        supports_header_signing: bool,
+    ) -> Result<[SecurityBufferRef<'_>; 2], Error> {
+        if authentication.auth_type != RPC_AUTH_TYPE_WINNT
+            || authentication.auth_level != RPC_AUTH_LEVEL_PACKET_INTEGRITY
+            || authentication.verifier_length != RPC_NTLM_VERIFIER_LENGTH
+        {
+            return Err(Error::new(
+                "invalid rpc ntlm authentication parameters",
+                GwErrorKind::Connect,
+            ));
+        }
+
+        let (body_start, security_trailer_offset) = {
+            let parsed = decode_rpc_authenticated_fragment(fragment, u16::MAX)
+                .map_err(|error| Error::custom("validate rpc ntlm fragment", error))?;
+            let header = parsed.header();
+            let trailer = parsed.security_trailer();
+            if usize::from(header.fragment_length()) != fragment.len()
+                || trailer.auth_type != authentication.auth_type
+                || trailer.auth_level != authentication.auth_level
+                || trailer.auth_context_id != authentication.auth_context_id
+                || header.auth_length() != authentication.verifier_length
+            {
+                return Err(Error::new(
+                    "rpc ntlm fragment authentication mismatch",
+                    GwErrorKind::Decode,
+                ));
+            }
+            // [C706] 12.6.4 places stub data after the PDU-specific header and any request object UUID.
+            let has_object = header.pfc_flags() & 0x80 != 0; // PFC_OBJECT_UUID
+            let body_start = RPC_COMMON_HEADER_SIZE
+                + match header.ptype() {
+                    PTYPE_REQUEST => {
+                        RPC_REQUEST_HEADER_SIZE
+                            + if has_object {
+                                16 /* object */
+                            } else {
+                                0
+                            }
+                    }
+                    PTYPE_RESPONSE if !has_object => RPC_RESPONSE_HEADER_SIZE,
+                    PTYPE_FAULT if !has_object => RPC_FAULT_HEADER_SIZE,
+                    _ => {
+                        return Err(Error::new(
+                            "unsupported rpc ntlm pdu type or flags",
+                            GwErrorKind::Decode,
+                        ));
+                    }
+                };
+            if parsed.body_end < body_start {
+                return Err(Error::new("truncated rpc ntlm pdu header", GwErrorKind::Decode));
+            }
+            (body_start, parsed.security_trailer_offset)
+        };
+
+        let verifier_offset = security_trailer_offset + RPC_SECURITY_TRAILER_SIZE;
+        let data_start = if supports_header_signing { 0 } else { body_start };
+        let (signed_data, verifier) = fragment.split_at_mut(verifier_offset);
+        let data_end = if supports_header_signing {
+            verifier_offset
+        } else {
+            security_trailer_offset
+        };
+        Ok([
+            SecurityBufferRef::token_buf(verifier),
+            SecurityBufferRef::data_buf(&mut signed_data[data_start..data_end]),
+        ])
     }
 
     fn next_token(&mut self, input: Option<&[u8]>) -> Result<Vec<u8>, Error> {
@@ -888,7 +1024,7 @@ impl RpcCommonHeader {
     ///
     /// This is used by stream transports to validate a fragment length before
     /// buffering the whole PDU.
-    fn decode_prefix(source: &[u8]) -> Result<Self, RpcPduError> {
+    pub(crate) fn decode_prefix(source: &[u8]) -> Result<Self, RpcPduError> {
         let header = source.get(..RPC_COMMON_HEADER_SIZE).ok_or(RpcPduError::Truncated {
             actual: source.len(),
             required: RPC_COMMON_HEADER_SIZE,
@@ -1286,7 +1422,8 @@ pub fn decode_rpc_authenticated_fragment(
             auth_length: header.auth_length(),
         });
     }
-    if !(security_trailer_offset - RPC_COMMON_HEADER_SIZE).is_multiple_of(16) {
+    // [C706] 12.6.3 requires only 4-byte alignment; Windows pads response stubs relative to the stub start.
+    if !(security_trailer_offset - RPC_COMMON_HEADER_SIZE).is_multiple_of(4) {
         return Err(RpcPduError::UnalignedSecurityTrailer {
             offset: security_trailer_offset,
         });
@@ -1690,6 +1827,7 @@ pub fn prepare_rpc_authenticated_bind(
     let body = encode_rpc_bind_body(fragment_sizes, association_group_id, presentation_contexts)?;
     let pfc_flags = PFC_FIRST_FRAG
         | PFC_LAST_FRAG
+        | PFC_CONC_MPX
         | if supports_header_signing {
             PFC_SUPPORT_HEADER_SIGN
         } else {
@@ -2306,7 +2444,7 @@ fn encode_authenticated_pdu(ptype: u8, call_id: u32, mut body: Vec<u8>, token: &
     );
     let header = RpcCommonHeader::encode(
         ptype,
-        PFC_FIRST_FRAG | PFC_LAST_FRAG | PFC_SUPPORT_HEADER_SIGN,
+        PFC_FIRST_FRAG | PFC_LAST_FRAG | PFC_CONC_MPX | PFC_SUPPORT_HEADER_SIGN,
         call_id,
         body.len(),
         auth_length,
@@ -2496,9 +2634,12 @@ fn decode_syntax_identifier(source: &[u8]) -> Result<RpcSyntaxIdentifier, RpcPdu
     ))
 }
 
-#[expect(
-    dead_code,
-    reason = "the control codecs are staged before an RPC transport consumes them"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "some TS Proxy control codecs are not wired into the live client path"
+    )
 )]
 pub(crate) mod tsgu {
     use core::fmt;
@@ -2543,6 +2684,8 @@ pub(crate) mod tsgu {
     const TSG_PACKET_TYPE_QUARREQUEST: u32 = 0x0000_5152;
     const TSG_PACKET_TYPE_RESPONSE: u32 = 0x0000_5052;
     const TSG_PACKET_TYPE_QUARENC_RESPONSE: u32 = 0x0000_4552;
+    const TSG_PACKET_TYPE_CAPS_RESPONSE: u32 = 0x0000_4350;
+    const TSG_PACKET_TYPE_REAUTH: u32 = 0x0000_5250;
     const TSG_PACKET_TYPE_MSGREQUEST: u32 = 0x0000_4752;
     const TSG_PACKET_TYPE_MESSAGE: u32 = 0x0000_4750;
     const TSG_TUNNEL_CALL_ASYNC_MSG_REQUEST: u32 = 1;
@@ -2553,7 +2696,19 @@ pub(crate) mod tsgu {
     const TSG_CAPABILITY_TYPE_NAP: u32 = 1;
     const TSG_NAP_CAPABILITY_QUAR_SOH: u32 = 0x0000_0001;
     const TSG_NAP_CAPABILITY_IDLE_TIMEOUT: u32 = 0x0000_0002;
-    const SUPPORTED_CAPABILITIES: u32 = TSG_NAP_CAPABILITY_QUAR_SOH | TSG_NAP_CAPABILITY_IDLE_TIMEOUT;
+    /// The RDG server presents a consent message in its `TsProxyCreateTunnel` response.
+    pub(crate) const TSG_MESSAGING_CAP_CONSENT_SIGN: u32 = 0x0000_0004;
+    /// The RDG server delivers administrative messages through `TsProxyMakeTunnelCall`.
+    pub(crate) const TSG_MESSAGING_CAP_SERVICE_MSG: u32 = 0x0000_0008;
+    /// The RDG server requests reauthentication through `TsProxyMakeTunnelCall`.
+    pub(crate) const TSG_MESSAGING_CAP_REAUTH: u32 = 0x0000_0010;
+    /// Capabilities the RPCH client advertises in `TsProxyCreateTunnel` ([MS-TSGU] 2.2.5.2.20 through 2.2.5.2.23).
+    pub(crate) const TSG_CLIENT_CAPABILITIES: u32 = TSG_NAP_CAPABILITY_QUAR_SOH
+        | TSG_NAP_CAPABILITY_IDLE_TIMEOUT
+        | TSG_MESSAGING_CAP_CONSENT_SIGN
+        | TSG_MESSAGING_CAP_SERVICE_MSG
+        | TSG_MESSAGING_CAP_REAUTH;
+    const SUPPORTED_CAPABILITIES: u32 = TSG_CLIENT_CAPABILITIES;
     const TSG_PROTOCOL_VERSION: u16 = 1;
     const E_PROXY_QUARANTINE_ACCESSDENIED: u32 = 0x8007_59ed;
     const MAX_CAPABILITIES: usize = 32;
@@ -2747,26 +2902,52 @@ pub(crate) mod tsgu {
 
     /// NDR32 `TsProxyCreateTunnel` request stub.
     ///
-    /// [MS-TSGU] 2.2.9.2.1.2 and 3.2.6.1.1.
+    /// [MS-TSGU] 2.2.9.2.1.2, 2.2.9.2.1.11 and 3.2.6.1.1.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub(crate) struct TsProxyCreateTunnelRequest {
         capabilities: u32,
+        reauth_tunnel_context: Option<u64>,
     }
 
     impl TsProxyCreateTunnelRequest {
         pub(crate) const fn new(capabilities: u32) -> Self {
-            Self { capabilities }
+            Self {
+                capabilities,
+                reauth_tunnel_context: None,
+            }
+        }
+
+        /// Opens the tunnel of a reauthentication connection for the tunnel the server named in its
+        /// reauthentication message ([MS-TSGU] 3.6.4).
+        pub(crate) const fn reauthenticate(capabilities: u32, tunnel_context: u64) -> Self {
+            Self {
+                capabilities,
+                reauth_tunnel_context: Some(tunnel_context),
+            }
         }
 
         pub(crate) fn encode(self) -> Result<Vec<u8>, RpcStubError> {
             validate_capabilities(self.capabilities)?;
-            let mut output = Vec::with_capacity(48);
-            output.extend_from_slice(&TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes()); // packetId
-            output.extend_from_slice(&TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes()); // union switch
-            encode_ndr_pointer(&mut output, 0); // packetVersionCaps
+            let mut output = Vec::with_capacity(64);
+            if let Some(tunnel_context) = self.reauth_tunnel_context {
+                output.extend_from_slice(&TSG_PACKET_TYPE_REAUTH.to_le_bytes()); // packetId
+                output.extend_from_slice(&TSG_PACKET_TYPE_REAUTH.to_le_bytes()); // union switch
+                encode_ndr_pointer(&mut output, 0); // packetReauth
+                // TSG_PACKET_REAUTH starts with an unsigned __int64, so its referent is 8-byte aligned.
+                output.extend_from_slice(&0u32.to_le_bytes()); // NDR alignment
+                output.extend_from_slice(&tunnel_context.to_le_bytes()); // tunnelContext
+                output.extend_from_slice(&TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes()); // packetId
+                output.extend_from_slice(&TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes()); // union switch
+                encode_ndr_pointer(&mut output, 1); // packetVersionCaps
+            } else {
+                output.extend_from_slice(&TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes()); // packetId
+                output.extend_from_slice(&TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes()); // union switch
+                encode_ndr_pointer(&mut output, 0); // packetVersionCaps
+            }
+            let caps_referent = if self.reauth_tunnel_context.is_some() { 2 } else { 1 };
             output.extend_from_slice(&TSG_COMPONENT_ID.to_le_bytes()); // componentId
             output.extend_from_slice(&TSG_PACKET_TYPE_VERSIONCAPS_ID.to_le_bytes()); // packetId
-            encode_ndr_pointer(&mut output, 1); // TSGCaps
+            encode_ndr_pointer(&mut output, caps_referent); // TSGCaps
             output.extend_from_slice(&1u32.to_le_bytes()); // numCapabilities
             output.extend_from_slice(&1u16.to_le_bytes()); // majorVersion
             output.extend_from_slice(&1u16.to_le_bytes()); // minorVersion
@@ -3091,18 +3272,21 @@ pub(crate) mod tsgu {
         read_u32(source, 0)
     }
 
-    /// Decoded non-messaging `TsProxyCreateTunnel` response values.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    /// Decoded `TsProxyCreateTunnel` response values.
+    #[derive(Clone, Debug, PartialEq, Eq)]
     pub(crate) struct TsProxyCreateTunnelResponse {
         pub(crate) tunnel_context: NonNullRpcContextHandle,
         pub(crate) tunnel_id: u32,
         pub(crate) nonce: Uuid,
         pub(crate) capabilities: u32,
+        /// Consent message from a `TSG_PACKET_CAPS_RESPONSE`, or [`TsProxyTunnelMessage::None`].
+        pub(crate) message: TsProxyTunnelMessage,
     }
 
-    /// Decodes a non-messaging `TsProxyCreateTunnel` response stub.
+    /// Decodes a `TsProxyCreateTunnel` response stub.
     ///
-    /// Consent-signing `TSG_PACKET_CAPS_RESPONSE` stubs are deliberately excluded.
+    /// Accepts `TSG_PACKET_QUARENC_RESPONSE` and, when consent signing is negotiated,
+    /// `TSG_PACKET_CAPS_RESPONSE` ([MS-TSGU] 2.2.9.2.1.5 and 2.2.9.2.1.6).
     pub(crate) fn decode_tsgu_create_tunnel_response(
         source: &[u8],
     ) -> Result<TsProxyCreateTunnelResponse, RpcStubError> {
@@ -3110,7 +3294,7 @@ pub(crate) mod tsgu {
             4 /* TSGPacketResponse */ + RpcContextHandle::SIZE /* tunnelContext */ + 4 /* tunnelId */ + 4 /* HRESULT */;
         validate_hresult(read_trailing_hresult(source, MINIMUM_RESPONSE_SIZE)?)?;
 
-        const FIXED_SIZE: usize = 4 /* TSGPacketResponse */
+        const QUARENC_FIXED_SIZE: usize = 4 /* TSGPacketResponse */
             + 4 /* packetId */
             + 4 /* union switch */
             + 4 /* packetQuarEncResponse */
@@ -3119,12 +3303,31 @@ pub(crate) mod tsgu {
             + 4 /* certChainData */
             + 16 /* nonce */
             + 4; /* versionCaps */
-        let fixed = source.get(..FIXED_SIZE).ok_or(RpcStubError::ResponseLength {
+        const CAPS_FIXED_SIZE: usize = QUARENC_FIXED_SIZE
+            + 4 /* msgID */
+            + 4 /* msgType */
+            + 4 /* isMsgPresent */
+            + 4 /* messagePacket union switch */
+            + 4; /* messagePacket pointer */
+        let caps_response = read_u32(source, 4)? == TSG_PACKET_TYPE_CAPS_RESPONSE;
+        let fixed_size = if caps_response {
+            CAPS_FIXED_SIZE
+        } else {
+            QUARENC_FIXED_SIZE
+        };
+        let fixed = source.get(..fixed_size).ok_or(RpcStubError::ResponseLength {
             actual: source.len(),
-            expected: FIXED_SIZE,
+            expected: fixed_size,
         })?;
         require_ndr_pointer(read_u32(fixed, 0)?)?;
-        validate_packet(fixed, TSG_PACKET_TYPE_QUARENC_RESPONSE)?;
+        validate_packet(
+            fixed,
+            if caps_response {
+                TSG_PACKET_TYPE_CAPS_RESPONSE
+            } else {
+                TSG_PACKET_TYPE_QUARENC_RESPONSE
+            },
+        )?;
         require_ndr_pointer(read_u32(fixed, 12)?)?;
         let flags = read_u32(fixed, 16)?;
         if flags != 0 {
@@ -3142,8 +3345,29 @@ pub(crate) mod tsgu {
         }
         let nonce = Uuid::from_bytes_le(fixed[28..44].try_into().map_err(|_| RpcStubError::LengthOverflow)?);
         require_ndr_pointer(read_u32(fixed, 44)?)?;
+        let consent = if caps_response {
+            let message_type = read_u32(fixed, 52)?;
+            if !matches!(message_type, TSG_ASYNC_MESSAGE_CONSENT | TSG_ASYNC_MESSAGE_SERVICE) {
+                return Err(RpcStubError::InvalidMessageType { actual: message_type });
+            }
+            let message_present = decode_ndr_boolean(fixed, 56)?;
+            let message_switch = read_u32(fixed, 60)?;
+            if message_switch != message_type {
+                return Err(RpcStubError::UnexpectedMessageSwitch {
+                    expected: message_type,
+                    actual: message_switch,
+                });
+            }
+            let message_pointer = read_u32(fixed, 64)?;
+            if message_present {
+                require_ndr_pointer(message_pointer)?;
+            }
+            Some((message_type, message_present, message_pointer != 0))
+        } else {
+            None
+        };
 
-        let mut offset = FIXED_SIZE;
+        let mut offset = fixed_size;
         if certificate_chain_pointer != 0 {
             let (certificate, next_offset) = decode_ndr_utf16_string(source, offset, certificate_chain_len)?;
             if !certificate.is_empty() && certificate.contains('\0') {
@@ -3236,6 +3460,17 @@ pub(crate) mod tsgu {
             offset = offset.checked_add(12).ok_or(RpcStubError::LengthOverflow)?;
         }
 
+        let mut message = TsProxyTunnelMessage::None;
+        if let Some((message_type, message_present, message_pointer_present)) = consent {
+            if message_pointer_present {
+                let (decoded, next_offset) = decode_string_message(source, offset, message_type)?;
+                offset = next_offset;
+                if message_present {
+                    message = decoded;
+                }
+            }
+        }
+
         const TRAILER_SIZE: usize = RpcContextHandle::SIZE /* tunnelContext */ + 4 /* tunnelId */ + 4 /* HRESULT */;
         let response_size = offset.checked_add(TRAILER_SIZE).ok_or(RpcStubError::LengthOverflow)?;
         if source.len() != response_size {
@@ -3253,6 +3488,7 @@ pub(crate) mod tsgu {
             tunnel_id,
             nonce,
             capabilities,
+            message,
         })
     }
 
@@ -3469,90 +3705,72 @@ pub(crate) mod tsgu {
                 Ok(TsProxyTunnelMessage::Reauthenticate { tunnel_context })
             }
             TSG_ASYNC_MESSAGE_CONSENT | TSG_ASYNC_MESSAGE_SERVICE => {
-                const STRING_FIXED_SIZE: usize = 4 /* isDisplayMandatory */
-                    + 4 /* isConsentMandatory */
-                    + 4 /* msgBytes */
-                    + 4; /* msgBuffer */
-                let string_start = FIXED_SIZE;
-                let string_end = string_start
-                    .checked_add(STRING_FIXED_SIZE)
+                let (message, message_end) = decode_string_message(source, FIXED_SIZE, message_type)?;
+                let response_size = message_end
+                    .checked_add(4 /* HRESULT */)
                     .ok_or(RpcStubError::LengthOverflow)?;
-                let string_fixed = source
-                    .get(string_start..string_end)
-                    .ok_or(RpcStubError::ResponseLength {
-                        actual: source.len(),
-                        expected: string_end,
-                    })?;
-                let display_mandatory = decode_ndr_boolean(string_fixed, 0)?;
-                let consent_mandatory = decode_ndr_boolean(string_fixed, 4)?;
-                let message_chars =
-                    usize::try_from(read_u32(string_fixed, 8)?).map_err(|_| RpcStubError::LengthOverflow)?;
-                if message_chars > MAX_MESSAGE_CHARS {
-                    return Err(RpcStubError::MessageTooLong { actual: message_chars });
-                }
-                let message_pointer = read_u32(string_fixed, 12)?;
-                if message_chars != 0 {
-                    require_ndr_pointer(message_pointer)?;
-                }
-
-                let (message_bytes, response_size) = if message_pointer == 0 {
-                    (&[][..], string_end.checked_add(4).ok_or(RpcStubError::LengthOverflow)?)
-                } else {
-                    let array_count =
-                        usize::try_from(read_u32(source, string_end)?).map_err(|_| RpcStubError::LengthOverflow)?;
-                    if array_count != message_chars {
-                        return Err(RpcStubError::InvalidNdrArrayLength {
-                            actual: u32::try_from(array_count).map_err(|_| RpcStubError::LengthOverflow)?,
-                            expected: u32::try_from(message_chars).map_err(|_| RpcStubError::LengthOverflow)?,
-                        });
-                    }
-                    let message_start = string_end.checked_add(4).ok_or(RpcStubError::LengthOverflow)?;
-                    let message_len = message_chars.checked_mul(2).ok_or(RpcStubError::LengthOverflow)?;
-                    let message_end = message_start
-                        .checked_add(message_len)
-                        .ok_or(RpcStubError::LengthOverflow)?;
-                    let response_size = padded_to_ndr(message_end, 4)?
-                        .checked_add(4 /* HRESULT */)
-                        .ok_or(RpcStubError::LengthOverflow)?;
-                    let message_bytes = source
-                        .get(message_start..message_end)
-                        .ok_or(RpcStubError::ResponseLength {
-                            actual: source.len(),
-                            expected: message_end,
-                        })?;
-                    (message_bytes, response_size)
-                };
                 if source.len() != response_size {
                     return Err(RpcStubError::ResponseLength {
                         actual: source.len(),
                         expected: response_size,
                     });
                 }
-                if message_chars != 0 && message_bytes[message_bytes.len() - 2..] != [0, 0] {
-                    return Err(RpcStubError::UnterminatedNdrString);
-                }
-                let message_units: Vec<u16> = message_bytes
-                    .chunks_exact(2)
-                    .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
-                    .collect();
-                let text = String::from_utf16(&message_units[..message_units.len().saturating_sub(1)])
-                    .map_err(|_| RpcStubError::InvalidUtf16)?;
-
-                Ok(if message_type == TSG_ASYNC_MESSAGE_CONSENT {
-                    TsProxyTunnelMessage::Consent {
-                        display_mandatory,
-                        consent_mandatory,
-                        text,
-                    }
-                } else {
-                    TsProxyTunnelMessage::Service {
-                        display_mandatory,
-                        text,
-                    }
-                })
+                Ok(message)
             }
             actual => Err(RpcStubError::InvalidMessageType { actual }),
         }
+    }
+
+    /// Decodes a `TSG_PACKET_STRING_MESSAGE` referent and its deferred string at `start`.
+    ///
+    /// Returns the message and the 4-byte aligned offset after its deferred data ([MS-TSGU] 2.2.9.2.1.9.1.1).
+    fn decode_string_message(
+        source: &[u8],
+        start: usize,
+        message_type: u32,
+    ) -> Result<(TsProxyTunnelMessage, usize), RpcStubError> {
+        const STRING_FIXED_SIZE: usize = 4 /* isDisplayMandatory */
+            + 4 /* isConsentMandatory */
+            + 4 /* msgBytes */
+            + 4; /* msgBuffer */
+        let string_end = start
+            .checked_add(STRING_FIXED_SIZE)
+            .ok_or(RpcStubError::LengthOverflow)?;
+        let string_fixed = source.get(start..string_end).ok_or(RpcStubError::ResponseLength {
+            actual: source.len(),
+            expected: string_end,
+        })?;
+        let display_mandatory = decode_ndr_boolean(string_fixed, 0)?;
+        let consent_mandatory = decode_ndr_boolean(string_fixed, 4)?;
+        let message_chars = usize::try_from(read_u32(string_fixed, 8)?).map_err(|_| RpcStubError::LengthOverflow)?;
+        if message_chars > MAX_MESSAGE_CHARS {
+            return Err(RpcStubError::MessageTooLong { actual: message_chars });
+        }
+        let message_pointer = read_u32(string_fixed, 12)?;
+        if message_chars != 0 {
+            require_ndr_pointer(message_pointer)?;
+        }
+
+        let (text, end) = if message_pointer == 0 {
+            (String::new(), string_end)
+        } else {
+            // Windows sends capacity, offset and actual count before the transmitted UTF-16 characters.
+            decode_ndr_utf16_array(source, string_end, message_chars, false)?
+        };
+
+        let message = if message_type == TSG_ASYNC_MESSAGE_CONSENT {
+            TsProxyTunnelMessage::Consent {
+                display_mandatory,
+                consent_mandatory,
+                text,
+            }
+        } else {
+            TsProxyTunnelMessage::Service {
+                display_mandatory,
+                text,
+            }
+        };
+        Ok((message, end))
     }
 
     /// Validates the null response and HRESULT from a cancelled message request.
@@ -3588,6 +3806,19 @@ pub(crate) mod tsgu {
     pub(crate) fn decode_tsgu_create_channel_response(
         source: &[u8],
     ) -> Result<TsProxyCreateChannelResponse, RpcStubError> {
+        decode_tsgu_reauthentication_channel_response(source)?;
+        let channel_context = RpcContextHandle::from_bytes(&source[..RpcContextHandle::SIZE])?.require_non_null()?;
+        let channel_id = read_u32(source, RpcContextHandle::SIZE)?;
+        Ok(TsProxyCreateChannelResponse {
+            channel_context,
+            channel_id,
+        })
+    }
+
+    /// Validates resource authorization on a reauthentication connection, which creates no target channel.
+    ///
+    /// [MS-TSGU] 3.2.6.1.4, "TsProxyCreateChannel (Opnum 4)".
+    pub(crate) fn decode_tsgu_reauthentication_channel_response(source: &[u8]) -> Result<(), RpcStubError> {
         const RESPONSE_SIZE: usize = RpcContextHandle::SIZE /* channelContext */ + 4 /* channelId */ + 4 /* HRESULT */;
         if source.len() != RESPONSE_SIZE {
             return Err(RpcStubError::ResponseLength {
@@ -3595,13 +3826,7 @@ pub(crate) mod tsgu {
                 expected: RESPONSE_SIZE,
             });
         }
-        validate_hresult(read_trailing_hresult(source, RESPONSE_SIZE)?)?;
-        let channel_context = RpcContextHandle::from_bytes(&source[..RpcContextHandle::SIZE])?.require_non_null()?;
-        let channel_id = read_u32(source, RpcContextHandle::SIZE)?;
-        Ok(TsProxyCreateChannelResponse {
-            channel_context,
-            channel_id,
-        })
+        validate_hresult(read_trailing_hresult(source, RESPONSE_SIZE)?)
     }
 
     fn encode_ndr_pointer(output: &mut Vec<u8>, index: u32) {
@@ -3658,6 +3883,15 @@ pub(crate) mod tsgu {
         offset: usize,
         expected_count: usize,
     ) -> Result<(String, usize), RpcStubError> {
+        decode_ndr_utf16_array(source, offset, expected_count, true)
+    }
+
+    fn decode_ndr_utf16_array(
+        source: &[u8],
+        offset: usize,
+        expected_count: usize,
+        exact_count: bool,
+    ) -> Result<(String, usize), RpcStubError> {
         let max_count = usize::try_from(read_u32(source, offset)?).map_err(|_| RpcStubError::LengthOverflow)?;
         let first_index = read_u32(source, offset.checked_add(4).ok_or(RpcStubError::LengthOverflow)?)?;
         let actual_count = usize::try_from(read_u32(
@@ -3665,14 +3899,21 @@ pub(crate) mod tsgu {
             offset.checked_add(8).ok_or(RpcStubError::LengthOverflow)?,
         )?)
         .map_err(|_| RpcStubError::LengthOverflow)?;
-        if max_count != expected_count || first_index != 0 || actual_count != expected_count {
+        if max_count != expected_count
+            || first_index != 0
+            || max_count < actual_count
+            || (exact_count && actual_count != expected_count)
+        {
             return Err(RpcStubError::InvalidNdrArrayLength {
                 actual: u32::try_from(actual_count).map_err(|_| RpcStubError::LengthOverflow)?,
                 expected: u32::try_from(expected_count).map_err(|_| RpcStubError::LengthOverflow)?,
             });
         }
         let characters_start = offset.checked_add(12).ok_or(RpcStubError::LengthOverflow)?;
-        let byte_len = expected_count.checked_mul(2).ok_or(RpcStubError::LengthOverflow)?;
+        if !exact_count && expected_count == 0 && actual_count == 0 {
+            return Ok((String::new(), characters_start));
+        }
+        let byte_len = actual_count.checked_mul(2).ok_or(RpcStubError::LengthOverflow)?;
         let characters_end = characters_start
             .checked_add(byte_len)
             .ok_or(RpcStubError::LengthOverflow)?;
@@ -3883,8 +4124,8 @@ pub(crate) mod tsgu {
                 Err(RpcStubError::EmbeddedNulInMachineName)
             );
             assert_eq!(
-                TsProxyCreateTunnelRequest::new(0x0000_0004).encode(),
-                Err(RpcStubError::UnsupportedCapabilities { actual: 0x0000_0004 })
+                TsProxyCreateTunnelRequest::new(0x0000_0020).encode(),
+                Err(RpcStubError::UnsupportedCapabilities { actual: 0x0000_0020 })
             );
             assert_eq!(
                 TsProxyAuthorizeTunnelRequest::new(context, "host", &[0; MAX_STATEMENT_OF_HEALTH_SIZE + 1]).encode(),
@@ -3917,17 +4158,8 @@ pub(crate) mod tsgu {
                     tunnel_id: 42,
                     nonce: Uuid::from_u128(0x00112233_4455_6677_8899_aabbccddeeff),
                     capabilities: 3,
+                    message: TsProxyTunnelMessage::None,
                 }
-            );
-
-            let mut caps_response = response;
-            caps_response[4..8].copy_from_slice(&0x0000_4350u32.to_le_bytes());
-            assert_eq!(
-                decode_tsgu_create_tunnel_response(&caps_response),
-                Err(RpcStubError::UnexpectedPacketId {
-                    expected: TSG_PACKET_TYPE_QUARENC_RESPONSE,
-                    actual: 0x0000_4350,
-                })
             );
 
             let mut zero_capabilities = create_tunnel_response();
@@ -3944,7 +4176,178 @@ pub(crate) mod tsgu {
                     tunnel_id: 42,
                     nonce: Uuid::from_u128(0x00112233_4455_6677_8899_aabbccddeeff),
                     capabilities: 0,
+                    message: TsProxyTunnelMessage::None,
                 }
+            );
+        }
+
+        #[test]
+        fn string_message_decodes_windows_conformant_varying_utf16() {
+            // oracle: reference Windows RD Gateway live consent response: msgBytes=166, max=166, offset=0, actual=83.
+            let response = [
+                &1u32.to_le_bytes()[..],
+                &1u32.to_le_bytes(),
+                &8u32.to_le_bytes(),
+                &0x0002_0014u32.to_le_bytes(),
+                &8u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
+                &4u32.to_le_bytes(),
+                &[b'y', 0, b'e', 0, b's', 0, 0, 0],
+            ]
+            .concat();
+            assert_eq!(
+                decode_string_message(&response, 0, TSG_ASYNC_MESSAGE_CONSENT),
+                Ok((
+                    TsProxyTunnelMessage::Consent {
+                        display_mandatory: true,
+                        consent_mandatory: true,
+                        text: "yes".to_owned(),
+                    },
+                    response.len()
+                )),
+            );
+            let mut invalid = response.clone();
+            invalid[20..24].copy_from_slice(&1u32.to_le_bytes());
+            assert!(matches!(
+                decode_string_message(&invalid, 0, TSG_ASYNC_MESSAGE_CONSENT),
+                Err(RpcStubError::InvalidNdrArrayLength { .. })
+            ));
+            let mut invalid = response.clone();
+            invalid[24..28].copy_from_slice(&9u32.to_le_bytes());
+            assert!(matches!(
+                decode_string_message(&invalid, 0, TSG_ASYNC_MESSAGE_CONSENT),
+                Err(RpcStubError::InvalidNdrArrayLength { .. })
+            ));
+            assert!(decode_string_message(&response[..response.len() - 2], 0, TSG_ASYNC_MESSAGE_CONSENT).is_err());
+            let empty = [
+                &0u32.to_le_bytes()[..],
+                &0u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
+                &0x0002_0014u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
+            ]
+            .concat();
+            assert_eq!(
+                decode_string_message(&empty, 0, TSG_ASYNC_MESSAGE_SERVICE),
+                Ok((
+                    TsProxyTunnelMessage::Service {
+                        display_mandatory: false,
+                        text: String::new()
+                    },
+                    empty.len(),
+                ))
+            );
+        }
+
+        #[test]
+        fn create_tunnel_response_decodes_consent_caps_response() {
+            // oracle: MS-TSGU 2.2.9.2.1.6 TSG_PACKET_CAPS_RESPONSE and 2.2.9.2.1.9.1.1 TSG_PACKET_STRING_MESSAGE
+            // with NDR deferred-pointer order: certificate chain, version caps, capability array, message.
+            // oracle: reference Windows RD Gateway consent capture: capacity exceeds transmitted character count.
+            let nonce = Uuid::from_u128(0x00112233_4455_6677_8899_aabbccddeeff);
+            let text: Vec<u8> = "OK?\0".encode_utf16().flat_map(u16::to_le_bytes).collect();
+            let response = [
+                NDR_REFERENT_ID.to_le_bytes().as_slice(),
+                &0x0000_4350u32.to_le_bytes(), // TSG_PACKET_TYPE_CAPS_RESPONSE
+                &0x0000_4350u32.to_le_bytes(),
+                &(NDR_REFERENT_ID + 4).to_le_bytes(),
+                &0u32.to_le_bytes(), // flags
+                &0u32.to_le_bytes(), // certChainLen
+                &0u32.to_le_bytes(), // certChainData
+                &nonce.to_bytes_le(),
+                &(NDR_REFERENT_ID + 8).to_le_bytes(), // versionCaps
+                &7u32.to_le_bytes(),                  // msgID
+                &TSG_ASYNC_MESSAGE_CONSENT.to_le_bytes(),
+                &1u32.to_le_bytes(), // isMsgPresent
+                &TSG_ASYNC_MESSAGE_CONSENT.to_le_bytes(),
+                &(NDR_REFERENT_ID + 12).to_le_bytes(), // consentMessage
+                &TSG_COMPONENT_ID.to_le_bytes(),
+                &TSG_PACKET_TYPE_VERSIONCAPS_ID.to_le_bytes(),
+                &(NDR_REFERENT_ID + 16).to_le_bytes(),
+                &1u32.to_le_bytes(),
+                &1u16.to_le_bytes(),
+                &1u16.to_le_bytes(),
+                &0u16.to_le_bytes(),
+                &0u16.to_le_bytes(),
+                &1u32.to_le_bytes(),
+                &TSG_CAPABILITY_TYPE_NAP.to_le_bytes(),
+                &TSG_CAPABILITY_TYPE_NAP.to_le_bytes(),
+                &0x1fu32.to_le_bytes(),
+                &1u32.to_le_bytes(), // isDisplayMandatory
+                &0u32.to_le_bytes(), // isConsentMandatory
+                &8u32.to_le_bytes(), // msgBytes
+                &(NDR_REFERENT_ID + 20).to_le_bytes(),
+                &8u32.to_le_bytes(), // conformant array capacity
+                &0u32.to_le_bytes(), // array offset
+                &4u32.to_le_bytes(), // transmitted character count
+                &text,
+                &CONTEXT,
+                &42u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
+            ]
+            .concat();
+            let decoded = decode_tsgu_create_tunnel_response(&response).expect("valid caps response");
+            assert_eq!(decoded.capabilities, 0x1f);
+            assert_eq!(decoded.tunnel_id, 42);
+            assert_eq!(
+                decoded.message,
+                TsProxyTunnelMessage::Consent {
+                    display_mandatory: true,
+                    consent_mandatory: false,
+                    text: "OK?".to_owned(),
+                }
+            );
+
+            let mut reauth_type = response.clone();
+            reauth_type[52..56].copy_from_slice(&TSG_ASYNC_MESSAGE_REAUTH.to_le_bytes());
+            assert_eq!(
+                decode_tsgu_create_tunnel_response(&reauth_type),
+                Err(RpcStubError::InvalidMessageType {
+                    actual: TSG_ASYNC_MESSAGE_REAUTH
+                })
+            );
+
+            let mut truncated = response;
+            truncated.truncate(truncated.len() - 4 - 4 - 20 - 2);
+            truncated.extend_from_slice(&CONTEXT);
+            truncated.extend_from_slice(&42u32.to_le_bytes());
+            truncated.extend_from_slice(&0u32.to_le_bytes());
+            assert!(decode_tsgu_create_tunnel_response(&truncated).is_err());
+        }
+
+        #[test]
+        fn create_tunnel_reauth_request_encodes_reauth_packet() {
+            // oracle: MS-TSGU 2.2.9.2.1.11 TSG_PACKET_REAUTH, whose unsigned __int64 member aligns its referent to 8.
+            let request = TsProxyCreateTunnelRequest::reauthenticate(0x1f, 0x0102_0304_0506_0708)
+                .encode()
+                .expect("valid request");
+            assert_eq!(
+                request,
+                [
+                    0x0000_5250u32.to_le_bytes().as_slice(), // packetId
+                    &0x0000_5250u32.to_le_bytes(),           // union switch
+                    &NDR_REFERENT_ID.to_le_bytes(),          // packetReauth
+                    &0u32.to_le_bytes(),                     // 8-byte alignment
+                    &0x0102_0304_0506_0708u64.to_le_bytes(), // tunnelContext
+                    &TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes(),
+                    &TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes(),
+                    &(NDR_REFERENT_ID + 4).to_le_bytes(), // packetVersionCaps
+                    &TSG_COMPONENT_ID.to_le_bytes(),
+                    &TSG_PACKET_TYPE_VERSIONCAPS_ID.to_le_bytes(),
+                    &(NDR_REFERENT_ID + 8).to_le_bytes(), // TSGCaps
+                    &1u32.to_le_bytes(),                  // numCapabilities
+                    &1u16.to_le_bytes(),
+                    &1u16.to_le_bytes(),
+                    &0u16.to_le_bytes(),
+                    &0u16.to_le_bytes(),
+                    &1u32.to_le_bytes(), // conformant array size
+                    &TSG_CAPABILITY_TYPE_NAP.to_le_bytes(),
+                    &TSG_CAPABILITY_TYPE_NAP.to_le_bytes(),
+                    &0x1fu32.to_le_bytes(),
+                ]
+                .concat()
             );
         }
 
@@ -3981,10 +4384,10 @@ pub(crate) mod tsgu {
             );
 
             let mut response = create_tunnel_response();
-            response[80..84].copy_from_slice(&0x0000_0004u32.to_le_bytes());
+            response[80..84].copy_from_slice(&0x0000_0020u32.to_le_bytes());
             assert_eq!(
                 decode_tsgu_create_tunnel_response(&response),
-                Err(RpcStubError::UnsupportedCapabilities { actual: 0x0000_0004 })
+                Err(RpcStubError::UnsupportedCapabilities { actual: 0x0000_0020 })
             );
 
             let mut response = create_tunnel_response();
@@ -4215,6 +4618,8 @@ pub(crate) mod tsgu {
                 &2u32.to_le_bytes(),
                 &(NDR_REFERENT_ID + 12).to_le_bytes(),
                 &2u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
+                &2u32.to_le_bytes(),
                 &[b'x', 0, 0, 0],
                 &0u32.to_le_bytes(),
             ]
@@ -4251,6 +4656,8 @@ pub(crate) mod tsgu {
                 &0u32.to_le_bytes(),
                 &3u32.to_le_bytes(),
                 &(NDR_REFERENT_ID + 12).to_le_bytes(),
+                &3u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
                 &3u32.to_le_bytes(),
                 &[b'h', 0, b'i', 0, 0, 0],
                 &[0, 0],
@@ -4649,7 +5056,7 @@ impl RtsOutRecycleA6 {
 pub enum RpchInChannelRecycleState {
     /// The default IN channel is open.
     Open,
-    /// IN_R1/A1 was produced and IN_R1/A4 is expected.
+    /// IN_R1/A1 was produced and IN_R1/A4 or IN_R2/A4 is expected.
     AwaitingA4,
     /// IN_R1/A5 was produced and must be sent before the channel is reopened.
     AwaitingA5,
@@ -4659,7 +5066,7 @@ pub enum RpchInChannelRecycleState {
 
 /// State of the virtual OUT channel recycling sequence.
 ///
-/// [MS-RPCH] 3.2.2.5.6 through 3.2.2.5.8.
+/// [MS-RPCH] 3.2.2.5.6 through 3.2.2.5.10.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RpchOutChannelRecycleState {
     /// The default OUT channel is open.
@@ -4670,6 +5077,8 @@ pub enum RpchOutChannelRecycleState {
     AwaitingA10,
     /// OUT_R1/A11 was produced and must be sent before the channel is reopened.
     AwaitingA11,
+    /// OUT_R2/A7 and OUT_R2/C1 were produced and OUT_R2/B3 is expected.
+    AwaitingB3,
     /// An invalid recycle event was received.
     Failed,
 }
@@ -4730,6 +5139,10 @@ pub struct RpchV2Setup {
     in_channel_ping_timeout: Option<u32>,
     connection_timeout: Option<u32>,
     peer_receive_window_size: Option<u32>,
+    recycle_in_state: RpchInChannelRecycleState,
+    recycle_out_state: RpchOutChannelRecycleState,
+    successor_in_channel_cookie: Option<RtsCookie>,
+    successor_out_channel_cookie: Option<RtsCookie>,
 }
 
 impl RpchV2Setup {
@@ -4751,6 +5164,10 @@ impl RpchV2Setup {
             in_channel_ping_timeout: None,
             connection_timeout: None,
             peer_receive_window_size: None,
+            recycle_in_state: RpchInChannelRecycleState::Open,
+            recycle_out_state: RpchOutChannelRecycleState::Open,
+            successor_in_channel_cookie: None,
+            successor_out_channel_cookie: None,
         }
     }
 
@@ -4915,7 +5332,9 @@ impl RpchV2Setup {
         ))
     }
 
-    /// Creates state validation for channel recycling after the initial CONN sequence opens.
+    /// Returns a view over channel recycling state after the initial CONN sequence opens.
+    ///
+    /// Recycling state persists in the setup across calls, so a caller may advance one sequence through several views.
     ///
     /// [MS-RPCH] 3.2.2.5.5 through 3.2.2.5.8 and 3.2.2.5.12.
     pub fn channel_recycling(&mut self) -> Result<RpchV2ChannelRecycle<'_>, RpchV2Error> {
@@ -4926,13 +5345,7 @@ impl RpchV2Setup {
             });
         }
 
-        Ok(RpchV2ChannelRecycle {
-            setup: self,
-            in_state: RpchInChannelRecycleState::Open,
-            out_state: RpchOutChannelRecycleState::Open,
-            successor_in_channel_cookie: None,
-            successor_out_channel_cookie: None,
-        })
+        Ok(RpchV2ChannelRecycle { setup: self })
     }
 
     fn fail<T>(&mut self, error: RpchV2Error) -> Result<T, RpchV2Error> {
@@ -4941,7 +5354,7 @@ impl RpchV2Setup {
     }
 }
 
-/// Stateful validation for the RPCH v2 R1 channel recycling sequences.
+/// Stateful validation for the RPCH v2 channel recycling sequences.
 ///
 /// The caller creates and switches transport channels around the returned RTS PDUs.
 /// This type owns no I/O and validates only the protocol-visible ordering.
@@ -4950,21 +5363,17 @@ impl RpchV2Setup {
 #[derive(Debug)]
 pub struct RpchV2ChannelRecycle<'a> {
     setup: &'a mut RpchV2Setup,
-    in_state: RpchInChannelRecycleState,
-    out_state: RpchOutChannelRecycleState,
-    successor_in_channel_cookie: Option<RtsCookie>,
-    successor_out_channel_cookie: Option<RtsCookie>,
 }
 
 impl RpchV2ChannelRecycle<'_> {
     /// Current virtual IN channel recycling state.
     pub const fn in_state(&self) -> RpchInChannelRecycleState {
-        self.in_state
+        self.setup.recycle_in_state
     }
 
     /// Current virtual OUT channel recycling state.
     pub const fn out_state(&self) -> RpchOutChannelRecycleState {
-        self.out_state
+        self.setup.recycle_out_state
     }
 
     /// Current default IN channel cookie.
@@ -5002,10 +5411,10 @@ impl RpchV2ChannelRecycle<'_> {
         &mut self,
         successor_channel_cookie: RtsCookie,
     ) -> Result<Vec<u8>, RpchChannelRecycleError> {
-        if self.in_state != RpchInChannelRecycleState::Open {
+        if self.setup.recycle_in_state != RpchInChannelRecycleState::Open {
             return self.fail(RpchChannelRecycleError::InvalidInState {
                 action: "start IN channel recycling",
-                state: self.in_state,
+                state: self.setup.recycle_in_state,
             });
         }
 
@@ -5014,43 +5423,50 @@ impl RpchV2ChannelRecycle<'_> {
             self.setup.in_channel_cookie,
             successor_channel_cookie,
         )?;
-        self.successor_in_channel_cookie = Some(successor_channel_cookie);
-        self.in_state = RpchInChannelRecycleState::AwaitingA4;
+        self.setup.successor_in_channel_cookie = Some(successor_channel_cookie);
+        self.setup.recycle_in_state = RpchInChannelRecycleState::AwaitingA4;
         Ok(pdu)
     }
 
-    /// Accepts IN_R1/A4 and returns IN_R1/A5 for the predecessor IN channel.
+    /// Accepts IN_R1/A4 or IN_R2/A4 and returns IN_R1/A5 for the predecessor IN channel.
     ///
     /// The returned PDU must be sent after predecessor-channel PDUs have drained.
     ///
-    /// [MS-RPCH] 2.2.4.13, 2.2.4.14, and 3.2.2.5.5.
+    /// [MS-RPCH] 2.2.4.13, 2.2.4.14, 2.2.4.21, and 3.2.2.5.5.
     pub fn receive_in_recycle_a4(&mut self, pdu: &[u8]) -> Result<Vec<u8>, RpchChannelRecycleError> {
-        if self.in_state != RpchInChannelRecycleState::AwaitingA4 {
+        if self.setup.recycle_in_state != RpchInChannelRecycleState::AwaitingA4 {
             return self.fail(RpchChannelRecycleError::InvalidInState {
                 action: "accept IN_R1/A4",
-                state: self.in_state,
+                state: self.setup.recycle_in_state,
             });
         }
 
-        let a4 = match decode_rts_in_recycle_a4(pdu) {
-            Ok(a4) => a4,
-            Err(error) => return self.fail(error.into()),
+        let a4 = if decode_rts_in_recycle_r2_a4(pdu).is_ok() {
+            None
+        } else {
+            match decode_rts_in_recycle_a4(pdu) {
+                Ok(a4) => Some(a4),
+                Err(error) => return self.fail(error.into()),
+            }
         };
-        let successor_channel_cookie = match self.successor_in_channel_cookie {
+        let successor_channel_cookie = match self.setup.successor_in_channel_cookie {
             Some(cookie) => cookie,
             None => {
                 return self.fail(RpchChannelRecycleError::InvalidInState {
                     action: "read the successor IN channel cookie",
-                    state: self.in_state,
+                    state: self.setup.recycle_in_state,
                 });
             }
         };
         let a5 = encode_rts_in_recycle_a5(successor_channel_cookie)?;
         self.setup.in_channel_cookie = successor_channel_cookie;
-        self.setup.in_channel_ping_timeout = Some(a4.connection_timeout);
-        self.setup.peer_receive_window_size = Some(a4.receive_window_size);
-        self.successor_in_channel_cookie = None;
-        self.in_state = RpchInChannelRecycleState::AwaitingA5;
+        // IN_R2/A4 carries no new window or timeout, so the existing values remain in force.
+        if let Some(a4) = a4 {
+            self.setup.in_channel_ping_timeout = Some(a4.connection_timeout);
+            self.setup.peer_receive_window_size = Some(a4.receive_window_size);
+        }
+        self.setup.successor_in_channel_cookie = None;
+        self.setup.recycle_in_state = RpchInChannelRecycleState::AwaitingA5;
         Ok(a5)
     }
 
@@ -5064,16 +5480,16 @@ impl RpchV2ChannelRecycle<'_> {
         flow_control: &mut RpchFlowControl,
         ping_schedule: &mut RpchPingSchedule,
     ) -> Result<(), RpchChannelRecycleError> {
-        if self.in_state != RpchInChannelRecycleState::AwaitingA5 {
+        if self.setup.recycle_in_state != RpchInChannelRecycleState::AwaitingA5 {
             return self.fail(RpchChannelRecycleError::InvalidInState {
                 action: "finish IN channel recycling",
-                state: self.in_state,
+                state: self.setup.recycle_in_state,
             });
         }
 
         flow_control.reset_sending_channel(self.peer_receive_window_size(), self.default_in_channel_cookie());
         ping_schedule.set_connection_timeout(self.in_channel_ping_timeout());
-        self.in_state = RpchInChannelRecycleState::Open;
+        self.setup.recycle_in_state = RpchInChannelRecycleState::Open;
         Ok(())
     }
 
@@ -5087,10 +5503,10 @@ impl RpchV2ChannelRecycle<'_> {
         pdu: &[u8],
         successor_channel_cookie: RtsCookie,
     ) -> Result<Vec<u8>, RpchChannelRecycleError> {
-        if self.out_state != RpchOutChannelRecycleState::Open {
+        if self.setup.recycle_out_state != RpchOutChannelRecycleState::Open {
             return self.fail(RpchChannelRecycleError::InvalidOutState {
                 action: "accept OUT_R1/A2",
-                state: self.out_state,
+                state: self.setup.recycle_out_state,
             });
         }
 
@@ -5103,36 +5519,102 @@ impl RpchV2ChannelRecycle<'_> {
             successor_channel_cookie,
             self.setup.settings.receive_window_size,
         )?;
-        self.successor_out_channel_cookie = Some(successor_channel_cookie);
-        self.out_state = RpchOutChannelRecycleState::AwaitingA6;
+        self.setup.successor_out_channel_cookie = Some(successor_channel_cookie);
+        self.setup.recycle_out_state = RpchOutChannelRecycleState::AwaitingA6;
         Ok(a3)
+    }
+
+    /// Accepts OUT_R2/A6 and returns OUT_R2/A7 for the default IN channel and OUT_R2/C1 for the successor OUT channel.
+    ///
+    /// The proxy selects R2 instead of R1 when the successor OUT channel reached the same outbound proxy.
+    ///
+    /// [MS-RPCH] 2.2.4.39, 2.2.4.40, 2.2.4.45, and 3.2.2.5.9.
+    pub fn receive_out_recycle_r2_a6(&mut self, pdu: &[u8]) -> Result<(Vec<u8>, Vec<u8>), RpchChannelRecycleError> {
+        if self.setup.recycle_out_state != RpchOutChannelRecycleState::AwaitingA6 {
+            return self.fail(RpchChannelRecycleError::InvalidOutState {
+                action: "accept OUT_R2/A6",
+                state: self.setup.recycle_out_state,
+            });
+        }
+
+        if let Err(error) = decode_rts_out_recycle_r2_a6(pdu) {
+            return self.fail(error.into());
+        }
+        let successor_channel_cookie = match self.setup.successor_out_channel_cookie {
+            Some(cookie) => cookie,
+            None => {
+                return self.fail(RpchChannelRecycleError::InvalidOutState {
+                    action: "read the successor OUT channel cookie",
+                    state: self.setup.recycle_out_state,
+                });
+            }
+        };
+        let a7 = encode_rts_out_recycle_r2_a7(successor_channel_cookie)?;
+        let c1 = encode_rts_out_recycle_r2_c1()?;
+        self.setup.recycle_out_state = RpchOutChannelRecycleState::AwaitingB3;
+        Ok((a7, c1))
+    }
+
+    /// Accepts OUT_R2/B3 and makes the successor OUT channel the default.
+    ///
+    /// The caller must stop reading the predecessor OUT channel and continue on the successor.
+    ///
+    /// [MS-RPCH] 2.2.4.44 and 3.2.2.5.10.
+    pub fn receive_out_recycle_b3(
+        &mut self,
+        pdu: &[u8],
+        flow_control: &mut RpchFlowControl,
+    ) -> Result<(), RpchChannelRecycleError> {
+        if self.setup.recycle_out_state != RpchOutChannelRecycleState::AwaitingB3 {
+            return self.fail(RpchChannelRecycleError::InvalidOutState {
+                action: "accept OUT_R2/B3",
+                state: self.setup.recycle_out_state,
+            });
+        }
+
+        if let Err(error) = decode_rts_out_recycle_r2_b3(pdu) {
+            return self.fail(error.into());
+        }
+        let successor_channel_cookie = match self.setup.successor_out_channel_cookie.take() {
+            Some(cookie) => cookie,
+            None => {
+                return self.fail(RpchChannelRecycleError::InvalidOutState {
+                    action: "read the successor OUT channel cookie",
+                    state: self.setup.recycle_out_state,
+                });
+            }
+        };
+        self.setup.out_channel_cookie = successor_channel_cookie;
+        flow_control.reset_receiving_channel(successor_channel_cookie);
+        self.setup.recycle_out_state = RpchOutChannelRecycleState::Open;
+        Ok(())
     }
 
     /// Accepts OUT_R1/A6 and returns OUT_R1/A7 for the default IN channel.
     ///
     /// [MS-RPCH] 2.2.4.28, 2.2.4.29, and 3.2.2.5.7.
     pub fn receive_out_recycle_a6(&mut self, pdu: &[u8]) -> Result<Vec<u8>, RpchChannelRecycleError> {
-        if self.out_state != RpchOutChannelRecycleState::AwaitingA6 {
+        if self.setup.recycle_out_state != RpchOutChannelRecycleState::AwaitingA6 {
             return self.fail(RpchChannelRecycleError::InvalidOutState {
                 action: "accept OUT_R1/A6",
-                state: self.out_state,
+                state: self.setup.recycle_out_state,
             });
         }
 
         if let Err(error) = decode_rts_out_recycle_a6(pdu) {
             return self.fail(error.into());
         }
-        let successor_channel_cookie = match self.successor_out_channel_cookie {
+        let successor_channel_cookie = match self.setup.successor_out_channel_cookie {
             Some(cookie) => cookie,
             None => {
                 return self.fail(RpchChannelRecycleError::InvalidOutState {
                     action: "read the successor OUT channel cookie",
-                    state: self.out_state,
+                    state: self.setup.recycle_out_state,
                 });
             }
         };
         let a7 = encode_rts_out_recycle_a7(successor_channel_cookie)?;
-        self.out_state = RpchOutChannelRecycleState::AwaitingA10;
+        self.setup.recycle_out_state = RpchOutChannelRecycleState::AwaitingA10;
         Ok(a7)
     }
 
@@ -5140,29 +5622,29 @@ impl RpchV2ChannelRecycle<'_> {
     ///
     /// [MS-RPCH] 2.2.4.32, 2.2.4.33, and 3.2.2.5.8.
     pub fn receive_out_recycle_a10(&mut self, pdu: &[u8]) -> Result<Vec<u8>, RpchChannelRecycleError> {
-        if self.out_state != RpchOutChannelRecycleState::AwaitingA10 {
+        if self.setup.recycle_out_state != RpchOutChannelRecycleState::AwaitingA10 {
             return self.fail(RpchChannelRecycleError::InvalidOutState {
                 action: "accept OUT_R1/A10",
-                state: self.out_state,
+                state: self.setup.recycle_out_state,
             });
         }
 
         if let Err(error) = decode_rts_out_recycle_a10(pdu) {
             return self.fail(error.into());
         }
-        let successor_channel_cookie = match self.successor_out_channel_cookie {
+        let successor_channel_cookie = match self.setup.successor_out_channel_cookie {
             Some(cookie) => cookie,
             None => {
                 return self.fail(RpchChannelRecycleError::InvalidOutState {
                     action: "read the successor OUT channel cookie",
-                    state: self.out_state,
+                    state: self.setup.recycle_out_state,
                 });
             }
         };
         let a11 = encode_rts_out_recycle_a11()?;
         self.setup.out_channel_cookie = successor_channel_cookie;
-        self.successor_out_channel_cookie = None;
-        self.out_state = RpchOutChannelRecycleState::AwaitingA11;
+        self.setup.successor_out_channel_cookie = None;
+        self.setup.recycle_out_state = RpchOutChannelRecycleState::AwaitingA11;
         Ok(a11)
     }
 
@@ -5172,23 +5654,23 @@ impl RpchV2ChannelRecycle<'_> {
     ///
     /// [MS-RPCH] 3.2.2.5.8.
     pub fn finish_out_recycling(&mut self, flow_control: &mut RpchFlowControl) -> Result<(), RpchChannelRecycleError> {
-        if self.out_state != RpchOutChannelRecycleState::AwaitingA11 {
+        if self.setup.recycle_out_state != RpchOutChannelRecycleState::AwaitingA11 {
             return self.fail(RpchChannelRecycleError::InvalidOutState {
                 action: "finish OUT channel recycling",
-                state: self.out_state,
+                state: self.setup.recycle_out_state,
             });
         }
 
         flow_control.reset_receiving_channel(self.default_out_channel_cookie());
-        self.out_state = RpchOutChannelRecycleState::Open;
+        self.setup.recycle_out_state = RpchOutChannelRecycleState::Open;
         Ok(())
     }
 
     fn fail<T>(&mut self, error: RpchChannelRecycleError) -> Result<T, RpchChannelRecycleError> {
         // A protocol error terminates the entire virtual connection.
         self.setup.state = RpchV2State::Failed;
-        self.in_state = RpchInChannelRecycleState::Failed;
-        self.out_state = RpchOutChannelRecycleState::Failed;
+        self.setup.recycle_in_state = RpchInChannelRecycleState::Failed;
+        self.setup.recycle_out_state = RpchOutChannelRecycleState::Failed;
         Err(error)
     }
 }
@@ -5201,6 +5683,59 @@ pub struct RtsFlowControlAck {
     bytes_received: u32,
     available_window: u32,
     channel_cookie: RtsCookie,
+}
+
+/// The destination-aware form of an RPCH flow-control acknowledgement.
+///
+/// [MS-RPCH] 2.2.4.51.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RtsFlowControlAckWithDestination {
+    destination: RtsDestination,
+    acknowledgement: RtsFlowControlAck,
+}
+
+/// A destination used by an RPCH RTS forwarding command.
+///
+/// [MS-RPCH] 2.2.3.3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RtsDestination {
+    Client,
+    InProxy,
+    Server,
+    OutProxy,
+}
+
+impl RtsDestination {
+    const fn from_wire_value(value: u32) -> Option<Self> {
+        match value {
+            RTS_DESTINATION_FD_CLIENT => Some(Self::Client),
+            1 => Some(Self::InProxy),
+            RTS_DESTINATION_FD_SERVER => Some(Self::Server),
+            RTS_DESTINATION_FD_OUT_PROXY => Some(Self::OutProxy),
+            _ => None,
+        }
+    }
+
+    const fn wire_value(self) -> u32 {
+        match self {
+            Self::Client => RTS_DESTINATION_FD_CLIENT,
+            Self::InProxy => 1,
+            Self::Server => RTS_DESTINATION_FD_SERVER,
+            Self::OutProxy => RTS_DESTINATION_FD_OUT_PROXY,
+        }
+    }
+}
+
+impl RtsFlowControlAckWithDestination {
+    /// Forwarding destination carried by this RTS PDU.
+    pub const fn destination(self) -> RtsDestination {
+        self.destination
+    }
+
+    /// Flow-control information carried by this RTS PDU.
+    pub const fn acknowledgement(self) -> RtsFlowControlAck {
+        self.acknowledgement
+    }
 }
 
 impl RtsFlowControlAck {
@@ -5510,6 +6045,15 @@ pub struct RpchPingSchedule {
 }
 
 impl RpchPingSchedule {
+    pub(crate) fn next_ping_time(&self) -> Duration {
+        let interval = if self.keepalive_interval.is_zero() {
+            self.connection_timeout
+        } else {
+            self.connection_timeout.min(self.keepalive_interval / 2)
+        };
+        self.last_send.saturating_add(interval)
+    }
+
     const fn new(connection_timeout: Duration, keepalive_interval: Duration, now: Duration) -> Self {
         Self {
             connection_timeout,
@@ -5709,6 +6253,67 @@ pub fn decode_rts_out_recycle_a10(source: &[u8]) -> Result<(), RpcPduError> {
     Ok(())
 }
 
+/// Decodes and validates an OUT_R2/A6 RTS PDU.
+///
+/// [MS-RPCH] 2.2.4.39.
+pub fn decode_rts_out_recycle_r2_a6(source: &[u8]) -> Result<(), RpcPduError> {
+    let body = decode_rts_pdu(source, RTS_FLAG_NONE, 2, 12)?;
+    let destination = decode_rts_u32_command(body, 0, RTS_COMMAND_DESTINATION)?;
+    if destination != RTS_DESTINATION_FD_CLIENT {
+        return Err(RpcPduError::UnexpectedRtsDestination {
+            expected: RTS_DESTINATION_FD_CLIENT,
+            actual: destination,
+        });
+    }
+    let command_type = read_u32(body, 8)?;
+    if command_type != RTS_COMMAND_ANCE {
+        return Err(RpcPduError::UnexpectedRtsCommandType {
+            expected: RTS_COMMAND_ANCE,
+            actual: command_type,
+        });
+    }
+    Ok(())
+}
+
+/// Encodes the client OUT_R2/A7 RTS PDU for the default IN channel.
+///
+/// [MS-RPCH] 2.2.4.40.
+pub fn encode_rts_out_recycle_r2_a7(successor_channel_cookie: RtsCookie) -> Result<Vec<u8>, RpcPduError> {
+    let mut commands = Vec::with_capacity(
+        8 /* destination */
+            + 20 /* successor OUT channel cookie */
+            + 8, /* version */
+    );
+    encode_rts_u32_command(&mut commands, RTS_COMMAND_DESTINATION, RTS_DESTINATION_FD_SERVER);
+    encode_rts_cookie_command(&mut commands, RTS_COMMAND_COOKIE, successor_channel_cookie);
+    encode_rts_u32_command(&mut commands, RTS_COMMAND_VERSION, RTS_VERSION);
+    encode_rts_pdu(RTS_FLAG_OUT_CHANNEL, 3, commands)
+}
+
+/// Encodes the client OUT_R2/C1 RTS PDU for a successor OUT channel.
+///
+/// It has the same size as OUT_R1/A11, so either fills the successor request's declared content length.
+///
+/// [MS-RPCH] 2.2.4.45.
+pub fn encode_rts_out_recycle_r2_c1() -> Result<Vec<u8>, RpcPduError> {
+    encode_rts_pdu(RTS_FLAG_PING, 1, RTS_COMMAND_EMPTY.to_le_bytes().to_vec())
+}
+
+/// Decodes and validates an OUT_R2/B3 RTS PDU.
+///
+/// [MS-RPCH] 2.2.4.44.
+pub fn decode_rts_out_recycle_r2_b3(source: &[u8]) -> Result<(), RpcPduError> {
+    let body = decode_rts_pdu(source, RTS_FLAG_EOF, 1, 4)?;
+    let command_type = read_u32(body, 0)?;
+    if command_type != RTS_COMMAND_ANCE {
+        return Err(RpcPduError::UnexpectedRtsCommandType {
+            expected: RTS_COMMAND_ANCE,
+            actual: command_type,
+        });
+    }
+    Ok(())
+}
+
 /// Encodes the client OUT_R1/A11 RTS PDU for a successor OUT channel.
 ///
 /// [MS-RPCH] 2.2.4.33.
@@ -5740,10 +6345,78 @@ pub fn encode_rts_flow_control_ack(ack: RtsFlowControlAck) -> Result<Vec<u8>, Rp
     encode_rts_pdu(RTS_FLAG_OTHER_CMD, 1, commands)
 }
 
+/// Encodes a destination-aware RPCH flow-control acknowledgement.
+///
+/// [MS-RPCH] 2.2.4.51.
+pub fn encode_rts_flow_control_ack_with_destination(
+    ack: RtsFlowControlAck,
+    destination: RtsDestination,
+) -> Result<Vec<u8>, RpcPduError> {
+    let mut commands = Vec::with_capacity(
+        4 /* destination command */
+            + 4 /* destination */
+            + 4 /* flow-control ack command */
+            + 4 /* bytes received */
+            + 4 /* available window */
+            + RtsCookie::SIZE, /* channel cookie */
+    );
+    encode_rts_u32_command(&mut commands, RTS_COMMAND_DESTINATION, destination.wire_value());
+    commands.extend_from_slice(&RTS_COMMAND_FLOW_CONTROL_ACK.to_le_bytes());
+    commands.extend_from_slice(&ack.bytes_received.to_le_bytes());
+    commands.extend_from_slice(&ack.available_window.to_le_bytes());
+    commands.extend_from_slice(ack.channel_cookie.as_bytes());
+    encode_rts_pdu(RTS_FLAG_OTHER_CMD, 2, commands)
+}
+
+/// Decodes a destination-aware RPCH flow-control acknowledgement.
+///
+/// [MS-RPCH] 2.2.4.51.
+pub fn decode_rts_flow_control_ack_with_destination(
+    source: &[u8],
+) -> Result<RtsFlowControlAckWithDestination, RpcPduError> {
+    let body = decode_rts_pdu(source, RTS_FLAG_OTHER_CMD, 2, 36)?;
+    let destination_value = decode_rts_u32_command(body, 0, RTS_COMMAND_DESTINATION)?;
+    let destination =
+        RtsDestination::from_wire_value(destination_value).ok_or(RpcPduError::UnexpectedRtsDestination {
+            expected: RTS_DESTINATION_FD_OUT_PROXY,
+            actual: destination_value,
+        })?;
+    if read_u32(body, 8)? != RTS_COMMAND_FLOW_CONTROL_ACK {
+        return Err(RpcPduError::UnexpectedRtsCommandType {
+            expected: RTS_COMMAND_FLOW_CONTROL_ACK,
+            actual: read_u32(body, 8)?,
+        });
+    }
+
+    let channel_cookie = body
+        .get(20..20 + RtsCookie::SIZE)
+        .ok_or(RpcPduError::Truncated {
+            actual: body.len(),
+            required: 20 + RtsCookie::SIZE,
+        })?
+        .try_into()
+        .map(RtsCookie::new)
+        .map_err(|_| RpcPduError::LengthOverflow)?;
+    Ok(RtsFlowControlAckWithDestination {
+        destination,
+        acknowledgement: RtsFlowControlAck::new(read_u32(body, 12)?, read_u32(body, 16)?, channel_cookie),
+    })
+}
+
 /// Decodes an RPCH flow-control acknowledgement.
 ///
 /// [MS-RPCH] 2.2.4.50.
 pub fn decode_rts_flow_control_ack(source: &[u8]) -> Result<RtsFlowControlAck, RpcPduError> {
+    if let Ok(ack) = decode_rts_flow_control_ack_with_destination(source) {
+        if ack.destination == RtsDestination::Client {
+            return Ok(ack.acknowledgement);
+        }
+        return Err(RpcPduError::UnexpectedRtsDestination {
+            expected: RTS_DESTINATION_FD_CLIENT,
+            actual: ack.destination.wire_value(),
+        });
+    }
+
     let body = decode_rts_pdu(source, RTS_FLAG_OTHER_CMD, 1, 28)?;
     let command_type = read_u32(body, 0)?;
     if command_type != RTS_COMMAND_FLOW_CONTROL_ACK {
@@ -5809,6 +6482,19 @@ pub fn decode_rts_in_recycle_a4(source: &[u8]) -> Result<RtsInRecycleA4, RpcPduE
         receive_window_size,
         connection_timeout,
     })
+}
+
+/// Decodes and validates [MS-RPCH] 2.2.4.21, "IN_R2/A4 RTS PDU".
+pub(crate) fn decode_rts_in_recycle_r2_a4(source: &[u8]) -> Result<(), RpcPduError> {
+    let body = decode_rts_pdu(source, RTS_FLAG_NONE, 1, 8)?;
+    let destination = decode_rts_u32_command(body, 0, RTS_COMMAND_DESTINATION)?;
+    if destination != RTS_DESTINATION_FD_CLIENT {
+        return Err(RpcPduError::UnexpectedRtsDestination {
+            expected: RTS_DESTINATION_FD_CLIENT,
+            actual: destination,
+        });
+    }
+    Ok(())
 }
 
 fn encode_rts_pdu(flags: u16, command_count: u16, commands: Vec<u8>) -> Result<Vec<u8>, RpcPduError> {
