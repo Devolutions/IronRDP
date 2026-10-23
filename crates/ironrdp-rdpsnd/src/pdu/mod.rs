@@ -24,8 +24,8 @@ const SNDC_CLOSE: u8 = 0x01;
 const SNDC_WAVE2: u8 = 0x0D;
 const SNDC_VOLUME: u8 = 0x03;
 const SNDC_PITCH: u8 = 0x04;
-
-// TODO: UDP PDUs
+const SNDC_UDPWAVE: u8 = 0x0A;
+const SNDC_UDPWAVELAST: u8 = 0x0B;
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Eq)]
@@ -262,6 +262,27 @@ impl AudioFormat {
             self.n_avg_bytes_per_sec == other.n_avg_bytes_per_sec && self.n_block_align == other.n_block_align
         }
     }
+}
+
+/// Keeps the `chosen` formats that match one of the `server` formats, in `chosen` order.
+///
+/// Only formats the server offered may be advertised ([MS-RDPEA] 2.2.2.2). Matching uses
+/// [`AudioFormat::matches_for_negotiation`].
+///
+/// [MS-RDPEA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/bea2d5cf-e3b9-4419-92e5-0e074ff9bc5b
+pub fn retain_offered(chosen: Vec<AudioFormat>, server: &[AudioFormat]) -> Vec<AudioFormat> {
+    chosen
+        .into_iter()
+        .filter(|chosen| {
+            let offered = server
+                .iter()
+                .any(|server_format| chosen.matches_for_negotiation(server_format));
+            if !offered {
+                tracing::debug!(format = ?chosen, "Not advertising a format the server did not offer");
+            }
+            offered
+        })
+        .collect()
 }
 
 impl Encode for AudioFormat {
@@ -1187,6 +1208,218 @@ impl<'de> Decode<'de> for PitchPdu {
     }
 }
 
+/// UDP Wave PDU (`SNDUDPWAVE`): one fragment of an audio sample sent over UDP.
+///
+/// [MS-RDPEA] 2.2.3.6: fragments carry pieces of an `AUDIO_FRAGDATA` structure (an 8-byte
+/// signature followed by the audio data); a [`UdpWaveLastPdu`] carries the final piece.
+///
+/// [MS-RDPEA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/bea2d5cf-e3b9-4419-92e5-0e074ff9bc5b
+#[derive(Clone, PartialEq, Eq)]
+pub struct UdpWavePdu<'a> {
+    pub block_no: u8,
+    /// Position of this fragment in the sample, from 0.
+    ///
+    /// INVARIANT: `frag_no <= UdpWavePdu::MAX_FRAG_NO`.
+    pub frag_no: u16,
+    pub data: Cow<'a, [u8]>,
+}
+
+impl fmt::Debug for UdpWavePdu<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UdpWavePdu")
+            .field("block_no", &self.block_no)
+            .field("frag_no", &self.frag_no)
+            .field("data_len", &self.data.len())
+            .finish()
+    }
+}
+
+impl UdpWavePdu<'_> {
+    const NAME: &'static str = "SNDUDPWAVE";
+
+    /// Largest fragment number the 15-bit `cFragNo` encoding can carry.
+    pub const MAX_FRAG_NO: u16 = 0x7FFF;
+
+    const FIXED_PART_SIZE: usize = 1 /* Type */ + 1 /* cBlockNo */ + 1 /* cFragNo (short form) */;
+
+    fn frag_no_size(&self) -> usize {
+        if self.frag_no < 0x80 { 1 } else { 2 }
+    }
+}
+
+impl Encode for UdpWavePdu<'_> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        if Self::MAX_FRAG_NO < self.frag_no {
+            return Err(other_err!("UdpWavePdu", "cFragNo does not fit in 15 bits"));
+        }
+        ensure_size!(in: dst, size: self.size());
+
+        dst.write_u8(SNDC_UDPWAVE);
+        dst.write_u8(self.block_no);
+        let [high, low] = self.frag_no.to_be_bytes();
+        if self.frag_no < 0x80 {
+            dst.write_u8(low);
+        } else {
+            dst.write_u8(high | 0x80);
+            dst.write_u8(low);
+        }
+        dst.write_slice(&self.data);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        (1 /* Type */ + 1 /* cBlockNo */ + self.frag_no_size())
+            .checked_add(self.data.len())
+            .expect("never overflow")
+    }
+}
+
+impl<'de> Decode<'de> for UdpWavePdu<'de> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let msg_type = src.read_u8();
+        if msg_type != SNDC_UDPWAVE {
+            return Err(invalid_field_err!("Type", "not a UDP Wave PDU", in: src));
+        }
+        let block_no = src.read_u8();
+        let first = src.read_u8();
+        let frag_no = if first < 0x80 {
+            u16::from(first)
+        } else {
+            ensure_size!(in: src, size: 1);
+            u16::from_be_bytes([first & 0x7F, src.read_u8()])
+        };
+        let data = Cow::Borrowed(src.read_slice(src.len()));
+
+        Ok(Self {
+            block_no,
+            frag_no,
+            data,
+        })
+    }
+}
+
+/// UDP Wave Last PDU (`SNDUDPWAVELAST`): the final fragment of an audio sample sent over UDP.
+///
+/// [MS-RDPEA] 2.2.3.7.
+///
+/// [MS-RDPEA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/bea2d5cf-e3b9-4419-92e5-0e074ff9bc5b
+#[derive(Clone, PartialEq, Eq)]
+pub struct UdpWaveLastPdu<'a> {
+    /// Size of the whole `AUDIO_FRAGDATA` structure, summed over every fragment.
+    pub total_size: u16,
+    pub timestamp: u16,
+    pub format_no: u16,
+    pub block_no: u8,
+    pub data: Cow<'a, [u8]>,
+}
+
+impl fmt::Debug for UdpWaveLastPdu<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UdpWaveLastPdu")
+            .field("total_size", &self.total_size)
+            .field("timestamp", &self.timestamp)
+            .field("format_no", &self.format_no)
+            .field("block_no", &self.block_no)
+            .field("data_len", &self.data.len())
+            .finish()
+    }
+}
+
+impl UdpWaveLastPdu<'_> {
+    const NAME: &'static str = "SNDUDPWAVELAST";
+
+    const FIXED_PART_SIZE: usize = 1 /* Type */
+        + 2 /* wTotalSize */
+        + 2 /* wTimeStamp */
+        + 2 /* wFormatNo */
+        + 1 /* cBlockNo */
+        + 3 /* bPad */;
+}
+
+impl Encode for UdpWaveLastPdu<'_> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        dst.write_u8(SNDC_UDPWAVELAST);
+        dst.write_u16(self.total_size);
+        dst.write_u16(self.timestamp);
+        dst.write_u16(self.format_no);
+        dst.write_u8(self.block_no);
+        write_padding!(dst, 3);
+        dst.write_slice(&self.data);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+            .checked_add(self.data.len())
+            .expect("never overflow")
+    }
+}
+
+impl<'de> Decode<'de> for UdpWaveLastPdu<'de> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let msg_type = src.read_u8();
+        if msg_type != SNDC_UDPWAVELAST {
+            return Err(invalid_field_err!("Type", "not a UDP Wave Last PDU", in: src));
+        }
+        let total_size = src.read_u16();
+        let timestamp = src.read_u16();
+        let format_no = src.read_u16();
+        let block_no = src.read_u8();
+        read_padding!(src, 3);
+        let data = Cow::Borrowed(src.read_slice(src.len()));
+
+        Ok(Self {
+            total_size,
+            timestamp,
+            format_no,
+            block_no,
+            data,
+        })
+    }
+}
+
+/// Audio output message received over the UDP port advertised in `wDGramPort`.
+///
+/// [MS-RDPEA] 2.1: the server can send the Training, Wave Encrypt, UDP Wave and UDP Wave Last PDUs
+/// over UDP. The UDP Wave PDUs have no `SNDPROLOG` header; the others do.
+///
+/// [MS-RDPEA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/bea2d5cf-e3b9-4419-92e5-0e074ff9bc5b
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerAudioDatagram<'a> {
+    UdpWave(UdpWavePdu<'a>),
+    UdpWaveLast(UdpWaveLastPdu<'a>),
+    /// A PDU with an `SNDPROLOG` header.
+    Prolog(ServerAudioOutputPdu<'a>),
+}
+
+impl<'de> Decode<'de> for ServerAudioDatagram<'de> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_size!(ctx: "ServerAudioDatagram", in: src, size: 1);
+
+        match src.peek_u8() {
+            SNDC_UDPWAVE => Ok(Self::UdpWave(UdpWavePdu::decode(src)?)),
+            SNDC_UDPWAVELAST => Ok(Self::UdpWaveLast(UdpWaveLastPdu::decode(src)?)),
+            _ => Ok(Self::Prolog(ServerAudioOutputPdu::decode(src)?)),
+        }
+    }
+}
+
 /// Server Audio Output Channel message (PDU prefixed with `SNDPROLOG`)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerAudioOutputPdu<'a> {
@@ -1402,3 +1635,5 @@ impl<'de> Decode<'de> for ClientAudioOutputPdu {
 }
 
 impl SvcEncode for ClientAudioOutputPdu {}
+
+impl ironrdp_dvc::DvcEncode for ClientAudioOutputPdu {}

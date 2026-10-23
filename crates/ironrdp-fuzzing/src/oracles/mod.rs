@@ -226,6 +226,7 @@ pub fn pdu_decode(data: &[u8]) {
 
     let _ = decode::<ironrdp_rdpsnd::pdu::ServerAudioOutputPdu<'_>>(data);
     let _ = decode::<ironrdp_rdpsnd::pdu::ClientAudioOutputPdu>(data);
+    let _ = decode::<ironrdp_rdpsnd::pdu::ServerAudioDatagram<'_>>(data);
 
     let _ = decode::<GfxPdu>(data);
     let _ = decode::<CacheToSurfacePdu>(data);
@@ -1698,5 +1699,31 @@ pub fn egfx_surface_state(data: &[u8]) {
             expected.total_frames_decoded,
             "total_frames_decoded mismatch"
         );
+    }
+}
+
+/// Wave codec oracle for audio output and input.
+///
+/// The input starts with a `WAVEFORMATEX` (with its extra bytes) selecting the codec and its
+/// parameters, followed by wave data. Decoding hostile wave data, and re-encoding what it decoded
+/// to, must not panic for any format the codecs accept.
+pub fn rdpsnd_codec_decode(data: &[u8]) {
+    use ironrdp_core::{Decode as _, ReadCursor};
+    use ironrdp_rdpsnd::codec::{AudioDecoder, AudioEncoder};
+    use ironrdp_rdpsnd::pdu::AudioFormat;
+
+    let mut cursor = ReadCursor::new(data);
+    let Ok(format) = AudioFormat::decode(&mut cursor) else {
+        return;
+    };
+    let Ok(mut decoder) = AudioDecoder::new(&format) else {
+        return;
+    };
+    let mut pcm = Vec::new();
+    let _ = decoder.decode(cursor.remaining(), &mut pcm);
+
+    if let Ok(mut encoder) = AudioEncoder::new(&format) {
+        let mut encoded = Vec::new();
+        encoder.encode(&pcm, &mut encoded);
     }
 }

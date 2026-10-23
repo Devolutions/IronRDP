@@ -219,6 +219,30 @@ struct Args {
     #[clap(long)]
     microphone: bool,
 
+    /// Audio output device, by ID or by (part of its) name
+    ///
+    /// Defaults to the system default device, followed when it changes. `--list-audio-devices`
+    /// shows the choices. Overrides the `.rdp` `ironrdp_audiooutputdevice` property.
+    #[clap(long, value_name = "DEVICE")]
+    audio_output_device: Option<String>,
+
+    /// Audio input (microphone) device, by ID or by (part of its) name
+    ///
+    /// Defaults to the system default device, followed when it changes. Overrides the `.rdp`
+    /// `ironrdp_audioinputdevice` property.
+    #[clap(long, value_name = "DEVICE")]
+    audio_input_device: Option<String>,
+
+    /// Audio kept buffered ahead of the speakers, in milliseconds (default 100)
+    ///
+    /// Raise it on networks with high jitter. Overrides the `.rdp` `ironrdp_audiolatency` property.
+    #[clap(long, value_name = "MS")]
+    audio_latency: Option<u64>,
+
+    /// List the audio output and input devices, then exit
+    #[clap(long)]
+    list_audio_devices: bool,
+
     /// Camera to redirect (MS-RDPECAM), by symbolic link or friendly name
     ///
     /// Repeat to redirect several cameras. `*` redirects every camera, including cameras attached
@@ -519,6 +543,7 @@ pub struct ViewerConfig {
     printers: Option<PrinterOptions>,
     named_drives: Vec<NamedDrive>,
     ports: PortOptions,
+    list_audio_devices: bool,
 }
 
 impl ViewerConfig {
@@ -551,6 +576,7 @@ impl ViewerConfig {
 
         let log_file = args.log_file.clone();
         let dump_rdp = args.dump_rdp.clone();
+        let list_audio_devices = args.list_audio_devices;
 
         if args.rpc {
             if args.rdp_file.is_some() || dump_rdp.is_some() {
@@ -580,6 +606,7 @@ impl ViewerConfig {
                 printers: None,
                 named_drives: Vec::new(),
                 ports: PortOptions::default(),
+                list_audio_devices: false,
             });
         }
 
@@ -669,6 +696,7 @@ impl ViewerConfig {
             printers,
             named_drives,
             ports,
+            list_audio_devices,
         })
     }
 
@@ -713,6 +741,11 @@ impl ViewerConfig {
     /// Whether the viewer should host the local RPC server.
     pub fn rpc_mode(&self) -> bool {
         self.rpc
+    }
+
+    /// Whether to list the audio devices instead of connecting.
+    pub fn list_audio_devices(&self) -> bool {
+        self.list_audio_devices
     }
 
     /// Endpoint explicitly selected for the RPC host.
@@ -846,6 +879,15 @@ fn apply_cli_to_builder(
 
     if args.microphone {
         builder = builder.with_audio_capture(true);
+    }
+    if let Some(device) = args.audio_output_device {
+        builder = builder.with_audio_output_device(Some(device));
+    }
+    if let Some(device) = args.audio_input_device {
+        builder = builder.with_audio_input_device(Some(device));
+    }
+    if let Some(latency) = args.audio_latency {
+        builder = builder.with_audio_latency(Duration::from_millis(latency));
     }
 
     if !args.cameras.is_empty() || args.camera_raw {

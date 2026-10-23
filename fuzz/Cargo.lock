@@ -572,8 +572,10 @@ version = "0.9.0"
 dependencies = [
  "bitflags",
  "ironrdp-core",
+ "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "sha1",
  "tracing",
 ]
 

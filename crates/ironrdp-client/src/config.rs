@@ -365,6 +365,10 @@ pub struct ChannelConfig {
     #[cfg(feature = "sound")]
     pub audio_capture: bool,
 
+    /// Audio devices and playback buffering.
+    #[cfg(feature = "sound")]
+    pub audio: crate::audio::AudioConfig,
+
     /// Clipboard redirection mode.
     #[cfg(feature = "clipboard")]
     pub clipboard: ClipboardType,
@@ -422,6 +426,8 @@ impl Default for ChannelConfig {
             sound: true,
             #[cfg(feature = "sound")]
             audio_capture: false,
+            #[cfg(feature = "sound")]
+            audio: crate::audio::AudioConfig::default(),
             #[cfg(feature = "clipboard")]
             clipboard: ClipboardType::Enable,
             #[cfg(feature = "rdpdr")]
@@ -1494,6 +1500,56 @@ impl ConfigBuilder {
         self
     }
 
+    /// Set the audio output device: a device ID or (part of) a device name; `None` follows the
+    /// system default device.
+    #[cfg(feature = "sound")]
+    #[must_use]
+    pub fn with_audio_output_device(mut self, device: Option<String>) -> Self {
+        match &device {
+            Some(device) => self
+                .properties
+                .insert(crate::audio::OUTPUT_DEVICE_PROPERTY, device.clone()),
+            None => self.properties.remove(crate::audio::OUTPUT_DEVICE_PROPERTY),
+        };
+        self.channels.audio.output_device = device;
+        self
+    }
+
+    /// Set the audio input (microphone) device: a device ID or (part of) a device name; `None`
+    /// follows the system default device.
+    #[cfg(feature = "sound")]
+    #[must_use]
+    pub fn with_audio_input_device(mut self, device: Option<String>) -> Self {
+        match &device {
+            Some(device) => self
+                .properties
+                .insert(crate::audio::INPUT_DEVICE_PROPERTY, device.clone()),
+            None => self.properties.remove(crate::audio::INPUT_DEVICE_PROPERTY),
+        };
+        self.channels.audio.input_device = device;
+        self
+    }
+
+    /// Set the audio kept buffered ahead of the output device (100 ms by default).
+    ///
+    /// Higher values ride out more network jitter at the cost of audio delay.
+    #[cfg(feature = "sound")]
+    #[must_use]
+    pub fn with_audio_latency(mut self, latency: Duration) -> Self {
+        self.properties.insert(
+            crate::audio::LATENCY_PROPERTY,
+            i64::try_from(latency.as_millis()).unwrap_or(i64::MAX),
+        );
+        self.channels.audio.latency = Some(latency);
+        self
+    }
+
+    /// Audio device and buffering settings.
+    #[cfg(feature = "sound")]
+    pub fn audio(&self) -> &crate::audio::AudioConfig {
+        &self.channels.audio
+    }
+
     /// Set the RDPSND quality policy sent to servers supporting audio protocol version 6 or newer.
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
     #[must_use]
@@ -2301,6 +2357,20 @@ impl ConfigBuilder {
             Ok(Some(AudioCaptureMode::CaptureFromClient)) => self.enable_audio_capture = Some(true),
             Ok(Some(AudioCaptureMode::Disabled)) => self.enable_audio_capture = Some(false),
             _ => {}
+        }
+        #[cfg(feature = "sound")]
+        {
+            if let Some(device) = ps.get::<&str>(crate::audio::OUTPUT_DEVICE_PROPERTY) {
+                self.channels.audio.output_device = Some(device.to_owned());
+            }
+            if let Some(device) = ps.get::<&str>(crate::audio::INPUT_DEVICE_PROPERTY) {
+                self.channels.audio.input_device = Some(device.to_owned());
+            }
+            if let Some(latency) = ps.get::<i64>(crate::audio::LATENCY_PROPERTY) {
+                let latency = u64::try_from(latency)
+                    .map_err(|_| anyhow::anyhow!("invalid '{}': {latency}", crate::audio::LATENCY_PROPERTY))?;
+                self.channels.audio.latency = Some(Duration::from_millis(latency));
+            }
         }
         if let Some(enabled) = ps.get::<i64>("ironrdp_egfx") {
             self.graphics_pipeline = enabled != 0;

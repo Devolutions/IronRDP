@@ -1257,6 +1257,87 @@ fn with_audio_capture_enables_client_info_flag_and_channel() {
     );
 }
 
+// oracle: spec crates/ironrdp-viewer/README.md §`.rdp` file support (ironrdp_audio* keys)
+#[test]
+fn rdp_audio_properties_select_devices_and_latency() {
+    let config = parse_config_from_rdp(
+        "full address:s:rdp.example.com
+username:s:test-user
+ClearTextPassword:s:test-pass
+ironrdp_audiooutputdevice:s:Headphones
+ironrdp_audioinputdevice:s:wasapi:{0.0.1.00000000}.{mic}
+ironrdp_audiolatency:i:250
+",
+        &[],
+    );
+
+    let audio = &config.channels().audio;
+    assert_eq!(audio.output_device.as_deref(), Some("Headphones"));
+    assert_eq!(audio.input_device.as_deref(), Some("wasapi:{0.0.1.00000000}.{mic}"));
+    assert_eq!(audio.latency, Some(core::time::Duration::from_millis(250)));
+}
+
+// oracle: spec crates/ironrdp-viewer/README.md §`.rdp` file support (ironrdp_audiolatency is a duration)
+#[test]
+fn negative_rdp_audio_latency_is_rejected() {
+    let result = parse_config_from_rdp_result(
+        "full address:s:rdp.example.com
+username:s:test-user
+ClearTextPassword:s:test-pass
+ironrdp_audiolatency:i:-5
+",
+        &[],
+    );
+
+    assert!(result.is_err());
+}
+
+// oracle: property round-trip
+#[test]
+fn audio_builder_settings_round_trip_through_the_property_set() {
+    let config = complete_builder()
+        .with_audio_output_device(Some("Speakers".to_owned()))
+        .with_audio_input_device(Some("Array".to_owned()))
+        .with_audio_latency(core::time::Duration::from_millis(150))
+        .build()
+        .expect("valid configuration");
+
+    let reparsed = complete_builder()
+        .with_property_set(config.properties())
+        .expect("valid properties")
+        .build()
+        .expect("valid configuration");
+
+    assert_eq!(reparsed.channels().audio, config.channels().audio);
+    assert_eq!(config.channels().audio.output_device.as_deref(), Some("Speakers"));
+}
+
+// oracle: spec crates/ironrdp-viewer/README.md §`.rdp` file support (property precedence)
+#[test]
+fn viewer_audio_flags_override_rdp_properties() {
+    let config = parse_config_from_rdp(
+        "full address:s:rdp.example.com
+username:s:test-user
+ClearTextPassword:s:test-pass
+ironrdp_audiooutputdevice:s:Headphones
+ironrdp_audiolatency:i:250
+",
+        &[
+            "--audio-output-device",
+            "Speakers",
+            "--audio-input-device",
+            "Array",
+            "--audio-latency",
+            "60",
+        ],
+    );
+
+    let audio = &config.channels().audio;
+    assert_eq!(audio.output_device.as_deref(), Some("Speakers"));
+    assert_eq!(audio.input_device.as_deref(), Some("Array"));
+    assert_eq!(audio.latency, Some(core::time::Duration::from_millis(60)));
+}
+
 #[test]
 fn camerastoredirect_selects_redirected_cameras() {
     let mut properties = ironrdp_propertyset::PropertySet::new();

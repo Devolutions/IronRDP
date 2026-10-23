@@ -25,6 +25,11 @@ fn main() -> anyhow::Result<()> {
         return run_rpc(cli).context("RPC server");
     }
 
+    if cli.list_audio_devices() {
+        print_audio_devices();
+        return Ok(());
+    }
+
     let dump_rdp = cli.dump_rdp().map(ToOwned::to_owned);
     #[cfg(windows)]
     let printers = cli.printers().cloned();
@@ -304,4 +309,24 @@ fn setup_logging(log_file: Option<&str>) -> anyhow::Result<()> {
     };
 
     Ok(())
+}
+
+#[expect(clippy::print_stdout, reason = "--list-audio-devices reports to the terminal")]
+fn print_audio_devices() {
+    use ironrdp::client::audio::{Direction, list_devices};
+
+    for (direction, label) in [
+        (Direction::Output, "Audio output devices"),
+        (Direction::Input, "Audio input devices"),
+    ] {
+        println!("{label}:");
+        for device in list_devices(direction) {
+            let marker = if device.is_default { " (default)" } else { "" };
+            println!(
+                "  {}{marker}
+    {}",
+                device.name, device.id
+            );
+        }
+    }
 }
