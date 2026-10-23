@@ -2322,6 +2322,9 @@ async fn consume_output(
                     RailControlEvent::ZOrderSync(_) => "z-order-sync",
                     RailControlEvent::Cloak(_) => "cloak",
                     RailControlEvent::PowerDisplayRequest(_) => "power-display-request",
+                    RailControlEvent::MinMaxInfo(_) => "min-max-info",
+                    RailControlEvent::LocalMoveSize(_) => "local-move-size",
+                    RailControlEvent::TaskbarInfo(_) => "taskbar-info",
                 };
                 guard.rail.record(RailEventKind::Control { kind: kind.to_owned() });
                 true
