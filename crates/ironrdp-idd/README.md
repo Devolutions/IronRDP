@@ -42,7 +42,8 @@ This crate is intentionally *safe-by-default* for normal workspace builds:
   - Expected keys include `dump_dir`, `session_id`, `wddm_idd_enabled`, `driver_loaded`, `hardware_id`, and `active_video_source`.
   - The swapchain thread performs best-effort CPU readback only when the runtime state proves the remote session is bound and a dump directory is configured.
   - Dump files are written as `idd-swapchain-s####-f##########-######.bmp`, which lets the e2e harness correlate frame artifacts with the target session.
-- The INF targets `UmdfExtensions=IddCx0104`.
+- The INF declares `UmdfExtensions=IddCx0102`, the only service name IddCx registers, even though the driver binds IddCx 1.4.
+  - Declaring `IddCx0104` makes IddCx's `WdfDriverCreate` fail with `STATUS_INVALID_PARAMETER` and the session drop with `ERRINFO_CLOSE_STACK_ON_DRIVER_FAILURE`.
   - Remote-session strict e2e assumes the package advertises the IddCx 1.4 remote-IDD contract and `UmdfHostProcessSharing=ProcessSharingDisabled`.
 
 ## Scripts
@@ -60,9 +61,43 @@ All scripts live in [crates/ironrdp-idd/scripts](scripts).
 - [check-windows-edition.ps1](scripts/check-windows-edition.ps1): check Windows edition suitability for 3rd party protocol providers.
 - [find-wdk-tools.ps1](scripts/find-wdk-tools.ps1): locate `iddcx.h`, `iddcxstub.lib`, and WDK/SDK signing tools on the machine.
 
+## Set up IT-HELP-TERMSRV
+
+Run from the repository root with `RDP_USERNAME` and `RDP_PASSWORD` supplied through the environment.
+The scripts default to `IT-HELP-TERMSRV` and use HTTPS remoting on port 5986 when HTTP authentication is unavailable.
+The lab HTTPS fallback skips certificate validation without changing local TrustedHosts or certificate stores.
+
+```powershell
+.\crates\ironrdp-idd\scripts\ensure-rdsh-role.ps1 -AttemptInstall
+.\crates\ironrdp-idd\scripts\deploy-idd.ps1
+.\crates\ironrdp-idd\scripts\restart-vm.ps1
+$env:IRONRDP_IDD_LINK = '1'
+cargo build --release --locked -p ironrdp-idd
+.\crates\ironrdp-idd\scripts\sign-driver.ps1
+.\crates\ironrdp-idd\scripts\install-idd-remote.ps1
+```
+
+Install the WDK and `psign-tool` on the build machine first.
+For an extracted WDK, set `IRONRDP_WINDOWS_KITS_ROOT` to its `c` directory before building and signing.
+Test signing requires a compatible boot policy; a Secure Boot policy that blocks it must be resolved before installation.
+
+Signing uses the public test-only fixtures pinned to commit `2a7a928a7db8479ca4c96273579aac8c85f60a09` in [Devolutions/psign][psign-fixtures].
+The helper caches them under `%LOCALAPPDATA%\IronRDP\TestSigning` and exports a public signer certificate.
+`psign-tool` 0.8.0 needs a persisted key provider, so the signing script temporarily imports the PFX into `CurrentUser\My` and removes the imported certificate and key afterward.
+It preserves a pre-existing personal-store certificate and never imports local trust anchors.
+WDK Inf2Cat generates the driver catalog; `psign-tool` signs the DLL and catalog, then verifies both signatures with an explicit CA anchor and checks DLL catalog membership.
+Offline signature verification does not establish Windows driver-policy acceptance.
+
+Only the VM receives the public CA and signer certificates in `LocalMachine\Root` and `LocalMachine\TrustedPublisher`.
+The PFX and private key stay on the build machine; these public fixtures must never be used for production signing.
+Use `ironrdp-agent`, not `mstsc` or MsRdpEx, for VM RDP connections; see the [TermSrv connection instructions][termsrv-rdp].
+
 ## Current status
 
 - Swapchain processing is a thread lifecycle scaffold (waits on the “new frame” event, uses a terminate event for shutdown, and enables MMCSS best-effort).
 - Optional diagnostics now flow through `C:\ProgramData\IronRDP\Idd\runtime-config.txt` and `C:\ProgramData\IronRDP\Idd\ironrdp-idd-debug.log`, which are also collected by the strict e2e harness.
 - Real IddCx swapchain acquire/release calls and accurate callback arg layouts require WDK headers/import libs.
   - Use [find-wdk-tools.ps1](scripts/find-wdk-tools.ps1) to confirm `iddcx.h`, `iddcxstub.lib`, and `Inf2Cat.exe` are present.
+
+[psign-fixtures]: https://github.com/Devolutions/psign/tree/2a7a928a7db8479ca4c96273579aac8c85f60a09/tests/fixtures/devolutions-authenticode
+[termsrv-rdp]: ../ironrdp-termsrv/README.md#connect-with-ironrdp-agent

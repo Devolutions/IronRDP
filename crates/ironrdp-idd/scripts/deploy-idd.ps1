@@ -2,10 +2,10 @@
 param(
     [Parameter()]
     [Alias('ComputerName')]
-    [string]$VmHostname = "IT-HELP-TEST",
+    [string]$VmHostname = "IT-HELP-TERMSRV",
 
     [Parameter()]
-    [string]$Username = "IT-HELP\Administrator",
+    [string]$Username = $env:RDP_USERNAME,
 
     [Parameter()]
     [pscredential]$Credential,
@@ -17,10 +17,10 @@ param(
     [switch]$PromptPassword,
 
     [Parameter()]
-    [string]$PasswordEnvVar = 'IRONRDP_TESTVM_PASSWORD',
+    [string]$PasswordEnvVar = 'RDP_PASSWORD',
 
     [Parameter()]
-    [string]$CertsUrl = "https://raw.githubusercontent.com/Devolutions/devolutions-authenticode/master/data/certs"
+    [string]$CertsUrl = 'https://raw.githubusercontent.com/Devolutions/psign/2a7a928a7db8479ca4c96273579aac8c85f60a09/tests/fixtures/devolutions-authenticode'
 )
 
 Set-StrictMode -Version Latest
@@ -64,47 +64,28 @@ if ($PSBoundParameters.ContainsKey('Credential') -and ($null -ne $Credential)) {
     }
 }
 
- $session = $null
- $session = New-TestVmSession -Hostname $VmHostname -Credential $credential
- try {
-     Invoke-Command -Session $session -ScriptBlock {
-         param($CertsUrl)
-
-    $ErrorActionPreference='Stop'
-
-    $TempPath = "C:\Temp\IronRdpCerts"
-    New-Item -ItemType Directory -Path $TempPath -Force | Out-Null
-
-    @('authenticode-test-ca.crt','authenticode-test-cert.pfx') | ForEach-Object {
-        Invoke-WebRequest -Uri "$CertsUrl/$_" -OutFile "$TempPath\$_" -ErrorAction Stop
-    }
-
-    Import-Certificate -FilePath "$TempPath\authenticode-test-ca.crt" -CertStoreLocation "cert:\LocalMachine\Root" | Out-Null
-
-    $CodeSignPassword = ConvertTo-SecureString "CodeSign123!" -AsPlainText -Force
-    Import-PfxCertificate -FilePath "$TempPath\authenticode-test-cert.pfx" -CertStoreLocation 'cert:\LocalMachine\My' -Password $CodeSignPassword | Out-Null
-
-    # Driver packages require the catalog signer to be trusted as a publisher.
-    # Import the public code signing certificate into LocalMachine\TrustedPublisher.
-    try {
-        $codeSigningCert = Get-ChildItem cert:\LocalMachine\My -CodeSigning | Where-Object { $_.Subject -eq 'CN=Test Code Signing Certificate' } | Select-Object -First 1
-        if ($null -ne $codeSigningCert) {
-            $pubCer = Join-Path $TempPath 'authenticode-test-cert.cer'
-            Export-Certificate -Cert $codeSigningCert -FilePath $pubCer | Out-Null
-            Import-Certificate -FilePath $pubCer -CertStoreLocation 'cert:\LocalMachine\TrustedPublisher' | Out-Null
-        } else {
-            Write-Warning 'Code signing cert not found in LocalMachine\\My after PFX import (TrustedPublisher not updated)'
+$certificates = & (Join-Path $PSScriptRoot 'get-test-certificates.ps1') -CertsUrl $CertsUrl
+$session = New-TestVmSession -Hostname $VmHostname -Credential $credential
+try {
+    $remotePath = 'C:\ProgramData\IronRDP\TestSigning'
+    Invoke-Command -Session $session -ScriptBlock {
+        param($Path)
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    } -ArgumentList $remotePath
+    Copy-Item -LiteralPath $certificates.RootCertificate -Destination "$remotePath\authenticode-test-ca.crt" -ToSession $session -Force
+    Copy-Item -LiteralPath $certificates.SignerCertificate -Destination "$remotePath\authenticode-test-cert.cer" -ToSession $session -Force
+    Invoke-Command -Session $session -ScriptBlock {
+        param($Path)
+        $ErrorActionPreference = 'Stop'
+        Import-Certificate -FilePath "$Path\authenticode-test-ca.crt" -CertStoreLocation cert:\LocalMachine\Root | Out-Null
+        Import-Certificate -FilePath "$Path\authenticode-test-cert.cer" -CertStoreLocation cert:\LocalMachine\TrustedPublisher | Out-Null
+        bcdedit /set testsigning on
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not enable test signing (exit $LASTEXITCODE); check Secure Boot policy"
         }
-    } catch {
-        Write-Warning "Failed to import code signing cert into TrustedPublisher: $($_.Exception.Message)"
-    }
-
-    bcdedit /set testsigning on | Out-Null
-
-         Write-Host "Test signing enabled. A reboot is required."
-     } -ArgumentList $CertsUrl
- }
- finally {
-     Remove-PSSession -Session $session -ErrorAction SilentlyContinue
- }
-
+        Write-Host 'Target-only certificate trust provisioned; reboot if test signing was not already enabled'
+    } -ArgumentList $remotePath
+}
+finally {
+    Remove-PSSession -Session $session -ErrorAction SilentlyContinue
+}

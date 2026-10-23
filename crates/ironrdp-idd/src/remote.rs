@@ -246,7 +246,10 @@ fn maybe_request_display_config_update(adapter: IDDCX_ADAPTER, source: &str) {
             return;
         }
 
-        if state.display_config_request_session_id == Some(session_id) && state.last_active_paths > 0 {
+        // The OS stores one display configuration per remote session and reapplies it on its own,
+        // for example on RedrawWindow after StopScreenUpdates deactivated every path.
+        // Re-sending it while paths are inactive makes the OS recommit modes in a loop.
+        if state.display_config_requested && state.display_config_request_session_id == Some(session_id) {
             return;
         }
 
@@ -505,9 +508,6 @@ pub fn set_display_config(_adapter: IDDCX_ADAPTER, paths: &[crate::adapter::IDDC
     state.last_path_count = paths.len();
     state.last_changed_paths = changed_paths;
     state.last_active_paths = active_paths;
-    if active_paths == 0 {
-        state.display_config_requested = false;
-    }
 
     crate::debug_trace(&format!(
         "SESSION_PROOF_IDD_COMMIT_MODES path_count={} changed_paths={} active_paths={} session_id={} wddm_enabled={} driver_loaded={} active_video_source={}",

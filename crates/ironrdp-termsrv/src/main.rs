@@ -787,8 +787,14 @@ mod windows_main {
                     || Instant::now() >= self.next_logon_readiness_probe_at;
 
                 if should_probe_logon_readiness {
-                    let user_token_available = session_id_override.is_some_and(session_has_user_token);
-                    let explorer_ready = session_id_override.is_some_and(session_has_explorer_token);
+                    let (user_token_available, explorer_ready) = tokio::task::spawn_blocking(move || {
+                        (
+                            session_id_override.is_some_and(session_has_user_token),
+                            session_id_override.is_some_and(session_has_explorer_token),
+                        )
+                    })
+                    .await
+                    .unwrap_or((false, false));
                     let interactive_shell_ready = user_token_available || explorer_ready;
 
                     self.logon_readiness_ready = interactive_shell_ready;
@@ -936,8 +942,18 @@ mod windows_main {
                     // helper. Launching the first helper on a prelogon token pins capture to the
                     // wrong desktop and can fail process startup during session bring-up.
                     if let Some(session_id) = session_id_override {
-                        let launch_user_token_available = session_has_user_token(session_id);
-                        let launch_explorer_ready = session_has_explorer_token(session_id);
+                        // WTS queries are RPCs into TermService, which may itself be inside a provider
+                        // callback waiting on this process's control pipe. Blocking the runtime thread
+                        // here stops the pipe from being served and deadlocks both processes.
+                        let (launch_user_token_available, launch_explorer_ready) =
+                            tokio::task::spawn_blocking(move || {
+                                (
+                                    session_has_user_token(session_id),
+                                    session_has_explorer_token(session_id),
+                                )
+                            })
+                            .await
+                            .unwrap_or((false, false));
                         if launch_user_token_available || launch_explorer_ready {
                             self.waiting_for_user_login_since = None;
                             self.next_auto_send_sas_at = Instant::now();
@@ -961,10 +977,13 @@ mod windows_main {
                                 self.next_waiting_for_user_login_diagnostic_at =
                                     now + WAITING_FOR_USER_LOGON_DIAGNOSTIC_INTERVAL;
 
+                                let snapshot = tokio::task::spawn_blocking(session_selection_snapshot)
+                                    .await
+                                    .unwrap_or_default();
                                 info!(
                                     connection_id = self.connection_id,
                                     session_id,
-                                    snapshot = %session_selection_snapshot(),
+                                    %snapshot,
                                     "SESSION_PROOF_TERMSRV_WAITING_FOR_USER_LOGON_STATE"
                                 );
                             }
@@ -972,7 +991,10 @@ mod windows_main {
                             if auto_send_sas_enabled() && now >= self.next_auto_send_sas_at {
                                 self.next_auto_send_sas_at = now + AUTO_SEND_SAS_RETRY_INTERVAL;
 
-                                if try_send_sas("provider_wait_for_user_logon") {
+                                if tokio::task::spawn_blocking(|| try_send_sas("provider_wait_for_user_logon"))
+                                    .await
+                                    .unwrap_or(false)
+                                {
                                     info!(
                                         connection_id = self.connection_id,
                                         session_id, "SESSION_PROOF_TERMSRV_SAS_SENT"
@@ -988,8 +1010,14 @@ mod windows_main {
                     let captured_credentials = { self.credentials_slot.lock().await.clone() };
                     let allow_prelogon_fallback = !self.provider_mode && !self.helper_started_once;
 
-                    let launch_user_token_available = session_id_override.is_some_and(session_has_user_token);
-                    let launch_explorer_ready = session_id_override.is_some_and(session_has_explorer_token);
+                    let (launch_user_token_available, launch_explorer_ready) = tokio::task::spawn_blocking(move || {
+                        (
+                            session_id_override.is_some_and(session_has_user_token),
+                            session_id_override.is_some_and(session_has_explorer_token),
+                        )
+                    })
+                    .await
+                    .unwrap_or((false, false));
                     info!(
                         connection_id = self.connection_id,
                         session_id = session_id_override.unwrap_or(0),
@@ -1578,14 +1606,23 @@ mod windows_main {
             info!(connection_id, input_addr = %input_addr, "Capture helper input listener bound");
 
             let helper_token = generate_capture_helper_token()?;
-            let helper = spawn_capture_helper_process_tcp(
-                local_addr,
-                input_addr,
-                &helper_token,
-                session_id_override,
-                credentials,
-                allow_prelogon_fallback,
-            )
+            // Token acquisition queries TermService over RPC; keep it off the runtime thread so the
+            // control pipe stays responsive (see the logon readiness probe in the capture loop).
+            let helper = {
+                let helper_token = helper_token.clone();
+                tokio::task::spawn_blocking(move || {
+                    spawn_capture_helper_process_tcp(
+                        local_addr,
+                        input_addr,
+                        &helper_token,
+                        session_id_override,
+                        credentials,
+                        allow_prelogon_fallback,
+                    )
+                })
+                .await
+                .context("capture helper spawn task failed")?
+            }
             .with_context(|| format!("failed to spawn capture helper for connection {connection_id}"))?;
 
             info!(
@@ -2011,15 +2048,25 @@ mod windows_main {
             let frame_ready_event = SendHandle(frame_ready_event);
 
             let helper_token = generate_capture_helper_token()?;
-            let helper = spawn_capture_helper_process_shared_mem(
-                &map_name,
-                &event_name,
-                input_addr,
-                &helper_token,
-                session_id_override,
-                credentials,
-                allow_prelogon_fallback,
-            )
+            // Token acquisition queries TermService over RPC; keep it off the runtime thread.
+            let helper = {
+                let map_name = map_name.clone();
+                let event_name = event_name.clone();
+                let helper_token = helper_token.clone();
+                tokio::task::spawn_blocking(move || {
+                    spawn_capture_helper_process_shared_mem(
+                        &map_name,
+                        &event_name,
+                        input_addr,
+                        &helper_token,
+                        session_id_override,
+                        credentials,
+                        allow_prelogon_fallback,
+                    )
+                })
+                .await
+                .context("shared-memory capture helper spawn task failed")?
+            }
             .with_context(|| format!("failed to spawn shared-memory capture helper for connection {connection_id}"))?;
 
             let input_stream =

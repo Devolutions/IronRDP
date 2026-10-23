@@ -7,7 +7,13 @@ param(
     [string]$InfPath = "crates\ironrdp-idd\IronRdpIdd.inf",
 
     [Parameter()]
-    [string]$CertSubject = "CN=Test Code Signing Certificate"
+    [string]$CertSubject = "CN=Test Code Signing Certificate",
+
+    [Parameter()]
+    [string]$CertsUrl = 'https://raw.githubusercontent.com/Devolutions/psign/2a7a928a7db8479ca4c96273579aac8c85f60a09/tests/fixtures/devolutions-authenticode',
+
+    [Parameter()]
+    [string]$CodeSignCertPassword = 'CodeSign123!'
 )
 
 Set-StrictMode -Version Latest
@@ -19,7 +25,7 @@ function Resolve-WindowsKitTool {
         [string]$ExeName,
 
         [Parameter()]
-        [string]$WindowsKitsRoot = "C:\Program Files (x86)\Windows Kits\10",
+        [string]$WindowsKitsRoot = $(if ($env:IRONRDP_WINDOWS_KITS_ROOT) { $env:IRONRDP_WINDOWS_KITS_ROOT } else { 'C:\Program Files (x86)\Windows Kits\10' }),
 
         [Parameter()]
         [string]$Arch = "x64"
@@ -63,44 +69,57 @@ $stagedDriverPath = Join-Path $infDir 'IronRdpIdd.dll'
 
 Copy-Item -Path $driverFullPath -Destination $stagedDriverPath -Force
 
-$cert = Get-ChildItem cert:\CurrentUser\My -CodeSigning |
-    Where-Object { $_.Subject -eq $CertSubject } |
-    Select-Object -First 1
-
-if (-not $cert) {
-    throw "Code signing certificate not found in cert:\CurrentUser\My (Subject='$CertSubject')"
-}
-
-$signtool = Resolve-WindowsKitTool -ExeName 'signtool.exe'
-if (-not $signtool) {
-    throw "signtool.exe not found (install Windows SDK/WDK or run from a Developer Command Prompt)"
-}
-
-& $signtool sign /v /fd sha256 /sha1 $cert.Thumbprint $stagedDriverPath
-if ($LASTEXITCODE -ne 0) {
-    throw "signtool failed for driver DLL (exit $LASTEXITCODE)"
-}
-
+$psign = (Get-Command psign-tool -ErrorAction Stop).Source
 $inf2cat = Resolve-WindowsKitTool -ExeName 'Inf2Cat.exe'
 if (-not $inf2cat) {
     throw "Inf2Cat.exe not found (install WDK)"
 }
 
-& $inf2cat /driver:$infDir /os:10_X64
-if ($LASTEXITCODE -ne 0) {
-    throw "Inf2Cat failed (exit $LASTEXITCODE)"
-}
-
 $catPath = Join-Path $infDir 'IronRdpIdd.cat'
-if (-not (Test-Path $catPath)) {
-    throw "Catalog not found after Inf2Cat: $catPath"
+$certificates = & (Join-Path $PSScriptRoot 'get-test-certificates.ps1') -CertsUrl $CertsUrl -CodeSignCertPassword $CodeSignCertPassword
+$signer = [Security.Cryptography.X509Certificates.X509Certificate2]::new($certificates.SignerCertificate)
+try {
+    if ($signer.Subject -ne $CertSubject) {
+        throw "Unexpected signing certificate subject: $($signer.Subject)"
+    }
+    $thumbprint = $signer.Thumbprint
+}
+finally {
+    $signer.Dispose()
+}
+$storePath = "cert:\CurrentUser\My\$thumbprint"
+$alreadyPresent = Test-Path -LiteralPath $storePath
+try {
+    # psign 0.8.0 requires a persisted key provider; My does not establish certificate trust.
+    if (-not $alreadyPresent) {
+        Import-PfxCertificate -FilePath $certificates.Pfx -Password (ConvertTo-SecureString $CodeSignCertPassword -AsPlainText -Force) -CertStoreLocation cert:\CurrentUser\My | Out-Null
+    }
+    if (-not (Get-Item -LiteralPath $storePath).HasPrivateKey) {
+        throw "Signing certificate has no private key: $storePath"
+    }
+    & $psign --mode windows sign --cert-sha1 $thumbprint --digest sha256 $stagedDriverPath
+    if ($LASTEXITCODE -ne 0) { throw "psign failed for driver DLL (exit $LASTEXITCODE)" }
+
+    & $inf2cat /driver:$infDir /os:10_X64
+    if ($LASTEXITCODE -ne 0) { throw "Inf2Cat failed (exit $LASTEXITCODE)" }
+    if (-not (Test-Path -LiteralPath $catPath)) { throw "Catalog not found after Inf2Cat: $catPath" }
+
+    & $psign --mode windows sign --cert-sha1 $thumbprint --digest sha256 $catPath
+    if ($LASTEXITCODE -ne 0) { throw "psign failed for catalog (exit $LASTEXITCODE)" }
+
+    & $psign portable trust-verify-pe $stagedDriverPath --trusted-ca $certificates.RootCertificate --revocation-mode off
+    if ($LASTEXITCODE -ne 0) { throw "Driver signature verification failed (exit $LASTEXITCODE)" }
+    & $psign portable trust-verify-catalog $catPath --trusted-ca $certificates.RootCertificate --revocation-mode off
+    if ($LASTEXITCODE -ne 0) { throw "Catalog signature verification failed (exit $LASTEXITCODE)" }
+    & $psign portable verify-catalog-member $stagedDriverPath --catalog $catPath
+    if ($LASTEXITCODE -ne 0) { throw "Catalog membership verification failed (exit $LASTEXITCODE)" }
+}
+finally {
+    if (-not $alreadyPresent -and (Test-Path -LiteralPath $storePath)) {
+        Remove-Item -LiteralPath $storePath -DeleteKey -ErrorAction Stop
+    }
 }
 
-& $signtool sign /v /fd sha256 /sha1 $cert.Thumbprint $catPath
-if ($LASTEXITCODE -ne 0) {
-    throw "signtool failed for catalog (exit $LASTEXITCODE)"
-}
-
-Write-Host "Signed: $driverFullPath"
 Write-Host "Staged: $stagedDriverPath"
+Write-Host "Signed: $stagedDriverPath"
 Write-Host "Signed: $catPath"

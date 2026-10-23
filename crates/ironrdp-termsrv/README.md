@@ -45,37 +45,38 @@ cargo run -p ironrdp-termsrv
 
 ## Deploy to a test VM (PSRemoting)
 
-For unattended deploy (no password prompt), set the VM admin password in an environment variable and run:
+Supply `RDP_USERNAME` and `RDP_PASSWORD` through the environment, then run from the repository root:
 
 ```powershell
-$env:IRONRDP_TESTVM_PASSWORD = '<vm-admin-password>'
-
-# Optional: if the RDP password differs from the PSRemoting password.
-$env:IRONRDP_TESTVM_RDP_PASSWORD = '<rdp-password>'
-
-powershell -NoProfile -ExecutionPolicy Bypass \
-  -File .\crates\ironrdp-termsrv\scripts\deploy-testvm-psremoting.ps1 \
-  -Hostname IT-HELP-TEST \
-  -Username 'IT-HELP\Administrator' \
-  -CaptureIpc shm \
-  -RdpUsername 'Administrator' \
-  -RdpDomain 'IT-HELP'
+.\crates\ironrdp-termsrv\scripts\deploy-testvm-psremoting.ps1 -CaptureIpc shm
 ```
 
 Notes:
 
 - The deployment script does not embed the RDP password in the scheduled task definition.
   It writes the password to a restricted file on the VM, uses it once to start `ironrdp-termsrv`, then deletes it.
-- If you omit `-RdpPassword`, the script attempts to read the password from `env:IRONRDP_TESTVM_RDP_PASSWORD` and falls back to `env:IRONRDP_TESTVM_PASSWORD` for convenience (override with `-RdpPasswordEnvVar`).
-- Prefer `env:IRONRDP_TESTVM_RDP_PASSWORD` over passing `-RdpPassword` on the command line to avoid leaking credentials via shell history.
+- The default host is `IT-HELP-TERMSRV`; both remoting and RDP use the environment-supplied identity.
+- To use separate credentials, override `-Username`, `-RdpUsername`, `-PasswordEnvVar`, and `-RdpPasswordEnvVar`.
+  Avoid plaintext password arguments in shell history.
+- The startup task persists, but its credential handoff is consumed once.
+  Redeploy after a later reboot to restore companion authentication credentials.
 
-Then connect with the IronRDP client:
+### Connect with ironrdp-agent
+
+Use `ironrdp-agent`, not `mstsc` or MsRdpEx, to connect to this VM.
+It reads `RDP_USERNAME` and `RDP_PASSWORD` directly, without password files or command-line secrets.
+Native Windows RDP uses port 3389; the IronRDP side-by-side provider uses port 4489.
 
 ```powershell
-$env:IRONRDP_LOG = 'debug'
-target\debug\ironrdp-client.exe --log-file .\target\tmp\ironrdp-client.log \
-  IT-HELP-TEST:4489 -u Administrator -d IT-HELP -p $env:IRONRDP_TESTVM_PASSWORD
+.\crates\ironrdp-termsrv\scripts\connect-agent.ps1
+ironrdp-agent status
 ```
+
+Use `-Port 4489` for the custom provider.
+Connections are asynchronous; inspect `status` before requesting a screenshot.
+If TLS validation fails, verify the reported SHA-256 certificate fingerprint over authenticated PSRemoting before using `ironrdp-agent cert trust HOST:PORT SHA256`.
+Pin the server certificate rather than disabling daemon-wide TLS checks.
+For driver prerequisites and target-only signing trust, follow the [IDD setup instructions](../ironrdp-idd/README.md#set-up-it-help-termsrv).
 
 ## Local control-plane smoke test (no TermDD required)
 
