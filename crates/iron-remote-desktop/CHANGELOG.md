@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.7.1...iron-remote-desktop-v0.8.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- [**breaking**] Tolerate unrecognized device-reported USB capability values ([#1418](https://github.com/Devolutions/IronRDP/issues/1418)) ([b2d75d4862](https://github.com/Devolutions/IronRDP/commit/b2d75d4862b4549b0a63cf9b26f02c3e8813014b)) 
+
+  ## Problem
+
+- Support WebSocket subprotocols ([#1970](https://github.com/Devolutions/IronRDP/issues/1970)) ([860cf6ccb1](https://github.com/Devolutions/IronRDP/commit/860cf6ccb1359e15034cfbf402a308e3ad21b341)) 
+
+
+
 ## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.7.0...iron-remote-desktop-v0.7.1)] - 2026-05-27
 
 ### <!-- 1 -->Features

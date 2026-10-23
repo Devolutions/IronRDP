@@ -6,6 +6,380 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-v0.7.0...ironrdp-cliprdr-v0.8.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- [**breaking**] Tolerate unrecognized device-reported USB capability values ([#1418](https://github.com/Devolutions/IronRDP/issues/1418)) ([b2d75d4862](https://github.com/Devolutions/IronRDP/commit/b2d75d4862b4549b0a63cf9b26f02c3e8813014b)) 
+
+  ## Problem
+
+- Add a chunked file-contents fetch primitive ([#1742](https://github.com/Devolutions/IronRDP/issues/1742)) ([58bcbaf572](https://github.com/Devolutions/IronRDP/commit/58bcbaf572d1c75c40daec3921ec217a811c25a4)) 
+
+  ## Summary
+  
+  - MS-RDPECLIP's file-contents protocol is receiver-driven: fetching a
+    file means sending a sequence of byte-range FileContentsRequests and
+    reassembling the FileContentsResponses. Nothing in this crate helps
+    with that sequencing, so every consumer that wants a whole file ends
+    up writing its own request/response loop by hand.
+  - Adds ChunkedFetch: a small state machine that produces the next
+    request to send and consumes each response, tracking offset and
+    buffered bytes so the caller doesn't have to. The size phase is
+    optional: construct with a known size (the common case, since it's
+    usually already available from an earlier FileGroupDescriptorW
+    exchange) to skip straight to range requests, or without one to
+    query it first.
+  - Every request carries an explicit clip_data_id, the id
+    CliprdrBackend::on_remote_file_list already hands the caller for the
+    file's locked snapshot. request_file_contents can auto-fill this from
+    current_lock_id when left unset, but a fetch spans multiple requests
+    and a FormatList between them can expire the old lock and install a
+    new one under the same field, so auto-filling would let a fetch
+    already in flight silently retarget to whichever lock happens to be
+    current at send time.
+  - A caller-provided max_total_size bounds how large a file this type
+    will try to buffer in memory, checked as soon as the size is known
+    (either the caller-supplied total_size, or the peer's own SIZE
+    response), independent of what that size claims to be.
+  - Two defensive cases beyond the happy path: an empty range response
+    before the file is complete fails the fetch rather than
+    re-requesting the same range forever, since the protocol has no
+    "not ready yet" signal that would legitimately produce one, and a
+    response longer than what's left is clamped rather than trusted,
+    since accepting it as-is would grow the buffer past the file's
+    total size.
+  
+  ## Validation
+  
+  `cargo xtask check fmt/lints/tests/typos/locks` all pass. Tests live
+  in ironrdp-testsuite-core since this crate sets [lib] test = false.
+  
+  ## Notes
+  
+  No public API break: this is a new module with entirely new public
+  types, no existing signature changes.
+
+- [**breaking**] Populate decode/encode error offsets from cursor positions ([#1275](https://github.com/Devolutions/IronRDP/issues/1275)) ([8607ac5d1c](https://github.com/Devolutions/IronRDP/commit/8607ac5d1c2ea14efcac02921e54d951ab1045ec)) 
+
+  ## Summary
+  
+  The workspace sweep that follows #1266. Decode and encode error
+  construction sites now pass the cursor, so the reported position is the
+  byte the decoder or encoder actually stopped at.
+  
+  Stacked on #1266 and merges after it.
+  
+  ## What "no position" means here
+  
+  #1266 makes `offset` an `Option<usize>` where `None` means the error has
+  no position in the input stream at all, rather than a position that
+  happened to be unavailable. This PR is the other half of that: it walks
+  the workspace and gives a real position to every site that has one, so
+  the sites left reporting `None` are the ones that genuinely never had
+  one.
+  
+  Those are constructors validating their arguments, integer conversions,
+  cache lookups that missed, accessors on already-decoded structures, and
+  the declared-size checks described below. They report nothing rather
+  than byte zero, and that is now their permanent answer rather than a gap
+  awaiting another sweep.
+  
+  There are no `at: 0` sites left anywhere in the workspace.
+  
+  ## The rule
+  
+  The position is attached where the cursor identifies the bytes being
+  complained about. It is omitted where the complaint is about a size the
+  peer declared, computed from data already consumed, because there the
+  cursor points at a byte that is not the problem.
+
+- Add a clipboard sync loop detector ([#1739](https://github.com/Devolutions/IronRDP/issues/1739)) ([4556adcd98](https://github.com/Devolutions/IronRDP/commit/4556adcd985f491bddfef8099638141dce037ff3)) 
+
+  ## Summary
+  
+  - An embedder bridging CLIPRDR to a local OS clipboard commonly hits a
+    feedback loop: content copied on one side syncs to the other, the
+    other side's own change notification fires for that same content, and
+    the embedder syncs it back, forever. ironrdp-cliprdr has no visibility
+    into the local OS clipboard on either side by design (that lives
+    entirely in the embedder's CliprdrBackend implementation), so it
+    can't detect this on its own, but nothing in the crate gives an
+    embedder a building block to break the cycle either. Every consumer
+    bridging to a real desktop clipboard ends up needing to write the
+    same hash-and-time-window correlation logic themselves.
+  - Adds LoopDetector: hashes recent format lists and content by source
+    (Remote/Local) within a configurable time window, so an embedder can
+    ask "would syncing this out right now just echo what the other side
+    just sent" before acting, plus an optional per-source rate limit as
+    a belt-and-suspenders guard against update storms.
+  - Every method that needs the time takes an explicit now_ms rather than
+    reading a clock itself, matching CliprdrBackend::now_ms()/elapsed_ms()
+    already on this crate for the same wasm/test-determinism reasons.
+  - Hashing uses DefaultHasher rather than adding a crypto dependency:
+    nothing here defends against an adversary, it only needs to avoid
+    mistaking two different clipboard payloads for the same one within
+    one process's own recent history.
+  - would_cause_loop takes an explicit source parameter, matching its
+    siblings would_cause_content_loop/should_skip_sync. An earlier
+    version of this algorithm I'd written elsewhere hardcoded that
+    direction on would_cause_loop specifically, which was an
+    inconsistency with its own siblings rather than an intentional
+    asymmetry; fixed here.
+  
+  ## Validation
+  
+  `cargo xtask check fmt/lints/tests/typos/locks` all pass. Tests live in
+  ironrdp-testsuite-core since this crate sets [lib] test = false.
+  
+  ## Notes
+  
+  No public API break: this is a new module with entirely new public
+  types, no existing signature changes.
+
+- Transfer files through the Windows clipboard ([#2179](https://github.com/Devolutions/IronRDP/issues/2179)) ([b9d1400033](https://github.com/Devolutions/IronRDP/commit/b9d140003323f3ae3cd22f91be556e58ed43322e)) 
+
+  Adds clipboard file transfer, in both directions, to the Windows
+  clipboard backend (`WinClipboard`), and stops it advertising formats it
+  can't deliver. ActiveX and `ironrdp-client` get the feature as is; the
+  .NET FFI gets it through new bindings, opt-in.
+  
+  ## Backend (`feat(cliprdr)`)
+  
+  **Remote to local.** When the remote format list has
+  `FileGroupDescriptorW`, an OLE data object goes on the clipboard
+  (`OleSetClipboard`). It offers `FileGroupDescriptorW` and one
+  `FileContents` `IStream` per file (`lindex`), plus the other remote
+  formats.
+  - Streams read through `FileContents` RANGE requests carrying the
+  `clipDataId` of the lock `Cliprdr` took for that list, so a paste keeps
+  working after the remote clipboard changes, until the lock is released.
+  Files over 4 GiB work.
+  - OLE needs an STA: this is only enabled when `WinClipboard` is created
+  on one. COM is never initialized on a thread that has none.
+  - The objects are not agile and run on the clipboard thread. A stream
+  read blocks it like `WM_RENDERFORMAT` handling already does (30 s
+  timeout, chunks up to 1 MiB with read-ahead). Backend events arriving
+  during a wait are now queued instead of dropped.
+  
+  **Local to remote.** `CF_HDROP` paths (directories walked into relative
+  paths), or another application's virtual files (`FileGroupDescriptorW` +
+  `FileContents`), are offered with `SendInitiateFileCopy` once the
+  channel is ready. The remote's SIZE/RANGE requests are served, from the
+  lock snapshot when a `clipDataId` is given.
+  
+  **Capabilities.** The backend now negotiates `STREAM_FILECLIP_ENABLED`,
+  `FILECLIP_NO_FILE_PATHS`, `CAN_LOCK_CLIPDATA` and
+  `HUGE_FILE_SUPPORT_ENABLED`.
+  
+  **Format filtering.** Handle-based formats (`CF_BITMAP`,
+  `CF_ENHMETAFILE`, `CF_METAFILEPICT`, `CF_PALETTE`), private ranges,
+  local paths and shell items (`CF_HDROP`, `FileNameW`, `Shell IDList
+  Array`) and OLE storage formats are no longer advertised in either
+  direction. Images still go through as `CF_DIB`, which Windows
+  synthesizes.
+  
+  **Request validation.** `ironrdp-client` treats a rejected clipboard
+  request as session-fatal, so the backend checks what it sends against
+  the rules `Cliprdr` enforces: file list indexes, range bounds, huge-file
+  positions, and released locks.
+  
+  **Also fixed.** The window subclass state leaked on drop, and
+  `WM_DESTROY` freed it while `WM_NCDESTROY` could still use it.
+  
+  ## Viewer (`fix(viewer)`)
+  
+  Without a backend factory, `ironrdp-client` created `WinClipboard` on
+  the RDP thread, which runs a tokio runtime and no Windows message loop,
+  so clipboard redirection never worked in the viewer (no clipboard
+  events, no backend wake-ups, no STA for OLE). The viewer now initializes
+  OLE and creates the clipboard, with file transfer, on its winit thread
+  and hands the factory to `RdpClient`.
+  
+  ## .NET FFI (`feat(ffi)`)
+  
+  - `ActiveStage.SubmitClipboardMessage` hands any backend message to the
+  clipboard channel, file transfer included, and returns the frame to
+  send.
+  - `ActiveStage.DriveClipboardTimeouts` expires clipboard locks and file
+  transfers.
+  - `WinCliprdr.NewWithFileTransfer(bool)` opts in. `WinCliprdr.New()`
+  keeps file transfer off, so existing consumers that only route the three
+  original message types don't receive new ones.
+  - `WinCliprdr.NextClipboardMessageTimeout(ms)` lets a loop wake up to
+  drive the timeouts.
+  - The Avalonia example opts in, submits every message through
+  `SubmitClipboardMessage`, drives the timeouts, and logs a failed
+  clipboard operation instead of stopping clipboard handling.
+  
+  Only the four affected generated files are included.
+  
+  ## Testing
+  
+  - `cargo xtask check fmt`, `check lints` and `check locks` pass.
+  - 12 unit tests in `cliprdr_native::windows`: format filtering, file
+  list building, file contents serving, range sizing, descriptor
+  round-trips.
+  - 6 tests in `cliprdr_native::windows_live` run a `CliprdrClient` over
+  `WinClipboard` against an in-memory `CliprdrServer` on the real Windows
+  clipboard. They are opt-in with `IRONRDP_WIN_CLIPBOARD_LIVE=1`, because
+  they replace the clipboard and briefly open an Explorer window. All pass
+  locally:
+  - Explorer pastes remote folders and files, contents checked byte for
+  byte.
+    - A 5 GiB remote file is read through OLE past 4 GiB.
+    - Remote handle and path formats are not offered locally.
+  - Local folders reach the remote, both at connect time and when copied
+  mid-session.
+    - Local image formats are filtered.
+    - Virtual files from another session reach the remote.
+  - .NET: the solution builds and the smoke tests pass (9/9, one new).
+  
+  - End to end with `ironrdp-viewer` against a Windows 11 server
+  (rdpclip): capabilities negotiated as `STREAM_FILECLIP_ENABLED |
+  FILECLIP_NO_FILE_PATHS | CAN_LOCK_CLIPDATA | HUGE_FILE_SUPPORT_ENABLED`.
+  A local folder (nested directories, an empty directory, an empty file, a
+  5 MiB random file) copied in Explorer was pasted into Explorer in the
+  session, served under rdpclip's lock. Copying it back in the session and
+  pasting it into a local Explorer window gave byte-identical files
+  (SHA-256).
+  
+  Not verified by hand: ActiveX and the Avalonia example against a real
+  server.
+  
+  ## Notes for review
+  
+  - This conflicts with #2175 in `MainWindow.axaml.cs` and the generated
+  `ActiveStage` files. The clipboard loop body here is a single
+  `SubmitClipboardMessage` call, so the merge only needs #2175's
+  `WithActiveStage(...)` wrapper around it; the generated files can be
+  regenerated.
+  - Running the extra test suite locally may need `CMAKE` pointed at
+  Visual Studio 2026's bundled CMake: `libopus_sys` fails with older CMake
+  versions that lack the "Visual Studio 18 2026" generator.
+  
+  🤖 Generated with [Claude Code](https://claude.com/claude-code)
+  
+  ---------
+
+### <!-- 4 -->Bug Fixes
+
+- A clipboard failure must not disconnect the session ([#1980](https://github.com/Devolutions/IronRDP/issues/1980)) ([124406d881](https://github.com/Devolutions/IronRDP/commit/124406d881af377cb339e8c131831f69e3cf7e45)) 
+
+  Two halves of the same problem: a rejected clipboard operation is both
+  invisible to the backend waiting on it and fatal to the session.
+  
+  ## `ironrdp-server`: a clipboard error ends `client_loop`
+  
+  `dispatch_server_events` propagates every `CliprdrServer` error with
+  `?`:
+  
+  ```rust
+  ClipboardMessage::SendFileContentsRequest(request) => cliprdr.request_file_contents(request),
+  ...
+  }
+  .map_err_kind("failed to send clipboard event", ServerErrorKind::Pdu)?;
+  ```
+  
+  That error unwinds through `dispatch_events` → `client_loop` →
+  `client_accepted` → `accept_finalize`, and the accept loop logs
+  `"Connection error"`, resets the static channels and calls
+  `on_disconnected`. **The session is torn down.**
+  
+  The things that can trigger it are all ordinary: a file contents request
+  that became stale because the remote clipboard changed under it, a
+  capability that was never negotiated, `MAX_PENDING_FILE_REQUESTS`
+  backpressure, a malformed flag combination. None is a reason to
+  disconnect a peer whose display, audio and input are fine.
+  
+  Three lines above, `ClipboardMessage::Error` already takes the opposite
+  view:
+  
+  ```rust
+  ClipboardMessage::Error(error) => {
+      error!(?error, "Handling clipboard event");
+      continue;
+  }
+  ```
+  
+  This makes the two paths agree.
+  
+  ## `ironrdp-cliprdr`: a rejection strands its caller
+  
+  `request_file_contents` has ten rejection paths and all of them return a
+  bare `PduError`. The error carries no stream id, so an embedder that
+  surfaces it has no way to map it back to the transfer that failed —
+  whatever is awaiting that stream just hangs until an unrelated timeout
+  fires.
+  
+  The crate already solves this elsewhere. `FormatListResponse::Fail`
+  does:
+  
+  ```rust
+  // Notify backend for each pending request so it can clean up
+  // (e.g. reject pending download promises in WASM).
+  for stream_id in stream_ids {
+      self.backend.on_file_contents_response(FileContentsResponse::new_error(stream_id));
+  }
+  ```
+  
+  Every rejection in `request_file_contents` now does the same before
+  returning. **The `Err` is unchanged** — this is strictly additive for
+  existing callers.
+  
+  ## Tests
+  
+  -
+  `crates/ironrdp-testsuite-core/tests/clipboard/file_contents_state_machine.rs`
+  — `a_rejected_request_fails_its_stream_on_the_backend` (out-of-bounds
+  index) and
+  `a_request_rejected_before_ready_fails_its_stream_on_the_backend`
+  (`require_ready`, the path most likely to strand a caller). Both assert
+  the error is still returned *and* that the backend saw an error response
+  for the right stream id.
+  - `crates/ironrdp-server/src/server.rs` —
+  `a_refused_clipboard_message_does_not_end_the_client_loop` drives
+  `dispatch_server_events` with a request the channel refuses and asserts
+  `RunState::Continue`.
+  
+  All 211 existing clipboard tests and the 15 `ironrdp-server` lib tests
+  pass unchanged.
+  
+  🤖 Generated with [Claude Code](https://claude.com/claude-code)
+  
+  ---------
+
+- Correlate format data responses with requests in order ([#2053](https://github.com/Devolutions/IronRDP/issues/2053)) ([cd5739d129](https://github.com/Devolutions/IronRDP/commit/cd5739d1299aefd22eb38b206cd73222b37bfff4)) 
+
+  A `FormatDataResponse` names no format, so `Cliprdr` has to work out
+  which request each response answers. It tracked only the most recently
+  sent request (`pending_format_data_request: Option<ClipboardFormatId>`),
+  which pairs responses with the wrong request in two cases:
+  
+  - **A second paste initiated before the first is answered.**
+  `initiate_paste` overwrote the slot, so the first response was
+  correlated with the second request.
+  - **A FormatList arriving while a request is outstanding.**
+  `handle_format_list` cleared the slot, although that request's response
+  was still coming.
+  
+  The file-list interception is where this bites. A text response can be
+  parsed as the file list, or the real file list is handed to the backend
+  as plain data and `on_remote_file_list` never runs.
+  
+  The second case is easy to hit. Firefox and Word announce a single copy
+  with two FormatLists a few milliseconds apart, so a backend that fetches
+  on each announcement has a request outstanding when the next one
+  arrives. We ran into the same misattribution in macrdp's clipboard
+  backend while live-testing rich-text copy from Windows 11 over mstsc,
+  then found `Cliprdr` had the same single-slot correlation.
+
+- Validate locked file requests against the list their lock covers ([#1981](https://github.com/Devolutions/IronRDP/issues/1981)) ([a765306172](https://github.com/Devolutions/IronRDP/commit/a7653061725cc28df01b155b8e3d104a511df163)) 
+
+  Validates outgoing FileContentsRequests carrying a clipDataId against the remote file list snapshotted under that lock, mirroring the sender-side locked_file_lists pattern, with deliberate fallback to the current list otherwise.
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-v0.6.0...ironrdp-cliprdr-v0.7.0)] - 2026-07-10
 
 ### <!-- 1 -->Features

@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdcleanpath-v0.2.2...ironrdp-rdcleanpath-v0.3.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- [**breaking**] Tolerate unrecognized device-reported USB capability values ([#1418](https://github.com/Devolutions/IronRDP/issues/1418)) ([b2d75d4862](https://github.com/Devolutions/IronRDP/commit/b2d75d4862b4549b0a63cf9b26f02c3e8813014b)) 
+
+  ## Problem
+
+- Support Hyper-V connection ordering ([#1505](https://github.com/Devolutions/IronRDP/issues/1505)) ([5c1816244e](https://github.com/Devolutions/IronRDP/commit/5c1816244e83187a04249e9d9c240d096cb78f55)) 
+
+  Hyper-V over RDCleanPath needs PCB → TLS on the proxy, then CredSSP →
+  X.224 on the client. Ordinary RDCleanPath stays X.224-first.
+  
+  Still VERSION_1 with the same DER fields. An explicit VMConnect request
+  carries a Unicode PCB payload in `preconnection_blob` with no X.224; the
+  proxy encodes the binary PCB. Generic PCB requests keep their existing
+  X.224-first behavior.
+  
+  Gateway reference implementation:
+  [Devolutions/devolutions-gateway#1372](https://github.com/Devolutions/devolutions-gateway/pull/1372)
+  
+  Checked locally: Rust builds, formatting, Svelte typecheck, and .NET
+  build. Real nested Hyper-V E2E through Gateway: Native rendered 18
+  frames, Avalonia connected and rendered its first frame, and Web
+  rendered a non-empty 1280×720 canvas.
+  
+  ---------
+
+### <!-- 7 -->Build
+
+- Bump the crypto group across 1 directory with 3 updates ([#1449](https://github.com/Devolutions/IronRDP/issues/1449)) ([e1725e8c8a](https://github.com/Devolutions/IronRDP/commit/e1725e8c8a581b83835647b6ee563a5b3f6c7a1b)) 
+
+
+
 ## [[0.2.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdcleanpath-v0.2.1...ironrdp-rdcleanpath-v0.2.2)] - 2026-06-05
 
 ## [[0.2.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdcleanpath-v0.2.0...ironrdp-rdcleanpath-v0.2.1)] - 2025-10-02

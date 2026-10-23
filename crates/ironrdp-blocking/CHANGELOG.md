@@ -6,6 +6,84 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-blocking-v0.10.0...ironrdp-blocking-v0.11.0)] - 2026-10-23
+
+### <!-- 0 -->Security
+
+- [**breaking**] Follow server redirection to the target host ([#2208](https://github.com/Devolutions/IronRDP/issues/2208)) ([485657a6ec](https://github.com/Devolutions/IronRDP/commit/485657a6eca682a0356e100a9fda229342861fd7)) 
+
+  An RD Connection Broker sends a Server Redirection PDU to move a client
+  to the session host that holds or will hold its session. IronRDP
+  rejected the PDU as an unexpected share control PDU, so a client could
+  not connect to an RDS farm through its broker.
+  
+  The PDU layer decodes and encodes the Server Redirection Packet with
+  every optional field, the target net addresses and the Base64 target
+  certificate container, in both its Enhanced Security variant (share
+  control type PDUTYPE_SERVER_REDIR_PKT) and its Standard Security
+  variant. The Client Info PDU can carry an opaque password cookie
+  verbatim, as FreeRDP sends it.
+  
+  The connector recognizes the PDU during capabilities exchange and
+  connection finalization and ends in a `Redirected` state instead of
+  failing; `connect_finalize` returns a `ConnectionOutcome` that is either
+  `Connected` or `Redirected`. The session reports a redirection received
+  later as `ActiveStageOutput::ServerRedirection`. PDUs marked
+  LB_NOREDIRECT are ignored.
+  
+  `ironrdp-client` now always advertises redirection support in the Client
+  Cluster Data and follows a redirection for every front-end: it closes
+  the connection, emits `RdpOutputEvent::ServerRedirected` and reconnects
+  with the load-balancing information as the X.224 routing token, the
+  session ID in the cluster data, the password cookie in the Client Info
+  PDU and the redirected user name and domain. Transport, TLS and CredSSP
+  settings are kept. A direct connection tries the target addresses first,
+  like mstsc, and authenticates the FQDN; `use redirection server name`
+  (ActiveX `UseRedirectionServerName`) or a gateway puts the names first.
+  A target certificate reported by the broker is accepted under strict
+  validation, a TsvUrl mismatch aborts, and at most 8 redirections are
+  followed. RDSTLS-encrypted passwords are refused as unsupported.
+  
+  `ironrdp-server` gains a redirection handle that sends the PDU to the
+  active client and waits for it to disconnect, and reports the routing
+  token, redirected session ID and password cookie of an incoming
+  connection. The FFI exposes the redirection outcome to .NET.
+
+### <!-- 1 -->Features
+
+- [**breaking**] Tolerate unrecognized device-reported USB capability values ([#1418](https://github.com/Devolutions/IronRDP/issues/1418)) ([b2d75d4862](https://github.com/Devolutions/IronRDP/commit/b2d75d4862b4549b0a63cf9b26f02c3e8813014b)) 
+
+  ## Problem
+
+- [**breaking**] Pass frame arrival time into Sequence::step ([#1530](https://github.com/Devolutions/IronRDP/issues/1530)) ([6a499faece](https://github.com/Devolutions/IronRDP/commit/6a499faece8911e50a715a3fb08d4fd8e7d7dc87)) 
+
+  ## Summary
+  
+  - Connect-time bandwidth measurement needs to know when bytes arrived,
+  and nothing in the sans-I/O layer could tell it. #1465, now merged,
+  answers the server's Bandwidth Measure Stop with a nominal interval for
+  exactly that reason: the connector has no way to observe the real one.
+  - Introduce `MonotonicInstant`, a millisecond counter with an arbitrary
+  epoch, and make `Option<MonotonicInstant>` a required parameter of
+  `Sequence::step`. The I/O drivers already know when a read completed, so
+  `Framed` records the arrival time of each read and hands it to the state
+  machine. A driver with no clock passes `None`.
+  - With arrival times available, measure for real: a Bandwidth Measure
+  Start opens a window, Payload messages accumulate their byte counts, and
+  Stop reports the elapsed time between its own arrival and the Start's.
+  
+  #1465 has merged, so this applies directly to master and carries no
+  merge-order dependency. That PR was the FreeRDP unblock on its own; this
+  is the design change behind it, split out at @CBenoit's suggestion in
+  review.
+  
+  ## Why the clock lives in the driver
+  
+  Two reasons, both of which rule out having the sequence read a clock
+  itself.
+
+
+
 ## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-blocking-v0.9.0...ironrdp-blocking-v0.10.0)] - 2026-07-10
 
 ### <!-- 7 -->Build

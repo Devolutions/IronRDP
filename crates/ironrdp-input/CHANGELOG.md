@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-input-v0.7.0...ironrdp-input-v0.8.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- [**breaking**] Tolerate unrecognized device-reported USB capability values ([#1418](https://github.com/Devolutions/IronRDP/issues/1418)) ([b2d75d4862](https://github.com/Devolutions/IronRDP/commit/b2d75d4862b4549b0a63cf9b26f02c3e8813014b)) 
+
+  ## Problem
+
+### <!-- 4 -->Bug Fixes
+
+- Clamp wheel rotation units to the wire's 9-bit range ([#1818](https://github.com/Devolutions/IronRDP/issues/1818)) ([2685d85cc4](https://github.com/Devolutions/IronRDP/commit/2685d85cc4f95e2ee3294e4edda4d0ff41f9ff80)) 
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-input-v0.6.0...ironrdp-input-v0.7.0)] - 2026-07-10
 
 ### <!-- 7 -->Build
