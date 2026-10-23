@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [[0.1.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpei-v0.1.0...ironrdp-rdpei-v0.1.1)] - 2026-10-23
+
+
+
 ### Added
 
 - Initial MS-RDPEI implementation: variable-length integers, all input PDUs, client and server DVC processors.

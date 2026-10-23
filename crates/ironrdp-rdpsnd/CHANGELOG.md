@@ -6,6 +6,384 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.9.0...ironrdp-rdpsnd-v0.10.0)] - 2026-10-23
+
+### <!-- 0 -->Security
+
+- Support advanced session settings ([#1781](https://github.com/Devolutions/IronRDP/issues/1781)) ([14ef4fd49f](https://github.com/Devolutions/IronRDP/commit/14ef4fd49fcf950169806866ee67db0c49662cfc)) 
+
+  Wire administrative-session GCC data, opaque load-balance routing
+  tokens, and RDPSND quality selection through the ActiveX settings
+  objects and client configuration.
+  
+  Keep unrelated transport, cache, video, device, and security policy
+  slots as explicit E_NOTIMPL failures.
+  
+  ---------
+
+### <!-- 1 -->Features
+
+- Add AUDIO_INPUT protocol crate ([#1645](https://github.com/Devolutions/IronRDP/issues/1645)) ([50fa88b29e](https://github.com/Devolutions/IronRDP/commit/50fa88b29e5d57c5c6353229bda8aa786a9906fd)) 
+
+  Introduce `ironrdp-rdpeai` for MS-RDPEAI (AUDIO_INPUT) PDUs and client
+  handler, plus the shared RDPSND format matching helper used during
+  negotiation.
+  
+  The crate is workspace-internal (`publish = false`) with unit coverage
+  in `ironrdp-testsuite-core`. Capture backends and ActiveX wiring land in
+  a follow-up stacked PR.
+
+- Harden Windows client playback path ([#1648](https://github.com/Devolutions/IronRDP/issues/1648)) ([2d9a9bf114](https://github.com/Devolutions/IronRDP/commit/2d9a9bf114dcf41a1ddc7343f564bc2e8d1d06db)) 
+
+  Keep client format order for wFormatNo, play pre-v8 Wave PDUs, and apply
+  volume on a broader CPAL PCM offer so ActiveX mode 0 can redirect remote
+  audio reliably.
+  
+  Also fix clippy noise in the RDPSND client suite and keep interleaved
+  volume L/R phase stable across wave blocks. Volume scaling is a simple
+  amplitude map, not a logarithmic MS-RDPEA model.
+
+- [**breaking**] Populate decode/encode error offsets from cursor positions ([#1275](https://github.com/Devolutions/IronRDP/issues/1275)) ([8607ac5d1c](https://github.com/Devolutions/IronRDP/commit/8607ac5d1c2ea14efcac02921e54d951ab1045ec)) 
+
+  ## Summary
+  
+  The workspace sweep that follows #1266. Decode and encode error
+  construction sites now pass the cursor, so the reported position is the
+  byte the decoder or encoder actually stopped at.
+  
+  Stacked on #1266 and merges after it.
+  
+  ## What "no position" means here
+  
+  #1266 makes `offset` an `Option<usize>` where `None` means the error has
+  no position in the input stream at all, rather than a position that
+  happened to be unavailable. This PR is the other half of that: it walks
+  the workspace and gives a real position to every site that has one, so
+  the sites left reporting `None` are the ones that genuinely never had
+  one.
+  
+  Those are constructors validating their arguments, integer conversions,
+  cache lookups that missed, accessors on already-decoded structures, and
+  the declared-size checks described below. They report nothing rather
+  than byte zero, and that is now their permanent answer rather than a gap
+  awaiting another sweep.
+  
+  There are no `at: 0` sites left anywhere in the workspace.
+  
+  ## The rule
+  
+  The position is attached where the cursor identifies the bytes being
+  complained about. It is omitted where the complaint is about a size the
+  peer declared, computed from data already consumed, because there the
+  cursor points at a byte that is not the problem.
+
+- Carry the capture timestamp on waves and surface wave confirms ([#1720](https://github.com/Devolutions/IronRDP/issues/1720)) ([160752fcf3](https://github.com/Devolutions/IronRDP/commit/160752fcf3293889f1ce1bdd3d2e7afc790a9cd2)) 
+
+  MS-RDPEA 2.2.3.8 has the client answer a wave's wTimeStamp in the Wave
+  Confirm
+  PDU, set to "the same field of the originating WaveInfo PDU [...] plus
+  the
+  time, in milliseconds, between receiving the complete wave PDU from the
+  network
+  and sending this PDU". The server hardcoded that field to zero for both
+  Wave
+  and Wave2, so the client's answer was relative to nothing and the
+  confirm was
+  only logged, never delivered - an embedder chasing an audio/video offset
+  had no
+  way to tell "the delay is on my side of the socket" from "the client is
+  buffering".
+  
+  Waves now carry the low bits of the same capture time the 32-bit
+  dwAudioTimeStamp gets, and RdpsndServerHandler gains a defaulted
+  wave_confirm
+  method that receives the block number and that timestamp. Existing
+  handlers are
+  unaffected.
+  
+  The value is not an echo, and one block can be confirmed more than once.
+  FreeRDP's client sends two confirms per wave: the first on receipt with
+  the
+  timestamp unchanged, "to determine the network latency", and a second
+  after
+  playback with the elapsed time added, "to determine the actual render
+  latency"
+  (channels/rdpsnd/client/rdpsnd_main.c, both comments citing 2.2.3.8). A
+  handler
+  therefore sees the two measurements as two calls with the same block_no,
+  which
+  the rustdoc now says.
+  
+  The trait method has no consumer inside this repository. Its consumer is
+  hypr-rdp, which times its own PipeWire captures and needs the confirm to
+  separate capture-to-wire delay from client-side buffering; without a
+  hook there
+  is no way to reach the PDU at all, since the server discards it after a
+  debug
+  log. Setting the field and surfacing the confirm are separable, but only
+  in the
+  sense that either alone leaves the measurement impossible: a timestamp
+  nobody
+  receives, or a confirm relative to zero.
+
+- Log the server side of the channel ([#1991](https://github.com/Devolutions/IronRDP/issues/1991)) ([966a842f7e](https://github.com/Devolutions/IronRDP/commit/966a842f7e4ca6ff045a860a9fec68eb9206615b)) 
+
+  The RDPSND server logged each incoming PDU as a bare Debug dump and
+  nothing it sent. When a session ended up with no audio, the log did not
+  show which formats each side offered, which one was chosen, or whether
+  the client had set TSSNDCAPS_ALIVE.
+  
+  Negotiation is now logged at debug: the server's offered formats and the
+  client's reply (each entry with its position, which for the client list
+  is the wFormatNo the waves go out under), the client version, flags and
+  volume, the quality mode, training, the chosen format, and which case
+  applied when none is chosen. A client that omits TSSNDCAPS_ALIVE gets a
+  warning, since MS-RDPEA 2.2.2.2 requires it for any audio to be
+  transferred.
+  
+  Per-wave traffic is logged at trace. MS-RDPEA 2.2.3.8 describes one Wave
+  Confirm per wave, but Windows clients and xfreerdp3 both send two: One
+  on receipt that echoes the wave's wTimeStamp, and a later one for the
+  same block with a later timestamp. The server keeps the wTimeStamp of
+  each block it sent and tracks both confirms, so the second is logged as
+  such with how long the client held the data (about 1.7 s once playback
+  settles, with a Windows client), and only a confirm beyond those two, or
+  one for a block the server never sent, counts as unmatched. A confirm
+  whose timestamp comes before the send of the wave now under its block
+  number belongs to an earlier wave whose number has been reused, and is
+  counted as stale instead. With an eight-bit block number this is exact
+  while fewer than 256 waves are sent within the client's confirm delay. A
+  block number reused after a single confirm is not flagged, since a
+  client may confirm once as the specification describes. Volume and close
+  are logged at debug, and a summary of waves, bytes and confirms is
+  logged when the stream ends. The unexpected-PDU errors now name the PDU
+  and the state instead of "Invalid PDU".
+  
+  Levels follow the STYLE.md guidance: nothing new at info, one-off
+  negotiation events at debug, anything per wave at trace. The format
+  lists are rendered through Display wrappers, so they cost nothing unless
+  the level is enabled.
+  
+  Tests check that first, second, extra and unmatched confirms all still
+  reach the handler after the bookkeeping, that confirms are classified
+  correctly when a block number is reused and across the u16 timestamp
+  wrap, and that the stream counters come out exact, including
+  never-confirmed waves and stale confirms after the block number wraps.
+  cargo xtask check fmt/lints/tests/typos/locks all pass.
+
+- [**breaking**] Compressed audio over AUDIO_PLAYBACK_DVC ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483)) 
+
+  Windows 8 and later servers stream audio over the AUDIO_PLAYBACK_DVC and
+  AUDIO_PLAYBACK_LOSSY_DVC dynamic channels, preferring AAC or ADPCM on
+  constrained links, but IronRDP declined those channels and could only
+  play PCM and Opus. Wave Confirm PDUs echoed the server timestamp,
+  playback dropped audio when its fixed 500 ms ring filled, and devices
+  could not be chosen.
+  
+  - `ironrdp-rdpsnd` gains a pure `codec` module (PCM, G.711 A-law and
+  µ-law, IMA and Microsoft ADPCM decoders and encoders, bit-exact with the
+  Windows ACM codecs), an `RdpsndDvc` processor whose `RdpsndDvcState`
+  lets both dynamic channels share one negotiation (Windows negotiates on
+  the reliable channel and sends AAC on the lossy one), the UDP Wave
+  datagrams, and a `playout` jitter-buffer policy. Wave Confirm PDUs
+  report the hold time plus the handler's playback latency, and handlers
+  pick the formats to advertise from the server's list.
+  - The CPAL backend decodes every offered format it can, including AAC
+  through Media Foundation on Windows, plays through the jitter buffer
+  with a configurable latency target, reports buffered plus device
+  latency, follows the default device or a selected one, and maps the
+  server volume to the Windows audio session. Microphone capture encodes
+  to PCM, G.711 or ADPCM and selects its device.
+  - `ironrdp-client` registers the dynamic channels next to the static one
+  on a shared backend and adds `AudioConfig` (`ironrdp_audiooutputdevice`,
+  `ironrdp_audioinputdevice`, `ironrdp_audiolatency`); the viewer adds
+  `--audio-output-device`, `--audio-input-device`, `--audio-latency` and
+  `--list-audio-devices`.
+
+### <!-- 4 -->Bug Fixes
+
+- Key auto-detect optional fields off requestType, not the Option ([#1491](https://github.com/Devolutions/IronRDP/issues/1491)) ([f9cc62fa2c](https://github.com/Devolutions/IronRDP/commit/f9cc62fa2ccb4f211838dd0961c19cdf3b79a38e)) 
+
+  ## Summary
+  
+  MS-RDPBCGR decides which optional fields an auto-detect message carries
+  by its `requestType`. Two of these message types encoded them by
+  inspecting which `Option`s happened to be set instead, so the encoder
+  and the decoder disagreed about the wire.
+  
+  This started as a fix for `BandwidthMeasureStop` alone. Review found the
+  connect-time fallback was still non-compliant, and checking whether the
+  same shape appeared elsewhere in the file turned up
+  `NetworkCharacteristicsResult` with the identical defect and a worse
+  consequence, so both are fixed here rather than one now and one later.
+  
+  ## The two failure modes
+  
+  **Connect-time stop with no payload: encodes to bytes the decoder
+  rejects.**
+  
+  ```rust
+  AutoDetectRequest::BandwidthMeasureStop {
+      sequence_number: 7,
+      request_type: BW_STOP_CONNECT_TIME,
+      payload: None,
+  }
+  ```
+  
+  encodes to ten bytes with `headerLength` 0x06 and no length field.
+  Decoding those bytes
+  fails with `not enough bytes provided to decode: received 0 bytes,
+  expected 2 bytes`,
+  because the decoder reads `payloadLength` back for every
+  `BW_STOP_CONNECT_TIME`.
+  
+  **UDP stop with a payload: silently loses it.**
+  
+  ```rust
+  AutoDetectRequest::BandwidthMeasureStop {
+      sequence_number: 3,
+      request_type: BW_STOP_RELIABLE_UDP,
+      payload: Some(vec![0xAA; 16]),
+  }
+  ```
+  
+  encodes the length and the sixteen bytes, which the decoder never reads
+  back for
+  `BW_STOP_RELIABLE_UDP` or `BW_STOP_LOSSY_UDP`.
+  `AutoDetectReqPdu::decode` does not check
+  for trailing bytes, so the payload is dropped in transit without an
+  error rather than
+  refused.
+  
+  The second is the worse of the two: a round trip that loses data and
+  reports success.
+  
+  ## Network Characteristics Result (2.2.14.1.5)
+  
+  The same defect, found by sweeping the file rather than reported.
+  
+  `0x0840` carries baseRTT and averageRTT, `0x0880` carries bandwidth and
+  averageRTT, `0x08C0` carries all three, and the decoder already read
+  them on that basis. Encoding from the `Option`s meant:
+  
+  - a `0x0840` result with no `base_rtt_ms` wrote a body the decoder
+  cannot read;
+  - a `0x0840` result carrying `bandwidth_kbps` instead wrote that
+  bandwidth into the slot the decoder reads as baseRTT, so the value came
+  back **silently corrupted** rather than rejected;
+  - `headerLength` was always derived from `requestType`, so it could
+  contradict the body it described.
+  
+  Encode and `size()` now consult `requestType` through a shared helper, a
+  value the type does not carry is dropped rather than written, and a
+  missing one that the type requires is an error.
+  
+  ## Fix
+  
+  `Encode` and `size()` now key off `requestType`, matching the decoder.
+  That makes the
+  wire form canonical:
+  
+  - an absent payload on a connect-time stop encodes as a zero length and
+  reads back as an
+    empty one;
+  - a payload on a UDP stop never reaches the wire.
+  
+  Decoding and re-encoding reproduces the same bytes in every case. The
+  types can still
+  express states the protocol cannot, so value-level identity is not
+  achievable, but byte
+  stability is, and that is what a decoder consuming real traffic depends
+  on.
+  
+  No public signatures change; this is a behaviour fix inside the existing
+  `Encode` impl.
+  
+  ## Tests
+  
+  New `pdu/autodetect.rs` in `ironrdp-testsuite-core`:
+  
+  - a connect-time stop with no payload round-trips, and `size()` agrees
+  with `encode()`;
+  - a UDP stop carrying a payload encodes header-only and comes back with
+  `payload: None`,
+    for both the reliable and lossy request types;
+  - a connect-time stop preserves a real payload;
+  - decode-then-encode reproduces identical bytes for both shapes.
+  
+  Three of the four fail against the current encoder and pass with the
+  fix. The fourth is
+  a control that passed before and after.
+  
+  Note the existing `pdu_round_trip` fuzz oracle would not have caught
+  this even with
+  auto-detect added to it, since it discards the result of the re-decode
+  (`let _ =`). That
+  is deliberate in the oracle's design and out of scope here, but it is
+  why this went
+  unnoticed.
+  
+  ## How this was found
+  
+  Writing a test for the connect-time bandwidth measurement in #1465,
+  which needs to answer
+  a connect-time stop. The `None` case was constructed to check the reply
+  path stayed
+  lenient and turned out not to be constructible on the wire at all.
+  
+  ## Verification
+  
+  - `cargo xtask check fmt -v` green
+  - `cargo xtask check lints -v` green
+  - `cargo xtask check tests -v` green
+  - `cargo xtask check typos -v` green
+  - `cargo xtask check locks -v` green
+
+- Isolate malformed encrypted waves ([#1514](https://github.com/Devolutions/IronRDP/issues/1514)) ([c87ab68e9c](https://github.com/Devolutions/IronRDP/commit/c87ab68e9c6adbf524cb0b2783ff4bd61178fb9b)) 
+
+  ## Summary
+  
+  - Treat malformed RDPSND server-audio PDUs as recoverable channel input
+  and ignore them without failing the desktop session.
+  - Preserve the RDPSND state after a decode failure so valid subsequent
+  audio continues normally.
+  - Add a regression test for an encrypted wave missing its required v5
+  signature.
+  
+  ## Testing
+  
+  - `cargo test -p ironrdp-testsuite-core --test integration_tests_core --
+  rdpsnd::client`
+  - `cargo fmt --all -- --check`
+  
+  ---------
+
+- Drop RDPSND waves that arrive before the channel negotiates ([#1990](https://github.com/Devolutions/IronRDP/issues/1990)) ([2e872b085b](https://github.com/Devolutions/IronRDP/commit/2e872b085b504cf3b9ce9994237270f71a35d13a)) 
+
+  The server event channel outlives a single connection. When a client
+  with audio disconnects, waves its sound handler already queued stay in
+  the channel and become the first events the next connection dispatches,
+  before that connection's RdpsndServer has received the client's formats.
+  wave() then fails in version() with "client format not yet received",
+  and the map_err_kind at the dispatch site ends the new client loop, so a
+  disconnect of an audio-enabled client can turn into a failed connect for
+  whoever comes next. The per-batch WAVE_KEEP trim only removes waves
+  beyond the newest four, so it does not cover this.
+  
+  This adds RdpsndServer::is_ready() and drops waves and volume changes
+  with a debug log while the channel is not ready. A volume change fails
+  the same way before negotiation, since set_volume() needs the client's
+  format flags. A wave has nowhere to go before negotiation, and after a
+  failed negotiation (no common format, or the handler's start failing) it
+  never will.
+  
+  A test drives the handshake and checks is_ready() before negotiation,
+  after a successful one, with no common format, and when start fails. It
+  also checks that wave() and set_volume() fail before negotiation, and
+  that wave() goes through once is_ready() holds.
+
+
+
 ## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.8.1...ironrdp-rdpsnd-v0.9.0)] - 2026-07-10
 
 ### <!-- 1 -->Features
