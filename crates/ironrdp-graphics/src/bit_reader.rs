@@ -62,7 +62,7 @@ impl<'a> BitReader<'a> {
         }
         #[expect(
             clippy::cast_possible_truncation,
-            clippy::as_convertions,
+            clippy::as_conversions,
             reason = "n <= 32, so the shift leaves 32 bits"
         )]
         let value = (self.acc >> (64 - n)) as u32;
