@@ -412,3 +412,64 @@ fn cancelled_request_stays_pending_until_the_backend_completes_it() {
         "a request completes only once"
     );
 }
+
+// Windows Server registers a request completion interface ID below 4, which coincides with the
+// default interfaces of the control channel. It is valid: the server allocates it in its own space.
+#[test]
+fn request_completion_interface_may_reuse_a_default_interface_id() {
+    use ironrdp_rdpeusb::pdu::usb_dev::{IoControl, RegisterRequestCallback};
+
+    let udev_iface = InterfaceId::try_from(4).expect("valid device interface id");
+    let backend = Box::new(NoopDeviceClientBackend::new(simple_device_info()));
+    let mut client = UrbdrcDeviceClient::new(udev_iface, backend).expect("device client should be created");
+
+    client
+        .process(
+            99,
+            &encode_pdu(&UrbdrcServerDevicePdu::IfaceRelease(InterfaceRelease {
+                iface_id: proxy_iface_id(InterfaceId::NOTIFY_CLIENT),
+                msg_id: 1,
+            })),
+        )
+        .expect("notification release should succeed");
+    client
+        .process(
+            99,
+            &encode_pdu(&UrbdrcServerDevicePdu::RegReqCb(RegisterRequestCallback {
+                msg_id: 2,
+                udev_iface,
+                request_completion: Some(InterfaceId::DEVICE_SINK),
+            })),
+        )
+        .expect("a request completion interface below 4 is accepted");
+
+    client
+        .process(
+            99,
+            &encode_pdu(&UrbdrcServerDevicePdu::IoCtl(IoControl {
+                msg_id: 3,
+                udev_iface,
+                ioctl_code: IoctlInternalUsb::GetPortStatus,
+                input_buffer: Vec::new(),
+                output_buffer_size: 4,
+                req_id: 7,
+            })),
+        )
+        .expect("IO control should be accepted");
+    let completion = client
+        .io_ctl_completion(
+            7,
+            IoControlCompletionResult {
+                hresult: 0,
+                information: 0,
+                output_buffer: Vec::new(),
+            },
+        )
+        .expect("the request is pending");
+
+    // The completion goes to the registered interface. Server-side decoding would route this
+    // interface ID to the device sink, so check the header itself: InterfaceId with the proxy mask.
+    let encoded = encode_vec(completion.as_ref()).expect("encode should succeed");
+    let interface = u32::from_le_bytes(encoded[..4].try_into().expect("four bytes"));
+    assert_eq!(interface, 0x4000_0001);
+}
