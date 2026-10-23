@@ -42,7 +42,7 @@ The RPCH stream recycles IN and OUT channels, keeps load-balancer cookies and wa
 It accepts gateway consent messages, logs service messages and answers reauthentication on a separate authenticated connection.
 Gateway UDP/DTLS remains unsupported.
 An RPCH session through one Windows RD Gateway has been tested, including IN-channel recycling with a reduced channel lifetime.
-OUT-channel recycling, gateway message delivery and reauthentication have been tested only against a loopback proxy.
+Dedicated TCP-channel tests through that gateway also verified OUT-channel recycling, consent and service messages, and repeated reauthentication during a 1.25 GiB transfer.
 
 For the end-user RDP client binary, see [`ironrdp-viewer`](../ironrdp-viewer).
 

@@ -1353,6 +1353,8 @@ fn string_message(text: &str, referent: u32) -> Vec<u8> {
         count.to_le_bytes(),
         referent.to_le_bytes(),
         count.to_le_bytes(),
+        0u32.to_le_bytes(),
+        count.to_le_bytes(),
     ]
     .concat();
     output.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));

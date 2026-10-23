@@ -3773,39 +3773,12 @@ pub(crate) mod tsgu {
             require_ndr_pointer(message_pointer)?;
         }
 
-        let (message_bytes, end) = if message_pointer == 0 {
-            (&[][..], string_end)
+        let (text, end) = if message_pointer == 0 {
+            (String::new(), string_end)
         } else {
-            let array_count =
-                usize::try_from(read_u32(source, string_end)?).map_err(|_| RpcStubError::LengthOverflow)?;
-            if array_count != message_chars {
-                return Err(RpcStubError::InvalidNdrArrayLength {
-                    actual: u32::try_from(array_count).map_err(|_| RpcStubError::LengthOverflow)?,
-                    expected: u32::try_from(message_chars).map_err(|_| RpcStubError::LengthOverflow)?,
-                });
-            }
-            let message_start = string_end.checked_add(4).ok_or(RpcStubError::LengthOverflow)?;
-            let message_len = message_chars.checked_mul(2).ok_or(RpcStubError::LengthOverflow)?;
-            let message_end = message_start
-                .checked_add(message_len)
-                .ok_or(RpcStubError::LengthOverflow)?;
-            let message_bytes = source
-                .get(message_start..message_end)
-                .ok_or(RpcStubError::ResponseLength {
-                    actual: source.len(),
-                    expected: message_end,
-                })?;
-            (message_bytes, padded_to_ndr(message_end, 4)?)
+            // Windows sends capacity, offset and actual count before the transmitted UTF-16 characters.
+            decode_ndr_utf16_array(source, string_end, message_chars, false)?
         };
-        if message_chars != 0 && message_bytes[message_bytes.len() - 2..] != [0, 0] {
-            return Err(RpcStubError::UnterminatedNdrString);
-        }
-        let message_units: Vec<u16> = message_bytes
-            .chunks_exact(2)
-            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
-            .collect();
-        let text = String::from_utf16(&message_units[..message_units.len().saturating_sub(1)])
-            .map_err(|_| RpcStubError::InvalidUtf16)?;
 
         let message = if message_type == TSG_ASYNC_MESSAGE_CONSENT {
             TsProxyTunnelMessage::Consent {
@@ -3932,6 +3905,15 @@ pub(crate) mod tsgu {
         offset: usize,
         expected_count: usize,
     ) -> Result<(String, usize), RpcStubError> {
+        decode_ndr_utf16_array(source, offset, expected_count, true)
+    }
+
+    fn decode_ndr_utf16_array(
+        source: &[u8],
+        offset: usize,
+        expected_count: usize,
+        exact_count: bool,
+    ) -> Result<(String, usize), RpcStubError> {
         let max_count = usize::try_from(read_u32(source, offset)?).map_err(|_| RpcStubError::LengthOverflow)?;
         let first_index = read_u32(source, offset.checked_add(4).ok_or(RpcStubError::LengthOverflow)?)?;
         let actual_count = usize::try_from(read_u32(
@@ -3939,14 +3921,21 @@ pub(crate) mod tsgu {
             offset.checked_add(8).ok_or(RpcStubError::LengthOverflow)?,
         )?)
         .map_err(|_| RpcStubError::LengthOverflow)?;
-        if max_count != expected_count || first_index != 0 || actual_count != expected_count {
+        if max_count != expected_count
+            || first_index != 0
+            || max_count < actual_count
+            || (exact_count && actual_count != expected_count)
+        {
             return Err(RpcStubError::InvalidNdrArrayLength {
                 actual: u32::try_from(actual_count).map_err(|_| RpcStubError::LengthOverflow)?,
                 expected: u32::try_from(expected_count).map_err(|_| RpcStubError::LengthOverflow)?,
             });
         }
         let characters_start = offset.checked_add(12).ok_or(RpcStubError::LengthOverflow)?;
-        let byte_len = expected_count.checked_mul(2).ok_or(RpcStubError::LengthOverflow)?;
+        if !exact_count && expected_count == 0 && actual_count == 0 {
+            return Ok((String::new(), characters_start));
+        }
+        let byte_len = actual_count.checked_mul(2).ok_or(RpcStubError::LengthOverflow)?;
         let characters_end = characters_start
             .checked_add(byte_len)
             .ok_or(RpcStubError::LengthOverflow)?;
@@ -4215,9 +4204,70 @@ pub(crate) mod tsgu {
         }
 
         #[test]
+        fn string_message_decodes_windows_conformant_varying_utf16() {
+            // oracle: reference Windows RD Gateway live consent response: msgBytes=166, max=166, offset=0, actual=83.
+            let response = [
+                &1u32.to_le_bytes()[..],
+                &1u32.to_le_bytes(),
+                &8u32.to_le_bytes(),
+                &0x0002_0014u32.to_le_bytes(),
+                &8u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
+                &4u32.to_le_bytes(),
+                &[b'y', 0, b'e', 0, b's', 0, 0, 0],
+            ]
+            .concat();
+            assert_eq!(
+                decode_string_message(&response, 0, TSG_ASYNC_MESSAGE_CONSENT),
+                Ok((
+                    TsProxyTunnelMessage::Consent {
+                        display_mandatory: true,
+                        consent_mandatory: true,
+                        text: "yes".to_owned(),
+                    },
+                    response.len()
+                )),
+            );
+            let mut invalid = response.clone();
+            invalid[20..24].copy_from_slice(&1u32.to_le_bytes());
+            assert!(matches!(
+                decode_string_message(&invalid, 0, TSG_ASYNC_MESSAGE_CONSENT),
+                Err(RpcStubError::InvalidNdrArrayLength { .. })
+            ));
+            let mut invalid = response.clone();
+            invalid[24..28].copy_from_slice(&9u32.to_le_bytes());
+            assert!(matches!(
+                decode_string_message(&invalid, 0, TSG_ASYNC_MESSAGE_CONSENT),
+                Err(RpcStubError::InvalidNdrArrayLength { .. })
+            ));
+            assert!(decode_string_message(&response[..response.len() - 2], 0, TSG_ASYNC_MESSAGE_CONSENT).is_err());
+            let empty = [
+                &0u32.to_le_bytes()[..],
+                &0u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
+                &0x0002_0014u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
+            ]
+            .concat();
+            assert_eq!(
+                decode_string_message(&empty, 0, TSG_ASYNC_MESSAGE_SERVICE),
+                Ok((
+                    TsProxyTunnelMessage::Service {
+                        display_mandatory: false,
+                        text: String::new()
+                    },
+                    empty.len(),
+                ))
+            );
+        }
+
+        #[test]
         fn create_tunnel_response_decodes_consent_caps_response() {
             // oracle: MS-TSGU 2.2.9.2.1.6 TSG_PACKET_CAPS_RESPONSE and 2.2.9.2.1.9.1.1 TSG_PACKET_STRING_MESSAGE
             // with NDR deferred-pointer order: certificate chain, version caps, capability array, message.
+            // oracle: reference Windows RD Gateway consent capture: capacity exceeds transmitted character count.
             let nonce = Uuid::from_u128(0x00112233_4455_6677_8899_aabbccddeeff);
             let text: Vec<u8> = "OK?\0".encode_utf16().flat_map(u16::to_le_bytes).collect();
             let response = [
@@ -4249,9 +4299,11 @@ pub(crate) mod tsgu {
                 &0x1fu32.to_le_bytes(),
                 &1u32.to_le_bytes(), // isDisplayMandatory
                 &0u32.to_le_bytes(), // isConsentMandatory
-                &4u32.to_le_bytes(), // msgBytes
+                &8u32.to_le_bytes(), // msgBytes
                 &(NDR_REFERENT_ID + 20).to_le_bytes(),
-                &4u32.to_le_bytes(), // conformant array size
+                &8u32.to_le_bytes(), // conformant array capacity
+                &0u32.to_le_bytes(), // array offset
+                &4u32.to_le_bytes(), // transmitted character count
                 &text,
                 &CONTEXT,
                 &42u32.to_le_bytes(),
@@ -4588,6 +4640,8 @@ pub(crate) mod tsgu {
                 &2u32.to_le_bytes(),
                 &(NDR_REFERENT_ID + 12).to_le_bytes(),
                 &2u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
+                &2u32.to_le_bytes(),
                 &[b'x', 0, 0, 0],
                 &0u32.to_le_bytes(),
             ]
@@ -4624,6 +4678,8 @@ pub(crate) mod tsgu {
                 &0u32.to_le_bytes(),
                 &3u32.to_le_bytes(),
                 &(NDR_REFERENT_ID + 12).to_le_bytes(),
+                &3u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
                 &3u32.to_le_bytes(),
                 &[b'h', 0, b'i', 0, 0, 0],
                 &[0, 0],

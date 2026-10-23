@@ -53,7 +53,8 @@ It closes the TS Proxy channel, cancels the pending message call and closes the 
 There is no automatic HTTP/WebSocket-to-RPCH fallback.
 A session through one Windows RD Gateway has been tested: it negotiated messaging, reached the remote desktop and disconnected cleanly.
 The same gateway completed six IN_R2 replacements with a test build using a 128 KiB IN body, and separate connections verified cancellation of the pending message call during graceful shutdown.
-OUT recycling, consent and service message delivery, and reauthentication have been tested only against the loopback proxy, not a real gateway.
+A dedicated TCP transfer through the same gateway verified 1.25 GiB across OUT recycling and repeated server-requested reauthentication, with real consent and service message delivery.
+Load-balanced affinity and deployments with different HTTP authentication policies remain unverified.
 
 [MS-RPCH]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpch/c0f4c9c5-1a61-4d10-b8e2-005378d1d212
 
