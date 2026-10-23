@@ -11,26 +11,9 @@ pub(crate) const FORMAT_SIZE: usize = 4;
 
 #[test]
 fn decode_decodes_valid_sequence_of_messages() {
-    let destination = InclusiveRectangle {
-        left: 0,
-        top: 0,
-        right: u16::try_from(IMAGE_WIDTH).unwrap() - 1,
-        bottom: u16::try_from(IMAGE_HEIGHT).unwrap() - 1,
-    };
-    let data = &mut ReadCursor::new(ENCODED_MESSAGES.as_ref());
-    let expected = DECODED_IMAGE.as_ref();
+    let image = decode_messages(ENCODED_MESSAGES.as_ref());
 
-    let mut image = DecodedImage::new(
-        PixelFormat::BgrX32,
-        IMAGE_WIDTH.try_into().unwrap(),
-        IMAGE_HEIGHT.try_into().unwrap(),
-    );
-
-    let mut handler = DecodingContext::default();
-
-    handler.decode(&mut image, &destination, data).unwrap();
-
-    assert_eq!(expected, image.data());
+    assert_eq!(DECODED_IMAGE.as_ref(), image.data());
 }
 
 /// MS-RDPRFX 4.2.2, 4.2.3 and 4.2.4.1: header, frame and tileset sample messages.
@@ -1113,13 +1096,6 @@ fn decode_edited_messages(edit: impl Fn(&mut ironrdp_pdu::codecs::rfx::Block<'_>
     use ironrdp_pdu::Decode as _;
     use ironrdp_pdu::codecs::rfx::Block;
 
-    let destination = InclusiveRectangle {
-        left: 0,
-        top: 0,
-        right: u16::try_from(IMAGE_WIDTH).unwrap() - 1,
-        bottom: u16::try_from(IMAGE_HEIGHT).unwrap() - 1,
-    };
-
     let mut src = ReadCursor::new(ENCODED_MESSAGES.as_ref());
     let mut encoded = Vec::new();
     while !src.is_empty() {
@@ -1128,13 +1104,25 @@ fn decode_edited_messages(edit: impl Fn(&mut ironrdp_pdu::codecs::rfx::Block<'_>
         encoded.extend(ironrdp_core::encode_vec(&block).unwrap());
     }
 
+    decode_messages(&encoded)
+}
+
+/// Decodes `messages` into a fresh image covering the whole 64x64 channel.
+fn decode_messages(messages: &[u8]) -> DecodedImage {
+    let destination = InclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: u16::try_from(IMAGE_WIDTH).unwrap() - 1,
+        bottom: u16::try_from(IMAGE_HEIGHT).unwrap() - 1,
+    };
+
     let mut image = DecodedImage::new(
         PixelFormat::BgrX32,
         IMAGE_WIDTH.try_into().unwrap(),
         IMAGE_HEIGHT.try_into().unwrap(),
     );
     DecodingContext::default()
-        .decode(&mut image, &destination, &mut ReadCursor::new(&encoded))
+        .decode(&mut image, &destination, &mut ReadCursor::new(messages))
         .unwrap();
 
     image
