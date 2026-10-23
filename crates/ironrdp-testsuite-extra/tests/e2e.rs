@@ -2999,6 +2999,7 @@ async fn rdp_client_follows_a_server_redirection_to_its_target() {
             .with_client_dir("C:\\")
             .with_platform(MajorPlatformType::WINDOWS)
             .with_client_name("client")
+            .with_clipboard(ironrdp_client::config::ClipboardType::Disable)
             .build()
             .expect("client configuration");
         let (output_tx, mut output_rx) = ironrdp_client::output_channel::output_channel(64);
@@ -3073,4 +3074,119 @@ async fn rdp_client_follows_a_server_redirection_to_its_target() {
         server_task.abort();
     }))
     .await;
+}
+
+/// Redirects a strictly validating `RdpClient` to `localhost`, whose self-signed test certificate fails validation,
+/// and reports whether the client connected to the target.
+///
+/// The client's own validation callback accepts the redirecting server's endpoint only, so the target is accepted only
+/// through the certificate the Server Redirection PDU reports, when `report_certificate` is set.
+async fn follows_redirection_under_strict_validation(report_certificate: bool) -> bool {
+    use ironrdp::pdu::rdp::server_redirection::{ServerRedirectionPdu, TargetCertificateContainer};
+    use ironrdp_client::config::{ConfigBuilder, Destination};
+    use ironrdp_client::rdp::{RdpClient, RdpOutputEvent};
+
+    let identity = test_tls_identity();
+    let certificate = identity.certs[0].to_vec();
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_hybrid(acceptor, identity.pub_key)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: HYBRID_USER.into(),
+        password: HYBRID_PASSWORD.into(),
+        domain: None,
+    }));
+    let redirection_handle = server.server_redirection_handle();
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server.run().await;
+        });
+        let server_addr = local_addr_of(&ev).await;
+
+        let redirecting_endpoint = format!("127.0.0.1:{}", server_addr.port());
+        let config = ConfigBuilder::new()
+            .with_destination(Destination::from_parts("127.0.0.1", server_addr.port()))
+            .with_username(HYBRID_USER)
+            .with_password(HYBRID_PASSWORD)
+            .with_client_build(1)
+            .with_client_dir("C:\\")
+            .with_platform(MajorPlatformType::WINDOWS)
+            .with_client_name("client")
+            .with_clipboard(ironrdp_client::config::ClipboardType::Disable)
+            .with_certificate_validation(ironrdp_tls::CertificateValidation::Strict)
+            .with_certificate_validation_callback(Arc::new(move |_certificate: &[u8], endpoint: &str, _error: &str| {
+                endpoint == redirecting_endpoint
+            }))
+            .build()
+            .expect("client configuration");
+        let (output_tx, mut output_rx) = ironrdp_client::output_channel::output_channel(64);
+        let client = RdpClient::new(config, output_tx);
+        let input = client.input_sender();
+        let client_task = tokio::task::spawn_local(client.run());
+
+        let mut connections = 0;
+        let mut redirected = false;
+        let reconnected = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match output_rx.recv().await.expect("the client is running") {
+                    RdpOutputEvent::Connected => {
+                        connections += 1;
+                        if connections == 2 {
+                            return true;
+                        }
+                        redirection_handle
+                            .redirect(ServerRedirectionPdu {
+                                session_id: 1,
+                                target_net_address: Some("127.0.0.1".to_owned()),
+                                target_fqdn: Some("localhost".to_owned()),
+                                target_certificate: report_certificate
+                                    .then(|| TargetCertificateContainer::from_certificate_der(certificate.clone())),
+                                ..ServerRedirectionPdu::default()
+                            })
+                            .expect("the server is running");
+                    }
+                    RdpOutputEvent::ServerRedirected { .. } => redirected = true,
+                    RdpOutputEvent::ConnectionFailure(error) => {
+                        let error = format!("{error:?}");
+                        assert!(error.contains("TLS upgrade"), "unexpected connection failure: {error}");
+                        return false;
+                    }
+                    RdpOutputEvent::Terminated(result) => unreachable!("the session ended: {result:?}"),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("the client connects or fails");
+        assert!(redirected, "the client follows the redirection");
+
+        input.request_close();
+        let _ = tokio::time::timeout(Duration::from_secs(5), client_task).await;
+        server_task.abort();
+        reconnected
+    }))
+    .await
+}
+
+// oracle: spec MS-RDPBCGR §2.2.13.1
+// TargetCertificate "encapsulates the X.509 certificate of the target server".
+#[tokio::test]
+async fn strict_validation_accepts_the_target_certificate_the_redirecting_server_reports() {
+    assert!(follows_redirection_under_strict_validation(true).await);
+}
+
+#[tokio::test]
+async fn strict_validation_rejects_an_unreported_target_certificate() {
+    assert!(!follows_redirection_under_strict_validation(false).await);
 }

@@ -723,6 +723,7 @@ fn server_redirection() -> ServerRedirectionPdu {
 
 /// A server may redirect the client instead of activating it ([MS-RDPBCGR] 3.2.5.13.1): the connector ends in
 /// `Redirected` rather than failing on an unexpected PDU.
+// oracle: spec MS-RDPBCGR §3.2.5.13.1
 #[test]
 fn server_redirection_during_capabilities_exchange_ends_the_connection_sequence() {
     let config = test_config();
@@ -743,6 +744,7 @@ fn server_redirection_during_capabilities_exchange_ends_the_connection_sequence(
 }
 
 /// `LB_NOREDIRECT` marks the PDU as informational only ([MS-RDPBCGR] 2.2.13.1).
+// oracle: spec MS-RDPBCGR §2.2.13.1
 #[test]
 fn informational_server_redirection_does_not_interrupt_activation() {
     let mut sequence = ConnectionActivationSequence::new(test_config(), IO_CHANNEL_ID, USER_CHANNEL_ID);
@@ -760,6 +762,7 @@ fn informational_server_redirection_does_not_interrupt_activation() {
     ));
 }
 
+// oracle: spec MS-RDPBCGR §3.2.5.13.1
 #[test]
 fn active_processor_surfaces_server_redirection() {
     let frame = encode_server_share_control(ShareControlPdu::ServerRedirect(server_redirection()));
@@ -781,6 +784,7 @@ fn active_processor_surfaces_server_redirection() {
 
 /// An informational Enhanced Security Server Redirection PDU uses Share Control framing, so a PDU concatenated after it
 /// in the same Send Data Indication is still processed.
+// oracle: spec MS-RDPBCGR §2.2.13.3.1
 #[test]
 fn active_processor_processes_the_pdu_after_an_informational_server_redirection() {
     let mut user_data = encode_vec(&ShareControlHeader {

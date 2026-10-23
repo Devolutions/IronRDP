@@ -187,18 +187,6 @@ impl ServerRedirectionPdu {
     pub fn is_informational(&self) -> bool {
         self.flags.contains(ServerRedirectionFlags::NO_REDIRECT)
     }
-
-    /// The password as a null-terminated Unicode string, when it is not an encrypted blob.
-    ///
-    /// Windows connection brokers usually send an opaque cookie here instead of a password, which this method may
-    /// still decode as text: the cookie is only meaningful when passed through verbatim.
-    pub fn password_text(&self) -> Option<String> {
-        if self.flags.contains(ServerRedirectionFlags::PASSWORD_IS_PK_ENCRYPTED) {
-            return None;
-        }
-        let password = self.password.as_deref()?;
-        utils::decode_string(password, CharacterSet::Unicode, true).ok()
-    }
 }
 
 impl Encode for ServerRedirectionPdu {
@@ -340,8 +328,9 @@ impl<'de> Decode<'de> for ServerRedirectionPdu {
             pdu.redirection_guid = Some(read_bytes_field(src)?.to_vec());
         }
         if flags.contains(ServerRedirectionFlags::TARGET_CERTIFICATE) {
+            let offset = src.pos();
             let text = read_bytes_field(src)?;
-            pdu.target_certificate = Some(TargetCertificateContainer::from_base64_unicode(text)?);
+            pdu.target_certificate = Some(TargetCertificateContainer::from_base64_unicode(text, offset)?);
         }
         if flags.contains(ServerRedirectionFlags::TARGET_NET_ADDRESSES) {
             let field = read_bytes_field(src)?;
@@ -437,13 +426,14 @@ impl TargetCertificateContainer {
         base64_encode(&binary)
     }
 
-    fn from_base64_unicode(text: &[u8]) -> DecodeResult<Self> {
+    /// Decodes the `TargetCertificate` field, which starts at `offset` in the Server Redirection Packet.
+    fn from_base64_unicode(text: &[u8], offset: usize) -> DecodeResult<Self> {
         if !text.len().is_multiple_of(2) {
-            return Err(invalid_field_err(
+            return Err(invalid_field_err!(
                 Self::NAME,
                 "TargetCertificate",
                 "odd Unicode length",
-                None,
+                at: offset
             ));
         }
         let mut ascii = Vec::with_capacity(text.len() / 2);
@@ -451,17 +441,17 @@ impl TargetCertificateContainer {
             match u8::try_from(code_unit) {
                 Ok(byte) => ascii.push(byte),
                 Err(_) => {
-                    return Err(invalid_field_err(
+                    return Err(invalid_field_err!(
                         Self::NAME,
                         "TargetCertificate",
                         "non-ASCII Base64 character",
-                        None,
+                        at: offset
                     ));
                 }
             }
         }
         let binary = base64_decode(&ascii)
-            .ok_or_else(|| invalid_field_err(Self::NAME, "TargetCertificate", "invalid Base64", None))?;
+            .ok_or_else(|| invalid_field_err!(Self::NAME, "TargetCertificate", "invalid Base64", at: offset))?;
 
         let mut src = ReadCursor::new(&binary);
         let mut elements = Vec::new();

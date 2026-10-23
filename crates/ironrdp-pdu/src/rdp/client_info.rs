@@ -200,7 +200,7 @@ impl<'de> Decode<'de> for ClientInfo {
         // A password cookie is opaque binary data. The field holds a password only when its text encodes back to the
         // same bytes: a cookie can contain null code units, invalid text, or end with its own null terminator.
         let (password, password_cookie) = match utils::decode_string(password_field, character_set, true) {
-            Ok(password) if encoded_text(&password, character_set) == raw_password => (password, None),
+            Ok(password) if is_encoded_text(raw_password, &password, character_set) => (password, None),
             _ => (String::new(), Some(PasswordCookie(raw_password.to_vec()))),
         };
 
@@ -1015,10 +1015,14 @@ impl CompressionType {
     }
 }
 
-fn encoded_text(value: &str, character_set: CharacterSet) -> Vec<u8> {
+/// Whether `encoded` is exactly `value` in `character_set`, without a null terminator.
+fn is_encoded_text(encoded: &[u8], value: &str, character_set: CharacterSet) -> bool {
     match character_set {
-        CharacterSet::Ansi => value.as_bytes().to_vec(),
-        CharacterSet::Unicode => value.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+        CharacterSet::Ansi => encoded == value.as_bytes(),
+        CharacterSet::Unicode => encoded
+            .iter()
+            .copied()
+            .eq(value.encode_utf16().flat_map(u16::to_le_bytes)),
     }
 }
 

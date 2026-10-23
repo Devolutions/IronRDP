@@ -23,7 +23,7 @@ fn annotated_redirection() -> ServerRedirectionPdu {
         .expect("a Server Redirection PDU")
 }
 
-// Oracle: the field values annotated in [MS-RDPBCGR] 4.6.
+// oracle: spec MS-RDPBCGR §4.6
 #[test]
 fn decodes_the_annotated_enhanced_security_server_redirection_pdu() {
     let redirection = annotated_redirection();
@@ -53,7 +53,8 @@ fn decodes_the_annotated_enhanced_security_server_redirection_pdu() {
     assert_eq!(redirection.target_certificate, None);
 }
 
-// Oracle: [MS-RDPBCGR] 4.6, with the padding fields, whose values "MUST be ignored", written as zeros.
+// oracle: spec MS-RDPBCGR §4.6
+// The padding fields, whose values "MUST be ignored", are expected as zeros.
 #[test]
 fn encodes_the_annotated_enhanced_security_server_redirection_pdu() {
     let header = ShareControlHeader {
@@ -72,8 +73,9 @@ fn encodes_the_annotated_enhanced_security_server_redirection_pdu() {
     assert_eq!(encode_vec(&header).unwrap(), expected);
 }
 
-// Oracle: [MS-RDPBCGR] 2.2.13.2.1, a Basic Security Header carrying SEC_REDIRECTION_PKT (0x0400) with flagsHi zero,
-// then the Server Redirection Packet whose Flags field is SEC_REDIRECTION_PKT as well.
+// oracle: spec MS-RDPBCGR §2.2.13.2.1
+// A Basic Security Header carrying SEC_REDIRECTION_PKT (0x0400) with flagsHi zero, then the Server Redirection Packet
+// whose Flags field is SEC_REDIRECTION_PKT as well.
 #[test]
 fn standard_security_server_redirection_is_recognized_on_the_io_channel() {
     let redirection = ServerRedirectionPdu {
@@ -90,14 +92,18 @@ fn standard_security_server_redirection_is_recognized_on_the_io_channel() {
     .unwrap();
 
     assert_eq!(encoded[..6], [0x00, 0x04, 0x00, 0x00, 0x00, 0x04]);
-    // Decoding keeps RedirFlags as sent, field-presence bits included.
+    // oracle: spec MS-RDPBCGR §2.2.13.1
+    // RedirFlags as sent: LB_LOAD_BALANCE_INFO (0x02) | LB_USERNAME (0x04) | LB_DONTSTOREUSERNAME (0x20) |
+    // LB_TARGET_FQDN (0x100).
     let expected = ServerRedirectionPdu {
-        flags: redirection.wire_flags(),
+        flags: ServerRedirectionFlags::from_bits_retain(0x0000_0126),
         ..redirection
     };
     assert_eq!(decode_server_redirection(&encoded).unwrap(), Some(expected));
 }
 
+// oracle: spec MS-RDPBCGR §2.2.8.1.1.1.1
+// A Server Deactivate All PDU has PDU type 0x6, not PDUTYPE_SERVER_REDIR_PKT (0xA).
 #[test]
 fn other_share_control_pdus_are_not_server_redirections() {
     let deactivate_all = encode_vec(&ShareControlHeader {
@@ -110,8 +116,9 @@ fn other_share_control_pdus_are_not_server_redirections() {
     assert_eq!(decode_server_redirection(&deactivate_all).unwrap(), None);
 }
 
-// Oracle: [MS-RDPBCGR] 2.2.13.1.2 and 2.2.13.1.2.1 for the container layout, and a Base64 encoding computed
-// independently of this crate, split by the CR LF line breaks Windows servers insert.
+// oracle: spec MS-RDPBCGR §2.2.13.1.2
+// The container layout, Base64-encoded with Python's `base64` module and split by the CR LF line breaks that FreeRDP
+// `rdp_redirection_read_base64_wchar` strips.
 #[test]
 fn target_certificate_is_read_from_base64_with_line_breaks() {
     const BASE64: &str = "AQAAAAAAAAAC\r\nAAAACQkgAAAA\r\nAQAAAAUAAAAw\r\nAwIBBQ==";
@@ -134,8 +141,9 @@ fn target_certificate_is_read_from_base64_with_line_breaks() {
     assert_eq!(container.certificate_der(), Some(CERTIFICATE.as_slice()));
 }
 
-// Oracle: FreeRDP `rdp_write_info_packet`, which sends the cookie as the Password field, cbPassword included the
-// cookie's own trailing null, followed by the mandatory null terminator.
+// oracle: reference awakecoding/FreeRDP@16a7c2ec2fd0:libfreerdp/core/info.c
+// `rdp_write_info_packet` sends the cookie as the Password field, cbPassword including the cookie's own trailing null,
+// followed by the mandatory null terminator.
 #[test]
 fn client_info_sends_a_password_cookie_verbatim() {
     // An unpaired UTF-16 surrogate makes the cookie unreadable as text.
@@ -163,7 +171,9 @@ fn decoded_password_cookie(cookie: &[u8]) -> (String, Option<PasswordCookie>) {
     (decoded.credentials.password, decoded.password_cookie)
 }
 
-// A cookie whose leading code units read as text must not be cut at its first null code unit.
+// oracle: spec MS-RDPBCGR §2.2.13.1
+// The Password field is an opaque cookie passed to the target as is, so a cookie whose leading code units read as text
+// must not be cut at its first null code unit.
 #[test]
 fn client_info_keeps_a_password_cookie_with_an_embedded_null() {
     let cookie = [0x41, 0x00, 0x00, 0x00, 0x00, 0xD8, 0x00, 0x00];
@@ -174,7 +184,8 @@ fn client_info_keeps_a_password_cookie_with_an_embedded_null() {
     );
 }
 
-// Oracle: the cookie of [MS-RDPBCGR] 4.6, which is valid UTF-16 text and ends with its own null terminator.
+// oracle: spec MS-RDPBCGR §4.6
+// The annotated cookie is valid UTF-16 text and ends with its own null terminator.
 #[test]
 fn client_info_keeps_a_valid_utf16_password_cookie() {
     let cookie = &ANNOTATED_PDU[PASSWORD_RANGE];
@@ -196,17 +207,23 @@ fn packet_with_length(length: u16, trailing: usize) -> Vec<u8> {
     packet
 }
 
+// oracle: spec MS-RDPBCGR §2.2.13.1
+// Length is the overall length of the packet, which cannot be shorter than its fixed fields.
 #[test]
 fn server_redirection_length_shorter_than_its_fields_is_rejected() {
     assert!(decode::<ServerRedirectionPdu>(&packet_with_length(8, 0)).is_err());
 }
 
+// oracle: spec MS-RDPBCGR §2.2.13.1
+// Only the optional 8-byte Pad may be missing from the bytes Length counts.
 #[test]
 fn server_redirection_length_past_the_padding_is_rejected() {
     assert!(decode::<ServerRedirectionPdu>(&packet_with_length(12 + 9, 0)).is_err());
 }
 
-// Some Windows versions omit the padding that `Length` counts.
+// oracle: reference awakecoding/FreeRDP@16a7c2ec2fd0:libfreerdp/core/redirection.c
+// `rdp_recv_server_redirection_pdu` skips the Pad only when present, because "some versions of windows don't included
+// this padding before closing the connection".
 #[test]
 fn server_redirection_without_its_counted_padding_is_accepted() {
     assert!(decode::<ServerRedirectionPdu>(&packet_with_length(12 + 8, 0)).is_ok());

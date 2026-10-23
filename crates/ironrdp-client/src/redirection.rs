@@ -63,7 +63,15 @@ pub(crate) fn apply_server_redirection(
     // redirection from moving a client off the collection it asked for; check it against a broker that sends
     // LB_CLIENT_TSV_URL when changing the comparison or the normalization of the load-balancing information.
     if let (Some(tsv_url), Some(load_balance_info)) = (&redirection.tsv_url, &config.load_balance_info) {
-        let tsv_url = decode_tsv_url(tsv_url);
+        // The TsvUrl is Unicode text, with or without a null terminator.
+        let tsv_url = {
+            let code_units: Vec<u16> = tsv_url
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .take_while(|&code_unit| code_unit != 0)
+                .collect();
+            String::from_utf16_lossy(&code_units)
+        };
         if tsv_url != *load_balance_info {
             return Err(reason_err!(
                 "Redirect",
@@ -192,15 +200,5 @@ pub(crate) fn apply_server_redirection(
             ));
         }
         String::from_utf8(token.to_vec()).map_err(|e| ironrdp_connector::custom_err!("routing token", e))
-    }
-
-    /// The `TsvUrl` is Unicode text, with or without a null terminator.
-    fn decode_tsv_url(tsv_url: &[u8]) -> String {
-        let code_units: Vec<u16> = tsv_url
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .take_while(|&code_unit| code_unit != 0)
-            .collect();
-        String::from_utf16_lossy(&code_units)
     }
 }

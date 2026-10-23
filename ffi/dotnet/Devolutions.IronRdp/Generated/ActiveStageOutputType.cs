@@ -36,5 +36,5 @@ public enum ActiveStageOutputType
     /// <summary>
     /// The server sent a Server Redirection PDU; use `get_server_redirection()` to read the target.
     /// </summary>
-    ServerRedirection = 15,
+    ServerRedirection = 16,
 }

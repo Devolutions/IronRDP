@@ -419,7 +419,7 @@ pub mod ffi {
         AutoReconnectFailed = 13,
         MonitorLayout = 14,
         /// The server sent a Server Redirection PDU; use `get_server_redirection()` to read the target.
-        ServerRedirection = 15,
+        ServerRedirection = 16,
     }
 
     impl ActiveStageOutput {

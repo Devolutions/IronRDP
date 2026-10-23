@@ -2888,20 +2888,15 @@ where
 
     let (initial_stream, leftover_bytes) = framed.into_inner();
 
-    let tls_upgrade = if let Some(callback) = redirection_certificate_callback(config) {
+    // The UDP transport presents the same server certificate, so it is validated the same way.
+    let callback =
+        redirection_certificate_callback(config).or_else(|| config.certificate_validation_callback().cloned());
+    let tls_upgrade = if let Some(callback) = callback.clone() {
         ironrdp_tls::upgrade_with_certificate_validation_callback_for_endpoint(
             initial_stream,
             config.destination.name(),
             &config.destination.to_string(),
             callback,
-        )
-        .await
-    } else if let Some(callback) = config.certificate_validation_callback() {
-        ironrdp_tls::upgrade_with_certificate_validation_callback_for_endpoint(
-            initial_stream,
-            config.destination.name(),
-            &config.destination.to_string(),
-            Arc::clone(callback),
         )
         .await
     } else {
@@ -2933,7 +2928,7 @@ where
             offer_version: config.udp_offer_version,
             tls: ironrdp_rdpeudp_tokio::UdpTlsConfig {
                 certificate_validation: config.certificate_validation,
-                certificate_validation_callback: config.certificate_validation_callback.clone(),
+                certificate_validation_callback: callback,
                 certificate_validation_endpoint: config.destination.to_string(),
             },
         };
@@ -3008,9 +3003,6 @@ where
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
 fn redirection_certificate_callback(config: &Config) -> Option<ironrdp_tls::CertificateValidationCallback> {
-    // UNTESTED: under strict validation, the exact certificate the redirecting server reported is accepted for the
-    // target and no other one is. It is what lets a client reach a farm member by address without a certificate
-    // prompt; when changing it, connect by address to a target whose certificate names only its FQDN.
     let target_certificate = config.redirection.as_ref()?.target_certificate.clone()?;
     // The native-tls backend rejects validation callbacks, so it keeps ordinary strict validation.
     if cfg!(feature = "native-tls") || config.certificate_validation() != ironrdp_tls::CertificateValidation::Strict {
@@ -3019,7 +3011,7 @@ fn redirection_certificate_callback(config: &Config) -> Option<ironrdp_tls::Cert
     let fallback = config.certificate_validation_callback().cloned();
     Some(Arc::new(move |certificate: &[u8], endpoint: &str, error: &str| {
         if certificate == target_certificate.as_slice() {
-            debug!(%endpoint, "Accepting the target certificate reported by the redirecting server");
+            info!(%endpoint, %error, "Accepting the target certificate reported by the redirecting server");
             return true;
         }
         fallback
