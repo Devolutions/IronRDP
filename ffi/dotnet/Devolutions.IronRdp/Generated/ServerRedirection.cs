@@ -38,7 +38,7 @@ public partial class ServerRedirection: IDisposable
         }
     }
 
-    public BytesSlice LoadBalanceInfo
+    public VecU8 LoadBalanceInfo
     {
         get
         {
@@ -46,7 +46,7 @@ public partial class ServerRedirection: IDisposable
         }
     }
 
-    public BytesSlice Password
+    public VecU8 Password
     {
         get
         {
@@ -62,7 +62,7 @@ public partial class ServerRedirection: IDisposable
         }
     }
 
-    public BytesSlice TargetCertificate
+    public VecU8 TargetCertificate
     {
         get
         {
@@ -431,12 +431,12 @@ public partial class ServerRedirection: IDisposable
     }
 
     /// <summary>
-    /// The load-balancing information, empty when the PDU has none.
+    /// A copy of the load-balancing information, empty when the PDU has none.
     /// </summary>
     /// <returns>
-    /// A <c>BytesSlice</c> allocated on Rust side.
+    /// A <c>VecU8</c> allocated on Rust side.
     /// </returns>
-    public BytesSlice GetLoadBalanceInfo()
+    public VecU8 GetLoadBalanceInfo()
     {
         unsafe
         {
@@ -444,18 +444,18 @@ public partial class ServerRedirection: IDisposable
             {
                 throw new ObjectDisposedException("ServerRedirection");
             }
-            Raw.BytesSlice* retVal = Raw.ServerRedirection.GetLoadBalanceInfo(_inner);
-            return new BytesSlice(retVal);
+            Raw.VecU8* retVal = Raw.ServerRedirection.GetLoadBalanceInfo(_inner);
+            return new VecU8(retVal);
         }
     }
 
     /// <summary>
-    /// The password or password cookie, empty when the PDU has none.
+    /// A copy of the password or password cookie, empty when the PDU has none.
     /// </summary>
     /// <returns>
-    /// A <c>BytesSlice</c> allocated on Rust side.
+    /// A <c>VecU8</c> allocated on Rust side.
     /// </returns>
-    public BytesSlice GetPassword()
+    public VecU8 GetPassword()
     {
         unsafe
         {
@@ -463,18 +463,18 @@ public partial class ServerRedirection: IDisposable
             {
                 throw new ObjectDisposedException("ServerRedirection");
             }
-            Raw.BytesSlice* retVal = Raw.ServerRedirection.GetPassword(_inner);
-            return new BytesSlice(retVal);
+            Raw.VecU8* retVal = Raw.ServerRedirection.GetPassword(_inner);
+            return new VecU8(retVal);
         }
     }
 
     /// <summary>
-    /// The DER-encoded certificate of the target, empty when the PDU has none.
+    /// A copy of the DER-encoded certificate of the target, empty when the PDU has none.
     /// </summary>
     /// <returns>
-    /// A <c>BytesSlice</c> allocated on Rust side.
+    /// A <c>VecU8</c> allocated on Rust side.
     /// </returns>
-    public BytesSlice GetTargetCertificate()
+    public VecU8 GetTargetCertificate()
     {
         unsafe
         {
@@ -482,8 +482,8 @@ public partial class ServerRedirection: IDisposable
             {
                 throw new ObjectDisposedException("ServerRedirection");
             }
-            Raw.BytesSlice* retVal = Raw.ServerRedirection.GetTargetCertificate(_inner);
-            return new BytesSlice(retVal);
+            Raw.VecU8* retVal = Raw.ServerRedirection.GetTargetCertificate(_inner);
+            return new VecU8(retVal);
         }
     }
 

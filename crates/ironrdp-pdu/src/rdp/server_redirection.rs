@@ -355,13 +355,19 @@ impl<'de> Decode<'de> for ServerRedirectionPdu {
             pdu.target_net_addresses = Some(addresses);
         }
 
-        // `Length` covers the optional `Pad` when the server sends it. Some servers omit the padding, so it is skipped
-        // only when present.
+        // `Length` covers the fields and the optional `Pad`. Some Windows versions omit the padding at the end of the
+        // stream, so a shortfall of at most the padding size is accepted; any other mismatch means the fields do not
+        // fit the declared packet.
         let consumed = src.pos() - start;
-        if let Some(padding) = length.checked_sub(consumed) {
-            if padding <= src.len() {
-                read_padding!(src, padding);
-            }
+        let Some(padding) = length.checked_sub(consumed) else {
+            return Err(invalid_field_err!("Length", "shorter than the packet fields", in: src));
+        };
+        if padding <= src.len() {
+            read_padding!(src, padding);
+        } else if padding - src.len() <= PACKET_PAD_SIZE {
+            read_padding!(src, src.len());
+        } else {
+            return Err(invalid_field_err!("Length", "longer than the packet", in: src));
         }
 
         Ok(pdu)

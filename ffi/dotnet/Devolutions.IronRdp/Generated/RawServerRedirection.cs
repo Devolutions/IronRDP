@@ -72,22 +72,22 @@ public partial struct ServerRedirection
     public static unsafe extern ConnectorResultFfiResultVoidBoxIronRdpError GetDomain(ServerRedirection* self, DiplomatWriteable* writeable);
 
     /// <summary>
-    /// The load-balancing information, empty when the PDU has none.
+    /// A copy of the load-balancing information, empty when the PDU has none.
     /// </summary>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ServerRedirection_get_load_balance_info", ExactSpelling = true)]
-    public static unsafe extern BytesSlice* GetLoadBalanceInfo(ServerRedirection* self);
+    public static unsafe extern VecU8* GetLoadBalanceInfo(ServerRedirection* self);
 
     /// <summary>
-    /// The password or password cookie, empty when the PDU has none.
+    /// A copy of the password or password cookie, empty when the PDU has none.
     /// </summary>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ServerRedirection_get_password", ExactSpelling = true)]
-    public static unsafe extern BytesSlice* GetPassword(ServerRedirection* self);
+    public static unsafe extern VecU8* GetPassword(ServerRedirection* self);
 
     /// <summary>
-    /// The DER-encoded certificate of the target, empty when the PDU has none.
+    /// A copy of the DER-encoded certificate of the target, empty when the PDU has none.
     /// </summary>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ServerRedirection_get_target_certificate", ExactSpelling = true)]
-    public static unsafe extern BytesSlice* GetTargetCertificate(ServerRedirection* self);
+    public static unsafe extern VecU8* GetTargetCertificate(ServerRedirection* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ServerRedirection_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ServerRedirection* self);

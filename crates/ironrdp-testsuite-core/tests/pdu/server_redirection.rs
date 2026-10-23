@@ -153,3 +153,62 @@ fn client_info_sends_a_password_cookie_verbatim() {
     assert_eq!(decoded.password_cookie, Some(PasswordCookie(cookie)));
     assert_eq!(decoded.credentials.password, "");
 }
+
+fn decoded_password_cookie(cookie: &[u8]) -> (String, Option<PasswordCookie>) {
+    let client_info = ClientInfo {
+        password_cookie: Some(PasswordCookie(cookie.to_vec())),
+        ..CLIENT_INFO_UNICODE.clone()
+    };
+    let decoded: ClientInfo = decode(&encode_vec(&client_info).unwrap()).unwrap();
+    (decoded.credentials.password, decoded.password_cookie)
+}
+
+// A cookie whose leading code units read as text must not be cut at its first null code unit.
+#[test]
+fn client_info_keeps_a_password_cookie_with_an_embedded_null() {
+    let cookie = [0x41, 0x00, 0x00, 0x00, 0x00, 0xD8, 0x00, 0x00];
+
+    assert_eq!(
+        decoded_password_cookie(&cookie),
+        (String::new(), Some(PasswordCookie(cookie.to_vec())))
+    );
+}
+
+// Oracle: the cookie of [MS-RDPBCGR] 4.6, which is valid UTF-16 text and ends with its own null terminator.
+#[test]
+fn client_info_keeps_a_valid_utf16_password_cookie() {
+    let cookie = &ANNOTATED_PDU[PASSWORD_RANGE];
+
+    assert_eq!(
+        decoded_password_cookie(cookie),
+        (String::new(), Some(PasswordCookie(cookie.to_vec())))
+    );
+}
+
+/// A Server Redirection Packet with no optional field and the given `Length`, followed by `trailing` bytes.
+fn packet_with_length(length: u16, trailing: usize) -> Vec<u8> {
+    let mut packet = Vec::new();
+    packet.extend_from_slice(&0x0400u16.to_le_bytes()); // Flags
+    packet.extend_from_slice(&length.to_le_bytes()); // Length
+    packet.extend_from_slice(&1u32.to_le_bytes()); // SessionID
+    packet.extend_from_slice(&0u32.to_le_bytes()); // RedirFlags
+    packet.resize(packet.len() + trailing, 0);
+    packet
+}
+
+#[test]
+fn server_redirection_length_shorter_than_its_fields_is_rejected() {
+    assert!(decode::<ServerRedirectionPdu>(&packet_with_length(8, 0)).is_err());
+}
+
+#[test]
+fn server_redirection_length_past_the_padding_is_rejected() {
+    assert!(decode::<ServerRedirectionPdu>(&packet_with_length(12 + 9, 0)).is_err());
+}
+
+// Some Windows versions omit the padding that `Length` counts.
+#[test]
+fn server_redirection_without_its_counted_padding_is_accepted() {
+    assert!(decode::<ServerRedirectionPdu>(&packet_with_length(12 + 8, 0)).is_ok());
+    assert!(decode::<ServerRedirectionPdu>(&packet_with_length(12 + 8, 8)).is_ok());
+}

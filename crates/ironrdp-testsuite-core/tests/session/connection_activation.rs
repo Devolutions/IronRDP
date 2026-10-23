@@ -778,3 +778,43 @@ fn active_processor_surfaces_server_redirection() {
         [ProcessorOutput::ServerRedirection(redirection)] if redirection.session_id == 4
     ));
 }
+
+/// An informational Enhanced Security Server Redirection PDU uses Share Control framing, so a PDU concatenated after it
+/// in the same Send Data Indication is still processed.
+#[test]
+fn active_processor_processes_the_pdu_after_an_informational_server_redirection() {
+    let mut user_data = encode_vec(&ShareControlHeader {
+        share_control_pdu: ShareControlPdu::ServerRedirect(ServerRedirectionPdu {
+            flags: ServerRedirectionFlags::NO_REDIRECT,
+            ..server_redirection()
+        }),
+        pdu_source: USER_CHANNEL_ID,
+        share_id: SHARE_ID,
+    })
+    .unwrap();
+    user_data.extend(
+        encode_vec(&ShareControlHeader {
+            share_control_pdu: ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll),
+            pdu_source: USER_CHANNEL_ID,
+            share_id: SHARE_ID,
+        })
+        .unwrap(),
+    );
+    let frame = encode_vec(&X224(McsMessage::SendDataIndication(SendDataIndication {
+        initiator_id: USER_CHANNEL_ID,
+        channel_id: IO_CHANNEL_ID,
+        user_data: Cow::Owned(user_data),
+    })))
+    .unwrap();
+    let mut processor = Processor::new(
+        StaticChannelSet::new(),
+        USER_CHANNEL_ID,
+        IO_CHANNEL_ID,
+        Some(MESSAGE_CHANNEL_ID),
+        SHARE_ID,
+    );
+
+    let outputs = processor.process(&frame, &mut None, None).unwrap();
+
+    assert!(matches!(outputs.as_slice(), [ProcessorOutput::DeactivateAll]));
+}

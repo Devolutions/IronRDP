@@ -122,6 +122,9 @@ internal static class ConnectionHelpers
         }
         else if (state.GetEnumType() == ClientConnectorStateType.Redirected)
         {
+            // The redirecting server waits for the client to close this connection (MS-RDPBCGR 3.2.5.13.1).
+            var (stream, _) = framedSsl.GetInner();
+            stream.Dispose();
             throw new ServerRedirectionException(state.GetRedirectedResult());
         }
         else

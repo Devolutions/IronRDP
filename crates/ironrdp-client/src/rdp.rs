@@ -3012,7 +3012,8 @@ fn redirection_certificate_callback(config: &Config) -> Option<ironrdp_tls::Cert
     // target and no other one is. It is what lets a client reach a farm member by address without a certificate
     // prompt; when changing it, connect by address to a target whose certificate names only its FQDN.
     let target_certificate = config.redirection.as_ref()?.target_certificate.clone()?;
-    if config.certificate_validation() != ironrdp_tls::CertificateValidation::Strict {
+    // The native-tls backend rejects validation callbacks, so it keeps ordinary strict validation.
+    if cfg!(feature = "native-tls") || config.certificate_validation() != ironrdp_tls::CertificateValidation::Strict {
         return None;
     }
     let fallback = config.certificate_validation_callback().cloned();

@@ -283,10 +283,13 @@ impl Processor {
 
         // Multitransport PDUs and the Standard Security Server Redirection PDU use BasicSecurityHeader, so the first
         // two bytes are flags rather than Share Control totalLength. Delegate before walking concatenated PDUs.
-        if matches!(
-            ironrdp_pdu::rdp::headers::decode_io_channel(data_ctx),
-            Ok(IoChannelPdu::MultitransportRequest(_) | IoChannelPdu::ServerRedirection(_))
-        ) {
+        let basic_security_header = data_ctx.user_data.get(2..4) == Some([0, 0].as_slice());
+        if basic_security_header
+            && matches!(
+                ironrdp_pdu::rdp::headers::decode_io_channel(data_ctx),
+                Ok(IoChannelPdu::MultitransportRequest(_) | IoChannelPdu::ServerRedirection(_))
+            )
+        {
             self.record_bandwidth_bytes(data_ctx.user_data.len() - BasicSecurityHeader::FIXED_PART_SIZE);
             return self.process_io_channel(data_ctx, bulk_decompressor);
         }

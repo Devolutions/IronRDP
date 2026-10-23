@@ -196,13 +196,12 @@ impl<'de> Decode<'de> for ClientInfo {
         let domain = utils::decode_string(src.read_slice(domain_size), character_set, true)?;
         let username = utils::decode_string(src.read_slice(user_name_size), character_set, true)?;
         let password_field = src.read_slice(password_size);
+        let raw_password = &password_field[..password_size - nt];
+        // A password cookie is opaque binary data. The field holds a password only when its text encodes back to the
+        // same bytes: a cookie can contain null code units, invalid text, or end with its own null terminator.
         let (password, password_cookie) = match utils::decode_string(password_field, character_set, true) {
-            Ok(password) => (password, None),
-            // A password cookie is opaque binary data.
-            Err(_) => (
-                String::new(),
-                Some(PasswordCookie(password_field[..password_size - nt].to_vec())),
-            ),
+            Ok(password) if encoded_text(&password, character_set) == raw_password => (password, None),
+            _ => (String::new(), Some(PasswordCookie(raw_password.to_vec()))),
         };
 
         let domain = if domain.is_empty() { None } else { Some(domain) };
@@ -1013,6 +1012,13 @@ impl CompressionType {
     )]
     pub fn as_u8(self) -> u8 {
         self as u8
+    }
+}
+
+fn encoded_text(value: &str, character_set: CharacterSet) -> Vec<u8> {
+    match character_set {
+        CharacterSet::Ansi => value.as_bytes().to_vec(),
+        CharacterSet::Unicode => value.encode_utf16().flat_map(u16::to_le_bytes).collect(),
     }
 }
 

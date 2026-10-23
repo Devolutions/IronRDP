@@ -3,7 +3,7 @@ pub mod ffi {
     use crate::connector::config::ffi::DesktopSize;
     use crate::error::ValueConsumedError;
     use crate::error::ffi::IronRdpError;
-    use crate::utils::ffi::{BytesSlice, OptionalUsize};
+    use crate::utils::ffi::{OptionalUsize, VecU8};
     use diplomat_runtime::DiplomatWriteable;
 
     #[diplomat::opaque]
@@ -156,28 +156,28 @@ pub mod ffi {
             write_optional(writeable, self.0.domain.as_deref())
         }
 
-        /// The load-balancing information, empty when the PDU has none.
+        /// A copy of the load-balancing information, empty when the PDU has none.
         #[diplomat::attr(auto, getter = "load_balance_info")]
-        pub fn get_load_balance_info(&self) -> Box<BytesSlice<'_>> {
-            Box::new(BytesSlice(self.0.load_balance_info.as_deref().unwrap_or_default()))
+        pub fn get_load_balance_info(&self) -> Box<VecU8> {
+            VecU8::from_bytes(self.0.load_balance_info.as_deref().unwrap_or_default())
         }
 
-        /// The password or password cookie, empty when the PDU has none.
+        /// A copy of the password or password cookie, empty when the PDU has none.
         #[diplomat::attr(auto, getter = "password")]
-        pub fn get_password(&self) -> Box<BytesSlice<'_>> {
-            Box::new(BytesSlice(self.0.password.as_deref().unwrap_or_default()))
+        pub fn get_password(&self) -> Box<VecU8> {
+            VecU8::from_bytes(self.0.password.as_deref().unwrap_or_default())
         }
 
-        /// The DER-encoded certificate of the target, empty when the PDU has none.
+        /// A copy of the DER-encoded certificate of the target, empty when the PDU has none.
         #[diplomat::attr(auto, getter = "target_certificate")]
-        pub fn get_target_certificate(&self) -> Box<BytesSlice<'_>> {
-            Box::new(BytesSlice(
+        pub fn get_target_certificate(&self) -> Box<VecU8> {
+            VecU8::from_bytes(
                 self.0
                     .target_certificate
                     .as_ref()
                     .and_then(|container| container.certificate_der())
                     .unwrap_or_default(),
-            ))
+            )
         }
     }
 
