@@ -780,3 +780,17 @@ fn rlgr1_round_trip_randomized() {
         assert_eq!(decoded, input, "RLGR1 round trip of {input:?}");
     }
 }
+
+/// In RLGR3 the second value is the code remainder minus the first, which the
+/// stream sets: a first value larger than the remainder is invalid data, not
+/// an overflow.
+#[test]
+fn decode_rejects_rlgr3_values_larger_than_their_remainder() {
+    let mut output = [0; 64];
+    let result = decode(EntropyAlgorithm::Rlgr3, &[0x41, 0x1b], &mut output);
+
+    assert!(
+        matches!(result, Err(RlgrError::InvalidIntegralConversion(_))),
+        "expected an out-of-range error, got {result:?}"
+    );
+}
