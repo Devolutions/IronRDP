@@ -1751,6 +1751,10 @@ impl GatewayRedirectionPolicy {
         if flags.clipboard_disabled {
             mapped_flags |= HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD;
         }
+        #[cfg(feature = "usb")]
+        if flags.pnp_disabled {
+            mapped_flags |= HTTP_TUNNEL_REDIR_DISABLE_PNP;
+        }
         Self::from_flags(Some(mapped_flags))
     }
 
@@ -5669,6 +5673,34 @@ mod tests {
         assert!(!GatewayRedirectionPolicy::from_flags(Some(0x8000_0000)).disables_usb());
         assert!(GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_PNP)).disables_usb());
         assert!(GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_ALL)).disables_usb());
+    }
+
+    #[cfg(all(feature = "gateway", feature = "usb"))]
+    #[test]
+    fn rpch_gateway_policy_governs_usb_with_pnp() {
+        let rpch = |flags| GatewayRedirectionPolicy::from_rpch_flags(flags);
+        assert!(!rpch(ironrdp_mstsgu::GwRpchRedirectionFlags::default()).disables_usb());
+        assert!(
+            rpch(ironrdp_mstsgu::GwRpchRedirectionFlags {
+                pnp_disabled: true,
+                ..Default::default()
+            })
+            .disables_usb()
+        );
+        assert!(
+            rpch(ironrdp_mstsgu::GwRpchRedirectionFlags {
+                disable_all: true,
+                ..Default::default()
+            })
+            .disables_usb()
+        );
+        assert!(
+            !rpch(ironrdp_mstsgu::GwRpchRedirectionFlags {
+                printer_disabled: true,
+                ..Default::default()
+            })
+            .disables_usb()
+        );
     }
 
     #[test]
