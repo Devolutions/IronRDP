@@ -19,8 +19,8 @@ test = false
 
 [dependencies]
 ironrdp-core = { version = "0.3.0", path = "../ironrdp-core", features = ["alloc"] } # public
-ironrdp-dvc = { version = "0.9.0", path = "../ironrdp-dvc" } # public
-ironrdp-egfx = { version = "0.4", path = "../ironrdp-egfx" } # public
+ironrdp-dvc = { version = "0.9.1", path = "../ironrdp-dvc" } # public
+ironrdp-egfx = { version = "0.5", path = "../ironrdp-egfx" } # public
 ironrdp-pdu = { version = "0.10.0", path = "../ironrdp-pdu", features = ["alloc"] } # public
 ironrdp-rdpegt = { path = "../ironrdp-rdpegt" } # public
 ironrdp-svc = { version = "0.9.0", path = "../ironrdp-svc" } # public

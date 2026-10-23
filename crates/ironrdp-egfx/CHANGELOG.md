@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-egfx-v0.4.0...ironrdp-egfx-v0.5.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- [**breaking**] Composite surfaces mapped to RemoteApp windows ([#2197](https://github.com/Devolutions/IronRDP/issues/2197)) ([6e54d5e9ec](https://github.com/Devolutions/IronRDP/commit/6e54d5e9ec58c69debaff96fa49bed4343348d3e)) 
+
+  With the graphics pipeline in a RemoteApp session, Windows servers
+  present each application window from its own surface through
+  MapSurfaceToWindow or MapSurfaceToScaledWindow (MS-RDPEGFX 2.2.2.20 and
+  2.2.2.23). The client only forwarded these PDUs to handler callbacks, so
+  nothing those surfaces drew reached the windows.
+  
+  The compositor now records window mappings and, at each EndFrame,
+  materializes dirty regions of window-mapped surfaces into window
+  updates: the RAIL window ID, the presented size and the changed region
+  in window coordinates, scaled when the server asks for a different
+  target size. GraphicsPipelineClient::drain_window_updates exposes them,
+  the session emits ActiveStageOutput::WindowSurfaceUpdates and the client
+  forwards RdpOutputEvent::WindowSurfaceUpdates. A mapping the client
+  cannot present, such as a mapped area larger than its surface, is
+  ignored and the surface keeps its previous mapping; FreeRDP also refuses
+  oversized mappings.
+  
+  🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+
+
 ## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-egfx-v0.3.0...ironrdp-egfx-v0.4.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

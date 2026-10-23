@@ -2793,7 +2793,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-cfg"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ironrdp-propertyset",
 ]
@@ -2965,7 +2965,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ironrdp-bulk",
  "ironrdp-core 0.3.0",
@@ -2976,7 +2976,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc-com-plugin"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ironrdp-core 0.3.0",
  "ironrdp-dvc",
@@ -2989,7 +2989,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc-pipe-proxy"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-trait",
  "ironrdp-core 0.3.0",
@@ -3012,7 +3012,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-egfx"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arbitrary",
  "bit_field",
@@ -3078,7 +3078,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-graphics"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "bit_field",
  "bitflags 2.13.2",
@@ -3106,7 +3106,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-mstsgu"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "base64 0.22.1",
  "bitflags 2.13.2",
@@ -3267,7 +3267,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpel"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "ironrdp-core 0.3.0",
  "ironrdp-dvc",
@@ -3475,7 +3475,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-session"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "ironrdp-bulk",
  "ironrdp-core 0.3.0",
@@ -3499,7 +3499,7 @@ version = "0.0.0"
 
 [[package]]
 name = "ironrdp-str"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytemuck",
  "ironrdp-core 0.3.0",
@@ -6291,9 +6291,9 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "smallvec"
-version = "1.16.3"
+version = "1.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b3dc8af474f516a851ff4bd12db780f948b9250ad37211e4eec0bccea54e01b"
+checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
 
 [[package]]
 name = "smithay-client-toolkit"
