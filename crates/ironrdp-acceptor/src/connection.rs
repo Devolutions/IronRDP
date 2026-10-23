@@ -1383,7 +1383,7 @@ impl Sequence for Acceptor {
                     pdu_source: self.io_channel_id,
                     share_control_pdu: ShareControlPdu::ServerDemandActive(rdp::capability_sets::ServerDemandActive {
                         pdu: rdp::capability_sets::DemandActive {
-                            source_descriptor: "".into(),
+                            source_descriptor: "RDP".into(),
                             capability_sets: self.server_capabilities.clone(),
                         },
                     }),
