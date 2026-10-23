@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-blocking-v0.10.0...ironrdp-blocking-v0.11.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- [**breaking**] `connect_finalize` returns a `ConnectionOutcome` that is either `Connected` or `Redirected` when the server sends a Server Redirection PDU ([#2208](https://github.com/Devolutions/IronRDP/issues/2208)) ([485657a6ec](https://github.com/Devolutions/IronRDP/commit/485657a6eca682a0356e100a9fda229342861fd7))
+
+- `connect_finalize` declines a server's multitransport request and continues over TCP instead of failing ([#1098](https://github.com/Devolutions/IronRDP/issues/1098)) ([e45fbfe0f5](https://github.com/Devolutions/IronRDP/commit/e45fbfe0f597011706e77fc174ca14e5e9d435b9))
+
+- Add `Framed::last_read_at` and pass each frame's arrival time to `Sequence::step` so the connector can measure bandwidth ([#1530](https://github.com/Devolutions/IronRDP/issues/1530)) ([6a499faece](https://github.com/Devolutions/IronRDP/commit/6a499faece8911e50a715a3fb08d4fd8e7d7dc87))
+
+### <!-- 7 -->Build
+
+- Bump the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- [**breaking**] Update `ironrdp-connector` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-core` public dependency to 0.3
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.10
+
+
+
 ## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-blocking-v0.9.0...ironrdp-blocking-v0.10.0)] - 2026-07-10
 
 ### <!-- 7 -->Build

@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-v0.8.0...ironrdp-dvc-v0.9.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- [**breaking**] Add the `SoftSyncRequest` and `SoftSyncResponse` variants to `DrdynvcServerPdu` and `DrdynvcClientPdu`, and mark `DrdynvcDataPdu`, `DrdynvcClientPdu` and `DrdynvcServerPdu` `#[non_exhaustive]` ([#1584](https://github.com/Devolutions/IronRDP/issues/1584)) ([bd630842ba](https://github.com/Devolutions/IronRDP/commit/bd630842bacc49cc129e613610482023a0f760db))
+
+- Add the Soft-Sync PDUs `SoftSyncRequestPdu`, `SoftSyncResponsePdu`, `SoftSyncChannelList` and `SoftSyncTunnelType`, and client-side Soft-Sync in `DrdynvcClient` (`enable_soft_sync_tunnel`, `tunnel_for_channel`, `switched_to_tunnel`, and `process_tunnel`, which returns a `DvcMessageBatch` tagged with its channel ID) ([#1584](https://github.com/Devolutions/IronRDP/issues/1584)) ([bd630842ba](https://github.com/Devolutions/IronRDP/commit/bd630842bacc49cc129e613610482023a0f760db)) ([#1826](https://github.com/Devolutions/IronRDP/issues/1826)) ([a989229409](https://github.com/Devolutions/IronRDP/commit/a9892294095d32808ee24dc8dad74dce46cb0bb4)) ([#2008](https://github.com/Devolutions/IronRDP/issues/2008)) ([bfd16a2e55](https://github.com/Devolutions/IronRDP/commit/bfd16a2e5573d4cd6617dd71b2802b4e7b944a59))
+
+- Add Soft-Sync on the server: `DrdynvcServer::request_reliable_udp`, `tunnel_for_outgoing_channel`, `soft_sync_awaiting_response`, `soft_sync_response_received` and `process_tunnel` ([#1584](https://github.com/Devolutions/IronRDP/issues/1584)) ([bd630842ba](https://github.com/Devolutions/IronRDP/commit/bd630842bacc49cc129e613610482023a0f760db)) ([#1954](https://github.com/Devolutions/IronRDP/issues/1954)) ([73dfa30e38](https://github.com/Devolutions/IronRDP/commit/73dfa30e3831e51cf8aa58f93e27b1b00102a7ec))
+
+- [**breaking**] Replace `DrdynvcClient::get_dvc_by_type_id` with `DrdynvcClient::get_dvc` and `get_dvc_mut`, which return a typed `DynamicChannelRef` or `DynamicChannelMut` ([#1377](https://github.com/Devolutions/IronRDP/issues/1377)) ([d43ecf9a54](https://github.com/Devolutions/IronRDP/commit/d43ecf9a54363d37e0c485a1e9e73da0d47ae540)) ([#1778](https://github.com/Devolutions/IronRDP/issues/1778)) ([1cee7a8613](https://github.com/Devolutions/IronRDP/commit/1cee7a86135a0556c01965d0406233bd7df367a9))
+
+- [**breaking**] Make `DrdynvcClient::get_dvc_by_channel_id` and `get_dvc_by_channel_id_mut` generic over the processor type, returning `DynamicChannelRef` and `DynamicChannelMut` ([#1377](https://github.com/Devolutions/IronRDP/issues/1377)) ([d43ecf9a54](https://github.com/Devolutions/IronRDP/commit/d43ecf9a54363d37e0c485a1e9e73da0d47ae540))
+
+- [**breaking**] Remove `DynamicVirtualChannel` from the public API ([#1377](https://github.com/Devolutions/IronRDP/issues/1377)) ([d43ecf9a54](https://github.com/Devolutions/IronRDP/commit/d43ecf9a54363d37e0c485a1e9e73da0d47ae540))
+
+- [**breaking**] Return `Box<dyn DvcClientProcessor>` instead of `Box<dyn DvcProcessor>` from `DvcChannelListener::create` ([#1377](https://github.com/Devolutions/IronRDP/issues/1377)) ([d43ecf9a54](https://github.com/Devolutions/IronRDP/commit/d43ecf9a54363d37e0c485a1e9e73da0d47ae540))
+
+- Add `DrdynvcClient::has_registered_dvc` ([#1522](https://github.com/Devolutions/IronRDP/issues/1522)) ([57b1366650](https://github.com/Devolutions/IronRDP/commit/57b13666506dc40c15b4c4702d35150beee99133))
+
+- Add `DvcChannelListener::is_available`, with a default implementation, so a listener can report that it can no longer create a channel ([#1522](https://github.com/Devolutions/IronRDP/issues/1522)) ([57b1366650](https://github.com/Devolutions/IronRDP/commit/57b13666506dc40c15b4c4702d35150beee99133))
+
+- Add `DrdynvcClient::with_dynamic_channel_factory` to register a channel whose processor is recreated each time the server opens it ([#2184](https://github.com/Devolutions/IronRDP/issues/2184)) ([0f735b174a](https://github.com/Devolutions/IronRDP/commit/0f735b174a9f48e71c6857d80f30d6c3ca60555b))
+
+- Add `DrdynvcClient::attach_established_dynamic_channel` to attach a processor to an already known channel ID, for offline replay ([#1664](https://github.com/Devolutions/IronRDP/issues/1664)) ([93780feeec](https://github.com/Devolutions/IronRDP/commit/93780feeec1f09e13c8dd4691d5c5da20fae9310))
+
+- Add `DrdynvcServer::create_channel_with` to build a processor with the channel ID reserved for it ([#1416](https://github.com/Devolutions/IronRDP/issues/1416)) ([41293c2442](https://github.com/Devolutions/IronRDP/commit/41293c2442dfb2da6b61ca05a0c842706d048fc1))
+
+### <!-- 4 -->Bug Fixes
+
+- Decode the `DYNVC_DATA_FIRST_COMPRESSED` and `DYNVC_DATA_COMPRESSED` PDUs of DRDYNVC version 3, which the client accepts when the server offers that version, on both client and server, through the new `DataFirstCompressedPdu` and `DataCompressedPdu` and the matching `DrdynvcDataPdu` variants ([#2173](https://github.com/Devolutions/IronRDP/issues/2173)) ([c3dd17e607](https://github.com/Devolutions/IronRDP/commit/c3dd17e6071342aa5f92b743a89a38382665eb64))
+
+- Return an error, instead of logging and dropping the message, when a data PDU makes a message longer than its declared length ([#2173](https://github.com/Devolutions/IronRDP/issues/2173)) ([c3dd17e607](https://github.com/Devolutions/IronRDP/commit/c3dd17e6071342aa5f92b743a89a38382665eb64))
+
+### <!-- 7 -->Build
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- [**breaking**] Update `ironrdp-core` public dependency to 0.3
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.10
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.9
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-v0.7.0...ironrdp-dvc-v0.8.0)] - 2026-07-10
 
 ### <!-- 1 -->Features

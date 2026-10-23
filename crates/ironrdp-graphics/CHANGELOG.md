@@ -6,6 +6,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-graphics-v0.9.0...ironrdp-graphics-v0.10.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- [**breaking**] Scope Progressive tile state to its surface: `ProgressiveDecoder::decode_bitmap` and `ProgressiveDecoder::delete_context` take a `surface_id`, `ProgressiveDecoder::delete_surface` releases a surface, and a context-less update for a surface without codec state is rejected ([#1673](https://github.com/Devolutions/IronRDP/issues/1673)) ([f21f1979f4](https://github.com/Devolutions/IronRDP/commit/f21f1979f4ef7ce8756a4022d866c7f7fc150b0b))
+
+- [**breaking**] Clip decoded Progressive tiles to the REGION rectangles and surface bounds, reported in the new `DecodedTile::update_rectangles` field ([#1443](https://github.com/Devolutions/IronRDP/issues/1443)) ([11b10531de](https://github.com/Devolutions/IronRDP/commit/11b10531de491c67f5c8d6bb6972f6951bbeecc8))
+
+- Add `ProgressiveDecoder::begin_frame` and `ProgressiveDecoder::end_frame` so REGION blocks split across payloads of one frame share tiles, and add `progressive::TILE_DIM` and `progressive::TILE_BYTES_PER_PIXEL` ([#1443](https://github.com/Devolutions/IronRDP/issues/1443)) ([11b10531de](https://github.com/Devolutions/IronRDP/commit/11b10531de491c67f5c8d6bb6972f6951bbeecc8))
+
+- Add the `rfx` module with `TileDecoder` and `MessageDecoder` for RemoteFX surface commands ([#2194](https://github.com/Devolutions/IronRDP/issues/2194)) ([52476f3cee](https://github.com/Devolutions/IronRDP/commit/52476f3cee6015ddb04a62e0377b17b33ba78e19))
+
+- Add the `alpha` module with `alpha::decode` for the raw and RLE Alpha codec ([#2194](https://github.com/Devolutions/IronRDP/issues/2194)) ([52476f3cee](https://github.com/Devolutions/IronRDP/commit/52476f3cee6015ddb04a62e0377b17b33ba78e19))
+
+- Decode NSCodec regions in `ClearCodecDecoder` ([#1728](https://github.com/Devolutions/IronRDP/issues/1728)) ([2cac77e444](https://github.com/Devolutions/IronRDP/commit/2cac77e444a24f2bdcc96af18a551caf21c22a7a))
+
+- Add `zgfx::wrap_uncompressed_recorded` to send a segment uncompressed while recording it in the compressor history ([#2003](https://github.com/Devolutions/IronRDP/issues/2003)) ([2412bb1712](https://github.com/Devolutions/IronRDP/commit/2412bb17123632b717a8974d9627dbf31a810924))
+
+- Add `DecodedPointer::decode_pointer_attribute_with_palette` and `DecodedPointer::decode_large_pointer_attribute_with_palette` to decode 4 bpp and 8 bpp pointers with the session palette ([#1519](https://github.com/Devolutions/IronRDP/issues/1519)) ([ad19280762](https://github.com/Devolutions/IronRDP/commit/ad192807620bcc3a0467eaeb07173a79cb1da257))
+
+### <!-- 4 -->Bug Fixes
+
+- [**breaking**] Decode Progressive SRL refinements across DWT bands, including Windows streams without trailing zeros: `decode_srl`, `encode_srl`, `decode_upgrade_pass`, `encode_upgrade_pass` and `TileState::decode_upgrade` now return a `Result` with the new `SrlError`, `ProgressiveDecodeError` gains an `Srl` variant, and `SrlDecoder` and `SrlEncoder` are added ([#1696](https://github.com/Devolutions/IronRDP/issues/1696)) ([7824bc7503](https://github.com/Devolutions/IronRDP/commit/7824bc75034846e0b69e955aa671cd25527c8d1e)) ([#2134](https://github.com/Devolutions/IronRDP/issues/2134)) ([1f69e124e6](https://github.com/Devolutions/IronRDP/commit/1f69e124e6bf85608efce3495c12eaf5f6b5a95d))
+
+- [**breaking**] Compose Progressive difference tiles with their retained surface reference, and reject one without a reference with the new `ProgressiveDecodeError::MissingTileReference` ([#1698](https://github.com/Devolutions/IronRDP/issues/1698)) ([69e323ae47](https://github.com/Devolutions/IronRDP/commit/69e323ae473264e13b2bb3f70a356cd967debea8))
+
+- [**breaking**] Correct the Progressive base quantization scale, including fractional factors, and add the `TileState::base_quant` field ([#1499](https://github.com/Devolutions/IronRDP/issues/1499)) ([ccfe5bb8b3](https://github.com/Devolutions/IronRDP/commit/ccfe5bb8b3b1ddf447776e056d27cd14e2399ab7))
+
+- Accept a ClearCodec glyph hit whose destination has the same area as the cached glyph ([#1175](https://github.com/Devolutions/IronRDP/issues/1175)) ([714dce4662](https://github.com/Devolutions/IronRDP/commit/714dce46627e299c57d82f4f6a5c18067a95bffa))
+
+- Consume a foreground pixel only in set-foreground RLE runs ([#1519](https://github.com/Devolutions/IronRDP/issues/1519)) ([ad19280762](https://github.com/Devolutions/IronRDP/commit/ad192807620bcc3a0467eaeb07173a79cb1da257))
+
+- Correct the RLGR3 exhausted-pair default and the RLGR1 GR-mode `kp` update in the RLGR encoder ([#1179](https://github.com/Devolutions/IronRDP/issues/1179)) ([f26d06da6f](https://github.com/Devolutions/IronRDP/commit/f26d06da6f16bfb7fa57f8d4f67658b33c01bc01))
+
+- [**breaking**] Return `RlgrError::OutputTooSmall` instead of panicking when the RLGR output buffer is too small ([#1558](https://github.com/Devolutions/IronRDP/issues/1558)) ([71903c5509](https://github.com/Devolutions/IronRDP/commit/71903c550929dbbd1b1b881cc403a6a693b6e233))
+
+- Ignore Progressive REGION blocks outside the first `FRAME_BEGIN`/`FRAME_END` pair ([#1443](https://github.com/Devolutions/IronRDP/issues/1443)) ([11b10531de](https://github.com/Devolutions/IronRDP/commit/11b10531de491c67f5c8d6bb6972f6951bbeecc8))
+
+- Decode Progressive streams from Windows hosts: full-quality tiles sent with an empty quantization table, and a new codec context that arrives without SYNC and CONTEXT blocks ([#1443](https://github.com/Devolutions/IronRDP/issues/1443)) ([11b10531de](https://github.com/Devolutions/IronRDP/commit/11b10531de491c67f5c8d6bb6972f6951bbeecc8))
+
+- [**breaking**] Reject malformed ZGFX input instead of panicking or decompressing without bound: `ZgfxError` is now `#[non_exhaustive]` and has new variants ([#1333](https://github.com/Devolutions/IronRDP/issues/1333)) ([42320260a2](https://github.com/Devolutions/IronRDP/commit/42320260a2cdfb32eeab646af3d565e88bd3b655))
+
+- Prevent overflow in the Progressive YCbCr-to-RGB conversion ([#1703](https://github.com/Devolutions/IronRDP/issues/1703)) ([fb0c041350](https://github.com/Devolutions/IronRDP/commit/fb0c041350a5922a4c5d61fc43ac904300044fa6))
+
+- [**breaking**] Cap RLE decoder dimensions and add `RleError::DimensionsTooLarge` ([#1962](https://github.com/Devolutions/IronRDP/issues/1962)) ([9b151c4c2e](https://github.com/Devolutions/IronRDP/commit/9b151c4c2e47c6014e1e8e55909d4180aa8bdb99))
+
+- Keep ZGFX segments within 65535 bytes of uncompressed data by sending larger input as multipart ([#2136](https://github.com/Devolutions/IronRDP/issues/2136)) ([41b28b4676](https://github.com/Devolutions/IronRDP/commit/41b28b467682fe031a61eced06ddf6e2effbe57a))
+
+- Check Planar sizes before allocating ([#2176](https://github.com/Devolutions/IronRDP/issues/2176)) ([a8b4aaa814](https://github.com/Devolutions/IronRDP/commit/a8b4aaa8144f900d6b9dce1eb8a38cbe396d11b9))
+
+### <!-- 5 -->Performance
+
+- Use portable SIMD for the inverse DWT ([#1383](https://github.com/Devolutions/IronRDP/issues/1383)) ([629154026d](https://github.com/Devolutions/IronRDP/commit/629154026de0eaaf16b93352b4cecbae49a87511))
+
+- Keep ZGFX compression linear once the history is full ([#2001](https://github.com/Devolutions/IronRDP/issues/2001)) ([3257adb691](https://github.com/Devolutions/IronRDP/commit/3257adb691fa74eaec302af1e9a77f9b5d633d4b))
+
+### <!-- 7 -->Build
+
+- Bump MSRV to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- [**breaking**] Update `ironrdp-core` public dependency to 0.3
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.10
+
+
+
 ## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-graphics-v0.8.1...ironrdp-graphics-v0.9.0)] - 2026-07-10
 
 ### <!-- 4 -->Bug Fixes

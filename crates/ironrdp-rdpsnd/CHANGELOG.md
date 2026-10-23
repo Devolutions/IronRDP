@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.9.0...ironrdp-rdpsnd-v0.10.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- [**breaking**] Play pre-v8 Wave PDUs: `WavePdu` now holds the WaveInfo fields, gaining `data_prefix` and `audio_length`, and `WaveDataPdu` replaces `SndWavePdu` for the wave payload that follows ([#1648](https://github.com/Devolutions/IronRDP/issues/1648)) ([2d9a9bf114](https://github.com/Devolutions/IronRDP/commit/2d9a9bf114dcf41a1ddc7343f564bc2e8d1d06db))
+
+- [**breaking**] Pass the negotiated `AudioFormat` to `RdpsndClientHandler::wave` instead of a format index ([#1648](https://github.com/Devolutions/IronRDP/issues/1648)) ([2d9a9bf114](https://github.com/Devolutions/IronRDP/commit/2d9a9bf114dcf41a1ddc7343f564bc2e8d1d06db))
+
+- Add `AudioFormat::matches_for_negotiation` to compare formats the way negotiation does ([#1645](https://github.com/Devolutions/IronRDP/issues/1645)) ([50fa88b29e](https://github.com/Devolutions/IronRDP/commit/50fa88b29e5d57c5c6353229bda8aa786a9906fd))
+
+- Add `Rdpsnd::with_quality_mode` to choose the quality mode sent to the server ([#1781](https://github.com/Devolutions/IronRDP/issues/1781)) ([14ef4fd49f](https://github.com/Devolutions/IronRDP/commit/14ef4fd49fcf950169806866ee67db0c49662cfc))
+
+- Receive audio over the `AUDIO_PLAYBACK_DVC` and `AUDIO_PLAYBACK_LOSSY_DVC` dynamic channels with `RdpsndDvc` and `RdpsndDvcState`, and over UDP with `Rdpsnd::with_datagram_port`, `Rdpsnd::process_datagram` and the UDP wave PDUs ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483))
+
+- Add the `codec` module, with PCM, G.711 and ADPCM decoders and encoders, and the `playout` jitter-buffer module ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483))
+
+- Add `RdpsndClientHandler::choose_formats` and `pdu::retain_offered` so handlers pick the formats to advertise from the server's list ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483))
+
+- Report the hold time plus `RdpsndClientHandler::playback_latency` in Wave Confirm PDUs instead of echoing the server timestamp, and add `Rdpsnd::with_clock` ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483))
+
+- Send the capture time in the `wTimeStamp` of server waves instead of zero, and add `RdpsndServerHandler::wave_confirm` to receive the client's Wave Confirm PDUs ([#1720](https://github.com/Devolutions/IronRDP/issues/1720)) ([160752fcf3](https://github.com/Devolutions/IronRDP/commit/160752fcf3293889f1ce1bdd3d2e7afc790a9cd2))
+
+- Add `RdpsndServer::is_ready` to tell whether negotiation finished with an accepted format ([#1990](https://github.com/Devolutions/IronRDP/issues/1990)) ([2e872b085b](https://github.com/Devolutions/IronRDP/commit/2e872b085b504cf3b9ce9994237270f71a35d13a))
+
+- Add `RdpsndServer::stats` and `StreamStats` to count sent waves and their confirms ([#1991](https://github.com/Devolutions/IronRDP/issues/1991)) ([966a842f7e](https://github.com/Devolutions/IronRDP/commit/966a842f7e4ca6ff045a860a9fec68eb9206615b))
+
+- Report byte offsets in RDPSND PDU decode and encode errors ([#1275](https://github.com/Devolutions/IronRDP/issues/1275)) ([8607ac5d1c](https://github.com/Devolutions/IronRDP/commit/8607ac5d1c2ea14efcac02921e54d951ab1045ec))
+
+### <!-- 4 -->Bug Fixes
+
+- Ignore malformed RDPSND PDUs instead of failing the client channel ([#1514](https://github.com/Devolutions/IronRDP/issues/1514)) ([c87ab68e9c](https://github.com/Devolutions/IronRDP/commit/c87ab68e9c6adbf524cb0b2783ff4bd61178fb9b))
+
+- Resolve `wFormatNo` against the formats the client advertised, in the order it advertised them, instead of the server list ([#1648](https://github.com/Devolutions/IronRDP/issues/1648)) ([2d9a9bf114](https://github.com/Devolutions/IronRDP/commit/2d9a9bf114dcf41a1ddc7343f564bc2e8d1d06db))
+
+### <!-- 7 -->Build
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- [**breaking**] Update `ironrdp-dvc` public dependency to 0.9
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.10
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.9
+
+
+
 ## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.8.1...ironrdp-rdpsnd-v0.9.0)] - 2026-07-10
 
 ### <!-- 1 -->Features

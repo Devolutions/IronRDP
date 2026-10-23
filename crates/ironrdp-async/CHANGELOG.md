@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-async-v0.10.0...ironrdp-async-v0.11.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- [**breaking**] `connect_finalize` returns a `ConnectionOutcome` that is either `Connected` or `Redirected` when the server sends a Server Redirection PDU ([#2208](https://github.com/Devolutions/IronRDP/issues/2208)) ([485657a6ec](https://github.com/Devolutions/IronRDP/commit/485657a6eca682a0356e100a9fda229342861fd7))
+
+- `connect_finalize` declines a server's multitransport request with `E_ABORT` and continues over TCP; `connect_finalize_with_multitransport` and `complete_multitransport` let the application set up the transport instead ([#1098](https://github.com/Devolutions/IronRDP/issues/1098)) ([e45fbfe0f5](https://github.com/Devolutions/IronRDP/commit/e45fbfe0f597011706e77fc174ca14e5e9d435b9)) ([#1858](https://github.com/Devolutions/IronRDP/issues/1858)) ([7036fb8c7e](https://github.com/Devolutions/IronRDP/commit/7036fb8c7ef32f71b456745902e14d34008c7add))
+
+- Add `perform_credssp` to run the CredSSP exchange on an upgraded stream without a `ClientConnector` ([#1503](https://github.com/Devolutions/IronRDP/issues/1503)) ([a7cc067d50](https://github.com/Devolutions/IronRDP/commit/a7cc067d5069cbbcb13bae3e0561c0611da3bcf6))
+
+- `connect_begin` no longer requires the stream to be `Sync` ([#1505](https://github.com/Devolutions/IronRDP/issues/1505)) ([5c1816244e](https://github.com/Devolutions/IronRDP/commit/5c1816244e83187a04249e9d9c240d096cb78f55))
+
+- Add `Framed::last_read_at` and pass each frame's arrival time to `Sequence::step` so the connector can measure bandwidth ([#1530](https://github.com/Devolutions/IronRDP/issues/1530)) ([6a499faece](https://github.com/Devolutions/IronRDP/commit/6a499faece8911e50a715a3fb08d4fd8e7d7dc87))
+
+### <!-- 4 -->Bug Fixes
+
+- `Framed::read_by_hint` returns an error instead of spinning forever when a hint reports a zero-length unmatched PDU ([#1556](https://github.com/Devolutions/IronRDP/issues/1556)) ([2d2c37fc21](https://github.com/Devolutions/IronRDP/commit/2d2c37fc21bd7f089fbbca41831abba14fa2b72b))
+
+### <!-- 7 -->Build
+
+- Bump the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- [**breaking**] Update `ironrdp-connector` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-core` public dependency to 0.3
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.10
+
+
+
 ## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-async-v0.9.0...ironrdp-async-v0.10.0)] - 2026-07-10
 
 ### <!-- 7 -->Build

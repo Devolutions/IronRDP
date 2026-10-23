@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-displaycontrol-v0.8.0...ironrdp-displaycontrol-v0.9.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- Add `DisplayControlHandler::capabilities`, defaulting to the new `DisplayControlCapabilities::single_monitor`, so a server handler can advertise more monitors ([#1917](https://github.com/Devolutions/IronRDP/issues/1917)) ([db0066072e](https://github.com/Devolutions/IronRDP/commit/db0066072e787ea1268acf2ce46ed5ff0bb578b9)) ([#1918](https://github.com/Devolutions/IronRDP/issues/1918)) ([25331598f3](https://github.com/Devolutions/IronRDP/commit/25331598f37f49573205c54ee45c878d291317f2))
+
+- Add multi-monitor layouts on the client: `DisplayControlClient::encode_monitor_layout` sends a full layout fitted with the new `DisplayControlMonitorLayout::fit_to_capabilities`, which drops monitors beyond the server's `MaxNumMonitors`, scales down an oversized single monitor and rejects an oversized multi-monitor layout ([#2182](https://github.com/Devolutions/IronRDP/issues/2182)) ([0784fceca8](https://github.com/Devolutions/IronRDP/commit/0784fceca8d1c29cdceda2c74339e13311f0b857))
+
+- Add `DisplayControlClient::capabilities`, `DisplayControlCapabilities::max_num_monitors`, `DisplayControlMonitorLayout::desktop_size`, `MonitorLayoutEntry::adjust_desktop_scale_factor`, `DeviceScaleFactor::from_value` and `DeviceScaleFactor::from_desktop_scale_factor` ([#2182](https://github.com/Devolutions/IronRDP/issues/2182)) ([0784fceca8](https://github.com/Devolutions/IronRDP/commit/0784fceca8d1c29cdceda2c74339e13311f0b857))
+
+- Fit the layout sent by `DisplayControlClient::encode_single_primary_monitor` to the server capabilities ([#2182](https://github.com/Devolutions/IronRDP/issues/2182)) ([0784fceca8](https://github.com/Devolutions/IronRDP/commit/0784fceca8d1c29cdceda2c74339e13311f0b857))
+
+- Derive the device scale factor from the desktop scale factor, clamped to 100–500%, in `DisplayControlMonitorLayout::new_single_primary_monitor` instead of always using 100% ([#2182](https://github.com/Devolutions/IronRDP/issues/2182)) ([0784fceca8](https://github.com/Devolutions/IronRDP/commit/0784fceca8d1c29cdceda2c74339e13311f0b857))
+
+- [**breaking**] Reject overlapping monitors, and in multi-monitor layouts monitors not adjacent to another one, in `DisplayControlMonitorLayout::new` ([#2182](https://github.com/Devolutions/IronRDP/issues/2182)) ([0784fceca8](https://github.com/Devolutions/IronRDP/commit/0784fceca8d1c29cdceda2c74339e13311f0b857))
+
+### <!-- 4 -->Bug Fixes
+
+- Decode the headered `DISPLAYCONTROL_CAPS_PDU` in `DisplayControlClient`, and reject display control PDUs whose length does not match their payload ([#1442](https://github.com/Devolutions/IronRDP/issues/1442)) ([3b66961a8b](https://github.com/Devolutions/IronRDP/commit/3b66961a8b2ec5bb2d49175c6970e4a480348b3f))
+
+- Use landscape orientation for a square monitor in `DisplayControlMonitorLayout::new_single_primary_monitor` ([#2182](https://github.com/Devolutions/IronRDP/issues/2182)) ([0784fceca8](https://github.com/Devolutions/IronRDP/commit/0784fceca8d1c29cdceda2c74339e13311f0b857))
+
+### <!-- 7 -->Build
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- [**breaking**] Update `ironrdp-core` public dependency to 0.3
+
+- [**breaking**] Update `ironrdp-dvc` public dependency to 0.9
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.10
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.9
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-displaycontrol-v0.7.0...ironrdp-displaycontrol-v0.8.0)] - 2026-07-10
 
 ### <!-- 7 -->Build
