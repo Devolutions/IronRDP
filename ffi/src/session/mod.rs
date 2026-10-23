@@ -453,6 +453,10 @@ pub mod ffi {
         WindowingOrders = 12,
         AutoReconnectFailed = 13,
         MonitorLayout = 14,
+        /// RemoteApp window pixels from graphics pipeline surfaces mapped to RAIL windows.
+        /// The pixels are not exposed yet: this binding does not enable RemoteApp,
+        /// so servers do not map surfaces to windows.
+        WindowSurfaceUpdates = 15,
         /// The server sent a Server Redirection PDU; use `get_server_redirection()` to read the target.
         ServerRedirection = 16,
     }
@@ -480,6 +484,9 @@ pub mod ffi {
                 }
                 ironrdp::session::ActiveStageOutput::AutoReconnectFailed => ActiveStageOutputType::AutoReconnectFailed,
                 ironrdp::session::ActiveStageOutput::MonitorLayout(_) => ActiveStageOutputType::MonitorLayout,
+                ironrdp::session::ActiveStageOutput::WindowSurfaceUpdates(_) => {
+                    ActiveStageOutputType::WindowSurfaceUpdates
+                }
                 ironrdp::session::ActiveStageOutput::ServerRedirection(_) => ActiveStageOutputType::ServerRedirection,
             }
         }

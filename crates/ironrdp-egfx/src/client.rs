@@ -644,6 +644,17 @@ impl GraphicsPipelineClient {
         self.compositor.drain_output()
     }
 
+    /// Take the RemoteApp window regions that changed in completed frames.
+    ///
+    /// Surfaces the server maps to a RAIL window with `MapSurfaceToWindow` or
+    /// `MapSurfaceToScaledWindow` are presented in that window rather than on the
+    /// graphics output, so their changes are drained here instead of by
+    /// [`Self::drain_output`]. Each call empties the queue.
+    #[must_use]
+    pub fn drain_window_updates(&mut self) -> Vec<crate::compositor::WindowUpdate> {
+        self.compositor.drain_window_updates()
+    }
+
     /// Take the most recent graphics-output extent announced by `ResetGraphics`.
     ///
     /// The returned dimensions satisfy the protocol's output limit and the
@@ -794,6 +805,12 @@ impl GraphicsPipelineClient {
                     window_id = pdu.window_id,
                     "MapSurfaceToWindow"
                 );
+                self.handle_map_surface_to_window(
+                    pdu.surface_id,
+                    pdu.window_id,
+                    (pdu.mapped_width, pdu.mapped_height),
+                    (pdu.mapped_width, pdu.mapped_height),
+                );
                 self.handler.on_map_surface_to_window(&pdu);
                 Ok(vec![])
             }
@@ -805,6 +822,12 @@ impl GraphicsPipelineClient {
             }
             GfxPdu::MapSurfaceToScaledWindow(pdu) => {
                 trace!(surface_id = pdu.surface_id, "MapSurfaceToScaledWindow");
+                self.handle_map_surface_to_window(
+                    pdu.surface_id,
+                    pdu.window_id,
+                    (pdu.mapped_width, pdu.mapped_height),
+                    (pdu.target_width, pdu.target_height),
+                );
                 self.handler.on_map_surface_to_scaled_window(&pdu);
                 Ok(vec![])
             }
@@ -981,6 +1004,23 @@ impl GraphicsPipelineClient {
             self.handler.on_surface_mapped(surface_id, origin_x, origin_y);
         } else {
             warn!(surface_id, "MapSurfaceToOutput for unknown surface");
+        }
+    }
+
+    fn handle_map_surface_to_window(
+        &mut self,
+        surface_id: u16,
+        window_id: u64,
+        mapped: (u32, u32),
+        target: (u32, u32),
+    ) {
+        if let Some(surface) = self.surfaces.get_mut(&surface_id) {
+            surface.is_mapped = true;
+            self.compositor
+                .map_surface_to_window(surface_id, window_id, mapped, target);
+            debug!(surface_id, window_id, ?mapped, ?target, "Surface mapped to window");
+        } else {
+            warn!(surface_id, "MapSurfaceToWindow for unknown surface");
         }
     }
 

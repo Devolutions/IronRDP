@@ -1091,8 +1091,8 @@ impl iron_remote_desktop::Session for Session {
                             "Received remote monitor layout without multi-monitor support"
                         );
                     }
-                    ActiveStageOutput::WindowingOrders(_) => {
-                        // Windowing orders are not meaningful to the protocol-agnostic web component.
+                    ActiveStageOutput::WindowingOrders(_) | ActiveStageOutput::WindowSurfaceUpdates(_) => {
+                        // RemoteApp windows are not meaningful to the protocol-agnostic web component.
                     }
                     ActiveStageOutput::DeactivateAll => {
                         // Execute the Deactivation-Reactivation Sequence:

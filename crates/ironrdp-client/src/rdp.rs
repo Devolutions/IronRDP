@@ -158,6 +158,10 @@ pub enum RdpOutputEvent {
     /// The orders are delivered only after the Window List support level negotiated for the
     /// current activation is validated.
     WindowingOrders(Vec<ironrdp_pdu::window::WindowingOrder>),
+    /// RemoteApp window pixels from graphics pipeline surfaces mapped to RAIL windows.
+    ///
+    /// The regions are in window coordinates and are not part of [`RdpOutputEvent::Image`].
+    WindowSurfaceUpdates(Vec<ironrdp_egfx::compositor::WindowUpdate>),
     /// The server completed the RAIL static-channel handshake.
     RailHandshake {
         handshake_ex_flags: Option<u32>,
@@ -4790,6 +4794,19 @@ async fn active_session(
                     if !send_active_output_event(
                         output_event_sender,
                         RdpOutputEvent::WindowingOrders(orders),
+                        close_receiver,
+                    )
+                    .await?
+                    {
+                        return Ok(RdpControlFlow::TerminatedGracefully(
+                            GracefulDisconnectReason::UserInitiated,
+                        ));
+                    }
+                }
+                ActiveStageOutput::WindowSurfaceUpdates(updates) => {
+                    if !send_active_output_event(
+                        output_event_sender,
+                        RdpOutputEvent::WindowSurfaceUpdates(updates),
                         close_receiver,
                     )
                     .await?

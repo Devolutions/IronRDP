@@ -65,6 +65,34 @@ pub struct OutputUpdate {
     pub data: Vec<u8>,
 }
 
+/// A rectangular region of a RemoteApp window whose pixels changed within a frame.
+///
+/// Produced for surfaces the server mapped to a RAIL window with
+/// [2.2.2.20] RDPGFX_MAP_SURFACE_TO_WINDOW_PDU or
+/// [2.2.2.23] RDPGFX_MAP_SURFACE_TO_SCALED_WINDOW_PDU instead of to the graphics
+/// output. `region` is in window coordinates, relative to the window's top-left
+/// corner, and `data` is tightly-packed RGBA8888 for it. The alpha channel is opaque
+/// unless the server set the surface's alpha with the Alpha codec, because [3.3.5.1]
+/// ignores the alpha of every other codec for window-mapped surfaces.
+///
+/// [2.2.2.20]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/2ec1357c-ee65-4d9b-89f3-8fc49348c92a
+/// [2.2.2.23]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/22fc0ec7-38ce-4d9d-ad6d-93a0e9f3c38c
+/// [3.3.5.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/3fdfcd8d-ec4f-4b7a-8e0d-0385a840ec81
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct WindowUpdate {
+    /// The RAIL window the surface is mapped to.
+    pub window_id: u64,
+    /// Width of the window content the surface is presented at.
+    pub width: u16,
+    /// Height of the window content the surface is presented at.
+    pub height: u16,
+    /// Changed region, in window coordinates.
+    pub region: ExclusiveRectangle,
+    /// RGBA8888 pixels for `region`, row-major.
+    pub data: Vec<u8>,
+}
+
 /// A surface-space rectangle that changed within the frame being built.
 ///
 /// Regions rather than pixels: one PDU may carry 65,535 rectangles or destination
@@ -86,8 +114,56 @@ struct Surface {
     height: u16,
     /// RGBA8888, `width * height * 4` bytes.
     data: Vec<u8>,
-    /// Output mapping if this surface is visible, else `None`.
+    /// Output mapping if this surface is visible on the graphics output, else `None`.
     mapping: Option<OutputMapping>,
+    /// RAIL window mapping if this surface is presented in a RemoteApp window, else `None`.
+    window: Option<WindowMapping>,
+    /// Whether an Alpha codec command set this surface's alpha channel.
+    ///
+    /// INVARIANT: until it is set, window updates are opaque; once set, every pixel's
+    /// alpha byte holds the surface's alpha, starting from opaque.
+    has_alpha: bool,
+}
+
+/// A surface-to-window mapping: the surface's top-left `mapped_width` by
+/// `mapped_height` pixels presented at `target_width` by `target_height`.
+#[derive(Debug, Clone, Copy)]
+struct WindowMapping {
+    window_id: u64,
+    mapped_width: u16,
+    mapped_height: u16,
+    target_width: u16,
+    target_height: u16,
+}
+
+impl WindowMapping {
+    /// Validates a mapping against its surface size.
+    ///
+    /// INVARIANT: every dimension of a returned mapping is nonzero, the mapped area
+    /// lies within the surface, the target is at most `MAX_OUTPUT_DIM` on each edge, and a
+    /// full-target window update fits the compositor's memory budget.
+    fn new(
+        window_id: u64,
+        (surface_width, surface_height): (u16, u16),
+        (mapped_width, mapped_height): (u32, u32),
+        (target_width, target_height): (u32, u32),
+    ) -> Option<Self> {
+        let mapped_width = u16::try_from(mapped_width).ok()?;
+        let mapped_height = u16::try_from(mapped_height).ok()?;
+        let target_width = u16::try_from(target_width).ok()?;
+        let target_height = u16::try_from(target_height).ok()?;
+        let within_limits = (1..=surface_width).contains(&mapped_width)
+            && (1..=surface_height).contains(&mapped_height)
+            && Compositor::materializable_output_size(u32::from(target_width), u32::from(target_height)).is_some();
+
+        within_limits.then_some(Self {
+            window_id,
+            mapped_width,
+            mapped_height,
+            target_width,
+            target_height,
+        })
+    }
 }
 
 /// A surface-to-output mapping, including the scaled output dimensions.
@@ -155,6 +231,8 @@ pub(crate) struct Compositor {
     ready: Vec<OutputUpdate>,
     /// Whether the confirmed capabilities constrain the bitmap cache to 16 MB.
     small_bitmap_cache: bool,
+    /// Window deltas from completed frames, awaiting drain.
+    ready_windows: Vec<WindowUpdate>,
 }
 
 impl Compositor {
@@ -206,6 +284,7 @@ impl Compositor {
         self.surfaces.clear();
         self.frame.clear();
         self.ready.clear();
+        self.ready_windows.clear();
         // Only the cache keeps its allocations, so only its charge remains. Within the
         // 3.3.1.4 cap the cache leaves room in the budget for the surfaces the server creates
         // after the reset. A server that filled the cache past the cap could otherwise hold
@@ -300,6 +379,8 @@ impl Compositor {
                 height,
                 data: vec![0; len],
                 mapping: None,
+                window: None,
+                has_alpha: false,
             },
         );
     }
@@ -340,9 +421,40 @@ impl Compositor {
             return;
         };
         surface.mapping = Some(mapping);
+        surface.window = None;
         let (w, h) = (surface.width, surface.height);
         // The whole surface becomes visible at its new origin.
         self.record_dirty(id, 0, 0, w, h);
+    }
+
+    /// Handle `MapSurfaceToWindow` and `MapSurfaceToScaledWindow`: present the surface's
+    /// top-left `mapped_width` by `mapped_height` pixels in a RemoteApp window, scaled to
+    /// `target_width` by `target_height`, instead of on the graphics output.
+    ///
+    /// A mapped area that is empty or larger than the surface, or a target that is
+    /// empty or beyond the output size limit, cannot be presented, so the mapping is
+    /// ignored and the surface keeps its previous output or window mapping.
+    /// MS-RDPEGFX 3.3.5.20 and 3.3.5.23 define no rejection for such values; keeping
+    /// the earlier association, as FreeRDP's client does when it refuses an oversized
+    /// mapping, leaves the surface visible until the server maps it again.
+    pub(crate) fn map_surface_to_window(&mut self, id: u16, window_id: u64, mapped: (u32, u32), target: (u32, u32)) {
+        let Some(surface) = self.surfaces.get_mut(&id) else {
+            return;
+        };
+        let Some(window) = WindowMapping::new(window_id, (surface.width, surface.height), mapped, target) else {
+            debug!(
+                id,
+                window_id,
+                ?mapped,
+                ?target,
+                "Surface window mapping cannot be presented"
+            );
+            return;
+        };
+        surface.mapping = None;
+        surface.window = Some(window);
+        // The mapped area becomes visible in its window.
+        self.record_dirty(id, 0, 0, window.mapped_width, window.mapped_height);
     }
 
     /// Write a decoded RGBA8888 bitmap into a surface sub-rectangle (the output of
@@ -356,7 +468,13 @@ impl Compositor {
         let w = dest.right.saturating_sub(dest.left);
         let h = dest.bottom.saturating_sub(dest.top);
         if let Some(surface) = self.surfaces.get_mut(&surface_id) {
-            blit_region(surface.canvas_mut(), x, y, w, h, rgba);
+            if surface.has_alpha && surface.window.is_some() {
+                // MS-RDPEGFX 3.3.5.1: a non-Alpha codec copies only the color channels into a
+                // window-mapped surface, leaving the alpha the Alpha codec set.
+                blit_color_region(surface.canvas_mut(), x, y, w, h, rgba);
+            } else {
+                blit_region(surface.canvas_mut(), x, y, w, h, rgba);
+            }
         }
         self.record_dirty(surface_id, x, y, w, h);
     }
@@ -386,6 +504,13 @@ impl Compositor {
             alpha::decode(stream, w, h, |_, _| {})?;
             return Ok(None);
         };
+        if !surface.has_alpha {
+            // Pixels the Alpha codec has not reached yet stay opaque.
+            for pixel in surface.data.chunks_exact_mut(BYTES_PER_PIXEL) {
+                pixel[3] = 0xFF;
+            }
+            surface.has_alpha = true;
+        }
         let mut canvas = surface.canvas_mut();
         alpha::decode(stream, w, h, |first_pixel, run| {
             write_alpha_run(&mut canvas, (x, y, w), first_pixel, run);
@@ -641,11 +766,23 @@ impl Compositor {
         drained
     }
 
+    /// Take all committed window updates, leaving the pending set empty.
+    pub(crate) fn drain_window_updates(&mut self) -> Vec<WindowUpdate> {
+        let drained = core::mem::take(&mut self.ready_windows);
+        let released = drained.iter().map(|update| update.data.len()).sum();
+        self.release(released);
+        drained
+    }
+
     /// Copy the pixels for one dirty region into the drainable queue.
     ///
     /// The region arrives clipped to its surface and is mapped against the output
     /// mapping in force now rather than the one active when it was drawn.
     fn materialize(&mut self, dirty: &DirtyRegion) {
+        if let Some(window) = self.surfaces.get(&dirty.surface_id).and_then(|surface| surface.window) {
+            self.materialize_window(dirty, window);
+            return;
+        }
         let Some((mapping, source_width, source_height)) = self
             .surfaces
             .get(&dirty.surface_id)
@@ -684,7 +821,7 @@ impl Compositor {
             .1
             .saturating_add(mapped_bottom)
             .min(u32::from(self.output_height));
-        if right <= left || bottom <= top {
+        if !(left < right && top < bottom) {
             return;
         }
 
@@ -714,10 +851,83 @@ impl Compositor {
             if mapping.target_width == u32::from(source_width) && mapping.target_height == u32::from(source_height) {
                 copy_region(&surface.data, source_width, dirty.rect.left, dirty.rect.top, w, h)
             } else {
-                copy_scaled_region(&surface.data, (source_width, source_height), mapping, &output_rect)
+                copy_scaled_region(
+                    &surface.data,
+                    source_width,
+                    (source_width, source_height),
+                    mapping,
+                    &output_rect,
+                )
             };
         self.ready.push(OutputUpdate {
             region: output_rect,
+            data,
+        });
+    }
+
+    /// Copy the pixels for one dirty region of a window-mapped surface into the
+    /// drainable window queue, clipped to the mapped area.
+    fn materialize_window(&mut self, dirty: &DirtyRegion, window: WindowMapping) {
+        let source = ExclusiveRectangle {
+            left: dirty.rect.left.min(window.mapped_width),
+            top: dirty.rect.top.min(window.mapped_height),
+            right: dirty.rect.right.min(window.mapped_width),
+            bottom: dirty.rect.bottom.min(window.mapped_height),
+        };
+        if !(source.left < source.right && source.top < source.bottom) {
+            return;
+        }
+        let target_width = u32::from(window.target_width);
+        let target_height = u32::from(window.target_height);
+        // `scaled_edge` returns at most its target length, which fits in `u16`
+        // per the `WindowMapping::new` invariant, so the conversion never saturates.
+        let edge = |source_edge, source_length, target_length| {
+            u16::try_from(scaled_edge(source_edge, source_length, target_length)).unwrap_or(u16::MAX)
+        };
+        let region = ExclusiveRectangle {
+            left: edge(source.left, window.mapped_width, target_width),
+            top: edge(source.top, window.mapped_height, target_height),
+            right: edge(source.right, window.mapped_width, target_width),
+            bottom: edge(source.bottom, window.mapped_height, target_height),
+        };
+        let w = region.right.saturating_sub(region.left);
+        let h = region.bottom.saturating_sub(region.top);
+        let Some(len) = pixel_data_len(w, h) else {
+            return;
+        };
+        if len == 0 || !self.charge(len) {
+            return;
+        }
+        let Some(surface) = self.surfaces.get(&dirty.surface_id) else {
+            self.release(len);
+            return;
+        };
+        let mut data = if window.target_width == window.mapped_width && window.target_height == window.mapped_height {
+            copy_region(&surface.data, surface.width, source.left, source.top, w, h)
+        } else {
+            copy_scaled_region(
+                &surface.data,
+                surface.width,
+                (window.mapped_width, window.mapped_height),
+                OutputMapping {
+                    origin: (0, 0),
+                    target_width,
+                    target_height,
+                },
+                &region,
+            )
+        };
+        // MS-RDPEGFX 3.3.5.1: only the Alpha codec gives a window-mapped surface its alpha.
+        if !surface.has_alpha {
+            for pixel in data.chunks_exact_mut(BYTES_PER_PIXEL) {
+                pixel[3] = 0xFF;
+            }
+        }
+        self.ready_windows.push(WindowUpdate {
+            window_id: window.window_id,
+            width: window.target_width,
+            height: window.target_height,
+            region,
             data,
         });
     }
@@ -816,10 +1026,12 @@ fn copy_region(src: &[u8], src_width: u16, x: u16, y: u16, w: u16, h: u16) -> Ve
     out
 }
 
-/// Scale a target-space rectangle from a source RGBA8888 canvas using nearest
+/// Scale a target-space rectangle from the top-left `src_width` by `src_height`
+/// pixels of an RGBA8888 canvas `stride_width` pixels wide, using nearest
 /// neighbor sampling.
 fn copy_scaled_region(
     src: &[u8],
+    stride_width: u16,
     (src_width, src_height): (u16, u16),
     mapping: OutputMapping,
     output_rect: &ExclusiveRectangle,
@@ -848,7 +1060,7 @@ fn copy_scaled_region(
             (u64::from(target_top) + u64::from(y)) * u64::from(src_height) / u64::from(mapping.target_height),
         )
         .unwrap_or(u16::MAX);
-        let source_row_offset = usize::from(source_y) * usize::from(src_width) * BYTES_PER_PIXEL;
+        let source_row_offset = usize::from(source_y) * usize::from(stride_width) * BYTES_PER_PIXEL;
         for x in 0..width {
             let source_offset = source_row_offset + source_column_offsets[usize::from(x)];
             let target_offset = (usize::from(y) * usize::from(width) + usize::from(x)) * BYTES_PER_PIXEL;
@@ -923,6 +1135,26 @@ fn write_alpha_run(dst: &mut CanvasMut<'_>, (x, y, w): (u16, u16, u16), first_pi
     }
 }
 
+/// Like [`blit_region`], but writes only the red, green and blue channels, keeping the
+/// canvas's alpha.
+fn blit_color_region(dst: CanvasMut<'_>, x: u16, y: u16, w: u16, h: u16, src: &[u8]) {
+    let dst_stride = usize::from(dst.width) * BYTES_PER_PIXEL;
+    let src_stride = usize::from(w) * BYTES_PER_PIXEL;
+    let copy_cols = usize::from(w).min(usize::from(dst.width).saturating_sub(usize::from(x)));
+    let copy_rows = usize::from(h).min(usize::from(dst.height).saturating_sub(usize::from(y)));
+    for row in 0..copy_rows {
+        let dst_start = (usize::from(y) + row) * dst_stride + usize::from(x) * BYTES_PER_PIXEL;
+        let src_start = row * src_stride;
+        for col in 0..copy_cols {
+            let d = dst_start + col * BYTES_PER_PIXEL;
+            let s = src_start + col * BYTES_PER_PIXEL;
+            if let (Some(dst_pixel), Some(src_pixel)) = (dst.data.get_mut(d..d + 3), src.get(s..s + 3)) {
+                dst_pixel.copy_from_slice(src_pixel);
+            }
+        }
+    }
+}
+
 /// Fill a sub-rectangle of a canvas with a single RGBA8888 pixel, clipping to the
 /// canvas bounds.
 fn fill_region(dst: CanvasMut<'_>, x: u16, y: u16, w: u16, h: u16, px: [u8; 4]) {
@@ -952,6 +1184,48 @@ mod tests {
             right,
             bottom,
         }
+    }
+
+    /// A translucent bitmap on a window-mapped surface drains one window update
+    /// with alpha forced to 0xFF.
+    // oracle: spec MS-RDPEGFX §3.3.5.1 (a non-Alpha codec's alpha is ignored for a window-mapped surface)
+    #[test]
+    fn window_updates_are_opaque() {
+        let mut c = Compositor::default();
+        c.create_surface(1, 1, 1);
+        c.map_surface_to_window(1, 7, (1, 1), (1, 1));
+        c.end_frame();
+        let _ = c.drain_window_updates();
+
+        c.apply_bitmap(1, &rect(0, 0, 1, 1), &[0x10, 0x20, 0x30, 0x40]);
+        c.end_frame();
+        let updates = c.drain_window_updates();
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].data, [0x10, 0x20, 0x30, 0xFF]);
+    }
+
+    /// Alpha set by the Alpha codec reaches the window, and later color-only bitmaps keep it.
+    // oracle: spec MS-RDPEGFX §3.3.5.1 (the Alpha codec updates only the target's alpha; other
+    // codecs copy only red, green and blue into a window-mapped surface) and §2.2.4.3 (raw stream)
+    #[test]
+    fn window_updates_carry_alpha_codec_values() {
+        let mut c = Compositor::default();
+        c.create_surface(1, 2, 1);
+        c.map_surface_to_window(1, 7, (2, 1), (2, 1));
+        c.apply_bitmap(1, &rect(0, 0, 2, 1), &[0x10, 0x20, 0x30, 0xFF, 0x40, 0x50, 0x60, 0xFF]);
+        // ALPHACODEC_BITMAP_STREAM: alphaSig 0x414C, compressed 0, one byte for the first pixel.
+        c.apply_alpha(1, &rect(0, 0, 1, 1), &[0x4C, 0x41, 0x00, 0x00, 0x80])
+            .unwrap();
+        c.end_frame();
+        let _ = c.drain_window_updates();
+
+        c.apply_bitmap(1, &rect(0, 0, 2, 1), &[0x11, 0x21, 0x31, 0x00, 0x41, 0x51, 0x61, 0x00]);
+        c.end_frame();
+        let updates = c.drain_window_updates();
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].data, [0x11, 0x21, 0x31, 0x80, 0x41, 0x51, 0x61, 0xFF]);
     }
 
     /// A mapped surface filled with a solid color drains one output update, in
