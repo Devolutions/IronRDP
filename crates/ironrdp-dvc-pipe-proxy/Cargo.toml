@@ -19,7 +19,7 @@ test = false
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.3" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.10" } # public (PduResult type)
-ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.9" }
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.9" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.9" } # public (SvcMessage type)
 
 tracing = { version = "0.1", features = ["log"] }
