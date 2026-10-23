@@ -398,6 +398,7 @@ fn slow_path_orders_update_encoding_inverts_its_decoding() {
 
 // oracle: reference Devolutions/IronRDP@1de38a2ee553:crates/ironrdp-pdu/src/basic_output/window.rs
 // (validate_window_fields accepts ICON_BIG and ICON_OVERLAY on a state order; neither carries data)
+// oracle: spec MS-RDPERP §2.2.1.3.1.2.2 (flag values: ICON_BIG 0x00002000, ICON_OVERLAY 0x00100000)
 #[rstest]
 #[case::icon_big(0x0100_2000)]
 #[case::icon_overlay(0x0110_0000)]
