@@ -90,7 +90,7 @@ ironrdp-session = { path = "../ironrdp-session", version = "0.11" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.9" } # public
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.8" }
 ironrdp-echo = { path = "../ironrdp-echo", version = "0.4" }
-ironrdp-egfx = { path = "../ironrdp-egfx", version = "0.3" }
+ironrdp-egfx = { path = "../ironrdp-egfx", version = "0.3" } # public
 ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" } # public
 ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", version = "0.1", optional = true }
 ironrdp-rdpeudp-tokio = { path = "../ironrdp-rdpeudp-tokio", version = "0.1", optional = true }

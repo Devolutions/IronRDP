@@ -1,7 +1,6 @@
 use core::fmt;
 use core::str::FromStr;
 use core::time::Duration;
-#[cfg(all(windows, feature = "dvc-com-plugin"))]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -424,6 +423,16 @@ pub struct ChannelConfig {
     /// Defaults to [`crate::h264::H264DecoderFactory::platform_default`]: Media Foundation's on
     /// Windows, or OpenH264 with the `openh264` feature.
     pub h264_decoder: Option<crate::h264::H264DecoderFactory>,
+    /// File keeping the graphics pipeline's bitmap cache across sessions ([MS-RDPEGFX] 3.3.1.5),
+    /// so a reconnect paints from cached tiles instead of waiting for the server to resend them.
+    /// `None` keeps the cache in memory only.
+    ///
+    /// Defaults to `None`, unlike mstsc, which persists the cache unless told not to
+    /// (`BitmapPersistenceEnabled` defaults to on there); [`crate::egfx_cache::default_cache_path`]
+    /// gives the per-user location to opt in with.
+    ///
+    /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
+    pub egfx_persistent_cache: Option<PathBuf>,
 }
 
 impl Default for ChannelConfig {
@@ -452,6 +461,7 @@ impl Default for ChannelConfig {
             #[cfg(feature = "video")]
             video: crate::video::VideoConfig::default(),
             h264_decoder: crate::h264::H264DecoderFactory::platform_default(),
+            egfx_persistent_cache: None,
         }
     }
 }
@@ -1424,6 +1434,16 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_graphics_pipeline(mut self, enabled: bool) -> Self {
         self.graphics_pipeline = Some(enabled);
+        self
+    }
+
+    /// Keep the graphics pipeline's bitmap cache in `path` across sessions, or only in memory with
+    /// `None` (the default). [`crate::egfx_cache::default_cache_path`] gives a per-user location.
+    ///
+    /// See [`ChannelConfig::egfx_persistent_cache`].
+    #[must_use]
+    pub fn with_egfx_persistent_cache(mut self, path: Option<PathBuf>) -> Self {
+        self.channels.egfx_persistent_cache = path;
         self
     }
 
@@ -2463,6 +2483,15 @@ impl ConfigBuilder {
         }
         if let Some(enabled) = ps.get::<i64>("ironrdp_egfx") {
             self.graphics_pipeline = Some(enabled != 0);
+        }
+        // Off unless asked for, unlike mstsc. `1` asks for the per-user cache mstsc also keeps, at
+        // the default location unless a path was already chosen; `0` turns it off.
+        match ps.get::<i64>("bitmapcachepersistenable") {
+            Some(0) => self.channels.egfx_persistent_cache = None,
+            Some(_) if self.channels.egfx_persistent_cache.is_none() => {
+                self.channels.egfx_persistent_cache = crate::egfx_cache::default_cache_path();
+            }
+            _ => {}
         }
         #[cfg(feature = "video")]
         if ps.get::<i64>("videoplaybackmode") == Some(0) {
