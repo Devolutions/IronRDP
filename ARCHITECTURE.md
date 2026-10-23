@@ -339,6 +339,10 @@ Offline direct-TCP RDP capture analysis that routes recovered plaintext and reco
 
 Binary tool that writes rendered replay frames and diagnostics from offline RDP captures.
 
+#### [`crates/ironrdp-bench`](./crates/ironrdp-bench)
+
+Criterion benchmarks and standalone binaries for codecs, server encoding, and capture replay.
+
 #### [`fuzz`](./fuzz)
 
 Fuzz targets for code in core tier.

@@ -12,8 +12,8 @@ use std::process::Command;
 use anyhow::Context as _;
 use ironrdp_capture::read_capture;
 use ironrdp_capture_replay::{
-    ReplayDirection, ReplayError, ReplayGap, ReplayLifecycle, ReplayOptions, ReplayOutcome, ReplaySummary,
-    prepare_capture,
+    PreparedReplay, ReplayDirection, ReplayError, ReplayGap, ReplayLifecycle, ReplayOptions, ReplayOutcome,
+    ReplaySummary, prepare_capture,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -21,6 +21,10 @@ use sha2::{Digest as _, Sha256};
 const MANIFEST: &str = include_str!("../corpus.toml");
 const UPSTREAM_REPOSITORY: &str = "awakecoding/wireshark-rdp";
 const MAX_GAP_DETAILS: usize = 16;
+
+/// Benchmark kind that times capture replay of a rendered session.
+pub const REPLAY_BENCHMARK: &str = "replay";
+const BENCHMARK_KINDS: &[&str] = &[REPLAY_BENCHMARK];
 
 /// Pinned capture corpus manifest.
 #[derive(Debug, Deserialize)]
@@ -150,8 +154,41 @@ impl Corpus {
                 "unsafe capture file name: {}",
                 capture.file
             );
+            for kind in &capture.benchmark {
+                anyhow::ensure!(
+                    BENCHMARK_KINDS.contains(&kind.as_str()),
+                    "unknown benchmark kind for capture {}: {kind}",
+                    capture.id
+                );
+            }
+            // Only a rendered session gives capture replay meaningful work to time.
+            if capture.lists(REPLAY_BENCHMARK) {
+                let renders = match &capture.expect {
+                    Expectation::Complete(observation) | Expectation::Partial(observation) => {
+                        matches!(observation.lifecycle, Lifecycle::Active | Lifecycle::Terminated)
+                            && observation.graphics_updates > 0
+                    }
+                    Expectation::Unsupported(_) => false,
+                };
+                anyhow::ensure!(
+                    renders,
+                    "capture {} lists the replay benchmark but its expectation renders no active or terminated session",
+                    capture.id
+                );
+            }
         }
         Ok(corpus)
+    }
+
+    /// Find a capture that lists the given benchmark kind.
+    pub fn benchmark_capture(&self, kind: &str, id: &str) -> anyhow::Result<&CorpusCapture> {
+        let capture = self
+            .captures
+            .iter()
+            .find(|capture| capture.id == id)
+            .with_context(|| format!("unknown capture: {id}"))?;
+        anyhow::ensure!(capture.lists(kind), "capture {id} does not list the {kind} benchmark");
+        Ok(capture)
     }
 
     /// Directory containing the verified cached captures for the pinned revision.
@@ -160,6 +197,44 @@ impl Corpus {
             .join("../../bench-data/wireshark-rdp")
             .join(&self.upstream.revision)
             .join("captures")
+    }
+}
+
+impl CorpusCapture {
+    /// Whether this capture lists the given benchmark kind.
+    pub fn lists(&self, kind: &str) -> bool {
+        self.benchmark.iter().any(|listed| listed == kind)
+    }
+
+    /// Verify the cached capture's digest, then read, decrypt, and prepare it for repeated replay.
+    pub fn prepare(&self, cache_dir: &Path) -> anyhow::Result<PreparedReplay> {
+        let path = cache_dir.join(&self.file);
+        verify_digest(&path, &self.sha256)?;
+        read_capture(&path)
+            .map_err(ReplayError::from)
+            .and_then(|capture| prepare_capture(&capture))
+            .with_context(|| format!("prepare capture {}", self.id))
+    }
+
+    /// Compare a replay summary with this capture's expectation.
+    ///
+    /// A summary without an output fingerprint is compared on everything except that fingerprint.
+    pub fn verify(&self, summary: &ReplaySummary) -> anyhow::Result<()> {
+        let mut observed = Expectation::from_summary(summary);
+        if summary.output_fingerprint.is_none()
+            && let (
+                Expectation::Complete(observed) | Expectation::Partial(observed),
+                Expectation::Complete(expected) | Expectation::Partial(expected),
+            ) = (&mut observed, &self.expect)
+        {
+            observed.fingerprint.clone_from(&expected.fingerprint);
+        }
+        anyhow::ensure!(
+            observed == self.expect,
+            "capture {} replay does not match its expectation",
+            self.id
+        );
+        Ok(())
     }
 }
 
@@ -448,6 +523,52 @@ expect = { outcome = "unsupported", reason = "test" }
         assert!(verify_digest(&path, SHA256_ABC).is_err());
 
         fs::remove_file(&path).expect("remove test cache entry");
+    }
+
+    #[test]
+    fn rejects_replay_benchmark_without_rendered_session() {
+        let manifest = |benchmark: &str, expect: &str| {
+            format!(
+                r#"
+[upstream]
+revision = "683505a753dfd7a2b27713b3a21e9a6951abacc4"
+
+[[capture]]
+id = "a"
+file = "a.pcapng"
+sha256 = ""
+intent = ""
+benchmark = [{benchmark}]
+
+[capture.expect]
+{expect}
+"#
+            )
+        };
+        let rendered = r#"outcome = "partial"
+lifecycle = "terminated"
+client_pdus = 0
+connection_pdus = 0
+fast_path_pdus = 0
+io_channel_pdus = 0
+message_channel_pdus = 0
+static_channel_pdus = 0
+other_server_message_pdus = 0
+graphics_updates = 1
+gaps = 1
+fingerprint = ""
+gap_fingerprint = """#;
+
+        assert!(Corpus::parse(&manifest(r#""replay""#, rendered)).is_ok());
+        assert!(Corpus::parse(&manifest(r#""typo""#, rendered)).is_err());
+        assert!(
+            Corpus::parse(&manifest(
+                r#""replay""#,
+                &rendered.replace("graphics_updates = 1", "graphics_updates = 0")
+            ))
+            .is_err()
+        );
+        assert!(Corpus::parse(&manifest(r#""replay""#, "outcome = \"unsupported\"\nreason = \"x\"")).is_err());
     }
 
     #[test]

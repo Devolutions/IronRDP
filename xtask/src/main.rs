@@ -66,6 +66,7 @@ fn main() -> anyhow::Result<()> {
             Some(capture) => bench::corpus(&sh, &["check", "--capture", capture])?,
             None => bench::corpus(&sh, &["check"])?,
         },
+        Action::BenchReplay { capture } => bench::replay(&sh, &capture)?,
         Action::CheckFmt => check::fmt(&sh)?,
         Action::CheckLints => check::lints(&sh)?,
         Action::CheckLocks => check::lock_files(&sh)?,
