@@ -1,8 +1,4 @@
 #![expect(
-    unused_crate_dependencies,
-    reason = "the binary delegates replay implementation to the library crate"
-)]
-#![expect(
     clippy::print_stdout,
     reason = "the command reports a completed export path to its interactive caller"
 )]
@@ -15,7 +11,10 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use ironrdp_capture_replay::{ExportOptions, export_capture, read_capture};
+use ironrdp_capture::{CaptureError, read_capture};
+mod output;
+
+use output::{ExportOptions, export_capture};
 use zeroize::Zeroize as _;
 
 fn main() -> ExitCode {
@@ -24,9 +23,17 @@ fn main() -> ExitCode {
         Err(error) => {
             eprintln!("replay export failed: {error}");
             let mut source = core::error::Error::source(error.as_ref());
+            let mut missing_tunneled_tls_secret = false;
             while let Some(cause) = source {
                 eprintln!("  caused by: {cause}");
+                missing_tunneled_tls_secret |= matches!(
+                    cause.downcast_ref::<CaptureError>(),
+                    Some(CaptureError::MissingTunneledTlsSecret)
+                );
                 source = cause.source();
+            }
+            if missing_tunneled_tls_secret {
+                eprintln!("  hint: supply the original key log with --keylog");
             }
             ExitCode::FAILURE
         }
@@ -96,5 +103,5 @@ fn parse_arguments(arguments: impl Iterator<Item = OsString>) -> Result<Argument
 }
 
 fn usage() -> String {
-    "usage: ironrdp-capture-replay [--replace] [--keylog <tls-keys.log>] <capture.pcapng> <output-directory>".to_owned()
+    "usage: ironrdp-capture-export [--replace] [--keylog <tls-keys.log>] <capture.pcapng> <output-directory>".to_owned()
 }

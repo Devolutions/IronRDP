@@ -190,6 +190,37 @@ jobs:
       - name: Lock files
         run: cargo xtask check locks -v
 
+  corpus-check:
+    name: Corpus check
+    needs: [formatting]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        uses: ./.github/actions/install-build-deps
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.9.1
+
+      - name: Corpus cache key
+        id: corpus-key
+        shell: bash
+        run: echo "hash=$(grep -E '^(revision|file|sha256) = ' crates/ironrdp-bench/corpus.toml | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Corpus cache
+        uses: actions/cache@v5
+        with:
+          path: ./bench-data/wireshark-rdp
+          key: ${{ runner.os }}-benchmark-corpus-${{ steps.corpus-key.outputs.hash }}
+
+      - name: Fetch corpus
+        run: cargo xtask bench corpus-fetch
+
+      - name: Check corpus
+        run: cargo xtask bench corpus-check
+
   web:
     name: Web Client
     needs: [formatting]
@@ -303,7 +334,7 @@ jobs:
   success:
     name: Success
     if: ${{ always() }}
-    needs: [formatting, test-settings, typos, openai-agent, checks, fuzz, web, ffi, feature-matrix-setup, feature-matrix]
+    needs: [formatting, test-settings, typos, openai-agent, checks, fuzz, corpus-check, web, ffi, feature-matrix-setup, feature-matrix]
     runs-on: ubuntu-latest
 
     steps:

@@ -12,6 +12,8 @@ TASKS:
   bootstrap               Install all requirements for development
   bench corpus-fetch      Fetch and verify the pinned benchmark capture corpus
   bench corpus-list       List pinned benchmark capture corpus metadata
+  bench corpus-check [--capture <ID>]
+                          Replay cached captures and verify their expectations
   check fmt               Check formatting
   check lints             Check lints
   check locks             Check for dirty or staged lock files not yet committed
@@ -90,6 +92,9 @@ pub enum Action {
     Bootstrap,
     BenchCorpusFetch,
     BenchCorpusList,
+    BenchCorpusCheck {
+        capture: Option<String>,
+    },
     CheckFmt,
     CheckLints,
     CheckLocks,
@@ -156,6 +161,9 @@ pub fn parse_args() -> anyhow::Result<Args> {
             Some("bench") => match args.subcommand()?.as_deref() {
                 Some("corpus-fetch") => Action::BenchCorpusFetch,
                 Some("corpus-list") => Action::BenchCorpusList,
+                Some("corpus-check") => Action::BenchCorpusCheck {
+                    capture: args.opt_value_from_str("--capture")?,
+                },
                 Some(unknown) => anyhow::bail!("unknown bench action: {unknown}"),
                 None => Action::ShowHelp,
             },

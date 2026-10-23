@@ -327,9 +327,17 @@ Contains all integration tests for code living in the extra tier, in a single bi
 
 Provides test case generators and oracles for use with fuzzing.
 
+#### [`crates/ironrdp-capture`](./crates/ironrdp-capture)
+
+Offline pcapng capture decoding, TCP flow reassembly, TLS decryption, and RD Gateway tunnel unwrapping.
+
 #### [`crates/ironrdp-capture-replay`](./crates/ironrdp-capture-replay)
 
-Offline direct-TCP RDP capture analysis that routes recovered plaintext and exports payload-free replay diagnostics with rendered framebuffer snapshots.
+Offline direct-TCP RDP capture analysis that routes recovered plaintext and records payload-free replay diagnostics.
+
+#### [`crates/ironrdp-capture-export`](./crates/ironrdp-capture-export)
+
+Binary tool that writes rendered replay frames and diagnostics from offline RDP captures.
 
 #### [`fuzz`](./fuzz)
 

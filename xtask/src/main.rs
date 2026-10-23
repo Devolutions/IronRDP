@@ -60,8 +60,12 @@ fn main() -> anyhow::Result<()> {
                 list_files(&sh, local_bin())?;
             }
         }
-        Action::BenchCorpusFetch => bench::corpus(&sh, "fetch")?,
-        Action::BenchCorpusList => bench::corpus(&sh, "list")?,
+        Action::BenchCorpusFetch => bench::corpus(&sh, &["fetch"])?,
+        Action::BenchCorpusList => bench::corpus(&sh, &["list"])?,
+        Action::BenchCorpusCheck { capture } => match capture.as_deref() {
+            Some(capture) => bench::corpus(&sh, &["check", "--capture", capture])?,
+            None => bench::corpus(&sh, &["check"])?,
+        },
         Action::CheckFmt => check::fmt(&sh)?,
         Action::CheckLints => check::lints(&sh)?,
         Action::CheckLocks => check::lock_files(&sh)?,
@@ -102,6 +106,8 @@ fn main() -> anyhow::Result<()> {
             features::run_all(&sh)?;
             check::dependencies(&sh)?;
             check::capture_files(&sh)?;
+            bench::corpus(&sh, &["fetch"])?;
+            bench::corpus(&sh, &["check"])?;
             wasm::check(&sh)?;
             fuzz::run(&sh, None, None)?;
             web::install(&sh)?;
