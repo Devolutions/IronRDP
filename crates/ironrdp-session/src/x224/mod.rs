@@ -12,7 +12,9 @@ use ironrdp_pdu::rdp::heartbeat::HeartbeatPdu;
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::rdp::server_redirection::ServerRedirectionPdu;
-use ironrdp_pdu::rdp::session_info::{InfoData, SaveSessionInfoPdu, ServerAutoReconnect};
+use ironrdp_pdu::rdp::session_info::{
+    InfoData, LogonErrorsInfo, LogonInfoVersion1, LogonInfoVersion2, SaveSessionInfoPdu, ServerAutoReconnect,
+};
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{
     ChannelFlags, StaticChannelSet, StaticVirtualChannel, SvcMessage, SvcProcessor, SvcProcessorMessages,
@@ -41,6 +43,14 @@ pub enum ProcessorOutput {
     /// logon; the source PDU is not retained because it can contain user details and
     /// auto-reconnect cookies.
     SaveSessionInfo { logon_complete: bool },
+    /// The ID of the remote session, from a Save Session Info PDU that carries logon information
+    /// (Logon Info Version 1 or 2, [\[MS-RDPBCGR\] 2.2.10.1.1.1 and 2.2.10.1.1.2]).
+    ///
+    /// It precedes the [`ProcessorOutput::SaveSessionInfo`] output of the same PDU, so a consumer
+    /// knows the ID when it reports the completed logon.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.10.1.1.1 and 2.2.10.1.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    SessionId(u32),
     /// Server Initiate Multitransport Request. The application should establish a
     /// sideband UDP transport using the request ID and security cookie, then send
     /// a [`MultitransportResponsePdu`] back on the message channel.
@@ -66,6 +76,13 @@ pub enum ProcessorOutput {
     /// [\[MS-RDPBCGR\] 2.2.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/18f4f605-0ee3-4175-8a62-cf8775252547
     /// [\[MS-RDPBCGR\] 1.3.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
     AutoReconnectCookie(ServerAutoReconnect),
+    /// Logon error or warning notification from a Save Session Info PDU
+    /// ([\[MS-RDPBCGR\] 2.2.10.1.1.4.1.1]).
+    ///
+    /// Only the two notification codes are surfaced; neither carries credentials.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.10.1.1.4.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/845eb789-6edf-453a-8b0e-c976823d1f72
+    LogonErrors(LogonErrorsInfo),
     /// Server rejected a Client Auto-Reconnect Packet ([\[MS-RDPBCGR\] 2.2.4.1]).
     ///
     /// The client must discard its cookie and not report the reconnect as successful.
@@ -384,9 +401,15 @@ impl Processor {
         match pdu {
             ShareDataPdu::SaveSessionInfo(session_info) => {
                 debug!("Got Session Save Info PDU: {session_info:?}");
-                let mut outputs = vec![ProcessorOutput::SaveSessionInfo {
+                let mut outputs = Vec::new();
+                if let InfoData::LogonInfoV1(LogonInfoVersion1 { logon_info })
+                | InfoData::LogonInfoV2(LogonInfoVersion2 { logon_info }) = &session_info.info_data
+                {
+                    outputs.push(ProcessorOutput::SessionId(logon_info.session_id));
+                }
+                outputs.push(ProcessorOutput::SaveSessionInfo {
                     logon_complete: is_logon_complete(&session_info),
-                }];
+                });
 
                 // Surface the auto-reconnect cookie alongside the logon status so
                 // the consumer can keep it for a later reconnect. Both come out of
@@ -394,6 +417,9 @@ impl Processor {
                 if let InfoData::LogonExtended(extended) = &session_info.info_data {
                     if let Some(cookie) = &extended.auto_reconnect {
                         outputs.push(ProcessorOutput::AutoReconnectCookie(cookie.clone()));
+                    }
+                    if let Some(errors) = &extended.errors_info {
+                        outputs.push(ProcessorOutput::LogonErrors(errors.clone()));
                     }
                 }
 

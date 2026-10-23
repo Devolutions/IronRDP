@@ -613,6 +613,16 @@ impl ConnectionType {
     fn as_u8(self) -> u8 {
         self as u8
     }
+
+    /// Converts a specified `connectionType` value (1 through 7), rejecting 0 (`NotUsed`) and unknown values.
+    pub fn from_specified(value: u8) -> Option<Self> {
+        Self::from_u8(value).filter(|connection_type| *connection_type != Self::NotUsed)
+    }
+
+    /// Returns the `connectionType` value, or `None` for [`NotUsed`](Self::NotUsed).
+    pub fn specified_value(self) -> Option<u8> {
+        (self != Self::NotUsed).then(|| self.as_u8())
+    }
 }
 
 bitflags! {

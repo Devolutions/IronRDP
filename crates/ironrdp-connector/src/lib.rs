@@ -152,6 +152,35 @@ pub struct Config {
     ///
     /// This becomes the `desktop_scale_factor` in the [`TS_UD_CS_CORE`](gcc::ClientCoreOptionalData) structure.
     pub desktop_scale_factor: u32,
+    /// The physical width and height of the desktop, in millimeters.
+    ///
+    /// These become `desktopPhysicalWidth` and `desktopPhysicalHeight` in the
+    /// [`TS_UD_CS_CORE`](gcc::ClientCoreOptionalData) structure. `None` sends zero, which servers ignore.
+    pub desktop_physical_size: Option<(u32, u32)>,
+    /// The orientation of the desktop.
+    ///
+    /// This becomes `desktopOrientation` in the [`TS_UD_CS_CORE`](gcc::ClientCoreOptionalData)
+    /// structure. `None` derives landscape or portrait from [`desktop_size`](Self::desktop_size).
+    pub desktop_orientation: Option<gcc::MonitorOrientation>,
+    /// The device scale factor (100, 140 or 180).
+    ///
+    /// This becomes `deviceScaleFactor` in the [`TS_UD_CS_CORE`](gcc::ClientCoreOptionalData) structure,
+    /// which servers only honor alongside a valid [`desktop_scale_factor`](Self::desktop_scale_factor).
+    /// `None` sends 100.
+    pub device_scale_factor: Option<u32>,
+    /// Per-monitor physical size, orientation and scale advertised in the GCC Client Monitor Extended Data block.
+    ///
+    /// Sent only together with [`monitor_layout`](Self::monitor_layout), with one entry per monitor in the same order.
+    /// A layout whose entry count differs from `monitor_layout` is not sent.
+    pub monitor_extended_layout: Option<gcc::ClientMonitorExtendedData>,
+    /// Whether the client sends relative mouse input ([MS-RDPBCGR] 2.2.8.1.2.2.7).
+    ///
+    /// This sets `RNS_UD_CS_RELATIVE_MOUSE_INPUT` in the `earlyCapabilityFlags` of the
+    /// [`TS_UD_CS_CORE`](gcc::ClientCoreOptionalData) structure and advertises RDP 10.12
+    /// (`0x00080011`), the lowest version for which servers honor relative mouse support.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    pub relative_mouse_input: bool,
     /// TLS + Graphical login (legacy)
     ///
     /// Also called SSL or TLS security protocol.

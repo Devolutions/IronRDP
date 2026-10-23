@@ -2270,6 +2270,11 @@ pub(super) fn default_client_config() -> connector::Config {
         },
         monitor_layout: None,
         desktop_scale_factor: 0, // Default to 0 per FreeRDP
+        desktop_physical_size: None,
+        desktop_orientation: None,
+        device_scale_factor: None,
+        monitor_extended_layout: None,
+        relative_mouse_input: false,
         enable_tls: true,
         enable_credssp: true,
         enable_standard_rdp_security: false,

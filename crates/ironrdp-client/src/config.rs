@@ -115,6 +115,7 @@ pub struct Config {
     pub(crate) input_send_interval: Option<Duration>,
     pub(crate) input_keepalive_interval: Option<Duration>,
     pub(crate) fake_events_interval: Option<Duration>,
+    pub(crate) tcp_connect_attempt_timeout: Option<Duration>,
     pub(crate) channels: ChannelConfig,
     pub(crate) administrative_session: bool,
     pub(crate) load_balance_info: Option<String>,
@@ -239,6 +240,11 @@ impl Config {
         self.fake_events_interval
     }
 
+    /// Maximum time a direct connection waits for one resolved server address to accept TCP.
+    pub fn tcp_connect_attempt_timeout(&self) -> Option<Duration> {
+        self.tcp_connect_attempt_timeout
+    }
+
     /// Channel/codec runtime toggles.
     pub fn channels(&self) -> &ChannelConfig {
         &self.channels
@@ -321,6 +327,7 @@ impl fmt::Debug for Config {
         s.field("input_send_interval", &self.input_send_interval);
         s.field("input_keepalive_interval", &self.input_keepalive_interval);
         s.field("fake_events_interval", &self.fake_events_interval);
+        s.field("tcp_connect_attempt_timeout", &self.tcp_connect_attempt_timeout);
         s.field("channels", &self.channels);
         s.field("administrative_session", &self.administrative_session);
         s.field("load_balance_info", &self.load_balance_info);
@@ -409,6 +416,11 @@ pub struct ChannelConfig {
     #[cfg(feature = "location")]
     pub location: bool,
 
+    /// Maximum number of simultaneous touch contacts advertised in the RDPEI `CS_READY` PDU.
+    ///
+    /// Defaults to [`RDPEI_MAX_TOUCH_CONTACTS`](crate::rdp::RDPEI_MAX_TOUCH_CONTACTS).
+    pub max_touch_contacts: u16,
+
     /// MS-RDPECAM camera redirection (`camerastoredirect`). No camera is redirected by default.
     #[cfg(feature = "camera")]
     pub cameras: crate::camera::CameraConfig,
@@ -460,6 +472,7 @@ impl Default for ChannelConfig {
             webauthn: true,
             #[cfg(feature = "location")]
             location: false,
+            max_touch_contacts: crate::rdp::RDPEI_MAX_TOUCH_CONTACTS,
             #[cfg(feature = "camera")]
             cameras: crate::camera::CameraConfig::default(),
             #[cfg(feature = "video")]
@@ -861,7 +874,12 @@ pub struct ConfigBuilder {
     desktop_width: Option<u16>,
     desktop_height: Option<u16>,
     monitor_layout: Option<ironrdp_pdu::gcc::ClientMonitorData>,
+    monitor_extended_layout: Option<ironrdp_pdu::gcc::ClientMonitorExtendedData>,
+    relative_mouse_input: bool,
     desktop_scale_factor: Option<u32>,
+    device_scale_factor: Option<u32>,
+    desktop_physical_size: Option<(u32, u32)>,
+    desktop_orientation: Option<ironrdp_pdu::gcc::MonitorOrientation>,
     color_depth: Option<u32>,
     lossy_compression: Option<bool>,
     codecs: Vec<String>,
@@ -901,6 +919,7 @@ pub struct ConfigBuilder {
     input_send_interval: Option<Duration>,
     input_keepalive_interval: Option<Duration>,
     fake_events_interval: Option<Duration>,
+    tcp_connect_attempt_timeout: Option<Duration>,
     channels: ChannelConfig,
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
     audio_quality_mode: Option<AudioQualityMode>,
@@ -1095,6 +1114,52 @@ impl ConfigBuilder {
     pub fn with_desktop_scale_factor(mut self, scale: u32) -> Self {
         self.desktop_scale_factor = Some(scale);
         self.properties.set_desktop_scale_factor(scale);
+        self
+    }
+
+    /// Advertise per-monitor physical size, orientation and scale in the GCC Client Monitor
+    /// Extended Data block.
+    ///
+    /// The block is sent only with a [monitor layout](Self::with_monitor_layout), and must list
+    /// the same monitors in the same order.
+    #[must_use]
+    pub fn with_monitor_extended_layout(
+        mut self,
+        monitor_extended_layout: ironrdp_pdu::gcc::ClientMonitorExtendedData,
+    ) -> Self {
+        self.monitor_extended_layout = Some(monitor_extended_layout);
+        self
+    }
+
+    /// Set the device scale factor (100, 140 or 180) to request. Upserts the `devicescalefactor`
+    /// property.
+    ///
+    /// This becomes the `deviceScaleFactor` in the `TS_UD_CS_CORE` GCC structure, which servers
+    /// honor only alongside a valid [desktop scale factor](Self::with_desktop_scale_factor).
+    /// [`build`](Self::build) rejects any other value.
+    #[must_use]
+    pub fn with_device_scale_factor(mut self, scale: u32) -> Self {
+        self.device_scale_factor = Some(scale);
+        self.properties.insert("devicescalefactor", scale);
+        self
+    }
+
+    /// Set the physical size of the desktop in millimeters.
+    ///
+    /// This becomes `desktopPhysicalWidth` and `desktopPhysicalHeight` in the `TS_UD_CS_CORE` GCC
+    /// structure. Servers ignore sizes outside 10 to 10,000 millimeters.
+    #[must_use]
+    pub fn with_desktop_physical_size(mut self, width: u32, height: u32) -> Self {
+        self.desktop_physical_size = Some((width, height));
+        self
+    }
+
+    /// Set the desktop orientation, instead of deriving landscape or portrait from the desktop size.
+    ///
+    /// This becomes `desktopOrientation` in the `TS_UD_CS_CORE` GCC structure.
+    #[must_use]
+    pub fn with_desktop_orientation(mut self, orientation: ironrdp_pdu::gcc::MonitorOrientation) -> Self {
+        self.desktop_orientation = Some(orientation);
         self
     }
 
@@ -1549,6 +1614,18 @@ impl ConfigBuilder {
         self
     }
 
+    /// Bound each TCP connection attempt of a direct connection.
+    ///
+    /// The destination host name is resolved first, then each address is tried in order, and an
+    /// address that does not accept the connection within `timeout` is abandoned for the next one.
+    /// Without this setting the operating system's connect timeout applies to each address.
+    /// [`build`](Self::build) rejects a zero timeout.
+    #[must_use]
+    pub fn with_tcp_connect_attempt_timeout(mut self, timeout: Duration) -> Self {
+        self.tcp_connect_attempt_timeout = Some(timeout);
+        self
+    }
+
     /// Enable or disable RDPSND (audio) playback.
     #[cfg(feature = "sound")]
     #[must_use]
@@ -1734,6 +1811,25 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_location_redirection(mut self, enabled: bool) -> Self {
         self.channels.location = enabled;
+        self
+    }
+
+    /// Advertise that the client sends relative mouse input.
+    ///
+    /// Sets `RNS_UD_CS_RELATIVE_MOUSE_INPUT` in the GCC Client Core Data. Enable it before sending
+    /// relative pointer events.
+    #[must_use]
+    pub fn with_relative_mouse_input(mut self, enabled: bool) -> Self {
+        self.relative_mouse_input = enabled;
+        self
+    }
+
+    /// Set the maximum number of simultaneous touch contacts advertised over RDPEI.
+    ///
+    /// [`build`](Self::build) rejects values outside 1 through 256, the RDPEI limit.
+    #[must_use]
+    pub fn with_max_touch_contacts(mut self, contacts: u16) -> Self {
+        self.channels.max_touch_contacts = contacts;
         self
     }
 
@@ -1951,6 +2047,20 @@ impl ConfigBuilder {
     pub fn build(mut self) -> anyhow::Result<Config> {
         use ironrdp_pdu::rdp::capability_sets::client_codecs_capabilities;
         use ironrdp_pdu::rdp::client_info::TimezoneInfo;
+
+        if let Some(scale) = self.device_scale_factor {
+            anyhow::ensure!(
+                matches!(scale, 100 | 140 | 180),
+                "invalid device scale factor: valid values are 100, 140 and 180"
+            );
+        }
+        anyhow::ensure!(
+            (1..=256).contains(&self.channels.max_touch_contacts),
+            "invalid maximum touch contacts: valid values are 1 through 256"
+        );
+        if let Some(timeout) = self.tcp_connect_attempt_timeout {
+            anyhow::ensure!(!timeout.is_zero(), "the TCP connect attempt timeout must not be zero");
+        }
 
         if let Some(load_balance_info) = &self.load_balance_info {
             anyhow::ensure!(
@@ -2236,6 +2346,11 @@ impl ConfigBuilder {
             },
             monitor_layout: self.monitor_layout,
             desktop_scale_factor: self.desktop_scale_factor.unwrap_or(0),
+            desktop_physical_size: self.desktop_physical_size,
+            desktop_orientation: self.desktop_orientation,
+            device_scale_factor: self.device_scale_factor,
+            monitor_extended_layout: self.monitor_extended_layout,
+            relative_mouse_input: self.relative_mouse_input,
             bitmap: Some(bitmap),
             client_build: self.client_build.unwrap_or_default(),
             client_name,
@@ -2303,6 +2418,7 @@ impl ConfigBuilder {
             input_send_interval: self.input_send_interval,
             input_keepalive_interval: self.input_keepalive_interval,
             fake_events_interval: self.fake_events_interval,
+            tcp_connect_attempt_timeout: self.tcp_connect_attempt_timeout,
             channels: self.channels,
             administrative_session: self.administrative_session,
             load_balance_info: self.load_balance_info,
@@ -2393,6 +2509,24 @@ impl ConfigBuilder {
         if let Some(scale) = ps.desktop_scale_factor().ok().flatten() {
             self.desktop_scale_factor = Some(scale);
         }
+        if let Some(scale) = ps.get::<i64>("devicescalefactor") {
+            self.device_scale_factor = Some(match scale {
+                100 => 100,
+                140 => 140,
+                180 => 180,
+                _ => anyhow::bail!("invalid 'devicescalefactor': valid values are 100, 140 and 180"),
+            });
+        }
+        if let Some(connection_type) = ps.get::<i64>("connection type") {
+            use ironrdp_pdu::gcc::ConnectionType;
+
+            self.connection_type = Some(
+                u8::try_from(connection_type)
+                    .ok()
+                    .and_then(ConnectionType::from_specified)
+                    .ok_or_else(|| anyhow::anyhow!("invalid 'connection type': valid values are 1 through 7"))?,
+            );
+        }
         if let Some(width) = ps.desktop_width().ok().flatten() {
             self.desktop_width = Some(width);
         }
@@ -2444,6 +2578,15 @@ impl ConfigBuilder {
         }
         if let Some(enabled) = ps.compression() {
             self.compression_enabled = Some(enabled);
+        }
+        // IronRDP renders 16 or 32 bits per pixel: `session bpp` selects the closest of the two,
+        // and the IronRDP-specific color depth, when present, takes precedence.
+        if let Some(bpp) = ps.get::<i64>("session bpp") {
+            self.color_depth = Some(match bpp {
+                8 | 15 | 16 => 16,
+                24 | 32 => 32,
+                _ => anyhow::bail!("invalid 'session bpp': valid values are 8, 15, 16, 24 and 32"),
+            });
         }
         if let Some(depth) = ps.color_depth() {
             self.color_depth = Some(depth);
@@ -2633,6 +2776,10 @@ impl ConfigBuilder {
             }
             let _ = redirect;
         }
+        #[cfg(feature = "location")]
+        if let Some(redirect) = ps.get::<bool>("redirectlocation") {
+            self.channels.location = redirect;
+        }
 
         #[cfg(feature = "rdpdr")]
         if let Some(enabled) = ps.enable_rdpdr() {
@@ -2641,6 +2788,10 @@ impl ConfigBuilder {
         #[cfg(feature = "rdpdr")]
         if let Some(drives) = ps.drive_redirection() {
             self.channels.rdpdr.drives = drives;
+        }
+        #[cfg(feature = "smartcard")]
+        if let Some(enabled) = ps.get::<bool>("redirectsmartcards") {
+            self.channels.rdpdr.smartcard = enabled;
         }
         #[cfg(feature = "smartcard")]
         if let Some(enabled) = ps.enable_smartcard() {
@@ -2834,6 +2985,33 @@ mod tests {
 
         properties.insert("mininputsendinterval", 2_001u32);
         assert!(complete_builder().with_property_set(&properties).is_err());
+    }
+
+    #[test]
+    fn build_rejects_display_and_input_values_outside_their_protocol_ranges() {
+        assert!(complete_builder().with_device_scale_factor(140).build().is_ok());
+        assert!(complete_builder().with_device_scale_factor(125).build().is_err());
+        assert!(complete_builder().with_max_touch_contacts(256).build().is_ok());
+        assert!(complete_builder().with_max_touch_contacts(0).build().is_err());
+        assert!(complete_builder().with_max_touch_contacts(257).build().is_err());
+        assert!(
+            complete_builder()
+                .with_tcp_connect_attempt_timeout(Duration::ZERO)
+                .build()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn tcp_connect_attempt_timeout_is_unset_by_default() {
+        let config = complete_builder().build().expect("valid configuration");
+        assert_eq!(config.tcp_connect_attempt_timeout(), None);
+
+        let config = complete_builder()
+            .with_tcp_connect_attempt_timeout(Duration::from_secs(8))
+            .build()
+            .expect("valid configuration");
+        assert_eq!(config.tcp_connect_attempt_timeout(), Some(Duration::from_secs(8)));
     }
 
     #[cfg(any(feature = "sound", feature = "rdpdr"))]

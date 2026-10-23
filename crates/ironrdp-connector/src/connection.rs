@@ -1772,7 +1772,13 @@ fn create_gcc_blocks<'a>(
 
     Ok(ClientGccBlocks {
         core: ClientCoreData {
-            version: RdpVersion::V5_PLUS,
+            // Servers ignore the relative mouse capabilities below RDP 10.12 ([MS-RDPBCGR] 2.2.1.3.2,
+            // 2.2.7.1.6), so only a client that sends relative input announces that version.
+            version: if config.relative_mouse_input {
+                RdpVersion::V10_12
+            } else {
+                RdpVersion::V5_PLUS
+            },
             desktop_width: config.desktop_size.width,
             desktop_height: config.desktop_size.height,
             color_depth: ColorDepth::Bpp8, // ignored because we use the optional core data below
@@ -1809,22 +1815,30 @@ fn create_gcc_blocks<'a>(
                     if config.support_dyn_vc_gfx_protocol {
                         early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL;
                     }
+                    if config.relative_mouse_input {
+                        early_capability_flags |= ClientEarlyCapabilityFlags::RELATIVE_MOUSE_INPUT;
+                    }
 
                     Some(early_capability_flags)
                 },
                 dig_product_id: Some(config.dig_product_id.clone()),
                 connection_type: Some(config.connection_type),
                 server_selected_protocol: Some(selected_protocol),
-                desktop_physical_width: Some(0),  // 0 per FreeRDP
-                desktop_physical_height: Some(0), // 0 per FreeRDP
-                desktop_orientation: if config.desktop_size.width > config.desktop_size.height {
-                    Some(MonitorOrientation::Landscape.as_u16())
-                } else {
-                    Some(MonitorOrientation::Portrait.as_u16())
-                },
+                desktop_physical_width: Some(config.desktop_physical_size.map_or(0, |(width, _)| width)),
+                desktop_physical_height: Some(config.desktop_physical_size.map_or(0, |(_, height)| height)),
+                desktop_orientation: Some(
+                    config
+                        .desktop_orientation
+                        .unwrap_or(if config.desktop_size.width > config.desktop_size.height {
+                            MonitorOrientation::Landscape
+                        } else {
+                            MonitorOrientation::Portrait
+                        })
+                        .as_u16(),
+                ),
                 desktop_scale_factor: Some(config.desktop_scale_factor),
                 device_scale_factor: if config.desktop_scale_factor >= 100 && config.desktop_scale_factor <= 500 {
-                    Some(100)
+                    Some(config.device_scale_factor.unwrap_or(100))
                 } else {
                     Some(0)
                 },
@@ -1854,8 +1868,27 @@ fn create_gcc_blocks<'a>(
                     .map(|flags| gcc::MultiTransportChannelData { flags })
             })
             .flatten(),
-        monitor_extended: None,
+        // Client Monitor Extended Data describes the monitors of Client Monitor Data, so it is
+        // only sent alongside it, with the same monitor count ([MS-RDPBCGR] 2.2.1.3.10).
+        monitor_extended: extended_client_data_supported
+            .then(|| monitor_extended_layout(config))
+            .flatten(),
     })
+}
+
+/// Returns the configured Client Monitor Extended Data when it describes every monitor of Client Monitor Data.
+fn monitor_extended_layout(config: &Config) -> Option<gcc::ClientMonitorExtendedData> {
+    let monitors = config.monitor_layout.as_ref()?.monitors.len();
+    let extended = config.monitor_extended_layout.as_ref()?;
+    if extended.extended_monitors_info.len() != monitors {
+        warn!(
+            monitors,
+            extended_monitors = extended.extended_monitors_info.len(),
+            "Omitting Client Monitor Extended Data whose monitor count differs from Client Monitor Data"
+        );
+        return None;
+    }
+    Some(extended.clone())
 }
 
 fn create_client_info_pdu(
@@ -1987,6 +2020,11 @@ mod tests {
             },
             monitor_layout: None,
             desktop_scale_factor: 0,
+            desktop_physical_size: None,
+            desktop_orientation: None,
+            device_scale_factor: None,
+            monitor_extended_layout: None,
+            relative_mouse_input: false,
             enable_tls: true,
             enable_credssp: false,
             enable_standard_rdp_security: false,
@@ -2043,6 +2081,11 @@ mod tests {
             },
             monitor_layout: None,
             desktop_scale_factor: 0,
+            desktop_physical_size: None,
+            desktop_orientation: None,
+            device_scale_factor: None,
+            monitor_extended_layout: None,
+            relative_mouse_input: false,
             enable_tls: true,
             enable_credssp: false,
             enable_standard_rdp_security: false,
@@ -2108,6 +2151,11 @@ mod tests {
                 }],
             }),
             desktop_scale_factor: 0,
+            desktop_physical_size: None,
+            desktop_orientation: None,
+            device_scale_factor: None,
+            monitor_extended_layout: None,
+            relative_mouse_input: false,
             enable_tls: true,
             enable_credssp: false,
             enable_standard_rdp_security: false,
@@ -2157,6 +2205,7 @@ mod tests {
         .expect("valid GCC Client Monitor Data");
 
         assert_eq!(blocks.monitor, config.monitor_layout);
+        assert!(blocks.monitor_extended.is_none());
         assert!(
             blocks
                 .core
@@ -2166,6 +2215,43 @@ mod tests {
                 .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU)
         );
 
+        let monitor_extended = gcc::ClientMonitorExtendedData {
+            extended_monitors_info: vec![gcc::ExtendedMonitorInfo {
+                physical_width: 0,
+                physical_height: 0,
+                orientation: gcc::MonitorOrientation::Portrait,
+                desktop_scale_factor: 150,
+                device_scale_factor: 140,
+            }],
+        };
+        config.monitor_extended_layout = Some(monitor_extended.clone());
+        let blocks = create_gcc_blocks(
+            &config,
+            None,
+            nego::SecurityProtocol::empty(),
+            true,
+            core::iter::empty(),
+        )
+        .expect("valid GCC Client Monitor Extended Data");
+        assert_eq!(blocks.monitor_extended, Some(monitor_extended.clone()));
+
+        // A count that differs from Client Monitor Data would be a nonconformant block.
+        let mut mismatched = monitor_extended;
+        mismatched
+            .extended_monitors_info
+            .push(mismatched.extended_monitors_info[0].clone());
+        config.monitor_extended_layout = Some(mismatched);
+        let blocks = create_gcc_blocks(
+            &config,
+            None,
+            nego::SecurityProtocol::empty(),
+            true,
+            core::iter::empty(),
+        )
+        .expect("valid GCC Client Monitor Data");
+        assert!(blocks.monitor_extended.is_none());
+
+        // Extended data describes the monitors of Client Monitor Data, so it is not sent alone.
         config.monitor_layout = None;
         let blocks = create_gcc_blocks(
             &config,
@@ -2177,6 +2263,7 @@ mod tests {
         .expect("valid GCC Client Monitor Data");
 
         assert!(blocks.monitor.is_none());
+        assert!(blocks.monitor_extended.is_none());
         assert!(
             blocks
                 .core

@@ -2234,7 +2234,7 @@ async fn consume_output(
                 }
                 false
             }
-            RdpOutputEvent::LoginComplete => false,
+            RdpOutputEvent::LoginComplete | RdpOutputEvent::RemoteSessionId(_) => false,
             RdpOutputEvent::WindowingOrders(orders) => {
                 guard.rail.record(RailEventKind::WindowingOrders {
                     byte_count: u32::try_from(ironrdp_pdu::window::slow_path_windowing_orders_update_size(&orders))

@@ -1551,6 +1551,105 @@ fn with_audio_capture_disabled_clears_channel() {
     );
 }
 
+const RDP_TARGET: &str = "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\n";
+
+// oracle: mutant a session bpp outside 16 and 32 must map to the nearest depth IronRDP renders (no document decides
+// the mapping; it is this client's choice), and ironrdp_colordepth must keep precedence
+#[test]
+fn session_bpp_selects_the_closest_supported_color_depth() {
+    let color_depth = |rdp: &str| {
+        parse_config_from_rdp(&format!("{RDP_TARGET}{rdp}"), &[])
+            .connector()
+            .bitmap
+            .as_ref()
+            .expect("bitmap config")
+            .color_depth
+    };
+
+    assert_eq!(color_depth("session bpp:i:15\n"), 16);
+    assert_eq!(color_depth("session bpp:i:24\n"), 32);
+    assert_eq!(color_depth("session bpp:i:16\n"), 16);
+    // The IronRDP-specific color depth takes precedence.
+    assert_eq!(color_depth("session bpp:i:16\nironrdp_colordepth:i:32\n"), 32);
+
+    assert!(parse_config_from_rdp_result(&format!("{RDP_TARGET}session bpp:i:12\n"), &[]).is_err());
+}
+
+#[test]
+fn rdp_file_maps_device_scale_factor_and_connection_type() {
+    use ironrdp_pdu::gcc::ConnectionType;
+
+    let config = parse_config_from_rdp(
+        &format!("{RDP_TARGET}desktopscalefactor:i:150\ndevicescalefactor:i:140\nconnection type:i:2\n"),
+        &[],
+    );
+    assert_eq!(config.connector().desktop_scale_factor, 150);
+    assert_eq!(config.connector().device_scale_factor, Some(140));
+    assert_eq!(config.connector().connection_type, ConnectionType::BroadbandLow);
+
+    for invalid in [
+        "devicescalefactor:i:120\n",
+        "connection type:i:0\n",
+        "connection type:i:8\n",
+    ] {
+        assert!(
+            parse_config_from_rdp_result(&format!("{RDP_TARGET}{invalid}"), &[]).is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn builder_display_attributes_reach_connector_configuration() {
+    use ironrdp_pdu::gcc::{ClientMonitorExtendedData, ExtendedMonitorInfo, MonitorOrientation};
+
+    let monitor_extended = ClientMonitorExtendedData {
+        extended_monitors_info: vec![ExtendedMonitorInfo {
+            physical_width: 0,
+            physical_height: 0,
+            orientation: MonitorOrientation::Portrait,
+            desktop_scale_factor: 125,
+            device_scale_factor: 100,
+        }],
+    };
+    let config = ConfigBuilder::new()
+        .with_destination(Destination::from_parts("rdp.example.com", 3389))
+        .with_username("test-user")
+        .with_password("test-pass")
+        .with_client_build(1)
+        .with_client_dir("C:\\Windows\\System32")
+        .with_client_name("ironrdp-tests")
+        .with_platform(MajorPlatformType::WINDOWS)
+        .with_desktop_scale_factor(125)
+        .with_device_scale_factor(140)
+        .with_desktop_physical_size(600, 340)
+        .with_desktop_orientation(MonitorOrientation::LandscapeFlipped)
+        .with_monitor_layout(ClientMonitorData {
+            monitors: vec![Monitor {
+                left: 0,
+                top: 0,
+                right: 1_023,
+                bottom: 767,
+                flags: MonitorFlags::PRIMARY,
+            }],
+        })
+        .with_monitor_extended_layout(monitor_extended.clone())
+        .with_max_touch_contacts(20)
+        .build()
+        .expect("valid display configuration");
+
+    let connector = config.connector();
+    assert_eq!(connector.device_scale_factor, Some(140));
+    assert_eq!(connector.desktop_physical_size, Some((600, 340)));
+    assert_eq!(
+        connector.desktop_orientation,
+        Some(MonitorOrientation::LandscapeFlipped)
+    );
+    assert_eq!(connector.monitor_extended_layout, Some(monitor_extended));
+    assert_eq!(config.channels().max_touch_contacts, 20);
+    assert_eq!(config.properties().get::<u32>("devicescalefactor"), Some(140));
+}
+
 // oracle: spec crates/ironrdp-rdpeusb-native/README.md §Device selection
 #[test]
 fn property_set_selects_usb_devices() {
