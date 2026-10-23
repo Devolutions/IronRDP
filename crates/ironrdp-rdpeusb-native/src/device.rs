@@ -39,7 +39,7 @@ use nusb::transfer::{
 };
 use nusb::{Endpoint, MaybeFuture as _};
 use tokio::sync::{mpsc, oneshot};
-use tokio::task::{AbortHandle, JoinHandle};
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, trace, warn};
 
 use crate::filter::UsbDeviceIdentity;
@@ -255,14 +255,29 @@ impl core::error::Error for OpenError {
     }
 }
 
-/// Completion routing shared by the worker tasks.
+/// Device-channel event routing shared by discovery and worker tasks.
 #[derive(Clone)]
-struct Reply {
+pub(crate) struct Reply {
     channel_id: u32,
     events: EventOrigin,
 }
 
 impl Reply {
+    pub(crate) fn new(channel_id: u32, token: &Arc<()>, sink: UrbdrcEventSink) -> Self {
+        Self {
+            channel_id,
+            events: EventOrigin::new(token, sink),
+        }
+    }
+
+    pub(crate) fn channel_id(&self) -> u32 {
+        self.channel_id
+    }
+
+    pub(crate) fn same_channel(&self, other: &Self) -> bool {
+        self.events.token.ptr_eq(&other.events.token)
+    }
+
     fn complete(&self, request_id: RequestId, completion: CompletionData) {
         self.events.send(UrbdrcEventKind::Completion {
             channel_id: self.channel_id,
@@ -271,8 +286,8 @@ impl Reply {
         });
     }
 
-    /// Close the device channel, for errors the protocol does not let the client report.
-    fn terminate(&self) {
+    /// Close the device channel after unplugging or an error that cannot be reported.
+    pub(crate) fn terminate(&self) {
         self.events.send(UrbdrcEventKind::CloseChannel {
             channel_id: self.channel_id,
         });
@@ -318,12 +333,48 @@ enum Command {
         reservation: Reservation,
     },
     Cancel(RequestId),
-    /// A spawned request finished. The worker completes it, so that a cancellation and a new
-    /// request reusing the ID are both ordered after its removal from the running requests.
-    ControlDone {
+}
+
+#[derive(Default)]
+struct ControlRequests {
+    pending: HashMap<RequestId, (tokio::task::Id, Envelope)>,
+    tasks: JoinSet<(RequestId, CompletionData)>,
+}
+
+impl ControlRequests {
+    fn spawn(
+        &mut self,
         request_id: RequestId,
-        completion: CompletionData,
-    },
+        envelope: Envelope,
+        reservation: Reservation,
+        future: impl Future<Output = CompletionData> + Send + 'static,
+    ) {
+        let task = self.tasks.spawn(async move {
+            let _reservation = reservation;
+            (request_id, future.await)
+        });
+        self.pending.insert(request_id, (task.id(), envelope));
+    }
+
+    fn cancel(&mut self, request_id: RequestId) -> Option<CompletionData> {
+        let (_, envelope) = self.pending.remove(&request_id)?;
+        // nusb retains submitted control transfers after their future is dropped.
+        // Keep polling and charging the physical operation, but complete the logical request now.
+        // UNTESTED: native controls must finish by their timeout so shutdown can release claims.
+        // Verify cancelled-control timeouts on hardware when changing nusb or this lifetime handling.
+        Some(urb::failure_completion(envelope, usbd_status::CANCELED))
+    }
+
+    async fn next_completed(&mut self) -> Result<Option<(RequestId, CompletionData)>, tokio::task::JoinError> {
+        while let Some(completed) = self.tasks.join_next_with_id().await {
+            let (task_id, (request_id, completion)) = completed?;
+            if self.pending.get(&request_id).is_some_and(|(id, _)| *id == task_id) {
+                self.pending.remove(&request_id);
+                return Ok(Some((request_id, completion)));
+            }
+        }
+        Ok(None)
+    }
 }
 
 /// [`UrbdrcDeviceBackend`] for a device opened with nusb.
@@ -351,13 +402,13 @@ impl Drop for OnClose {
 }
 
 impl NusbDeviceBackend {
-    /// Start the worker thread for `device`, redirected on the device DVC `channel_id`.
+    /// Start the worker thread for `device`, using its device-channel event origin.
     ///
     /// `on_close` runs once the worker has released the device, so that it can be offered again.
     pub(crate) fn start(
         device: OpenedDevice,
-        channel_id: u32,
-        sink: UrbdrcEventSink,
+        reply: Reply,
+        events_token: Arc<()>,
         on_close: Box<dyn FnOnce() + Send>,
     ) -> Self {
         let OpenedDevice {
@@ -368,20 +419,14 @@ impl NusbDeviceBackend {
             description,
             location,
         } = device;
-        let events_token = Arc::new(());
-        let reply = Reply {
-            channel_id,
-            events: EventOrigin::new(&events_token, sink),
-        };
         let (commands, receiver) = mpsc::unbounded_channel();
 
         let worker = Worker {
             device,
             interfaces,
             endpoints: BTreeMap::new(),
-            controls: HashMap::new(),
+            controls: ControlRequests::default(),
             reply: reply.clone(),
-            commands: commands.downgrade(),
         };
         let thread_name = format!(
             "urbdrc-{:04x}:{:04x}",
@@ -571,11 +616,8 @@ struct Worker {
     device: nusb::Device,
     interfaces: BTreeMap<u8, nusb::Interface>,
     endpoints: BTreeMap<u8, EndpointTask>,
-    /// Running control requests, with the envelope to complete them in when cancelled.
-    controls: HashMap<RequestId, (AbortHandle, Envelope)>,
+    controls: ControlRequests,
     reply: Reply,
-    /// Weak, so that the worker stops once the backend drops the last strong sender.
-    commands: mpsc::WeakUnboundedSender<Command>,
 }
 
 struct EndpointTask {
@@ -586,43 +628,54 @@ struct EndpointTask {
 
 impl Worker {
     async fn run(mut self, mut commands: mpsc::UnboundedReceiver<Command>) {
-        while let Some(command) = commands.recv().await {
-            match command {
-                Command::Submit {
-                    request_id,
-                    envelope,
-                    request,
-                    reservation,
-                } => self.submit(request_id, envelope, request, reservation).await,
-                Command::Cancel(request_id) => {
-                    if let Some((control, envelope)) = self.controls.remove(&request_id) {
-                        // nusb cannot cancel a submitted control transfer, which keeps running on the
-                        // device until it completes or times out. The server's request completes now,
-                        // and a result already on its way is dropped when it arrives.
-                        control.abort();
-                        self.reply
-                            .complete(request_id, urb::failure_completion(envelope, usbd_status::CANCELED));
-                    } else {
-                        for endpoint in self.endpoints.values() {
-                            let _ = endpoint.commands.send(EndpointCommand::Cancel(request_id));
+        loop {
+            tokio::select! {
+                command = commands.recv() => {
+                    let Some(command) = command else {
+                        break;
+                    };
+                    match command {
+                        Command::Submit {
+                            request_id,
+                            envelope,
+                            request,
+                            reservation,
+                        } => self.submit(request_id, envelope, request, reservation).await,
+                        Command::Cancel(request_id) => {
+                            if let Some(completion) = self.controls.cancel(request_id) {
+                                self.reply.complete(request_id, completion);
+                            } else {
+                                for endpoint in self.endpoints.values() {
+                                    let _ = endpoint.commands.send(EndpointCommand::Cancel(request_id));
+                                }
+                            }
                         }
                     }
                 }
-                Command::ControlDone { request_id, completion } => {
-                    if self.controls.remove(&request_id).is_some() {
-                        self.reply.complete(request_id, completion);
+                completed = self.controls.next_completed(), if !self.controls.tasks.is_empty() => {
+                    match completed {
+                        Ok(Some((request_id, completion))) => self.reply.complete(request_id, completion),
+                        Ok(None) => {}
+                        Err(error) => {
+                            warn!(%error, "USB control task failed; closing the device channel");
+                            self.reply.terminate();
+                            break;
+                        }
                     }
                 }
             }
         }
 
         debug!(channel_id = self.reply.channel_id, "Stopping USB device worker");
-        for (control, _) in self.controls.into_values() {
-            control.abort();
-        }
         for (_, endpoint) in core::mem::take(&mut self.endpoints) {
             drop(endpoint.commands);
             let _ = endpoint.task.await;
+        }
+        // A closed channel must not release its claims or budget before native controls finish.
+        while let Some(completed) = self.controls.tasks.join_next().await {
+            if let Err(error) = completed {
+                warn!(%error, "USB control task failed during device shutdown");
+            }
         }
     }
 
@@ -646,14 +699,14 @@ impl Worker {
                 } => {
                     let device = self.device.clone();
                     let length = usize::from(setup.length);
-                    self.spawn(request_id, envelope, reservation, async move {
+                    self.controls.spawn(request_id, envelope, reservation, async move {
                         match device
                             .get_descriptor(descriptor_type, descriptor_index, language_id, timeout)
                             .await
                         {
                             Ok(mut descriptor) => {
                                 descriptor.truncate(length);
-                                urb::transfer_completion(envelope, descriptor, 0)
+                                urb::transfer_completion(envelope, usbd_status::SUCCESS, descriptor, 0)
                             }
                             Err(error) => urb::failure_completion(envelope, descriptor_error_status(error)),
                         }
@@ -666,12 +719,12 @@ impl Worker {
                     alternate_setting,
                 } => Some(
                     match self.set_alternate_setting(interface_number, alternate_setting).await {
-                        Ok(()) => urb::transfer_completion(envelope, Vec::new(), 0),
+                        Ok(()) => urb::transfer_completion(envelope, usbd_status::SUCCESS, Vec::new(), 0),
                         Err(status) => urb::failure_completion(envelope, status),
                     },
                 ),
                 ControlRoute::ClearHalt { endpoint } => Some(match self.clear_halt(endpoint).await {
-                    Ok(()) => urb::transfer_completion(envelope, Vec::new(), 0),
+                    Ok(()) => urb::transfer_completion(envelope, usbd_status::SUCCESS, Vec::new(), 0),
                     Err(status) => urb::failure_completion(envelope, status),
                 }),
                 ControlRoute::Reject => Some(urb::failure_completion(envelope, usbd_status::NOT_SUPPORTED)),
@@ -734,7 +787,7 @@ impl Worker {
                 match interface {
                     Ok(interface) => {
                         let device = self.device.clone();
-                        self.spawn(request_id, envelope, reservation, async move {
+                        self.controls.spawn(request_id, envelope, reservation, async move {
                             let vendor_code = device
                                 .get_descriptor(
                                     urb::DESCRIPTOR_TYPE_STRING,
@@ -780,13 +833,13 @@ impl Worker {
                             let _ = aborted.await;
                         }
                     }
-                    urb::transfer_completion(envelope, Vec::new(), 0)
+                    urb::transfer_completion(envelope, usbd_status::SUCCESS, Vec::new(), 0)
                 }
                 PipeOperation::ClearHalt => match self.clear_halt(endpoint).await {
-                    Ok(()) => urb::transfer_completion(envelope, Vec::new(), 0),
+                    Ok(()) => urb::transfer_completion(envelope, usbd_status::SUCCESS, Vec::new(), 0),
                     Err(status) => urb::failure_completion(envelope, status),
                 },
-                PipeOperation::Ignore => urb::transfer_completion(envelope, Vec::new(), 0),
+                PipeOperation::Ignore => urb::transfer_completion(envelope, usbd_status::SUCCESS, Vec::new(), 0),
             }),
             // Unreachable: `NusbDeviceBackend::dispatch`, the only producer of `Command::Submit`, answers
             // these locally. The arms keep the match exhaustive and still complete the request should
@@ -800,25 +853,6 @@ impl Worker {
         if let Some(completion) = completion {
             self.reply.complete(request_id, completion);
         }
-    }
-
-    /// Run a request that completes on its own, keeping a handle to cancel it.
-    fn spawn(
-        &mut self,
-        request_id: RequestId,
-        envelope: Envelope,
-        reservation: Reservation,
-        future: impl Future<Output = CompletionData> + Send + 'static,
-    ) {
-        let commands = self.commands.clone();
-        let task = tokio::spawn(async move {
-            let _reservation = reservation;
-            let completion = future.await;
-            if let Some(commands) = commands.upgrade() {
-                let _ = commands.send(Command::ControlDone { request_id, completion });
-            }
-        });
-        self.controls.insert(request_id, (task.abort_handle(), envelope));
     }
 
     fn spawn_control(
@@ -838,7 +872,7 @@ impl Worker {
             return;
         };
 
-        self.spawn(request_id, envelope, reservation, async move {
+        self.controls.spawn(request_id, envelope, reservation, async move {
             control(&interface, envelope, setup, data, timeout).await
         });
     }
@@ -997,7 +1031,7 @@ impl Worker {
             .map(|config| config.configuration_value())
             .ok();
         if active == Some(value) {
-            urb::transfer_completion(envelope, Vec::new(), 0)
+            urb::transfer_completion(envelope, usbd_status::SUCCESS, Vec::new(), 0)
         } else {
             // Changing the configuration would invalidate every claimed interface, and WinUSB does not
             // allow it at all. Devices with a single configuration never need it.
@@ -1131,7 +1165,7 @@ async fn control(
                 )
                 .await;
             match result {
-                Ok(data) => urb::transfer_completion(envelope, data, 0),
+                Ok(data) => urb::transfer_completion(envelope, usbd_status::SUCCESS, data, 0),
                 Err(error) => urb::failure_completion(envelope, transfer_error_status(error)),
             }
         }
@@ -1151,7 +1185,7 @@ async fn control(
                 )
                 .await;
             match result {
-                Ok(()) => urb::transfer_completion(envelope, Vec::new(), written),
+                Ok(()) => urb::transfer_completion(envelope, usbd_status::SUCCESS, Vec::new(), written),
                 Err(error) => urb::failure_completion(envelope, transfer_error_status(error)),
             }
         }
@@ -1188,6 +1222,17 @@ struct InFlight {
     _reservation: Reservation,
 }
 
+impl InFlight {
+    fn into_cancelled(self) -> CompletionData {
+        urb::transfer_completion(
+            self.envelope,
+            usbd_status::CANCELED,
+            self.received,
+            u32::try_from(self.written).unwrap_or(u32::MAX),
+        )
+    }
+}
+
 /// Transfers of one endpoint, in submission order.
 struct EndpointQueue {
     in_flight: VecDeque<InFlight>,
@@ -1209,6 +1254,8 @@ async fn run_endpoint<T: BulkOrInterrupt, D: EndpointDirection>(
     mut commands: mpsc::UnboundedReceiver<EndpointCommand>,
     reply: Reply,
 ) {
+    // UNTESTED: nusb must return completions in submission order to match them to the right URB.
+    // Verify cancellation and resume ordering on hardware when changing endpoint handling.
     let mut queue = EndpointQueue {
         in_flight: VecDeque::new(),
         draining: false,
@@ -1234,15 +1281,15 @@ async fn run_endpoint<T: BulkOrInterrupt, D: EndpointDirection>(
                         queue.draining = true;
                         endpoint.cancel_all();
                     } else {
-                        // Not submitted yet: complete it as cancelled without touching the device.
+                        // Waiting to submit or resume: preserve any progress without touching the device.
                         let held = queue.held.iter().position(|submission| submission.request_id == request_id);
                         let retried = queue.retry.iter().position(|(entry, _)| entry.request_id == request_id);
-                        let envelope = held
+                        let completion = held
                             .and_then(|index| queue.held.remove(index))
-                            .map(|submission| submission.envelope)
-                            .or_else(|| retried.and_then(|index| queue.retry.remove(index)).map(|(entry, _)| entry.envelope));
-                        if let Some(envelope) = envelope {
-                            reply.complete(request_id, urb::failure_completion(envelope, usbd_status::CANCELED));
+                            .map(|submission| urb::failure_completion(submission.envelope, usbd_status::CANCELED))
+                            .or_else(|| retried.and_then(|index| queue.retry.remove(index)).map(|(entry, _)| entry.into_cancelled()));
+                        if let Some(completion) = completion {
+                            reply.complete(request_id, completion);
                         }
                     }
                 }
@@ -1312,7 +1359,10 @@ fn submit<T: BulkOrInterrupt, D: EndpointDirection>(
 
     let buffer = if D::DIR == nusb::transfer::Direction::In {
         if length == 0 {
-            reply.complete(request_id, urb::transfer_completion(envelope, Vec::new(), 0));
+            reply.complete(
+                request_id,
+                urb::transfer_completion(envelope, usbd_status::SUCCESS, Vec::new(), 0),
+            );
             return;
         }
         let Some(buffer_length) = in_buffer_length(endpoint.max_packet_size(), length) else {
@@ -1428,18 +1478,14 @@ async fn cancel_all<T: BulkOrInterrupt, D: EndpointDirection>(
     queue.in_flight.clear();
     queue.draining = false;
 
-    let cancelled = queue
-        .retry
-        .drain(..)
-        .map(|(entry, _)| (entry.request_id, entry.envelope))
-        .chain(
-            queue
-                .held
-                .drain(..)
-                .map(|submission| (submission.request_id, submission.envelope)),
+    for (entry, _) in queue.retry.drain(..) {
+        reply.complete(entry.request_id, entry.into_cancelled());
+    }
+    for submission in queue.held.drain(..) {
+        reply.complete(
+            submission.request_id,
+            urb::failure_completion(submission.envelope, usbd_status::CANCELED),
         );
-    for (request_id, envelope) in cancelled {
-        reply.complete(request_id, urb::failure_completion(envelope, usbd_status::CANCELED));
     }
 }
 
@@ -1458,35 +1504,37 @@ fn complete_transfer<D: EndpointDirection>(reply: &Reply, entry: InFlight, compl
 /// or aborted its pipe. Transfers cancelled only along with another one resume instead (see
 /// [`resume`]).
 fn transfer_completion<D: EndpointDirection>(mut entry: InFlight, completion: Completion) -> Option<CompletionData> {
-    Some(match completion.status {
-        Ok(()) if D::DIR == nusb::transfer::Direction::In => {
-            // Reuse nusb's buffer unless the transfer resumed after a cancellation.
-            let data = if entry.received.is_empty() {
-                completion.buffer.into_vec()
-            } else {
-                let mut data = core::mem::take(&mut entry.received);
-                data.extend_from_slice(&completion.buffer);
-                data
-            };
-            if usize::try_from(entry.length).is_ok_and(|length| length < data.len()) {
-                // The buffer was rounded up to whole packets and the device filled more than the server
-                // asked for. MS-RDPEUSB 3.3.5.3.6 requires terminating the device channel in this case.
-                warn!(
-                    request_id = entry.request_id,
-                    requested = entry.length,
-                    received = data.len(),
-                    "USB IN transfer overran its buffer; closing the device channel"
-                );
-                return None;
-            }
-            urb::transfer_completion(entry.envelope, data, 0)
+    let status = completion
+        .status
+        .map_or_else(transfer_error_status, |()| usbd_status::SUCCESS);
+    Some(if D::DIR == nusb::transfer::Direction::In {
+        // Reuse nusb's buffer unless the transfer resumed after a cancellation.
+        let data = if entry.received.is_empty() {
+            completion.buffer.into_vec()
+        } else {
+            let mut data = core::mem::take(&mut entry.received);
+            data.extend_from_slice(&completion.buffer);
+            data
+        };
+        if usize::try_from(entry.length).is_ok_and(|length| length < data.len()) {
+            // The buffer was rounded up to whole packets and the device filled more than the server
+            // asked for. MS-RDPEUSB 3.3.5.3.6 requires terminating the device channel in this case.
+            warn!(
+                request_id = entry.request_id,
+                requested = entry.length,
+                received = data.len(),
+                "USB IN transfer overran its buffer; closing the device channel"
+            );
+            return None;
         }
-        Ok(()) => urb::transfer_completion(
+        urb::transfer_completion(entry.envelope, status, data, 0)
+    } else {
+        urb::transfer_completion(
             entry.envelope,
+            status,
             Vec::new(),
             u32::try_from(entry.written.saturating_add(completion.actual_len)).unwrap_or(u32::MAX),
-        ),
-        Err(error) => urb::failure_completion(entry.envelope, transfer_error_status(error)),
+        )
     })
 }
 
@@ -1520,6 +1568,10 @@ fn error_status(error: &nusb::Error) -> UsbdStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // oracle: reference microsoft/win32metadata@6d6617a8eee5:generation/WinSDK/RecompiledIdlHeaders/shared/usb.h
+    const CANCELED: UsbdStatus = 0xc001_0000;
+    const STALL_PID: UsbdStatus = 0xc000_0004;
 
     fn budget(bytes: usize) -> Arc<TransferBudget> {
         Arc::new(TransferBudget {
@@ -1562,16 +1614,175 @@ mod tests {
     }
 
     #[test]
+    fn queued_unplug_close_does_not_survive_its_device_channel() {
+        // oracle: spec MS-RDPEDYC §3.3.5.2 permits channel ID reuse; stale events must not affect its new owner.
+        let (sender, received) = std::sync::mpsc::channel();
+        let sink: UrbdrcEventSink = Arc::new(move |event| sender.send(event).expect("receiver is alive"));
+        let manager_token = Arc::new(());
+        let manager = EventOrigin::new(&manager_token, Arc::clone(&sink));
+        let old_token = Arc::new(());
+        let old = Reply::new(7, &old_token, Arc::clone(&sink));
+        old.terminate();
+        drop(old_token);
+
+        let replacement_token = Arc::new(());
+        let replacement = Reply::new(7, &replacement_token, sink);
+        assert!(!old.same_channel(&replacement));
+        assert!(received.try_recv().expect("queued unplug").into_current().is_none());
+
+        replacement.terminate();
+        assert!(matches!(
+            received.try_recv().expect("replacement close").into_current(),
+            Some(UrbdrcEventKind::CloseChannel { channel_id: 7 })
+        ));
+        manager.send(UrbdrcEventKind::CloseChannel { channel_id: 8 });
+        assert!(
+            received
+                .try_recv()
+                .expect("manager still lives")
+                .into_current()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_controls_remain_charged_until_native_completion() {
+        // oracle: reference nusb 0.2.8 Pending::drop retains native controls after their future is dropped.
+        // oracle: spec crates/ironrdp-rdpeusb-native/README.md §Limitations requires charging in-flight controls.
+        let budget = budget(100);
+        let envelope = Envelope::In { output_buffer_size: 1 };
+        let (started, running) = oneshot::channel();
+        let (finish, finished) = oneshot::channel();
+        let mut controls = ControlRequests::default();
+        controls.spawn(7, envelope, budget.reserve(100).expect("fits"), async move {
+            started.send(()).expect("test is waiting");
+            finished.await.expect("test completes the native operation");
+            urb::transfer_completion(envelope, usbd_status::SUCCESS, vec![1], 0)
+        });
+        running.await.expect("native operation started");
+
+        let Some(CompletionData::TransferIn(cancelled)) = controls.cancel(7) else {
+            panic!("expected immediate logical cancellation");
+        };
+        assert_eq!(cancelled.ts_urb_result.header.usbd_status, CANCELED);
+        tokio::task::yield_now().await;
+        assert!(
+            budget.reserve(1).is_none(),
+            "the physical operation still owns its buffer"
+        );
+
+        finish.send(()).expect("native operation was not aborted");
+        assert!(controls.next_completed().await.expect("task succeeds").is_none());
+        assert_eq!(budget.available.load(Ordering::Acquire), 100);
+    }
+
+    #[tokio::test]
+    async fn late_control_completion_cannot_complete_a_reused_request_id() {
+        // oracle: spec MS-RDPEUSB §3.3.5.4 requires a completion for its corresponding request only.
+        let budget = budget(2);
+        let envelope = Envelope::In { output_buffer_size: 1 };
+        let mut controls = ControlRequests::default();
+        let (finish_old, old_finished) = oneshot::channel();
+        let (old_done, old_completed) = oneshot::channel();
+        controls.spawn(7, envelope, budget.reserve(1).expect("fits"), async move {
+            old_finished.await.expect("test completes old request");
+            let completion = urb::transfer_completion(envelope, usbd_status::SUCCESS, vec![1], 0);
+            old_done.send(()).expect("test is waiting for old completion");
+            completion
+        });
+        assert!(controls.cancel(7).is_some());
+        let (finish_new, new_finished) = oneshot::channel();
+        controls.spawn(7, envelope, budget.reserve(1).expect("fits"), async move {
+            new_finished.await.expect("test completes new request");
+            urb::transfer_completion(envelope, usbd_status::SUCCESS, vec![2], 0)
+        });
+
+        finish_old.send(()).expect("old operation remains alive");
+        old_completed.await.expect("old operation completed first");
+        finish_new.send(()).expect("new operation remains alive");
+        let (request_id, CompletionData::TransferIn(done)) = controls
+            .next_completed()
+            .await
+            .expect("task succeeds")
+            .expect("new request completes")
+        else {
+            panic!("expected a transfer-in completion");
+        };
+        assert_eq!(request_id, 7);
+        assert_eq!(done.output_buffer, [2]);
+        assert!(controls.next_completed().await.expect("tasks succeed").is_none());
+        assert_eq!(budget.available.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
     fn cancelled_transfers_still_complete() {
-        // The server sees the cancellation, even when some data moved before it.
+        // oracle: spec MS-RDPEUSB §3.3.5.4.2 returns the operation result and all data read.
         for data in [&[][..], &[1, 2, 3]] {
             let Some(CompletionData::TransferIn(cancelled)) =
                 transfer_completion::<In>(in_flight(64), completion(data, Err(TransferError::Cancelled)))
             else {
                 panic!("expected a transfer-in completion");
             };
-            assert_eq!(cancelled.ts_urb_result.header.usbd_status, usbd_status::CANCELED);
+            assert_eq!(cancelled.ts_urb_result.header.usbd_status, CANCELED);
+            assert_eq!(cancelled.output_buffer, data);
         }
+    }
+
+    #[test]
+    fn stalled_in_transfer_keeps_resumed_data() {
+        // oracle: spec MS-RDPEUSB §3.3.5.4.2 returns all data read, including before a failure.
+        let mut entry = in_flight(6);
+        entry.received = vec![1, 2];
+        let Some(CompletionData::TransferIn(done)) =
+            transfer_completion::<In>(entry, completion(&[3, 4], Err(TransferError::Stall)))
+        else {
+            panic!("expected a transfer-in completion");
+        };
+        assert_eq!(done.ts_urb_result.header.usbd_status, STALL_PID);
+        assert_eq!(done.output_buffer, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn cancelled_out_transfer_reports_partial_progress() {
+        // oracle: spec MS-RDPEUSB §2.2.7.3 reports the bytes actually sent, not the requested length.
+        let mut entry = in_flight(6);
+        entry.envelope = Envelope::Out;
+        entry.written = 2;
+        let partial = Completion {
+            buffer: Buffer::from(vec![3, 4, 5, 6]),
+            actual_len: 2,
+            status: Err(TransferError::Cancelled),
+        };
+        let Some(CompletionData::TransferOut(done)) = transfer_completion::<Out>(entry, partial) else {
+            panic!("expected a transfer-out completion");
+        };
+        assert_eq!(done.ts_urb_result.header.usbd_status, CANCELED);
+        assert_eq!(done.output_buffer_size, 4);
+    }
+
+    #[test]
+    fn cancelled_in_retry_keeps_received_data() {
+        // oracle: spec MS-RDPEUSB §3.3.5.4.2 returns data read even when cancelled before resubmission.
+        let mut entry = in_flight(6);
+        entry.received = vec![1, 2];
+        let CompletionData::TransferIn(done) = entry.into_cancelled() else {
+            panic!("expected a transfer-in completion");
+        };
+        assert_eq!(done.ts_urb_result.header.usbd_status, CANCELED);
+        assert_eq!(done.output_buffer, [1, 2]);
+    }
+
+    #[test]
+    fn cancelled_out_retry_keeps_written_count() {
+        // oracle: spec MS-RDPEUSB §2.2.7.3 reports bytes already sent, even before resubmission.
+        let mut entry = in_flight(6);
+        entry.envelope = Envelope::Out;
+        entry.written = 2;
+        let CompletionData::TransferOut(done) = entry.into_cancelled() else {
+            panic!("expected a transfer-out completion");
+        };
+        assert_eq!(done.ts_urb_result.header.usbd_status, CANCELED);
+        assert_eq!(done.output_buffer_size, 2);
     }
 
     #[test]

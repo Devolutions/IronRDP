@@ -701,19 +701,24 @@ fn hresult(usbd_status: UsbdStatus) -> HResult {
 }
 
 /// Complete a request that read `data` (IN) or wrote `written` bytes (OUT).
-pub(crate) fn transfer_completion(envelope: Envelope, mut data: Vec<u8>, written: u32) -> CompletionData {
+pub(crate) fn transfer_completion(
+    envelope: Envelope,
+    usbd_status: UsbdStatus,
+    mut data: Vec<u8>,
+    written: u32,
+) -> CompletionData {
     match envelope {
         Envelope::In { output_buffer_size } => {
             data.truncate(usize::try_from(output_buffer_size).unwrap_or(usize::MAX));
             CompletionData::TransferIn(TransferInCompletionResult {
-                ts_urb_result: result(usbd_status::SUCCESS, None),
-                hresult: S_OK,
+                ts_urb_result: result(usbd_status, None),
+                hresult: hresult(usbd_status),
                 output_buffer: data,
             })
         }
         Envelope::Out => CompletionData::TransferOut(TransferOutCompletionResult {
-            ts_urb_result: result(usbd_status::SUCCESS, None),
-            hresult: S_OK,
+            ts_urb_result: result(usbd_status, None),
+            hresult: hresult(usbd_status),
             output_buffer_size: written,
         }),
     }
@@ -1320,9 +1325,12 @@ mod tests {
 
     #[test]
     fn completions_carry_status_and_hresult() {
-        let CompletionData::TransferIn(read) =
-            transfer_completion(Envelope::In { output_buffer_size: 2 }, vec![1, 2, 3], 0)
-        else {
+        let CompletionData::TransferIn(read) = transfer_completion(
+            Envelope::In { output_buffer_size: 2 },
+            usbd_status::SUCCESS,
+            vec![1, 2, 3],
+            0,
+        ) else {
             panic!("expected a transfer-in completion");
         };
         assert_eq!(read.output_buffer, [1, 2]);

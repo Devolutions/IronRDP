@@ -27,7 +27,7 @@ What can be claimed depends on the platform, because nusb uses the generic user-
   Devices with WinUSB firmware descriptors (Microsoft OS descriptors), such as many development boards, DFU and ADB/fastboot interfaces, work out of the box.
   Other devices need their driver replaced with WinUSB first, for example with [Zadig], which requires administrator rights and makes the device unusable locally until the original driver is restored.
   Devices owned by Windows class drivers are not reachable: HID (keyboards, mice, security keys), mass storage, smart card readers, printers, audio, cameras, USB serial and Bluetooth.
-  mstsc reaches those through the RemoteFX USB filter driver (`tsusbflt`), whose control interface is private to the Remote Desktop client and cannot be reused.
+  mstsc reaches those through the RemoteFX USB filter driver (`tsusbflt`), which this backend does not use.
 - **Linux**: kernel drivers are detached from the claimed interfaces, so most devices can be redirected; the user needs write access to `/dev/bus/usb`, usually through a udev rule.
   The kernel driver is reattached when the redirection ends.
 - **macOS**: devices claimed by a kernel or system extension are not reachable, which covers most class devices.
@@ -38,13 +38,20 @@ What can be claimed depends on the platform, because nusb uses the generic user-
 - The active configuration cannot be changed: WinUSB does not allow it, and on other platforms it would invalidate every claimed interface.
   Selecting the active configuration, and alternate settings, works.
 - Port reset and cycle requests are acknowledged without resetting the device, like the FreeRDP client, because re-enumeration would end the redirection.
-- nusb cancels bulk and interrupt transfers per endpoint. When the server cancels one request, the other transfers pending on that endpoint that had not moved any data are submitted again in order, and partially completed ones are reported as short transfers.
-- nusb cannot cancel a control transfer once it is submitted. Cancelling one completes it at once with `USBD_STATUS_CANCELED`, but the request still runs on the device until it completes or times out. A control transfer without a timeout, or with an infinite one, is given 5 minutes.
+- nusb cancels bulk and interrupt transfers per endpoint.
+  When the server cancels one request, other transfers cancelled with it resume in order, preserving the data already moved.
+  An IN transfer that received a short packet or filled its buffer, or an OUT transfer that wrote everything, completes instead.
+- nusb cannot cancel a control transfer once it is submitted.
+  Cancelling one completes it at once with `USBD_STATUS_CANCELED`, but the request still runs on the device until it completes or times out.
+  A control transfer without a timeout, or with an infinite one, is given 5 minutes.
+  Cancelled controls retain their budget and device claims until the native operation finishes; late results cannot complete a reused request ID.
 - Each device has a 64 MiB budget for requests in flight, charged with each request's buffer plus 1 KiB, which also caps them at 65536; requests beyond that fail with `USBD_STATUS_INSUFFICIENT_RESOURCES`.
-- IN transfers are limited to 16 MiB, and data a device sends beyond the requested length is reported as `USBD_STATUS_BUFFER_OVERRUN`.
+- IN transfers are limited to 16 MiB.
+  Data a device sends beyond the requested length terminates its device channel, as MS-RDPEUSB requires.
 - On Windows, interface-directed Microsoft OS feature descriptor requests are rejected with `USBD_STATUS_NOT_SUPPORTED` unless the feature index matches the interface number, because WinUSB refuses them otherwise.
 - Windows reads device-level descriptors through the hub driver, and on Windows hotplugged devices are opened after a short delay so that their driver can bind first.
-- The bus number in `addr:` rules is the platform bus number on Linux and macOS. On Windows it is the position of the host controller among the controllers present, sorted by instance ID, so it changes when a controller (a dock, for example) is added or removed; `local_devices` shows the current numbers.
+- The bus number in `addr:` rules is the platform bus number on Linux and macOS.
+  On Windows it is the position of the host controller among the controllers present, sorted by instance ID, so it changes when a controller (a dock, for example) is added or removed; `local_devices` shows the current numbers.
 
 This crate is part of the [IronRDP] project.
 

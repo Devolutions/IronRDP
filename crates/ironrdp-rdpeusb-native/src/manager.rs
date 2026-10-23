@@ -16,7 +16,7 @@ use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
 use tracing::{debug, info, warn};
 
-use crate::device::{self, NusbDeviceBackend, OpenedDevice};
+use crate::device::{self, NusbDeviceBackend, OpenedDevice, Reply};
 use crate::filter::{UsbDeviceIdentity, UsbRedirectionConfig};
 use crate::{EventOrigin, UrbdrcEventKind, UrbdrcEventSink};
 
@@ -47,7 +47,7 @@ struct State {
     /// Opened devices announced with `ADD_VIRTUAL_CHANNEL`, waiting for their DVC.
     pending: PendingQueue<nusb::DeviceId, OpenedDevice>,
     /// Devices announced or redirected, with their device DVC once it exists.
-    redirected: HashMap<nusb::DeviceId, Option<u32>>,
+    redirected: HashMap<nusb::DeviceId, Option<Reply>>,
     /// Stops the discovery thread.
     discovery: Option<oneshot::Sender<()>>,
 }
@@ -167,7 +167,7 @@ impl DeviceManagerBackend for NusbDeviceManager {
     }
 
     fn take_device_for_channel(&mut self, channel_id: u32) -> Option<Box<dyn UrbdrcDeviceBackend>> {
-        let device = {
+        let (device, reply, events_token) = {
             let mut state = self.shared.state();
             let Some(device) = state.pending.pop()? else {
                 debug!(
@@ -176,8 +176,10 @@ impl DeviceManagerBackend for NusbDeviceManager {
                 );
                 return None;
             };
-            state.redirected.insert(device.id, Some(channel_id));
-            device
+            let events_token = Arc::new(());
+            let reply = Reply::new(channel_id, &events_token, Arc::clone(self.shared.events.sink()));
+            state.redirected.insert(device.id, Some(reply.clone()));
+            (device, reply, events_token)
         };
 
         let (vendor_id, product_id) = device.vendor_product();
@@ -190,16 +192,25 @@ impl DeviceManagerBackend for NusbDeviceManager {
 
         let id = device.id;
         let shared = Arc::downgrade(&self.shared);
+        let closed = reply.clone();
         let on_close = Box::new(move || {
             if let Some(shared) = shared.upgrade() {
-                shared.state().redirected.remove(&id);
+                let mut state = shared.state();
+                if state
+                    .redirected
+                    .get(&id)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|current| current.same_channel(&closed))
+                {
+                    state.redirected.remove(&id);
+                }
             }
         });
 
         Some(Box::new(NusbDeviceBackend::start(
             device,
-            channel_id,
-            Arc::clone(self.shared.events.sink()),
+            reply,
+            events_token,
             on_close,
         )))
     }
@@ -396,14 +407,14 @@ async fn run_hotplug(mut watch: nusb::hotplug::HotplugWatch, mut stopped: onesho
                 if let Some(task) = opening.remove(&id) {
                     task.abort();
                 }
-                let channel_id = {
+                let channel = {
                     let mut state = shared.state();
                     state.pending.unplug(id);
                     state.redirected.remove(&id).flatten()
                 };
-                if let Some(channel_id) = channel_id {
-                    debug!(channel_id, "Redirected USB device was unplugged");
-                    shared.events.send(UrbdrcEventKind::CloseChannel { channel_id });
+                if let Some(channel) = channel {
+                    debug!(channel_id = channel.channel_id(), "Redirected USB device was unplugged");
+                    channel.terminate();
                 }
             }
         }

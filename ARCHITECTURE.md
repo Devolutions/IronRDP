@@ -110,6 +110,11 @@ EGFX dynamic channel implemented as described in MS-RDPEGFX.
 
 AUDIO_INPUT dynamic channel for client microphone capture implemented as described in MS-RDPEAI.
 
+#### [`crates/ironrdp-rdpeusb`](./crates/ironrdp-rdpeusb)
+
+URBDRC dynamic channel state machines, PDU codecs, and USB device backend interfaces implemented as described in MS-RDPEUSB.
+The crate performs no USB I/O; host device access belongs to a backend.
+
 #### [`crates/ironrdp-rdpecam`](./crates/ironrdp-rdpecam)
 
 Video capture dynamic channel client and backend boundary implemented as described in MS-RDPECAM.
@@ -291,6 +296,11 @@ Web-based frontend using `Svelte` and `Material` frameworks.
 #### [`crates/ironrdp-cliprdr-native`](./crates/ironrdp-cliprdr-native)
 
 Native CLIPRDR backend implementations.
+
+#### [`crates/ironrdp-rdpeusb-native`](./crates/ironrdp-rdpeusb-native)
+
+nusb backend for the MS-RDPEUSB client, handling device selection, discovery, and USB I/O outside the session loop.
+[`crates/ironrdp-client`](./crates/ironrdp-client) integrates it through its optional `usb` feature.
 
 #### [`crates/ironrdp-cfg`](./crates/ironrdp-cfg)
 
