@@ -264,8 +264,8 @@ pub(crate) fn translate_in(packet: TransferInPacket) -> UsbRequest {
             None => UsbRequest::Reject(usbd_status::INVALID_PARAMETER),
         },
         TsUrbInKind::VendorClassReq(request) => match (function_kind(func), function_recipient(func)) {
-            // Windows also submits OUT requests without a data stage as TRANSFER_IN_REQUESTs, with
-            // transfer flags that keep their direction.
+            // Windows also submits OUT requests without a data stage in TRANSFER_IN_REQUEST
+            // messages, with transfer flags that keep their direction.
             (Some(kind), Some(recipient)) if request.transfer_flags & USBD_TRANSFER_DIRECTION_IN == 0 => {
                 UsbRequest::Control {
                     setup: SetupPacket {

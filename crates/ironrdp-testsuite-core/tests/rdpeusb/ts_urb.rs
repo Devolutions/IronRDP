@@ -78,7 +78,7 @@ fn select_configuration_carries_full_descriptor() {
 }
 
 // Windows submits OUT control requests without a data stage, such as a HID SET_IDLE, as
-// TRANSFER_IN_REQUESTs whose transfer flags keep the OUT direction.
+// TRANSFER_IN_REQUEST messages whose transfer flags keep the OUT direction.
 #[test]
 fn transfer_in_accepts_out_control_requests_without_data() {
     use ironrdp_rdpeusb::pdu::usb_dev::ts_urb::{TsUrbIn, TsUrbInKind};
