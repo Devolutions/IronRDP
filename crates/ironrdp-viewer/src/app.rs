@@ -7,12 +7,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context as _;
+use ironrdp::client::rail::RailInputEvent;
 use ironrdp::client::rdp::{
     AutoReconnectDecision, RDPEI_MAX_TOUCH_CONTACTS, RdpInputEvent, RdpInputSender, RdpOutputEvent,
 };
 use ironrdp::rdpei::RdpeiInputState;
 use ironrdp::rdpei::contact::{TouchFrameBuilder, TouchPhase};
 use ironrdp_daemon::daemon::{Daemon, ResizeError};
+use ironrdp_rail::pdu::{ActivatePdu, SystemCommand, SystemCommandPdu};
 use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
 use smallvec::SmallVec;
 use tracing::{debug, error, info, trace, warn};
@@ -21,12 +23,16 @@ use winit::dpi::{LogicalPosition, PhysicalPosition, PhysicalSize};
 use winit::event::{self, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
-use winit::window::{CursorIcon, CustomCursor, Window, WindowAttributes};
+use winit::window::{Cursor, CursorIcon, CustomCursor, Window, WindowAttributes};
 
 use crate::keymap::{is_modifier, map_key_code};
+use crate::rail::{RailWindows, bounded_window_size, window_point_to_desktop};
 
 /// Emulated mouse operations kept while the session input queue is full; beyond this, moves are dropped.
 const MAX_PENDING_TOUCH_MOUSE: usize = 256;
+
+/// RAIL controls kept while the session input queue is full; beyond this, the oldest is dropped.
+const MAX_PENDING_RAIL_INPUTS: usize = 64;
 
 type WindowSurface = (Arc<Window>, softbuffer::Surface<DisplayHandle<'static>, Arc<Window>>);
 
@@ -68,22 +74,33 @@ pub struct RpcApp {
     pending_touch_mouse: Vec<ironrdp::input::Operation>,
     /// Origin of the touch frame timestamps.
     touch_epoch: Instant,
+    /// RemoteApp mode: server windows open as local windows and no desktop window is shown.
+    remote_app: bool,
+    rail_windows: RailWindows,
+    /// Activate and Close requests that wait for room in the session input queue, in order.
+    pending_rail_inputs: std::collections::VecDeque<RailInputEvent>,
+    /// Whether releasing every held key and button after a focus loss waits for room in the
+    /// session input queue.
+    release_pending: bool,
 }
 
 impl App {
+    /// Creates the viewer; with `remote_app`, each RemoteApp window opens as a local window
+    /// instead of a desktop window.
     pub fn new(
         event_loop: &EventLoop<RdpOutputEvent>,
         input_event_sender: &RdpInputSender,
         initial_window_size: PhysicalSize<u32>,
+        remote_app: bool,
     ) -> anyhow::Result<Self> {
-        Ok(Self {
-            inner: RpcApp::new_inner(
-                event_loop,
-                InputTarget::Direct(input_event_sender.clone()),
-                None,
-                initial_window_size,
-            )?,
-        })
+        let inner = RpcApp::new_inner(
+            event_loop,
+            InputTarget::Direct(input_event_sender.clone()),
+            None,
+            initial_window_size,
+            remote_app,
+        )?;
+        Ok(Self { inner })
     }
 }
 
@@ -94,11 +111,13 @@ impl RpcApp {
         frame_wakeup: Arc<AtomicBool>,
         initial_window_size: PhysicalSize<u32>,
     ) -> anyhow::Result<Self> {
+        // RemoteApp windows need the client's RAIL output, which the RPC daemon does not expose.
         Self::new_inner(
             event_loop,
             InputTarget::Rpc(daemon),
             Some(frame_wakeup),
             initial_window_size,
+            false,
         )
     }
 
@@ -107,6 +126,7 @@ impl RpcApp {
         input_target: InputTarget,
         frame_wakeup: Option<Arc<AtomicBool>>,
         initial_window_size: PhysicalSize<u32>,
+        remote_app: bool,
     ) -> anyhow::Result<Self> {
         // SAFETY: We drop the softbuffer context right before the event loop is stopped, thus making this safe.
         // FIXME: This is not a sufficient proof and the API is actually unsound as-is.
@@ -135,6 +155,10 @@ impl RpcApp {
             mouse_touch: None,
             pending_touch_mouse: Vec::new(),
             touch_epoch: Instant::now(),
+            remote_app,
+            rail_windows: RailWindows::default(),
+            pending_rail_inputs: std::collections::VecDeque::new(),
+            release_pending: false,
         })
     }
 
@@ -351,11 +375,14 @@ impl RpcApp {
     fn on_about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.send_touch_frames();
         self.send_touch_mouse();
-        // Touch input that found the session input queue full is retried shortly, since draining the queue
+        self.send_pending_rail_input();
+        // Input that found the session input queue full is retried shortly, since draining the queue
         // does not wake the event loop.
         // Frames held for a suspended server wait for the resume event, which wakes the loop.
         let touch_pending = (self.touch_frames.has_pending_frames() && !self.rdpei_input_state.suspended)
-            || !self.pending_touch_mouse.is_empty();
+            || !self.pending_touch_mouse.is_empty()
+            || self.release_pending
+            || !self.pending_rail_inputs.is_empty();
         let touch_retry = touch_pending.then(|| Instant::now() + Duration::from_millis(10));
         let deadline = touch_retry.into_iter().chain(self.resize_deadline()).min();
         event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
@@ -373,6 +400,9 @@ impl RpcApp {
     }
 
     fn on_resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.remote_app || self.window.is_some() {
+            return;
+        }
         let window_attributes = WindowAttributes::default()
             .with_title("IronRDP")
             .with_inner_size(self.initial_window_size);
@@ -398,12 +428,12 @@ impl RpcApp {
         window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        let Some((window, _)) = self.window.as_mut() else {
+        let Some((window, _)) = self.window.as_mut().filter(|(window, _)| window.id() == window_id) else {
+            if let Some(rail_window_id) = self.rail_windows.find(window_id) {
+                self.on_rail_window_event(rail_window_id, event);
+            }
             return;
         };
-        if window_id != window.id() {
-            return;
-        }
 
         match event {
             WindowEvent::Resized(size) => {
@@ -446,165 +476,22 @@ impl RpcApp {
             // TODO(#376): Update winit
             // TODO(#376): Implement unicode input in native client
             // }
-            WindowEvent::KeyboardInput { event, .. } => {
-                let key_code = match event.physical_key {
-                    PhysicalKey::Code(key_code) => key_code,
-                    PhysicalKey::Unidentified(native_key_code) => {
-                        warn!(?native_key_code, "Unsupported physical key; ignored");
-                        return;
-                    }
-                };
-
-                // `ModifiersChanged` is authoritative for these keys.
-                if is_modifier(key_code) {
+            input @ (WindowEvent::KeyboardInput { .. }
+            | WindowEvent::ModifiersChanged(_)
+            | WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::MouseInput { .. }) => {
+                if matches!(input, WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. })
+                    && is_touch_or_pen_mouse_message()
+                {
                     return;
                 }
-
-                let Some((scancode, release_only)) = map_key_code(key_code) else {
-                    warn!(?key_code, "Unsupported physical key; ignored");
-                    return;
-                };
-
-                let operations: SmallVec<[ironrdp::input::Operation; 2]> = match event.state {
-                    event::ElementState::Pressed => {
-                        smallvec::smallvec![ironrdp::input::Operation::KeyPressed(scancode)]
-                    }
-                    event::ElementState::Released if release_only => smallvec::smallvec![
-                        ironrdp::input::Operation::KeyPressed(scancode),
-                        ironrdp::input::Operation::KeyReleased(scancode),
-                    ],
-                    event::ElementState::Released => {
-                        smallvec::smallvec![ironrdp::input::Operation::KeyReleased(scancode)]
-                    }
-                };
-
-                apply_and_send_fast_path_events(&self.input_target, &mut self.input_database, operations);
-            }
-            WindowEvent::ModifiersChanged(modifiers) => {
-                const SHIFT_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x2A);
-                const CONTROL_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x1D);
-                const ALT_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x38);
-                const LOGO_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(true, 0x5B);
-
-                let mut operations = SmallVec::<[ironrdp::input::Operation; 4]>::new();
-
-                let mut add_operation = |pressed: bool, scancode: ironrdp::input::Scancode| {
-                    let operation = if pressed {
-                        ironrdp::input::Operation::KeyPressed(scancode)
-                    } else {
-                        ironrdp::input::Operation::KeyReleased(scancode)
-                    };
-                    operations.push(operation);
-                };
-
-                // NOTE: https://docs.rs/winit/0.30.12/src/winit/keyboard.rs.html#1737-1744
-                //
-                // We can’t use state.lshift_state(), state.lcontrol_state(), etc, because on some platforms such as
-                // Linux, the modifiers change is hidden.
-                //
-                // > The exact modifier key is not used to represent modifiers state in the
-                // > first place due to a fact that modifiers state could be changed without any
-                // > key being pressed and on some platforms like Wayland/X11 which key resulted
-                // > in modifiers change is hidden, also, not that it really matters.
-                add_operation(modifiers.state().shift_key(), SHIFT_LEFT);
-                add_operation(modifiers.state().control_key(), CONTROL_LEFT);
-                add_operation(modifiers.state().alt_key(), ALT_LEFT);
-                add_operation(modifiers.state().super_key(), LOGO_LEFT);
-
-                apply_and_send_fast_path_events(&self.input_target, &mut self.input_database, operations);
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                if is_touch_or_pen_mouse_message() {
-                    return;
-                }
-                let position = desktop_position(window.inner_size(), self.buffer_size, position);
-                let operation = ironrdp::input::Operation::MouseMove(position);
-
-                apply_and_send_fast_path_events(
-                    &self.input_target,
-                    &mut self.input_database,
-                    core::iter::once(operation),
-                );
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let mut operations = SmallVec::<[ironrdp::input::Operation; 2]>::new();
-
-                match delta {
-                    event::MouseScrollDelta::LineDelta(delta_x, delta_y) => {
-                        if delta_x.abs() > 0.001 {
-                            operations.push(ironrdp::input::Operation::WheelRotations(
-                                ironrdp::input::WheelRotations {
-                                    is_vertical: false,
-                                    #[expect(clippy::as_conversions, reason = "casting f32 to i16")]
-                                    rotation_units: (delta_x * 100.) as i16,
-                                },
-                            ));
-                        }
-
-                        if delta_y.abs() > 0.001 {
-                            operations.push(ironrdp::input::Operation::WheelRotations(
-                                ironrdp::input::WheelRotations {
-                                    is_vertical: true,
-                                    #[expect(clippy::as_conversions, reason = "casting f32 to i16")]
-                                    rotation_units: (delta_y * 100.) as i16,
-                                },
-                            ));
-                        }
-                    }
-                    event::MouseScrollDelta::PixelDelta(delta) => {
-                        if delta.x.abs() > 0.001 {
-                            operations.push(ironrdp::input::Operation::WheelRotations(
-                                ironrdp::input::WheelRotations {
-                                    is_vertical: false,
-                                    #[expect(clippy::as_conversions, reason = "casting f64 to i16")]
-                                    rotation_units: delta.x as i16,
-                                },
-                            ));
-                        }
-
-                        if delta.y.abs() > 0.001 {
-                            operations.push(ironrdp::input::Operation::WheelRotations(
-                                ironrdp::input::WheelRotations {
-                                    is_vertical: true,
-                                    #[expect(clippy::as_conversions, reason = "casting f64 to i16")]
-                                    rotation_units: delta.y as i16,
-                                },
-                            ));
-                        }
-                    }
-                };
-
-                apply_and_send_fast_path_events(&self.input_target, &mut self.input_database, operations);
-            }
-            WindowEvent::MouseInput { state, button, .. } => {
-                if is_touch_or_pen_mouse_message() {
-                    return;
-                }
-                let mouse_button = match button {
-                    event::MouseButton::Left => ironrdp::input::MouseButton::Left,
-                    event::MouseButton::Right => ironrdp::input::MouseButton::Right,
-                    event::MouseButton::Middle => ironrdp::input::MouseButton::Middle,
-                    event::MouseButton::Back => ironrdp::input::MouseButton::X1,
-                    event::MouseButton::Forward => ironrdp::input::MouseButton::X2,
-                    event::MouseButton::Other(native_button) => {
-                        if let Some(button) = ironrdp::input::MouseButton::from_native_button(native_button) {
-                            button
-                        } else {
-                            return;
-                        }
-                    }
-                };
-
-                let operation = match state {
-                    event::ElementState::Pressed => ironrdp::input::Operation::MouseButtonPressed(mouse_button),
-                    event::ElementState::Released => ironrdp::input::Operation::MouseButtonReleased(mouse_button),
-                };
-
-                apply_and_send_fast_path_events(
-                    &self.input_target,
-                    &mut self.input_database,
-                    core::iter::once(operation),
-                );
+                let win_size = window.inner_size();
+                let buffer_size = self.buffer_size;
+                // The desktop window scales the session frame to its client area.
+                let to_session =
+                    |x: f64, y: f64| Some(desktop_position(win_size, buffer_size, PhysicalPosition::new(x, y)));
+                forward_input_event(&self.input_target, &mut self.input_database, &input, &to_session);
             }
             WindowEvent::RedrawRequested => {
                 self.draw();
@@ -645,10 +532,100 @@ impl RpcApp {
         }
     }
 
-    fn handle_output_event(&mut self, event_loop: &ActiveEventLoop, event: RdpOutputEvent) {
-        let Some((window, surface)) = self.window.as_mut() else {
+    /// Handles input and painting for a local RemoteApp window.
+    fn on_rail_window_event(&mut self, rail_window_id: u32, event: WindowEvent) {
+        match event {
+            WindowEvent::RedrawRequested | WindowEvent::Resized(_) => {
+                self.rail_windows.draw(rail_window_id, &self.buffer, self.buffer_size);
+            }
+            WindowEvent::ScaleFactorChanged {
+                mut inner_size_writer, ..
+            } => {
+                // A RemoteApp window maps the server's pixels 1:1, so it keeps its physical
+                // size on a monitor with another DPI instead of the size winit would scale it to.
+                if let Some(model) = self.rail_windows.model(rail_window_id)
+                    && let (width, height) = bounded_window_size(model.width, model.height)
+                    && let Err(error) = inner_size_writer.request_inner_size(PhysicalSize::new(width, height))
+                {
+                    debug!(%error, rail_window_id, "Unable to keep a RemoteApp window size");
+                }
+            }
+            WindowEvent::CloseRequested => {
+                // The server owns the window's lifetime and answers with a Deleted Window order.
+                self.send_rail_input(RailInputEvent::SystemCommand(SystemCommandPdu {
+                    window_id: rail_window_id,
+                    command: SystemCommand::Close,
+                }));
+            }
+            WindowEvent::Focused(focused) => {
+                self.send_rail_input(RailInputEvent::Activate(ActivatePdu {
+                    window_id: rail_window_id,
+                    enabled: focused,
+                }));
+                if !focused {
+                    // Keys and buttons held when focus moves away would otherwise stay
+                    // pressed on the server, because their release goes to another window.
+                    self.release_pending = true;
+                    self.send_pending_rail_input();
+                }
+            }
+            input if is_input_event(&input) => {
+                // A pending release goes out before any later input.
+                self.send_pending_rail_input();
+                // A RemoteApp window shows its server rectangle 1:1 at the server position.
+                let origin = self.rail_windows.model(rail_window_id).map(|model| (model.x, model.y));
+                let to_session = |x: f64, y: f64| origin.and_then(|origin| window_point_to_desktop(origin, x, y));
+                forward_input_event(&self.input_target, &mut self.input_database, &input, &to_session);
+            }
+            _ => {}
+        }
+    }
+
+    /// Sends a RAIL control, or queues it behind earlier ones while the session input queue
+    /// is full, so an Activate or Close is never lost to an input burst.
+    fn send_rail_input(&mut self, event: RailInputEvent) {
+        if MAX_PENDING_RAIL_INPUTS <= self.pending_rail_inputs.len() {
+            debug!(?event, "Dropping the oldest pending RAIL input");
+            self.pending_rail_inputs.pop_front();
+        }
+        self.pending_rail_inputs.push_back(event);
+        self.send_pending_rail_input();
+    }
+
+    /// Sends the queued RAIL controls and the pending input release, in order, until the
+    /// session input queue is full.
+    ///
+    /// UNTESTED: a pending control or release is retried from `on_about_to_wait` until it is
+    /// sent, which needs a running event loop to exercise; keep it in the retry deadline there.
+    fn send_pending_rail_input(&mut self) {
+        let InputTarget::Direct(input_event_sender) = &self.input_target else {
+            self.pending_rail_inputs.clear();
+            self.release_pending = false;
             return;
         };
+        while let Some(&event) = self.pending_rail_inputs.front() {
+            match input_event_sender.try_send_rail_input(event) {
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => return,
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) | Ok(()) => {
+                    self.pending_rail_inputs.pop_front();
+                }
+            }
+        }
+        if self.release_pending && release_all_input(&self.input_target, &mut self.input_database) {
+            self.release_pending = false;
+        }
+    }
+
+    /// Applies a server pointer shape to every local window and shows the pointer.
+    fn set_cursor(&mut self, cursor: Cursor) {
+        if let Some((window, _)) = &self.window {
+            window.set_cursor(cursor.clone());
+            window.set_cursor_visible(true);
+        }
+        self.rail_windows.set_cursor(cursor);
+    }
+
+    fn handle_output_event(&mut self, event_loop: &ActiveEventLoop, event: RdpOutputEvent) {
         match event {
             RdpOutputEvent::Connected => info!("RDP session connected"),
             RdpOutputEvent::MonitorLayout(monitors) => {
@@ -664,14 +641,16 @@ impl RpcApp {
             }
             RdpOutputEvent::Image { buffer, width, height } => {
                 trace!(width = ?width, height = ?height, "Received image with size");
-                trace!(window_physical_size = ?window.inner_size(), "Drawing image to the window with size");
                 self.buffer_size = (width.get(), height.get());
                 self.buffer = buffer;
-                surface
-                    .resize(NonZeroU32::from(width), NonZeroU32::from(height))
-                    .expect("surface resize");
-
-                window.request_redraw();
+                if let Some((window, surface)) = self.window.as_mut() {
+                    trace!(window_physical_size = ?window.inner_size(), "Drawing image to the window with size");
+                    surface
+                        .resize(NonZeroU32::from(width), NonZeroU32::from(height))
+                        .expect("surface resize");
+                    window.request_redraw();
+                }
+                self.rail_windows.request_redraw_all();
             }
             RdpOutputEvent::ConnectionFailure(error) => {
                 error!(?error);
@@ -695,14 +674,19 @@ impl RpcApp {
                 event_loop.exit();
             }
             RdpOutputEvent::PointerHidden => {
-                window.set_cursor_visible(false);
+                if let Some((window, _)) = &self.window {
+                    window.set_cursor_visible(false);
+                }
+                self.rail_windows.set_cursor_visible(false);
             }
             RdpOutputEvent::PointerDefault => {
-                window.set_cursor(CursorIcon::default());
-                window.set_cursor_visible(true);
+                self.set_cursor(Cursor::from(CursorIcon::default()));
             }
             RdpOutputEvent::PointerPosition { x, y } => {
-                if let Err(error) = window.set_cursor_position(LogicalPosition::new(x, y)) {
+                // A RemoteApp session has no single window the desktop position maps into.
+                if let Some((window, _)) = &self.window
+                    && let Err(error) = window.set_cursor_position(LogicalPosition::new(x, y))
+                {
                     error!(?error, "Failed to set cursor position");
                 }
             }
@@ -715,10 +699,9 @@ impl RpcApp {
                     pointer.hotspot_x,
                     pointer.hotspot_y,
                 ) {
-                    Ok(cursor) => window.set_cursor(event_loop.create_custom_cursor(cursor)),
+                    Ok(cursor) => self.set_cursor(Cursor::from(event_loop.create_custom_cursor(cursor))),
                     Err(error) => error!(?error, "Failed to set cursor bitmap"),
                 }
-                window.set_cursor_visible(true);
             }
             RdpOutputEvent::DisplayResizeFallback(reason) => {
                 warn!(
@@ -796,7 +779,23 @@ impl RpcApp {
             RdpOutputEvent::RailControl(control) => {
                 debug!(?control, "RAIL control received");
             }
-            RdpOutputEvent::WindowingOrders(_) | RdpOutputEvent::WindowSurfaceUpdates(_) => {}
+            RdpOutputEvent::WindowingOrders(orders) => {
+                if self.remote_app {
+                    self.rail_windows.apply_orders(event_loop, &self.context, orders);
+                } else {
+                    debug!("Ignoring windowing orders outside RemoteApp mode");
+                }
+            }
+            RdpOutputEvent::WindowSurfaceUpdates(updates) => {
+                for update in updates {
+                    self.rail_windows.apply_surface_update(
+                        update.window_id,
+                        (update.width, update.height),
+                        &update.region,
+                        &update.data,
+                    );
+                }
+            }
             // Only produced when the client is built with `.with_desktop_updates()`, which the
             // viewer does not opt into: it always presents full-frame `Image` snapshots instead.
             RdpOutputEvent::DesktopUpdate(_) => {}
@@ -904,4 +903,177 @@ fn apply_and_send_fast_path_events(
             true
         }
     }
+}
+
+/// Whether `forward_input_event` handles `event`.
+fn is_input_event(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { .. }
+            | WindowEvent::ModifiersChanged(_)
+            | WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::MouseInput { .. }
+    )
+}
+
+/// Forwards the events `is_input_event` accepts: keyboard, modifier, pointer and wheel input
+/// from a local window.
+///
+/// `to_session` maps a position in the window to session desktop coordinates, or rejects it.
+fn forward_input_event(
+    input_target: &InputTarget,
+    input_database: &mut ironrdp::input::Database,
+    event: &WindowEvent,
+    to_session: &dyn Fn(f64, f64) -> Option<ironrdp::input::MousePosition>,
+) {
+    match event {
+        WindowEvent::KeyboardInput { event, .. } => {
+            if let Some(operations) = keyboard_operations(event) {
+                apply_and_send_fast_path_events(input_target, input_database, operations);
+            }
+        }
+        WindowEvent::ModifiersChanged(modifiers) => {
+            const SHIFT_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x2A);
+            const CONTROL_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x1D);
+            const ALT_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x38);
+            const LOGO_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(true, 0x5B);
+
+            // NOTE: https://docs.rs/winit/0.30.12/src/winit/keyboard.rs.html#1737-1744
+            //
+            // We can’t use state.lshift_state(), state.lcontrol_state(), etc, because on some platforms such as
+            // Linux, the modifiers change is hidden.
+            //
+            // > The exact modifier key is not used to represent modifiers state in the
+            // > first place due to a fact that modifiers state could be changed without any
+            // > key being pressed and on some platforms like Wayland/X11 which key resulted
+            // > in modifiers change is hidden, also, not that it really matters.
+            let state = modifiers.state();
+            let operations = [
+                (state.shift_key(), SHIFT_LEFT),
+                (state.control_key(), CONTROL_LEFT),
+                (state.alt_key(), ALT_LEFT),
+                (state.super_key(), LOGO_LEFT),
+            ]
+            .map(|(pressed, scancode)| {
+                if pressed {
+                    ironrdp::input::Operation::KeyPressed(scancode)
+                } else {
+                    ironrdp::input::Operation::KeyReleased(scancode)
+                }
+            });
+            apply_and_send_fast_path_events(input_target, input_database, operations);
+        }
+        WindowEvent::CursorMoved { position, .. } => {
+            if let Some(position) = to_session(position.x, position.y) {
+                apply_and_send_fast_path_events(
+                    input_target,
+                    input_database,
+                    core::iter::once(ironrdp::input::Operation::MouseMove(position)),
+                );
+            }
+        }
+        WindowEvent::MouseWheel { delta, .. } => {
+            // Each axis is `(raw delta, rotation units)`; line deltas are scaled to roughly match a
+            // wheel notch, and the dead band applies to the raw delta.
+            let axes = match *delta {
+                event::MouseScrollDelta::LineDelta(delta_x, delta_y) => [
+                    (f64::from(delta_x), f64::from(delta_x) * 100.),
+                    (f64::from(delta_y), f64::from(delta_y) * 100.),
+                ],
+                event::MouseScrollDelta::PixelDelta(delta) => [(delta.x, delta.x), (delta.y, delta.y)],
+            };
+            let operations = [false, true]
+                .into_iter()
+                .zip(axes)
+                .filter(|(_, (raw, _))| 0.001 < raw.abs())
+                .map(|(is_vertical, (_, units))| {
+                    ironrdp::input::Operation::WheelRotations(ironrdp::input::WheelRotations {
+                        is_vertical,
+                        #[expect(clippy::as_conversions, reason = "casting f64 to i16")]
+                        rotation_units: units as i16,
+                    })
+                });
+            apply_and_send_fast_path_events(input_target, input_database, operations);
+        }
+        WindowEvent::MouseInput { state, button, .. } => {
+            if let Some(operation) = mouse_button_operation(*state, *button) {
+                apply_and_send_fast_path_events(input_target, input_database, core::iter::once(operation));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Releases every key and mouse button the session still holds pressed.
+///
+/// Returns false when the session input queue is full and nothing was released.
+fn release_all_input(input_target: &InputTarget, input_database: &mut ironrdp::input::Database) -> bool {
+    match input_target {
+        InputTarget::Direct(input_event_sender) => {
+            let permit = match input_event_sender.try_reserve() {
+                Ok(permit) => permit,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(())) => return false,
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(())) => return true,
+            };
+            let input_events = input_database.release_all();
+            if !input_events.is_empty() {
+                permit.send(RdpInputEvent::FastPath(input_events));
+            }
+            true
+        }
+        // The daemon tracks its own input state, and RemoteApp windows are not shown in RPC mode.
+        InputTarget::Rpc(_) => true,
+    }
+}
+
+/// Maps a key event to fast-path operations; modifiers are reported by `ModifiersChanged` instead.
+fn keyboard_operations(event: &event::KeyEvent) -> Option<SmallVec<[ironrdp::input::Operation; 2]>> {
+    let key_code = match event.physical_key {
+        PhysicalKey::Code(key_code) => key_code,
+        PhysicalKey::Unidentified(native_key_code) => {
+            warn!(?native_key_code, "Unsupported physical key; ignored");
+            return None;
+        }
+    };
+
+    // `ModifiersChanged` is authoritative for these keys.
+    if is_modifier(key_code) {
+        return None;
+    }
+
+    let Some((scancode, release_only)) = map_key_code(key_code) else {
+        warn!(?key_code, "Unsupported physical key; ignored");
+        return None;
+    };
+
+    Some(match event.state {
+        event::ElementState::Pressed => {
+            smallvec::smallvec![ironrdp::input::Operation::KeyPressed(scancode)]
+        }
+        event::ElementState::Released if release_only => smallvec::smallvec![
+            ironrdp::input::Operation::KeyPressed(scancode),
+            ironrdp::input::Operation::KeyReleased(scancode),
+        ],
+        event::ElementState::Released => {
+            smallvec::smallvec![ironrdp::input::Operation::KeyReleased(scancode)]
+        }
+    })
+}
+
+/// Maps a mouse button event to a fast-path operation.
+fn mouse_button_operation(state: event::ElementState, button: event::MouseButton) -> Option<ironrdp::input::Operation> {
+    let mouse_button = match button {
+        event::MouseButton::Left => ironrdp::input::MouseButton::Left,
+        event::MouseButton::Right => ironrdp::input::MouseButton::Right,
+        event::MouseButton::Middle => ironrdp::input::MouseButton::Middle,
+        event::MouseButton::Back => ironrdp::input::MouseButton::X1,
+        event::MouseButton::Forward => ironrdp::input::MouseButton::X2,
+        event::MouseButton::Other(native_button) => ironrdp::input::MouseButton::from_native_button(native_button)?,
+    };
+
+    Some(match state {
+        event::ElementState::Pressed => ironrdp::input::Operation::MouseButtonPressed(mouse_button),
+        event::ElementState::Released => ironrdp::input::Operation::MouseButtonReleased(mouse_button),
+    })
 }
