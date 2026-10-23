@@ -2,10 +2,10 @@
 param(
     [Parameter()]
     [Alias('ComputerName')]
-    [string]$VmHostname = "IT-HELP-TEST",
+    [string]$VmHostname = "IT-HELP-TERMSRV",
 
     [Parameter()]
-    [string]$Username = "IT-HELP\Administrator",
+    [string]$Username = $env:RDP_USERNAME,
 
     [Parameter()]
     [pscredential]$Credential,
@@ -17,7 +17,7 @@ param(
     [switch]$PromptPassword,
 
     [Parameter()]
-    [string]$PasswordEnvVar = 'IRONRDP_TESTVM_PASSWORD',
+    [string]$PasswordEnvVar = 'RDP_PASSWORD',
 
     [Parameter()]
     [switch]$SkipTermService,
@@ -124,4 +124,3 @@ try {
 finally {
     Remove-PSSession -Session $session -ErrorAction SilentlyContinue
 }
-

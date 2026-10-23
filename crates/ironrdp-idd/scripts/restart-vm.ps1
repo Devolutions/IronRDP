@@ -2,10 +2,10 @@
 param(
     [Parameter()]
     [Alias('ComputerName')]
-    [string]$VmHostname = "IT-HELP-TEST",
+    [string]$VmHostname = "IT-HELP-TERMSRV",
 
     [Parameter()]
-    [string]$Username = "IT-HELP\Administrator",
+    [string]$Username = $env:RDP_USERNAME,
 
     [Parameter()]
     [pscredential]$Credential,
@@ -17,7 +17,7 @@ param(
     [switch]$PromptPassword,
 
     [Parameter()]
-    [string]$PasswordEnvVar = 'IRONRDP_TESTVM_PASSWORD',
+    [string]$PasswordEnvVar = 'RDP_PASSWORD',
 
     [Parameter()]
     [int]$TimeoutSeconds = 180
@@ -66,13 +66,16 @@ if ($PSBoundParameters.ContainsKey('Credential') -and ($null -ne $Credential)) {
 
 Write-Host "Restarting $VmHostname..." -ForegroundColor Cyan
 
+$session = New-TestVmSession -Hostname $VmHostname -Credential $credential
 try {
-    Restart-Computer -ComputerName $VmHostname -Credential $credential -Force -ErrorAction Stop
-} catch {
-    Write-Warning "Restart-Computer returned an error (this can be expected during reboot): $($_.Exception.Message)"
+    Invoke-Command -Session $session -ScriptBlock { Restart-Computer -Force -ErrorAction Stop }
+}
+finally {
+    Remove-PSSession -Session $session -ErrorAction SilentlyContinue
 }
 
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+Start-Sleep -Seconds 20
 do {
     Start-Sleep -Seconds 5
     try {

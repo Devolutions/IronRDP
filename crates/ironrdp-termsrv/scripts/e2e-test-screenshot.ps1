@@ -30,7 +30,7 @@ param(
 
     [Parameter()]
     [Alias('ComputerName')]
-    [string]$Hostname = 'IT-HELP-TEST',
+    [string]$Hostname = 'IT-HELP-TERMSRV',
 
     [Parameter()]
     [Alias('ServerPort')]
@@ -40,25 +40,25 @@ param(
     [pscredential]$Credential,
 
     [Parameter()]
-    [string]$AdminUsername = 'IT-HELP\Administrator',
+    [string]$AdminUsername = $env:RDP_USERNAME,
 
     [Parameter()]
-    [string]$AdminPassword = 'DevoLabs123!',
+    [string]$AdminPassword = '',
 
     [Parameter()]
-    [string]$AdminPasswordEnvVar = 'IRONRDP_TESTVM_PASSWORD',
+    [string]$AdminPasswordEnvVar = 'RDP_PASSWORD',
 
     [Parameter()]
-    [string]$RdpUsername = 'Administrator',
+    [string]$RdpUsername = $env:RDP_USERNAME,
 
     [Parameter()]
-    [string]$RdpPassword = 'DevoLabs123!',
+    [string]$RdpPassword = '',
 
     [Parameter()]
-    [string]$RdpPasswordEnvVar = 'IRONRDP_TESTVM_RDP_PASSWORD',
+    [string]$RdpPasswordEnvVar = 'RDP_PASSWORD',
 
     [Parameter()]
-    [string]$RdpDomain = 'IT-HELP',
+    [string]$RdpDomain = '',
 
     [Parameter()]
     [int]$RdpPort = 3389,
@@ -1302,20 +1302,20 @@ if (-not $SkipDeploy.IsPresent) {
 
                         $iddInfPresent = Test-Path -LiteralPath $DriverInfPath -PathType Leaf
                         $iddInfText = if ($iddInfPresent) { Get-Content -LiteralPath $DriverInfPath -Raw -ErrorAction SilentlyContinue } else { '' }
-                        $iddInfUsesIddCx0104 = (-not [string]::IsNullOrWhiteSpace($iddInfText)) -and ($iddInfText -match '(?im)^\s*UmdfExtensions\s*=\s*IddCx0104\s*$')
+                        $iddInfUsesIddCx0102 = (-not [string]::IsNullOrWhiteSpace($iddInfText)) -and ($iddInfText -match '(?im)^\s*UmdfExtensions\s*=\s*IddCx0102\s*$')
                         $iddInfDisablesHostSharing = (-not [string]::IsNullOrWhiteSpace($iddInfText)) -and ($iddInfText -match '(?im)^\s*UmdfHostProcessSharing\s*=\s*ProcessSharingDisabled\s*$')
                         if (-not $iddInfPresent) {
                             $issues.Add("IronRdpIdd INF not found at expected deploy path '$DriverInfPath'")
                         } else {
-                            if (-not $iddInfUsesIddCx0104) {
-                                $issues.Add('IronRdpIdd INF is not configured for UmdfExtensions=IddCx0104')
+                            if (-not $iddInfUsesIddCx0102) {
+                                $issues.Add('IronRdpIdd INF is not configured for UmdfExtensions=IddCx0102')
                             }
                             if ($isWindowsServer -and (-not $iddInfDisablesHostSharing)) {
                                 $issues.Add('IronRdpIdd INF does not set UmdfHostProcessSharing=ProcessSharingDisabled on this Windows Server host')
                             }
                         }
                         $result['idd_inf_present'] = $iddInfPresent
-                        $result['idd_inf_uses_iddcx0104'] = $iddInfUsesIddCx0104
+                        $result['idd_inf_uses_iddcx0102'] = $iddInfUsesIddCx0102
                         $result['idd_inf_disables_host_sharing'] = $iddInfDisablesHostSharing
 
                         $iddDevices = @(Get-PnpDevice -Class Display -ErrorAction SilentlyContinue |
@@ -3696,7 +3696,6 @@ if ($StrictSessionProof.IsPresent) {
 
     Write-Host "STRICT RESULT: PASS" -ForegroundColor Green
 }
-
 
 
 

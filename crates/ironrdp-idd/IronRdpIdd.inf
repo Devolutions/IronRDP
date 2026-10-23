@@ -5,7 +5,7 @@ Class=Display
 ClassGuid={4d36e968-e325-11ce-bfc1-08002be10318}
 Provider=%ManufacturerName%
 CatalogFile=IronRdpIdd.cat
-DriverVer=02/24/2026,0.1.0.14
+DriverVer=02/24/2026,0.1.0.16
 PnpLockdown=1
 
 [Manufacturer]
@@ -81,7 +81,8 @@ UmdfImpersonationLevel=Identification
 [IronRdpIdd_Install]
 UmdfLibraryVersion=2.33.0
 ServiceBinary=%12%\UMDF\IronRdpIdd.dll
-UmdfExtensions=IddCx0104
+; IddCx registers its UMDF service as IddCx0102 for every IddCx version.
+UmdfExtensions=IddCx0102
 
 [Strings]
 ; non localizable

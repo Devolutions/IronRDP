@@ -1,13 +1,13 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$VmHostname = "IT-HELP-TEST.ad.it-help.ninja",
+    [string]$VmHostname = "IT-HELP-TERMSRV",
 
     [Parameter()]
-    [string]$Username = "Administrator@ad.it-help.ninja",
+    [string]$Username = $env:RDP_USERNAME,
 
     [Parameter()]
-    [string]$Password = "",
+    [string]$Password = $env:RDP_PASSWORD,
 
     [Parameter()]
     [switch]$AttemptInstall
@@ -23,7 +23,13 @@ if ([string]::IsNullOrWhiteSpace($Password)) {
 $securePassword = ConvertTo-SecureString $Password -AsPlainText -Force
 $credential = New-Object System.Management.Automation.PSCredential($Username, $securePassword)
 
-$session = New-PSSession -ComputerName $VmHostname -Credential $credential -ErrorAction Stop
+try {
+    $session = New-PSSession -ComputerName $VmHostname -Credential $credential -ErrorAction Stop
+}
+catch {
+    Write-Warning "WinRM over HTTP failed for $VmHostname; trying HTTPS (5986)"
+    $session = New-PSSession -ComputerName $VmHostname -Credential $credential -UseSSL -Port 5986 -SessionOption (New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck) -ErrorAction Stop
+}
 try {
     $obj = Invoke-Command -Session $session -ScriptBlock {
         param([bool]$AttemptInstall)

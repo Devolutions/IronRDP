@@ -10,7 +10,7 @@
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{Read as _, Write};
@@ -66,9 +66,9 @@ use windows::Win32::System::RemoteDesktop::{
     WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH, WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW, WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED,
     WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL, WTS_CLIENT_DATA, WTS_KEY_EXCHANGE_ALG_RSA, WTS_LICENSE_CAPABILITIES,
     WTS_LICENSE_PREAMBLE_VERSION, WTS_LOGON_ERR_NOT_HANDLED, WTS_LOGON_ERROR_REDIRECTOR_RESPONSE, WTS_PROCESS_INFOW,
-    WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS, WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_SESSION_INFOW, WTS_USER_CREDENTIAL,
-    WTSEnumerateProcessesW, WTSEnumerateSessionsW, WTSFreeMemory, WTSGetActiveConsoleSessionId, WTSQueryUserToken,
-    WTSVirtualChannelClose, WTSVirtualChannelOpenEx, WTSVirtualChannelRead, WTSVirtualChannelWrite,
+    WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS, WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_USER_CREDENTIAL,
+    WTSEnumerateProcessesW, WTSFreeMemory, WTSQueryUserToken, WTSVirtualChannelClose, WTSVirtualChannelOpenEx,
+    WTSVirtualChannelRead, WTSVirtualChannelWrite,
 };
 use windows::Win32::System::Services::{
     CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS,
@@ -90,7 +90,9 @@ const S_OK: HRESULT = HRESULT(0);
 const S_FALSE: HRESULT = HRESULT(1);
 // HRESULT_FROM_WIN32(ERROR_OUTOFMEMORY=14) == 0x8007000E
 const E_OUTOFMEMORY: HRESULT = HRESULT(-2147024882);
-const CRED_PACK_PROTECTED_CREDENTIALS: u32 = 0x1;
+// CRED_PACK_PROTECTED_CREDENTIALS would encrypt the password for TermService's logon session,
+// which Winlogon cannot decrypt, so the serialized credential is packed unprotected.
+const CRED_PACK_UNPROTECTED: u32 = 0;
 
 #[link(name = "credui")]
 unsafe extern "system" {
@@ -285,12 +287,6 @@ const FAST_RECONNECT_DISABLED: u32 = 0;
 const FAST_RECONNECT_BASIC: u32 = 1;
 const FAST_RECONNECT_ENHANCED: u32 = 2;
 
-fn active_console_session_id() -> Option<u32> {
-    // SAFETY: FFI call has no input parameters and always returns a plain value.
-    let session_id = unsafe { WTSGetActiveConsoleSessionId() };
-    if session_id == u32::MAX { None } else { Some(session_id) }
-}
-
 fn session_has_user_token(session_id: u32) -> bool {
     let mut token = HANDLE::default();
     // SAFETY: `WTSQueryUserToken` writes a token handle into `token` on success.
@@ -363,61 +359,6 @@ fn canonicalize_enumerated_session_id(session_id: u32) -> u32 {
     }
 
     session_id
-}
-
-fn session_selection_snapshot() -> String {
-    let console = active_console_session_id()
-        .map(|session_id| session_id.to_string())
-        .unwrap_or_else(|| "none".to_owned());
-
-    let mut sessions_ptr: *mut WTS_SESSION_INFOW = core::ptr::null_mut();
-    let mut session_count = 0u32;
-
-    // SAFETY: WTSEnumerateSessionsW writes a pointer/count pair on success.
-    let enumerate_result = unsafe { WTSEnumerateSessionsW(None, 0, 1, &mut sessions_ptr, &mut session_count) };
-    if enumerate_result.is_err() || sessions_ptr.is_null() || session_count == 0 {
-        return format!("console={console} sessions=none");
-    }
-
-    let mut rows = Vec::new();
-
-    if let Ok(session_count_usize) = usize::try_from(session_count) {
-        // SAFETY: `sessions_ptr` references `session_count_usize` entries on success.
-        let sessions = unsafe { core::slice::from_raw_parts(sessions_ptr, session_count_usize) };
-
-        let mut seen = HashSet::new();
-        for entry in sessions {
-            let raw = entry.SessionId;
-            if raw == u32::MAX {
-                continue;
-            }
-
-            let canonical = canonicalize_enumerated_session_id(raw);
-            if !seen.insert((raw, canonical)) {
-                continue;
-            }
-
-            let has_token = session_has_user_token(canonical);
-            let has_explorer = session_has_process(canonical, "explorer.exe");
-            let has_winlogon = session_has_process(canonical, "winlogon.exe");
-            let has_logonui = session_has_process(canonical, "LogonUI.exe");
-
-            rows.push(format!(
-                "{raw}->{canonical}:token={has_token},explorer={has_explorer},winlogon={has_winlogon},logonui={has_logonui}",
-            ));
-        }
-    }
-
-    // SAFETY: free memory allocated by WTSEnumerateSessionsW.
-    unsafe {
-        WTSFreeMemory(sessions_ptr.cast());
-    }
-
-    if rows.is_empty() {
-        format!("console={console} sessions=empty")
-    } else {
-        format!("console={console} sessions=[{}]", rows.join("; "))
-    }
 }
 
 fn lookup_account_sid_string(username: &str, domain: &str) -> windows_core::Result<String> {
@@ -811,6 +752,7 @@ const VIRTUAL_CHANNEL_PIPE_BRIDGE_ENV: &str = "IRONRDP_WTS_VC_BRIDGE_PIPE_PREFIX
 const VIRTUAL_CHANNEL_PIPE_BRIDGE_QUEUE_SIZE: usize = 200;
 const VIRTUAL_CHANNEL_PIPE_BRIDGE_RECONNECT_DELAY: Duration = Duration::from_millis(500);
 const VIRTUAL_CHANNEL_PIPE_BRIDGE_SEND_TIMEOUT: Duration = Duration::from_millis(100);
+const CONTROL_PIPE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 const VIRTUAL_CHANNEL_PIPE_BRIDGE_MAX_FRAME_SIZE: usize = 1024 * 1024;
 
 type SharedVirtualChannelBridgeHandler = Arc<dyn VirtualChannelBridgeHandler>;
@@ -1463,11 +1405,51 @@ impl ProviderControlBridge {
                 }
             };
 
+            // The companion impersonates the client before reading, which only works once data is
+            // in the pipe, so the command is written here; a small frame never blocks on the pipe buffer.
             write_json_message(&mut pipe, command)
                 .map_err(|error| io_error_to_windows_error(error, "failed to send control command"))?;
 
-            let event = read_json_message::<ServiceEvent>(&mut pipe, DEFAULT_MAX_FRAME_SIZE)
-                .map_err(|error| io_error_to_windows_error(error, "failed to read control response"))?;
+            // TermService calls the provider while holding its own locks, and the companion may be
+            // blocked in a WTS RPC into TermService. Waiting unboundedly for the reply would deadlock
+            // both processes, so the read runs on a worker thread and is abandoned after a deadline.
+            // An abandoned worker exits once the companion answers or the pipe breaks.
+            let response_timeout = match command {
+                ProviderCommand::WaitForIncoming { timeout_ms, .. } => {
+                    Duration::from_millis(u64::from(*timeout_ms)) + CONTROL_PIPE_RESPONSE_TIMEOUT
+                }
+                _ => CONTROL_PIPE_RESPONSE_TIMEOUT,
+            };
+            let (response_tx, response_rx) = mpsc::sync_channel(1);
+            thread::Builder::new()
+                .name("ironrdp-control-pipe-read".to_owned())
+                .spawn(move || {
+                    let result = read_json_message::<ServiceEvent>(&mut pipe, DEFAULT_MAX_FRAME_SIZE)
+                        .map_err(|error| io_error_to_windows_error(error, "failed to read control response"));
+                    let _ = response_tx.send(result);
+                })
+                .map_err(|error| io_error_to_windows_error(error, "failed to spawn control pipe read thread"))?;
+
+            let event = match response_rx.recv_timeout(response_timeout) {
+                Ok(result) => result?,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    debug_log_line(&format!(
+                        "ProviderControlBridge::send_command timed_out command={} timeout_ms={}",
+                        command_kind(command),
+                        response_timeout.as_millis()
+                    ));
+                    return Err(windows_core::Error::new(
+                        HRESULT::from_win32(ERROR_SEM_TIMEOUT.0),
+                        "companion did not answer the control command in time",
+                    ));
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(windows_core::Error::new(
+                        E_UNEXPECTED,
+                        "control pipe read thread ended without a response",
+                    ));
+                }
+            };
 
             debug_log_line(&format!(
                 "ProviderControlBridge::send_command ok command={} event={}",
@@ -1501,6 +1483,11 @@ fn is_optional_control_pipe_error(error: &std::io::Error) -> bool {
     )
 }
 
+/// TermService session arbitration treats only `0xFFFFFFFF` as "no limit";
+/// a zero `MaxProtocolListenerConnectionCount` rejects every non-admin logon
+/// with `ERROR_CTX_LICENSE_NOT_AVAILABLE` ("Exceed listener max instance count").
+const UNLIMITED_LISTENER_CONNECTIONS: u32 = u32::MAX;
+
 fn default_connection_settings(listener_name: &str) -> WRDS_CONNECTION_SETTINGS {
     // SAFETY: `WRDS_CONNECTION_SETTINGS` is a plain C struct; a zeroed value is a valid baseline.
     let mut settings: WRDS_CONNECTION_SETTINGS = unsafe { core::mem::zeroed() };
@@ -1526,6 +1513,9 @@ fn default_connection_settings(listener_name: &str) -> WRDS_CONNECTION_SETTINGS 
 
         let ls = &mut s1.WRdsListenerSettings;
         ls.WRdsListenerSettingLevel = WRDS_LISTENER_SETTING_LEVEL(1);
+        ls.WRdsListenerSetting
+            .WRdsListenerSettings1
+            .MaxProtocolListenerConnectionCount = UNLIMITED_LISTENER_CONNECTIONS;
         ls.WRdsListenerSetting.WRdsListenerSettings1.pSecurityDescriptor = core::ptr::null_mut();
     }
 
@@ -2225,13 +2215,13 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
         };
 
         settings.WRdsListenerSetting.WRdsListenerSettings1 = WRDS_LISTENER_SETTINGS_1 {
-            MaxProtocolListenerConnectionCount: 0,
+            MaxProtocolListenerConnectionCount: UNLIMITED_LISTENER_CONNECTIONS,
             SecurityDescriptorSize: 0,
             pSecurityDescriptor: core::ptr::null_mut(),
         };
 
         debug_log_line(&format!(
-            "IWRdsProtocolListener::GetSettings listener_name={} level={} -> ok (max_conn=0 sd_size=0 sd_ptr=0x0)",
+            "IWRdsProtocolListener::GetSettings listener_name={} level={} -> ok (max_conn=unlimited sd_size=0 sd_ptr=0x0)",
             self.listener_name, wrdslistenersettinglevel.0
         ));
 
@@ -2871,8 +2861,6 @@ struct ComProtocolConnection {
     last_input_time: Mutex<u64>,
     virtual_channels: Mutex<Vec<VirtualChannelHandle>>,
     virtual_channel_forwarders: Mutex<Vec<VirtualChannelForwarderWorker>>,
-    keyboard_handle: Mutex<Option<HANDLE>>,
-    mouse_handle: Mutex<Option<HANDLE>>,
     video_handle: Mutex<Option<HANDLE>>,
     session_impersonation_token: Mutex<Option<(u32, HANDLE)>>,
     video_handle_source: Mutex<VideoHandleSource>,
@@ -3109,8 +3097,6 @@ impl ComProtocolConnection {
             last_input_time: Mutex::new(0),
             virtual_channels: Mutex::new(Vec::new()),
             virtual_channel_forwarders: Mutex::new(Vec::new()),
-            keyboard_handle: Mutex::new(None),
-            mouse_handle: Mutex::new(None),
             video_handle: Mutex::new(None),
             session_impersonation_token: Mutex::new(None),
             video_handle_source: Mutex::new(VideoHandleSource::Unknown),
@@ -3119,16 +3105,8 @@ impl ComProtocolConnection {
     }
 
     fn close_device_handles(&self) {
-        // Best-effort cleanup: TermService might also close these, but we treat them as owned
-        // by this connection object to avoid leaks across repeated connections.
-        for slot in [&self.keyboard_handle, &self.mouse_handle, &self.video_handle] {
-            if let Some(handle) = slot.lock().take() {
-                // SAFETY: handle came from CreateFileW.
-                unsafe {
-                    let _ = CloseHandle(handle);
-                }
-            }
-        }
+        // Keyboard and mouse handles are not tracked here: GetInputHandles transfers them to TermService, which closes them.
+        self.close_cached_video_handle();
 
         if let Some((session_id, token)) = self.session_impersonation_token.lock().take() {
             debug_log_line(&format!("release_session_impersonation_token session_id={session_id}"));
@@ -3250,7 +3228,7 @@ impl ComProtocolConnection {
         // SAFETY: probing required size with null output buffer follows `CredPackAuthenticationBufferW` contract.
         let probe = unsafe {
             CredPackAuthenticationBufferW(
-                CRED_PACK_PROTECTED_CREDENTIALS,
+                CRED_PACK_UNPROTECTED,
                 PWSTR(username_wide.as_mut_ptr()),
                 PWSTR(password_wide.as_mut_ptr()),
                 core::ptr::null_mut(),
@@ -3293,7 +3271,7 @@ impl ComProtocolConnection {
         // SAFETY: `packed_ptr` references `packed_len` writable bytes from `CoTaskMemAlloc`.
         let packed_ok = unsafe {
             CredPackAuthenticationBufferW(
-                CRED_PACK_PROTECTED_CREDENTIALS,
+                CRED_PACK_UNPROTECTED,
                 PWSTR(username_wide.as_mut_ptr()),
                 PWSTR(password_wide.as_mut_ptr()),
                 packed_ptr,
@@ -5000,8 +4978,7 @@ impl IWRdsEnhancedFastReconnectArbitrator_Impl for ComProtocolConnection_Impl {
     ) -> windows_core::Result<()> {
         let connection_id = self.inner.connection_id();
         debug_log_line(&format!(
-            "IWRdsEnhancedFastReconnectArbitrator::GetSessionForEnhancedFastReconnect called connection_id={connection_id} count={dwsessioncount} snapshot={}",
-            session_selection_snapshot(),
+            "IWRdsEnhancedFastReconnectArbitrator::GetSessionForEnhancedFastReconnect called connection_id={connection_id} count={dwsessioncount}",
         ));
 
         if presultsessionid.is_null() {
@@ -5350,57 +5327,56 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             unsafe { *pbeephandle = HANDLE_PTR::default() };
         }
 
-        // Best-effort: provide real device handles so TermService can complete session setup.
+        // TermService takes ownership of the returned handles and closes them itself
+        // (CConnectionEx::GetTerminalChannels stores them in SmartHANDLE members).
+        // Open fresh handles on every call and never close them here:
+        // a second close would hit whatever object reuses the handle value.
         if !pkeyboardhandle.is_null() {
-            let mut slot = self.keyboard_handle.lock();
-            if slot.is_none() {
-                match ComProtocolConnection::open_keyboard_device_handle() {
-                    Ok(handle) => {
-                        debug_log_line("GetInputHandles: opened keyboard device handle");
-                        *slot = Some(handle);
-                    }
-                    Err(error) => {
-                        debug_log_line(&format!(
-                            "GetInputHandles: failed to open keyboard device handle: {error}"
-                        ));
+            let handle = match ComProtocolConnection::open_keyboard_device_handle() {
+                Ok(handle) => {
+                    debug_log_line("GetInputHandles: opened keyboard device handle");
+                    Some(handle)
+                }
+                Err(error) => {
+                    debug_log_line(&format!(
+                        "GetInputHandles: failed to open keyboard device handle: {error}"
+                    ));
 
-                        // Some environments deny opening keyboard device objects from the TermService process.
-                        // Provide a non-null fallback handle so TermService can still advance the session.
-                        match ComProtocolConnection::open_pointer_device_handle() {
-                            Ok(handle) => {
-                                debug_log_line("GetInputHandles: using pointer device handle as keyboard fallback");
-                                *slot = Some(handle);
-                            }
-                            Err(fallback_error) => {
-                                debug_log_line(&format!(
-                                    "GetInputHandles: keyboard fallback (pointer device) failed: {fallback_error}"
-                                ));
-                            }
+                    // Some environments deny opening keyboard device objects from the TermService process.
+                    // Provide a non-null fallback handle so TermService can still advance the session.
+                    match ComProtocolConnection::open_pointer_device_handle() {
+                        Ok(handle) => {
+                            debug_log_line("GetInputHandles: using pointer device handle as keyboard fallback");
+                            Some(handle)
+                        }
+                        Err(fallback_error) => {
+                            debug_log_line(&format!(
+                                "GetInputHandles: keyboard fallback (pointer device) failed: {fallback_error}"
+                            ));
+                            None
                         }
                     }
                 }
-            }
-            let raw = slot.map(handle_to_raw_usize).unwrap_or_default();
+            };
+            let raw = handle.map(handle_to_raw_usize).unwrap_or_default();
             // SAFETY: non-null pointer, TermService-provided output.
             unsafe { *pkeyboardhandle = HANDLE_PTR(raw) };
         }
 
         if !pmousehandle.is_null() {
-            let mut slot = self.mouse_handle.lock();
-            if slot.is_none() {
-                match ComProtocolConnection::open_pointer_device_handle() {
-                    Ok(handle) => {
-                        debug_log_line("GetInputHandles: opened pointer device handle");
-                        *slot = Some(handle);
-                    }
-                    Err(error) => {
-                        debug_log_line(&format!(
-                            "GetInputHandles: failed to open pointer device handle: {error}"
-                        ));
-                    }
+            let handle = match ComProtocolConnection::open_pointer_device_handle() {
+                Ok(handle) => {
+                    debug_log_line("GetInputHandles: opened pointer device handle");
+                    Some(handle)
                 }
-            }
-            let raw = slot.map(handle_to_raw_usize).unwrap_or_default();
+                Err(error) => {
+                    debug_log_line(&format!(
+                        "GetInputHandles: failed to open pointer device handle: {error}"
+                    ));
+                    None
+                }
+            };
+            let raw = handle.map(handle_to_raw_usize).unwrap_or_default();
             // SAFETY: non-null pointer, TermService-provided output.
             unsafe { *pmousehandle = HANDLE_PTR(raw) };
         }
@@ -5620,11 +5596,12 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
     }
 
     fn PreDisconnect(&self, disconnectreason: u32) -> windows_core::Result<()> {
+        // Do not enumerate sessions here: TermService holds its session lock during this callback,
+        // so `WTSEnumerateSessionsW` RPCs back into TermService and deadlocks it.
         debug_log_line(&format!(
-            "IWRdsProtocolConnection::PreDisconnect called connection_id={} reason={} snapshot={}",
+            "IWRdsProtocolConnection::PreDisconnect called connection_id={} reason={}",
             self.inner.connection_id(),
             disconnectreason,
-            session_selection_snapshot(),
         ));
         Ok(())
     }
@@ -5885,10 +5862,9 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
                 "IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_GET_FAST_RECONNECT -> {fast_reconnect_mode}",
             ));
             debug_log_line(&format!(
-                "SESSION_PROOF_PROVIDER_FAST_RECONNECT connection_id={} mode={} snapshot={}",
+                "SESSION_PROOF_PROVIDER_FAST_RECONNECT connection_id={} mode={}",
                 self.inner.connection_id(),
                 fast_reconnect_mode,
-                session_selection_snapshot(),
             ));
             return Ok(());
         }

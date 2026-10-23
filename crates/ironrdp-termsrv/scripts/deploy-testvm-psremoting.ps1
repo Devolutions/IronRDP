@@ -1,10 +1,10 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$Hostname = 'IT-HELP-TEST',
+    [string]$Hostname = 'IT-HELP-TERMSRV',
 
     [Parameter()]
-    [string]$Username = 'IT-HELP\Administrator',
+    [string]$Username = $env:RDP_USERNAME,
 
     [Parameter()]
     [securestring]$Password,
@@ -16,16 +16,16 @@ param(
     [switch]$PromptPassword,
 
     [Parameter()]
-    [string]$PasswordEnvVar = 'IRONRDP_TESTVM_PASSWORD',
+    [string]$PasswordEnvVar = 'RDP_PASSWORD',
 
     [Parameter()]
-    [string]$RdpUsername = 'test',
+    [string]$RdpUsername = $env:RDP_USERNAME,
 
     [Parameter()]
     [string]$RdpPassword = '',
 
     [Parameter()]
-    [string]$RdpPasswordEnvVar = 'IRONRDP_TESTVM_RDP_PASSWORD',
+    [string]$RdpPasswordEnvVar = 'RDP_PASSWORD',
 
     [Parameter()]
     [string]$RdpDomain = '',
@@ -172,6 +172,7 @@ if (-not $SkipBuild.IsPresent) {
         } else {
             cargo build -p ironrdp-termsrv
         }
+        if ($LASTEXITCODE -ne 0) { throw "Companion build failed (exit $LASTEXITCODE)" }
     }
     finally {
         Pop-Location
@@ -239,7 +240,7 @@ else {
         $fromEnv
     } else {
         # Back-compat / convenience fallback: if the admin password env var is set, reuse it.
-        [Environment]::GetEnvironmentVariable('IRONRDP_TESTVM_PASSWORD')
+        [Environment]::GetEnvironmentVariable($PasswordEnvVar)
     }
 }
 
@@ -744,15 +745,11 @@ finally {
     } -ArgumentList $ListenerAddr, $logOut, $logErr, $TailLines, $NoTermServiceStart.IsPresent
 
     Write-Host "Ready: $Hostname ($ListenerAddr)" -ForegroundColor Green
-    $rdpIdentity = if ([string]::IsNullOrWhiteSpace($RdpDomain)) { $RdpUsername } else { "$RdpDomain\\$RdpUsername" }
-    $rdpDomainArgs = if ([string]::IsNullOrWhiteSpace($RdpDomain)) { '' } else { " -d $RdpDomain" }
     $port = $ListenerAddr.Split(':')[-1]
     if ([string]::IsNullOrWhiteSpace($resolvedRdpPassword)) {
-        Write-Host "RDP test credentials: $rdpIdentity (password NOT configured)" -ForegroundColor Yellow
-        Write-Host "Connect with: ironrdp-client.exe ${Hostname}:$port -u $RdpUsername$rdpDomainArgs -p <password>" -ForegroundColor Yellow
+        Write-Warning 'RDP password is not configured'
     } else {
-        Write-Host "RDP test credentials: $rdpIdentity (password provided out-of-band)" -ForegroundColor Green
-        Write-Host "Connect with: ironrdp-client.exe ${Hostname}:$port -u $RdpUsername$rdpDomainArgs -p <password>" -ForegroundColor Green
+        Write-Host "Connect with: ironrdp-agent connect --server ${Hostname}:$port --no-prompt (credentials from environment)" -ForegroundColor Green
     }
 }
 finally {
