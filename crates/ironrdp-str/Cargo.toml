@@ -18,7 +18,7 @@ alloc = ["ironrdp-core/alloc", "bytemuck/extern_crate_alloc"]
 
 [dependencies]
 bytemuck = { version = "1", default-features = false }
-ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
+ironrdp-core = { path = "../ironrdp-core", version = "0.2" } # public
 
 [lints]
 workspace = true
