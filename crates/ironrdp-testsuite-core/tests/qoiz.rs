@@ -169,6 +169,11 @@ fn decompresses_empty_update() {
     let mut decompressor = QoizDecompressor::default();
 
     assert_eq!(decompressor.decompress(&[]).unwrap(), Vec::<u8>::new());
+
+    for (update, expected) in ZSTD_SAFE_STREAM.iter().zip(payloads()) {
+        assert_eq!(decompressor.decompress(update).unwrap(), expected);
+        assert_eq!(decompressor.decompress(&[]).unwrap(), Vec::<u8>::new());
+    }
 }
 
 /// An update is only decodable after the ones before it.
