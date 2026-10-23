@@ -33,4 +33,8 @@ public enum ActiveStageOutputType
     WindowingOrders = 12,
     AutoReconnectFailed = 13,
     MonitorLayout = 14,
+    /// <summary>
+    /// The server sent a Server Redirection PDU; use `get_server_redirection()` to read the target.
+    /// </summary>
+    ServerRedirection = 15,
 }

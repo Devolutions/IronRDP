@@ -12,5 +12,6 @@ mod message_channel;
 mod pointer;
 mod rdp;
 mod rfx;
+mod server_redirection;
 mod slow_path;
 mod x224;

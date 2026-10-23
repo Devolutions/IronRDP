@@ -11,6 +11,7 @@ use ironrdp_pdu::rdp::headers::{
 use ironrdp_pdu::rdp::heartbeat::HeartbeatPdu;
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
+use ironrdp_pdu::rdp::server_redirection::ServerRedirectionPdu;
 use ironrdp_pdu::rdp::session_info::{InfoData, SaveSessionInfoPdu, ServerAutoReconnect};
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{
@@ -90,6 +91,11 @@ pub enum ProcessorOutput {
     /// The server may send this after activation when the client advertises
     /// `RNS_UD_CS_SUPPORT_MONITOR_LAYOUT_PDU`.
     MonitorLayout(Vec<Monitor>),
+    /// Server Redirection PDU ([MS-RDPBCGR] 2.2.13).
+    ///
+    /// The client must close the connection and reconnect to the target it describes. Informational PDUs
+    /// (`LB_NOREDIRECT`) are not reported.
+    ServerRedirection(Box<ServerRedirectionPdu>),
 }
 
 #[derive(Debug, Clone)]
@@ -275,11 +281,11 @@ impl Processor {
     ) -> SessionResult<Vec<ProcessorOutput>> {
         debug_assert_eq!(data_ctx.channel_id, self.io_channel_id);
 
-        // Multitransport PDUs use BasicSecurityHeader, so the first two bytes are flags
-        // rather than Share Control totalLength. Delegate before walking concatenated PDUs.
+        // Multitransport PDUs and the Standard Security Server Redirection PDU use BasicSecurityHeader, so the first
+        // two bytes are flags rather than Share Control totalLength. Delegate before walking concatenated PDUs.
         if matches!(
             ironrdp_pdu::rdp::headers::decode_io_channel(data_ctx),
-            Ok(IoChannelPdu::MultitransportRequest(_))
+            Ok(IoChannelPdu::MultitransportRequest(_) | IoChannelPdu::ServerRedirection(_))
         ) {
             self.record_bandwidth_bytes(data_ctx.user_data.len() - BasicSecurityHeader::FIXED_PART_SIZE);
             return self.process_io_channel(data_ctx, bulk_decompressor);
@@ -340,6 +346,14 @@ impl Processor {
                 Ok(Vec::new())
             }
             IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll]),
+            IoChannelPdu::ServerRedirection(redirection) => {
+                if redirection.is_informational() {
+                    debug!(?redirection, "Ignoring informational Server Redirection PDU");
+                    return Ok(Vec::new());
+                }
+                debug!(session_id = redirection.session_id, "Received Server Redirection PDU");
+                Ok(vec![ProcessorOutput::ServerRedirection(Box::new(redirection))])
+            }
         }
     }
 

@@ -119,6 +119,10 @@ pub struct Config {
     pub(crate) channels: ChannelConfig,
     pub(crate) administrative_session: bool,
     pub(crate) load_balance_info: Option<String>,
+    /// Whether a server redirection connects to the target by name rather than by address.
+    pub(crate) use_redirection_server_name: bool,
+    /// What the last Server Redirection PDU changed for the next connection attempts.
+    pub(crate) redirection: Option<crate::redirection::RedirectionHop>,
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
     pub(crate) audio_quality_mode: AudioQualityMode,
     pub(crate) rail_client_status_flags: Option<u32>,
@@ -250,6 +254,12 @@ impl Config {
         self.load_balance_info.as_deref()
     }
 
+    /// Whether a server redirection connects to the target by name rather than by address
+    /// (`use redirection server name`).
+    pub fn use_redirection_server_name(&self) -> bool {
+        self.use_redirection_server_name
+    }
+
     /// RDPSND quality policy sent during audio format negotiation.
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
     pub fn audio_quality_mode(&self) -> AudioQualityMode {
@@ -314,6 +324,8 @@ impl fmt::Debug for Config {
         s.field("channels", &self.channels);
         s.field("administrative_session", &self.administrative_session);
         s.field("load_balance_info", &self.load_balance_info);
+        s.field("use_redirection_server_name", &self.use_redirection_server_name);
+        s.field("redirection", &self.redirection);
         #[cfg(any(feature = "sound", feature = "rdpdr"))]
         s.field("audio_quality_mode", &self.audio_quality_mode);
         s.field("rail_client_status_flags", &self.rail_client_status_flags);
@@ -824,6 +836,7 @@ pub struct ConfigBuilder {
     compression_type: Option<ironrdp_pdu::rdp::client_info::CompressionType>,
     compression_enabled: Option<bool>,
     load_balance_info: Option<String>,
+    use_redirection_server_name: bool,
     administrative_session: bool,
     alternate_shell: Option<String>,
     work_dir: Option<String>,
@@ -1090,6 +1103,18 @@ impl ConfigBuilder {
             self.properties.insert("loadbalanceinfo", value.clone());
             self.load_balance_info = Some(normalized.to_owned());
         }
+        self
+    }
+
+    /// Connect to the target of a server redirection by name rather than by address.
+    ///
+    /// Upserts the `use redirection server name` property, which mirrors the mstsc ActiveX
+    /// `UseRedirectionServerName` property. By default a direct connection follows a redirection to the target's IP
+    /// address first; connections through a gateway or an RDCleanPath proxy always prefer the name.
+    #[must_use]
+    pub fn with_use_redirection_server_name(mut self, enabled: bool) -> Self {
+        self.use_redirection_server_name = enabled;
+        self.properties.insert("use redirection server name", enabled);
         self
     }
 
@@ -2184,6 +2209,8 @@ impl ConfigBuilder {
             channels: self.channels,
             administrative_session: self.administrative_session,
             load_balance_info: self.load_balance_info,
+            use_redirection_server_name: self.use_redirection_server_name,
+            redirection: None,
             #[cfg(any(feature = "sound", feature = "rdpdr"))]
             audio_quality_mode: self.audio_quality_mode.unwrap_or_default(),
             rail_client_status_flags: self.rail_client_status_flags,
@@ -2253,6 +2280,9 @@ impl ConfigBuilder {
         }
         if let Some(administrative_session) = ps.get::<bool>("administrative session") {
             self.administrative_session = administrative_session;
+        }
+        if let Some(use_redirection_server_name) = ps.get::<bool>("use redirection server name") {
+            self.use_redirection_server_name = use_redirection_server_name;
         }
         if let Some(load_balance_info) = ps.get::<&str>("loadbalanceinfo") {
             let normalized = load_balance_info.strip_suffix("\r\n").unwrap_or(load_balance_info);

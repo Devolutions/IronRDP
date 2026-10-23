@@ -22,6 +22,9 @@ public partial struct ConnectionActivationState
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationState_get_connection_finalization", ExactSpelling = true)]
     public static unsafe extern ConnectorActivationFfiResultBoxConnectionActivationStateConnectionFinalizationBoxIronRdpError GetConnectionFinalization(ConnectionActivationState* self);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationState_get_redirected", ExactSpelling = true)]
+    public static unsafe extern ConnectorActivationFfiResultBoxServerRedirectionBoxIronRdpError GetRedirected(ConnectionActivationState* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationState_get_finalized", ExactSpelling = true)]
     public static unsafe extern ConnectorActivationFfiResultBoxConnectionActivationStateFinalizedBoxIronRdpError GetFinalized(ConnectionActivationState* self);
 

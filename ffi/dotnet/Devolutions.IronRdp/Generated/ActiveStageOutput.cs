@@ -79,6 +79,14 @@ public partial class ActiveStageOutput: IDisposable
         }
     }
 
+    public ServerRedirection ServerRedirection
+    {
+        get
+        {
+            return GetServerRedirection();
+        }
+    }
+
     public GracefulDisconnectReason Terminate
     {
         get
@@ -254,6 +262,28 @@ public partial class ActiveStageOutput: IDisposable
             }
             Raw.MonitorLayoutIterator* retVal = result.Ok;
             return new MonitorLayoutIterator(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ServerRedirection</c> allocated on Rust side.
+    /// </returns>
+    public ServerRedirection GetServerRedirection()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStageOutput");
+            }
+            Raw.SessionFfiResultBoxServerRedirectionBoxIronRdpError result = Raw.ActiveStageOutput.GetServerRedirection(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ServerRedirection* retVal = result.Ok;
+            return new ServerRedirection(retVal);
         }
     }
 

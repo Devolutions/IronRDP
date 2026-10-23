@@ -1560,6 +1560,7 @@ struct CompatibilitySettings {
     keep_alive_interval_seconds: i32,
     load_balance_info: String,
     administrative_session: bool,
+    use_redirection_server_name: bool,
     audio_quality_mode: AudioQualityMode,
     rdp_port: Option<u16>,
     enable_mouse: bool,
@@ -1644,6 +1645,7 @@ impl Default for CompatibilitySettings {
             keep_alive_interval_seconds: 0,
             load_balance_info: String::new(),
             administrative_session: false,
+            use_redirection_server_name: false,
             audio_quality_mode: AudioQualityMode::Dynamic,
             rdp_port: None,
             enable_mouse: true,
@@ -8520,6 +8522,7 @@ fn active_x_property_snapshot(settings: &Settings, compatibility: &Compatibility
         properties.insert("loadbalanceinfo", compatibility.load_balance_info.clone());
     }
     properties.insert("administrative session", compatibility.administrative_session);
+    properties.insert("use redirection server name", compatibility.use_redirection_server_name);
     properties.insert("mininputsendinterval", compatibility.min_input_send_interval_ms);
     properties.insert(
         "keepaliveinterval",
@@ -8590,6 +8593,7 @@ fn is_boolean_modern_property(name: &str) -> bool {
             | "enablecredsspsupport"
             | "compression"
             | "administrative session"
+            | "use redirection server name"
             | "remoteapplicationmode"
     )
 }
@@ -8629,6 +8633,7 @@ fn validate_modern_rdp_property(name: &str, value: &Value) -> Result<()> {
         | "enablecredsspsupport"
         | "compression"
         | "administrative session"
+        | "use redirection server name"
         | "remoteapplicationmode" => {
             let _ = property_bool(value)?;
             Ok(())
@@ -8827,6 +8832,9 @@ impl Control {
             }
             "administrative session" => {
                 self.compatibility.borrow_mut().administrative_session = value.as_int().unwrap_or_default() != 0;
+            }
+            "use redirection server name" => {
+                self.compatibility.borrow_mut().use_redirection_server_name = value.as_int().unwrap_or_default() != 0;
             }
             "loadbalanceinfo" => {
                 self.compatibility.borrow_mut().load_balance_info = value.as_str().unwrap_or_default().to_owned();
@@ -11688,6 +11696,7 @@ impl Control {
                 .unwrap_or_default()
                 .to_owned();
             compatibility.administrative_session = config.administrative_session();
+            compatibility.use_redirection_server_name = config.use_redirection_server_name();
             compatibility.audio_quality_mode = config.audio_quality_mode();
             compatibility.secured_start_program = connector.alternate_shell.clone();
             compatibility.secured_work_dir = connector.work_dir.clone();
@@ -12020,6 +12029,7 @@ impl Control {
         let compression_level = compatibility.compression_level;
         let load_balance_info = compatibility.load_balance_info.clone();
         let administrative_session = compatibility.administrative_session;
+        let use_redirection_server_name = compatibility.use_redirection_server_name;
         let audio_quality_mode = compatibility.audio_quality_mode;
         let client_build = compatibility.client_build;
         let client_dir = compatibility.client_dir.clone();
@@ -12169,6 +12179,7 @@ impl Control {
                 u64::try_from(min_input_send_interval_ms).map_err(|_| Error::from_hresult(E_INVALIDARG))?,
             ))
             .with_administrative_session(administrative_session)
+            .with_use_redirection_server_name(use_redirection_server_name)
             .with_certificate_validation(certificate_validation)
             // The GDI presenter has no hardware-cursor overlay, so cursor updates must be
             // composited into the decoded framebuffer before it receives image events.
@@ -15167,15 +15178,14 @@ impl IMsRdpClient10_Impl for Control_Impl {
 
 impl IMsRdpPreferredRedirectionInfo_Impl for Control_Impl {
     unsafe fn put_UseRedirectionServerName(&self, value: i16) -> Result<()> {
-        if value == VARIANT_FALSE.0 {
-            Ok(())
-        } else {
-            Err(Error::from_hresult(E_NOTIMPL))
-        }
+        // Like the other connection settings, the value applies to the next connection.
+        self.compatibility.borrow_mut().use_redirection_server_name = value != VARIANT_FALSE.0;
+        Ok(())
     }
 
     unsafe fn get_UseRedirectionServerName(&self, value: *mut i16) -> Result<()> {
-        write_out(value, VARIANT_FALSE.0)
+        let enabled = self.compatibility.borrow().use_redirection_server_name;
+        write_out(value, if enabled { VARIANT_TRUE.0 } else { VARIANT_FALSE.0 })
     }
 }
 
@@ -24442,21 +24452,22 @@ try {
         let preferred = control
             .cast::<IMsRdpPreferredRedirectionInfo>()
             .expect("client supports preferred redirection settings");
-        let error = unsafe { preferred.put_UseRedirectionServerName(VARIANT_TRUE.0) }
-            .expect_err("redirection server names are not implemented");
-        assert_eq!(error.code(), E_NOTIMPL);
-        unsafe {
-            preferred
-                .put_UseRedirectionServerName(VARIANT_FALSE.0)
-                .expect("disabling an unavailable redirection feature is accepted");
-        }
         let mut use_redirection_server_name = VARIANT_TRUE.0;
         unsafe {
             preferred
                 .get_UseRedirectionServerName(&mut use_redirection_server_name)
-                .expect("query disabled redirection state");
+                .expect("query the default redirection setting");
         }
         assert_eq!(use_redirection_server_name, VARIANT_FALSE.0);
+        unsafe {
+            preferred
+                .put_UseRedirectionServerName(VARIANT_TRUE.0)
+                .expect("enable redirection server names");
+            preferred
+                .get_UseRedirectionServerName(&mut use_redirection_server_name)
+                .expect("query the enabled redirection setting");
+        }
+        assert_eq!(use_redirection_server_name, VARIANT_TRUE.0);
 
         let control = control.cast::<IMsTscAx>().expect("client supports IMsTscAx");
         let empty_channels = ptr::null();

@@ -79,6 +79,14 @@ public partial class ClientConnectorState: IDisposable
         }
     }
 
+    public ServerRedirection RedirectedResult
+    {
+        get
+        {
+            return GetRedirectedResult();
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>ClientConnectorState</c> from a raw handle.
     /// </summary>
@@ -244,6 +252,28 @@ public partial class ClientConnectorState: IDisposable
             }
             Raw.ConnectionResult* retVal = result.Ok;
             return new ConnectionResult(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ServerRedirection</c> allocated on Rust side.
+    /// </returns>
+    public ServerRedirection GetRedirectedResult()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnectorState");
+            }
+            Raw.ConnectorStateFfiResultBoxServerRedirectionBoxIronRdpError result = Raw.ClientConnectorState.GetRedirectedResult(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ServerRedirection* retVal = result.Ok;
+            return new ServerRedirection(retVal);
         }
     }
 

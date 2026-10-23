@@ -28,4 +28,8 @@ public enum ClientConnectorStateType
     CapabilitiesExchange = 12,
     ConnectionFinalization = 13,
     Connected = 14,
+    /// <summary>
+    /// The server sent a Server Redirection PDU instead of completing the connection.
+    /// </summary>
+    Redirected = 15,
 }

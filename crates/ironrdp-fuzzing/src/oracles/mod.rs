@@ -153,7 +153,8 @@ pub fn pdu_decode(data: &[u8]) {
     use ironrdp_pdu::mcs::{ConnectInitial, ConnectResponse, McsMessage};
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
     use ironrdp_pdu::rdp::{
-        ClientInfoPdu, capability_sets, headers, multitransport, server_error_info, server_license, vc,
+        ClientInfoPdu, capability_sets, headers, multitransport, server_error_info, server_license, server_redirection,
+        vc,
     };
     use ironrdp_pdu::x224::X224;
     use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
@@ -168,6 +169,8 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<headers::ShareControlHeader>(data);
     let _ = decode::<pcb::PreconnectionBlob>(data);
     let _ = decode::<server_error_info::ServerSetErrorInfoPdu>(data);
+    let _ = decode::<server_redirection::ServerRedirectionPdu>(data);
+    let _ = decode::<server_redirection::StandardSecurityServerRedirection>(data);
 
     let _ = decode::<gcc::ClientGccBlocks>(data);
     let _ = decode::<gcc::ServerGccBlocks>(data);
@@ -313,7 +316,9 @@ pub fn pdu_round_trip(data: &[u8]) {
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
     use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
     use ironrdp_pdu::rdp::headers::ShareControlHeader;
-    use ironrdp_pdu::rdp::{self, ClientInfoPdu, multitransport, server_error_info, server_license, vc};
+    use ironrdp_pdu::rdp::{
+        self, ClientInfoPdu, multitransport, server_error_info, server_license, server_redirection, vc,
+    };
     use ironrdp_pdu::x224::X224;
     use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
 
@@ -326,6 +331,8 @@ pub fn pdu_round_trip(data: &[u8]) {
     pdu_round_trip_one!(data, ClientInfoPdu);
     pdu_round_trip_one!(data, pcb::PreconnectionBlob);
     pdu_round_trip_one!(data, server_error_info::ServerSetErrorInfoPdu);
+    pdu_round_trip_one!(data, server_redirection::ServerRedirectionPdu);
+    pdu_round_trip_one!(data, server_redirection::StandardSecurityServerRedirection);
 
     // Capability sharing
     pdu_round_trip_one!(data, CapabilitySet);
@@ -1302,7 +1309,7 @@ pub fn message_decoding_invariants(data: &[u8]) {
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
     use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
     use ironrdp_pdu::rdp::headers::ShareControlHeader;
-    use ironrdp_pdu::rdp::{ClientInfoPdu, server_error_info, server_license, vc};
+    use ironrdp_pdu::rdp::{ClientInfoPdu, server_error_info, server_license, server_redirection, vc};
     use ironrdp_pdu::x224::X224;
     use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
 
@@ -1315,6 +1322,8 @@ pub fn message_decoding_invariants(data: &[u8]) {
     decode_size_invariant_one!(data, ClientInfoPdu);
     decode_size_invariant_one!(data, pcb::PreconnectionBlob);
     decode_size_invariant_one!(data, server_error_info::ServerSetErrorInfoPdu);
+    decode_size_invariant_one!(data, server_redirection::ServerRedirectionPdu);
+    decode_size_invariant_one!(data, server_redirection::StandardSecurityServerRedirection);
 
     // Capability sharing. `ShareControlHeader` transits through `CapabilitySet`'s
     // encoder via the Active variants, so the same encoder path exercises both.

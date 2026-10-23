@@ -15,7 +15,7 @@ use std::time::Instant;
 #[cfg(feature = "clipboard")]
 pub use ironrdp_cliprdr::backend::CliprdrBackendFactory;
 use ironrdp_connector::connection_activation::ConnectionActivationState;
-use ironrdp_connector::{ConnectionResult, ConnectorResult};
+use ironrdp_connector::{ConnectionOutcome, ConnectionResult, ConnectorResult};
 use ironrdp_core::WriteBuf;
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout, MonitorLayoutEntry};
@@ -40,6 +40,7 @@ use ironrdp_pdu::input::mouse::PointerFlags;
 ))]
 use ironrdp_pdu::pdu_other_err;
 use ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu;
+use ironrdp_pdu::rdp::server_redirection::ServerRedirectionPdu;
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 #[cfg(feature = "rdpdr")]
 pub use ironrdp_rdpdr::backend::{
@@ -205,6 +206,17 @@ pub enum RdpOutputEvent {
     },
     /// A cookie-based reconnect has completed successfully.
     AutoReconnected,
+    /// The server redirected the connection ([MS-RDPBCGR] 3.2.5.13.1), and the client is connecting to `target`.
+    ///
+    /// This is not a disconnection: a [`RdpOutputEvent::Connected`] follows once the target accepts the connection.
+    /// It can arrive before or after a first [`RdpOutputEvent::Connected`], because a server may redirect during the
+    /// connection sequence or later in the session.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    ServerRedirected {
+        /// Host and port of the redirection target.
+        target: String,
+    },
     /// The MS-RDPEI input channel started or stopped accepting touch or pen frames, or the server
     /// suspended or resumed input.
     ///
@@ -1058,6 +1070,7 @@ impl RdpClient {
         let auto_reconnect_policy = self.auto_reconnect_maximum_attempts.map(AutoReconnectPolicy::new);
         let mut auto_reconnect_cookie = None;
         let mut reconnect_attempt = 0;
+        let mut server_redirections = 0;
 
         loop {
             if *self.close_receiver.borrow_and_update() {
@@ -1071,7 +1084,7 @@ impl RdpClient {
                 .then_some(auto_reconnect_cookie.as_ref())
                 .flatten();
             let used_auto_reconnect_cookie = reconnect_cookie.is_some();
-            let (connection_result, framed, udp_tunnel) = match &self.config.transport {
+            let (connection_outcome, framed, udp_tunnel) = match &self.config.transport {
                 Transport::Direct => match Box::pin(cancelable_operation(
                     connect_direct(
                         &self.config,
@@ -1257,6 +1270,32 @@ impl RdpClient {
                 auto_reconnect_cookie = None;
             }
 
+            let connection_result = match connection_outcome {
+                ConnectionOutcome::Connected(connection_result) => connection_result,
+                ConnectionOutcome::Redirected(redirection) => {
+                    // The redirecting server is done with this connection.
+                    drop((framed, udp_tunnel));
+                    match self
+                        .follow_server_redirection(&redirection, &mut server_redirections)
+                        .await
+                    {
+                        Ok(true) => {
+                            // The target is a new connection, not a resumption of the redirecting one.
+                            auto_reconnect_cookie = None;
+                            reconnect_attempt = 0;
+                            continue;
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
+                                self.emit_user_initiated_termination();
+                            }
+                        }
+                    }
+                    break;
+                }
+            };
+
             if reconnect_attempt == 0 {
                 if let Some(monitor_layout) = connection_result.monitor_layout.as_ref()
                     && !self
@@ -1339,6 +1378,25 @@ impl RdpClient {
                     }
                     break;
                 }
+                Ok(RdpControlFlow::ServerRedirection(redirection)) => {
+                    match self
+                        .follow_server_redirection(&redirection, &mut server_redirections)
+                        .await
+                    {
+                        Ok(true) => {
+                            auto_reconnect_cookie = None;
+                            reconnect_attempt = 0;
+                        }
+                        Ok(false) => break,
+                        Err(error) => {
+                            let error = ironrdp_session::custom_err!("server redirection", error);
+                            if !self.send_output_event(RdpOutputEvent::Terminated(Err(error))).await {
+                                self.emit_user_initiated_termination();
+                            }
+                            break;
+                        }
+                    }
+                }
                 Ok(RdpControlFlow::TransportFailure(error)) => {
                     if self
                         .try_auto_reconnect(
@@ -1364,6 +1422,35 @@ impl RdpClient {
                 }
             }
         }
+    }
+
+    /// Prepares the next connection attempt for the target of a Server Redirection PDU.
+    ///
+    /// Returns `Ok(false)` when the output channel closed, which ends the client.
+    async fn follow_server_redirection(
+        &mut self,
+        redirection: &ServerRedirectionPdu,
+        server_redirections: &mut u32,
+    ) -> ConnectorResult<bool> {
+        if crate::redirection::MAX_SERVER_REDIRECTIONS <= *server_redirections {
+            return Err(ironrdp_connector::reason_err!(
+                "Redirect",
+                "the server redirected the connection more than {} times",
+                crate::redirection::MAX_SERVER_REDIRECTIONS
+            ));
+        }
+        *server_redirections += 1;
+
+        let target = crate::redirection::apply_server_redirection(&mut self.config, redirection)?;
+
+        if !self
+            .send_output_event(RdpOutputEvent::ServerRedirected { target })
+            .await
+        {
+            self.emit_user_initiated_termination();
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     async fn send_output_event(&mut self, event: RdpOutputEvent) -> bool {
@@ -1792,6 +1879,39 @@ fn rdpsnd_backend_kind(audio_playback: bool, rdpdr_attached: bool) -> Option<Rdp
     }
 }
 
+/// GCC Client Cluster Data advertising server redirection support, as mstsc always sends it
+/// ([MS-RDPBCGR] 2.2.1.3.5).
+///
+/// The session ID requests the administrative session (0) or the session a redirection named.
+/// Redirection version 6 implies multitransport support, so version 5 is advertised without UDP, as FreeRDP does.
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+fn client_cluster_data(config: &Config, enable_udp: bool) -> ironrdp_pdu::gcc::ClientClusterData {
+    use ironrdp_pdu::gcc::{ClientClusterData, RedirectionFlags, RedirectionVersion};
+
+    let redirected_session_id = config.redirection.as_ref().map(|hop| hop.session_id);
+    let mut flags = RedirectionFlags::REDIRECTION_SUPPORTED;
+    if config.administrative_session || redirected_session_id.is_some() {
+        flags |= RedirectionFlags::REDIRECTED_SESSION_FIELD_VALID;
+    }
+    if matches!(
+        config.connector.credentials,
+        ironrdp_connector::Credentials::SmartCard { .. }
+    ) {
+        flags |= RedirectionFlags::REDIRECTED_SMARTCARD;
+    }
+
+    ClientClusterData {
+        flags,
+        redirection_version: if enable_udp {
+            RedirectionVersion::V6
+        } else {
+            RedirectionVersion::V5
+        },
+        redirected_session_id: redirected_session_id.unwrap_or(0),
+    }
+}
+
 #[cfg(feature = "udp")]
 fn reliable_udp_multitransport_flags(enabled: bool) -> Option<ironrdp_pdu::gcc::MultiTransportFlags> {
     enabled.then_some(
@@ -2143,13 +2263,10 @@ fn build_connector(
         connector = connector.with_load_balance_info(load_balance_info.clone());
     }
 
-    if config.administrative_session {
-        connector = connector.with_cluster_data(ironrdp_pdu::gcc::ClientClusterData {
-            flags: ironrdp_pdu::gcc::RedirectionFlags::REDIRECTION_SUPPORTED
-                | ironrdp_pdu::gcc::RedirectionFlags::REDIRECTED_SESSION_FIELD_VALID,
-            redirection_version: ironrdp_pdu::gcc::RedirectionVersion::V6,
-            redirected_session_id: 0,
-        });
+    connector = connector.with_cluster_data(client_cluster_data(config, enable_udp));
+
+    if let Some(password_cookie) = config.redirection.as_ref().and_then(|hop| hop.password_cookie.clone()) {
+        connector = connector.with_redirection_password_cookie(password_cookie);
     }
 
     if let Some(rail_client) = rail_client {
@@ -2369,7 +2486,7 @@ async fn bootstrap_udp_transport(
         .ok_or_else(|| ironrdp_connector::general_err!("successful UDP bootstrap did not produce a transport"))
 }
 
-type ConnectOutput = (ConnectionResult, UpgradedFramed, UdpTunnel);
+type ConnectOutput = (ConnectionOutcome, UpgradedFramed, UdpTunnel);
 
 /// Direct TCP → TLS connection (no gateway).
 async fn connect_direct(
@@ -2380,10 +2497,7 @@ async fn connect_direct(
     rdpdr_factory: RdpdrFactoryRef<'_>,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
 ) -> ConnectorResult<ConnectOutput> {
-    let dest = config.destination.to_string();
-    let stream = TcpStream::connect(&dest)
-        .await
-        .map_err(|e| ironrdp_connector::custom_err!("TCP connect", e))?;
+    let stream = tcp_connect_destination(config).await?;
     #[cfg(feature = "vmconnect")]
     let pcb_deadline = tokio::time::Instant::now() + ironrdp_vmconnect::PCB_TRANSMIT_DEADLINE;
     let client_addr = stream
@@ -2439,6 +2553,39 @@ async fn connect_direct(
     #[cfg(not(feature = "udp"))]
     let udp_peer = None;
     Box::pin(security_upgrade_and_finalize(framed, connector, config, udp_peer)).await
+}
+
+/// Opens the TCP connection of a direct transport.
+///
+/// After a server redirection, the target's hosts are tried in order of preference.
+async fn tcp_connect_destination(config: &Config) -> ConnectorResult<TcpStream> {
+    let port = config.destination.port();
+    let hosts = config
+        .redirection
+        .as_ref()
+        .map(|hop| hop.connect_hosts.as_slice())
+        .filter(|hosts| !hosts.is_empty());
+    let Some(hosts) = hosts else {
+        return TcpStream::connect(config.destination.to_string())
+            .await
+            .map_err(|e| ironrdp_connector::custom_err!("TCP connect", e));
+    };
+
+    let mut last_error = None;
+    for host in hosts {
+        match TcpStream::connect((host.as_str(), port)).await {
+            Ok(stream) => {
+                debug!(%host, port, "Connected to the redirection target");
+                return Ok(stream);
+            }
+            Err(error) => {
+                debug!(%host, port, %error, "Redirection target host is unreachable");
+                last_error = Some(error);
+            }
+        }
+    }
+    let error = last_error.unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no redirection target host"));
+    Err(ironrdp_connector::custom_err!("TCP connect", error))
 }
 
 /// Windows named-pipe RDP stream (e.g. Windows Sandbox `\\.\pipe\{VMId}`).
@@ -2741,7 +2888,15 @@ where
 
     let (initial_stream, leftover_bytes) = framed.into_inner();
 
-    let tls_upgrade = if let Some(callback) = config.certificate_validation_callback() {
+    let tls_upgrade = if let Some(callback) = redirection_certificate_callback(config) {
+        ironrdp_tls::upgrade_with_certificate_validation_callback_for_endpoint(
+            initial_stream,
+            config.destination.name(),
+            &config.destination.to_string(),
+            callback,
+        )
+        .await
+    } else if let Some(callback) = config.certificate_validation_callback() {
         ironrdp_tls::upgrade_with_certificate_validation_callback_for_endpoint(
             initial_stream,
             config.destination.name(),
@@ -2758,6 +2913,7 @@ where
         .await
     };
     let (tls_stream, tls_cert) = tls_upgrade.map_err(|e| ironrdp_connector::custom_err!("TLS upgrade", e))?;
+    warn_on_unexpected_target_certificate(config, &tls_cert);
 
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
 
@@ -2843,6 +2999,55 @@ where
     .await?;
 
     Ok((connection_result, upgraded_framed, UdpTunnel::default()))
+}
+
+/// Validation callback that accepts the target certificate reported by a server redirection
+/// ([MS-RDPBCGR] 2.2.13.1.2), on top of the configured validation.
+///
+/// Returns `None` when no target certificate is known or validation is disabled anyway.
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+fn redirection_certificate_callback(config: &Config) -> Option<ironrdp_tls::CertificateValidationCallback> {
+    // UNTESTED: under strict validation, the exact certificate the redirecting server reported is accepted for the
+    // target and no other one is. It is what lets a client reach a farm member by address without a certificate
+    // prompt; when changing it, connect by address to a target whose certificate names only its FQDN.
+    let target_certificate = config.redirection.as_ref()?.target_certificate.clone()?;
+    if config.certificate_validation() != ironrdp_tls::CertificateValidation::Strict {
+        return None;
+    }
+    let fallback = config.certificate_validation_callback().cloned();
+    Some(Arc::new(move |certificate: &[u8], endpoint: &str, error: &str| {
+        if certificate == target_certificate.as_slice() {
+            debug!(%endpoint, "Accepting the target certificate reported by the redirecting server");
+            return true;
+        }
+        fallback
+            .as_ref()
+            .is_some_and(|callback| callback(certificate, endpoint, error))
+    }))
+}
+
+/// Reports a redirection target whose certificate differs from the one the redirecting server reported, when
+/// certificate validation does not check it.
+fn warn_on_unexpected_target_certificate(config: &Config, tls_cert: &x509_cert::Certificate) {
+    use x509_cert::der::Encode as _;
+
+    let Some(expected) = config
+        .redirection
+        .as_ref()
+        .and_then(|hop| hop.target_certificate.as_ref())
+    else {
+        return;
+    };
+    let Ok(certificate) = tls_cert.to_der() else {
+        return;
+    };
+    if certificate != *expected {
+        warn!(
+            server = %config.destination,
+            "The redirection target presented a certificate other than the one the redirecting server reported"
+        );
+    }
 }
 
 /// Hyper-V console connect via ironrdp-vmconnect, then shared RDP tail.
@@ -3190,6 +3395,8 @@ enum RdpControlFlow {
     },
     TransportFailure(SessionError),
     TerminatedGracefully(GracefulDisconnectReason),
+    /// The server sent a Server Redirection PDU during the session.
+    ServerRedirection(Box<ServerRedirectionPdu>),
 }
 
 struct ActiveSessionIteration {
@@ -4137,6 +4344,9 @@ async fn active_session(
                 // The status pre-scan above discarded the reconnect state before
                 // success can be reported; this output has no host-facing event.
                 ActiveStageOutput::AutoReconnectFailed => {}
+                ActiveStageOutput::ServerRedirection(redirection) => {
+                    return Ok(RdpControlFlow::ServerRedirection(redirection));
+                }
                 ActiveStageOutput::ResponseFrame(frame) => {
                     let Some(result) = cancelable_operation(writer.write_all(&frame), close_receiver).await else {
                         return Ok(RdpControlFlow::TerminatedGracefully(
@@ -4417,6 +4627,11 @@ async fn active_session(
                                     error
                                 )));
                             }
+                        }
+                        if let ConnectionActivationState::Redirected { redirection } =
+                            connection_activation.connection_activation_state()
+                        {
+                            return Ok(RdpControlFlow::ServerRedirection(redirection));
                         }
                         if let ConnectionActivationState::Finalized {
                             desktop_size,

@@ -120,6 +120,10 @@ internal static class ConnectionHelpers
         {
             return state.GetConnectedResult();
         }
+        else if (state.GetEnumType() == ClientConnectorStateType.Redirected)
+        {
+            throw new ServerRedirectionException(state.GetRedirectedResult());
+        }
         else
         {
             throw new IronRdpLibException(IronRdpLibExceptionType.ConnectionFailed, "Connection failed");

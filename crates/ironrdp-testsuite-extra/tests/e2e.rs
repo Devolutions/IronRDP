@@ -1409,7 +1409,7 @@ async fn client_server_with_display<D, DF, F, Fut, C>(
                 match direct_listener {
                     Some(listener) => {
                         let (stream, _) = listener.accept().await.expect("accept connection");
-                        server.run_connection(stream).await.unwrap();
+                        Box::pin(server.run_connection(stream)).await.unwrap();
                     }
                     None => server.run().await.unwrap(),
                 }
@@ -1594,6 +1594,7 @@ async fn egfx_moves_onto_the_udp_tunnel_with_soft_sync() {
                     },
                 )
                 .await
+                .and_then(connector::ConnectionOutcome::into_connected)
                 .expect("finalize connection");
                 let mut tunnel = tunnel.expect("the server sent an Initiate Multitransport Request");
 
@@ -2228,7 +2229,7 @@ async fn a_vouch_for_a_replaced_connection_does_not_reach_its_replacement() {
         .run_until(async move {
             let server = tokio::task::spawn_local(async move {
                 let (stream, _) = listener.accept().await.expect("accept connection");
-                server.run_connection(stream).await.unwrap();
+                Box::pin(server.run_connection(stream)).await.unwrap();
             });
 
             let client = tokio::task::spawn_local(async move {
@@ -2367,6 +2368,7 @@ async fn connect_client(
         None,
     )
     .await
+    .and_then(connector::ConnectionOutcome::into_connected)
     .expect("finalize connection");
     (upgraded_framed, connection_result)
 }
@@ -2921,6 +2923,153 @@ async fn serve_gates_a_preempting_newcomer_with_on_accept() {
         assert_eq!(asked.load(Ordering::SeqCst), 2, "on_accept saw both connections");
 
         drop(first);
+        server_task.abort();
+    }))
+    .await;
+}
+
+/// What a server learns from a connection about a client that follows a Server Redirection PDU.
+#[derive(Debug, PartialEq, Eq)]
+struct RedirectedConnection {
+    routing_token: Option<String>,
+    redirected_session_id: Option<u32>,
+    password_cookie: Option<Vec<u8>>,
+}
+
+struct RedirectionRecorder(UnboundedSender<RedirectedConnection>);
+
+impl server::ConnectionHandler for RedirectionRecorder {
+    fn on_connection_info(&mut self, info: &server::ConnectionInfo) {
+        let _ = self.0.send(RedirectedConnection {
+            routing_token: info.routing_token.clone(),
+            redirected_session_id: info.redirected_session_id,
+            password_cookie: info.password_cookie.as_ref().map(|cookie| cookie.0.clone()),
+        });
+    }
+}
+
+/// An `RdpClient` follows a Server Redirection PDU received during its session to the target, here the same
+/// server since the PDU carries no port.
+/// The new connection carries the load-balancing information as the X.224 routing token, the session ID in the
+/// Client Cluster Data and the password cookie in the Client Info PDU (MS-RDPBCGR 2.2.13.1), and the client
+/// reports the redirection rather than a disconnection.
+#[tokio::test]
+async fn rdp_client_follows_a_server_redirection_to_its_target() {
+    use ironrdp::pdu::rdp::server_redirection::ServerRedirectionPdu;
+    use ironrdp_client::config::{ConfigBuilder, Destination};
+    use ironrdp_client::rdp::{RdpClient, RdpOutputEvent};
+
+    // An unpaired UTF-16 surrogate makes the cookie opaque binary data rather than a password.
+    const COOKIE: [u8; 6] = [0x00, 0xD8, 0x42, 0x00, 0x00, 0x00];
+
+    let identity = test_tls_identity();
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+    let (connections_tx, mut connections_rx) = mpsc::unbounded_channel();
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_hybrid(acceptor, identity.pub_key)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .with_connection_handler(Some(Box::new(RedirectionRecorder(connections_tx))))
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: HYBRID_USER.into(),
+        password: HYBRID_PASSWORD.into(),
+        domain: None,
+    }));
+    let redirection_handle = server.server_redirection_handle();
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server.run().await;
+        });
+        let server_addr = local_addr_of(&ev).await;
+
+        let config = ConfigBuilder::new()
+            .with_destination(Destination::from_parts("127.0.0.1", server_addr.port()))
+            .with_username(HYBRID_USER)
+            .with_password(HYBRID_PASSWORD)
+            .with_client_build(1)
+            .with_client_dir("C:\\")
+            .with_platform(MajorPlatformType::WINDOWS)
+            .with_client_name("client")
+            .build()
+            .expect("client configuration");
+        let (output_tx, mut output_rx) = ironrdp_client::output_channel::output_channel(64);
+        let client = RdpClient::new(config, output_tx);
+        let input = client.input_sender();
+        let client_task = tokio::task::spawn_local(client.run());
+
+        let mut events = Vec::new();
+        let mut wait_for = async |wanted: fn(&RdpOutputEvent) -> bool| {
+            tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    let event = output_rx.recv().await.expect("the client is running");
+                    if !matches!(event, RdpOutputEvent::Image { .. } | RdpOutputEvent::DesktopUpdate(_)) {
+                        events.push(format!("{event:?}"));
+                    }
+                    assert!(
+                        !matches!(
+                            event,
+                            RdpOutputEvent::Terminated(_) | RdpOutputEvent::ConnectionFailure(_)
+                        ),
+                        "the client stopped: {events:?}"
+                    );
+                    if wanted(&event) {
+                        return event;
+                    }
+                }
+            })
+            .await
+            .expect("the client event arrives")
+        };
+
+        wait_for(|event| matches!(event, RdpOutputEvent::Connected)).await;
+        let first = connections_rx.recv().await.expect("the first connection");
+        assert_eq!(
+            first,
+            RedirectedConnection {
+                routing_token: None,
+                redirected_session_id: None,
+                password_cookie: None,
+            }
+        );
+
+        redirection_handle
+            .redirect(ServerRedirectionPdu {
+                session_id: 7,
+                target_net_address: Some("127.0.0.1".to_owned()),
+                load_balance_info: Some(b"Cookie: msts=16777343.15629.0000\r\n".to_vec()),
+                password: Some(COOKIE.to_vec()),
+                ..ServerRedirectionPdu::default()
+            })
+            .expect("the server is running");
+
+        let redirected = wait_for(|event| matches!(event, RdpOutputEvent::ServerRedirected { .. })).await;
+        let RdpOutputEvent::ServerRedirected { target } = redirected else {
+            unreachable!()
+        };
+        assert_eq!(target, format!("127.0.0.1:{}", server_addr.port()));
+        wait_for(|event| matches!(event, RdpOutputEvent::Connected)).await;
+
+        let second = connections_rx.recv().await.expect("the redirected connection");
+        assert_eq!(
+            second,
+            RedirectedConnection {
+                routing_token: Some("16777343.15629.0000".to_owned()),
+                redirected_session_id: Some(7),
+                password_cookie: Some(COOKIE.to_vec()),
+            }
+        );
+
+        input.request_close();
+        let _ = tokio::time::timeout(Duration::from_secs(5), client_task).await;
         server_task.abort();
     }))
     .await;

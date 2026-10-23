@@ -3,7 +3,8 @@ pub mod ffi {
     use crate::connector::config::ffi::DesktopSize;
     use crate::error::ValueConsumedError;
     use crate::error::ffi::IronRdpError;
-    use crate::utils::ffi::OptionalUsize;
+    use crate::utils::ffi::{BytesSlice, OptionalUsize};
+    use diplomat_runtime::DiplomatWriteable;
 
     #[diplomat::opaque]
     pub struct Written(pub ironrdp::connector::Written);
@@ -89,5 +90,104 @@ pub mod ffi {
                 .ok_or_else(|| ValueConsumedError::for_item("ConnectionResult"))?
                 .pointer_software_rendering)
         }
+    }
+
+    /// A Server Redirection PDU (MS-RDPBCGR 2.2.13.1): the server asked the client to reconnect elsewhere.
+    ///
+    /// Reconnect to the target, sending `load_balance_info` as the X.224 routing token, `session_id` as the
+    /// redirected session ID of the GCC Client Cluster Data, and `password` as the Client Info password.
+    #[diplomat::opaque]
+    pub struct ServerRedirection(pub ironrdp::pdu::rdp::server_redirection::ServerRedirectionPdu);
+
+    impl ServerRedirection {
+        #[diplomat::attr(auto, getter = "session_id")]
+        pub fn get_session_id(&self) -> u32 {
+            self.0.session_id
+        }
+
+        /// The `RedirFlags` field.
+        #[diplomat::attr(auto, getter = "flags")]
+        pub fn get_flags(&self) -> u32 {
+            self.0.wire_flags().bits()
+        }
+
+        /// Writes the target FQDN, or nothing when the PDU has none.
+        pub fn get_target_fqdn(&self, writeable: &mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
+            write_optional(writeable, self.0.target_fqdn.as_deref())
+        }
+
+        /// Writes the target NetBIOS name, or nothing when the PDU has none.
+        pub fn get_target_netbios_name(&self, writeable: &mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
+            write_optional(writeable, self.0.target_netbios_name.as_deref())
+        }
+
+        /// Writes the target IP address, or nothing when the PDU has none.
+        pub fn get_target_net_address(&self, writeable: &mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
+            write_optional(writeable, self.0.target_net_address.as_deref())
+        }
+
+        #[diplomat::attr(auto, getter = "target_net_addresses_count")]
+        pub fn get_target_net_addresses_count(&self) -> usize {
+            self.0.target_net_addresses.as_ref().map_or(0, Vec::len)
+        }
+
+        /// Writes the IP address at `index` of the `TargetNetAddresses` field.
+        pub fn get_target_net_addresses_at(
+            &self,
+            index: usize,
+            writeable: &mut DiplomatWriteable,
+        ) -> Result<(), Box<IronRdpError>> {
+            let address = self
+                .0
+                .target_net_addresses
+                .as_ref()
+                .and_then(|addresses| addresses.get(index))
+                .ok_or("target net address index out of range")?;
+            write_optional(writeable, Some(address))
+        }
+
+        /// Writes the user name, or nothing when the PDU has none.
+        pub fn get_username(&self, writeable: &mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
+            write_optional(writeable, self.0.username.as_deref())
+        }
+
+        /// Writes the domain, or nothing when the PDU has none.
+        pub fn get_domain(&self, writeable: &mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
+            write_optional(writeable, self.0.domain.as_deref())
+        }
+
+        /// The load-balancing information, empty when the PDU has none.
+        #[diplomat::attr(auto, getter = "load_balance_info")]
+        pub fn get_load_balance_info(&self) -> Box<BytesSlice<'_>> {
+            Box::new(BytesSlice(self.0.load_balance_info.as_deref().unwrap_or_default()))
+        }
+
+        /// The password or password cookie, empty when the PDU has none.
+        #[diplomat::attr(auto, getter = "password")]
+        pub fn get_password(&self) -> Box<BytesSlice<'_>> {
+            Box::new(BytesSlice(self.0.password.as_deref().unwrap_or_default()))
+        }
+
+        /// The DER-encoded certificate of the target, empty when the PDU has none.
+        #[diplomat::attr(auto, getter = "target_certificate")]
+        pub fn get_target_certificate(&self) -> Box<BytesSlice<'_>> {
+            Box::new(BytesSlice(
+                self.0
+                    .target_certificate
+                    .as_ref()
+                    .and_then(|container| container.certificate_der())
+                    .unwrap_or_default(),
+            ))
+        }
+    }
+
+    fn write_optional(writeable: &mut DiplomatWriteable, value: Option<&str>) -> Result<(), Box<IronRdpError>> {
+        use core::fmt::Write as _;
+
+        if let Some(value) = value {
+            writeable.write_str(value).map_err(|_| "failed to write string")?;
+        }
+        writeable.flush();
+        Ok(())
     }
 }
