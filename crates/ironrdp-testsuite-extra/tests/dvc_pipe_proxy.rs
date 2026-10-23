@@ -159,9 +159,11 @@ fn assert_forwarded_data(callback_rx: mpsc::Receiver<ForwardedMessages>, written
 #[cfg(windows)]
 fn dvc_data_payload(message: &ironrdp_svc::SvcMessage) -> Vec<u8> {
     let encoded = message.encode_unframed_pdu().expect("encode forwarded SVC message");
-    match ironrdp_core::decode(&encoded).expect("decode forwarded DVC PDU") {
-        DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(pdu)) => pdu.data().to_vec(),
-        DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(pdu)) => pdu.data().to_vec(),
-        pdu => panic!("DVC pipe proxy must forward uncompressed DVC data, got {pdu:?}"),
-    }
+    let payload = match ironrdp_core::decode(&encoded).expect("decode forwarded DVC PDU") {
+        DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(pdu)) => Some(pdu.data().to_vec()),
+        DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(pdu)) => Some(pdu.data().to_vec()),
+        _ => None,
+    };
+
+    payload.expect("DVC pipe proxy must forward uncompressed DVC data")
 }
