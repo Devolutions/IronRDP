@@ -780,10 +780,16 @@ impl BitmapUpdateHandler for QoiHandler {
 }
 
 #[cfg(feature = "qoiz")]
-#[derive(Debug)]
 struct QoizHandler {
     codec_id: u8,
     compressor: qoiz::Compressor,
+}
+
+#[cfg(feature = "qoiz")]
+impl fmt::Debug for QoizHandler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QoizHandler").field("codec_id", &self.codec_id).finish()
+    }
 }
 
 #[cfg(feature = "qoiz")]

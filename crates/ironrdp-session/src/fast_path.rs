@@ -19,7 +19,9 @@ use tracing::{debug, trace, warn};
 use crate::image::DecodedImage;
 use crate::palette::Palette;
 use crate::pointer::PointerCache;
-use crate::{SessionError, SessionErrorExt as _, SessionErrorKind, SessionResult, qoiz, reason_err, rfx};
+#[cfg(feature = "qoiz")]
+use crate::qoiz;
+use crate::{SessionError, SessionErrorExt as _, SessionErrorKind, SessionResult, reason_err, rfx};
 
 /// A bounded category for a failed Fast-Path bulk decompression operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -795,10 +797,7 @@ impl Processor {
                         }
                         #[cfg(feature = "qoiz")]
                         ironrdp_pdu::rdp::capability_sets::CODEC_ID_QOIZ => {
-                            let data = self
-                                .qoiz_decompressor
-                                .decompress(bits.extended_bitmap_data.data)
-                                .map_err(|error| reason_err!("qoiz", "{}", error))?;
+                            let data = self.qoiz_decompressor.decompress(bits.extended_bitmap_data.data)?;
 
                             qoi_apply(image, destination, &data, &mut update_rectangle)?;
                         }
@@ -894,7 +893,7 @@ impl ProcessorBuilder {
             bitmap_recovery_requested: false,
             bitmap_recovery_pending: false,
             #[cfg(feature = "qoiz")]
-            qoiz_decompressor: qoiz::Decompressor::new(),
+            qoiz_decompressor: qoiz::Decompressor::default(),
         }
     }
 }
