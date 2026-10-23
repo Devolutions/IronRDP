@@ -396,16 +396,16 @@ fn slow_path_orders_update_encoding_inverts_its_decoding() {
     assert!(!decoded.contains_non_window_orders);
 }
 
-// oracle: reference IronRDP before typed decoding (ICON_BIG and ICON_OVERLAY carry no data and
-// were tolerated without an icon); MS-RDPERP §2.2.1.3.1.2.2 ties them to an icon order
-#[test]
-fn icon_flags_without_an_icon_are_ignored() {
-    #[rustfmt::skip]
-    let bytes = [
-        0x2e, 0x0b, 0x00, // controlFlags, orderSize = 11
-        0x00, 0x20, 0x10, 0x01, // fieldsPresent: WINDOW | ICON_BIG | ICON_OVERLAY
-        0x07, 0x00, 0x00, 0x00, // WindowId
-    ];
+// oracle: reference Devolutions/IronRDP@1de38a2ee553:crates/ironrdp-pdu/src/basic_output/window.rs
+// (validate_window_fields accepts ICON_BIG and ICON_OVERLAY on a state order; neither carries data)
+#[rstest]
+#[case::icon_big(0x0100_2000)]
+#[case::icon_overlay(0x0110_0000)]
+#[case::icon_big_and_overlay(0x0110_2000)]
+fn icon_flags_without_an_icon_are_ignored(#[case] fields_present: u32) {
+    let mut bytes = vec![0x2e, 0x0b, 0x00]; // controlFlags, orderSize = 11
+    bytes.extend_from_slice(&fields_present.to_le_bytes());
+    bytes.extend_from_slice(&7u32.to_le_bytes()); // WindowId
 
     assert_eq!(
         decode::<WindowingOrder>(&bytes).unwrap(),
