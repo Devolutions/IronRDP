@@ -6,6 +6,7 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
     use crate::utils::ffi::VecU8;
 
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque]
     pub struct WriteBuf(pub ironrdp_core::WriteBuf);
 
