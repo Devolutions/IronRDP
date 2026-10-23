@@ -13,6 +13,8 @@ pub mod x224;
 mod active_stage;
 mod autodetect;
 mod palette;
+#[cfg(feature = "qoiz")]
+mod qoiz;
 
 use core::fmt;
 
@@ -23,6 +25,8 @@ pub use active_stage::{
     composite_graphics_pipeline,
 };
 pub use fast_path::{BulkDecompressionErrorKind, FastPathBulkDecompressionFailure};
+#[cfg(all(feature = "__test", feature = "qoiz"))]
+pub use qoiz::Decompressor as QoizDecompressor;
 
 pub type SessionResult<T> = Result<T, SessionError>;
 
