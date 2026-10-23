@@ -1063,12 +1063,15 @@ const DECODED_IMAGE: [u8; IMAGE_WIDTH * IMAGE_HEIGHT * FORMAT_SIZE] = [
     0x11, 0xFF, 0xF5, 0x9A, 0x11, 0xFF,
 ];
 
-/// Nothing reaches the image from a tile placed past the u16 range or from an empty rectangle.
+/// Nothing reaches the image from a tile placed past the u16 range, from an empty rectangle,
+/// or from a rectangle outside the channel.
 #[rstest]
 #[case::tile_x(Edit::TileX)]
 #[case::tile_y(Edit::TileY)]
 #[case::region_width(Edit::RegionWidth)]
 #[case::region_height(Edit::RegionHeight)]
+#[case::region_x(Edit::RegionX)]
+#[case::region_y(Edit::RegionY)]
 #[case::channel_width(Edit::ChannelWidth)]
 #[case::channel_height(Edit::ChannelHeight)]
 fn decode_draws_nothing_for_unreachable_geometry(#[case] edit: Edit) {
@@ -1080,6 +1083,9 @@ fn decode_draws_nothing_for_unreachable_geometry(#[case] edit: Edit) {
         (Edit::TileY, Block::CodecChannel(CodecChannel::TileSet(tile_set))) => tile_set.tiles[0].y = 1024,
         (Edit::RegionWidth, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].width = 0,
         (Edit::RegionHeight, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].height = 0,
+        // The channel is 64x64.
+        (Edit::RegionX, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].x = 100,
+        (Edit::RegionY, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].y = 100,
         (Edit::ChannelWidth, Block::Channels(channels)) => channels.0[0].width = 0,
         (Edit::ChannelHeight, Block::Channels(channels)) => channels.0[0].height = 0,
         _ => {}
@@ -1094,6 +1100,8 @@ enum Edit {
     TileY,
     RegionWidth,
     RegionHeight,
+    RegionX,
+    RegionY,
     ChannelWidth,
     ChannelHeight,
 }
@@ -1154,21 +1162,68 @@ fn clipping_rectangles_reach_the_last_u16_column() {
     assert_eq!(clip.extents, destination);
 }
 
+/// A RemoteFX surface for a secondary monitor is placed at a non-zero
+/// framebuffer offset, and its channel (frame) dimensions describe only
+/// that surface's own content rather than the entire desktop.
 #[test]
-fn tile_rectangle_is_cut_at_the_u16_limit() {
-    use ironrdp_pdu::codecs::rfx::Tile;
-    use ironrdp_session::rfx::tiles_to_rectangles;
+fn clipping_rectangles_track_surface_framebuffer_offset() {
+    use ironrdp_pdu::codecs::rfx::RfxRectangle;
+    use ironrdp_session::rfx::clipping_rectangles;
 
-    let tile = |x| Tile {
+    // Update for a second monitor with origin (2000, 1000) and dimensions 1000x1200
+    let destination = InclusiveRectangle {
+        left: 2000,
+        top: 1000,
+        right: 2999,
+        bottom: 2199,
+    };
+    let channel_width = 1000;
+    let channel_height = 1200;
+
+    let rects = [RfxRectangle {
+        x: 0,
+        y: 0,
+        width: channel_width,
+        height: channel_height,
+    }];
+
+    let region = clipping_rectangles(&rects, &destination, channel_width, channel_height);
+
+    assert_eq!(
+        region.extents.left, 2000,
+        "clip collapsed away from the surface's framebuffer position (left)"
+    );
+    assert_eq!(
+        region.extents.right, 2999,
+        "clip collapsed away from the surface's framebuffer position (right)"
+    );
+    assert_eq!(
+        region.extents.top, 1000,
+        "clip collapsed away from the surface's framebuffer position (top)"
+    );
+    assert_eq!(
+        region.extents.bottom, 2199,
+        "clip collapsed away from the surface's framebuffer position (bottom)"
+    );
+}
+
+fn tile_at(x: u16, y: u16) -> ironrdp_pdu::codecs::rfx::Tile<'static> {
+    ironrdp_pdu::codecs::rfx::Tile {
         y_quant_index: 0,
         cb_quant_index: 0,
         cr_quant_index: 0,
         x,
-        y: 0,
+        y,
         y_data: &[],
         cb_data: &[],
         cr_data: &[],
-    };
+    }
+}
+
+#[test]
+fn tile_rectangle_is_cut_at_the_u16_limit() {
+    use ironrdp_session::rfx::tiles_to_rectangles;
+
     let destination = InclusiveRectangle {
         left: 1,
         top: 0,
@@ -1176,7 +1231,7 @@ fn tile_rectangle_is_cut_at_the_u16_limit() {
         bottom: 63,
     };
 
-    let rectangles: Vec<_> = tiles_to_rectangles(&[tile(1023), tile(1024)], &destination).collect();
+    let rectangles: Vec<_> = tiles_to_rectangles(&[tile_at(1023, 0), tile_at(1024, 0)], &destination).collect();
 
     // The first tile starts at 1 + 1023 * 64 = 65473 and crosses the limit; the second cannot start in u16.
     assert_eq!(
@@ -1191,4 +1246,21 @@ fn tile_rectangle_is_cut_at_the_u16_limit() {
             None,
         ]
     );
+}
+
+#[test]
+fn tile_pushed_past_the_u16_limit_by_the_destination_is_skipped() {
+    use ironrdp_session::rfx::tiles_to_rectangles;
+
+    let destination = InclusiveRectangle {
+        left: 64,
+        top: 64,
+        right: u16::MAX,
+        bottom: u16::MAX,
+    };
+
+    let rectangles: Vec<_> = tiles_to_rectangles(&[tile_at(1023, 0), tile_at(0, 1023)], &destination).collect();
+
+    // 1023 * 64 = 65472 fits in u16, but adding the destination offset of 64 does not.
+    assert_eq!(rectangles, [None, None]);
 }

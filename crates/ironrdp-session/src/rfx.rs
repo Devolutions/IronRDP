@@ -263,6 +263,8 @@ fn clipping_rectangles(
                 return None;
             }
 
+            // INVARIANT: left < right <= right_limit <= u16::MAX + 1, and likewise for top and bottom,
+            // so every conversion below succeeds.
             Some(InclusiveRectangle {
                 left: u16::try_from(left).ok()?,
                 top: u16::try_from(top).ok()?,
@@ -312,54 +314,4 @@ fn map_tiles_data<'a>(tiles: &[Tile<'a>], quants: &[Quant]) -> Vec<TileData<'a>>
 struct TileData<'a> {
     quants: [Quant; 3],
     data: [&'a [u8]; 3],
-}
-
-#[cfg(test)]
-mod tests {
-    use ironrdp_pdu::codecs::rfx::RfxRectangle;
-    use ironrdp_pdu::geometry::InclusiveRectangle;
-
-    use super::clipping_rectangles;
-
-    /// A RemoteFX surface for a secondary monitor is placed at a non-zero
-    /// framebuffer offset, and its channel (frame) dimensions describe only
-    /// that surface's own content rather than the entire desktop.
-    #[test]
-    fn clipping_rectangles_track_surface_framebuffer_offset() {
-        // Update for a second monitor with origin (2000, 1000) and dimensions 1000x1200
-        let destination = InclusiveRectangle {
-            left: 2000,
-            top: 1000,
-            right: 2999,
-            bottom: 2199,
-        };
-        let channel_width = 1000;
-        let channel_height = 1200;
-
-        let rects = [RfxRectangle {
-            x: 0,
-            y: 0,
-            width: channel_width,
-            height: channel_height,
-        }];
-
-        let region = clipping_rectangles(&rects, &destination, channel_width, channel_height);
-
-        assert_eq!(
-            region.extents.left, 2000,
-            "clip collapsed away from the surface's framebuffer position (left)"
-        );
-        assert_eq!(
-            region.extents.right, 2999,
-            "clip collapsed away from the surface's framebuffer position (right)"
-        );
-        assert_eq!(
-            region.extents.top, 1000,
-            "clip collapsed away from the surface's framebuffer position (top)"
-        );
-        assert_eq!(
-            region.extents.bottom, 2199,
-            "clip collapsed away from the surface's framebuffer position (bottom)"
-        );
-    }
 }
