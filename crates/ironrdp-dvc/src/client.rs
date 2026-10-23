@@ -381,13 +381,19 @@ impl DrdynvcClient {
     fn client_close(&mut self, channel_id: DynamicChannelId) -> Option<(SvcMessage, Option<SoftSyncTunnelType>)> {
         let tunnel = self.tunnel_channels.get(&channel_id).copied();
         let message = self.remove_channel(channel_id)?;
+        self.remember_client_close(channel_id, tunnel);
+        Some((message, tunnel))
+    }
+
+    /// Remember a channel the client closed, so that data the server sent before seeing the close is
+    /// dropped instead of failing the connection.
+    fn remember_client_close(&mut self, channel_id: DynamicChannelId, tunnel: Option<SoftSyncTunnelType>) {
         self.client_closed.push_back((channel_id, tunnel));
         // MS-RDPEDYC 3.2.5.2 specifies no server acknowledgement of a client-initiated close.
         // Bound the history by forgetting the oldest close, regardless of the server's ID order.
         if MAX_CLIENT_CLOSED_CHANNELS < self.client_closed.len() {
             self.client_closed.pop_front();
         }
-        Some((message, tunnel))
     }
 
     fn remove_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
@@ -594,6 +600,10 @@ impl DrdynvcClient {
             for channel_id in list.channel_ids() {
                 if self.dynamic_channels.get_by_channel_id(*channel_id).is_some() {
                     tunnel_channels.insert(*channel_id, list.tunnel_type());
+                } else if self.client_closed.contains(&(*channel_id, None)) {
+                    // Closed by this client while the server was choosing tunnels: the server may
+                    // already send its data on the tunnel, and that data is dropped as well.
+                    self.remember_client_close(*channel_id, Some(list.tunnel_type()));
                 } else {
                     debug!(
                         channel_id,
