@@ -1738,17 +1738,42 @@ enum StreamCommand {
 /// OUT channels are recycled when the proxy requests it ([MS-RPCH] 3.2.2.5.5 through 3.2.2.5.12).
 /// An RTS PDU that no recycle state expects, a rejected replacement channel, or an IN channel
 /// error response terminates the stream.
+/// Writes acknowledge acceptance into a bounded local queue.
+/// Flush waits for the corresponding signed RPC send operation; flush, later writes and shutdown report its errors.
 pub struct RpchStream {
     commands: PollSender<StreamCommand>,
     received: mpsc::Receiver<Result<Bytes, String>>,
     read_buffer: Option<Bytes>,
-    pending_write: Option<(usize, oneshot::Receiver<Result<(), String>>)>,
+    pending_write: Option<oneshot::Receiver<Result<(), String>>>,
+    failure: Option<String>,
     shutdown: Option<oneshot::Receiver<Result<(), String>>>,
+    shutdown_complete: bool,
     actor: JoinHandle<()>,
     redirection_flags: GwRpchRedirectionFlags,
 }
 
 impl RpchStream {
+    fn fail(&mut self, message: String) -> io::Error {
+        self.failure = Some(message.clone());
+        io::Error::other(message)
+    }
+
+    fn poll_write_completion(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if let Some(error) = &self.failure {
+            return Poll::Ready(Err(io::Error::other(error.clone())));
+        }
+        let Some(response) = self.pending_write.as_mut() else {
+            return Poll::Ready(Ok(()));
+        };
+        let result = match Pin::new(response).poll(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Ok(result)) => result,
+            Poll::Ready(Err(error)) => Err(error.to_string()),
+        };
+        self.pending_write = None;
+        Poll::Ready(result.map_err(|error| self.fail(error)))
+    }
+
     /// Opens an authenticated MS-RPCH tunnel and returns its local TCP address.
     ///
     /// RPC packet integrity is always negotiated and verified independently of TLS and HTTP
@@ -1849,7 +1874,9 @@ impl RpchStream {
             received: received_rx,
             read_buffer: None,
             pending_write: None,
+            failure: None,
             shutdown: None,
+            shutdown_complete: false,
             actor,
             redirection_flags,
         })
@@ -1867,6 +1894,9 @@ impl AsyncRead for RpchStream {
         if buf.remaining() == 0 {
             return Poll::Ready(Ok(()));
         }
+        if let Some(error) = &self.failure {
+            return Poll::Ready(Err(io::Error::other(error.clone())));
+        }
         loop {
             if let Some(bytes) = self.read_buffer.as_mut() {
                 let count = bytes.len().min(buf.remaining());
@@ -1880,7 +1910,7 @@ impl AsyncRead for RpchStream {
             match Pin::new(&mut self.received).poll_recv(cx) {
                 Poll::Ready(Some(Ok(bytes))) => self.read_buffer = Some(bytes),
                 Poll::Ready(Some(Err(error))) => {
-                    return Poll::Ready(Err(io::Error::other(error)));
+                    return Poll::Ready(Err(self.fail(error)));
                 }
                 Poll::Ready(None) => {
                     return Poll::Ready(Err(io::Error::new(io::ErrorKind::UnexpectedEof, "rpch stream closed")));
@@ -1896,23 +1926,12 @@ impl AsyncWrite for RpchStream {
         if buf.is_empty() {
             return Poll::Ready(Ok(0));
         }
-        if let Some((count, response)) = &mut self.pending_write {
-            return match Pin::new(response).poll(cx) {
-                Poll::Ready(Ok(Ok(()))) => {
-                    let count = *count;
-                    self.pending_write = None;
-                    Poll::Ready(Ok(count))
-                }
-                Poll::Ready(Ok(Err(error))) => {
-                    self.pending_write = None;
-                    Poll::Ready(Err(io::Error::other(error)))
-                }
-                Poll::Ready(Err(error)) => {
-                    self.pending_write = None;
-                    Poll::Ready(Err(io::Error::other(error)))
-                }
-                Poll::Pending => Poll::Pending,
-            };
+        core::task::ready!(self.poll_write_completion(cx))?;
+        if self.shutdown.is_some() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "rpch stream is shut down",
+            )));
         }
 
         match self.commands.poll_reserve(cx) {
@@ -1924,59 +1943,48 @@ impl AsyncWrite for RpchStream {
                     .send_item(StreamCommand::Write(Bytes::copy_from_slice(&buf[..count]), response_tx))
                     .is_err()
                 {
-                    return Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "rpch stream actor stopped",
-                    )));
+                    return Poll::Ready(Err(self.fail("rpch stream actor stopped".to_owned())));
                 }
-                self.pending_write = Some((count, response_rx));
-                cx.waker().wake_by_ref();
-                Poll::Pending
+                self.pending_write = Some(response_rx);
+                Poll::Ready(Ok(count))
             }
-            Poll::Ready(Err(_)) => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "rpch stream is shut down",
-            ))),
+            Poll::Ready(Err(_)) => Poll::Ready(Err(self.fail("rpch stream actor stopped".to_owned()))),
             Poll::Pending => Poll::Pending,
         }
     }
 
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if self.pending_write.is_some() {
-            Poll::Pending
-        } else {
-            Poll::Ready(Ok(()))
-        }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.poll_write_completion(cx)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        core::task::ready!(self.poll_write_completion(cx))?;
+        if self.shutdown_complete {
+            return Poll::Ready(Ok(()));
+        }
         if self.shutdown.is_none() {
             match self.commands.poll_reserve(cx) {
                 Poll::Ready(Ok(())) => {
                     let (response_tx, response_rx) = oneshot::channel();
                     if self.commands.send_item(StreamCommand::Shutdown(response_tx)).is_err() {
-                        return Poll::Ready(Err(io::Error::new(
-                            io::ErrorKind::BrokenPipe,
-                            "rpch stream actor stopped",
-                        )));
+                        return Poll::Ready(Err(self.fail("rpch stream actor stopped".to_owned())));
                     }
                     self.shutdown = Some(response_rx);
                 }
                 Poll::Ready(Err(_)) => {
-                    return Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "rpch stream actor stopped",
-                    )));
+                    return Poll::Ready(Err(self.fail("rpch stream actor stopped".to_owned())));
                 }
                 Poll::Pending => return Poll::Pending,
             }
         }
-        match Pin::new(self.shutdown.as_mut().expect("shutdown receiver initialized")).poll(cx) {
-            Poll::Ready(Ok(Ok(()))) => Poll::Ready(Ok(())),
-            Poll::Ready(Ok(Err(error))) => Poll::Ready(Err(io::Error::other(error))),
-            Poll::Ready(Err(error)) => Poll::Ready(Err(io::Error::other(error))),
-            Poll::Pending => Poll::Pending,
+        let result =
+            core::task::ready!(Pin::new(self.shutdown.as_mut().expect("shutdown receiver initialized")).poll(cx));
+        let result = result.unwrap_or_else(|error| Err(error.to_string()));
+        if let Err(error) = result {
+            return Poll::Ready(Err(self.fail(error)));
         }
+        self.shutdown_complete = true;
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -2215,6 +2223,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_out_requires_bounded_http_content_length() {
+        // oracle: spec MS-RPCH §2.1.2.1.4: OUT content length is between 128 KiB and 2 GiB.
         for length in [None, Some(0), Some(131071), Some(2147483649)] {
             assert!(validate_out_content_length(length).is_err());
         }
@@ -2330,6 +2339,29 @@ mod tests {
         open_stream_reporting_reauth(scenario, None).await
     }
 
+    fn controlled_stream() -> (RpchStream, mpsc::Receiver<StreamCommand>) {
+        let (commands, command_rx) = mpsc::channel(8);
+        let (received, input) = mpsc::channel(8);
+        let actor = tokio::spawn(async move {
+            let _received = received;
+            core::future::pending::<()>().await;
+        });
+        (
+            RpchStream {
+                commands: PollSender::new(commands),
+                received: input,
+                read_buffer: None,
+                pending_write: None,
+                failure: None,
+                shutdown: None,
+                shutdown_complete: false,
+                actor,
+                redirection_flags: GwRpchRedirectionFlags::default(),
+            },
+            command_rx,
+        )
+    }
+
     async fn open_stream_reporting_reauth(
         scenario: MockRpchScenario,
         reauth_report: Option<mpsc::UnboundedSender<u64>>,
@@ -2358,6 +2390,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_session_runs_ntlm_authenticated_tsproxy_echo() {
+        // oracle: spec MS-TSGU §3.6.5.1 and §3.6.5.4: TS Proxy carries the target bytes unchanged.
         let (mut session, proxy) = open_session(MockRpchScenario::Echo).await;
         session
             .send_to_server(Bytes::from_static(b"hello-rdp"))
@@ -2370,6 +2403,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_session_poisoned_auth_context_rejects_later_requests() {
+        // oracle: regression #2202: an integrity failure prevents later use of the association.
         let (session, proxy) = connect_session(MockRpchScenario::TamperedResponse).await;
         let mut session = session.expect("rpch connect");
 
@@ -2386,6 +2420,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_session_authenticates_each_http_channel_independently() {
+        // oracle: spec MS-RPCH §2.1.2.1.1 and §2.1.2.1.2: IN and OUT requests authenticate separately.
         let (mut session, proxy) = open_session(MockRpchScenario::BasicAuthentication).await;
         session
             .send_to_server(Bytes::from_static(b"authenticated"))
@@ -2397,6 +2432,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_session_surfaces_receive_pipe_terminal_hresult() {
+        // oracle: spec MS-TSGU §3.6.5.5: the terminal receive-pipe response carries the call return value.
         const E_PROXY_INTERNAL_ERROR: u32 = 0x0000_59d8;
         let (mut session, proxy) = open_session(MockRpchScenario::ReceivePipeError(E_PROXY_INTERNAL_ERROR)).await;
         let error = session.read_data().await.expect_err("receive pipe error");
@@ -2448,6 +2484,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_session_handles_ping_and_flow_control_acknowledgements() {
+        // oracle: spec MS-RPCH §3.2.1.1.4 and §3.2.2.6.1: RPC bytes consume credit, RTS pings do not.
         let (mut session, proxy) = open_session(MockRpchScenario::Echo).await;
         assert!(!session.ping_due(Duration::ZERO));
         let due = session.ping.next_ping_time();
@@ -2469,6 +2506,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_session_rejects_invalid_out_fragment_length() {
+        // oracle: regression #2202: malformed peer framing must fail before exposing target data.
         let (session, proxy) = connect_session(MockRpchScenario::InvalidOutFragmentLength).await;
         let Err(error) = session else {
             panic!("invalid fragment length must fail");
@@ -2478,7 +2516,164 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rpch_stream_accepts_bytes_before_waiting_for_rpc_completion() {
+        // oracle: regression #2202: poll_write reports the bytes it accepted rather than returning Pending afterward.
+        let (mut stream, mut commands) = controlled_stream();
+        let mut context = Context::from_waker(futures_util::task::noop_waker_ref());
+        assert!(matches!(
+            Pin::new(&mut stream).poll_write(&mut context, b"accepted"),
+            Poll::Ready(Ok(8))
+        ));
+        let Some(StreamCommand::Write(bytes, _response)) = commands.recv().await else {
+            panic!("one write command expected");
+        };
+        assert_eq!(&*bytes, b"accepted");
+    }
+
+    #[tokio::test]
+    async fn rpch_stream_cancelled_write_does_not_report_a_previous_buffers_count() {
+        // oracle: regression #2202: a cancelled subsequent write neither queues its bytes nor reuses an earlier count.
+        let (mut stream, mut commands) = controlled_stream();
+        let mut context = Context::from_waker(futures_util::task::noop_waker_ref());
+        let _ = Pin::new(&mut stream).poll_write(&mut context, b"previous-buffer");
+        let Some(StreamCommand::Write(bytes, response)) = commands.recv().await else {
+            panic!("first command expected");
+        };
+        assert_eq!(&*bytes, b"previous-buffer");
+        {
+            let mut cancelled = Box::pin(stream.write(b"cancelled"));
+            assert!(matches!(cancelled.as_mut().poll(&mut context), Poll::Pending));
+        }
+        response.send(Ok(())).expect("complete first RPC");
+        assert!(matches!(
+            Pin::new(&mut stream).poll_write(&mut context, b"x"),
+            Poll::Ready(Ok(1))
+        ));
+        let Some(StreamCommand::Write(bytes, _response)) = commands.recv().await else {
+            panic!("replacement command expected");
+        };
+        assert_eq!(&*bytes, b"x");
+    }
+
+    #[tokio::test]
+    async fn rpch_stream_flush_after_cancelled_write_observes_completion_and_wakes() {
+        // oracle: regression #2202: flush must poll the outstanding completion and arrange wakeup.
+        let (mut stream, mut commands) = controlled_stream();
+        let mut context = Context::from_waker(futures_util::task::noop_waker_ref());
+        {
+            let mut cancelled = Box::pin(stream.write(b"queued"));
+            let _ = cancelled.as_mut().poll(&mut context);
+        }
+        let Some(StreamCommand::Write(_, response)) = commands.recv().await else {
+            panic!("queued command expected");
+        };
+        let completion = tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            response.send(Ok(())).expect("writer waits for completion");
+        });
+        tokio::time::timeout(Duration::from_secs(1), stream.flush())
+            .await
+            .expect("flush is woken")
+            .expect("RPC completion succeeds");
+        completion.await.expect("completion task");
+    }
+
+    #[tokio::test]
+    async fn rpch_stream_completion_failure_rejects_flush_writes_and_shutdown() {
+        // oracle: regression #2202: RPC write failure poisons every later write-side operation.
+        let (mut stream, mut commands) = controlled_stream();
+        let mut context = Context::from_waker(futures_util::task::noop_waker_ref());
+        let _ = Pin::new(&mut stream).poll_write(&mut context, b"request");
+        let Some(StreamCommand::Write(_, response)) = commands.recv().await else {
+            panic!("queued command expected");
+        };
+        response
+            .send(Err("RPC integrity failure".to_owned()))
+            .expect("report failure");
+        let error = tokio::time::timeout(Duration::from_secs(1), stream.flush())
+            .await
+            .expect("flush reports failure")
+            .expect_err("RPC failure");
+        assert!(error.to_string().contains("RPC integrity failure"));
+        stream.write_all(b"later").await.expect_err("no later write");
+        stream
+            .shutdown()
+            .await
+            .expect_err("no successful shutdown after failure");
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn rpch_stream_shutdown_waits_for_accepted_bytes_and_can_be_polled_again() {
+        // oracle: regression #2202: shutdown drains accepted writes before closing the TS Proxy contexts.
+        let (mut stream, mut commands) = controlled_stream();
+        let mut context = Context::from_waker(futures_util::task::noop_waker_ref());
+        let _ = Pin::new(&mut stream).poll_write(&mut context, b"last bytes");
+        let Some(StreamCommand::Write(_, response)) = commands.recv().await else {
+            panic!("queued write expected");
+        };
+        assert!(matches!(
+            Pin::new(&mut stream).poll_shutdown(&mut context),
+            Poll::Pending
+        ));
+        assert!(commands.try_recv().is_err());
+        response.send(Ok(())).expect("write completion");
+        assert!(matches!(
+            Pin::new(&mut stream).poll_shutdown(&mut context),
+            Poll::Pending
+        ));
+        let Some(StreamCommand::Shutdown(response)) = commands.recv().await else {
+            panic!("shutdown after write completion expected");
+        };
+        response.send(Ok(())).expect("shutdown completion");
+        assert!(matches!(
+            Pin::new(&mut stream).poll_shutdown(&mut context),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(matches!(
+            Pin::new(&mut stream).poll_shutdown(&mut context),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(matches!(
+            Pin::new(&mut stream).poll_write(&mut context, b"after close"),
+            Poll::Ready(Err(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn rpch_stream_shutdown_failure_remains_terminal_on_repeated_polls() {
+        // oracle: regression #2202: close failures remain errors instead of repolling a completed receiver.
+        let (mut stream, mut commands) = controlled_stream();
+        let mut context = Context::from_waker(futures_util::task::noop_waker_ref());
+        assert!(matches!(
+            Pin::new(&mut stream).poll_shutdown(&mut context),
+            Poll::Pending
+        ));
+        let Some(StreamCommand::Shutdown(response)) = commands.recv().await else {
+            panic!("shutdown command expected");
+        };
+        response.send(Err("close failed".to_owned())).expect("close failure");
+        assert!(matches!(
+            Pin::new(&mut stream).poll_shutdown(&mut context),
+            Poll::Ready(Err(_))
+        ));
+        assert!(matches!(
+            Pin::new(&mut stream).poll_shutdown(&mut context),
+            Poll::Ready(Err(_))
+        ));
+        assert!(matches!(
+            Pin::new(&mut stream).poll_flush(&mut context),
+            Poll::Ready(Err(_))
+        ));
+        assert!(matches!(
+            Pin::new(&mut stream).poll_write(&mut context, b"later"),
+            Poll::Ready(Err(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn rpch_stream_reads_while_writes_are_in_flight_and_preserves_chunks() {
+        // oracle: regression #2202: concurrent input/output preserves the chosen target byte sequence.
         let (stream, proxy) = open_stream(MockRpchScenario::FragmentedReceivePipePdu).await;
         let (mut reader, mut writer) = tokio::io::split(stream);
         let mut response = [0; 10];
@@ -2498,6 +2693,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_stream_read_cancellation_does_not_lose_inbound_framing() {
+        // oracle: regression #2202: cancelling an application read must not cancel the owned framing reader.
         let (mut stream, proxy) = open_stream(MockRpchScenario::Echo).await;
         let mut scratch = [0; 8];
         assert!(
@@ -2520,6 +2716,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_stream_tampered_receive_pipe_response_fails_closed() {
+        // oracle: regression #2202: a tampered target-data response terminates the authenticated stream.
         let (mut stream, proxy) = open_stream(MockRpchScenario::TamperedReceivePipeResponse).await;
         stream.write_all(b"request").await.expect("send authenticated request");
         let mut response = [0; 7];
@@ -2534,6 +2731,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_stream_shutdown_closes_channel_and_tunnel() {
+        // oracle: spec MS-TSGU §3.6.4: graceful shutdown closes the channel before the tunnel.
         let (mut stream, proxy) = open_stream(MockRpchScenario::Echo).await;
         stream.shutdown().await.expect("close TS Proxy contexts");
         assert!(stream.actor.is_finished());
@@ -2547,6 +2745,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_stream_writes_and_shuts_down_while_inbound_data_is_unread() {
+        // oracle: regression #2202: receive backpressure must not deadlock outgoing commands or shutdown.
         let (mut stream, proxy) = open_stream(MockRpchScenario::Echo).await;
         let mut expected = Vec::new();
         for index in 0..20u8 {
@@ -2582,6 +2781,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_session_recycles_in_channel_without_losing_data() {
+        // oracle: spec MS-RPCH §3.2.2.5.5 and §3.2.2.5.12: successor IN channels preserve the byte stream.
         let (mut session, proxy) = open_session(MockRpchScenario::RecycleIn).await;
         let chunk = vec![0x5a; 2 * 1024];
         // Enough traffic to cross the quarter-remaining threshold of a 128 KiB IN body at least once.
@@ -2636,6 +2836,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_session_follows_out_r1_recycling() {
+        // oracle: spec MS-RPCH §3.2.2.5.6 through §3.2.2.5.9: OUT_R1 switches after the handshake.
         let (mut session, proxy) = open_session(MockRpchScenario::RecycleOutR1).await;
         echo(&mut session, b"across-out-r1").await;
         assert_eq!(
@@ -2650,6 +2851,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_session_follows_out_r2_recycling() {
+        // oracle: spec MS-RPCH §3.2.2.5.6 through §3.2.2.5.10: OUT_R2 switches on the predecessor's B3.
         let (mut session, proxy) = open_session(MockRpchScenario::RecycleOutR2).await;
         echo(&mut session, b"across-out-r2").await;
         assert_eq!(
@@ -2664,6 +2866,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_stream_carries_data_across_out_recycling() {
+        // oracle: spec MS-RPCH §3.2.2.5.10: switching OUT channels preserves target bytes.
         let (mut stream, proxy) = open_stream(MockRpchScenario::RecycleOutR1).await;
         stream.write_all(b"recycled").await.expect("write across recycle");
         let mut response = [0; 8];
@@ -2675,6 +2878,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_session_surfaces_in_channel_rpc_error() {
+        // oracle: spec MS-RPCH §3.2.2.5.11: proxy RPC-Error codes are returned to higher layers.
         const RPC_S_SERVER_UNAVAILABLE: u32 = 0x6ba;
         let (mut session, proxy) = open_session(MockRpchScenario::InHttpError(RPC_S_SERVER_UNAVAILABLE)).await;
         let error = tokio::time::timeout(
@@ -2690,6 +2894,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_session_negotiates_messaging_and_cancels_pending_call_on_close() {
+        // oracle: spec MS-TSGU §3.6.4: pending messages are cancelled between closing channel and tunnel.
         let (mut session, proxy) = open_session(MockRpchScenario::Messaging).await;
         assert_eq!(session.capabilities, TSG_CLIENT_CAPABILITIES);
         assert!(session.messaging);
@@ -2709,6 +2914,7 @@ mod tests {
 
     #[tokio::test]
     async fn rpch_stream_carries_data_and_shuts_down_with_messaging() {
+        // oracle: spec MS-TSGU §3.6.4: outstanding administrative calls coexist with data and graceful close.
         let (mut stream, proxy) = open_stream(MockRpchScenario::Messaging).await;
         stream.write_all(b"messaging").await.expect("write with messaging");
         let mut response = [0; 9];

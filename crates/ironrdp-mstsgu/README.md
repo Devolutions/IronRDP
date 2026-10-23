@@ -36,6 +36,7 @@ TLS and HTTP authentication do not establish RPC packet integrity.
 `RpchStream::connect_with_port_and_certificate_validation` provides the explicit authenticated path used by the client's `TransportKind::GatewayRpch` selection.
 It performs the NTLM RPC association exchange, signs outgoing TS Proxy requests, verifies incoming responses, opens the TS Proxy tunnel and exposes it as an asynchronous RDP byte stream.
 Its packet-integrity state is owned by the session and fail-closed; TLS certificate validation and HTTP channel authentication remain separate gateway security layers.
+Writes acknowledge bounded local buffering; flush waits for the signed TS Proxy send operation and reports its failure.
 The stream applies TS Proxy redirection restrictions before starting RDP device channels.
 
 The live stream reserves a 1 GiB IN body.

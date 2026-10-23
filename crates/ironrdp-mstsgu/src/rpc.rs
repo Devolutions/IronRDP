@@ -747,7 +747,7 @@ impl RpcNtlmAuth {
     ///
     /// `authentication` must match the security trailer, and `sequence_number` is
     /// managed by the caller for the lifetime of the RPC association.
-    /// When header signing was negotiated, the common header, padded body, and security trailer are signed.
+    /// When header signing was negotiated, the PDU header, padded body, and security trailer are signed.
     /// Otherwise only the padded body is signed, as required by [MS-RPCE] 3.3.1.5.2.2.
     /// Any error invalidates an established context, preventing further signing or verification.
     pub fn sign_fragment(
@@ -761,54 +761,7 @@ impl RpcNtlmAuth {
             return Err(Error::new("rpc ntlm context is not established", GwErrorKind::Connect));
         }
         self.state = RpcNtlmAuthState::Failed;
-        if authentication.auth_type != RPC_AUTH_TYPE_WINNT
-            || authentication.auth_level != RPC_AUTH_LEVEL_PACKET_INTEGRITY
-            || authentication.verifier_length != RPC_NTLM_VERIFIER_LENGTH
-        {
-            return Err(Error::new(
-                "invalid rpc ntlm authentication parameters",
-                GwErrorKind::Connect,
-            ));
-        }
-
-        let security_trailer_offset = {
-            let parsed = decode_rpc_authenticated_fragment(fragment, u16::MAX)
-                .map_err(|error| Error::custom("validate rpc ntlm fragment", error))?;
-            let header = parsed.header();
-            let trailer = parsed.security_trailer();
-            if usize::from(header.fragment_length()) != fragment.len()
-                || trailer.auth_type != authentication.auth_type
-                || trailer.auth_level != authentication.auth_level
-                || trailer.auth_context_id != authentication.auth_context_id
-                || header.auth_length() != authentication.verifier_length
-            {
-                return Err(Error::new(
-                    "rpc ntlm fragment authentication mismatch",
-                    GwErrorKind::Decode,
-                ));
-            }
-            fragment
-                .len()
-                .checked_sub(usize::from(header.auth_length()) + RPC_SECURITY_TRAILER_SIZE)
-                .ok_or_else(|| Error::new("invalid rpc ntlm signature offset", GwErrorKind::Decode))?
-        };
-
-        let verifier_offset = security_trailer_offset + RPC_SECURITY_TRAILER_SIZE;
-        let data_start = if supports_header_signing {
-            0
-        } else {
-            RPC_COMMON_HEADER_SIZE
-        };
-        let (signed_data, verifier) = fragment.split_at_mut(verifier_offset);
-        let data_end = if supports_header_signing {
-            verifier_offset
-        } else {
-            security_trailer_offset
-        };
-        let mut buffers = [
-            SecurityBufferRef::token_buf(verifier),
-            SecurityBufferRef::data_buf(&mut signed_data[data_start..data_end]),
-        ];
+        let mut buffers = Self::signature_buffers(fragment, authentication, supports_header_signing)?;
         if let Err(error) = self.ntlm.make_signature(0, &mut buffers, sequence_number) {
             return Err(Error::custom("sign rpc ntlm fragment", error));
         }
@@ -820,7 +773,7 @@ impl RpcNtlmAuth {
     ///
     /// `authentication` must match the security trailer, and `sequence_number` is
     /// managed by the caller for the lifetime of the RPC association.
-    /// When header signing was negotiated, the common header, padded body, and security trailer are verified.
+    /// When header signing was negotiated, the PDU header, padded body, and security trailer are verified.
     /// Otherwise only the padded body is verified, as required by [MS-RPCE] 3.3.1.5.2.2.
     /// Any error invalidates an established context, preventing further signing or verification.
     pub fn verify_fragment(
@@ -834,6 +787,19 @@ impl RpcNtlmAuth {
             return Err(Error::new("rpc ntlm context is not established", GwErrorKind::Connect));
         }
         self.state = RpcNtlmAuthState::Failed;
+        let mut buffers = Self::signature_buffers(fragment, authentication, supports_header_signing)?;
+        if let Err(error) = self.ntlm.verify_signature(&mut buffers, sequence_number) {
+            return Err(Error::custom("verify rpc ntlm fragment", error));
+        }
+        self.state = RpcNtlmAuthState::Established;
+        Ok(())
+    }
+
+    fn signature_buffers(
+        fragment: &mut [u8],
+        authentication: RpcAuthenticationInfo,
+        supports_header_signing: bool,
+    ) -> Result<[SecurityBufferRef<'_>; 2], Error> {
         if authentication.auth_type != RPC_AUTH_TYPE_WINNT
             || authentication.auth_level != RPC_AUTH_LEVEL_PACKET_INTEGRITY
             || authentication.verifier_length != RPC_NTLM_VERIFIER_LENGTH
@@ -844,7 +810,7 @@ impl RpcNtlmAuth {
             ));
         }
 
-        let security_trailer_offset = {
+        let (body_start, security_trailer_offset) = {
             let parsed = decode_rpc_authenticated_fragment(fragment, u16::MAX)
                 .map_err(|error| Error::custom("validate rpc ntlm fragment", error))?;
             let header = parsed.header();
@@ -860,33 +826,45 @@ impl RpcNtlmAuth {
                     GwErrorKind::Decode,
                 ));
             }
-            fragment
-                .len()
-                .checked_sub(usize::from(header.auth_length()) + RPC_SECURITY_TRAILER_SIZE)
-                .ok_or_else(|| Error::new("invalid rpc ntlm signature offset", GwErrorKind::Decode))?
+            // [C706] 12.6.4 places stub data after the PDU-specific header and any request object UUID.
+            let has_object = header.pfc_flags() & 0x80 != 0; // PFC_OBJECT_UUID
+            let body_start = RPC_COMMON_HEADER_SIZE
+                + match header.ptype() {
+                    PTYPE_REQUEST => {
+                        RPC_REQUEST_HEADER_SIZE
+                            + if has_object {
+                                16 /* object */
+                            } else {
+                                0
+                            }
+                    }
+                    PTYPE_RESPONSE if !has_object => RPC_RESPONSE_HEADER_SIZE,
+                    PTYPE_FAULT if !has_object => RPC_FAULT_HEADER_SIZE,
+                    _ => {
+                        return Err(Error::new(
+                            "unsupported rpc ntlm pdu type or flags",
+                            GwErrorKind::Decode,
+                        ));
+                    }
+                };
+            if parsed.body_end < body_start {
+                return Err(Error::new("truncated rpc ntlm pdu header", GwErrorKind::Decode));
+            }
+            (body_start, parsed.security_trailer_offset)
         };
 
         let verifier_offset = security_trailer_offset + RPC_SECURITY_TRAILER_SIZE;
-        let data_start = if supports_header_signing {
-            0
-        } else {
-            RPC_COMMON_HEADER_SIZE
-        };
+        let data_start = if supports_header_signing { 0 } else { body_start };
         let (signed_data, verifier) = fragment.split_at_mut(verifier_offset);
         let data_end = if supports_header_signing {
             verifier_offset
         } else {
             security_trailer_offset
         };
-        let mut buffers = [
+        Ok([
             SecurityBufferRef::token_buf(verifier),
             SecurityBufferRef::data_buf(&mut signed_data[data_start..data_end]),
-        ];
-        if let Err(error) = self.ntlm.verify_signature(&mut buffers, sequence_number) {
-            return Err(Error::custom("verify rpc ntlm fragment", error));
-        }
-        self.state = RpcNtlmAuthState::Established;
-        Ok(())
+        ])
     }
 
     fn next_token(&mut self, input: Option<&[u8]>) -> Result<Vec<u8>, Error> {

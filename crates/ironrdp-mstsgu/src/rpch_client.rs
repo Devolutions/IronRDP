@@ -1,8 +1,6 @@
 use ironrdp_tls::{CertificateValidation, CertificateValidationCallback};
 
-use crate::packet_io::{
-    GatewayStream, open_gateway_tcp, parse_gateway_endpoint, proxy_from_environment, upgrade_gateway_tls,
-};
+use crate::packet_io::{GatewayStream, open_rpch_gateway_stream, parse_gateway_endpoint};
 use crate::rpch::{RpchChannel, RpchHttpCredentials};
 use crate::{Error, GwConnectTarget, GwErrorKind};
 
@@ -56,20 +54,13 @@ impl RpchClient {
             ));
         }
         let gateway = parse_gateway_endpoint(&target.gw_endpoint)?;
-        let proxy = proxy_from_environment(&gateway)?;
-        let (input, _) = open_gateway_tcp(&gateway, proxy.as_ref()).await?;
-        let input = upgrade_gateway_tls(
-            input,
-            &gateway.host,
+        let (input, _) = open_rpch_gateway_stream(
             &target.gw_endpoint,
             certificate_validation,
             certificate_validation_callback.clone(),
         )
         .await?;
-        let (out, _) = open_gateway_tcp(&gateway, proxy.as_ref()).await?;
-        let out = upgrade_gateway_tls(
-            out,
-            &gateway.host,
+        let (out, _) = open_rpch_gateway_stream(
             &target.gw_endpoint,
             certificate_validation,
             certificate_validation_callback,
