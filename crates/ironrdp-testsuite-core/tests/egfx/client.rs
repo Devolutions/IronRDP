@@ -1367,6 +1367,30 @@ fn rejected_window_mapping_keeps_the_previous_window() {
     assert_eq!(updates[0].window_id, 7);
 }
 
+// oracle: mutant a window target too large for the compositor budget replaces a working mapping
+#[test]
+fn over_budget_window_target_keeps_the_previous_window() {
+    let mut client = setup_active_client_with_surface(None, 1, 4, 4);
+    map_and_settle(&mut client, map_to_window(1, 7, (4, 4)));
+    map_and_settle(
+        &mut client,
+        GfxPdu::MapSurfaceToScaledWindow(MapSurfaceToScaledWindowPdu {
+            surface_id: 1,
+            window_id: 8,
+            mapped_width: 1,
+            mapped_height: 1,
+            target_width: 10_000,
+            target_height: 10_000,
+        }),
+    );
+
+    fill_frame(&mut client, 1, rect(0, 0, 4, 4));
+
+    let updates = client.drain_window_updates();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].window_id, 7);
+}
+
 // oracle: reference FreeRDP/FreeRDP@16a7c2ec2fd0:libfreerdp/gdi/gfx.c (gdi_MapSurfaceToWindow refuses an oversized mapping without touching the surface's existing mapping)
 #[test]
 fn rejected_window_mapping_keeps_the_output_mapping() {
@@ -1385,6 +1409,7 @@ fn rejected_window_mapping_keeps_the_output_mapping() {
 #[case::empty_target((0, 4))]
 #[case::target_past_max_output_dim((32_767, 4))]
 #[case::target_past_u16((70_000, 4))]
+#[case::target_past_the_pixel_budget((10_000, 10_000))]
 fn window_mapping_with_an_unpresentable_target_is_ignored(#[case] (target_width, target_height): (u32, u32)) {
     let mut client = setup_active_client_with_surface(None, 1, 4, 4);
     map_and_settle(
