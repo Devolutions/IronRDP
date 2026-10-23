@@ -23,3 +23,7 @@ Keep `ConnectorReplay::drive` to connector stepping and state guards; framing, P
 
 Before timing, assert that each fixture exercises the intended path: bulk inputs of 16 KiB or more pass through uncompressed, and all-zero images encode trivially.
 Dependencies used only by `perfenc` stay optional behind the `perfenc` feature, because the corpus tooling builds with `--no-default-features` and must not compile the server encoder or Tokio.
+
+## CodSpeed
+
+`replay/<id>/cli` entries in `codspeed.yml` run `corpus-bench replay` without `--strict` and append `/cli` to the Criterion ID, and every Criterion target file needs the `#[cfg(feature = "codspeed")] use codspeed_criterion_compat as criterion;` shim for CodSpeed to report its IDs.

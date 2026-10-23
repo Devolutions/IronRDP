@@ -2,6 +2,8 @@
 
 use core::hint::black_box;
 
+#[cfg(feature = "codspeed")]
+use codspeed_criterion_compat as criterion;
 use criterion::{Criterion, criterion_group, criterion_main};
 use ironrdp_bench::corpus::{CONNECTOR_BENCHMARK, Corpus, REPLAY_BENCHMARK};
 use ironrdp_capture_replay::ReplayOptions;

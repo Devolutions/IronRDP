@@ -22,10 +22,12 @@ default = ["qoi", "qoiz"]
 perfenc = ["dep:async-trait", "dep:pico-args", "dep:tokio", "dep:tracing", "dep:tracing-subscriber", "ironrdp/server", "ironrdp/__bench"]
 qoi = ["perfenc", "ironrdp/qoi"]
 qoiz = ["perfenc", "ironrdp/qoiz"]
+codspeed = ["dep:codspeed-criterion-compat"]
 
 [dependencies]
 anyhow = "1" # public
 async-trait = { version = "0.1", optional = true }
+codspeed-criterion-compat = { version = "5.0.1", optional = true }
 ironrdp = { path = "../ironrdp", features = ["pdu", "connector", "svc"] }
 ironrdp-capture.path = "../ironrdp-capture"
 ironrdp-capture-replay.path = "../ironrdp-capture-replay" # public

@@ -69,3 +69,25 @@ The benchmark verifies the full output once, then times connections that skip fr
 To update the corpus, change the manifest revision, entries, and digests together, then run `cargo xtask bench corpus-fetch` and `cargo xtask bench corpus-check`.
 Review every changed expectation before committing it; a recorded expectation describes current replay behavior, not proof of correctness.
 Never commit captures, TLS key material, decrypted payloads, or generated output.
+
+## CodSpeed
+
+The `CodSpeed` workflow reports every benchmark as a separately named result and never times the corpus as a whole.
+It runs only after maintainers enable the repository in CodSpeed and set the `CODSPEED_ENABLED` repository variable to `true`; it authenticates through GitHub OIDC without a repository secret.
+
+Simulation runs on pushes to `master`, pull requests, and manual dispatches.
+It measures the `bench` and `corpus` Criterion benchmarks built with the `codspeed` feature, which replaces Criterion 0.8 with `codspeed-criterion-compat`; regular `cargo bench` is unchanged.
+Simulation models deterministic CPU work, so it catches processing regressions but not wall-clock, SIMD-specific, or native H.264 performance changes.
+
+Manual dispatches also measure wall time when maintainers set the `CODSPEED_WALLTIME_RUNNER` repository variable to an approved, dedicated Linux runner label; dispatchers cannot choose the runner.
+`codspeed.yml` times one hash-free `corpus-bench replay` process per capture, so loading, decrypting, and preparing the capture are included but take far less time than the replay.
+The connector is timed only by Criterion, because preparing its capture takes far longer than the connection itself.
+Compilation and corpus fetching happen before measurement, and CodSpeed receives measurements and profiles, never captures, decrypted payloads, or key material.
+
+Check the instrumented benchmarks locally; CodSpeed records no measurement outside its runner:
+
+```PowerShell
+cargo install cargo-codspeed --version 5.0.1 --locked
+cargo codspeed build -p ironrdp-bench --bench bench --bench corpus --no-default-features --features codspeed --locked -m simulation
+cargo codspeed run -p ironrdp-bench -m simulation
+```
