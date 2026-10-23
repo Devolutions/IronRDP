@@ -589,12 +589,9 @@ impl WindowOrder {
             });
         }
 
-        if flags & (FIELD_ICON_BIG | FIELD_ICON_OVERLAY) != 0 {
-            return Err(invalid_field_err!(
-                "fieldsPresent",
-                "icon flags without an icon representation"
-            ));
-        }
+        // ICON_BIG and ICON_OVERLAY carry no data of their own and only qualify an icon,
+        // so without one they are ignored rather than rejected, as before typed decoding.
+        // The decoded state does not keep them, so they do not survive re-encoding.
 
         Ok(Self {
             window_id,
@@ -1439,21 +1436,34 @@ pub struct WindowingOrdersUpdate {
     pub contains_non_window_orders: bool,
 }
 
-/// Returns the size of [`encode_slow_path_windowing_orders`]'s output for `orders`.
-pub fn slow_path_windowing_orders_size(orders: &[WindowingOrder]) -> usize {
-    2 /* pad2OctetsA */ + 2 /* numberOrders */ + 2 /* pad2OctetsB */ + orders.iter().map(Encode::size).sum::<usize>()
+/// Returns the size of [`encode_slow_path_windowing_orders_update`]'s output for `orders`.
+pub fn slow_path_windowing_orders_update_size(orders: &[WindowingOrder]) -> usize {
+    2 /* updateType */
+        + 2 /* pad2OctetsA */
+        + 2 /* numberOrders */
+        + 2 /* pad2OctetsB */
+        + orders.iter().map(Encode::size).sum::<usize>()
 }
 
-/// Encodes windowing orders as a slow-path Orders update after its `updateType` field
-/// ([MS-RDPBCGR] 2.2.9.1.1.3.1.1), the inverse of [`try_decode_slow_path_windowing_orders`].
+/// Encodes windowing orders as a complete slow-path Orders update: a Slow-Path Graphics
+/// Update ([MS-RDPBCGR] 2.2.9.1.1.3.1) of type `UPDATETYPE_ORDERS` whose data is an
+/// Orders Update ([MS-RDPEGDI] 2.2.2.1).
 ///
+/// [`try_decode_slow_path_windowing_orders`] decodes what follows the `updateType` field.
 /// Orders produced by the decoder always encode. An error means an order was built with
 /// a value the decoder would reject, or there are more than 65,535 orders.
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr
-pub fn encode_slow_path_windowing_orders(orders: &[WindowingOrder], dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-    ensure_size!(in: dst, size: slow_path_windowing_orders_size(orders));
+/// [MS-RDPEGDI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegdi
+pub fn encode_slow_path_windowing_orders_update(
+    orders: &[WindowingOrder],
+    dst: &mut WriteCursor<'_>,
+) -> EncodeResult<()> {
+    const UPDATETYPE_ORDERS: u16 = 0x0000;
+
+    ensure_size!(in: dst, size: slow_path_windowing_orders_update_size(orders));
     let order_count: u16 = cast_length!("numberOrders", orders.len())?;
+    dst.write_u16(UPDATETYPE_ORDERS);
     dst.write_u16(0); // pad2OctetsA
     dst.write_u16(order_count);
     dst.write_u16(0); // pad2OctetsB
