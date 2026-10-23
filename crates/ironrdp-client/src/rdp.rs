@@ -1862,7 +1862,16 @@ fn build_connector(
             CsReadyFlags::ENABLE_MULTIPEN_INJECTION,
             RdpInputProtocolVersion::V300,
         ))
-        .with_dynamic_channel(GraphicsPipelineClient::new(Box::new(EgfxHandler), h264_decoder));
+        .with_dynamic_channel({
+            let egfx = GraphicsPipelineClient::new(Box::new(EgfxHandler), h264_decoder);
+            match &config.channels.egfx_persistent_cache {
+                Some(path) => {
+                    debug!(path = %path.display(), "Using a persistent graphics cache");
+                    egfx.with_persistent_cache(Box::new(crate::egfx_cache::FilePersistentCache::new(path)))
+                }
+                None => egfx,
+            }
+        });
 
     #[cfg(feature = "location")]
     if config.channels.location {

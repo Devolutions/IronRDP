@@ -140,6 +140,12 @@ struct Args {
     #[clap(long, env = "IRONRDP_EGFX", value_parser = clap::builder::BoolishValueParser::new(), num_args = 0..=1, default_missing_value = "true")]
     egfx: Option<bool>,
 
+    /// Keep the graphics pipeline's bitmap cache in this file across sessions, so reconnects paint
+    /// from cached tiles. Off by default, unlike mstsc; `.rdp` `bitmapcachepersistenable:i:1`
+    /// uses a per-user default file.
+    #[clap(long, value_name = "PATH")]
+    egfx_cache: Option<PathBuf>,
+
     /// The keyboard subtype (an original equipment manufacturer-dependent value)
     #[clap(long, default_value_t = 0)]
     keyboard_subtype: u32,
@@ -799,6 +805,9 @@ fn apply_cli_to_builder(
     }
     if let Some(enabled) = args.egfx {
         builder = builder.with_graphics_pipeline(enabled);
+    }
+    if let Some(path) = args.egfx_cache {
+        builder = builder.with_egfx_persistent_cache(Some(path));
     }
     if let Some(width) = args.desktop_width {
         builder = builder.with_desktop_width(width);

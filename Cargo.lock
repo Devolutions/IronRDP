@@ -3548,6 +3548,7 @@ dependencies = [
  "ironrdp-viewer",
  "ironrdp-vmconnect",
  "png",
+ "proptest",
  "rcgen",
  "semver",
  "tokio",

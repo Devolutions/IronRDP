@@ -1436,6 +1436,57 @@ pub fn egfx_zgfx_decompress(data: &[u8]) {
     let _ = decompressor.decompress(data, &mut output);
 }
 
+/// Panic and sanitizer oracle for the Alpha codec decoder ([MS-RDPEGFX 2.2.4.3]).
+///
+/// The first four bytes choose the bitmap width and height, so the fuzzer can reach runs that
+/// overrun or undershoot the area as well as the extended run-length encodings.
+///
+/// [MS-RDPEGFX 2.2.4.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/4c14f2a6-a025-476f-aa33-30f1718bd015
+pub fn egfx_alpha_decode(data: &[u8]) {
+    let [w0, w1, h0, h1, stream @ ..] = data else {
+        return;
+    };
+    let width = u16::from_le_bytes([*w0, *w1]);
+    let height = u16::from_le_bytes([*h0, *h1]);
+    let area = usize::from(width) * usize::from(height);
+
+    // oracle: spec MS-RDPEGFX §2.2.4.3 (the segments MUST encode exactly the bitmap area, top-left to
+    // bottom-right)
+    let mut covered = 0usize;
+    let result = ironrdp_graphics::alpha::decode(stream, width, height, |first_pixel, run| {
+        assert_eq!(first_pixel, covered, "runs are contiguous");
+        covered += run.len();
+    });
+    if result.is_ok() {
+        assert_eq!(covered, area, "a decoded stream covers the whole bitmap");
+    }
+}
+
+/// Panic and sanitizer oracle for the RemoteFX message parser and tile decoder
+/// ([MS-RDPRFX 2.2.2]), as the EGFX client runs them on `RDPGFX_CODECID_CAVIDEO` payloads.
+///
+/// [MS-RDPRFX 2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/edd6c368-4f39-420a-bf14-a0e83c654ab7
+pub fn egfx_rfx_decode(data: &[u8]) {
+    use ironrdp_graphics::rfx::{MAX_TILES_PER_MESSAGE, MessageDecoder, TILE_RGBA_LEN, TileDecoder};
+
+    let Ok(message) = MessageDecoder::new().parse(data) else {
+        return;
+    };
+    // oracle: mutant (a parsed message past the documented tile limit)
+    assert!(message.tile_count() <= MAX_TILES_PER_MESSAGE);
+
+    let mut tiles = TileDecoder::new();
+    for frame in &message.frames {
+        let tile_set = &frame.tile_set;
+        for tile in &tile_set.tiles {
+            if let Ok(pixels) = tiles.decode(tile, &tile_set.quants, tile_set.entropy_algorithm) {
+                // oracle: spec MS-RDPRFX §3.1.8.1.1 (a tile is 64x64 pixels)
+                assert_eq!(pixels.len(), TILE_RGBA_LEN);
+            }
+        }
+    }
+}
+
 /// Surface-lifecycle state-machine oracle for the EGFX graphics pipeline client.
 ///
 /// Sibling of [`egfx_multi_frame`] with two distinct properties:
