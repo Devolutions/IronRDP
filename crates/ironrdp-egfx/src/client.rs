@@ -535,6 +535,8 @@ impl GraphicsPipelineClient {
         let pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(core::slice::from_ref(caps)));
         self.state = ClientState::Resetting;
         self.surfaces.clear();
+        // The compositor reset below drops their budget charge with everything else.
+        self.avc444_frames.clear();
         self.compositor.reset_protocol();
         // A full channel reset restarts codec contexts, unlike the output-only ResetGraphics PDU.
         self.clearcodec_decoder = None;
