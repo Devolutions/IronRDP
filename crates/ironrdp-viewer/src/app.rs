@@ -26,10 +26,13 @@ use winit::keyboard::PhysicalKey;
 use winit::window::{Cursor, CursorIcon, CustomCursor, Window, WindowAttributes};
 
 use crate::keymap::{is_modifier, map_key_code};
-use crate::rail::{RailWindows, window_point_to_desktop};
+use crate::rail::{RailWindows, bounded_window_size, window_point_to_desktop};
 
 /// Emulated mouse operations kept while the session input queue is full; beyond this, moves are dropped.
 const MAX_PENDING_TOUCH_MOUSE: usize = 256;
+
+/// RAIL controls kept while the session input queue is full; beyond this, the oldest is dropped.
+const MAX_PENDING_RAIL_INPUTS: usize = 64;
 
 type WindowSurface = (Arc<Window>, softbuffer::Surface<DisplayHandle<'static>, Arc<Window>>);
 
@@ -74,6 +77,11 @@ pub struct RpcApp {
     /// RemoteApp mode: server windows open as local windows and no desktop window is shown.
     remote_app: bool,
     rail_windows: RailWindows,
+    /// Activate and Close requests that wait for room in the session input queue, in order.
+    pending_rail_inputs: std::collections::VecDeque<RailInputEvent>,
+    /// Whether releasing every held key and button after a focus loss waits for room in the
+    /// session input queue.
+    release_pending: bool,
 }
 
 impl App {
@@ -149,6 +157,8 @@ impl RpcApp {
             touch_epoch: Instant::now(),
             remote_app,
             rail_windows: RailWindows::default(),
+            pending_rail_inputs: std::collections::VecDeque::new(),
+            release_pending: false,
         })
     }
 
@@ -365,11 +375,14 @@ impl RpcApp {
     fn on_about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.send_touch_frames();
         self.send_touch_mouse();
-        // Touch input that found the session input queue full is retried shortly, since draining the queue
+        self.send_pending_rail_input();
+        // Input that found the session input queue full is retried shortly, since draining the queue
         // does not wake the event loop.
         // Frames held for a suspended server wait for the resume event, which wakes the loop.
         let touch_pending = (self.touch_frames.has_pending_frames() && !self.rdpei_input_state.suspended)
-            || !self.pending_touch_mouse.is_empty();
+            || !self.pending_touch_mouse.is_empty()
+            || self.release_pending
+            || !self.pending_rail_inputs.is_empty();
         let touch_retry = touch_pending.then(|| Instant::now() + Duration::from_millis(10));
         let deadline = touch_retry.into_iter().chain(self.resize_deadline()).min();
         event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
@@ -531,8 +544,8 @@ impl RpcApp {
                 // A RemoteApp window maps the server's pixels 1:1, so it keeps its physical
                 // size on a monitor with another DPI instead of the size winit would scale it to.
                 if let Some(model) = self.rail_windows.model(rail_window_id)
-                    && let Err(error) =
-                        inner_size_writer.request_inner_size(PhysicalSize::new(model.width, model.height))
+                    && let (width, height) = bounded_window_size(model.width, model.height)
+                    && let Err(error) = inner_size_writer.request_inner_size(PhysicalSize::new(width, height))
                 {
                     debug!(%error, rail_window_id, "Unable to keep a RemoteApp window size");
                 }
@@ -552,10 +565,13 @@ impl RpcApp {
                 if !focused {
                     // Keys and buttons held when focus moves away would otherwise stay
                     // pressed on the server, because their release goes to another window.
-                    release_all_input(&self.input_target, &mut self.input_database);
+                    self.release_pending = true;
+                    self.send_pending_rail_input();
                 }
             }
             input if is_input_event(&input) => {
+                // A pending release goes out before any later input.
+                self.send_pending_rail_input();
                 // A RemoteApp window shows its server rectangle 1:1 at the server position.
                 let origin = self.rail_windows.model(rail_window_id).map(|model| (model.x, model.y));
                 let to_session = |x: f64, y: f64| origin.and_then(|origin| window_point_to_desktop(origin, x, y));
@@ -565,11 +581,38 @@ impl RpcApp {
         }
     }
 
-    fn send_rail_input(&self, event: RailInputEvent) {
-        if let InputTarget::Direct(input_event_sender) = &self.input_target
-            && let Err(error) = input_event_sender.try_send_rail_input(event)
-        {
-            debug!(%error, "Unable to send RAIL input");
+    /// Sends a RAIL control, or queues it behind earlier ones while the session input queue
+    /// is full, so an Activate or Close is never lost to an input burst.
+    fn send_rail_input(&mut self, event: RailInputEvent) {
+        if MAX_PENDING_RAIL_INPUTS <= self.pending_rail_inputs.len() {
+            debug!(?event, "Dropping the oldest pending RAIL input");
+            self.pending_rail_inputs.pop_front();
+        }
+        self.pending_rail_inputs.push_back(event);
+        self.send_pending_rail_input();
+    }
+
+    /// Sends the queued RAIL controls and the pending input release, in order, until the
+    /// session input queue is full.
+    ///
+    /// UNTESTED: a pending control or release is retried from `on_about_to_wait` until it is
+    /// sent, which needs a running event loop to exercise; keep it in the retry deadline there.
+    fn send_pending_rail_input(&mut self) {
+        let InputTarget::Direct(input_event_sender) = &self.input_target else {
+            self.pending_rail_inputs.clear();
+            self.release_pending = false;
+            return;
+        };
+        while let Some(&event) = self.pending_rail_inputs.front() {
+            match input_event_sender.try_send_rail_input(event) {
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => return,
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) | Ok(()) => {
+                    self.pending_rail_inputs.pop_front();
+                }
+            }
+        }
+        if self.release_pending && release_all_input(&self.input_target, &mut self.input_database) {
+            self.release_pending = false;
         }
     }
 
@@ -963,19 +1006,24 @@ fn forward_input_event(
 }
 
 /// Releases every key and mouse button the session still holds pressed.
-fn release_all_input(input_target: &InputTarget, input_database: &mut ironrdp::input::Database) {
+///
+/// Returns false when the session input queue is full and nothing was released.
+fn release_all_input(input_target: &InputTarget, input_database: &mut ironrdp::input::Database) -> bool {
     match input_target {
         InputTarget::Direct(input_event_sender) => {
-            let Ok(permit) = input_event_sender.try_reserve() else {
-                return;
+            let permit = match input_event_sender.try_reserve() {
+                Ok(permit) => permit,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(())) => return false,
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(())) => return true,
             };
             let input_events = input_database.release_all();
             if !input_events.is_empty() {
                 permit.send(RdpInputEvent::FastPath(input_events));
             }
+            true
         }
         // The daemon tracks its own input state, and RemoteApp windows are not shown in RPC mode.
-        InputTarget::Rpc(_) => {}
+        InputTarget::Rpc(_) => true,
     }
 }
 

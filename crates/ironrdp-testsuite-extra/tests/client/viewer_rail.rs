@@ -4,8 +4,8 @@ use ironrdp::input::MousePosition;
 use ironrdp::pdu::geometry::ExclusiveRectangle;
 use ironrdp::pdu::window::{IconInfo, ShowState, WindowPoint, WindowSize, WindowState, WindowStyle};
 use ironrdp_viewer::rail::{
-    MAX_TOTAL_WINDOW_PIXELS, MAX_WINDOW_PIXELS, ModelChanges, RailWindowModel, WindowPixels, crop_frame,
-    fits_window_pixel_budget, icon_to_rgba, window_point_to_desktop,
+    MAX_TOTAL_WINDOW_PIXELS, MAX_WINDOW_PIXELS, ModelChanges, RailWindowModel, WindowPixels, bounded_window_size,
+    crop_frame, fits_window_pixel_budget, icon_to_rgba, window_point_to_desktop,
 };
 use proptest::prelude::*;
 
@@ -453,4 +453,17 @@ proptest! {
             prop_assert_eq!(rgba.len(), usize::from(width) * usize::from(height) * 4);
         }
     }
+}
+
+// oracle: mutant a server window size reaches native window creation or a painting buffer unbounded
+#[rstest::rstest]
+#[case::within_the_budget((1920, 1080), (1920, 1080))]
+#[case::empty((0, 0), (1, 1))]
+#[case::too_wide((40_000, 10), (16_384, 10))]
+#[case::too_large_an_area((32_766, 32_766), (16_384, 2_025))]
+fn server_window_sizes_are_bounded_for_local_windows(#[case] size: (u32, u32), #[case] bounded: (u32, u32)) {
+    let (width, height) = bounded_window_size(size.0, size.1);
+
+    assert_eq!((width, height), bounded);
+    assert!(usize::try_from(u64::from(width) * u64::from(height)).unwrap() <= MAX_WINDOW_PIXELS);
 }

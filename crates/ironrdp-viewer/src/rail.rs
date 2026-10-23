@@ -238,6 +238,24 @@ impl WindowPixels {
 ///
 /// The size comes from the server's surface-to-window mapping, so it is bounded before the
 /// window's pixel buffer is allocated.
+/// Largest edge of a local RemoteApp window, in pixels.
+const MAX_WINDOW_EDGE: u32 = 16384;
+
+/// Bounds a server window size for a local window, whose surface and painting buffers are
+/// allocated at that size: each edge stays within [`MAX_WINDOW_EDGE`] and the area within
+/// [`MAX_WINDOW_PIXELS`], shrinking the height first.
+pub fn bounded_window_size(width: u32, height: u32) -> (u32, u32) {
+    let width = width.clamp(1, MAX_WINDOW_EDGE);
+    let max_height =
+        u32::try_from(MAX_WINDOW_PIXELS / usize::try_from(width).unwrap_or(usize::MAX)).unwrap_or(u32::MAX);
+    (width, height.clamp(1, max_height.clamp(1, MAX_WINDOW_EDGE)))
+}
+
+/// Whether a local window's painting buffer fits [`MAX_WINDOW_PIXELS`].
+fn fits_window_area(width: u32, height: u32) -> bool {
+    usize::try_from(u64::from(width) * u64::from(height)).is_ok_and(|area| area <= MAX_WINDOW_PIXELS)
+}
+
 pub fn fits_window_pixel_budget((width, height): (u16, u16), other_windows_pixels: usize) -> bool {
     let pixels = usize::from(width) * usize::from(height);
     pixels <= MAX_WINDOW_PIXELS && other_windows_pixels.saturating_add(pixels) <= MAX_TOTAL_WINDOW_PIXELS
@@ -331,8 +349,8 @@ type Surface = softbuffer::Surface<DisplayHandle<'static>, Arc<Window>>;
 struct LocalWindow {
     window: Arc<Window>,
     surface: Surface,
-    /// Whether the window was created with its server owner's local window as owner.
-    has_owner: bool,
+    /// The RAIL window whose local window this one was created with as owner.
+    owner: Option<u32>,
 }
 
 struct RailWindow {
@@ -352,6 +370,8 @@ pub(crate) struct RailWindows {
     icon_cache: BTreeMap<(u8, u16), (Icon, usize)>,
     icon_cache_bytes: usize,
     cursor: Option<Cursor>,
+    /// Whether the server pointer is hidden; windows created later start the same way.
+    cursor_hidden: bool,
 }
 
 impl RailWindows {
@@ -526,14 +546,9 @@ impl RailWindows {
         window_id: u32,
         changes: ModelChanges,
     ) {
-        let owner = self
-            .windows
-            .get(&window_id)
-            .and_then(|window| window.model.owner_window_id)
-            .and_then(|owner| self.windows.get(&owner))
-            .and_then(|owner| owner.local.as_ref())
-            .map(|local| Arc::clone(&local.window));
+        let owner = self.attachable_owner(window_id);
         let cursor = self.cursor.clone();
+        let cursor_hidden = self.cursor_hidden;
         let Some(window) = self.windows.get_mut(&window_id) else {
             return;
         };
@@ -543,12 +558,16 @@ impl RailWindows {
             if !model.is_visible() {
                 return;
             }
-            match create_local_window(event_loop, context, model, owner.as_deref()) {
-                Ok(local) => {
+            let owner_id = owner.as_ref().map(|(owner_id, _)| *owner_id);
+            let owner_window = owner.map(|(_, window)| window);
+            match create_local_window(event_loop, context, model, owner_window.as_deref()) {
+                Ok(mut local) => {
+                    local.owner = owner_id;
                     local.window.set_window_icon(window.icon.clone());
                     if let Some(cursor) = cursor {
                         local.window.set_cursor(cursor);
                     }
+                    local.window.set_cursor_visible(!cursor_hidden);
                     window.local = Some(local);
                     self.attach_owned_windows(event_loop, context, window_id);
                 }
@@ -557,18 +576,22 @@ impl RailWindows {
             return;
         };
 
+        if local.owner != owner.as_ref().map(|(owner_id, _)| *owner_id) {
+            // An owner cannot be changed after a window is created, so the window and the
+            // windows it owns are created again with the new owner.
+            self.recreate_with_owned(event_loop, context, window_id);
+            return;
+        }
         if changes.title {
             local.window.set_title(&model.title);
         }
         if changes.taskbar {
-            // An owner cannot be changed after a window is created, but taskbar visibility can.
             set_skip_taskbar(&local.window, model.skips_taskbar());
         }
         if changes.geometry {
             local.window.set_outer_position(PhysicalPosition::new(model.x, model.y));
-            let _ = local
-                .window
-                .request_inner_size(PhysicalSize::new(model.width, model.height));
+            let (width, height) = bounded_window_size(model.width, model.height);
+            let _ = local.window.request_inner_size(PhysicalSize::new(width, height));
         }
         if changes.show_state {
             match model.show_state {
@@ -582,6 +605,28 @@ impl RailWindows {
             }
         }
         local.window.request_redraw();
+    }
+
+    /// The owner a window's local window should be created with: its server owner's local
+    /// window, when local windows take owners and the owner has one.
+    ///
+    /// A window whose owner chain leads back to itself gets no owner, so a cyclic ownership
+    /// from the server cannot make owners and owned windows recreate each other forever.
+    fn attachable_owner(&self, window_id: u32) -> Option<(u32, Arc<Window>)> {
+        if !OWNER_WINDOWS_SUPPORTED {
+            return None;
+        }
+        let owner_id = self.windows.get(&window_id)?.model.owner_window_id?;
+        let mut ancestor = Some(owner_id);
+        for _ in 0..=MAX_RAIL_WINDOWS {
+            match ancestor {
+                Some(id) if id == window_id => return None,
+                Some(id) => ancestor = self.windows.get(&id).and_then(|window| window.model.owner_window_id),
+                None => break,
+            }
+        }
+        let owner = self.windows.get(&owner_id)?.local.as_ref()?;
+        Some((owner_id, Arc::clone(&owner.window)))
     }
 
     /// Recreates the local windows owned by `owner_window_id` that were created while it had
@@ -604,15 +649,53 @@ impl RailWindows {
             .filter(|(window_id, window)| {
                 **window_id != owner_window_id
                     && window.model.owner_window_id == Some(owner_window_id)
-                    && window.local.as_ref().is_some_and(|local| !local.has_owner)
+                    && window
+                        .local
+                        .as_ref()
+                        .is_some_and(|local| local.owner != Some(owner_window_id))
             })
             .map(|(window_id, _)| *window_id)
             .collect::<Vec<_>>();
         for window_id in unattached {
-            if let Some(window) = self.windows.get_mut(&window_id) {
+            self.recreate_with_owned(event_loop, context, window_id);
+        }
+    }
+
+    /// Destroys the local windows of `window_id` and of every window it owns, directly or
+    /// through other owned windows, then creates them again, owners first.
+    ///
+    /// Destroying a native owner also destroys the windows it owns, so they are dropped
+    /// first and recreated with it rather than left pointing at destroyed windows.
+    fn recreate_with_owned(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        context: &softbuffer::Context<DisplayHandle<'static>>,
+        window_id: u32,
+    ) {
+        let mut subtree = vec![window_id];
+        let mut index = 0;
+        while let Some(&owner_id) = subtree.get(index) {
+            subtree.extend(
+                self.windows
+                    .iter()
+                    .filter(|(id, window)| window.model.owner_window_id == Some(owner_id) && !subtree.contains(id))
+                    .map(|(id, _)| *id)
+                    .collect::<Vec<_>>(),
+            );
+            index += 1;
+        }
+        // UNTESTED: owned windows are dropped before their owners and recreated after them, so no
+        // native window outlives its owner and every owned window comes back. This needs a winit
+        // event loop to exercise; keep both orders when changing this.
+        for id in subtree.iter().rev() {
+            if let Some(window) = self.windows.get_mut(id) {
                 window.local = None;
             }
-            self.sync_local_window(event_loop, context, window_id, ModelChanges::default());
+        }
+        for id in subtree {
+            if self.windows.get(&id).is_some_and(|window| window.local.is_none()) {
+                self.sync_local_window(event_loop, context, id, ModelChanges::default());
+            }
         }
     }
 
@@ -684,12 +767,14 @@ impl RailWindows {
             local.window.set_cursor_visible(true);
         }
         self.cursor = Some(cursor);
+        self.cursor_hidden = false;
     }
 
-    pub(crate) fn set_cursor_visible(&self, visible: bool) {
+    pub(crate) fn set_cursor_visible(&mut self, visible: bool) {
         for local in self.windows.values().filter_map(|window| window.local.as_ref()) {
             local.window.set_cursor_visible(visible);
         }
+        self.cursor_hidden = !visible;
     }
 
     /// Paints a RAIL window from its graphics pipeline content, or from the session frame.
@@ -707,6 +792,16 @@ impl RailWindows {
         ) else {
             return;
         };
+        if !fits_window_area(size.width, size.height) {
+            // The platform may size a window past what it was asked for; painting it would
+            // allocate a buffer beyond the window pixel budget.
+            debug!(
+                window_id,
+                ?size,
+                "RemoteApp window beyond the pixel budget is not painted"
+            );
+            return;
+        }
         let pixels = match &window.pixels {
             Some(pixels) => pixels.crop(size.width, size.height),
             None if frame.is_empty() => return,
@@ -739,11 +834,12 @@ fn create_local_window(
     model: &RailWindowModel,
     owner: Option<&Window>,
 ) -> anyhow::Result<LocalWindow> {
+    let (width, height) = bounded_window_size(model.width, model.height);
     let attributes = WindowAttributes::default()
         .with_title(model.title.clone())
         .with_decorations(false)
         .with_position(PhysicalPosition::new(model.x, model.y))
-        .with_inner_size(PhysicalSize::new(model.width, model.height))
+        .with_inner_size(PhysicalSize::new(width, height))
         .with_active(model.activates_on_open());
     let attributes = windows_attributes(attributes, model, owner);
     let window = Arc::new(event_loop.create_window(attributes)?);
@@ -755,7 +851,7 @@ fn create_local_window(
     Ok(LocalWindow {
         window,
         surface,
-        has_owner: owner.is_some() || model.owner_window_id.is_none(),
+        owner: None,
     })
 }
 
