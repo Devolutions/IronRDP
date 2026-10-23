@@ -931,9 +931,8 @@ impl GraphicsPipelineClient {
         }
         // The Progressive decoder is deliberately NOT reset here either. Its context lifetime
         // is driven by DeleteEncodingContext and DeleteSurface; MS-RDPEGFX 3.3.5.14 only
-        // resizes the Graphics Output Buffer. Windows establishes a codec context once and
-        // never re-sends SYNC + CONTEXT afterwards, so dropping it here makes every later
-        // payload fail with MissingBlock("CONTEXT").
+        // resizes the Graphics Output Buffer. Dropping it here would discard the tile state
+        // that later upgrade passes refine.
         // The ClearCodec decoder is deliberately NOT reset here. MS-RDPEGFX 3.3.5.14 only
         // resizes the Graphics Output Buffer; cache lifetime is driven by the stream instead,
         // through CLEARCODEC_FLAG_CACHE_RESET (2.2.4.1), which ClearCodecDecoder::decode
@@ -2173,6 +2172,8 @@ fn copy_frame_region(frame_data: &[u8], frame_width: u32, region: &ExclusiveRect
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use ironrdp_pdu::codecs::rfx::progressive::TILE_FLAG_DIFFERENCE;
+
     use super::*;
 
     struct TestHandler;
@@ -2715,45 +2716,7 @@ mod tests {
         }))
     }
 
-    fn progressive_context_stream(with_context: bool) -> Vec<u8> {
-        use ironrdp_pdu::codecs::rfx::RfxRectangle;
-        use ironrdp_pdu::codecs::rfx::progressive::{
-            ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
-            ProgressiveRegion, ProgressiveSyncPdu, encode_progressive_stream,
-        };
-
-        let mut blocks = Vec::new();
-        if with_context {
-            blocks.push(ProgressiveBlock::Sync(ProgressiveSyncPdu));
-            blocks.push(ProgressiveBlock::Context(ProgressiveContextPdu {
-                context_id: 0,
-                tile_size: 0x0040,
-                flags: 0,
-            }));
-        }
-        blocks.push(ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
-            frame_index: 0,
-            region_count: 1,
-        }));
-        blocks.push(ProgressiveBlock::Region(ProgressiveRegion {
-            tile_size: 0x40,
-            rects: vec![RfxRectangle {
-                x: 0,
-                y: 0,
-                width: 64,
-                height: 64,
-            }],
-            quant_vals: vec![],
-            quant_prog_vals: vec![],
-            flags: 0,
-            tiles: vec![],
-        }));
-        blocks.push(ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu));
-
-        encode_progressive_stream(&blocks).unwrap()
-    }
-
-    fn progressive_tile_stream(tile_x: u16, tile_y: u16, rect_width: u16, rect_height: u16) -> Vec<u8> {
+    fn progressive_tile_stream(tile_x: u16, tile_y: u16, rect_width: u16, rect_height: u16, tile_flags: u8) -> Vec<u8> {
         use ironrdp_graphics::progressive::{COEFFICIENTS_PER_COMPONENT, encode_first_pass};
         use ironrdp_pdu::codecs::rfx::RfxRectangle;
         use ironrdp_pdu::codecs::rfx::progressive::{
@@ -2803,7 +2766,7 @@ mod tests {
                     quant_idx_cr: 0,
                     x_idx: tile_x,
                     y_idx: tile_y,
-                    flags: 0,
+                    flags: tile_flags,
                     y_data: component_data,
                     cb_data: component_data,
                     cr_data: component_data,
@@ -2874,7 +2837,7 @@ mod tests {
                 frame_id: 2,
             }))
             .unwrap();
-        wire_progressive(&mut client, progressive_tile_stream(1, 1, 36, 36)).unwrap();
+        wire_progressive(&mut client, progressive_tile_stream(1, 1, 36, 36, 0)).unwrap();
         client
             .handle_pdu(GfxPdu::EndFrame(crate::pdu::EndFramePdu { frame_id: 2 }))
             .unwrap();
@@ -3058,6 +3021,16 @@ mod tests {
         assert!(client.drain_output().is_empty());
     }
 
+    /// Sends a tile, runs `step`, then sends a difference tile, which needs the reference the first
+    /// tile left on its surface. Returns the client so that its dropped updates can be checked.
+    fn wire_difference_tile_after(step: impl FnOnce(&mut GraphicsPipelineClient)) -> GraphicsPipelineClient {
+        let mut client = progressive_client();
+        wire_progressive(&mut client, progressive_tile_stream(0, 0, 64, 64, 0)).unwrap();
+        step(&mut client);
+        wire_progressive(&mut client, progressive_tile_stream(0, 0, 64, 64, TILE_FLAG_DIFFERENCE)).unwrap();
+        client
+    }
+
     fn progressive_upgrade_stream() -> Vec<u8> {
         use ironrdp_pdu::codecs::rfx::progressive::{
             ComponentCodecQuant, ProgressiveBlock, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu, ProgressiveRegion,
@@ -3112,7 +3085,7 @@ mod tests {
             }))
             .unwrap();
         for surface_id in [1, 2] {
-            send(&mut client, surface_id, progressive_tile_stream(0, 0, 64, 64));
+            send(&mut client, surface_id, progressive_tile_stream(0, 0, 64, 64, 0));
         }
         assert_eq!(updates.lock().unwrap().len(), 2);
         updates.lock().unwrap().clear();
@@ -3209,14 +3182,6 @@ mod tests {
         }
     }
 
-    fn assert_progressive_context_is_deleted(clear: impl FnOnce(&mut GraphicsPipelineClient)) {
-        let mut client = progressive_client();
-        wire_progressive(&mut client, progressive_context_stream(true)).unwrap();
-        clear(&mut client);
-        assert!(wire_progressive(&mut client, progressive_context_stream(false)).is_ok());
-        assert_eq!(client.dropped_updates, 1);
-    }
-
     #[test]
     fn an_undecodable_clearcodec_update_is_dropped_not_fatal() {
         let mut client = progressive_client();
@@ -3246,7 +3211,7 @@ mod tests {
             updates: Arc::clone(&updates),
             unhandled: Arc::new(Mutex::new(0)),
         });
-        wire_progressive(&mut client, progressive_tile_stream(0, 0, 64, 64)).unwrap();
+        wire_progressive(&mut client, progressive_tile_stream(0, 0, 64, 64, 0)).unwrap();
         assert_eq!(updates.lock().unwrap().len(), 1);
         updates.lock().unwrap().clear();
 
@@ -3310,7 +3275,7 @@ mod tests {
                 bitmap_data,
             })
         };
-        let seed = wire(progressive_tile_stream(0, 0, 64, 64));
+        let seed = wire(progressive_tile_stream(0, 0, 64, 64, 0));
         let upgrade = wire(progressive_upgrade_stream());
         for pdu in [&confirm, &create, &seed, &upgrade] {
             process(&mut client, pdu);
@@ -3322,16 +3287,18 @@ mod tests {
         for pdu in [&confirm, &create, &upgrade] {
             process(&mut client, pdu);
         }
-        assert_eq!(
-            client.dropped_updates(),
-            1,
-            "the previous codec context must no longer exist"
-        );
-        process(&mut client, &wire(progressive_context_stream(true)));
-        process(&mut client, &upgrade);
         assert!(
             updates.lock().unwrap().is_empty(),
             "a fresh context must not inherit the previous tile"
+        );
+        process(
+            &mut client,
+            &wire(progressive_tile_stream(0, 0, 64, 64, TILE_FLAG_DIFFERENCE)),
+        );
+        assert_eq!(
+            client.dropped_updates(),
+            1,
+            "the previous surface's sub-band reference must no longer exist"
         );
         for pdu in [&seed, &upgrade] {
             process(&mut client, pdu);
@@ -3341,25 +3308,47 @@ mod tests {
     }
 
     #[test]
-    fn progressive_context_is_deleted_with_encoding_context() {
-        let mut client = progressive_client();
-        wire_progressive(&mut client, progressive_context_stream(true)).unwrap();
-        client
-            .handle_pdu(GfxPdu::DeleteEncodingContext(DeleteEncodingContextPdu {
-                surface_id: 1,
-                codec_context_id: 7,
-            }))
-            .unwrap();
+    fn difference_tile_reference_survives_graphics_reset() {
+        let client = wire_difference_tile_after(|client| {
+            client
+                .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
+                    width: 64,
+                    height: 64,
+                    monitors: vec![],
+                }))
+                .unwrap();
+            client
+                .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                    surface_id: 1,
+                    width: 64,
+                    height: 64,
+                    pixel_format: PixelFormat::XRgb,
+                }))
+                .unwrap();
+        });
 
-        // The context's tiles are gone, but the surface survives and keeps the band layout it
-        // was given, so a payload reusing the id decodes from scratch. Windows deletes a codec
-        // context as it opens the next one and never repeats SYNC + CONTEXT.
-        assert!(wire_progressive(&mut client, progressive_context_stream(false)).is_ok());
+        assert_eq!(client.dropped_updates, 0);
+    }
+
+    #[test]
+    fn progressive_context_is_deleted_with_encoding_context() {
+        // The context's tiles are gone, but its surface keeps the sub-band reference. Windows
+        // deletes a codec context as it opens the next one.
+        let client = wire_difference_tile_after(|client| {
+            client
+                .handle_pdu(GfxPdu::DeleteEncodingContext(DeleteEncodingContextPdu {
+                    surface_id: 1,
+                    codec_context_id: 7,
+                }))
+                .unwrap();
+        });
+
+        assert_eq!(client.dropped_updates, 0);
     }
 
     #[test]
     fn progressive_context_is_deleted_with_surface() {
-        assert_progressive_context_is_deleted(|client| {
+        let client = wire_difference_tile_after(|client| {
             client
                 .handle_pdu(GfxPdu::DeleteSurface(crate::pdu::DeleteSurfacePdu { surface_id: 1 }))
                 .unwrap();
@@ -3372,6 +3361,8 @@ mod tests {
                 }))
                 .unwrap();
         });
+
+        assert_eq!(client.dropped_updates, 1);
     }
 
     // ========================================================================
