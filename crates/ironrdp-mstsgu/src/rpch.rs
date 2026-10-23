@@ -17,7 +17,6 @@ use log::warn;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf, WriteHalf};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tokio::time::MissedTickBehavior;
 use tokio_util::sync::PollSender;
 use uuid::Uuid;
 
@@ -56,6 +55,7 @@ const CHANNEL_IN_CONTENT_LENGTH: u32 = 128 * 1024;
 /// IN body reserved by TS Proxy sessions; it matches the default channel lifetime, as deployed proxies expect.
 const SESSION_IN_CONTENT_LENGTH: u32 = 1024 * 1024 * 1024;
 const MAX_RESPONSE_STUB_SIZE: usize = 32 * 1024;
+const MAX_MESSAGE_STUB_SIZE: usize = 2 * 65_536 + 1024;
 const MAX_AUTH_ROUNDS: usize = 8;
 /// IN body kept free for RTS PDUs, such as IN_R1/A5 and flow-control acknowledgements, sent before a recycle completes.
 const IN_RECYCLE_RESERVE: u32 = 1024;
@@ -133,8 +133,8 @@ struct RpchSession<Out, In, Provider> {
     session_id: String,
     credentials: RpchHttpCredentials,
     flow_control: RpchFlowControl,
-    connection_timeout: Duration,
     ping: RpchPingSchedule,
+    started: Instant,
     fragment_sizes: RpcFragmentSizes,
     rpc_auth: RpcNtlmAuth,
     rpc_authentication: RpcAuthenticationInfo,
@@ -143,6 +143,8 @@ struct RpchSession<Out, In, Provider> {
     send_sequence_number: u32,
     receive_sequence_number: u32,
     responses: RpcAuthenticatedResponseReassembler,
+    message_responses: RpcAuthenticatedResponseReassembler,
+    active_call_id: Option<u32>,
     call_id: u32,
     receive_pipe_call_id: Option<u32>,
     tunnel_context: Option<NonNullRpcContextHandle>,
@@ -158,13 +160,13 @@ struct RpchSession<Out, In, Provider> {
     /// Set once close starts, so responses that tear-down provokes are expected rather than failures.
     closing: bool,
     data: VecDeque<Bytes>,
+    buffered_data: usize,
     failed: bool,
 }
 
 struct OutSuccessor<Out> {
     channel: OutChannel,
     writer: WriteHalf<Out>,
-    head: Option<oneshot::Receiver<Result<Vec<String>, Error>>>,
 }
 
 /// Watches the read half of an accepted IN channel, where the proxy writes only error responses.
@@ -274,8 +276,8 @@ where
         session_id,
         credentials,
         flow_control: channel.flow_control,
-        connection_timeout: channel.connection_timeout,
         ping,
+        started: Instant::now(),
         fragment_sizes: RpcFragmentSizes::DEFAULT,
         rpc_auth,
         rpc_authentication: RpcAuthenticationInfo {
@@ -289,6 +291,8 @@ where
         send_sequence_number: 0,
         receive_sequence_number: 0,
         responses: RpcAuthenticatedResponseReassembler::new(MAX_RESPONSE_STUB_SIZE),
+        message_responses: RpcAuthenticatedResponseReassembler::new(MAX_MESSAGE_STUB_SIZE),
+        active_call_id: None,
         call_id: 0,
         receive_pipe_call_id: None,
         tunnel_context: None,
@@ -300,6 +304,7 @@ where
         pending_reauth: None,
         closing: false,
         data: VecDeque::new(),
+        buffered_data: 0,
         failed: false,
     };
     session.bind().await?;
@@ -774,7 +779,7 @@ where
         // ([MS-TSGU] 3.2.6.1.3 and 3.6.5.1).
         self.messaging = self.capabilities & TSG_MESSAGING_CAP_SERVICE_MSG != 0;
         self.request_tunnel_message().await?;
-        self.create_channel(&target).await?;
+        self.create_channel(&target, false).await?;
         self.tunnel_target = Some(target);
 
         let channel_context = self
@@ -790,14 +795,14 @@ where
 
     /// Answers a reauthentication message on this separate virtual connection ([MS-TSGU] 3.6.4).
     ///
-    /// The new tunnel names the original one, then is authorized and given a channel; it carries no data.
+    /// The new tunnel names the original one, then authorizes the user and resource without creating a data channel.
     async fn reauthenticate_tunnel(&mut self, tunnel_context: u64, target: &TunnelTarget) -> Result<(), Error> {
         self.create_tunnel(
             TsProxyCreateTunnelRequest::reauthenticate(TSG_CLIENT_CAPABILITIES, tunnel_context),
             target,
         )
         .await?;
-        self.create_channel(target).await
+        self.create_channel(target, true).await
     }
 
     async fn create_tunnel(
@@ -831,7 +836,7 @@ where
         Ok(tunnel)
     }
 
-    async fn create_channel(&mut self, target: &TunnelTarget) -> Result<(), Error> {
+    async fn create_channel(&mut self, target: &TunnelTarget, reauthentication: bool) -> Result<(), Error> {
         let tunnel_context = self
             .tunnel_context
             .ok_or_else(|| Error::new("rpch channel before tunnel", GwErrorKind::Connect))?;
@@ -839,6 +844,10 @@ where
             .encode()
             .map_err(|error| custom_err!("encode create channel", error))?;
         let response = self.call(TSPROXY_CREATE_CHANNEL_OPNUM, &request).await?;
+        if reauthentication {
+            return crate::rpc::tsgu::decode_tsgu_reauthentication_channel_response(&response)
+                .map_err(|error| custom_err!("decode reauthentication resource authorization", error));
+        }
         let channel = decode_tsgu_create_channel_response(&response)
             .map_err(|error| custom_err!("decode create channel", error))?;
         self.channel_context = Some(channel.channel_context);
@@ -971,6 +980,7 @@ where
         Ok(())
     }
 
+    #[cfg(test)]
     async fn read_data(&mut self) -> Result<Bytes, Error> {
         self.ensure_active()?;
         let result = self.read_data_inner().await;
@@ -980,9 +990,11 @@ where
         result
     }
 
+    #[cfg(test)]
     async fn read_data_inner(&mut self) -> Result<Bytes, Error> {
         loop {
             if let Some(data) = self.data.pop_front() {
+                self.buffered_data -= data.len();
                 return Ok(data);
             }
             let pdu = self.read_out_pdu().await?;
@@ -1004,11 +1016,14 @@ where
                 out_successor,
                 ..
             } = self;
+            let OutChannel { receiver, head, .. } = out;
+            let ready = head.is_none();
             let successor_cookies = tokio::select! {
-                pdu = out.read_pdu() => return pdu,
+                cookies = out_response_head(head) => cookies?,
+                pdu = receiver.recv(), if ready => return pdu.unwrap_or_else(|| Err(Error::new("rpch OUT reader stopped", GwErrorKind::Connect))),
                 error = in_monitor.failed() => return Err(error),
                 error = successor_in_failed(in_successor) => return Err(error),
-                head = successor_out_head(out_successor) => head?,
+                cookies = successor_out_head(out_successor) => cookies?,
             };
             self.cookies.update(&successor_cookies)?;
         }
@@ -1044,6 +1059,7 @@ where
                         return Err(Error::new("rpc fault on receive pipe", GwErrorKind::Connect));
                     }
                     self.message_call_id = None;
+                    self.message_responses = RpcAuthenticatedResponseReassembler::new(MAX_MESSAGE_STUB_SIZE);
                     self.messaging = false;
                     if !self.closing {
                         warn!("RD Gateway faulted the message call; administrative messages are disabled");
@@ -1058,8 +1074,16 @@ where
                     self.queue_receive_pipe_response(pdu_len, response).await?;
                     return Ok(None);
                 }
-                let response = self
-                    .responses
+                let is_message = self.message_call_id == Some(response.call_id);
+                if !is_message && self.active_call_id != Some(response.call_id) {
+                    return Err(Error::new("unexpected tsproxy response call ID", GwErrorKind::Decode));
+                }
+                let responses = if is_message {
+                    &mut self.message_responses
+                } else {
+                    &mut self.responses
+                };
+                let response = responses
                     .push_for_context(fragment, 0)
                     .map_err(|error| custom_err!("reassemble tsproxy response", error))?;
                 self.consume_out_pdu(pdu_len).await?;
@@ -1141,6 +1165,14 @@ where
 
     async fn call_inner(&mut self, opnum: u16, stub: &[u8]) -> Result<Vec<u8>, Error> {
         let call_id = self.next_call_id();
+        self.active_call_id = Some(call_id);
+        // CreateTunnel may return both a 24,000-character certificate chain and a consent message.
+        let limit = if opnum == TSPROXY_CREATE_TUNNEL_OPNUM {
+            MAX_MESSAGE_STUB_SIZE + 2 * 24_000
+        } else {
+            MAX_RESPONSE_STUB_SIZE
+        };
+        self.responses = RpcAuthenticatedResponseReassembler::new(limit);
         self.send_call(call_id, opnum, stub).await?;
         loop {
             let pdu = self.read_out_pdu().await?;
@@ -1148,6 +1180,7 @@ where
                 if response_call_id != call_id {
                     return Err(Error::new("unexpected tsproxy response call ID", GwErrorKind::Decode));
                 }
+                self.active_call_id = None;
                 return Ok(response);
             }
         }
@@ -1158,7 +1191,7 @@ where
         pdu_len: usize,
         response: crate::rpc::RpcResponse<'_>,
     ) -> Result<(), Error> {
-        if response.is_last_fragment() && response.stub.len() == 4 {
+        if response.is_last_fragment() {
             let result = decode_tsgu_setup_receive_pipe_final_response(response.stub)
                 .map_err(|error| custom_err!("decode receive-pipe terminal result", error))?;
             if self.closing {
@@ -1179,7 +1212,13 @@ where
                 },
             ));
         }
+        let buffered = self
+            .buffered_data
+            .checked_add(response.stub.len())
+            .filter(|length| *length <= MAX_BUFFERED_DATA)
+            .ok_or_else(|| Error::new("rpch receive buffer exceeded", GwErrorKind::Connect))?;
         self.data.push_back(Bytes::copy_from_slice(response.stub));
+        self.buffered_data = buffered;
         self.consume_out_pdu(pdu_len).await
     }
 
@@ -1368,6 +1407,9 @@ where
             return Err(Error::new("rpch IN body exhausted", GwErrorKind::Connect));
         }
         let result = write_in_pdu(&mut self.input, pdu).await;
+        if result.is_ok() {
+            self.ping.record_send(self.started.elapsed());
+        }
         if result.is_err() {
             self.failed = true;
         }
@@ -1402,17 +1444,14 @@ where
             if self.handle_out_pdu(out_pdu).await?.is_some() {
                 return Err(Error::new("unexpected tsproxy response", GwErrorKind::Decode));
             }
-            if self.data.iter().map(Bytes::len).sum::<usize>() > MAX_BUFFERED_DATA {
-                return Err(Error::new(
-                    "rpch receive buffer exceeded while waiting for send window",
-                    GwErrorKind::Connect,
-                ));
-            }
         }
         self.flow_control
             .sent_rpc_pdu(pdu.len())
             .map_err(|error| custom_err!("account rpch send window", error))?;
         let result = write_in_pdu(&mut self.input, pdu).await;
+        if result.is_ok() {
+            self.ping.record_send(self.started.elapsed());
+        }
         if result.is_err() {
             self.failed = true;
         }
@@ -1444,7 +1483,7 @@ where
         Ok(())
     }
 
-    /// Accepts IN_R1/A4, sends IN_R1/A5 on the predecessor, and makes the successor the default IN channel.
+    /// Accepts IN_R1/A4 or IN_R2/A4, sends IN_R1/A5 on the predecessor, and makes the successor the default IN channel.
     ///
     /// [MS-RPCH] 3.2.2.5.5.
     async fn finish_in_recycling(&mut self, a4: &[u8]) -> Result<(), Error> {
@@ -1570,12 +1609,8 @@ where
         }
 
         let (read, writer) = tokio::io::split(stream);
-        let (channel, head) = OutChannel::successor(read);
-        Ok(OutSuccessor {
-            channel,
-            writer,
-            head: Some(head),
-        })
+        let channel = OutChannel::successor(read, auth);
+        Ok(OutSuccessor { channel, writer })
     }
 
     fn next_call_id(&mut self) -> u32 {
@@ -1593,13 +1628,20 @@ async fn successor_in_failed<In>(successor: &mut Option<(RpchInRequest<WriteHalf
 
 /// Resolves with the cookies of an accepted successor OUT response, or its failure.
 async fn successor_out_head<Out>(successor: &mut Option<OutSuccessor<Out>>) -> Result<Vec<String>, Error> {
-    let Some(head) = successor.as_mut().and_then(|successor| successor.head.as_mut()) else {
+    match successor {
+        Some(successor) => out_response_head(&mut successor.channel.head).await,
+        None => core::future::pending().await,
+    }
+}
+
+async fn out_response_head(
+    head: &mut Option<oneshot::Receiver<Result<Vec<String>, Error>>>,
+) -> Result<Vec<String>, Error> {
+    let Some(receiver) = head.as_mut() else {
         return core::future::pending().await;
     };
-    let result = head.await;
-    if let Some(successor) = successor.as_mut() {
-        successor.head = None;
-    }
+    let result = receiver.await;
+    *head = None;
     result.unwrap_or_else(|_| Err(Error::new("rpch successor OUT reader stopped", GwErrorKind::Connect)))
 }
 
@@ -1948,11 +1990,6 @@ where
     In: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     Provider: RpchStreamProvider<Out, In>,
 {
-    let started = Instant::now();
-    let interval = (session.connection_timeout / 2).max(Duration::from_secs(1));
-    let mut keepalive = tokio::time::interval(interval);
-    keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    keepalive.tick().await;
     let mut reauthentication = None;
 
     loop {
@@ -1968,6 +2005,7 @@ where
         // Inbound data is delivered from its own branch so a reader that stops reading never stalls writes or
         // shutdown; the OUT channel is not read while data waits, which bounds the buffered data.
         let delivering = !session.data.is_empty();
+        let deadline = tokio::time::Instant::from_std(session.started + session.ping.next_ping_time());
         tokio::select! {
             result = reauthentication_finished(&mut reauthentication) => {
                 match result {
@@ -1978,6 +2016,7 @@ where
             permit = received.reserve(), if delivering => {
                 let permit = permit.map_err(|_| Error::new("rpch stream reader closed", GwErrorKind::Connect))?;
                 if let Some(data) = session.data.pop_front() {
+                    session.buffered_data -= data.len();
                     permit.send(Ok(data));
                 }
             }
@@ -2009,8 +2048,8 @@ where
                     return Err(Error::new("unexpected tsproxy response", GwErrorKind::Decode));
                 }
             }
-            _ = keepalive.tick() => {
-                let now = started.elapsed();
+            _ = tokio::time::sleep_until(deadline) => {
+                let now = session.started.elapsed();
                 if session.ping_due(now) {
                     session.send_ping(now).await?;
                 }
@@ -2034,6 +2073,7 @@ fn is_rts_ping(pdu: &[u8]) -> bool {
 struct OutChannel {
     receiver: mpsc::Receiver<Result<Vec<u8>, Error>>,
     reader: JoinHandle<()>,
+    head: Option<oneshot::Receiver<Result<Vec<String>, Error>>>,
 }
 
 /// Accepts an OUT channel response body length in the range [MS-RPCH] 2.1.2.1.4 allows.
@@ -2095,31 +2135,38 @@ impl OutChannel {
         let remaining = validate_out_content_length(content_length)?;
         let (sender, receiver) = mpsc::channel(2);
         let reader = tokio::spawn(async move { read_out_pdus(&mut stream, remaining, &sender).await });
-        Ok(Self { receiver, reader })
+        Ok(Self {
+            receiver,
+            reader,
+            head: None,
+        })
     }
 
     /// Reads a successor OUT channel whose response head arrives after the request body completes.
     ///
     /// The head result, carrying the response cookies, is reported separately so the recycle can fail early.
-    fn successor<S>(mut stream: S) -> (Self, oneshot::Receiver<Result<Vec<String>, Error>>)
+    fn successor<S>(mut stream: S, mut auth: Option<GatewayHttpAuth>) -> Self
     where
         S: AsyncRead + Send + Unpin + 'static,
     {
         let (sender, receiver) = mpsc::channel(2);
         let (head_sender, head) = oneshot::channel();
         let reader = tokio::spawn(async move {
-            let accepted = read_rpch_response_head(&mut stream).await.and_then(|response| {
+            let accepted = async {
+                let response = read_rpch_response_head(&mut stream).await?;
                 if response.status != 200 {
                     return Err(Error::new(
                         "rpch successor OUT channel rejected",
                         GwErrorKind::HttpStatus(response.status),
                     ));
                 }
+                finish_http_auth(&mut auth, &response.www_authenticate).await?;
                 Ok((
                     validate_out_content_length(response.content_length)?,
                     response.set_cookies,
                 ))
-            });
+            }
+            .await;
             match accepted {
                 Ok((remaining, cookies)) => {
                     let _ = head_sender.send(Ok(cookies));
@@ -2136,7 +2183,11 @@ impl OutChannel {
                 }
             }
         });
-        (Self { receiver, reader }, head)
+        Self {
+            receiver,
+            reader,
+            head: Some(head),
+        }
     }
 
     async fn read_pdu(&mut self) -> Result<Vec<u8>, Error> {
@@ -2354,12 +2405,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rpch_session_recomputes_ping_deadline_when_recycling_changes_timeout() {
+        // oracle: spec MS-RPCH §3.2.1.2.2 and §3.2.2.5.5.
+        let (mut session, proxy) = open_session(MockRpchScenario::Echo).await;
+        for timeout in [600_000u32, 120_000] {
+            let successor = RtsCookie::new([0x73; 16]);
+            let mut recycling = session.setup.channel_recycling().expect("recycling");
+            recycling.start_in_recycling(successor).expect("start IN replacement");
+            let a4 = [
+                &[5, 0, 20, 3, 16, 0, 0, 0, 52, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0][..],
+                &13u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
+                &6u32.to_le_bytes(),
+                &1u32.to_le_bytes(),
+                &0u32.to_le_bytes(),
+                &8192u32.to_le_bytes(),
+                &2u32.to_le_bytes(),
+                &timeout.to_le_bytes(),
+            ]
+            .concat();
+            recycling.receive_in_recycle_a4(&a4).expect("IN_R1/A4");
+            recycling
+                .finish_in_recycling(&mut session.flow_control, &mut session.ping)
+                .expect("switch IN");
+            session.ping.record_send(Duration::ZERO);
+            assert_eq!(session.ping.next_ping_time(), Duration::from_millis(u64::from(timeout)));
+        }
+        proxy.abort();
+    }
+
+    #[tokio::test]
+    async fn rpch_session_records_normal_rpc_sends_for_idle_pings() {
+        // oracle: spec MS-RPCH §3.2.1.1.6.2: every sent PDU updates LastPacketSentTimestamp.
+        let (mut session, proxy) = open_session(MockRpchScenario::Echo).await;
+        session.started = Instant::now() - Duration::from_secs(120);
+        session.ping.record_send(Duration::ZERO);
+        assert!(session.ping_due(Duration::from_secs(120)));
+        echo(&mut session, b"active").await;
+        assert!(!session.ping_due(Duration::from_secs(120)));
+        proxy.abort();
+    }
+
+    #[tokio::test]
     async fn rpch_session_handles_ping_and_flow_control_acknowledgements() {
         let (mut session, proxy) = open_session(MockRpchScenario::Echo).await;
         assert!(!session.ping_due(Duration::ZERO));
-        assert!(session.ping_due(Duration::from_secs(120)));
-        session.send_ping(Duration::from_secs(120)).await.expect("send ping");
-        assert!(!session.ping_due(Duration::from_secs(120)));
+        let due = session.ping.next_ping_time();
+        assert!(session.ping_due(due));
+        session.send_ping(due).await.expect("send ping");
+        assert!(!session.ping_due(due));
 
         let data = vec![0; 2 * 1024];
         let data = Bytes::from(data);
@@ -2520,6 +2614,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rpch_session_keeps_cookies_from_a_delayed_successor_head() {
+        // oracle: regression #2202: cookies arriving after OUT_R1/A11 must survive switching the channel.
+        let (mut session, proxy) = open_session(MockRpchScenario::RecycleOutDelayedHead).await;
+        echo(&mut session, b"delayed-head").await;
+        assert!(session.cookies.header().expect("cookies").contains("Rotated=successor"));
+        proxy.abort();
+    }
+
+    #[tokio::test]
+    async fn rpch_session_preserves_delayed_successor_rejection_status() {
+        // oracle: regression #2202: a rejected replacement must expose its HTTP status after the switch.
+        let (mut session, proxy) = open_session(MockRpchScenario::RecycleOutRejectedHead).await;
+        let error = session
+            .send_to_server(Bytes::from_static(b"rejected"))
+            .await
+            .expect_err("rejected successor");
+        assert!(matches!(error.kind(), GwErrorKind::HttpStatus(403)));
+        proxy.abort();
+    }
+
+    #[tokio::test]
     async fn rpch_session_follows_out_r1_recycling() {
         let (mut session, proxy) = open_session(MockRpchScenario::RecycleOutR1).await;
         echo(&mut session, b"across-out-r1").await;
@@ -2669,7 +2784,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rpch_stream_accepts_a_valid_consent_larger_than_32_kib() {
+        // oracle: spec MS-TSGU §2.2.9.2.1.9.1.1: string messages allow 65,536 UTF-16 characters.
+        let (mut stream, proxy) = open_stream(MockRpchScenario::LargeConsent).await;
+        stream.shutdown().await.expect("close after large consent");
+        proxy.abort();
+    }
+
+    #[tokio::test]
+    async fn rpch_stream_dispatches_interleaved_large_message_and_call_responses() {
+        // oracle: spec MS-RPCE §3.3.2.5.2 and MS-TSGU §2.2.9.2.1.9.1.1.
+        let (mut stream, proxy) = open_stream(MockRpchScenario::InterleavedMessage).await;
+        stream.write_all(b"interleaved").await.expect("write beside message");
+        let mut response = [0; 11];
+        stream.read_exact(&mut response).await.expect("read beside message");
+        assert_eq!(&response, b"interleaved");
+        stream.shutdown().await.expect("close with messaging");
+        proxy.abort();
+    }
+
+    #[tokio::test]
+    async fn rpch_stream_discards_partial_message_after_verified_fault() {
+        // oracle: spec MS-RPCE §3.3.2.5.2: independent calls are dispatched by call_id.
+        let (mut stream, proxy) = open_stream(MockRpchScenario::PartialMessageFault).await;
+        stream
+            .write_all(b"after-fault")
+            .await
+            .expect("write after partial message fault");
+        let mut response = [0; 11];
+        stream
+            .read_exact(&mut response)
+            .await
+            .expect("read after partial message fault");
+        assert_eq!(&response, b"after-fault");
+        stream.shutdown().await.expect("close after partial message fault");
+        proxy.abort();
+    }
+
+    #[tokio::test]
+    async fn rpch_session_bounds_receive_data_while_a_call_waits() {
+        // oracle: regression #2202: the receive queue remains bounded while a synchronous call waits.
+        let (mut session, proxy) = open_session(MockRpchScenario::ReceivePipeOverflow).await;
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            session.send_to_server(Bytes::from_static(b"request")),
+        )
+        .await
+        .expect("overflow is reported without waiting for a call response")
+        .expect_err("buffer limit");
+        assert!(error.to_string().contains("receive buffer"));
+        assert!(session.data.iter().map(Bytes::len).sum::<usize>() <= MAX_BUFFERED_DATA);
+        proxy.abort();
+    }
+
+    #[tokio::test]
+    async fn rpch_stream_rejects_a_malformed_receive_pipe_final() {
+        // oracle: spec MS-TSGU §3.6.5.5: a final response contains exactly one four-byte return value.
+        let (mut stream, proxy) = open_stream(MockRpchScenario::InvalidReceivePipeFinal).await;
+        let mut buffer = [0; 8];
+        tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buffer))
+            .await
+            .expect("terminal result")
+            .expect_err("malformed final response is not target data");
+        proxy.abort();
+    }
+
+    #[tokio::test]
+    async fn rpch_stream_rejects_an_unsolicited_partial_call_response() {
+        // oracle: spec MS-RPCE §3.3.2.5.2: responses must belong to an outstanding call.
+        let (mut stream, proxy) = open_stream(MockRpchScenario::UnexpectedResponse).await;
+        let mut buffer = [0; 8];
+        tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buffer))
+            .await
+            .expect("unsolicited response is rejected")
+            .expect_err("unknown call fails before buffering its continuation");
+        proxy.abort();
+    }
+
+    #[tokio::test]
     async fn rpch_stream_answers_reauthentication_on_a_separate_connection() {
+        // oracle: spec MS-TSGU §3.2.6.1.4: reauthentication authorizes resources without creating a channel.
         let (report, mut reauthenticated) = mpsc::unbounded_channel();
         let (mut stream, proxy) = open_stream_reporting_reauth(MockRpchScenario::Reauth, Some(report)).await;
         let tunnel_context = tokio::time::timeout(Duration::from_secs(5), reauthenticated.recv())

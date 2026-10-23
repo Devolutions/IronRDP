@@ -42,6 +42,8 @@ pub(crate) enum MockRpchScenario {
     RecycleOutR1,
     /// The proxy recycles the OUT channel with the OUT_R2 sequence on the first send.
     RecycleOutR2,
+    RecycleOutDelayedHead,
+    RecycleOutRejectedHead,
     /// The proxy fails the IN channel with an RPC-Error response on the first send.
     InHttpError(u32),
     /// The proxy negotiates consent and service messages, sends a consent message with the tunnel, answers the
@@ -50,6 +52,12 @@ pub(crate) enum MockRpchScenario {
     MessageCallFault,
     TamperedMessageCallFault,
     UnsignedMessageCallFault,
+    InterleavedMessage,
+    LargeConsent,
+    PartialMessageFault,
+    ReceivePipeOverflow,
+    InvalidReceivePipeFinal,
+    UnexpectedResponse,
     /// The proxy negotiates reauthentication, answers the first message call with a reauthentication message and
     /// keeps the next one pending until the client cancels it.
     Reauth,
@@ -361,7 +369,15 @@ async fn run_proxy(
             | MockRpchScenario::TamperedMessageCallFault
             | MockRpchScenario::UnsignedMessageCallFault
     );
-    let messaging = matches!(scenario, MockRpchScenario::Messaging | MockRpchScenario::Reauth) || message_call_fault;
+    let interleaved_message = matches!(
+        scenario,
+        MockRpchScenario::InterleavedMessage | MockRpchScenario::PartialMessageFault
+    );
+    let messaging = matches!(
+        scenario,
+        MockRpchScenario::Messaging | MockRpchScenario::Reauth | MockRpchScenario::LargeConsent
+    ) || message_call_fault
+        || interleaved_message;
     let mut message_calls = 0u32;
     let mut pending_message_call = None;
     let mut message_call_cancelled = false;
@@ -492,6 +508,15 @@ async fn run_proxy(
                         return;
                     }
                     receive_pipe_call_id = Some(request_call_id);
+                    if matches!(scenario, MockRpchScenario::UnexpectedResponse) {
+                        let response = rpc_security
+                            .signed_response(0xffff, PFC_FIRST_FRAG, b"unsolicited")
+                            .expect("response");
+                        let _ = write_all(&mut out, &response).await;
+                    }
+                    if matches!(scenario, MockRpchScenario::InvalidReceivePipeFinal) {
+                        let _ = write_response(&mut out, &mut rpc_security, request_call_id, &[0; 8]).await;
+                    }
                     if let Some(result) = receive_pipe_result {
                         if write_response(&mut out, &mut rpc_security, request_call_id, &result.to_le_bytes())
                             .await
@@ -517,7 +542,12 @@ async fn run_proxy(
                             if stub.get(stub.len().saturating_sub(4)..) != Some(0x1fu32.to_le_bytes().as_slice()) {
                                 return;
                             }
-                            create_tunnel_caps_response(&TUNNEL_CONTEXT, 7)
+                            let consent = if matches!(scenario, MockRpchScenario::LargeConsent) {
+                                "c".repeat(20 * 1024)
+                            } else {
+                                CONSENT_MESSAGE.to_owned()
+                            };
+                            create_tunnel_caps_response(&TUNNEL_CONTEXT, 7, &consent)
                         } else {
                             create_tunnel_response(&TUNNEL_CONTEXT, 7)
                         };
@@ -555,6 +585,10 @@ async fn run_proxy(
                                     return;
                                 }
                                 message_calls += 1;
+                                if interleaved_message && message_calls == 1 {
+                                    pending_message_call = Some(request_call_id);
+                                    continue;
+                                }
                                 if message_call_fault {
                                     if message_calls != 1 {
                                         return;
@@ -623,19 +657,73 @@ async fn run_proxy(
                         }
                     }
                     TSPROXY_CREATE_CHANNEL_OPNUM => {
+                        let message = service_message_response(&"x".repeat(20 * 1024));
+                        if interleaved_message {
+                            let first = rpc_security
+                                .signed_response(
+                                    pending_message_call.expect("pending message"),
+                                    PFC_FIRST_FRAG,
+                                    &message[..1024],
+                                )
+                                .expect("first message fragment");
+                            if write_all(&mut out, &first).await.is_err() {
+                                return;
+                            }
+                            if matches!(scenario, MockRpchScenario::PartialMessageFault) {
+                                let fault = rpc_security
+                                    .fault_response(pending_message_call.take().expect("pending message"), true)
+                                    .expect("signed fault");
+                                if write_all(&mut out, &fault).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        let channel_context = if matches!(scenario, MockRpchScenario::ReauthConnection) {
+                            [0; 20]
+                        } else {
+                            CHANNEL_CONTEXT
+                        };
                         if write_response(
                             &mut out,
                             &mut rpc_security,
                             request_call_id,
-                            &create_channel_response(&CHANNEL_CONTEXT, 3),
+                            &create_channel_response(&channel_context, 3),
                         )
                         .await
                         .is_err()
                         {
                             return;
                         }
+                        if matches!(scenario, MockRpchScenario::InterleavedMessage) {
+                            let call = pending_message_call.take().expect("pending message");
+                            for (index, chunk) in message[1024..].chunks(1024).enumerate() {
+                                let end = 1024 + (index + 1) * 1024;
+                                let flags = if message.len() <= end { PFC_LAST_FRAG } else { 0 };
+                                let response = rpc_security
+                                    .signed_response(call, flags, chunk)
+                                    .expect("message continuation");
+                                if write_all(&mut out, &response).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        if matches!(scenario, MockRpchScenario::PartialMessageFault) {
+                            message_call_cancelled = true;
+                        }
                     }
                     TSPROXY_SEND_TO_SERVER_OPNUM => {
+                        if matches!(scenario, MockRpchScenario::ReceivePipeOverflow) {
+                            for index in 0..514 {
+                                let flags = if index == 0 { PFC_FIRST_FRAG } else { 0 };
+                                let response = rpc_security
+                                    .signed_response(receive_pipe_call_id.expect("receive pipe"), flags, &[0; 2 * 1024])
+                                    .expect("receive data");
+                                if write_all(&mut out, &response).await.is_err() {
+                                    return;
+                                }
+                            }
+                            continue;
+                        }
                         let Some(data) = send_to_server_data(&body) else {
                             return;
                         };
@@ -647,12 +735,16 @@ async fn run_proxy(
                         let r2 = match scenario {
                             MockRpchScenario::RecycleOutR1 => Some(false),
                             MockRpchScenario::RecycleOutR2 => Some(true),
+                            MockRpchScenario::RecycleOutDelayedHead | MockRpchScenario::RecycleOutRejectedHead => {
+                                Some(false)
+                            }
                             _ => None,
                         };
                         if let Some(r2) = r2.filter(|_| !out_recycled) {
                             out_recycled = true;
                             let Some(successor) =
-                                recycle_out_channel(&mut out, &mut out_accept, &mut events, active_in, r2).await
+                                recycle_out_channel(&mut out, &mut out_accept, &mut events, active_in, r2, scenario)
+                                    .await
                             else {
                                 return;
                             };
@@ -710,6 +802,11 @@ async fn run_proxy(
                         }
                     }
                     TSPROXY_CLOSE_CHANNEL_OPNUM | TSPROXY_CLOSE_TUNNEL_OPNUM => {
+                        if opnum == TSPROXY_CLOSE_CHANNEL_OPNUM
+                            && matches!(scenario, MockRpchScenario::ReauthConnection)
+                        {
+                            return;
+                        }
                         // The scripted recycle scenarios must have run before the client closes.
                         if matches!(scenario, MockRpchScenario::RecycleIn | MockRpchScenario::RecycleInR2)
                             && !in_recycled
@@ -753,6 +850,7 @@ async fn recycle_out_channel(
     events: &mut mpsc::UnboundedReceiver<InEvent>,
     active_in: usize,
     r2: bool,
+    scenario: MockRpchScenario,
 ) -> Option<DuplexStream> {
     const RTS_FLAG_RECYCLE_CHANNEL: u16 = 0x0004;
     const RTS_FLAG_OUT_CHANNEL: u16 = 0x0010;
@@ -777,12 +875,18 @@ async fn recycle_out_channel(
     }
     let mut a3 = [0; 96];
     successor.read_exact(&mut a3).await.ok()?;
-    write_all(
-        &mut successor,
-        b"HTTP/1.1 200 OK\r\nContent-Type: application/rpc\r\nContent-Length: 1073741824\r\n\r\n",
-    )
-    .await
-    .ok()?;
+    let delayed = matches!(
+        scenario,
+        MockRpchScenario::RecycleOutDelayedHead | MockRpchScenario::RecycleOutRejectedHead
+    );
+    if !delayed {
+        write_all(
+            &mut successor,
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/rpc\r\nContent-Length: 1073741824\r\n\r\n",
+        )
+        .await
+        .ok()?;
+    }
 
     let (a6, a7_flags, a7_count) = if r2 {
         (
@@ -826,6 +930,15 @@ async fn recycle_out_channel(
     } else {
         write_all(predecessor, &rts_pdu_with_flags(0, &ance, 1)).await.ok()?;
         successor.read_exact(&mut trailer).await.ok()?;
+    }
+    if delayed {
+        tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+        let response: &[u8] = if matches!(scenario, MockRpchScenario::RecycleOutRejectedHead) {
+            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"
+        } else {
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/rpc\r\nContent-Length: 1073741824\r\nSet-Cookie: Rotated=successor\r\n\r\n"
+        };
+        write_all(&mut successor, response).await.ok()?;
     }
     Some(successor)
 }
@@ -1019,15 +1132,18 @@ async fn write_fragmented_response(
     call_id: u32,
     stub: &[u8],
 ) -> tokio::io::Result<()> {
-    let split_at = stub.len() / 2;
-    let first = security
-        .signed_response(call_id, PFC_FIRST_FRAG, &stub[..split_at])
-        .expect("test response fits");
-    let second = security
-        .signed_response(call_id, PFC_LAST_FRAG, &stub[split_at..])
-        .expect("test response fits");
-    write_all(stream, &first).await?;
-    write_all(stream, &second).await
+    let chunk_size = (stub.len() / 2).clamp(1, 2048);
+    for (index, chunk) in stub.chunks(chunk_size).enumerate() {
+        let mut flags = if index == 0 { PFC_FIRST_FRAG } else { 0 };
+        if stub.len() <= (index + 1) * chunk_size {
+            flags |= PFC_LAST_FRAG;
+        }
+        let response = security
+            .signed_response(call_id, flags, chunk)
+            .expect("test response fits");
+        write_all(stream, &response).await?;
+    }
+    Ok(())
 }
 
 fn send_to_server_data(body: &[u8]) -> Option<&[u8]> {
@@ -1189,7 +1305,7 @@ fn create_tunnel_response(tunnel_context: &[u8; 20], tunnel_id: u32) -> Vec<u8> 
 
 /// `TSG_PACKET_CAPS_RESPONSE` negotiating every messaging capability and carrying [`CONSENT_MESSAGE`]
 /// ([MS-TSGU] 2.2.9.2.1.6).
-fn create_tunnel_caps_response(tunnel_context: &[u8; 20], tunnel_id: u32) -> Vec<u8> {
+fn create_tunnel_caps_response(tunnel_context: &[u8; 20], tunnel_id: u32, consent: &str) -> Vec<u8> {
     const TSG_PACKET_TYPE_CAPS_RESPONSE: u32 = 0x0000_4350;
     const TSG_ASYNC_MESSAGE_CONSENT: u32 = 1;
     [
@@ -1219,7 +1335,7 @@ fn create_tunnel_caps_response(tunnel_context: &[u8; 20], tunnel_id: u32) -> Vec
         1u32.to_le_bytes().as_slice(),
         1u32.to_le_bytes().as_slice(),
         0x1fu32.to_le_bytes().as_slice(),
-        &string_message(CONSENT_MESSAGE, 0x0002_0014),
+        &string_message(consent, 0x0002_0014),
         tunnel_context,
         tunnel_id.to_le_bytes().as_slice(),
         0u32.to_le_bytes().as_slice(),

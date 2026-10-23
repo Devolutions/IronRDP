@@ -749,6 +749,7 @@ impl RpcNtlmAuth {
     /// managed by the caller for the lifetime of the RPC association.
     /// When header signing was negotiated, the common header, padded body, and security trailer are signed.
     /// Otherwise only the padded body is signed, as required by [MS-RPCE] 3.3.1.5.2.2.
+    /// Any error invalidates an established context, preventing further signing or verification.
     pub fn sign_fragment(
         &mut self,
         fragment: &mut [u8],
@@ -759,6 +760,7 @@ impl RpcNtlmAuth {
         if !self.is_complete() {
             return Err(Error::new("rpc ntlm context is not established", GwErrorKind::Connect));
         }
+        self.state = RpcNtlmAuthState::Failed;
         if authentication.auth_type != RPC_AUTH_TYPE_WINNT
             || authentication.auth_level != RPC_AUTH_LEVEL_PACKET_INTEGRITY
             || authentication.verifier_length != RPC_NTLM_VERIFIER_LENGTH
@@ -808,9 +810,9 @@ impl RpcNtlmAuth {
             SecurityBufferRef::data_buf(&mut signed_data[data_start..data_end]),
         ];
         if let Err(error) = self.ntlm.make_signature(0, &mut buffers, sequence_number) {
-            self.state = RpcNtlmAuthState::Failed;
             return Err(Error::custom("sign rpc ntlm fragment", error));
         }
+        self.state = RpcNtlmAuthState::Established;
         Ok(())
     }
 
@@ -820,6 +822,7 @@ impl RpcNtlmAuth {
     /// managed by the caller for the lifetime of the RPC association.
     /// When header signing was negotiated, the common header, padded body, and security trailer are verified.
     /// Otherwise only the padded body is verified, as required by [MS-RPCE] 3.3.1.5.2.2.
+    /// Any error invalidates an established context, preventing further signing or verification.
     pub fn verify_fragment(
         &mut self,
         fragment: &mut [u8],
@@ -830,6 +833,7 @@ impl RpcNtlmAuth {
         if !self.is_complete() {
             return Err(Error::new("rpc ntlm context is not established", GwErrorKind::Connect));
         }
+        self.state = RpcNtlmAuthState::Failed;
         if authentication.auth_type != RPC_AUTH_TYPE_WINNT
             || authentication.auth_level != RPC_AUTH_LEVEL_PACKET_INTEGRITY
             || authentication.verifier_length != RPC_NTLM_VERIFIER_LENGTH
@@ -879,9 +883,9 @@ impl RpcNtlmAuth {
             SecurityBufferRef::data_buf(&mut signed_data[data_start..data_end]),
         ];
         if let Err(error) = self.ntlm.verify_signature(&mut buffers, sequence_number) {
-            self.state = RpcNtlmAuthState::Failed;
             return Err(Error::custom("verify rpc ntlm fragment", error));
         }
+        self.state = RpcNtlmAuthState::Established;
         Ok(())
     }
 
@@ -3851,6 +3855,19 @@ pub(crate) mod tsgu {
     pub(crate) fn decode_tsgu_create_channel_response(
         source: &[u8],
     ) -> Result<TsProxyCreateChannelResponse, RpcStubError> {
+        decode_tsgu_reauthentication_channel_response(source)?;
+        let channel_context = RpcContextHandle::from_bytes(&source[..RpcContextHandle::SIZE])?.require_non_null()?;
+        let channel_id = read_u32(source, RpcContextHandle::SIZE)?;
+        Ok(TsProxyCreateChannelResponse {
+            channel_context,
+            channel_id,
+        })
+    }
+
+    /// Validates resource authorization on a reauthentication connection, which creates no target channel.
+    ///
+    /// [MS-TSGU] 3.2.6.1.4, "TsProxyCreateChannel (Opnum 4)".
+    pub(crate) fn decode_tsgu_reauthentication_channel_response(source: &[u8]) -> Result<(), RpcStubError> {
         const RESPONSE_SIZE: usize = RpcContextHandle::SIZE /* channelContext */ + 4 /* channelId */ + 4 /* HRESULT */;
         if source.len() != RESPONSE_SIZE {
             return Err(RpcStubError::ResponseLength {
@@ -3858,13 +3875,7 @@ pub(crate) mod tsgu {
                 expected: RESPONSE_SIZE,
             });
         }
-        validate_hresult(read_trailing_hresult(source, RESPONSE_SIZE)?)?;
-        let channel_context = RpcContextHandle::from_bytes(&source[..RpcContextHandle::SIZE])?.require_non_null()?;
-        let channel_id = read_u32(source, RpcContextHandle::SIZE)?;
-        Ok(TsProxyCreateChannelResponse {
-            channel_context,
-            channel_id,
-        })
+        validate_hresult(read_trailing_hresult(source, RESPONSE_SIZE)?)
     }
 
     fn encode_ndr_pointer(output: &mut Vec<u8>, index: u32) {
@@ -6000,6 +6011,15 @@ pub struct RpchPingSchedule {
 }
 
 impl RpchPingSchedule {
+    pub(crate) fn next_ping_time(&self) -> Duration {
+        let interval = if self.keepalive_interval.is_zero() {
+            self.connection_timeout
+        } else {
+            self.connection_timeout.min(self.keepalive_interval / 2)
+        };
+        self.last_send.saturating_add(interval)
+    }
+
     const fn new(connection_timeout: Duration, keepalive_interval: Duration, now: Duration) -> Self {
         Self {
             connection_timeout,

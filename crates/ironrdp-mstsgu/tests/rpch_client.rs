@@ -1,12 +1,16 @@
 #![allow(unused_crate_dependencies)]
 
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 use core::time::Duration;
 
 use ironrdp_mstsgu::rpc::{
-    PTYPE_REQUEST, PTYPE_RESPONSE, PTYPE_RTS, RPC_AUTH_LEVEL_PACKET_INTEGRITY, RPC_AUTH_TYPE_WINNT,
-    RPC_NTLM_VERIFIER_LENGTH, RPC_SECURITY_TRAILER_SIZE, RpcAuthenticationInfo, RpcNtlmAuth, RtsCookie, RtsDestination,
-    RtsFlowControlAck, decode_rts_flow_control_ack_with_destination, encode_rpc_response,
-    encode_rts_flow_control_ack_with_destination, encode_rts_ping, prepare_rpc_authenticated_pdu,
+    PTYPE_REQUEST, PTYPE_RESPONSE, RPC_AUTH_LEVEL_PACKET_INTEGRITY, RPC_AUTH_TYPE_WINNT, RPC_NTLM_VERIFIER_LENGTH,
+    RPC_SECURITY_TRAILER_SIZE, RpcAuthenticationInfo, RpcNtlmAuth, prepare_rpc_authenticated_pdu,
+};
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
+use ironrdp_mstsgu::rpc::{
+    PTYPE_RTS, RtsCookie, RtsDestination, RtsFlowControlAck, decode_rts_flow_control_ack_with_destination,
+    encode_rpc_response, encode_rts_flow_control_ack_with_destination, encode_rts_ping,
 };
 use ironrdp_mstsgu::{GwConnectTarget, GwErrorKind, RpchClient};
 use ironrdp_tls::CertificateValidation;
@@ -14,13 +18,19 @@ use sspi::{
     AuthIdentity, BufferType, CredentialUse, DataRepresentation, Ntlm, SecurityBuffer, SecurityBufferRef,
     ServerRequestFlags, Sspi as _, SspiImpl as _, Username,
 };
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _};
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 use tokio::net::{TcpListener, TcpStream};
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 use tokio_native_tls::native_tls::{Identity, TlsAcceptor as NativeTlsAcceptor};
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 use tokio_native_tls::{TlsAcceptor, TlsStream};
 
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 type ServerStream = TlsStream<TcpStream>;
 
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 #[tokio::test]
 async fn live_rpch_authenticates_both_channels_and_preserves_caller_verifiers() {
     let (mut client, mut input, mut out, _) = live_channel(8192).await;
@@ -51,6 +61,7 @@ async fn live_rpch_authenticates_both_channels_and_preserves_caller_verifiers() 
     );
 }
 
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 #[tokio::test]
 async fn live_rpch_rejects_unsigned_malformed_and_batched_requests_before_writing() {
     let (mut client, mut input, _out, _) = live_channel(8192).await;
@@ -85,6 +96,7 @@ async fn live_rpch_rejects_unsigned_malformed_and_batched_requests_before_writin
     assert_eq!(read_pdu(&mut input).await, encode_rts_ping().expect("ping"));
 }
 
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 #[tokio::test]
 async fn live_rpch_respects_send_credit_and_excludes_rts_from_accounting() {
     let fragment = authenticated_fragment(PTYPE_REQUEST, 8192);
@@ -113,6 +125,7 @@ async fn live_rpch_respects_send_credit_and_excludes_rts_from_accounting() {
     assert_eq!(read_pdu(&mut input).await, fragment);
 }
 
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 #[tokio::test]
 async fn live_rpch_releases_receive_credit_and_stops_at_declared_out_body() {
     let (mut client, mut input, mut out, _) = live_channel(256 * 1024).await;
@@ -133,6 +146,7 @@ async fn live_rpch_releases_receive_credit_and_stops_at_declared_out_body() {
     assert!(error.to_string().contains("exceeds OUT body"), "{error}");
 }
 
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 #[tokio::test]
 async fn live_rpch_stops_at_in_body_limit_without_recycling() {
     let (mut client, mut input, _out, _) = live_channel(256 * 1024).await;
@@ -147,6 +161,7 @@ async fn live_rpch_stops_at_in_body_limit_without_recycling() {
     assert_eq!(client.send_available_window(), credit);
 }
 
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 #[tokio::test]
 async fn live_rpch_rejects_malformed_peer_headers_and_unsupported_rts() {
     for variant in 0..3 {
@@ -167,8 +182,7 @@ async fn live_rpch_rejects_malformed_peer_headers_and_unsupported_rts() {
     }
 }
 
-#[test]
-fn rpc_ntlm_context_signs_and_verifies_integrity_fragments() {
+fn established_rpc_ntlm_contexts() -> (RpcNtlmAuth, Ntlm) {
     let username = "rpch-test-user";
     let password = "rpch-test-password";
     let mut client = RpcNtlmAuth::new(username, password).expect("create client NTLM context");
@@ -234,13 +248,13 @@ fn rpc_ntlm_context_signs_and_verifies_integrity_fragments() {
     assert_eq!(response.status, sspi::SecurityStatus::CompleteNeeded);
     server.complete_auth_token(&mut []).expect("complete NTLM context");
     assert!(client.is_complete());
+    (client, server)
+}
 
-    let authentication = RpcAuthenticationInfo {
-        auth_type: RPC_AUTH_TYPE_WINNT,
-        auth_level: RPC_AUTH_LEVEL_PACKET_INTEGRITY,
-        auth_context_id: 1,
-        verifier_length: RPC_NTLM_VERIFIER_LENGTH,
-    };
+#[test]
+fn rpc_ntlm_context_signs_and_verifies_integrity_fragments() {
+    let (mut client, mut server) = established_rpc_ntlm_contexts();
+    let authentication = ntlm_authentication();
     let mut last_response = Vec::new();
     for (sequence_number, header_signing) in [(0, false), (1, true)] {
         let mut request = rpc_fragment(PTYPE_REQUEST, authentication, b"request");
@@ -277,6 +291,105 @@ fn rpc_ntlm_context_signs_and_verifies_integrity_fragments() {
     );
 }
 
+#[test]
+fn rpc_ntlm_signing_malformed_header_poisons_established_context() {
+    // oracle: regression #2202 requires fail-closed fragment validation.
+    let (mut client, mut server) = established_rpc_ntlm_contexts();
+    let authentication = ntlm_authentication();
+    let mut request = rpc_fragment(PTYPE_REQUEST, authentication, b"request");
+    request[0] = 4;
+    assert!(client.sign_fragment(&mut request, authentication, 0, true).is_err());
+    assert_failed_context_refuses_fragments(&mut client, &mut server, authentication);
+}
+
+#[test]
+fn rpc_ntlm_verifying_malformed_trailer_poisons_established_context() {
+    // oracle: regression #2202 requires fail-closed fragment validation.
+    let (mut client, mut server) = established_rpc_ntlm_contexts();
+    let authentication = ntlm_authentication();
+    let mut response = rpc_fragment(PTYPE_RESPONSE, authentication, b"response");
+    let trailer_offset = response.len() - usize::from(RPC_NTLM_VERIFIER_LENGTH) - RPC_SECURITY_TRAILER_SIZE;
+    response[trailer_offset + 2] = u8::MAX;
+    assert!(client.verify_fragment(&mut response, authentication, 0, true).is_err());
+    assert_failed_context_refuses_fragments(&mut client, &mut server, authentication);
+}
+
+#[test]
+fn rpc_ntlm_signing_mismatched_trailer_poisons_established_context() {
+    // oracle: regression #2202 requires fail-closed fragment validation.
+    let (mut client, mut server) = established_rpc_ntlm_contexts();
+    let authentication = ntlm_authentication();
+    let mut request = rpc_fragment(PTYPE_REQUEST, authentication, b"request");
+    let trailer_offset = request.len() - usize::from(RPC_NTLM_VERIFIER_LENGTH) - RPC_SECURITY_TRAILER_SIZE;
+    request[trailer_offset + 4..trailer_offset + 8].copy_from_slice(&2u32.to_le_bytes());
+    assert!(client.sign_fragment(&mut request, authentication, 0, true).is_err());
+    assert_failed_context_refuses_fragments(&mut client, &mut server, authentication);
+}
+
+#[test]
+fn rpc_ntlm_verifying_mismatched_trailer_poisons_established_context() {
+    // oracle: regression #2202 requires fail-closed fragment validation.
+    let (mut client, mut server) = established_rpc_ntlm_contexts();
+    let authentication = ntlm_authentication();
+    let mut response = rpc_fragment(PTYPE_RESPONSE, authentication, b"response");
+    let trailer_offset = response.len() - usize::from(RPC_NTLM_VERIFIER_LENGTH) - RPC_SECURITY_TRAILER_SIZE;
+    response[trailer_offset + 4..trailer_offset + 8].copy_from_slice(&2u32.to_le_bytes());
+    assert!(client.verify_fragment(&mut response, authentication, 0, true).is_err());
+    assert_failed_context_refuses_fragments(&mut client, &mut server, authentication);
+}
+
+#[test]
+fn rpc_ntlm_signing_invalid_authentication_poisons_established_context() {
+    // oracle: regression #2202 requires fail-closed fragment validation.
+    let (mut client, mut server) = established_rpc_ntlm_contexts();
+    let authentication = ntlm_authentication();
+    let mut request = rpc_fragment(PTYPE_REQUEST, authentication, b"request");
+    let invalid_authentication = RpcAuthenticationInfo {
+        verifier_length: 15,
+        ..authentication
+    };
+    assert!(
+        client
+            .sign_fragment(&mut request, invalid_authentication, 0, true)
+            .is_err()
+    );
+    assert_failed_context_refuses_fragments(&mut client, &mut server, authentication);
+}
+
+#[test]
+fn rpc_ntlm_verifying_invalid_authentication_poisons_established_context() {
+    // oracle: regression #2202 requires fail-closed fragment validation.
+    let (mut client, mut server) = established_rpc_ntlm_contexts();
+    let authentication = ntlm_authentication();
+    let mut response = rpc_fragment(PTYPE_RESPONSE, authentication, b"response");
+    let invalid_authentication = RpcAuthenticationInfo {
+        auth_level: 4,
+        ..authentication
+    };
+    assert!(
+        client
+            .verify_fragment(&mut response, invalid_authentication, 0, true)
+            .is_err()
+    );
+    assert_failed_context_refuses_fragments(&mut client, &mut server, authentication);
+}
+
+fn assert_failed_context_refuses_fragments(
+    client: &mut RpcNtlmAuth,
+    server: &mut Ntlm,
+    authentication: RpcAuthenticationInfo,
+) {
+    assert!(!client.is_complete(), "invalid fragment must poison the NTLM context");
+    let mut request = rpc_fragment(PTYPE_REQUEST, authentication, b"valid request");
+    assert!(client.sign_fragment(&mut request, authentication, 0, true).is_err());
+    let mut response = rpc_fragment(PTYPE_RESPONSE, authentication, b"valid response");
+    server_sign_fragment(server, &mut response, 0, true);
+    assert!(
+        client.verify_fragment(&mut response, authentication, 0, true).is_err(),
+        "a failed NTLM context must reject even a correctly signed response"
+    );
+}
+
 #[tokio::test]
 async fn live_rpch_validates_configuration_before_connecting() {
     let target = gateway_target(1);
@@ -294,6 +407,7 @@ async fn live_rpch_validates_configuration_before_connecting() {
     assert!(matches!(result, Err(error) if matches!(error.kind(), GwErrorKind::InvalidCertificateValidation)));
 }
 
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 #[tokio::test]
 async fn live_rpch_strict_tls_rejects_self_signed_gateway() {
     let (listener, acceptor) = tls_listener().await;
@@ -302,10 +416,18 @@ async fn live_rpch_strict_tls_rejects_self_signed_gateway() {
         let (stream, _) = listener.accept().await.expect("accept TLS");
         let _ = acceptor.accept(stream).await;
     };
-    let (result, ()) = tokio::join!(RpchClient::connect(&target, "backend:3388"), server);
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::try_join!(RpchClient::connect(&target, "backend:3388"), async {
+            server.await;
+            Ok(())
+        })
+    })
+    .await
+    .expect("bounded strict TLS rejection");
     assert!(matches!(result, Err(error) if error.to_string().contains("tls connect")));
 }
 
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 async fn live_channel(peer_window: u32) -> (RpchClient, ServerStream, ServerStream, RtsCookie) {
     let (listener, acceptor) = tls_listener().await;
     let port = listener.local_addr().expect("address").port();
@@ -317,7 +439,7 @@ async fn live_channel(peer_window: u32) -> (RpchClient, ServerStream, ServerStre
         let mut out = acceptor.accept(out).await.expect("OUT TLS");
         let head = read_head(&mut input).await;
         assert!(head.starts_with("RPC_IN_DATA /rpc/rpcproxy.dll?backend:3388 HTTP/1.1\r\n"));
-        assert!(head.contains(&format!("Host: localhost:{port}\r\n")));
+        assert!(head.contains(&format!("Host: 127.0.0.1:{port}\r\n")));
         assert!(head.contains("Content-Length: 0\r\n"));
         assert!(!head.contains("Expect:"));
         assert!(!head.contains("Authorization:"));
@@ -365,10 +487,17 @@ async fn live_channel(peer_window: u32) -> (RpchClient, ServerStream, ServerStre
         CertificateValidation::DangerouslyAcceptInvalidCertificate,
         None,
     );
-    let (client, (input, out, cookie)) = tokio::join!(connect, server);
-    (client.expect("live channel"), input, out, cookie)
+    let (client, (input, out, cookie)) = tokio::time::timeout(
+        Duration::from_secs(10),
+        Box::pin(async move { tokio::try_join!(connect, async { Ok(server.await) }) }),
+    )
+    .await
+    .expect("bounded loopback channel establishment")
+    .expect("live channel");
+    (client, input, out, cookie)
 }
 
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 fn rts(words: &[u32], commands: u16) -> Vec<u8> {
     let mut pdu = vec![5, 0, PTYPE_RTS, 3, 0x10, 0, 0, 0];
     pdu.extend_from_slice(&u16::try_from(20 + words.len() * 4).expect("RTS length").to_le_bytes());
@@ -381,6 +510,7 @@ fn rts(words: &[u32], commands: u16) -> Vec<u8> {
     pdu
 }
 
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 fn authenticated_fragment(ptype: u8, body_length: usize) -> Vec<u8> {
     prepare_rpc_authenticated_pdu(
         ptype,
@@ -404,6 +534,15 @@ fn rpc_fragment(ptype: u8, authentication: RpcAuthenticationInfo, body: &[u8]) -
         .expect("prepare integrity PDU")
         .finish(&[0; 16])
         .expect("reserve integrity verifier")
+}
+
+fn ntlm_authentication() -> RpcAuthenticationInfo {
+    RpcAuthenticationInfo {
+        auth_type: RPC_AUTH_TYPE_WINNT,
+        auth_level: RPC_AUTH_LEVEL_PACKET_INTEGRITY,
+        auth_context_id: 1,
+        verifier_length: RPC_NTLM_VERIFIER_LENGTH,
+    }
 }
 
 fn server_sign_fragment(server: &mut Ntlm, fragment: &mut [u8], sequence_number: u32, header_signing: bool) {
@@ -457,6 +596,7 @@ fn server_verify_fragment(server: &mut Ntlm, fragment: &mut [u8], sequence_numbe
         .expect("verify client signature");
 }
 
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 async fn read_head<S: AsyncRead + Unpin>(stream: &mut S) -> String {
     let mut bytes = Vec::new();
     while !bytes.ends_with(b"\r\n\r\n") {
@@ -466,6 +606,7 @@ async fn read_head<S: AsyncRead + Unpin>(stream: &mut S) -> String {
     String::from_utf8(bytes).expect("request headers")
 }
 
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 async fn read_pdu<S: AsyncRead + Unpin>(stream: &mut S) -> Vec<u8> {
     let mut header = [0; 16];
     stream.read_exact(&mut header).await.expect("RPC header");
@@ -477,6 +618,7 @@ async fn read_pdu<S: AsyncRead + Unpin>(stream: &mut S) -> Vec<u8> {
     pdu
 }
 
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 async fn tls_listener() -> (TcpListener, TlsAcceptor) {
     let identity = Identity::from_pkcs8(
         include_bytes!("../../ironrdp-tls/tests/certs/server-cert.pem"),
@@ -490,7 +632,7 @@ async fn tls_listener() -> (TcpListener, TlsAcceptor) {
 
 fn gateway_target(port: u16) -> GwConnectTarget {
     GwConnectTarget {
-        gw_endpoint: format!("localhost:{port}"),
+        gw_endpoint: format!("127.0.0.1:{port}"),
         gw_user: "user".to_owned(),
         gw_pass: "pass".to_owned(),
         smart_card: None,

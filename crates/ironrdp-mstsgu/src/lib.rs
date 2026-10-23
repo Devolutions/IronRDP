@@ -16,13 +16,6 @@ mod proto;
 #[doc(hidden)]
 pub mod rpc;
 mod rpc_transport;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "authenticated RPC session orchestration is not yet wired into a live client"
-    )
-)]
 mod rpch;
 mod rpch_client;
 #[cfg(feature = "test-support")]

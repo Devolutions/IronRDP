@@ -43,10 +43,11 @@ It opens a successor IN channel before the default one runs out, accepts IN_R1 a
 Only RPC PDUs count against the flow-control windows; RTS PDUs do not.
 Cookies set on any channel response are sent on later channel requests so a load balancer keeps the virtual connection on one proxy.
 The IN channel response is watched for the whole session; an `RPC Error` status ends the stream with the gateway's error code.
-Unexpected RTS sequences, a rejected replacement channel or a buffered-data overflow while waiting for send credit end the stream with an error.
+Unexpected RTS sequences, a rejected replacement channel or more than 1 MiB of queued target data end the stream with an error, including while waiting for an RPC response.
 It negotiates TS Proxy administrative messaging and keeps one `TsProxyMakeTunnelCall` pending to receive service, consent and reauthentication messages.
 Consent messages are accepted and service messages are logged.
-A reauthentication message is answered on a separate authenticated virtual connection that sends the reauthentication tunnel context, while the data path stays open.
+A reauthentication message is answered on a separate authenticated virtual connection that sends the reauthentication tunnel context and repeats user and resource authorization without opening another data channel.
+The original data path stays open.
 A failed message call disables messaging without ending the session.
 It closes the TS Proxy channel, cancels the pending message call and closes the tunnel on graceful shutdown; an I/O or integrity error poisons the session, while dropping the stream closes its sockets without a close handshake.
 There is no automatic HTTP/WebSocket-to-RPCH fallback.
