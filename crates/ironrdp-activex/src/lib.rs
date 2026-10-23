@@ -28,6 +28,12 @@ mod mstsc;
 #[cfg(windows)]
 mod pen;
 #[cfg(windows)]
+mod rail_icons;
+#[cfg(windows)]
+mod rail_tray;
+#[cfg(windows)]
+mod rail_windows;
+#[cfg(windows)]
 mod registration;
 #[cfg(windows)]
 mod rpc;
