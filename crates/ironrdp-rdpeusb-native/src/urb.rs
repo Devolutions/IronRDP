@@ -64,6 +64,9 @@ const PIPE_HANDLE_TAG: PipeHandle = 0x0003_0000;
 /// `USBD_PORT_ENABLED | USBD_PORT_CONNECTED`, returned for `IOCTL_INTERNAL_USB_GET_PORT_STATUS`.
 const PORT_STATUS_ENABLED_CONNECTED: u32 = 0x0000_0003;
 
+/// `USBD_TRANSFER_DIRECTION_IN` transfer flag.
+const USBD_TRANSFER_DIRECTION_IN: u32 = 0x0000_0001;
+
 /// `DeviceTextDescription` from the WDK `DEVICE_TEXT_TYPE` enumeration.
 const DEVICE_TEXT_DESCRIPTION: u32 = 0;
 /// `DeviceTextLocationInformation` from the WDK `DEVICE_TEXT_TYPE` enumeration.
@@ -261,6 +264,21 @@ pub(crate) fn translate_in(packet: TransferInPacket) -> UsbRequest {
             None => UsbRequest::Reject(usbd_status::INVALID_PARAMETER),
         },
         TsUrbInKind::VendorClassReq(request) => match (function_kind(func), function_recipient(func)) {
+            // Windows also submits OUT requests without a data stage as TRANSFER_IN_REQUESTs, with
+            // transfer flags that keep their direction.
+            (Some(kind), Some(recipient)) if request.transfer_flags & USBD_TRANSFER_DIRECTION_IN == 0 => {
+                UsbRequest::Control {
+                    setup: SetupPacket {
+                        request_type: RequestType::new(Direction::Out, kind, recipient),
+                        request: request.request,
+                        value: request.value,
+                        index: request.index,
+                        length: 0,
+                    },
+                    data: Vec::new(),
+                    timeout: DEFAULT_CONTROL_TIMEOUT,
+                }
+            }
             (Some(kind), Some(recipient)) => UsbRequest::Control {
                 setup: SetupPacket {
                     request_type: RequestType::new(Direction::In, kind, recipient),
@@ -1020,6 +1038,19 @@ mod tests {
         ));
 
         assert_eq!(vendor_in, control(0xc3, 0x01, 0x0002, 0x0003, 8));
+
+        // HID SET_IDLE, an OUT request without data that Windows submits as a TRANSFER_IN_REQUEST.
+        let set_idle = translate_in(transfer_in(
+            TsUrbInKind::VendorClassReq(TsUrbControlVendorClassRequest {
+                transfer_flags: 0,
+                request: 0x0a,
+                value: 0x0000,
+                index: 0x0001,
+            }),
+            UrbFunction::URB_FUNCTION_CLASS_INTERFACE,
+            0,
+        ));
+        assert_eq!(set_idle, control(0x21, 0x0a, 0x0000, 0x0001, 0));
         assert_eq!(
             class_out,
             UsbRequest::Control {
