@@ -4,7 +4,7 @@ use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu,
 use ironrdp_pdu::{Encode as _, WriteCursor};
 
 // this is the maximum amount of data (not including headers) we can send in a single TS_FP_UPDATE_PDU
-const MAX_FASTPATH_UPDATE_SIZE: usize = 16_374;
+pub(crate) const MAX_FASTPATH_UPDATE_SIZE: usize = 16_374;
 
 const FASTPATH_HEADER_SIZE: usize = 6;
 
@@ -17,7 +17,7 @@ const FASTPATH_HEADER_SIZE: usize = 6;
     clippy::partial_pub_fields,
     reason = "public field is not a part of the public API and is used by benchmarks"
 )]
-#[cfg_attr(feature = "__bench", visibility::make(pub))]
+#[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
 pub(crate) struct UpdateFragmenter {
     code: UpdateCode,
     index: usize,

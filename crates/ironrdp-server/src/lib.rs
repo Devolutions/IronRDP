@@ -33,6 +33,8 @@ pub use display::{
     RGBAPointer, RdpServerDisplay, RdpServerDisplayUpdates,
 };
 pub use echo::{EchoDvcBridge, EchoRoundTripMeasurement, EchoServerHandle, EchoServerMessage};
+#[cfg(feature = "__test")]
+pub use encoder::{UpdateEncoder, UpdateEncoderCodecs};
 pub use error::{ServerError, ServerErrorExt, ServerErrorKind, ServerResult, ServerResultExt};
 #[cfg(feature = "egfx")]
 pub use gfx::{EgfxServerMessage, GfxDvcBridge, GfxServerFactory, GfxServerHandle};
@@ -56,6 +58,8 @@ pub use rdpei::{
 pub use server::autodetect_response_from_sub_header;
 #[cfg(all(feature = "__test", feature = "egfx"))]
 pub use server::autodetect_sub_header;
+#[cfg(feature = "__test")]
+pub use server::client_max_request_size;
 pub use server::{
     AuthenticatedConnection, AutoReconnectCookieHandle, BoundConnection, ConnectionBinder, ConnectionHandler,
     ConnectionInfo, ConnectionPolicy, ConnectionSource, CredentialDecision, CredentialValidationError,

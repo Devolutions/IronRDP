@@ -16,6 +16,7 @@ use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, Surfa
 use tracing::{debug, warn};
 
 use self::bitmap::BitmapEncoder;
+pub(crate) use self::fast_path::MAX_FASTPATH_UPDATE_SIZE;
 use self::rfx::RfxEncoder;
 use super::BitmapUpdate;
 use crate::error::{ServerError, ServerErrorExt as _, ServerResult, ServerResultExt as _};
@@ -46,7 +47,7 @@ impl CodecId {
     }
 }
 
-#[cfg_attr(feature = "__bench", visibility::make(pub))]
+#[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
 #[derive(Debug)]
 pub(crate) struct UpdateEncoderCodecs {
     remotefx: Option<(EntropyBits, u8)>,
@@ -65,7 +66,7 @@ pub(crate) struct UpdateEncoderCodecs {
 }
 
 impl UpdateEncoderCodecs {
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
     pub(crate) fn new() -> Self {
         Self {
             remotefx: None,
@@ -79,7 +80,7 @@ impl UpdateEncoderCodecs {
         }
     }
 
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
     pub(crate) fn set_remotefx(&mut self, remotefx: Option<(EntropyBits, u8)>) {
         self.remotefx = remotefx
     }
@@ -88,19 +89,19 @@ impl UpdateEncoderCodecs {
     /// Has no effect unless `set_remotefx` also selects RemoteFX; kept
     /// separate because quantization is server policy, not part of codec
     /// selection.
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
     pub(crate) fn set_remotefx_quant(&mut self, quant: Quant) {
         self.remotefx_quant = quant
     }
 
     #[cfg(feature = "qoi")]
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
     pub(crate) fn set_qoi(&mut self, qoi: Option<u8>) {
         self.qoi = qoi
     }
 
     #[cfg(feature = "qoiz")]
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
     pub(crate) fn set_qoiz(&mut self, qoiz: Option<u8>) {
         self.qoiz = qoiz
     }
@@ -108,7 +109,7 @@ impl UpdateEncoderCodecs {
     /// Record the negotiated NsCodec codec id and color-loss level so the
     /// encoder selection path can build an `NsCodecHandler` for this session.
     #[cfg(feature = "nscodec")]
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
     pub(crate) fn set_nscodec(&mut self, nscodec: Option<(u8, u8)>) {
         self.nscodec = nscodec
     }
@@ -120,7 +121,7 @@ impl Default for UpdateEncoderCodecs {
     }
 }
 
-#[cfg_attr(feature = "__bench", visibility::make(pub))]
+#[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
 pub(crate) struct UpdateEncoder {
     desktop_size: DesktopSize,
     framebuffer: Option<Framebuffer>,
@@ -151,7 +152,7 @@ impl fmt::Debug for UpdateEncoder {
 }
 
 impl UpdateEncoder {
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
     pub(crate) fn new(
         desktop_size: DesktopSize,
         surface_flags: CmdFlags,
@@ -226,7 +227,7 @@ impl UpdateEncoder {
             .contains(LargePointerSupportFlags::UP_TO_384X384_PIXELS)
     }
 
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
     pub(crate) fn update(&mut self, update: DisplayUpdate) -> EncoderIter<'_> {
         EncoderIter {
             encoder: self,
@@ -370,7 +371,7 @@ impl UpdateEncoder {
         // MultifragmentUpdate reassembly buffer.
         let mut tiled = Vec::with_capacity(diffs.len());
         for rect in diffs {
-            if rect.width * rect.height * 4 <= self.max_request_size {
+            if rect.width * rect.height * 4 <= self.max_tile_bytes() {
                 tiled.push(rect);
             } else {
                 let rects = self.split_diff(rect);
@@ -380,19 +381,29 @@ impl UpdateEncoder {
         tiled
     }
 
-    /// Split a rect into tiles that fit within `max_request_size`.
+    /// Uncompressed size a tile may have so that its encoded update fits `max_request_size`.
+    ///
+    /// A tile is sized before it is encoded and cannot be re-encoded smaller afterwards
+    /// (RemoteFX and QOIZ keep state across updates), so room is held back for what encoding
+    /// adds: the update and bitmap headers (tens of bytes; raw and QOI output is otherwise
+    /// no larger than the pixels, and the other codecs compress).
+    fn max_tile_bytes(&self) -> usize {
+        self.max_request_size - self.max_request_size / 64
+    }
+
+    /// Split a rect into tiles that fit within `max_tile_bytes`.
     /// Splits by height first, then by width within each horizontal strip.
     fn split_diff(&self, rect: Rect) -> Vec<Rect> {
         let mut rects = Vec::new();
 
-        let max_height = (self.max_request_size / (rect.width * 4)).max(1);
+        let max_height = (self.max_tile_bytes() / (rect.width * 4)).max(1);
         let mut y = rect.y;
         let y_end = rect.y + rect.height;
         while y < y_end {
             let h = (y_end - y).min(max_height);
             // Width splitting is unlikely in practice (would require
             // max_request_size < ~256 KB), but ensures correctness.
-            let max_width = (self.max_request_size / (h * 4)).max(1);
+            let max_width = (self.max_tile_bytes() / (h * 4)).max(1);
             let mut x = rect.x;
             let x_end = rect.x + rect.width;
             while x < x_end {
@@ -456,14 +467,14 @@ enum State {
     Ended,
 }
 
-#[cfg_attr(feature = "__bench", visibility::make(pub))]
+#[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
 pub(crate) struct EncoderIter<'a> {
     encoder: &'a mut UpdateEncoder,
     state: State,
 }
 
 impl EncoderIter<'_> {
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
     pub(crate) async fn next(&mut self) -> Option<ServerResult<UpdateFragmenter>> {
         loop {
             let state = core::mem::take(&mut self.state);
@@ -611,7 +622,23 @@ impl EncoderIter<'_> {
                 State::Ended => return None,
             };
 
-            return Some(res);
+            // The tiling allowance is an estimate, not a bound for every codec or
+            // pointer shape. Never send a fragmented update that could overflow the
+            // client's negotiated reassembly buffer, even if encoding expands it.
+            return Some(res.and_then(|update| {
+                if update.data.len() > encoder.max_request_size {
+                    Err(ServerError::reason(
+                        "fast-path update",
+                        format!(
+                            "encoded update of {} bytes exceeds negotiated maximum of {} bytes",
+                            update.data.len(),
+                            encoder.max_request_size
+                        ),
+                    ))
+                } else {
+                    Ok(update)
+                }
+            }));
         }
     }
 }
