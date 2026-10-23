@@ -2748,10 +2748,10 @@ where
     #[cfg(not(feature = "rdpdr"))]
     let rdpdr_policy = RdpdrDevicePolicy::ALLOW_ALL;
     #[cfg(not(any(feature = "clipboard", feature = "rdpdr")))]
-    let _ = match tunnel_policy {
-        GatewayTunnelPolicy::Http(policy) => policy.redirection_flags.is_some(),
-        GatewayTunnelPolicy::Rpch(flags) => flags.enable_all,
-    };
+    match tunnel_policy {
+        GatewayTunnelPolicy::Http(_policy) => {}
+        GatewayTunnelPolicy::Rpch(_flags) => {}
+    }
 
     let framed = ironrdp_tokio::TokioFramed::new(gw_stream);
 

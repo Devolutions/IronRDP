@@ -2633,6 +2633,9 @@ fn level_from_compression_type(ty: ironrdp_pdu::rdp::client_info::CompressionTyp
 /// Authenticated RPCH requires the IronRDP-specific `ironrdp_gatewayrpch:i:1` opt-in.
 #[cfg(feature = "gateway")]
 fn gateway_transport_kind(ps: &PropertySet, endpoint: &str, prefer_direct: bool) -> anyhow::Result<TransportKind> {
+    if ps.get::<&str>("ironrdp_gatewayrpch").is_some() {
+        anyhow::bail!("invalid 'ironrdp_gatewayrpch': expected integer 0 or 1");
+    }
     let endpoint = endpoint.to_owned();
     match ps.get::<i64>("ironrdp_gatewayrpch") {
         None | Some(0) => Ok(TransportKind::Gateway {
@@ -2785,16 +2788,41 @@ mod tests {
     }
 
     #[cfg(feature = "gateway")]
-    #[test]
-    fn rpch_gateway_property_opt_in() {
+    fn gateway_test_properties() -> ironrdp_propertyset::PropertySet {
         let mut properties = ironrdp_propertyset::PropertySet::new();
         properties.insert("gatewayhostname", "gateway.example:443");
         properties.insert("gatewayusagemethod", 1i64);
+        properties
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn rpch_gateway_absent_property_selects_http() {
+        // oracle: regression #2202: standard gateway properties preserve the HTTP/WebSocket default.
+        let properties = gateway_test_properties();
         let legacy = complete_builder()
             .with_property_set(&properties)
             .expect("valid gateway properties");
         assert!(matches!(legacy.transport, TransportKind::Gateway { .. }));
+    }
 
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn rpch_gateway_zero_property_selects_http() {
+        // oracle: regression #2202: integer zero disables the RPCH opt-in.
+        let mut properties = gateway_test_properties();
+        properties.insert("ironrdp_gatewayrpch", 0i64);
+        let builder = complete_builder()
+            .with_property_set(&properties)
+            .expect("valid disabled RPCH property");
+        assert!(matches!(builder.transport, TransportKind::Gateway { .. }));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn rpch_gateway_one_property_selects_rpch() {
+        // oracle: regression #2202: integer one explicitly selects RPCH.
+        let mut properties = gateway_test_properties();
         properties.insert("ironrdp_gatewayrpch", 1i64);
         let rpch = complete_builder()
             .with_property_set(&properties)
@@ -2803,9 +2831,34 @@ mod tests {
             rpch.transport,
             TransportKind::GatewayRpch { ref endpoint, prefer_direct: false } if endpoint == "gateway.example:443"
         ));
+    }
 
-        properties.insert("ironrdp_gatewayrpch", 2i64);
-        assert!(complete_builder().with_property_set(&properties).is_err());
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn rpch_gateway_rejects_other_integer_properties() {
+        // oracle: regression #2202: only integer zero and one are valid opt-in values.
+        for value in [-1, 2, i64::MIN, i64::MAX] {
+            let mut properties = gateway_test_properties();
+            properties.insert("ironrdp_gatewayrpch", value);
+            assert!(
+                complete_builder().with_property_set(&properties).is_err(),
+                "invalid value: {value}"
+            );
+        }
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn rpch_gateway_rejects_string_properties() {
+        // oracle: regression #2202: the opt-in property uses the RDP integer type, not a string.
+        for value in ["", "0", "1"] {
+            let mut properties = gateway_test_properties();
+            properties.insert("ironrdp_gatewayrpch", value);
+            assert!(
+                complete_builder().with_property_set(&properties).is_err(),
+                "invalid string: {value:?}"
+            );
+        }
     }
 
     // oracle: regression #2202 (exported direct settings must not retain the RPCH opt-in).
