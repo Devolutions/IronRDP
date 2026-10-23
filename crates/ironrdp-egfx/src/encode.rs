@@ -177,12 +177,40 @@ mod openh264_impl {
                 return Err(EncoderError::msg("frame buffer length does not match dimensions"));
             }
 
-            let rgba = openh264::formats::RgbaSliceU8::new(frame.data, (width, height));
-            let yuv = openh264::formats::YUVBuffer::from_rgb_source(rgba);
+            let rgba_stride = frame
+                .width
+                .checked_mul(4)
+                .ok_or_else(|| EncoderError::msg("frame dimensions overflow"))?;
+
+            // MS-RDPEGFX 3.3.8.3.1 mandates full-range BT.709 for
+            // RFX_AVC420_BITMAP_STREAM color conversion; openh264's built-in
+            // RGBA-to-YUV applies a limited-range BT.601 matrix instead, which
+            // produces spec-nonconformant luma placement.
+            let mut planar =
+                yuv::YuvPlanarImageMut::alloc(frame.width, frame.height, yuv::YuvChromaSubsampling::Yuv420);
+            yuv::rgba_to_yuv420(
+                &mut planar,
+                frame.data,
+                rgba_stride,
+                yuv::YuvRange::Full,
+                yuv::YuvStandardMatrix::Bt709,
+                yuv::YuvConversionMode::Balanced,
+            )
+            .map_err(|e| EncoderError::new("failed to convert RGBA to YUV420", e))?;
+
+            let yuv_source = openh264::formats::YUVSlices::new(
+                (
+                    planar.y_plane.borrow(),
+                    planar.u_plane.borrow(),
+                    planar.v_plane.borrow(),
+                ),
+                (width, height),
+                (width, width / 2, width / 2),
+            );
 
             let bitstream = self
                 .encoder
-                .encode(&yuv)
+                .encode(&yuv_source)
                 .map_err(|e| EncoderError::new("OpenH264 encode failed", e))?;
 
             Ok(bitstream.to_vec())
