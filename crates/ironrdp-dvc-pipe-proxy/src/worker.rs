@@ -166,7 +166,7 @@ async fn process_client<P: OsPipe>(ctx: &mut BridgedWorkerCtx) -> Result<NextWor
                 )
                 .map_err(DvcPipeProxyError::EncodeDvcMessage)?;
 
-                if let Err(error) = (ctx.on_write_dvc)(0, messages) {
+                if let Err(error) = (ctx.on_write_dvc)(ctx.channel_id, messages) {
                     error!(%channel_name, %pipe_name, ?error, "DVC pipe proxy write callback failed");
                 }
             }
