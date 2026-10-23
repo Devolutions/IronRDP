@@ -18,13 +18,17 @@ use ironrdp_capture_replay::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::connector_replay::{ConnectorExpectation, ConnectorReplay};
+
 const MANIFEST: &str = include_str!("../corpus.toml");
 const UPSTREAM_REPOSITORY: &str = "awakecoding/wireshark-rdp";
 const MAX_GAP_DETAILS: usize = 16;
 
 /// Benchmark kind that times capture replay of a rendered session.
 pub const REPLAY_BENCHMARK: &str = "replay";
-const BENCHMARK_KINDS: &[&str] = &[REPLAY_BENCHMARK];
+/// Benchmark kind that times the production connector from construction to `Connected`, fed by captured server frames.
+pub const CONNECTOR_BENCHMARK: &str = "connector";
+const BENCHMARK_KINDS: &[&str] = &[REPLAY_BENCHMARK, CONNECTOR_BENCHMARK];
 
 /// Pinned capture corpus manifest.
 #[derive(Debug, Deserialize)]
@@ -60,6 +64,8 @@ pub struct CorpusCapture {
     pub benchmark: Vec<String>,
     /// Expected capture replay result.
     pub expect: Expectation,
+    /// Expected connector result, present exactly when `benchmark` lists the connector benchmark.
+    pub connector: Option<ConnectorExpectation>,
 }
 
 /// Expected capture replay result, tagged by its outcome.
@@ -176,6 +182,11 @@ impl Corpus {
                     capture.id
                 );
             }
+            anyhow::ensure!(
+                capture.lists(CONNECTOR_BENCHMARK) == capture.connector.is_some(),
+                "capture {} must have a [capture.connector] table exactly when it lists the connector benchmark",
+                capture.id
+            );
         }
         Ok(corpus)
     }
@@ -214,6 +225,17 @@ impl CorpusCapture {
             .map_err(ReplayError::from)
             .and_then(|capture| prepare_capture(&capture))
             .with_context(|| format!("prepare capture {}", self.id))
+    }
+
+    /// Verify the cached capture's digest, then prepare it for repeated connector runs.
+    pub fn prepare_connector(&self, cache_dir: &Path) -> anyhow::Result<ConnectorReplay> {
+        let expected = self
+            .connector
+            .clone()
+            .with_context(|| format!("capture {} has no connector expectation", self.id))?;
+        let path = cache_dir.join(&self.file);
+        verify_digest(&path, &self.sha256)?;
+        ConnectorReplay::prepare(&path, expected).with_context(|| format!("prepare connector for capture {}", self.id))
     }
 
     /// Compare a replay summary with this capture's expectation.
@@ -368,6 +390,7 @@ pub fn list(out: &mut dyn Write) -> anyhow::Result<()> {
 
 /// Replay cached captures with full verification and compare every result with its expectation.
 ///
+/// Captures listing the connector benchmark also run the connector and compare it with their connector expectation.
 /// Prints the observed expectation as TOML for each mismatch and fails if any capture mismatched or could not be verified.
 pub fn check(selector: Option<&str>, out: &mut dyn Write) -> anyhow::Result<()> {
     let corpus = Corpus::load()?;
@@ -384,7 +407,7 @@ pub fn check(selector: Option<&str>, out: &mut dyn Write) -> anyhow::Result<()> 
     );
 
     let (mut complete, mut partial, mut unsupported, mut failures) = (0usize, 0usize, 0usize, 0usize);
-    for capture in captures {
+    for &capture in &captures {
         let (observed, gaps) = match observe(&cache_dir.join(&capture.file), &capture.sha256) {
             Ok(observed) => observed,
             Err(error) => {
@@ -432,6 +455,22 @@ pub fn check(selector: Option<&str>, out: &mut dyn Write) -> anyhow::Result<()> 
         out,
         "Capture outcomes: complete={complete}, partial={partial}, unsupported={unsupported}"
     )?;
+
+    for capture in captures
+        .into_iter()
+        .filter(|capture| capture.lists(CONNECTOR_BENCHMARK))
+    {
+        match capture
+            .prepare_connector(&cache_dir)
+            .and_then(|connector| connector.verify())
+        {
+            Ok(_) => writeln!(out, "{}: connector", capture.id)?,
+            Err(error) => {
+                failures += 1;
+                writeln!(out, "{}: {error:#}", capture.id)?;
+            }
+        }
+    }
     anyhow::ensure!(failures == 0, "{failures} capture(s) failed verification");
     Ok(())
 }
@@ -526,7 +565,7 @@ expect = { outcome = "unsupported", reason = "test" }
     }
 
     #[test]
-    fn rejects_replay_benchmark_without_rendered_session() {
+    fn validates_benchmark_listings() {
         let manifest = |benchmark: &str, expect: &str| {
             format!(
                 r#"
@@ -569,6 +608,11 @@ gap_fingerprint = """#;
             .is_err()
         );
         assert!(Corpus::parse(&manifest(r#""replay""#, "outcome = \"unsupported\"\nreason = \"x\"")).is_err());
+
+        let connector = "\n[capture.connector]\nsteps = 1\noutbound_frames = 1\nserver_frames = 1\nfingerprint = \"\"";
+        assert!(Corpus::parse(&manifest(r#""connector""#, &format!("{rendered}{connector}"))).is_ok());
+        assert!(Corpus::parse(&manifest(r#""connector""#, rendered)).is_err());
+        assert!(Corpus::parse(&manifest(r#""replay""#, &format!("{rendered}{connector}"))).is_err());
     }
 
     #[test]

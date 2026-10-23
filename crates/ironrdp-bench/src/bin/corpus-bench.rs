@@ -2,13 +2,14 @@
 #![allow(clippy::print_stdout)]
 
 use anyhow::Context as _;
-use ironrdp_bench::corpus::{Corpus, REPLAY_BENCHMARK};
+use ironrdp_bench::corpus::{CONNECTOR_BENCHMARK, Corpus, REPLAY_BENCHMARK};
 use ironrdp_capture_replay::ReplayOptions;
 
 const USAGE: &str = "usage: corpus-bench fetch
        corpus-bench list
        corpus-bench check [--capture <ID>]
-       corpus-bench replay --capture <ID> [--strict]";
+       corpus-bench replay --capture <ID> [--strict]
+       corpus-bench connector --capture <ID> [--strict]";
 
 fn main() -> anyhow::Result<()> {
     let mut out = std::io::stdout().lock();
@@ -20,6 +21,8 @@ fn main() -> anyhow::Result<()> {
         ["check", "--capture", id] => ironrdp_bench::corpus::check(Some(id), &mut out),
         ["replay", "--capture", id] => replay(id, false),
         ["replay", "--capture", id, "--strict"] => replay(id, true),
+        ["connector", "--capture", id] => connector(id, false),
+        ["connector", "--capture", id, "--strict"] => connector(id, true),
         _ => anyhow::bail!(USAGE),
     }
 }
@@ -41,6 +44,31 @@ fn replay(id: &str, full: bool) -> anyhow::Result<()> {
     println!(
         "replay/{id}\tclient_pdus={}\tgraphics_updates={}\tgaps={}",
         summary.client_pdus, summary.graphics_updates, summary.gaps
+    );
+    Ok(())
+}
+
+/// Run the connector for one cached capture once and print a payload-free summary line.
+///
+/// Without `--strict`, the run skips framing and hashing its output, matching the timed run.
+fn connector(id: &str, full: bool) -> anyhow::Result<()> {
+    let corpus = Corpus::load()?;
+    let connector = corpus
+        .benchmark_capture(CONNECTOR_BENCHMARK, id)?
+        .prepare_connector(&corpus.cache_dir())?;
+    let measurement = if full {
+        connector.verify()?
+    } else {
+        let measurement = connector.replay()?;
+        anyhow::ensure!(
+            connector.matches_counts(&measurement),
+            "capture {id} connector run does not match its expectation"
+        );
+        measurement
+    };
+    println!(
+        "connector/{id}\tsteps={}\tserver_frames={}\toutbound_bytes={}",
+        measurement.steps, measurement.server_frames, measurement.outbound_bytes
     );
     Ok(())
 }

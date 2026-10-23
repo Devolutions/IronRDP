@@ -3,7 +3,7 @@
 use core::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use ironrdp_bench::corpus::{Corpus, REPLAY_BENCHMARK};
+use ironrdp_bench::corpus::{CONNECTOR_BENCHMARK, Corpus, REPLAY_BENCHMARK};
 use ironrdp_capture_replay::ReplayOptions;
 
 fn replay(c: &mut Criterion) {
@@ -28,5 +28,25 @@ fn replay(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, replay);
+fn connector(c: &mut Criterion) {
+    let corpus = Corpus::load().expect("valid corpus manifest");
+    let cache_dir = corpus.cache_dir();
+    for capture in corpus
+        .captures
+        .iter()
+        .filter(|capture| capture.lists(CONNECTOR_BENCHMARK))
+    {
+        // Criterion runs this closure only for selected benchmarks, so unselected captures are never loaded.
+        c.bench_function(&format!("connector/{}", capture.id), |b| {
+            let connector = capture
+                .prepare_connector(&cache_dir)
+                .expect("cached capture must prepare");
+            connector.verify().expect("connector run must match its expectation");
+
+            b.iter(|| black_box(connector.replay()));
+        });
+    }
+}
+
+criterion_group!(benches, replay, connector);
 criterion_main!(benches);

@@ -9,9 +9,9 @@ pub fn corpus(sh: &Shell, arguments: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Time capture replay of one cached capture with the `ironrdp-bench` Criterion target.
-pub fn replay(sh: &Shell, capture: &str) -> anyhow::Result<()> {
-    let benchmark = format!("replay/{capture}");
+/// Time one cached capture with a benchmark kind of the `ironrdp-bench` corpus Criterion target.
+pub fn time(sh: &Shell, kind: &str, capture: &str) -> anyhow::Result<()> {
+    let benchmark = format!("{kind}/{capture}");
 
     // Criterion exits successfully without measuring anything when the filter matches no benchmark.
     let listed = cmd!(
@@ -21,7 +21,7 @@ pub fn replay(sh: &Shell, capture: &str) -> anyhow::Result<()> {
     .read()?;
     anyhow::ensure!(
         listed.lines().any(|line| line == format!("{benchmark}: benchmark")),
-        "capture {capture} is unknown or does not list the replay benchmark"
+        "capture {capture} is unknown or does not list the {kind} benchmark"
     );
 
     cmd!(

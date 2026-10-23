@@ -12,6 +12,13 @@ When `corpus-check` prints a replacement `[capture.expect]` table, paste it only
 Only `corpus-bench fetch` touches the network; every other path reads the verified `bench-data/wireshark-rdp` cache and fails when an entry is missing.
 Never commit captures, TLS key logs, decrypted payloads, or screenshots; `cargo xtask check captures` rejects only tracked capture files.
 
+## Connector
+
+A capture listing `connector` needs a `[capture.connector]` table; paste the block that `corpus-bench check --capture <ID>` prints rather than computing it.
+That fingerprint hashes the raw outbound bytes with Channel Join Requests sorted, because `ironrdp-connector` sends joins in `HashSet` order.
+Keep `ConnectorReplay::drive` to connector stepping and state guards; framing, PDU classification, and hashing belong in `verify`, outside the timed loop.
+`connector_replay.rs` depends on `ironrdp-capture` only, never the replay engine in `ironrdp-capture-replay`; keep that boundary.
+
 ## Fixtures and dependencies
 
 Before timing, assert that each fixture exercises the intended path: bulk inputs of 16 KiB or more pass through uncompressed, and all-zero images encode trivially.
