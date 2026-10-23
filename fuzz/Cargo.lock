@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-bulk"
-version = "0.1.2"
+version = "0.2.0"
 
 [[package]]
 name = "ironrdp-cliprdr"

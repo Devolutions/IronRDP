@@ -89,18 +89,18 @@ ironrdp-connector = { path = "../ironrdp-connector", version = "0.11" } # public
 ironrdp-session = { path = "../ironrdp-session", version = "0.12" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.10" } # public
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.9" }
-ironrdp-echo = { path = "../ironrdp-echo", version = "0.4" }
+ironrdp-echo = { path = "../ironrdp-echo", version = "0.5" }
 ironrdp-egfx = { path = "../ironrdp-egfx", version = "0.4" } # public
-ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" } # public
+ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.2" } # public
 ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", version = "0.1", optional = true }
 ironrdp-rdpeudp-tokio = { path = "../ironrdp-rdpeudp-tokio", version = "0.1", optional = true }
-ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" } # public
-ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.10", features = ["reqwest"] }
-ironrdp-rdcleanpath = { path = "../ironrdp-rdcleanpath", version = "0.2" }
+ironrdp-tls = { path = "../ironrdp-tls", version = "0.3" } # public
+ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.11", features = ["reqwest"] }
+ironrdp-rdcleanpath = { path = "../ironrdp-rdcleanpath", version = "0.3" }
 ironrdp-vmconnect = { path = "../ironrdp-vmconnect", version = "0.1", optional = true }
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.2" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # public
-ironrdp-rail = { path = "../ironrdp-rail", version = "0.1" }
+ironrdp-rail = { path = "../ironrdp-rail", version = "0.2" }
 
 # Optional protocol crates (activated by features above)
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.8", optional = true } # public
@@ -113,9 +113,9 @@ ironrdp-rdpevor = { path = "../ironrdp-rdpevor", version = "0.0.0", optional = t
 
 # Optional backend crates (activated by features above)
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.7", optional = true } # public
-ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.7", optional = true }
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.8", optional = true }
 ironrdp-mstsgu = { path = "../ironrdp-mstsgu", version = "0.0.2", optional = true }
-ironrdp-dvc-pipe-proxy = { path = "../ironrdp-dvc-pipe-proxy", version = "0.5", optional = true }
+ironrdp-dvc-pipe-proxy = { path = "../ironrdp-dvc-pipe-proxy", version = "0.6", optional = true }
 
 # Logging
 tracing = { version = "0.1", features = ["log"] }
@@ -132,7 +132,7 @@ url = "2"
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
-ironrdp-dvc-com-plugin = { path = "../ironrdp-dvc-com-plugin", version = "0.1", optional = true }
+ironrdp-dvc-com-plugin = { path = "../ironrdp-dvc-com-plugin", version = "0.2", optional = true }
 ironrdp-rdpewa = { path = "../ironrdp-rdpewa", version = "0.1", optional = true }
 ironrdp-rdpewa-native = { path = "../ironrdp-rdpewa-native", version = "0.1", optional = true }
 ironrdp-rdpecam = { path = "../ironrdp-rdpecam", version = "0.0.0", optional = true }

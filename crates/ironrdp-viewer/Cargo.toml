@@ -63,7 +63,7 @@ raw-window-handle = "0.6"
 url = "2"
 
 [target.'cfg(windows)'.dependencies]
-ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.7" }
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.8" }
 ironrdp-rdpdr-native = { path = "../ironrdp-rdpdr-native", version = "0.8" }
 windows = { version = "0.62", features = ["Win32_System_Ole", "Win32_UI_WindowsAndMessaging"] }
 

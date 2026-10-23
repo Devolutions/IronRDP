@@ -10,189 +10,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 1 -->Features
 
-- [**breaking**] Populate decode/encode error offsets from cursor positions ([#1275](https://github.com/Devolutions/IronRDP/issues/1275)) ([8607ac5d1c](https://github.com/Devolutions/IronRDP/commit/8607ac5d1c2ea14efcac02921e54d951ab1045ec)) 
+- Add `validate_dib` and `validate_dibv5` to check a `CF_DIB` or `CF_DIBV5` payload and return its length ([#1794](https://github.com/Devolutions/IronRDP/issues/1794)) ([c7766c5a56](https://github.com/Devolutions/IronRDP/commit/c7766c5a56ba668a93737f2ca384fc2b63546376))
 
-  ## Summary
-  
-  The workspace sweep that follows #1266. Decode and encode error
-  construction sites now pass the cursor, so the reported position is the
-  byte the decoder or encoder actually stopped at.
-  
-  Stacked on #1266 and merges after it.
-  
-  ## What "no position" means here
-  
-  #1266 makes `offset` an `Option<usize>` where `None` means the error has
-  no position in the input stream at all, rather than a position that
-  happened to be unavailable. This PR is the other half of that: it walks
-  the workspace and gives a real position to every site that has one, so
-  the sites left reporting `None` are the ones that genuinely never had
-  one.
-  
-  Those are constructors validating their arguments, integer conversions,
-  cache lookups that missed, accessors on already-decoded structures, and
-  the declared-size checks described below. They report nothing rather
-  than byte zero, and that is now their permanent answer rather than a gap
-  awaiting another sweep.
-  
-  There are no `at: 0` sites left anywhere in the workspace.
-  
-  ## The rule
-  
-  The position is attached where the cursor identifies the bytes being
-  complained about. It is omitted where the complaint is about a size the
-  peer declared, computed from data already consumed, because there the
-  cursor points at a byte that is not the problem.
-
-- Expand OLE clipboard snapshots ([#1794](https://github.com/Devolutions/IronRDP/issues/1794)) ([c7766c5a56](https://github.com/Devolutions/IronRDP/commit/c7766c5a56ba668a93737f2ca384fc2b63546376)) 
-
-  Expose bounded read-only snapshots for text, locale, DIB/DIBV5, and
-  Windows HTML formats. Validate FORMATETC and payloads, return
-  independent HGLOBAL media, and keep file, write, and advisory paths
-  disabled.
-
-- Add clipboard image support ([#1877](https://github.com/Devolutions/IronRDP/issues/1877)) ([a59b3b687d](https://github.com/Devolutions/IronRDP/commit/a59b3b687d8ec81cfb79bd6e91e7d3341c866b6b)) 
-
-  Adds PNG clipboard image support to the agent daemon and CLI using CLIPRDR DIB conversions.
+- Add `validate_cf_html` to check a `CF_HTML` payload and return its length ([#1794](https://github.com/Devolutions/IronRDP/issues/1794)) ([c7766c5a56](https://github.com/Devolutions/IronRDP/commit/c7766c5a56ba668a93737f2ca384fc2b63546376))
 
 ### <!-- 4 -->Bug Fixes
 
-- Key auto-detect optional fields off requestType, not the Option ([#1491](https://github.com/Devolutions/IronRDP/issues/1491)) ([f9cc62fa2c](https://github.com/Devolutions/IronRDP/commit/f9cc62fa2ccb4f211838dd0961c19cdf3b79a38e)) 
+- Reject DIBs with an embedded color profile, a mismatched `biSizeImage`, or truncated pixel data in `dib_to_png` and `dibv5_to_png` ([#1794](https://github.com/Devolutions/IronRDP/issues/1794)) ([c7766c5a56](https://github.com/Devolutions/IronRDP/commit/c7766c5a56ba668a93737f2ca384fc2b63546376))
 
-  ## Summary
-  
-  MS-RDPBCGR decides which optional fields an auto-detect message carries
-  by its `requestType`. Two of these message types encoded them by
-  inspecting which `Option`s happened to be set instead, so the encoder
-  and the decoder disagreed about the wire.
-  
-  This started as a fix for `BandwidthMeasureStop` alone. Review found the
-  connect-time fallback was still non-compliant, and checking whether the
-  same shape appeared elsewhere in the file turned up
-  `NetworkCharacteristicsResult` with the identical defect and a worse
-  consequence, so both are fixed here rather than one now and one later.
-  
-  ## The two failure modes
-  
-  **Connect-time stop with no payload: encodes to bytes the decoder
-  rejects.**
-  
-  ```rust
-  AutoDetectRequest::BandwidthMeasureStop {
-      sequence_number: 7,
-      request_type: BW_STOP_CONNECT_TIME,
-      payload: None,
-  }
-  ```
-  
-  encodes to ten bytes with `headerLength` 0x06 and no length field.
-  Decoding those bytes
-  fails with `not enough bytes provided to decode: received 0 bytes,
-  expected 2 bytes`,
-  because the decoder reads `payloadLength` back for every
-  `BW_STOP_CONNECT_TIME`.
-  
-  **UDP stop with a payload: silently loses it.**
-  
-  ```rust
-  AutoDetectRequest::BandwidthMeasureStop {
-      sequence_number: 3,
-      request_type: BW_STOP_RELIABLE_UDP,
-      payload: Some(vec![0xAA; 16]),
-  }
-  ```
-  
-  encodes the length and the sixteen bytes, which the decoder never reads
-  back for
-  `BW_STOP_RELIABLE_UDP` or `BW_STOP_LOSSY_UDP`.
-  `AutoDetectReqPdu::decode` does not check
-  for trailing bytes, so the payload is dropped in transit without an
-  error rather than
-  refused.
-  
-  The second is the worse of the two: a round trip that loses data and
-  reports success.
-  
-  ## Network Characteristics Result (2.2.14.1.5)
-  
-  The same defect, found by sweeping the file rather than reported.
-  
-  `0x0840` carries baseRTT and averageRTT, `0x0880` carries bandwidth and
-  averageRTT, `0x08C0` carries all three, and the decoder already read
-  them on that basis. Encoding from the `Option`s meant:
-  
-  - a `0x0840` result with no `base_rtt_ms` wrote a body the decoder
-  cannot read;
-  - a `0x0840` result carrying `bandwidth_kbps` instead wrote that
-  bandwidth into the slot the decoder reads as baseRTT, so the value came
-  back **silently corrupted** rather than rejected;
-  - `headerLength` was always derived from `requestType`, so it could
-  contradict the body it described.
-  
-  Encode and `size()` now consult `requestType` through a shared helper, a
-  value the type does not carry is dropped rather than written, and a
-  missing one that the type requires is an error.
-  
-  ## Fix
-  
-  `Encode` and `size()` now key off `requestType`, matching the decoder.
-  That makes the
-  wire form canonical:
-  
-  - an absent payload on a connect-time stop encodes as a zero length and
-  reads back as an
-    empty one;
-  - a payload on a UDP stop never reaches the wire.
-  
-  Decoding and re-encoding reproduces the same bytes in every case. The
-  types can still
-  express states the protocol cannot, so value-level identity is not
-  achievable, but byte
-  stability is, and that is what a decoder consuming real traffic depends
-  on.
-  
-  No public signatures change; this is a behaviour fix inside the existing
-  `Encode` impl.
-  
-  ## Tests
-  
-  New `pdu/autodetect.rs` in `ironrdp-testsuite-core`:
-  
-  - a connect-time stop with no payload round-trips, and `size()` agrees
-  with `encode()`;
-  - a UDP stop carrying a payload encodes header-only and comes back with
-  `payload: None`,
-    for both the reliable and lossy request types;
-  - a connect-time stop preserves a real payload;
-  - decode-then-encode reproduces identical bytes for both shapes.
-  
-  Three of the four fail against the current encoder and pass with the
-  fix. The fourth is
-  a control that passed before and after.
-  
-  Note the existing `pdu_round_trip` fuzz oracle would not have caught
-  this even with
-  auto-detect added to it, since it discards the result of the re-decode
-  (`let _ =`). That
-  is deliberate in the oracle's design and out of scope here, but it is
-  why this went
-  unnoticed.
-  
-  ## How this was found
-  
-  Writing a test for the connect-time bandwidth measurement in #1465,
-  which needs to answer
-  a connect-time stop. The `None` case was constructed to check the reply
-  path stayed
-  lenient and turned out not to be constructible on the wire at all.
-  
-  ## Verification
-  
-  - `cargo xtask check fmt -v` green
-  - `cargo xtask check lints -v` green
-  - `cargo xtask check tests -v` green
-  - `cargo xtask check typos -v` green
-  - `cargo xtask check locks -v` green
+- Validate the headers, offsets and fragment markers of a `CF_HTML` payload in `cf_html_to_plain_html`, which now rejects payloads missing `Version`, `StartHTML` or `EndHTML` ([#1794](https://github.com/Devolutions/IronRDP/issues/1794)) ([c7766c5a56](https://github.com/Devolutions/IronRDP/commit/c7766c5a56ba668a93737f2ca384fc2b63546376))
+
+- Convert 16-bit and grayscale PNG images correctly in `png_to_cf_dib` and `png_to_cf_dibv5` ([#1877](https://github.com/Devolutions/IronRDP/issues/1877)) ([a59b3b687d](https://github.com/Devolutions/IronRDP/commit/a59b3b687d8ec81cfb79bd6e91e7d3341c866b6b))
+
+### <!-- 7 -->Build
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- [**breaking**] Update `ironrdp-core` public dependency to 0.3
 
 
 

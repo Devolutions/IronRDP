@@ -99,7 +99,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 hyper = { version = "1.9", features = ["client", "http1"] }
 ironrdp-core = { path = "../ironrdp-core", version = "0.3", features = ["std"] } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.2" }
-ironrdp-tls = { path = "../ironrdp-tls", version = "0.2.3" } # public
+ironrdp-tls = { path = "../ironrdp-tls", version = "0.3.0" } # public
 log = "0.4"
 sspi = { version = "0.23", features = ["network_client"] }
 tokio-tungstenite = { version = "0.29" }

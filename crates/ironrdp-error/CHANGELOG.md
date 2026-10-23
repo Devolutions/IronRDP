@@ -10,164 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 1 -->Features
 
-- Add IronRDP ActiveX COM server ([#1523](https://github.com/Devolutions/IronRDP/issues/1523)) ([ee58b7c5f2](https://github.com/Devolutions/IronRDP/commit/ee58b7c5f283ef64be93a8483242f49070c6cdc9)) 
+- Add the `ErrorMapping` trait and the `ResultExt` extension trait (`map_err_as`, `map_err_kind`, `map_err_source`) for converting errors between error kinds ([#1481](https://github.com/Devolutions/IronRDP/issues/1481)) ([71d63c75f5](https://github.com/Devolutions/IronRDP/commit/71d63c75f58228fa0960c3b52327e9694272e976))
 
-  ## Summary
-  - Add the IronRDP ActiveX COM server and native MSTSC host integration.
-  - Provide bounded native-host diagnostics, credential-bridge support,
-  and an AxHost test harness.
-  - Preserve the minimal client, connector, and error integrations needed
-  by the control.
-  
-  ## Validation
-  - cargo check -p ironrdp-activex
-  - Focused ironrdp-error and ironrdp-connector tests
-  - cargo test -p ironrdp-activex --lib --no-run
-  - cargo fmt --all -- --check
-  - cargo xtask check locks -v
-  
-  ---------
+- Implement `core::error::Error` for `Error<Kind>` without the `std` feature ([#1481](https://github.com/Devolutions/IronRDP/issues/1481)) ([71d63c75f5](https://github.com/Devolutions/IronRDP/commit/71d63c75f58228fa0960c3b52327e9694272e976))
 
 ### <!-- 4 -->Bug Fixes
 
-- Key auto-detect optional fields off requestType, not the Option ([#1491](https://github.com/Devolutions/IronRDP/issues/1491)) ([f9cc62fa2c](https://github.com/Devolutions/IronRDP/commit/f9cc62fa2ccb4f211838dd0961c19cdf3b79a38e)) 
+- Omit source locations from the default `Display` output of `Error` and `ErrorReport`; include them with the alternate form (`{:#}`) or `ErrorReport::with_locations` ([#1480](https://github.com/Devolutions/IronRDP/issues/1480)) ([f84cd01450](https://github.com/Devolutions/IronRDP/commit/f84cd01450e18d12838b225859878b311802b805))
 
-  ## Summary
-  
-  MS-RDPBCGR decides which optional fields an auto-detect message carries
-  by its `requestType`. Two of these message types encoded them by
-  inspecting which `Option`s happened to be set instead, so the encoder
-  and the decoder disagreed about the wire.
-  
-  This started as a fix for `BandwidthMeasureStop` alone. Review found the
-  connect-time fallback was still non-compliant, and checking whether the
-  same shape appeared elsewhere in the file turned up
-  `NetworkCharacteristicsResult` with the identical defect and a worse
-  consequence, so both are fixed here rather than one now and one later.
-  
-  ## The two failure modes
-  
-  **Connect-time stop with no payload: encodes to bytes the decoder
-  rejects.**
-  
-  ```rust
-  AutoDetectRequest::BandwidthMeasureStop {
-      sequence_number: 7,
-      request_type: BW_STOP_CONNECT_TIME,
-      payload: None,
-  }
-  ```
-  
-  encodes to ten bytes with `headerLength` 0x06 and no length field.
-  Decoding those bytes
-  fails with `not enough bytes provided to decode: received 0 bytes,
-  expected 2 bytes`,
-  because the decoder reads `payloadLength` back for every
-  `BW_STOP_CONNECT_TIME`.
-  
-  **UDP stop with a payload: silently loses it.**
-  
-  ```rust
-  AutoDetectRequest::BandwidthMeasureStop {
-      sequence_number: 3,
-      request_type: BW_STOP_RELIABLE_UDP,
-      payload: Some(vec![0xAA; 16]),
-  }
-  ```
-  
-  encodes the length and the sixteen bytes, which the decoder never reads
-  back for
-  `BW_STOP_RELIABLE_UDP` or `BW_STOP_LOSSY_UDP`.
-  `AutoDetectReqPdu::decode` does not check
-  for trailing bytes, so the payload is dropped in transit without an
-  error rather than
-  refused.
-  
-  The second is the worse of the two: a round trip that loses data and
-  reports success.
-  
-  ## Network Characteristics Result (2.2.14.1.5)
-  
-  The same defect, found by sweeping the file rather than reported.
-  
-  `0x0840` carries baseRTT and averageRTT, `0x0880` carries bandwidth and
-  averageRTT, `0x08C0` carries all three, and the decoder already read
-  them on that basis. Encoding from the `Option`s meant:
-  
-  - a `0x0840` result with no `base_rtt_ms` wrote a body the decoder
-  cannot read;
-  - a `0x0840` result carrying `bandwidth_kbps` instead wrote that
-  bandwidth into the slot the decoder reads as baseRTT, so the value came
-  back **silently corrupted** rather than rejected;
-  - `headerLength` was always derived from `requestType`, so it could
-  contradict the body it described.
-  
-  Encode and `size()` now consult `requestType` through a shared helper, a
-  value the type does not carry is dropped rather than written, and a
-  missing one that the type requires is an error.
-  
-  ## Fix
-  
-  `Encode` and `size()` now key off `requestType`, matching the decoder.
-  That makes the
-  wire form canonical:
-  
-  - an absent payload on a connect-time stop encodes as a zero length and
-  reads back as an
-    empty one;
-  - a payload on a UDP stop never reaches the wire.
-  
-  Decoding and re-encoding reproduces the same bytes in every case. The
-  types can still
-  express states the protocol cannot, so value-level identity is not
-  achievable, but byte
-  stability is, and that is what a decoder consuming real traffic depends
-  on.
-  
-  No public signatures change; this is a behaviour fix inside the existing
-  `Encode` impl.
-  
-  ## Tests
-  
-  New `pdu/autodetect.rs` in `ironrdp-testsuite-core`:
-  
-  - a connect-time stop with no payload round-trips, and `size()` agrees
-  with `encode()`;
-  - a UDP stop carrying a payload encodes header-only and comes back with
-  `payload: None`,
-    for both the reliable and lossy request types;
-  - a connect-time stop preserves a real payload;
-  - decode-then-encode reproduces identical bytes for both shapes.
-  
-  Three of the four fail against the current encoder and pass with the
-  fix. The fourth is
-  a control that passed before and after.
-  
-  Note the existing `pdu_round_trip` fuzz oracle would not have caught
-  this even with
-  auto-detect added to it, since it discards the result of the re-decode
-  (`let _ =`). That
-  is deliberate in the oracle's design and out of scope here, but it is
-  why this went
-  unnoticed.
-  
-  ## How this was found
-  
-  Writing a test for the connect-time bandwidth measurement in #1465,
-  which needs to answer
-  a connect-time stop. The `None` case was constructed to check the reply
-  path stayed
-  lenient and turned out not to be constructible on the wire at all.
-  
-  ## Verification
-  
-  - `cargo xtask check fmt -v` green
-  - `cargo xtask check lints -v` green
-  - `cargo xtask check tests -v` green
-  - `cargo xtask check typos -v` green
-  - `cargo xtask check locks -v` green
+### <!-- 7 -->Build
 
-
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
 
 ## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-error-v0.1.3...ironrdp-error-v0.2.0)] - 2026-05-27
 
