@@ -2609,6 +2609,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rpch_stream_keeps_data_and_shutdown_working_after_a_verified_message_fault() {
+        // oracle: spec MS-TSGU §3.6.4: asynchronous messaging is optional and can stop after a returned call.
+        let (mut stream, proxy) = open_stream(MockRpchScenario::MessageCallFault).await;
+        stream
+            .write_all(b"after-message-fault")
+            .await
+            .expect("write after verified fault");
+        let mut response = [0; 19];
+        stream
+            .read_exact(&mut response)
+            .await
+            .expect("read after verified fault");
+        assert_eq!(&response, b"after-message-fault");
+        stream
+            .shutdown()
+            .await
+            .expect("close without cancelling a faulted call");
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), proxy)
+                .await
+                .expect("proxy observes shutdown without another message call")
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn rpch_session_rejects_a_tampered_message_fault_and_poisoned_association() {
+        // oracle: regression #2202: message-call recovery must not bypass RPC packet integrity.
+        let (session, proxy) = connect_session(MockRpchScenario::TamperedMessageCallFault).await;
+        let mut session = session.expect("authenticated association");
+        session
+            .open_tunnel("test-client", "rdp.contoso.com", 3389)
+            .await
+            .expect_err("tamper must fail");
+        assert!(!session.rpc_auth.is_complete());
+        session
+            .send_call(99, TSPROXY_CREATE_TUNNEL_OPNUM, &[])
+            .await
+            .expect_err("association is poisoned");
+        proxy.abort();
+    }
+
+    #[tokio::test]
+    async fn rpch_session_rejects_an_unsigned_message_fault_and_later_calls() {
+        // oracle: regression #2202: unsigned faults terminate the session rather than disable only messaging.
+        let (session, proxy) = connect_session(MockRpchScenario::UnsignedMessageCallFault).await;
+        let mut session = session.expect("authenticated association");
+        let error = session
+            .open_tunnel("test-client", "rdp.contoso.com", 3389)
+            .await
+            .expect_err("unsigned fault must fail");
+        assert!(matches!(error.kind(), GwErrorKind::GatewayCode(5)));
+        session
+            .send_call(99, TSPROXY_CREATE_TUNNEL_OPNUM, &[])
+            .await
+            .expect_err("session is poisoned");
+        proxy.abort();
+    }
+
+    #[tokio::test]
     async fn rpch_stream_answers_reauthentication_on_a_separate_connection() {
         let (report, mut reauthenticated) = mpsc::unbounded_channel();
         let (mut stream, proxy) = open_stream_reporting_reauth(MockRpchScenario::Reauth, Some(report)).await;

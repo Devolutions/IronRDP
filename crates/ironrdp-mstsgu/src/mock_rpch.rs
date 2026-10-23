@@ -47,6 +47,9 @@ pub(crate) enum MockRpchScenario {
     /// The proxy negotiates consent and service messages, sends a consent message with the tunnel, answers the
     /// first message call with a service message and keeps the next one pending until the client cancels it.
     Messaging,
+    MessageCallFault,
+    TamperedMessageCallFault,
+    UnsignedMessageCallFault,
     /// The proxy negotiates reauthentication, answers the first message call with a reauthentication message and
     /// keeps the next one pending until the client cancels it.
     Reauth,
@@ -201,6 +204,33 @@ impl MockRpcSecurity {
     fn bind_ack(call_id: u32, type2_token: &[u8]) -> Vec<u8> {
         encode_authenticated_token_pdu(crate::rpc::PTYPE_BIND_ACK, call_id, bind_ack_body(), type2_token)
     }
+
+    fn fault_response(&mut self, call_id: u32, authenticated: bool) -> Result<Vec<u8>, crate::rpc::RpcPduError> {
+        let fault = crate::rpc::encode_rpc_fault(crate::rpc::RpcFault {
+            call_id,
+            pfc_flags: PFC_FIRST_FRAG | PFC_LAST_FRAG,
+            alloc_hint: 0,
+            cancel_count: 0,
+            reserved: 0,
+            status: 5,
+            reserved2: 0,
+            stub: &[],
+        })?;
+        if !authenticated {
+            return Ok(fault);
+        }
+        let mut pdu = prepare_rpc_authenticated_pdu(
+            crate::rpc::PTYPE_FAULT,
+            PFC_FIRST_FRAG | PFC_LAST_FRAG,
+            call_id,
+            &fault[RPC_COMMON_HEADER_SIZE..],
+            self.authentication,
+        )?
+        .finish(&[0; 16])?;
+        sign_server_fragment(&mut self.ntlm, &mut pdu, self.send_sequence);
+        self.send_sequence = self.send_sequence.checked_add(1).expect("test sequence fits");
+        Ok(pdu)
+    }
 }
 
 type MockProxy = (
@@ -325,7 +355,13 @@ async fn run_proxy(
     // Only RPC PDUs count against the receive window ([MS-RPCH] 3.2.1.1.4).
     let mut bytes_received = 0u32;
     let mut rpc_security = MockRpcSecurity::new();
-    let messaging = matches!(scenario, MockRpchScenario::Messaging | MockRpchScenario::Reauth);
+    let message_call_fault = matches!(
+        scenario,
+        MockRpchScenario::MessageCallFault
+            | MockRpchScenario::TamperedMessageCallFault
+            | MockRpchScenario::UnsignedMessageCallFault
+    );
+    let messaging = matches!(scenario, MockRpchScenario::Messaging | MockRpchScenario::Reauth) || message_call_fault;
     let mut message_calls = 0u32;
     let mut pending_message_call = None;
     let mut message_call_cancelled = false;
@@ -519,6 +555,24 @@ async fn run_proxy(
                                     return;
                                 }
                                 message_calls += 1;
+                                if message_call_fault {
+                                    if message_calls != 1 {
+                                        return;
+                                    }
+                                    let Ok(mut fault) = rpc_security.fault_response(
+                                        request_call_id,
+                                        !matches!(scenario, MockRpchScenario::UnsignedMessageCallFault),
+                                    ) else {
+                                        return;
+                                    };
+                                    if matches!(scenario, MockRpchScenario::TamperedMessageCallFault) {
+                                        *fault.last_mut().expect("fault verifier") ^= 1;
+                                    }
+                                    if write_all(&mut out, &fault).await.is_err() {
+                                        return;
+                                    }
+                                    continue;
+                                }
                                 if message_calls > 1 {
                                     pending_message_call = Some(request_call_id);
                                     continue;
@@ -664,7 +718,9 @@ async fn run_proxy(
                         }
                         // A pending message call must be cancelled before the tunnel closes ([MS-TSGU] 3.6.5).
                         if opnum == TSPROXY_CLOSE_TUNNEL_OPNUM {
-                            if pending_message_call.is_some() || (messaging && !message_call_cancelled) {
+                            if pending_message_call.is_some()
+                                || (messaging && !message_call_fault && !message_call_cancelled)
+                            {
                                 return;
                             }
                             if let (Some(report), Some(tunnel_context)) = (&reauth_report, reauth_tunnel_context) {
