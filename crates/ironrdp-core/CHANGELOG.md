@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 4 -->Bug Fixes
 
-- [**breaking**] Rename `ReadCursor::rewinded` and `WriteCursor::rewinded` to `rewound` ([#1529](https://github.com/Devolutions/IronRDP/issues/1529)) ([c85b089b46](https://github.com/Devolutions/IronRDP/commit/c85b089b4617176240b41482be65a77c9ad76a07))
+- [**breaking**] Rename the misspelled past-tense `rewind` methods of `ReadCursor` and `WriteCursor` to `rewound` ([#1529](https://github.com/Devolutions/IronRDP/issues/1529)) ([c85b089b46](https://github.com/Devolutions/IronRDP/commit/c85b089b4617176240b41482be65a77c9ad76a07))
 
 ### <!-- 7 -->Build
 
