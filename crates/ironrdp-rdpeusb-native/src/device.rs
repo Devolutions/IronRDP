@@ -1282,6 +1282,8 @@ enum EndpointCommand {
 }
 
 struct InFlight {
+    /// Position of the transfer among those submitted to the endpoint, kept when it resumes.
+    seq: u64,
     request_id: RequestId,
     envelope: Envelope,
     length: u32,
@@ -1315,6 +1317,64 @@ struct EndpointQueue {
     retry: VecDeque<(InFlight, Buffer)>,
     /// Requests received while draining.
     held: VecDeque<Submission>,
+    /// Finished transfers waiting for an earlier one to finish, by position.
+    finished: BTreeMap<u64, Outcome>,
+    next_seq: u64,
+}
+
+/// How a finished transfer is reported.
+enum Outcome {
+    Complete(RequestId, CompletionData),
+    /// An IN transfer overran its buffer, which the protocol only lets the client report by closing
+    /// the device channel.
+    Terminate,
+}
+
+impl EndpointQueue {
+    fn new() -> Self {
+        Self {
+            in_flight: VecDeque::new(),
+            draining: false,
+            retry: VecDeque::new(),
+            held: VecDeque::new(),
+            finished: BTreeMap::new(),
+            next_seq: 0,
+        }
+    }
+
+    fn next_seq(&mut self) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        seq
+    }
+
+    /// The position of the oldest transfer still running or waiting to resume.
+    fn oldest_unfinished(&self) -> Option<u64> {
+        let in_flight = self.in_flight.front().map(|entry| entry.seq);
+        let retry = self.retry.front().map(|(entry, _)| entry.seq);
+        match (in_flight, retry) {
+            (Some(in_flight), Some(retry)) => Some(in_flight.min(retry)),
+            (in_flight, retry) => in_flight.or(retry),
+        }
+    }
+
+    /// Report a finished transfer once every transfer submitted before it finished too.
+    ///
+    /// USB completes the transfers of a pipe in order. A transfer that nusb cancelled along with
+    /// another one runs again later, and those after it must not be reported first.
+    fn finish(&mut self, reply: &Reply, seq: u64, outcome: Outcome) {
+        self.finished.insert(seq, outcome);
+        let oldest = self.oldest_unfinished();
+        while let Some(entry) = self.finished.first_entry() {
+            if oldest.is_some_and(|oldest| oldest < *entry.key()) {
+                break;
+            }
+            match entry.remove() {
+                Outcome::Complete(request_id, completion) => reply.complete(request_id, completion),
+                Outcome::Terminate => reply.terminate(),
+            }
+        }
+    }
 }
 
 /// Serve the transfers of one bulk or interrupt endpoint.
@@ -1329,12 +1389,7 @@ async fn run_endpoint<T: BulkOrInterrupt, D: EndpointDirection>(
 ) {
     // UNTESTED: nusb must return completions in submission order to match them to the right URB.
     // Verify cancellation and resume ordering on hardware when changing endpoint handling.
-    let mut queue = EndpointQueue {
-        in_flight: VecDeque::new(),
-        draining: false,
-        retry: VecDeque::new(),
-        held: VecDeque::new(),
-    };
+    let mut queue = EndpointQueue::new();
 
     loop {
         let pending = endpoint.pending() != 0;
@@ -1386,17 +1441,22 @@ async fn run_endpoint<T: BulkOrInterrupt, D: EndpointDirection>(
                     continue;
                 };
                 let cancelled = completion.status == Err(TransferError::Cancelled);
+                let seq = entry.seq;
                 if cancelled && queue.draining && !entry.cancelled {
                     match resume::<D>(endpoint.max_packet_size(), &mut entry, completion) {
                         Resume::Submit(buffer) => queue.retry.push_back((entry, buffer)),
-                        Resume::Finished(completion) => complete_transfer::<D>(&reply, entry, completion),
-                        Resume::Invalid => reply.complete(
-                            entry.request_id,
-                            urb::failure_completion(entry.envelope, usbd_status::INVALID_PARAMETER),
-                        ),
+                        Resume::Finished(completion) => {
+                            let outcome = transfer_outcome::<D>(entry, completion);
+                            queue.finish(&reply, seq, outcome);
+                        }
+                        Resume::Invalid => {
+                            let completion = urb::failure_completion(entry.envelope, usbd_status::INVALID_PARAMETER);
+                            queue.finish(&reply, seq, Outcome::Complete(entry.request_id, completion));
+                        }
                     }
                 } else {
-                    complete_transfer::<D>(&reply, entry, completion);
+                    let outcome = transfer_outcome::<D>(entry, completion);
+                    queue.finish(&reply, seq, outcome);
                 }
 
                 if queue.draining && queue.in_flight.is_empty() {
@@ -1429,20 +1489,18 @@ fn submit<T: BulkOrInterrupt, D: EndpointDirection>(
         data,
         reservation,
     } = submission;
+    let seq = queue.next_seq();
 
     let buffer = if D::DIR == nusb::transfer::Direction::In {
+        // Completed without touching the device, still after the transfers submitted before.
         if length == 0 {
-            reply.complete(
-                request_id,
-                urb::transfer_completion(envelope, usbd_status::SUCCESS, Vec::new(), 0),
-            );
+            let completion = urb::transfer_completion(envelope, usbd_status::SUCCESS, Vec::new(), 0);
+            queue.finish(reply, seq, Outcome::Complete(request_id, completion));
             return;
         }
         let Some(buffer_length) = in_buffer_length(endpoint.max_packet_size(), length) else {
-            reply.complete(
-                request_id,
-                urb::failure_completion(envelope, usbd_status::INVALID_PARAMETER),
-            );
+            let completion = urb::failure_completion(envelope, usbd_status::INVALID_PARAMETER);
+            queue.finish(reply, seq, Outcome::Complete(request_id, completion));
             return;
         };
         Buffer::new(buffer_length)
@@ -1452,6 +1510,7 @@ fn submit<T: BulkOrInterrupt, D: EndpointDirection>(
 
     endpoint.submit(buffer);
     queue.in_flight.push_back(InFlight {
+        seq,
         request_id,
         envelope,
         length,
@@ -1546,13 +1605,23 @@ async fn cancel_all<T: BulkOrInterrupt, D: EndpointDirection>(
         let Some(entry) = queue.in_flight.pop_front() else {
             continue;
         };
-        complete_transfer::<D>(reply, entry, completion);
+        let seq = entry.seq;
+        let outcome = transfer_outcome::<D>(entry, completion);
+        queue.finish(reply, seq, outcome);
     }
     queue.in_flight.clear();
     queue.draining = false;
 
-    for (entry, _) in queue.retry.drain(..) {
-        reply.complete(entry.request_id, entry.into_cancelled());
+    while let Some((entry, _)) = queue.retry.pop_front() {
+        let (seq, request_id) = (entry.seq, entry.request_id);
+        queue.finish(reply, seq, Outcome::Complete(request_id, entry.into_cancelled()));
+    }
+    // Nothing is left running: report whatever still waited for an earlier transfer.
+    while let Some((_, outcome)) = queue.finished.pop_first() {
+        match outcome {
+            Outcome::Complete(request_id, completion) => reply.complete(request_id, completion),
+            Outcome::Terminate => reply.terminate(),
+        }
     }
     for submission in queue.held.drain(..) {
         reply.complete(
@@ -1562,12 +1631,12 @@ async fn cancel_all<T: BulkOrInterrupt, D: EndpointDirection>(
     }
 }
 
-/// Complete a bulk or interrupt transfer, or terminate the device channel on an IN overrun.
-fn complete_transfer<D: EndpointDirection>(reply: &Reply, entry: InFlight, completion: Completion) {
+/// Report a bulk or interrupt transfer, or terminate the device channel on an IN overrun.
+fn transfer_outcome<D: EndpointDirection>(entry: InFlight, completion: Completion) -> Outcome {
     let request_id = entry.request_id;
     match transfer_completion::<D>(entry, completion) {
-        Some(completion) => reply.complete(request_id, completion),
-        None => reply.terminate(),
+        Some(completion) => Outcome::Complete(request_id, completion),
+        None => Outcome::Terminate,
     }
 }
 
@@ -1654,6 +1723,7 @@ mod tests {
 
     fn in_flight(length: u32) -> InFlight {
         InFlight {
+            seq: 0,
             request_id: 7,
             envelope: Envelope::In {
                 output_buffer_size: length,
@@ -1672,6 +1742,46 @@ mod tests {
             actual_len: data.len(),
             status,
         }
+    }
+
+    #[test]
+    fn transfers_of_an_endpoint_finish_in_submission_order() {
+        let (sender, received) = std::sync::mpsc::channel();
+        let sink: UrbdrcEventSink = Arc::new(move |event| sender.send(event).expect("receiver is alive"));
+        let token = Arc::new(());
+        let reply = Reply::new(3, &token, sink);
+        let finished = || -> Vec<RequestId> {
+            received
+                .try_iter()
+                .filter_map(|event| match event.into_current() {
+                    Some(UrbdrcEventKind::Completion { request_id, .. }) => Some(request_id),
+                    _ => None,
+                })
+                .collect()
+        };
+        let ok = || urb::transfer_completion(Envelope::Out, usbd_status::SUCCESS, Vec::new(), 0);
+
+        let mut queue = EndpointQueue::new();
+        let mut first = in_flight(64);
+        first.seq = queue.next_seq();
+        first.request_id = 1;
+        let second_seq = queue.next_seq();
+
+        // The first transfer was cancelled along with another one and waits to run again: the second,
+        // which finished meanwhile, is held back.
+        queue.retry.push_back((first, Buffer::new(64)));
+        queue.finish(&reply, second_seq, Outcome::Complete(2, ok()));
+        assert!(finished().is_empty());
+
+        // Once the first one finishes, both are reported, in order.
+        let (first, _) = queue.retry.pop_front().expect("queued for retry");
+        queue.finish(&reply, first.seq, Outcome::Complete(1, ok()));
+        assert_eq!(finished(), [1, 2]);
+
+        // With nothing earlier pending, a transfer is reported right away.
+        let third_seq = queue.next_seq();
+        queue.finish(&reply, third_seq, Outcome::Complete(3, ok()));
+        assert_eq!(finished(), [3]);
     }
 
     #[test]
