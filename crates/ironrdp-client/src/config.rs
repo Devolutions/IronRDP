@@ -400,25 +400,18 @@ pub struct ChannelConfig {
     #[cfg(feature = "camera")]
     pub cameras: crate::camera::CameraConfig,
 
-    /// MS-RDPEVOR video optimized remoting, enabled when an H.264 decoder is available (by default
-    /// on Windows or with the `openh264` feature) unless `videoplaybackmode:i:0` turns it off.
+    /// MS-RDPEVOR video optimized remoting, enabled when an H.264 decoder is available unless
+    /// `videoplaybackmode:i:0` turns it off.
     #[cfg(feature = "video")]
     pub video: crate::video::VideoConfig,
+
+    /// H.264 decoder for the graphics pipeline and video optimized remoting.
+    ///
+    /// Defaults to [`crate::h264::H264DecoderFactory::platform_default`]: Media Foundation's on
+    /// Windows, or OpenH264 with the `openh264` feature.
+    pub h264_decoder: Option<crate::h264::H264DecoderFactory>,
 }
 
-#[cfg_attr(
-    not(any(
-        feature = "sound",
-        feature = "clipboard",
-        feature = "qoi",
-        feature = "qoiz",
-        feature = "webauthn"
-    )),
-    expect(
-        clippy::derivable_impls,
-        reason = "fields setting non-default values are feature-gated; the impl is only trivially derivable in some feature combinations"
-    )
-)]
 impl Default for ChannelConfig {
     fn default() -> Self {
         Self {
@@ -444,6 +437,7 @@ impl Default for ChannelConfig {
             cameras: crate::camera::CameraConfig::default(),
             #[cfg(feature = "video")]
             video: crate::video::VideoConfig::default(),
+            h264_decoder: crate::h264::H264DecoderFactory::platform_default(),
         }
     }
 }
@@ -843,7 +837,7 @@ pub struct ConfigBuilder {
     udp_transport_enabled: bool,
     #[cfg(feature = "udp")]
     udp_offer_version: Option<UdpVersion>,
-    graphics_pipeline: bool,
+    graphics_pipeline: Option<bool>,
     #[cfg(feature = "vmconnect")]
     vm_id: Option<String>,
     #[cfg(feature = "vmconnect")]
@@ -1353,15 +1347,17 @@ impl ConfigBuilder {
         self
     }
 
-    /// Advertises the graphics pipeline ([MS-RDPEGFX]) to the server. Off by default.
+    /// Advertises the graphics pipeline ([MS-RDPEGFX]) to the server.
     ///
-    /// Without it, the server keeps graphics on the legacy bitmap path, which travels on the
-    /// main connection and cannot move to a reliable UDP tunnel.
+    /// On by default when an H.264 decoder is configured ([`Self::with_h264_decoder`]), so the
+    /// server can send AVC420 and AVC444; `false` opts out. Without it, the server keeps graphics
+    /// on the legacy bitmap path, which travels on the main connection and cannot move to a
+    /// reliable UDP tunnel.
     ///
     /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/
     #[must_use]
     pub fn with_graphics_pipeline(mut self, enabled: bool) -> Self {
-        self.graphics_pipeline = enabled;
+        self.graphics_pipeline = Some(enabled);
         self
     }
 
@@ -1659,13 +1655,13 @@ impl ConfigBuilder {
         self
     }
 
-    /// Set the H.264 decoder used for MS-RDPEVOR video optimized remoting.
+    /// Set the H.264 decoder used by the graphics pipeline and MS-RDPEVOR video optimized remoting.
     ///
-    /// `None` declines the video channels.
-    #[cfg(feature = "video")]
+    /// `None` keeps the graphics pipeline to the codecs that need no H.264 decoder, turns it off
+    /// unless [`Self::with_graphics_pipeline`] turns it on, and declines the video channels.
     #[must_use]
-    pub fn with_h264_decoder(mut self, decoder: Option<crate::video::H264DecoderFactory>) -> Self {
-        self.channels.video.decoder = decoder;
+    pub fn with_h264_decoder(mut self, decoder: Option<crate::h264::H264DecoderFactory>) -> Self {
+        self.channels.h264_decoder = decoder;
         self
     }
 
@@ -2134,7 +2130,9 @@ impl ConfigBuilder {
             request_data: None,
             pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
             multitransport_flags: None,
-            support_dyn_vc_gfx_protocol: self.graphics_pipeline,
+            support_dyn_vc_gfx_protocol: self
+                .graphics_pipeline
+                .unwrap_or_else(|| self.channels.h264_decoder.is_some()),
             compression_type,
             performance_flags: self.performance_flags.unwrap_or_default(),
             timezone_info: TimezoneInfo::default(),
@@ -2373,11 +2371,11 @@ impl ConfigBuilder {
             }
         }
         if let Some(enabled) = ps.get::<i64>("ironrdp_egfx") {
-            self.graphics_pipeline = enabled != 0;
+            self.graphics_pipeline = Some(enabled != 0);
         }
         #[cfg(feature = "video")]
         if ps.get::<i64>("videoplaybackmode") == Some(0) {
-            self.channels.video.decoder = None;
+            self.channels.video.enabled = false;
         }
         #[cfg(feature = "camera")]
         if let Some(cameras) = ps.get::<&str>("camerastoredirect") {

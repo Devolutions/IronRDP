@@ -136,7 +136,7 @@ struct Args {
     #[clap(long, env = "IRONRDP_UDP_OFFER", requires = "udp", value_parser = clap::value_parser!(u16).range(1..=3))]
     udp_offer: Option<u16>,
 
-    /// Advertise the graphics pipeline (MS-RDPEGFX)
+    /// Advertise the graphics pipeline (MS-RDPEGFX); on by default when an H.264 decoder is available
     #[clap(long, env = "IRONRDP_EGFX", value_parser = clap::builder::BoolishValueParser::new(), num_args = 0..=1, default_missing_value = "true")]
     egfx: Option<bool>,
 

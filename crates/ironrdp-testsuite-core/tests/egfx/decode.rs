@@ -352,3 +352,75 @@ fn test_decode_uses_bt709_chroma_matrix() {
         assert!(px[2] < 20, "red B channel leaked: {}", px[2]);
     }
 }
+
+// ============================================================================
+// AVC444 Through a Real H.264 Stream
+// ============================================================================
+
+/// The main and auxiliary views of a picture go through one OpenH264 encoder and one decoder,
+/// as MS-RDPEGFX 2.2.4.5 requires, and recombine into a picture closer to the original than
+/// the main view alone.
+// oracle: spec MS-RDPEGFX §2.2.4.5
+#[rstest::rstest]
+#[case::avc444(ironrdp_egfx::avc444::Avc444Layout::V1)]
+#[case::avc444v2(ironrdp_egfx::avc444::Avc444Layout::V2)]
+fn test_openh264_avc444_views_recombine(#[case] layout: ironrdp_egfx::avc444::Avc444Layout) {
+    use ironrdp_egfx::avc444::Yuv444Frame;
+    use ironrdp_egfx::decode::Yuv420Frame;
+    use ironrdp_pdu::geometry::ExclusiveRectangle;
+    use openh264::encoder::Encoder;
+    use openh264::formats::YUVSlices;
+
+    const SIZE: u16 = 64;
+    // Stripes of saturated colors one pixel wide, which 4:2:0 subsampling blurs.
+    let mut original = Vec::new();
+    for _ in 0..SIZE {
+        for x in 0..SIZE {
+            let pixel = if x % 2 == 0 { [230, 40, 40] } else { [40, 60, 230] };
+            original.extend_from_slice(&pixel);
+            original.push(0xFF);
+        }
+    }
+    let picture = Yuv444Frame::from_rgba(&original, SIZE, SIZE).expect("picture");
+    let (main, auxiliary) = picture.split(layout).expect("views");
+
+    let mut encoder = Encoder::new().expect("encoder should initialize");
+    let mut decoder = OpenH264Decoder::new().expect("decoder should initialize");
+    let mut round_trip = |view: &Yuv420Frame| {
+        let y: Vec<u8> = (0..).map_while(|row| view.luma_row(row)).flatten().copied().collect();
+        let u: Vec<u8> = (0..).map_while(|row| view.u_row(row)).flatten().copied().collect();
+        let v: Vec<u8> = (0..).map_while(|row| view.v_row(row)).flatten().copied().collect();
+        let (width, height) = (usize::from(view.width()), usize::from(view.height()));
+        let yuv = YUVSlices::new((&y, &u, &v), (width, height), (width, width / 2, width / 2));
+        let bitstream = encoder.encode(&yuv).expect("encode should succeed").to_vec();
+        decoder.decode_yuv420(&bitstream).expect("decode should succeed")
+    };
+    let main = round_trip(&main);
+    let auxiliary = round_trip(&auxiliary);
+
+    let everything = ExclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: SIZE,
+        bottom: SIZE,
+    };
+    let mut combined = Yuv444Frame::new(SIZE, SIZE);
+    combined.apply_main_view(&main, core::slice::from_ref(&everything));
+    let subsampled = combined.to_rgba(&everything);
+    combined.apply_auxiliary_view(layout, &auxiliary, core::slice::from_ref(&everything));
+    let recombined = combined.to_rgba(&everything);
+
+    let mean_error = |picture: &[u8]| {
+        let total: u64 = picture
+            .iter()
+            .zip(&original)
+            .map(|(actual, expected)| u64::from(actual.abs_diff(*expected)))
+            .sum();
+        total / u64::try_from(picture.len()).expect("length fits in u64")
+    };
+    let (avc420_error, avc444_error) = (mean_error(&subsampled), mean_error(&recombined));
+    assert!(
+        avc444_error * 4 < avc420_error,
+        "AVC444 error {avc444_error} is not well below the 4:2:0 error {avc420_error}"
+    );
+}

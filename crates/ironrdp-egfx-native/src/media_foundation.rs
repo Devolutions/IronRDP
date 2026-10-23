@@ -4,7 +4,7 @@ use core::time::Duration;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 
-use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
+use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decoder, Yuv420Frame};
 use ironrdp_egfx::pdu::{avc_to_annex_b_into, is_avc_format};
 use tracing::{debug, warn};
 use windows::Win32::Media::MediaFoundation::{
@@ -23,7 +23,11 @@ use windows::Win32::System::Com::{
 /// and the caller is blocked meanwhile.
 const DECODE_TIMEOUT: Duration = Duration::from_secs(1);
 /// Longest time creating the decoder waits for Media Foundation to start.
-const START_TIMEOUT: Duration = Duration::from_secs(2);
+///
+/// Starting COM, Media Foundation and the transform cold can take seconds on a loaded machine.
+/// The graphics pipeline creates its decoder once per connection and loses H.264 for the whole
+/// session when this expires, so it allows for that rather than for the usual start.
+const START_TIMEOUT: Duration = Duration::from_secs(10);
 /// Spacing of the synthetic sample times, in 100-ns units (30 frames per second).
 const SAMPLE_DURATION: i64 = 333_333;
 
@@ -40,14 +44,24 @@ fn coefficients(matrix: YuvMatrix) -> (i32, i32, [i32; 4]) {
 }
 
 enum Command {
-    Decode(Vec<u8>, mpsc::SyncSender<DecoderResult<DecodedFrame>>),
+    Decode(Vec<u8>, mpsc::SyncSender<DecoderResult<Picture>>),
     Reset,
 }
 
+/// A decoded NV12 picture.
+struct Picture {
+    pixels: Vec<u8>,
+    format: OutputFormat,
+}
+
 /// H.264 decoder backed by the Microsoft H.264 decoder transform shipped with Windows.
+///
+/// [`H264Decoder::decode`] converts pictures with the matrix given at creation, and
+/// [`H264Decoder::decode_yuv420`] returns their planes.
 pub struct MediaFoundationH264Decoder {
     commands: Option<mpsc::Sender<Command>>,
     thread: Option<JoinHandle<()>>,
+    matrix: YuvMatrix,
 }
 
 impl MediaFoundationH264Decoder {
@@ -59,12 +73,13 @@ impl MediaFoundationH264Decoder {
         let (ready, ready_receiver) = mpsc::sync_channel(1);
         let thread = thread::Builder::new()
             .name("h264-decoder".to_owned())
-            .spawn(move || worker_main(matrix, &command_receiver, &ready))
+            .spawn(move || worker_main(&command_receiver, &ready))
             .map_err(|error| DecoderError::new("failed to spawn the H.264 decoder thread", error))?;
         match ready_receiver.recv_timeout(START_TIMEOUT) {
             Ok(Ok(())) => Ok(Self {
                 commands: Some(commands),
                 thread: Some(thread),
+                matrix,
             }),
             Ok(Err(error)) => {
                 let _ = thread.join();
@@ -78,10 +93,8 @@ impl MediaFoundationH264Decoder {
             )),
         }
     }
-}
 
-impl H264Decoder for MediaFoundationH264Decoder {
-    fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
+    fn decode_picture(&mut self, data: &[u8]) -> DecoderResult<Picture> {
         let commands = self
             .commands
             .as_ref()
@@ -101,6 +114,27 @@ impl H264Decoder for MediaFoundationH264Decoder {
             }
         }
     }
+}
+
+impl H264Decoder for MediaFoundationH264Decoder {
+    fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
+        let Picture { pixels, format } = self.decode_picture(data)?;
+        let (Ok(width), Ok(height)) = (usize::try_from(format.width), usize::try_from(format.height)) else {
+            return Err(DecoderError::msg("H.264 picture dimensions overflow"));
+        };
+        let rgba = nv12_to_rgba(&pixels, width, height, format.stride, self.matrix)
+            .ok_or_else(|| DecoderError::msg("the H.264 picture is smaller than its format"))?;
+        Ok(DecodedFrame::new(rgba, format.width, format.height))
+    }
+
+    fn decode_yuv420(&mut self, data: &[u8]) -> DecoderResult<Yuv420Frame> {
+        let Picture { pixels, format } = self.decode_picture(data)?;
+        nv12_to_yuv420(&pixels, format)
+    }
+
+    fn supports_yuv420(&self) -> bool {
+        true
+    }
 
     fn reset(&mut self) {
         if let Some(commands) = &self.commands {
@@ -119,11 +153,7 @@ impl Drop for MediaFoundationH264Decoder {
     }
 }
 
-fn worker_main(
-    matrix: YuvMatrix,
-    commands: &mpsc::Receiver<Command>,
-    ready: &mpsc::SyncSender<Result<(), windows::core::Error>>,
-) {
+fn worker_main(commands: &mpsc::Receiver<Command>, ready: &mpsc::SyncSender<Result<(), windows::core::Error>>) {
     let _media_foundation = match MediaFoundationThread::initialize() {
         Ok(media_foundation) => media_foundation,
         Err(error) => {
@@ -131,7 +161,7 @@ fn worker_main(
             return;
         }
     };
-    let mut transform = match Transform::create(matrix) {
+    let mut transform = match Transform::create() {
         Ok(transform) => transform,
         Err(error) => {
             let _ = ready.send(Err(error));
@@ -189,13 +219,12 @@ struct OutputFormat {
 struct Transform {
     transform: IMFTransform,
     output: OutputFormat,
-    matrix: YuvMatrix,
     sample_time: i64,
     annex_b: Vec<u8>,
 }
 
 impl Transform {
-    fn create(matrix: YuvMatrix) -> windows::core::Result<Self> {
+    fn create() -> windows::core::Result<Self> {
         // SAFETY: COM is initialized on the worker thread.
         let transform: IMFTransform = unsafe { CoCreateInstance(&CLSID_MSH264DecoderMFT, None, CLSCTX_INPROC_SERVER) }?;
         // SAFETY: valid transform.
@@ -223,13 +252,12 @@ impl Transform {
         Ok(Self {
             transform,
             output,
-            matrix,
             sample_time: 0,
             annex_b: Vec::new(),
         })
     }
 
-    fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
+    fn decode(&mut self, data: &[u8]) -> DecoderResult<Picture> {
         let data = if is_avc_format(data) {
             avc_to_annex_b_into(data, &mut self.annex_b);
             core::mem::take(&mut self.annex_b)
@@ -295,7 +323,7 @@ impl Transform {
     }
 
     /// Returns the pictures the transform has ready.
-    fn drain(&mut self) -> DecoderResult<Vec<DecodedFrame>> {
+    fn drain(&mut self) -> DecoderResult<Vec<Picture>> {
         let mut frames = Vec::new();
         loop {
             // SAFETY: valid transform.
@@ -336,20 +364,13 @@ impl Transform {
             let Some(picture) = picture else {
                 continue;
             };
-            frames.push(self.convert(&picture)?);
+            let pixels =
+                sample_bytes(&picture).map_err(|error| DecoderError::new("failed to read an H.264 picture", error))?;
+            frames.push(Picture {
+                pixels,
+                format: self.output,
+            });
         }
-    }
-
-    fn convert(&self, picture: &IMFSample) -> DecoderResult<DecodedFrame> {
-        let OutputFormat { width, height, stride } = self.output;
-        let pixels =
-            sample_bytes(picture).map_err(|error| DecoderError::new("failed to read an H.264 picture", error))?;
-        let (Ok(width), Ok(height)) = (usize::try_from(width), usize::try_from(height)) else {
-            return Err(DecoderError::msg("H.264 picture dimensions overflow"));
-        };
-        let rgba = nv12_to_rgba(&pixels, width, height, stride, self.matrix)
-            .ok_or_else(|| DecoderError::msg("the H.264 picture is smaller than its format"))?;
-        Ok(DecodedFrame::new(rgba, self.output.width, self.output.height))
     }
 }
 
@@ -406,6 +427,29 @@ fn sample_bytes(sample: &IMFSample) -> windows::core::Result<Vec<u8>> {
     // SAFETY: balances the successful `Lock`.
     unsafe { buffer.Unlock() }?;
     data.ok_or_else(windows::core::Error::empty)
+}
+
+/// Splits an NV12 picture into the planes of a YUV 4:2:0 picture.
+fn nv12_to_yuv420(nv12: &[u8], format: OutputFormat) -> DecoderResult<Yuv420Frame> {
+    let OutputFormat { width, height, stride } = format;
+    let (Ok(width), Ok(height)) = (u16::try_from(width), u16::try_from(height)) else {
+        return Err(DecoderError::msg("H.264 picture dimensions exceed 65535"));
+    };
+    let chroma_width = usize::from(width.div_ceil(2));
+    let chroma_rows = usize::from(height.div_ceil(2));
+    let luma_size = stride * usize::from(height);
+    let Some(interleaved) = nv12.get(luma_size..luma_size + stride * chroma_rows) else {
+        return Err(DecoderError::msg("the H.264 picture is smaller than its format"));
+    };
+    let mut u = Vec::with_capacity(chroma_width * chroma_rows);
+    let mut v = Vec::with_capacity(chroma_width * chroma_rows);
+    for row in interleaved.chunks_exact(stride) {
+        for pair in row.chunks_exact(2).take(chroma_width) {
+            u.push(pair[0]);
+            v.push(pair[1]);
+        }
+    }
+    Yuv420Frame::new(width, height, nv12[..luma_size].to_vec(), stride, u, v, chroma_width)
 }
 
 /// Converts an NV12 picture with `stride`-byte rows to tightly packed RGBA.

@@ -57,7 +57,8 @@ Audio plays on the system default output device, followed when it changes; `--au
 `--microphone` redirects the default input device, or the one `--audio-input-device` selects.
 `--audio-latency <MS>` sets how much audio is buffered ahead of the speakers (100 ms by default); raise it on networks with high jitter.
 
-MS-RDPEVOR video optimized remoting is decoded with the Windows H.264 decoder; build with `--features openh264` to use the bundled OpenH264 sources instead (required on other platforms).
+The graphics pipeline (MS-RDPEGFX) is used by default with H.264, including AVC444, and MS-RDPEVOR video optimized remoting is accepted; both decode with the Windows H.264 decoder.
+Build with `--features openh264` to use the bundled OpenH264 sources instead (required on other platforms), and pass `--egfx=false` to keep graphics on the legacy bitmap path.
 
 To open the basic console of a local Hyper-V VM with the current Windows account:
 

@@ -186,6 +186,7 @@ fn client_filters_avc_caps_without_decoder() {
     );
 }
 
+// oracle: spec MS-RDPEGFX §2.2.3.3
 #[test]
 fn client_keeps_avc_caps_with_decoder() {
     let handler = TestHandler::new();
@@ -199,8 +200,8 @@ fn client_keeps_avc_caps_with_decoder() {
         2,
         "expected both capability sets with decoder present"
     );
-    // V10.x is absent by design: those versions imply AVC444, which the client
-    // cannot decode, and the server would then send only frames it discards.
+    // V10.x is absent: those versions imply AVC444, which needs a decoder returning
+    // YUV planes, and the server would then send only frames the client discards.
     assert_eq!(caps_pdu.0[0].version, CapabilityVersion::V8_1);
     assert_eq!(caps_pdu.0[1].version, CapabilityVersion::V8);
 }
@@ -559,6 +560,141 @@ fn protocol_reset_discards_clearcodec_glyphs() {
         client.dropped_updates(),
         1,
         "a fresh seed must make the glyph usable again"
+    );
+}
+
+// oracle: mutant version 10 sets missing or reordered with a YUV decoder
+#[test]
+fn client_advertises_avc444_with_a_yuv_decoder() {
+    struct YuvDecoder;
+    impl H264Decoder for YuvDecoder {
+        fn decode(&mut self, _data: &[u8]) -> DecoderResult<DecodedFrame> {
+            Ok(DecodedFrame::new(vec![0; 16 * 16 * 4], 16, 16))
+        }
+
+        fn supports_yuv420(&self) -> bool {
+            true
+        }
+    }
+
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), Some(Box::new(YuvDecoder)));
+    let messages = client.start(0).expect("start should succeed");
+    let caps_pdu = decode_caps_from_message(&messages[0]);
+    let versions: Vec<_> = caps_pdu.0.iter().map(|cap| cap.version).collect();
+    assert_eq!(
+        versions,
+        [
+            CapabilityVersion::V10_7,
+            CapabilityVersion::V10_6,
+            CapabilityVersion::V10_5,
+            CapabilityVersion::V10_4,
+            CapabilityVersion::V10_3,
+            CapabilityVersion::V10_2,
+            CapabilityVersion::V10_1,
+            CapabilityVersion::V10,
+            CapabilityVersion::V8_1,
+            CapabilityVersion::V8,
+        ]
+    );
+}
+
+// oracle: spec MS-RDPEGFX §2.2.3.3
+#[test]
+fn client_advertises_no_avc_when_the_decoder_never_becomes_ready() {
+    struct FailedStart;
+    impl H264Decoder for FailedStart {
+        fn decode(&mut self, _data: &[u8]) -> DecoderResult<DecodedFrame> {
+            Ok(DecodedFrame::new(vec![0; 16 * 16 * 4], 16, 16))
+        }
+
+        fn supports_yuv420(&self) -> bool {
+            true
+        }
+
+        fn wait_until_ready(&mut self) -> bool {
+            false
+        }
+    }
+
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), Some(Box::new(FailedStart)));
+    let messages = client.start(0).expect("start should succeed");
+    let caps_pdu = decode_caps_from_message(&messages[0]);
+    let versions: Vec<_> = caps_pdu.0.iter().map(|cap| cap.version).collect();
+    assert_eq!(versions, [CapabilityVersion::V8]);
+}
+
+// oracle: spec MS-RDPEGFX §2.2.3.10
+#[test]
+fn client_keeps_handler_caps_that_disable_avc_without_decoder() {
+    struct AvcDisabledHandler;
+    impl GraphicsPipelineHandler for AvcDisabledHandler {
+        fn capabilities(&self) -> Vec<CapabilitySet> {
+            vec![
+                CapabilitySet::V10_7 {
+                    flags: CapabilitiesV107Flags::AVC_DISABLED,
+                },
+                CapabilitySet::V10_7 {
+                    flags: CapabilitiesV107Flags::empty(),
+                },
+            ]
+        }
+    }
+
+    let mut client = GraphicsPipelineClient::new(Box::new(AvcDisabledHandler), None);
+    let messages = client.start(0).expect("start should succeed");
+    let caps_pdu = decode_caps_from_message(&messages[0]);
+    assert_eq!(
+        caps_pdu
+            .0
+            .iter()
+            .map(|cap| cap.parsed().expect("valid set").expect("known version"))
+            .collect::<Vec<_>>(),
+        [CapabilitySet::V10_7 {
+            flags: CapabilitiesV107Flags::AVC_DISABLED,
+        }]
+    );
+}
+
+#[rstest]
+// oracle: spec MS-RDPEGFX §2.2.3.1
+#[case::v8_thin_client(CapabilitySet::V8 { flags: CapabilitiesV8Flags::THIN_CLIENT }, false, false, true, true)]
+// oracle: spec MS-RDPEGFX §2.2.3.2
+#[case::v8_1_avc420(
+    CapabilitySet::V8_1 { flags: CapabilitiesV81Flags::AVC420_ENABLED },
+    true,
+    false,
+    false,
+    false
+)]
+// oracle: spec MS-RDPEGFX §2.2.3.3
+#[case::v10_avc_disabled(
+    CapabilitySet::V10 { flags: CapabilitiesV10Flags::AVC_DISABLED | CapabilitiesV10Flags::SMALL_CACHE },
+    false,
+    false,
+    true,
+    false
+)]
+// oracle: spec MS-RDPEGFX §3.3.1.4
+#[case::v10_3_always_small(CapabilitySet::V10_3 { flags: CapabilitiesV103Flags::AVC_THIN_CLIENT }, true, true, true, true)]
+// oracle: spec MS-RDPEGFX §2.2.3.10
+#[case::v10_7_large_cache(CapabilitySet::V10_7 { flags: CapabilitiesV107Flags::empty() }, true, true, false, false)]
+fn client_reads_confirmed_flags(
+    #[case] confirmed: CapabilitySet,
+    #[case] avc420: bool,
+    #[case] avc444: bool,
+    #[case] small_cache: bool,
+    #[case] thin_client: bool,
+) {
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), None);
+    let confirm = GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&confirmed));
+    client
+        .process(0, &encode_for_process(&confirm))
+        .expect("confirm should succeed");
+
+    let codecs = client.codec_capabilities();
+    assert_eq!(
+        (codecs.avc420, codecs.avc444, codecs.small_cache, codecs.thin_client),
+        (avc420, avc444, small_cache, thin_client)
     );
 }
 
