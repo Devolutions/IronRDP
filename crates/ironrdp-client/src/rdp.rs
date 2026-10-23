@@ -1623,6 +1623,14 @@ impl GatewayRedirectionPolicy {
         if flags.drive_disabled {
             mapped_flags |= HTTP_TUNNEL_REDIR_DISABLE_DRIVE;
         }
+        #[cfg(feature = "rdpdr")]
+        if flags.printer_disabled {
+            mapped_flags |= HTTP_TUNNEL_REDIR_DISABLE_PRINTER;
+        }
+        #[cfg(feature = "rdpdr")]
+        if flags.port_disabled {
+            mapped_flags |= HTTP_TUNNEL_REDIR_DISABLE_PORT;
+        }
         #[cfg(feature = "clipboard")]
         if flags.clipboard_disabled {
             mapped_flags |= HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD;
@@ -2604,7 +2612,6 @@ fn gateway_connect_target(config: &Config, gw: &crate::config::GatewayConfig) ->
     }
 }
 
-#[cfg(feature = "gateway")]
 #[cfg(feature = "gateway")]
 enum GatewayTunnelPolicy {
     Http(ironrdp_mstsgu::GwTunnelPolicy),
@@ -5261,6 +5268,40 @@ mod tests {
                     | ironrdp_pdu::gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP
             )
         );
+    }
+
+    // oracle: regression #2202 (RPCH printer restrictions must not disable other device classes).
+    #[cfg(all(feature = "gateway", feature = "rdpdr"))]
+    #[test]
+    fn rpch_gateway_printer_restriction_preserves_other_device_classes() {
+        let policy = GatewayRedirectionPolicy::from_rpch_flags(ironrdp_mstsgu::GwRpchRedirectionFlags {
+            printer_disabled: true,
+            ..Default::default()
+        });
+
+        assert!(policy.disables_printer());
+        assert!(!policy.disables_drive());
+        assert!(!policy.disables_port());
+        assert!(!policy.disables_all());
+        #[cfg(feature = "clipboard")]
+        assert!(!policy.disables_clipboard());
+    }
+
+    // oracle: regression #2202 (RPCH port restrictions must not disable other device classes).
+    #[cfg(all(feature = "gateway", feature = "rdpdr"))]
+    #[test]
+    fn rpch_gateway_port_restriction_preserves_other_device_classes() {
+        let policy = GatewayRedirectionPolicy::from_rpch_flags(ironrdp_mstsgu::GwRpchRedirectionFlags {
+            port_disabled: true,
+            ..Default::default()
+        });
+
+        assert!(policy.disables_port());
+        assert!(!policy.disables_drive());
+        assert!(!policy.disables_printer());
+        assert!(!policy.disables_all());
+        #[cfg(feature = "clipboard")]
+        assert!(!policy.disables_clipboard());
     }
 
     #[cfg(all(feature = "gateway", feature = "clipboard", feature = "rdpdr"))]

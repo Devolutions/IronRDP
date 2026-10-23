@@ -1307,6 +1307,7 @@ impl ConfigBuilder {
     /// `ironrdp_gatewayrpch:i:1` opt-in.
     #[must_use]
     pub fn with_transport(mut self, transport: TransportKind) -> Self {
+        self.properties.remove("ironrdp_gatewayrpch");
         match &transport {
             TransportKind::Direct => {
                 self.properties.clear_rdcleanpath();
@@ -1340,8 +1341,6 @@ impl ConfigBuilder {
                 });
                 if matches!(transport, TransportKind::GatewayRpch { .. }) {
                     self.properties.insert("ironrdp_gatewayrpch", 1i64);
-                } else {
-                    self.properties.remove("ironrdp_gatewayrpch");
                 }
             }
             #[cfg(windows)]
@@ -2774,6 +2773,8 @@ mod tests {
             .with_gateway_password("gateway-password")
             .build()
             .expect("valid explicit RPCH gateway configuration");
+        // oracle: regression #2202 (explicit RPCH selection must retain its exported opt-in).
+        assert_eq!(rpch.properties().get::<i64>("ironrdp_gatewayrpch"), Some(1));
         let Transport::GatewayRpch(gateway) = rpch.transport() else {
             panic!("explicit RPCH gateway transport expected");
         };
@@ -2805,6 +2806,96 @@ mod tests {
 
         properties.insert("ironrdp_gatewayrpch", 2i64);
         assert!(complete_builder().with_property_set(&properties).is_err());
+    }
+
+    // oracle: regression #2202 (exported direct settings must not retain the RPCH opt-in).
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn direct_transport_clears_rpch_opt_in() {
+        let config = complete_builder()
+            .with_transport(TransportKind::GatewayRpch {
+                endpoint: "gateway.example:443".to_owned(),
+                prefer_direct: false,
+            })
+            .with_transport(TransportKind::Direct)
+            .build()
+            .expect("valid direct configuration");
+
+        assert!(matches!(config.transport(), Transport::Direct));
+        assert_eq!(config.properties().get::<i64>("ironrdp_gatewayrpch"), None);
+
+        let mut properties = config.properties().clone();
+        properties.set_gateway_hostname("new-gateway.example:443");
+        properties.set_gateway_usage_method(ironrdp_cfg::GatewayUsageMethod::UseAlways);
+        let reloaded = complete_builder()
+            .with_property_set(&properties)
+            .expect("valid merged gateway properties")
+            .with_gateway_username("gateway-user")
+            .with_gateway_password("gateway-password")
+            .build()
+            .expect("valid merged gateway configuration");
+        assert!(matches!(reloaded.transport(), Transport::Gateway(_)));
+    }
+
+    // oracle: regression #2202 (exported RDCleanPath settings must not retain the RPCH opt-in).
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn rdcleanpath_transport_clears_rpch_opt_in() {
+        let config = complete_builder()
+            .with_transport(TransportKind::GatewayRpch {
+                endpoint: "gateway.example:443".to_owned(),
+                prefer_direct: false,
+            })
+            .with_transport(TransportKind::RDCleanPath {
+                url: "wss://proxy.example".parse().expect("valid RDCleanPath URL"),
+            })
+            .with_rdcleanpath_token("token")
+            .build()
+            .expect("valid RDCleanPath configuration");
+
+        assert!(matches!(config.transport(), Transport::RDCleanPath(_)));
+        assert_eq!(config.properties().get::<i64>("ironrdp_gatewayrpch"), None);
+    }
+
+    // oracle: regression #2202 (exported named-pipe settings must not retain the RPCH opt-in).
+    #[cfg(all(windows, feature = "gateway"))]
+    #[test]
+    fn named_pipe_transport_clears_rpch_opt_in() {
+        let config = complete_builder()
+            .with_transport(TransportKind::GatewayRpch {
+                endpoint: "gateway.example:443".to_owned(),
+                prefer_direct: false,
+            })
+            .with_transport(TransportKind::NamedPipe {
+                path: r"\\.\pipe\rdp".to_owned(),
+            })
+            .build()
+            .expect("valid named-pipe configuration");
+
+        assert!(matches!(config.transport(), Transport::NamedPipe { .. }));
+        assert_eq!(config.properties().get::<i64>("ironrdp_gatewayrpch"), None);
+    }
+
+    // oracle: regression #2202 (exported HTTP gateway settings must not retain the RPCH opt-in).
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn http_gateway_transport_clears_rpch_opt_in() {
+        let config = complete_builder()
+            .with_transport(TransportKind::GatewayRpch {
+                endpoint: "gateway.example:443".to_owned(),
+                prefer_direct: false,
+            })
+            .with_transport(TransportKind::Gateway {
+                endpoint: "gateway.example:443".to_owned(),
+                prefer_direct: false,
+            })
+            .with_gateway_username("gateway-user")
+            .with_gateway_password("gateway-password")
+            .build()
+            .expect("valid HTTP gateway configuration");
+
+        assert!(matches!(config.transport(), Transport::Gateway(_)));
+        assert_eq!(config.properties().get::<i64>("ironrdp_gatewayrpch"), None);
     }
 
     #[cfg(feature = "gateway")]
