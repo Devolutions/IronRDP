@@ -1,0 +1,61 @@
+name: Web pixel correctness
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-pixel-correctness-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pixels:
+    name: Canvas pixels (${{ matrix.simd }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      matrix:
+        simd: ['+simd128', '-simd128']
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install WASM test tools
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --version 0.2.126 --locked
+      - name: Install Chromium and its driver
+        id: chromium
+        uses: browser-actions/setup-chrome@v2
+        with:
+          chrome-version: latest
+          install-chromedriver: true
+          install-dependencies: true
+      - name: Run production Canvas tests
+        working-directory: crates/ironrdp-web
+        env:
+          CHROMIUM_BINARY: ${{ steps.chromium.outputs.chrome-path }}
+          CHROMEDRIVER: ${{ steps.chromium.outputs.chromedriver-path }}
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+          WASM_BINDGEN_TEST_TIMEOUT: '180'
+          RUSTFLAGS: '-Ctarget-feature=${{ matrix.simd }} --cfg getrandom_backend="wasm_js"'
+        run: |
+          unset CARGO_ENCODED_RUSTFLAGS NO_HEADLESS
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path("webdriver.json").write_text(json.dumps({
+              "goog:chromeOptions": {
+                  "binary": os.environ["CHROMIUM_BINARY"],
+                  "args": ["--no-sandbox", "--disable-dev-shm-usage"]
+              }
+          }))
+          PY
+          cargo test --locked --target wasm32-unknown-unknown --test canvas_pixels
