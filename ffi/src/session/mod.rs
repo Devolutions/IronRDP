@@ -10,23 +10,23 @@ fn active_stage_output(output: ironrdp::session::ActiveStageOutput) -> ffi::Acti
     ffi::ActiveStageOutput(output, encoded_windowing_orders)
 }
 
-/// Encodes windowing orders as a complete slow-path Orders update, including its
-/// `updateType` field ([MS-RDPBCGR] 2.2.9.1.1.3.1.1): the byte form this API exposed
-/// before orders were decoded.
+/// Encodes windowing orders as a complete slow-path Orders update ([MS-RDPBCGR] 2.2.9.1.1.3.1
+/// Slow-Path Graphics Update carrying an [MS-RDPEGDI] 2.2.2.1 Orders Update), the byte form this
+/// API exposed before orders were decoded.
 ///
 /// Orders the session decoded always encode; see
-/// [`encode_slow_path_windowing_orders`](ironrdp::pdu::window::encode_slow_path_windowing_orders).
+/// [`encode_slow_path_windowing_orders_update`](ironrdp::pdu::window::encode_slow_path_windowing_orders_update).
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr
+/// [MS-RDPEGDI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegdi
 fn encode_slow_path_orders_update(
     orders: &[ironrdp::pdu::window::WindowingOrder],
 ) -> ironrdp::core::EncodeResult<Vec<u8>> {
-    const UPDATETYPE_ORDERS: u16 = 0;
-
-    let mut update = vec![0; 2 /* updateType */ + ironrdp::pdu::window::slow_path_windowing_orders_size(orders)];
-    let mut dst = ironrdp::core::WriteCursor::new(&mut update);
-    dst.write_u16(UPDATETYPE_ORDERS);
-    ironrdp::pdu::window::encode_slow_path_windowing_orders(orders, &mut dst)?;
+    let mut update = vec![0; ironrdp::pdu::window::slow_path_windowing_orders_update_size(orders)];
+    ironrdp::pdu::window::encode_slow_path_windowing_orders_update(
+        orders,
+        &mut ironrdp::core::WriteCursor::new(&mut update),
+    )?;
     Ok(update)
 }
 
@@ -702,7 +702,7 @@ mod tests {
         assert!(output.get_windowing_orders().is_err());
     }
 
-    // oracle: spec MS-RDPBCGR §2.2.9.1.1.3.1.1 and MS-RDPERP §2.2.1.3.1.2.4
+    // oracle: spec MS-RDPBCGR §2.2.9.1.1.3.1, MS-RDPEGDI §2.2.2.1 and MS-RDPERP §2.2.1.3.1.2.4
     #[test]
     fn active_stage_output_exposes_windowing_orders_as_a_slow_path_update() {
         use ironrdp::pdu::window::{WindowOrder, WindowOrderBody, WindowingOrder};

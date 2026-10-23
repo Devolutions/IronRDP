@@ -2237,11 +2237,8 @@ async fn consume_output(
             RdpOutputEvent::LoginComplete => false,
             RdpOutputEvent::WindowingOrders(orders) => {
                 guard.rail.record(RailEventKind::WindowingOrders {
-                    // The slow-path Orders update the orders arrive in, with its updateType field.
-                    byte_count: u32::try_from(
-                        2 /* updateType */ + ironrdp_pdu::window::slow_path_windowing_orders_size(&orders),
-                    )
-                    .unwrap_or(u32::MAX),
+                    byte_count: u32::try_from(ironrdp_pdu::window::slow_path_windowing_orders_update_size(&orders))
+                        .unwrap_or(u32::MAX),
                 });
                 true
             }

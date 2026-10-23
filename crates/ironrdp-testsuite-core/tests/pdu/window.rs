@@ -11,8 +11,9 @@ use ironrdp_pdu::geometry::ExclusiveRectangle;
 use ironrdp_pdu::window::{
     CachedIconInfo, DesktopOrder, IconInfo, IconSource, MonitoredDesktop, NotifyIconInfoTip, NotifyIconOrder,
     NotifyIconState, ResizeMargins, ShowState, WindowIcon, WindowOrder, WindowOrderBody, WindowPoint, WindowSize,
-    WindowState, WindowStyle, WindowingOrder, encode_slow_path_windowing_orders, slow_path_windowing_orders_size,
-    try_decode_fast_path_windowing_orders, try_decode_slow_path_windowing_orders,
+    WindowState, WindowStyle, WindowingOrder, encode_slow_path_windowing_orders_update,
+    slow_path_windowing_orders_update_size, try_decode_fast_path_windowing_orders,
+    try_decode_slow_path_windowing_orders,
 };
 use rstest::rstest;
 
@@ -274,7 +275,7 @@ fn rejects_malformed_window_orders(#[case] bytes: &[u8]) {
     assert!(decode::<WindowingOrder>(bytes).is_err());
 }
 
-// oracle: spec MS-RDPBCGR §2.2.9.1.1.3.1.1
+// oracle: spec MS-RDPEGDI §2.2.2.1
 #[test]
 fn slow_path_update_decodes_every_order() {
     let mut update = vec![0, 0, 2, 0, 0, 0]; // pad2OctetsA, numberOrders = 2, pad2OctetsB
@@ -377,19 +378,42 @@ fn notification_icon_values_the_decoder_rejects_are_not_encoded(#[case] state: N
     assert!(encode_vec(&order).is_err());
 }
 
-// oracle: property round-trip, and spec MS-RDPBCGR §2.2.9.1.1.3.1.1 for the framing
 #[test]
 fn slow_path_orders_update_encoding_inverts_its_decoding() {
     let orders = [
         new_window(),
         decode::<WindowingOrder>(&[0x2e, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x21, 0x07, 0x00, 0x00, 0x00]).unwrap(),
     ];
-    let mut update = vec![0; slow_path_windowing_orders_size(&orders)];
+    let mut update = vec![0; slow_path_windowing_orders_update_size(&orders)];
 
-    encode_slow_path_windowing_orders(&orders, &mut WriteCursor::new(&mut update)).unwrap();
+    encode_slow_path_windowing_orders_update(&orders, &mut WriteCursor::new(&mut update)).unwrap();
 
-    assert_eq!(&update[..6], [0, 0, 2, 0, 0, 0]); // pad2OctetsA, numberOrders = 2, pad2OctetsB
-    let decoded = try_decode_slow_path_windowing_orders(&mut ReadCursor::new(&update)).unwrap();
+    // oracle: spec MS-RDPBCGR §2.2.9.1.1.3.1 and MS-RDPEGDI §2.2.2.1
+    assert_eq!(&update[..8], [0, 0, 0, 0, 2, 0, 0, 0]); // updateType: ORDERS, pad2OctetsA, numberOrders = 2, pad2OctetsB
+    // oracle: property round-trip
+    let decoded = try_decode_slow_path_windowing_orders(&mut ReadCursor::new(&update[2..])).unwrap();
     assert_eq!(decoded.orders, orders);
     assert!(!decoded.contains_non_window_orders);
+}
+
+// oracle: reference Devolutions/IronRDP@1de38a2ee553:crates/ironrdp-pdu/src/basic_output/window.rs
+// (validate_window_fields accepts ICON_BIG and ICON_OVERLAY on a state order; neither carries data)
+// oracle: spec MS-RDPERP §2.2.1.3.1.2.2 (flag values: ICON_BIG 0x00002000, ICON_OVERLAY 0x00100000)
+#[rstest]
+#[case::icon_big(0x0100_2000)]
+#[case::icon_overlay(0x0110_0000)]
+#[case::icon_big_and_overlay(0x0110_2000)]
+fn icon_flags_without_an_icon_are_ignored(#[case] fields_present: u32) {
+    let mut bytes = vec![0x2e, 0x0b, 0x00]; // controlFlags, orderSize = 11
+    bytes.extend_from_slice(&fields_present.to_le_bytes());
+    bytes.extend_from_slice(&7u32.to_le_bytes()); // WindowId
+
+    assert_eq!(
+        decode::<WindowingOrder>(&bytes).unwrap(),
+        WindowingOrder::Window(WindowOrder {
+            window_id: 7,
+            is_new: false,
+            body: WindowOrderBody::State(Box::default()),
+        })
+    );
 }
