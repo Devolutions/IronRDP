@@ -936,6 +936,7 @@ pub enum RailEventKind {
         kind: String,
     },
     WindowingOrders {
+        /// Size of the orders as one slow-path Orders update, including its `updateType` field.
         byte_count: u32,
     },
     /// History before this sequence was evicted from the bounded ledger.

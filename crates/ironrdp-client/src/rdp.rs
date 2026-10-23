@@ -148,9 +148,9 @@ pub enum RdpOutputEvent {
     PointerBitmap(Arc<DecodedPointer>),
     /// RAIL Windowing Alternate Secondary Drawing Orders.
     ///
-    /// The owned payload begins with the slow-path `Orders` update type and is delivered only
-    /// after the Window List support level negotiated for the current activation is validated.
-    WindowingOrders(Vec<u8>),
+    /// The orders are delivered only after the Window List support level negotiated for the
+    /// current activation is validated.
+    WindowingOrders(Vec<ironrdp_pdu::window::WindowingOrder>),
     /// The server completed the RAIL static-channel handshake.
     RailHandshake {
         handshake_ex_flags: Option<u32>,
@@ -6170,15 +6170,21 @@ mod tests {
         ));
     }
 
+    // oracle: mutant (orders dropped or altered between the session loop and the output consumer)
     #[tokio::test]
     async fn windowing_orders_are_delivered_to_the_output_consumer() {
+        let deleted_window = ironrdp_pdu::window::WindowingOrder::Window(ironrdp_pdu::window::WindowOrder {
+            window_id: 7,
+            is_new: false,
+            body: ironrdp_pdu::window::WindowOrderBody::Deleted,
+        });
         let (output_sender, mut output_receiver) = crate::output_channel::output_channel(1);
         let (_close_sender, mut close_receiver) = watch::channel(false);
 
         assert!(
             send_active_output_event(
                 &output_sender,
-                RdpOutputEvent::WindowingOrders(vec![0, 0, 1, 2, 3]),
+                RdpOutputEvent::WindowingOrders(vec![deleted_window.clone()]),
                 &mut close_receiver,
             )
             .await
@@ -6186,7 +6192,7 @@ mod tests {
         );
         assert!(matches!(
             output_receiver.recv().await,
-            Some(RdpOutputEvent::WindowingOrders(data)) if data == [0, 0, 1, 2, 3]
+            Some(RdpOutputEvent::WindowingOrders(orders)) if orders == [deleted_window]
         ));
     }
 

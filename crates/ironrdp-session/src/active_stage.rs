@@ -21,7 +21,7 @@ use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp_pdu::rdp::suppress_output::SuppressOutputPdu;
 use ironrdp_pdu::slow_path::{self, GraphicsUpdateType};
 use ironrdp_pdu::window::{
-    WindowingOrdersUpdate, try_decode_fast_path_windowing_orders, try_decode_slow_path_windowing_orders,
+    WindowingOrder, WindowingOrdersUpdate, try_decode_fast_path_windowing_orders, try_decode_slow_path_windowing_orders,
 };
 use ironrdp_pdu::{Action, mcs};
 use ironrdp_rdpei::RdpeiClient;
@@ -897,11 +897,18 @@ pub enum ActiveStageOutput {
     PointerBitmap(Arc<DecodedPointer>),
     /// Server-reported remote monitor layout ([MS-RDPBCGR] 2.2.12.1).
     MonitorLayout(Vec<Monitor>),
-    /// Validated Windowing Alternate Secondary Drawing Orders.
+    /// Decoded Windowing Alternate Secondary Drawing Orders ([MS-RDPERP] 2.2.1.3).
     ///
-    /// The payload is a complete slow-path Orders graphics update. It remains
-    /// protocol data rather than a RAIL message.
-    WindowingOrders(Vec<u8>),
+    /// The orders come from one slow-path or Fast-Path Orders update, in wire order,
+    /// and are only forwarded when window support was negotiated.
+    ///
+    /// An update that also carries other drawing orders is decoded only up to the first
+    /// of them: their framing depends on drawing-order state this client does not keep,
+    /// and it advertises no drawing-order support that would make a server send them.
+    /// Such an update is logged as a warning.
+    ///
+    /// [MS-RDPERP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp
+    WindowingOrders(Vec<WindowingOrder>),
     Terminate(GracefulDisconnectReason),
     /// Server Save Session Info notification ([MS-RDPBCGR] 2.2.10.1).
     ///
@@ -1010,7 +1017,7 @@ fn process_slow_path_graphics(
     image: &mut DecodedImage,
     window_support_level: Option<WindowSupportLevel>,
     data: &[u8],
-) -> SessionResult<(Vec<UpdateKind>, Option<Vec<u8>>)> {
+) -> SessionResult<(Vec<UpdateKind>, Option<Vec<WindowingOrder>>)> {
     let mut src = ReadCursor::new(data);
     let update_type = slow_path::read_graphics_update_type(&mut src).map_err(SessionError::decode)?;
 
@@ -1027,7 +1034,7 @@ fn process_slow_path_graphics(
             };
             let orders = try_decode_slow_path_windowing_orders(&mut src).map_err(SessionError::decode)?;
             validate_windowing_orders_support(&orders, window_support_level)?;
-            Ok((Vec::new(), Some(data.to_vec())))
+            Ok((Vec::new(), Some(orders.orders)))
         }
         GraphicsUpdateType::Palette => {
             fast_path_processor.process_palette_update(data);
@@ -1045,7 +1052,7 @@ fn process_slow_path_graphics(
 fn process_fast_path_windowing_orders(
     window_support_level: Option<WindowSupportLevel>,
     data: &[u8],
-) -> SessionResult<Option<Vec<u8>>> {
+) -> SessionResult<Option<Vec<WindowingOrder>>> {
     let Some(window_support_level) = window_support_level else {
         return Ok(None);
     };
@@ -1053,22 +1060,20 @@ fn process_fast_path_windowing_orders(
     let mut src = ReadCursor::new(data);
     let orders = try_decode_fast_path_windowing_orders(&mut src).map_err(SessionError::decode)?;
     validate_windowing_orders_support(&orders, window_support_level)?;
-
-    let mut normalized = Vec::with_capacity(
-        2 /* updateType */ + 2 /* pad2OctetsA */ + data.len() + 2, /* pad2OctetsB */
-    );
-    normalized.extend_from_slice(&0u16.to_le_bytes());
-    normalized.extend_from_slice(&0u16.to_le_bytes());
-    normalized.extend_from_slice(&data[..2]);
-    normalized.extend_from_slice(&0u16.to_le_bytes());
-    normalized.extend_from_slice(&data[2..]);
-    Ok(Some(normalized))
+    Ok(Some(orders.orders))
 }
 
 fn validate_windowing_orders_support(
-    orders: &WindowingOrdersUpdate<'_>,
+    orders: &WindowingOrdersUpdate,
     window_support_level: WindowSupportLevel,
 ) -> SessionResult<()> {
+    if orders.contains_non_window_orders {
+        warn!(
+            decoded_orders = orders.orders.len(),
+            "Orders update mixes windowing orders with other drawing orders; orders after the first non-windowing order are dropped"
+        );
+    }
+
     if window_support_level == WindowSupportLevel::SupportedEx
         || !orders.orders.iter().any(|order| order.requires_extended_support())
     {
@@ -1396,6 +1401,7 @@ mod tests {
         update
     }
 
+    // oracle: spec MS-RDPERP §2.2.1.1.2 (orders are only valid after Window List support is negotiated)
     #[test]
     fn slow_path_windowing_orders_require_negotiated_support() {
         let mut processor = fast_path::ProcessorBuilder {
@@ -1415,31 +1421,66 @@ mod tests {
         let (_, orders) =
             process_slow_path_graphics(&mut processor, &mut image, Some(WindowSupportLevel::Supported), &update)
                 .unwrap();
-        assert_eq!(orders.as_deref(), Some(update.as_slice()));
+        assert_eq!(orders, Some(vec![deleted_window_order()]));
     }
 
+    fn deleted_window_order() -> WindowingOrder {
+        WindowingOrder::Window(ironrdp_pdu::window::WindowOrder {
+            window_id: 7,
+            is_new: false,
+            body: ironrdp_pdu::window::WindowOrderBody::Deleted,
+        })
+    }
+
+    // oracle: spec MS-RDPERP §2.2.1.3.1.2.4
     #[test]
-    fn fast_path_windowing_orders_are_normalized_for_forwarding() {
+    fn fast_path_windowing_orders_are_decoded_for_forwarding() {
         let order = window_order(0x2100_0000);
         let mut update = Vec::new();
         update.extend_from_slice(&1u16.to_le_bytes());
         update.extend_from_slice(&order);
 
-        let normalized = process_fast_path_windowing_orders(Some(WindowSupportLevel::Supported), &update)
+        let orders = process_fast_path_windowing_orders(Some(WindowSupportLevel::Supported), &update)
             .unwrap()
             .unwrap();
-        assert_eq!(
-            normalized,
-            [
-                0, 0, // updateType
-                0, 0, // pad2OctetsA
-                1, 0, // numberOrders
-                0, 0, // pad2OctetsB
-                0x2e, 11, 0, 0, 0, 0, 0x21, 7, 0, 0, 0,
-            ]
-        );
+        assert_eq!(orders, [deleted_window_order()]);
     }
 
+    // oracle: spec MS-RDPEGDI §2.2.2.2.1.1.2 (controlFlags 0x01 is a primary drawing order, which
+    // MS-RDPERP §2.2.1.3.1.1 windowing order framing does not cover)
+    #[test]
+    fn mixed_orders_updates_forward_the_windowing_prefix_on_both_transports() {
+        let mut fast_path_update = 2u16.to_le_bytes().to_vec(); // numberOrders
+        fast_path_update.extend_from_slice(&window_order(0x2100_0000));
+        fast_path_update.push(0x01); // TS_STANDARD primary drawing order
+        let mut slow_path_update = slow_path_orders_update(&window_order(0x2100_0000));
+        slow_path_update[4] = 2; // numberOrders
+        slow_path_update.push(0x01);
+        let mut processor = fast_path::ProcessorBuilder {
+            io_channel_id: 0,
+            user_channel_id: 0,
+            share_id: 0,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+
+        let fast_path_orders =
+            process_fast_path_windowing_orders(Some(WindowSupportLevel::Supported), &fast_path_update).unwrap();
+        let (_, slow_path_orders) = process_slow_path_graphics(
+            &mut processor,
+            &mut image,
+            Some(WindowSupportLevel::Supported),
+            &slow_path_update,
+        )
+        .unwrap();
+
+        assert_eq!(fast_path_orders, Some(vec![deleted_window_order()]));
+        assert_eq!(slow_path_orders, Some(vec![deleted_window_order()]));
+    }
+
+    // oracle: spec MS-RDPERP §2.2.1.1.2
     #[test]
     fn extended_windowing_orders_require_extended_support() {
         let update = slow_path_orders_update(&window_order(0x0101_0000));

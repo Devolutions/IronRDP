@@ -30,7 +30,7 @@ use ironrdp_cliprdr_format::bitmap::{validate_dib, validate_dibv5};
 use ironrdp_cliprdr_format::html::validate_cf_html;
 use ironrdp_cliprdr_native::WinClipboard;
 use ironrdp_connector::{ConnectorError, ConnectorErrorKind, Credentials};
-use ironrdp_core::{DecodeError, DecodeErrorKind, ReadCursor, encode_vec};
+use ironrdp_core::{DecodeError, DecodeErrorKind, encode_vec};
 use ironrdp_displaycontrol::pdu::{
     DeviceScaleFactor, DisplayControlMonitorLayout, MonitorLayoutEntry, MonitorOrientation,
 };
@@ -44,7 +44,7 @@ use ironrdp_pdu::rdp::{
     capability_sets::{MajorPlatformType, RailSupportLevel},
     client_info::PerformanceFlags,
 };
-use ironrdp_pdu::window::try_decode_slow_path_windowing_orders;
+use ironrdp_pdu::window::{ShowState, WindowOrder, WindowOrderBody, WindowingOrder};
 use ironrdp_pdu::{PduError, PduErrorKind, PduResult};
 use ironrdp_propertyset::{PropertySet, Value};
 use ironrdp_rail::pdu::{
@@ -4693,7 +4693,7 @@ enum WorkerEvent {
     },
     RailWindowingOrders {
         generation: u64,
-        data: Vec<u8>,
+        orders: Vec<WindowingOrder>,
     },
     RailExecuteResult {
         generation: u64,
@@ -5541,119 +5541,23 @@ struct ProjectedRailWindowOrder {
     window_size: Option<(u32, u32)>,
 }
 
-struct WindowOrderReader<'a> {
-    data: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> WindowOrderReader<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        Self { data, offset: 0 }
-    }
-
-    fn read_u8(&mut self) -> Option<u8> {
-        let value = *self.data.get(self.offset)?;
-        self.offset = self.offset.checked_add(1)?;
-        Some(value)
-    }
-
-    fn read_u16(&mut self) -> Option<u16> {
-        let bytes = self.take(2)?;
-        Some(u16::from_le_bytes(bytes.try_into().ok()?))
-    }
-
-    fn read_u32(&mut self) -> Option<u32> {
-        let bytes = self.take(4)?;
-        Some(u32::from_le_bytes(bytes.try_into().ok()?))
-    }
-
-    fn read_i32(&mut self) -> Option<i32> {
-        let bytes = self.take(4)?;
-        Some(i32::from_le_bytes(bytes.try_into().ok()?))
-    }
-
-    fn take(&mut self, length: usize) -> Option<&'a [u8]> {
-        let end = self.offset.checked_add(length)?;
-        let bytes = self.data.get(self.offset..end)?;
-        self.offset = end;
-        Some(bytes)
-    }
-
-    fn skip(&mut self, length: usize) -> Option<()> {
-        self.take(length).map(|_| ())
-    }
-
-    fn read_utf16(&mut self) -> Option<String> {
-        let length = usize::from(self.read_u16()?);
-        let bytes = self.take(length)?;
-        let code_units = bytes
-            .chunks_exact(2)
-            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
-            .collect::<Vec<_>>();
-        String::from_utf16(&code_units).ok()
-    }
-}
-
-fn parse_projected_rail_window_order(encoded: &[u8], flags: u32) -> Option<ProjectedRailWindowOrder> {
-    const WINDOW_TYPE: u32 = 0x0100_0000;
-    const STATE_NEW: u32 = 0x1000_0000;
-    const DELETED: u32 = 0x2000_0000;
-    const ICON: u32 = 0x4000_0000;
-    const CACHED_ICON: u32 = 0x8000_0000;
-
-    if flags & WINDOW_TYPE == 0 || flags & (DELETED | ICON | CACHED_ICON) != 0 {
+fn projected_rail_window_order(order: WindowOrder) -> Option<ProjectedRailWindowOrder> {
+    let WindowOrderBody::State(state) = order.body else {
         return None;
-    }
-
-    let mut reader = WindowOrderReader::new(encoded.get(7..)?);
-    let window_id = reader.read_u32()?;
-    let owner_window_id =
-        (flags & 0x0000_0002 != 0).then(|| reader.read_u32().map(|owner| (owner != 0).then_some(owner)))?;
-    let style = (flags & 0x0000_0008 != 0).then(|| Some((reader.read_u32()?, reader.read_u32()?)))?;
-    let show_state = (flags & 0x0000_0010 != 0).then(|| reader.read_u8())?;
-    let title = (flags & 0x0000_0004 != 0).then(|| reader.read_utf16())?;
-    let client_area_offset = (flags & 0x0000_4000 != 0).then(|| Some((reader.read_i32()?, reader.read_i32()?)))?;
-    let client_area_size = (flags & 0x0001_0000 != 0).then(|| Some((reader.read_u32()?, reader.read_u32()?)))?;
-    if flags & 0x0000_0080 != 0 {
-        reader.skip(8)?;
-    }
-    if flags & 0x0800_0000 != 0 {
-        reader.skip(8)?;
-    }
-    if flags & 0x0002_0000 != 0 {
-        reader.skip(1)?;
-    }
-    if flags & 0x0004_0000 != 0 {
-        reader.skip(4)?;
-    }
-    let window_offset = (flags & 0x0000_0800 != 0).then(|| Some((reader.read_i32()?, reader.read_i32()?)))?;
-    let client_delta = (flags & 0x0000_8000 != 0).then(|| Some((reader.read_i32()?, reader.read_i32()?)))?;
-    let window_size = (flags & 0x0000_0400 != 0).then(|| Some((reader.read_u32()?, reader.read_u32()?)))?;
-
+    };
     Some(ProjectedRailWindowOrder {
-        is_new: flags & STATE_NEW != 0,
-        window_id,
-        owner_window_id,
-        style,
-        show_state,
-        title,
-        client_area_offset,
-        client_area_size,
-        window_offset,
-        client_delta,
-        window_size,
+        is_new: order.is_new,
+        window_id: order.window_id,
+        owner_window_id: state.owner_window_id.map(|owner| (owner != 0).then_some(owner)),
+        style: state.style.map(|style| (style.style, style.extended_style)),
+        show_state: state.show_state.map(ShowState::as_u8),
+        title: state.title,
+        client_area_offset: state.client_offset.map(|point| (point.x, point.y)),
+        client_area_size: state.client_area_size.map(|size| (size.width, size.height)),
+        window_offset: state.window_offset.map(|point| (point.x, point.y)),
+        client_delta: state.client_delta.map(|point| (point.x, point.y)),
+        window_size: state.window_size.map(|size| (size.width, size.height)),
     })
-}
-
-fn resets_projected_rail_windows(fields_present: u32) -> bool {
-    const DESKTOP_TYPE: u32 = 0x0400_0000;
-    const DESKTOP_NON_MONITORED: u32 = 0x0000_0001;
-    const DESKTOP_HOOKED: u32 = 0x0000_0002;
-    const DESKTOP_ARC_BEGAN: u32 = 0x0000_0008;
-
-    fields_present & DESKTOP_TYPE != 0
-        && (fields_present & DESKTOP_NON_MONITORED != 0
-            || fields_present & (DESKTOP_HOOKED | DESKTOP_ARC_BEGAN) == DESKTOP_HOOKED | DESKTOP_ARC_BEGAN)
 }
 
 fn acquire_rail_window_class() -> Result<()> {
@@ -6122,34 +6026,21 @@ impl RailWindowManager {
         self.input_sender = None;
     }
 
-    fn consume(&mut self, update: &[u8]) {
-        let mut reader = ReadCursor::new(update);
-        if reader.len() < 2 {
-            tracing::debug!("Ignoring truncated RAIL windowing update");
-            return;
-        }
-        reader.advance(2);
-        let Ok(update) = try_decode_slow_path_windowing_orders(&mut reader) else {
-            tracing::debug!("Ignoring malformed RAIL windowing update");
-            return;
-        };
-        for order in update.orders {
-            const WINDOW_TYPE: u32 = 0x0100_0000;
-            const DELETED: u32 = 0x2000_0000;
-
-            if resets_projected_rail_windows(order.fields_present) {
-                self.clear();
-            } else if order.fields_present & WINDOW_TYPE != 0 && order.fields_present & DELETED != 0 {
-                if let Some(window_id) = order
-                    .encoded
-                    .get(7..11)
-                    .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
-                    .map(u32::from_le_bytes)
-                {
-                    self.destroy_window(window_id);
+    fn consume(&mut self, orders: Vec<WindowingOrder>) {
+        for order in orders {
+            match order {
+                WindowingOrder::Desktop(desktop) if desktop.resets_windows() => self.clear(),
+                WindowingOrder::Window(WindowOrder {
+                    window_id,
+                    body: WindowOrderBody::Deleted,
+                    ..
+                }) => self.destroy_window(window_id),
+                WindowingOrder::Window(order) => {
+                    if let Some(order) = projected_rail_window_order(order) {
+                        self.apply_window_order(order);
+                    }
                 }
-            } else if let Some(order) = parse_projected_rail_window_order(order.encoded, order.fields_present) {
-                self.apply_window_order(order);
+                WindowingOrder::NotifyIcon(_) | WindowingOrder::Desktop(_) => {}
             }
         }
     }
@@ -11296,9 +11187,9 @@ impl Control {
                 }
                 WorkerEvent::DisplayResizeFallback { .. } => self.report_display_resize_fallback(),
                 WorkerEvent::MonitorLayoutRejected { .. } => self.monitor_layout_rejected(),
-                WorkerEvent::RailWindowingOrders { data, .. } => {
+                WorkerEvent::RailWindowingOrders { orders, .. } => {
                     if self.rail_windows.borrow().is_enabled() {
-                        self.rail_windows.borrow_mut().consume(&data);
+                        self.rail_windows.borrow_mut().consume(orders);
                     }
                 }
                 WorkerEvent::RailExecuteResult { result, .. } => {
@@ -12417,12 +12308,12 @@ impl Control {
                                                     break;
                                                 }
                                             }
-                                            RdpOutputEvent::WindowingOrders(data) => {
+                                            RdpOutputEvent::WindowingOrders(orders) => {
                                                 if !queue_worker_event(
                                                     &worker_events,
                                                     &worker_event_posted,
                                                     hwnd,
-                                                    WorkerEvent::RailWindowingOrders { generation, data },
+                                                    WorkerEvent::RailWindowingOrders { generation, orders },
                                                 ) {
                                                     break;
                                                 }
@@ -24885,41 +24776,37 @@ try {
         );
     }
 
+    // oracle: spec MS-RDPERP §2.2.1.3.1.2.1 (absent fields leave the client's values unchanged)
     #[test]
     fn projected_rail_window_order_retains_incremental_fields() {
-        let flags: u32 = 0x1100_0000
-            | 0x0000_0002
-            | 0x0000_0004
-            | 0x0000_0008
-            | 0x0000_0010
-            | 0x0000_0400
-            | 0x0000_0800
-            | 0x0000_4000
-            | 0x0000_8000
-            | 0x0001_0000;
-        let mut encoded = vec![0x2e, 0, 0];
-        encoded.extend_from_slice(&flags.to_le_bytes());
-        encoded.extend_from_slice(&42u32.to_le_bytes());
-        encoded.extend_from_slice(&7u32.to_le_bytes());
-        encoded.extend_from_slice(&0x00c4_0000u32.to_le_bytes());
-        encoded.extend_from_slice(&0x0000_0100u32.to_le_bytes());
-        encoded.push(5);
-        encoded.extend_from_slice(&8u16.to_le_bytes());
-        encoded.extend("Calc".encode_utf16().flat_map(u16::to_le_bytes));
-        encoded.extend_from_slice(&110i32.to_le_bytes());
-        encoded.extend_from_slice(&120i32.to_le_bytes());
-        encoded.extend_from_slice(&300u32.to_le_bytes());
-        encoded.extend_from_slice(&200u32.to_le_bytes());
-        encoded.extend_from_slice(&100i32.to_le_bytes());
-        encoded.extend_from_slice(&90i32.to_le_bytes());
-        encoded.extend_from_slice(&10i32.to_le_bytes());
-        encoded.extend_from_slice(&30i32.to_le_bytes());
-        encoded.extend_from_slice(&320u32.to_le_bytes());
-        encoded.extend_from_slice(&240u32.to_le_bytes());
-        let order_size = u16::try_from(encoded.len()).expect("test order fits");
-        encoded[1..3].copy_from_slice(&order_size.to_le_bytes());
+        use ironrdp_pdu::window::{WindowPoint, WindowSize, WindowState, WindowStyle};
 
-        let order = parse_projected_rail_window_order(&encoded, flags).expect("parse validated window order");
+        let order = projected_rail_window_order(WindowOrder {
+            window_id: 42,
+            is_new: true,
+            body: WindowOrderBody::State(Box::new(WindowState {
+                owner_window_id: Some(7),
+                style: Some(WindowStyle {
+                    style: 0x00c4_0000,
+                    extended_style: 0x0000_0100,
+                }),
+                show_state: Some(ShowState::Show),
+                title: Some("Calc".to_owned()),
+                client_offset: Some(WindowPoint { x: 110, y: 120 }),
+                client_area_size: Some(WindowSize {
+                    width: 300,
+                    height: 200,
+                }),
+                window_offset: Some(WindowPoint { x: 100, y: 90 }),
+                client_delta: Some(WindowPoint { x: 10, y: 30 }),
+                window_size: Some(WindowSize {
+                    width: 320,
+                    height: 240,
+                }),
+                ..WindowState::default()
+            })),
+        })
+        .expect("window state order is projected");
         assert!(order.is_new);
         assert_eq!(order.window_id, 42);
         assert_eq!(order.owner_window_id, Some(Some(7)));
@@ -24975,13 +24862,6 @@ try {
                 height: 300,
             }
         );
-    }
-
-    #[test]
-    fn projected_rail_desktop_synchronization_resets_windows() {
-        assert!(resets_projected_rail_windows(0x0400_0001));
-        assert!(resets_projected_rail_windows(0x0400_000a));
-        assert!(!resets_projected_rail_windows(0x0400_0002));
     }
 
     #[test]
@@ -26109,6 +25989,14 @@ try {
         assert!(!event_posted.load(Ordering::Acquire));
     }
 
+    fn deleted_window_order() -> WindowingOrder {
+        WindowingOrder::Window(WindowOrder {
+            window_id: 7,
+            is_new: false,
+            body: WindowOrderBody::Deleted,
+        })
+    }
+
     #[test]
     fn worker_event_queue_waits_for_rail_window_orders() {
         let events = Arc::new(WorkerEventQueue::new());
@@ -26136,7 +26024,7 @@ try {
                 HWND(dispatcher_raw as *mut c_void),
                 WorkerEvent::RailWindowingOrders {
                     generation: 7,
-                    data: vec![1, 2, 3],
+                    orders: vec![deleted_window_order()],
                 },
             );
             completed_sender.send(queued).expect("report queued order");
@@ -26157,8 +26045,8 @@ try {
             take_queued_events(&events).as_slice(),
             [WorkerEvent::RailWindowingOrders {
                 generation: 7,
-                data,
-            }] if data == &[1, 2, 3]
+                orders,
+            }] if orders == &[deleted_window_order()]
         ));
     }
 
