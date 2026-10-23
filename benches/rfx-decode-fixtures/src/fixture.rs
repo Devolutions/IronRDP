@@ -12,8 +12,7 @@ use super::{BPP, Image, TILE, TILE_SIZE_BYTES};
 
 pub(super) const FORMAT: PixelFormat = PixelFormat::RgbA32;
 
-/// An RFX bitstreams for one screen: `init` primes the decoder,
-/// `frame` is the frame the benchmarks decode repeatedly.
+/// RFX bitstreams for one screen: `init` primes the decoder, and `frame` is decoded repeatedly.
 pub struct Fixture {
     pub pattern: Pattern,
     pub width: u16,
@@ -91,7 +90,7 @@ pub fn fixture(pattern: Pattern, width: u16, height: u16, algorithm: EntropyAlgo
     let init = encode_blocks(&[
         Block::Sync(SyncPdu),
         Block::CodecChannel(CodecChannel::Context(rfx::ContextPdu {
-            flags: OperatingMode::IMAGE_MODE,
+            flags: OperatingMode::empty(),
             entropy_algorithm: algorithm,
         })),
         Block::Channels(ChannelsPdu(vec![RfxChannel {

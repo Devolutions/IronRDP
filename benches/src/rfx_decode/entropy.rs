@@ -3,7 +3,7 @@ use ironrdp::pdu::codecs::rfx::EntropyAlgorithm;
 
 use rfx_decode_fixtures::{Driver, Pattern, fixture};
 
-/// Benchmarks the RLGR entropy stage on a full frame.
+/// Compares full-frame decoding with RLGR1 and RLGR3.
 pub(crate) fn entropy(c: &mut Criterion) {
     let mut group = c.benchmark_group("entropy");
 

@@ -1,3 +1,5 @@
+use core::hint::black_box;
+
 use ironrdp::pdu::geometry::InclusiveRectangle;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::rfx::DecodingContext;
@@ -35,8 +37,7 @@ impl Driver {
         this
     }
 
-    /// Decodes one frame and returns a checksum of the touched region, so the
-    /// optimizer cannot discard the work.
+    /// Decodes one frame and returns a checksum of the touched region.
     pub fn decode(&mut self, frame: &[u8]) -> u64 {
         let mut cursor = ironrdp::core::ReadCursor::new(frame);
         let (_frame_id, rect) = self
@@ -44,10 +45,8 @@ impl Driver {
             .decode(&mut self.image, &self.destination, &mut cursor)
             .expect("decode frame");
 
-        // Sample the updated region rather than hashing every byte. It is enough to
-        // keep the decoder live without the checksum itself showing up in the
-        // measurement.
-        let data = self.image.data();
+        // Keep all pixel writes observable without hashing the entire image.
+        let data = black_box(self.image.data());
         let stride = self.image.stride();
         let x_off = usize::from(rect.left) * BPP;
 

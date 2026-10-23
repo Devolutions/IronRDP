@@ -32,12 +32,19 @@ pub fn rfx_decode(sh: &Shell, args: Vec<String>) -> anyhow::Result<()> {
 pub fn rfx_decode_wasm(sh: &Shell, simd: bool) -> anyhow::Result<()> {
     let _s = Section::new("BENCH-RFX-DECODE-WASM");
 
-    run_cmd_in!(sh, RFX_DECODE_WASM_PATH, "{NPM} install")?;
+    run_cmd_in!(sh, RFX_DECODE_WASM_PATH, "{NPM} ci")?;
 
-    {
-        let _env_guard = simd.then(|| sh.push_env("RUSTFLAGS", "-C target-feature=+simd128"));
-        cmd!(sh, "{CARGO} build -p rfx-decode-wasm --release --target {WASM_TARGET}").run()?;
+    let mut build = cmd!(
+        sh,
+        "{CARGO} build -p rfx-decode-wasm --release --locked --target {WASM_TARGET}"
+    );
+    if simd {
+        build = build.args([
+            "--config",
+            r#"target.wasm32-unknown-unknown.rustflags=["-C", "target-feature=+simd128"]"#,
+        ]);
     }
+    build.run()?;
 
     let build_dir = PathBuf::from(RFX_DECODE_WASM_PATH).join("build");
     sh.create_dir(&build_dir)?;

@@ -1,10 +1,8 @@
-// Drives the rfx-decode-wasm module and reports RemoteFX decode throughput, so
-// the browser target can be measured with the same workload as the native
-// criterion bench.
+// Measure the same RemoteFX workloads as the native Criterion benchmark.
 //
 //   node run.mjs <module.wasm>
 //
-// To measure a build with WASM SIMD, compile with RUSTFLAGS="-C target-feature=+simd128".
+// Build and run with SIMD using `cargo xtask bench rfx-decode-wasm --simd`.
 // The report states whether the module has SIMD enabled.
 
 import { readFile } from 'node:fs/promises';
@@ -21,9 +19,6 @@ const SIZES = [
 // a tile), except ycbcr which is per whole tile.
 const STAGES = ['rlgr', 'subband', 'quantization', 'dwt', 'ycbcr'];
 const STAGE_PATTERNS = ['desktop', 'text', 'noise'];
-// Stages that restore their input buffer each iteration; the copy is measured
-// separately and subtracted.
-const RESTORES = new Set(['subband', 'quantization', 'dwt']);
 
 // Enough repetitions that timer granularity and JIT noise wash out, but short
 // enough to keep a full run to a couple of minutes.
@@ -60,31 +55,45 @@ async function countSimd() {
   return { total, top };
 }
 
-function timeBatch(run, iters) {
-  const start = performance.now();
+let checksum = 0;
+
+function timeBatch(run, iters, prepare) {
+  let elapsed = 0;
   let sink = 0;
-  for (let i = 0; i < iters; i++) sink += run();
-  return { elapsed: performance.now() - start, sink };
+  if (prepare) {
+    // Each call processes a batch of independent inputs, prepared before timing.
+    for (let i = 0; i < iters; i++) {
+      prepare();
+      const start = performance.now();
+      sink = (sink + run()) >>> 0;
+      elapsed += performance.now() - start;
+    }
+  } else {
+    const start = performance.now();
+    for (let i = 0; i < iters; i++) sink = (sink + run()) >>> 0;
+    elapsed = performance.now() - start;
+  }
+  checksum = (checksum + sink) >>> 0;
+  return elapsed;
 }
 
 // Returns the median and best time of `run`, in milliseconds per call.
-function measure(run) {
+function measure(run, prepare) {
   // Warm up.
   let iters = 1;
   const warmStart = performance.now();
   while (performance.now() - warmStart < WARMUP_MS) {
-    timeBatch(run, iters);
+    timeBatch(run, iters, prepare);
     iters *= 2;
   }
 
   // Size a batch to run for about BATCH_MS.
-  const probe = timeBatch(run, 8);
-  const perIter = probe.elapsed / 8;
+  const perIter = timeBatch(run, 8, prepare) / 8;
   const batchIters = Math.max(1, Math.round(BATCH_MS / Math.max(perIter, 1e-4)));
 
   const samples = [];
   for (let b = 0; b < BATCHES; b++) {
-    samples.push(timeBatch(run, batchIters).elapsed / batchIters);
+    samples.push(timeBatch(run, batchIters, prepare) / batchIters);
   }
   samples.sort((a, b) => a - b);
   return { median: samples[Math.floor(samples.length / 2)], best: samples[0] };
@@ -126,20 +135,18 @@ console.log('\nper-stage, us per 4096-coefficient component (ycbcr: per 64x64 ti
 console.log('pattern'.padEnd(10) + 'stage'.padEnd(14) + 'median'.padStart(12) + 'best'.padStart(12));
 for (const pattern of STAGE_PATTERNS) {
   for (const stage of STAGES) {
-    if (exports.bench_stage_setup(PATTERNS.indexOf(pattern), STAGES.indexOf(stage), 1) !== 1) {
+    const batchSize = exports.bench_stage_setup(PATTERNS.indexOf(pattern), STAGES.indexOf(stage), 1);
+    if (batchSize === 0) {
       throw new Error(`stage setup failed for ${pattern}/${stage}`);
     }
-    let { median, best } = measure(exports.bench_stage_run);
-    if (RESTORES.has(stage)) {
-      const overhead = measure(exports.bench_stage_restore_only);
-      median = Math.max(0, median - overhead.median);
-      best = Math.max(0, best - overhead.best);
-    }
+    const { median, best } = measure(exports.bench_stage_run, exports.bench_stage_prepare);
     console.log(
       pattern.padEnd(10) +
       stage.padEnd(14) +
-      `${(median * 1000).toFixed(3)}us`.padStart(12) +
-      `${(best * 1000).toFixed(3)}us`.padStart(12)
+      `${(median * 1000 / batchSize).toFixed(3)}us`.padStart(12) +
+      `${(best * 1000 / batchSize).toFixed(3)}us`.padStart(12)
     );
   }
 }
+
+console.log(`\nchecksum: ${checksum}`);

@@ -1,14 +1,7 @@
 {
-  "name": "wasm",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "MIT",
+  "name": "rfx-decode-wasm",
+  "version": "0.0.0",
+  "private": true,
   "dependencies": {
     "wabt": "^1.0.39"
   }

@@ -1,3 +1,5 @@
+use core::hint::black_box;
+
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput};
 use ironrdp::graphics::color_conversion::{YCbCrBuffer, ycbcr_to_rgba};
 use ironrdp::graphics::{dwt, quantization, rlgr, subband_reconstruction};
@@ -5,14 +7,11 @@ use ironrdp::graphics::{dwt, quantization, rlgr, subband_reconstruction};
 use crate::ENTROPY_ALGORITHM;
 use rfx_decode_fixtures::{LL3_OFFSET, Pattern, TILE, stage_fixture};
 
-/// Per-stage cost on one tile's worth of real coefficients. Each stage runs on a
-/// buffer restored to the state its predecessor would have left, so the inputs
-/// are the ones the stage sees in production (coefficient magnitudes drive both
-/// the RLGR and the DWT cost).
+/// Per-stage cost on one tile's worth of real coefficients.
+/// Each stage starts from the output of its predecessor, restored outside the timed section.
 pub(crate) fn stage(c: &mut Criterion) {
     let mut group = c.benchmark_group("stage");
-    // One tile of one component. Three components per tile, so multiply by 3 to
-    // compare against the per-tile numbers.
+    // Stages process one component, except color conversion, which processes all three.
     group.throughput(Throughput::Elements(
         u64::try_from(TILE * TILE).expect("tile area fits in u64"),
     ));
@@ -24,7 +23,10 @@ pub(crate) fn stage(c: &mut Criterion) {
         let mut temp = vec![0i16; TILE * TILE];
 
         group.bench_function(BenchmarkId::new("rlgr", name), |b| {
-            b.iter(|| rlgr::decode(ENTROPY_ALGORITHM, &sf.encoded[0], &mut out).expect("rlgr"))
+            b.iter(|| {
+                rlgr::decode(ENTROPY_ALGORITHM, &sf.encoded[0], &mut out).expect("rlgr");
+                black_box(&out);
+            })
         });
 
         // Capture each stage's input once, then clone it in the untimed setup of
@@ -37,7 +39,10 @@ pub(crate) fn stage(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("subband", name), |b| {
             b.iter_batched_ref(
                 || after_rlgr.clone(),
-                |buf| subband_reconstruction::decode(&mut buf[LL3_OFFSET..]),
+                |buf| {
+                    subband_reconstruction::decode(&mut buf[LL3_OFFSET..]);
+                    black_box(buf);
+                },
                 BatchSize::SmallInput,
             )
         });
@@ -50,7 +55,10 @@ pub(crate) fn stage(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("quantization", name), |b| {
             b.iter_batched_ref(
                 || after_subband.clone(),
-                |buf| quantization::decode(buf, &sf.quant),
+                |buf| {
+                    quantization::decode(buf, &sf.quant);
+                    black_box(buf);
+                },
                 BatchSize::SmallInput,
             )
         });
@@ -63,7 +71,10 @@ pub(crate) fn stage(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("dwt", name), |b| {
             b.iter_batched_ref(
                 || after_quant.clone(),
-                |buf| dwt::decode(buf, &mut temp),
+                |buf| {
+                    dwt::decode(buf, &mut temp);
+                    black_box(buf);
+                },
                 BatchSize::SmallInput,
             )
         });
@@ -80,7 +91,8 @@ pub(crate) fn stage(c: &mut Criterion) {
                     },
                     &mut rgba,
                 )
-                .expect("ycbcr")
+                .expect("ycbcr");
+                black_box(&rgba);
             })
         });
     }

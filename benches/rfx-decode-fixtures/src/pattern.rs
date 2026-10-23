@@ -10,10 +10,9 @@ pub enum Pattern {
     /// Mostly flat desktop: solid background, a few windows, borders, a taskbar.
     /// The common case for an idle or lightly-used session.
     Desktop,
-    /// Dense small text on white. Realistic worst case for real workloads
-    /// (a terminal, an editor, a spreadsheet) and the heaviest on RLGR.
+    /// Dense small text on white, representing terminals, editors, and spreadsheets.
     Text,
-    /// Smooth 2D gradient: almost everything quantizes away. Best case.
+    /// Smooth 2D gradient.
     Gradient,
     /// Photo-like content: smooth blobs plus fine detail.
     Photo,
