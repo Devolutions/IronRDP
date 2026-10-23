@@ -27,7 +27,7 @@ const BATCH_MS = 150;
 const BATCHES = 9;
 
 const path = process.argv[2];
-if (process.argv.length !== 3 || path === undefined) {
+if (process.argv.length !== 3) {
   console.error('usage: node run.mjs <module.wasm>');
   process.exit(2);
 }

@@ -12,16 +12,16 @@ use super::{BPP, Image, TILE, TILE_SIZE_BYTES};
 
 pub(super) const FORMAT: PixelFormat = PixelFormat::RgbA32;
 
-/// RFX bitstreams for one screen: `init` primes the decoder, and `frame` is decoded repeatedly.
+/// Video-mode RFX bitstreams using [2.2.2.2.4] TS_RFX_CONTEXT.
+/// Decode `init` once, then reuse `frame` for steady-state measurements.
+///
+/// [2.2.2.2.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/bde1ce78-5d9e-44c1-8a15-5843fa12270a
 pub struct Fixture {
     pub width: u16,
     pub height: u16,
-    /// Stream prefix that establishes the decoder's context: the RFX header
-    /// messages followed by a minimal first frame (one tile).
-    /// This is decoded once, before any `frame`, as the server does when the session starts.
+    /// Header messages and one tile, used to prime the decoder before timing.
     pub init: Vec<u8>,
-    /// A steady-state frame covering every tile, as the server sends once the
-    /// context is established.
+    /// A full-screen frame that reuses the established context.
     pub frame: Vec<u8>,
     pub tiles: usize,
     /// Encoded size of `frame`, i.e. what actually crosses the wire.

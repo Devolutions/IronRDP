@@ -80,7 +80,7 @@ pub(crate) fn stage(c: &mut Criterion) {
         });
 
         let planes = sf.planes();
-        let mut rgba = vec![0u8; TILE * TILE * 4];
+        let mut rgba = vec![0u8; TILE * TILE * 4 /* RGBA bytes per pixel */];
         group.bench_function(BenchmarkId::new("ycbcr_to_rgba", name), |b| {
             b.iter(|| {
                 ycbcr_to_rgba(

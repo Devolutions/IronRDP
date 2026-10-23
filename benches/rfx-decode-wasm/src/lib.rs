@@ -150,7 +150,7 @@ pub extern "C" fn bench_stage_setup(pattern: u32, stage: u32, rlgr3: u32) -> u32
             input,
             temp,
             planes,
-            rgba: vec![0u8; TILE * TILE * 4],
+            rgba: vec![0u8; TILE * TILE * 4 /* RGBA bytes per pixel */],
             stage,
         });
     });
@@ -226,6 +226,35 @@ mod tests {
 
     use super::*;
 
+    // oracle: reference model from Driver, bypassing the C-ABI state and frame selection.
+    #[rstest]
+    fn frame_decode_matches_reference_and_repeats(#[values(0, 1)] rlgr3: u32) {
+        let fx = fixture(Pattern::Text, 65, 65, entropy_algorithm(rlgr3));
+        let mut reference = Driver::new(&fx);
+        let initial = reference.image().data().to_vec();
+        let checksum = reference.decode(&fx.frame);
+        let expected_checksum = u32::try_from(checksum & u64::from(u32::MAX)).expect("masked checksum fits");
+        assert_ne!(
+            reference.image().data(),
+            initial,
+            "the full frame must differ from the one-tile init"
+        );
+
+        assert_eq!(
+            bench_setup(1, 65, 65, rlgr3),
+            u32::try_from(fx.wire_bytes).expect("frame size fits")
+        );
+        for _ in 0..3 {
+            assert_eq!(bench_decode_frame(), expected_checksum);
+            STATE.with_borrow(|state| {
+                assert_eq!(
+                    state.as_ref().expect("initialized").driver.image().data(),
+                    reference.image().data()
+                );
+            });
+        }
+    }
+
     // oracle: reference model from direct codec-stage calls, independent of the batched C-ABI driver.
     #[rstest]
     #[case::rlgr(STAGE_RLGR)]
@@ -271,7 +300,7 @@ mod tests {
     #[rstest]
     fn ycbcr_batches_match_reference_and_repeat_after_prepare(#[values(0, 1)] rlgr3: u32) {
         let planes = stage_fixture(Pattern::Text, entropy_algorithm(rlgr3)).planes();
-        let mut expected = vec![0u8; TILE * TILE * 4];
+        let mut expected = vec![0u8; TILE * TILE * 4 /* RGBA bytes per pixel */];
         ironrdp::graphics::color_conversion::ycbcr_to_rgba(
             ironrdp::graphics::color_conversion::YCbCrBuffer {
                 y: &planes[0],
@@ -295,7 +324,7 @@ mod tests {
         }
     }
 
-    // oracle: bench_setup's contract clears stale state on invalid pattern IDs or dimensions.
+    // oracle: mutant guard against retaining a stale frame workload after invalid setup.
     #[rstest]
     #[case::invalid_pattern(5, 64, 64)]
     #[case::empty_width(0, 0, 64)]
@@ -309,7 +338,7 @@ mod tests {
         STATE.with_borrow(|state| assert!(state.is_none()));
     }
 
-    // oracle: bench_stage_setup's contract clears stale state on invalid pattern or stage IDs.
+    // oracle: mutant guard against retaining a stale stage workload after invalid setup.
     #[rstest]
     #[case::invalid_pattern(5, STAGE_RLGR)]
     #[case::invalid_stage(0, STAGE_YCBCR + 1)]

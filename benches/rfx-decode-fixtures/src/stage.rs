@@ -4,8 +4,9 @@ use super::fixture::encode_tile;
 use super::pattern::{Pattern, render};
 use super::{Image, LL3_OFFSET, TILE, TILE_SIZE_BYTES};
 
-/// Entropy-coded data for a single tile, for benchmarking the decode stages in
-/// isolation.
+/// Entropy-coded components of one [2.2.2.3.4.1] TS_RFX_TILE for isolated stage measurements.
+///
+/// [2.2.2.3.4.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/89e669ed-b6dd-4591-a267-73a72bc6d84e
 pub struct StageFixture {
     pub quant: Quant,
     pub algorithm: EntropyAlgorithm,

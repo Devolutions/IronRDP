@@ -37,7 +37,8 @@ fn mae_between(a: &[u8], b: &[u8]) -> f64 {
     }
 }
 
-// oracle: regression baseline c4c27fdd, 640x384 RGB MAE at Quant::default() for both entropy modes.
+// oracle: mutant guard against blank or partially decoded fixture output.
+// Baseline c4c27fdd, 640x384 RGB MAE at Quant::default() for both entropy modes:
 // Desktop=2.073459, text=2.338346, gradient=9.708313, photo=10.887949, noise=8.870715.
 // Ceilings round each measured MAE up to the next channel-value unit; these are regression gates, not codec accuracy guarantees.
 #[rstest]
@@ -58,7 +59,7 @@ fn every_pattern_round_trips(
     );
 }
 
-// oracle: metamorphic comparison against independently rendered source images chosen by each case.
+// oracle: mutant guard against substituting another pattern's decoded image.
 #[rstest]
 #[case::desktop_text(Pattern::Desktop, Pattern::Text)]
 #[case::desktop_gradient(Pattern::Desktop, Pattern::Gradient)]
@@ -94,13 +95,15 @@ fn decode_matches_its_own_source_better_than_an_unrelated_one(#[case] pattern: P
     );
 }
 
-// oracle: 64x64 tiling geometry and regression baseline c4c27fdd at Quant::default().
+// oracle: mutant guard against leaving partial edge tiles undecoded.
+// Baseline c4c27fdd at Quant::default():
 // Desktop RGB MAE is 4.982012 at 65x65 and 1.701910 at 1920x1080, rounded up as above.
 #[rstest]
 #[case::partial_row_and_column(65, 65, 4, 5.0)]
 #[case::full_hd(1920, 1080, 30 * 17, 2.0)]
 fn partial_tiles_are_covered(#[case] width: u16, #[case] height: u16, #[case] tiles: usize, #[case] max_mae: f64) {
     let fx = fixture(Pattern::Desktop, width, height, EntropyAlgorithm::Rlgr3);
+    // oracle: 64x64 tiling geometry for the chosen dimensions.
     assert_eq!(fx.tiles, tiles);
 
     let mut driver = Driver::new(&fx);
@@ -136,5 +139,6 @@ fn steady_state_frames_use_video_mode() {
     driver.decode(&fx.frame);
     let first = driver.image().data().to_vec();
     driver.decode(&fx.frame);
+    // oracle: benches/README.md#fixtures requires deterministic workloads for repeated measurements.
     assert_eq!(driver.image().data(), first);
 }
