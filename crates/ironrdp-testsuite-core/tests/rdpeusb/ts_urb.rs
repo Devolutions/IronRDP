@@ -87,10 +87,17 @@ fn transfer_in_accepts_out_control_requests_without_data() {
     // RequestTypeReservedBits, Request SET_IDLE, Value 0, Index 1, Padding.
     let ts_urb = [20, 0, 27, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0x0a, 0, 0, 1, 0, 0, 0];
     let urb: TsUrbIn = decode(&ts_urb).expect("a data-less OUT class request decodes");
-    let TsUrbInKind::VendorClassReq(request) = urb.kind else {
+    let TsUrbInKind::VendorClassReq(request) = urb.kind.clone() else {
         panic!("expected a vendor or class request");
     };
     assert_eq!(request.transfer_flags, 0);
     assert_eq!(request.request, 0x0a);
     assert_eq!(request.index, 1);
+
+    // Backends that hand TS_URBs to the operating system encode it back as it was.
+    let urb = TsUrbIn {
+        kind: TsUrbInKind::VendorClassReq(request),
+        header: urb.header,
+    };
+    assert_eq!(encode_vec(&urb).expect("it encodes back"), ts_urb);
 }
