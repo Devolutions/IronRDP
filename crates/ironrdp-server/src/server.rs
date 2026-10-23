@@ -106,6 +106,7 @@ fn client_core_frame_ack_limit(capabilities: &[CapabilitySet]) -> Option<NonZero
 /// only make the encoder cut every frame into tiny tiles.
 ///
 /// [MaxRequestSize]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/01717954-716a-424d-af35-28fb2b86df89
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 fn client_max_request_size(server_max_request_size: u32, capabilities: &[CapabilitySet]) -> u32 {
     let one_fragment = u32::try_from(MAX_FASTPATH_UPDATE_SIZE).unwrap_or(u32::MAX);
     capabilities
@@ -7388,23 +7389,6 @@ mod tests {
         assert!(
             released.load(Ordering::Relaxed),
             "the channel backends of a finished connection must be released, not held until the next client"
-        );
-    }
-
-    #[test]
-    fn a_smaller_client_max_request_size_caps_the_servers() {
-        use ironrdp_pdu::rdp::capability_sets::MultifragmentUpdate;
-
-        let client = |max_request_size| CapabilitySet::MultiFragmentUpdate(MultifragmentUpdate { max_request_size });
-
-        assert_eq!(client_max_request_size(8 * 1024 * 1024, &[client(65536)]), 65536);
-        assert_eq!(client_max_request_size(65536, &[client(8 * 1024 * 1024)]), 65536);
-        assert_eq!(client_max_request_size(65536, &[client(0)]), 65536);
-        assert_eq!(client_max_request_size(65536, &[]), 65536);
-        assert_eq!(
-            client_max_request_size(65536, &[client(1)]),
-            16_374,
-            "one fragment at least"
         );
     }
 }

@@ -17,7 +17,7 @@ const FASTPATH_HEADER_SIZE: usize = 6;
     clippy::partial_pub_fields,
     reason = "public field is not a part of the public API and is used by benchmarks"
 )]
-#[cfg_attr(feature = "__bench", visibility::make(pub))]
+#[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
 pub(crate) struct UpdateFragmenter {
     code: UpdateCode,
     index: usize,

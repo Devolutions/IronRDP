@@ -4,6 +4,7 @@ mod connection_policy;
 mod credential_validator;
 mod fast_path;
 mod finalize_timeout;
+mod max_request_size;
 mod multitransport_finalize;
 mod pointer_mask;
 mod rdpdr;
