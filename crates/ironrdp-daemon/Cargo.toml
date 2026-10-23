@@ -1,10 +1,10 @@
 [package]
 name = "ironrdp-daemon"
 version = "0.1.0"
-publish = false
 readme = "README.md"
 description = "Reusable persistent RDP session daemon support"
 edition.workspace = true
+rust-version = "1.94"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -13,7 +13,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["rustls", "dvc-pipe-proxy", "rdpdr", "smartcard", "vmconnect", "gateway", "clipboard"] } # public
+ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["rustls", "dvc-pipe-proxy", "rdpdr", "smartcard", "vmconnect", "gateway", "clipboard", "video"] } # public
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.7" }
 ironrdp-cliprdr-format = { path = "../ironrdp-cliprdr-format", version = "0.2" }
@@ -44,7 +44,7 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 # WebAuthn redirection is Windows-only (webauthn.dll / WebAuthN* APIs).
-ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["webauthn"] }
+ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["camera", "webauthn"] }
 ironrdp-rdpdr-native = { path = "../ironrdp-rdpdr-native", version = "0.7" }
 
 [lints]

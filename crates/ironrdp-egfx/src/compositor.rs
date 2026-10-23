@@ -48,6 +48,12 @@ const MAX_OUTPUT_DIM: u16 = 32766;
 /// single-surface case (16384*16384*4) impossible to reach.
 const MAX_COMPOSITOR_BYTES: usize = 256 * 1024 * 1024;
 
+/// The largest bitmap cache a server may fill: MS-RDPEGFX 3.3.1.4 caps it at 100 MB.
+const MAX_BITMAP_CACHE_BYTES: usize = 100 * 1024 * 1024;
+
+/// The bitmap cache cap when the server confirms SMALL_CACHE, THINCLIENT or version 10.3 (MS-RDPEGFX 3.3.1.4).
+const SMALL_BITMAP_CACHE_BYTES: usize = 16 * 1024 * 1024;
+
 /// A rectangular region of the graphics output whose pixels changed within a frame.
 ///
 /// `region` is in output space (after a surface-to-output mapping), using the
@@ -114,7 +120,7 @@ struct CanvasMut<'a> {
     height: u16,
 }
 
-/// A cached bitmap tile (MS-RDPEGFX bitmap cache, 2.2.2.10 / 2.2.2.11).
+/// A cached bitmap tile (MS-RDPEGFX 3.3.1.4 bitmap cache, filled by `SurfaceToCache`, 2.2.2.6).
 #[derive(Debug)]
 struct CachedTile {
     width: u16,
@@ -144,9 +150,20 @@ pub(crate) struct Compositor {
     frame: Vec<DirtyRegion>,
     /// Deltas from completed frames, awaiting drain.
     ready: Vec<OutputUpdate>,
+    /// Whether the confirmed capabilities constrain the bitmap cache to 16 MB.
+    small_bitmap_cache: bool,
 }
 
 impl Compositor {
+    /// Discard channel pixels while retaining the last announced output extent.
+    pub(crate) fn reset_protocol(&mut self) {
+        *self = Self {
+            output_width: self.output_width,
+            output_height: self.output_height,
+            ..Self::default()
+        };
+    }
+
     pub(crate) fn materializable_output_size(width: u32, height: u32) -> Option<(u16, u16)> {
         let width = u16::try_from(width).ok()?;
         let height = u16::try_from(height).ok()?;
@@ -162,8 +179,8 @@ impl Compositor {
             .then_some((width, height))
     }
 
-    /// Handle `ResetGraphics`: set the output size and drop all surfaces, cache and
-    /// pending output.
+    /// Handle `ResetGraphics`: set the output size and drop all surfaces and pending
+    /// output. The bitmap cache is kept while it stays within the protocol's cap.
     ///
     /// Per MS-RDPEGFX 2.2.2.14 a reset implicitly destroys every surface and
     /// redefines the graphics output, so deltas produced before it are discarded
@@ -172,15 +189,45 @@ impl Compositor {
     /// `ResetGraphics` together, and those deltas were clipped against the previous
     /// output, so painting them into the new one repaints stale pixels and, after a
     /// shrink, addresses a region the new output no longer contains.
+    ///
+    /// The bitmap cache (3.3.1.4) is not part of the graphics output and survives a
+    /// reset: MS-RDPEGFX 3.3.5.14 only resizes the Graphics Output Buffer, and cache
+    /// slots are released by `EvictCacheEntry`, a cache import or the end of the
+    /// channel. Windows sends a `ResetGraphics` for every desktop resize and
+    /// then keeps pasting toolbars, icons and text from slots it filled before the
+    /// reset, so dropping them here leaves those regions black until something
+    /// forces a fresh upload.
     pub(crate) fn reset(&mut self, width: u32, height: u32) {
         self.output_width = u16::try_from(width).unwrap_or(u16::MAX);
         self.output_height = u16::try_from(height).unwrap_or(u16::MAX);
         self.surfaces.clear();
-        self.cache.clear();
         self.frame.clear();
         self.ready.clear();
-        // Every charged allocation lived in one of those, so the whole charge goes.
-        self.allocated_bytes = 0;
+        // Only the cache keeps its allocations, so only its charge remains. Within the
+        // 3.3.1.4 cap the cache leaves room in the budget for the surfaces the server creates
+        // after the reset. A server that filled the cache past the cap could otherwise hold
+        // that room for the rest of the session, so such a cache is dropped with the surfaces.
+        let cached_bytes: usize = self.cache.values().map(|tile| tile.data.len()).sum();
+        let cap = if self.small_bitmap_cache {
+            SMALL_BITMAP_CACHE_BYTES
+        } else {
+            MAX_BITMAP_CACHE_BYTES
+        };
+        if cap < cached_bytes {
+            debug!(
+                cached_bytes,
+                cap, "Bitmap cache exceeds the MS-RDPEGFX cap; dropping it on reset"
+            );
+            self.cache.clear();
+            self.allocated_bytes = 0;
+        } else {
+            self.allocated_bytes = cached_bytes;
+        }
+    }
+
+    /// Apply the bitmap cache size the server confirmed (MS-RDPEGFX 3.3.1.4).
+    pub(crate) fn set_small_bitmap_cache(&mut self, small: bool) {
+        self.small_bitmap_cache = small;
     }
 
     /// Reserve `len` pixel bytes, or refuse if that would exceed the budget.
@@ -207,10 +254,19 @@ impl Compositor {
     }
 
     /// Release a charge taken by [`Self::charge`].
-    fn release(&mut self, len: usize) {
+    pub(crate) fn release(&mut self, len: usize) {
         // Saturating rather than wrapping: an accounting slip must not underflow
         // into a huge budget that disables the limit entirely.
         self.allocated_bytes = self.allocated_bytes.saturating_sub(len);
+    }
+
+    /// Reserve `len` bytes for a buffer kept beside surface `id`, such as a codec's reference picture.
+    ///
+    /// Refused when the compositor holds no canvas for the surface (it was too large or over budget)
+    /// or the reservation would exceed the budget. A reset releases every reservation, so the owner
+    /// drops these buffers then; otherwise it returns the bytes with [`Self::release`].
+    pub(crate) fn reserve_for_surface(&mut self, id: u16, len: usize) -> bool {
+        self.surfaces.contains_key(&id) && self.charge(len)
     }
 
     /// Handle `CreateSurface`: allocate a zeroed RGBA8888 canvas.
@@ -1125,9 +1181,10 @@ mod tests {
         assert_eq!(c.surfaces.len(), 1);
     }
 
-    /// `ResetGraphics` empties both maps, so it must zero the charge with them.
+    /// `ResetGraphics` empties the surface map, so its charge goes with it; the cache
+    /// survives the reset and so does its charge.
     #[test]
-    fn reset_releases_the_whole_charge() {
+    fn reset_releases_the_surface_charge_and_keeps_the_cache() {
         const EDGE: u16 = 4096;
         let mut c = Compositor::default();
         c.reset(1920, 1080);
@@ -1140,6 +1197,72 @@ mod tests {
             c.allocated_bytes, 0,
             "reset drops every surface, so it drops the charge"
         );
+
+        c.create_surface(1, 16, 16);
+        c.map_surface(1, 0, 0);
+        c.surface_to_cache(1, 7, &rect(0, 0, 16, 16));
+        let cached = c.cache[&7].data.len();
+        assert!(cached > 0);
+
+        c.reset(1920, 1080);
+        assert_eq!(c.cache.len(), 1, "reset keeps the bitmap cache");
+        assert_eq!(
+            c.allocated_bytes, cached,
+            "only the cache's charge remains after a reset"
+        );
+
+        // The kept tile is still usable on a surface created after the reset.
+        c.create_surface(2, 16, 16);
+        c.map_surface(2, 0, 0);
+        c.cache_to_surface(7, 2, &[Point { x: 0, y: 0 }]);
+        c.end_frame();
+        assert_eq!(
+            c.drain_output().len(),
+            1,
+            "a cache paste after the reset still produces output"
+        );
+    }
+
+    /// A cache past the MS-RDPEGFX 3.3.1.4 cap is dropped on reset, so it cannot hold the
+    /// budget the surfaces created after the reset need.
+    #[test]
+    fn reset_drops_a_cache_over_the_protocol_cap() {
+        const EDGE: u16 = 4096; // 64 MiB per surface, and per full-surface tile
+        let mut c = Compositor::default();
+        c.reset(1920, 1080);
+        c.create_surface(1, EDGE, EDGE);
+        for slot in 0..2 {
+            c.surface_to_cache(1, slot, &rect(0, 0, EDGE, EDGE));
+        }
+        assert_eq!(c.cache.len(), 2);
+        assert!(c.cache.values().map(|tile| tile.data.len()).sum::<usize>() > MAX_BITMAP_CACHE_BYTES);
+
+        c.reset(1920, 1080);
+        assert!(c.cache.is_empty(), "a cache over the cap does not survive the reset");
+        assert_eq!(c.allocated_bytes, 0);
+    }
+
+    /// A server confirming a 16 MB cache drops a larger one on reset.
+    // oracle: spec MS-RDPEGFX §3.3.1.4
+    #[test]
+    fn reset_drops_a_cache_over_the_small_cache_cap() {
+        const EDGE: u16 = 2048; // 16 MiB per surface, and per full-surface tile
+        let mut c = Compositor::default();
+        c.reset(1920, 1080);
+        c.create_surface(1, EDGE, EDGE);
+        for slot in 0..2 {
+            c.surface_to_cache(1, slot, &rect(0, 0, EDGE, EDGE));
+        }
+        let cached: usize = c.cache.values().map(|tile| tile.data.len()).sum();
+        assert!(SMALL_BITMAP_CACHE_BYTES < cached && cached < MAX_BITMAP_CACHE_BYTES);
+
+        c.reset(1920, 1080);
+        assert_eq!(c.cache.len(), 2, "a 32 MiB cache is within the 100 MB cap");
+
+        c.set_small_bitmap_cache(true);
+        c.reset(1920, 1080);
+        assert!(c.cache.is_empty(), "a 32 MiB cache exceeds the 16 MB cap");
+        assert_eq!(c.allocated_bytes, 0);
     }
 
     /// Cache slots are a second allocation pool keyed by `u16`. Charging them against

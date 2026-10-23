@@ -4,6 +4,7 @@
 
 mod macros;
 
+mod bench;
 mod bin_install;
 mod bin_version;
 mod check;
@@ -59,10 +60,13 @@ fn main() -> anyhow::Result<()> {
                 list_files(&sh, local_bin())?;
             }
         }
+        Action::BenchCorpusFetch => bench::corpus(&sh, "fetch")?,
+        Action::BenchCorpusList => bench::corpus(&sh, "list")?,
         Action::CheckFmt => check::fmt(&sh)?,
         Action::CheckLints => check::lints(&sh)?,
         Action::CheckLocks => check::lock_files(&sh)?,
         Action::CheckDependencies => check::dependencies(&sh)?,
+        Action::CheckCaptures => check::capture_files(&sh)?,
         Action::CheckTestSettings { base, head } => check::test_settings(&sh, &base, &head)?,
         Action::CheckTests { no_run } => {
             if no_run {
@@ -97,6 +101,7 @@ fn main() -> anyhow::Result<()> {
             check::lints(&sh)?;
             features::run_all(&sh)?;
             check::dependencies(&sh)?;
+            check::capture_files(&sh)?;
             wasm::check(&sh)?;
             fuzz::run(&sh, None, None)?;
             web::install(&sh)?;

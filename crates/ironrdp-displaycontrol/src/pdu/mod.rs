@@ -171,6 +171,13 @@ impl DisplayControlCapabilities {
         })
     }
 
+    /// Returns the maximum number of monitors the server accepts in a monitor layout (`MaxNumMonitors`).
+    pub fn max_num_monitors(&self) -> u32 {
+        self.max_num_monitors
+    }
+
+    /// Returns the maximum total area, in square pixels, of a monitor layout:
+    /// `MaxNumMonitors * MaxMonitorAreaFactorA * MaxMonitorAreaFactorB`.
     pub fn max_monitor_area(&self) -> u64 {
         self.max_monitor_area
     }
@@ -243,6 +250,21 @@ impl DisplayControlMonitorLayout {
     const NAME: &'static str = "DISPLAYCONTROL_MONITOR_LAYOUT_PDU";
     const FIXED_PART_SIZE: usize = 4 /* MonitorLayoutSize */ + 4 /* NumMonitors */;
 
+    /// Creates a new [`DisplayControlMonitorLayout`] from the complete client monitor layout.
+    ///
+    /// Per [2.2.2.2], [2.2.2.2.1] and [3.1.5.2], the layout is rejected unless:
+    /// - it has at most 1024 monitors, exactly one of which is primary;
+    /// - the primary monitor is at (0, 0) (enforced by [`MonitorLayoutEntry::with_position`]);
+    /// - no two monitors overlap;
+    /// - when there is more than one monitor, each monitor is adjacent to at least one other
+    ///   monitor, even if only at a single point.
+    ///
+    /// Use [`Self::fit_to_capabilities`] to adapt the layout to the limits the server advertised
+    /// in its [`DisplayControlCapabilities`].
+    ///
+    /// [2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/22741217-12a0-4fb8-b5a0-df43905aaf06
+    /// [2.2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
+    /// [3.1.5.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
     pub fn new(monitors: &[MonitorLayoutEntry]) -> EncodeResult<Self> {
         if monitors.len() > MAX_SUPPORTED_MONITORS.into() {
             return Err(invalid_field_err!("NumMonitors", "Too many monitors"));
@@ -257,9 +279,154 @@ impl DisplayControlMonitorLayout {
             ));
         }
 
+        for (index, monitor) in monitors.iter().enumerate() {
+            if monitors[..index].iter().any(|other| monitor.overlaps(other)) {
+                return Err(invalid_field_err!("Monitors", "monitors must not overlap"));
+            }
+        }
+
+        if 1 < monitors.len() {
+            for (index, monitor) in monitors.iter().enumerate() {
+                let is_adjacent = monitors
+                    .iter()
+                    .enumerate()
+                    .any(|(other_index, other)| other_index != index && monitor.touches(other));
+                if !is_adjacent {
+                    return Err(invalid_field_err!(
+                        "Monitors",
+                        "each monitor must be adjacent to another monitor"
+                    ));
+                }
+            }
+        }
+
         Ok(Self {
             monitors: monitors.to_vec(),
         })
+    }
+
+    /// Adapts this layout to the limits the server advertised in its [`DisplayControlCapabilities`].
+    ///
+    /// Per [3.2.5.2], the client must not exceed `MaxNumMonitors` nor the maximum monitor area
+    /// (`MaxNumMonitors * MaxMonitorAreaFactorA * MaxMonitorAreaFactorB`):
+    /// - monitors beyond `MaxNumMonitors` are dropped: starting from the primary monitor, the
+    ///   monitors adjacent to an already kept monitor are kept first, in their original order,
+    ///   so the reduced layout stays connected;
+    /// - a single-monitor layout larger than the maximum area is scaled down, preserving its
+    ///   aspect ratio;
+    /// - a multi-monitor layout larger than the maximum area is rejected, since shrinking it
+    ///   would move the monitors relative to each other.
+    ///
+    /// An error means no layout within the server limits preserves the request; callers should
+    /// keep the current layout rather than send a partial one.
+    ///
+    /// [3.2.5.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
+    pub fn fit_to_capabilities(&self, capabilities: &DisplayControlCapabilities) -> EncodeResult<Self> {
+        let max_num_monitors = usize::try_from(capabilities.max_num_monitors()).unwrap_or(usize::MAX);
+        if max_num_monitors == 0 {
+            return Err(invalid_field_err!("NumMonitors", "server accepts no monitors"));
+        }
+
+        let mut monitors = if max_num_monitors < self.monitors.len() {
+            warn!(
+                requested = self.monitors.len(),
+                max_num_monitors, "Dropping monitors beyond the server maximum"
+            );
+            // Grow the kept set from the primary monitor, one adjacent monitor at a time, so the
+            // reduced layout stays connected whatever order the monitors are listed in.
+            let mut kept = self
+                .monitors
+                .iter()
+                .map(MonitorLayoutEntry::is_primary)
+                .collect::<Vec<_>>();
+            let mut kept_count = kept.iter().filter(|kept| **kept).count();
+            while kept_count < max_num_monitors {
+                let next = self.monitors.iter().enumerate().position(|(index, monitor)| {
+                    !kept[index]
+                        && self
+                            .monitors
+                            .iter()
+                            .zip(&kept)
+                            .any(|(other, other_kept)| *other_kept && monitor.touches(other))
+                });
+                let Some(next) = next else {
+                    break;
+                };
+                kept[next] = true;
+                kept_count = kept_count.saturating_add(1);
+            }
+            self.monitors
+                .iter()
+                .zip(kept)
+                .filter(|(_, kept)| *kept)
+                .map(|(monitor, _)| monitor.clone())
+                .collect::<Vec<_>>()
+        } else {
+            self.monitors.clone()
+        };
+
+        let max_area = capabilities.max_monitor_area();
+        if max_area < layout_area(&monitors) {
+            let [monitor] = monitors.as_mut_slice() else {
+                return Err(invalid_field_err!(
+                    "Monitors",
+                    "monitor layout area exceeds the server maximum"
+                ));
+            };
+
+            let (width, height) = (u128::from(monitor.width), u128::from(monitor.height));
+            // Largest width w' such that w' * (w' * height / width) <= max_area, i.e.
+            // w' = sqrt(width^2 * max_area / (width * height)).
+            // No overflow: width, height <= 8192 and max_area < 2^39, so every product fits in u128.
+            #[expect(clippy::arithmetic_side_effects)]
+            let (new_width, new_height) = {
+                let new_width = (width * width * u128::from(max_area) / (width * height)).isqrt();
+                let new_height = new_width * height / width;
+                (new_width, new_height)
+            };
+            let (new_width, new_height) = MonitorLayoutEntry::adjust_display_size(
+                u32::try_from(new_width).unwrap_or(u32::MAX),
+                u32::try_from(new_height).unwrap_or(u32::MAX),
+            );
+            if max_area < u64::from(new_width).saturating_mul(u64::from(new_height)) {
+                return Err(invalid_field_err!(
+                    "Monitors",
+                    "server maximum monitor area is smaller than the minimum monitor size"
+                ));
+            }
+
+            warn!(
+                from_width = monitor.width,
+                from_height = monitor.height,
+                to_width = new_width,
+                to_height = new_height,
+                max_area,
+                "Scaling the monitor down to the server maximum area"
+            );
+            monitor.width = new_width;
+            monitor.height = new_height;
+        }
+
+        Self::new(&monitors)
+    }
+
+    /// Returns the size (width, height), in pixels, of the smallest rectangle containing every monitor.
+    pub fn desktop_size(&self) -> (u32, u32) {
+        let (left, top, right, bottom) = self.monitors.iter().map(MonitorLayoutEntry::bounds).fold(
+            (i64::MAX, i64::MAX, i64::MIN, i64::MIN),
+            |(left, top, right, bottom), (monitor_left, monitor_top, monitor_right, monitor_bottom)| {
+                (
+                    left.min(monitor_left),
+                    top.min(monitor_top),
+                    right.max(monitor_right),
+                    bottom.max(monitor_bottom),
+                )
+            },
+        );
+        (
+            u32::try_from(right.saturating_sub(left)).unwrap_or(0),
+            u32::try_from(bottom.saturating_sub(top)).unwrap_or(0),
+        )
     }
 
     /// Creates a new [`DisplayControlMonitorLayout`] with a single primary monitor
@@ -269,6 +436,11 @@ impl DisplayControlMonitorLayout {
     /// - The `height` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels.
     /// - The `scale_factor` MUST be ignored if it is less than 100 percent or greater than 500 percent.
     /// - The `physical_dims` (width, height) MUST be ignored if either is less than 10 mm or greater than 10,000 mm.
+    ///
+    /// The desktop `scale_factor` is clamped with [`MonitorLayoutEntry::adjust_desktop_scale_factor`], and
+    /// the device scale factor is derived from it with [`DeviceScaleFactor::from_desktop_scale_factor`].
+    /// The orientation is [`MonitorOrientation::Portrait`] when `height` exceeds `width`, and
+    /// [`MonitorOrientation::Landscape`] otherwise; use [`Self::new`] for an explicit orientation.
     ///
     /// Use [`MonitorLayoutEntry::adjust_display_size`] to adjust `width` and `height` before calling this function
     /// to ensure the display size is within the valid range.
@@ -280,16 +452,17 @@ impl DisplayControlMonitorLayout {
         scale_factor: Option<u32>,
         physical_dims: Option<(u32, u32)>,
     ) -> EncodeResult<Self> {
-        let entry = MonitorLayoutEntry::new_primary(width, height)?.with_orientation(if width > height {
-            MonitorOrientation::Landscape
-        } else {
+        let entry = MonitorLayoutEntry::new_primary(width, height)?.with_orientation(if width < height {
             MonitorOrientation::Portrait
+        } else {
+            MonitorOrientation::Landscape
         });
 
         let entry = if let Some(scale_factor) = scale_factor {
+            let desktop_scale_factor = MonitorLayoutEntry::adjust_desktop_scale_factor(scale_factor);
             entry
-                .with_desktop_scale_factor(scale_factor)?
-                .with_device_scale_factor(DeviceScaleFactor::Scale100Percent)
+                .with_desktop_scale_factor(desktop_scale_factor)?
+                .with_device_scale_factor(DeviceScaleFactor::from_desktop_scale_factor(desktop_scale_factor))
         } else {
             entry
         };
@@ -476,6 +649,16 @@ impl MonitorLayoutEntry {
         (constrain(width), constrain(height))
     }
 
+    /// Clamps a desktop scale factor, in percent, to the valid range.
+    ///
+    /// Per [2.2.2.2.1], the desktop scale factor MUST be ignored if it is less than 100 percent
+    /// or greater than 500 percent.
+    ///
+    /// [2.2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
+    pub fn adjust_desktop_scale_factor(desktop_scale_factor: u32) -> u32 {
+        desktop_scale_factor.clamp(100, 500)
+    }
+
     /// Creates a new primary [`MonitorLayoutEntry`].
     ///
     /// Per [2.2.2.2.1]:
@@ -505,6 +688,9 @@ impl MonitorLayoutEntry {
     }
 
     /// Sets the monitor's orientation. (Default is [`MonitorOrientation::Landscape`])
+    ///
+    /// The width and height of the entry describe the desktop as the user sees it, after the
+    /// rotation: a 1080x1920 portrait monitor has a width of 1080.
     #[must_use]
     pub fn with_orientation(mut self, orientation: MonitorOrientation) -> Self {
         self.orientation = orientation.angle();
@@ -606,12 +792,31 @@ impl MonitorLayoutEntry {
     /// IMPORTANT: When processing scale factors, make sure that both desktop and device scale factors
     /// are valid, otherwise they both should be ignored.
     pub fn device_scale_factor(&self) -> Option<DeviceScaleFactor> {
-        match self.device_scale_factor {
-            100 => Some(DeviceScaleFactor::Scale100Percent),
-            140 => Some(DeviceScaleFactor::Scale140Percent),
-            180 => Some(DeviceScaleFactor::Scale180Percent),
-            _ => None,
-        }
+        DeviceScaleFactor::from_value(self.device_scale_factor)
+    }
+
+    /// Returns the monitor rectangle as (left, top, right, bottom), right and bottom exclusive.
+    fn bounds(&self) -> (i64, i64, i64, i64) {
+        let left = i64::from(self.left);
+        let top = i64::from(self.top);
+        // No overflow: an i32 plus a u32 always fits in an i64.
+        #[expect(clippy::arithmetic_side_effects)]
+        let (right, bottom) = (left + i64::from(self.width), top + i64::from(self.height));
+        (left, top, right, bottom)
+    }
+
+    /// Returns whether both monitors share at least one pixel.
+    fn overlaps(&self, other: &Self) -> bool {
+        let (left, top, right, bottom) = self.bounds();
+        let (other_left, other_top, other_right, other_bottom) = other.bounds();
+        left < other_right && other_left < right && top < other_bottom && other_top < bottom
+    }
+
+    /// Returns whether both monitors overlap or share an edge or a corner.
+    fn touches(&self, other: &Self) -> bool {
+        let (left, top, right, bottom) = self.bounds();
+        let (other_left, other_top, other_right, other_bottom) = other.bounds();
+        left <= other_right && other_left <= right && top <= other_bottom && other_top <= bottom
     }
 }
 
@@ -718,6 +923,31 @@ pub enum DeviceScaleFactor {
 }
 
 impl DeviceScaleFactor {
+    /// Returns the device scale factor for a value in percent, if it is one of 100, 140 or 180.
+    pub fn from_value(value: u32) -> Option<Self> {
+        match value {
+            100 => Some(Self::Scale100Percent),
+            140 => Some(Self::Scale140Percent),
+            180 => Some(Self::Scale180Percent),
+            _ => None,
+        }
+    }
+
+    /// Returns the device scale factor matching a desktop scale factor in percent.
+    ///
+    /// The device scale factor is the plateau the desktop scale factor reaches: below 140 percent
+    /// maps to 100 percent, below 180 percent maps to 140 percent, and anything higher maps to
+    /// 180 percent.
+    pub fn from_desktop_scale_factor(desktop_scale_factor: u32) -> Self {
+        if desktop_scale_factor < 140 {
+            Self::Scale100Percent
+        } else if desktop_scale_factor < 180 {
+            Self::Scale140Percent
+        } else {
+            Self::Scale180Percent
+        }
+    }
+
     pub fn value(&self) -> u32 {
         match self {
             Self::Scale100Percent => 100,
@@ -725,6 +955,12 @@ impl DeviceScaleFactor {
             Self::Scale180Percent => 180,
         }
     }
+}
+
+fn layout_area(monitors: &[MonitorLayoutEntry]) -> u64 {
+    monitors.iter().fold(0, |area, monitor| {
+        area.saturating_add(u64::from(monitor.width).saturating_mul(u64::from(monitor.height)))
+    })
 }
 
 fn validate_position(left: i32, top: i32, is_primary: bool) -> EncodeResult<()> {

@@ -12,6 +12,7 @@
 //! Cargo will run all tests from a single binary in parallel, but
 //! binaries themselves are run sequentially.
 
+mod bulk;
 mod cfg;
 mod clipboard;
 mod connector;
@@ -30,11 +31,13 @@ mod rdcleanpath;
 mod rdpdr;
 mod rdpeai;
 mod rdpecam;
+mod rdpegt;
 mod rdpei;
 mod rdpel;
 mod rdpemt;
 mod rdpeudp;
 mod rdpeusb;
+mod rdpevor;
 mod rdpsnd;
 mod server;
 mod server_name;

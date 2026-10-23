@@ -2,7 +2,7 @@ use ironrdp_core::{DecodeError, decode};
 use ironrdp_pdu::bitmap::rdp6::{BitmapStream as BitmapStreamPdu, ColorPlaneDefinition};
 
 use crate::color_conversion::Rgb;
-use crate::rdp6::rle::{RleDecodeError, decompress_8bpp_plane};
+use crate::rdp6::rle::{RleDecodeError, decompress_8bpp_plane, min_compressed_plane_size};
 
 #[derive(Debug)]
 pub enum BitmapDecodeError {
@@ -62,6 +62,8 @@ struct BitmapStreamDecoderImpl<'a> {
     image_height: usize,
     chroma_width: usize,
     chroma_height: usize,
+    /// INVARIANT: `full_plane_size * 4 <= usize::MAX`, so the sizes of up to four planes (alpha and three
+    /// color planes) add up without overflowing.
     full_plane_size: usize,
     chroma_plane_size: usize,
     uncompressed_planes_size: usize,
@@ -75,7 +77,7 @@ struct AYCoCgParams {
 }
 
 impl<'a> BitmapStreamDecoderImpl<'a> {
-    fn init(bitmap: BitmapStreamPdu<'a>, image_width: usize, image_height: usize) -> Self {
+    fn init(bitmap: BitmapStreamPdu<'a>, image_width: usize, image_height: usize) -> Result<Self, BitmapDecodeError> {
         let (chroma_width, chroma_height) = if bitmap.has_subsampled_chroma() {
             // When image is subsampled, chroma plane has half the size of the luma plane, however
             // its size is rounded up to the nearest greater integer, to take into account odd image
@@ -86,7 +88,10 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
             (image_width, image_height)
         };
 
-        let full_plane_size = image_width * image_height;
+        let full_plane_size = image_width
+            .checked_mul(image_height)
+            .filter(|size| size.checked_mul(4).is_some())
+            .ok_or(BitmapDecodeError::InvalidUncompressedDataSize)?;
         let chroma_plane_size = chroma_width * chroma_height;
 
         let uncompressed_planes_size = if bitmap.has_subsampled_chroma() {
@@ -97,7 +102,20 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
 
         let color_plane_offsets = [0, full_plane_size, full_plane_size + chroma_plane_size];
 
-        Self {
+        if bitmap.header.enable_rle_compression {
+            let min_full_plane_data_size = min_compressed_plane_size(image_width, image_height);
+            let min_chroma_plane_data_size = min_compressed_plane_size(chroma_width, chroma_height);
+            let alpha_planes = usize::from(bitmap.header.use_alpha);
+            // Per invariants: each minimum is at most its plane size, so the sum is at most four full planes.
+            let min_planes_data_size = min_full_plane_data_size * (1 + alpha_planes) + min_chroma_plane_data_size * 2;
+
+            // A shorter body cannot hold the bitmap.
+            if bitmap.color_panes_data().len() < min_planes_data_size {
+                return Err(BitmapDecodeError::InvalidUncompressedDataSize);
+            }
+        }
+
+        Ok(Self {
             bitmap,
             image_width,
             image_height,
@@ -107,7 +125,7 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
             chroma_plane_size,
             uncompressed_planes_size,
             color_plane_offsets,
-        }
+        })
     }
 
     fn decompress_planes(&'a self, aux_buffer: &'a mut Vec<u8>) -> Result<&'a [u8], BitmapDecodeError> {
@@ -230,12 +248,13 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
     }
 
     fn decode(self, dst: &mut Vec<u8>, aux_buffer: &'a mut Vec<u8>) -> Result<(), BitmapDecodeError> {
+        let color_planes = self.decompress_planes(aux_buffer)?;
+
         // Reserve enough space for decoded RGB channels data
-        dst.reserve(self.image_height * self.image_width * 3);
+        dst.reserve(self.full_plane_size * 3);
 
         match self.bitmap.header.color_plane_definition {
             ColorPlaneDefinition::Argb => {
-                let color_planes = self.decompress_planes(aux_buffer)?;
                 self.write_argb_planes_to_rgb24(color_planes, dst);
             }
             ColorPlaneDefinition::AYCoCg {
@@ -248,7 +267,6 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
                     chroma_subsampling: use_chroma_subsampling,
                     alpha: self.bitmap.header.use_alpha,
                 };
-                let color_planes = self.decompress_planes(aux_buffer)?;
                 self.write_aycocg_planes_to_rgb24(params, color_planes, dst);
             }
         }
@@ -298,7 +316,7 @@ impl BitmapStreamDecoder {
     ) -> Result<(), BitmapDecodeError> {
         let bitmap = decode::<BitmapStreamPdu<'_>>(bitmap_data)?;
 
-        let decoder = BitmapStreamDecoderImpl::init(bitmap, image_width, image_height);
+        let decoder = BitmapStreamDecoderImpl::init(bitmap, image_width, image_height)?;
 
         decoder.decode(dst, &mut self.planes_buffer)
     }

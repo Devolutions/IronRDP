@@ -1,0 +1,34 @@
+[package]
+name = "ironrdp-rdpecam-native"
+version = "0.0.0"
+publish = false
+readme = "README.md"
+description = "Native camera capture backends for the IronRDP MS-RDPECAM client"
+edition.workspace = true
+rust-version = "1.94"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+
+[target.'cfg(windows)'.dependencies]
+ironrdp-rdpecam = { path = "../ironrdp-rdpecam" } # public
+tracing = { version = "0.1", features = ["log"] }
+windows = { version = "0.62", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Foundation",
+    "Win32_Media_DirectShow",
+    "Win32_Media_KernelStreaming",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+] }
+
+[lints]
+workspace = true

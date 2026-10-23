@@ -26,6 +26,8 @@ mod control;
 #[cfg(windows)]
 mod mstsc;
 #[cfg(windows)]
+mod pen;
+#[cfg(windows)]
 mod registration;
 #[cfg(windows)]
 mod rpc;

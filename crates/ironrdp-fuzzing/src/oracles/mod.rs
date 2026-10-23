@@ -51,6 +51,50 @@ pub fn bulk_decompress_xcrush(data: &[u8]) {
     let _ = bulk.decompress(data, flags::PACKET_COMPRESSED | 0x03);
 }
 
+/// RDP 8.0 decompressor used by the dynamic virtual channels, checked against the
+/// graphics pipeline's ZGFX decoder on the same input. `ironrdp-bulk` also accepts
+/// RDP 8.0 Lite segments, so it may decode inputs the graphics decoder rejects. The other
+/// way around, it only rejects match-length prefixes that MS-RDPEGFX reserves. The RDP 8.0
+/// Lite profile, used by DVCs, must decode whatever it accepts exactly like the RDP 8.0 one.
+///
+/// # Panics
+///
+/// Panics (reporting the bug to libFuzzer) when the graphics decoder accepts an input that
+/// `ironrdp-bulk` rejects or decodes to different bytes, or when the Lite profile accepts an
+/// input that the RDP 8.0 profile rejects or decodes to different bytes.
+#[expect(clippy::panic, reason = "panic is the libFuzzer bug-reporting mechanism")]
+pub fn bulk_decompress_rdp8(data: &[u8]) {
+    use ironrdp_bulk::rdp8::{Rdp8Decompressor, Rdp8Error};
+    use ironrdp_graphics::zgfx::Decompressor;
+
+    let mut reference = Vec::new();
+    let reference_result = Decompressor::new().decompress(data, &mut reference);
+
+    let mut output = Vec::new();
+    let result = Rdp8Decompressor::new().decompress(data, &mut output);
+
+    // The RDP 8.0 Lite profile only narrows the limits of the RDP 8.0 one, and both start
+    // from a zeroed history, so whatever Lite accepts must decode identically there.
+    let mut lite_output = Vec::new();
+    if Rdp8Decompressor::new_lite().decompress(data, &mut lite_output).is_ok() {
+        match &result {
+            Ok(_) if lite_output == output => {}
+            Ok(_) => panic!("RDP 8.0 Lite and RDP 8.0 profiles disagree on the output"),
+            Err(e) => panic!("RDP 8.0 profile rejected input the Lite profile accepts: {e}"),
+        }
+    }
+
+    if reference_result.is_ok() {
+        match result {
+            Ok(_) if output == reference => {}
+            Ok(_) => panic!("RDP 8.0 decompressors disagree on the output"),
+            // The graphics decoder also accepts match-length prefixes that MS-RDPEGFX reserves.
+            Err(Rdp8Error::MatchLengthTooLarge) => {}
+            Err(e) => panic!("ironrdp-bulk rejected input the graphics decoder accepts: {e}"),
+        }
+    }
+}
+
 /// Round-trip oracle: compress uncompressed input then decompress the result,
 /// assert byte-equality with the original. `BulkCompressor` holds both halves;
 /// a fresh compressor and decompressor are constructed per call to avoid
@@ -174,12 +218,15 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<ironrdp_cliprdr::pdu::FileContentsResponse<'_>>(data);
 
     let _ = decode::<ironrdp_rdpdr::pdu::RdpdrPdu>(data);
+    let _ = decode::<ironrdp_rdpdr::pdu::epc::PrinterCacheData>(data);
+    let _ = decode::<ironrdp_rdpdr::pdu::epc::PrinterUsingXps>(data);
 
     let _ = decode::<ironrdp_displaycontrol::pdu::DisplayControlPdu>(data);
     let _ = decode::<ironrdp_rdpel::pdu::LocationPdu>(data);
 
     let _ = decode::<ironrdp_rdpsnd::pdu::ServerAudioOutputPdu<'_>>(data);
     let _ = decode::<ironrdp_rdpsnd::pdu::ClientAudioOutputPdu>(data);
+    let _ = decode::<ironrdp_rdpsnd::pdu::ServerAudioDatagram<'_>>(data);
 
     let _ = decode::<GfxPdu>(data);
     let _ = decode::<CacheToSurfacePdu>(data);
@@ -336,6 +383,8 @@ pub fn pdu_round_trip(data: &[u8]) {
 
     // RDPDR
     pdu_round_trip_one!(data, ironrdp_rdpdr::pdu::RdpdrPdu);
+    pdu_round_trip_one!(data, ironrdp_rdpdr::pdu::epc::PrinterCacheData);
+    pdu_round_trip_one!(data, ironrdp_rdpdr::pdu::epc::PrinterUsingXps);
 
     // Display control
     pdu_round_trip_one!(data, ironrdp_displaycontrol::pdu::DisplayControlPdu);
@@ -395,18 +444,21 @@ pub fn egfx_round_trip(data: &[u8]) {
 /// AVC420 decode-side wrapper fuzz oracle.
 ///
 /// Fuzzes the IronRDP wrapper layer between a wire `Avc420BitmapStream` and
-/// the consumer's `H264Decoder`. Specifically targets `avc_to_annex_b`, the
-/// AVC-length-prefix to Annex-B conversion that runs before OpenH264 sees
-/// any bytes.
+/// the consumer's `H264Decoder`: `is_avc_format`, which decides whether the
+/// input is length-prefixed, and `avc_to_annex_b`, the conversion that
+/// `OpenH264Decoder` runs on length-prefixed input before OpenH264 sees it
+/// (Annex B input is passed through unchanged).
 ///
 /// The oracle runs two paths on each input:
 ///
-/// - Direct: call `avc_to_annex_b(data)` on the raw fuzz input. This
-///   exercises the wrapper on arbitrary byte distributions, including
+/// - Direct: run `is_avc_format` and `avc_to_annex_b` on the raw fuzz input,
+///   the conversion unconditionally so malformed length prefixes reach it.
+///   This exercises the wrapper on arbitrary byte distributions, including
 ///   inputs that do not parse as `Avc420BitmapStream`.
-/// - Decode-chain: try `Avc420BitmapStream::decode(data)`; on success, call
-///   `avc_to_annex_b(stream.data)`. This exercises the wrapper on the
-///   realistic post-decode payload distribution.
+/// - Decode-chain: try `Avc420BitmapStream::decode(data)`; on success, make
+///   the same dispatch as `OpenH264Decoder::decode` on the stream's payload.
+///   This exercises the wrapper on the realistic post-decode payload
+///   distribution.
 ///
 /// What this catches: panics in the wrapper, OOM via attacker-controlled
 /// NAL length encoding, contract violations on the produced Annex-B byte
@@ -416,13 +468,16 @@ pub fn egfx_round_trip(data: &[u8]) {
 /// post-OpenH264 YUV-to-RGBA conversion path in `OpenH264Decoder::decode`,
 /// AVC444 luma plus chroma split (covered by a sibling target).
 pub fn egfx_avc420_decode(data: &[u8]) {
-    use ironrdp_egfx::pdu::{Avc420BitmapStream, avc_to_annex_b};
+    use ironrdp_egfx::pdu::{Avc420BitmapStream, avc_to_annex_b, is_avc_format};
 
+    let _ = is_avc_format(data);
     let _ = avc_to_annex_b(data);
 
     let mut cursor = ironrdp_core::ReadCursor::new(data);
     if let Ok(stream) = ironrdp_core::decode_cursor::<Avc420BitmapStream<'_>>(&mut cursor) {
-        let _ = avc_to_annex_b(stream.data);
+        if is_avc_format(stream.data) {
+            let _ = avc_to_annex_b(stream.data);
+        }
     }
 }
 
@@ -568,9 +623,17 @@ pub fn cliprdr_format(input: &[u8]) {
 pub fn channel_process(input: &[u8]) {
     use ironrdp_svc::SvcProcessor as _;
 
+    // A printer with a cache store lets printer cache-data PDUs reach the store; an add event
+    // for its `PRN1` port matches without knowing the printer name.
     let mut rdpdr = ironrdp_rdpdr::Rdpdr::new(Box::new(ironrdp_rdpdr::NoopRdpdrBackend), "Backend".to_owned())
         .with_smartcard(1)
-        .with_drives(None);
+        .with_drives(None)
+        .with_printer_cache_store(std::sync::Arc::new(ironrdp_rdpdr::InMemoryRdpdrPrinterCacheStore::new()))
+        .with_redirected_printer(ironrdp_rdpdr::RdpdrPrinter::new(
+            2,
+            "Printer".to_owned(),
+            "Driver".to_owned(),
+        ));
 
     let _ = rdpdr.process(input);
 }
@@ -1297,9 +1360,10 @@ pub fn message_decoding_invariants(data: &[u8]) {
 ///
 /// Sibling of [`egfx_avc420_decode`]. Fuzzes the IronRDP wrapper layer between
 /// a wire `Avc444BitmapStream` and the consumer's `H264Decoder`. Targets the
-/// AVC-length-prefix to Annex-B conversion that runs on each of the two
+/// AVC-length-prefix to Annex-B conversion, called unconditionally (without
+/// the `is_avc_format` dispatch) on the raw input and on each of the two
 /// underlying `Avc420BitmapStream`s (luma plus optional chroma) per
-/// MS-RDPEGFX 2.2.4.4.
+/// MS-RDPEGFX 2.2.4.4, so malformed length prefixes reach it.
 ///
 /// The oracle runs three paths on each input:
 ///
@@ -1635,5 +1699,31 @@ pub fn egfx_surface_state(data: &[u8]) {
             expected.total_frames_decoded,
             "total_frames_decoded mismatch"
         );
+    }
+}
+
+/// Wave codec oracle for audio output and input.
+///
+/// The input starts with a `WAVEFORMATEX` (with its extra bytes) selecting the codec and its
+/// parameters, followed by wave data. Decoding hostile wave data, and re-encoding what it decoded
+/// to, must not panic for any format the codecs accept.
+pub fn rdpsnd_codec_decode(data: &[u8]) {
+    use ironrdp_core::{Decode as _, ReadCursor};
+    use ironrdp_rdpsnd::codec::{AudioDecoder, AudioEncoder};
+    use ironrdp_rdpsnd::pdu::AudioFormat;
+
+    let mut cursor = ReadCursor::new(data);
+    let Ok(format) = AudioFormat::decode(&mut cursor) else {
+        return;
+    };
+    let Ok(mut decoder) = AudioDecoder::new(&format) else {
+        return;
+    };
+    let mut pcm = Vec::new();
+    let _ = decoder.decode(cursor.remaining(), &mut pcm);
+
+    if let Ok(mut encoder) = AudioEncoder::new(&format) {
+        let mut encoded = Vec::new();
+        encoder.encode(&pcm, &mut encoded);
     }
 }

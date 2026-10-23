@@ -88,6 +88,7 @@ pub mod ffi {
         }
 
         /// Gets the type of this RDCleanPath PDU
+        #[diplomat::attr(auto, getter = "type")]
         pub fn get_type(&self) -> Result<RDCleanPathResultType, Box<IronRdpError>> {
             if self.0.destination.is_some() {
                 if self.0.proxy_auth.is_none() {
@@ -127,6 +128,7 @@ pub mod ffi {
         }
 
         /// Gets the X.224 connection response bytes (for Response or NegotiationError variants)
+        #[diplomat::attr(auto, getter = "x224_response")]
         pub fn get_x224_response(&self) -> Result<Box<VecU8>, Box<IronRdpError>> {
             if self.0.server_addr.is_some() {
                 let x224 = self
@@ -159,6 +161,7 @@ pub mod ffi {
 
         /// Gets the server certificate chain (for Response variant)
         /// Returns a vector iterator of certificate bytes
+        #[diplomat::attr(auto, getter = "server_cert_chain")]
         pub fn get_server_cert_chain(&self) -> Result<Box<CertificateChainIterator>, Box<IronRdpError>> {
             if self.0.server_addr.is_some() {
                 let certs = self
@@ -175,6 +178,7 @@ pub mod ffi {
         }
 
         /// Gets the server address string (for Response variant)
+        #[diplomat::attr(auto, getter = "server_addr")]
         pub fn get_server_addr<'a>(&'a self, writeable: &'a mut DiplomatWriteable) {
             if self.0.server_addr.is_some() && self.0.server_cert_chain.is_some() {
                 if let Some(server_addr) = &self.0.server_addr {
@@ -184,6 +188,7 @@ pub mod ffi {
         }
 
         /// Gets error message (for GeneralError variant)
+        #[diplomat::attr(auto, getter = "error_message")]
         pub fn get_error_message<'a>(&'a self, writeable: &'a mut DiplomatWriteable) {
             if let Ok(err) = self.general_error() {
                 let _ = write!(writeable, "{err}");
@@ -191,6 +196,7 @@ pub mod ffi {
         }
 
         /// Gets the error code (for GeneralError variant)
+        #[diplomat::attr(auto, getter = "error_code")]
         pub fn get_error_code(&self) -> Result<u16, Box<IronRdpError>> {
             let err = self.general_error()?;
             Ok(err.error_code)
@@ -198,6 +204,7 @@ pub mod ffi {
 
         /// Gets the HTTP status code if present (for GeneralError variant)
         /// Returns error if not present or not a GeneralError variant
+        #[diplomat::attr(auto, getter = "http_status_code")]
         pub fn get_http_status_code(&self) -> Result<u16, Box<IronRdpError>> {
             let err = self.general_error()?;
 
@@ -244,6 +251,7 @@ pub mod ffi {
             matches!(self.0, ironrdp_rdcleanpath::DetectionResult::Failed)
         }
 
+        #[diplomat::attr(auto, getter = "total_length")]
         pub fn get_total_length(&self) -> Result<usize, Box<IronRdpError>> {
             if let ironrdp_rdcleanpath::DetectionResult::Detected { total_length, .. } = self.0 {
                 Ok(total_length)

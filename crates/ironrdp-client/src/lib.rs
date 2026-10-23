@@ -7,12 +7,19 @@
 #![allow(clippy::cast_possible_wrap)]
 #![allow(clippy::cast_sign_loss)]
 
+#[cfg(feature = "sound")]
+pub mod audio;
+#[cfg(feature = "camera")]
+pub mod camera;
 pub mod config;
+pub mod h264;
 pub mod output_channel;
 pub mod rail;
 pub mod rdp;
+#[cfg(feature = "video")]
+pub mod video;
 
-#[cfg(all(windows, feature = "clipboard"))]
+#[cfg(all(any(windows, target_os = "linux"), feature = "clipboard"))]
 mod clipboard;
 
 mod ws;

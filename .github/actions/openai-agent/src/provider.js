@@ -40,7 +40,9 @@ const POST_FINISH_SHAPES = new Set([
   "finish-mismatch",
   "delta-invalid",
   "delta-content",
+  "delta-content-empty",
   "delta-reasoning",
+  "delta-reasoning-empty",
   "delta-tool-calls",
   "delta-extension",
 ]);
@@ -144,11 +146,13 @@ class RuntimeMetrics {
     if (code !== undefined) this.providerErrorCode = code;
   }
 
+  // The first violation and shape stay at the top level; each attempt also keeps its own so a
+  // malformed attempt that a request retry recovered remains visible.
   recordStreamStructuralViolation(violation) {
-    if (this.streamStructuralViolation === undefined &&
-        STREAM_STRUCTURAL_VIOLATIONS.has(violation)) {
-      this.streamStructuralViolation = violation;
-    }
+    if (!STREAM_STRUCTURAL_VIOLATIONS.has(violation)) return;
+    this.streamStructuralViolation ??= violation;
+    const attempt = this.activeRequest?.attempts.at(-1);
+    if (attempt) attempt.streamStructuralViolation ??= violation;
   }
 
   recordIgnoredPostFinishEmptyDeltaChoice(repeatedTerminal) {
@@ -163,9 +167,10 @@ class RuntimeMetrics {
   }
 
   recordPostFinishShape(shape) {
-    if (this.postFinishShape === undefined && POST_FINISH_SHAPES.has(shape)) {
-      this.postFinishShape = shape;
-    }
+    if (!POST_FINISH_SHAPES.has(shape)) return;
+    this.postFinishShape ??= shape;
+    const attempt = this.activeRequest?.attempts.at(-1);
+    if (attempt) attempt.postFinishShape ??= shape;
   }
 
   // A rejected output attempt is the only evidence left of why a stage exhausted its repairs, so it
@@ -198,6 +203,10 @@ class RuntimeMetrics {
       ...(attempt.requestId === undefined ? {} : { requestId: attempt.requestId }),
       ...(attempt.finishReason === undefined ? {} : { finishReason: attempt.finishReason }),
       ...(attempt.usage === undefined ? {} : { usage: attempt.usage }),
+      ...(attempt.streamStructuralViolation === undefined
+        ? {}
+        : { streamStructuralViolation: attempt.streamStructuralViolation }),
+      ...(attempt.postFinishShape === undefined ? {} : { postFinishShape: attempt.postFinishShape }),
     })));
     const usage = summarizeUsage(providerAttempts);
     const finishReason = [...providerAttempts].reverse()

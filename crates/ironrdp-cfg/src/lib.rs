@@ -315,6 +315,153 @@ impl core::fmt::Display for DvcPipeSpecMissingDelimiter {
 
 impl core::error::Error for DvcPipeSpecMissingDelimiter {}
 
+/// Local drives selected for redirection.
+///
+/// Corresponds to the `drivestoredirect` `.rdp` property, using the mstsc syntax: entries are
+/// separated by `;`, `*` selects every drive (including drives connected later), `DynamicDrives`
+/// selects drives connected later, and `C:\` (or `C:`, `C`) selects one drive letter.
+/// Unrecognized entries, such as FreeRDP-specific paths, are ignored; see
+/// [`Self::unrecognized_entries`].
+///
+/// Selecting every drive implies dynamic drives, because `*` cannot express one without the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DriveRedirection {
+    /// INVARIANT: only the low 26 bits are used; bit `n` selects the letter `'A' + n`.
+    letters: u32,
+    all: bool,
+    dynamic: bool,
+}
+
+impl DriveRedirection {
+    const DYNAMIC_DRIVES: &str = "DynamicDrives";
+
+    /// Selects every local drive, including drives connected later (`*`).
+    pub fn all() -> Self {
+        Self {
+            letters: 0,
+            all: true,
+            dynamic: true,
+        }
+    }
+
+    /// Parses a `drivestoredirect` value.
+    pub fn parse(value: &str) -> Self {
+        let mut selection = Self::default();
+        for (_, entry) in Self::entries(value) {
+            match entry {
+                Some(DriveEntry::All) => {
+                    selection.all = true;
+                    selection.dynamic = true;
+                }
+                Some(DriveEntry::Dynamic) => selection.dynamic = true,
+                Some(DriveEntry::Letter(index)) => selection.letters |= 1 << index,
+                None => {}
+            }
+        }
+        if selection.all {
+            // `*` already selects every letter.
+            selection.letters = 0;
+        }
+        selection
+    }
+
+    /// Returns the entries of a `drivestoredirect` value that [`Self::parse`] ignores, so callers
+    /// can report them.
+    pub fn unrecognized_entries(value: &str) -> impl Iterator<Item = &str> {
+        Self::entries(value).filter_map(|(text, entry)| entry.is_none().then_some(text))
+    }
+
+    /// Splits a `drivestoredirect` value into its nonempty entries and their meaning.
+    fn entries(value: &str) -> impl Iterator<Item = (&str, Option<DriveEntry>)> {
+        value
+            .split(';')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| {
+                let kind = if entry == "*" {
+                    Some(DriveEntry::All)
+                } else if entry.eq_ignore_ascii_case(Self::DYNAMIC_DRIVES) {
+                    Some(DriveEntry::Dynamic)
+                } else {
+                    drive_letter_index(entry).map(DriveEntry::Letter)
+                };
+                (entry, kind)
+            })
+    }
+
+    /// Returns this selection with drives connected later enabled or disabled.
+    ///
+    /// Has no effect on a selection of every drive.
+    #[must_use]
+    pub fn with_dynamic(mut self, enabled: bool) -> Self {
+        self.dynamic = enabled || self.all;
+        self
+    }
+
+    /// Whether every local drive is selected.
+    pub fn redirects_all(&self) -> bool {
+        self.all
+    }
+
+    /// Whether drives connected during the session are selected.
+    pub fn redirects_dynamic(&self) -> bool {
+        self.dynamic
+    }
+
+    /// Returns the uppercase drive letters selected explicitly, in alphabetical order.
+    pub fn letters(&self) -> impl Iterator<Item = char> + '_ {
+        (b'A'..=b'Z')
+            .zip(0u32..)
+            .filter(|(_, index)| self.letters & (1 << index) != 0)
+            .map(|(letter, _)| char::from(letter))
+    }
+
+    /// Whether no drive is selected.
+    pub fn is_empty(&self) -> bool {
+        self.letters == 0 && !self.all && !self.dynamic
+    }
+}
+
+impl core::fmt::Display for DriveRedirection {
+    /// Formats the selection as a `drivestoredirect` value.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.all {
+            return f.write_str("*");
+        }
+
+        let mut separator = "";
+        for letter in self.letters() {
+            write!(f, "{separator}{letter}:\\")?;
+            separator = ";";
+        }
+        if self.dynamic {
+            write!(f, "{separator}{}", Self::DYNAMIC_DRIVES)?;
+        }
+        Ok(())
+    }
+}
+
+/// A recognized `drivestoredirect` entry.
+#[derive(Clone, Copy)]
+enum DriveEntry {
+    /// `*`
+    All,
+    /// `DynamicDrives`
+    Dynamic,
+    /// A drive letter, as its bit index.
+    Letter(u32),
+}
+
+/// Returns the bit index of a `C`, `C:`, `C:\` or `C:/` drive entry.
+fn drive_letter_index(entry: &str) -> Option<u32> {
+    match entry.as_bytes() {
+        [letter] | [letter, b':'] | [letter, b':', b'\\' | b'/'] if letter.is_ascii_alphabetic() => {
+            Some(u32::from(letter.to_ascii_uppercase() - b'A'))
+        }
+        _ => None,
+    }
+}
+
 /// Typed accessors for the RDP properties IronRDP understands.
 ///
 /// Every property is exposed as a triplet of methods sharing the same underlying key: a getter
@@ -411,6 +558,15 @@ pub trait PropertySetExt {
     /// Removes the `domain` property.
     fn clear_domain(&mut self);
 
+    /// Raw local drive selection (`drivestoredirect`); see [`DriveRedirection`] for the syntax.
+    ///
+    /// Prefer [`Self::drive_redirection`], which also honors the legacy `redirectdrives` key.
+    fn drives_to_redirect(&self) -> Option<&str>;
+    /// Sets the `drivestoredirect` property.
+    fn set_drives_to_redirect(&mut self, value: impl Into<String>);
+    /// Removes the `drivestoredirect` property.
+    fn clear_drives_to_redirect(&mut self);
+
     /// Whether CredSSP/NLA support is enabled (`enablecredsspsupport`).
     fn enable_credssp_support(&self) -> Option<bool>;
     /// Sets the `enablecredsspsupport` property.
@@ -485,12 +641,35 @@ pub trait PropertySetExt {
     /// Removes the `redirectclipboard` property.
     fn clear_redirect_clipboard(&mut self);
 
+    /// Whether every local drive is redirected (`redirectdrives`, legacy).
+    ///
+    /// Prefer [`Self::drive_redirection`], which gives `drivestoredirect` precedence.
+    fn redirect_drives(&self) -> Option<bool>;
+    /// Sets the `redirectdrives` property.
+    fn set_redirect_drives(&mut self, value: bool);
+    /// Removes the `redirectdrives` property.
+    fn clear_redirect_drives(&mut self);
+
     /// Whether WebAuthn redirection is requested (`redirectwebauthn`).
     fn redirect_webauthn(&self) -> Option<bool>;
     /// Sets the `redirectwebauthn` property.
     fn set_redirect_webauthn(&mut self, value: bool);
     /// Removes the `redirectwebauthn` property.
     fn clear_redirect_webauthn(&mut self);
+
+    /// Whether printer redirection is requested (`redirectprinters`).
+    fn redirect_printers(&self) -> Option<bool>;
+    /// Sets the `redirectprinters` property.
+    fn set_redirect_printers(&mut self, value: bool);
+    /// Removes the `redirectprinters` property.
+    fn clear_redirect_printers(&mut self);
+
+    /// Whether serial and parallel port redirection is requested (`redirectcomports`).
+    fn redirect_com_ports(&self) -> Option<bool>;
+    /// Sets the `redirectcomports` property.
+    fn set_redirect_com_ports(&mut self, value: bool);
+    /// Removes the `redirectcomports` property.
+    fn clear_redirect_com_ports(&mut self);
 
     /// RemoteApp application name (`remoteapplicationname`).
     fn remote_application_name(&self) -> Option<&str>;
@@ -674,6 +853,16 @@ pub trait PropertySetExt {
     /// `gatewayusername`, and both `GatewayPassword` casings).
     fn clear_gateway(&mut self);
 
+    /// Local drive selection resolved from `drivestoredirect` and the legacy `redirectdrives`.
+    ///
+    /// An explicit `redirectdrives:i:0` disables drive redirection, so clearing the legacy flag
+    /// cannot leave a stale `drivestoredirect` list exposed. Otherwise a nonempty
+    /// `drivestoredirect` takes precedence, and `redirectdrives:i:1` alone selects every drive, as
+    /// in FreeRDP. Returns `None` when neither key is present.
+    fn drive_redirection(&self) -> Option<DriveRedirection>;
+    /// Writes `drivestoredirect` and `redirectdrives` from a drive selection.
+    fn set_drive_redirection(&mut self, value: DriveRedirection);
+
     /// Removes every RDCleanPath-related key (`ironrdp_rdcleanpathurl` and
     /// `ironrdp_rdcleanpathtoken`).
     fn clear_rdcleanpath(&mut self);
@@ -824,6 +1013,18 @@ impl PropertySetExt for PropertySet {
         self.remove("domain");
     }
 
+    fn drives_to_redirect(&self) -> Option<&str> {
+        self.get::<&str>("drivestoredirect")
+    }
+
+    fn set_drives_to_redirect(&mut self, value: impl Into<String>) {
+        self.insert("drivestoredirect", value.into());
+    }
+
+    fn clear_drives_to_redirect(&mut self) {
+        self.remove("drivestoredirect");
+    }
+
     fn enable_credssp_support(&self) -> Option<bool> {
         self.get::<bool>("enablecredsspsupport")
     }
@@ -954,6 +1155,18 @@ impl PropertySetExt for PropertySet {
         self.remove("redirectclipboard");
     }
 
+    fn redirect_drives(&self) -> Option<bool> {
+        self.get::<bool>("redirectdrives")
+    }
+
+    fn set_redirect_drives(&mut self, value: bool) {
+        self.insert("redirectdrives", value);
+    }
+
+    fn clear_redirect_drives(&mut self) {
+        self.remove("redirectdrives");
+    }
+
     fn redirect_webauthn(&self) -> Option<bool> {
         self.get::<bool>("redirectwebauthn")
     }
@@ -964,6 +1177,30 @@ impl PropertySetExt for PropertySet {
 
     fn clear_redirect_webauthn(&mut self) {
         self.remove("redirectwebauthn");
+    }
+
+    fn redirect_printers(&self) -> Option<bool> {
+        self.get::<bool>("redirectprinters")
+    }
+
+    fn set_redirect_printers(&mut self, value: bool) {
+        self.insert("redirectprinters", value);
+    }
+
+    fn clear_redirect_printers(&mut self) {
+        self.remove("redirectprinters");
+    }
+
+    fn redirect_com_ports(&self) -> Option<bool> {
+        self.get::<bool>("redirectcomports")
+    }
+
+    fn set_redirect_com_ports(&mut self, value: bool) {
+        self.insert("redirectcomports", value);
+    }
+
+    fn clear_redirect_com_ports(&mut self) {
+        self.remove("redirectcomports");
     }
 
     fn remote_application_name(&self) -> Option<&str> {
@@ -1319,6 +1556,23 @@ impl PropertySetExt for PropertySet {
         self.remove("gatewayusername");
         self.remove("gatewaypassword");
         self.remove("GatewayPassword");
+    }
+
+    fn drive_redirection(&self) -> Option<DriveRedirection> {
+        let drives_to_redirect = self.drives_to_redirect();
+        let redirect_drives = self.redirect_drives();
+        match (drives_to_redirect.map(str::trim), redirect_drives) {
+            (_, Some(false)) => Some(DriveRedirection::default()),
+            (Some(value), _) if !value.is_empty() => Some(DriveRedirection::parse(value)),
+            (_, Some(true)) => Some(DriveRedirection::all()),
+            (None, None) => None,
+            _ => Some(DriveRedirection::default()),
+        }
+    }
+
+    fn set_drive_redirection(&mut self, value: DriveRedirection) {
+        self.set_drives_to_redirect(value.to_string());
+        self.set_redirect_drives(!value.is_empty());
     }
 
     fn clear_rdcleanpath(&mut self) {

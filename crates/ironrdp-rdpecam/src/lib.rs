@@ -14,7 +14,9 @@ pub mod pdu;
 
 pub use client::{
     CameraBackend, CameraRedirectionSession, DeviceChannelListener, DeviceClient, EnumerationClient, RedirectedDevice,
+    SampleDelivery, SampleSink, SampleUplink,
 };
 pub use pdu::{
-    DeviceDescriptor, ErrorCode, MediaFormat, MediaType, ProtocolVersion, StartStreamInfo, StreamDescription,
+    DeviceDescriptor, ErrorCode, MediaFormat, MediaType, PropertyDescription, PropertyId, PropertyMode, PropertySet,
+    PropertyValue, ProtocolVersion, StartStreamInfo, StreamDescription,
 };

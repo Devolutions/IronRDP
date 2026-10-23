@@ -181,6 +181,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "bulk_rdp8"
+path = "fuzz_targets/bulk_rdp8.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "egfx_zgfx_decompress"
 path = "fuzz_targets/egfx_zgfx_decompress.rs"
 test = false
@@ -190,6 +197,13 @@ bench = false
 [[bin]]
 name = "egfx_surface_state"
 path = "fuzz_targets/egfx_surface_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rdpsnd_codec_decode"
+path = "fuzz_targets/rdpsnd_codec_decode.rs"
 test = false
 doc = false
 bench = false

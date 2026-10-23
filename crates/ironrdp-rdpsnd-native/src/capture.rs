@@ -3,12 +3,15 @@ use core::time::Duration;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 
-use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
+use cpal::traits::{DeviceTrait as _, StreamTrait as _};
 use cpal::{Stream, StreamConfig};
 use ironrdp_rdpeai::client::{AudioPacketSink, RdpeaiCaptureHandler};
 use ironrdp_rdpeai::pdu::{MAX_DATA_PACKET_SIZE, OpenReplyPdu, pcm_format};
+use ironrdp_rdpsnd::codec::AudioEncoder;
 use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
+
+use crate::device::{self, DeviceSelector, Direction};
 
 /// Upper bound for waiting on CPAL input stream startup from the session task.
 ///
@@ -26,12 +29,21 @@ const KSDATAFORMAT_SUBTYPE_PCM: [u8; 16] = [
     0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71, // Data4
 ];
 
+/// Capture settings.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CaptureConfig {
+    /// Input device.
+    pub device: DeviceSelector,
+}
+
 /// CPAL-backed MS-RDPEAI capture handler.
 ///
-/// This backend captures PCM only and ships capture-sized PCM Data PDUs.
-/// Encode formats that differ from the Open capture WAVEFORMATEX cause a
-/// capture-stream restart so FormatChange can always be confirmed.
+/// The device records 16-bit PCM in the format the server's Open PDU requests. Each capture packet
+/// of `FramesPerPacket` frames is then encoded to the negotiated format (PCM, G.711 or ADPCM)
+/// before it is sent. A format change that keeps the sample rate and channel count switches the
+/// encoder in place; one that does not restarts capture at the new parameters.
 pub struct RdpeaiCaptureBackend {
+    config: CaptureConfig,
     formats: Vec<AudioFormat>,
     stream_handle: Option<JoinHandle<()>>,
     stream_ended: Arc<AtomicBool>,
@@ -45,6 +57,10 @@ struct SinkState {
     sink: AudioPacketSink,
     packet_size: usize,
     buffer: Vec<u8>,
+    /// Encoder for the negotiated format; `None` sends the captured PCM as is.
+    encoder: Option<AudioEncoder>,
+    /// Samples of the packet being encoded, reused across packets.
+    pcm: Vec<i16>,
 }
 
 impl Default for RdpeaiCaptureBackend {
@@ -55,7 +71,12 @@ impl Default for RdpeaiCaptureBackend {
 
 impl RdpeaiCaptureBackend {
     pub fn new() -> Self {
+        Self::with_config(CaptureConfig::default())
+    }
+
+    pub fn with_config(config: CaptureConfig) -> Self {
         Self {
+            config,
             formats: default_capture_formats(),
             stream_handle: None,
             stream_ended: Arc::new(AtomicBool::new(false)),
@@ -95,42 +116,21 @@ impl RdpeaiCaptureBackend {
             ));
         }
 
-        let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| "no default input device".to_owned())?;
-
+        let selector = self.config.device.clone();
         let config = StreamConfig {
             channels: format.n_channels,
             sample_rate: format.n_samples_per_sec,
             buffer_size: cpal::BufferSize::Default,
         };
 
-        let stream_ended = Arc::clone(&self.stream_ended);
+        let stream_ended = Arc::new(AtomicBool::new(false));
+        self.stream_ended = Arc::clone(&stream_ended);
         let sink_state = Arc::clone(&self.sink_state);
-        self.stream_ended.store(false, Ordering::Relaxed);
 
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
 
         self.stream_handle = Some(thread::spawn(move || {
-            let stream = match build_input_stream(&device, &config, Arc::clone(&sink_state)) {
-                Ok(stream) => stream,
-                Err(error) => {
-                    let _ = ready_tx.send(Err(error));
-                    return;
-                }
-            };
-            if let Err(error) = stream.play() {
-                let _ = ready_tx.send(Err(error.to_string()));
-                return;
-            }
-            let _ = ready_tx.send(Ok(()));
-            debug!("AUDIO_INPUT capture stream running");
-            while !stream_ended.load(Ordering::Relaxed) {
-                thread::park();
-            }
-            drop(stream);
-            debug!("AUDIO_INPUT capture stream stopped");
+            run_capture(&selector, &config, &sink_state, &stream_ended, ready_tx);
         }));
 
         match ready_rx.recv_timeout(STREAM_START_TIMEOUT) {
@@ -158,6 +158,21 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
         &self.formats
     }
 
+    fn choose_formats(&self, server_formats: &[AudioFormat]) -> Vec<AudioFormat> {
+        // Every server format the encoder handles is acceptable; the server picks among them.
+        let mut chosen: Vec<AudioFormat> = server_formats
+            .iter()
+            .filter(|format| {
+                (is_pcm_capture_format(format) && format.bits_per_sample == 16) || AudioEncoder::supports(format)
+            })
+            .cloned()
+            .collect();
+        // Offer compressed formats first so that a server choosing the first usable format saves
+        // uplink bandwidth; PCM stays available as the fallback every server supports.
+        chosen.sort_by_key(is_pcm_capture_format);
+        chosen
+    }
+
     fn open(
         &mut self,
         capture_format: &AudioFormat,
@@ -165,20 +180,18 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
         packet_size: usize,
         sink: AudioPacketSink,
     ) -> i32 {
-        // PCM-only backend: encode must match capture rate/channels so Data PDUs stay decodable.
-        if !same_pcm_params(capture_format, encode_format) {
-            warn!(
-                ?capture_format,
-                ?encode_format,
-                "Refusing capture open: encode format differs from capture (PCM-only backend)"
-            );
-            return OpenReplyPdu::E_FAIL;
-        }
-
         if packet_size == 0 || packet_size > MAX_DATA_PACKET_SIZE {
             warn!(packet_size, "Refusing capture open with invalid packet size");
             return OpenReplyPdu::E_FAIL;
         }
+
+        let encoder = match encoder_for(capture_format, encode_format) {
+            Ok(encoder) => encoder,
+            Err(reason) => {
+                warn!(?capture_format, ?encode_format, reason, "Refusing capture open");
+                return OpenReplyPdu::E_FAIL;
+            }
+        };
 
         let mut buffer = Vec::new();
         if buffer.try_reserve_exact(packet_size.saturating_mul(2)).is_err() {
@@ -194,11 +207,14 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
                 sink,
                 packet_size,
                 buffer,
+                encoder,
+                pcm: Vec::new(),
             });
         }
 
         match self.start_stream(capture_format) {
             Ok(()) => {
+                debug!(?encode_format, "AUDIO_INPUT capture encoding");
                 self.open_capture_format = Some(capture_format.clone());
                 OpenReplyPdu::S_OK
             }
@@ -214,36 +230,49 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
     fn set_format(&mut self, encode_format: &AudioFormat, packet_size: usize) -> bool {
         // FormatChange switches encoding. Capture packet size stays at the Open value.
         let _ = packet_size;
-        if self.open_capture_format.is_none() {
+        let Some(capture_format) = self.open_capture_format.clone() else {
             return false;
-        }
-        if !is_pcm_capture_format(encode_format) || encode_format.bits_per_sample != 16 {
-            warn!(
-                ?encode_format,
-                "Rejecting FormatChange: encode format is not 16-bit PCM"
-            );
-            return false;
-        }
+        };
 
-        if self
-            .open_capture_format
-            .as_ref()
-            .is_some_and(|capture| same_pcm_params(capture, encode_format))
+        let restart = !same_rate_and_channels(&capture_format, encode_format);
+        let capture_format = if restart {
+            // Capture at the new rate and channel count so the confirmation is honest.
+            pcm_format(encode_format.n_channels, encode_format.n_samples_per_sec, 16)
+        } else {
+            capture_format
+        };
+        let encoder = match encoder_for(&capture_format, encode_format) {
+            Ok(encoder) => encoder,
+            Err(reason) => {
+                warn!(?encode_format, reason, "Rejecting FormatChange");
+                return false;
+            }
+        };
+
+        if restart {
+            // Stop the old stream before switching, so none of its samples meet the new encoder.
+            self.stop_worker();
+        }
         {
-            return self.sink_state.lock().map(|guard| guard.is_some()).unwrap_or(false);
+            let Ok(mut guard) = self.sink_state.lock() else {
+                return false;
+            };
+            let Some(state) = guard.as_mut() else {
+                return false;
+            };
+            // Leftover samples of the old format must not start a packet of the new one.
+            state.buffer.clear();
+            state.encoder = encoder;
         }
-
-        // Restart capture at the newly selected PCM params so confirmation is honest.
-        match self.start_stream(encode_format) {
-            Ok(()) => {
-                self.open_capture_format = Some(encode_format.clone());
-                true
-            }
-            Err(error) => {
+        if restart {
+            if let Err(error) = self.start_stream(&capture_format) {
                 warn!(%error, "AUDIO_INPUT capture restart for FormatChange failed");
-                false
+                return false;
             }
+            self.open_capture_format = Some(capture_format);
         }
+        debug!(?encode_format, "AUDIO_INPUT capture encoding changed");
+        true
     }
 
     fn close(&mut self) {
@@ -251,6 +280,26 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
         self.clear_sink();
         self.open_capture_format = None;
     }
+}
+
+/// Result of a capture setup check, with the reason for a refusal.
+type CaptureResult<T> = Result<T, &'static str>;
+
+/// Builds the encoder from captured 16-bit PCM to `encode_format`, or `None` when the capture
+/// format can be sent unchanged.
+fn encoder_for(capture_format: &AudioFormat, encode_format: &AudioFormat) -> CaptureResult<Option<AudioEncoder>> {
+    if !(is_pcm_capture_format(capture_format) && capture_format.bits_per_sample == 16) {
+        return Err("capture format is not 16-bit PCM");
+    }
+    if !same_rate_and_channels(capture_format, encode_format) {
+        return Err("encode format has a different sample rate or channel count than the capture format");
+    }
+    if is_pcm_capture_format(encode_format) && encode_format.bits_per_sample == 16 {
+        return Ok(None);
+    }
+    AudioEncoder::new(encode_format)
+        .map(Some)
+        .map_err(|_| "no encoder for the encode format")
 }
 
 fn default_capture_formats() -> Vec<AudioFormat> {
@@ -290,13 +339,8 @@ fn is_extensible_pcm_subtype(format: &AudioFormat) -> bool {
     data[SUBTYPE_OFFSET..SUBTYPE_OFFSET + 16] == KSDATAFORMAT_SUBTYPE_PCM
 }
 
-/// Compare PCM capture parameters, treating plain PCM and extensible PCM subtype as equivalent.
-fn same_pcm_params(a: &AudioFormat, b: &AudioFormat) -> bool {
-    is_pcm_capture_format(a)
-        && is_pcm_capture_format(b)
-        && a.n_channels == b.n_channels
-        && a.n_samples_per_sec == b.n_samples_per_sec
-        && a.bits_per_sample == b.bits_per_sample
+fn same_rate_and_channels(a: &AudioFormat, b: &AudioFormat) -> bool {
+    a.n_channels == b.n_channels && a.n_samples_per_sec == b.n_samples_per_sec
 }
 
 /// Split complete fixed-size capture packets out of `buffer`.
@@ -316,12 +360,56 @@ pub fn take_capture_packets(buffer: &mut Vec<u8>, packet_size: usize) -> Vec<Vec
     packets
 }
 
-fn append_i16_le(buffer: &mut Vec<u8>, samples: &[i16]) {
-    let extra = samples.len().saturating_mul(2);
-    buffer.reserve(extra);
-    for sample in samples {
-        buffer.extend_from_slice(&sample.to_le_bytes());
+/// Body of the capture thread: keeps an input stream open on the selected device until `ended`.
+///
+/// The first open reports its outcome through `ready`; later reopens (device lost, or the default
+/// input device changed) are only logged.
+fn run_capture(
+    selector: &DeviceSelector,
+    config: &StreamConfig,
+    sink_state: &Arc<Mutex<Option<SinkState>>>,
+    ended: &Arc<AtomicBool>,
+    ready: mpsc::SyncSender<Result<(), String>>,
+) {
+    let mut ready = Some(ready);
+    let device_lost = Arc::new(AtomicBool::new(false));
+
+    while !ended.load(Ordering::Relaxed) {
+        let opened = device::open_device(selector, Direction::Input)
+            .ok_or_else(|| format!("audio input device {selector} not found"))
+            .and_then(|device| {
+                let stream = build_input_stream(&device, config, sink_state, &device_lost)?;
+                stream.play().map_err(|error| error.to_string())?;
+                Ok((device::device_id(&device), stream))
+            });
+        let (device_id, stream) = match opened {
+            Ok(opened) => opened,
+            Err(error) => {
+                if let Some(ready) = ready.take() {
+                    let _ = ready.send(Err(error));
+                    return;
+                }
+                warn!(%error, "Failed to reopen the audio input device; retrying");
+                thread::park_timeout(device::DEVICE_RETRY_INTERVAL);
+                continue;
+            }
+        };
+        if let Some(ready) = ready.take() {
+            let _ = ready.send(Ok(()));
+        }
+        info!(device = ?device_id, "AUDIO_INPUT capture stream running");
+
+        device::watch_device(
+            selector,
+            Direction::Input,
+            device_id.as_deref(),
+            ended,
+            &device_lost,
+            || {},
+        );
+        drop(stream);
     }
+    debug!("AUDIO_INPUT capture stream stopped");
 }
 
 fn f32_to_i16(sample: f32) -> i16 {
@@ -339,20 +427,29 @@ fn f32_to_i16(sample: f32) -> i16 {
 fn build_input_stream(
     device: &cpal::Device,
     config: &StreamConfig,
-    sink_state: Arc<Mutex<Option<SinkState>>>,
+    sink_state: &Arc<Mutex<Option<SinkState>>>,
+    device_lost: &Arc<AtomicBool>,
 ) -> Result<Stream, String> {
-    let err_fn = |error| error!(%error, "CPAL input stream error");
+    let capture_thread = thread::current();
+    let err_fn = {
+        let device_lost = Arc::clone(device_lost);
+        move |error| match error {
+            cpal::StreamError::DeviceNotAvailable | cpal::StreamError::StreamInvalidated => {
+                device_lost.store(true, Ordering::Relaxed);
+                capture_thread.unpark();
+            }
+            error => error!(%error, "CPAL input stream error"),
+        }
+    };
 
     // Prefer native i16; fall back to f32→i16 so CoreAudio / float WASAPI hosts still work.
     let i16_result = device.build_input_stream(
         config,
         {
-            let sink_state = Arc::clone(&sink_state);
-            move |data: &[i16], _| {
-                push_i16_samples(&sink_state, data);
-            }
+            let sink_state = Arc::clone(sink_state);
+            move |data: &[i16], _| push_samples(&sink_state, data.iter().copied())
         },
-        err_fn,
+        err_fn.clone(),
         None,
     );
 
@@ -360,12 +457,11 @@ fn build_input_stream(
         Ok(stream) => Ok(stream),
         Err(i16_error) => {
             debug!(%i16_error, "I16 input stream unsupported; trying F32");
+            let sink_state = Arc::clone(sink_state);
             device
                 .build_input_stream(
                     config,
-                    move |data: &[f32], _| {
-                        push_f32_samples(&sink_state, data);
-                    },
+                    move |data: &[f32], _| push_samples(&sink_state, data.iter().copied().map(f32_to_i16)),
                     err_fn,
                     None,
                 )
@@ -374,56 +470,44 @@ fn build_input_stream(
     }
 }
 
-fn push_i16_samples(sink_state: &Arc<Mutex<Option<SinkState>>>, samples: &[i16]) {
-    let (mut sink, packets) = {
-        let Ok(mut guard) = sink_state.lock() else {
-            return;
-        };
-        let Some(state) = guard.as_mut() else {
-            return;
-        };
-        append_i16_le(&mut state.buffer, samples);
-        let packets = take_capture_packets(&mut state.buffer, state.packet_size);
-        // Move sink out so the uplink encode runs without holding sink_state.
-        let sink = core::mem::replace(&mut state.sink, Box::new(|_| {}));
-        (sink, packets)
+fn push_samples(sink_state: &Arc<Mutex<Option<SinkState>>>, samples: impl ExactSizeIterator<Item = i16>) {
+    // The packets are encoded and handed to the sink under the lock, so a format change, which takes
+    // the same lock, separates the packets of the old encoding from those of the new one. The sink
+    // only queues the packets for the session loop (a non-blocking `try_send`).
+    //
+    // Unlike playback, this callback allocates: each packet leaves as an owned buffer for the uplink.
+    // A packet is one `FramesPerPacket` chunk (tens of milliseconds) and ADPCM or G.711 encoding of
+    // it is a single pass, and an overrun here only drops input samples rather than glitching what
+    // the user hears.
+    let Ok(mut guard) = sink_state.lock() else {
+        return;
     };
-
-    for packet in packets {
-        sink(packet);
-    }
-
-    if let Ok(mut guard) = sink_state.lock() {
-        if let Some(state) = guard.as_mut() {
-            state.sink = sink;
-        }
-    }
-}
-
-fn push_f32_samples(sink_state: &Arc<Mutex<Option<SinkState>>>, samples: &[f32]) {
-    let (mut sink, packets) = {
-        let Ok(mut guard) = sink_state.lock() else {
-            return;
-        };
-        let Some(state) = guard.as_mut() else {
-            return;
-        };
-        state.buffer.reserve(samples.len().saturating_mul(2));
-        for sample in samples {
-            state.buffer.extend_from_slice(&f32_to_i16(*sample).to_le_bytes());
-        }
-        let packets = take_capture_packets(&mut state.buffer, state.packet_size);
-        let sink = core::mem::replace(&mut state.sink, Box::new(|_| {}));
-        (sink, packets)
+    let Some(state) = guard.as_mut() else {
+        return;
     };
-
-    for packet in packets {
-        sink(packet);
+    state.buffer.reserve(samples.len().saturating_mul(2));
+    for sample in samples {
+        state.buffer.extend_from_slice(&sample.to_le_bytes());
     }
-
-    if let Ok(mut guard) = sink_state.lock() {
-        if let Some(state) = guard.as_mut() {
-            state.sink = sink;
-        }
+    for packet in take_capture_packets(&mut state.buffer, state.packet_size) {
+        let packet = match state.encoder.as_mut() {
+            None => packet,
+            Some(encoder) => {
+                state.pcm.clear();
+                state.pcm.extend(
+                    packet
+                        .chunks_exact(2)
+                        .map(|sample| i16::from_le_bytes([sample[0], sample[1]])),
+                );
+                let mut wave_data = Vec::with_capacity(packet.len());
+                encoder.encode(&state.pcm, &mut wave_data);
+                // A packet shorter than one block leaves nothing to send until the next one.
+                if wave_data.is_empty() {
+                    continue;
+                }
+                wave_data
+            }
+        };
+        (state.sink)(packet);
     }
 }

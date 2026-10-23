@@ -224,6 +224,7 @@ pub mod ffi {
         }
 
         /// Returns the error kind.
+        #[diplomat::attr(auto, getter = "kind")]
         pub fn get_kind(&self) -> IronRdpErrorKind {
             self.0.kind
         }

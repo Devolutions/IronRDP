@@ -3,6 +3,9 @@
 //! The reader uses a 32-bit accumulator with a 32-bit prefetch lookahead,
 //! loaded in big-endian order. The writer uses a 32-bit accumulator that
 //! flushes in big-endian order.
+//!
+//! RDP 8.0 decompression (`rdp8`) keeps its own simpler reader, because it needs a hard
+//! end-of-bits limit, byte alignment and raw byte runs that these hot paths do not.
 
 /// Reads bits from a byte buffer using a 32-bit accumulator with prefetch.
 ///

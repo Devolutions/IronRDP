@@ -43,6 +43,11 @@ fn check_bulk_decompress_xcrush() {
 }
 
 #[test]
+fn check_bulk_decompress_rdp8() {
+    check!(bulk_decompress_rdp8);
+}
+
+#[test]
 fn check_bulk_round_trip() {
     check!(bulk_round_trip);
 }
@@ -50,6 +55,11 @@ fn check_bulk_round_trip() {
 #[test]
 fn check_pdu_round_trip() {
     check!(pdu_round_trip);
+}
+
+#[test]
+fn check_channel_process() {
+    check!(channel_process);
 }
 
 #[test]
@@ -90,4 +100,10 @@ fn check_egfx_zgfx_decompress() {
 #[test]
 fn check_egfx_surface_state() {
     check!(egfx_surface_state);
+}
+
+// oracle: spec crates/ironrdp-fuzzing/src/oracles/mod.rs §rdpsnd_codec_decode (no panic for any accepted format; seeds built from the FFmpeg vectors in crates/ironrdp-testsuite-core/test_data/audio)
+#[test]
+fn check_rdpsnd_codec_decode() {
+    check!(rdpsnd_codec_decode);
 }

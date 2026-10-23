@@ -52,6 +52,12 @@ use crate::printer::{JsPrinterStreamCallbacks, WasmPrinter, WasmPrinterBackend, 
 const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 720;
 
+#[derive(Clone, Copy)]
+struct SecurityConfig {
+    enable_credssp: bool,
+    enable_standard_rdp_security: bool,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct SessionBuilder(Rc<RefCell<SessionBuilderInner>>);
 
@@ -61,6 +67,7 @@ struct SessionBuilderInner {
     server_domain: Option<String>,
     password: Option<String>,
     proxy_address: Option<String>,
+    websocket_protocols: Result<Option<js_sys::Array>, &'static str>,
     auth_token: Option<String>,
     pcb: Option<String>,
     vmconnect: Option<String>,
@@ -91,6 +98,7 @@ struct SessionBuilderInner {
 
     use_display_control: bool,
     enable_credssp: bool,
+    enable_standard_rdp_security: bool,
     enable_server_pointer: bool,
     legacy_graphics: bool,
     outbound_message_size_limit: Option<usize>,
@@ -104,6 +112,7 @@ impl Default for SessionBuilderInner {
             server_domain: None,
             password: None,
             proxy_address: None,
+            websocket_protocols: Ok(None),
             auth_token: None,
             pcb: None,
             vmconnect: None,
@@ -135,6 +144,7 @@ impl Default for SessionBuilderInner {
 
             use_display_control: false,
             enable_credssp: true,
+            enable_standard_rdp_security: false,
             enable_server_pointer: true,
             legacy_graphics: false,
             outbound_message_size_limit: None,
@@ -181,6 +191,34 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
     /// Required
     fn proxy_address(&self, address: String) -> Self {
         self.0.borrow_mut().proxy_address = Some(address);
+        self.clone()
+    }
+
+    /// Optional
+    fn websocket_protocols(&self, protocols: js_sys::Array) -> Self {
+        // Copy validated values so later changes to the caller's array cannot change the configuration.
+        let protocols = if js_sys::Array::is_array(&protocols) {
+            protocols
+                .iter()
+                .try_fold(js_sys::Array::new(), |copy, protocol| {
+                    if !protocol.is_string() {
+                        return Err("websocket protocols must be strings");
+                    }
+
+                    copy.push(&protocol);
+                    Ok(copy)
+                })
+                .map(|protocols| (protocols.length() != 0).then_some(protocols))
+        } else {
+            Err("websocket protocols must be an array")
+        };
+
+        if let Err(error) = protocols {
+            warn!(%error, "Invalid WebSocket protocols");
+        }
+
+        self.0.borrow_mut().websocket_protocols = protocols;
+
         self.clone()
     }
 
@@ -255,6 +293,9 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |kdc_proxy_url: String| { self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url) };
             |display_control: bool| { self.0.borrow_mut().use_display_control = display_control };
             |enable_credssp: bool| { self.0.borrow_mut().enable_credssp = enable_credssp };
+            |enable_standard_rdp_security: bool| {
+                self.0.borrow_mut().enable_standard_rdp_security = enable_standard_rdp_security;
+            };
             |enable_server_pointer: bool| { self.0.borrow_mut().enable_server_pointer = enable_server_pointer };
             |legacy_graphics: bool| { self.0.borrow_mut().legacy_graphics = legacy_graphics };
             |outbound_message_size_limit: f64| {
@@ -339,6 +380,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             server_domain,
             password,
             proxy_address,
+            websocket_protocols,
             auth_token,
             pcb,
             vmconnect,
@@ -364,11 +406,13 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_driver_name,
             outbound_message_size_limit,
             legacy_graphics,
+            security,
         );
 
         {
             let inner = self.0.borrow();
 
+            websocket_protocols = inner.websocket_protocols.clone().map_err(anyhow::Error::msg)?;
             username = inner.username.clone().context("username missing")?;
             destination = inner.destination.clone().context("destination missing")?;
             server_domain = inner.server_domain.clone();
@@ -407,10 +451,18 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_driver_name = inner.printer_driver_name.clone();
             outbound_message_size_limit = inner.outbound_message_size_limit;
             legacy_graphics = inner.legacy_graphics;
+            security = SecurityConfig {
+                enable_credssp: inner.enable_credssp,
+                enable_standard_rdp_security: inner.enable_standard_rdp_security,
+            };
         }
 
         if pcb.is_some() && vmconnect.is_some() {
             return Err(anyhow::Error::msg("generic preconnection blob and VMConnect are mutually exclusive").into());
+        }
+
+        if security.enable_standard_rdp_security && vmconnect.is_some() {
+            return Err(anyhow::Error::msg("standard RDP security and VMConnect are mutually exclusive").into());
         }
 
         info!("Connect to RDP host");
@@ -422,10 +474,8 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             client_name.clone(),
             desktop_size,
             legacy_graphics,
+            security,
         );
-
-        let enable_credssp = self.0.borrow().enable_credssp;
-        config.enable_credssp = enable_credssp;
 
         let enable_server_pointer = self.0.borrow().enable_server_pointer;
         config.enable_server_pointer = enable_server_pointer;
@@ -473,7 +523,14 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         let printer_name = printer_name.unwrap_or_else(|| "IronRDP Virtual Printer".to_owned());
         let printer_driver_name = printer_driver_name.unwrap_or_else(default_printer_driver_name);
 
-        let ws = WebSocket::open(&proxy_address).context("couldn't open WebSocket")?;
+        let ws = if let Some(protocols) = websocket_protocols {
+            web_sys::WebSocket::new_with_str_sequence(&proxy_address, &protocols)
+                .map_err(|error| anyhow::anyhow!("{error:?}"))
+                .and_then(|socket| WebSocket::try_from(socket).map_err(anyhow::Error::from))
+        } else {
+            WebSocket::open(&proxy_address).map_err(anyhow::Error::from)
+        }
+        .context("couldn't open WebSocket")?;
 
         // NOTE: ideally, when the WebSocket can't be opened, the above call should fail with details on why is that
         // (e.g., the proxy hostname could not be resolved, proxy service is not running), but errors are neved
@@ -712,7 +769,7 @@ impl iron_remote_desktop::Session for Session {
                     let (action, payload) = frame.context("read frame")?;
                     trace!(?action, frame_length = payload.len(), "Frame received");
 
-                    active_stage.process(&mut image, action, &payload)?
+                    active_stage.process(&mut image, action, &payload, framed.last_read_at())?
                 }
                 input_events = input_events.next() => {
                     let event = input_events.context("read next input events")?;
@@ -1459,6 +1516,7 @@ fn build_config(
     client_name: String,
     desktop_size: DesktopSize,
     legacy_graphics: bool,
+    security: SecurityConfig,
 ) -> connector::Config {
     // Win7-class servers need 32-bpp lossless bitmaps and no advertised codecs.
     let bitmap = if legacy_graphics {
@@ -1478,10 +1536,9 @@ fn build_config(
     connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
         domain,
-        // TODO(#327): expose these options from the WASM module.
-        enable_tls: true,
-        enable_credssp: true,
-        enable_standard_rdp_security: false,
+        enable_tls: !security.enable_standard_rdp_security,
+        enable_credssp: security.enable_credssp && !security.enable_standard_rdp_security,
+        enable_standard_rdp_security: security.enable_standard_rdp_security,
         keyboard_type: ironrdp::pdu::gcc::KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
         keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
@@ -1872,34 +1929,50 @@ where
             }
         };
 
-        let server_cert = server_cert_chain
-            .into_iter()
-            .next()
-            .context("server cert chain missing from rdcleanpath response")?;
+        let standard_rdp_security = if let Some(x224_connection_response) = x224_connection_response.as_ref() {
+            let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
+                return Err(anyhow::Error::msg("invalid connector state (wait confirm)").into());
+            };
 
-        let cert = x509_cert::Certificate::from_der(server_cert.as_bytes())
-            .context("failed to decode x509 certificate sent by proxy")?;
+            debug_assert!(connector.next_pdu_hint().is_some());
 
-        let server_public_key = cert
-            .tbs_certificate()
-            .subject_public_key_info()
-            .subject_public_key
-            .as_bytes()
-            .context("subject public key BIT STRING is not aligned")?
-            .to_owned();
+            buf.clear();
+            let written = connector.step(x224_connection_response.as_bytes(), None, &mut buf)?;
+            debug_assert!(written.is_nothing());
+
+            let connector::ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol } = &connector.state
+            else {
+                return Err(anyhow::Error::msg("invalid connector state (security upgrade)").into());
+            };
+
+            selected_protocol.is_standard_rdp_security()
+        } else {
+            false
+        };
+
+        let server_public_key = if standard_rdp_security {
+            // The proxy certificate is used to bind CredSSP to the TLS server. Standard RDP
+            // Security with ENCRYPTION_LEVEL_NONE performs neither exchange.
+            Vec::new()
+        } else {
+            let server_cert = server_cert_chain
+                .into_iter()
+                .next()
+                .context("server cert chain missing from rdcleanpath response")?;
+
+            let cert = x509_cert::Certificate::from_der(server_cert.as_bytes())
+                .context("failed to decode x509 certificate sent by proxy")?;
+
+            cert.tbs_certificate()
+                .subject_public_key_info()
+                .subject_public_key
+                .as_bytes()
+                .context("subject public key BIT STRING is not aligned")?
+                .to_owned()
+        };
 
         let upgraded = match x224_connection_response {
-            Some(x224_connection_response) => {
-                let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
-                    return Err(anyhow::Error::msg("invalid connector state (wait confirm)").into());
-                };
-
-                debug_assert!(connector.next_pdu_hint().is_some());
-
-                buf.clear();
-                let written = connector.step(x224_connection_response.as_bytes(), None, &mut buf)?;
-                debug_assert!(written.is_nothing());
-
+            Some(_) => {
                 let should_upgrade = ironrdp_futures::skip_connect_begin(connector);
                 ironrdp_futures::mark_as_upgraded(should_upgrade, connector)
             }
@@ -1927,6 +2000,10 @@ fn f64_to_u16_saturating_cast(value: f64) -> u16 {
 
 #[cfg(test)]
 mod tests {
+    use futures_util::io::Cursor;
+    use iron_remote_desktop::IronError as _;
+    use ironrdp_futures::bytes::BytesMut;
+
     use super::*;
 
     // Test helpers
@@ -1935,6 +2012,55 @@ mod tests {
         mpsc::UnboundedReceiver<RdpInputEvent>,
     ) {
         mpsc::unbounded()
+    }
+
+    fn rdcleanpath_framed(response: &[u8]) -> ironrdp_futures::LocalFuturesFramed<Cursor<Vec<u8>>> {
+        ironrdp_futures::LocalFuturesFramed::new_with_leftover(Cursor::new(Vec::new()), BytesMut::from(response))
+    }
+
+    fn connector_config(security: SecurityConfig) -> connector::Config {
+        build_config(
+            String::new(),
+            String::new(),
+            None,
+            "ironrdp-web-test".to_owned(),
+            DesktopSize {
+                width: DEFAULT_WIDTH,
+                height: DEFAULT_HEIGHT,
+            },
+            false,
+            security,
+        )
+    }
+
+    fn rdcleanpath_response(protocol: ironrdp::pdu::nego::SecurityProtocol) -> Vec<u8> {
+        let x224_response = ironrdp_core::encode_vec(&ironrdp::pdu::x224::X224(
+            ironrdp::pdu::nego::ConnectionConfirm::Response {
+                flags: ironrdp::pdu::nego::ResponseFlags::empty(),
+                protocol,
+            },
+        ))
+        .expect("encode X.224 connection response");
+
+        ironrdp_rdcleanpath::RDCleanPathPdu::new_response(
+            "127.0.0.1".to_owned(),
+            x224_response,
+            core::iter::empty::<Vec<u8>>(),
+        )
+        .expect("build RDCleanPath response")
+        .to_der()
+        .expect("encode RDCleanPath response")
+    }
+
+    fn rdcleanpath_connect_params() -> RDCleanPathConnectParams {
+        RDCleanPathConnectParams {
+            server_name: connector::ServerName::from("rdp.example.test"),
+            destination: "rdp.example.test".to_owned(),
+            proxy_auth_token: "test-token".to_owned(),
+            pcb: None,
+            vmconnect: None,
+            kerberos_config: None,
+        }
     }
 
     #[test]
@@ -1974,6 +2100,111 @@ mod tests {
         assert_eq!(
             macos_major_version_from_user_agent("Mozilla/5.0 (Windows NT 10.0)"),
             None
+        );
+    }
+
+    #[test]
+    fn standard_rdp_security_overrides_enhanced_security() {
+        for (case, enable_credssp, enable_standard_rdp_security, expected_tls, expected_credssp) in [
+            ("secure defaults", true, false, true, true),
+            ("credssp disabled", false, false, true, false),
+            ("standard RDP security", true, true, false, false),
+        ] {
+            let config = connector_config(SecurityConfig {
+                enable_credssp,
+                enable_standard_rdp_security,
+            });
+
+            assert_eq!(config.enable_tls, expected_tls, "{case}");
+            assert_eq!(config.enable_credssp, expected_credssp, "{case}");
+        }
+    }
+
+    #[test]
+    fn standard_rdp_security_accepts_empty_rdcleanpath_certificate_chain() {
+        let response = rdcleanpath_response(ironrdp::pdu::nego::SecurityProtocol::empty());
+        let mut framed = rdcleanpath_framed(&response);
+        let mut connector = ClientConnector::new(
+            connector_config(SecurityConfig {
+                enable_credssp: false,
+                enable_standard_rdp_security: true,
+            }),
+            core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
+        );
+        let mut network_client = WasmNetworkClient;
+
+        let (upgraded, server_public_key) = connect_rdcleanpath(
+            &mut framed,
+            &mut connector,
+            &mut network_client,
+            rdcleanpath_connect_params(),
+        )
+        .now_or_never()
+        .expect("in-memory RDCleanPath I/O should be ready")
+        .unwrap_or_else(|error| panic!("Standard RDP Security negotiation failed: {}", error.backtrace()));
+
+        assert!(server_public_key.is_empty());
+        let request_len = framed.get_inner().0.get_ref().len();
+        assert_ne!(request_len, 0, "RDCleanPath request was sent");
+
+        // The fixture intentionally has no MCS response. Reaching EOF only after a second
+        // write proves finalization advanced past the no-op security upgrade and sent the
+        // client's MCS Connect Initial without trying to perform TLS first.
+        let finalize_result = ironrdp_futures::connect_finalize(
+            upgraded,
+            connector,
+            &mut framed,
+            &mut network_client,
+            connector::ServerName::from("rdp.example.test"),
+            server_public_key,
+            None,
+        )
+        .now_or_never()
+        .expect("in-memory finalization I/O should be ready");
+
+        assert!(
+            finalize_result.is_err(),
+            "fixture should end while awaiting the MCS response"
+        );
+        let final_len = framed.get_inner().0.get_ref().len();
+        assert!(
+            final_len > request_len,
+            "expected finalization to write more data: {final_len} <= {request_len}"
+        );
+    }
+
+    #[test]
+    fn enhanced_security_rejects_empty_rdcleanpath_certificate_chain() {
+        let response = rdcleanpath_response(ironrdp::pdu::nego::SecurityProtocol::SSL);
+        let mut framed = rdcleanpath_framed(&response);
+        let mut connector = ClientConnector::new(
+            connector_config(SecurityConfig {
+                enable_credssp: false,
+                enable_standard_rdp_security: false,
+            }),
+            core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
+        );
+        let mut network_client = WasmNetworkClient;
+
+        let error = match connect_rdcleanpath(
+            &mut framed,
+            &mut connector,
+            &mut network_client,
+            rdcleanpath_connect_params(),
+        )
+        .now_or_never()
+        .expect("in-memory RDCleanPath I/O should be ready")
+        {
+            Ok(_) => panic!("enhanced security accepted a missing proxy certificate"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error
+                .backtrace()
+                .contains("server cert chain missing from rdcleanpath response"),
+            "unexpected error: {}",
+            error.backtrace()
         );
     }
 

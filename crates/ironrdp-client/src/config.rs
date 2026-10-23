@@ -11,6 +11,13 @@ use ironrdp_propertyset::PropertySet;
 use ironrdp_rail::pdu::ExecutePdu;
 use url::Url;
 
+/// Local drive selection, as configured with [`ConfigBuilder::with_drive_redirection`].
+#[cfg(feature = "rdpdr")]
+pub use ironrdp_cfg::DriveRedirection;
+
+/// RDP-UDP protocol version, as offered with [`ConfigBuilder::with_udp_offer_version`].
+#[cfg(feature = "udp")]
+pub use ironrdp_rdpeudp::pdu::UdpVersion;
 #[cfg(feature = "vmconnect")]
 pub use ironrdp_vmconnect::Mode as VmConnectMode;
 
@@ -93,6 +100,8 @@ pub struct Config {
     pub(crate) transport: Transport,
     #[cfg(feature = "udp")]
     pub(crate) udp_transport_enabled: bool,
+    #[cfg(feature = "udp")]
+    pub(crate) udp_offer_version: UdpVersion,
     pub(crate) certificate_validation: ironrdp_tls::CertificateValidation,
     pub(crate) certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
 
@@ -162,6 +171,12 @@ impl Config {
     #[cfg(feature = "udp")]
     pub fn udp_transport_enabled(&self) -> bool {
         self.udp_transport_enabled
+    }
+
+    /// Highest RDP-UDP protocol version offered in the SYN of the UDP handshake.
+    #[cfg(feature = "udp")]
+    pub fn udp_offer_version(&self) -> UdpVersion {
+        self.udp_offer_version
     }
 
     /// TLS peer-certificate validation policy.
@@ -273,6 +288,8 @@ impl fmt::Debug for Config {
         s.field("transport", &self.transport);
         #[cfg(feature = "udp")]
         s.field("udp_transport_enabled", &self.udp_transport_enabled);
+        #[cfg(feature = "udp")]
+        s.field("udp_offer_version", &self.udp_offer_version);
         s.field("certificate_validation", &self.certificate_validation);
         s.field(
             "certificate_validation_callback",
@@ -348,6 +365,10 @@ pub struct ChannelConfig {
     #[cfg(feature = "sound")]
     pub audio_capture: bool,
 
+    /// Audio devices and playback buffering.
+    #[cfg(feature = "sound")]
+    pub audio: crate::audio::AudioConfig,
+
     /// Clipboard redirection mode.
     #[cfg(feature = "clipboard")]
     pub clipboard: ClipboardType,
@@ -374,21 +395,23 @@ pub struct ChannelConfig {
     /// Enable the MS-RDPEL location dynamic virtual channel.
     #[cfg(feature = "location")]
     pub location: bool,
+
+    /// MS-RDPECAM camera redirection (`camerastoredirect`). No camera is redirected by default.
+    #[cfg(feature = "camera")]
+    pub cameras: crate::camera::CameraConfig,
+
+    /// MS-RDPEVOR video optimized remoting, enabled when an H.264 decoder is available unless
+    /// `videoplaybackmode:i:0` turns it off.
+    #[cfg(feature = "video")]
+    pub video: crate::video::VideoConfig,
+
+    /// H.264 decoder for the graphics pipeline and video optimized remoting.
+    ///
+    /// Defaults to [`crate::h264::H264DecoderFactory::platform_default`]: Media Foundation's on
+    /// Windows, or OpenH264 with the `openh264` feature.
+    pub h264_decoder: Option<crate::h264::H264DecoderFactory>,
 }
 
-#[cfg_attr(
-    not(any(
-        feature = "sound",
-        feature = "clipboard",
-        feature = "qoi",
-        feature = "qoiz",
-        feature = "webauthn"
-    )),
-    expect(
-        clippy::derivable_impls,
-        reason = "fields setting non-default values are feature-gated; the impl is only trivially derivable in some feature combinations"
-    )
-)]
 impl Default for ChannelConfig {
     fn default() -> Self {
         Self {
@@ -396,6 +419,8 @@ impl Default for ChannelConfig {
             sound: true,
             #[cfg(feature = "sound")]
             audio_capture: false,
+            #[cfg(feature = "sound")]
+            audio: crate::audio::AudioConfig::default(),
             #[cfg(feature = "clipboard")]
             clipboard: ClipboardType::Enable,
             #[cfg(feature = "rdpdr")]
@@ -408,6 +433,11 @@ impl Default for ChannelConfig {
             webauthn: true,
             #[cfg(feature = "location")]
             location: false,
+            #[cfg(feature = "camera")]
+            cameras: crate::camera::CameraConfig::default(),
+            #[cfg(feature = "video")]
+            video: crate::video::VideoConfig::default(),
+            h264_decoder: crate::h264::H264DecoderFactory::platform_default(),
         }
     }
 }
@@ -422,6 +452,24 @@ pub struct RdpdrConfig {
     /// Enable smart-card redirection within RDPDR.
     #[cfg(feature = "smartcard")]
     pub smartcard: bool,
+
+    /// Local drives requested for redirection.
+    ///
+    /// The client does not enumerate drives itself: frontends read this selection to configure
+    /// their native RDPDR backend factory.
+    pub drives: DriveRedirection,
+
+    /// Announce the serial and parallel ports the RDPDR backend factory provides.
+    ///
+    /// Mirrors the `.rdp` `redirectcomports` property. Which local ports exist and are
+    /// selected is up to the factory; this only gates their announcement.
+    pub ports: bool,
+
+    /// Allow printers from the RDPDR backend product to be announced.
+    ///
+    /// Mirrors the `.rdp` `redirectprinters` property. The backend factory still decides which
+    /// printers exist; this only lets the connection drop them.
+    pub printers: bool,
 }
 
 #[cfg(feature = "rdpdr")]
@@ -431,6 +479,9 @@ impl Default for RdpdrConfig {
             enabled: true,
             #[cfg(feature = "smartcard")]
             smartcard: true,
+            drives: DriveRedirection::default(),
+            ports: true,
+            printers: true,
         }
     }
 }
@@ -784,6 +835,9 @@ pub struct ConfigBuilder {
     transport: TransportKind,
     #[cfg(feature = "udp")]
     udp_transport_enabled: bool,
+    #[cfg(feature = "udp")]
+    udp_offer_version: Option<UdpVersion>,
+    graphics_pipeline: Option<bool>,
     #[cfg(feature = "vmconnect")]
     vm_id: Option<String>,
     #[cfg(feature = "vmconnect")]
@@ -1281,6 +1335,32 @@ impl ConfigBuilder {
         self
     }
 
+    /// Selects the highest RDP-UDP protocol version the UDP handshake offers.
+    ///
+    /// The default, [`UdpVersion::V3`], offers MS-RDPEUDP2 and lets the server settle on a
+    /// lower version. Offering [`UdpVersion::V2`] or [`UdpVersion::V1`] asks for MS-RDPEUDP
+    /// outright, which is what Windows servers that do not implement version 3 answer.
+    #[cfg(feature = "udp")]
+    #[must_use]
+    pub fn with_udp_offer_version(mut self, version: UdpVersion) -> Self {
+        self.udp_offer_version = Some(version);
+        self
+    }
+
+    /// Advertises the graphics pipeline ([MS-RDPEGFX]) to the server.
+    ///
+    /// On by default when an H.264 decoder is configured ([`Self::with_h264_decoder`]), so the
+    /// server can send AVC420 and AVC444; `false` opts out. Without it, the server keeps graphics
+    /// on the legacy bitmap path, which travels on the main connection and cannot move to a
+    /// reliable UDP tunnel.
+    ///
+    /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/
+    #[must_use]
+    pub fn with_graphics_pipeline(mut self, enabled: bool) -> Self {
+        self.graphics_pipeline = Some(enabled);
+        self
+    }
+
     /// Connect to a Hyper-V VM console by VM GUID. Destination must use port
     /// [`ironrdp_vmconnect::PORT`] (2179) unless the caller explicitly selects another port.
     /// A destination with no explicit port defaults to 2179 instead of the ordinary RDP port.
@@ -1416,6 +1496,56 @@ impl ConfigBuilder {
         self
     }
 
+    /// Set the audio output device: a device ID or (part of) a device name; `None` follows the
+    /// system default device.
+    #[cfg(feature = "sound")]
+    #[must_use]
+    pub fn with_audio_output_device(mut self, device: Option<String>) -> Self {
+        match &device {
+            Some(device) => self
+                .properties
+                .insert(crate::audio::OUTPUT_DEVICE_PROPERTY, device.clone()),
+            None => self.properties.remove(crate::audio::OUTPUT_DEVICE_PROPERTY),
+        };
+        self.channels.audio.output_device = device;
+        self
+    }
+
+    /// Set the audio input (microphone) device: a device ID or (part of) a device name; `None`
+    /// follows the system default device.
+    #[cfg(feature = "sound")]
+    #[must_use]
+    pub fn with_audio_input_device(mut self, device: Option<String>) -> Self {
+        match &device {
+            Some(device) => self
+                .properties
+                .insert(crate::audio::INPUT_DEVICE_PROPERTY, device.clone()),
+            None => self.properties.remove(crate::audio::INPUT_DEVICE_PROPERTY),
+        };
+        self.channels.audio.input_device = device;
+        self
+    }
+
+    /// Set the audio kept buffered ahead of the output device (100 ms by default).
+    ///
+    /// Higher values ride out more network jitter at the cost of audio delay.
+    #[cfg(feature = "sound")]
+    #[must_use]
+    pub fn with_audio_latency(mut self, latency: Duration) -> Self {
+        self.properties.insert(
+            crate::audio::LATENCY_PROPERTY,
+            i64::try_from(latency.as_millis()).unwrap_or(i64::MAX),
+        );
+        self.channels.audio.latency = Some(latency);
+        self
+    }
+
+    /// Audio device and buffering settings.
+    #[cfg(feature = "sound")]
+    pub fn audio(&self) -> &crate::audio::AudioConfig {
+        &self.channels.audio
+    }
+
     /// Set the RDPSND quality policy sent to servers supporting audio protocol version 6 or newer.
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
     #[must_use]
@@ -1441,6 +1571,33 @@ impl ConfigBuilder {
     pub fn with_rdpdr(mut self, enabled: bool) -> Self {
         self.channels.rdpdr.enabled = enabled;
         self.properties.set_enable_rdpdr(enabled);
+        self
+    }
+
+    /// Selects the local drives to redirect (`drivestoredirect`).
+    #[cfg(feature = "rdpdr")]
+    #[must_use]
+    pub fn with_drive_redirection(mut self, drives: DriveRedirection) -> Self {
+        self.channels.rdpdr.drives = drives;
+        self.properties.set_drive_redirection(drives);
+        self
+    }
+
+    /// Enable or disable serial and parallel port redirection within RDPDR (`redirectcomports`).
+    #[cfg(feature = "rdpdr")]
+    #[must_use]
+    pub fn with_ports(mut self, enabled: bool) -> Self {
+        self.channels.rdpdr.ports = enabled;
+        self.properties.set_redirect_com_ports(enabled);
+        self
+    }
+
+    /// Allow or drop printers announced by the RDPDR backend product (`redirectprinters`).
+    #[cfg(feature = "rdpdr")]
+    #[must_use]
+    pub fn with_printers(mut self, enabled: bool) -> Self {
+        self.channels.rdpdr.printers = enabled;
+        self.properties.set_redirect_printers(enabled);
         self
     }
 
@@ -1486,6 +1643,32 @@ impl ConfigBuilder {
     pub fn with_location_redirection(mut self, enabled: bool) -> Self {
         self.channels.location = enabled;
         self
+    }
+
+    /// Select the cameras to redirect over MS-RDPECAM.
+    ///
+    /// Capture is only implemented on Windows.
+    #[cfg(feature = "camera")]
+    #[must_use]
+    pub fn with_cameras(mut self, cameras: crate::camera::CameraConfig) -> Self {
+        self.channels.cameras = cameras;
+        self
+    }
+
+    /// Set the H.264 decoder used by the graphics pipeline and MS-RDPEVOR video optimized remoting.
+    ///
+    /// `None` keeps the graphics pipeline to the codecs that need no H.264 decoder, turns it off
+    /// unless [`Self::with_graphics_pipeline`] turns it on, and declines the video channels.
+    #[must_use]
+    pub fn with_h264_decoder(mut self, decoder: Option<crate::h264::H264DecoderFactory>) -> Self {
+        self.channels.h264_decoder = decoder;
+        self
+    }
+
+    /// Cameras currently selected for redirection, e.g. from a `.rdp` file.
+    #[cfg(feature = "camera")]
+    pub fn cameras(&self) -> &crate::camera::CameraConfig {
+        &self.channels.cameras
     }
 
     /// Parent HWND used for WebAuthn UI prompts (Windows only).
@@ -1947,7 +2130,9 @@ impl ConfigBuilder {
             request_data: None,
             pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
             multitransport_flags: None,
-            support_dyn_vc_gfx_protocol: false,
+            support_dyn_vc_gfx_protocol: self
+                .graphics_pipeline
+                .unwrap_or_else(|| self.channels.h264_decoder.is_some()),
             compression_type,
             performance_flags: self.performance_flags.unwrap_or_default(),
             timezone_info: TimezoneInfo::default(),
@@ -1982,6 +2167,8 @@ impl ConfigBuilder {
             transport,
             #[cfg(feature = "udp")]
             udp_transport_enabled: self.udp_transport_enabled,
+            #[cfg(feature = "udp")]
+            udp_offer_version: self.udp_offer_version.unwrap_or(UdpVersion::V3),
             certificate_validation,
             certificate_validation_callback: self.certificate_validation_callback,
             #[cfg(feature = "vmconnect")]
@@ -2169,6 +2356,31 @@ impl ConfigBuilder {
             Ok(Some(AudioCaptureMode::Disabled)) => self.enable_audio_capture = Some(false),
             _ => {}
         }
+        #[cfg(feature = "sound")]
+        {
+            if let Some(device) = ps.get::<&str>(crate::audio::OUTPUT_DEVICE_PROPERTY) {
+                self.channels.audio.output_device = Some(device.to_owned());
+            }
+            if let Some(device) = ps.get::<&str>(crate::audio::INPUT_DEVICE_PROPERTY) {
+                self.channels.audio.input_device = Some(device.to_owned());
+            }
+            if let Some(latency) = ps.get::<i64>(crate::audio::LATENCY_PROPERTY) {
+                let latency = u64::try_from(latency)
+                    .map_err(|_| anyhow::anyhow!("invalid '{}': {latency}", crate::audio::LATENCY_PROPERTY))?;
+                self.channels.audio.latency = Some(Duration::from_millis(latency));
+            }
+        }
+        if let Some(enabled) = ps.get::<i64>("ironrdp_egfx") {
+            self.graphics_pipeline = Some(enabled != 0);
+        }
+        #[cfg(feature = "video")]
+        if ps.get::<i64>("videoplaybackmode") == Some(0) {
+            self.channels.video.enabled = false;
+        }
+        #[cfg(feature = "camera")]
+        if let Some(cameras) = ps.get::<&str>("camerastoredirect") {
+            self.channels.cameras.apply_rdp_value(cameras);
+        }
         #[cfg(any(feature = "sound", feature = "rdpdr"))]
         if let Some(audio_quality_mode) = ps.get::<i64>("audioqualitymode") {
             self.audio_quality_mode = Some(match audio_quality_mode {
@@ -2295,9 +2507,21 @@ impl ConfigBuilder {
         if let Some(enabled) = ps.enable_rdpdr() {
             self.channels.rdpdr.enabled = enabled;
         }
+        #[cfg(feature = "rdpdr")]
+        if let Some(drives) = ps.drive_redirection() {
+            self.channels.rdpdr.drives = drives;
+        }
         #[cfg(feature = "smartcard")]
         if let Some(enabled) = ps.enable_smartcard() {
             self.channels.rdpdr.smartcard = enabled;
+        }
+        #[cfg(feature = "rdpdr")]
+        if let Some(enabled) = ps.redirect_com_ports() {
+            self.channels.rdpdr.ports = enabled;
+        }
+        #[cfg(feature = "rdpdr")]
+        if let Some(enabled) = ps.redirect_printers() {
+            self.channels.rdpdr.printers = enabled;
         }
         #[cfg(feature = "qoi")]
         if let Some(enabled) = ps.enable_qoi() {

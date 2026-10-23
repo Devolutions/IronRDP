@@ -56,8 +56,12 @@ internal static class ConnectionHelpers
 
         while (true)
         {
-            var generator = credsspSequence.ProcessTsRequest(tsRequest);
-            var clientState = await Connection.ResolveGenerator(generator, tcpClient);
+            ClientState clientState;
+            using (var generator = credsspSequence.ProcessTsRequest(tsRequest))
+            {
+                clientState = await Connection.ResolveGenerator(generator, tcpClient);
+            }
+
             writeBuf.Clear();
             var written = credsspSequence.HandleProcessResult(clientState, writeBuf);
 

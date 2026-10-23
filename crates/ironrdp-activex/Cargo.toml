@@ -21,7 +21,7 @@ doctest = false
 [target.'cfg(windows)'.dependencies]
 anyhow = "1"
 base64 = "0.22"
-ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["clipboard", "dvc-com-plugin", "gateway", "location", "rdpdr", "rustls", "smartcard", "sound", "webauthn"] }
+ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["camera", "clipboard", "dvc-com-plugin", "gateway", "location", "rdpdr", "rustls", "smartcard", "sound", "webauthn"] }
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.7" }
 ironrdp-cliprdr-format = { path = "../ironrdp-cliprdr-format", version = "0.2.0" }
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.7" }
@@ -29,6 +29,7 @@ ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.10" }
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
 ironrdp-daemon = { path = "../ironrdp-daemon", version = "0.1" }
+ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.8" }
 ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
 ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" }
@@ -57,6 +58,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Com_StructuredStorage",
     "Win32_System_LibraryLoader",
     "Win32_System_Ole",
+    "Win32_System_Performance",
     "Win32_System_Registry",
     "Win32_System_Variant",
     "Win32_UI_Controls",
@@ -67,6 +69,9 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 windows-core = "0.62"
+
+[target.'cfg(windows)'.dev-dependencies]
+proptest.workspace = true
 
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3.0"

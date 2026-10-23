@@ -20,9 +20,13 @@ namespace Devolutions.IronRdp.AvaloniaExample;
 
 public partial class MainWindow : Window
 {
+    static readonly TimeSpan ClipboardTimeoutsInterval = TimeSpan.FromSeconds(5);
+    static readonly TimeSpan RdpdrDeferredPollInterval = TimeSpan.FromMilliseconds(50);
+
     readonly InputDatabase? _inputDatabase = InputDatabase.New();
     ActiveStage? _activeStage;
     DecodedImage? _decodedImage;
+    readonly object _stageLock = new();
     Framed<Stream>? _framed;
     WinCliprdr? _cliprdr;
     private readonly RendererModel _renderModel;
@@ -60,7 +64,7 @@ public partial class MainWindow : Window
     {
         if (_activeStage != null)
         {
-            var output = _activeStage.EncodedResize((uint)updatedWidth, (uint)updatedHeight);
+            var output = WithStageLock(() => _activeStage.EncodedResize((uint)updatedWidth, (uint)updatedHeight));
             if (output == null)
             {
                 return;
@@ -127,7 +131,8 @@ public partial class MainWindow : Window
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            _cliprdr = WinCliprdr.New();
+            // Created on the UI thread: pasting remote files needs its single-threaded apartment.
+            _cliprdr = WinCliprdr.NewWithFileTransfer(true);
 
             if (_cliprdr != null)
             {
@@ -240,11 +245,17 @@ public partial class MainWindow : Window
         {
             try
             {
-                var data = _decodedImage!.GetData();
-                var bufferSize = (int)data.GetSize();
-
-                var buffer = new byte[bufferSize];
-                data.Fill(buffer);
+                int bufferSize, width, height;
+                byte[] buffer;
+                lock (_stageLock)
+                {
+                    var data = _decodedImage!.GetData();
+                    bufferSize = (int)data.GetSize();
+                    buffer = new byte[bufferSize];
+                    data.Fill(buffer);
+                    width = _decodedImage.GetWidth();
+                    height = _decodedImage.GetHeight();
+                }
 
                 if (_imageControl is not { Source: WriteableBitmap writableBitmap })
                 {
@@ -255,7 +266,7 @@ public partial class MainWindow : Window
                 if (Math.Abs(bufferSize - currentBitmapSize) > 1)
                 {
                     var newBitmap =
-                        new WriteableBitmap(new PixelSize(_decodedImage.GetWidth(), _decodedImage.GetHeight()),
+                        new WriteableBitmap(new PixelSize(width, height),
                             new Vector(96, 96), Avalonia.Platform.PixelFormat.Rgba8888, AlphaFormat.Opaque);
                     _imageControl.Source = newBitmap;
                     writableBitmap = newBitmap;
@@ -297,12 +308,32 @@ public partial class MainWindow : Window
             try
             {
                 var keepLooping = true;
+                Task<(Action, byte[])>? readPduTask = null;
                 while (keepLooping)
                 {
-                    var (action, payload) = await _framed!.ReadPdu();
-                    var outputIterator = _activeStage!.Process(_decodedImage!, action, payload);
+                    // Start the next read only once the previous frame's outputs are handled:
+                    // reactivation reads from the same stream.
+                    readPduTask ??= _framed!.ReadPdu();
+
+                    // Wake up periodically to send RDPDR completions (e.g. smartcard calls) that
+                    // finished while the server sent nothing.
+                    if (readPduTask != await Task.WhenAny(readPduTask, Task.Delay(RdpdrDeferredPollInterval)))
+                    {
+                        var deferred = WithStageLock(() => _activeStage!.PollRdpdrDeferred());
+                        keepLooping = await HandleActiveStageOutput(deferred);
+                        continue;
+                    }
+
+                    var (action, payload) = await readPduTask;
+                    readPduTask = null;
+                    var outputIterator = WithStageLock(() => _activeStage!.Process(_decodedImage!, action, payload));
                     keepLooping = await HandleActiveStageOutput(outputIterator);
                 }
+
+                // The session can end while a read is still pending: report its failure, if any.
+                readPduTask?.ContinueWith(
+                    t => Trace.TraceError("Error reading PDU: " + t.Exception!.GetBaseException().Message),
+                    TaskContinuationOptions.OnlyOnFaulted);
 
                 Trace.TraceInformation("ReadPduAndProcessActiveStage loop ended");
             }
@@ -317,45 +348,52 @@ public partial class MainWindow : Window
     {
         Task.Run(async () =>
         {
-            while (true)
+            var sinceTimeouts = Stopwatch.StartNew();
+
+            while (_cliprdr != null)
             {
-                if (_cliprdr == null)
+                // Wakes up at least every second, to expire clipboard locks and file transfers.
+                var message = _cliprdr.NextClipboardMessageTimeout(1000);
+
+                if (message != null)
                 {
-                    continue;
+                    Trace.TraceInformation("Clipboard message type: " + message.GetMessageType());
+                    await SubmitClipboardFrame(() => _activeStage!.SubmitClipboardMessage(message));
                 }
 
-                var message = _cliprdr.NextClipboardMessageBlocking();
-
-                VecU8 frame;
-                var messageType = message.GetMessageType();
-                Trace.TraceInformation("Clipboard message type: " + messageType);
-                if (messageType == ClipboardMessageType.SendFormatData)
+                if (sinceTimeouts.Elapsed >= ClipboardTimeoutsInterval)
                 {
-                    var formatData = message.GetSendFormatData()!;
-                    frame = _activeStage!.SubmitClipboardFormatData(formatData);
+                    sinceTimeouts.Restart();
+                    await SubmitClipboardFrame(() => _activeStage!.DriveClipboardTimeouts());
                 }
-                else if (messageType == ClipboardMessageType.SendInitiateCopy)
-                {
-                    var initiateCopy = message.GetSendInitiateCopy()!;
-                    frame = _activeStage!.InitiateClipboardCopy(initiateCopy);
-                }
-                else if (messageType == ClipboardMessageType.SendInitiatePaste)
-                {
-                    var initiatePaste = message.GetSendInitiatePaste()!;
-                    frame = _activeStage!.InitiateClipboardPaste(initiatePaste);
-                }
-                else
-                {
-                    Console.WriteLine("Error in clipboard");
-                    break;
-                }
-
-                var toWriteBack = new byte[frame.GetSize()];
-                frame.Fill(toWriteBack);
-
-                await _framed!.Write(toWriteBack);
             }
         });
+    }
+
+    private async Task SubmitClipboardFrame(Func<VecU8> submit)
+    {
+        VecU8 frame;
+        try
+        {
+            frame = WithStageLock(submit);
+        }
+        catch (IronRdpException e)
+        {
+            // Only this clipboard operation failed: the session goes on.
+            Trace.TraceError("Clipboard error: " + e.Message);
+            return;
+        }
+
+        var size = (int)frame.GetSize();
+        if (size == 0)
+        {
+            return;
+        }
+
+        var toWriteBack = new byte[size];
+        frame.Fill(toWriteBack);
+
+        await _framed!.Write(toWriteBack);
     }
 
     private static Config BuildConfig(string username, string password, string? domain, int width, int height)
@@ -398,8 +436,7 @@ public partial class MainWindow : Window
 
         var buttonOperation = MouseButton.New(buttonType).AsOperationMouseButtonPressed();
         var fastpath = _inputDatabase!.Apply(buttonOperation);
-        var output = _activeStage!.ProcessFastpathInput(_decodedImage!, fastpath);
-        var _ = HandleActiveStageOutput(output);
+        SendFastpath(fastpath);
     }
 
     private void OnPointerMoved(object sender, PointerEventArgs e)
@@ -414,8 +451,7 @@ public partial class MainWindow : Window
         var y = (ushort)position.Y;
         var mouseMovedEvent = MousePosition.New(x, y).AsMoveOperation();
         var fastpath = _inputDatabase!.Apply(mouseMovedEvent);
-        var output = _activeStage.ProcessFastpathInput(_decodedImage, fastpath);
-        var _ = HandleActiveStageOutput(output);
+        SendFastpath(fastpath);
     }
 
     private void OnPointerReleased(object sender, PointerReleasedEventArgs e)
@@ -440,8 +476,7 @@ public partial class MainWindow : Window
 
         var buttonOperation = MouseButton.New(buttonType).AsOperationMouseButtonReleased();
         var fastpath = _inputDatabase!.Apply(buttonOperation);
-        var output = _activeStage!.ProcessFastpathInput(_decodedImage!, fastpath);
-        var _ = HandleActiveStageOutput(output);
+        SendFastpath(fastpath);
     }
 
     private void OnKeyDown(object? sender, KeyEventArgs? e)
@@ -462,8 +497,7 @@ public partial class MainWindow : Window
 
         var keyOperation = Scancode.FromU16(keycode.Value).AsOperationKeyPressed();
         var fastpath = _inputDatabase!.Apply(keyOperation);
-        var output = _activeStage.ProcessFastpathInput(_decodedImage, fastpath);
-        var _ = HandleActiveStageOutput(output);
+        SendFastpath(fastpath);
     }
 
     private void OnKeyUp(object? sender, KeyEventArgs? e)
@@ -484,8 +518,26 @@ public partial class MainWindow : Window
 
         var keyOperation = Scancode.FromU16(keycode.Value).AsOperationKeyReleased();
         var fastpath = _inputDatabase!.Apply(keyOperation);
-        var output = _activeStage.ProcessFastpathInput(_decodedImage, fastpath);
+        SendFastpath(fastpath);
+    }
+
+    private void SendFastpath(FastPathInputEventIterator fastpath)
+    {
+        if (_activeStage == null || _decodedImage == null)
+        {
+            return;
+        }
+
+        var output = WithStageLock(() => _activeStage!.ProcessFastpathInput(_decodedImage!, fastpath));
         var _ = HandleActiveStageOutput(output);
+    }
+
+    private T WithStageLock<T>(Func<T> call)
+    {
+        lock (_stageLock)
+        {
+            return call();
+        }
     }
 
     private async Task<bool> HandleActiveStageOutput(ActiveStageOutputIterator outputIterator)
@@ -516,7 +568,7 @@ public partial class MainWindow : Window
                 }
                 else if (output.GetEnumType() == ActiveStageOutputType.DeactivateAll)
                 {
-                    var activationSequence = _activeStage!.CreateConnectionActivation();
+                    var activationSequence = WithStageLock(() => _activeStage!.CreateConnectionActivation());
                     var writeBuf = WriteBuf.New();
                     while (true)
                     {
@@ -535,20 +587,23 @@ public partial class MainWindow : Window
                         var staticChannelChunkSize = finalized.GetStaticChannelChunkSize();
                         var windowSupportLevel = finalized.GetWindowSupportLevel();
 
-                        _decodedImage = DecodedImage.New(PixelFormat.RgbA32, desktopSize.GetWidth(),
-                            desktopSize.GetHeight());
+                        lock (_stageLock)
+                        {
+                            _decodedImage = DecodedImage.New(PixelFormat.RgbA32, desktopSize.GetWidth(),
+                                desktopSize.GetHeight());
 
-                        _activeStage!.Reactivate(
-                            ioChannelId,
-                            userChannelId,
-                            shareId,
-                            enableServerPointer,
-                            pointerSoftwareRendering,
-                            staticChannelChunkSize,
-                            windowSupportLevel
-                        );
+                            _activeStage!.Reactivate(
+                                ioChannelId,
+                                userChannelId,
+                                shareId,
+                                enableServerPointer,
+                                pointerSoftwareRendering,
+                                staticChannelChunkSize,
+                                windowSupportLevel
+                            );
 
-                        _activeStage.SetEnableServerPointer(enableServerPointer);
+                            _activeStage.SetEnableServerPointer(enableServerPointer);
+                        }
 
                         break;
                     }
@@ -580,7 +635,7 @@ public partial class MainWindow : Window
 
     public void OnDisconnectClick(object? sender, RoutedEventArgs e)
     {
-        var output = this._activeStage!.GracefulShutdown();
+        var output = WithStageLock(() => this._activeStage!.GracefulShutdown());
 
         HandleActiveStageOutput(output).ContinueWith(t =>
         {

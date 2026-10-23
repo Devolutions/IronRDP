@@ -4,10 +4,11 @@
 //! MS-RDPEI Input Virtual Channel Extension.
 
 mod client;
+pub mod contact;
 pub mod pdu;
 mod server;
 
-pub use client::RdpeiClient;
+pub use client::{RdpeiClient, RdpeiInputState};
 pub use server::{RdpeiHandler, RdpeiServer};
 
 /// Dynamic channel name for MS-RDPEI ([MS-RDPEI] 2.1).

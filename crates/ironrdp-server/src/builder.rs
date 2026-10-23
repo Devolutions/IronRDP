@@ -1,5 +1,4 @@
 use core::net::SocketAddr;
-use core::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::Arc;
 
 use ironrdp_pdu::codecs::rfx::Quant;
@@ -8,13 +7,13 @@ use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use tokio_rustls::TlsAcceptor;
 
 use super::clipboard::CliprdrServerFactory;
-use super::display::{DesktopSize, RdpServerDisplay};
+use super::display::{DesktopSize, DisplayContext, RdpServerDisplay};
 #[cfg(feature = "egfx")]
 use super::gfx::GfxServerFactory;
 use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use super::server::{
-    ConnectionHandler, ConnectionPolicy, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity,
-    StaticChannelFactory,
+    ConnectionBinder, ConnectionHandler, ConnectionPolicy, CredentialValidator, RdpServer, RdpServerOptions,
+    RdpServerSecurity, StaticChannelFactory,
 };
 use crate::error::ServerResult;
 #[cfg(feature = "usb")]
@@ -52,17 +51,14 @@ pub struct BuilderDone {
     rdpeai_factory: Option<Box<dyn RdpeaiServerFactory>>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
+    connection_binder: Option<Arc<dyn ConnectionBinder>>,
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
     #[cfg(feature = "usb")]
     usb_factory: Option<Box<dyn DeviceFactory>>,
-    display_suppressed: Option<Arc<AtomicBool>>,
-    autodetect_rtt: Option<Arc<AtomicU32>>,
-    autodetect_baseline_rtt: Option<Arc<AtomicU32>>,
-    autodetect_bandwidth: Option<Arc<AtomicU32>>,
-    autodetect_bandwidth_generation: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
+    auto_reconnect_on_request: bool,
     connection_policy: ConnectionPolicy,
     remotefx_quant: Quant,
     remotefx_entropy_coder: Option<EntropyBits>,
@@ -151,6 +147,7 @@ impl RdpServerBuilder<WantsDisplay> {
     where
         D: RdpServerDisplay + 'static,
     {
+        let connection_policy = ConnectionPolicy::default_for(&self.state.security);
         RdpServerBuilder {
             state: BuilderDone {
                 addr: self.state.addr,
@@ -165,20 +162,17 @@ impl RdpServerBuilder<WantsDisplay> {
                 rdpeai_factory: None,
                 connection_handler: None,
                 credential_validator: None,
+                connection_binder: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
                 #[cfg(feature = "usb")]
                 usb_factory: None,
-                display_suppressed: None,
-                autodetect_rtt: None,
-                autodetect_baseline_rtt: None,
-                autodetect_bandwidth: None,
-                autodetect_bandwidth_generation: None,
                 honor_client_desktop_size: None,
-                connection_policy: ConnectionPolicy::default(),
+                connection_policy,
                 auto_reconnect_cookie: None,
+                auto_reconnect_on_request: false,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
                 udp_bind_addr: None,
@@ -187,6 +181,7 @@ impl RdpServerBuilder<WantsDisplay> {
     }
 
     pub fn with_no_display(self) -> RdpServerBuilder<BuilderDone> {
+        let connection_policy = ConnectionPolicy::default_for(&self.state.security);
         RdpServerBuilder {
             state: BuilderDone {
                 addr: self.state.addr,
@@ -201,20 +196,17 @@ impl RdpServerBuilder<WantsDisplay> {
                 rdpeai_factory: None,
                 connection_handler: None,
                 credential_validator: None,
+                connection_binder: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
                 #[cfg(feature = "usb")]
                 usb_factory: None,
-                display_suppressed: None,
-                autodetect_rtt: None,
-                autodetect_baseline_rtt: None,
-                autodetect_bandwidth: None,
-                autodetect_bandwidth_generation: None,
                 honor_client_desktop_size: None,
-                connection_policy: ConnectionPolicy::default(),
+                connection_policy,
                 auto_reconnect_cookie: None,
+                auto_reconnect_on_request: false,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
                 udp_bind_addr: None,
@@ -293,26 +285,6 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
-    /// Share the server's "display suppressed" flag with the display
-    /// backend before construction.
-    ///
-    /// The flag is `true` while the connected client has sent
-    /// `SuppressOutput { desktop_rect: None }` (e.g., mstsc minimized).
-    /// Display backends that want to skip frame emission while the
-    /// client is minimized create one `Arc<AtomicBool>` in the
-    /// application, hand a clone to the display, and pass the same
-    /// `Arc` here so the server's per-connection PDU handler writes to
-    /// the same instance the backend reads.
-    ///
-    /// When this is not called, the server allocates its own internal
-    /// flag (still readable via [`RdpServer::display_suppressed_handle`])
-    /// — useful when the backend can call `display_suppressed_handle()`
-    /// after construction to obtain a handle, rather than sharing one in.
-    pub fn with_display_suppressed_handle(mut self, handle: Arc<AtomicBool>) -> Self {
-        self.state.display_suppressed = Some(handle);
-        self
-    }
-
     /// Negotiate each session at the desktop size the client requests in its
     /// Client Core Data, rather than the size reported by the display handler.
     ///
@@ -354,9 +326,12 @@ impl RdpServerBuilder<BuilderDone> {
 
     /// Choose what [`RdpServer::run`] does with a second connection that
     /// arrives while a session is already being served: leave it in the backlog
-    /// ([`ConnectionPolicy::Queue`], the default), close it immediately
+    /// ([`ConnectionPolicy::Queue`]), close it immediately
     /// ([`ConnectionPolicy::Reject`]), or let a fully-authenticated newcomer
     /// take the session over ([`ConnectionPolicy::Preempt`]).
+    ///
+    /// The default follows the security mode already chosen on this builder;
+    /// see [`ConnectionPolicy::default_for`].
     ///
     /// `Preempt`'s takeover is only authentication-gated under
     /// [`RdpServerSecurity::Hybrid`]; see [`ConnectionPolicy::Preempt`] for the
@@ -368,71 +343,26 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
-    /// Set a credential validator for TLS-mode connections.
+    /// Set a credential validator for accepted client credentials.
     ///
-    /// When set, credentials received from the client during
-    /// `SecureSettingsExchange` (`ClientInfoPdu`) are passed to this
-    /// validator before the session is established. Rejection or a backend
-    /// error closes the connection. Pass `None` (the default) to skip
-    /// validation entirely.
+    /// When set, credentials surfaced by the acceptor are passed to this
+    /// validator before the session is established, together with their
+    /// origin. This includes `SecureSettingsExchange` (`ClientInfoPdu`)
+    /// credentials and, when available, CredSSP/Hybrid delegated credentials.
+    /// Rejection or a backend error closes the connection. Pass `None` (the
+    /// default) to skip validation entirely.
     ///
     /// A valid Server Auto-Reconnect Cookie bypasses this validator. Applications
     /// that must validate every connection should leave automatic reconnection
     /// disabled.
-    ///
-    /// Not used for CredSSP/Hybrid connections (those use pre-loaded
-    /// credentials for NTLM challenge-response).
     pub fn with_credential_validator(mut self, validator: Option<Arc<dyn CredentialValidator>>) -> Self {
         self.state.credential_validator = validator;
         self
     }
 
-    /// Inject a shared NetworkAutoDetect RTT handle (milliseconds, `u32::MAX`
-    /// until the first measurement). The server writes the latest measured RTT
-    /// to the same instance the backend reads. When not called, the server
-    /// allocates its own (still readable via
-    /// [`RdpServer::autodetect_rtt_handle`]). The value stays `u32::MAX` unless
-    /// auto-detect is enabled via [`RdpServer::enable_autodetect`].
-    pub fn with_autodetect_rtt_handle(mut self, handle: Arc<AtomicU32>) -> Self {
-        self.state.autodetect_rtt = Some(handle);
-        self
-    }
-
-    /// Inject a shared session-lifetime baseline RTT handle (milliseconds,
-    /// `u32::MAX` until the first measurement; see
-    /// [`RdpServer::autodetect_baseline_rtt_handle`] for what distinguishes
-    /// this from [`Self::with_autodetect_rtt_handle`]). The server writes the
-    /// latest baseline to the same instance the backend reads. When not
-    /// called, the server allocates its own (still readable via
-    /// [`RdpServer::autodetect_baseline_rtt_handle`]). The value stays
-    /// `u32::MAX` unless auto-detect is enabled via
-    /// [`RdpServer::enable_autodetect`].
-    pub fn with_autodetect_baseline_rtt_handle(mut self, handle: Arc<AtomicU32>) -> Self {
-        self.state.autodetect_baseline_rtt = Some(handle);
-        self
-    }
-
-    /// Inject a shared NetworkAutoDetect bandwidth handle (kilobits per
-    /// second, `u32::MAX` until the first measurement completes). The server
-    /// writes the latest measured bandwidth to the same instance the backend
-    /// reads. When not called, the server allocates its own (still readable
-    /// via [`RdpServer::autodetect_bandwidth_handle`]). The value stays
-    /// `u32::MAX` unless auto-detect is enabled via
-    /// [`RdpServer::enable_autodetect`].
-    pub fn with_autodetect_bandwidth_handle(mut self, handle: Arc<AtomicU32>) -> Self {
-        self.state.autodetect_bandwidth = Some(handle);
-        self
-    }
-
-    /// Inject a shared handle that increments every time a Bandwidth Measure
-    /// transaction completes, whether or not it produced a usable figure.
-    /// Pairs with [`Self::with_autodetect_bandwidth_handle`]: the bandwidth
-    /// figure alone repeats too often to tell a fresh measurement window
-    /// apart from a stale one. When not called, the server allocates its own
-    /// (still readable via
-    /// [`RdpServer::autodetect_bandwidth_generation_handle`]).
-    pub fn with_autodetect_bandwidth_generation_handle(mut self, handle: Arc<AtomicU32>) -> Self {
-        self.state.autodetect_bandwidth_generation = Some(handle);
+    /// Set a binder that replaces display/input handlers after credentials are accepted.
+    pub fn with_connection_binder(mut self, binder: Option<Arc<dyn ConnectionBinder>>) -> Self {
+        self.state.connection_binder = binder;
         self
     }
 
@@ -446,11 +376,24 @@ impl RdpServerBuilder<BuilderDone> {
     /// security, which provides the all-zero client random required for Enhanced
     /// RDP Security. `None` (the default) sends no cookie.
     ///
+    /// With [`Self::with_auto_reconnect_on_request`] the cookie is sent only on
+    /// request, and the server regenerates it when the embedder vouches for a
+    /// connection instead of on every connect.
+    ///
     /// See [`RdpServer::set_auto_reconnect_cookie`] for post-construction
     /// configuration and [`RdpServer::auto_reconnect_cookie_handle`] for
     /// updates while the server is running.
     pub fn with_auto_reconnect_cookie(mut self, cookie: Option<ServerAutoReconnect>) -> Self {
         self.state.auto_reconnect_cookie = cookie;
+        self
+    }
+
+    /// Send the cookie only on request instead of at activation.
+    ///
+    /// A server with a connection binder refuses auto-reconnect, so this has no
+    /// useful effect there. See [`RdpServer::set_auto_reconnect_on_request`].
+    pub fn with_auto_reconnect_on_request(mut self, on_request: bool) -> Self {
+        self.state.auto_reconnect_on_request = on_request;
         self
     }
 
@@ -538,16 +481,13 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.connection_handler,
             #[cfg(feature = "egfx")]
             self.state.gfx_factory,
-            self.state.display_suppressed,
             #[cfg(feature = "usb")]
             self.state.usb_factory,
-            self.state.autodetect_rtt,
-            self.state.autodetect_baseline_rtt,
-            self.state.autodetect_bandwidth,
-            self.state.autodetect_bandwidth_generation,
         );
         server.set_credential_validator(self.state.credential_validator);
         server.set_auto_reconnect_cookie(self.state.auto_reconnect_cookie);
+        server.set_auto_reconnect_on_request(self.state.auto_reconnect_on_request);
+        server.set_connection_binder(self.state.connection_binder);
         server
     }
 }
@@ -577,7 +517,7 @@ impl RdpServerDisplay for NoopDisplay {
         DesktopSize { width: 0, height: 0 }
     }
 
-    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(&mut self, _: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(NoopDisplayUpdates {}))
     }
 }

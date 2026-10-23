@@ -91,7 +91,11 @@ fn save_session_info_surfaces_the_auto_reconnect_cookie() {
 
     let mut bulk_decompressor = None;
     let outputs = make_processor()
-        .process(&encode_save_session_info(Some(cookie.clone())), &mut bulk_decompressor)
+        .process(
+            &encode_save_session_info(Some(cookie.clone())),
+            &mut bulk_decompressor,
+            None,
+        )
         .unwrap();
 
     let surfaced = outputs
@@ -120,7 +124,7 @@ fn save_session_info_surfaces_the_auto_reconnect_cookie() {
 fn save_session_info_without_a_cookie_surfaces_no_cookie() {
     let mut bulk_decompressor = None;
     let outputs = make_processor()
-        .process(&encode_save_session_info(None), &mut bulk_decompressor)
+        .process(&encode_save_session_info(None), &mut bulk_decompressor, None)
         .unwrap();
 
     assert!(
@@ -142,7 +146,7 @@ fn monitor_layout_is_forwarded_from_the_active_io_channel() {
     }];
     let mut bulk_decompressor = None;
     let outputs = make_processor()
-        .process(&encode_monitor_layout(monitors.clone()), &mut bulk_decompressor)
+        .process(&encode_monitor_layout(monitors.clone()), &mut bulk_decompressor, None)
         .expect("the monitor layout PDU should be processed");
 
     let [ProcessorOutput::MonitorLayout(actual)] = outputs.as_slice() else {

@@ -5,6 +5,19 @@ description = "IronRDP benchmarks"
 edition.workspace = true
 publish = false
 
+[lib]
+doctest = false
+
+[[bin]]
+name = "corpus-bench"
+test = false
+
+[dependencies]
+anyhow = "1" # public
+serde = { version = "1", features = ["derive"] } # public
+sha2 = "0.10"
+toml = "1.1"
+
 [dev-dependencies]
 criterion = "0.8"
 ironrdp-graphics.path = "../ironrdp-graphics"

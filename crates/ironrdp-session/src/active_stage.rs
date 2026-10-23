@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
-use ironrdp_core::{ReadCursor, WriteBuf};
+use ironrdp_core::{MonotonicInstant, ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
+use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout};
 use ironrdp_dvc::pdu::SoftSyncTunnelType;
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessageBatch, DynamicChannelMut, DynamicChannelRef};
 use ironrdp_egfx::client::GraphicsPipelineClient;
@@ -183,15 +184,28 @@ impl ActiveStage {
     }
 
     /// Process a frame received from the server.
+    ///
+    /// `received_at` is when the transport read the frame, such as `Framed::last_read_at()`
+    /// from `ironrdp-async` or `ironrdp-blocking`. Use one monotonic clock for every frame, and
+    /// keep the read time for buffered frames so bandwidth measurements reflect network arrival.
+    /// With `None`, a Bandwidth Measure Stop is answered with `timeDelta = 1` and
+    /// `byteCount = 0`, which the server reads as 0 kbps ([\[MS-RDPBCGR\] 3.3.5.14]).
+    ///
+    /// [\[MS-RDPBCGR\] 3.3.5.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b716fd9a-5a0b-4970-b5d0-f1be451408b7
     pub fn process(
         &mut self,
         image: &mut DecodedImage,
         action: Action,
         frame: &[u8],
+        received_at: Option<MonotonicInstant>,
     ) -> SessionResult<Vec<ActiveStageOutput>> {
         self.damage_regions.clear();
         let (mut stage_outputs, processor_updates) = match action {
             Action::FastPath => {
+                // Fast-path frames carry no security flags or data signature: IronRDP supports
+                // Enhanced RDP Security, and Standard RDP Security only at ENCRYPTION_LEVEL_NONE.
+                // The continuous bandwidth count therefore includes the entire frame.
+                self.x224_processor.record_bandwidth_bytes(frame.len());
                 let mut output = WriteBuf::new();
                 let processor_updates =
                     self.fast_path_processor
@@ -202,7 +216,9 @@ impl ActiveStage {
                 )
             }
             Action::X224 => {
-                let x224_outputs = self.x224_processor.process(frame, &mut self.bulk_decompressor)?;
+                let x224_outputs = self
+                    .x224_processor
+                    .process(frame, &mut self.bulk_decompressor, received_at)?;
                 let mut stage_outputs = Vec::new();
                 let mut processor_updates = Vec::new();
 
@@ -294,6 +310,21 @@ impl ActiveStage {
         }
         let (region, damage_regions) =
             composite_graphics_updates(image, graphics_updates.into_iter().map(|u| (u.region, u.data)))?;
+        self.damage_regions.extend(damage_regions);
+        Ok(region)
+    }
+
+    /// Composites RGBA pixels rendered outside the session, such as client-side video, into
+    /// `image` and records their damage like a graphics pipeline update.
+    ///
+    /// Each update is a region with exclusive right and bottom edges and its tightly packed RGBA
+    /// rows. Updates outside the image are dropped. Returns the union of the changed regions.
+    pub fn composite_rgba32(
+        &mut self,
+        image: &mut DecodedImage,
+        updates: impl IntoIterator<Item = (ExclusiveRectangle, Vec<u8>)>,
+    ) -> SessionResult<Option<InclusiveRectangle>> {
+        let (region, damage_regions) = composite_graphics_updates(image, updates)?;
         self.damage_regions.extend(damage_regions);
         Ok(region)
     }
@@ -660,6 +691,52 @@ impl ActiveStage {
         Some(prepared.and_then(|batch| self.encode_dvc_batch_over_tcp(batch)))
     }
 
+    /// Returns the capabilities the server sent over the Display Control Virtual Channel, if any.
+    pub fn display_control_capabilities(&self) -> Option<DisplayControlCapabilities> {
+        self.get_dvc::<DisplayControlClient>()?
+            .processor()
+            .capabilities()
+            .cloned()
+    }
+
+    /// Prepares a complete monitor layout request for routing over TCP or a Soft-Sync tunnel.
+    ///
+    /// The layout carries every monitor with its position, orientation, physical size and scale
+    /// factors, and is adapted to the server capabilities with
+    /// [`DisplayControlMonitorLayout::fit_to_capabilities`] before it is encoded.
+    ///
+    /// If the Display Control Virtual Channel is not available, not yet connected, or has not
+    /// received its required server capabilities PDU, this method returns `None`.
+    pub fn prepare_monitor_layout(
+        &mut self,
+        layout: &DisplayControlMonitorLayout,
+    ) -> Option<SessionResult<DvcMessageBatch>> {
+        let Some(dvc) = self.get_dvc::<DisplayControlClient>() else {
+            debug!("Could not encode a monitor layout: Display Control Virtual Channel is not available");
+            return None;
+        };
+        let channel_id = dvc.channel_id();
+        let display_control = dvc.processor();
+        if !display_control.ready() {
+            debug!("Could not encode a monitor layout: Display Control capabilities have not been received");
+            return None;
+        }
+        let messages = match display_control.encode_monitor_layout(channel_id, layout) {
+            Ok(messages) => messages,
+            Err(error) => return Some(Err(SessionError::encode(error))),
+        };
+        Some(DvcMessageBatch::try_new(channel_id, messages).map_err(SessionError::pdu))
+    }
+
+    /// Fully encodes a complete monitor layout request for sending over the Display Control Virtual Channel.
+    ///
+    /// See [`Self::prepare_monitor_layout`]. Returns an error when Soft-Sync routes the channel
+    /// through a multitransport tunnel.
+    pub fn encode_monitor_layout(&mut self, layout: &DisplayControlMonitorLayout) -> Option<SessionResult<Vec<u8>>> {
+        let prepared = self.prepare_monitor_layout(layout)?;
+        Some(prepared.and_then(|batch| self.encode_dvc_batch_over_tcp(batch)))
+    }
+
     /// Returns whether the RDPEI channel is available and ready (SC_READY / CS_READY exchanged).
     ///
     /// `None` means no RDPEI client is configured. `Some(false)` means it is registered but not
@@ -678,6 +755,13 @@ impl ActiveStage {
     pub fn rdpei_can_send_touch(&mut self) -> bool {
         self.get_dvc::<RdpeiClient>()
             .is_some_and(|dvc| dvc.processor().ready() && !dvc.processor().is_suspended())
+    }
+
+    /// What the RDPEI channel accepts right now; nothing when it is missing or closed.
+    pub fn rdpei_input_state(&self) -> ironrdp_rdpei::RdpeiInputState {
+        self.get_dvc::<RdpeiClient>()
+            .map(|dvc| dvc.processor().input_state())
+            .unwrap_or_default()
     }
 
     /// Prepares a touch event for routing over TCP or a Soft-Sync tunnel.
@@ -1067,7 +1151,7 @@ mod tests {
 
     use super::*;
     use ironrdp_core::{Decode as _, encode_vec};
-    use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlPdu};
+    use ironrdp_displaycontrol::pdu::{DisplayControlPdu, MonitorLayoutEntry};
     use ironrdp_dvc::pdu::{
         ClosePdu, CreateRequestPdu, DataPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu,
     };
@@ -1405,6 +1489,28 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_prepared_batch(&pen, 2);
+    }
+
+    #[test]
+    fn monitor_layouts_are_prepared_once_capabilities_are_received() {
+        let mut stage = active_stage_with_ready_dvcs();
+        assert_eq!(
+            stage.display_control_capabilities(),
+            Some(DisplayControlCapabilities::new(1, 3840, 2400).unwrap())
+        );
+
+        let layout = DisplayControlMonitorLayout::new(&[
+            MonitorLayoutEntry::new_primary(1920, 1080).unwrap(),
+            MonitorLayoutEntry::new_secondary(1920, 1080)
+                .unwrap()
+                .with_position(1920, 0)
+                .unwrap(),
+        ])
+        .unwrap();
+        let batch = stage.prepare_monitor_layout(&layout).unwrap().unwrap();
+        assert_prepared_batch(&batch, 1);
+        let expected = stage.encode_dvc_messages(batch.into_messages()).unwrap();
+        assert_eq!(stage.encode_monitor_layout(&layout).unwrap().unwrap(), expected);
     }
 
     #[test]

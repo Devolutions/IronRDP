@@ -72,7 +72,7 @@ Exception: it’s not necessary when the type alias is clear enough (e.g.: `Conn
 
 A single sentence which:
 - is short and concise,
-- does not start by a capital letter, and
+- does not capitalize a word solely because it appears at the start of a sentence
 - does not contain trailing punctuation.
 
 This is the convention adopted by the Rust project:
@@ -84,9 +84,11 @@ Also, use proper abbreviation casing, e.g., IPv4 and IPv6 (not ipv4/ipv6).
 ```rust
 // GOOD
 "invalid X.509 certificate"
+"DIB decode error"
 
 // BAD
 "Invalid X.509 certificate."
+"dib decode error"
 ```
 
 **Rationale**: it’s easier to compose with other error messages. 
@@ -379,6 +381,7 @@ Exception: no period for brief comments (e.g., `// VER`, `// RSV`, `// ATYP`)
 
 For `.md` and `.adoc` files, prefer a sentence-per-line format, don't wrap lines.
 If the line is too long, you want to split the sentence in two.
+Code comments and doc comments follow the same rule, except that a sentence wraps where it would exceed the line-length limit.
 
 **Rationale:** much easier to edit the text and read the diff, see [this link][asciidoctor-practices].
 

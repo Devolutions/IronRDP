@@ -89,6 +89,13 @@ public partial class ClientConnector: IDisposable
     /// <summary>
     /// Must use
     /// </summary>
+    /// <remarks>
+    /// Announces a smartcard device. On Windows, calls are passed through to the local
+    /// WinSCard service; elsewhere every call fails with `SCARD_E_NO_SERVICE`.
+    /// <br/>
+    /// Some WinSCard calls complete asynchronously: call `ActiveStage::poll_rdpdr_deferred`
+    /// periodically to send their results to the server.
+    /// </remarks>
     /// <exception cref="IronRdpException"></exception>
     public void WithStaticChannelRdpdr(string computerName, uint smartCardDeviceId)
     {

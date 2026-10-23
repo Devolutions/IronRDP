@@ -11,6 +11,7 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
     use crate::utils::ffi::VecU8;
 
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque]
     pub struct CredsspProcessGenerator<'a>(pub ironrdp::connector::credssp::CredsspProcessGenerator<'a>);
 
@@ -52,6 +53,7 @@ pub mod ffi {
             matches!(self.0, CredsspGeneratorState::Completed(_))
         }
 
+        #[diplomat::attr(auto, getter = "network_request_if_suspended")]
         pub fn get_network_request_if_suspended<'a>(&'a self) -> Option<Box<NetworkRequest<'a>>> {
             match &self.0 {
                 CredsspGeneratorState::Suspended(request) => Some(Box::new(NetworkRequest(request))),
@@ -59,6 +61,7 @@ pub mod ffi {
             }
         }
 
+        #[diplomat::attr(auto, getter = "client_state_if_completed")]
         pub fn get_client_state_if_completed(&self) -> Result<Box<ClientState>, Box<IronRdpError>> {
             match &self.0 {
                 CredsspGeneratorState::Completed(Ok(res)) => Ok(Box::new(ClientState(res.clone()))),
@@ -77,6 +80,7 @@ pub mod ffi {
             matches!(self.0, sspi::credssp::ClientState::FinalMessage(_))
         }
 
+        #[diplomat::attr(auto, getter = "ts_request")]
         pub fn get_ts_request(&self) -> Result<Box<TsRequest>, Box<IronRdpError>> {
             match &self.0 {
                 sspi::credssp::ClientState::ReplyNeeded(ts_request) => Ok(Box::new(TsRequest(ts_request.clone()))),
@@ -86,14 +90,17 @@ pub mod ffi {
     }
 
     impl<'a> NetworkRequest<'a> {
+        #[diplomat::attr(auto, getter = "data")]
         pub fn get_data(&self) -> Box<VecU8> {
             Box::new(VecU8(self.0.data.clone()))
         }
 
+        #[diplomat::attr(auto, getter = "protocol")]
         pub fn get_protocol(&self) -> NetworkRequestProtocol {
             self.0.protocol.into()
         }
 
+        #[diplomat::attr(auto, getter = "url")]
         pub fn get_url(&self, writeable: &mut diplomat_runtime::DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
             use core::fmt::Write as _;
             let url: &str = self.0.url.as_ref();

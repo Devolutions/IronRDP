@@ -100,7 +100,7 @@ RDPDR channel implementation.
 
 #### [`crates/ironrdp-rdpsnd`](./crates/ironrdp-rdpsnd)
 
-RDPSND static channel for audio output implemented as described in MS-RDPEA.
+Audio output channels (the static RDPSND channel and the AUDIO_PLAYBACK_DVC dynamic channels), wave codecs and a jitter-buffer policy, implemented as described in MS-RDPEA.
 
 #### [`crates/ironrdp-egfx`](./crates/ironrdp-egfx)
 
@@ -114,6 +114,20 @@ AUDIO_INPUT dynamic channel for client microphone capture implemented as describ
 
 Video capture dynamic channel client and backend boundary implemented as described in MS-RDPECAM.
 The crate performs no camera I/O and advertises only devices explicitly supplied by its caller.
+The Windows Media Foundation capture backend lives in [`crates/ironrdp-rdpecam-native`](./crates/ironrdp-rdpecam-native).
+
+#### [`crates/ironrdp-egfx-native`](./crates/ironrdp-egfx-native)
+
+Native H.264 decoders for the `ironrdp-egfx` decoder trait; on Windows, the Media Foundation decoder transform.
+
+#### [`crates/ironrdp-rdpegt`](./crates/ironrdp-rdpegt)
+
+Geometry tracking dynamic channel client and PDU codecs implemented as described in MS-RDPEGT.
+
+#### [`crates/ironrdp-rdpevor`](./crates/ironrdp-rdpevor)
+
+Video optimized remoting dynamic channel clients implemented as described in MS-RDPEVOR.
+Its presenter decodes H.264 through the `ironrdp-egfx` decoder trait and places pictures with MS-RDPEGT geometry; it performs no I/O and takes time from a caller-supplied clock.
 
 #### [`crates/ironrdp-rdpel`](./crates/ironrdp-rdpel)
 
@@ -209,10 +223,17 @@ that adds the winit/softbuffer GUI event loop, the clap CLI, the inquire prompts
 
 #### [`crates/ironrdp-daemon`](./crates/ironrdp-daemon)
 
-Internal reusable persistent RDP-session support. It provides local RPC daemon lifecycle and
+Reusable persistent RDP-session support. It provides local RPC daemon lifecycle and
 server handling, retained framebuffer, input and screenshot handling, session log buffering, NOW
 endpoint management, and durable NOW operations. Its RPC schema and transport dependency is
-[`ironrdp-rpc`](./crates/ironrdp-rpc); it is not published.
+[`ironrdp-rpc`](./crates/ironrdp-rpc).
+
+#### [`crates/ironrdp-rpc`](./crates/ironrdp-rpc)
+
+Shared local RPC protocol and transport: typed request/response schema, binary codecs, framed
+messages, Unix-domain-socket and Windows named-pipe transports. Used by `ironrdp-daemon` and its
+local clients (`ironrdp-agent`, `ironrdp-viewer`, `ironrdp-activex`); both endpoints must use
+compatible protocol versions.
 
 #### [`crates/ironrdp-web`](./crates/ironrdp-web)
 

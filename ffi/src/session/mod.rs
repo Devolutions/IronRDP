@@ -5,7 +5,9 @@ pub mod ffi {
     use std::collections::VecDeque;
 
     use super::image::ffi::DecodedImage;
-    use crate::clipboard::message::ffi::{ClipboardFormatId, ClipboardFormatIterator, FormatDataResponse};
+    use crate::clipboard::message::ffi::{
+        ClipboardFormatId, ClipboardFormatIterator, ClipboardMessage, FormatDataResponse,
+    };
     use crate::connector::activation::ffi::ConnectionActivationSequence;
     use crate::connector::result::ffi::ConnectionResult;
     use crate::dvc::dvc_pipe_proxy_message_queue::ffi::DvcPipeProxyMessage;
@@ -15,6 +17,7 @@ pub mod ffi {
     use crate::pdu::ffi::{Action, FastPathInputEventIterator, InclusiveRectangle};
     use crate::utils::ffi::{BytesSlice, Position, VecU8};
 
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque]
     pub struct ActiveStage(
         pub ironrdp::session::ActiveStage,
@@ -24,6 +27,7 @@ pub mod ffi {
     #[diplomat::opaque]
     pub struct ActiveStageOutput(pub ironrdp::session::ActiveStageOutput);
 
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque]
     pub struct ActiveStageOutputIterator(pub VecDeque<ironrdp::session::ActiveStageOutput>);
 
@@ -62,18 +66,22 @@ pub mod ffi {
     }
 
     impl MonitorLayoutEntry {
+        #[diplomat::attr(auto, getter = "left")]
         pub fn get_left(&self) -> i32 {
             self.0.left
         }
 
+        #[diplomat::attr(auto, getter = "top")]
         pub fn get_top(&self) -> i32 {
             self.0.top
         }
 
+        #[diplomat::attr(auto, getter = "right")]
         pub fn get_right(&self) -> i32 {
             self.0.right
         }
 
+        #[diplomat::attr(auto, getter = "bottom")]
         pub fn get_bottom(&self) -> i32 {
             self.0.bottom
         }
@@ -125,7 +133,33 @@ pub mod ffi {
             action: &Action,
             payload: &[u8],
         ) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
-            let outputs = self.0.process(&mut image.0, action.0, payload)?;
+            // The .NET host calls this right after reading each frame, so the call time stands in
+            // for the arrival time.
+            let mut outputs = self
+                .0
+                .process(&mut image.0, action.0, payload, Some(crate::utils::monotonic_now()))?;
+            // After DeactivateAll the frame would carry pre-reactivation channel IDs; after
+            // Terminate there is no session left. The next poll flushes them instead.
+            let session_continues = !outputs.iter().any(|output| {
+                matches!(
+                    output,
+                    ironrdp::session::ActiveStageOutput::DeactivateAll
+                        | ironrdp::session::ActiveStageOutput::Terminate(_)
+                )
+            });
+            if session_continues {
+                outputs.extend(self.poll_rdpdr_deferred_output()?);
+            }
+            Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
+        }
+
+        /// Collects RDPDR completions that finished asynchronously (e.g. smartcard waits).
+        ///
+        /// [`Self::process`] already collects them after each frame. Also call this on a short
+        /// timer (e.g. every 50 ms) so that they reach the server while it sends no frames. Do
+        /// not call it concurrently with other methods of this `ActiveStage`.
+        pub fn poll_rdpdr_deferred(&mut self) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
+            let outputs = self.poll_rdpdr_deferred_output()?;
             Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
         }
 
@@ -188,6 +222,57 @@ pub mod ffi {
                 .ok_or("clipboard svc processor not found in active stage")?;
 
             let result = clipboard.submit_format_data(data)?;
+
+            let frame = self.0.process_svc_processor_messages(result)?;
+
+            Ok(Box::new(VecU8(frame)))
+        }
+
+        /// Hands any message of the clipboard backend (e.g. `WinCliprdr`) to the clipboard
+        /// channel, file transfer messages included, and returns the frame to send.
+        ///
+        /// The frame is empty when there is nothing to send. A backend `Error` message is
+        /// returned as an error. Errors only concern that message: the session can go on.
+        pub fn submit_clipboard_message(
+            &mut self,
+            message: &ClipboardMessage,
+        ) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            use ironrdp::cliprdr::backend::ClipboardMessage as Message;
+
+            let clipboard = self
+                .0
+                .get_svc_processor_mut::<ironrdp::cliprdr::CliprdrClient>()
+                .ok_or("clipboard svc processor not found in active stage")?;
+
+            let result = match &message.0 {
+                Message::SendInitiateCopy(formats) => clipboard.initiate_copy(formats)?,
+                Message::SendInitiateFileCopy(files) => clipboard.initiate_file_copy(files.clone())?,
+                Message::SendFormatData(response) => clipboard.submit_format_data(response.clone())?,
+                Message::SendInitiatePaste(format) => clipboard.initiate_paste(*format)?,
+                Message::SendFileContentsRequest(request) => clipboard.request_file_contents(request.clone())?,
+                Message::SendFileContentsResponse(response) => clipboard.submit_file_contents(response.clone())?,
+                Message::Error(error) => {
+                    let error: &dyn ironrdp::cliprdr::backend::ClipboardError = error.as_ref();
+                    return Err(error.into());
+                }
+            };
+
+            let frame = self.0.process_svc_processor_messages(result)?;
+
+            Ok(Box::new(VecU8(frame)))
+        }
+
+        /// Expires clipboard locks and file transfers that timed out, returning the frame to send
+        /// (empty when there is nothing to send).
+        ///
+        /// Call it every few seconds while file transfer is enabled on the clipboard backend.
+        pub fn drive_clipboard_timeouts(&mut self) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            let clipboard = self
+                .0
+                .get_svc_processor_mut::<ironrdp::cliprdr::CliprdrClient>()
+                .ok_or("clipboard svc processor not found in active stage")?;
+
+            let result = clipboard.drive_timeouts()?;
 
             let frame = self.0.process_svc_processor_messages(result)?;
 
@@ -290,8 +375,27 @@ pub mod ffi {
             Ok(())
         }
 
+        #[diplomat::attr(auto, setter = "enable_server_pointer")]
         pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {
             self.0.set_enable_server_pointer(enable_server_pointer);
+        }
+
+        fn poll_rdpdr_deferred_output(
+            &mut self,
+        ) -> Result<Vec<ironrdp::session::ActiveStageOutput>, Box<IronRdpError>> {
+            let Some(rdpdr) = self.0.get_svc_processor_mut::<ironrdp::rdpdr::Rdpdr>() else {
+                return Ok(Vec::new());
+            };
+
+            let messages = rdpdr.poll_deferred_messages()?;
+            if messages.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let frame = self
+                .0
+                .process_svc_messages_by_name(&ironrdp::rdpdr::Rdpdr::NAME, messages)?;
+            Ok(vec![ironrdp::session::ActiveStageOutput::ResponseFrame(frame)])
         }
     }
 
@@ -317,6 +421,7 @@ pub mod ffi {
     }
 
     impl ActiveStageOutput {
+        #[diplomat::attr(auto, getter = "enum_type")]
         pub fn get_enum_type(&self) -> ActiveStageOutputType {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::ResponseFrame { .. } => ActiveStageOutputType::ResponseFrame,
@@ -341,6 +446,7 @@ pub mod ffi {
             }
         }
 
+        #[diplomat::attr(auto, getter = "response_frame")]
         pub fn get_response_frame(&self) -> Result<Box<BytesSlice<'_>>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::ResponseFrame(frame) => Ok(Box::new(BytesSlice(frame))),
@@ -350,6 +456,7 @@ pub mod ffi {
             }
         }
 
+        #[diplomat::attr(auto, getter = "graphics_update")]
         pub fn get_graphics_update(&self) -> Result<Box<InclusiveRectangle>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::GraphicsUpdate(rect) => {
@@ -361,6 +468,7 @@ pub mod ffi {
             }
         }
 
+        #[diplomat::attr(auto, getter = "pointer_position")]
         pub fn get_pointer_position(&self) -> Result<Position, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::PointerPosition { x, y } => Ok(Position { x: *x, y: *y }),
@@ -370,6 +478,7 @@ pub mod ffi {
             }
         }
 
+        #[diplomat::attr(auto, getter = "pointer_bitmap")]
         pub fn get_pointer_bitmap(&self) -> Result<Box<DecodedPointer>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::PointerBitmap(decoded_pointer) => {
@@ -382,6 +491,7 @@ pub mod ffi {
             .map(Box::new)
         }
 
+        #[diplomat::attr(auto, getter = "windowing_orders")]
         pub fn get_windowing_orders(&self) -> Result<Box<BytesSlice<'_>>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::WindowingOrders(orders) => Ok(Box::new(BytesSlice(orders))),
@@ -391,6 +501,7 @@ pub mod ffi {
             }
         }
 
+        #[diplomat::attr(auto, getter = "monitor_layout")]
         pub fn get_monitor_layout(&self) -> Result<Box<MonitorLayoutIterator>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::MonitorLayout(monitors) => {
@@ -402,6 +513,7 @@ pub mod ffi {
             }
         }
 
+        #[diplomat::attr(auto, getter = "terminate")]
         pub fn get_terminate(&self) -> Result<Box<GracefulDisconnectReason>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::Terminate(reason) => Ok(GracefulDisconnectReason(reason.clone())),
@@ -420,6 +532,7 @@ pub mod ffi {
             clippy::as_conversions,
             reason = "RequestedProtocol is #[repr(u16)], cast is lossless"
         )]
+        #[diplomat::attr(auto, getter = "multitransport_request")]
         pub fn get_multitransport_request(&self) -> Result<MultitransportRequest, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::MultitransportRequest(pdu) => Ok(MultitransportRequest {
@@ -436,6 +549,7 @@ pub mod ffi {
         /// Returns RTT and bandwidth measurements for health monitoring.
         /// These values will feed into FramePacingFeedback when the
         /// library-level health observer traits from #1158 land.
+        #[diplomat::attr(auto, getter = "autodetect_network_characteristics")]
         pub fn get_autodetect_network_characteristics(&self) -> Result<NetworkCharacteristics, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::AutoDetect(

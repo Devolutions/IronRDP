@@ -1,6 +1,7 @@
 use core::any::TypeId;
 use core::mem;
 
+use ironrdp_connector::sspi::{AuthIdentity, UsernameParts};
 use ironrdp_connector::{
     ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, MonotonicInstant, Sequence, State, Written,
     encode_x224_packet, general_err, reason_err,
@@ -47,11 +48,13 @@ pub struct Acceptor {
     /// not the latter (2.2.1.4).
     multitransport_flags: Option<gcc::MultiTransportFlags>,
     early_capability_flags: gcc::ClientEarlyCapabilityFlags,
+    client_monitors: Vec<gcc::Monitor>,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
     pub(crate) creds: Option<Credentials>,
-    received_credentials: Option<Credentials>,
+    received_credentials: Option<ReceivedCredentials>,
+    credentials_handled: bool,
     received_auto_reconnect: Option<ClientAutoReconnect>,
     reactivation: bool,
     honor_client_desktop_size: Option<DesktopSize>,
@@ -141,6 +144,37 @@ fn set_bitmap_desktop_size(capabilities: &mut [CapabilitySet], size: DesktopSize
     }
 }
 
+/// Protocol source and handshake-authentication status of received credentials.
+///
+/// Servers must not infer this from their configured security mode: the origin
+/// records what the acceptor actually received during negotiation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialOrigin {
+    /// Received in the ClientInfoPdu (MS-RDPBCGR 2.2.1.11).
+    ///
+    /// These credentials are client-supplied and have not been authenticated by
+    /// the protocol handshake. A server should validate them before using them
+    /// to select identity-bound resources.
+    ClientInfo,
+    /// Delegated TSPasswordCreds decrypted by CredSSP (MS-CSSP).
+    ///
+    /// CredSSP authenticated the principal during the exchange. A server may
+    /// still run authorization policy before starting or selecting a session.
+    CredSspDelegated,
+}
+
+/// Credentials received by the acceptor together with their protocol origin.
+///
+/// Keeping both values in one type makes it impossible to expose credentials
+/// without the provenance required to interpret their authentication status.
+#[derive(Clone, Debug)]
+pub struct ReceivedCredentials {
+    /// CredSSP UPNs remain intact in `username`, with no `domain`.
+    /// Down-level names separate the account name and optional NetBIOS domain.
+    pub credentials: Credentials,
+    pub origin: CredentialOrigin,
+}
+
 #[derive(Debug)]
 pub struct AcceptorResult {
     pub static_channels: StaticChannelSet,
@@ -183,6 +217,20 @@ pub struct AcceptorResult {
     /// to gate optional features the client has to opt into, e.g. Server
     /// Heartbeat PDUs (`RNS_UD_CS_SUPPORT_HEARTBEAT_PDU`, section 2.2.16.1).
     pub client_early_capability_flags: gcc::ClientEarlyCapabilityFlags,
+    /// The monitors the client announced in its GCC Client Monitor Data
+    /// (section 2.2.1.3.6), in the order it sent them, with their positions on
+    /// the client's virtual desktop.
+    ///
+    /// Empty when the client did not send the block, which a client with a
+    /// single monitor commonly does not. Servers that can present a variable
+    /// number of outputs use it to present as many as the client has.
+    ///
+    /// This is the client's layout, in the client's coordinates. It does not
+    /// change what the acceptor announces back: the Monitor Layout PDU
+    /// (section 2.2.12.1, sent when the client supports it) describes the
+    /// server's session and still lists one monitor spanning the desktop size,
+    /// whatever the server presents.
+    pub client_monitors: Vec<gcc::Monitor>,
     /// Multitransport (MS-RDPEMT) capability flags announced by the client in
     /// its GCC `MultiTransportChannelData` block (section 2.2.1.3.8).
     ///
@@ -198,11 +246,11 @@ pub struct AcceptorResult {
     /// Credentials received from the client during SecureSettingsExchange.
     ///
     /// Present for TLS-mode connections where the client sends credentials
-    /// in the ClientInfoPdu. `None` for CredSSP/Hybrid connections (where
-    /// authentication happens during the CredSSP exchange instead).
+    /// in the ClientInfoPdu. For CredSSP/Hybrid connections, credentials are
+    /// handled before capability exchange and are not exposed here.
     ///
     /// Servers that need to validate credentials (e.g., via PAM or LDAP)
-    /// can use this field for post-handshake validation.
+    /// should use a [`ConnectionSetupHandler`](crate::ConnectionSetupHandler).
     pub credentials: Option<Credentials>,
     /// Client Auto-Reconnect Packet received in the Client Info PDU.
     ///
@@ -232,11 +280,13 @@ impl Acceptor {
             ime_file_name: String::new(),
             multitransport_flags: None,
             early_capability_flags: gcc::ClientEarlyCapabilityFlags::empty(),
+            client_monitors: Vec::new(),
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation: Default::default(),
             creds,
             received_credentials: None,
+            credentials_handled: false,
             received_auto_reconnect: None,
             reactivation: false,
             honor_client_desktop_size: None,
@@ -467,11 +517,13 @@ impl Acceptor {
             ime_file_name: consumed.ime_file_name,
             multitransport_flags: consumed.multitransport_flags,
             early_capability_flags: consumed.early_capability_flags,
+            client_monitors: consumed.client_monitors,
             server_capabilities: consumed.server_capabilities,
             static_channels,
             saved_for_reactivation,
             creds: consumed.creds,
             received_credentials: consumed.received_credentials,
+            credentials_handled: consumed.credentials_handled,
             received_auto_reconnect: consumed.received_auto_reconnect,
             reactivation: true,
             honor_client_desktop_size: consumed.honor_client_desktop_size,
@@ -542,6 +594,94 @@ impl Acceptor {
         matches!(self.state, AcceptorState::Credssp { .. })
     }
 
+    pub(crate) fn desktop_size(&self) -> DesktopSize {
+        self.desktop_size
+    }
+
+    pub(crate) fn is_reactivation(&self) -> bool {
+        self.reactivation
+    }
+
+    /// Whether the client supplied a well-formed Client Auto-Reconnect Packet.
+    ///
+    /// The server still has to verify its security verifier before accepting
+    /// the connection.
+    pub(crate) fn is_auto_reconnect_attempt(&self) -> bool {
+        self.received_auto_reconnect.is_some()
+    }
+
+    pub(crate) fn is_ready_for_capability_exchange(&self) -> bool {
+        matches!(self.state, AcceptorState::CapabilitiesSendServer { .. })
+    }
+
+    /// Returns credentials received during the current handshake, if any.
+    pub(crate) fn received_credentials(&self) -> Option<&ReceivedCredentials> {
+        self.received_credentials.as_ref()
+    }
+
+    /// Whether credentials need handling after channel joins and ClientInfo.
+    pub(crate) fn credentials_need_handling(&self) -> bool {
+        matches!(self.state, AcceptorState::LicensingExchange { .. })
+            && !self.is_auto_reconnect_attempt()
+            && self.received_credentials.is_some()
+            && !self.credentials_handled
+    }
+
+    pub(crate) fn mark_credentials_handled(&mut self) {
+        self.credentials_handled = true;
+    }
+
+    fn credentials_for_result(&mut self) -> Option<Credentials> {
+        self.received_credentials
+            .take()
+            .filter(|received| received.origin == CredentialOrigin::ClientInfo)
+            .map(|received| received.credentials)
+    }
+
+    /// Encodes a Set Error Info PDU for a user authorization failure ([MS-RDPBCGR] section 2.2.5.1.1).
+    ///
+    /// Returns zero without writing if the client did not advertise error-info support.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    pub fn encode_access_denied(&self, output: &mut WriteBuf) -> ConnectorResult<usize> {
+        if !self
+            .early_capability_flags
+            .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU)
+        {
+            debug!("Omitting access-denied PDU because the client did not advertise error-info support");
+            return Ok(0);
+        }
+
+        let info = wrap_share_data(
+            rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+                ProtocolIndependentCode::ServerInsufficientPrivileges,
+            ))),
+            0,
+        );
+        debug!(message = ?info, "Send");
+        util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &info, output)
+    }
+
+    /// Stores CredSSP/NLA credentials for the same validation and binding path as TLS ClientInfo credentials.
+    pub(crate) fn set_received_credssp_credentials(&mut self, identity: AuthIdentity) {
+        let (username, domain) = match identity.username.parts() {
+            UsernameParts::UserPrincipalName(parts) => (parts.upn().to_owned(), None),
+            UsernameParts::DownLevelLogonName(parts) => (
+                parts.account_name().to_owned(),
+                parts.netbios_domain().map(str::to_owned),
+            ),
+        };
+        self.received_credentials = Some(ReceivedCredentials {
+            credentials: Credentials {
+                username,
+                password: identity.password.as_ref().clone(),
+                domain,
+            },
+            origin: CredentialOrigin::CredSspDelegated,
+        });
+        self.credentials_handled = false;
+    }
+
     /// # Panics
     ///
     /// Panics if state is not [AcceptorState::Credssp].
@@ -575,8 +715,9 @@ impl Acceptor {
                     .unwrap_or_else(gcc::MultiTransportFlags::empty),
                 multitransport_response_success: self.received_multitransport_response,
                 client_early_capability_flags: self.early_capability_flags,
+                client_monitors: self.client_monitors.clone(),
                 reactivation: self.reactivation,
-                credentials: self.received_credentials.take(),
+                credentials: self.credentials_for_result(),
                 auto_reconnect: self.received_auto_reconnect.take(),
             }),
             previous_state => {
@@ -878,6 +1019,7 @@ impl Sequence for Acceptor {
                 let early_capability = gcc_blocks.core.optional_data.early_capability_flags;
                 self.early_capability_flags = early_capability.unwrap_or(gcc::ClientEarlyCapabilityFlags::empty());
                 let client_wants_message_channel = gcc_blocks.message_channel.is_some();
+                self.client_monitors = gcc_blocks.monitor.map_or_else(Vec::new, |data| data.monitors);
                 self.keyboard_layout = gcc_blocks.core.keyboard_layout;
                 self.keyboard_type = gcc_blocks.core.keyboard_type;
                 self.ime_file_name.clone_from(&gcc_blocks.core.ime_file_name);
@@ -1088,22 +1230,17 @@ impl Sequence for Acceptor {
 
                     if let Some(expected) = &self.creds {
                         if expected != &creds {
-                            // FIXME: How authorization should be denied with standard RDP security?
-                            // Since standard RDP security is not a priority, we just send a ServerDeniedConnection ServerSetErrorInfo PDU.
-                            let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
-                                ProtocolIndependentCode::ServerDeniedConnection,
-                            ));
-
-                            debug!(message = ?info, "Send");
-
-                            util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &info, output)?;
-
+                            self.encode_access_denied(output)?;
                             return Err(ConnectorError::general("invalid credentials"));
                         }
                     }
 
                     // Store credentials for later retrieval via AcceptorResult.
-                    self.received_credentials = Some(creds);
+                    self.received_credentials = Some(ReceivedCredentials {
+                        credentials: creds,
+                        origin: CredentialOrigin::ClientInfo,
+                    });
+                    self.credentials_handled = false;
                 }
 
                 (
@@ -1433,5 +1570,73 @@ fn create_gcc_blocks(
         multi_transport_channel: message_channel_id
             .and(offer_multitransport)
             .map(|flags| gcc::MultiTransportChannelData { flags }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn credentials(username: &str) -> Credentials {
+        Credentials {
+            username: username.to_owned(),
+            password: "secret".to_owned(),
+            domain: None,
+        }
+    }
+
+    #[test]
+    fn acceptor_result_exposes_only_client_info_credentials() {
+        let mut acceptor = Acceptor::new(
+            SecurityProtocol::SSL,
+            DesktopSize {
+                width: 1024,
+                height: 768,
+            },
+            Vec::new(),
+            None,
+        );
+
+        acceptor.received_credentials = Some(ReceivedCredentials {
+            credentials: credentials("nla-user"),
+            origin: CredentialOrigin::CredSspDelegated,
+        });
+        assert!(acceptor.credentials_for_result().is_none());
+
+        acceptor.received_credentials = Some(ReceivedCredentials {
+            credentials: credentials("tls-user"),
+            origin: CredentialOrigin::ClientInfo,
+        });
+        assert_eq!(
+            acceptor
+                .credentials_for_result()
+                .expect("ClientInfo credentials should remain available")
+                .username,
+            "tls-user"
+        );
+    }
+
+    #[test]
+    fn auto_reconnect_defers_client_info_credentials() {
+        let mut acceptor = Acceptor::new(
+            SecurityProtocol::SSL,
+            DesktopSize {
+                width: 1024,
+                height: 768,
+            },
+            Vec::new(),
+            None,
+        );
+        acceptor.received_credentials = Some(ReceivedCredentials {
+            credentials: credentials("reconnect-user"),
+            origin: CredentialOrigin::ClientInfo,
+        });
+        acceptor.received_auto_reconnect = Some(ClientAutoReconnect {
+            logon_id: 7,
+            security_verifier: [0x5A; 16],
+        });
+
+        assert!(acceptor.is_auto_reconnect_attempt());
+        assert!(!acceptor.credentials_need_handling());
     }
 }

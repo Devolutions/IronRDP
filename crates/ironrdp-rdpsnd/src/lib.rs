@@ -2,5 +2,7 @@
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
 pub mod client;
+pub mod codec;
 pub mod pdu;
+pub mod playout;
 pub mod server;

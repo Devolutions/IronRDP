@@ -10,10 +10,13 @@ FLAGS:
 
 TASKS:
   bootstrap               Install all requirements for development
+  bench corpus-fetch      Fetch and verify the pinned benchmark capture corpus
+  bench corpus-list       List pinned benchmark capture corpus metadata
   check fmt               Check formatting
   check lints             Check lints
   check locks             Check for dirty or staged lock files not yet committed
   check dependencies      Check dependency-graph invariants between crates
+  check captures          Reject tracked packet capture files
   check test-settings --base <REV> --head <REV>
                           Prevent removal of protected Cargo test settings
   check tests [--no-run]  Compile tests and, unless specified otherwise, run them
@@ -85,10 +88,13 @@ impl core::str::FromStr for ListFormat {
 pub enum Action {
     ShowHelp,
     Bootstrap,
+    BenchCorpusFetch,
+    BenchCorpusList,
     CheckFmt,
     CheckLints,
     CheckLocks,
     CheckDependencies,
+    CheckCaptures,
     CheckTestSettings {
         base: String,
         head: String,
@@ -147,11 +153,18 @@ pub fn parse_args() -> anyhow::Result<Args> {
     } else {
         match args.subcommand()?.as_deref() {
             Some("bootstrap") => Action::Bootstrap,
+            Some("bench") => match args.subcommand()?.as_deref() {
+                Some("corpus-fetch") => Action::BenchCorpusFetch,
+                Some("corpus-list") => Action::BenchCorpusList,
+                Some(unknown) => anyhow::bail!("unknown bench action: {unknown}"),
+                None => Action::ShowHelp,
+            },
             Some("check") => match args.subcommand()?.as_deref() {
                 Some("fmt") => Action::CheckFmt,
                 Some("lints") => Action::CheckLints,
                 Some("locks") => Action::CheckLocks,
                 Some("dependencies") => Action::CheckDependencies,
+                Some("captures") => Action::CheckCaptures,
                 Some("test-settings") => Action::CheckTestSettings {
                     base: args.value_from_str("--base")?,
                     head: args.value_from_str("--head")?,

@@ -362,7 +362,9 @@ pub trait Role: core::fmt::Debug + Send + 'static {
 /// Per MS-RDPECLIP 3.1.5.3.2, clipboard changes should auto-unlock, but
 /// malicious or buggy implementations may not comply. This limit provides
 /// defense-in-depth protection.
-const MAX_LOCKED_FILE_LISTS: usize = 100;
+///
+/// Backends keeping their own per-lock state can use it to stay within the same bound.
+pub const MAX_LOCKED_FILE_LISTS: usize = 100;
 
 /// Maximum number of outgoing clipboard locks we will create.
 ///
@@ -642,6 +644,14 @@ impl<R: Role> Cliprdr<R> {
 
     fn build_format_list(&self, formats: &[ClipboardFormat]) -> EncodeResult<FormatList<'static>> {
         FormatList::new_unicode(formats, self.are_long_format_names_enabled())
+    }
+
+    /// Whether the clipboard channel finished its initialization.
+    ///
+    /// Only [`Self::initiate_copy`] and [`Self::request_file_contents`] (which answers with a
+    /// failure) accept being called before.
+    pub fn is_ready(&self) -> bool {
+        self.state == CliprdrState::Ready
     }
 
     /// Returns an error if the clipboard channel is not in Ready state.

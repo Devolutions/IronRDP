@@ -1,6 +1,7 @@
 pub mod noop;
 
 use core::fmt;
+use std::sync::Arc;
 
 use ironrdp_core::AsAny;
 use ironrdp_pdu::PduResult;
@@ -13,6 +14,7 @@ use crate::pdu::efs::{
     PrinterIoRequest, ServerDeviceAnnounceResponse, ServerDriveIoRequest,
 };
 use crate::pdu::esc::{ScardCall, ScardIoCtlCode};
+use crate::pdu::esp::PortIoRequest;
 
 /// Device redirection backend interface.
 pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
@@ -65,6 +67,10 @@ pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
     /// Handles the server result for a device announcement.
     ///
     /// A rejected filesystem device is never eligible for server I/O.
+    ///
+    /// Port IRPs are served before the response arrives, so a backend that opened files for a
+    /// port the server then rejects should release them here: the SVC processor ignores the
+    /// rejected device's later closes.
     fn handle_server_device_announce_response(&mut self, pdu: ServerDeviceAnnounceResponse) -> PduResult<()>;
 
     /// Handles a decoded smart-card Device Control IRP.
@@ -126,6 +132,19 @@ pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
         ))])
     }
 
+    /// Handles a server-initiated IRP addressed to a serial or parallel port device.
+    ///
+    /// Ports see create, close, read, write, flush and device-control requests; other major
+    /// functions are completed by the SVC processor before the backend is called. Long-running
+    /// requests, such as reads waiting for data or `IOCTL_SERIAL_WAIT_ON_MASK`, may return an
+    /// empty vector and complete later via [`Self::poll_deferred_messages`]. A close MUST first
+    /// complete every request still pending on that file.
+    ///
+    /// The default completes every request with `STATUS_NOT_SUPPORTED`.
+    fn handle_port_io_request(&mut self, req: PortIoRequest) -> PduResult<Vec<SvcMessage>> {
+        Ok(vec![SvcMessage::from(req.failure_response(NtStatus::NOT_SUPPORTED))])
+    }
+
     /// Rejects an oversized printer write before its server-controlled payload is allocated.
     ///
     /// Stateful printer implementations should also poison or abort the target file handle so a
@@ -174,16 +193,27 @@ pub struct RdpdrPrinter {
     name: String,
     driver_name: String,
     network: bool,
+    default: bool,
+    explicit_driver: bool,
+    server_name: Option<String>,
+    cached_config_data: Vec<u8>,
 }
 
 impl RdpdrPrinter {
     /// Creates printer metadata for an RDPDR announcement.
+    ///
+    /// The printer is not marked as the default printer. When a product announces a single
+    /// printer without the flag, `ironrdp-client` marks it as the default.
     pub fn new(device_id: u32, name: String, driver_name: String) -> Self {
         Self {
             device_id,
             name,
             driver_name,
             network: true,
+            default: false,
+            explicit_driver: false,
+            server_name: None,
+            cached_config_data: Vec::new(),
         }
     }
 
@@ -194,14 +224,47 @@ impl RdpdrPrinter {
         self
     }
 
+    /// Marks the printer as the session default printer.
+    ///
+    /// [MS-RDPEPC 2.2.2.1] allows only one announced printer with this flag.
+    #[must_use]
+    pub fn with_default(mut self, default: bool) -> Self {
+        self.default = default;
+        self
+    }
+
+    /// Marks the driver name as chosen by the user.
+    ///
+    /// A cached driver from an [`RdpdrPrinterCacheStore`] replaces a driver that is not explicit.
+    #[must_use]
+    pub fn with_explicit_driver(mut self, explicit: bool) -> Self {
+        self.explicit_driver = explicit;
+        self
+    }
+
+    /// Sets the opaque `CachedPrinterConfigData` sent with the announcement.
+    #[must_use]
+    pub fn with_cached_config_data(mut self, data: Vec<u8>) -> Self {
+        self.cached_config_data = data;
+        self
+    }
+
     /// Returns the device identifier used in RDPDR requests.
     pub fn device_id(&self) -> u32 {
         self.device_id
     }
 
-    /// Returns the local printer queue name announced to the server.
+    /// Returns the local printer queue name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns the printer name announced to the server.
+    ///
+    /// This is the local queue name unless a cache entry records a name the server gave the
+    /// printer; see [`RdpdrPrinterCacheEntry::printer_name`].
+    pub fn announced_name(&self) -> &str {
+        self.server_name.as_deref().unwrap_or(&self.name)
     }
 
     /// Returns the Windows printer driver name requested on the server.
@@ -214,9 +277,212 @@ impl RdpdrPrinter {
         self.network
     }
 
+    /// Returns whether the printer is announced as the session default printer.
+    pub fn is_default(&self) -> bool {
+        self.default
+    }
+
+    /// Returns whether the driver name was chosen by the user.
+    pub fn explicit_driver(&self) -> bool {
+        self.explicit_driver
+    }
+
+    /// Returns the opaque `CachedPrinterConfigData` sent with the announcement.
+    pub fn cached_config_data(&self) -> &[u8] {
+        &self.cached_config_data
+    }
+
+    /// Applies a cache entry previously saved for this printer.
+    ///
+    /// The cached printer name replaces the announced name, and the cached driver replaces the
+    /// driver name unless it is explicit. The cached configuration
+    /// is driver-specific ([MS-RDPEPC 3.1.1.1]): when it belongs to another driver than the one
+    /// announced, the printer announces no configuration, and configuration set with
+    /// [`Self::with_cached_config_data`] is dropped as well when the cached driver replaced the
+    /// driver it was set for.
+    ///
+    /// [MS-RDPEPC 3.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepc/
+    #[must_use]
+    pub fn with_cache_entry(mut self, entry: RdpdrPrinterCacheEntry) -> Self {
+        if entry.printer_name.is_some() {
+            self.server_name = entry.printer_name;
+        }
+        if let Some(driver_name) = entry.driver_name
+            && !self.explicit_driver
+        {
+            self.driver_name = driver_name;
+        }
+        if entry
+            .config_driver_name
+            .is_none_or(|config_driver_name| config_driver_name == self.driver_name)
+        {
+            self.cached_config_data = entry.config_data;
+        } else {
+            self.cached_config_data.clear();
+        }
+        self
+    }
+
     /// Splits the metadata into the RDPDR announcement fields.
+    ///
+    /// Default, server-name, and cached-configuration metadata is not part of the tuple; use
+    /// [`Rdpdr::with_redirected_printer`] to announce it.
     pub fn into_parts(self) -> (u32, String, String, bool) {
         (self.device_id, self.name, self.driver_name, self.network)
+    }
+}
+
+/// Kind of a redirected port.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RdpdrPortKind {
+    /// A serial (COM) port, announced as `RDPDR_DTYP_SERIAL`.
+    Serial,
+    /// A parallel (LPT) port, announced as `RDPDR_DTYP_PARALLEL`.
+    Parallel,
+}
+
+impl RdpdrPortKind {
+    /// Returns the announced RDPDR device type.
+    pub fn device_type(self) -> crate::pdu::efs::DeviceType {
+        match self {
+            Self::Serial => crate::pdu::efs::DeviceType::Serial,
+            Self::Parallel => crate::pdu::efs::DeviceType::Parallel,
+        }
+    }
+}
+
+/// Immutable serial or parallel port metadata announced for one RDPDR channel lifetime.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RdpdrPort {
+    device_id: u32,
+    kind: RdpdrPortKind,
+    name: String,
+}
+
+impl RdpdrPort {
+    /// Creates port metadata for an RDPDR announcement.
+    ///
+    /// `name` is the client-side DOS name, such as `COM1` or `LPT1`, and is sent as the
+    /// PreferredDosName. It must be 1 to 7 ASCII characters and must not contain any of
+    /// `< > " / \ | :` or control characters, which the server rejects.
+    pub fn new(device_id: u32, kind: RdpdrPortKind, name: String) -> Result<Self, InvalidPortName> {
+        // INVARIANT: 0 < name.len() <= 7, so the null-terminated name fits PreferredDosName.
+        let valid = !name.is_empty()
+            && name.len() <= 7
+            && name.bytes().all(|byte| {
+                byte.is_ascii_graphic() && !matches!(byte, b'<' | b'>' | b'"' | b'/' | b'\\' | b'|' | b':')
+            });
+        if !valid {
+            return Err(InvalidPortName);
+        }
+
+        Ok(Self { device_id, kind, name })
+    }
+
+    /// Returns the device identifier used in RDPDR requests.
+    pub fn device_id(&self) -> u32 {
+        self.device_id
+    }
+
+    /// Returns whether the port is serial or parallel.
+    pub fn kind(&self) -> RdpdrPortKind {
+        self.kind
+    }
+
+    /// Returns the DOS name announced to the server.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Splits the metadata into the RDPDR announcement fields.
+    pub fn into_parts(self) -> (u32, RdpdrPortKind, String) {
+        (self.device_id, self.kind, self.name)
+    }
+}
+
+/// A port name that cannot be sent as an RDPDR PreferredDosName.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvalidPortName;
+
+impl fmt::Display for InvalidPortName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("port name must be 1 to 7 printable ASCII characters without < > \" / \\ | :")
+    }
+}
+
+impl core::error::Error for InvalidPortName {}
+
+/// Printer configuration a server sent with `PAKID_PRN_CACHE_DATA`.
+///
+/// [MS-RDPEPC 3.1.1.1] describes it as a record keyed by printer name. The client replays it
+/// in the next announcement of the printer so server-side printing preferences persist.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RdpdrPrinterCacheEntry {
+    /// Name the server gave the printer, from a rename event or a queue a user installed
+    /// manually on the redirected port; announced instead of the local queue name.
+    pub printer_name: Option<String>,
+    /// Server driver of a queue that a user installed manually on the redirected port.
+    pub driver_name: Option<String>,
+    /// Driver that `config_data` was produced for; `None` applies it to any driver.
+    pub config_driver_name: Option<String>,
+    /// Opaque `CachedPrinterConfigData` blob.
+    pub config_data: Vec<u8>,
+}
+
+/// Result returned by an [`RdpdrPrinterCacheStore`].
+pub type RdpdrPrinterCacheResult<T> = Result<T, Box<dyn core::error::Error + Send + Sync>>;
+
+/// Persistent store for printer cache data, supplied by the embedder.
+///
+/// Entries are keyed by the local printer queue name, which stays the same when the server
+/// renames the printer; the entry records the new name instead. Embedders decide the scope,
+/// for example one store per server host as [MS-RDPEPC 3.2.5.1.3] suggests. The channel logs
+/// store errors and continues, so a failing store only loses cached settings.
+///
+/// [MS-RDPEPC 3.2.5.1.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepc/
+pub trait RdpdrPrinterCacheStore: Send + Sync {
+    /// Loads the entry saved for `printer_name`.
+    fn load(&self, printer_name: &str) -> RdpdrPrinterCacheResult<Option<RdpdrPrinterCacheEntry>>;
+
+    /// Saves or replaces the entry for `printer_name`.
+    fn save(&self, printer_name: &str, entry: &RdpdrPrinterCacheEntry) -> RdpdrPrinterCacheResult<()>;
+
+    /// Deletes the entry for `printer_name`, if any.
+    fn delete(&self, printer_name: &str) -> RdpdrPrinterCacheResult<()>;
+}
+
+/// [`RdpdrPrinterCacheStore`] that keeps entries in memory.
+///
+/// Sharing one instance across reconnects keeps settings for the lifetime of the process.
+#[derive(Debug, Default)]
+pub struct InMemoryRdpdrPrinterCacheStore {
+    entries: std::sync::Mutex<std::collections::BTreeMap<String, RdpdrPrinterCacheEntry>>,
+}
+
+impl InMemoryRdpdrPrinterCacheStore {
+    /// Creates an empty store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn entries(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<String, RdpdrPrinterCacheEntry>> {
+        self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl RdpdrPrinterCacheStore for InMemoryRdpdrPrinterCacheStore {
+    fn load(&self, printer_name: &str) -> RdpdrPrinterCacheResult<Option<RdpdrPrinterCacheEntry>> {
+        Ok(self.entries().get(printer_name).cloned())
+    }
+
+    fn save(&self, printer_name: &str, entry: &RdpdrPrinterCacheEntry) -> RdpdrPrinterCacheResult<()> {
+        self.entries().insert(printer_name.to_owned(), entry.clone());
+        Ok(())
+    }
+
+    fn delete(&self, printer_name: &str) -> RdpdrPrinterCacheResult<()> {
+        self.entries().remove(printer_name);
+        Ok(())
     }
 }
 
@@ -228,7 +494,9 @@ pub struct RdpdrBackendProduct {
     backend: Box<dyn RdpdrBackend>,
     initial_drives: Vec<RdpdrDrive>,
     drive_hotplug: bool,
-    printer: Option<RdpdrPrinter>,
+    ports: Vec<RdpdrPort>,
+    printers: Vec<RdpdrPrinter>,
+    printer_cache_store: Option<Arc<dyn RdpdrPrinterCacheStore>>,
 }
 
 impl RdpdrBackendProduct {
@@ -238,7 +506,9 @@ impl RdpdrBackendProduct {
             backend,
             initial_drives,
             drive_hotplug: false,
-            printer: None,
+            ports: Vec::new(),
+            printers: Vec::new(),
+            printer_cache_store: None,
         }
     }
 
@@ -259,16 +529,52 @@ impl RdpdrBackendProduct {
         self.drive_hotplug
     }
 
-    /// Configures one printer announced after the remote user logs on.
+    /// Adds a printer announced after the remote user logs on.
     #[must_use]
     pub fn with_printer(mut self, printer: RdpdrPrinter) -> Self {
-        self.printer = Some(printer);
+        self.printers.push(printer);
         self
     }
 
-    /// Returns the configured printer, if any.
+    /// Adds printers announced after the remote user logs on.
+    #[must_use]
+    pub fn with_printers(mut self, printers: impl IntoIterator<Item = RdpdrPrinter>) -> Self {
+        self.printers.extend(printers);
+        self
+    }
+
+    /// Returns the first configured printer, if any.
     pub fn printer(&self) -> Option<&RdpdrPrinter> {
-        self.printer.as_ref()
+        self.printers.first()
+    }
+
+    /// Returns all configured printers in announcement order.
+    pub fn printers(&self) -> &[RdpdrPrinter] {
+        &self.printers
+    }
+
+    /// Persists server printer cache data for this product's printers.
+    #[must_use]
+    pub fn with_printer_cache_store(mut self, store: Arc<dyn RdpdrPrinterCacheStore>) -> Self {
+        self.printer_cache_store = Some(store);
+        self
+    }
+
+    /// Returns the printer cache store, if any.
+    pub fn printer_cache_store(&self) -> Option<&Arc<dyn RdpdrPrinterCacheStore>> {
+        self.printer_cache_store.as_ref()
+    }
+
+    /// Configures serial and parallel ports announced after the remote user logs on.
+    #[must_use]
+    pub fn with_ports(mut self, ports: Vec<RdpdrPort>) -> Self {
+        self.ports = ports;
+        self
+    }
+
+    /// Returns the configured serial and parallel ports.
+    pub fn ports(&self) -> &[RdpdrPort] {
+        &self.ports
     }
 
     /// Consumes the product into its backend and matching announcement metadata.

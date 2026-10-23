@@ -33,6 +33,17 @@ public partial struct ActiveStage
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_process", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError Process(ActiveStage* self, DecodedImage* image, Action* action, byte* payload, nuint payloadSz);
 
+    /// <summary>
+    /// Collects RDPDR completions that finished asynchronously (e.g. smartcard waits).
+    /// </summary>
+    /// <remarks>
+    /// [`Self::process`] already collects them after each frame. Also call this on a short
+    /// timer (e.g. every 50 ms) so that they reach the server while it sends no frames. Do
+    /// not call it concurrently with other methods of this `ActiveStage`.
+    /// </remarks>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_poll_rdpdr_deferred", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError PollRdpdrDeferred(ActiveStage* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_process_fastpath_input", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError ProcessFastpathInput(ActiveStage* self, DecodedImage* image, FastPathInputEventIterator* fastpathInput);
 
@@ -44,6 +55,27 @@ public partial struct ActiveStage
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_submit_clipboard_format_data", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultBoxVecU8BoxIronRdpError SubmitClipboardFormatData(ActiveStage* self, FormatDataResponse* formatDataResponse);
+
+    /// <summary>
+    /// Hands any message of the clipboard backend (e.g. `WinCliprdr`) to the clipboard
+    /// channel, file transfer messages included, and returns the frame to send.
+    /// </summary>
+    /// <remarks>
+    /// The frame is empty when there is nothing to send. A backend `Error` message is
+    /// returned as an error. Errors only concern that message: the session can go on.
+    /// </remarks>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_submit_clipboard_message", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultBoxVecU8BoxIronRdpError SubmitClipboardMessage(ActiveStage* self, ClipboardMessage* message);
+
+    /// <summary>
+    /// Expires clipboard locks and file transfers that timed out, returning the frame to send
+    /// (empty when there is nothing to send).
+    /// </summary>
+    /// <remarks>
+    /// Call it every few seconds while file transfer is enabled on the clipboard backend.
+    /// </remarks>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_drive_clipboard_timeouts", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultBoxVecU8BoxIronRdpError DriveClipboardTimeouts(ActiveStage* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_send_dvc_pipe_proxy_message", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultBoxVecU8BoxIronRdpError SendDvcPipeProxyMessage(ActiveStage* self, DvcPipeProxyMessage* message);

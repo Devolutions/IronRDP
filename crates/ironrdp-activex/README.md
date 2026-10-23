@@ -334,7 +334,7 @@ A source-level audit of RDM's Windows RDP host covers these ActiveX contracts:
 | WinForms `AxHost` lifecycle | Windowed OLE activation, focus, sizing, the inherited `IMsRdpClient` through `IMsRdpClient10` raw interfaces, and the RDM virtual channels `RDMJump`, `RDMLog`, and `RDMCmd` are supported. |
 | Connection configuration | Server, account, desktop, color, smart-sizing, keyboard, display update, gateway, audio and quality policy, clipboard, default-printer redirection, CredSSP, administrative session, load-balance routing token, client-device name, RemoteApp, and backing `ConfigBuilder` settings are mapped where IronRDP provides the same behavior. |
 | Events | Connecting, connected, login-complete, disconnect, fatal-error, fullscreen-leave, virtual-channel, resize, writable confirm-close, and worker-backed warning and auto-reconnect events are delivered on the creating apartment. |
-| Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. `IMsRdpCameraRedirConfigCollection` exposes connected Windows camera metadata and offline configurations, but camera stream redirection remains unavailable. Non-filesystem device, monitor, and preferred-redirection capabilities remain unavailable. |
+| Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. `IMsRdpCameraRedirConfigCollection` exposes connected Windows camera metadata and offline configurations and selects the cameras redirected over MS-RDPECAM. Non-filesystem device, monitor, and preferred-redirection capabilities remain unavailable. |
 | Smartcard redirection | `IMsRdpClientAdvancedSettings::RedirectSmartCards` enables WinSCard RDPDR smartcard redirection (smartcard-only sessions are valid without redirected drives). |
 | Printer redirection | `IMsRdpClientAdvancedSettings::RedirectPrinters` redirects the current user's default Windows printer through RDPDR when the remote server has the same printer driver. |
 
@@ -633,10 +633,10 @@ viewport.
 Each configuration exposes the friendly name, symbolic link, instance ID, parent instance ID, connection state, and requested redirection state.
 Rescans preserve configuration identity and retain disconnected or explicitly added symbolic links with `DeviceExists` set to false.
 
-The collection is currently an enabling compatibility layer, not a camera redirection backend.
-The `ironrdp-rdpecam` crate provides bounded version 1 codecs and DVC state machines, but the ActiveX worker neither registers the RDPECAM channels nor provides a native camera capture backend.
-Attempts to enable `Redirected`, `RedirectByDefault`, or an enabled `AddConfig` entry therefore return `E_NOTIMPL`, and no camera is advertised or activated.
-Encoding policy can be read or changed before connecting, but has no effect until the native backend is available.
+The collection drives MS-RDPECAM camera redirection through the Media Foundation backend.
+`Redirected` and enabled `AddConfig` entries select cameras by symbolic link, `RedirectByDefault` also redirects cameras attached during the session, and disabling `Redirected` excludes a camera from that default.
+`EncodeVideo` and `EncodingQuality` control H.264 encoding for cameras that only produce raw frames.
+The policy is read when the connection starts.
 All collection mutations are rejected after connection settings are sealed.
 
 ### DVC COM plugins
@@ -720,9 +720,10 @@ The first update after activation, `ResetGraphics`, or an extent change covers t
 Each paint composes the black letterbox areas and scaled frame into a retained client-size memory backbuffer, then copies the clipped result to the visible window so the intermediate clear is not exposed.
 Consumers that do not opt into dirty-region delivery keep receiving complete `RdpOutputEvent::Image` snapshots.
 
-Every connection registers the `Microsoft::Windows::RDS::Graphics` dynamic virtual channel.
-The ActiveX path supplies no H.264 decoder, so its EGFX capability advertisement is limited to `RDPGFX_CAPSET_VERSION8` with `RDPGFX_CAPS_FLAG_SMALL_CACHE`; AVC420, AVC444, and AVC444v2 are not advertised.
-The selected V8 path composes ClearCodec, Planar, uncompressed, and RemoteFX Progressive surface updates, including surface IDs, mappings, cache operations, frame ordering, and acknowledgements, into the same retained GDI framebuffer used by legacy bitmap updates.
+Every connection advertises the graphics pipeline and registers the `Microsoft::Windows::RDS::Graphics` dynamic virtual channel.
+H.264 is decoded by the Media Foundation decoder shipped with Windows, so the EGFX capability advertisement offers versions 10.7 down to 10 (AVC444 and AVC444v2), 8.1 (AVC420) and 8, all with `RDPGFX_CAPS_FLAG_SMALL_CACHE`.
+Windows editions without that decoder, such as N editions without the Media Feature Pack, advertise version 8 only.
+The negotiated path composes AVC420, AVC444, AVC444v2, ClearCodec, Planar, uncompressed, and RemoteFX Progressive surface updates, including surface IDs, mappings, cache operations, frame ordering, and acknowledgements, into the same retained GDI framebuffer used by legacy bitmap updates.
 This does not advertise the legacy RemoteFX bitmap codec from the Confirm Active capability set, enable lossy bitmap compression, or implement GPU presentation.
 `ResetGraphics` resizes the software output only when each dimension fits the protocol's 32,766-pixel limit and the complete output fits the 256 MiB compositor budget; malformed or oversized resets are rejected before allocating the session framebuffer.
 GDI remains the presentation fallback for every negotiated graphics path, and `RedirectDirectX` remains explicitly unsupported with `E_NOTIMPL`.

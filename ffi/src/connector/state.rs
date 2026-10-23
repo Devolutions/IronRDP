@@ -26,6 +26,7 @@ pub mod ffi {
     }
 
     impl ClientConnectorState {
+        #[diplomat::attr(auto, getter = "enum_type")]
         pub fn get_enum_type(&self) -> Result<ClientConnectorStateType, Box<IronRdpError>> {
             let res = match &self
                 .0

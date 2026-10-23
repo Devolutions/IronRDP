@@ -7,19 +7,26 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context as _;
-use ironrdp::client::rdp::{AutoReconnectDecision, RdpInputEvent, RdpInputSender, RdpOutputEvent};
+use ironrdp::client::rdp::{
+    AutoReconnectDecision, RDPEI_MAX_TOUCH_CONTACTS, RdpInputEvent, RdpInputSender, RdpOutputEvent,
+};
+use ironrdp::rdpei::RdpeiInputState;
+use ironrdp::rdpei::contact::{TouchFrameBuilder, TouchPhase};
 use ironrdp_daemon::daemon::{Daemon, ResizeError};
 use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
 use smallvec::SmallVec;
 use tracing::{debug, error, info, trace, warn};
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalPosition, PhysicalSize};
+use winit::dpi::{LogicalPosition, PhysicalPosition, PhysicalSize};
 use winit::event::{self, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{CursorIcon, CustomCursor, Window, WindowAttributes};
 
 use crate::keymap::{is_modifier, map_key_code};
+
+/// Emulated mouse operations kept while the session input queue is full; beyond this, moves are dropped.
+const MAX_PENDING_TOUCH_MOUSE: usize = 256;
 
 type WindowSurface = (Arc<Window>, softbuffer::Surface<DisplayHandle<'static>, Arc<Window>>);
 
@@ -52,6 +59,15 @@ pub struct RpcApp {
     input_database: ironrdp::input::Database,
     last_size: Option<PhysicalSize<u32>>,
     resize_timeout: Option<Instant>,
+    /// What the server's RDPEI channel accepts; touch is emulated as mouse input otherwise.
+    rdpei_input_state: RdpeiInputState,
+    touch_frames: TouchFrameBuilder,
+    /// The touch point that drives the emulated mouse.
+    mouse_touch: Option<u64>,
+    /// Emulated mouse input from touch that waits for room in the session input queue.
+    pending_touch_mouse: Vec<ironrdp::input::Operation>,
+    /// Origin of the touch frame timestamps.
+    touch_epoch: Instant,
 }
 
 impl App {
@@ -114,7 +130,135 @@ impl RpcApp {
             input_database,
             last_size: None,
             resize_timeout: None,
+            rdpei_input_state: RdpeiInputState::default(),
+            touch_frames: TouchFrameBuilder::new(RDPEI_MAX_TOUCH_CONTACTS),
+            mouse_touch: None,
+            pending_touch_mouse: Vec::new(),
+            touch_epoch: Instant::now(),
         })
+    }
+
+    fn touch_timestamp_us(&self) -> u64 {
+        u64::try_from(self.touch_epoch.elapsed().as_micros()).unwrap_or(u64::MAX)
+    }
+
+    /// Sends the touch frames gathered since the last call as one RDPEI touch event.
+    fn send_touch_frames(&mut self) {
+        let InputTarget::Direct(input_event_sender) = &self.input_target else {
+            return;
+        };
+        // A suspended server keeps its contacts, so their frames wait for the resume.
+        if !self.touch_frames.has_pending_frames() || self.rdpei_input_state.suspended {
+            return;
+        }
+        // Frames stay pending while the queue is full, so no contact transition is lost.
+        let Ok(permit) = input_event_sender.try_reserve() else {
+            return;
+        };
+        let now_us = self.touch_timestamp_us();
+        if let Some(event) = self.touch_frames.take_event(now_us) {
+            permit.send(RdpInputEvent::Touch(event));
+        }
+    }
+
+    /// Routes one touch point to RDPEI, or to the emulated mouse when the server does not accept touch.
+    ///
+    /// winit on Windows also reports pen input as touch points, with pressure but without hover, tilt,
+    /// rotation or buttons, so pens drive RDPEI touch contacts here.
+    fn handle_touch(&mut self, touch: event::Touch) {
+        let Some((window, _)) = self.window.as_ref() else {
+            return;
+        };
+        let position = desktop_position(window.inner_size(), self.buffer_size, touch.location);
+        let phase = match touch.phase {
+            event::TouchPhase::Started => TouchPhase::Started,
+            event::TouchPhase::Moved => TouchPhase::Moved,
+            event::TouchPhase::Ended => TouchPhase::Ended,
+            event::TouchPhase::Cancelled => TouchPhase::Canceled,
+        };
+
+        // A touch point that started on the emulated mouse stays there, so its button is released.
+        let rdpei = matches!(self.input_target, InputTarget::Direct(_)) && self.rdpei_input_state.touch;
+        if rdpei && self.mouse_touch != Some(touch.id) {
+            #[expect(clippy::as_conversions, reason = "casting a normalized f64 force to u32")]
+            let pressure = touch.force.map(|force| (force.normalized() * 1024.0).round() as u32);
+            let timestamp_us = self.touch_timestamp_us();
+            self.touch_frames.push(
+                touch.id,
+                phase,
+                i32::from(position.x),
+                i32::from(position.y),
+                pressure,
+                timestamp_us,
+            );
+            return;
+        }
+
+        // The first touch point drives the left mouse button, the way Windows promotes touch to mouse.
+        // Moves without a touching point move the pointer, which follows a hovering pen.
+        {
+            use ironrdp::input::{MouseButton, Operation};
+
+            let operations: SmallVec<[Operation; 2]> = match (phase, self.mouse_touch) {
+                (TouchPhase::Started, None) => {
+                    self.mouse_touch = Some(touch.id);
+                    smallvec::smallvec![
+                        Operation::MouseMove(position),
+                        Operation::MouseButtonPressed(MouseButton::Left)
+                    ]
+                }
+                (TouchPhase::Moved, None) => smallvec::smallvec![Operation::MouseMove(position)],
+                (TouchPhase::Moved, Some(primary)) if primary == touch.id => {
+                    smallvec::smallvec![Operation::MouseMove(position)]
+                }
+                (TouchPhase::Ended | TouchPhase::Canceled, Some(primary)) if primary == touch.id => {
+                    self.mouse_touch = None;
+                    smallvec::smallvec![
+                        Operation::MouseMove(position),
+                        Operation::MouseButtonReleased(MouseButton::Left)
+                    ]
+                }
+                _ => SmallVec::new(),
+            };
+            self.pending_touch_mouse.extend(operations);
+        }
+        // While the queue stays full, only the oldest pointer moves are dropped; button changes are kept.
+        if MAX_PENDING_TOUCH_MOUSE < self.pending_touch_mouse.len()
+            && let Some(index) = self
+                .pending_touch_mouse
+                .iter()
+                .position(|operation| matches!(operation, ironrdp::input::Operation::MouseMove(_)))
+        {
+            self.pending_touch_mouse.remove(index);
+        }
+        self.send_touch_mouse();
+    }
+
+    /// Sends the emulated mouse input from touch, keeping it while the session input queue is full.
+    fn send_touch_mouse(&mut self) {
+        if !self.pending_touch_mouse.is_empty()
+            && apply_and_send_fast_path_events(
+                &self.input_target,
+                &mut self.input_database,
+                self.pending_touch_mouse.iter().cloned(),
+            )
+        {
+            self.pending_touch_mouse.clear();
+        }
+    }
+
+    /// Lifts every touch contact and the emulated mouse button, for when the window loses focus.
+    fn release_touch(&mut self) {
+        let now_us = self.touch_timestamp_us();
+        self.touch_frames.cancel_all(now_us);
+        self.send_touch_frames();
+        if self.mouse_touch.take().is_some() {
+            self.pending_touch_mouse
+                .push(ironrdp::input::Operation::MouseButtonReleased(
+                    ironrdp::input::MouseButton::Left,
+                ));
+            self.send_touch_mouse();
+        }
     }
 
     fn send_resize_event(&mut self) {
@@ -124,8 +268,10 @@ impl RpcApp {
         let Some((window, _)) = self.window.as_mut() else {
             return;
         };
+        // The viewer window spans a single monitor, so the session gets one primary monitor at the
+        // window DPI. A scale outside 100..=500 percent is clamped when the layout is encoded.
         #[expect(clippy::as_conversions, reason = "casting f64 to u32")]
-        let scale_factor = (window.scale_factor() * 100.0) as u32;
+        let scale_factor = (window.scale_factor() * 100.0).round() as u32;
 
         let width = u16::try_from(size.width).expect("reasonable width");
         let height = u16::try_from(size.height).expect("reasonable height");
@@ -150,7 +296,7 @@ impl RpcApp {
                     warn!("Unable to enqueue resize event because the RDP session is closed");
                 }
             },
-            InputTarget::Rpc(daemon) => match daemon.try_resize(width, height) {
+            InputTarget::Rpc(daemon) => match daemon.try_resize(width, height, scale_factor) {
                 Ok(()) => self.last_size = None,
                 Err(ResizeError::Full) => self.resize_timeout = Some(Instant::now() + Duration::from_millis(10)),
                 Err(error) => {
@@ -203,21 +349,27 @@ impl RpcApp {
         sb_buffer.present().expect("buffer present");
     }
     fn on_about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(timeout) = self.resize_timeout {
-            if let Some(timeout) = timeout.checked_duration_since(Instant::now()) {
-                event_loop.set_control_flow(ControlFlow::wait_duration(timeout));
-            } else {
-                self.resize_timeout = None;
-                self.send_resize_event();
-                if let Some(retry_timeout) = self.resize_timeout {
-                    event_loop.set_control_flow(ControlFlow::wait_duration(
-                        retry_timeout.saturating_duration_since(Instant::now()),
-                    ));
-                } else {
-                    event_loop.set_control_flow(ControlFlow::Wait);
-                }
-            }
+        self.send_touch_frames();
+        self.send_touch_mouse();
+        // Touch input that found the session input queue full is retried shortly, since draining the queue
+        // does not wake the event loop.
+        // Frames held for a suspended server wait for the resume event, which wakes the loop.
+        let touch_pending = (self.touch_frames.has_pending_frames() && !self.rdpei_input_state.suspended)
+            || !self.pending_touch_mouse.is_empty();
+        let touch_retry = touch_pending.then(|| Instant::now() + Duration::from_millis(10));
+        let deadline = touch_retry.into_iter().chain(self.resize_deadline()).min();
+        event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
+    }
+
+    /// Sends a resize that is due and returns when the next one is.
+    fn resize_deadline(&mut self) -> Option<Instant> {
+        let timeout = self.resize_timeout?;
+        if Instant::now() < timeout {
+            return Some(timeout);
         }
+        self.resize_timeout = None;
+        self.send_resize_event();
+        self.resize_timeout
     }
 
     fn on_resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -256,6 +408,13 @@ impl RpcApp {
         match event {
             WindowEvent::Resized(size) => {
                 self.last_size = Some(size);
+                self.resize_timeout = Some(Instant::now() + Duration::from_secs(1));
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                // The window moved to a monitor with another DPI, or the monitor DPI changed.
+                // Send the layout again with the matching desktop scale factor; winit usually
+                // follows with a `Resized` event, which refreshes the size within the same debounce.
+                self.last_size = Some(window.inner_size());
                 self.resize_timeout = Some(Instant::now() + Duration::from_secs(1));
             }
             WindowEvent::CloseRequested => match &self.input_target {
@@ -355,12 +514,11 @@ impl RpcApp {
                 apply_and_send_fast_path_events(&self.input_target, &mut self.input_database, operations);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let win_size = window.inner_size();
-                #[expect(clippy::as_conversions, reason = "casting f64 to u16")]
-                let x = (position.x / f64::from(win_size.width) * f64::from(self.buffer_size.0)) as u16;
-                #[expect(clippy::as_conversions, reason = "casting f64 to u16")]
-                let y = (position.y / f64::from(win_size.height) * f64::from(self.buffer_size.1)) as u16;
-                let operation = ironrdp::input::Operation::MouseMove(ironrdp::input::MousePosition { x, y });
+                if is_touch_or_pen_mouse_message() {
+                    return;
+                }
+                let position = desktop_position(window.inner_size(), self.buffer_size, position);
+                let operation = ironrdp::input::Operation::MouseMove(position);
 
                 apply_and_send_fast_path_events(
                     &self.input_target,
@@ -419,6 +577,9 @@ impl RpcApp {
                 apply_and_send_fast_path_events(&self.input_target, &mut self.input_database, operations);
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                if is_touch_or_pen_mouse_message() {
+                    return;
+                }
                 let mouse_button = match button {
                     event::MouseButton::Left => ironrdp::input::MouseButton::Left,
                     event::MouseButton::Right => ironrdp::input::MouseButton::Right,
@@ -448,12 +609,14 @@ impl RpcApp {
             WindowEvent::RedrawRequested => {
                 self.draw();
             }
+            WindowEvent::Touch(touch) => self.handle_touch(touch),
+            WindowEvent::Focused(false) => self.release_touch(),
             WindowEvent::ActivationTokenDone { .. }
             | WindowEvent::Moved(_)
             | WindowEvent::Destroyed
             | WindowEvent::HoveredFile(_)
             | WindowEvent::HoveredFileCancelled
-            | WindowEvent::Focused(_)
+            | WindowEvent::Focused(true)
             | WindowEvent::Ime(_)
             | WindowEvent::CursorEntered { .. }
             | WindowEvent::CursorLeft { .. }
@@ -463,8 +626,6 @@ impl RpcApp {
             | WindowEvent::RotationGesture { .. }
             | WindowEvent::TouchpadPressure { .. }
             | WindowEvent::AxisMotion { .. }
-            | WindowEvent::Touch(_)
-            | WindowEvent::ScaleFactorChanged { .. }
             | WindowEvent::ThemeChanged(_)
             | WindowEvent::Occluded(_) => {
                 // ignore
@@ -492,6 +653,9 @@ impl RpcApp {
             RdpOutputEvent::Connected => info!("RDP session connected"),
             RdpOutputEvent::MonitorLayout(monitors) => {
                 debug!(monitor_count = monitors.len(), "Received remote monitor layout");
+            }
+            RdpOutputEvent::MonitorLayoutRejected => {
+                warn!("The server cannot accept the requested monitor layout");
             }
             RdpOutputEvent::LoginComplete => info!("RDP login complete"),
             RdpOutputEvent::PostLogonDisplayRedraw => info!("Requested post-logon display redraw"),
@@ -573,6 +737,16 @@ impl RpcApp {
             }
             RdpOutputEvent::AutoReconnected => {
                 info!("RDP session automatically reconnected");
+            }
+            RdpOutputEvent::RdpeiInputState(state) => {
+                debug!(?state, "RDPEI input state changed");
+                // The server dropped the contacts with the channel state, so they are forgotten unsent.
+                // Suspension keeps them: their frames go out when the server resumes input.
+                if !state.touch {
+                    self.touch_frames.reset();
+                }
+                self.rdpei_input_state = state;
+                self.send_touch_frames();
             }
             RdpOutputEvent::RailHandshake {
                 handshake_ex_flags,
@@ -663,23 +837,68 @@ impl ApplicationHandler<RdpOutputEvent> for App {
     }
 }
 
+/// Maps a window position onto the remote desktop, which the viewer stretches over the client area.
+fn desktop_position(
+    window_size: PhysicalSize<u32>,
+    desktop_size: (u16, u16),
+    position: PhysicalPosition<f64>,
+) -> ironrdp::input::MousePosition {
+    let scale = |position: f64, window: u32, desktop: u16| {
+        let scaled = position / f64::from(window.max(1)) * f64::from(desktop);
+        #[expect(clippy::as_conversions, reason = "casting a clamped f64 to u16")]
+        let scaled = scaled.clamp(0.0, f64::from(desktop.saturating_sub(1))) as u16;
+        scaled
+    };
+    ironrdp::input::MousePosition {
+        x: scale(position.x, window_size.width, desktop_size.0),
+        y: scale(position.y, window_size.height, desktop_size.1),
+    }
+}
+
+/// Whether the mouse message being handled is one Windows synthesized from touch or pen input.
+///
+/// The viewer handles touch and pen through `WindowEvent::Touch`, so these duplicates are dropped.
+#[cfg(windows)]
+fn is_touch_or_pen_mouse_message() -> bool {
+    // `MI_WP_SIGNATURE` in the message extra info marks mouse input promoted from touch or pen.
+    const MI_WP_SIGNATURE: isize = 0xFF51_5700;
+    const SIGNATURE_MASK: isize = 0xFFFF_FF00;
+
+    // UNTESTED: winit dispatches mouse messages to the handler synchronously, so the extra info belongs to
+    // the message being handled.
+    // If touch input moves or clicks the remote mouse twice, check that winit still does so.
+    // SAFETY: `GetMessageExtraInfo` has no preconditions.
+    let extra_info = unsafe { windows::Win32::UI::WindowsAndMessaging::GetMessageExtraInfo() };
+    extra_info.0 & SIGNATURE_MASK == MI_WP_SIGNATURE
+}
+
+#[cfg(not(windows))]
+fn is_touch_or_pen_mouse_message() -> bool {
+    false
+}
+
+/// Returns false when the session input queue is full and nothing was applied.
 fn apply_and_send_fast_path_events(
     input_target: &InputTarget,
     input_database: &mut ironrdp::input::Database,
     operations: impl IntoIterator<Item = ironrdp::input::Operation>,
-) {
+) -> bool {
     match input_target {
         InputTarget::Direct(input_event_sender) => {
-            let Ok(permit) = input_event_sender.try_reserve() else {
-                return;
+            let permit = match input_event_sender.try_reserve() {
+                Ok(permit) => permit,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(())) => return false,
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(())) => return true,
             };
             let input_events = input_database.apply(operations);
             if !input_events.is_empty() {
                 permit.send(RdpInputEvent::FastPath(input_events));
             }
+            true
         }
         InputTarget::Rpc(daemon) => {
             let _ = daemon.input_operations(operations);
+            true
         }
     }
 }
