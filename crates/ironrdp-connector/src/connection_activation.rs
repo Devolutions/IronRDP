@@ -154,6 +154,7 @@ impl Sequence for ConnectionActivationSequence {
                 debug!(?redirection, "Ignoring informational Server Redirection PDU");
             } else {
                 info!(session_id = redirection.session_id, "Server requested a redirection");
+                debug!(?redirection, "Received");
                 self.state = ConnectionActivationState::Redirected {
                     redirection: Box::new(redirection),
                 };

@@ -354,7 +354,7 @@ impl Processor {
                     debug!(?redirection, "Ignoring informational Server Redirection PDU");
                     return Ok(Vec::new());
                 }
-                debug!(session_id = redirection.session_id, "Received Server Redirection PDU");
+                debug!(?redirection, "Received Server Redirection PDU");
                 Ok(vec![ProcessorOutput::ServerRedirection(Box::new(redirection))])
             }
         }
