@@ -1,0 +1,28 @@
+[package]
+name = "ironrdp-capture"
+version = "0.0.0"
+publish = false
+description = "Offline decoding of RDP packet captures"
+edition.workspace = true
+rust-version = "1.94"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+aes-gcm = "0.10"
+hmac = "0.12"
+pcap-parser = "0.17"
+sha2 = "0.10"
+thiserror = "2"
+zeroize = "1.8"
+
+[lib]
+doctest = false
+test = false
+
+[lints]
+workspace = true
