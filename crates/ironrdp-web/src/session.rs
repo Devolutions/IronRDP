@@ -1159,6 +1159,9 @@ impl iron_remote_desktop::Session for Session {
                     ActiveStageOutput::AutoReconnectCookie(_) => {
                         debug!("Server Auto-Reconnect Cookie received (automatic reconnection not implemented)");
                     }
+                    ActiveStageOutput::LogonErrors(errors) => {
+                        debug!(?errors, "Server logon error notification");
+                    }
                     ActiveStageOutput::AutoReconnectFailed => {
                         return Err(anyhow::Error::msg("automatic reconnect rejected by server").into());
                     }
@@ -1170,6 +1173,9 @@ impl iron_remote_desktop::Session for Session {
                     }
                     ActiveStageOutput::SaveSessionInfo { logon_complete: false } => {
                         debug!("RDP session info notification");
+                    }
+                    ActiveStageOutput::SessionId(session_id) => {
+                        debug!(session_id, "Remote session ID");
                     }
                     ActiveStageOutput::Terminate(reason) => break 'outer reason,
                 }
@@ -1579,6 +1585,11 @@ fn build_config(
         support_dyn_vc_gfx_protocol: false,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,
+        desktop_physical_size: None,
+        desktop_orientation: None,
+        device_scale_factor: None,
+        monitor_extended_layout: None,
+        relative_mouse_input: false,
         hardware_id: None,
         license_cache: None,
         timezone_info: TimezoneInfo::default(),

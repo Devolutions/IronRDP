@@ -19,7 +19,7 @@ use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu};
 use ironrdp_pdu::rdp::refresh_rectangle::RefreshRectanglePdu;
 use ironrdp_pdu::rdp::server_redirection::ServerRedirectionPdu;
-use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
+use ironrdp_pdu::rdp::session_info::{LogonErrorsInfo, ServerAutoReconnect};
 use ironrdp_pdu::rdp::suppress_output::SuppressOutputPdu;
 use ironrdp_pdu::slow_path::{self, GraphicsUpdateType};
 use ironrdp_pdu::window::{
@@ -942,6 +942,12 @@ pub enum ActiveStageOutput {
         /// Whether the notification unambiguously reports a completed logon.
         logon_complete: bool,
     },
+    /// The ID of the remote session, reported with a completed logon ([\[MS-RDPBCGR\] 2.2.10.1.1]).
+    ///
+    /// It precedes the [`ActiveStageOutput::SaveSessionInfo`] output of the same notification.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.10.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    SessionId(u32),
     /// Received a Server Deactivate All PDU. The consumer should execute the [Deactivation-Reactivation Sequence].
     ///
     /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
@@ -972,6 +978,11 @@ pub enum ActiveStageOutput {
     ///
     /// [\[MS-RDPBCGR\] 2.2.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/18f4f605-0ee3-4175-8a62-cf8775252547
     AutoReconnectCookie(ServerAutoReconnect),
+    /// Logon error or warning notification ([\[MS-RDPBCGR\] 2.2.10.1.1.4.1.1]), received in a
+    /// Save Session Info PDU.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.10.1.1.4.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/845eb789-6edf-453a-8b0e-c976823d1f72
+    LogonErrors(LogonErrorsInfo),
     /// Server rejected the automatic reconnection attempt.
     AutoReconnectFailed,
     /// The server sent a Server Redirection PDU ([MS-RDPBCGR] 2.2.13).
@@ -1000,10 +1011,12 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
                 Ok(Self::Terminate(desc))
             }
             x224::ProcessorOutput::SaveSessionInfo { logon_complete } => Ok(Self::SaveSessionInfo { logon_complete }),
+            x224::ProcessorOutput::SessionId(session_id) => Ok(Self::SessionId(session_id)),
             x224::ProcessorOutput::DeactivateAll => Ok(Self::DeactivateAll),
             x224::ProcessorOutput::MultitransportRequest(pdu) => Ok(Self::MultitransportRequest(pdu)),
             x224::ProcessorOutput::AutoDetect(request) => Ok(Self::AutoDetect(request)),
             x224::ProcessorOutput::AutoReconnectCookie(cookie) => Ok(Self::AutoReconnectCookie(cookie)),
+            x224::ProcessorOutput::LogonErrors(errors) => Ok(Self::LogonErrors(errors)),
             x224::ProcessorOutput::AutoReconnectFailed => Ok(Self::AutoReconnectFailed),
             x224::ProcessorOutput::MonitorLayout(monitors) => Ok(Self::MonitorLayout(monitors)),
             x224::ProcessorOutput::ServerRedirection(redirection) => Ok(Self::ServerRedirection(redirection)),

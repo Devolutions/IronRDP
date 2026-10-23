@@ -459,6 +459,10 @@ pub mod ffi {
         WindowSurfaceUpdates = 15,
         /// The server sent a Server Redirection PDU; use `get_server_redirection()` to read the target.
         ServerRedirection = 16,
+        LogonErrors = 17,
+        /// The ID of the remote session, reported with a completed logon.
+        /// Use `get_session_id()` to retrieve it.
+        SessionId = 18,
     }
 
     impl ActiveStageOutput {
@@ -487,6 +491,8 @@ pub mod ffi {
                 ironrdp::session::ActiveStageOutput::WindowSurfaceUpdates(_) => {
                     ActiveStageOutputType::WindowSurfaceUpdates
                 }
+                ironrdp::session::ActiveStageOutput::LogonErrors(_) => ActiveStageOutputType::LogonErrors,
+                ironrdp::session::ActiveStageOutput::SessionId(_) => ActiveStageOutputType::SessionId,
                 ironrdp::session::ActiveStageOutput::ServerRedirection(_) => ActiveStageOutputType::ServerRedirection,
             }
         }
@@ -557,6 +563,16 @@ pub mod ffi {
                     Ok(Box::new(MonitorLayoutIterator(monitors.clone().into())))
                 }
                 _ => Err(IncorrectEnumTypeError::on_variant("MonitorLayout")
+                    .of_enum("ActiveStageOutput")
+                    .into()),
+            }
+        }
+
+        #[diplomat::attr(auto, getter = "session_id")]
+        pub fn get_session_id(&self) -> Result<u32, Box<IronRdpError>> {
+            match &self.0 {
+                ironrdp::session::ActiveStageOutput::SessionId(session_id) => Ok(*session_id),
+                _ => Err(IncorrectEnumTypeError::on_variant("SessionId")
                     .of_enum("ActiveStageOutput")
                     .into()),
             }

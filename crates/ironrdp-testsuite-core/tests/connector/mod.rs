@@ -3,6 +3,7 @@ use ironrdp_pdu::gcc;
 use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
 
 mod autodetect;
+mod display_data;
 mod early_capabilities;
 
 fn test_config() -> ironrdp_connector::Config {
@@ -13,6 +14,11 @@ fn test_config() -> ironrdp_connector::Config {
         },
         monitor_layout: None,
         desktop_scale_factor: 0,
+        desktop_physical_size: None,
+        desktop_orientation: None,
+        device_scale_factor: None,
+        monitor_extended_layout: None,
+        relative_mouse_input: false,
         enable_tls: true,
         enable_credssp: false,
         enable_standard_rdp_security: false,

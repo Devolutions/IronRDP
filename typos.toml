@@ -47,6 +47,8 @@ ptd = "ptd"
 rto = "rto"
 # Windows TRACKMOUSEEVENT flag.
 TME_LEAVE = "TME_LEAVE"
+# Misspelled property in Microsoft's published IMsRdpClientAdvancedSettings interface.
+BitmapPeristence = "BitmapPeristence"
 # WebAuthn COSE algorithm parameter identifiers / locals.
 cose_params = "cose_params"
 WEBAUTHN_COSE_CREDENTIAL_PARAMETER = "WEBAUTHN_COSE_CREDENTIAL_PARAMETER"

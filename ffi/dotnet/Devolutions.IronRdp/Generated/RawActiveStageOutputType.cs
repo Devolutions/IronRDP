@@ -43,4 +43,10 @@ public enum ActiveStageOutputType
     /// The server sent a Server Redirection PDU; use `get_server_redirection()` to read the target.
     /// </summary>
     ServerRedirection = 16,
+    LogonErrors = 17,
+    /// <summary>
+    /// The ID of the remote session, reported with a completed logon.
+    /// Use `get_session_id()` to retrieve it.
+    /// </summary>
+    SessionId = 18,
 }

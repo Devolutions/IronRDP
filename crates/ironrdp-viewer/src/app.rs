@@ -635,6 +635,9 @@ impl RpcApp {
                 warn!("The server cannot accept the requested monitor layout");
             }
             RdpOutputEvent::LoginComplete => info!("RDP login complete"),
+            // The viewer sends absolute pointer events only, so no input depends on these flags.
+            RdpOutputEvent::ServerInputFlags(_) => {}
+            RdpOutputEvent::RemoteSessionId(session_id) => debug!(session_id, "Remote session ID"),
             RdpOutputEvent::PostLogonDisplayRedraw => info!("Requested post-logon display redraw"),
             RdpOutputEvent::MalformedBitmapDisplayRedraw => {
                 warn!("Requested display redraw after discarding a malformed bitmap update");
@@ -720,6 +723,21 @@ impl RpcApp {
             }
             RdpOutputEvent::AutoReconnected => {
                 info!("RDP session automatically reconnected");
+            }
+            RdpOutputEvent::LogonError(errors) => {
+                debug!(?errors, "Server logon error notification");
+            }
+            RdpOutputEvent::NetworkCharacteristics {
+                base_rtt_ms,
+                bandwidth_kbps,
+                average_rtt_ms,
+            } => {
+                debug!(
+                    ?base_rtt_ms,
+                    ?bandwidth_kbps,
+                    average_rtt_ms,
+                    "Network characteristics received"
+                );
             }
             RdpOutputEvent::ServerRedirected { target } => {
                 info!(%target, "Server redirected the connection");

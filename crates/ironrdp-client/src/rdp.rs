@@ -2,7 +2,6 @@ use core::net::SocketAddr;
 use core::num::{NonZeroU16, NonZeroUsize};
 #[cfg(feature = "gateway")]
 use core::pin::Pin;
-#[cfg(feature = "rdpdr")]
 use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "location")]
 use core::sync::atomic::{AtomicU8, Ordering as LocationOrdering};
@@ -13,7 +12,6 @@ use std::io;
 use std::sync::Arc;
 #[cfg(feature = "location")]
 use std::sync::mpsc as std_mpsc;
-#[cfg(feature = "location")]
 use std::time::Instant;
 
 #[cfg(feature = "clipboard")]
@@ -36,6 +34,7 @@ use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::MousePdu;
 use ironrdp_pdu::input::fast_path::FastPathInputEvent;
 use ironrdp_pdu::input::mouse::PointerFlags;
+use ironrdp_pdu::input::mouse_rel::{MouseRelPdu, PointerRelFlags};
 #[cfg(any(
     feature = "dvc-pipe-proxy",
     all(windows, feature = "dvc-com-plugin"),
@@ -43,9 +42,11 @@ use ironrdp_pdu::input::mouse::PointerFlags;
     all(windows, feature = "webauthn")
 ))]
 use ironrdp_pdu::pdu_other_err;
+use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
+use ironrdp_pdu::rdp::capability_sets::InputFlags;
 use ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu;
 use ironrdp_pdu::rdp::server_redirection::ServerRedirectionPdu;
-use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
+use ironrdp_pdu::rdp::session_info::{LogonErrorsInfo, ServerAutoReconnect};
 #[cfg(feature = "rdpdr")]
 pub use ironrdp_rdpdr::backend::{
     RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPort, RdpdrPortKind,
@@ -123,6 +124,11 @@ pub const RDPEI_MAX_TOUCH_CONTACTS: u16 = 10;
 pub enum RdpOutputEvent {
     /// Connection negotiation and activation have completed.
     Connected,
+    /// The Input Capability Set flags the server advertised for the current activation.
+    ///
+    /// Sent after every connection and every Deactivation-Reactivation Sequence, so input that
+    /// depends on a server capability (such as relative mouse events) can follow the server.
+    ServerInputFlags(InputFlags),
     /// The server-reported remote monitor layout.
     ///
     /// The server may send this during activation or after activation.
@@ -134,6 +140,10 @@ pub enum RdpOutputEvent {
     ///
     /// The PDU can contain sensitive session data, so this event does not expose its contents.
     LoginComplete,
+    /// The ID of the remote session, reported by the server with a completed logon.
+    ///
+    /// It is sent before the [`RdpOutputEvent::LoginComplete`] of the same notification.
+    RemoteSessionId(u32),
     Image {
         buffer: Vec<u32>,
         width: NonZeroU16,
@@ -216,6 +226,25 @@ pub enum RdpOutputEvent {
     },
     /// A cookie-based reconnect has completed successfully.
     AutoReconnected,
+    /// The server reported a logon error or warning in a Save Session Info PDU.
+    ///
+    /// See [MS-RDPBCGR] 2.2.10.1.1.4.1.1 "Logon Errors Information (TS_LOGON_ERRORS_INFO)".
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/845eb789-6edf-453a-8b0e-c976823d1f72
+    LogonError(LogonErrorsInfo),
+    /// The server reported the network characteristics it measured for the active session.
+    ///
+    /// See [MS-RDPBCGR] 2.2.14.1.5 "Network Characteristics Result (RDP_NETCHAR_RESULT)".
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/228ffc5c-b60c-4d3e-9781-ac613f822fdf
+    NetworkCharacteristics {
+        /// Lowest detected round-trip time in milliseconds, when the server reported it.
+        base_rtt_ms: Option<u32>,
+        /// Current bandwidth in kilobits per second, when the server reported it.
+        bandwidth_kbps: Option<u32>,
+        /// Current average round-trip time in milliseconds.
+        average_rtt_ms: u32,
+    },
     /// The server redirected the connection ([MS-RDPBCGR] 3.2.5.13.1), and the client is connecting to `target`.
     ///
     /// This is not a disconnection: a [`RdpOutputEvent::Connected`] follows once the target accepts the connection.
@@ -522,8 +551,43 @@ pub enum RdpInputEvent {
     Urbdrc(ironrdp_rdpeusb_native::UrbdrcEvent),
 }
 
+impl RdpInputEvent {
+    /// Returns whether the event carries input from the local user, as opposed to session control.
+    fn is_user_input(&self) -> bool {
+        matches!(
+            self,
+            Self::FastPath(_)
+                | Self::Touch(_)
+                | Self::Pen(_)
+                | Self::DismissHoveringTouchContact { .. }
+                | Self::Rail(_)
+        )
+    }
+}
+
 /// Maximum number of ordinary input events retained while the session is unable to process them.
 pub const RDP_INPUT_EVENT_QUEUE_CAPACITY: usize = 128;
+
+/// Session state the client publishes for the host while it runs.
+#[derive(Debug, Default)]
+struct SessionStatus {
+    auto_reconnect_cookie_available: AtomicBool,
+    last_user_input_sent: std::sync::Mutex<Option<Instant>>,
+}
+
+impl SessionStatus {
+    fn set_auto_reconnect_cookie_available(&self, available: bool) {
+        self.auto_reconnect_cookie_available.store(available, Ordering::Release);
+    }
+
+    fn record_user_input_sent(&self) {
+        let mut last_user_input_sent = self
+            .last_user_input_sent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *last_user_input_sent = Some(Instant::now());
+    }
+}
 
 /// Sends input to an [`RdpClient`] without allowing an unbounded queue to accumulate.
 ///
@@ -545,6 +609,7 @@ pub struct RdpInputSender {
     graceful_close_sender: watch::Sender<bool>,
     #[cfg(feature = "rdpdr")]
     rdpdr_drive_hotplug_available: Arc<AtomicBool>,
+    session_status: Arc<SessionStatus>,
 }
 
 impl RdpInputSender {
@@ -579,6 +644,7 @@ impl RdpInputSender {
                 graceful_close_sender,
                 #[cfg(feature = "rdpdr")]
                 rdpdr_drive_hotplug_available: Arc::new(AtomicBool::new(false)),
+                session_status: Arc::default(),
             },
             input_receiver,
             clipboard_receiver,
@@ -691,6 +757,27 @@ impl RdpInputSender {
     #[cfg(feature = "rdpdr")]
     fn set_rdpdr_drive_hotplug_available(&self, available: bool) {
         self.rdpdr_drive_hotplug_available.store(available, Ordering::Release);
+    }
+
+    /// Returns whether the client holds a Server Auto-Reconnect Cookie for the current session.
+    ///
+    /// The server supplies the cookie in a Save Session Info PDU. A successful automatic
+    /// reconnection consumes it, as does a server rejection or a reconnection for a new desktop size.
+    pub fn auto_reconnect_cookie_available(&self) -> bool {
+        self.session_status
+            .auto_reconnect_cookie_available
+            .load(Ordering::Acquire)
+    }
+
+    /// Returns when keyboard, mouse, touch, pen, or RemoteApp input was last sent to the session.
+    ///
+    /// Synthetic keepalive input is not counted. Returns `None` until the first such input.
+    pub fn last_user_input_sent(&self) -> Option<Instant> {
+        *self
+            .session_status
+            .last_user_input_sent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -1308,6 +1395,9 @@ impl RdpClient {
             // Only a subsequent Save Session Info PDU may provide a replacement.
             if used_auto_reconnect_cookie {
                 auto_reconnect_cookie = None;
+                self.input_event_sender
+                    .session_status
+                    .set_auto_reconnect_cookie_available(false);
             }
 
             let connection_result = match connection_outcome {
@@ -1322,6 +1412,9 @@ impl RdpClient {
                         Ok(true) => {
                             // The target is a new connection, not a resumption of the redirecting one.
                             auto_reconnect_cookie = None;
+                            self.input_event_sender
+                                .session_status
+                                .set_auto_reconnect_cookie_available(false);
                             reconnect_attempt = 0;
                             continue;
                         }
@@ -1336,6 +1429,13 @@ impl RdpClient {
                 }
             };
 
+            if !self
+                .send_output_event(RdpOutputEvent::ServerInputFlags(connection_result.input_flags))
+                .await
+            {
+                self.emit_user_initiated_termination();
+                break;
+            }
             if reconnect_attempt == 0 {
                 if let Some(monitor_layout) = connection_result.monitor_layout.as_ref()
                     && !self
@@ -1371,6 +1471,7 @@ impl RdpClient {
                 input_keepalive_interval,
                 &mut auto_reconnect_cookie,
                 &mut reconnect_attempt,
+                &self.input_event_sender.session_status,
             )
             .await
             {
@@ -1390,6 +1491,9 @@ impl RdpClient {
                     // A resize fallback intentionally establishes a new session, not an
                     // automatic reconnection to the old one.
                     auto_reconnect_cookie = None;
+                    self.input_event_sender
+                        .session_status
+                        .set_auto_reconnect_cookie_available(false);
                     reconnect_attempt = 0;
                     self.config.connector.desktop_size.width = width;
                     self.config.connector.desktop_size.height = height;
@@ -1411,6 +1515,8 @@ impl RdpClient {
                                 }],
                             })
                     });
+                    // The extended monitor data described the previous monitors.
+                    self.config.connector.monitor_extended_layout = None;
                 }
                 Ok(RdpControlFlow::TerminatedGracefully(reason)) => {
                     if !self.send_output_event(RdpOutputEvent::Terminated(Ok(reason))).await {
@@ -1425,6 +1531,9 @@ impl RdpClient {
                     {
                         Ok(true) => {
                             auto_reconnect_cookie = None;
+                            self.input_event_sender
+                                .session_status
+                                .set_auto_reconnect_cookie_available(false);
                             reconnect_attempt = 0;
                         }
                         Ok(false) => break,
@@ -2061,7 +2170,7 @@ fn build_connector(
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
         .with_dynamic_channel(EchoClient::new())
         .with_dynamic_channel(RdpeiClient::new(
-            RDPEI_MAX_TOUCH_CONTACTS,
+            config.channels.max_touch_contacts,
             CsReadyFlags::ENABLE_MULTIPEN_INJECTION,
             RdpInputProtocolVersion::V300,
         ))
@@ -2491,11 +2600,16 @@ impl FastPathInputBatcher {
     ) -> Option<SmallVec<[FastPathInputEvent; INPUT_BATCH_EVENT_LIMIT]>> {
         let mut force = false;
         for event in events {
+            // Pure pointer movement may wait for the interval; relative moves are batched, never merged,
+            // so their deltas still add up on the server.
             force |= !matches!(
                 event,
                 FastPathInputEvent::MouseEvent(MousePdu {
                     flags: PointerFlags::MOVE,
                     number_of_wheel_rotation_units: 0,
+                    ..
+                }) | FastPathInputEvent::MouseEventRel(MouseRelPdu {
+                    flags: PointerRelFlags::MOVE,
                     ..
                 })
             );
@@ -2599,6 +2713,28 @@ async fn bootstrap_udp_transport(
 
 type ConnectOutput = (ConnectionOutcome, UpgradedFramed, UdpTunnel);
 
+/// Opens a TCP connection, abandoning each resolved address after `attempt_timeout`.
+async fn connect_tcp(dest: &str, attempt_timeout: Option<Duration>) -> io::Result<TcpStream> {
+    let Some(attempt_timeout) = attempt_timeout else {
+        return TcpStream::connect(dest).await;
+    };
+
+    let mut last_error = None;
+    for address in tokio::net::lookup_host(dest).await? {
+        match tokio::time::timeout(attempt_timeout, TcpStream::connect(address)).await {
+            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Err(error)) => last_error = Some(error),
+            Err(_) => {
+                last_error = Some(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("{address} did not accept the connection within {attempt_timeout:?}"),
+                ));
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{dest} resolved to no address"))))
+}
+
 /// Direct TCP → TLS connection (no gateway).
 async fn connect_direct(
     config: &Config,
@@ -2678,14 +2814,20 @@ async fn tcp_connect_destination(config: &Config) -> ConnectorResult<TcpStream> 
         .map(|hop| hop.connect_hosts.as_slice())
         .filter(|hosts| !hosts.is_empty());
     let Some(hosts) = hosts else {
-        return TcpStream::connect(config.destination.to_string())
+        return connect_tcp(&config.destination.to_string(), config.tcp_connect_attempt_timeout)
             .await
             .map_err(|e| ironrdp_connector::custom_err!("TCP connect", e));
     };
 
     let mut last_error = None;
     for host in hosts {
-        match TcpStream::connect((host.as_str(), port)).await {
+        // Bracket IPv6 literals so the host and port stay separable.
+        let address = if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]:{port}")
+        } else {
+            format!("{host}:{port}")
+        };
+        match connect_tcp(&address, config.tcp_connect_attempt_timeout).await {
             Ok(stream) => {
                 debug!(%host, port, "Connected to the redirection target");
                 return Ok(stream);
@@ -3894,6 +4036,7 @@ async fn active_session(
     fake_events_interval: Option<Duration>,
     auto_reconnect_cookie: &mut Option<ServerAutoReconnect>,
     reconnect_attempt: &mut u32,
+    session_status: &SessionStatus,
 ) -> SessionResult<RdpControlFlow> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
     let desktop_size = connection_result.desktop_size;
@@ -4048,6 +4191,7 @@ async fn active_session(
                     }
                     if outputs.iter().any(|output| matches!(output, ActiveStageOutput::AutoReconnectFailed)) {
                         *auto_reconnect_cookie = None;
+                        session_status.set_auto_reconnect_cookie_available(false);
                         // The server rejected the cookie but may complete this
                         // connection with the configured credentials instead.
                         if *reconnect_attempt != 0 {
@@ -4182,6 +4326,9 @@ async fn active_session(
                     let input_event = input_event.ok_or_else(|| ironrdp_session::general_err!("GUI is stopped"))?;
 
                     last_input = tokio::time::Instant::now();
+                    if input_event.is_user_input() {
+                        session_status.record_user_input_sent();
+                    }
 
                     match input_event {
                     resize_event @ (RdpInputEvent::Resize { .. } | RdpInputEvent::MonitorLayout(_)) => {
@@ -4630,6 +4777,7 @@ async fn active_session(
             match out {
                 ActiveStageOutput::AutoReconnectCookie(cookie) => {
                     *auto_reconnect_cookie = Some(cookie);
+                    session_status.set_auto_reconnect_cookie_available(true);
                     debug!("Received a Server Auto-Reconnect Cookie");
                 }
                 // The status pre-scan above discarded the reconnect state before
@@ -4864,6 +5012,19 @@ async fn active_session(
                     }
                 }
                 ActiveStageOutput::SaveSessionInfo { logon_complete: false } => {}
+                ActiveStageOutput::SessionId(session_id) => {
+                    if !send_active_output_event(
+                        output_event_sender,
+                        RdpOutputEvent::RemoteSessionId(session_id),
+                        close_receiver,
+                    )
+                    .await?
+                    {
+                        return Ok(RdpControlFlow::TerminatedGracefully(
+                            GracefulDisconnectReason::UserInitiated,
+                        ));
+                    }
+                }
                 ActiveStageOutput::DeactivateAll => {
                     // Deactivation-Reactivation Sequence:
                     // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
@@ -4940,7 +5101,7 @@ async fn active_session(
                         if let ConnectionActivationState::Finalized {
                             desktop_size,
                             share_id,
-                            input_flags: _,
+                            input_flags,
                             enable_server_pointer,
                             pointer_software_rendering,
                             static_channel_chunk_size,
@@ -4965,6 +5126,17 @@ async fn active_session(
                                 return Err(ironrdp_session::general_err!("invalid static channel chunk size"));
                             }
                             active_stage.set_window_support_level(window_support_level);
+                            if !send_active_output_event(
+                                output_event_sender,
+                                RdpOutputEvent::ServerInputFlags(input_flags),
+                                close_receiver,
+                            )
+                            .await?
+                            {
+                                return Ok(RdpControlFlow::TerminatedGracefully(
+                                    GracefulDisconnectReason::UserInitiated,
+                                ));
+                            }
                             if let Some(monitor_layout) = connection_activation.monitor_layout()
                                 && !send_active_output_event(
                                     output_event_sender,
@@ -5095,6 +5267,41 @@ async fn active_session(
                 }
                 ActiveStageOutput::AutoDetect(request) => {
                     debug!(?request, "Auto-detect");
+                    if let AutoDetectRequest::NetworkCharacteristicsResult {
+                        base_rtt_ms,
+                        bandwidth_kbps,
+                        average_rtt_ms,
+                        ..
+                    } = request
+                        && !send_active_output_event(
+                            output_event_sender,
+                            RdpOutputEvent::NetworkCharacteristics {
+                                base_rtt_ms,
+                                bandwidth_kbps,
+                                average_rtt_ms,
+                            },
+                            close_receiver,
+                        )
+                        .await?
+                    {
+                        return Ok(RdpControlFlow::TerminatedGracefully(
+                            GracefulDisconnectReason::UserInitiated,
+                        ));
+                    }
+                }
+                ActiveStageOutput::LogonErrors(errors) => {
+                    debug!(?errors, "Server logon error notification");
+                    if !send_active_output_event(
+                        output_event_sender,
+                        RdpOutputEvent::LogonError(errors),
+                        close_receiver,
+                    )
+                    .await?
+                    {
+                        return Ok(RdpControlFlow::TerminatedGracefully(
+                            GracefulDisconnectReason::UserInitiated,
+                        ));
+                    }
                 }
                 ActiveStageOutput::Terminate(reason) => break 'outer reason,
             }
@@ -5385,6 +5592,38 @@ mod tests {
             .expect("pending mouse movement");
         assert_eq!(events.as_slice(), [mouse_move(1, 1), mouse_move(2, 2)]);
         assert_eq!(batcher.deadline(), None);
+    }
+
+    #[test]
+    fn input_batcher_keeps_every_relative_move_and_sends_relative_buttons_immediately() {
+        let start = tokio::time::Instant::now();
+        let mut batcher = FastPathInputBatcher::new(Some(Duration::from_millis(100)), start);
+        let relative_move = |x_delta, y_delta| {
+            FastPathInputEvent::MouseEventRel(MouseRelPdu {
+                flags: PointerRelFlags::MOVE,
+                x_delta,
+                y_delta,
+            })
+        };
+        let relative_press = FastPathInputEvent::MouseEventRel(MouseRelPdu {
+            flags: PointerRelFlags::DOWN | PointerRelFlags::BUTTON1,
+            x_delta: 0,
+            y_delta: 0,
+        });
+
+        assert!(batcher.queue([relative_move(3, -2)], start).is_none());
+        assert!(
+            batcher
+                .queue([relative_move(-1, 4)], start + Duration::from_millis(1))
+                .is_none()
+        );
+        let events = batcher
+            .queue([relative_press], start + Duration::from_millis(2))
+            .expect("a relative button event forces the pending batch");
+        assert_eq!(
+            events.as_slice(),
+            [relative_move(3, -2), relative_move(-1, 4), relative_press]
+        );
     }
 
     #[test]
@@ -5954,6 +6193,64 @@ mod tests {
         );
         assert!(*graceful_close_receiver.borrow_and_update());
         assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::Resize { .. })));
+    }
+
+    #[test]
+    fn session_status_counts_only_user_input() {
+        let keyboard = RdpInputEvent::FastPath(
+            [FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x1e)]
+                .into_iter()
+                .collect(),
+        );
+        assert!(keyboard.is_user_input());
+        assert!(RdpInputEvent::DismissHoveringTouchContact { contact_id: 1 }.is_user_input());
+        assert!(!RdpInputEvent::Close.is_user_input());
+        assert!(
+            !RdpInputEvent::Resize {
+                width: 1024,
+                height: 768,
+                scale_factor: 100,
+                physical_size: None,
+            }
+            .is_user_input()
+        );
+
+        let (sender, _receiver) = RdpInputSender::channel(1);
+        assert_eq!(sender.last_user_input_sent(), None);
+        assert!(!sender.auto_reconnect_cookie_available());
+
+        let before = Instant::now();
+        sender.session_status.record_user_input_sent();
+        sender.session_status.set_auto_reconnect_cookie_available(true);
+        let clone = sender.clone();
+        assert!(clone.last_user_input_sent().is_some_and(|sent| sent >= before));
+        assert!(clone.auto_reconnect_cookie_available());
+        sender.session_status.set_auto_reconnect_cookie_available(false);
+        assert!(!clone.auto_reconnect_cookie_available());
+    }
+
+    #[test]
+    fn tcp_connect_attempt_timeout_connects_to_a_listening_address() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind a loopback listener");
+            let address = listener.local_addr().expect("listener address").to_string();
+
+            connect_tcp(&address, Some(Duration::from_secs(5)))
+                .await
+                .expect("connect with an attempt timeout");
+            connect_tcp(&address, None)
+                .await
+                .expect("connect without an attempt timeout");
+
+            drop(listener);
+            assert!(connect_tcp(&address, Some(Duration::from_secs(5))).await.is_err());
+        });
     }
 
     #[cfg(feature = "rdpdr")]
